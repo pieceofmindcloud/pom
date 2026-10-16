@@ -17,6 +17,12 @@ const dump = reference as ReferenceDump;
 // The dump is the frozen pre-ICU baseline. Keep intentional product-copy
 // revisions here rather than rewriting the generated 1.8 MB single-line file.
 const copyUpdates: Record<string, string> = {
+  "en:chat.noModel": "One piece is missing: the network is not serving any model",
+  "pt-BR:chat.noModel": "Falta uma peça: a rede não está servindo nenhum modelo",
+  "en:chat.noModelDetail": "The machines are here, but there is no mind to put together yet. Deploy a model and every piece starts talking.",
+  "pt-BR:chat.noModelDetail": "As máquinas estão aqui, mas ainda não há uma mente para montar. Implante um modelo e todas as peças começam a conversar.",
+  "en:publicNetworks.noMatchesDetail": "Try another search or filter.",
+  "pt-BR:publicNetworks.noMatchesDetail": "Tente outra busca ou outro filtro.",
   "en:plugins.state.active": "License active",
   "pt-BR:plugins.state.active": "Licença ativa",
   "en:deploy.knob.hidden_state_dtypeHint":
@@ -49,9 +55,12 @@ const MOVED_TO_PLUGINS = new Set([
   "chat.ttftClient",
   "chat.ttftPipeline",
 ]);
-// Keys of the repetition-cycle detector, removed from the POM with it.
+// Keys of the repetition-cycle detector, removed from the POM with it, and
+// of the one-machine limit a whole model no longer has.
 const removed = (key: string) =>
-  key.startsWith("deploy.cycleDetection") || key.includes(".knob.cycle_detection_");
+  key.startsWith("deploy.cycleDetection") ||
+  key.includes(".knob.cycle_detection_") ||
+  key.startsWith("deploy.wholeSingleMachine");
 const moved = (key: string) =>
   key.startsWith("chat.telemetry.") || MOVED_TO_PLUGINS.has(key) || removed(key);
 

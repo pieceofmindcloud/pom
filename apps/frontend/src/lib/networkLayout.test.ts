@@ -32,16 +32,16 @@ describe("network layout", () => {
   });
 
   /**
-   * Reiniciar um nó mudava o `changed_at` dele, o que mudava a chave, o que
-   * fazia `readPositions` voltar vazio: o arranjo que o operador tinha montado
-   * à mão não era reorganizado, era **perdido**. A fatia e o modelo continuam
-   * invalidando, porque aí a rede desenhada é outra.
+   * Restarting a node changed its `changed_at`, which changed the key, which
+   * made `readPositions` come back empty: the arrangement the operator had made
+   * by hand was not reorganized, it was **lost**. The slice and the model still
+   * invalidate, because then the drawn network is another one.
    */
-  it("mantém o arranjo quando um nó só reiniciou", () => {
-    const antes = [{ node_id: "node-a", start_layer: 0, end_layer: 15, changed_at: "2026-08-12T10:00:00Z" }];
-    const depois = [{ node_id: "node-a", start_layer: 0, end_layer: 15, changed_at: "2026-08-17T09:30:00Z" }];
+  it("keeps the arrangement when a node merely restarted", () => {
+    const before = [{ node_id: "node-a", start_layer: 0, end_layer: 15, changed_at: "2026-08-12T10:00:00Z" }];
+    const after = [{ node_id: "node-a", start_layer: 0, end_layer: 15, changed_at: "2026-08-17T09:30:00Z" }];
 
-    expect(deploymentLayoutKey("qwen", antes)).toBe(deploymentLayoutKey("qwen", depois));
+    expect(deploymentLayoutKey("qwen", before)).toBe(deploymentLayoutKey("qwen", after));
   });
 
   it("places the automatic layout inside the canvas bounds", () => {
@@ -67,12 +67,12 @@ describe("writePositions and clearPositions", () => {
 });
 
 /**
- * O arranjo automático existe porque a grade não conta a história do pipeline.
+ * The automatic arrangement exists because the grid does not tell the pipeline's story.
  *
- * O que a tela precisa mostrar é a ordem das camadas da esquerda para a
- * direita, e as réplicas de uma mesma faixa empilhadas na mesma coluna - é
- * assim que a aresta vira uma linha curta e legível em vez de atravessar o
- * canvas inteiro.
+ * What the screen needs to show is the order of the layers from left to
+ * right, and the replicas of the same range stacked in the same column - that
+ * is how the edge becomes a short, readable line instead of crossing the
+ * whole canvas.
  */
 describe("autoLayout", () => {
   const macbook = { id: "macbook", start_layer: 0, end_layer: 18 };
@@ -80,71 +80,71 @@ describe("autoLayout", () => {
   const salem2 = { id: "salem2", start_layer: 19, end_layer: 34 };
   const ksia = { id: "ksia", start_layer: 35, end_layer: 64 };
 
-  it("põe uma coluna por faixa de camadas, na ordem do pipeline", () => {
-    const posicoes = autoLayout([ksia, macbook, salem]);
-    expect(posicoes.macbook.left).toBeLessThan(posicoes.salem.left);
-    expect(posicoes.salem.left).toBeLessThan(posicoes.ksia.left);
+  it("puts one column per layer range, in pipeline order", () => {
+    const positions = autoLayout([ksia, macbook, salem]);
+    expect(positions.macbook.left).toBeLessThan(positions.salem.left);
+    expect(positions.salem.left).toBeLessThan(positions.ksia.left);
   });
 
-  /** A ordem de entrada não pode mudar o desenho: a rede se reordena sozinha
-   * a cada refresh, e um layout que dependesse disso tremeria na tela. */
-  it("não depende da ordem em que os nós chegaram", () => {
+  /** The input order cannot change the drawing: the network reorders itself
+   * on every refresh, and a layout that depended on it would jitter on the screen. */
+  it("does not depend on the order the nodes arrived in", () => {
     const a = autoLayout([macbook, salem, salem2, ksia]);
     const b = autoLayout([ksia, salem2, macbook, salem]);
     expect(a).toEqual(b);
   });
 
-  it("empilha réplicas da mesma faixa na mesma coluna", () => {
-    const posicoes = autoLayout([macbook, salem, salem2, ksia]);
-    expect(posicoes.salem.left).toBe(posicoes.salem2.left);
-    expect(posicoes.salem.top).not.toBe(posicoes.salem2.top);
+  it("stacks replicas of the same range in the same column", () => {
+    const positions = autoLayout([macbook, salem, salem2, ksia]);
+    expect(positions.salem.left).toBe(positions.salem2.left);
+    expect(positions.salem.top).not.toBe(positions.salem2.top);
   });
 
-  /** Duas réplicas ficam simétricas em torno do eixo do estágio anterior, que
-   * é o que faz a bifurcação parecer uma bifurcação. */
-  it("centra a coluna verticalmente, qualquer que seja a altura dela", () => {
-    const posicoes = autoLayout([macbook, salem, salem2, ksia]);
-    const eixo = (id: string) => posicoes[id].top;
-    const meio = (eixo("salem") + eixo("salem2")) / 2;
-    expect(Math.abs(meio - eixo("macbook"))).toBeLessThan(1);
-    expect(Math.abs(meio - eixo("ksia"))).toBeLessThan(1);
+  /** Two replicas sit symmetrically around the previous stage's axis, which
+   * is what makes the fork look like a fork. */
+  it("centers the column vertically, whatever its height", () => {
+    const positions = autoLayout([macbook, salem, salem2, ksia]);
+    const axis = (id: string) => positions[id].top;
+    const middle = (axis("salem") + axis("salem2")) / 2;
+    expect(Math.abs(middle - axis("macbook"))).toBeLessThan(1);
+    expect(Math.abs(middle - axis("ksia"))).toBeLessThan(1);
   });
 
-  it("nunca põe um card em cima do outro na mesma coluna", () => {
-    const posicoes = autoLayout([salem, salem2]);
-    expect(Math.abs(posicoes.salem.top - posicoes.salem2.top)).toBeGreaterThanOrEqual(202);
+  it("never puts a card on top of another in the same column", () => {
+    const positions = autoLayout([salem, salem2]);
+    expect(Math.abs(positions.salem.top - positions.salem2.top)).toBeGreaterThanOrEqual(202);
   });
 
-  /** Duas rotas alternativas: 16-30 seguido de 31-40, ou 16-40 direto. As
-   * faixas que começam em 16 dividem a coluna, e a rota de dois estágios
-   * segue reta na linha da primeira. */
-  it("põe faixas alternativas que começam no mesmo ponto na mesma coluna", () => {
+  /** Two alternative routes: 16-30 followed by 31-40, or 16-40 directly. The
+   * ranges that start at 16 share the column, and the two-stage route
+   * goes straight on the first one's line. */
+  it("puts alternative ranges that start at the same point in the same column", () => {
     const head = { id: "ksia-gpu2", start_layer: 0, end_layer: 15 };
-    const curta = { id: "salem-gpu1", start_layer: 16, end_layer: 30 };
-    const longa = { id: "ksia-gpu1", start_layer: 16, end_layer: 40 };
-    const cauda = { id: "salem-gpu2", start_layer: 31, end_layer: 40 };
-    const posicoes = autoLayout([longa, cauda, head, curta]);
-    expect(posicoes["salem-gpu1"].left).toBe(posicoes["ksia-gpu1"].left);
-    expect(posicoes["ksia-gpu2"].left).toBeLessThan(posicoes["salem-gpu1"].left);
-    expect(posicoes["salem-gpu1"].left).toBeLessThan(posicoes["salem-gpu2"].left);
-    expect(posicoes["salem-gpu1"].top).toBe(posicoes["ksia-gpu2"].top);
-    expect(posicoes["salem-gpu2"].top).toBe(posicoes["ksia-gpu2"].top);
-    expect(posicoes["ksia-gpu1"].top).toBeGreaterThan(posicoes["salem-gpu1"].top);
+    const shortRange = { id: "salem-gpu1", start_layer: 16, end_layer: 30 };
+    const longRange = { id: "ksia-gpu1", start_layer: 16, end_layer: 40 };
+    const tail = { id: "salem-gpu2", start_layer: 31, end_layer: 40 };
+    const positions = autoLayout([longRange, tail, head, shortRange]);
+    expect(positions["salem-gpu1"].left).toBe(positions["ksia-gpu1"].left);
+    expect(positions["ksia-gpu2"].left).toBeLessThan(positions["salem-gpu1"].left);
+    expect(positions["salem-gpu1"].left).toBeLessThan(positions["salem-gpu2"].left);
+    expect(positions["salem-gpu1"].top).toBe(positions["ksia-gpu2"].top);
+    expect(positions["salem-gpu2"].top).toBe(positions["ksia-gpu2"].top);
+    expect(positions["ksia-gpu1"].top).toBeGreaterThan(positions["salem-gpu1"].top);
   });
 
-  it("uma lista vazia não quebra", () => {
+  it("an empty list does not break", () => {
     expect(autoLayout([])).toEqual({});
   });
 
-  /** Nó sem faixa (anunciando 0-0) ainda precisa de um lugar: some da tela é
-   * pior que aparecer numa coluna própria. */
-  it("dá lugar a quem não serve faixa nenhuma", () => {
-    const posicoes = autoLayout([{ id: "vazio", start_layer: 0, end_layer: 0 }]);
-    expect(Number.isFinite(posicoes.vazio.left)).toBe(true);
-    expect(Number.isFinite(posicoes.vazio.top)).toBe(true);
+  /** A node without a range (announcing 0-0) still needs a place: vanishing from
+   * the screen is worse than appearing in a column of its own. */
+  it("makes room for whoever serves no range", () => {
+    const positions = autoLayout([{ id: "empty", start_layer: 0, end_layer: 0 }]);
+    expect(Number.isFinite(positions.empty.left)).toBe(true);
+    expect(Number.isFinite(positions.empty.top)).toBe(true);
   });
 
-  it("coloca o gateway virtual depois da última coluna", () => {
+  it("places the virtual gateway after the last column", () => {
     const peers = [
       { left: 48, top: 96 },
       { left: 404, top: 136 },
@@ -155,7 +155,7 @@ describe("autoLayout", () => {
     expect(gateway!.top + GATEWAY_HEIGHT / 2).toBe((96 + CARD_HEIGHT / 2 + 136 + CARD_HEIGHT / 2) / 2);
   });
 
-  it("mantém a seta da perna final apontando para a direita", () => {
+  it("keeps the arrow of the final leg pointing right", () => {
     const from = { left: 404, top: 136 };
     const gateway = { left: 760, top: 136 };
     const geometry = gatewayRouteGeometry(from, gateway);
@@ -165,15 +165,15 @@ describe("autoLayout", () => {
     expect(geometry.c2x).toBeLessThan(geometry.x2);
   });
 
-  it("preserva posições existentes quando um peer novo entra no canvas", () => {
-    const atual = { ksia: { left: 520, top: 140 } };
-    const persistido = { ksia: { left: 100, top: 100 } };
-    const arranjo = {
+  it("preserves existing positions when a new peer enters the canvas", () => {
+    const current = { ksia: { left: 520, top: 140 } };
+    const persisted = { ksia: { left: 100, top: 100 } };
+    const arrangement = {
       ksia: { left: 100, top: 100 },
       salem: { left: 340, top: 100 },
     };
 
-    expect(mergePositions(atual, persistido, arranjo, ["ksia", "salem"])).toEqual({
+    expect(mergePositions(current, persisted, arrangement, ["ksia", "salem"])).toEqual({
       ksia: { left: 520, top: 140 },
       salem: { left: 340, top: 100 },
     });

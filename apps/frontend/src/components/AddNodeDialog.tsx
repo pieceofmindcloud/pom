@@ -1,17 +1,19 @@
 /**
- * Soma uma máquina a um modelo que já está no ar.
+ * Adds a machine to a model that is already live.
  *
- * O inventário é lido depois que a máquina é escolhida. Assim o diálogo não
- * mistura as fatias da máquina A com as da máquina B, e um modelo inteiro
- * continua sendo uma opção explícita do mesmo fluxo.
+ * The inventory is read after the machine is chosen. That way the dialog does
+ * not mix machine A's slices with machine B's, and a whole model remains an
+ * explicit option of the same flow.
  */
 import { useEffect, useRef, useState } from "react";
 import { Route } from "lucide-react";
-import { addNodeOptions, api } from "../lib/api";
-import type { AddNodeOption, AddNodeOptionsResponse, CacheTypesResponse, KvCacheType } from "../lib/types";
+import { addNodeOptions, api, listDeployments } from "../lib/api";
+import type { AddNodeOption, AddNodeOptionsResponse, CacheTypesResponse, KvCacheType, RuntimeParams } from "../lib/types";
 import { Confirm } from "./Confirm";
+import { DeploymentInspector } from "./DeploymentInspector";
+import type { InferenceServiceEntry } from "../lib/inferenceServices";
+import { Select } from "./ui";
 import { useI18n } from "../i18n/provider";
-import { localizeServerText } from "../i18n/locales";
 
 export interface AddNodePeer {
   node_id: string;
@@ -19,7 +21,7 @@ export interface AddNodePeer {
   hostname: string;
 }
 
-/** Compatibilidade do componente com a lista antiga fornecida pelo Painel. */
+/** Component compatibility with the old list supplied by the Dashboard. */
 export interface AddNodeSlice {
   start_layer: number;
   end_layer: number;
@@ -34,20 +36,23 @@ export function AddNodeDialog({
   deployId,
   peers,
   slices,
+  services = [],
   existingRanges,
   onClose,
   onDone,
 }: {
   open: boolean;
-  /** Identidade técnica do modelo no catálogo. */
+  /** Technical identity of the model in the catalog. */
   group?: string;
-  /** Deployment ativo que receberá a nova versão. */
+  /** Active deployment that will receive the new version. */
   deployId?: string;
   peers: AddNodePeer[];
-  /** Fallback para chamadas antigas e para o estado inicial dos testes. */
+  /** Fallback for old calls and for the initial state of the tests. */
   slices: AddNodeSlice[];
-  /** Faixas que já estão no ar, para saber o que a escolha sobrepõe. */
+  /** Ranges that are already live, to know what the choice overlaps. */
   existingRanges: [number, number][];
+  /** The inference services plugins offer (any machine); the machine picks among those it runs. */
+  services?: InferenceServiceEntry[];
   onClose: () => void;
   onDone?: (overlapping: number[]) => void;
 }) {
@@ -56,14 +61,17 @@ export function AddNodeDialog({
   const [options, setOptions] = useState<AddNodeOption[]>(group ? [] : toShardOptions(slices));
   const [optionKey, setOptionKey] = useState(() => keyOf(options[0]));
   const [cacheTypes, setCacheTypes] = useState<CacheTypesResponse | null>(null);
-  const [nGpuLayers, setNGpuLayers] = useState(99);
-  const [offloadKqv, setOffloadKqv] = useState(true);
+  // This machine's whole configuration, edited with the deployment inspector. It starts as the deployment's
+  // active version, and it is sent to the node as this machine's own override (the version keeps its parameters).
+  const [draft, setDraft] = useState<RuntimeParams | null>(null);
+  // The machine's engine: "" is llama.cpp, otherwise the code of an inference service the machine runs.
+  const [engineCode, setEngineCode] = useState("");
   const [loadingOptions, setLoadingOptions] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Re-semear é ato de abrir o diálogo, não de receber props novas. O Painel
-  // repolla os peers e não pode interromper a edição em andamento.
+  // Re-seeding is an act of opening the dialog, not of receiving new props. The Dashboard
+  // re-polls the peers and must not interrupt the edit in progress.
   const wasOpen = useRef(false);
   useEffect(() => {
     if (open && !wasOpen.current) {
@@ -73,15 +81,35 @@ export function AddNodeDialog({
       setOptions(fallback);
       setOptionKey(keyOf(fallback[0]));
       setCacheTypes(null);
-      setNGpuLayers(99);
-      setOffloadKqv(true);
+      setDraft(null);
+      setEngineCode("");
       setError(null);
     }
     wasOpen.current = open;
   }, [open, peers, slices]);
 
-  // A escolha só é trocada quando desaparece. Arrays novos do polling não
-  // devem devolver o operador para a primeira máquina.
+  // The machine starts with the deployment's configuration; a change of machine starts it over from that same
+  // configuration, so one machine's edits never reach another machine.
+  useEffect(() => {
+    if (!open || !deployId || !nodeId) return;
+    let cancelled = false;
+    void listDeployments()
+      .then((result) => {
+        if (cancelled) return;
+        const row = result.deployments.find((candidate) => candidate.deployment.deploy_id === deployId);
+        const version = row?.deployment.versions.find((candidate) => candidate.version === row.deployment.active_version);
+        if (version) setDraft(version.params);
+      })
+      .catch((reason) => {
+        if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, deployId, nodeId]);
+
+  // The choice is only changed when it disappears. New arrays from polling
+  // must not send the operator back to the first machine.
   useEffect(() => {
     if (!open) return;
     if (peers.length > 0 && !peers.some((peer) => peer.node_id === nodeId)) {
@@ -89,9 +117,9 @@ export function AddNodeDialog({
     }
   }, [open, peers, nodeId]);
 
-  // O catálogo e a configuração pertencem à máquina escolhida. O AbortSignal
-  // também impede que uma resposta lenta da máquina anterior sobrescreva a
-  // lista nova.
+  // The catalog and the configuration belong to the chosen machine. The AbortSignal
+  // also prevents a slow response from the previous machine from overwriting the
+  // new list.
   useEffect(() => {
     if (!open || !group || !nodeId) return;
     const controller = new AbortController();
@@ -104,12 +132,10 @@ export function AddNodeDialog({
       .then((result) => {
         setOptions(result.options);
         setCacheTypes(result.cache_types);
-        setNGpuLayers(result.defaults.n_gpu_layers);
-        setOffloadKqv(result.defaults.offload_kqv);
       })
       .catch((reason) => {
         if (!controller.signal.aborted) {
-          setError(localizeServerText(locale, reason instanceof Error ? reason.message : String(reason)));
+          setError(reason instanceof Error ? reason.message : String(reason));
         }
       })
       .finally(() => {
@@ -118,13 +144,25 @@ export function AddNodeDialog({
     return () => controller.abort();
   }, [open, group, nodeId, locale]);
 
-  useEffect(() => {
-    if (options.length > 0 && !options.some((option) => keyOf(option) === optionKey)) {
-      setOptionKey(keyOf(options[0]));
-    }
-  }, [options, optionKey]);
+  // The engines this machine runs, and the chosen one (llama.cpp when none).
+  const engines = services.filter((service) => service.nodeIds.includes(nodeId));
+  const engine = engines.find((service) => service.code === engineCode) ?? null;
+  // A service that does not run layer slices takes the whole model on this machine; one that runs slices keeps both.
+  const shownOptions = engine && !engine.stages ? options.filter((candidate) => candidate.kind === "whole") : options;
+  const option = shownOptions.find((candidate) => keyOf(candidate) === optionKey);
+  // The machine's whole configuration, with its engine: what the deployment inspector shows and what is sent.
+  const machine: RuntimeParams | null = draft ? { ...draft, inference_service: engine?.code ?? null } : null;
 
-  const option = options.find((candidate) => keyOf(candidate) === optionKey);
+  useEffect(() => {
+    if (shownOptions.length > 0 && !shownOptions.some((option) => keyOf(option) === optionKey)) {
+      setOptionKey(keyOf(shownOptions[0]));
+    }
+  }, [shownOptions, optionKey]);
+
+  // A machine that no longer runs the chosen engine goes back to llama.cpp.
+  useEffect(() => {
+    if (engineCode && !engines.some((service) => service.code === engineCode)) setEngineCode("");
+  }, [engines, engineCode]);
   const overlapping = option
     ? rangeOverlap(existingRanges, [option.start_layer, option.end_layer])
     : [];
@@ -144,8 +182,7 @@ export function AddNodeDialog({
         target_node_id: nodeId,
         start_layer: option.start_layer,
         end_layer: option.end_layer,
-        n_gpu_layers: nGpuLayers,
-        offload_kqv: offloadKqv,
+        ...(machine ? { overrides: { params: machine } } : {}),
         ...(cacheTypes
           ? {
               cache_type_k: cacheTypes.cache_type_k,
@@ -156,7 +193,7 @@ export function AddNodeDialog({
       onDone?.(result.overlapping_layers ?? []);
       onClose();
     } catch (reason) {
-      setError(localizeServerText(locale, reason instanceof Error ? reason.message : String(reason)));
+      setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setBusy(false);
     }
@@ -187,15 +224,34 @@ export function AddNodeDialog({
             </select>
           </label>
 
+          {engines.length > 0 && (
+            <label className="flex flex-col gap-1">
+              <span className="text-xs text-muted" title={t("deploy.inferenceServiceHint")}>
+                {t("deploy.inferenceService")}
+              </span>
+              <Select
+                name="add_node_engine"
+                value={engineCode}
+                onChange={(event) => setEngineCode(event.target.value)}
+                className="h-9 text-sm"
+              >
+                <option value="">{t("deploy.inferenceServiceLlama")}</option>
+                {engines.map((service) => (
+                  <option key={service.code} value={service.code}>{service.name}</option>
+                ))}
+              </Select>
+            </label>
+          )}
+
           <label className="flex flex-col gap-1">
             <span className="text-xs text-muted">{t("deploy.addNodeSlice")}</span>
             <select
               className="rounded-md border border-line bg-raised px-2 py-1.5 font-mono text-sm"
               value={optionKey}
-              disabled={loadingOptions || options.length === 0}
+              disabled={loadingOptions || shownOptions.length === 0}
               onChange={(event) => setOptionKey(event.target.value)}
             >
-              {options.map((candidate) => (
+              {shownOptions.map((candidate) => (
                 <option key={keyOf(candidate)} value={keyOf(candidate)}>
                   {candidate.kind === "whole" ? t("deploy.addNodeWhole") : candidate.label}
                 </option>
@@ -204,56 +260,33 @@ export function AddNodeDialog({
             {loadingOptions && <span className="text-xs text-muted">{t("deploy.addNodeLoading")}</span>}
           </label>
 
-          {cacheTypes && (
-            <div className="grid gap-2 rounded-lg border border-line bg-raised/40 p-3">
-              <div className="eyebrow">{t("deploy.addNodeMachineOptions")}</div>
-              <label className="flex items-center justify-between gap-3 text-xs text-muted">
-                <span>{t("deploy.knob.n_gpu_layers")}</span>
-                <input
-                  className="w-24 rounded-md border border-line bg-surface px-2 py-1 text-right font-mono text-xs text-fg"
-                  type="number"
-                  min={0}
-                  value={nGpuLayers}
-                  onChange={(event) => setNGpuLayers(Math.max(0, Number(event.target.value) || 0))}
-                />
-              </label>
-              <label className="flex items-center justify-between gap-3 text-xs text-muted">
-                <span>{t("deploy.addNodeKvPlacement")}</span>
-                <select
-                  className="rounded-md border border-line bg-surface px-2 py-1 text-xs text-fg"
-                  value={offloadKqv ? "gpu" : "cpu"}
-                  onChange={(event) => setOffloadKqv(event.target.value === "gpu")}
-                >
-                  <option value="gpu">{t("deploy.kvOnGpu")}</option>
-                  <option value="cpu">{t("deploy.kvInRam")}</option>
-                </select>
-              </label>
-              <div className="grid grid-cols-2 gap-2">
-                <label className="flex flex-col gap-1 text-xs text-muted">
-                  <span>{t("deploy.addNodeCacheK")}</span>
-                  <select
-                    className="rounded-md border border-line bg-surface px-2 py-1 text-xs text-fg"
-                    value={cacheTypes.cache_type_k}
-                    onChange={(event) => setCacheTypes({ ...cacheTypes, cache_type_k: event.target.value as KvCacheType })}
-                  >
-                    {(choices.length > 0 ? choices : [DEFAULT_CACHE_TYPE]).map((choice) => (
-                      <option key={choice} value={choice}>{choice}</option>
-                    ))}
-                  </select>
-                </label>
-                <label className="flex flex-col gap-1 text-xs text-muted">
-                  <span>{t("deploy.addNodeCacheV")}</span>
-                  <select
-                    className="rounded-md border border-line bg-surface px-2 py-1 text-xs text-fg"
-                    value={cacheTypes.cache_type_v}
-                    onChange={(event) => setCacheTypes({ ...cacheTypes, cache_type_v: event.target.value as KvCacheType })}
-                  >
-                    {(choices.length > 0 ? choices : [DEFAULT_CACHE_TYPE]).map((choice) => (
-                      <option key={choice} value={choice}>{choice}</option>
-                    ))}
-                  </select>
-                </label>
-              </div>
+          {machine && (
+            <div className="max-h-[55vh] overflow-y-auto pr-1">
+              <DeploymentInspector
+                value={machine}
+                onChange={setDraft}
+                inferenceService={
+                  engine
+                    ? { name: engine.name, settings: engine.settings, pomSettings: engine.pomSettings }
+                    : undefined
+                }
+                showHiddenStateDtype
+                cacheTypes={
+                  cacheTypes
+                    ? {
+                        k: cacheTypes.cache_type_k,
+                        v: cacheTypes.cache_type_v,
+                        choices: choices.length > 0 ? choices : [DEFAULT_CACHE_TYPE],
+                        onChange: (part, value) =>
+                          setCacheTypes(
+                            part === "k"
+                              ? { ...cacheTypes, cache_type_k: value }
+                              : { ...cacheTypes, cache_type_v: value },
+                          ),
+                      }
+                    : undefined
+                }
+              />
             </div>
           )}
 
@@ -274,14 +307,14 @@ function toShardOptions(slices: AddNodeSlice[]): AddNodeOption[] {
   return slices.map((slice) => ({ ...slice, kind: "shards" as const }));
 }
 
-/** Uma opção é identificada pela faixa e pelo tipo de arquivo. */
+/** An option is identified by the range and the file type. */
 function keyOf(option?: Pick<AddNodeOption, "kind" | "start_layer" | "end_layer">): string {
   return option
     ? `${option.kind === "whole" ? "whole:" : ""}${option.start_layer}-${option.end_layer}`
     : "";
 }
 
-/** As camadas que a faixa escolhida compartilha com as que já estão no ar. */
+/** The layers the chosen range shares with those already live. */
 export function rangeOverlap(
   existing: [number, number][],
   range: [number, number],

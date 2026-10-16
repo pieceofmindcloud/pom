@@ -40,7 +40,7 @@ pub struct PeerBudget {
     pub has_model: bool,
 }
 
-/// Parâmetros do cache usados para transformar a geometria GGUF em bytes.
+/// Cache parameters used to turn the GGUF geometry into bytes.
 #[derive(Debug, Clone, Copy)]
 pub struct KvPlanParams {
     pub n_ctx: u32,
@@ -92,8 +92,8 @@ pub struct SplitPlan {
 
 // ── Planner ──────────────────────────────────────────────────────────────────
 
-/// Variante do planejador que recusa uma faixa quando peso + KV não cabem no
-/// orçamento de memória do peer.
+/// Planner variant that refuses a range when weight + KV do not fit in the
+/// peer's memory budget.
 pub fn plan_split_with_kv(
     model_path: &str,
     layout: &GgufLayout,
@@ -122,10 +122,10 @@ fn plan_split_impl(
 ) -> Result<SplitPlan> {
     let total_layers = layout.layer_count();
     if total_layers == 0 {
-        bail!("não foi possível ler as camadas do GGUF (tensor table vazia)");
+        bail!("could not read the layers of the GGUF (empty tensor table)");
     }
     if budgets.is_empty() {
-        bail!("nenhum peer com orçamento informado");
+        bail!("no peer with a reported budget");
     }
 
     let reserve = (reserve_pct / 100.0).clamp(0.0, 0.9);
@@ -141,7 +141,7 @@ fn plan_split_impl(
 
         if pos >= total_layers {
             warnings.push(format!(
-                "{} ficou sem camadas: os peers anteriores já cobrem o modelo inteiro",
+                "{} was left without layers: the previous peers already cover the whole model",
                 budget.label
             ));
             continue;
@@ -165,7 +165,7 @@ fn plan_split_impl(
             let (weight_bytes, kv_bytes, total_bytes) =
                 range_cost(layout, info, kv, pos, pos, is_last_peer)?;
             warnings.push(format!(
-                "{}: {:.0} MB não cobrem nem uma camada (peso {} B + KV {} B = {} B, já descontada a reserva de {:.0}%)",
+                "{}: {:.0} MB do not cover even one layer (weights {} B + KV {} B = {} B, with the {:.0}% reserve already discounted)",
                 budget.label, budget.budget_mb, weight_bytes, kv_bytes, total_bytes, reserve_pct
             ));
             continue;
@@ -185,7 +185,7 @@ fn plan_split_impl(
 
         if !budget.has_model {
             warnings.push(format!(
-                "{} não tem o modelo escolhido instalado — precisa baixá-lo antes de fatiar",
+                "{} does not have the chosen model installed — it must be downloaded before slicing",
                 budget.label
             ));
         }
@@ -224,7 +224,7 @@ fn plan_split_impl(
 
     if !complete {
         warnings.push(format!(
-            "faltam as camadas {}-{}: some ~{:.0} MB de orçamento (ou some outro peer) para fechar o modelo",
+            "missing layers {}-{}: add ~{:.0} MB of budget (or add another peer) to close the model",
             covered_layers,
             total_layers - 1,
             missing_mb / (1.0 - reserve)
@@ -254,19 +254,18 @@ fn plan_split_impl(
 
 fn usable_memory_bytes(budget_mb: f64, reserve: f64) -> Result<u64> {
     if !budget_mb.is_finite() || budget_mb < 0.0 {
-        bail!("orçamento de memória inválido: {budget_mb}");
+        bail!("invalid memory budget: {budget_mb}");
     }
     let bytes = budget_mb * (1.0 - reserve) * MB;
     if !bytes.is_finite() || bytes < 0.0 || bytes > u64::MAX as f64 {
-        bail!("orçamento de memória excede a aritmética de bytes");
+        bail!("memory budget exceeds the byte arithmetic");
     }
     Ok(bytes.floor() as u64)
 }
 
-/// `pub(crate)`: também usado pela pré-visualização de capacidade do
-/// planejador de implantação (`crate::deploy::capacity_preview_endpoint`),
-/// que cobra peso e KV de uma faixa exatamente como o planejador de
-/// fatiamento faz aqui.
+/// `pub(crate)`: also used by the capacity preview of the deployment
+/// planner (`crate::deploy::capacity_preview_endpoint`), which charges the
+/// weight and KV of a range exactly as the slicing planner does here.
 pub(crate) fn range_cost(
     layout: &GgufLayout,
     info: Option<&GgufInfo>,
@@ -288,20 +287,20 @@ pub(crate) fn range_cost(
             )?
         }
         (None, None) => 0,
-        _ => bail!("configuração de orçamento KV incompleta"),
+        _ => bail!("incomplete KV budget configuration"),
     };
     let total_bytes = weight_bytes
         .checked_add(kv_bytes)
-        .ok_or_else(|| anyhow::anyhow!("overflow ao somar peso e KV da fatia"))?;
+        .ok_or_else(|| anyhow::anyhow!("overflow while summing the weights and KV of the slice"))?;
     Ok((weight_bytes, kv_bytes, total_bytes))
 }
 
-/// O nome do modelo tirado do caminho do arquivo, sem diretório nem `.gguf`.
+/// The model name taken from the file path, without directory or `.gguf`.
 ///
-/// Já teve uma segunda função - descascar um sufixo `_<inicio>_<fim>` para que
-/// refatiar uma fatia não empilhasse faixas no nome. Isso morreu junto com a
-/// convenção: a faixa de uma parte mora no `.pom`, e o arquivo se chama pelo
-/// próprio hash.
+/// It once had a second job - peeling off a `_<inicio>_<fim>` suffix so that
+/// re-slicing a slice would not stack ranges in the name. That died together
+/// with the convention: the range of a part lives in the `.pom`, and the file
+/// is named after its own hash.
 pub fn base_name_of(model_path: &str) -> String {
     Path::new(model_path)
         .file_stem()
@@ -315,71 +314,71 @@ pub fn base_name_of(model_path: &str) -> String {
 pub struct SliceOutcome {
     pub output_path: String,
     pub bytes: u64,
-    /// sha256 do arquivo — o nome dele em disco e a identidade dele no `.pom`.
+    /// sha256 of the file - its name on disk and its identity in the `.pom`.
     pub sha256: String,
     /// True when the slice already existed and was reused.
     pub reused: bool,
 }
 
-/// Grava a fatia num temporário e só a batiza depois de saber o hash.
+/// Writes the slice to a temporary file and only names it once the hash is known.
 ///
-/// O nome final é o conteúdo, e o conteúdo só se conhece no fim: por isso o
-/// corte sai para `<uuid>.part` e vira `<sha256>.gguf` num `rename`, que é
-/// atômico no mesmo sistema de arquivos. É também o que impede um corte
-/// interrompido de ficar parecendo fatia boa - o defeito que o critério antigo
-/// ("existe e tem mais de 1 KB") não conseguia enxergar.
-async fn write_then_name<F>(output_dir: &Path, corte: F) -> Result<SliceOutcome>
+/// The final name is the content, and the content is only known at the end:
+/// that is why the cut goes out to `<uuid>.part` and becomes `<sha256>.gguf`
+/// in a `rename`, which is atomic on the same file system. It is also what
+/// keeps an interrupted cut from looking like a good slice - the defect the
+/// old criterion ("exists and is larger than 1 KB") could not see.
+async fn write_then_name<F>(output_dir: &Path, cut: F) -> Result<SliceOutcome>
 where
     F: FnOnce(PathBuf) -> tokio::task::JoinHandle<Result<crate::splitter::WrittenSlice>>,
 {
     std::fs::create_dir_all(output_dir)
-        .with_context(|| format!("criar {}", output_dir.display()))?;
+        .with_context(|| format!("create {}", output_dir.display()))?;
 
     let temp = output_dir.join(format!("{}.part", uuid::Uuid::new_v4()));
-    let escrito = corte(temp.clone())
+    let written = cut(temp.clone())
         .await
-        .context("spawn_blocking para o fatiador")?
+        .context("spawn_blocking for the slicer")?
         .inspect_err(|_| {
             let _ = std::fs::remove_file(&temp);
         })?;
 
-    let destino = crate::pom::part_path(output_dir, &escrito.sha256)?;
-    // Já existir é o caso bom: outra rodada produziu bytes idênticos, e o
-    // endereço de conteúdo diz que um dos dois arquivos é redundante.
-    if destino.exists() {
+    let destination = crate::pom::part_path(output_dir, &written.sha256)?;
+    // Already existing is the good case: another round produced identical
+    // bytes, and the content address says one of the two files is redundant.
+    if destination.exists() {
         let _ = std::fs::remove_file(&temp);
         info!(
-            "parte idêntica já em disco, reaproveitando: {}",
-            destino.display()
+            "identical part already on disk, reusing: {}",
+            destination.display()
         );
-    } else if let Err(e) = std::fs::rename(&temp, &destino) {
+    } else if let Err(e) = std::fs::rename(&temp, &destination) {
         let _ = std::fs::remove_file(&temp);
-        return Err(e).with_context(|| format!("renomear para {}", destino.display()));
+        return Err(e).with_context(|| format!("rename to {}", destination.display()));
     }
 
     Ok(SliceOutcome {
-        output_path: destino.to_string_lossy().into_owned(),
-        bytes: escrito.bytes,
-        sha256: escrito.sha256,
+        output_path: destination.to_string_lossy().into_owned(),
+        bytes: written.bytes,
+        sha256: written.sha256,
         reused: false,
     })
 }
 
-/// A parte já está aqui, com este hash exato?
+/// Is the part already here, with this exact hash?
 ///
-/// Reaproveitar passa a exigir saber **qual** parte se quer, e não adivinhar um
-/// nome: é o `.pom` que diz o hash. Em troca some a classe inteira de defeito
-/// em que um arquivo com o nome certo e o conteúdo errado era carregado como se
-/// estivesse bom.
-fn ja_tenho(output_dir: &Path, sha256: &str) -> Option<SliceOutcome> {
-    let caminho = crate::pom::part_path(output_dir, sha256).ok()?;
-    let meta = std::fs::metadata(&caminho).ok()?;
+/// Reusing now requires knowing **which** part is wanted, rather than guessing
+/// a name: it is the `.pom` that states the hash. In exchange, the whole class
+/// of defect where a file with the right name and the wrong content was loaded
+/// as if it were good disappears.
+fn already_have(output_dir: &Path, sha256: &str) -> Option<SliceOutcome> {
+    let path = crate::pom::part_path(output_dir, sha256).ok()?;
+    let meta = std::fs::metadata(&path).ok()?;
     if meta.len() <= 1024 {
         return None;
     }
-    info!("parte já existe, reaproveitando: {}", caminho.display());
+    info!("part already exists, reusing: {}", path.display());
     Some(SliceOutcome {
-        output_path: caminho.to_string_lossy().into_owned(),
+        output_path: path.to_string_lossy().into_owned(),
         bytes: meta.len(),
         sha256: sha256.to_string(),
         reused: true,
@@ -393,9 +392,9 @@ fn ja_tenho(output_dir: &Path, sha256: &str) -> Option<SliceOutcome> {
 ///
 /// `on_progress` is called with 0..=100 as the slicer writes bytes.
 ///
-/// `expected_sha256` é o que o `.pom` diz que esta parte tem que ser. Com ele,
-/// reaproveitar é uma checagem de endereço de conteúdo; sem ele (uma rodada
-/// nova, que ainda não conhece o hash), corta-se e o hash sai do corte.
+/// `expected_sha256` is what the `.pom` says this part has to be. With it,
+/// reusing is a content address check; without it (a new round, which does not
+/// know the hash yet), the cut is made and the hash comes out of the cut.
 #[allow(clippy::too_many_arguments)]
 pub async fn extract_shard(
     source_model: &str,
@@ -428,14 +427,14 @@ pub async fn extract_shard(
                 )
             })
             .await
-            .context("preflight do GGUF antes de reaproveitar a fatia")??;
+            .context("GGUF preflight before reusing the slice")??;
         }
     }
 
     // Reuse an existing slice: these files are gigabytes and rebuilding one is
     // minutes of I/O for an identical result.
-    if let Some(pronta) = expected_sha256.and_then(|sha| ja_tenho(output_dir, sha)) {
-        return Ok(pronta);
+    if let Some(ready) = expected_sha256.and_then(|sha| already_have(output_dir, sha)) {
+        return Ok(ready);
     }
 
     write_then_name(output_dir, move |dst| {
@@ -454,19 +453,19 @@ pub async fn extract_shard(
     .await
 }
 
-/// Extrai o shard de tensor de um rank de tensor parallelism (caminho C).
+/// Extracts the tensor shard of one tensor parallelism rank (path C).
 ///
-/// Espelho de `extract_shard`: roda `splitter::shard_tensor_parallel` num
-/// `spawn_blocking`, reaproveita arquivo já completo e apaga o parcial no
-/// erro. O shard NÃO é carregável pelo llama.cpp de hoje; é a metade que o
-/// fork do caminho C carrega junto com a coletiva all-reduce.
+/// Mirror of `extract_shard`: runs `splitter::shard_tensor_parallel` in a
+/// `spawn_blocking`, reuses an already complete file and deletes the partial
+/// one on error. The shard is NOT loadable by today's llama.cpp; it is the
+/// half that the path C fork loads together with the all-reduce collective.
 ///
-/// O carimbo `pom.tp_format` continua sendo gravado, mas deixou de ser o que
-/// decide reaproveitar: um shard escrito por uma regra antiga tem **outros
-/// bytes**, logo outro hash, logo outro nome. O defeito de 17/08 - a ksia
-/// carregando o mesmo shard obsoleto durante três correções seguidas, com o log
-/// anunciando "reaproveitando" a cada tentativa - não tem como se repetir
-/// quando o nome do arquivo é o conteúdo dele.
+/// The `pom.tp_format` stamp is still written, but it is no longer what
+/// decides reuse: a shard written by an old rule has **other bytes**, hence
+/// another hash, hence another name. The defect of 17/08 - the ksia loading
+/// the same obsolete shard through three fixes in a row, with the log
+/// announcing "reusing" on every attempt - cannot repeat itself when
+/// the file name is its content.
 pub async fn extract_tp_shard(
     source_model: &str,
     output_dir: &Path,
@@ -475,8 +474,8 @@ pub async fn extract_tp_shard(
     tp_rank: u32,
     on_progress: impl Fn(f64) + Send + Sync + 'static,
 ) -> Result<SliceOutcome> {
-    if let Some(pronta) = expected_sha256.and_then(|sha| ja_tenho(output_dir, sha)) {
-        return Ok(pronta);
+    if let Some(ready) = expected_sha256.and_then(|sha| already_have(output_dir, sha)) {
+        return Ok(ready);
     }
 
     let src = std::path::PathBuf::from(source_model);
@@ -488,12 +487,12 @@ pub async fn extract_tp_shard(
     .await
 }
 
-// ── Fatias de tamanhos diferentes ────────────────────────────────────────────
+// ── Slices of different sizes ────────────────────────────────────────────────
 //
-// As máquinas do cluster não são parecidas, então dividir em partes iguais é a
-// resposta errada quase sempre: quem manda no tamanho de uma fatia é a memória
-// da máquina que vai recebê-la. Aqui o pedido é em bytes e a resposta é em
-// camadas, porque camada é a unidade que `split_model.py` conhece.
+// The machines of the cluster are not alike, so splitting into equal parts is
+// almost always the wrong answer: what dictates the size of a slice is the
+// memory of the machine that will receive it. Here the request is in bytes and
+// the answer is in layers, because the layer is the unit `split_model.py` knows.
 
 /// One slice the operator asked for.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -510,8 +509,8 @@ impl SizedSlice {
         }
     }
 
-    /// "O resto do modelo" — a conveniência que evita erro de arredondamento na
-    /// última fatia.
+    /// "The rest of the model" - the convenience that avoids a rounding error
+    /// in the last slice.
     fn rest() -> Self {
         Self { target_mb: None }
     }
@@ -578,10 +577,10 @@ pub struct SizePlan {
 pub fn plan_by_size(layout: &GgufLayout, slices: &[SizedSlice]) -> Result<SizePlan> {
     let total_layers = layout.layer_count();
     if total_layers == 0 {
-        bail!("não foi possível ler as camadas do GGUF (tensor table vazia)");
+        bail!("could not read the layers of the GGUF (empty tensor table)");
     }
     if slices.is_empty() {
-        bail!("nenhuma fatia na lista");
+        bail!("no slice in the list");
     }
 
     let mut ranges: Vec<SizedRange> = Vec::new();
@@ -594,7 +593,7 @@ pub fn plan_by_size(layout: &GgufLayout, slices: &[SizedSlice]) -> Result<SizePl
 
         if pos >= total_layers {
             warnings.push(format!(
-                "fatia {}: não sobrou camada nenhuma — as anteriores já cobrem o modelo inteiro",
+                "slice {}: no layer was left — the previous ones already cover the whole model",
                 index + 1
             ));
             ranges.push(SizedRange {
@@ -616,7 +615,7 @@ pub fn plan_by_size(layout: &GgufLayout, slices: &[SizedSlice]) -> Result<SizePl
             continue;
         }
 
-        // "O resto" takes everything left. The final entry is always the rest,
+        // "The rest" takes everything left. The final entry is always the rest,
         // even when an older client still sends a numeric target for it.
         let take_rest = slice.target_mb.is_none() || last_requested;
         let (end, too_small) = if take_rest {
@@ -636,8 +635,8 @@ pub fn plan_by_size(layout: &GgufLayout, slices: &[SizedSlice]) -> Result<SizePl
             if fits_one {
                 (end - 1, false)
             } else {
-                // Uma camada é o mínimo indivisível: entregamos uma e dizemos
-                // que o alvo não cabia, em vez de inventar meia camada.
+                // One layer is the indivisible minimum: we deliver one and say
+                // the target did not fit, instead of inventing half a layer.
                 (pos, true)
             }
         };
@@ -653,7 +652,7 @@ pub fn plan_by_size(layout: &GgufLayout, slices: &[SizedSlice]) -> Result<SizePl
 
         if too_small {
             warnings.push(format!(
-                "fatia {}: {} não cobrem nem a camada {}, que sozinha já pesa {}",
+                "slice {}: {} do not cover even layer {}, which alone already weighs {}",
                 index + 1,
                 fmt_gb(slice.target_mb.unwrap_or(0.0) * MB),
                 pos,
@@ -676,8 +675,8 @@ pub fn plan_by_size(layout: &GgufLayout, slices: &[SizedSlice]) -> Result<SizePl
 
         pos = end + 1;
         if take_rest && !last_requested {
-            // "O resto" no meio da lista engole tudo; as seguintes ficam vazias
-            // e o aviso acima explica por quê.
+            // "The rest" in the middle of the list swallows everything; the
+            // following ones are left empty and the warning above explains why.
             continue;
         }
     }
@@ -693,9 +692,9 @@ pub fn plan_by_size(layout: &GgufLayout, slices: &[SizedSlice]) -> Result<SizePl
         )
     };
 
-    // A cobertura não vira aviso: ela já está aqui em número (`covered_layers`,
-    // `missing_range`, `missing_bytes`), e quem mostra escreve uma frase só. Dois
-    // textos dizendo a mesma falta é ruído.
+    // Coverage does not become a warning: it is already here as numbers
+    // (`covered_layers`, `missing_range`, `missing_bytes`), and whoever shows it
+    // writes a single sentence. Two texts stating the same gap is noise.
     let blocked = ranges.iter().any(|r| r.empty || r.too_small);
 
     // NextN/MTP (Qwen3.5+): the predictor block lives only in the model's very
@@ -708,13 +707,13 @@ pub fn plan_by_size(layout: &GgufLayout, slices: &[SizedSlice]) -> Result<SizePl
         if complete {
             if nonempty > 1 {
                 warnings.push(format!(
-                    "modelo com predictor nextn (multi-token): o bloco de predição vive só na última camada ({}) e vai embutido na fatia final - as anteriores carregam como tronco puro",
+                    "model with a nextn predictor (multi-token): the prediction block lives only in the last layer ({}) and is embedded in the final slice - the previous ones load as a pure trunk",
                     total_layers - 1
                 ));
             }
         } else {
             warnings.push(format!(
-                "modelo com predictor nextn (multi-token): o bloco de predição fica na camada {}, que esta divisão não cobre - a fatia final carrega como tronco puro, sem predição multi-token",
+                "model with a nextn predictor (multi-token): the prediction block sits at layer {}, which this split does not cover - the final slice loads as a pure trunk, without multi-token prediction",
                 total_layers - 1
             ));
         }
@@ -766,7 +765,7 @@ pub fn plan_by_size(layout: &GgufLayout, slices: &[SizedSlice]) -> Result<SizePl
 pub fn plan_equal(layout: &GgufLayout, parts: u32) -> Result<SizePlan> {
     let ranges = even_split(layout.layer_count(), parts);
     if ranges.is_empty() {
-        bail!("este arquivo não declara camadas — não há o que dividir");
+        bail!("this file declares no layers — there is nothing to split");
     }
     let slices: Vec<SizedSlice> = ranges
         .iter()
@@ -956,7 +955,7 @@ mod tests {
     }
 
     #[test]
-    fn kv_bytes_entram_na_decisao_de_corte_e_nao_so_na_reserva() {
+    fn kv_bytes_enter_the_cut_decision_and_not_only_the_reserve() {
         let l = layout(4, 10.0);
         let info = GgufInfo {
             attention_head_count_kv: Some(vec![8]),
@@ -988,7 +987,7 @@ mod tests {
     }
 
     #[test]
-    fn kv_sem_metadado_completo_recusa_o_plano() {
+    fn kv_without_complete_metadata_refuses_the_plan() {
         let l = layout(2, 10.0);
         let info = GgufInfo::default();
         let error = plan_split_with_kv(
@@ -1027,10 +1026,7 @@ mod tests {
         assert_eq!(plan.covered_layers, 9);
         assert_eq!(plan.missing_range, Some((9, 31)));
         assert!(plan.missing_mb > 0.0);
-        assert!(plan
-            .warnings
-            .iter()
-            .any(|w| w.contains("faltam as camadas")));
+        assert!(plan.warnings.iter().any(|w| w.contains("missing layers")));
     }
 
     #[test]
@@ -1043,7 +1039,7 @@ mod tests {
             0.0,
         )
         .unwrap();
-        assert!(plan.warnings.iter().any(|w| w.contains("nem uma camada")));
+        assert!(plan.warnings.iter().any(|w| w.contains("even one layer")));
         // The remaining peer still covers everything.
         assert!(plan.complete);
     }
@@ -1079,7 +1075,10 @@ mod tests {
         let mut b = budget("b", 99000.0);
         b.has_model = false;
         let plan = plan_split("/m/qwen.gguf", &l, &[b], 0.0).unwrap();
-        assert!(plan.warnings.iter().any(|w| w.contains("não tem o modelo")));
+        assert!(plan
+            .warnings
+            .iter()
+            .any(|w| w.contains("does not have the chosen model")));
     }
 
     #[test]
@@ -1112,7 +1111,7 @@ mod tests {
             .await
             .unwrap();
         assert!(!outcome.reused);
-        // O nome é o conteúdo: `<sha256>.gguf`, e nada mais.
+        // The name is the content: `<sha256>.gguf`, and nothing else.
         assert!(outcome
             .output_path
             .ends_with(&format!("{}.gguf", outcome.sha256)));
@@ -1122,10 +1121,10 @@ mod tests {
                 .unwrap()
                 .0,
             outcome.sha256,
-            "o hash do passe de escrita tem que bater com o do arquivo em disco"
+            "the hash of the write pass must match that of the file on disk"
         );
 
-        // Sabendo o hash, reaproveita sem reescrever.
+        // Knowing the hash, it reuses without rewriting.
         let again = extract_tp_shard(
             whole.to_str().unwrap(),
             &dir,
@@ -1138,21 +1137,21 @@ mod tests {
         .unwrap();
         assert!(
             again.reused,
-            "arquivo já completo é reaproveitado, não reescrito"
+            "an already complete file is reused, not rewritten"
         );
         assert_eq!(again.output_path, outcome.output_path);
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// Shard escrito por uma regra antiga **não** é reaproveitado.
+    /// A shard written by an old rule is **not** reused.
     ///
-    /// Este é o teste que impede a repetição de 17/08: três correções seguidas
-    /// no fatiamento por tensor, e a ksia carregando o mesmo shard obsoleto em
-    /// todas, porque o critério de reuso era "existe e tem mais de 1 KB".
-    /// Agora o nome do arquivo é o hash do conteúdo, então "regra antiga"
-    /// e "regra atual" nem disputam o mesmo nome - o reuso só acerta quando os
-    /// bytes são exatamente os pedidos.
+    /// This is the test that prevents a repeat of 17/08: three fixes in a row
+    /// to the tensor slicing, and the ksia loading the same obsolete shard in
+    /// all of them, because the reuse criterion was "exists and is larger than
+    /// 1 KB". Now the file name is the hash of the content, so "old rule" and
+    /// "current rule" do not even compete for the same name - reuse only hits
+    /// when the bytes are exactly the ones requested.
     #[tokio::test]
     async fn a_shard_from_an_older_rule_is_rewritten_not_reused() {
         let dir = std::env::temp_dir().join(format!("pom-tp-stale-{}", std::process::id()));
@@ -1161,41 +1160,41 @@ mod tests {
         let whole = dir.join("whole.gguf");
         std::fs::write(&whole, crate::splitter::test_gguf_bytes(32)).unwrap();
 
-        // Um "shard" grande que nunca passou pelo fatiador, gravado sob um hash
-        // que não é o dele - exatamente o que uma regra antiga deixava para
-        // trás.
-        let hash_mentiroso = "b".repeat(64);
-        let velho = crate::pom::part_path(&dir, &hash_mentiroso).unwrap();
-        std::fs::write(&velho, vec![0u8; 4096]).unwrap();
+        // A large "shard" that never went through the slicer, written under a
+        // hash that is not its own - exactly what an old rule used to leave
+        // behind.
+        let lying_hash = "b".repeat(64);
+        let old = crate::pom::part_path(&dir, &lying_hash).unwrap();
+        std::fs::write(&old, vec![0u8; 4096]).unwrap();
 
         let outcome = extract_tp_shard(whole.to_str().unwrap(), &dir, None, 2, 0, |_| {})
             .await
             .unwrap();
         assert!(
             !outcome.reused,
-            "sem hash esperado não há reuso: o fatiador corta e o conteúdo se nomeia"
+            "without an expected hash there is no reuse: the slicer cuts and the content names itself"
         );
         assert_ne!(
-            outcome.sha256, hash_mentiroso,
-            "o shard novo não pode herdar o nome do lixo que estava na pasta"
+            outcome.sha256, lying_hash,
+            "the new shard cannot inherit the name of the junk that was in the folder"
         );
 
-        // E o que saiu tem o carimbo da regra atual.
+        // And what came out carries the stamp of the current rule.
         let info = crate::gguf::read_info(std::path::Path::new(&outcome.output_path)).unwrap();
         let stamp = info
             .tp_stamp
-            .expect("o shard novo carimba a regra que o escreveu");
+            .expect("the new shard stamps the rule that wrote it");
         assert_eq!(stamp.format, crate::splitter::TP_SHARD_FORMAT);
         assert_eq!((stamp.size, stamp.rank), (2, 0));
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    // ── Fatias de tamanhos diferentes ────────────────────────────────────────
+    // ── Slices of different sizes ────────────────────────────────────────────
     //
-    // Layout de referência: 32 camadas de 200 MB, embedding de 100 MB em toda
-    // fatia, cabeça de 100 MB só na última. Uma fatia de N camadas que não é a
-    // última custa 100 + 200N MB.
+    // Reference layout: 32 layers of 200 MB, a 100 MB embedding in every
+    // slice, a 100 MB head only in the last one. A slice of N layers that is
+    // not the last costs 100 + 200N MB.
 
     #[test]
     fn sizes_become_layer_ranges_and_the_rounding_is_visible() {
@@ -1210,18 +1209,18 @@ mod tests {
         )
         .unwrap();
 
-        // 100 de embedding + 5×200 = 1100 → camadas 0-4, exatamente no alvo.
+        // 100 of embedding + 5×200 = 1100 → layers 0-4, exactly on target.
         assert_eq!(
             (plan.ranges[0].start_layer, plan.ranges[0].end_layer),
             (0, 4)
         );
         assert_eq!(plan.ranges[0].bytes as f64 / MB, 1100.0);
-        // 100 + 10×200 = 2100 → camadas 5-14.
+        // 100 + 10×200 = 2100 → layers 5-14.
         assert_eq!(
             (plan.ranges[1].start_layer, plan.ranges[1].end_layer),
             (5, 14)
         );
-        // O resto leva 15-31 e paga a cabeça.
+        // The rest takes 15-31 and pays for the head.
         assert!(plan.ranges[2].is_rest);
         assert_eq!(
             (plan.ranges[2].start_layer, plan.ranges[2].end_layer),
@@ -1235,14 +1234,14 @@ mod tests {
     #[test]
     fn a_target_that_falls_between_layers_rounds_down_and_says_so() {
         let l = layout(32, 200.0);
-        // 1250 MB dá para 5 camadas (1100) mas não para 6 (1300).
+        // 1250 MB is enough for 5 layers (1100) but not for 6 (1300).
         let plan = plan_by_size(&l, &[SizedSlice::of_mb(1250.0), SizedSlice::rest()]).unwrap();
         assert_eq!(plan.ranges[0].layers, 5);
         assert_eq!(plan.ranges[0].target_mb, Some(1250.0));
         assert_eq!(
             plan.ranges[0].bytes as f64 / MB,
             1100.0,
-            "o tamanho real fica abaixo do alvo, e é isso que a tela mostra"
+            "the real size stays below the target, and that is what the screen shows"
         );
     }
 
@@ -1253,13 +1252,13 @@ mod tests {
         assert!(plan.ranges[0].too_small);
         assert_eq!(
             plan.ranges[0].layers, 1,
-            "uma camada é o mínimo indivisível"
+            "one layer is the indivisible minimum"
         );
         assert!(
             plan.blocked,
-            "não se fatia com uma fatia impossível na lista"
+            "no slicing with an impossible slice in the list"
         );
-        assert!(plan.warnings.iter().any(|w| w.contains("nem a camada 0")));
+        assert!(plan.warnings.iter().any(|w| w.contains("even layer 0")));
     }
 
     #[test]
@@ -1272,11 +1271,11 @@ mod tests {
         assert_eq!(plan.missing_bytes, 0);
         assert!(
             plan.warnings.is_empty(),
-            "a última entrada é o resto e fecha a cobertura"
+            "the last entry is the rest and closes the coverage"
         );
         assert!(
             !plan.blocked,
-            "faltar camada não impede fatiar o que já foi pedido"
+            "a missing layer does not prevent slicing what was already requested"
         );
     }
 
@@ -1288,16 +1287,19 @@ mod tests {
             &[SizedSlice::of_mb(99_000.0), SizedSlice::of_mb(1000.0)],
         )
         .unwrap();
-        assert_eq!(plan.ranges[0].layers, 8, "a primeira já cobre o modelo");
+        assert_eq!(
+            plan.ranges[0].layers, 8,
+            "the first already covers the model"
+        );
         assert!(plan.ranges[1].empty);
         assert!(plan.blocked);
         assert!(plan
             .warnings
             .iter()
-            .any(|w| w.contains("não sobrou camada")));
+            .any(|w| w.contains("no layer was left")));
         assert!(
             plan.complete,
-            "cobertura fechada, o problema é a fatia vazia"
+            "coverage closed, the problem is the empty slice"
         );
     }
 
@@ -1309,7 +1311,7 @@ mod tests {
         assert!(plan.complete && !plan.blocked);
         for (i, r) in plan.ranges.iter().enumerate() {
             assert_eq!(r.layers, 8);
-            // A última entrada é o resto, mesmo no atalho de partes iguais.
+            // The last entry is the rest, even in the equal parts shortcut.
             assert_eq!(r.target_mb, (i < 3).then_some(r.bytes as f64 / MB));
         }
         assert!(plan.ranges[3].bytes > plan.ranges[0].bytes);
@@ -1343,7 +1345,7 @@ mod tests {
         assert!(plan
             .warnings
             .iter()
-            .any(|w| w.contains("predictor nextn") && w.contains("última camada")));
+            .any(|w| w.contains("nextn predictor") && w.contains("last layer")));
     }
 
     #[test]
@@ -1363,13 +1365,13 @@ mod tests {
         assert!(plan.complete);
         assert!(
             plan.warnings.is_empty(),
-            "fatiar o modelo inteiro em uma fatia não gera observação"
+            "slicing the whole model into one slice produces no note"
         );
     }
 
     #[test]
     fn a_catalog_name_becomes_a_readable_base() {
-        // O caso que motiva isto: o peso do Ollama é um blob por digest.
+        // The case that motivates this: Ollama's weight is one blob per digest.
         assert_eq!(
             base_name_from_label("qwen3:8b").as_deref(),
             Some("qwen3-8b")
@@ -1378,8 +1380,8 @@ mod tests {
             base_name_from_label("lmstudio-community/Qwen3.6-35B").as_deref(),
             Some("lmstudio-community-Qwen3.6-35B")
         );
-        // Um rótulo com números no fim já não significa nada: a faixa mora no
-        // `.pom`, não no nome.
+        // A label with numbers at the end no longer means anything: the range
+        // lives in the `.pom`, not in the name.
         assert_eq!(
             base_name_from_label("modelo_0_15").as_deref(),
             Some("modelo_0_15")
@@ -1387,8 +1389,8 @@ mod tests {
         assert_eq!(base_name_from_label("  ").as_deref(), None);
         assert_eq!(base_name_from_label("///").as_deref(), None);
 
-        // Numa pasta comum o modelo se chama pelo arquivo, extensão e tudo, e
-        // empilhar outra daria `modelo.gguf_0_15.gguf`.
+        // In a common folder the model is named after the file, extension and
+        // all, and stacking another one would give `modelo.gguf_0_15.gguf`.
         assert_eq!(
             base_name_from_label("Qwen3.5-9B-DeepSeek-V4-Flash-Q4_K_S.gguf").as_deref(),
             Some("Qwen3.5-9B-DeepSeek-V4-Flash-Q4_K_S")
@@ -1399,7 +1401,7 @@ mod tests {
     fn even_split_covers_every_layer_without_a_gap() {
         assert_eq!(even_split(32, 2), vec![(0, 15), (16, 31)]);
         assert_eq!(even_split(32, 1), vec![(0, 31)]);
-        // 32 em 3: 11 + 11 + 10, e o resto vai para as primeiras.
+        // 32 in 3: 11 + 11 + 10, and the remainder goes to the first ones.
         assert_eq!(even_split(32, 3), vec![(0, 10), (11, 21), (22, 31)]);
 
         for parts in 1..=9u32 {
@@ -1407,15 +1409,15 @@ mod tests {
             assert_eq!(ranges[0].0, 0);
             assert_eq!(ranges.last().unwrap().1, 36);
             for pair in ranges.windows(2) {
-                assert_eq!(pair[1].0, pair[0].1 + 1, "faixas contíguas, sem buraco");
+                assert_eq!(pair[1].0, pair[0].1 + 1, "contiguous ranges, with no hole");
             }
         }
     }
 
     #[test]
     fn even_split_never_produces_an_empty_slice() {
-        // Mais fatias do que camadas seria uma fatia vazia — que o servidor de
-        // inferência não carrega.
+        // More slices than layers would mean an empty slice - which the
+        // inference server does not load.
         assert_eq!(even_split(3, 8).len(), 3);
         assert!(even_split(0, 4).is_empty());
         assert!(even_split(10, 0).is_empty());

@@ -1,5 +1,13 @@
 key,en,pt-BR
+"canvas.relayBypassed","The direct return {from} → {to} would go through the relay. POM is working around it: the answer comes back by the ring, over the same connections as the forward path.","A volta direta {from} → {to} passaria pelo relé. O POM está contornando: a resposta volta pelo anel, pelas mesmas conexões da ida."
+"canvas.relayEdgeHint","This link goes through a relay peer: every frame crosses an intermediate server, which adds latency. Review the route.","Esta ligação passa por um peer de relé: cada frame atravessa um servidor intermediário, o que aumenta a latência. Reveja a rota."
+"canvas.relayNotBypassed","POM cannot work around these legs: they are part of the forward path. When the first leg leaves this node, only requests that enter through here pay for it.","O POM não consegue contornar essas pernas: elas fazem parte da ida da pipeline. Quando a primeira perna sai deste nó, só as requisições que entram por aqui pagam por ela."
+"canvas.relayRouteHint","The fastest route crosses a relay peer because the machines could not connect directly (NAT, firewall or a failed hole punch). Every token pays the detour to the relay. To improve it, give the machines a direct path: publish the node ports, advertise a reachable address (a VPN such as Tailscale with POM_ADVERTISE_ADDR) or open the firewall so the hole punch succeeds.","A rota mais rápida atravessa um peer de relé porque as máquinas não conseguiram se conectar diretamente (NAT, firewall ou hole punch que falhou). Cada token paga o desvio até o relé. Para melhorar, dê às máquinas um caminho direto: publique as portas do nó, anuncie um endereço alcançável (uma VPN como Tailscale com POM_ADVERTISE_ADDR) ou libere o firewall para o hole punch fechar."
 about.contactLink,Contact POM,Contato do POM
+about.dataCities,"the countries, states and cities built into the node, unmodified, under the Open Database License 1.0.","os países, estados e cidades embutidos no nó, sem modificação, sob a Open Database License 1.0."
+about.dataMap,"the map images of the network location dialog, loaded from its servers only while that dialog is open.","as imagens do mapa do diálogo de localização da rede, carregadas dos servidores dele somente enquanto o diálogo está aberto."
+about.dataSubtitle,"Data that ships with POM or is shown by it, and its terms.","Dados que acompanham o POM ou são exibidos por ele, e seus termos."
+about.dataTitle,Third-party data,Dados de terceiros
 about.dependenciesCount,"Showing {visible} of {total} dependencies","Mostrando {visible} de {total} dependências"
 about.dependenciesSubtitle,"Direct frontend and Rust dependencies, grouped by their declared license.","Dependências diretas do frontend e do Rust, agrupadas pela licença declarada."
 about.dependenciesTitle,Third-party dependencies,Dependências de terceiros
@@ -142,30 +150,27 @@ canvas.machineTps,decode {decode} · prefill {prefill} tok/s,decode {decode} · 
 canvas.machineTpsUnknown,speed not measured,velocidade não medida
 canvas.memory,Memory,Memória
 canvas.meterUnknown,unknown,desconhecido
+canvas.modelGroupAria,Model,Modelo
 canvas.noCapacity,No inference capacity announced yet.,Nenhuma capacidade de inferência anunciada ainda.
 canvas.noModel,No model deployed,Nenhum modelo implantado
 canvas.openDetails,Double-click to open this machine''s details,Duplo clique abre os detalhes desta máquina
 canvas.pipelineCostBreakdown,network {network} ms · compute {compute} ms,rede {network} ms · compute {compute} ms
 canvas.pipelineRouteBreakdown,network {network} ms ({mode}) · compute {compute} ms,rede {network} ms ({mode}) · compute {compute} ms
-canvas.returnDirect,direct return,resposta direta
-canvas.returnDirectHint,Direct return: the last machine answers the gateway itself; each leg costs half a round trip.,Resposta direta: a última máquina responde ao próprio gateway; cada perna custa meio RTT.
-canvas.returnRing,ring,anel
-canvas.relayBadge,RELAY,RELAY
-"canvas.relayEdgeHint","This link goes through a relay peer: every frame crosses an intermediate server, which adds latency. Review the route.","Esta ligação passa por um peer de relé: cada frame atravessa um servidor intermediário, o que aumenta a latência. Reveja a rota."
-canvas.relayRouteTitle,Route through relay,Rota por relé
-canvas.relayLegs,Relayed legs: {legs},Pernas por relé: {legs}
-canvas.relayBypassedChip,Relay bypassed by the ring,Relé contornado pelo anel
-canvas.relayDetails,Relay route details,Detalhes da rota por relé
-canvas.relayClose,Close,Fechar
-"canvas.relayBypassed","The direct return {from} → {to} would go through the relay. POM is working around it: the answer comes back by the ring, over the same connections as the forward path.","A volta direta {from} → {to} passaria pelo relé. O POM está contornando: a resposta volta pelo anel, pelas mesmas conexões da ida."
-"canvas.relayNotBypassed","POM cannot work around these legs: they are part of the forward path. When the first leg leaves this node, only requests that enter through here pay for it.","O POM não consegue contornar essas pernas: elas fazem parte da ida da pipeline. Quando a primeira perna sai deste nó, só as requisições que entram por aqui pagam por ela."
-"canvas.relayRouteHint","The fastest route crosses a relay peer because the machines could not connect directly (NAT, firewall or a failed hole punch). Every token pays the detour to the relay. To improve it, give the machines a direct path: publish the node ports, advertise a reachable address (a VPN such as Tailscale with POM_ADVERTISE_ADDR) or open the firewall so the hole punch succeeds.","A rota mais rápida atravessa um peer de relé porque as máquinas não conseguiram se conectar diretamente (NAT, firewall ou hole punch que falhou). Cada token paga o desvio até o relé. Para melhorar, dê às máquinas um caminho direto: publique as portas do nó, anuncie um endereço alcançável (uma VPN como Tailscale com POM_ADVERTISE_ADDR) ou libere o firewall para o hole punch fechar."
 canvas.pipelineRouteCount,"{count} route{count, plural, =1 {} other {s}}","{count} rota{count, plural, =1 {} other {s}}"
 canvas.pipelineThroughput,≈ {tps} tok/s per token cycle,≈ {tps} tok/s por ciclo de token
 canvas.pipelineTotal,Pipeline total: {ms} ms,Total do pipeline: {ms} ms
 canvas.pipelineTotalLabel,cycle cost,custo do ciclo
 canvas.pipelineTotalUnknown,not measured,não medido
+canvas.relayBadge,RELAY,RELAY
+canvas.relayBypassedChip,Relay bypassed by the ring,Relé contornado pelo anel
+canvas.relayClose,Close,Fechar
+canvas.relayDetails,Relay route details,Detalhes da rota por relé
+canvas.relayLegs,Relayed legs: {legs},Pernas por relé: {legs}
+canvas.relayRouteTitle,Route through relay,Rota por relé
 canvas.resetLayout,"Reset the arrangement, including what you dragged","Redefinir o arranjo, inclusive o que você arrastou"
+canvas.returnDirect,direct return,resposta direta
+canvas.returnDirectHint,Direct return: the last machine answers the gateway itself; each leg costs half a round trip.,Resposta direta: a última máquina responde ao próprio gateway; cada perna custa meio RTT.
+canvas.returnRing,ring,anel
 canvas.returnRingHint,"Ring: the answer comes back over the forward connections, so the tail''s return is not paid.","Anel: a resposta volta pelas conexões da ida, então a volta da cauda não é paga."
 canvas.speedDecode,decode,decode
 canvas.speedPrefill,prefill,prefill
@@ -180,6 +185,7 @@ chat.ask,Ask the network anything,Pergunte alguma coisa à rede
 chat.askDetail,Messages travel through machines in Dashboard order and return token by token.,As mensagens percorrem as máquinas na ordem do Painel e voltam token a token.
 chat.attach,Attach file,Anexar ficheiro
 chat.attachmentAlt,Sent image: {name},Imagem enviada: {name}
+chat.attachmentFormatAria,Format {format},Formato {format}
 chat.attachmentResized,Resized automatically,Redimensionada automaticamente
 chat.attachmentThumbnail,Thumbnail of {name},Miniatura de {name}
 chat.attachmentTooLarge,Attachment too large,Anexo grande demais
@@ -222,7 +228,10 @@ chat.headUnavailable,Head selection unavailable,Escolha da cabeça indisponível
 chat.headUnavailableDetail,"This node could not read the current head candidates. Inference remains protected until a fresh choice is available.","Este nó não conseguiu ler as candidatas atuais à cabeça. A inferência fica protegida até haver uma escolha fresca."
 chat.history,Conversation history,Histórico de conversas
 chat.imageContextTooSmallDetail,"The image is still too large for the available context after reduction.",A imagem ainda é grande demais para o contexto disponível mesmo após a redução.
+chat.imageNoDimensions,image without valid dimensions,imagem sem dimensões válidas
 chat.imageRejected,Image rejected,Imagem recusada
+chat.imageStillTooLarge,the image still exceeds the available context even at 512 px,a imagem ainda excede o contexto disponível mesmo em 512 px
+chat.imageUnreadable,could not read the image,não foi possível ler a imagem
 chat.imageVisionUnavailable,This model does not support vision,este modelo não tem visão
 chat.incomplete,incomplete coverage,cobertura incompleta
 chat.interrupted,Interrupted.,Interrompido.
@@ -231,17 +240,36 @@ chat.keyRejectedDetail,Reload the page to pick up the node''s current key.,Recar
 chat.legacyTotalSpeed,Total: {value} tok/s,Total: {value} tok/s
 chat.localOnly,Chats stay in this browser.,As conversas ficam neste navegador.
 chat.message,"{count, plural, =1 {message} other {messages}}","{count, plural, =1 {mensagem} other {mensagens}}"
+chat.messageFieldAria,Message field,Campo de mensagem
 chat.model,Model,Modelo
 chat.modelAtStart,model used at conversation start: {model},modelo usado no início da conversa: {model}
 chat.modelChanged,model changed to {model},modelo alterado para {model}
 chat.networkTab,Network,Rede
 chat.new,New chat,Conversa nova
 chat.newShort,New,Nova
-chat.noModel,The network is not serving any model,A rede não está servindo nenhum modelo
-chat.noModelDetail,Assign a model to the nodes in Settings before testing.,Atribua um modelo aos nós em Configurações antes de testar.
+chat.noCanvas2d,the browser does not offer a 2D canvas,o navegador não oferece um canvas 2D
+chat.noModel,One piece is missing: the network is not serving any model,Falta uma peça: a rede não está servindo nenhum modelo
+chat.noModelAskAdmin,"The machines are here, but there is no mind to put together yet. Ask an administrator of the network to deploy a model.","As máquinas estão aqui, mas ainda não há uma mente para montar. Peça a um administrador da rede para implantar um modelo."
+chat.noModelDeployNext,"There is a model on this machine already: deploy it on the network and every piece starts talking.","Já existe um modelo nesta máquina: implante na rede e todas as peças começam a conversar."
+chat.noModelDetail,"The machines are here, but there is no mind to put together yet. Deploy a model and every piece starts talking.","As máquinas estão aqui, mas ainda não há uma mente para montar. Implante um modelo e todas as peças começam a conversar."
+chat.noModelDownloadNext,"This machine has no model yet. Download one, deploy it on the network, and the mind is complete.","Esta máquina ainda não tem nenhum modelo. Baixe um, implante na rede e a mente fica completa."
+chat.noModelHistory,See earlier conversations,Ver conversas anteriores
+chat.noModelHowItWorks,How POM works,Como o POM funciona
+chat.noModelStep.deploy,Deploy it on the network,Implantar na rede
+chat.noModelStep.deployDetail,"Whole, or sliced across the machines.","Inteiro, ou fatiado entre as máquinas."
+chat.noModelStep.download,Download a model,Baixar um modelo
+chat.noModelStep.downloadDetail,Pick a GGUF from Hugging Face; it lands on this machine.,Escolha um GGUF no Hugging Face; ele fica nesta máquina.
+chat.noModelStep.talk,Talk to the network,Conversar com a rede
+chat.noModelStep.talkDetail,Come back here and ask anything.,Volte aqui e pergunte o que quiser.
 chat.openLargerWindow,Open the chat in a larger window,Abrir o chat em uma janela maior
 chat.openLargerWindowShort,Larger window,Janela maior
 chat.placeholder,Write to the network…,Escreva para a rede…
+chat.prompt.1,Ask any piece of the mind...,Pergunte a qualquer pedaço da mente...
+chat.prompt.2,Every piece is listening. What do you want to know?,Todas as peças estão ouvindo. O que você quer saber?
+chat.prompt.3,"One mind, many machines. Ask away...","Uma mente, várias máquinas. Manda a pergunta..."
+chat.prompt.4,The GPUs are ready to compare notes...,As GPUs estão prontas para trocar figurinhas...
+chat.prompt.5,Give the network a puzzle to put together...,Dê um quebra-cabeça para a rede montar...
+chat.prompt.6,Your question travels machine to machine. Make it a good one...,Sua pergunta vai de máquina em máquina. Capriche...
 chat.quitApp,Quit POM,Sair do POM
 chat.ragCollection,Documents searched for this conversation,Documentos consultados nesta conversa
 chat.ragCollectionAll,All collections,Todas as coleções
@@ -270,6 +298,9 @@ chat.telemetryLine.ttftHint,Time to first token,Tempo até o primeiro token
 chat.thinkToggle,Think,Think
 chat.thinkToggleHint,"Use thinking for this inference. The choice stays active in this conversation.","Usar thinking nesta inferência. A escolha permanece ativa nesta conversa."
 chat.thinking,Thinking,Pensamento
+chat.thinkingDone,Thought,Pensou
+chat.thinkingLive,Thinking,Pensando
+chat.thinkingTokens,"{count, plural, one {# token} other {# tokens}}","{count, plural, one {# token} other {# tokens}}"
 chat.through,moving through the pipeline,atravessando o pipeline
 chat.timeUnit,s,s
 chat.title,Chat,Chat
@@ -304,6 +335,9 @@ common.next,Next,Próxima
 common.previous,Previous,Anterior
 common.retry,Retry,Tentar de novo
 common.serverDetails,The node returned details in an unsupported language.,O nó retornou detalhes em um idioma não suportado.
+common.viewWarningFor,View warning for {label},Ver aviso para {label}
+common.warningFor,Warning for {label},Aviso para {label}
+common.whatIs,What is {label},O que é {label}
 dashboard.activeModel,Network serving {model}.,Rede servindo {model}.
 dashboard.build,Build,Build
 dashboard.closedPipeline,pipeline complete,pipeline fechado
@@ -391,6 +425,7 @@ dashboard.mtpUnavailable,MTP unavailable,MTP indisponível
 dashboard.mtpUnavailableDetail,"This deployment requested MTP, but the runtime could not keep its nextn context active.","Esta implantação pediu MTP, mas o runtime não conseguiu manter o contexto nextn ativo."
 dashboard.noGpu,GPU,GPU
 dashboard.noMachines,No machines on the network,Nenhuma máquina na rede
+dashboard.mixedEngines,"The model {models} runs on more than one engine. Each pipeline uses a single engine: machines of another engine do not link to these and are not routed as hops.","O modelo {models} roda em mais de um motor. Cada pipeline usa um único motor: máquinas de outro motor não se ligam a estas e não entram no roteamento como saltos."
 dashboard.noMachinesDetail,"As soon as a peer is found, its memory, disk, and model appear here.","Assim que um peer for encontrado, a memória, o disco e o modelo dele aparecem aqui."
 dashboard.noModelAssigned,no model assigned,nenhum modelo atribuído
 dashboard.noSlice,no slice,sem fatia
@@ -459,6 +494,7 @@ dashboard.updateTitle,Update this machine?,Atualizar esta máquina?
 dashboard.updateWarning,It stops if there are uncommitted changes or the repository is on another branch. An open cargo build is serialized with this one and the binary is replaced.,"Para se houver alterações não commitadas ou se o repositório estiver em outro branch. Um cargo build aberto é serializado com este, e o binário é substituído."
 dashboard.usedOf,{used} of {total},{used} de {total}
 dashboard.versionProperties,Deployment version properties,Propriedades da versão da implantação
+dashboard.machineProperties,Machine: {host},Máquina: {host}
 dashboard.vram,VRAM · {name},VRAM · {name}
 dashboard.wiredMemory,Wired memory (Metal buffers),Memória wired (buffers do Metal)
 deploy.adaptivePrefillChunksHint,"The gateway picks each prompt's chunk size, between 32 tokens and the prefill chunk above, from what it measured on the route (64 at least while the MoE expert cache is on). Off, every prompt goes in chunks of exactly the prefill chunk.","O gateway escolhe o tamanho do pedaço de cada prompt, entre 32 tokens e o pedaço de prefill acima, pelo que mediu na rota (no mínimo 64 com o cache de experts do MoE ligado). Desligado, todo prompt vai em pedaços de exatamente o pedaço de prefill."
@@ -467,6 +503,8 @@ deploy.addNodeCacheK,KV cache K,Cache KV K
 deploy.addNodeCacheV,KV cache V,Cache KV V
 deploy.addNodeKvPlacement,KV cache location,Local do cache KV
 deploy.addNodeLoading,Loading this machine catalog…,Carregando o catálogo desta máquina…
+deploy.addNodeCtx,Context (empty = the deployment's),Contexto (vazio = o da implantação)
+deploy.addNodeSessions,Sessions (empty = the deployment's),Sessões (vazio = o da implantação)
 deploy.addNodeMachine,Machine,Máquina
 deploy.addNodeMachineOptions,Machine options,Opções da máquina
 deploy.addNodeSlice,Slice,Fatia
@@ -516,10 +554,19 @@ deploy.happens,What happens,O que acontece
 deploy.heldOn,on {machines},em {machines}
 deploy.heldOnMachines,on {count} machines,em {count} máquinas
 deploy.heldShards,Shards already present,Fatias que já tem
+deploy.inServiceElsewhere,"These machines are outside this plan and already serve {model}. Undeploy them, or keep that deployment in service beside the new one?","Estas máquinas estão fora deste plano e já servem {model}. Desimplantar, ou manter essa implantação em serviço ao lado da nova?"
+deploy.inServiceKeep,Keep in parallel,Manter em paralelo
+deploy.inServiceReplace,Replace and deploy,Substituir e implantar
+deploy.inServiceReplaced,"These machines of the plan stop what they serve now and take the new deployment. A machine serves one model at a time.","Estas máquinas do plano param o que servem agora e recebem a nova implantação. Uma máquina serve um modelo por vez."
+deploy.inServiceTitle,A model is already in service,Já existe modelo em serviço
+deploy.inServiceUndeploy,Undeploy and deploy,Desimplantar e implantar
 deploy.include,Include {range},Incluir {range}
 deploy.included,Included,Entra
 deploy.incomplete,The selected shards do not cover the full model,As fatias escolhidas não cobrem o modelo inteiro
 deploy.incompleteDetail,"It can start this way, but the planner rejects a pipeline with a gap. The network does not serve until coverage is complete.","Dá para subir assim, mas o planejador recusa pipeline com buraco. A rede não atende até a cobertura fechar."
+deploy.inferenceService,Inference service,Serviço de inferência
+deploy.inferenceServiceHint,"Who runs the model: llama.cpp (the POM pipeline) or the engine of a plugin. With a plugin's engine, only the models of the architectures it runs are offered.","Quem roda o modelo: o llama.cpp (a pipeline do POM) ou o motor de um plugin. Com o motor de um plugin, só aparecem os modelos das arquiteturas que ele roda."
+deploy.inferenceServiceLlama,llama.cpp,llama.cpp
 deploy.inferred,(inferred),(deduzidas)
 deploy.inferredDetail,The total was inferred from shard coverage: {count} layers.,O total foi deduzido da cobertura das fatias: {count} camadas.
 deploy.inferredTitle,Shards do not state the model size,As fatias não dizem de que tamanho é o modelo
@@ -661,6 +708,8 @@ deploy.removeReplica,Another machine serves this range. The network loses one pa
 deploy.response,response,resposta
 deploy.restore,Return to node plan,Voltar ao plano do nó
 deploy.selectedShards,{count} of {total} selected,{count} de {total} selecionadas
+deploy.serviceSingleMachineDetail,Remove the machine on the map before adding another one.,Retire a máquina do mapa antes de adicionar outra.
+deploy.serviceSingleMachineTitle,{name} runs the whole model on one machine,O {name} roda o modelo inteiro em uma máquina
 deploy.shard,Shard,Fatia
 deploy.shardCount,"{count}{count, plural, =1 { shard} other { shards}}","{count}{count, plural, =1 { fatia} other { fatias}}"
 deploy.shardSelection,"Which shards take part, and on which machine","Quais fatias entram, e em qual máquina"
@@ -700,14 +749,91 @@ deploy.wholeDetail,Un-sliced models that a cluster machine already has.,Modelos 
 deploy.wholeEmpty,No whole model on the network,Nenhum modelo inteiro na rede
 deploy.wholeEmptyDetail,No cluster machine has an un-sliced .gguf. Add the folder holding them under Settings › Folders.,Nenhuma máquina do cluster tem um .gguf não fatiado. Aponte a pasta onde eles estão em Configurar › Pastas.
 deploy.wholeNoLayers,unreadable header,cabeçalho ilegível
-deploy.wholeSingleMachineDetail,Remove a machine from the deployment map before switching to whole model or adding another one.,Retire uma máquina do mapa antes de trocar para modelo inteiro ou adicionar outra.
-deploy.wholeSingleMachineTitle,Whole model uses one machine,Modelo inteiro usa uma máquina
 deploy.whyNotBlocked,see the reason above,veja o motivo acima
 deploy.whyNotChecking,checking with the node…,conferindo com o nó…
 deploy.whyNotEmpty,select at least one shard,marque ao menos uma fatia
 deploy.whyNotMismatch,the node did not accept this selection - see the reason above,o nó não aceitou esta seleção - veja o motivo acima
 deploy.whyNotNoModel,choose a machine for the model,escolha uma máquina para o modelo
 deploy.yourChoice,Your selection,Sua escolha
+deployStudio.assignRangeAria,Assign {range} to {machine},Atribuir {range} a {machine}
+deployStudio.assignRangeTitle,Give {range} to {machine},Dar {range} a {machine}
+deployStudio.available,available,disponível
+deployStudio.availableForPlan,available for the plan,disponível para o plano
+deployStudio.deploy,Deploy,Implantar
+deployStudio.deploymentName,Deployment name,Nome da implantação
+deployStudio.diskFree,Free disk,Disco livre
+deployStudio.dropMachine,Drop a machine here to build the topology.,Solte uma máquina aqui para montar a topologia.
+deployStudio.dropToInclude,drop here to include,solte aqui para incluir
+deployStudio.engineUnsupported,This path cannot honor the chosen engine.,Este caminho não pode honrar o motor escolhido.
+deployStudio.fitCanvas,Fit to canvas,Ajustar ao canvas
+deployStudio.fitsButTrimmed,"It fits on {machine}, but ""Fit to memory"" would trim the request.","Cabe em {machine}, mas o ""Ajustar à memória"" apararia o pedido."
+deployStudio.gpuLayers,GPU layers,Camadas GPU
+deployStudio.gpuProjectedOf,GPU {index}: {projected} of {total},GPU {index}: {projected} de {total}
+deployStudio.gpuProjection,GPU · projection,GPU · projeção
+deployStudio.gpuUseFree,GPU used / free,GPU uso / livre
+deployStudio.heldBy,Held by,Está em
+deployStudio.hideInspector,Hide inspector,Ocultar inspetor
+deployStudio.inDeployment,in the deployment,na implantação
+deployStudio.kindShards,Shards,Fatias
+deployStudio.kindWhole,Whole model,Modelo inteiro
+deployStudio.kvCacheOnGpu,KV cache on the GPU,KV cache na GPU
+deployStudio.layers,Layers,Camadas
+deployStudio.layersOnMachine,Layers on this machine,Camadas nesta máquina
+deployStudio.layersOnPeer,Layers available on this peer,Camadas disponíveis neste peer
+deployStudio.layersWithoutMachine,Layers without a machine: {ranges},Camadas sem máquina: {ranges}
+deployStudio.localRtt,Local RTT,RTT local
+deployStudio.mapSummary,{nodes} nodes · {layers} layers,{nodes} nós · {layers} camadas
+deployStudio.mapTitle,Deployment map,Mapa da implantação
+deployStudio.markPrimary,Mark as primary,Marcar como primary
+deployStudio.markPrimaryAria,Mark {machine} as primary,Marcar {machine} como primary
+deployStudio.modelCoverage,Model coverage,Cobertura do modelo
+deployStudio.moeNeedsMetadata,MoE requires real expert metadata in the GGUF of this model.,MoE exige metadata real de experts no GGUF deste modelo.
+deployStudio.noGpu,no GPU,sem GPU
+deployStudio.noLayerAssigned,No layer assigned,Nenhuma camada atribuída
+deployStudio.noMachine,no machine,nenhuma máquina
+deployStudio.noRankAssigned,No rank assigned,Nenhum rank atribuído
+deployStudio.noSliceAvailable,No slice available,Nenhuma fatia disponível
+deployStudio.nowProjection,now {pct}% · projection after the copy,agora {pct}% · projeção após a cópia
+deployStudio.organizeMachines,Organize machines,Organizar máquinas
+deployStudio.primary,Primary,Principal
+deployStudio.projectionExceedsMany,The projection exceeds the VRAM of one of the GPUs of {machine}.,A projeção passa da VRAM de uma das GPUs de {machine}.
+deployStudio.projectionExceedsOne,The projection exceeds the VRAM of the GPU of {machine}.,A projeção passa da VRAM da GPU de {machine}.
+deployStudio.propertiesLabel,Deployment properties,Propriedades da implantação
+deployStudio.quantization,Quantization,Quantização
+deployStudio.ramUseFree,RAM used / free,RAM uso / livre
+deployStudio.ranksAvailableOn,Ranks available on,Ranks disponíveis em
+deployStudio.ranksOnMachine,Ranks on this machine,Ranks nesta máquina
+deployStudio.ranksOnPeer,Ranks available on this peer,Ranks disponíveis neste peer
+deployStudio.ready,ready,pronto
+deployStudio.removeFromDeployment,Remove from the deployment,Remover da implantação
+deployStudio.removeMachineAria,Remove {machine} from the deployment,Remover {machine} da implantação
+deployStudio.removeRangeAria,Remove {range} from {machine},Remover {range} de {machine}
+deployStudio.removeRangeTitle,Take {range} from {machine},Tirar {range} de {machine}
+deployStudio.resetLayout,Reset layout,Redefinir disposição
+deployStudio.restoreNodePlan,Back to the node plan,Voltar ao plano do nó
+deployStudio.selectMachine,Select a machine on the canvas.,Selecione uma máquina no canvas.
+deployStudio.showInspector,Show inspector,Mostrar inspetor
+deployStudio.size,Size,Tamanho
+deployStudio.tabGlobal,Global,Globais
+deployStudio.tabMachine,Machine: {name},Máquina: {name}
+deployStudio.technicalModel,Technical model,Modelo técnico
+deployStudio.tensorParallel,Tensor parallel,Tensor paralelo
+deployStudio.tpGroup,Tensor Parallelism group,Grupo Tensor Parallelism
+deployStudio.tpGroupRanks,TP group ranks,Ranks do grupo TP
+deployStudio.tpNoMoe,Tensor Parallelism does not support MoE in this version.,Tensor Parallelism não suporta MoE nesta versão.
+deployStudio.tpPartsPresliced,pre-sliced TP parts,partes TP pré-fatiadas
+deployStudio.tpPrimaryAria,Tensor Parallelism primary machine,Máquina principal do Tensor Parallelism
+deployStudio.tpWorkersAria,Tensor Parallelism workers,Workers do Tensor Parallelism
+deployStudio.trimmed,trimmed,aparada
+deployStudio.unassigned,unassigned,não atribuído
+deployStudio.unmarkPrimary,Unmark primary,Desmarcar primary
+deployStudio.unmarkPrimaryAria,Unmark {machine} as primary,Desmarcar {machine} como primary
+deployStudio.visionModel,Vision model,Modelo de visão
+deployStudio.visionModelTip,Choose the compatible projector that will be used at the head of the deployment.,Escolha o projetor compatível que será usado na cabeça da implantação.
+deployStudio.visionProjector,Vision projector,Projetor de visão
+deployStudio.vramProjectionOf,VRAM projection of {machine},projeção de VRAM de {machine}
+deployStudio.waiting,waiting,aguardando
+deployStudio.wholeOnEachPeer,whole model on each peer,modelo inteiro em cada peer
 deploymentLogs.allDeployments,All deployments,Todas as implantações
 deploymentLogs.autoScrollOff,Auto-scroll: off,Rolagem automática: desligada
 deploymentLogs.autoScrollOn,Auto-scroll: on,Rolagem automática: ligada
@@ -774,7 +900,23 @@ deployments.version,v{n},v{n}
 deployments.versionCount,"{count, plural, =1 {1 version} other {{count} versions}}","{count, plural, =1 {1 versão} other {{count} versões}}"
 deployments.versionPick,See the properties of version {n},Ver as propriedades da versão {n}
 deployments.versionProperties,Version {n} properties,Propriedades da versão {n}
+deployments.nodesTitle,Machines,Máquinas
+deployments.nodeOwn,own values,valores próprios
+deployments.nodeInherited,inherited,herdado
+deployments.nodeInheritChoice,Inherit from the version,Herdar da versão
+deployments.nodeOverridesHint,Changing {machine}'s own values reloads only this machine. The other machines keep the version's values.,Mudar os valores próprios de {machine} recarrega só esta máquina. As outras mantêm os valores da versão.
+deployments.nodeOverrideCtx,Context (n_ctx),Contexto (n_ctx)
+deployments.nodeOverrideSessions,Sessions (max_sessions),Sessões (max_sessions)
+deployments.nodeOverrideGpuLayers,GPU layers (n_gpu_layers),Camadas na GPU (n_gpu_layers)
+deployments.nodeOverrideKv,KV cache placement,Colocação do cache KV
+deployments.nodeOverrideReset,Back to the version's values,Voltar aos valores da versão
+deployments.nodeOverrideSave,Apply to this machine,Aplicar a esta máquina
+deployments.nodeOverrideDone,The machine reloaded with its own values.,A máquina recarregou com os valores próprios.
+deployments.nodeOverrideFailed,The machine did not accept the change: {error},A máquina não aceitou a mudança: {error}
 deployments.versionPropertiesHint,"The parameters this version was deployed with. To change them, redeploy with new parameters.","Os parâmetros com que esta versão foi implantada. Para mudá-los, reimplante com novos parâmetros."
+deployments.machineProperties,Machine: {host},Máquina: {host}
+deployments.backToVersion,Back to the version,Voltar à versão
+deployments.machineEngine,Engine: {engine},Motor: {engine}
 deployments.versionRedeployStarted,Re-deploying v{n},Reimplantando a v{n}
 deployments.versions,Versions,Versões
 deployments.versionsHint,"Every settings change under this deployment id, newest first.","Cada mudança de parâmetros sob este id de implantação, da mais nova para a mais antiga."
@@ -942,9 +1084,49 @@ firstRun.stepInvite,Invite,Convite
 firstRun.stepJoin,Join,Entrar
 firstRun.stepNetwork,Network,Rede
 firstRun.stepStart,Start,Início
+firstWizard.continue,Continue,Continuar
+firstWizard.failed,Could not save: {error},Não foi possível salvar: {error}
+firstWizard.guideDetail,"This machine now runs a network of its own. Next, hints on the screen point at what to click, one at a time: download a small model, deploy it and send a first message. Follow the instructions on screen.","Esta máquina agora tem uma rede própria. A seguir, dicas na tela apontam onde clicar, uma de cada vez: baixar um modelo pequeno, implantá-lo e enviar uma primeira mensagem. Siga as instruções na tela."
+firstWizard.guideTitle,Follow the instructions on screen,Siga as instruções na tela
+firstWizard.machineDetail,How other machines see this one.,Como as outras máquinas veem esta.
+firstWizard.machineLabel,Machine name,Nome da máquina
+firstWizard.namesDetail,Every machine starts with a network of its own. Name both; you can change them later.,Toda máquina começa com uma rede própria. Dê um nome às duas; você pode mudar depois.
+firstWizard.namesTitle,Name this machine and its network,Dê um nome a esta máquina e à rede dela
+firstWizard.networkDetail,The network this machine has just created.,A rede que esta máquina acabou de criar.
+firstWizard.networkLabel,Network name,Nome da rede
+firstWizard.networkWarning,"If you decide to make this network public, this name is advertised to everyone.","Se você decidir tornar esta rede pública, este nome será anunciado a todos."
+firstWizard.random,Random,Aleatório
+firstWizard.randomTitle,Generate a random name,Gerar um nome aleatório
+firstWizard.start,Start,Começar
+firstWizard.stepGuide,Hints,Dicas
+firstWizard.stepNames,Names,Nomes
 forbidden.back,Back to dashboard,Voltar ao painel
 forbidden.detail,"The active profile is {profile}, and this screen is not part of it. The profile belongs to the node, so it cannot be changed from here.","O perfil ativo é {profile}, e esta tela não faz parte dele. O perfil é do nó, e não se troca por aqui."
 forbidden.title,Screen restricted to another profile,Tela restrita a outro perfil
+guide.chatGo,Open Chat to talk to the model you deployed.,Abra o Chat para conversar com o modelo que você implantou.
+guide.chatHere,"Type a short message, like ""Say hello in five words"", and send it. The answer comes from your own machine.","Digite uma mensagem curta, como ""Diga olá em cinco palavras"", e envie. A resposta vem da sua própria máquina."
+guide.chatTitle,Send a first prompt,Envie um primeiro prompt
+guide.deployGo,"Open Deployments, then Deploy to network.","Abra Implantações e depois Implantar na rede."
+guide.deployHere,"Choose Whole model, pick the Qwen model, add this machine to the map and press Deploy.","Escolha Modelo inteiro, selecione o modelo Qwen, adicione esta máquina ao mapa e pressione Implantar."
+guide.deployPeer,"Pick the Qwen model in the list above, then click this machine to add it to the map.","Selecione o modelo Qwen na lista acima e clique nesta máquina para adicioná-la ao mapa."
+guide.deployRun,Everything is in place. Press Deploy and wait for the model to load.,Está tudo pronto. Pressione Implantar e aguarde o modelo carregar.
+guide.deployTitle,Deploy the model,Implante o modelo
+guide.deployWait,The model is loading. This step ends by itself once it is serving.,O modelo está carregando. Este passo se encerra sozinho quando ele estiver servindo.
+guide.deployWhole,This model is small enough to run whole on one machine: choose Whole model.,Este modelo é pequeno o bastante para rodar inteiro em uma máquina: escolha Modelo inteiro.
+guide.downloadConfirm,Confirm the download and wait for it to finish; this step ends by itself.,Confirme o download e aguarde o término; este passo se encerra sozinho.
+guide.downloadFile,"Pick a file to download. Q4_K_M is a good default, under 500 MB.","Escolha um arquivo para baixar. Q4_K_M é uma boa opção, com menos de 500 MB."
+guide.downloadGo,"Open Models, then Find HF models, to download a small model from Hugging Face.","Abra Modelos e depois Encontrar Modelos HF para baixar um modelo pequeno do Hugging Face."
+guide.downloadHere,Search for {model} and open it.,Busque por {model} e abra-o.
+guide.downloadOpen,This is the one: open {model} to see its files.,É este: abra {model} para ver os arquivos.
+guide.downloadTitle,Download a small model,Baixe um modelo pequeno
+guide.downloadWait,The model is downloading. Wait for it to finish; this step ends by itself.,O modelo está sendo baixado. Aguarde o término; este passo se encerra sozinho.
+guide.finish,Finish,Concluir
+guide.hide,Hide these hints,Ocultar estas dicas
+guide.joinGo,Open Networks to see the networks you can join.,Abra Redes para ver as redes em que você pode entrar.
+guide.joinHere,"Pick a network and ask to join it; its administrator approves the request. Staying on your own network is fine too.","Escolha uma rede e peça para entrar; o administrador dela aprova o pedido. Ficar só na sua rede também serve."
+guide.joinTitle,Join another network,Entre em outra rede
+guide.progress,Step {current} of {total},Passo {current} de {total}
+guide.skip,Skip this step,Pular este passo
 huggingFace.clear,Remove saved token,Remover token salvo
 huggingFace.cleared,Saved Hugging Face token removed,Token salvo do Hugging Face removido
 huggingFace.precedence,"Precedence: HF_TOKEN, HUGGING_FACE_HUB_TOKEN, pom.json, then the Hugging Face cache file. Environment variables always win.","Precedência: HF_TOKEN, HUGGING_FACE_HUB_TOKEN, pom.json e, por fim, o arquivo de cache do Hugging Face. As variáveis de ambiente sempre vencem."
@@ -970,11 +1152,15 @@ inspector.capabilityUnknown,Capability not confirmed. Turning it on is at the op
 inspector.engine.auto,Automatic,Automático
 inspector.engine.dense,llama.cpp,llama.cpp
 inspector.engine.moe,MoE,MoE
+inspector.engineDefault,Engine default,Padrão do motor
+inspector.engineOff,Off,Desligado
+inspector.engineOn,On,Ligado
 inspector.fitMemory,Fit to memory,Ajustar à memória
 inspector.guideBack,Back to the guide,Voltar ao guia
 inspector.guideHelp,Learn more about {section},Saiba mais sobre {section}
 inspector.inferenceMode,Inference engine,Motor de inferência
 inspector.inferenceModeHint,"Which engine runs the forward pass. The choice reaches the whole model, the shards and tensor parallelism alike; llama.cpp is the default and MoE is POM''s own path for mixture-of-experts models.","Qual motor roda a passagem à frente. A escolha vale para o modelo inteiro, para as fatias e para o Tensor Parallelism; o llama.cpp é o padrão e o MoE é o caminho próprio do POM para modelos de mistura de especialistas."
+inspector.inferenceServiceNote,"{name} runs the whole model on the chosen machine, on all of its NVIDIA cards. The context and the concurrent requests are passed to it; the llama.cpp settings do not apply.","O {name} roda o modelo inteiro na máquina escolhida, em todas as placas NVIDIA dela. O contexto e as requisições simultâneas são repassados a ele; as configurações do llama.cpp não se aplicam."
 inspector.knob.dry_allowed_length,DRY allowed length,DRY: tamanho permitido
 inspector.knob.dry_base,DRY base,DRY: base
 inspector.knob.dry_multiplier,DRY multiplier,DRY: multiplicador
@@ -1008,6 +1194,7 @@ inspector.noThinking,Disable thinking,Desativar thinking
 inspector.readOnly,Read only,Somente leitura
 inspector.sectionBeta,Beta,Beta
 inspector.sectionDefaults,Default settings,Configurações padrões
+inspector.sectionInferenceService,{name} settings,Configurações do {name}
 inspector.sectionPom,POM settings,Configurações POM
 inspector.sectionPomDev,POM settings (DEV),Configurações POM (DESENV)
 jobs.emptyDetail,"Slicing and model-assignment jobs appear here while running, and for ten minutes after they finish.",Fatiamentos e atribuições de modelo aparecem aqui enquanto rodam e por dez minutos depois de terminarem.
@@ -1098,11 +1285,14 @@ lobby.admissionAsk,Request admission,Pedir admissão
 lobby.admissionAskDetail,An admin of the network decides. You can close this window: the answer arrives in the notifications.,Um administrador da rede decide. Você pode fechar esta janela: a resposta chega nas notificações.
 lobby.admissionPending,Admission as {role} requested. Waiting for an admin.,Admissão como {role} pedida. Aguardando um administrador.
 lobby.admissionRejected,An admin declined this request. You can ask again later.,Um administrador recusou este pedido. Você pode pedir de novo mais tarde.
+lobby.admissionRejectedMayAsk,An admin declined the earlier request. You can ask again now.,Um administrador recusou o pedido anterior. Você já pode pedir de novo.
+lobby.admissionRejectedWait,"An admin declined this request. You can ask again in {minutes, plural, =1 {1 minute} other {# minutes}}.","Um administrador recusou este pedido. Você pode pedir de novo em {minutes, plural, =1 {1 minuto} other {# minutos}}."
 lobby.admissionRole,Join as,Entrar como
 lobby.admissionStanding,This machine was already admitted to this network as {role} and still holds its credentials. You can switch to it now.,Esta máquina já foi admitida nesta rede como {role} e ainda tem as credenciais. Você pode trocar para ela agora.
 lobby.candidate,candidate,candidato
 lobby.candidates,{count} in the lobby,{count} no lobby
 lobby.cardNote,This card goes with every message so the network can judge whether your machine fits.,Este cartão acompanha cada mensagem para a rede avaliar se a sua máquina serve.
+lobby.cardNoteRequest,This card goes with your request so the network can judge whether your machine fits.,Este cartão acompanha o seu pedido para a rede avaliar se a sua máquina serve.
 lobby.connecting,Reaching the network...,Conectando à rede...
 lobby.connection,Connection,Conexão
 lobby.connectionDirect,direct connection,conexão direta
@@ -1114,7 +1304,7 @@ lobby.detail,You are talking to this network before joining it. Its members read
 lobby.empty,No messages yet. Introduce yourself to the network.,Nenhuma mensagem ainda. Apresente-se à rede.
 lobby.emptyMember,Machines that have not joined yet write here before asking to be admitted.,Máquinas que ainda não entraram escrevem aqui antes de pedir admissão.
 lobby.errorBlocked,This network blocked this machine.,Esta rede bloqueou esta máquina.
-lobby.errorDisabled,This network is not accepting lobby chat right now.,Esta rede não está aceitando conversa no lobby no momento.
+lobby.errorDisabled,This network cannot be reached for admission right now.,Esta rede não pode ser alcançada para admissão no momento.
 lobby.errorFull,The lobby is full. Try again later.,O lobby está cheio. Tente novamente mais tarde.
 lobby.errorMember,This machine is already a member of this network. Use the network chat.,Esta máquina já é membro desta rede. Use o chat da rede.
 lobby.errorRate,Too many messages. Wait a moment and try again.,Mensagens demais. Aguarde um instante e tente de novo.
@@ -1129,6 +1319,7 @@ lobby.joinNow,Join now,Entrar agora
 lobby.joinTitle,Join {name}?,Entrar em {name}?
 lobby.latency,{value} ms,{value} ms
 lobby.member,member,membro
+lobby.messagesClosed,This network has its lobby conversation off. You can still ask to join it.,Esta rede está com a conversa do lobby desligada. Você ainda pode pedir para entrar.
 lobby.noCandidates,Nobody is in the lobby right now.,Ninguém está no lobby agora.
 lobby.noGpu,No GPU reported,Nenhuma GPU informada
 lobby.placeholder,Write to the lobby of this network…,Escreva para o lobby desta rede…
@@ -1144,6 +1335,40 @@ lobby.unifiedMemory,unified memory,memória unificada
 lobby.unknown,Not informed,Não informado
 lobby.you,(you),(você)
 lobby.yourCard,What the network sees,O que a rede vê
+location.attribution,"City data: Countries States Cities Database, under the Open Database License.","Dados de cidades: Countries States Cities Database, sob a Open Database License."
+location.browserDenied,The browser did not share its location. Place the point on the map or pick a city by name.,O navegador não compartilhou a localização. Marque o ponto no mapa ou escolha uma cidade pelo nome.
+location.browserUnavailable,The browser only shares its location on HTTPS or on localhost. Place the point on the map or pick a city by name.,O navegador só compartilha a localização em HTTPS ou em localhost. Marque o ponto no mapa ou escolha uma cidade pelo nome.
+location.change,Change location,Alterar localização
+location.choose,Choose location,Escolher localização
+location.confirm,Use this location,Usar esta localização
+location.dialogIntro,Place the point on the map or pick a city. The city always comes from the list built into this node; it cannot be typed freely.,Marque o ponto no mapa ou escolha uma cidade. A cidade sempre vem da lista embutida neste nó; não é possível digitá-la livremente.
+location.dialogTitle,Where is this network?,Onde fica esta rede?
+location.distance,{value} km,{value} km
+location.locating,Locating...,Localizando...
+location.lookupFailed,The node's city list could not be read.,Não foi possível ler a lista de cidades do nó.
+location.mapLabel,Map to place the network,Mapa para posicionar a rede
+location.mapUnavailable,The map images could not be loaded. You can still use the browser's location or pick a city by name.,As imagens do mapa não puderam ser carregadas. Ainda é possível usar a localização do navegador ou escolher uma cidade pelo nome.
+location.nearest,Cities near the point,Cidades perto do ponto
+location.nearestEmpty,Place a point to see the cities around it.,Marque um ponto para ver as cidades ao redor.
+location.none,No city chosen,Nenhuma cidade escolhida
+location.precision,What the network publishes,O que a rede publica
+location.precisionApproximate,Approximate area (about 10 km),Área aproximada (cerca de 10 km)
+location.precisionApproximateHint,The point is moved to a grid of about 10 km before it is saved. The exact point is not kept.,O ponto é deslocado para uma grade de cerca de 10 km antes de ser salvo. O ponto exato não é guardado.
+location.precisionCity,City centre only,Somente o centro da cidade
+location.precisionCityHint,"Only the centre of the chosen city is published, wherever the point was placed.","Somente o centro da cidade escolhida é publicado, onde quer que o ponto tenha sido marcado."
+location.precisionExact,Exact point,Ponto exato
+location.precisionExactHint,The public directory shows the point exactly where it was placed.,O diretório público mostra o ponto exatamente onde foi marcado.
+location.privacyNote,"The map images are loaded from OpenStreetMap, which sees your IP address and the area you look at. The point you place is sent to this node to find the nearest city. Nothing is published until you save the network settings.","As imagens do mapa são carregadas do OpenStreetMap, que vê o seu endereço IP e a área que você observa. O ponto marcado é enviado a este nó para encontrar a cidade mais próxima. Nada é publicado até você salvar as configurações da rede."
+location.published,"Published point: {latitude}, {longitude}","Ponto publicado: {latitude}, {longitude}"
+location.publishedCity,Published point: the centre of {city},Ponto publicado: o centro de {city}
+location.required,Required for a public network,Obrigatório para uma rede pública
+location.searchCity,City name,Nome da cidade
+location.searchCountry,Country,País
+location.searchEmpty,No city with that name in this country.,Nenhuma cidade com esse nome neste país.
+location.searchTitle,Or pick a city by name,Ou escolha uma cidade pelo nome
+location.title,Location,Localização
+location.useBrowser,Use my browser's location,Usar a localização do meu navegador
+machine.kindUnknown,Unknown,Desconhecida
 models.architecture,Architecture,Arquitetura
 models.chooseFolders,Choose folders,Escolher as pastas
 models.columnActions,Actions,Ações
@@ -1176,6 +1401,13 @@ models.sendAria,Send {name},Enviar {name}
 models.size,Size,Tamanho
 models.slice,Slice,Fatiar
 models.slowScan,The first scan of a slow volume takes time. The previous result stays on screen while it runs.,Varrer um volume lento leva tempo na primeira vez. O resultado anterior fica na tela enquanto isso.
+myMachine.nameHint,"Leave it empty to go by the system's hostname. The name is only a label: the machine's identity is its key.","Deixe vazio para usar o hostname do sistema. O nome é só um rótulo: a identidade da máquina é a chave dela."
+myMachine.nameLabel,Name,Nome
+myMachine.nameSaveFailed,Could not save the name,Não foi possível salvar o nome
+myMachine.nameSaved,Name updated,Nome atualizado
+myMachine.nameSavedDetail,The other machines see it within seconds; no restart is needed.,"As outras máquinas o veem em segundos, sem reiniciar."
+myMachine.nameSubtitle,How this machine appears to the others in the network.,Como esta máquina aparece para as outras na rede.
+myMachine.nameTitle,Machine name,Nome da máquina
 myMachine.subtitle,This machine's identity in the cluster and the address it advertises to peers.,A identidade desta máquina no cluster e o endereço que ela anuncia aos peers.
 myMachine.title,My machine,Minha máquina
 nav.about,About,Sobre
@@ -1219,9 +1451,11 @@ nav.transfers,Transfers,Transferências
 nav.trustAnchor,Trust root,Raiz de confiança
 nav.trustMachine,This machine,Esta máquina
 network.acceptedEnrollments,Accepting new members,Aceitando novos membros
-network.acceptedEnrollmentsHint,"Advertised in the public directory. With none selected the network shows as closed and nobody can start joining it from there. Current members are not affected.","Anunciado no diretório público. Sem nenhum marcado, a rede aparece como fechada e ninguém consegue iniciar a entrada por lá. Os membros atuais não são afetados."
+network.acceptedEnrollmentsHint,"The roles a machine may ask to join with. With none selected the network shows as closed and nobody can ask to join it. Current members are not affected.","Os papéis com que uma máquina pode pedir para entrar. Sem nenhum marcado, a rede aparece como fechada e ninguém consegue pedir para entrar. Os membros atuais não são afetados."
 network.accessAnyoneWithAnchor,Anyone with the trust root (legacy),Qualquer pessoa com a raiz de confiança (legado)
 network.accessAuthorized,Approved by an admin,Aprovados por um administrador
+network.accessAutoApprove,Anyone without approval,Qualquer um sem aprovação
+network.accessAutoApproveWarning,"Every machine that asks to join is admitted at once, with no admin looking at it, and receives the connection key of this network. Anyone who finds the network, or holds its trust document, can become a member, use its models and see its nodes. Blocked machines are still refused. Use this only on a network you are ready to open to strangers.","Toda máquina que pedir para entrar é admitida na hora, sem um administrador olhar, e recebe a chave de conexão desta rede. Qualquer um que encontre a rede, ou tenha o documento de confiança, pode virar membro, usar os modelos e ver os nós. Máquinas bloqueadas continuam recusadas. Use isto só numa rede que você está pronto para abrir a desconhecidos."
 network.accessLocalOnly,This machine only,Apenas esta máquina
 network.accessPolicy,Who can join,Quem pode entrar
 network.addrEffective,Currently advertising,Anunciando agora
@@ -1272,6 +1506,19 @@ network.chooseCity,Choose a city,Escolha uma cidade
 network.chooseCountry,Choose a country,Escolha um país
 network.city,City,Cidade
 network.cityRequired,Required for a public network,Obrigatório para uma rede pública
+network.clusterVersionCurrent,Up to date,Atualizada
+network.clusterVersionDiffers,This machine holds a different cluster version than this node,Esta máquina tem uma versão do cluster diferente da deste nó
+network.clusterVersionEyebrow,Trust chain,Cadeia de confiança
+network.clusterVersionNewerOn,Newer version seen on: {hosts},Versão mais nova vista em: {hosts}
+network.clusterVersionNoChange,This node already has the newest version it can reach,Este nó já tem a versão mais nova que consegue alcançar
+network.clusterVersionOutdated,Outdated - syncing,Desatualizada - sincronizando
+network.clusterVersionSame,Same cluster version as this node,Mesma versão do cluster deste nó
+network.clusterVersionShort,version {version},versão {version}
+network.clusterVersionSubtitle,"Which administrators this node knows. It changes when an administrator is added, removed or the network changes hands, and every machine should show the same value.","Quais administradores este nó conhece. Muda quando um administrador entra, sai ou a rede troca de dono, e toda máquina deve mostrar o mesmo valor."
+network.clusterVersionSync,Sync now,Sincronizar agora
+network.clusterVersionSyncFailed,Could not sync the cluster version,Não foi possível sincronizar a versão do cluster
+network.clusterVersionSynced,Cluster version updated,Versão do cluster atualizada
+network.clusterVersionTitle,Cluster version,Versão do cluster
 network.connected,connected,conectado
 network.connectionKey,Connection key,Chave de conexão
 network.copied,Copied,Copiado
@@ -1308,7 +1555,7 @@ network.geoLabel,Discovery label,Rótulo de descoberta
 network.here,here,aqui
 network.identityNote,"A machine''s identity is its node_id, stored in .pom-node.key. Removing that file makes a new machine to other peers, and the block no longer applies.","A identidade de uma máquina é o node_id, guardado em .pom-node.key. Apagar esse arquivo cria uma máquina nova aos olhos dos outros peers, e o bloqueio deixa de valer."
 network.inferPromotionDetail,This node sees only itself on the network. Promote it when you want it to share its hardware.,Este nó enxerga somente a si mesmo na rede. Promova-o quando quiser que ele compartilhe o hardware.
-network.inferRequestDetail,This node can request access to the network. A principal or secondary administrator must approve the request from the notification bell.,Este nó pode pedir acesso à rede. O principal ou um admin secundário precisa aprovar o pedido pelo sino de notificações.
+network.inferRequestDetail,"This machine was admitted to run inference only. To also serve models it has to leave this network and ask to be admitted again as a network node.","Esta máquina foi admitida apenas para rodar inferência. Para também servir modelos, ela precisa sair desta rede e pedir admissão de novo como nó da rede."
 network.infoSave,Save network details,Salvar detalhes da rede
 network.infoSaveFailed,Could not save network details,Não foi possível salvar os detalhes da rede
 network.infoSaved,Network details saved,Detalhes da rede salvos
@@ -1317,11 +1564,6 @@ network.knownCount,"{count}{count, plural, =1 { known node} other { known nodes}
 network.knownDetail,Blocking a node applies to this process. It is no longer accepted in the handshake.,Bloquear um nó vale para este processo: ele deixa de ser aceito no handshake.
 network.leave,Leave network,Sair da rede
 network.listFailed,Could not load the node list,A lista de nós não veio
-network.lobbyChat,Lobby chat,Chat de lobby
-network.lobbyChatEnable,Accept messages from machines that are not members,Aceitar mensagens de máquinas que não são membros
-network.lobbyChatHint,Lets a machine that has not joined talk to this network before being admitted. Members see its messages and declared hardware in the Lobby room of the network chat. Needs a public network with the network chat on.,Permite que uma máquina que ainda não entrou converse com esta rede antes de ser admitida. Os membros veem as mensagens e o hardware declarado na sala Lobby do chat da rede. Exige rede pública com o chat da rede ligado.
-network.lobbyChatOff,Closed,Fechado
-network.lobbyChatOn,Open,Aberto
 network.location,Location,Localização
 network.locationCoordinates,"{latitude}, {longitude}","{latitude}, {longitude}"
 network.logsDisable,Turn logs off,Desligar logs
@@ -1392,7 +1634,7 @@ network.publicNameRequired,Required for a public network,Obrigatório para uma r
 network.publicNoConnectionKey,"This is a public network, so there is no shared connection key to distribute.","Esta é uma rede pública, então não existe chave de conexão compartilhada para distribuir."
 network.publicStats,Published stats,Dados publicados
 network.publicStatsEnable,"Publish served models, node count and total VRAM","Publicar modelos servidos, número de nós e VRAM total"
-network.publicStatsHint,"Shown in the public directory to machines that have not joined. They are asked live from this node, so they are only available while it is online. Needs a public network.","Aparecem no diretório público para máquinas que ainda não entraram. São consultados ao vivo neste nó, então só ficam disponíveis enquanto ele está online. Exige rede pública."
+network.publicStatsHint,"Shown in the public directory to machines that have not joined. They are asked live from this node, so they are only available while it is online.","Aparecem no diretório público para máquinas que ainda não entraram. São consultados ao vivo neste nó, então só ficam disponíveis enquanto ele está online."
 network.publicStatsOff,Not published,Não publicados
 network.publicStatsOn,Published,Publicados
 network.quicDisable,Turn QUIC off,Desligar QUIC
@@ -1410,6 +1652,23 @@ network.quicSubtitle,"Prefer HTTP/3 for inference hops while keeping HTTP/HTTPS 
 network.quicTitle,QUIC transport,Transporte QUIC
 network.readOnly,Read-only,Somente leitura
 network.rejoin,Rejoin network,Voltar para a rede
+network.relayCluster,Relay for this network,Servir de relé para esta rede
+network.relayClusterHint,"When the internet reaches this machine, members of this network behind a router can reach each other through it.","Quando a internet alcança esta máquina, membros desta rede atrás de um roteador se alcançam por ela."
+network.relayEveryone,Relay for any network,Servir de relé para qualquer rede
+network.relayEveryoneHint,"Makes this machine a public relay: nodes of other networks may use it too. A public relay never carries file transfers.","Torna esta máquina um relé público: nós de outras redes também podem usá-la. Um relé público nunca transporta arquivos."
+network.relayFixed,Set on the command line for this run,Definido na linha de comando nesta execução
+network.relaySaveFailed,Could not save the relay options,Não foi possível salvar as opções de relé
+network.relaySaved,Relay options saved,Opções de relé salvas
+network.relaySavedDetail,They apply now; no restart is needed.,"Valem a partir de agora, sem reiniciar."
+network.relayStateCluster,Relaying for this network,Servindo de relé para esta rede
+network.relayStateEveryone,Relaying for any network,Servindo de relé para qualquer rede
+network.relayStateOff,Not relaying,Não está servindo de relé
+network.relayStateUnreachable,Not relaying: the internet does not reach this machine,Não está servindo de relé: a internet não alcança esta máquina
+network.relayStatus,Now,Agora
+network.relaySubtitle,"A relay only passes encrypted traffic between two machines that cannot reach each other directly.","Um relé só repassa tráfego cifrado entre duas máquinas que não se alcançam diretamente."
+network.relayTitle,Relay,Relé
+network.relayTransfers,Let file transfers of this network pass,Deixar transferências de arquivo desta rede passarem
+network.relayTransfersHint,"Files are large: turn this off to keep the relay for control and inference only.","Arquivos são grandes: desligue para manter o relé só para controle e inferência."
 network.relinquishNode,Become an infer node,Virar um nó infer
 network.relinquishNodeDescription,"New inference is routed away first. In-flight inference finishes. Then this node becomes infer and releases its slice. If no other node can serve that same slice, the range becomes uncovered and generations that need it fail clearly.","A inferência nova será encaminhada para outro nó primeiro. A inferência em curso termina. Depois este nó vira infer e libera sua fatia. Se nenhum outro nó puder servir essa mesma fatia, a faixa ficará descoberta e as gerações que precisarem dela falharão claramente."
 network.relinquishNodeFailed,The node could not leave the node role,O nó não conseguiu deixar o papel de node
@@ -1485,7 +1744,7 @@ network.unblocked,Node unblocked,Nó liberado
 network.verified,verified,verificado
 network.visibility,Discovery,Descoberta
 network.visibilityLocal,Off - this machine only,Desligada - só esta máquina
-network.visibilityPrivate,Hidden - announced but not listed (nobody can find it),Oculta - anunciada mas não listada (ninguém a encontra)
+network.visibilityPrivate,Hidden - not listed; joined by importing its trust document,Oculta - não listada; entra-se importando o documento de confiança
 network.visibilityPublic,On - other machines can find it and ask to join,Ligada - outras máquinas a encontram e pedem para entrar
 networkChat.attach,Attach a file,Anexar arquivo
 networkChat.disabledDetail,The main node has disabled this channel for the whole network.,O nó principal desativou este canal para toda a rede.
@@ -1500,6 +1759,7 @@ networkChat.hideOnline,Hide online,Ocultar online
 networkChat.hint,"Enter sends. Files are sent through the libp2p network.","Enter envia. Arquivos são enviados pela rede libp2p."
 networkChat.loadFailed,Could not load the network chat,Não foi possível carregar o Chat da rede
 networkChat.loading,Loading network chat,Carregando o Chat da rede
+networkChat.lobbyUnread,"{count, plural, one {# new message in the lobby} other {# new messages in the lobby}}","{count, plural, one {# mensagem nova no lobby} other {# mensagens novas no lobby}}"
 networkChat.noParticipants,No online participants,Nenhum participante online
 networkChat.nodeLabel,Node,Nó
 networkChat.online,online,online
@@ -1598,6 +1858,7 @@ paths.workspaceDetail,"One shared root for user projects and dynamic data from e
 paths.workspaceFolder,Project workspace,Workspace de projetos
 paths.workspaceHint,"Blank restores the default: {path}. The folder must be absolute and writable inside the container.","Em branco volta para o padrão: {path}. A pasta precisa ser absoluta e gravável dentro do container."
 paths.workspaceLayout,"Projects live directly under this root. Plugins keep hidden namespaced data below it.","Os projetos ficam diretamente sob esta raiz. Plugins guardam dados ocultos namespaced abaixo dela."
+peer.routeUnavailable,route unavailable on this node,rota indisponível neste nó
 pipeline.empty,No machine on the network,Nenhuma máquina na rede
 pipeline.emptyDetail,This node has not found peers yet. Check the bootstrap address under Settings › Network.,Este nó ainda não encontrou peers. Confira o endereço de bootstrap em Configurações › Rede.
 pipeline.footnote,Each connection carries hidden state as f16. The on-screen order is the order the request travels through machines.,Cada conexão carrega o estado oculto em f16. A ordem na tela é a ordem em que a requisição percorre as máquinas.
@@ -1642,27 +1903,13 @@ plugins.activationUsage.unused,No activations used,Nenhuma ativação utilizada
 plugins.activeTitle,Active,Ativo
 plugins.annualPrice,{price}/year,{price}/ano
 plugins.buy,Buy,Comprar
-plugins.developDescription,"The example of how to build a POM plugin: screens, menu, preferences and the host interface. Install it to see it working, then use its repository as the starting point for yours.","O exemplo de como desenvolver um plugin do POM: telas, menu, preferências e a interface com o host. Instale para ver funcionando e use o repositório dele como ponto de partida para o seu."
-plugins.developEyebrow,Example plugin,Plugin de exemplo
-plugins.developSource,View the source code on GitHub,Ver o código-fonte no GitHub
-plugins.developTitle,Start from pom-plugin-base,Comece pelo pom-plugin-base
-plugins.featured,Featured,Destaque
-plugins.pageNext,Next,Próxima
-plugins.pagePrevious,Previous,Anterior
-plugins.pageStatus,Page {page} of {pages},Página {page} de {pages}
-plugins.pagination,Plugin pages,Páginas de plugins
-plugins.platform.linux,Linux,Linux
-plugins.platform.macos,macOS,macOS
-plugins.platform.windows,Windows,Windows
-plugins.platforms,Platforms,Plataformas
-plugins.pomTeam,POM team,Equipe POM
-plugins.community,Community,Comunidade
-plugins.githubAddFromCatalog,Install from GitHub,Instalar do GitHub
 plugins.catalog.enterprise.description,Request Logs and Statistics for this node.,Logs de Requisições e Estatísticas para este nó.
 plugins.catalog.enterprise.name,Statistics & Request Logs,Estatísticas e Logs de Requisições
 plugins.catalogEmpty,No plugins are available right now.,Nenhum plugin disponível no momento.
 plugins.catalogError,Could not load the public plugin catalog.,Não foi possível carregar o catálogo público.
 plugins.catalogLoading,Loading the public plugin catalog,Carregando o catálogo público de plugins
+plugins.closeFailed,The plugin process did not stop,O processo do plugin não parou
+plugins.community,Community,Comunidade
 plugins.deactivate,Deactivate,Desativar
 plugins.deactivateConfirmDescription,This will deactivate the plugin on this node. You can activate it again later with a license key.,Isso desativará o plugin neste nó. Você poderá ativá-lo novamente com uma chave de licença.
 plugins.deactivateConfirmTitle,Deactivate {name}?,Desativar {name}?
@@ -1690,8 +1937,14 @@ plugins.devUninstallConfirmDescription,This removes the local development plugin
 plugins.devUninstallConfirmTitle,Remove local build of {name}?,Remover o build local de {name}?
 plugins.devUnknownFailure,The local rebuild failed.,O rebuild local falhou.
 plugins.devUnknownRepository,This repository is not in the supported plugin list.,Este repositório não está na lista de plugins compatíveis.
+plugins.developDescription,"The example of how to build a POM plugin: screens, menu, preferences and the host interface. Install it to see it working, then use its repository as the starting point for yours.","O exemplo de como desenvolver um plugin do POM: telas, menu, preferências e a interface com o host. Instale para ver funcionando e use o repositório dele como ponto de partida para o seu."
+plugins.developEyebrow,Example plugin,Plugin de exemplo
+plugins.developSource,View the source code on GitHub,Ver o código-fonte no GitHub
+plugins.developTitle,Start from pom-plugin-base,Comece pelo pom-plugin-base
+plugins.featured,Featured,Destaque
 plugins.formSubtitle,The key is sent only to the license server and is not saved by the POM interface.,A chave é enviada apenas ao servidor de licenças e não é salva pela interface do POM.
 plugins.formTitle,Enter your license key,Digite sua chave de licença
+plugins.githubAddFromCatalog,Install from GitHub,Instalar do GitHub
 plugins.githubCheck,Refresh releases,Atualizar releases
 plugins.githubCheckFailed,Could not refresh this GitHub repository.,Não foi possível atualizar este repositório GitHub.
 plugins.githubInstall,Install,Instalar
@@ -1725,10 +1978,25 @@ plugins.licenseKeyLabel,License key,Chave de licença
 plugins.licenseKeyPlaceholder,PM-...,PM-...
 plugins.licenseStatusError,Could not read this node's plugin license status.,Não foi possível ler o estado das licenças deste nó.
 plugins.licenseUnknown,License status unavailable,Estado da licença indisponível
+plugins.loading,Opening the plugin,Abrindo o plugin
+plugins.loadingHint,"The plugin's piece is on its way: its screens and texts are loading on this machine.","A peça do plugin está a caminho: as telas e os textos dele estão carregando nesta máquina."
+plugins.loadingNamed,Opening {name},Abrindo {name}
 plugins.manage,Manage,Gerenciar
 plugins.metadataUnavailable,Description unavailable,Descrição indisponível
 plugins.monthlyPrice,{price}/month,{price}/mês
 plugins.noLicenseRequired,No license required,Não exige licença
+plugins.open,Open plugin,Abrir plugin
+plugins.openFailed,The plugin did not start,O plugin não iniciou
+plugins.openNamed,Open {name},Abrir {name}
+plugins.pageNext,Next,Próxima
+plugins.pagePrevious,Previous,Anterior
+plugins.pageStatus,Page {page} of {pages},Página {page} de {pages}
+plugins.pagination,Plugin pages,Páginas de plugins
+plugins.platform.linux,Linux,Linux
+plugins.platform.macos,macOS,macOS
+plugins.platform.windows,Windows,Windows
+plugins.platforms,Platforms,Plataformas
+plugins.pomTeam,POM team,Equipe POM
 plugins.preferencesDialogTitle,{name} preferences,Preferências de {name}
 plugins.preferencesDirectoryHint,Absolute path on this node. It is created when missing.,Caminho absoluto neste nó. Ele é criado se não existir.
 plugins.preferencesLocalOnly,These values are stored on this node and are never sent to the license server.,Estes valores ficam armazenados neste nó e nunca são enviados ao servidor de licenças.
@@ -1744,6 +2012,7 @@ plugins.publishReview,Every submission goes through a review process before it i
 plugins.publishTitle,Publish your plugin on POM,Publique seu plugin no POM
 plugins.refresh,Refresh,Atualizar
 plugins.screenError.title,This plugin screen could not be loaded.,Não foi possível carregar a tela deste plugin.
+plugins.screenExportMissing,"the screen module does not export the component ""{name}""","o módulo da tela não exporta o componente ""{name}"""
 plugins.screenshotAlt,{name} screenshot {number},Captura de tela {number} de {name}
 plugins.screenshotClose,Close screenshot,Fechar captura de tela
 plugins.screenshotNext,Next screenshot,Próxima captura de tela
@@ -1760,6 +2029,9 @@ plugins.state.expired,Expired,Expirado
 plugins.state.needs_activation,Not activated,Não ativado
 plugins.state.revoked,Revoked,Revogado
 plugins.state.unavailable,Unavailable,Indisponível
+plugins.stopped,"The {name} piece is paused","A peça {name} está parada"
+plugins.stoppedCloseHint,"When you are not using it, close it again with the X next to its name in the menu.","Quando não estiver usando, feche de novo pelo X ao lado do nome no menu."
+plugins.stoppedHint,"It was stopped to save this machine's resources: while closed it uses no memory, processor or GPU, and it stays installed with everything you set. Open it to start it again.","Ela foi parada para economizar os recursos da sua máquina: fechada, não usa memória, processador nem GPU, e continua instalada com tudo o que você configurou. Abra para ligá-la de novo."
 plugins.subtitle,"Independent plugins for this node, each with its own license, version and lifecycle.","Plugins independentes para este nó, cada um com sua própria licença, versão e ciclo de vida."
 plugins.tabCatalog,Plugins,Plugins
 plugins.tabDevelop,Develop your plugin,Desenvolva seu plugin
@@ -1811,13 +2083,24 @@ profile.admin,Administrator,Administrador
 profile.infer,infer,infer
 profile.node,node,node
 publicNetworks.action,Action,Ação
+publicNetworks.add,Add network,Adicionar rede
+publicNetworks.addDetail,"Add a private network from its trust document, a JSON file its administrator exports.","Adicione uma rede privada a partir do documento de confiança, um arquivo JSON que o administrador dela exporta."
 publicNetworks.allCities,All cities,Todas as cidades
 publicNetworks.allCountries,All countries,Todos os países
+publicNetworks.askToJoin,Ask to join,Pedir para entrar
+publicNetworks.backToNetworks,Back to networks,Voltar para redes
+publicNetworks.browserLocationDenied,The browser did not share its location.,O navegador não compartilhou a localização.
+publicNetworks.browserLocationUnavailable,The browser only shares its location on HTTPS or on localhost.,O navegador só compartilha a localização em HTTPS ou em localhost.
+publicNetworks.cached,Not seen now · last seen {when},Não vista agora · vista {when}
+publicNetworks.cachedDetail,"This machine heard of the network before, but it did not answer the last search. It may be offline.","Esta máquina já conheceu a rede, mas ela não respondeu à última busca. Pode estar fora do ar."
 publicNetworks.chat,Chat,Conversar
 publicNetworks.checking,Checking reachability,Verificando alcance
 publicNetworks.city,City,Cidade
 publicNetworks.closed,Closed,Fechada
 publicNetworks.closedDetail,This network is not accepting new members right now.,Esta rede não está aceitando novos membros no momento.
+publicNetworks.closedShort,closed,fechada
+publicNetworks.closeLobby,Close the lobby of {name},Fechar o lobby de {name}
+publicNetworks.closePanel,Close panel,Fechar painel
 publicNetworks.country,Country,País
 publicNetworks.detailsTitle,Details for {name},Detalhes de {name}
 publicNetworks.directoryReplicas,Directory replicas,Réplicas do diretório
@@ -1825,43 +2108,134 @@ publicNetworks.discoveredDetail,Only public metadata is shown here. Trust is con
 publicNetworks.discoveredTitle,Networks found,Redes encontradas
 publicNetworks.discoveredVia,Discovered via,Descoberta via
 publicNetworks.distance,{value} km away,{value} km de distância
+publicNetworks.distanceApproximate,about {value} km,cerca de {value} km
+publicNetworks.distanceFromBrowser,"Distances are measured from your browser's location, which stays in the browser.","As distâncias são medidas a partir da localização do seu navegador, que não sai dele."
+publicNetworks.distanceFromNetwork,Distances are measured from your network's location.,As distâncias são medidas a partir da localização da sua rede.
+publicNetworks.distanceFromNone,"To see distances, set your network's location or use the browser's.","Para ver distâncias, defina a localização da sua rede ou use a do navegador."
 publicNetworks.emptyDetail,No relay listed a network yet. Networks appear here once their admin turns discovery on.,Nenhum relé listou uma rede ainda. As redes aparecem aqui quando o administrador liga a descoberta.
 publicNetworks.emptyTitle,No networks found,Nenhuma rede encontrada
+publicNetworks.enrollmentClosed,Closed to new members,Fechada para novos membros
+publicNetworks.enrollmentOpen,Accepting new members,Aceitando novos membros
+publicNetworks.expandDetails,Open all details,Abrir todos os detalhes
+publicNetworks.exportShort,Trust document,Documento de confiança
+publicNetworks.exportTrust,Export the trust document of {name},Exportar o documento de confiança de {name}
+publicNetworks.exportTrustDetail,Export the trust document so another machine can add this network,Exportar o documento de confiança para que outra máquina adicione esta rede
 publicNetworks.failed,Could not load the networks,Não foi possível carregar as redes
 publicNetworks.fingerprint,Fingerprint,Impressão digital
 publicNetworks.geoLabel,Geo discovery label,Rótulo geo de descoberta
+publicNetworks.importDone,Network added,Rede adicionada
+publicNetworks.importFailed,Could not add the network,Não foi possível adicionar a rede
 publicNetworks.join,Talk and ask to join,Conversar e pedir para entrar
 publicNetworks.joinConfirm,Leave this network and continue,Sair desta rede e continuar
 publicNetworks.joinDetail,"POM will leave the current network, keep your local hardware preferences, and open the setup with this public network ready. No shared secret is needed.","O POM vai sair da rede atual, manter suas preferências locais de hardware e abrir o setup com esta rede pública pronta. Nenhum segredo compartilhado é necessário."
 publicNetworks.joinFailed,Could not start joining this network,Não foi possível iniciar a entrada nesta rede
 publicNetworks.joinTitle,Join {name}?,Entrar em {name}?
+publicNetworks.kindCustom,Private · added here,Privada · adicionada aqui
+publicNetworks.kindOwn,Your network,Sua rede
 publicNetworks.latency,Average latency,Latência média
+publicNetworks.latencyChecking,measuring...,medindo...
+publicNetworks.latencyFailed,no answer,sem resposta
+publicNetworks.latencyValue,{value} ms,{value} ms
+publicNetworks.liveFailed,Could not update the list from the network,Não foi possível atualizar a lista pela rede
+publicNetworks.lobby,Lobby,Lobby
 publicNetworks.location,Country / city,País / cidade
-publicNetworks.locationNote,"If you allow location access, nearby networks appear first. Only an approximate network location is shown.","Se você permitir o acesso à localização, as redes próximas aparecem primeiro. Apenas uma localização aproximada da rede é mostrada."
+publicNetworks.locationNote,"Each network's city and country come from the coordinates it publishes, looked up in this node's own city list.","A cidade e o país de cada rede vêm das coordenadas que ela publica, consultadas na lista de cidades deste nó."
+publicNetworks.measureLatency,Measure latency,Medir latência
 publicNetworks.models,Served models,Modelos servidos
+publicNetworks.moreDetails,More details,Mais detalhes
 publicNetworks.name,Public name,Nome público
-publicNetworks.noLobby,No lobby,Sem lobby
-publicNetworks.noLobbyDetail,"This network has not opened its lobby, so it cannot be asked for admission from here.","Esta rede não abriu o lobby, então não é possível pedir admissão por aqui."
+publicNetworks.nextPage,Next page,Próxima página
 publicNetworks.noMatches,No public networks match these filters,Nenhuma rede pública corresponde a estes filtros
-publicNetworks.noMatchesDetail,Try another country or city.,Tente outro país ou cidade.
+publicNetworks.noMatchesDetail,Try another search or filter.,Tente outra busca ou outro filtro.
 publicNetworks.nodes,Nodes,Nós
 publicNetworks.openDetails,Open details for {name},Abrir detalhes de {name}
+publicNetworks.openLobbies,Open lobbies,Lobbies abertos
 publicNetworks.organization,Organization,Organização
+publicNetworks.pageOf,Page {page} of {pages},Página {page} de {pages}
+publicNetworks.pageRange,{from}-{to} of {total} networks,{from}-{to} de {total} redes
+publicNetworks.panelLabel,Network {name},Rede {name}
 publicNetworks.pkarr,pkarr,pkarr
+publicNetworks.place,Place,Local
+publicNetworks.previousPage,Previous page,Página anterior
 publicNetworks.publisherKey,Publisher key,Chave do publicador
 publicNetworks.reach,Reachability,Alcance
 publicNetworks.reachDirect,Direct route published,Rota direta publicada
 publicNetworks.reachRelayed,Reachable through a relay,Alcançável por relé
+publicNetworks.reachUnknown,Could not check,Não foi possível verificar
 publicNetworks.reachUnresolved,Not found on the DHT,Não encontrada na DHT
 publicNetworks.refresh,Refresh,Atualizar
 publicNetworks.relayHints,Dedicated relays,Relés dedicados
+publicNetworks.remove,Remove from the list,Remover da lista
+publicNetworks.removeDescription,"{name} leaves this machine's list. Nothing changes on that network, and its trust document can be imported again.","{name} sai da lista desta máquina. Nada muda naquela rede, e o documento de confiança pode ser importado de novo."
+publicNetworks.removeFailed,Could not remove the network,Não foi possível remover a rede
+publicNetworks.removeNamed,Remove {name} from the list,Remover {name} da lista
+publicNetworks.removeTitle,Remove this network from the list?,Remover esta rede da lista?
+publicNetworks.roleAccepted,Accepting,Aceitando
+publicNetworks.roleAcceptedNamed,Accepting {role},Aceitando {role}
+publicNetworks.roleNotAccepted,Not accepting,Não aceita
+publicNetworks.search,Search,Buscar
+publicNetworks.searchPlaceholder,"Name, organization, city...","Nome, organização, cidade..."
 publicNetworks.securityNote,The signed trust document is public metadata; the setup calculates its fingerprint before saving.,O documento de confiança assinado é um dado público; o setup calcula sua impressão digital antes de salvar.
-publicNetworks.subtitle,Networks you can talk to and ask to join. The list comes from the relays this node knows.,Redes com as quais você pode conversar e pedir para entrar. A lista vem dos relés que este nó conhece.
+publicNetworks.sort,Sort by,Ordenar por
+publicNetworks.sortDistance,Closest first,Mais próximas primeiro
+publicNetworks.sortLatency,Lowest latency first,Menor latência primeiro
+publicNetworks.sortName,Name,Nome
+publicNetworks.subtitle,"Networks you can talk to and ask to join. Public ones come from the relays this node knows; a private one is added from its trust document.","Redes com as quais você pode conversar e pedir para entrar. As públicas vêm dos relés que este nó conhece; uma privada é adicionada pelo documento de confiança."
 publicNetworks.title,Networks,Redes
 publicNetworks.unavailable,Not available,Indisponível
 publicNetworks.unknownCity,Unknown city,Cidade desconhecida
 publicNetworks.unknownCountry,Unknown country,País desconhecido
+publicNetworks.updatingLive,Updating from the network...,Atualizando pela rede...
+publicNetworks.useBrowserLocation,Use my browser's location,Usar a localização do meu navegador
 publicNetworks.vram,Total VRAM,VRAM total
+publicNetworks.within,Distance,Distância
+publicNetworks.withinAny,Any distance,Qualquer distância
+publicNetworks.withinKm,Within {value} km,Até {value} km
+quickSetup.accessAuthorizedDetail,Each request waits for you to approve it in the notifications bell.,Cada pedido espera a sua aprovação no sino de notificações.
+quickSetup.accessLegacyDetail,"The old open mode: anyone holding the trust root joins. It is no longer offered; choose another one to leave it.","O modo aberto antigo: quem tem a raiz de confiança entra. Não é mais oferecido; escolha outro para sair dele."
+quickSetup.accessLocalOnlyDetail,"Nobody else is admitted, even with discovery on.","Ninguém mais é admitido, mesmo com a descoberta ligada."
+quickSetup.action,Quick setup,Configuração rápida
+quickSetup.descriptionHint,What the network is for and what it offers.,Para que serve a rede e o que ela oferece.
+quickSetup.discoveryHidden,Hidden,Oculta
+quickSetup.discoveryHiddenDetail,Not listed. Only machines that import its trust document can ask to join.,Não é listada. Só máquinas que importam o documento de confiança dela podem pedir para entrar.
+quickSetup.discoveryOff,Off,Desligada
+quickSetup.discoveryOffDetail,This machine only. Nobody can find the network or ask to join.,Só esta máquina. Ninguém encontra a rede nem pede para entrar.
+quickSetup.discoveryPublic,Public,Pública
+quickSetup.discoveryPublicDetail,Listed in the public directory: other machines find it and ask to join.,Listada no diretório público: outras máquinas a encontram e pedem para entrar.
+quickSetup.heading.access,Who can join,Quem pode entrar
+quickSetup.heading.discovery,How should other machines find this network?,Como outras máquinas devem encontrar esta rede?
+quickSetup.heading.info,Tell people about your network,Conte sobre a sua rede
+quickSetup.heading.location,Where is the network?,Onde fica a rede?
+quickSetup.heading.relay,Help the community: relay traffic,Ajude a comunidade: sirva de relé
+quickSetup.heading.review,Review and publish,Revise e publique
+quickSetup.lead.access,Choose how requests are answered and which roles a new machine can ask for. Current members are not affected.,Escolha como os pedidos são respondidos e com que papéis uma máquina nova pode pedir para entrar. Os membros atuais não são afetados.
+quickSetup.lead.discovery,"A new installation starts with discovery off. Turn it on to list the network in the public directory, where other machines can find it and ask to join.","Uma instalação nova começa com a descoberta desligada. Ligue para listar a rede no diretório público, onde outras máquinas a encontram e pedem para entrar."
+quickSetup.lead.info,This is what others read in the directory before asking to join. Description and rules accept Markdown.,É o que os outros leem no diretório antes de pedir para entrar. Descrição e regras aceitam Markdown.
+quickSetup.lead.location,"The directory sorts networks by distance. Only an approximate point is published, never the exact one unless you choose it.","O diretório ordena as redes pela distância. Só um ponto aproximado é publicado, nunca o exato, a não ser que você escolha."
+quickSetup.lead.relay,"A setting of this machine, not of the network. Machines behind a router reach each other through relays: every machine that relays for any network makes the distributed network stronger for everyone.","Uma configuração desta máquina, não da rede. Máquinas atrás de um roteador se alcançam por relés: cada máquina que serve de relé para qualquer rede deixa a rede distribuída mais forte para todos."
+quickSetup.lead.review,Check the choices below. You can change any of them later in Network settings.,Confira as escolhas abaixo. Você pode mudar qualquer uma depois nas configurações da rede.
+quickSetup.nameRequired,Give the network a public name to continue,Dê um nome público à rede para continuar
+quickSetup.optional,Optional,Opcional
+quickSetup.progress,Setup steps,Etapas da configuração
+quickSetup.publish,Publish network,Publicar rede
+quickSetup.publishNote,Publishing sends these details to the relays; it can take a minute for other machines to see the network.,Publicar envia estes dados aos relés; pode levar um minuto até outras máquinas verem a rede.
+quickSetup.published,Network published,Rede publicada
+quickSetup.publishedDetail,Other machines can now find it in the public directory.,Outras máquinas já podem encontrá-la no diretório público.
+quickSetup.recommended,Recommended,Recomendado
+quickSetup.relayFailedDetail,The network was saved; set the relay again in Network settings.,A rede foi salva; ajuste o relé de novo nas configurações da rede.
+quickSetup.relayLive,"Applied to this machine as soon as it changes, without the Save button.","Aplicado a esta máquina assim que muda, sem o botão Salvar."
+quickSetup.role.infer,Use the network's models,Usam os modelos da rede
+quickSetup.role.node,Hold and serve model slices,Guardam e servem fatias de modelos
+quickSetup.rulesHint,What members agree to when they join.,O que os membros aceitam ao entrar.
+quickSetup.save,Save,Salvar
+quickSetup.saveNote,The network will not be listed in the public directory.,A rede não será listada no diretório público.
+quickSetup.step.access,Who can join,Quem pode entrar
+quickSetup.step.discovery,Discovery,Descoberta
+quickSetup.step.info,Information,Informações
+quickSetup.step.location,Location,Localização
+quickSetup.step.relay,Relay,Relé
+quickSetup.step.review,Review,Revisão
+quickSetup.title,Publish your network,Publicar sua rede
 release.alone,Release anyway,Liberar mesmo assim
 release.button,Release memory,Liberar memória
 release.failed,The shard is still loaded,A fatia continua carregada
@@ -2238,6 +2612,9 @@ sidebar.leaveNetworkConfirm,Leave network,Sair da rede
 sidebar.leaveNetworkDescription,"This removes the trust document and private network secret from this node, keeps local preferences, and restarts the first-access setup.","Isso remove o documento de confiança e o segredo privado da rede deste nó, preserva as preferências locais e reinicia a configuração inicial."
 sidebar.leaveNetworkFailed,The node could not leave the network,Não foi possível sair da rede
 sidebar.leaveNetworkNamed,Leave the network {name},Sair da rede {name}
+sidebar.pluginClose,Stop plugin process,Parar processo do plugin
+sidebar.scrollDown,Scroll menu down,Rolar menu para baixo
+sidebar.scrollUp,Scroll menu up,Rolar menu para cima
 sidebar.thisNetwork,this network,esta rede
 sidecars.copy,{host} copies it from {source} ({size}) before starting,{host} copia de {source} ({size}) antes de subir
 sidecars.details,More info,Mais informações

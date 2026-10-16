@@ -44,7 +44,7 @@ export function LocaleProvider({
 }) {
   const [locale, setLocaleState] = useState<Locale>(() => initialLocale ?? browserLocale());
   setActiveLocale(locale);
-  // Catálogos de plugin chegam depois do primeiro render: refaz o `t`.
+  // Plugin catalogs arrive after the first render: rebuild `t`.
   const pluginVersion = useSyncExternalStore(subscribePluginMessages, pluginMessagesVersion, pluginMessagesVersion);
 
   useEffect(() => {
@@ -65,7 +65,7 @@ export function LocaleProvider({
       locale,
       setLocale,
       t: (key: string, values: Record<string, string | number> = {}) =>
-        // Rótulos de menu de plugin vêm do manifesto, não do CSV do POM.
+        // Plugin menu labels come from the manifest, not from the POM CSV.
         (key.startsWith("plugin:") ? pluginLabel(key, locale) : null) ??
         formatMessage(locale, key, values),
     }),

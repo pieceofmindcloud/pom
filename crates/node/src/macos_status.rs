@@ -1,32 +1,32 @@
-//! Item da barra de status do macOS: o chat do nó a um clique da barra de menus.
+//! macOS status bar item: the node's chat one click away from the menu bar.
 //!
-//! O que é nativo aqui é só a moldura - o item de barra, o popover e a janela.
-//! O conteúdo é a mesma interface web que o nó já serve, carregada num
-//! `WKWebView` a partir do gateway local. Não há segunda linguagem no caminho
-//! de inferência, segundo processo, nem runtime de navegador empacotado:
-//! AppKit e WebKit são frameworks do sistema.
+//! What is native here is only the frame - the bar item, the popover and the
+//! window. The content is the same web interface the node already serves,
+//! loaded in a `WKWebView` from the local gateway. There is no second language
+//! in the inference path, no second process, and no bundled browser runtime:
+//! AppKit and WebKit are system frameworks.
 //!
-//! `macos_status.m` tem a implementação e a ABI C que este módulo chama. As
-//! dimensões e o endereço saem daqui, de propósito: o lado Objective-C não
-//! conhece a configuração do nó, e duplicar os números nos dois lados era
-//! convite a desencontro.
+//! `macos_status.m` has the implementation and the C ABI this module calls. The
+//! dimensions and the address come from here, on purpose: the Objective-C side
+//! does not know the node's configuration, and duplicating the numbers on both
+//! sides was an invitation to a mismatch.
 
 use anyhow::Result;
 use std::ffi::{c_char, c_int, CString};
 use std::path::PathBuf;
 
-/// Medida do painel, em pontos: exatamente a tela lógica de um iPhone 14/15
-/// (390 x 844). "Tamanho de smartphone" aqui é um telemóvel concreto, não uma
-/// aproximação, e é nesta largura que o chat foi conferido.
+/// Panel size, in points: exactly the logical screen of an iPhone 14/15
+/// (390 x 844). "Smartphone size" here is a concrete phone, not an
+/// approximation, and this is the width at which the chat was checked.
 ///
-/// A altura é o alvo, não uma promessa: num ecrã que não a comporte, o lado
-/// nativo encolhe o painel para caber. Um MacBook Pro de 13" antigo tem 800
-/// pontos de altura, e um painel de 844 sairia pela borda de baixo.
+/// The height is the target, not a promise: on a screen that cannot hold it,
+/// the native side shrinks the panel to fit. An old 13" MacBook Pro is 800
+/// points tall, and an 844 panel would run off the bottom edge.
 pub const POPOVER_SIZE: (f64, f64) = (390.0, 844.0);
 
-/// A janela maior, para quando 390 pontos de largura apertam. Maior que o
-/// painel nos dois eixos - uma "janela maior" mais baixa que o painel que a
-/// abriu seria uma troca ruim - e redimensionável a partir daí.
+/// The larger window, for when 390 points of width are tight. Larger than the
+/// panel on both axes - a "larger window" shorter than the panel that opened
+/// it would be a bad trade - and resizable from there.
 pub const WINDOW_SIZE: (f64, f64) = (1120.0, 880.0);
 
 unsafe extern "C" {
@@ -46,13 +46,13 @@ fn chat_url(port: u16) -> String {
     crate::gateway_url(port)
 }
 
-/// Caminho da arte 1x do item de barra; o lado nativo procura `@2x` e `@3x` ao
-/// lado dela.
+/// Path of the bar item's 1x artwork; the native side looks for `@2x` and
+/// `@3x` next to it.
 ///
-/// Dentro do `POM.app` a arte vem de `Contents/Resources`, posta lá por
-/// `scripts/make-macos-app.sh`. Fora do bundle - `cargo run` durante o
-/// desenvolvimento - ela vem da árvore do projeto, para o item aparecer sem
-/// exigir que se empacote o app a cada alteração.
+/// Inside `POM.app` the artwork comes from `Contents/Resources`, put there by
+/// `scripts/make-macos-app.sh`. Outside the bundle - `cargo run` during
+/// development - it comes from the project tree, so the item shows up without
+/// requiring the app to be packaged on every change.
 fn icon_path() -> PathBuf {
     const FILE: &str = "pom-status-template.png";
     let bundled = std::env::current_exe().ok().and_then(|exe| {
@@ -67,13 +67,13 @@ fn icon_path() -> PathBuf {
     })
 }
 
-/// Entrega a thread principal ao AppKit e corre o serviço do nó ao lado.
+/// Hands the main thread to AppKit and runs the node service beside it.
 ///
-/// A troca é obrigatória, não uma preferência: `NSApplication` só funciona a
-/// partir da thread principal do processo. O serviço recebe uma thread própria
-/// e, quando termina, derruba o laço de eventos - é isso que faz um arranque
-/// que falha cedo, como um `pom.json` inválido, sair sozinho em vez de ficar
-/// pendurado num item de barra que ninguém pediu.
+/// The swap is mandatory, not a preference: `NSApplication` only works from
+/// the process's main thread. The service gets a thread of its own and, when
+/// it ends, brings down the event loop - that is what makes a startup that
+/// fails early, such as an invalid `pom.json`, exit by itself instead of
+/// hanging on a bar item nobody asked for.
 pub fn run<F>(port: u16, service: F) -> Result<()>
 where
     F: FnOnce() -> Result<()> + Send + 'static,
@@ -106,12 +106,12 @@ where
         std::process::exit(0);
     }
 
-    // O laço de eventos só devolve o controlo quando o serviço já pediu a
-    // paragem, então a thread termina sem espera. Propagar o erro dela é o que
-    // mantém o código de saída do CLI honesto.
+    // The event loop only returns control once the service has already asked
+    // to stop, so the thread ends without waiting. Propagating its error is
+    // what keeps the CLI's exit code honest.
     service
         .join()
-        .map_err(|_| anyhow::anyhow!("thread do serviço macOS terminou em pânico"))?
+        .map_err(|_| anyhow::anyhow!("macOS service thread ended in a panic"))?
 }
 
 #[cfg(test)]
@@ -119,32 +119,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn o_popover_tem_medida_de_telemovel() {
-        // Retrato, e na largura de um iPhone padrão: é o que "tamanho de
-        // smartphone" quer dizer, e a largura em que o chat foi conferido.
+    fn the_popover_is_phone_sized() {
+        // Portrait, and at the width of a standard iPhone: that is what
+        // "smartphone size" means, and the width at which the chat was checked.
         let (width, height) = POPOVER_SIZE;
         assert_eq!(width, 390.0);
-        assert!(height > width, "o painel da barra é retrato, não paisagem");
+        assert!(
+            height > width,
+            "the status bar panel is portrait, not landscape"
+        );
         assert!(
             WINDOW_SIZE.0 > width && WINDOW_SIZE.1 > height,
-            "a janela maior tem de ser maior que o painel nos dois eixos"
+            "the larger window must be larger than the panel on both axes"
         );
     }
 
     #[test]
-    fn o_endereco_usa_a_porta_escolhida_pelo_rust() {
+    fn the_address_uses_the_port_chosen_by_rust() {
         assert_eq!(chat_url(9123), "http://127.0.0.1:9123/admin-ui/chat");
         assert_eq!(chat_url(8080), "http://127.0.0.1:8080/admin-ui/chat");
     }
 
     #[test]
-    fn a_arte_do_item_de_barra_esta_versionada_nas_tres_resolucoes() {
-        // O caminho sai do manifesto, e não de `project_root()`: durante os
-        // testes o cwd é o do crate, não a raiz do repositório.
+    fn the_status_bar_item_art_is_versioned_in_the_three_resolutions() {
+        // The path comes from the manifest, not from `project_root()`: during
+        // the tests the cwd is the crate's, not the repository root.
         //
-        // Se o derivador em `scripts/derive-macos-status-icon.py` deixar de
-        // ser corrido depois de mexer na marca, o item de barra cai para um
-        // rótulo de texto - em silêncio. Este teste é o aviso.
+        // If the deriver in `scripts/derive-macos-status-icon.py` stops being
+        // run after the brand is touched, the bar item falls back to a text
+        // label - silently. This test is the warning.
         let brand =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/brand/macos");
         for name in [

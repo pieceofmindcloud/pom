@@ -80,8 +80,17 @@ describe("LobbyChat", () => {
   it("says why when the network refuses", async () => {
     mocks.get.mockResolvedValue({ ...exchange, accepted: false, error: "lobby_disabled", messages: [] });
     mount();
-    expect(await screen.findByText("Esta rede não está aceitando conversa no lobby no momento.")).toBeTruthy();
+    expect(await screen.findByText("Esta rede não pode ser alcançada para admissão no momento.")).toBeTruthy();
     expect((screen.getByLabelText("Escreva para o lobby desta rede…") as HTMLInputElement).disabled).toBe(true);
+  });
+
+  it("shows only the request side when the network has its conversation off", async () => {
+    mocks.get.mockResolvedValue({ ...exchange, messages: [], messages_closed: true });
+    mount();
+    expect(await screen.findByTestId("lobby-admission")).toBeTruthy();
+    expect(screen.getByTestId("lobby-request")).toBeTruthy();
+    expect(screen.queryByTestId("lobby-messages")).toBeNull();
+    expect(screen.queryByLabelText("Escreva para o lobby desta rede…")).toBeNull();
   });
 
   it("offers to switch at once to a network that already admitted this machine", async () => {
@@ -113,5 +122,25 @@ describe("LobbyChat", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Entrar agora" }));
     expect(await screen.findByRole("dialog", { name: "Entrar em Rede Curitiba?" })).toBeTruthy();
     expect(mocks.post).not.toHaveBeenCalled();
+  });
+
+  it("tells a declined machine how long to wait, then lets it ask again", async () => {
+    const declined = (retryAt: number | null) => ({
+      ...exchange,
+      admission: { key: "pk:curitiba", name: "Rede Curitiba", role: "node", status: "rejected", retry_at: retryAt },
+    });
+    // 41 minutes and a few seconds left: rounded up, never down to "now".
+    mocks.get.mockResolvedValue(declined(Math.floor(Date.now() / 1000) + 41 * 60 + 5));
+    const first = mount();
+    expect((await screen.findByTestId("lobby-admission-wait")).textContent).toContain("pedir de novo em 42 minutos");
+    expect(screen.queryByRole("button", { name: "Pedir admissão" })).toBeNull();
+    first.unmount();
+
+    // The wait is over: the request form is back.
+    mocks.get.mockResolvedValue(declined(Math.floor(Date.now() / 1000) - 10));
+    mount();
+    expect(await screen.findByRole("button", { name: "Pedir admissão" })).toBeTruthy();
+    expect(screen.queryByTestId("lobby-admission-wait")).toBeNull();
+    expect(screen.getByText(/Você já pode pedir de novo/)).toBeTruthy();
   });
 });

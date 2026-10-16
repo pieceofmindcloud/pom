@@ -4,11 +4,11 @@ use super::pipeline::{direct_failure, record_direct_hops};
 
 /// One generated token through the whole pipeline, framed like the prefill.
 ///
-/// `speculate` é o convite a rascunhar que o gateway anexa no caminho fatiado
-/// (MTP): `None` mantém a rodada no formato antigo de um token; `Some` faz a
-/// cabeça montar o lote — com o rascunho pronto da cauda (`draft`) ou
-/// produzindo o próprio. A resposta é sempre a mesma `SpeculativeStep`: uma
-/// rodada sem especulação tem `accepted.len() == 1` e `speculated == false`.
+/// `speculate` is the invitation to draft that the gateway attaches on the sliced
+/// path (MTP): `None` keeps the round in the old one-token format; `Some` makes the
+/// head assemble the batch - with the tail's ready draft (`draft`) or
+/// producing its own. The reply is always the same `SpeculativeStep`: a
+/// round without speculation has `accepted.len() == 1` and `speculated == false`.
 #[allow(clippy::too_many_arguments)]
 pub async fn step(
     plan: &PipelinePlan,
@@ -38,9 +38,9 @@ pub async fn step(
         .await;
     }
 
-    // O caminho hub também passa pelo relay comum. Além de manter pinning,
-    // credencial e telemetria iguais ao anel, isso permite agrupar chamadas
-    // concorrentes que chegam ao mesmo hop.
+    // The hub path also goes through the common relay. Besides keeping pinning,
+    // credential and telemetry the same as the ring, this allows grouping
+    // concurrent calls that arrive at the same hop.
     let n_peers = plan.steps.len();
     let mut tensor: Option<(Vec<f32>, TensorShape)> = None;
     let mut meta = serde_json::Value::Null;
@@ -72,9 +72,9 @@ pub async fn step(
                 "exec_start": peer.exec_start,
                 "exec_end": peer.exec_end,
             });
-            // Thread o que a cabeça decidiu na ida — o rascunho, a composição
-            // do lote (`tokens`, para o `observe` da cauda) e a largura de
-            // lote da próxima rodada (`mtp_k`).
+            // Thread what the head decided on the way out - the draft, the batch
+            // composition (`tokens`, for the tail's `observe`) and the next
+            // round's batch width (`mtp_k`).
             if let Some(draft) = meta.get("draft") {
                 m["draft"] = draft.clone();
             }
@@ -109,7 +109,7 @@ pub async fn step(
         .await
         .map_err(|error| {
             routes.mark_failure(&peer.node_id, &peer.inference_url);
-            anyhow!("peer {} não respondeu: {error}", peer.node_id)
+            anyhow!("peer {} did not answer: {error}", peer.node_id)
         })?;
         trace.record_hop_from_sent(i, Phase::Decode, &sent);
         meta = sent.meta;
@@ -260,8 +260,8 @@ pub(super) async fn step_direct(
     };
     let ack_direct = direct.clone();
     let ack_ticket_id = ticket_id.clone();
-    // A cadeia inteira responde dentro do prazo do frame que a cabeça recebe:
-    // tokens desta rodada vezes todos os hops (ver `relay::frame_deadline`).
+    // The whole chain answers within the deadline of the frame the head receives:
+    // this round's tokens times all the hops (see `relay::frame_deadline`).
     let reply_deadline = crate::relay::frame_deadline_for(&body_meta, None);
     let meta = crate::direct::await_result_with_ack(
         ack,
@@ -294,7 +294,7 @@ pub(super) async fn step_direct(
 pub(super) fn ring_relay_error(head_node_id: &str, e: anyhow::Error) -> anyhow::Error {
     match crate::relay::extract_relay_failure(&e) {
         Some(failure) => anyhow!(
-            "pipeline falhou em {} (retransmitido por {head_node_id}): {} — {}",
+            "pipeline failed at {} (relayed by {head_node_id}): {} — {}",
             failure.failed_node_id,
             failure.kind,
             failure.message
@@ -335,10 +335,10 @@ pub struct SpeculativeStep {
     /// Detailed evidence from the hop that disabled a requested cycle. This
     /// is deliberately separate from the stable reason used by older peers.
     pub speculation_disabled_detail: Option<String>,
-    /// Rascunho que a cauda de um pipeline fatiado produziu para a **próxima**
-    /// rodada (bloco `nextn`). No stream remoto, a cabeça o instala
-    /// internamente antes de continuar o ciclo. `None` quando esta rodada não
-    /// produziu um rascunho ou a geração terminou.
+    /// Draft that the tail of a sliced pipeline produced for the **next**
+    /// round (`nextn` block). On the remote stream, the head installs it
+    /// internally before continuing the cycle. `None` when this round did not
+    /// produce a draft or the generation ended.
     pub next_draft: Option<Vec<i32>>,
     pub trace: RequestTrace,
 }
@@ -352,8 +352,8 @@ pub(crate) struct RemoteDecodeStream {
     pub(super) plan: PipelinePlan,
     pub(crate) initial_trace: RequestTrace,
     pub(super) last_callback_at: Option<Instant>,
-    /// Prazo entre dois callbacks: uma rodada da cabeça remota, com os tokens
-    /// que ela pode decodificar juntos, por todos os hops do plano.
+    /// Deadline between two callbacks: one round of the remote head, with the tokens
+    /// it can decode together, across all the hops of the plan.
     pub(super) callback_deadline: std::time::Duration,
 }
 
@@ -363,17 +363,17 @@ impl RemoteDecodeStream {
         let meta = cancelable(cancellation, async {
             tokio::time::timeout(deadline, self.ticket.recv())
                 .await
-                .map_err(|_| anyhow!("cabeça remota não entregou a rodada em {deadline:?}"))
+                .map_err(|_| anyhow!("remote head did not deliver the round in {deadline:?}"))
         })
         .await?
-        .ok_or_else(|| anyhow!("transporte remoto encerrou sem lote terminal"))?;
+        .ok_or_else(|| anyhow!("remote transport ended without a terminal batch"))?;
         let callback_at = Instant::now();
         let callback_interval_ms = self
             .last_callback_at
             .replace(callback_at)
             .map(|previous| callback_at.saturating_duration_since(previous).as_millis() as u64);
         if let Some(error) = meta.get("error").and_then(|value| value.as_str()) {
-            return Err(anyhow!("peer remoto falhou durante o stream: {error}"));
+            return Err(anyhow!("remote peer failed during the stream: {error}"));
         }
 
         let batch_bytes = meta
@@ -541,7 +541,7 @@ pub(crate) async fn step_stream(
         .and_then(|value| value.as_bool())
         != Some(true)
     {
-        return Err(anyhow!("peer não aceitou o transporte remoto por lotes"));
+        return Err(anyhow!("peer did not accept the batched remote transport"));
     }
 
     let mut initial_trace = RequestTrace::from_plan_with_trace_id(&request_trace_id, model, plan);
@@ -607,16 +607,16 @@ pub async fn step_speculative(
     .await
 }
 
-/// De onde a cabeça deve tirar o rascunho desta rodada.
+/// Where the head must take this round's draft from.
 ///
-/// Viaja no quadro (`speculate.source`) porque quem decide é o gateway, que é
-/// o único que vê o plano inteiro e as capacidades anunciadas, e quem executa
-/// é a cabeça. Ver `infer_server::Speculate`.
+/// It travels in the frame (`speculate.source`) because whoever decides is the gateway, which is
+/// the only one that sees the whole plan and the advertised capabilities, and whoever executes
+/// is the head. See `infer_server::Speculate`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DraftSource {
-    /// `find_draft`: repetição no texto já gerado.
+    /// `find_draft`: repetition in the text already generated.
     Lookup,
-    /// O bloco `nextn` do próprio modelo (`crate::mtp`).
+    /// The model's own `nextn` block (`crate::mtp`).
     Mtp,
 }
 
@@ -692,7 +692,7 @@ pub(super) async fn step_speculative_hub(
 
         let payload = tensor.take();
         let as_ref = payload.as_ref().map(|(v, s)| (v.as_slice(), s.clone()));
-        let peer_label = format!("{} (especulativo)", peer.node_id);
+        let peer_label = format!("{} (speculative)", peer.node_id);
         let sent = crate::relay::send_frame_or_tunnel(
             http,
             peer,
@@ -806,8 +806,8 @@ pub(super) fn speculative_step_from_meta(
     trace: RequestTrace,
 ) -> Result<SpeculativeStep> {
     let done = meta.get("done").and_then(|v| v.as_bool()).unwrap_or(false);
-    // O rascunho da cauda para a próxima rodada (pipeline fatiado) — presente
-    // nas duas formas de resposta quando a cauda tem o bloco `nextn`.
+    // The tail's draft for the next round (sliced pipeline) - present
+    // in both reply forms when the tail has the `nextn` block.
     let next_draft: Option<Vec<i32>> = meta
         .get("next_draft")
         .and_then(|v| v.as_array())
@@ -846,7 +846,7 @@ pub(super) fn speculative_step_from_meta(
     if accepted.is_empty() {
         let Some(token_id) = meta.get("token_id").and_then(|v| v.as_u64()) else {
             return Err(anyhow!(
-                "último peer não devolveu token nenhum na rodada especulativa"
+                "last peer returned no token at all in the speculative round"
             ));
         };
         return Ok(SpeculativeStep {

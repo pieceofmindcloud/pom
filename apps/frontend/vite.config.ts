@@ -14,9 +14,9 @@ import react from "@vitejs/plugin-react";
  * images into `public/brand/`.
  */
 function brandHtml(): Plugin {
-  // O manifesto **gerado** (`src/brand/brand.json`), não o da raiz: é ele que
-  // tem as URLs com hash de conteúdo que o navegador precisa para não segurar
-  // um ícone velho por um ano.
+  // The **generated** manifest (`src/brand/brand.json`), not the root one: it is
+  // the one with the content-hashed URLs the browser needs so as not to hold
+  // on to an old icon for a year.
   const brand = JSON.parse(
     readFileSync(fileURLToPath(new URL("./src/brand/brand.json", import.meta.url)), "utf8"),
   );
@@ -63,17 +63,17 @@ const docsDirectory = fileURLToPath(new URL("./src/docs", import.meta.url)).repl
 /**
  * Every path the node owns. Anything else is served by Vite itself.
  *
- * `/admin-ui` **não** entra aqui, ainda que o nó também o sirva: é o `base`
- * desta aplicação, e encaminhá-lo fazia o `npm run dev` devolver o bundle já
- * construído do nó em vez do código local. A tela não mudava por mais que se
- * editasse, e a única pista era o `index.html` vir com nomes de arquivo
- * versionados (`assets/index-C_gaTk6C.js`).
+ * `/admin-ui` does **not** go in here, even though the node serves it too: it is
+ * this application's `base`, and forwarding it made `npm run dev` return the
+ * node's already built bundle instead of the local code. The screen did not
+ * change however much one edited, and the only clue was the `index.html` coming
+ * with versioned file names (`assets/index-C_gaTk6C.js`).
  *
- * `/admin` sozinho não bastava tirar da lista: a chave de texto do proxy do
- * Vite casa por **prefixo de string**, não por segmento de caminho, então
- * `/admin-ui/src/App.tsx` começa com `/admin` e era encaminhado do mesmo
- * jeito. Por isso o `/admin` do nó entra como expressão regular que exclui o
- * `-ui` explicitamente.
+ * Taking `/admin` alone off the list was not enough: the text key of Vite's
+ * proxy matches by **string prefix**, not by path segment, so
+ * `/admin-ui/src/App.tsx` starts with `/admin` and was forwarded just the
+ * same. That is why the node's `/admin` goes in as a regular expression that
+ * excludes the `-ui` explicitly.
  */
 const proxied = ["/api", "/v1", "^/admin(?!-ui)", "/peers", "/health", "/generate"];
 

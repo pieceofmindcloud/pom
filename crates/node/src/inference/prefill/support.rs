@@ -28,9 +28,9 @@ pub(crate) const REMOTE_STREAM_BATCH_LIMIT: usize = 8;
 /// return through `crate::direct::REMOTE_STREAM_RESULT_PATH` in batches.
 pub(crate) const REMOTE_STREAM_PATH: &str = "/v1/step-stream";
 
-/// Cancelamento compartilhado entre o stream HTTP e o prefill. O `Notify`
-/// acorda uma chamada em voo; o `AtomicBool` torna as checagens entre hops e
-/// chunks baratas e sem await.
+/// Cancellation shared between the HTTP stream and the prefill. The `Notify`
+/// wakes an in-flight call; the `AtomicBool` makes the checks between hops and
+/// chunks cheap and await-free.
 #[derive(Clone, Default)]
 pub struct Cancellation {
     pub(super) cancelled: Arc<AtomicBool>,
@@ -65,7 +65,7 @@ pub struct GenerationCancelled;
 
 impl std::fmt::Display for GenerationCancelled {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("geração cancelada pelo cliente")
+        f.write_str("generation cancelled by the client")
     }
 }
 
@@ -75,19 +75,19 @@ pub fn is_cancelled(error: &anyhow::Error) -> bool {
     error.downcast_ref::<GenerationCancelled>().is_some()
 }
 
-/// Próximo chunk que o gateway pode reenviar sem alterar o KV remoto. Só é
-/// criado quando o transporte confirma que o corpo do chunk não foi entregue;
-/// falhas ambíguas usam `PrefillRebuildRequired`.
+/// Next chunk the gateway can resend without changing the remote KV. It is only
+/// created when the transport confirms the chunk body was not delivered;
+/// ambiguous failures use `PrefillRebuildRequired`.
 #[derive(Debug, Clone)]
 pub struct PrefillResumable {
     pub from_chunk: u32,
     pub start_pos: u32,
     pub prompt_tokens: u32,
     pub cached_tokens: u32,
-    /// A sequência ordenada do relay direto precisa sobreviver à retomada.
+    /// The ordered sequence of the direct relay must survive the resume.
     pub prefill_sequence_id: Option<String>,
-    /// Trace parcial acumulado antes da falha. A retomada acrescenta as novas
-    /// observações sem apagar os chunks que já chegaram ao peer.
+    /// Partial trace accumulated before the failure. The resume adds the new
+    /// observations without erasing the chunks that already reached the peer.
     pub trace: Option<Box<RequestTrace>>,
 }
 
@@ -95,13 +95,13 @@ impl std::fmt::Display for PrefillResumable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{RESUMABLE_TEXT_PREFIX}{} (posição {})",
+            "{RESUMABLE_TEXT_PREFIX}{} (position {})",
             self.from_chunk, self.start_pos
         )
     }
 }
 
-/// O ponto de retomada anexado a um erro de prefill, se houver.
+/// The resume point attached to a prefill error, if there is one.
 pub fn resume_point(error: &anyhow::Error) -> Option<PrefillResumable> {
     error.downcast_ref::<PrefillResumable>().cloned()
 }
@@ -119,8 +119,8 @@ impl std::fmt::Display for PartialPrefillTrace {
 
 impl std::error::Error for PartialPrefillTrace {}
 
-const PARTIAL_TRACE_TEXT: &str = "telemetria parcial do prefill";
-const RESUMABLE_TEXT_PREFIX: &str = "prefill retomável do pedaço ";
+const PARTIAL_TRACE_TEXT: &str = "partial prefill telemetry";
+const RESUMABLE_TEXT_PREFIX: &str = "resumable prefill of chunk ";
 
 /// The prefill error as a person reads it: the context chain without the
 /// wrappers that only carry telemetry or a resume point. Printing just the
@@ -131,9 +131,7 @@ pub fn failure_cause(error: &anyhow::Error) -> String {
     let parts: Vec<String> = error
         .chain()
         .map(|cause| cause.to_string())
-        .filter(|text| {
-            text != PARTIAL_TRACE_TEXT && !text.starts_with(RESUMABLE_TEXT_PREFIX)
-        })
+        .filter(|text| text != PARTIAL_TRACE_TEXT && !text.starts_with(RESUMABLE_TEXT_PREFIX))
         .collect();
     if parts.is_empty() {
         error.to_string()
@@ -168,9 +166,9 @@ pub(super) fn resume_with_trace(
     }
 }
 
-/// A sessão remota pode ter aceitado o chunk, então só é recuperável por uma
-/// reconstrução fria. O motivo é estático para que os logs delimitem com
-/// precisão por que o KV e o cache anterior não podem ser reaproveitados.
+/// The remote session may have accepted the chunk, so it is only recoverable by a
+/// cold rebuild. The reason is static so that the logs state precisely
+/// why the KV and the previous cache cannot be reused.
 #[derive(Debug, Clone, Copy)]
 pub struct PrefillRebuildRequired {
     pub from_chunk: u32,
@@ -182,7 +180,7 @@ impl std::fmt::Display for PrefillRebuildRequired {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "retoma insegura do pedaço {} (posição {}): {}",
+            "unsafe resume of chunk {} (position {}): {}",
             self.from_chunk, self.start_pos, self.reason
         )
     }
@@ -225,14 +223,14 @@ where
     }
 }
 
-/// Janela de sobreposição do prefill.
+/// Prefill overlap window.
 ///
-/// A profundidade é o número de pedaços que o gateway mantém em voo ao mesmo
-/// tempo pela cadeia: um pedaço por perna/hop é o que mantém todos os enlaces
-/// e todas as GPUs ocupados em paralelo em vez de um estágio só. Dois limites
-/// a contêm: a contagem (`acquire`, teto de oito) e o orçamento de bytes de
-/// estado oculto em voo no gateway (`reserve_bytes`, teto fixo de 512 MiB, que
-/// só morde com `n_embd` grande ou janela alta). `1` desliga a sobreposição.
+/// The depth is the number of chunks the gateway keeps in flight at the same
+/// time through the chain: one chunk per leg/hop is what keeps all links
+/// and all GPUs busy in parallel instead of a single stage. Two limits
+/// contain it: the count (`acquire`, cap of eight) and the byte budget of
+/// hidden state in flight at the gateway (`reserve_bytes`, fixed cap of 512 MiB, which
+/// only bites with a large `n_embd` or a high window). `1` turns the overlap off.
 #[derive(Clone, Debug)]
 pub(crate) struct PrefillOverlapWindow {
     pub(super) max_inflight_chunks: usize,
@@ -243,10 +241,10 @@ pub(crate) struct PrefillOverlapWindow {
 impl PrefillOverlapWindow {
     pub(crate) const DEFAULT_MAX_INFLIGHT_CHUNKS: usize = 8;
     pub(crate) const MAX_INFLIGHT_CHUNKS: usize = 8;
-    /// Teto de bytes de estado oculto (em memória, `f32`) que o gateway mantém
-    /// em voo ao mesmo tempo pelo pipeline de prefill. O gate por contagem é o
-    /// limite principal; este é a rede de segurança para modelos de `n_embd`
-    /// grande.
+    /// Cap on bytes of hidden state (in memory, `f32`) the gateway keeps
+    /// in flight at the same time through the prefill pipeline. The count gate is the
+    /// main limit; this is the safety net for models with a large
+    /// `n_embd`.
     pub(crate) const INFLIGHT_BYTE_BUDGET: usize = 512 * 1024 * 1024;
 
     pub(crate) fn new(requested: usize) -> Self {
@@ -262,29 +260,29 @@ impl PrefillOverlapWindow {
         self.max_inflight_chunks
     }
 
-    /// Uma vaga na janela. O permit viaja com o pedaço até o downstream dele
-    /// terminar; é isso que limita quantos pedaços cruzam a cadeia ao mesmo
-    /// tempo (`run`/`run_direct` guardam o permit dentro da future de cada
-    /// pedaço).
+    /// A slot in the window. The permit travels with the chunk until its downstream
+    /// finishes; this is what limits how many chunks cross the chain at the same
+    /// time (`run`/`run_direct` keep the permit inside each chunk's
+    /// future).
     pub(crate) async fn acquire(&self) -> Result<OwnedSemaphorePermit> {
         self.permits
             .clone()
             .acquire_owned()
             .await
-            .map_err(|_| anyhow!("janela de sobreposição foi encerrada"))
+            .map_err(|_| anyhow!("overlap window was closed"))
     }
 
-    /// Reserva `amount` bytes do orçamento em voo, esperando um pedaço anterior
-    /// terminar se preciso. Um `amount` sozinho maior que o orçamento é
-    /// limitado ao orçamento (o pedaço passa, mas segura a janela inteira),
-    /// então nunca trava. O permit devolvido libera os bytes ao cair.
+    /// Reserves `amount` bytes of the in-flight budget, waiting for an earlier chunk
+    /// to finish if needed. An `amount` that alone exceeds the budget is
+    /// clamped to the budget (the chunk passes, but holds the whole window),
+    /// so it never blocks. The returned permit releases the bytes when dropped.
     pub(crate) async fn reserve_bytes(&self, amount: usize) -> OwnedSemaphorePermit {
         let want = amount.clamp(1, Self::INFLIGHT_BYTE_BUDGET) as u32;
         self.byte_permits
             .clone()
             .acquire_many_owned(want)
             .await
-            .expect("semáforo de bytes do prefill nunca é fechado")
+            .expect("the prefill byte semaphore is never closed")
     }
 }
 
@@ -298,8 +296,8 @@ impl PrefillOverlapWindow {
 #[derive(Debug, Clone)]
 pub struct PrefillOutcome {
     pub token_id: u32,
-    /// `probe_result` do último peer quando o prefill levou rótulos de uma
-    /// decisão tipada: `{labels, probabilities, mass}`.
+    /// `probe_result` of the last peer when the prefill carried labels of a
+    /// typed decision: `{labels, probabilities, mass}`.
     pub probe: Option<serde_json::Value>,
     pub text: String,
     pub done: bool,
@@ -309,13 +307,13 @@ pub struct PrefillOutcome {
     /// and generation were separated. This is the value `/v1/session/rewind`
     /// confirms; it can be smaller than `prompt_tokens` by construction.
     pub retained_tokens: u32,
-    /// Quantos tokens do prompt a cabeça **não** reprocessou porque já estavam
-    /// no KV desta sessão.
+    /// How many prompt tokens the head did **not** reprocess because they were already
+    /// in this session's KV.
     ///
-    /// É a medida do que foi *executado*, não do que o gateway escolheu: quem
-    /// tokeniza é quem decide se o prefixo retido servia. Zero num turno frio,
-    /// num prefixo que divergiu e num modelo qualquer que tenha recomeçado a
-    /// sessão. Vai para o log e para `usage.prompt_tokens_details.cached_tokens`.
+    /// It is the measure of what was *executed*, not of what the gateway chose: whoever
+    /// tokenizes decides whether the retained prefix was usable. Zero on a cold turn,
+    /// on a prefix that diverged and on any model that restarted the
+    /// session. It goes to the log and to `usage.prompt_tokens_details.cached_tokens`.
     pub cached_tokens: u32,
     pub chunks: u32,
     pub trace: RequestTrace,
@@ -325,32 +323,32 @@ pub struct PrefillOutcome {
 /// apart because they are different workloads: prefill moves a whole prompt
 /// through the peer once, decode moves one token at a time. Averaging them
 /// together hides which of the two is slow.
-/// O que uma chamada de salto conta sobre o canal que ela usou.
+/// What a hop call reports about the channel it used.
 ///
-/// Existe como struct, e não como dois parâmetros soltos, porque `record_hop`
-/// já carrega nove posicionais - dois `u64` a mais ali seriam trocados de
-/// ordem no primeiro chamador distraído.
+/// It exists as a struct, and not as two loose parameters, because `record_hop`
+/// already carries nine positionals - two more `u64` there would be swapped
+/// in order by the first distracted caller.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct TlsHop {
-    /// A chamada foi cifrada.
+    /// The call was encrypted.
     pub on: bool,
-    /// Handshake medido no servidor, em ms. Zero quando a conexão veio do pool.
+    /// Handshake measured on the server, in ms. Zero when the connection came from the pool.
     pub handshake_ms: u64,
 }
 
-/// Uma travessia observada de um frame entre dois processos. Os valores são
-/// por chamada, não créditos residuais atribuídos ao primeiro hop.
+/// An observed crossing of a frame between two processes. The values are
+/// per call, not residual credits assigned to the first hop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TransportTrace {
     pub transport: crate::relay::InferenceTransport,
     pub fallback: bool,
-    /// Wall-clock do chamador: enfileirar o frame até a resposta chegar.
-    /// **Inclui** o nó remoto rodando o handler de step/prefill.
+    /// Caller's wall-clock: from queueing the frame until the response arrives.
+    /// **Includes** the remote node running the step/prefill handler.
     pub round_trip_ms: u64,
-    /// `round_trip_ms` menos o `processing_ms` que o nó remoto reportou de si:
-    /// o custo de transporte de fio, sem o compute do outro lado. É o número
-    /// que o card de telemetria deve mostrar por perna - um `round_trip` cheio
-    /// nunca chega perto do RTT de rede medido em 0,5 ms entre nós co-locados.
+    /// `round_trip_ms` minus the `processing_ms` the remote node reported for itself:
+    /// the wire transport cost, without the compute on the other side. It is the number
+    /// the telemetry card should show per leg - a full `round_trip`
+    /// never comes close to the network RTT measured at 0.5 ms between co-located nodes.
     pub network_ms: u64,
     pub bytes_sent: u64,
     pub bytes_received: u64,
@@ -426,10 +424,10 @@ impl RttDistribution {
     }
 }
 
-/// Quantis do ciclo observado pelo gateway entre solicitar uma rodada de
-/// decode e entregar o primeiro token confirmado ao cliente. O reservatório é
-/// usado apenas no modo normal para manter o custo limitado; os spans por
-/// estágio continuam opt-in no profiling.
+/// Quantiles of the cycle observed by the gateway between requesting a decode
+/// round and delivering the first confirmed token to the client. The reservoir is
+/// used only in normal mode to keep the cost bounded; the per-stage
+/// spans remain opt-in under profiling.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct TokenCycleTelemetry {
     pub samples: u64,
@@ -465,9 +463,9 @@ impl TokenCycleTelemetry {
     }
 }
 
-/// Agregados baratos do caminho de callbacks. Os quantis usam o mesmo
-/// reservoir limitado das travessias comuns, portanto não há vetor por token
-/// no modo normal.
+/// Cheap aggregates of the callback path. The quantiles use the same
+/// bounded reservoir as the common crossings, so there is no per-token vector
+/// in normal mode.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct RemoteStreamTelemetry {
     pub open_ms: Option<u64>,
@@ -491,14 +489,14 @@ pub struct RemoteStreamTelemetry {
     pub remote_stream_wait_total_ms: u64,
     pub remote_stream_wait_p50_ms: u64,
     pub remote_stream_wait_p95_ms: u64,
-    /// Espera entre o início do ciclo e o token ficar pronto no produtor.
-    /// Mede compute/produção ainda em andamento, sem chamá-la de fila.
+    /// Wait between the start of the cycle and the token being ready at the producer.
+    /// Measures compute/production still in progress, without calling it a queue.
     pub remote_stream_producer_wait_total_ms: u64,
     pub remote_stream_producer_wait_p50_ms: u64,
     pub remote_stream_producer_wait_p95_ms: u64,
-    /// Tempo em que o produtor aguardou um permit do canal limitado depois
-    /// de concluir a produção do token. Zero prova que não houve
-    /// contrapressão do `Sender` nesta execução.
+    /// Time the producer waited for a permit of the bounded channel after
+    /// finishing the token's production. Zero proves there was no
+    /// `Sender` backpressure in this run.
     pub remote_stream_channel_send_wait_total_ms: u64,
     pub remote_stream_channel_send_wait_p50_ms: u64,
     pub remote_stream_channel_send_wait_p95_ms: u64,
@@ -508,8 +506,8 @@ pub struct RemoteStreamTelemetry {
     pub remote_stream_downstream_wait_total_ms: u64,
     pub remote_stream_downstream_wait_p50_ms: u64,
     pub remote_stream_downstream_wait_p95_ms: u64,
-    /// Tempo em que o token já pronto permaneceu no canal antes do emitter.
-    /// Pode incluir backpressure quando o canal limitado está cheio.
+    /// Time the already ready token stayed in the channel before the emitter.
+    /// May include backpressure when the bounded channel is full.
     pub remote_stream_queue_wait_total_ms: u64,
     pub remote_stream_queue_wait_p50_ms: u64,
     pub remote_stream_queue_wait_p95_ms: u64,
@@ -519,9 +517,9 @@ pub struct RemoteStreamTelemetry {
     pub remote_stream_delivery_total_ms: u64,
     pub remote_stream_delivery_p50_ms: u64,
     pub remote_stream_delivery_p95_ms: u64,
-    /// Intervalo observado no gateway entre lotes de tokens recebidos. Em um
-    /// lote de um token, é o ciclo de entrega por token; lotes maiores são
-    /// contados como um ciclo, sem inventar intervalos internos.
+    /// Interval observed at the gateway between received token batches. In a
+    /// one-token batch, it is the per-token delivery cycle; larger batches are
+    /// counted as one cycle, without inventing internal intervals.
     pub token_delivery_interval_min_ms: u64,
     pub token_delivery_interval_p50_ms: u64,
     pub token_delivery_interval_p95_ms: u64,
@@ -730,8 +728,8 @@ impl RemoteStreamTelemetry {
     }
 }
 
-/// Span detalhado opt-in. Os timestamps são relativos ao domínio monotônico
-/// do peer que os produziu, nunca diferenças entre relógios de máquinas.
+/// Detailed opt-in span. The timestamps are relative to the monotonic domain
+/// of the peer that produced them, never differences between machine clocks.
 #[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
 pub struct TelemetrySpan {
     pub trace_id: String,
@@ -740,9 +738,9 @@ pub struct TelemetrySpan {
     pub peer_id: String,
     pub span_id: String,
     pub parent_span_id: Option<String>,
-    /// Nomeia a fronteira observada. A duração só é interpretável junto com
-    /// este nome: eventos como `client-emit` podem ter duração zero, enquanto
-    /// `transport-round-trip` cobre uma chamada completa.
+    /// Names the observed boundary. The duration is only interpretable together with
+    /// this name: events such as `client-emit` may have zero duration, while
+    /// `transport-round-trip` covers a complete call.
     pub name: String,
     pub phase: Phase,
     pub token_index: Option<u64>,
@@ -756,8 +754,8 @@ pub struct TelemetrySpan {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TelemetrySummary {
     pub status: String,
-    /// A resposta pode ter sido liberada enquanto os recibos remotos ainda
-    /// estão no caminho. Isso separa o fim da geração do fim da coleta.
+    /// The response may have been released while the remote receipts are still
+    /// on the way. This separates the end of generation from the end of collection.
     pub response_complete: bool,
     pub expected_peers: u32,
     pub reported_peers: u32,
@@ -832,15 +830,15 @@ pub struct TransportSummaryEntry {
     /// once for the shared physical request, not once per contained item.
     pub quic_request_body_send_us: u64,
     pub quic_request_body_send_calls: u32,
-    /// RTT cheio, incluindo o compute do nó remoto. Mantido para o total de
-    /// RTT de execução e compatibilidade com o front antigo.
+    /// Full RTT, including the remote node's compute. Kept for the execution RTT
+    /// total and compatibility with the old frontend.
     pub rtt_min_ms: u64,
     pub rtt_median_ms: u64,
     pub rtt_p95_ms: u64,
     pub rtt_max_ms: u64,
-    /// RTT só de transporte: `round_trip - processing_ms` remoto. É o que a
-    /// perna do card deve exibir; sem ele um link QUIC entre nós co-locados
-    /// aparecia com ~76 ms de "RTT" que era compute do outro lado.
+    /// Transport-only RTT: `round_trip - processing_ms` of the remote. It is what the
+    /// card's leg should display; without it a QUIC link between co-located nodes
+    /// showed ~76 ms of "RTT" that was compute on the other side.
     pub net_rtt_min_ms: u64,
     pub net_rtt_median_ms: u64,
     pub net_rtt_p95_ms: u64,
@@ -850,6 +848,31 @@ pub struct TransportSummaryEntry {
     pub(super) rtt: RttDistribution,
     #[serde(skip)]
     pub(super) net_rtt: RttDistribution,
+}
+
+impl TransportSummaryEntry {
+    /// A channel's entry built from aggregates measured elsewhere (the stage links of a plugin pipeline). The
+    /// round trips are averaged: `median` carries the mean and `p95` the maximum, because no sample list travels.
+    pub(crate) fn from_aggregates(
+        transport: crate::relay::InferenceTransport,
+        calls: u32,
+        bytes_sent: u64,
+        bytes_received: u64,
+        fallback_calls: u32,
+        round_trip: (u64, u64, u64),
+        network: (u64, u64, u64),
+    ) -> Self {
+        let mut entry = Self::new(transport);
+        entry.calls = calls;
+        entry.bytes_sent = bytes_sent;
+        entry.bytes_received = bytes_received;
+        entry.fallback_calls = fallback_calls;
+        (entry.rtt_min_ms, entry.rtt_median_ms, entry.rtt_max_ms) = round_trip;
+        entry.rtt_p95_ms = round_trip.2;
+        (entry.net_rtt_min_ms, entry.net_rtt_median_ms, entry.net_rtt_max_ms) = network;
+        entry.net_rtt_p95_ms = network.2;
+        entry
+    }
 }
 
 impl TransportSummaryEntry {
@@ -1022,13 +1045,13 @@ impl TransportSummary {
     }
 }
 
-/// Uma perna observada do ciclo lógico do pipeline.
+/// An observed leg of the pipeline's logical cycle.
 ///
-/// `from_node_id -> to_node_id` é a direção da travessia que foi observada no
-/// executor. O valor continua sendo a duração da operação de transporte
-/// observada (a distribuição antiga de RTT), não uma metade inferida de um
-/// relógio de ida e volta. O mapa usa cada perna uma vez, portanto não soma um
-/// retorno inexistente entre peers de avanço.
+/// `from_node_id -> to_node_id` is the direction of the crossing that was observed at the
+/// executor. The value remains the duration of the observed transport
+/// operation (the old RTT distribution), not an inferred half of a
+/// round-trip clock. The map uses each leg once, so it does not add a
+/// nonexistent return between forwarding peers.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PipelineCycleLeg {
     pub from_node_id: String,
@@ -1056,9 +1079,9 @@ impl PipelineCycleLeg {
     }
 }
 
-/// Decomposição agregada do ciclo, separada por workload para que prefill não
-/// altere o RTT mostrado para decode. No modo normal guarda apenas contadores,
-/// histogramas e uma entrada por perna, sem span por token.
+/// Aggregated decomposition of the cycle, separated by workload so that prefill does not
+/// change the RTT shown for decode. In normal mode it keeps only counters,
+/// histograms and one entry per leg, with no per-token span.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct PipelineCycleTelemetry {
     pub prefill: Vec<PipelineCycleLeg>,
@@ -1187,10 +1210,10 @@ pub struct PhaseTrace {
     /// phase that mixed formats, which is intentionally visible as unknown.
     pub hidden_state_dtype: Option<WireDtype>,
     pub calls: u32,
-    /// Quantos eventos de decode foram representados pelos agregados desta
-    /// fase. Em chamadas comuns vale um; um lote remote-stream pode carregar
-    /// vários tokens sem transformar o contador de chamadas em contador de
-    /// tokens.
+    /// How many decode events were represented by this phase's
+    /// aggregates. In ordinary calls it is one; a remote-stream batch may carry
+    /// several tokens without turning the call counter into a token
+    /// counter.
     pub reported_spans: u64,
     pub client_encode_ms: u64,
     /// Subset of client frame encode/decode spent on f32<->f16 conversion.
@@ -1199,49 +1222,49 @@ pub struct PhaseTrace {
     pub response_headers_ms: u64,
     pub response_body_ms: u64,
     pub client_decode_ms: u64,
-    /// Chamadas deste salto que foram cifradas.
+    /// Calls of this hop that were encrypted.
     ///
-    /// Contagem e não booleano porque uma fase soma várias chamadas: se só
-    /// parte delas foi por TLS, a tela precisa poder dizer isso em vez de
-    /// escolher um dos dois e mentir sobre o resto.
+    /// A count and not a boolean because a phase sums several calls: if only
+    /// some of them went over TLS, the screen needs to be able to say so instead of
+    /// picking one of the two and lying about the rest.
     pub tls_calls: u32,
-    /// Soma dos handshakes TLS deste salto, medidos no servidor.
+    /// Sum of this hop's TLS handshakes, measured on the server.
     ///
-    /// Quase sempre zero: o handshake acontece uma vez por conexão e as
-    /// conexões ficam no pool. É custo de estabelecimento, não custo por token.
+    /// Almost always zero: the handshake happens once per connection and the
+    /// connections stay in the pool. It is an establishment cost, not a per-token cost.
     pub tls_handshake_ms: u64,
-    /// Contagem do estado do pool reqwest observado nesta fase.
+    /// Count of the reqwest pool state observed in this phase.
     #[serde(skip_serializing_if = "is_zero_u32")]
     pub connection_new_calls: u32,
     #[serde(skip_serializing_if = "is_zero_u32")]
     pub connection_reused_calls: u32,
     #[serde(skip_serializing_if = "is_zero_u32")]
     pub connection_unknown_calls: u32,
-    /// Distribuição limitada das chamadas que cruzaram este hop.
+    /// Bounded distribution of the calls that crossed this hop.
     ///
-    /// Min/max são exatos. Depois de 1.024 amostras, os quantis usam um
-    /// reservoir limitado para que nem a memória do trace nem a resposta
-    /// cresçam por token.
+    /// Min/max are exact. After 1,024 samples, the quantiles use a bounded
+    /// reservoir so that neither the trace's memory nor the response
+    /// grow per token.
     pub transport_summary: TransportSummary,
     pub node_frame_decode_ms: f64,
     pub node_input_prepare_ms: f64,
     pub node_queue_ms: f64,
-    /// Subconjunto da fila que ficou aguardando seleção/admissão do scheduler.
-    /// Normalmente coincide com `node_queue_ms`; a separação existe para
-    /// nomear a carência de reclamação de sessões retidas sem subtrair tempos.
+    /// Subset of the queue that was waiting for the scheduler's selection/admission.
+    /// Normally coincides with `node_queue_ms`; the separation exists to
+    /// name the reclaim grace of retained sessions without subtracting times.
     pub node_scheduler_wait_ms: f64,
-    /// Motivos observados para a espera do scheduler nesta fase.
+    /// Observed reasons for the scheduler wait in this phase.
     pub scheduler_wait_reasons: Vec<String>,
-    /// Espera pelo mutex do motor no nó: o preço de outra requisição estar
-    /// decodificando ali. É o que separa "o nó é lento" de "o nó está ocupado".
+    /// Wait for the engine mutex on the node: the price of another request being
+    /// decoded there. It is what separates "the node is slow" from "the node is busy".
     pub node_lock_wait_ms: f64,
     pub node_setup_ms: f64,
     pub node_decode_ms: f64,
-    /// Tempo medido do bloco `nextn`, fora de `node_decode_ms` e antes da
-    /// serialização da resposta. Quando presente, explica a produção MTP que
-    /// um ciclo de remote-stream aguarda legitimamente.
+    /// Time measured for the `nextn` block, outside `node_decode_ms` and before the
+    /// response serialization. When present, it explains the MTP production that
+    /// a remote-stream cycle legitimately waits for.
     pub node_mtp_draft_ms: f64,
-    /// Soma do `observe` da cabeça `nextn` na cauda (ver `mtp_observe_ms`).
+    /// Sum of the `nextn` head's `observe` on the tail (see `mtp_observe_ms`).
     pub node_mtp_observe_ms: f64,
     /// Time spent in the backend evaluation API call. This is neither queue
     /// wait nor a guarantee of pure device-kernel time.
@@ -1251,11 +1274,11 @@ pub struct PhaseTrace {
     /// recorded; the effective `POM_PROFILE_SYNC` state is published separately
     /// by `/health` and must never be inferred from this timing.
     pub node_backend_sync_ms: f64,
-    /// Tempo do forward MoE externo, medido fora de `llama_decode`.
+    /// Time of the external MoE forward, measured outside `llama_decode`.
     ///
-    /// O hook do llama.cpp e opt-in e registra o forward depois que ele
-    /// retorna; sem este campo o trace confundia esse custo com o restante do
-    /// backend e deixava a soma impossível de fechar.
+    /// The llama.cpp hook is opt-in and records the forward after it
+    /// returns; without this field the trace confused this cost with the rest of the
+    /// backend and left the sum impossible to close.
     pub node_moe_forward_ms: f64,
     /// Device-to-host copy of the residual, measured inside the capture hook.
     pub node_residual_capture_d2h_sync_ms: f64,
@@ -1288,12 +1311,12 @@ pub struct PhaseTrace {
     /// Percentiles over the peer's own `decode_ms`, per call in this phase.
     pub node_p50_ms: f64,
     pub node_p95_ms: f64,
-    /// Caminho que o backend selecionou a partir do GGUF.
+    /// Path the backend selected from the GGUF.
     pub selected_path: Option<String>,
-    /// Motor único quando a fase foi homogênea; `unknown` para mistura ou
-    /// ausência de amostra.
+    /// Single engine when the phase was homogeneous; `unknown` for a mix or
+    /// absence of samples.
     pub executed_engine: crate::executor::ExecutionEngine,
-    /// Todos os motores observados, preservando a evidência de uma fase mista.
+    /// All observed engines, preserving the evidence of a mixed phase.
     pub executed_engines: Vec<crate::executor::ExecutionEngine>,
     pub engine_mismatch: bool,
     pub mixed_execution: bool,
@@ -1750,9 +1773,9 @@ pub struct HopTrace {
     pub decode: PhaseTrace,
 }
 
-/// Estado de aquecimento observado por esta execução. `Unknown` é deliberado:
-/// um peer antigo ou uma fronteira que não expõe o estado não deve virar
-/// `cold` por inferência.
+/// Warm-up state observed by this execution. `Unknown` is deliberate:
+/// an old peer or a boundary that does not expose the state must not become
+/// `cold` by inference.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RequestState {
@@ -1762,12 +1785,12 @@ pub enum RequestState {
     Unknown,
 }
 
-/// Span fechado medido em um único host.
+/// Closed span measured on a single host.
 ///
-/// `started_at_ms` é wall clock apenas para correlação. `start_offset_ms` e
-/// `duration_ms` vêm de `Instant` no mesmo host. Nunca se subtraem offsets de
-/// máquinas diferentes. O `parallel_group` permite que a UI explique
-/// sobreposição; o cálculo de caminho crítico usa a união dos intervalos.
+/// `started_at_ms` is wall clock only for correlation. `start_offset_ms` and
+/// `duration_ms` come from `Instant` on the same host. Offsets from different
+/// machines are never subtracted. The `parallel_group` lets the UI explain
+/// overlap; the critical path calculation uses the union of the intervals.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TraceSpan {
     pub name: String,
@@ -1823,9 +1846,9 @@ impl TraceSpan {
     }
 }
 
-/// Marcos observáveis do primeiro token. Cada timestamp é local ao host que
-/// o registrou; os campos de duração só são preenchidos quando o mesmo host
-/// consegue medir ambas as pontas.
+/// Observable milestones of the first token. Each timestamp is local to the host that
+/// recorded it; the duration fields are only filled in when the same host
+/// can measure both ends.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct FirstTokenTrace {
     pub engine_produced_at_ms: Option<u64>,
@@ -1885,9 +1908,9 @@ struct PendingDirectReceipt {
     phase: Phase,
 }
 
-/// União dos intervalos observados em um host. Abrange spans inclusivos e
-/// paralelos uma vez só, por isso não confunde soma de trabalho com caminho
-/// crítico.
+/// Union of the intervals observed on a host. It covers inclusive and
+/// parallel spans only once, so it does not confuse the sum of work with the critical
+/// path.
 pub fn critical_path_ms(spans: &[TraceSpan], host: &str) -> u64 {
     let mut intervals: Vec<_> = spans
         .iter()
@@ -1920,8 +1943,8 @@ pub fn critical_path_ms(spans: &[TraceSpan], host: &str) -> u64 {
 #[derive(Debug, Clone, Serialize)]
 pub struct RequestTrace {
     pub trace_id: String,
-    /// Probabilidade de cada rótulo quando o pedido era uma decisão tipada
-    /// (`/v1/systemone`): `{labels, probabilities, mass}` do último peer.
+    /// Probability of each label when the request was a typed decision
+    /// (`/v1/systemone`): `{labels, probabilities, mass}` of the last peer.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub probe: Option<serde_json::Value>,
     /// Typed decision summary (`/v1/systemone`), see `DecisionProbe::trace_summary`.
@@ -1959,41 +1982,41 @@ pub struct RequestTrace {
     pub connection_reused_calls: u32,
     #[serde(skip_serializing_if = "is_zero_u32")]
     pub connection_unknown_calls: u32,
-    /// Quantas travessias terminaram em HTTPS depois que um transporte
-    /// persistente/túnel falhou. Não é inferido pelo nome do transporte: só é
-    /// incrementado quando a camada de transporte carrega a razão explícita.
+    /// How many crossings ended up over HTTPS after a persistent/tunnel
+    /// transport failed. It is not inferred from the transport name: it is only
+    /// incremented when the transport layer carries the explicit reason.
     pub https_fallback_calls: u64,
-    /// Razões limitadas, preservadas para explicar por que o caminho normal
-    /// não foi usado. Uma entrada pode aparecer mais de uma vez se a mesma
-    /// aresta cair em vários tokens.
+    /// Bounded reasons, preserved to explain why the normal path
+    /// was not used. An entry may appear more than once if the same
+    /// edge falls over on several tokens.
     pub https_fallback_reasons: Vec<String>,
     pub model: String,
     pub input_tokens: u32,
-    /// Quantos dos `input_tokens` a cabeça **não** reprocessou porque já
-    /// estavam no KV da sessão reaproveitada.
+    /// How many of the `input_tokens` the head did **not** reprocess because they were already
+    /// in the reused session's KV.
     ///
-    /// Medida do executado, não da escolha: quem a preenche é a resposta da
-    /// cabeça (`PrefillOutcome::cached_tokens`). Um turno frio, um prefixo que
-    /// divergiu e um peer que recomeçou a sessão contam todos zero. Era
-    /// exatamente esta a lacuna que fazia o cache parecer estar funcionando -
-    /// o log dizia "sessão reusada" e a economia era nenhuma.
+    /// A measure of what was executed, not of the choice: whoever fills it in is the head's
+    /// response (`PrefillOutcome::cached_tokens`). A cold turn, a prefix that
+    /// diverged and a peer that restarted the session all count zero. This was
+    /// exactly the gap that made the cache look like it was working -
+    /// the log said "session reused" and the saving was nil.
     pub cached_tokens: u32,
-    /// Candidato comum com o prefixo retido. Pode ser maior que zero mesmo
-    /// quando a divergência fez o peer reiniciar a sessão a frio.
+    /// Candidate in common with the retained prefix. It may be greater than zero even
+    /// when the divergence made the peer restart the session cold.
     pub prefix_match_tokens: u32,
-    /// Resultado observável da tentativa: `full`, `partial-cold`, `miss` ou
-    /// `cold`. O gateway troca por `session-lost-cold` quando precisou
-    /// reconstruir a sessão após um peer perder seu estado, e por `disk`
-    /// quando o reuso veio de um snapshot automático em disco
-    /// (`slot_persist_prefix_cache`, ver `inference.md` §3.1.1).
+    /// Observable result of the attempt: `full`, `partial-cold`, `miss` or
+    /// `cold`. The gateway swaps it for `session-lost-cold` when it had to
+    /// rebuild the session after a peer lost its state, and for `disk`
+    /// when the reuse came from an automatic snapshot on disk
+    /// (`slot_persist_prefix_cache`, see `inference.md` §3.1.1).
     pub prefix_reuse_status: Option<String>,
-    /// Razão local para o gateway não ter encontrado sessão em memória.
-    /// Diferencia cache vazio, rota diferente, prompt que divergiu e lease
-    /// ocupado, sem inferir o motivo a partir do resultado do peer.
+    /// Local reason for the gateway not having found an in-memory session.
+    /// Distinguishes empty cache, different route, prompt that diverged and busy
+    /// lease, without inferring the reason from the peer's result.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gateway_prefix_miss_reason: Option<String>,
-    /// Tokens que realmente precisaram atravessar a fronteira de inferência.
-    /// Em um turno frio, ou após uma divergência parcial, é o prompt inteiro.
+    /// Tokens that actually had to cross the inference boundary.
+    /// On a cold turn, or after a partial divergence, it is the whole prompt.
     pub prompt_tokens_transmitted: u32,
     pub output_tokens: u32,
     pub prefill_ms: u64,
@@ -2006,41 +2029,41 @@ pub struct RequestTrace {
     pub transport_trace_complete: bool,
     pub prefill_overlap_enabled: bool,
     pub prefill_max_inflight_chunks: u32,
-    /// Tamanho efetivo escolhido para os pedaços nesta rota.
+    /// Effective size chosen for the chunks on this route.
     #[serde(skip_serializing_if = "is_zero_u32")]
     pub prefill_chunk_tokens: u32,
     pub prefill_overlapped_chunks: u32,
-    /// Maior número de pedaços de prefill que estiveram em voo ao mesmo tempo
-    /// nesta requisição. `<= prefill_max_inflight_chunks`; `1` quando a
-    /// sobreposição não pegou (prompt de um pedaço só, janela em 1, modo anel).
+    /// Largest number of prefill chunks that were in flight at the same time
+    /// in this request. `<= prefill_max_inflight_chunks`; `1` when the
+    /// overlap did not take hold (single-chunk prompt, window at 1, ring mode).
     pub prefill_pipeline_depth_max: u32,
-    /// Estado da própria coleta. `wall_clock_ms` é uma duração medida pelo
-    /// gateway; campos de overlap/residual só são preenchidos quando há
-    /// intervalos temporais explícitos, nunca por subtração de somatórios.
+    /// State of the collection itself. `wall_clock_ms` is a duration measured by the
+    /// gateway; overlap/residual fields are only filled in when there are explicit
+    /// time intervals, never by subtracting sums.
     pub telemetry: TelemetrySummary,
-    /// Spans de frame e eventos por token somente quando
-    /// `POM_PROFILE_SYNC=1` está ativo. Um evento de token tem duração zero
-    /// quando o lote não traz intervalos individuais, em vez de repetir o
-    /// custo do lote como se cada token tivesse sido medido separadamente.
+    /// Frame spans and per-token events only when
+    /// `POM_PROFILE_SYNC=1` is active. A token event has zero duration
+    /// when the batch carries no individual intervals, instead of repeating the
+    /// batch's cost as if each token had been measured separately.
     pub profiling_spans: Option<Vec<TelemetrySpan>>,
-    /// Distribuição barata do ciclo de uma rodada até a entrega no cliente.
-    /// Diferente de `profiling_spans`, existe também no modo normal para
-    /// revelar p95/p99 e propagação de jitter sem alocar um span por token.
+    /// Cheap distribution of the cycle from a round to delivery at the client.
+    /// Unlike `profiling_spans`, it also exists in normal mode to
+    /// reveal p95/p99 and jitter propagation without allocating a span per token.
     #[serde(skip_serializing_if = "TokenCycleTelemetry::is_empty")]
     pub token_cycle: TokenCycleTelemetry,
-    /// Pernas direcionais do ciclo lógico observadas no caminho direto. Inclui
-    /// a entrada do gateway, as transições de avanço e o retorno final quando
-    /// o recibo da entrega chegou ao gateway.
+    /// Directional legs of the logical cycle observed on the direct path. Includes
+    /// the gateway's entry, the forwarding transitions and the final return when
+    /// the delivery receipt reached the gateway.
     #[serde(skip_serializing_if = "PipelineCycleTelemetry::is_empty")]
     pub pipeline_cycle: PipelineCycleTelemetry,
-    /// Tokens draft que o caminho MTP propôs nesta requisição, somados entre
-    /// todos os hops e steps.
+    /// Draft tokens the MTP path proposed in this request, summed across
+    /// all hops and steps.
     pub mtp_draft_tokens_proposed: u64,
-    /// Tokens draft que passaram no critério de aceitação do MTP.
+    /// Draft tokens that passed the MTP acceptance criterion.
     pub mtp_draft_tokens_accepted: u64,
-    /// Tokens draft que foram verificados mas não foram aceitos pelo MTP.
+    /// Draft tokens that were verified but not accepted by MTP.
     pub mtp_draft_tokens_rejected: u64,
-    /// `accepted / proposed`; nulo quando a requisição não propôs tokens MTP.
+    /// `accepted / proposed`; null when the request proposed no MTP tokens.
     pub mtp_acceptance_rate: Option<f64>,
     #[serde(skip)]
     expected_decode_spans: u64,
@@ -2069,11 +2092,11 @@ pub enum Phase {
     Decode,
 }
 
-/// Contexto de uma amostra detalhada. O contexto só existe quando o modo de
-/// profiling foi explicitamente pedido e há índice de token para correlacionar
-/// os peers. `Instant` nunca atravessa a wire: cada span publica offsets no
-/// domínio monotônico local, preservando a impossibilidade de subtrair relógios
-/// de máquinas diferentes.
+/// Context of a detailed sample. The context only exists when profiling
+/// mode was explicitly requested and there is a token index to correlate
+/// the peers. `Instant` never crosses the wire: each span publishes offsets in the
+/// local monotonic domain, preserving the impossibility of subtracting clocks
+/// of different machines.
 #[derive(Debug, Clone)]
 pub struct TelemetryContext {
     pub trace_id: String,
@@ -2528,18 +2551,18 @@ impl RequestTrace {
         self.refresh_decode_counters();
     }
 
-    /// `decode_calls` é **derivado dos saltos**, não um contador próprio.
+    /// `decode_calls` is **derived from the hops**, not a counter of its own.
     ///
-    /// O laço de continuação do gateway funde o traço de cada perna no traço
-    /// base (`merge`), e a fusão sempre soube juntar `PhaseTrace::calls` mas
-    /// nunca carregou um contador solto: o resumo dizia "não medido" enquanto a
-    /// tabela por salto mostrava 111 chamadas na mesma execução. Derivar remove
-    /// a chance de as duas divergirem outra vez.
+    /// The gateway's continuation loop merges each leg's trace into the base
+    /// trace (`merge`), and the merge always knew how to add up `PhaseTrace::calls` but
+    /// never carried a standalone counter: the summary said "not measured" while the
+    /// per-hop table showed 111 calls in the same run. Deriving removes
+    /// the chance of the two diverging again.
     ///
-    /// É o **máximo** entre os saltos, não a soma: uma rodada de decode toca
-    /// cada salto uma vez, então somar multiplicaria as rodadas pelo tamanho do
-    /// pipeline e `tokens_per_decode_call` - o rendimento da especulação -
-    /// cairia por esse mesmo fator.
+    /// It is the **maximum** across the hops, not the sum: one decode round touches
+    /// each hop once, so summing would multiply the rounds by the pipeline size and
+    /// `tokens_per_decode_call` - the speculation's yield -
+    /// would drop by that same factor.
     pub(super) fn refresh_decode_counters(&mut self) {
         self.decode_calls = self
             .hops
@@ -2789,9 +2812,9 @@ impl RequestTrace {
         }
     }
 
-    /// Registra uma travessia no ciclo em sua direção real. A amostra é
-    /// agregada por aresta e transporte, sem alocar um span por token no modo
-    /// normal.
+    /// Records a crossing in the cycle in its real direction. The sample is
+    /// aggregated by edge and transport, without allocating a span per token in normal
+    /// mode.
     pub(super) fn record_cycle_transport(
         &mut self,
         phase: Phase,
@@ -2803,8 +2826,8 @@ impl RequestTrace {
             .record(phase, from_node_id, to_node_id, transport);
     }
 
-    /// Registra a última perna, que não pertence a nenhum `HopTrace`: a cauda
-    /// entrega o resultado ao gateway por uma operação separada.
+    /// Records the last leg, which belongs to no `HopTrace`: the tail
+    /// delivers the result to the gateway by a separate operation.
     pub(super) fn record_cycle_return(
         &mut self,
         phase: Phase,
@@ -2814,9 +2837,9 @@ impl RequestTrace {
         self.record_cycle_transport(phase, from_node_id, "gateway", transport);
     }
 
-    /// Registra a travessia de controle que abriu um `remote-stream` sem
-    /// contá-la como decode. O ACK confirma a abertura do stream, mas não é
-    /// um span de token e não pode inflar a completude observada.
+    /// Records the control crossing that opened a `remote-stream` without
+    /// counting it as decode. The ACK confirms the stream opened, but is not
+    /// a token span and cannot inflate the observed completeness.
     pub(super) fn record_control_transport(
         &mut self,
         hop: usize,
@@ -2851,9 +2874,9 @@ impl RequestTrace {
             .record_token_delivery_interval(duration_ms);
     }
 
-    /// Recebe spans detalhados anexados a uma resposta de peer. O ID é a
-    /// unidade de deduplicação porque o mesmo span pode aparecer no
-    /// `node_timings` e também numa entrada borbulhada de `hop_timings`.
+    /// Receives detailed spans attached to a peer response. The ID is the
+    /// deduplication unit because the same span may appear in
+    /// `node_timings` and also in a bubbled entry of `hop_timings`.
     pub(super) fn record_profiling_spans_from_json(&mut self, value: &serde_json::Value) {
         let Some(incoming) = value
             .get("profiling_spans")
@@ -2883,10 +2906,10 @@ impl RequestTrace {
         }
     }
 
-    /// Registra um callback sem transformar seus agregados em uma segunda
-    /// resposta. IDs repetidos são ignorados no merge; uma ordem diferente da
-    /// chegada continua válida. A janela é limitada para que a deduplicação
-    /// não transforme a telemetria em memória por requisição.
+    /// Records a callback without turning its aggregates into a second
+    /// response. Repeated IDs are ignored on merge; an order different from
+    /// arrival remains valid. The window is bounded so that deduplication
+    /// does not turn telemetry into per-request memory.
     pub(super) fn record_remote_stream_batch(&mut self, meta: &serde_json::Value) -> bool {
         let frame_id = meta
             .get("stream_id")
@@ -3282,11 +3305,11 @@ impl RequestTrace {
         };
         slot.hidden_state_bytes_sent += bytes_sent;
         slot.hidden_state_bytes_received += bytes_received;
-        // Um plano de um salto que cobre o modelo inteiro não carrega estado
-        // oculto. O relay ainda sabe qual precisão teria usado, mas publicar
-        // essa configuração local do gateway como precisão observada fazia
-        // dois gateways dizerem f8 e f16 para a mesma execução, ambos com 0 B.
-        // Precisão só é evidência quando bytes cruzam o hop.
+        // A one-hop plan that covers the whole model carries no hidden
+        // state. The relay still knows which precision it would have used, but publishing
+        // that local gateway setting as observed precision made
+        // two gateways report f8 and f16 for the same run, both with 0 B.
+        // Precision is only evidence when bytes cross the hop.
         if bytes_sent > 0 || bytes_received > 0 {
             if let Some(dtype) = dtype {
                 slot.observe_hidden_dtype(dtype);
@@ -3569,9 +3592,9 @@ impl DecisionProbe {
     }
 }
 
-/// Leva os rótulos de uma decisão tipada até o último peer, que responde com
-/// a probabilidade de cada um em `probe_result`, e diz à cabeça até onde o
-/// prompt é reaproveitável (`retain_prefix_bytes`).
+/// Carries the labels of a typed decision to the last peer, which answers with
+/// the probability of each one in `probe_result`, and tells the head how far the
+/// prompt is reusable (`retain_prefix_bytes`).
 pub(super) fn add_probe_to_head_meta(
     mut meta: serde_json::Value,
     probe: Option<&DecisionProbe>,
@@ -3589,8 +3612,8 @@ pub(super) fn add_probe_to_head_meta(
     meta
 }
 
-/// Codifica as imagens somente no primeiro quadro enviado à cabeça. O projector
-/// é executado ali; os demais peers recebem apenas o estado oculto.
+/// Encodes the images only in the first frame sent to the head. The projector
+/// runs there; the other peers receive only the hidden state.
 pub(super) fn add_images_to_head_meta(
     mut meta: serde_json::Value,
     images: Option<&[Vec<u8>]>,
@@ -3605,9 +3628,9 @@ pub(super) fn add_images_to_head_meta(
     meta
 }
 
-/// Posições de prefill são absolutas na sessão, não são deriváveis do índice
-/// lógico do pedaço. Um prompt curto pode terminar no token 42 e o pedaço 1
-/// seguinte começa em 42, não em `1 * chunk_size`.
+/// Prefill positions are absolute in the session, not derivable from the chunk's
+/// logical index. A short prompt may end at token 42 and the following chunk 1
+/// starts at 42, not at `1 * chunk_size`.
 pub(super) fn required_prefill_position(
     meta: &serde_json::Value,
     field: &str,
@@ -3617,13 +3640,13 @@ pub(super) fn required_prefill_position(
         .and_then(|value| value.as_u64())
         .map(|value| value as u32)
         .ok_or_else(|| {
-            anyhow!("peer omitiu {field} no chunk {chunk_index}; posição absoluta obrigatória")
+            anyhow!("peer omitted {field} at chunk {chunk_index}; absolute position required")
         })
 }
 
-/// No primeiro pedaço frio, zero é uma posição absoluta conhecida. Em todos
-/// os outros casos, inventar a posição pelo índice pode misturar KV de
-/// sessões diferentes e precisa abortar o caminho de reuso.
+/// On the first cold chunk, zero is a known absolute position. In all
+/// other cases, inventing the position from the index may mix KV of
+/// different sessions and must abort the reuse path.
 pub(super) fn observed_prefill_start(
     meta: &serde_json::Value,
     chunk_index: u32,
@@ -3636,11 +3659,11 @@ pub(super) fn observed_prefill_start(
     }
 }
 
-/// Quantos tokens de prompt a cabeça informou ter aproveitado neste pedaço.
+/// How many prompt tokens the head reported having reused in this chunk.
 ///
-/// Só o pedaço 0 traz o campo, e só a cabeça o preenche. Peer que não o mande
-/// (ou que tenha recomeçado a sessão) conta zero, que é a leitura conservadora
-/// certa: telemetria de cache nunca deve inventar economia.
+/// Only chunk 0 carries the field, and only the head fills it in. A peer that does not send it
+/// (or that restarted the session) counts zero, which is the right conservative
+/// reading: cache telemetry must never invent savings.
 pub(super) fn cached_tokens_of(meta: &serde_json::Value) -> u32 {
     meta.get("cached_tokens")
         .and_then(|value| value.as_u64())
@@ -3656,18 +3679,18 @@ pub(super) fn retained_tokens_of(meta: &serde_json::Value, prompt_tokens: u32) -
         .unwrap_or(prompt_tokens)
 }
 
-/// Se a cabeça de fato aproveitou o prefixo. Ver `cached_tokens_of`.
+/// Whether the head actually reused the prefix. See `cached_tokens_of`.
 pub(super) fn head_reused_prefix(meta: &serde_json::Value, requested: bool) -> bool {
     meta.get("reuse_prefix")
         .and_then(|value| value.as_bool())
         .unwrap_or(requested)
 }
 
-/// No modo de resposta direta, o ACK da cabeça carrega a progressão do
-/// prompt dentro de `prompt_progress`: a resposta completa chega depois,
-/// entregue pela cauda. O próximo chunk precisa ser despachado usando essa
-/// posição publicada, mesmo quando os dois chunks ficam em voo ao mesmo
-/// tempo.
+/// In direct-response mode, the head's ACK carries the prompt progression
+/// inside `prompt_progress`: the complete response arrives later,
+/// delivered by the tail. The next chunk must be dispatched using that
+/// published position, even when both chunks are in flight at the same
+/// time.
 pub(super) fn direct_prefill_progress(meta: &serde_json::Value) -> &serde_json::Value {
     meta.get("prompt_progress")
         .filter(|progress| progress.is_object())

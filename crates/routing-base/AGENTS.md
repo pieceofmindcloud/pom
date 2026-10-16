@@ -35,7 +35,7 @@ can swap in a different provider without touching the contract.
   contract types. `routing-base::plan` is exercised solely by its inline tests.
 - Siblings: see `crates/AGENTS.md`.
 
-## Pendências
+## Open items
 
-O provider aberto ainda não é chamado pelo binário nem comparado ao planner
-servido; ver `TODO.md`, item 5.
+The open provider is neither called by the binary nor compared against the
+served planner; see `TODO.md`, item 5.

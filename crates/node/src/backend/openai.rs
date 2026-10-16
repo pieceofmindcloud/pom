@@ -133,14 +133,14 @@ impl Content {
             }
             if let Some(image) = part.image_url.as_ref() {
                 let Some((prefix, encoded)) = image.url.split_once(",") else {
-                    return Err("imagem deve ser um data URL base64".to_string());
+                    return Err("image must be a base64 data URL".to_string());
                 };
                 if !prefix.starts_with("data:image/") || !prefix.contains(";base64") {
-                    return Err("imagem deve ser um data URL base64".to_string());
+                    return Err("image must be a base64 data URL".to_string());
                 }
                 let bytes = base64::engine::general_purpose::STANDARD
                     .decode(encoded)
-                    .map_err(|error| format!("imagem base64 inválida: {error}"))?;
+                    .map_err(|error| format!("invalid base64 image: {error}"))?;
                 text.push_str("<__media__>");
                 images.push(bytes);
             }
@@ -236,11 +236,15 @@ pub struct ChatRequest {
     /// when the peer is not a live head for the requested model.
     #[serde(default)]
     pub inference_head: Option<String>,
-    /// Escolha por inferência do Chat. Ausente mantém o padrão habilitado;
-    /// o peer de inferência ainda força `false` quando a implantação desligou
-    /// thinking globalmente.
+    /// The Chat's per-inference choice. Absent keeps the enabled default;
+    /// the inference peer still forces `false` when the deployment turned
+    /// thinking off globally.
     #[serde(default)]
     pub thinking_enabled: Option<bool>,
+    /// Names the conversation this turn belongs to, for a plugin engine's K/V sessions: the next turn with the same
+    /// name finds the session this one saved (`plugin_session`, `docs/subsystems/inference.md`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
     /// `false` keeps retrieved context (`crate::rag`) out of this request.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rag: Option<bool>,
@@ -274,10 +278,10 @@ impl ChatToolDef {
             name: self.function.name,
             description: self.function.description,
             input_schema: self.function.parameters,
-            // A OpenAI não tem interruptor para isto: ela **sempre** transmite
-            // os argumentos em fragmentos, conforme gera. Não há campo a
-            // espelhar, e inventar um seria estender o schema dela. Quem
-            // decide nesta rota é `EAGER_STREAMING_OPENAI`.
+            // OpenAI has no switch for this: it **always** streams
+            // the arguments in fragments, as it generates. There is no field to
+            // mirror, and inventing one would extend its schema. What
+            // decides on this route is `EAGER_STREAMING_OPENAI`.
             eager_input_streaming: None,
         }
     }
@@ -307,15 +311,15 @@ impl ChatRequest {
 
 // ── Prompt rendering ─────────────────────────────────────────────────────────
 
-/// Chave do cache de prefixo: o mesmo prompt canônico que será tokenizado pela
-/// cabeça da pipeline.
+/// Prefix cache key: the same canonical prompt that will be tokenized by the
+/// head of the pipeline.
 ///
-/// A chave precisa ter exatamente a mesma ordenação que `render_prompt_with_images`.
-/// Em especial, system/developer e ferramentas são movidos para o início do
-/// prompt. Chavear pela ordem original das mensagens podia declarar um hit
-/// quando um agente acrescentava um developer message no fim: a chave antiga
-/// continuava prefixo, mas o prompt real tinha mudado desde o primeiro token.
-/// O peer então recusava todo o prefixo e reprocessava o prompt inteiro.
+/// The key must have exactly the same ordering as `render_prompt_with_images`.
+/// In particular, system/developer messages and tools are moved to the start of the
+/// prompt. Keying by the original message order could declare a hit
+/// when an agent appended a developer message at the end: the old key
+/// was still a prefix, but the real prompt had changed since the first token.
+/// The peer then refused the whole prefix and reprocessed the entire prompt.
 pub fn conversation_cache_key(messages: &[ChatMessage], tools: &[ToolDef]) -> String {
     render_prompt(messages, tools)
 }
@@ -348,17 +352,17 @@ fn retain_boundary(bytes: Option<usize>) -> Option<crate::prefill::DecisionProbe
 /// emitting a second one here would nest one inside the other. Instead the
 /// turns are labelled in plain text and handed over as one user message.
 ///
-/// **Todo turno é rotulado, inclusive o primeiro.** Uma mensagem de usuário
-/// solitária já passou crua por aqui, e a partir da segunda entrava o rótulo:
-/// `"q1"` virava `"User: q1\n\nAssistant: …"`, de modo que o prompt do turno 1
-/// não era prefixo do prompt do turno 2 e o KV do turno anterior não servia
-/// para nada. A transição 1→2, o primeiro momento em que um chat poderia
-/// economizar, era a única que **nunca** podia acertar. Rotular sempre torna o
-/// prompt de um turno prefixo exato do prompt do seguinte, que é a propriedade
-/// sobre a qual o reuso inteiro se apoia (ver `crate::prefix_cache`).
+/// **Every turn is labelled, the first one included.** A lone user message
+/// used to pass through here raw, and from the second one on the label came in:
+/// `"q1"` became `"User: q1\n\nAssistant: …"`, so the turn 1 prompt
+/// was not a prefix of the turn 2 prompt and the previous turn's KV was of no
+/// use. The 1→2 transition, the first moment a chat could
+/// save anything, was the only one that could **never** hit. Always labelling makes
+/// one turn's prompt an exact prefix of the next one's prompt, which is the property
+/// the whole reuse rests on (see `crate::prefix_cache`).
 ///
-/// Cliente que queira o texto cru, sem rótulo nenhum, tem `/v1/completions` e
-/// `POST /api/generate`, que passam o prompt adiante intocado.
+/// A client that wants the raw text, with no label at all, has `/v1/completions` and
+/// `POST /api/generate`, which pass the prompt along untouched.
 #[allow(dead_code)]
 pub fn render_prompt(messages: &[ChatMessage], tools: &[ToolDef]) -> String {
     render_prompt_with_images(messages, tools)
@@ -366,8 +370,8 @@ pub fn render_prompt(messages: &[ChatMessage], tools: &[ToolDef]) -> String {
         .unwrap_or_default()
 }
 
-/// Renderiza o prompt e extrai as imagens em bytes para o projector. O texto
-/// usa o marcador oficial do mtmd no mesmo lugar de cada `image_url`.
+/// Renders the prompt and extracts the images as bytes for the projector. The text
+/// uses mtmd's official marker in the same place as each `image_url`.
 pub fn render_prompt_with_images(
     messages: &[ChatMessage],
     tools: &[ToolDef],
@@ -427,7 +431,7 @@ pub(crate) fn image_vision_error(
     mmproj_path: Option<&str>,
 ) -> Option<&'static str> {
     if !images.is_empty() && mmproj_path.is_none() {
-        Some("este modelo não tem visão")
+        Some("this model has no vision")
     } else {
         None
     }
@@ -498,17 +502,31 @@ fn model_object(
 }
 
 /// Models this cluster can actually serve: whatever labels the peers advertise.
-/// Os nomes que um cliente pode pedir.
+/// The names a client may ask for.
 ///
-/// Além do rótulo pelado de cada modelo, cada implantação aparece como
-/// `<modelo>@<deploy_id>`. É o que dá ao cliente como escolher **qual**
-/// implantação atende quando o mesmo modelo está no ar mais de uma vez; o nome
-/// pelado continua valendo e vai para a que quem monta o pipeline escolher.
+/// Besides each model's bare label, each deployment appears as
+/// `<model>@<deploy_id>`. This is what gives the client a way to choose **which**
+/// deployment serves when the same model is up more than once; the bare
+/// name still works and goes to the one whoever assembles the pipeline picks.
 ///
-/// Um peer ocioso não tem `runtime_capacity` enquanto os pesos estão fora da
-/// memória, mas continua sendo uma implantação servível: a geração o acorda
-/// depois de planejar a rota. Só um peer que não está ocioso e ainda não
-/// confirmou `/health` deve esconder o modelo do catálogo.
+/// An idle peer has no `runtime_capacity` while the weights are out of
+/// memory, but it is still a servable deployment: generation wakes it up
+/// after planning the route. Only a peer that is not idle and has not yet
+/// confirmed `/health` should hide the model from the catalog.
+/// A machine that serves the whole model by itself (layers 0 to the end): it can answer any request alone.
+fn covers_whole_model(p: &crate::network::PeerInfo) -> bool {
+    p.total_layers > 0 && p.start_layer == 0 && p.end_layer.saturating_add(1) >= p.total_layers
+}
+
+/// Whether a group of peers that serve one model can answer: each of them is ready (a pipeline needs all of its
+/// stages), or one of them is ready and serves the whole model alone (replicas do not wait for each other: a machine
+/// that is loading must not hide the one that serves).
+fn group_ready(group: &[&crate::network::PeerInfo]) -> bool {
+    let ready = |p: &crate::network::PeerInfo| p.runtime_capacity.is_some() || p.idle;
+    group.iter().all(|p| ready(p))
+        || group.iter().any(|p| ready(p) && covers_whole_model(p))
+}
+
 pub(crate) fn model_ids_from_peers(peers: &[crate::network::PeerInfo]) -> Vec<String> {
     let alive_models: std::collections::BTreeSet<String> = peers
         .iter()
@@ -518,10 +536,9 @@ pub(crate) fn model_ids_from_peers(peers: &[crate::network::PeerInfo]) -> Vec<St
     let mut ids: Vec<String> = alive_models
         .into_iter()
         .filter(|model| {
-            peers
-                .iter()
-                .filter(|p| p.is_alive() && p.model == *model)
-                .all(|p| p.runtime_capacity.is_some() || p.idle)
+            let group: Vec<&crate::network::PeerInfo> =
+                peers.iter().filter(|p| p.is_alive() && p.model == *model).collect();
+            group_ready(&group)
         })
         .collect();
     let deployments: std::collections::BTreeSet<(String, String)> = peers
@@ -530,10 +547,11 @@ pub(crate) fn model_ids_from_peers(peers: &[crate::network::PeerInfo]) -> Vec<St
         .map(|p| (p.model.clone(), p.deploy_id.clone()))
         .collect();
     for (model, deploy_id) in deployments {
-        let ready = peers
+        let group: Vec<&crate::network::PeerInfo> = peers
             .iter()
             .filter(|p| p.is_alive() && p.model == model && p.deploy_id == deploy_id)
-            .all(|p| p.runtime_capacity.is_some() || p.idle);
+            .collect();
+        let ready = group_ready(&group);
         if ready {
             ids.push(format!("{model}@{deploy_id}"));
         }
@@ -601,7 +619,7 @@ async fn get_model(
     } else {
         error_response(
             StatusCode::NOT_FOUND,
-            format!("modelo '{id}' não existe nesta rede"),
+            format!("model '{id}' does not exist on this network"),
         )
     }
 }
@@ -614,7 +632,7 @@ async fn chat_completions(
     Json(req): Json<ChatRequest>,
 ) -> Response {
     if req.messages.is_empty() {
-        return error_response(StatusCode::BAD_REQUEST, "'messages' não pode ser vazio");
+        return error_response(StatusCode::BAD_REQUEST, "'messages' cannot be empty");
     }
     let request_details = serde_json::to_value(&req).unwrap_or_else(|_| json!({}));
 
@@ -637,8 +655,8 @@ async fn chat_completions(
         Ok(rendered) => rendered,
         Err(error) => return error_response(StatusCode::BAD_REQUEST, error),
     };
-    // Chaveia o cache de prefixo pelas mensagens, não pelo texto renderizado -
-    // ver `conversation_cache_key`.
+    // Key the prefix cache by the messages, not by the rendered text -
+    // see `conversation_cache_key`.
     let cache_key = conversation_cache_key(&req.messages, &tools);
     let inference_token = auth.token().to_string();
     let caller = auth.into_caller();
@@ -689,7 +707,12 @@ async fn chat_completions(
     let prompt_tokens = approx_tokens(&prompt);
 
     let output_limit = state
-        .request_output_limit_for_model(Some(&model), requested_max_tokens, &prompt)
+        .request_output_limit_for_head(
+            Some(&model),
+            preferred_head.as_deref(),
+            requested_max_tokens,
+            &prompt,
+        )
         .await;
     log_output_limit("/v1/chat/completions", output_limit);
     if let Some(error) = output_limit.rejection_reason() {
@@ -817,7 +840,7 @@ async fn completions(
             created,
             Mode::Completion,
             stops,
-            // Completion crua não tem conversa: o prefixo é o próprio texto.
+            // A raw completion has no conversation: the prefix is the text itself.
             None,
             None,
             None,
@@ -864,16 +887,15 @@ pub(crate) async fn resolve_model(
     if model_ids(state).await.contains(&requested) {
         return Ok(requested);
     }
-    // Um `@<deploy_id>` que ainda não apareceu no anúncio de ninguém continua
-    // valendo: recusar aqui trocaria "esta implantação não respondeu" por
-    // "atendi noutra", que é pior - o cliente pediu uma configuração
-    // específica. Quem não achar peer nenhum falha adiante, dizendo isso.
+    // An `@<deploy_id>` that has not yet appeared in anyone's announcement still
+    // holds: refusing here would swap "this deployment did not answer" for
+    // "I served from another one", which is worse - the client asked for a
+    // specific configuration. Whoever finds no peer at all fails ahead, saying so.
     if crate::deployment::split_selector(&requested).1.is_some() {
         return Ok(requested);
     }
     Err(format!(
-        "modelo '{requested}' não existe ou não está carregado nesta rede; \
-         consulte GET /v1/models para os nomes servíveis"
+        "model '{requested}' does not exist or is not loaded on this network; see GET /v1/models for the servable names"
     ))
 }
 
@@ -919,7 +941,7 @@ async fn blocking_response(
     request_details: serde_json::Value,
     output_limit: OutputTokenLimit,
 ) -> Response {
-    match crate::gateway::generate_blocking_with_stops(
+    match crate::gateway::generate_blocking_output_with_stops(
         route,
         caller,
         GenerationInput {
@@ -941,11 +963,11 @@ async fn blocking_response(
     )
     .await
     {
-        Ok((text, summary)) => {
-            // Quem encerrou foi o teto, não o modelo. Uma chamada ainda aberta
-            // aqui foi cortada ao meio, e é assim que ela volta: estruturada e
-            // incompleta, com `finish_reason: "length"` - o que a OpenAI faz.
-            // Ver `TagScanner::finish_truncated`.
+        Ok((output, summary)) => {
+            // It was the ceiling that ended it, not the model. A call still open
+            // here was cut in half, and this is how it comes back: structured and
+            // incomplete, with `finish_reason: "length"` - what OpenAI does.
+            // See `TagScanner::finish_truncated`.
             let truncated = summary.finish_reason.as_deref() == Some("length");
             let (message_or_text, saw_tool_call, truncated_tool_call): (
                 serde_json::Value,
@@ -954,14 +976,17 @@ async fn blocking_response(
             ) = match mode {
                 Mode::Chat => {
                     let (parts, cut_inside_call) = if truncated {
-                        parse_output_truncated(&text)
+                        parse_output_truncated(&output.text)
                     } else {
-                        (parse_output(&text), false)
+                        (parse_output(&output.text), false)
                     };
-                    let (message, saw) = chat_message_json(&parts);
+                    let (mut message, saw) = chat_message_json(&parts);
+                    if !output.reasoning.is_empty() {
+                        message["reasoning_content"] = json!(output.reasoning);
+                    }
                     (message, saw, cut_inside_call)
                 }
-                Mode::Completion => (json!(text), false, false),
+                Mode::Completion => (json!(output.text), false, false),
             };
             let finish = finish_reason(&summary, budget.total, saw_tool_call);
             let choice = match mode {
@@ -987,11 +1012,14 @@ async fn blocking_response(
                     "usage": {
                         "prompt_tokens": prompt_tokens,
                         "completion_tokens": summary.tokens_generated,
+                        "completion_tokens_details": {
+                            "reasoning_tokens": summary.reasoning_tokens,
+                        },
                         "total_tokens": prompt_tokens + summary.tokens_generated,
-                        // Quantos tokens do prompt o pipeline **não**
-                        // reprocessou, medido no lado que executa. Mesmo nome e
-                        // lugar que a OpenAI usa, para o cliente ler sem
-                        // adaptação. Ver `RequestTrace::cached_tokens`.
+                        // How many prompt tokens the pipeline did **not**
+                        // reprocess, measured on the side that executes. Same name and
+                        // place that OpenAI uses, so the client reads it without
+                        // adaptation. See `RequestTrace::cached_tokens`.
                         "prompt_tokens_details": {
                             "cached_tokens": summary
                                 .trace
@@ -1005,24 +1033,25 @@ async fn blocking_response(
                     "x_pom": {
                         "source": summary.source,
                         "tokens_per_sec": summary.tokens_per_sec,
+                        "reasoning_tokens": summary.reasoning_tokens,
                         "duration_ms": summary.duration_ms,
                         "timings": summary.timings,
-                        // `partial` é `true` sempre que a resposta não é a
-                        // que o modelo teria dado: perda de transporte, ou o
-                        // teto cortando uma chamada de ferramenta ao meio.
+                        // `partial` is `true` whenever the response is not what
+                        // the model would have given: transport loss, or the
+                        // ceiling cutting a tool call in half.
                         "partial": summary.partial || truncated_tool_call,
                         "finish_reason": summary.finish_reason,
                         "stop_sequence": summary.stop_sequence,
                         "trace": summary.trace,
                         "output_limits": output_limit,
-                        // `true` quando o teto do cliente caiu **dentro** de
-                        // uma chamada de ferramenta. A chamada volta
-                        // estruturada e incompleta, com `length`: o cliente
-                        // repete o pedido com um teto maior, não executa.
+                        // `true` when the client's ceiling fell **inside** a
+                        // tool call. The call comes back structured and
+                        // incomplete, with `length`: the client repeats the
+                        // request with a larger ceiling, it does not execute.
                         "truncated_tool_call": truncated_tool_call,
-                        // Quantas gerações de backend esta resposta costurou.
-                        // `1` é uma só; maior que `1` diz que a saída passou do
-                        // `max_new_tokens` da implantação sem que ele mudasse.
+                        // How many backend generations this response stitched together.
+                        // `1` is a single one; greater than `1` says the output went past the
+                        // deployment's `max_new_tokens` without it changing.
                         "continuation_legs": summary.legs,
                     },
                 })),
@@ -1033,17 +1062,17 @@ async fn blocking_response(
     }
 }
 
-/// `max_tokens` aqui é o **total** da requisição, nunca o teto de uma perna do
-/// laço de continuação: uma perna esgotada não é `length`, é o meio da
-/// resposta. Vazar o `length` intermediário para o cliente era o defeito - o
-/// harness lê `max_tokens` como condição terminal e larga a chamada de
-/// ferramenta pela metade.
+/// `max_tokens` here is the request's **total**, never the ceiling of one leg of the
+/// continuation loop: an exhausted leg is not `length`, it is the middle of the
+/// response. Leaking the intermediate `length` to the client was the defect - the
+/// harness reads `max_tokens` as a terminal condition and drops the tool
+/// call halfway.
 ///
-/// Atingir o total, esse sim, é **parada terminal**: `length` vem primeiro,
-/// mesmo com uma chamada de ferramenta na saída, porque a chamada que o teto
-/// pegou aberta está incompleta e não é fim de turno. É a regra da OpenAI, e
-/// é o que faz o cliente repetir o pedido com um teto maior em vez de executar
-/// meia chamada.
+/// Reaching the total, that one, is a **terminal stop**: `length` comes first,
+/// even with a tool call in the output, because the call the ceiling
+/// caught open is incomplete and is not the end of a turn. It is OpenAI's rule, and
+/// it is what makes the client repeat the request with a larger ceiling instead of executing
+/// half a call.
 fn finish_reason(
     summary: &crate::gateway::GenSummary,
     max_tokens: u32,
@@ -1067,7 +1096,7 @@ fn finish_reason(
 fn chat_message_json(parts: &[OutputPart]) -> (serde_json::Value, bool) {
     let mut text = String::new();
     let mut tool_calls = Vec::new();
-    // Só chamadas **completas** contam: ver `OutputPart::ToolCallTruncated`.
+    // Only **complete** calls count: see `OutputPart::ToolCallTruncated`.
     let mut complete_calls = 0usize;
     for p in parts {
         match p {
@@ -1085,10 +1114,10 @@ fn chat_message_json(parts: &[OutputPart]) -> (serde_json::Value, bool) {
                     "function": { "name": name, "arguments": arguments.to_string() },
                 }));
             }
-            // A chamada que o teto cortou entra na lista - é o que a OpenAI
-            // devolve -, mas **não** conta como chamada vista: o turno não
-            // terminou nela, terminou no teto, e o motivo de parada tem de
-            // dizer `length`.
+            // The call the ceiling cut goes into the list - it is what OpenAI
+            // returns -, but it does **not** count as a call seen: the turn did not
+            // end on it, it ended at the ceiling, and the stop reason has to
+            // say `length`.
             OutputPart::ToolCallTruncated(partial) => {
                 tool_calls.push(json!({
                     "id": format!("call_{}", uuid::Uuid::new_v4().simple()),
@@ -1161,21 +1190,21 @@ fn stream_response(
         .into_response()
 }
 
-/// A OpenAI **sempre** transmite os argumentos em fragmentos, conforme gera -
-/// não existe interruptor para isso na API dela, e por isso não há campo a
-/// espelhar em `ChatToolDef`. Esta rota é ansiosa sempre.
+/// OpenAI **always** streams the arguments in fragments, as it generates -
+/// there is no switch for this in its API, and so there is no field to
+/// mirror in `ChatToolDef`. This route is always eager.
 const EAGER_STREAMING_OPENAI: bool = true;
 
-/// O estado de uma chamada de ferramenta sendo transmitida.
+/// The state of a tool call being streamed.
 ///
-/// Ela nasce em `ToolCallOpen`, cresce a cada `ToolCallChunk` e morre no
-/// fechamento. Enquanto o nome não sai, nada é transmitido: um índice de
-/// `tool_calls` aberto sem nome não serve para nada ao cliente.
-struct ChamadaEmCurso {
-    /// O corpo cru visto até agora - é dele que o transcodificador vive.
+/// It is born at `ToolCallOpen`, grows with each `ToolCallChunk` and dies at
+/// the close. While the name has not come out, nothing is streamed: an open `tool_calls`
+/// index with no name is of no use to the client.
+struct CallInProgress {
+    /// The raw body seen so far - it is what the transcoder lives on.
     body: String,
     streamer: crate::tool_call::CallArgsStreamer,
-    /// O índice já anunciado ao cliente, quando a abertura já saiu.
+    /// The index already announced to the client, once the opening has gone out.
     index: Option<u32>,
 }
 
@@ -1186,49 +1215,49 @@ struct ChamadaEmCurso {
 /// call). Synchronous and free of any axum/SSE type so it's directly
 /// unit-testable.
 ///
-/// **Os argumentos saem em fragmentos, conforme o modelo os gera.** Era aqui
-/// que eles ficavam represados: o corpo da chamada era acumulado e só virava
-/// delta quando a tag fechava, o que no ksia deu 663 caracteres num pedaço só,
-/// aos 11,01 s. `CallArgsStreamer` transcodifica a marcação em JSON conforme
-/// ela chega, e a concatenação dos fragmentos é exatamente a string que o
-/// caminho não-streaming produziria.
+/// **The arguments come out in fragments, as the model generates them.** This is
+/// where they used to be held back: the call body was accumulated and only became a
+/// delta when the tag closed, which on ksia gave 663 characters in one piece,
+/// at 11.01 s. `CallArgsStreamer` transcodes the markup into JSON as
+/// it arrives, and the concatenation of the fragments is exactly the string the
+/// non-streaming path would produce.
 fn apply_scan_events_openai(
     events: Vec<ScanEvent>,
     tool_call_index: &mut u32,
     saw_tool_call: &mut bool,
-    em_curso: &mut Option<ChamadaEmCurso>,
+    in_progress: &mut Option<CallInProgress>,
     out: &mut Vec<serde_json::Value>,
 ) {
-    /// A abertura: índice, id e nome, com os argumentos ainda vazios. Sai uma
-    /// vez só por chamada, no primeiro fragmento que houver.
-    fn abrir(
-        nome: &str,
+    /// The opening: index, id and name, with the arguments still empty. It goes out
+    /// only once per call, on the first fragment there is.
+    fn open_call(
+        name: &str,
         tool_call_index: &mut u32,
-        em_curso: &mut ChamadaEmCurso,
+        in_progress: &mut CallInProgress,
         out: &mut Vec<serde_json::Value>,
     ) -> u32 {
-        if let Some(idx) = em_curso.index {
+        if let Some(idx) = in_progress.index {
             return idx;
         }
         let idx = *tool_call_index;
         *tool_call_index += 1;
-        em_curso.index = Some(idx);
+        in_progress.index = Some(idx);
         out.push(json!({
             "tool_calls": [{
                 "index": idx,
                 "id": format!("call_{}", uuid::Uuid::new_v4().simple()),
                 "type": "function",
-                "function": { "name": nome, "arguments": "" },
+                "function": { "name": name, "arguments": "" },
             }]
         }));
         idx
     }
 
-    fn fragmento(idx: u32, texto: String, out: &mut Vec<serde_json::Value>) {
+    fn emit_fragment(idx: u32, text: String, out: &mut Vec<serde_json::Value>) {
         out.push(json!({
             "tool_calls": [{
                 "index": idx,
-                "function": { "arguments": texto },
+                "function": { "arguments": text },
             }]
         }));
     }
@@ -1238,70 +1267,70 @@ fn apply_scan_events_openai(
             ScanEvent::Text(s) if !s.is_empty() => out.push(json!({ "content": s })),
             ScanEvent::Text(_) => {}
             ScanEvent::ToolCallOpen => {
-                *em_curso = Some(ChamadaEmCurso {
+                *in_progress = Some(CallInProgress {
                     body: String::new(),
                     streamer: crate::tool_call::CallArgsStreamer::new(EAGER_STREAMING_OPENAI),
                     index: None,
                 });
             }
             ScanEvent::ToolCallChunk(fragment) => {
-                let Some(chamada) = em_curso.as_mut() else {
+                let Some(call) = in_progress.as_mut() else {
                     continue;
                 };
-                chamada.body.push_str(&fragment);
-                let corpo = chamada.body.clone();
-                if let Some(delta) = chamada.streamer.advance(&corpo) {
-                    let nome = crate::tool_call::peek_call_name(&corpo).unwrap_or_default();
-                    let idx = abrir(&nome, tool_call_index, chamada, out);
-                    fragmento(idx, delta, out);
+                call.body.push_str(&fragment);
+                let body = call.body.clone();
+                if let Some(delta) = call.streamer.advance(&body) {
+                    let name = crate::tool_call::peek_call_name(&body).unwrap_or_default();
+                    let idx = open_call(&name, tool_call_index, call, out);
+                    emit_fragment(idx, delta, out);
                 }
             }
             ScanEvent::ToolCallClose(Ok((name, arguments))) => {
                 *saw_tool_call = true;
-                let mut chamada = em_curso.take().unwrap_or_else(|| ChamadaEmCurso {
+                let mut call = in_progress.take().unwrap_or_else(|| CallInProgress {
                     body: String::new(),
                     streamer: crate::tool_call::CallArgsStreamer::new(EAGER_STREAMING_OPENAI),
                     index: None,
                 });
-                let idx = abrir(&name, tool_call_index, &mut chamada, out);
-                // Só o que ainda não saiu. Repetir o que o cliente já
-                // acumulou duplicaria os argumentos dele.
-                if let Some(delta) = chamada.streamer.finish_complete(&chamada.body, &arguments) {
-                    fragmento(idx, delta, out);
+                let idx = open_call(&name, tool_call_index, &mut call, out);
+                // Only what has not gone out yet. Repeating what the client already
+                // accumulated would duplicate its arguments.
+                if let Some(delta) = call.streamer.finish_complete(&call.body, &arguments) {
+                    emit_fragment(idx, delta, out);
                 }
             }
             ScanEvent::ToolCallClose(Err(raw)) => {
-                let chamada = em_curso.take();
-                // Uma chamada que já começou a sair não pode virar texto: o
-                // cliente já tem um `tool_calls[i]` aberto com nome, e não há
-                // como desenviar. Ela fica como está - argumentos que não
-                // parseiam, que é o caso "JSON inválido" que os provedores
-                // documentam e mandam devolver ao modelo.
-                if chamada.is_some_and(|c| c.streamer.emitted_len() > 0) {
+                let call = in_progress.take();
+                // A call that has already started going out cannot become text: the
+                // client already has an open `tool_calls[i]` with a name, and there is no
+                // way to unsend. It stays as it is - arguments that do not
+                // parse, which is the "invalid JSON" case the providers
+                // document and tell you to hand back to the model.
+                if call.is_some_and(|c| c.streamer.emitted_len() > 0) {
                     continue;
                 }
                 apply_scan_events_openai(
                     vec![ScanEvent::Text(raw)],
                     tool_call_index,
                     saw_tool_call,
-                    em_curso,
+                    in_progress,
                     out,
                 );
             }
-            // A chamada cortada pelo teto sai na mesma forma, e os argumentos
-            // acabam na string JSON inacabada da Fase 1 - o que já tinha sido
-            // transmitido conta, então só o que falta sai aqui.
-            // `saw_tool_call` **não** é marcado: o turno terminou no teto, e o
-            // quadro final diz `length`.
+            // The call cut by the ceiling goes out in the same form, and the arguments
+            // end up in the unfinished JSON string of Phase 1 - what had already been
+            // transmitted counts, so only what is missing goes out here.
+            // `saw_tool_call` is **not** set: the turn ended at the ceiling, and the
+            // final frame says `length`.
             ScanEvent::ToolCallTruncated(partial) => {
-                let mut chamada = em_curso.take().unwrap_or_else(|| ChamadaEmCurso {
+                let mut call = in_progress.take().unwrap_or_else(|| CallInProgress {
                     body: String::new(),
                     streamer: crate::tool_call::CallArgsStreamer::new(EAGER_STREAMING_OPENAI),
                     index: None,
                 });
-                let idx = abrir(&partial.name, tool_call_index, &mut chamada, out);
-                if let Some(delta) = chamada.streamer.finish_truncated(&partial.arguments) {
-                    fragmento(idx, delta, out);
+                let idx = open_call(&partial.name, tool_call_index, &mut call, out);
+                if let Some(delta) = call.streamer.finish_truncated(&partial.arguments) {
+                    emit_fragment(idx, delta, out);
                 }
             }
         }
@@ -1314,6 +1343,17 @@ fn apply_scan_events_openai(
 /// literal `[DONE]` sentinel. `Mode::Completion` never touches the scanner —
 /// the real API has no tool-calling concept there either — so that path
 /// stays byte-for-byte what it was before tool support existed.
+fn reasoning_delta(mode: Mode, text: String) -> serde_json::Value {
+    match mode {
+        // Chat clients such as Pi recognize this llama.cpp-compatible field
+        // as a thinking delta.
+        Mode::Chat => json!({ "reasoning_content": text }),
+        // The legacy completions schema has no distinct reasoning field, so
+        // preserve the generated text.
+        Mode::Completion => json!(text),
+    }
+}
+
 fn sse_stream(
     rx: mpsc::Receiver<GenEvent>,
     id: String,
@@ -1342,11 +1382,11 @@ fn sse_stream(
         scanner: TagScanner,
         tool_call_index: u32,
         saw_tool_call: bool,
-        /// `true` quando o teto do cliente caiu dentro de uma chamada de
-        /// ferramenta. Vai para o `x_pom` do quadro final.
+        /// `true` when the client's ceiling fell inside a tool
+        /// call. Goes into the final frame's `x_pom`.
         truncated_tool_call: bool,
-        /// A chamada cujos argumentos estão sendo transmitidos agora.
-        em_curso: Option<ChamadaEmCurso>,
+        /// The call whose arguments are being streamed right now.
+        in_progress: Option<CallInProgress>,
     }
 
     let state = S {
@@ -1363,7 +1403,7 @@ fn sse_stream(
         tool_call_index: 0,
         saw_tool_call: false,
         truncated_tool_call: false,
-        em_curso: None,
+        in_progress: None,
     };
 
     futures::stream::unfold(state, |mut s| async move {
@@ -1414,7 +1454,7 @@ fn sse_stream(
                                     events,
                                     &mut s.tool_call_index,
                                     &mut s.saw_tool_call,
-                                    &mut s.em_curso,
+                                    &mut s.in_progress,
                                     &mut deltas,
                                 );
                                 for delta in deltas {
@@ -1427,14 +1467,21 @@ fn sse_stream(
                         }
                         continue;
                     }
+                    Some(GenEvent::Reasoning(text)) => {
+                        let delta = reasoning_delta(s.mode, text);
+                        let chunk =
+                            chunk_json(&s.id, s.created, &s.model, s.mode, delta, None, None, None);
+                        s.queue.push_back(Event::default().data(chunk));
+                        continue;
+                    }
                     Some(GenEvent::Done(summary)) => {
                         if s.mode == Mode::Chat {
                             let scanner = std::mem::replace(&mut s.scanner, TagScanner::new());
-                            // A chamada cortada só pode sair estruturada aqui
-                            // porque nada de dentro da tag foi transmitido:
-                            // `apply_scan_events_openai` engole `ToolCallOpen`
-                            // e `ToolCallChunk`, e o scanner segura o corpo até
-                            // a tag fechar. Nada a desenviar, nada vazado.
+                            // The cut call can only come out structured here
+                            // because nothing inside the tag was streamed:
+                            // `apply_scan_events_openai` swallows `ToolCallOpen`
+                            // and `ToolCallChunk`, and the scanner holds the body until
+                            // the tag closes. Nothing to unsend, nothing leaked.
                             let (finish_events, cut_inside_call) =
                                 if summary.finish_reason.as_deref() == Some("length") {
                                     scanner.finish_truncated()
@@ -1447,7 +1494,7 @@ fn sse_stream(
                                 finish_events,
                                 &mut s.tool_call_index,
                                 &mut s.saw_tool_call,
-                                &mut s.em_curso,
+                                &mut s.in_progress,
                                 &mut deltas,
                             );
                             for delta in deltas {
@@ -1524,8 +1571,8 @@ fn chunk_json(
     )
 }
 
-/// [`chunk_json`] com o único dado que só o quadro final conhece: se o teto
-/// cortou uma chamada de ferramenta ao meio.
+/// [`chunk_json`] with the one datum only the final frame knows: whether the ceiling
+/// cut a tool call in half.
 #[allow(clippy::too_many_arguments)]
 fn chunk_json_final(
     id: &str,
@@ -1550,14 +1597,35 @@ fn chunk_json_final(
         "choices": [choice],
     });
     if let Some(summary) = summary {
+        let prompt_tokens = summary
+            .trace
+            .as_ref()
+            .map(|trace| trace.input_tokens)
+            .unwrap_or(0);
+        payload["usage"] = json!({
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": summary.tokens_generated,
+            "total_tokens": prompt_tokens + summary.tokens_generated,
+            "prompt_tokens_details": {
+                "cached_tokens": summary
+                    .trace
+                    .as_ref()
+                    .map(|trace| trace.cached_tokens)
+                    .unwrap_or(0),
+            },
+            "completion_tokens_details": {
+                "reasoning_tokens": summary.reasoning_tokens,
+            },
+        });
         payload["x_pom"] = json!({
             "source": summary.source,
             "tokens_per_sec": summary.tokens_per_sec,
             "tokens_generated": summary.tokens_generated,
+            "reasoning_tokens": summary.reasoning_tokens,
             "duration_ms": summary.duration_ms,
             "timings": summary.timings,
-            // Ver o mesmo campo no caminho não-streaming: uma chamada
-            // cortada ao meio também é resposta parcial.
+            // See the same field on the non-streaming path: a call
+            // cut in half is also a partial response.
             "partial": summary.partial || truncated_tool_call,
             "finish_reason": summary.finish_reason,
             "stop_sequence": summary.stop_sequence,
@@ -1588,6 +1656,13 @@ fn error_response(status: StatusCode, message: impl Into<String>) -> Response {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn reasoning_uses_the_structured_chat_delta_instead_of_visible_content() {
+        let delta = reasoning_delta(Mode::Chat, "checking".into());
+        assert_eq!(delta["reasoning_content"], "checking");
+        assert!(delta.get("content").is_none());
+    }
 
     #[test]
     fn retrieval_searches_for_what_the_person_last_wrote() {
@@ -1666,7 +1741,7 @@ mod tests {
     fn image_is_rejected_when_the_served_model_has_no_mmproj() {
         assert_eq!(
             image_vision_error(&[vec![0xFF, 0xD8]], None),
-            Some("este modelo não tem visão")
+            Some("this model has no vision")
         );
         assert_eq!(
             image_vision_error(&[vec![0xFF, 0xD8]], Some("mmproj.gguf")),
@@ -1675,10 +1750,10 @@ mod tests {
         assert_eq!(image_vision_error(&[], None), None);
     }
 
-    // ── Escolha de implantação ───────────────────────────────────────────────
+    // ── Deployment choice ────────────────────────────────────────────────────
 
-    /// Cada implantação aparece na lista com o próprio sufixo, para o cliente
-    /// ter como pedir uma configuração específica.
+    /// Each deployment appears in the list with its own suffix, so the client
+    /// has a way to ask for a specific configuration.
     #[tokio::test]
     async fn deployments_are_listed_alongside_the_plain_model_name() {
         let mut p1 = crate::gateway::testkit::peer("n1", "n1", 8080);
@@ -1696,9 +1771,65 @@ mod tests {
         assert!(ids.contains(&"qwen3:8b@d-bbbbbbbb".to_string()), "{ids:?}");
     }
 
-    /// A CLI default is only a selector for the inference path. Depois de um
-    /// unload, ele não é um modelo publicado e não pode voltar ao catálogo
-    /// para enganar um cliente que autodetecta modelos.
+    /// Replicas of the whole model: one that serves answers for the name even while another is still loading. The
+    /// loading one must not hide the model from the list (it did, because every peer had to be ready).
+    #[tokio::test]
+    async fn a_loading_replica_does_not_hide_a_model_another_replica_serves() {
+        let mut serving = crate::gateway::testkit::peer("n1", "n1", 8080);
+        serving.model = "qwen3:8b".into();
+        serving.start_layer = 0;
+        serving.end_layer = 47;
+        serving.total_layers = 48;
+        let mut loading = crate::gateway::testkit::peer("n2", "n2", 8080);
+        loading.model = "qwen3:8b".into();
+        loading.start_layer = 0;
+        loading.end_layer = 47;
+        loading.total_layers = 48;
+        loading.runtime_capacity = None;
+        loading.idle = false;
+
+        let state = crate::gateway::testkit::state_with("eu", vec![serving, loading]).await;
+        assert!(model_ids(&state).await.contains(&"qwen3:8b".to_string()));
+    }
+
+    /// A pipeline still waits for every stage: a loading stage keeps the model out of the list.
+    #[tokio::test]
+    async fn a_loading_pipeline_stage_still_hides_the_model() {
+        let mut head = crate::gateway::testkit::peer("n1", "n1", 8080);
+        head.model = "qwen3:8b".into();
+        head.start_layer = 0;
+        head.end_layer = 23;
+        head.total_layers = 48;
+        let mut tail = crate::gateway::testkit::peer("n2", "n2", 8080);
+        tail.model = "qwen3:8b".into();
+        tail.start_layer = 24;
+        tail.end_layer = 47;
+        tail.total_layers = 48;
+        tail.runtime_capacity = None;
+        tail.idle = false;
+
+        let state = crate::gateway::testkit::state_with("eu", vec![head, tail]).await;
+        assert!(!model_ids(&state).await.contains(&"qwen3:8b".to_string()));
+    }
+
+    /// A whole-model peer that is loading answers for nothing: with no ready replica the model stays hidden.
+    #[tokio::test]
+    async fn a_loading_whole_model_peer_alone_is_not_listed() {
+        let mut loading = crate::gateway::testkit::peer("n1", "n1", 8080);
+        loading.model = "qwen3:8b".into();
+        loading.start_layer = 0;
+        loading.end_layer = 47;
+        loading.total_layers = 48;
+        loading.runtime_capacity = None;
+        loading.idle = false;
+
+        let state = crate::gateway::testkit::state_with("eu", vec![loading]).await;
+        assert!(!model_ids(&state).await.contains(&"qwen3:8b".to_string()));
+    }
+
+    /// A CLI default is only a selector for the inference path. After an
+    /// unload, it is not a published model and cannot return to the catalog
+    /// to mislead a client that auto-detects models.
     #[tokio::test]
     async fn model_discovery_ignores_an_unpublished_default_model() {
         let mut state = crate::gateway::testkit::state_with("eu", vec![]).await;
@@ -1707,10 +1838,10 @@ mod tests {
         assert!(model_ids(&state).await.is_empty());
     }
 
-    /// Um anúncio que perdeu a capacidade efetiva representa um peer em
-    /// restart, não uma implantação pronta. Ele não pode manter o modelo no
-    /// catálogo autodetectado enquanto a camada antiga ainda estiver viva na
-    /// tabela de gossip.
+    /// An announcement that lost its effective capacity represents a peer
+    /// restarting, not a ready deployment. It cannot keep the model in the
+    /// auto-detected catalog while the old layer is still alive in the
+    /// gossip table.
     #[tokio::test]
     async fn model_discovery_ignores_a_peer_during_runtime_restart() {
         let mut peer = crate::gateway::testkit::peer("n1", "n1", 8080);
@@ -1768,9 +1899,9 @@ mod tests {
         );
     }
 
-    /// Pedir uma implantação que ninguém anuncia **não** pode cair calado na
-    /// ativa: quem escreveu o sufixo pediu aquela configuração, e responder
-    /// com outra é pior que falhar.
+    /// Asking for a deployment that nobody announces **cannot** silently fall back to the
+    /// active one: whoever wrote the suffix asked for that configuration, and answering
+    /// with another is worse than failing.
     #[tokio::test]
     async fn an_explicit_deployment_is_never_silently_swapped() {
         let mut p1 = crate::gateway::testkit::peer("n1", "n1", 8080);
@@ -1784,10 +1915,10 @@ mod tests {
         );
     }
 
-    /// Um nome pelado que nenhum peer anuncia é recusado, não trocado
-    /// caladamente pelo modelo ativo - decisão do captain: o cliente que
-    /// pediu um modelo inexistente precisa de um erro claro, nunca de uma
-    /// resposta 200 servida por outro modelo.
+    /// A bare name that no peer announces is refused, not silently swapped
+    /// for the active model - captain's decision: a client that
+    /// asked for a nonexistent model needs a clear error, never a
+    /// 200 response served by another model.
     #[tokio::test]
     async fn an_unknown_plain_model_name_is_refused_not_silently_swapped() {
         let mut p1 = crate::gateway::testkit::peer("n1", "n1", 8080);
@@ -1876,6 +2007,7 @@ mod tests {
             ApiKeyAuth::for_test(crate::reqlog::Caller::anonymous()),
             State(state),
             Json(ChatRequest {
+                session: None,
                 // Retrieval is not what this test is about.
                 rag: Some(false),
                 rag_collection: None,
@@ -1941,10 +2073,10 @@ mod tests {
         assert_eq!(meta["thinking_enabled"], false);
     }
 
-    /// O que o cliente lê como economia é o que o pipeline **executou**. A
-    /// cabeça informa `cached_tokens` no pedaço 0 e o número atravessa
-    /// `PrefillOutcome` → `RequestTrace` → `usage`. Antes disto o cliente não
-    /// tinha como saber que o acerto de cache não estava economizando nada.
+    /// What the client reads as savings is what the pipeline **executed**. The
+    /// head reports `cached_tokens` in chunk 0 and the number crosses
+    /// `PrefillOutcome` → `RequestTrace` → `usage`. Before this the client had
+    /// no way to know the cache hit was not saving anything.
     #[tokio::test]
     async fn usage_reports_the_prefix_tokens_the_pipeline_actually_reused() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2015,6 +2147,7 @@ mod tests {
             ApiKeyAuth::for_test(crate::reqlog::Caller::anonymous()),
             State(state),
             Json(ChatRequest {
+                session: None,
                 // Retrieval is not what this test is about.
                 rag: Some(false),
                 rag_collection: None,
@@ -2037,11 +2170,11 @@ mod tests {
         assert_eq!(body["x_pom"]["trace"]["input_tokens"], 40);
     }
 
-    /// A resposta do primeiro chunk pode terminar no token 42 mesmo quando o
-    /// wire usa chunks de 512. O gateway não pode transformar a ausência de
-    /// `next_pos` em `chunk_index * 512`: antes da correção isso despachava o
-    /// chunk 1 na posição 512, o peer respondia 400 e o SSE expunha
-    /// `server_error` antes de concluir o fallback frio.
+    /// The first chunk's response can end at token 42 even when the
+    /// wire uses chunks of 512. The gateway cannot turn the absence of
+    /// `next_pos` into `chunk_index * 512`: before the fix this dispatched
+    /// chunk 1 at position 512, the peer answered 400 and the SSE exposed
+    /// `server_error` before concluding the cold fallback.
     #[tokio::test]
     async fn streaming_chat_falls_back_without_sending_a_chunk_index_position() {
         let frames = std::sync::Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
@@ -2095,7 +2228,7 @@ mod tests {
                             if chunk_index == 1 && meta["start_pos"] == 512 {
                                 return (
                                     StatusCode::BAD_REQUEST,
-                                    "chunk fora de ordem: recebi 1 (pos 512) mas a sessão está em 42",
+                                    "chunk out of order: received 1 (pos 512) but the session is at 42",
                                 )
                                     .into_response();
                             }
@@ -2170,11 +2303,12 @@ mod tests {
             ApiKeyAuth::for_test(crate::reqlog::Caller::anonymous()),
             State(state.clone()),
             Json(ChatRequest {
+                session: None,
                 // Retrieval is not what this test is about.
                 rag: Some(false),
                 rag_collection: None,
                 model: Some("whole-model".into()),
-                messages: vec![msg("user", "primeiro")],
+                messages: vec![msg("user", "first")],
                 stream: true,
                 max_tokens: Some(1),
                 max_completion_tokens: None,
@@ -2194,12 +2328,13 @@ mod tests {
             ApiKeyAuth::for_test(crate::reqlog::Caller::anonymous()),
             State(state),
             Json(ChatRequest {
+                session: None,
                 // Retrieval is not what this test is about.
                 rag: Some(false),
                 rag_collection: None,
                 model: Some("whole-model".into()),
                 messages: vec![
-                    msg("user", "primeiro"),
+                    msg("user", "first"),
                     msg("assistant", "ok"),
                     msg("user", "segundo"),
                 ],
@@ -2230,7 +2365,7 @@ mod tests {
             !frames
                 .iter()
                 .any(|meta| { meta["chunk_index"] == 1 && meta["start_pos"] == 512 }),
-            "posição derivada do índice enviada ao peer: {frames:?}"
+            "position derived from the index sent to the peer: {frames:?}"
         );
     }
 
@@ -2245,13 +2380,14 @@ mod tests {
             ApiKeyAuth::for_test(crate::reqlog::Caller::anonymous()),
             State(state),
             Json(ChatRequest {
+                session: None,
                 // Retrieval is not what this test is about.
                 rag: Some(false),
                 rag_collection: None,
-                // Sem peer anunciando "lab" nesta fixture, um `model`
-                // explícito seria recusado pelo `resolve_model` - o alvo deste
-                // teste é a matemática de orçamento/contexto, não a resolução
-                // de nome, então omitir usa `active_model()` diretamente.
+                // With no peer announcing "lab" in this fixture, an explicit
+                // `model` would be refused by `resolve_model` - the target of this
+                // test is the budget/context math, not name resolution,
+                // so omitting it uses `active_model()` directly.
                 model: None,
                 messages: vec![
                     msg("system", &"agent instructions ".repeat(prompt_repeats)),
@@ -2270,15 +2406,15 @@ mod tests {
         .status()
     }
 
-    /// A ausência de um teto absoluto artificial não transforma o pedido em
-    /// erro. O contexto efetivo é quem reduz o orçamento, se necessário.
+    /// The absence of an artificial absolute ceiling does not turn the request into an
+    /// error. The effective context is what reduces the budget, if necessary.
     #[tokio::test]
     async fn a_request_above_the_old_absolute_default_is_not_rejected() {
         assert_eq!(streaming_chat_status(1, 32_000).await, StatusCode::OK);
     }
 
-    /// E a recusa por contexto cheio continua sendo 413, com o pedido dentro
-    /// da capacidade: são dois motivos diferentes, com códigos diferentes.
+    /// And the refusal for a full context is still 413, with the request within
+    /// capacity: they are two different reasons, with different codes.
     #[tokio::test]
     async fn a_prompt_that_fills_the_context_is_still_rejected_before_sse_starts() {
         assert_eq!(
@@ -2289,44 +2425,44 @@ mod tests {
 
     #[test]
     fn single_user_message_is_labelled_like_every_other_turn() {
-        // O rótulo vale desde o primeiro turno: é ele que faz o prompt de um
-        // turno ser prefixo exato do prompt do seguinte. Ver `render_prompt`.
+        // The label holds from the first turn: it is what makes one turn's prompt
+        // an exact prefix of the next one's prompt. See `render_prompt`.
         assert_eq!(
             render_prompt(&[msg("user", "O que e inferencia distribuida?")], &[]),
             "User: O que e inferencia distribuida?"
         );
     }
 
-    /// A propriedade de que o reuso de prefixo depende, afirmada diretamente:
-    /// acrescentar mensagens só acrescenta texto no fim.
+    /// The property prefix reuse depends on, asserted directly:
+    /// appending messages only appends text at the end.
     #[test]
     fn every_extra_turn_only_appends_to_the_previous_prompt() {
-        let turno1 = vec![msg("user", "1+1?")];
-        let turno2 = vec![
+        let turn1 = vec![msg("user", "1+1?")];
+        let turn2 = vec![
             msg("user", "1+1?"),
             msg("assistant", "2"),
             msg("user", "e 2+2?"),
         ];
-        let turno3 = {
-            let mut m = turno2.clone();
+        let turn3 = {
+            let mut m = turn2.clone();
             m.push(msg("assistant", "4"));
             m.push(msg("user", "e 3+3?"));
             m
         };
 
-        let p1 = render_prompt(&turno1, &[]);
-        let p2 = render_prompt(&turno2, &[]);
-        let p3 = render_prompt(&turno3, &[]);
+        let p1 = render_prompt(&turn1, &[]);
+        let p2 = render_prompt(&turn2, &[]);
+        let p3 = render_prompt(&turn3, &[]);
 
         assert!(
             p2.starts_with(&p1),
-            "turno 2 não continua o turno 1:\n{p1}\n---\n{p2}"
+            "turn 2 does not continue turn 1:\n{p1}\n---\n{p2}"
         );
-        assert!(p3.starts_with(&p2), "turno 3 não continua o turno 2");
-        // E a chave do cache acompanha, que é o que `PrefixCache` consulta.
-        let k1 = conversation_cache_key(&turno1, &[]);
-        let k2 = conversation_cache_key(&turno2, &[]);
-        let k3 = conversation_cache_key(&turno3, &[]);
+        assert!(p3.starts_with(&p2), "turn 3 does not continue turn 2");
+        // And the cache key follows, which is what `PrefixCache` consults.
+        let k1 = conversation_cache_key(&turn1, &[]);
+        let k2 = conversation_cache_key(&turn2, &[]);
+        let k3 = conversation_cache_key(&turn3, &[]);
         assert!(k2.starts_with(&k1));
         assert!(k3.starts_with(&k2));
     }
@@ -2350,26 +2486,26 @@ mod tests {
         assert_eq!(next_key, next_prompt);
         assert!(
             !next_key.starts_with(&first_key),
-            "o cache não pode declarar prefixo quando a renderização inseriu contexto no início"
+            "the cache cannot declare a prefix when the rendering inserted context at the start"
         );
     }
 
-    /// Trocar a lista de ferramentas move o começo do prompt, e o prefixo
-    /// **tem** que ser descartado - a chave precisa refletir isso.
+    /// Changing the tool list moves the start of the prompt, and the prefix
+    /// **has** to be discarded - the key must reflect that.
     #[test]
     fn changing_the_tool_list_breaks_the_cache_key_on_purpose() {
         let messages = vec![msg("user", "oi")];
-        let ferramenta = ToolDef {
+        let tool = ToolDef {
             eager_input_streaming: None,
             name: "buscar".into(),
             description: None,
             input_schema: json!({"type": "object"}),
         };
-        let sem = conversation_cache_key(&messages, &[]);
-        let com = conversation_cache_key(&messages, std::slice::from_ref(&ferramenta));
+        let without_tool = conversation_cache_key(&messages, &[]);
+        let with_tool = conversation_cache_key(&messages, std::slice::from_ref(&tool));
         assert!(
-            !com.starts_with(&sem),
-            "a chave com ferramenta não pode continuar a sem"
+            !with_tool.starts_with(&without_tool),
+            "the key with a tool cannot continue the one without"
         );
     }
 
@@ -2532,9 +2668,9 @@ mod tests {
         );
     }
 
-    /// `context_length` e `max_completion_tokens` vêm do contexto efetivo da
-    /// implantação. Anunciar o `max_new_tokens` (aqui, 1000) faria um cliente
-    /// confundir o tamanho de uma perna com o orçamento total.
+    /// `context_length` and `max_completion_tokens` come from the deployment's
+    /// effective context. Announcing `max_new_tokens` (here, 1000) would make a client
+    /// confuse the size of one leg with the total budget.
     #[tokio::test]
     async fn model_metadata_advertises_the_request_ceiling_not_the_leg() {
         let state = crate::gateway::testkit::state_with("eu", vec![]).await;
@@ -2591,6 +2727,7 @@ mod tests {
         let summary = |n: u32| crate::gateway::GenSummary {
             source: "pipeline:a→b".into(),
             tokens_generated: n,
+            reasoning_tokens: 0,
             tokens_per_sec: 1.0,
             duration_ms: 10,
             timings: crate::gateway::timing_metrics(10, 10, 10, 0, n),
@@ -2603,9 +2740,9 @@ mod tests {
         // Complete tool call within the budget: the model ended its turn by
         // asking for the tool, so the protocol must preserve tool_calls.
         assert_eq!(finish_reason(&summary(3640), 4000, true), "tool_calls");
-        // Atingir o teto é parada terminal e vence uma chamada na saída: a
-        // chamada que o teto pegou aberta está incompleta, e é o `length` que
-        // faz o cliente repetir o pedido em vez de executá-la.
+        // Reaching the ceiling is a terminal stop and wins over a call in the output: the
+        // call the ceiling caught open is incomplete, and it is `length` that
+        // makes the client repeat the request instead of executing it.
         assert_eq!(finish_reason(&summary(4000), 4000, true), "length");
         // Plain text cut by the budget is length as well.
         assert_eq!(finish_reason(&summary(4000), 4000, false), "length");
@@ -2843,6 +2980,7 @@ mod tests {
         let summary = crate::gateway::GenSummary {
             source: "pipeline:a→b".into(),
             tokens_generated: 12,
+            reasoning_tokens: 5,
             tokens_per_sec: 4.5,
             duration_ms: 2666,
             timings: crate::gateway::timing_metrics(2666, 900, 900, 12, 12),
@@ -2865,10 +3003,16 @@ mod tests {
             Some(&summary),
             None,
         ))
-        .expect("JSON válido");
+        .expect("valid JSON");
 
         assert_eq!(payload["x_pom"]["tokens_per_sec"], 4.5);
         assert_eq!(payload["x_pom"]["tokens_generated"], 12);
+        assert_eq!(payload["x_pom"]["reasoning_tokens"], 5);
+        assert_eq!(payload["usage"]["completion_tokens"], 12);
+        assert_eq!(
+            payload["usage"]["completion_tokens_details"]["reasoning_tokens"],
+            5
+        );
         assert_eq!(payload["x_pom"]["timings"]["ttft_ms"], 900);
         assert!(payload["x_pom"]["timings"]["generation_tokens_per_sec"].is_number());
         assert_eq!(payload["x_pom"]["trace"]["model"], "qwen35");

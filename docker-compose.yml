@@ -17,6 +17,11 @@
 #   node-cpu    : no GPU
 # Ksia is brought up from the pom-cluster-config repository. Shared
 # build/runtime data is in docker-compose.common.yml.
+# Secret of the engine release download (read only when POM_PLUGIN_LLAMA_RELEASE is set).
+secrets:
+  pom_gh_token:
+    environment: POM_GH_TOKEN
+
 services:
   node-gpu:
     extends:

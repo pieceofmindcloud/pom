@@ -1,24 +1,27 @@
 import clsx from "clsx";
 import { AnimatePresence, motion } from "framer-motion";
-import { ChevronDown, Moon, Sun } from "lucide-react";
-import { useEffect, useState } from "react";
+import { ChevronDown, ChevronUp, Moon, Sun, X } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
+import { useQueryClient } from "@tanstack/react-query";
 import { LogoFull, LogoMark } from "./Logo";
 import { ChatSessionList } from "./ChatSessionList";
 import { navFooterForProfile, navForProfile, type NavSection } from "./nav";
 import { useI18n } from "../i18n/provider";
+import { closePlugin, openPlugin } from "../lib/api";
 import { useProfile } from "../lib/profile";
-import { useOptionalChatSessionController } from "../lib/chatStore";
-import { useNetworkChatUnread } from "../lib/networkChatUnread";
-import { useNode } from "../lib/queries";
+import { hasConversations, useOptionalChatSessionController } from "../lib/chatStore";
+import { useLobbyUnread, useNetworkChatUnread } from "../lib/networkChatUnread";
+import { keys, useNode, usePluginUi } from "../lib/queries";
 import { useTheme } from "../lib/theme";
+import { useToast } from "../lib/toast";
 import { TlsChip } from "./TlsIndicator";
 import { LanguageFlags } from "./LanguageFlags";
 
 /**
- * Cabeçalho da barra. Quando recebe o toggle da Sidebar desktop, a própria
- * logo vira o controle acessível e o clique alterna o estado. No drawer mobile
- * ela permanece uma marca passiva, pois o Topbar controla a abertura por fora.
+ * Header of the bar. When it receives the desktop Sidebar's toggle, the logo
+ * itself becomes the accessible control and the click toggles the state. In the mobile drawer
+ * it stays a passive mark, since the Topbar controls the opening from outside.
  */
 function SidebarBrand({
   collapsed,
@@ -80,22 +83,97 @@ function NavigationIcon({
   );
 }
 
+/** Pixels scrolled by each chevron click. */
+const SCROLL_STEP = 120;
+
+function ScrollEdgeButton({ direction, onClick }: { direction: "up" | "down"; onClick: () => void }) {
+  const { t } = useI18n();
+  const label = t(direction === "up" ? "sidebar.scrollUp" : "sidebar.scrollDown");
+  const Chevron = direction === "up" ? ChevronUp : ChevronDown;
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      onClick={onClick}
+      className="flex h-5 w-full shrink-0 items-center justify-center text-faint transition-colors hover:text-fg"
+    >
+      <Chevron className="h-3.5 w-3.5" aria-hidden="true" />
+    </button>
+  );
+}
+
 /**
- * Idioma e tema, no pé da barra.
+ * Scrollable menu: when the items do not fit the window height, chevrons appear
+ * at the top and bottom to scroll. Only the chevrons on the side with hidden items
+ * are drawn.
+ */
+export function ScrollableNav({ className, children }: { className?: string; children: ReactNode }) {
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const [edges, setEdges] = useState({ up: false, down: false });
+
+  const measure = useCallback(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    const up = scroller.scrollTop > 1;
+    const down = scroller.scrollTop + scroller.clientHeight < scroller.scrollHeight - 1;
+    setEdges((previous) => (previous.up === up && previous.down === down ? previous : { up, down }));
+  }, []);
+
+  useEffect(() => {
+    const scroller = scrollerRef.current;
+    const content = contentRef.current;
+    if (!scroller || !content) return;
+    measure();
+    // The window height changes what fits; the content height changes when a section opens.
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(scroller);
+    observer?.observe(content);
+    window.addEventListener("resize", measure);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [measure]);
+
+  const scrollBy = (delta: number) => {
+    scrollerRef.current?.scrollBy({ top: delta, behavior: "smooth" });
+  };
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      {edges.up && <ScrollEdgeButton direction="up" onClick={() => scrollBy(-SCROLL_STEP)} />}
+      <div
+        ref={scrollerRef}
+        onScroll={measure}
+        className={clsx("min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-y-contain", className)}
+      >
+        <div ref={contentRef} className="flex flex-col gap-1">
+          {children}
+        </div>
+      </div>
+      {edges.down && <ScrollEdgeButton direction="down" onClick={() => scrollBy(SCROLL_STEP)} />}
+    </div>
+  );
+}
+
+/**
+ * Language and theme, at the foot of the bar.
  *
- * O idioma é uma bandeira, não "EN"/"PT-BR": o rótulo em texto só ajuda quem já
- * sabe o que a sigla quer dizer, e o alvo aqui é justamente quem abriu a tela
- * no idioma errado. O nome do idioma continua no `aria-label` e no `title`,
- * porque bandeira não é idioma para um leitor de tela.
+ * The language is a flag, not "EN"/"PT-BR": the text label only helps whoever already
+ * knows what the abbreviation means, and the target here is precisely whoever opened the screen
+ * in the wrong language. The language name stays in the `aria-label` and in the `title`,
+ * because a flag is not a language for a screen reader.
  */
 function SidebarUtilityControls({ collapsed }: { collapsed: boolean }) {
   const { t } = useI18n();
   const { profile } = useProfile();
   const { theme, toggle } = useTheme();
-  // O commit deste nó vive aqui, ao lado dos controles: num cluster de várias
-  // máquinas "qual build é esse?" não se responde sem shell, e um peer rodando
-  // binário velho parece sadio até a hora da inferência. Sem a palavra "build"
-  // na frente - é um hash em fonte mono, e o que ele é fica no tooltip.
+  // This node's commit lives here, beside the controls: in a cluster of several
+  // machines "which build is this?" cannot be answered without a shell, and a peer running
+  // an old binary looks healthy until inference time. Without the word "build"
+  // in front - it is a hash in mono font, and what it is stays in the tooltip.
   const { data: node } = useNode();
   const footerLinks = navFooterForProfile(profile);
   return (
@@ -149,12 +227,100 @@ function SidebarUtilityControls({ collapsed }: { collapsed: boolean }) {
   );
 }
 
+/**
+ * An on-demand plugin menu item: a click starts the process when it is
+ * stopped and only then opens the screen; `close` appears while it is running and
+ * stops the process. The plugin stays installed and licensed in both cases.
+ * A regular plugin (manifest without `lifecycle: "on_demand"`) passes straight through.
+ */
+function usePluginMenuItem(pluginCode: string | undefined, to: string, onNavigate?: () => void) {
+  const { t } = useI18n();
+  const navigate = useNavigate();
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const { data } = usePluginUi();
+  const [busy, setBusy] = useState(false);
+  const plugin = pluginCode ? data?.plugins.find((entry) => entry.code === pluginCode) : undefined;
+  const onDemand = plugin?.on_demand === true;
+  const running = plugin?.running === true;
+  const refresh = () => void queryClient.invalidateQueries({ queryKey: keys.pluginUi });
+
+  const onClick = (event: MouseEvent<HTMLAnchorElement>) => {
+    onNavigate?.();
+    if (!pluginCode || !onDemand || running) return;
+    event.preventDefault();
+    setBusy(true);
+    openPlugin(pluginCode)
+      .then(() => navigate(to))
+      .catch((error: unknown) => toast.fromError(t("plugins.openFailed"), error))
+      .finally(() => {
+        setBusy(false);
+        refresh();
+      });
+  };
+
+  const close = (event: MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!pluginCode) return;
+    closePlugin(pluginCode)
+      .catch((error: unknown) => toast.fromError(t("plugins.closeFailed"), error))
+      .finally(refresh);
+  };
+
+  return { busy, onClick, close: onDemand && running ? close : undefined };
+}
+
+/** The X badge of a running plugin; the button sits beside the link, never inside it. */
+function PluginCloseButton({ onClick, className }: { onClick: (event: MouseEvent<HTMLButtonElement>) => void; className?: string }) {
+  const { t } = useI18n();
+  const label = t("sidebar.pluginClose");
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      onClick={onClick}
+      className={clsx(
+        "flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-line bg-surface text-muted transition-colors hover:border-rose/60 hover:text-rose",
+        className,
+      )}
+    >
+      <X className="h-2.5 w-2.5" aria-hidden="true" />
+    </button>
+  );
+}
+
 function leafHoldsPath(leaf: NonNullable<NavSection["children"]>[number], pathname: string): boolean {
   return (leaf.end ? pathname === leaf.to : pathname === leaf.to || pathname.startsWith(`${leaf.to}/`))
     || (leaf.children ?? []).some((child) => leafHoldsPath(child, pathname));
 }
 
-function UnreadBadge({ count, compact = false }: { count: number; compact?: boolean }) {
+/**
+ * New messages in the lobby, where machines that are not members talk and ask
+ * to join. Amber, beside the members' room count, so an administrator tells
+ * the two apart at a glance.
+ */
+function LobbyBadge({ count, compact = false }: { count: number; compact?: boolean }) {
+  const { t } = useI18n();
+  if (count < 1) return null;
+  const label = t("networkChat.lobbyUnread", { count });
+  return (
+    <span
+      data-testid="network-chat-lobby-unread"
+      aria-label={label}
+      title={label}
+      className={clsx(
+        "shrink-0 rounded-full bg-amber px-1.5 text-center text-[0.65rem] font-semibold text-ink",
+        compact ? "absolute -bottom-1 -right-1 min-w-4 leading-4" : "min-w-5 leading-5",
+      )}
+    >
+      {count > 99 ? "99+" : count}
+    </span>
+  );
+}
+
+function UnreadBadge({ count, compact = false, inline = false }: { count: number; compact?: boolean; inline?: boolean }) {
   const { t } = useI18n();
   if (count < 1) return null;
   return (
@@ -163,7 +329,7 @@ function UnreadBadge({ count, compact = false }: { count: number; compact?: bool
       aria-label={t("networkChat.unread", { count })}
       className={clsx(
         "shrink-0 rounded-full bg-iris px-1.5 text-center text-[0.65rem] font-semibold leading-5 text-ink",
-        compact ? "absolute -right-1 -top-1 min-w-4 leading-4" : "ml-auto min-w-5",
+        compact ? "absolute -right-1 -top-1 min-w-4 leading-4" : inline ? "min-w-5" : "ml-auto min-w-5",
       )}
     >
       {count > 99 ? "99+" : count}
@@ -182,37 +348,45 @@ function Leaf({
   end,
   children,
   onNavigate,
+  pluginCode,
 }: {
   to: string;
   labelKey: string;
   end?: boolean;
   children?: NonNullable<NavSection["children"]>[number]["children"];
   onNavigate?: () => void;
+  pluginCode?: string;
 }) {
   const { t } = useI18n();
   const linkEnd = end ?? Boolean(children?.length);
+  const plugin = usePluginMenuItem(pluginCode, to, onNavigate);
   return (
     <div>
-      <NavLink to={to} end={linkEnd} onClick={onNavigate}>
-        {({ isActive }) => (
-          <span
-            className={clsx(
-              "relative flex items-center rounded-lg py-1.5 pl-3 pr-2.5 text-[0.83rem]",
-              "transition-colors duration-150",
-              isActive ? "text-fg" : "text-muted hover:bg-line/40 hover:text-fg",
-            )}
-          >
-            {isActive && (
-              <motion.span
-                layoutId="nav-leaf"
-                className="absolute inset-0 rounded-lg bg-iris/12 ring-1 ring-inset ring-iris/25"
-                transition={{ type: "spring", stiffness: 520, damping: 42 }}
-              />
-            )}
-            <span className="relative truncate">{t(labelKey)}</span>
-          </span>
-        )}
-      </NavLink>
+      <div className="relative">
+        <NavLink to={to} end={linkEnd} onClick={plugin.onClick} data-guide-nav={to} className={plugin.close ? "block pr-6" : undefined}>
+          {({ isActive }) => (
+            <span
+              className={clsx(
+                "relative flex items-center rounded-lg py-1.5 pl-3 pr-2.5 text-[0.83rem]",
+                "transition-colors duration-150",
+                isActive ? "text-fg" : "text-muted hover:bg-line/40 hover:text-fg",
+                plugin.busy && "opacity-60",
+              )}
+              aria-busy={plugin.busy || undefined}
+            >
+              {isActive && (
+                <motion.span
+                  layoutId="nav-leaf"
+                  className="absolute inset-0 rounded-lg bg-iris/12 ring-1 ring-inset ring-iris/25"
+                  transition={{ type: "spring", stiffness: 520, damping: 42 }}
+                />
+              )}
+              <span className="relative truncate">{t(labelKey)}</span>
+            </span>
+          )}
+        </NavLink>
+        {plugin.close && <PluginCloseButton onClick={plugin.close} className="absolute right-1.5 top-1/2 -translate-y-1/2" />}
+      </div>
       {children && children.length > 0 && (
         <div className="ml-3 border-l border-line pl-2">
           {children.map((child) => <Leaf key={child.to} {...child} onNavigate={onNavigate} />)}
@@ -228,29 +402,38 @@ function FlyoutLeaf({
   end,
   children,
   onNavigate,
+  pluginCode,
 }: {
   to: string;
   labelKey: string;
   end?: boolean;
   children?: NonNullable<NavSection["children"]>[number]["children"];
   onNavigate?: () => void;
+  pluginCode?: string;
 }) {
   const { t } = useI18n();
   const linkEnd = end ?? Boolean(children?.length);
+  const plugin = usePluginMenuItem(pluginCode, to, onNavigate);
   return (
     <div>
-      <NavLink to={to} end={linkEnd} onClick={onNavigate}>
-      {({ isActive }) => (
-        <span
-          className={clsx(
-            "block rounded-lg px-2.5 py-2 text-[0.83rem] transition-colors",
-            isActive ? "bg-iris/12 text-fg ring-1 ring-inset ring-iris/25" : "text-muted hover:bg-line/40 hover:text-fg",
-          )}
-        >
-          {t(labelKey)}
-        </span>
-      )}
-      </NavLink>
+      <div className="relative">
+        <NavLink to={to} end={linkEnd} onClick={plugin.onClick} data-guide-nav={to} className={plugin.close ? "block" : undefined}>
+        {({ isActive }) => (
+          <span
+            className={clsx(
+              "block rounded-lg px-2.5 py-2 text-[0.83rem] transition-colors",
+              isActive ? "bg-iris/12 text-fg ring-1 ring-inset ring-iris/25" : "text-muted hover:bg-line/40 hover:text-fg",
+              plugin.close && "pr-7",
+              plugin.busy && "opacity-60",
+            )}
+            aria-busy={plugin.busy || undefined}
+          >
+            {t(labelKey)}
+          </span>
+        )}
+        </NavLink>
+        {plugin.close && <PluginCloseButton onClick={plugin.close} className="absolute right-2 top-1/2 -translate-y-1/2" />}
+      </div>
       {children && children.length > 0 && <div className="ml-3 border-l border-line pl-2">{children.map((child) => <FlyoutLeaf key={child.to} {...child} onNavigate={onNavigate} />)}</div>}
     </div>
   );
@@ -260,10 +443,12 @@ function CollapsedSection({
   section,
   onNavigate,
   badge,
+  lobbyBadge,
 }: {
   section: NavSection;
   onNavigate?: () => void;
   badge?: number;
+  lobbyBadge?: number;
 }) {
   const { t } = useI18n();
   const { pathname } = useLocation();
@@ -271,45 +456,75 @@ function CollapsedSection({
   const label = t(section.labelKey);
   const Icon = section.icon;
   const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const flyoutRef = useRef<HTMLDivElement>(null);
+  const [anchor, setAnchor] = useState<{ top: number; left: number } | null>(null);
+  const plugin = usePluginMenuItem(section.pluginCode, section.to ?? "", onNavigate);
+
+  // The submenu is `fixed` and anchored to the icon, so it is not clipped by the
+  // scrollable menu (an `overflow` would clip an `absolute` one).
+  const anchorFlyout = () => {
+    const rect = triggerRef.current?.getBoundingClientRect();
+    if (rect) setAnchor({ top: rect.top, left: rect.right });
+  };
+
+  useLayoutEffect(() => {
+    const flyout = flyoutRef.current;
+    if (!flyout || !anchor) return;
+    // Drops from the icon, but never past the bottom of the window.
+    const overflow = anchor.top + flyout.offsetHeight - (window.innerHeight - 8);
+    flyout.style.top = `${Math.max(8, anchor.top - Math.max(0, overflow))}px`;
+  }, [anchor]);
 
   if (section.to) {
     return (
-      <NavLink to={section.to} end onClick={onNavigate} aria-label={label} title={label}>
-        {({ isActive }) => (
-          <span
-            className={clsx(
-              "relative flex h-10 items-center justify-center rounded-lg transition-colors duration-150",
-              isActive ? "text-fg" : "text-muted hover:bg-line/40 hover:text-fg",
-            )}
-          >
-            {isActive && (
-              <motion.span
-                layoutId="nav-collapsed-section"
-                className="absolute inset-0 rounded-lg bg-iris/12 ring-1 ring-inset ring-iris/25"
-                transition={{ type: "spring", stiffness: 520, damping: 42 }}
+      <div className="relative">
+        <NavLink to={section.to} end onClick={plugin.onClick} data-guide-nav={section.to} aria-label={label} title={label} aria-busy={plugin.busy || undefined}>
+          {({ isActive }) => (
+            <span
+              className={clsx(
+                "relative flex h-10 items-center justify-center rounded-lg transition-colors duration-150",
+                isActive ? "text-fg" : "text-muted hover:bg-line/40 hover:text-fg",
+                plugin.busy && "opacity-60",
+              )}
+            >
+              {isActive && (
+                <motion.span
+                  layoutId="nav-collapsed-section"
+                  className="absolute inset-0 rounded-lg bg-iris/12 ring-1 ring-inset ring-iris/25"
+                  transition={{ type: "spring", stiffness: 520, damping: 42 }}
+                />
+              )}
+              <NavigationIcon
+                icon={Icon}
+                image={section.iconImage}
+                className={clsx("relative h-[1.05rem] w-[1.05rem]", isActive && "text-iris")}
               />
-            )}
-            <NavigationIcon
-              icon={Icon}
-              image={section.iconImage}
-              className={clsx("relative h-[1.05rem] w-[1.05rem]", isActive && "text-iris")}
-            />
-            <UnreadBadge count={badge ?? 0} compact />
-          </span>
-        )}
-      </NavLink>
+              <UnreadBadge count={badge ?? 0} compact />
+              {/* Both on a collapsed icon: the lobby takes the other corner. */}
+              <LobbyBadge count={lobbyBadge ?? 0} compact />
+            </span>
+          )}
+        </NavLink>
+        {plugin.close && <PluginCloseButton onClick={plugin.close} className="absolute -left-1 -top-1" />}
+      </div>
     );
   }
 
   return (
-    <div className="group relative">
+    <div className="group relative" onMouseEnter={anchorFlyout} onFocus={anchorFlyout}>
       <button
+        ref={triggerRef}
         type="button"
         aria-label={label}
         title={label}
         aria-haspopup="menu"
         aria-expanded={open}
-        onClick={() => setOpen((value) => !value)}
+        data-guide-section={section.labelKey}
+        onClick={() => {
+          anchorFlyout();
+          setOpen((value) => !value);
+        }}
         className={clsx(
           "flex h-10 w-full items-center justify-center rounded-lg transition-colors duration-150",
           holdsPath ? "bg-iris/12 text-iris ring-1 ring-inset ring-iris/25" : "text-muted hover:bg-line/40 hover:text-fg",
@@ -321,11 +536,15 @@ function CollapsedSection({
           className="h-[1.05rem] w-[1.05rem]"
         />
       </button>
-      <div className={clsx(
-        "pointer-events-none absolute left-full top-0 z-50 pl-2 transition-opacity duration-150 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100",
-        open ? "pointer-events-auto opacity-100" : "opacity-0",
-      )}>
-        <div className="w-56 rounded-xl border border-line-strong bg-surface p-2 shadow-2xl shadow-black/30">
+      <div
+        ref={flyoutRef}
+        style={anchor ? { top: anchor.top, left: anchor.left } : undefined}
+        className={clsx(
+          "pointer-events-none fixed z-50 pl-2 transition-opacity duration-150 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100",
+          open ? "pointer-events-auto opacity-100" : "opacity-0",
+        )}
+      >
+        <div className="max-h-[calc(100vh-16px)] w-56 overflow-y-auto rounded-xl border border-line-strong bg-surface p-2 shadow-2xl shadow-black/30">
           <p className="px-2.5 py-2 font-mono text-[0.68rem] uppercase tracking-[0.16em] text-faint">
             {label}
           </p>
@@ -345,11 +564,14 @@ function Section({
   onNavigate,
   collapsed,
   badge,
+  lobbyBadge,
 }: {
   section: NavSection;
   onNavigate?: () => void;
   collapsed: boolean;
   badge?: number;
+  /** New lobby messages, for an administrator: a second, amber badge. */
+  lobbyBadge?: number;
 }) {
   const { t } = useI18n();
   const { pathname } = useLocation();
@@ -361,17 +583,22 @@ function Section({
   const expanded = open || holdsPath;
   const Icon = section.icon;
 
-  if (collapsed) return <CollapsedSection section={section} onNavigate={onNavigate} badge={badge} />;
+  const plugin = usePluginMenuItem(section.pluginCode, section.to ?? "", onNavigate);
+
+  if (collapsed) return <CollapsedSection section={section} onNavigate={onNavigate} badge={badge} lobbyBadge={lobbyBadge} />;
 
   if (section.to) {
     return (
-      <NavLink to={section.to} end onClick={onNavigate}>
+      <div className="relative">
+      <NavLink to={section.to} end onClick={plugin.onClick} data-guide-nav={section.to} className={plugin.close ? "block" : undefined} aria-busy={plugin.busy || undefined}>
         {({ isActive }) => (
           <span
             className={clsx(
               "relative flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium",
               "transition-colors duration-150",
               isActive ? "text-fg" : "text-muted hover:bg-line/40 hover:text-fg",
+              plugin.close && "pr-7",
+              plugin.busy && "opacity-60",
             )}
           >
             {isActive && (
@@ -387,10 +614,15 @@ function Section({
               className={clsx("relative h-[1.05rem] w-[1.05rem] shrink-0", isActive && "text-iris")}
             />
             <span className="relative truncate">{t(section.labelKey)}</span>
-            <UnreadBadge count={badge ?? 0} />
+            <span className="ml-auto flex shrink-0 items-center gap-1">
+              <LobbyBadge count={lobbyBadge ?? 0} />
+              <UnreadBadge count={badge ?? 0} inline />
+            </span>
           </span>
         )}
       </NavLink>
+      {plugin.close && <PluginCloseButton onClick={plugin.close} className="absolute right-2 top-1/2 -translate-y-1/2" />}
+      </div>
     );
   }
 
@@ -399,6 +631,7 @@ function Section({
       <button
         onClick={() => setOpen((o) => !o)}
         aria-expanded={expanded}
+        data-guide-section={section.labelKey}
         className={clsx(
           "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium",
           "transition-colors duration-150",
@@ -463,12 +696,12 @@ function InferenceMainMenu({
   const { pathname } = useLocation();
 
   /*
-   * Esta lista é o menu principal do perfil `infer`, e é vista de toda rota -
-   * da documentação, das configurações. Trocar a conversa ativa não é
-   * navegar: fora do `/chat` o clique mudava o estado compartilhado e a tela
-   * continuava a mesma, como se o menu tivesse parado de responder. Quem já
-   * está no chat não é enviado de novo, para não empilhar entradas iguais no
-   * histórico do navegador.
+   * This list is the `infer` profile's main menu, and it is seen from every route -
+   * from the documentation, from the settings. Changing the active conversation is not
+   * navigating: outside `/chat` the click changed the shared state and the screen
+   * stayed the same, as if the menu had stopped responding. Whoever is already
+   * in the chat is not sent again, so as not to stack identical entries in the
+   * browser history.
    */
   const openChat = () => {
     if (pathname !== "/chat") navigate("/chat");
@@ -481,7 +714,8 @@ function InferenceMainMenu({
         collapsed ? "overflow-visible px-2" : "px-3",
       )}
     >
-      <ChatSessionList
+      {/* No conversation yet: the menu is only the network and the rest. */}
+      {hasConversations(sessions) && <ChatSessionList
         sessions={sessions}
         activeId={session?.id ?? ""}
         compact
@@ -497,7 +731,7 @@ function InferenceMainMenu({
           onNavigate?.();
         }}
         onDelete={(id) => deleteSession(id, session?.model ?? null)}
-      />
+      />}
       <div className="mt-2 shrink-0 space-y-1">
         {sections.map((section) => (
           <Section
@@ -522,32 +756,32 @@ export function SidebarContent({
   collapsed?: boolean;
   onToggle?: () => void;
 }) {
-  // O menu segue o perfil: o que este perfil não abre também não é oferecido.
-  // Ver `navForProfile` e a tabela em `lib/access.ts`.
+  // The menu follows the profile: what this profile does not open is not offered either.
+  // See `navForProfile` and the table in `lib/access.ts`.
   const { profile } = useProfile();
-  const { unreadCount } = useNetworkChatUnread(false);
+  const { unreadCount, snapshot } = useNetworkChatUnread(false);
+  const { data: node } = useNode();
+  // Only an administrator answers the lobby, and only while the network has it on.
+  const lobbyUnread = useLobbyUnread(Boolean(node?.authority_level) && snapshot?.lobbyEnabled === true);
   return (
     <>
       <SidebarBrand collapsed={collapsed} onToggle={onToggle} />
       {profile === "infer" ? (
         <InferenceMainMenu onNavigate={onNavigate} collapsed={collapsed} unreadCount={unreadCount} />
       ) : (
-        /* O menu existente permanece intocado para administrador e node. */
-        <nav
-          className={clsx(
-            "flex min-h-0 flex-1 flex-col gap-1 pb-4 pt-[5px] overscroll-y-contain",
-            collapsed ? "overflow-visible px-2" : "overflow-y-auto overflow-x-hidden px-3",
-          )}
-        >
-          {navForProfile(profile).map((s) => (
-            <Section
-              key={s.labelKey}
-              section={s}
-              onNavigate={onNavigate}
-              collapsed={collapsed}
-              badge={s.to === "/network-chat" ? unreadCount : undefined}
-            />
-          ))}
+        <nav className="flex min-h-0 flex-1 flex-col">
+          <ScrollableNav className={clsx("pb-4 pt-[5px]", collapsed ? "px-2" : "px-3")}>
+            {navForProfile(profile).map((s) => (
+              <Section
+                key={s.labelKey}
+                section={s}
+                onNavigate={onNavigate}
+                collapsed={collapsed}
+                badge={s.to === "/network-chat" ? unreadCount : undefined}
+                lobbyBadge={s.to === "/network-chat" ? lobbyUnread : undefined}
+              />
+            ))}
+          </ScrollableNav>
         </nav>
       )}
       <SidebarUtilityControls collapsed={collapsed} />

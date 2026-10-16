@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 /**
- * O estado da criptografia do cluster tem que ser legível de qualquer tela.
+ * The cluster's encryption state has to be readable from any screen.
  *
- * O que se afirma aqui é que o selo diz as duas coisas - cifrado e não cifrado -
- * em vez de aparecer só quando está ligado. Um selo que some quando o TLS cai é
- * pior que nenhum: o operador lê a ausência como "a tela não mostra isso", não
- * como "o cluster está em texto claro".
+ * What is asserted here is that the badge says both things - encrypted and not encrypted -
+ * instead of appearing only when it is on. A badge that vanishes when TLS drops is
+ * worse than none: the operator reads the absence as "the screen does not show this", not
+ * as "the cluster is in clear text".
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
@@ -65,7 +65,7 @@ function mountTopbarWithRoutes() {
             <Topbar />
             <Routes>
               <Route path="/chat" element={<p>chat</p>} />
-              <Route path="/modelos/remotos" element={<p>remotos</p>} />
+              <Route path="/models/remote" element={<p>remotos</p>} />
             </Routes>
           </ProfileProvider>
         </MemoryRouter>
@@ -77,14 +77,14 @@ function mountTopbarWithRoutes() {
 describe("TlsChip", () => {
   afterEach(cleanup);
 
-  it("não renderiza o indicador TLS", () => {
+  it("does not render the TLS indicator", () => {
     nodeData = fakeNode({ tls_required: true });
     const { container } = mount();
     expect(container.querySelector('[data-testid="tls-indicator"]')).toBeNull();
   });
 });
 
-describe("perfil na toolbar", () => {
+describe("profile in the toolbar", () => {
   afterEach(cleanup);
 
   it("shows the network this machine is in, linking to its settings", () => {
@@ -94,7 +94,7 @@ describe("perfil na toolbar", () => {
     const network = screen.getByTestId("topbar-network");
     expect(network.textContent).toBe("POM-SALEM");
     expect(network.getAttribute("aria-label")).toBe("Rede: POM-SALEM");
-    expect(network.getAttribute("href")).toBe("/config/rede");
+    expect(network.getAttribute("href")).toBe("/config/network");
   });
 
   it("shows no network chip while the node reports no network name", () => {
@@ -103,7 +103,7 @@ describe("perfil na toolbar", () => {
     expect(screen.queryByTestId("topbar-network")).toBeNull();
   });
 
-  it("oculta o botão Este nó e mantém o perfil oficial na toolbar", () => {
+  it("hides the This node button and keeps the official profile in the toolbar", () => {
     nodeData = fakeNode({ profile: "infer" });
     mountTopbar("infer");
 
@@ -113,7 +113,7 @@ describe("perfil na toolbar", () => {
     expect(screen.queryByRole("button", { name: /administrador|node|infer/i })).toBeNull();
   });
 
-  it("mostra Larger Window na toolbar nativa quando o WebKit oferece a ponte", () => {
+  it("shows Larger Window in the native toolbar when WebKit offers the bridge", () => {
     nodeData = fakeNode({ profile: "admin" });
     Object.defineProperty(window, "webkit", {
       configurable: true,
@@ -125,7 +125,7 @@ describe("perfil na toolbar", () => {
     delete (window as Window & { webkit?: unknown }).webkit;
   });
 
-  it("oculta o indicador TLS e o hash do build fora do admin", () => {
+  it("hides the TLS indicator and the build hash outside admin", () => {
     nodeData = fakeNode({ profile: "infer", build_commit: "abc123" });
     mountTopbar("infer");
 
@@ -137,7 +137,7 @@ describe("perfil na toolbar", () => {
 describe("menu mobile", () => {
   afterEach(cleanup);
 
-  it("fecha o drawer ao navegar e permite reabri-lo na tela seguinte", () => {
+  it("closes the drawer on navigation and allows reopening it on the next screen", () => {
     mountTopbarWithRoutes();
 
     fireEvent.click(screen.getByRole("button", { name: "Abrir menu" }));

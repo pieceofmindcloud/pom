@@ -80,13 +80,13 @@ pub(super) async fn deploy_endpoint(
         .is_some_and(|slot| slot.needs_copy());
     if req.vision && plan.mmproj_path.is_none() && !vision_arriving {
         return bad(json!({
-            "error": plan.mmproj_reason.as_deref().unwrap_or("este modelo não tem visão: nenhum projetor compatível foi comprovado para o GGUF")
+            "error": plan.mmproj_reason.as_deref().unwrap_or("this model has no vision: no compatible projector was proven for the GGUF")
         }));
     }
 
-    // A checagem de shardabilidade lê o GGUF no primary; o deploy re-faz tudo
-    // sobre a varredura fresca, então também re-valida aqui — não confia no
-    // preview que a tela mostrou.
+    // The shardability check reads the GGUF on the primary; the deploy redoes everything
+    // on the fresh survey, so it also re-validates here - it does not trust the
+    // preview the screen showed.
     if req.kind == DeployKind::TensorParallel && plan.blocked.is_none() && !has_tp_parts(&machines)
     {
         if let Some(tp) = &req.tp {
@@ -96,6 +96,22 @@ pub(super) async fn deploy_endpoint(
         }
     }
 
+    if plan.blocked.is_none() {
+        if let Some(service) = params.inference_service.as_deref() {
+            let targets: Vec<String> = plan
+                .steps
+                .iter()
+                .map(|step| step.target_node_id.clone())
+                .collect();
+            plan.blocked = crate::plugin_engine::deploy_block(
+                &state,
+                service,
+                req.kind == DeployKind::Whole,
+                &targets,
+            )
+            .await;
+        }
+    }
     if let Some(reason) = plan.blocked {
         return (
             axum::http::StatusCode::BAD_REQUEST,
@@ -106,24 +122,24 @@ pub(super) async fn deploy_endpoint(
     if plan.steps.is_empty() {
         return (
             axum::http::StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "nada para implantar" })),
+            Json(json!({ "error": "nothing to deploy" })),
         )
             .into_response();
     }
 
-    // A identidade é resolvida antes de criar o job e antes de tocar em um
-    // peer. Se o GGUF não puder ser provado por hash, ou a fatia não trouxer
-    // pom_id, o operador recebe a recusa na própria ação de implantar.
+    // The identity is resolved before the job is created and before touching a
+    // peer. If the GGUF cannot be proven by hash, or the slice carries no
+    // pom_id, the operator gets the refusal on the deploy action itself.
     let identity = match resolve_requested_model_identity(&state, &plan, &machines).await {
         Ok(identity) => identity,
         Err(error) => return bad(json!({ "error": error })),
     };
 
-    // Reaproveitar o `deploy_id` de uma implantação de mesma **forma**: mesmo
-    // `kind`, mesma identidade de modelo provada e o mesmo conjunto de
-    // `(node_id, faixa, rank)`. Sem prova de identidade não deduplica - cunha um
-    // id novo, como antes. Trocar de máquina ou de faixa muda a forma e também
-    // cunha id novo (isso é assunto do Deploy Studio, não uma versão).
+    // Reuse the `deploy_id` of a deployment of the same **shape**: same
+    // `kind`, same proven model identity and the same set of
+    // `(node_id, range, rank)`. Without proof of identity it does not deduplicate - it mints a
+    // new id, as before. Changing machine or range changes the shape and also
+    // mints a new id (that is a Deploy Studio matter, not a version).
     let ranges: Vec<(String, u32, u32, Option<u32>)> = if !plan.tp_targets.is_empty() {
         plan.tp_targets
             .iter()
@@ -148,8 +164,8 @@ pub(super) async fn deploy_endpoint(
             .deployments()
             .ok()
             .as_deref()
-            .and_then(|todas| {
-                crate::deployment::matching_shape(todas, record_kind(req.kind), proof, &ranges)
+            .and_then(|all| {
+                crate::deployment::matching_shape(all, record_kind(req.kind), proof, &ranges)
                     .map(|d| d.deploy_id.clone())
             }),
         None => None,
@@ -159,22 +175,26 @@ pub(super) async fn deploy_endpoint(
     // A whole model is one machine, and "em 1 nós" is the kind of seam that
     // makes an operator wonder what else was written for the other case.
     let title = format!(
-        "Implantar {} em {} {}",
+        "Deploy {} on {} {}",
         deployment_name,
         plan.steps.len(),
-        if plan.steps.len() == 1 { "nó" } else { "nós" }
+        if plan.steps.len() == 1 {
+            "node"
+        } else {
+            "nodes"
+        }
     );
     jobs().write().await.insert(
         job_id.clone(),
-        new_job(&job_id, "deploy", title, "preparando"),
+        new_job(&job_id, "deploy", title, "preparing"),
     );
 
-    // Cunhado antes de subir nada: é o nome desta implantação, e ele vai junto
-    // com cada `apply` para que o nó saiba de que conjunto passou a fazer parte.
+    // Minted before anything is brought up: it is the name of this deployment, and it goes along
+    // with every `apply` so the node knows which set it became part of.
     let record_plan = match reuse_id {
         Some(id) => match find_record(&state, &id).await {
-            Some(existente) => RecordPlan::ReuseVersion(Box::new(existente)),
-            // O registro sumiu entre o `matching_shape` e agora: trata como novo.
+            Some(existing) => RecordPlan::ReuseVersion(Box::new(existing)),
+            // The record vanished between `matching_shape` and now: treat it as new.
             None => RecordPlan::New {
                 deploy_id: crate::deployment::new_deploy_id(),
             },
@@ -199,11 +219,22 @@ pub(super) async fn deploy_endpoint(
     );
     let id = job_id.clone();
     tokio::spawn(async move {
-        match run(state, plan, params, identity, record_plan, req.vision, &id).await {
-            Ok(()) => set_job(&id, "done", "pronto", "o modelo está atendendo na rede").await,
+        match run(
+            state,
+            plan,
+            params,
+            identity,
+            record_plan,
+            req.vision,
+            req.keep_existing,
+            &id,
+        )
+        .await
+        {
+            Ok(()) => set_job(&id, "done", "pronto", "the model is serving on the network").await,
             Err(e) => {
-                warn!("implantação falhou: {e}");
-                set_job(&id, "failed", "falhou", &e).await;
+                warn!("deployment failed: {e}");
+                set_job(&id, "failed", "failed", &e).await;
             }
         }
     });
@@ -224,23 +255,23 @@ pub(super) async fn deploy_endpoint(
 /// whose range happens to be the entire model, so it comes out as a plain
 /// target with `skip_split` — which is also what makes the receiving peer a
 /// `single_peer`, running without hidden-state extraction.
-/// Validações estáticas de um grupo de tensor parallelism, antes da checagem
-/// de shardabilidade (que lê o GGUF). Devolve `Some(motivo)` quando o deploy não
-/// pode nem começar: tamanho inválido, primary/workers fora do cluster, alguém
-/// sem o modelo inteiro, ou primary sem URL de inferência derivável.
+/// Static validations of a tensor parallelism group, before the shardability
+/// check (which reads the GGUF). Returns `Some(reason)` when the deploy cannot
+/// even start: invalid size, primary/workers outside the cluster, someone
+/// without the whole model, or a primary without a derivable inference URL.
 pub(super) fn tp_group_checks(tp: &TpLaunch, machines: &[Machine], group: &str) -> Option<String> {
     if tp.size < 2 {
-        return Some("um grupo tensor-parallel precisa de pelo menos 2 ranks".to_string());
+        return Some("a tensor-parallel group needs at least 2 ranks".to_string());
     }
     let Some(primary) = machines.iter().find(|m| m.node_id == tp.primary_node_id) else {
         return Some(format!(
-            "o primary {} não está no cluster",
+            "the primary {} is not in the cluster",
             tp.primary_node_id
         ));
     };
     if primary.inference_url.is_none() {
         return Some(format!(
-            "não foi possível descobrir a URL de inferência do primary {} (ele precisa anunciar a porta de inferência)",
+            "could not find the inference URL of the primary {} (it must announce the inference port)",
             primary.label()
         ));
     }
@@ -248,7 +279,7 @@ pub(super) fn tp_group_checks(tp: &TpLaunch, machines: &[Machine], group: &str) 
     let expected_workers = (tp.size - 1) as usize;
     if tp.worker_node_ids.len() != expected_workers {
         return Some(format!(
-            "são {} ranks, então o grupo precisa de {} worker{} (você marcou {})",
+            "there are {} ranks, so the group needs {} worker{} (you marked {})",
             tp.size,
             expected_workers,
             if expected_workers == 1 { "" } else { "s" },
@@ -261,17 +292,17 @@ pub(super) fn tp_group_checks(tp: &TpLaunch, machines: &[Machine], group: &str) 
     let mut seen = std::collections::HashSet::new();
     for worker_id in &tp.worker_node_ids {
         if worker_id == &tp.primary_node_id {
-            return Some("um worker não pode ser o próprio primary".to_string());
+            return Some("a worker cannot be the primary itself".to_string());
         }
         if !seen.insert(worker_id.clone()) {
-            return Some(format!("o worker {worker_id} foi marcado duas vezes"));
+            return Some(format!("worker {worker_id} was marked twice"));
         }
         let Some(worker) = machines.iter().find(|m| &m.node_id == worker_id) else {
-            return Some(format!("o worker {worker_id} não está no cluster"));
+            return Some(format!("worker {worker_id} is not in the cluster"));
         };
         if worker.inference_url.is_none() {
             return Some(format!(
-                "não foi possível descobrir a URL de inferência do worker {}",
+                "could not find the inference URL of worker {}",
                 worker.label()
             ));
         }
@@ -286,7 +317,7 @@ pub(super) fn tp_group_checks(tp: &TpLaunch, machines: &[Machine], group: &str) 
                 .any(|machine| machine.holds_tp(0, end, rank, tp.size).is_some())
             {
                 return Some(format!(
-                    "rank {}of{} do grupo TP {group} não existe em máquina nenhuma do cluster",
+                    "rank {}of{} of TP group {group} exists on no machine of the cluster",
                     rank + 1,
                     tp.size
                 ));
@@ -297,7 +328,7 @@ pub(super) fn tp_group_checks(tp: &TpLaunch, machines: &[Machine], group: &str) 
 
     if !primary.held.iter().any(|s| s.start_layer == 0) {
         return Some(format!(
-            "o primary {} não tem o modelo inteiro {group}",
+            "the primary {} does not have the whole model {group}",
             primary.label()
         ));
     }
@@ -305,10 +336,10 @@ pub(super) fn tp_group_checks(tp: &TpLaunch, machines: &[Machine], group: &str) 
         let worker = machines
             .iter()
             .find(|m| &m.node_id == worker_id)
-            .expect("worker validado");
+            .expect("worker validated");
         if !worker.held.iter().any(|s| s.start_layer == 0) {
             return Some(format!(
-                "o worker {} não tem o modelo inteiro {group} para extrair o shard",
+                "worker {} does not have the whole model {group} to extract the shard from",
                 worker.label()
             ));
         }
@@ -322,10 +353,10 @@ pub(super) fn has_tp_parts(machines: &[Machine]) -> bool {
         .any(|machine| machine.held.iter().any(|shard| shard.tp_size.is_some()))
 }
 
-/// Resolve o arquivo de cada rank TP pré-fatiado. O alvo pode já ter o rank;
-/// nesse caso não há transferência. Se ainda não tiver, escolhemos qualquer
-/// peer que possua exatamente o mesmo `tp_rank` e carregamos o hash e caminho
-/// desse peer para a transferência por conteúdo.
+/// Resolves the file of each pre-sliced TP rank. The target may already have the rank;
+/// in that case there is no transfer. If it does not yet, we pick any
+/// peer that has exactly the same `tp_rank` and carry that peer's hash and path
+/// over for the content-based transfer.
 pub(super) fn tp_targets_for(
     tp: &TpLaunch,
     machines: &[Machine],
@@ -361,12 +392,12 @@ pub(super) fn tp_targets_for(
         let file = held.or_else(|| source.and_then(|m| m.holds_tp(0, end_layer, rank, tp.size)));
         let ready = held.is_some();
         let problem = if target_node_id.is_empty() {
-            Some(format!("rank {}of{} está sem máquina", rank + 1, tp.size))
+            Some(format!("rank {}of{} has no machine", rank + 1, tp.size))
         } else if target.is_none() {
-            Some(format!("a máquina {target_node_id} não está no cluster"))
+            Some(format!("machine {target_node_id} is not in the cluster"))
         } else if file.is_none() {
             Some(format!(
-                "rank {}of{} do grupo TP {group} não existe em máquina nenhuma do cluster",
+                "rank {}of{} of TP group {group} exists on no machine of the cluster",
                 rank + 1,
                 tp.size
             ))
@@ -422,21 +453,21 @@ pub(super) fn tp_identity(
         size,
         rank,
         rank0_url: rank0.map(|m| m.url.clone()),
-        // O certificado da coletiva é pinado por este id; sem ele o cliente
-        // padrão recusa o autoassinado do cluster e o all-reduce falha calado.
+        // The collective's certificate is pinned by this id; without it the default client
+        // refuses the cluster's self-signed one and the all-reduce fails silently.
         rank0_node_id: rank0.map(|m| m.node_id.clone()),
-        // Todo membro recebe a lista inteira: o rank 0 usa para transmitir o
-        // decode, e os demais para saber quem são.
+        // Every member receives the whole list: rank 0 uses it to broadcast the
+        // decode, and the others to know who they are.
         members: members.to_vec(),
     }
 }
 
-/// Os membros do grupo TP em ordem de rank (0 = primary), com a URL de
-/// inferência de cada um.
+/// The members of the TP group in rank order (0 = primary), with the
+/// inference URL of each.
 ///
-/// Recusa cedo quem não anuncia porta de inferência: sem ela o rank 0 não teria
-/// como disparar o decode daquele rank, e o grupo travaria na primeira barreira
-/// em vez de falhar aqui.
+/// Refuses early whoever does not announce an inference port: without it rank 0 would have no
+/// way to trigger that rank's decode, and the group would hang on the first barrier
+/// instead of failing here.
 pub(super) fn tp_members(
     tp: &TpLaunch,
     machines: &[Machine],
@@ -445,10 +476,10 @@ pub(super) fn tp_members(
         let m = machines
             .iter()
             .find(|m| m.node_id == node_id)
-            .ok_or_else(|| format!("{node_id} não está no cluster"))?;
+            .ok_or_else(|| format!("{node_id} is not in the cluster"))?;
         let url = m.inference_url.clone().ok_or_else(|| {
             format!(
-                "não foi possível descobrir a URL de inferência de {} (ele precisa anunciar a porta de inferência)",
+                "could not find the inference URL of {} (it must announce the inference port)",
                 m.label()
             )
         })?;
@@ -487,8 +518,8 @@ pub(super) fn launch_targets(
     tp: Option<&TpLaunch>,
     tp_targets: &[TpTarget],
 ) -> Result<Vec<LaunchTarget>, String> {
-    // A URL da coletiva (rank 0) é derivada do primary, não digitada: é a porta
-    // de inferência que o próprio nó anuncia. `tp.is_some()` ⟺ `rank0_url.is_some()`.
+    // The collective's URL (rank 0) is derived from the primary, not typed: it is the inference
+    // port the node itself announces. `tp.is_some()` ⟺ `rank0_url.is_some()`.
     let rank0_url = tp
         .map(|t| {
             machines
@@ -497,14 +528,14 @@ pub(super) fn launch_targets(
                 .and_then(|m| m.inference_url.clone())
                 .ok_or_else(|| {
                     format!(
-                        "não foi possível descobrir a URL de inferência do primary {}",
+                        "could not find the inference URL of the primary {}",
                         t.primary_node_id
                     )
                 })
         })
         .transpose()?;
     let _ = rank0_url;
-    let membros = match tp {
+    let members = match tp {
         Some(t) => tp_members(t, machines)?,
         None => Vec::new(),
     };
@@ -515,7 +546,7 @@ pub(super) fn launch_targets(
             let machine = machines
                 .iter()
                 .find(|machine| machine.node_id == target.target_node_id)
-                .ok_or_else(|| format!("{} não está no cluster", target.target_node_id))?;
+                .ok_or_else(|| format!("{} is not in the cluster", target.target_node_id))?;
             let held = machine
                 .holds_tp(
                     target.start_layer,
@@ -525,7 +556,7 @@ pub(super) fn launch_targets(
                 )
                 .ok_or_else(|| {
                     format!(
-                        "{} não achou o rank {}of{} depois da cópia",
+                        "{} did not find rank {}of{} after the copy",
                         machine.label(),
                         target.rank + 1,
                         target.size
@@ -553,7 +584,7 @@ pub(super) fn launch_targets(
                     } else {
                         "worker"
                     },
-                    &membros,
+                    &members,
                 )),
                 mmproj_path: (target.rank == 0)
                     .then(|| held.mmproj_path.clone())
@@ -567,9 +598,9 @@ pub(super) fn launch_targets(
         return Ok(targets);
     }
 
-    // Réplicas da mesma faixa ocupam o mesmo estágio lógico do pipeline. Cada
-    // cópia precisa receber o mesmo peer_index/peer_count para exportar o
-    // residual exatamente como a rota principal daquele estágio.
+    // Replicas of the same range occupy the same logical pipeline stage. Each
+    // copy must receive the same peer_index/peer_count to export the
+    // residual exactly like that stage's main route.
     let mut pipeline_ranges: Vec<(u32, u32)> = Vec::new();
     for step in steps {
         let range = (step.start_layer, step.end_layer);
@@ -603,7 +634,7 @@ pub(super) fn launch_targets(
                     .map(|s| s.path.clone())
                     .ok_or_else(|| {
                         format!(
-                            "{} não achou a fatia L{}-{} depois da cópia",
+                            "{} did not find slice L{}-{} after the copy",
                             step.target_host, part.start_layer, part.end_layer
                         )
                     })?;
@@ -616,7 +647,7 @@ pub(super) fn launch_targets(
             let anchor = merge
                 .first()
                 .map(|m| m.source_model_path.clone())
-                .ok_or_else(|| format!("{} não tem fatias para juntar", step.target_host))?;
+                .ok_or_else(|| format!("{} has no slices to merge", step.target_host))?;
             let (peer_index, peer_count) = pipeline_fields(step);
 
             targets.push(LaunchTarget {
@@ -629,8 +660,8 @@ pub(super) fn launch_targets(
                 end_layer: step.end_layer,
                 // Nothing to cut: the merge produces the exact range.
                 skip_split: true,
-                // A junção produz um arquivo novo, cujo hash ninguém conhece
-                // antes de juntar: quem junta é que o nomeia.
+                // The merge produces a new file, whose hash nobody knows
+                // before merging: whoever merges is the one that names it.
                 part_sha256: None,
                 merge: Some(merge),
                 n_gpu_layers: step.n_gpu_layers,
@@ -638,7 +669,7 @@ pub(super) fn launch_targets(
                 no_embeddings: None,
                 peer_index,
                 peer_count,
-                tp: tp.map(|t| tp_identity(t.size, &step.name, 0, "primary", &membros)),
+                tp: tp.map(|t| tp_identity(t.size, &step.name, 0, "primary", &members)),
                 mmproj_path: if step.start_layer == 0 {
                     target_machine.and_then(|machine| {
                         step.parts.first().and_then(|part| {
@@ -662,7 +693,7 @@ pub(super) fn launch_targets(
             .and_then(|m| m.holds_ready(step.start_layer, step.end_layer))
             .ok_or_else(|| {
                 format!(
-                    "{} não achou {} depois da cópia",
+                    "{} did not find {} after the copy",
                     step.target_host,
                     kind.unit(&step.name, step.start_layer, step.end_layer)
                 )
@@ -684,7 +715,7 @@ pub(super) fn launch_targets(
             no_embeddings: None,
             peer_index,
             peer_count,
-            tp: tp.map(|t| tp_identity(t.size, &step.name, 0, "primary", &membros)),
+            tp: tp.map(|t| tp_identity(t.size, &step.name, 0, "primary", &members)),
             mmproj_path: (step.start_layer == 0)
                 .then(|| held.mmproj_path.clone())
                 .flatten(),
@@ -695,22 +726,22 @@ pub(super) fn launch_targets(
         });
     }
 
-    // Grupo de tensor parallelism: além do primary (o step do modelo inteiro),
-    // cada worker vira um alvo que extrai o próprio shard de tensor.
+    // Tensor parallelism group: besides the primary (the whole-model step),
+    // each worker becomes a target that extracts its own tensor shard.
     if let Some(tp) = tp {
-        let head = steps.first().ok_or("plano TP sem step")?;
+        let head = steps.first().ok_or("TP plan without a step")?;
         for (i, worker_id) in tp.worker_node_ids.iter().enumerate() {
             let rank = (i + 1) as u32;
             let worker_machine = machines
                 .iter()
                 .find(|m| m.node_id == *worker_id)
-                .ok_or_else(|| format!("worker {worker_id} não está no cluster"))?;
+                .ok_or_else(|| format!("worker {worker_id} is not in the cluster"))?;
             let path = worker_machine
                 .holds_ready(head.start_layer, head.end_layer)
                 .map(|s| s.path.clone())
                 .ok_or_else(|| {
                     format!(
-                        "{} não tem o modelo para extrair o shard de tensor",
+                        "{} does not have the model to extract the tensor shard from",
                         worker_machine.hostname
                     )
                 })?;
@@ -720,8 +751,8 @@ pub(super) fn launch_targets(
                 start_layer: head.start_layer,
                 end_layer: head.end_layer,
                 skip_split: true,
-                // O shard de tensor deste rank ainda vai ser extraído aqui; o
-                // hash sai do corte.
+                // This rank's tensor shard is still to be extracted here; the
+                // hash comes out of the cut.
                 part_sha256: None,
                 merge: None,
                 n_gpu_layers: head.n_gpu_layers,
@@ -729,7 +760,7 @@ pub(super) fn launch_targets(
                 no_embeddings: None,
                 peer_index: None,
                 peer_count: None,
-                tp: Some(tp_identity(tp.size, &head.name, rank, "worker", &membros)),
+                tp: Some(tp_identity(tp.size, &head.name, rank, "worker", &members)),
                 mmproj_path: None,
                 mtp_draft_path: None,
                 mtp_draft_file: None,
@@ -806,8 +837,8 @@ pub(super) async fn whole_layer_options_for_plan(
                 total_layers,
                 cuts: Vec::new(),
                 granularity: None,
-                rule: "não foi possível confirmar as regras reais deste GGUF".to_string(),
-                reason: Some(format!("{} não está no cluster", machine.label())),
+                rule: "could not confirm the real rules of this GGUF".to_string(),
+                reason: Some(format!("{} is not in the cluster", machine.label())),
             });
         };
         let request_body = crate::webui::ModelLayerOptionsRequest { path };
@@ -821,7 +852,7 @@ pub(super) async fn whole_layer_options_for_plan(
             .await
             .map_err(|error| {
                 format!(
-                    "não foi possível ler as regras de fatiamento em {}: {error:#}",
+                    "could not read the slicing rules on {}: {error:#}",
                     machine.label()
                 )
             });
@@ -833,7 +864,7 @@ pub(super) async fn whole_layer_options_for_plan(
                     total_layers,
                     cuts: Vec::new(),
                     granularity: None,
-                    rule: "não foi possível confirmar as regras reais deste GGUF".to_string(),
+                    rule: "could not confirm the real rules of this GGUF".to_string(),
                     reason: Some(error),
                 });
             }
@@ -847,10 +878,8 @@ pub(super) async fn whole_layer_options_for_plan(
                     total_layers,
                     cuts: Vec::new(),
                     granularity: None,
-                    rule: "não foi possível confirmar as regras reais deste GGUF".to_string(),
-                    reason: Some(format!(
-                        "resposta inválida das regras de fatiamento: {error}"
-                    )),
+                    rule: "could not confirm the real rules of this GGUF".to_string(),
+                    reason: Some(format!("invalid slicing rules response: {error}")),
                 });
             }
         };
@@ -858,11 +887,11 @@ pub(super) async fn whole_layer_options_for_plan(
             Err(body
                 .get("error")
                 .and_then(|value| value.as_str())
-                .unwrap_or("o peer recusou a leitura das regras de fatiamento")
+                .unwrap_or("the peer refused the reading of the slicing rules")
                 .to_string())
         } else {
             serde_json::from_value::<ModelLayerOptions>(body)
-                .map_err(|error| format!("resposta inválida das regras de fatiamento: {error}"))
+                .map_err(|error| format!("invalid slicing rules response: {error}"))
         }
     };
     match result {
@@ -879,7 +908,7 @@ pub(super) async fn whole_layer_options_for_plan(
             total_layers,
             cuts: Vec::new(),
             granularity: None,
-            rule: "não foi possível confirmar as regras reais deste GGUF".to_string(),
+            rule: "could not confirm the real rules of this GGUF".to_string(),
             reason: Some(format!("{}: {}", group, error)),
         }),
     }
@@ -892,10 +921,7 @@ pub(super) fn add_virtual_whole_slices(
     options: &WholeLayerOptions,
 ) -> Result<(), String> {
     if let Some(reason) = &options.reason {
-        return Err(format!(
-            "não é possível escolher camadas de {}: {}",
-            group, reason
-        ));
+        return Err(format!("cannot choose layers of {}: {}", group, reason));
     }
     let cut = options
         .cuts
@@ -903,19 +929,17 @@ pub(super) fn add_virtual_whole_slices(
         .find(|cut| cut.end_layer == selection.end_layer)
         .ok_or_else(|| {
             format!(
-                "o corte na camada L{} não respeita as regras reais do GGUF",
+                "the cut at layer L{} does not respect the real rules of the GGUF",
                 selection.end_layer
             )
         })?;
     if selection.source_node_id == selection.target_node_id {
-        return Err(
-            "a máquina de origem e a máquina de destino precisam ser diferentes".to_string(),
-        );
+        return Err("the source machine and the destination machine must be different".to_string());
     }
     let source = machines
         .iter()
         .find(|machine| machine.node_id == selection.source_node_id)
-        .ok_or_else(|| "a máquina que propõe o modelo não está no cluster".to_string())?;
+        .ok_or_else(|| "the machine proposing the model is not in the cluster".to_string())?;
     let whole = source
         .held
         .iter()
@@ -927,7 +951,7 @@ pub(super) fn add_virtual_whole_slices(
         .cloned()
         .ok_or_else(|| {
             format!(
-                "{} não tem o modelo inteiro selecionado para fatiar",
+                "{} does not have the selected whole model to slice",
                 source.label()
             )
         })?;
@@ -935,7 +959,7 @@ pub(super) fn add_virtual_whole_slices(
         .iter()
         .any(|machine| machine.node_id == selection.target_node_id)
     {
-        return Err("a máquina de destino não está no cluster".to_string());
+        return Err("the destination machine is not in the cluster".to_string());
     }
 
     let mut ranges = vec![(0, cut.end_layer, cut.size_bytes)];
@@ -949,7 +973,7 @@ pub(super) fn add_virtual_whole_slices(
     let source = machines
         .iter_mut()
         .find(|machine| machine.node_id == selection.source_node_id)
-        .expect("origem validada");
+        .expect("source validated");
     for (start_layer, end_layer, size_bytes) in ranges {
         if source.holds_ready(start_layer, end_layer).is_some()
             || source
@@ -997,7 +1021,7 @@ pub(super) async fn materialize_slices_on_peer(
         .await
         .into_iter()
         .find(|peer| peer.node_id == source_node_id)
-        .ok_or_else(|| format!("a máquina de origem {source_node_id} não está no cluster"))?;
+        .ok_or_else(|| format!("the source machine {source_node_id} is not in the cluster"))?;
     let response = state
         .control_post_json(
             &peer,
@@ -1006,16 +1030,11 @@ pub(super) async fn materialize_slices_on_peer(
             Duration::from_secs(3600),
         )
         .await
-        .map_err(|error| {
-            format!(
-                "não foi possível fatiar o modelo em {}: {error:#}",
-                peer.hostname
-            )
-        })?;
+        .map_err(|error| format!("could not slice the model on {}: {error:#}", peer.hostname))?;
     let status = response.status();
     let body: serde_json::Value = response.json().await.map_err(|error| {
         format!(
-            "{} respondeu uma materialização inválida: {error}",
+            "{} answered an invalid materialization: {error}",
             peer.hostname
         )
     })?;
@@ -1023,15 +1042,11 @@ pub(super) async fn materialize_slices_on_peer(
         return Err(body
             .get("error")
             .and_then(|value| value.as_str())
-            .unwrap_or("o peer recusou o fatiamento local")
+            .unwrap_or("the peer refused the local slicing")
             .to_string());
     }
-    serde_json::from_value(body).map_err(|error| {
-        format!(
-            "resposta inválida do fatiamento em {}: {error}",
-            peer.hostname
-        )
-    })
+    serde_json::from_value(body)
+        .map_err(|error| format!("invalid slicing response from {}: {error}", peer.hostname))
 }
 
 pub(super) async fn model_identity_on_peer(
@@ -1048,7 +1063,7 @@ pub(super) async fn model_identity_on_peer(
         .await
         .into_iter()
         .find(|peer| peer.node_id == node_id)
-        .ok_or_else(|| format!("peer {node_id} não está no cluster"))?;
+        .ok_or_else(|| format!("peer {node_id} is not in the cluster"))?;
     let request_body = crate::webui::ModelIdentityRequest {
         path: path.to_string(),
         hash,
@@ -1056,21 +1071,21 @@ pub(super) async fn model_identity_on_peer(
     let response = state
         .control_post_json(&peer, "/api/ui/model-identity", &request_body, PEER_TIMEOUT)
         .await
-        .map_err(|e| format!("não foi possível consultar a identidade em {node_id}: {e:#}"))?;
+        .map_err(|e| format!("could not query the identity on {node_id}: {e:#}"))?;
     let status = response.status();
     let body: serde_json::Value = response
         .json()
         .await
-        .map_err(|e| format!("resposta de identidade inválida de {node_id}: {e}"))?;
+        .map_err(|e| format!("invalid identity response from {node_id}: {e}"))?;
     if !status.is_success() {
         return Err(body
             .get("error")
             .and_then(|value| value.as_str())
             .map(str::to_string)
-            .unwrap_or_else(|| format!("peer respondeu HTTP {status}")));
+            .unwrap_or_else(|| format!("peer answered HTTP {status}")));
     }
     serde_json::from_value(body)
-        .map_err(|e| format!("resposta de identidade inválida de {node_id}: {e}"))
+        .map_err(|e| format!("invalid identity response from {node_id}: {e}"))
 }
 
 pub(super) async fn resolve_requested_model_identity(
@@ -1092,7 +1107,7 @@ pub(super) async fn resolve_requested_model_identity(
     let paths = planned_model_paths(plan);
     if paths.is_empty() {
         return Err(format!(
-            "identidade indisponível: o plano de {} não informa o arquivo selecionado",
+            "identity unavailable: the plan of {} does not name the selected file",
             plan.group
         ));
     }
@@ -1104,7 +1119,7 @@ pub(super) async fn resolve_requested_model_identity(
             DeployKind::TensorParallel if plan.tp_targets.is_empty() => true,
             DeployKind::Shards | DeployKind::TensorParallel => {
                 return Err(format!(
-                    "identidade indisponível: o plano de {} usa fatias sem pom_id; não é seguro provar o mesmo modelo por hash de uma fatia",
+                    "identity unavailable: the plan of {} uses slices without a pom_id; it is not safe to prove the same model by the hash of a slice",
                     plan.group
                 ));
             }
@@ -1118,7 +1133,7 @@ pub(super) async fn resolve_requested_model_identity(
         })
     } else if pom_ids.len() > 1 {
         return Err(format!(
-            "identidade indisponível: o plano de {} mistura mais de um pom_id",
+            "identity unavailable: the plan of {} mixes more than one pom_id",
             plan.group
         ));
     } else {
@@ -1136,16 +1151,16 @@ pub(super) async fn resolve_requested_model_identity(
                     .await
                     .map_err(|fallback| {
                         format!(
-                            "identidade indisponível para {}: {} (reserva de caminho também falhou: {})",
+                            "identity unavailable for {}: {} (the path fallback also failed: {})",
                             plan.group,
-                            first_hash_error.as_deref().unwrap_or("hash não calculado"),
+                            first_hash_error.as_deref().unwrap_or("hash not computed"),
                             fallback
                         )
                     })?
             }
             Err(error) => {
                 return Err(format!(
-                    "identidade indisponível para {} em {}: {}",
+                    "identity unavailable for {} on {}: {}",
                     plan.group, node_id, error
                 ));
             }
@@ -1160,7 +1175,7 @@ pub(super) async fn resolve_requested_model_identity(
         info!(
             model = %plan.group,
             error = ?first_hash_error,
-            "usando caminho canônico como prova de reserva no peer de origem"
+            "using the canonical path as fallback proof on the source peer"
         );
     }
 
@@ -1190,14 +1205,14 @@ pub(super) async fn peer_node_snapshot(
     let response = state
         .control_get(peer, "/api/ui/node", PEER_TIMEOUT)
         .await
-        .map_err(|e| format!("{} não respondeu: {e:#}", peer.hostname))?;
+        .map_err(|e| format!("{} did not answer: {e:#}", peer.hostname))?;
     let status = response.status();
     let body: serde_json::Value = response
         .json()
         .await
-        .map_err(|e| format!("{} respondeu estado inválido: {e}", peer.hostname))?;
+        .map_err(|e| format!("{} answered an invalid state: {e}", peer.hostname))?;
     if !status.is_success() {
-        return Err(format!("{} respondeu HTTP {status}", peer.hostname));
+        return Err(format!("{} answered HTTP {status}", peer.hostname));
     }
     Ok(body)
 }
@@ -1236,7 +1251,7 @@ pub(super) async fn wait_for_peer_idle_with_timeout(
         let now = tokio::time::Instant::now();
         if now >= deadline {
             return Err(format!(
-                "{} não ficou ocioso dentro do limite de {}s; ficou ocupado: {}",
+                "{} did not become idle within the limit of {}s; it stayed busy: {}",
                 if peer.hostname.is_empty() {
                     &peer.node_id
                 } else {
@@ -1250,9 +1265,9 @@ pub(super) async fn wait_for_peer_idle_with_timeout(
     }
 }
 
-/// True quando o nó tem um `NodeConfig` carregado e o servidor de inferência
-/// está `ready` - o inverso de `node_is_idle`, para o `redeploy` esperar cada
-/// máquina *voltar a servir* antes de mexer na próxima.
+/// True when the node has a loaded `NodeConfig` and the inference server
+/// is `ready` - the inverse of `node_is_idle`, so `redeploy` waits for each
+/// machine to *serve again* before touching the next.
 pub(super) fn node_is_serving_ready(snapshot: &serde_json::Value) -> bool {
     !snapshot
         .get("config")
@@ -1279,7 +1294,7 @@ pub(super) async fn wait_for_peer_serving_with_timeout(
         let now = tokio::time::Instant::now();
         if now >= deadline {
             return Err(format!(
-                "{} não voltou a servir dentro do limite de {}s; {}",
+                "{} did not resume serving within the limit of {}s; {}",
                 if peer.hostname.is_empty() {
                     &peer.node_id
                 } else {
@@ -1297,6 +1312,9 @@ pub(super) async fn prepare_existing_model(
     state: &GatewayState,
     group: &str,
     desired: &RequestedModelIdentity,
+    // `Some`: only these machines are released; the others that serve the
+    // same model keep their deployment.
+    only: Option<&[String]>,
     job_id: &str,
 ) -> Result<(), String> {
     let peers = state.all_peers().await;
@@ -1305,11 +1323,14 @@ pub(super) async fn prepare_existing_model(
     for peer in peers.into_iter().filter(|peer| peer.total_layers > 0) {
         if peer.model.is_empty() {
             return Err(format!(
-                "não foi possível provar a identidade antes de implantar {}: {} está ocupado, mas não anuncia qual modelo está servindo",
+                "could not prove the identity before deploying {}: {} is busy, but does not announce which model it is serving",
                 group, peer.hostname
             ));
         }
         if peer.model != group {
+            continue;
+        }
+        if only.is_some_and(|ids| !ids.contains(&peer.node_id)) {
             continue;
         }
 
@@ -1337,7 +1358,7 @@ pub(super) async fn prepare_existing_model(
 
         let snapshot = peer_node_snapshot(state, &peer).await.map_err(|error| {
             format!(
-                "não foi possível provar a identidade do modelo em {}: {}",
+                "could not prove the identity of the model on {}: {}",
                 peer.hostname, error
             )
         })?;
@@ -1345,7 +1366,7 @@ pub(super) async fn prepare_existing_model(
             .await
             .map_err(|error| {
                 format!(
-                    "não foi possível provar a identidade do modelo em {}: {}",
+                    "could not prove the identity of the model on {}: {}",
                     peer.hostname, error
                 )
             })?;
@@ -1367,7 +1388,7 @@ pub(super) async fn prepare_existing_model(
             to_release.push(peer);
         } else {
             return Err(format!(
-                "não foi possível provar que o modelo ativo em {} é o mesmo que {}: o registro não tem hash/pom_id e o caminho canônico não coincide",
+                "could not prove that the active model on {} is the same as {}: the record has no hash/pom_id and the canonical path does not match",
                 peer.hostname, group
             ));
         }
@@ -1380,9 +1401,9 @@ pub(super) async fn prepare_existing_model(
     set_job(
         job_id,
         "running",
-        "desimplantando",
+        "undeploying",
         &format!(
-            "liberando {} máquina(s) que já servem este modelo",
+            "releasing {} machine(s) that already serve this model",
             to_release.len()
         ),
     )
@@ -1406,7 +1427,7 @@ pub(super) async fn prepare_existing_model(
         .collect();
     if !failures.is_empty() {
         return Err(format!(
-            "a nova implantação foi recusada porque a desimplantação falhou: {}",
+            "the new deployment was refused because the undeploy failed: {}",
             failures.join("; ")
         ));
     }
@@ -1414,8 +1435,8 @@ pub(super) async fn prepare_existing_model(
     set_job(
         job_id,
         "running",
-        "aguardando recursos ociosos",
-        "esperando as máquinas liberarem memória e encerrarem a inferência",
+        "waiting for idle resources",
+        "waiting for the machines to free memory and stop inference",
     )
     .await;
     let waits = futures::future::join_all(to_release.iter().map(|peer| async move {
@@ -1436,18 +1457,18 @@ pub(super) async fn prepare_existing_model(
         .collect();
     if !failures.is_empty() {
         return Err(format!(
-            "a nova implantação foi recusada porque as máquinas não ficaram ociosas: {}",
+            "the new deployment was refused because the machines did not become idle: {}",
             failures.join("; ")
         ));
     }
     Ok(())
 }
 
-/// De onde sai o registro que `run` publica ao fim de um `launch` bem-sucedido.
+/// Where the record that `run` publishes at the end of a successful `launch` comes from.
 pub(super) enum RecordPlan {
-    /// `deploy_id` novo: monta a v1 a partir do plano e dos alvos.
+    /// New `deploy_id`: builds v1 from the plan and the targets.
     New { deploy_id: String },
-    /// `deploy_id` reaproveitado (mesma forma, mesma identidade provada):
-    /// anexa - ou reativa - uma versão neste registro.
+    /// Reused `deploy_id` (same shape, same proven identity):
+    /// appends - or reactivates - a version in this record.
     ReuseVersion(Box<crate::deployment::Deployment>),
 }

@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 /**
- * "Esta máquina" e "Endereço anunciado" saíram de NetworkSettings.tsx para
- * cá, numa tela própria de menu ("Minha Máquina"). Ver `NetworkSettings.test.tsx`
- * para a tela de retrato geral da rede.
+ * "Esta máquina" and "Endereço anunciado" left NetworkSettings.tsx for
+ * here, a menu screen of their own ("Minha Máquina"). See `NetworkSettings.test.tsx`
+ * for the screen with the overall picture of the network.
  */
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -21,15 +21,21 @@ const queryMocks = vi.hoisted(() => ({
       profile: "node",
       authority_level: "primary" as "primary" | null,
       detached: false,
+      node_name: null as string | null,
       advertise_addr: null,
       effective_address: "127.0.0.1:42777",
     },
   },
 }));
 
+vi.mock("../lib/guide", () => ({
+  useGuideActions: () => ({ complete: vi.fn(async () => {}), dismiss: vi.fn(async () => {}) }),
+}));
 vi.mock("../lib/api", () => ({
   api: {
     post: vi.fn(async () => undefined),
+    // The relay panel loads on its own and stays out without an answer.
+    get: vi.fn(async () => { throw new Error("no relay status in this test"); }),
   },
 }));
 vi.mock("../lib/toast", () => ({
@@ -54,7 +60,7 @@ describe("MyMachine", () => {
     vi.clearAllMocks();
   });
 
-  it("mostra a identidade da máquina e o endereço anunciado", () => {
+  it("shows the machine identity and the announced address", () => {
     mount();
     expect(screen.getByText("Esta máquina")).toBeTruthy();
     expect(screen.getByText("infer-box")).toBeTruthy();
@@ -62,7 +68,27 @@ describe("MyMachine", () => {
     expect(screen.getByText("127.0.0.1:42777")).toBeTruthy();
   });
 
-  it("mantém Sair da rede como saída da máquina do cluster", async () => {
+  it("lets the operator name the machine, which the setup wizard is no longer there to do", async () => {
+    vi.mocked(api.post).mockResolvedValueOnce({ node_name: "Mesa do laboratório", hostname: "Mesa do laboratório" });
+    mount();
+
+    const input = screen.getByTestId("node-name") as HTMLInputElement;
+    // Nothing chosen yet: the field is empty and shows the hostname in use.
+    expect(input.value).toBe("");
+    expect(input.placeholder).toBe("infer-box");
+
+    fireEvent.change(input, { target: { value: "  Mesa do laboratório " } });
+    fireEvent.click(screen.getByTestId("node-name-save"));
+
+    await waitFor(() =>
+      expect(vi.mocked(api.post)).toHaveBeenCalledWith("/api/ui/network/node-name", {
+        node_name: "Mesa do laboratório",
+      }),
+    );
+    await waitFor(() => expect(input.value).toBe("Mesa do laboratório"));
+  });
+
+  it("keeps Leave network as the exit of the machine from the cluster", async () => {
     queryMocks.node.data.profile = "admin";
     queryMocks.node.data.authority_level = "primary";
     mount();
@@ -73,7 +99,7 @@ describe("MyMachine", () => {
     expect(vi.mocked(api.post)).not.toHaveBeenCalledWith("/api/ui/network/leave");
   });
 
-  it("deixa um node sair mesmo sem autoridade e sem modelo carregado", async () => {
+  it("lets a node leave even without authority and without a loaded model", async () => {
     queryMocks.node.data.profile = "node";
     queryMocks.node.data.authority_level = null;
     mount();

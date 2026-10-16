@@ -16,6 +16,14 @@ const MAX_PLUGIN_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MAX_PLUGIN_BYTES: u64 = 512 * 1024 * 1024;
 const CARGO_METADATA_TIMEOUT: Duration = Duration::from_secs(90);
 const CARGO_BUILD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// Each rebuild step a plugin declares (`development.rebuild` in its manifest).
+const PREPARE_STEP_TIMEOUT: Duration = Duration::from_secs(20 * 60);
+const MAX_PREPARE_STEPS: usize = 8;
+const MAX_PREPARE_ARGS: usize = 16;
+const MAX_PREPARE_ARG_CHARS: usize = 256;
+/// The writable folder, inside the build directory, where rebuild steps write
+/// (the mounted source is read-only) and that `cargo build` is told about.
+const PREPARE_DIRECTORY: &str = "pom-prepare";
 
 /// A source name is a single safe repository slug under the mounted plugin
 /// root. Its plugin identity comes from the validated manifest, not a catalog
@@ -70,6 +78,7 @@ pub(crate) struct MountedPluginSources {
 pub(crate) enum BuildStage {
     Inspect,
     Metadata,
+    Prepare,
     Compile,
     Install,
 }
@@ -135,6 +144,16 @@ struct Source {
     display_name: String,
     root: PathBuf,
     cargo_manifest: PathBuf,
+    /// The manifest's rebuild steps for this machine's operating system.
+    prepare: Vec<PrepareStep>,
+}
+
+/// One `development.rebuild` entry: a script inside the source and its
+/// arguments, run before `cargo build`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PrepareStep {
+    program: PathBuf,
+    args: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -164,11 +183,23 @@ pub(crate) struct CommandOutput {
 
 #[async_trait]
 pub(crate) trait DevCommandRunner: Send + Sync {
+    /// `cargo` with `args`; `env` is added to its environment.
     async fn run(
         &self,
         args: &[String],
         working_directory: &Path,
         target_directory: &Path,
+        env: &[(String, String)],
+        timeout: Duration,
+    ) -> Result<CommandOutput, ()>;
+
+    /// A rebuild step, its output appended to `log`.
+    async fn run_step(
+        &self,
+        step: &PrepareStep,
+        working_directory: &Path,
+        env: &[(String, String)],
+        log: &Path,
         timeout: Duration,
     ) -> Result<CommandOutput, ()>;
 }
@@ -182,6 +213,7 @@ impl DevCommandRunner for CargoCommandRunner {
         args: &[String],
         working_directory: &Path,
         target_directory: &Path,
+        env: &[(String, String)],
         timeout: Duration,
     ) -> Result<CommandOutput, ()> {
         let capture_stdout = args.first().is_some_and(|arg| arg == "metadata");
@@ -189,6 +221,7 @@ impl DevCommandRunner for CargoCommandRunner {
         command
             .args(args)
             .current_dir(working_directory)
+            .envs(env.iter().map(|(key, value)| (key, value)))
             .env("CARGO_TARGET_DIR", target_directory)
             .env("CARGO_TERM_COLOR", "never")
             .stdout(if capture_stdout {
@@ -221,6 +254,54 @@ impl DevCommandRunner for CargoCommandRunner {
         .await
         .map_err(|_| ())?
     }
+
+    async fn run_step(
+        &self,
+        step: &PrepareStep,
+        working_directory: &Path,
+        env: &[(String, String)],
+        log: &Path,
+        timeout: Duration,
+    ) -> Result<CommandOutput, ()> {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log)
+            .map_err(|_| ())?;
+        let _ = writeln!(file, "$ {} {}", step.program.display(), step.args.join(" "));
+        let stderr = file.try_clone().map_err(|_| ())?;
+        // A shell script runs through bash, so it needs no executable bit.
+        let mut command = if step
+            .program
+            .extension()
+            .is_some_and(|extension| extension == "sh")
+        {
+            let mut command = tokio::process::Command::new("bash");
+            command.arg(&step.program);
+            command
+        } else {
+            tokio::process::Command::new(&step.program)
+        };
+        command
+            .args(&step.args)
+            .current_dir(working_directory)
+            .envs(env.iter().map(|(key, value)| (key, value)))
+            .stdin(Stdio::null())
+            .stdout(file)
+            .stderr(stderr)
+            .kill_on_drop(true);
+        let mut child = command.spawn().map_err(|_| ())?;
+        let status = tokio::time::timeout(timeout, child.wait())
+            .await
+            .map_err(|_| ())?
+            .map_err(|_| ())?;
+        Ok(CommandOutput {
+            success: status.success(),
+            exit_code: status.code(),
+            stdout: Vec::new(),
+        })
+    }
 }
 
 fn canonical_source(root: &Path, repository: &str) -> Result<Source, DevPluginError> {
@@ -251,13 +332,14 @@ fn canonical_source(root: &Path, repository: &str) -> Result<Source, DevPluginEr
     if !cargo_manifest.starts_with(&source) || !cargo_manifest.is_file() {
         return Err(DevPluginError::new(DevPluginErrorCode::InvalidSource));
     }
-    let plugin_code = validate_plugin_manifests(&source)?;
+    let (plugin_code, prepare) = validate_plugin_manifests(&source)?;
     Ok(Source {
         repository: repository.to_owned(),
         plugin_code,
         display_name: display_name_for_repository(repository),
         root: source,
         cargo_manifest,
+        prepare,
     })
 }
 
@@ -300,8 +382,87 @@ fn canonical_target_directory(
     }
 }
 
-fn validate_plugin_manifests(root: &Path) -> Result<String, DevPluginError> {
+/// The platform name rebuild steps get in `POM_PLUGIN_PLATFORM`, as plugin
+/// release assets name it (`linux-x86_64`, `macos-aarch64`, ...).
+fn build_platform() -> String {
+    let os = match std::env::consts::OS {
+        "macos" => "macos",
+        "windows" => "windows",
+        other => other,
+    };
+    format!("{os}-{}", std::env::consts::ARCH)
+}
+
+/// The `development.rebuild` steps of a manifest that run on this operating
+/// system. A step is `{"run": [script, args...], "os": [...]}`: the script is a
+/// file inside the source (no absolute path, no `..`), the arguments plain
+/// strings, `os` (`linux`, `macos`, `windows`) optional.
+fn rebuild_steps(
+    root: &Path,
+    manifest: &serde_json::Value,
+) -> Result<Vec<PrepareStep>, DevPluginError> {
+    let invalid = || DevPluginError::new(DevPluginErrorCode::InvalidSource);
+    let Some(steps) = manifest
+        .get("development")
+        .and_then(|value| value.get("rebuild"))
+    else {
+        return Ok(Vec::new());
+    };
+    let steps = steps.as_array().ok_or_else(invalid)?;
+    if steps.len() > MAX_PREPARE_STEPS {
+        return Err(invalid());
+    }
+    let mut out = Vec::new();
+    for step in steps {
+        if let Some(systems) = step.get("os") {
+            let systems = systems.as_array().ok_or_else(invalid)?;
+            if !systems
+                .iter()
+                .any(|system| system.as_str() == Some(std::env::consts::OS))
+            {
+                continue;
+            }
+        }
+        let run = step
+            .get("run")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(invalid)?;
+        let mut words = Vec::new();
+        for word in run {
+            let word = word.as_str().ok_or_else(invalid)?;
+            if word.is_empty()
+                || word.chars().count() > MAX_PREPARE_ARG_CHARS
+                || word.contains('\0')
+            {
+                return Err(invalid());
+            }
+            words.push(word.to_owned());
+        }
+        if words.is_empty() || words.len() > MAX_PREPARE_ARGS + 1 {
+            return Err(invalid());
+        }
+        let script = Path::new(&words[0]);
+        if !script
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
+        {
+            return Err(invalid());
+        }
+        let program = root.join(script).canonicalize().map_err(|_| invalid())?;
+        if !program.starts_with(root) || !program.is_file() {
+            return Err(invalid());
+        }
+        out.push(PrepareStep {
+            program,
+            args: words[1..].to_vec(),
+        });
+    }
+    Ok(out)
+}
+
+fn validate_plugin_manifests(root: &Path) -> Result<(String, Vec<PrepareStep>), DevPluginError> {
     let mut plugin_code = None;
+    let mut prepare = Vec::new();
     for relative in [Path::new("manifest.json"), Path::new("ui/manifest.json")] {
         let path = root.join(relative);
         if !path.exists() {
@@ -336,8 +497,14 @@ fn validate_plugin_manifests(root: &Path) -> Result<String, DevPluginError> {
             return Err(DevPluginError::new(DevPluginErrorCode::InvalidSource));
         }
         plugin_code = Some(code.to_owned());
+        prepare.extend(rebuild_steps(root, &value)?);
     }
-    plugin_code.ok_or_else(|| DevPluginError::new(DevPluginErrorCode::InvalidSource))
+    if prepare.len() > MAX_PREPARE_STEPS {
+        return Err(DevPluginError::new(DevPluginErrorCode::InvalidSource));
+    }
+    let plugin_code =
+        plugin_code.ok_or_else(|| DevPluginError::new(DevPluginErrorCode::InvalidSource))?;
+    Ok((plugin_code, prepare))
 }
 
 pub(crate) fn list_mounted_sources(
@@ -415,11 +582,28 @@ pub(crate) async fn build_source(
         "--manifest-path".to_owned(),
         source.cargo_manifest.to_string_lossy().into_owned(),
     ];
+    let prepare_directory = target_directory.join(PREPARE_DIRECTORY);
+    std::fs::create_dir_all(&prepare_directory)
+        .map_err(|_| DevPluginError::new(DevPluginErrorCode::InvalidSource))?;
+    // What rebuild steps and the plugin's build script are told: where to
+    // write (the source is read-only), the platform, and the source itself.
+    let env = vec![
+        (
+            "POM_PLUGIN_OUT_DIR".to_owned(),
+            prepare_directory.to_string_lossy().into_owned(),
+        ),
+        ("POM_PLUGIN_PLATFORM".to_owned(), build_platform()),
+        (
+            "POM_PLUGIN_SOURCE_DIR".to_owned(),
+            source.root.to_string_lossy().into_owned(),
+        ),
+    ];
     let metadata = runner
         .run(
             &metadata_args,
             &source.root,
             &target_directory,
+            &env,
             CARGO_METADATA_TIMEOUT,
         )
         .await
@@ -460,6 +644,23 @@ pub(crate) async fn build_source(
         return Err(DevPluginError::new(DevPluginErrorCode::InvalidSource));
     }
 
+    let log = prepare_directory.join("rebuild.log");
+    if !source.prepare.is_empty() {
+        let _ = std::fs::write(&log, b"");
+    }
+    for step in &source.prepare {
+        let output = runner
+            .run_step(step, &source.root, &env, &log, PREPARE_STEP_TIMEOUT)
+            .await
+            .map_err(|_| DevPluginError::build_failed(BuildStage::Prepare, None))?;
+        if !output.success {
+            return Err(DevPluginError::build_failed(
+                BuildStage::Prepare,
+                output.exit_code,
+            ));
+        }
+    }
+
     let build_args = vec![
         "build".to_owned(),
         "--release".to_owned(),
@@ -475,6 +676,7 @@ pub(crate) async fn build_source(
             &build_args,
             &source.root,
             &target_directory,
+            &env,
             CARGO_BUILD_TIMEOUT,
         )
         .await
@@ -535,6 +737,7 @@ mod tests {
     struct FakeRunner {
         responses: Mutex<VecDeque<Result<CommandOutput, ()>>>,
         calls: Mutex<Vec<Vec<String>>>,
+        envs: Mutex<Vec<Vec<(String, String)>>>,
     }
 
     impl FakeRunner {
@@ -542,6 +745,7 @@ mod tests {
             Self {
                 responses: Mutex::new(responses.into()),
                 calls: Mutex::new(Vec::new()),
+                envs: Mutex::new(Vec::new()),
             }
         }
     }
@@ -553,9 +757,11 @@ mod tests {
             args: &[String],
             _working_directory: &Path,
             target_directory: &Path,
+            env: &[(String, String)],
             _timeout: Duration,
         ) -> Result<CommandOutput, ()> {
             self.calls.lock().unwrap().push(args.to_vec());
+            self.envs.lock().unwrap().push(env.to_vec());
             let output = self
                 .responses
                 .lock()
@@ -579,6 +785,210 @@ mod tests {
                 std::fs::write(release_dir.join(artifact), b"plugin bytes").unwrap();
             }
             Ok(output)
+        }
+
+        async fn run_step(
+            &self,
+            step: &PrepareStep,
+            _working_directory: &Path,
+            env: &[(String, String)],
+            _log: &Path,
+            _timeout: Duration,
+        ) -> Result<CommandOutput, ()> {
+            let name = step
+                .program
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned();
+            let mut call = vec!["step".to_owned(), name];
+            call.extend(step.args.iter().cloned());
+            self.calls.lock().unwrap().push(call);
+            self.envs.lock().unwrap().push(env.to_vec());
+            self.responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("scripted step")
+        }
+    }
+
+    fn ok() -> Result<CommandOutput, ()> {
+        Ok(CommandOutput {
+            success: true,
+            exit_code: Some(0),
+            stdout: Vec::new(),
+        })
+    }
+
+    /// A source whose manifest declares `rebuild`, with `scripts/` holding
+    /// every script those steps name.
+    fn source_with_rebuild(
+        root: &Path,
+        rebuild: serde_json::Value,
+    ) -> (PathBuf, serde_json::Value) {
+        let source = make_source_with_identity(root, "pom-plugin-strata", "strata");
+        std::fs::create_dir_all(source.join("scripts")).unwrap();
+        for name in ["ui.sh", "runtime.sh", "mac.sh"] {
+            std::fs::write(source.join("scripts").join(name), "#!/bin/sh\n").unwrap();
+        }
+        std::fs::write(
+            source.join("ui/manifest.json"),
+            serde_json::json!({
+                "schema": "pom-plugin-ui/v1",
+                "plugin_code": "strata",
+                "development": {"rebuild": rebuild}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let manifest = source.join("Cargo.toml").canonicalize().unwrap();
+        let metadata = serde_json::json!({
+            "packages": [{
+                "name": "pom-plugin-strata",
+                "manifest_path": manifest,
+                "targets": [{"name":"pom_plugin_strata","kind":["cdylib"]}]
+            }]
+        });
+        (source, metadata)
+    }
+
+    #[tokio::test]
+    async fn the_manifests_rebuild_steps_run_before_the_build_with_a_writable_folder() {
+        let temp = tempfile::tempdir().unwrap();
+        let other_os = if std::env::consts::OS == "linux" {
+            "windows"
+        } else {
+            "linux"
+        };
+        let (_, metadata) = source_with_rebuild(
+            temp.path(),
+            serde_json::json!([
+                {"run": ["scripts/ui.sh"]},
+                {"run": ["scripts/mac.sh"], "os": [other_os]},
+                {"run": ["scripts/runtime.sh", "--quick"], "os": [std::env::consts::OS]},
+            ]),
+        );
+        let build_root = temp.path().join("builds");
+        let runner = FakeRunner::new(vec![
+            Ok(CommandOutput {
+                success: true,
+                exit_code: Some(0),
+                stdout: serde_json::to_vec(&metadata).unwrap(),
+            }),
+            ok(),
+            ok(),
+            ok(),
+        ]);
+        build_source(temp.path(), &build_root, "pom-plugin-strata", &runner)
+            .await
+            .unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls[0][0], "metadata");
+        assert_eq!(calls[1], ["step", "ui.sh"]);
+        assert_eq!(calls[2], ["step", "runtime.sh", "--quick"]);
+        assert_eq!(calls[3][0], "build");
+        assert_eq!(calls.len(), 4);
+        // The steps and the build see the same writable folder, outside the source.
+        let envs = runner.envs.lock().unwrap();
+        let out = envs[1]
+            .iter()
+            .find(|(key, _)| key == "POM_PLUGIN_OUT_DIR")
+            .unwrap()
+            .1
+            .clone();
+        let out_dir = build_root
+            .canonicalize()
+            .unwrap()
+            .join("pom-plugin-strata")
+            .join(PREPARE_DIRECTORY);
+        assert_eq!(Path::new(&out), out_dir);
+        assert!(out_dir.is_dir());
+        assert!(envs[3]
+            .iter()
+            .any(|(key, value)| key == "POM_PLUGIN_OUT_DIR" && *value == out));
+        assert!(envs[1]
+            .iter()
+            .any(|(key, value)| key == "POM_PLUGIN_PLATFORM" && *value == build_platform()));
+    }
+
+    #[tokio::test]
+    async fn a_failed_rebuild_step_stops_before_the_build() {
+        let temp = tempfile::tempdir().unwrap();
+        let (_, metadata) =
+            source_with_rebuild(temp.path(), serde_json::json!([{"run": ["scripts/ui.sh"]}]));
+        let runner = FakeRunner::new(vec![
+            Ok(CommandOutput {
+                success: true,
+                exit_code: Some(0),
+                stdout: serde_json::to_vec(&metadata).unwrap(),
+            }),
+            Ok(CommandOutput {
+                success: false,
+                exit_code: Some(2),
+                stdout: Vec::new(),
+            }),
+        ]);
+        let error = build_source(
+            temp.path(),
+            &temp.path().join("builds"),
+            "pom-plugin-strata",
+            &runner,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.stage, Some(BuildStage::Prepare));
+        assert_eq!(error.exit_code, Some(2));
+        assert_eq!(runner.calls.lock().unwrap().len(), 2);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_rebuild_script_runs_through_bash_with_the_build_variables_and_a_log() {
+        let temp = tempfile::tempdir().unwrap();
+        let script = temp.path().join("step.sh");
+        // No executable bit: bash runs it.
+        std::fs::write(
+            &script,
+            "echo \"out=$POM_PLUGIN_OUT_DIR arg=$1\"\necho to-stderr >&2\nexit 3\n",
+        )
+        .unwrap();
+        let log = temp.path().join("rebuild.log");
+        let step = PrepareStep {
+            program: script,
+            args: vec!["x".into()],
+        };
+        let env = vec![("POM_PLUGIN_OUT_DIR".to_owned(), "/out".to_owned())];
+        let output = CargoCommandRunner
+            .run_step(&step, temp.path(), &env, &log, Duration::from_secs(30))
+            .await
+            .unwrap();
+        assert!(!output.success);
+        assert_eq!(output.exit_code, Some(3));
+        let text = std::fs::read_to_string(&log).unwrap();
+        assert!(text.contains("out=/out arg=x"), "{text}");
+        assert!(text.contains("to-stderr"), "{text}");
+    }
+
+    #[test]
+    fn a_rebuild_step_must_name_a_script_inside_the_source() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("outside.sh"), "#!/bin/sh\n").unwrap();
+        for rebuild in [
+            serde_json::json!([{"run": ["../outside.sh"]}]),
+            serde_json::json!([{"run": ["/bin/sh"]}]),
+            serde_json::json!([{"run": ["scripts/missing.sh"]}]),
+            serde_json::json!([{"run": []}]),
+            serde_json::json!([{"run": "scripts/ui.sh"}]),
+            serde_json::json!({"run": ["scripts/ui.sh"]}),
+        ] {
+            let (source, _) = source_with_rebuild(temp.path(), rebuild.clone());
+            let root = source.canonicalize().unwrap();
+            assert_eq!(
+                validate_plugin_manifests(&root).unwrap_err().code,
+                DevPluginErrorCode::InvalidSource,
+                "{rebuild}"
+            );
         }
     }
 

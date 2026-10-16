@@ -25,6 +25,7 @@ import { getActiveLocale } from "../i18n/locales";
 import {
   consumeChatDelta,
   consumeChatError,
+  consumeReasoningDelta,
   emptyChatStream,
   finishChatStream,
   streamErrorMessage,
@@ -68,6 +69,8 @@ export interface ChatMessage {
   source?: string;
   /** Thinking blocks emitted by models with reasoning enabled. */
   reasoning?: string;
+  /** How many tokens the model spent thinking, counted from the stream. */
+  reasoningTokens?: number;
   /** Authoritative final throughput from the generating node. */
   tokensPerSecond?: number;
   tokensGenerated?: number;
@@ -225,6 +228,16 @@ export function emptySession(model: string | null): ChatSession {
   };
 }
 
+/**
+ * Whether there is any conversation to list: a session nobody wrote in (a new
+ * chat, or one only touched by a toggle) does not count. Without one, the
+ * history and its "New chat" are not drawn, so an empty Chat is only the
+ * composer.
+ */
+export function hasConversations(sessions: ChatSession[]): boolean {
+  return sessions.some((session) => session.messages.length > 0);
+}
+
 /** One subscription per mount, kept in sync across tabs of the same browser. */
 export function useChatSessions() {
   const [sessions, setSessions] = useState<ChatSession[]>(read);
@@ -378,6 +391,8 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
           {
             model: options.model,
             ...(options.inferenceHead ? { inference_head: options.inferenceHead } : {}),
+            // The conversation's id: a plugin engine keeps and restores the K/V state of a named conversation
+            session: options.session.id,
             stream: true,
             ...(options.maxTokens ? { max_tokens: options.maxTokens } : {}),
             thinking_enabled: options.thinkingEnabled,
@@ -416,7 +431,11 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
             }
             if (typeof delta === "string" && delta) {
               streamed = consumeChatDelta(streamed, delta);
-              patchReply({ content: streamed.content, reasoning: streamed.reasoning || undefined });
+              patchReply({ content: streamed.content, reasoning: streamed.reasoning || undefined, reasoningTokens: streamed.reasoningTokens || undefined });
+            }
+            if (typeof reasoningDelta === "string" && reasoningDelta) {
+              streamed = consumeReasoningDelta(streamed, reasoningDelta);
+              patchReply({ content: streamed.content, reasoning: streamed.reasoning, reasoningTokens: streamed.reasoningTokens });
             }
             const metrics = chunk?.x_pom;
             if (metrics && typeof metrics === "object") finalMetrics = metrics;
@@ -439,7 +458,7 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
           streamed = finishChatStream(streamed, measuredMetrics);
           patchReply({
             content: streamed.content,
-            reasoning: streamed.reasoning || undefined,
+            reasoning: streamed.reasoning || undefined, reasoningTokens: streamed.reasoningTokens || undefined,
             tokensPerSecond: streamed.tokensPerSecond,
             tokensGenerated: streamed.tokensGenerated,
             durationMs: streamed.durationMs,
@@ -450,7 +469,7 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
         } else {
           streamed = finishChatStream(streamed);
         }
-        patchReply({ content: streamed.content, reasoning: streamed.reasoning || undefined }, true);
+        patchReply({ content: streamed.content, reasoning: streamed.reasoning || undefined, reasoningTokens: streamed.reasoningTokens || undefined }, true);
         if (streamAbort.current === controller && streamed.trace) {
           setLastStreamResult({
             sessionId: options.session.id,

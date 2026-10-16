@@ -7,11 +7,11 @@
  * the page in the middle of a 17-minute transfer shows the same bar at the same
  * percentage instead of losing it.
  *
- * O sino lista os **dois sentidos** e também o desfecho recente
- * (`isWorthNotifying`). Antes ele mostrava só o que estava em andamento, e o
- * resultado — concluída, falhada, recusada — sumia da tela no instante em que
- * acontecia: quem recebia via a barra andar e depois nada, quem enviava não
- * via aviso nenhum de que a outra ponta tinha aceitado ou recusado.
+ * The bell lists **both directions** and also the recent outcome
+ * (`isWorthNotifying`). Before, it showed only what was in progress, and the
+ * result - completed, failed, refused - vanished from the screen the instant it
+ * happened: whoever received saw the bar move and then nothing, whoever sent
+ * got no notice at all that the other end had accepted or refused.
  */
 import clsx from "clsx";
 import { AnimatePresence, motion } from "framer-motion";
@@ -39,7 +39,7 @@ import {
   markDefaultPasswordNoticeRead,
   useDefaultPasswordNoticeState,
 } from "../lib/defaultPasswordNotice";
-import { admissionsApi, useAdmissionRequests, useAdmissions, type AdmissionRecord } from "../lib/admissions";
+import { admissionsApi, retryWaitMinutes, useAdmissionRequests, useAdmissions, type AdmissionRecord } from "../lib/admissions";
 import { useProfile } from "../lib/profile";
 import { useToast } from "../lib/toast";
 import { isFinishedTransfer, isWorthNotifying } from "../lib/transferStatus";
@@ -47,8 +47,6 @@ import { transferHash, transferTitle } from "../lib/transferLabel";
 import type {
   AdminTransferOffer,
   NetworkOffer,
-  NodePromotionOffer,
-  NodeRelinquishNotice,
   TransferJob,
   TransferOffer,
 } from "../lib/types";
@@ -63,7 +61,6 @@ import {
 } from "../lib/pluginInbox";
 import { pluginDisplayName } from "../lib/pluginUi";
 import { useI18n } from "../i18n/provider";
-import { localizeServerText } from "../i18n/locales";
 
 /** What an admin needs to decide on a candidate, in one line. */
 function admissionDetail(record: AdmissionRecord, t: (key: string, values?: Record<string, string | number>) => string): string {
@@ -82,7 +79,7 @@ function admissionDetail(record: AdmissionRecord, t: (key: string, values?: Reco
   ].filter(Boolean).join(" · ");
 }
 
-/** Ícone, tom e chave de estado de uma transferência, num lugar só. */
+/** Icon, tone and status key of a transfer, in one place. */
 function transferLook(job: TransferJob) {
   if (job.state === "done") {
     return { icon: <CheckCircle2 className="h-3.5 w-3.5" />, tone: "aqua" as const };
@@ -115,7 +112,7 @@ function Row({
 }: {
   icon: React.ReactNode;
   title: string;
-  /** Identificação secundária — o hash curto de uma fatia. */
+  /** Secondary identification - the short hash of a slice. */
   aside?: string | null;
   detail?: string;
   progress?: number | null;
@@ -150,12 +147,10 @@ function Row({
   );
 }
 
-type AuthorityOffer = AdminTransferOffer | NodePromotionOffer | NodeRelinquishNotice;
+type AuthorityOffer = AdminTransferOffer;
 
 function isAuthorityOffer(offer: NetworkOffer): offer is AuthorityOffer {
-  return offer.kind === "principal_transfer"
-    || offer.kind === "node_promotion"
-    || offer.kind === "node_relinquish_notice";
+  return offer.kind === "principal_transfer";
 }
 
 function isSliceOffer(offer: NetworkOffer): offer is TransferOffer {
@@ -191,8 +186,9 @@ export function Notifications() {
   const offers = useOffers();
   // Machines asking to join this network (for its admin), and the answers to
   // what this machine asked of other networks.
-  const { profile } = useProfile();
-  const admissions = useAdmissions(profile === "admin");
+  // Approving a machine is the principal's; a secondary admin is not asked.
+  const { profile, secondary } = useProfile();
+  const admissions = useAdmissions(profile === "admin" && !secondary);
   const admissionRequests = useAdmissionRequests();
   const pendingAdmissions = (admissions.data ?? []).filter((record) => record.status === "pending");
   // An answer to something this machine asked. A standing approval (it was
@@ -226,18 +222,18 @@ export function Notifications() {
   }
 
   const running = (jobs.data?.jobs ?? []).filter((j) => j.state === "running");
-  // O que anda **e** o que acabou de terminar: o desfecho é a metade da
-  // notificação que faltava, nos dois sentidos.
+  // What is in progress **and** what has just finished: the outcome is the half of the
+  // notification that was missing, in both directions.
   const moving = (transfers.data?.jobs ?? []).filter((transfer) => isWorthNotifying(transfer));
   const waiting = offers.data?.offers ?? [];
   const sliceOffers = waiting.filter(isSliceOffer);
   const authorityOffers = waiting.filter(isAuthorityOffer);
-  // Perguntas de plugins (`notification.confirm`): esperam aqui como uma
-  // oferta, e a resposta volta à janela do plugin que perguntou.
+  // Plugin questions (`notification.confirm`): wait here like an
+  // offer, and the answer goes back to the window of the plugin that asked.
   const pluginConfirms = usePendingPluginConfirms();
-  // Avisos de plugins (`notification.notify`): só mensagem. Contam enquanto
-  // não lidos e ficam lidos quando o sino é aberto; o destaque de "novo" vale
-  // para esta abertura.
+  // Plugin notices (`notification.notify`): message only. They count while
+  // unread and become read when the bell is opened; the "new" highlight applies
+  // to this opening.
   const pluginNotices = usePluginNotices();
   const unreadNotices = pluginNotices.filter((notice) => !notice.read).length;
   const [freshNotices, setFreshNotices] = useState<ReadonlySet<string>>(new Set());
@@ -302,14 +298,10 @@ export function Notifications() {
         accept
           ? kind === "principal_transfer"
             ? t("notifications.principalTransferAccepted")
-            : kind === "node_promotion"
-              ? t("notifications.nodePromotionAccepted")
-              : t("notifications.transferStarted")
+            : t("notifications.transferStarted")
           : kind === "principal_transfer"
             ? t("notifications.principalTransferRejected")
-            : kind === "node_promotion"
-              ? t("notifications.nodePromotionRejected")
-              : t("notifications.offerRejected"),
+            : t("notifications.offerRejected"),
       );
       void offers.refetch();
       void transfers.refetch();
@@ -378,7 +370,7 @@ export function Notifications() {
                           variant="ghost"
                           onClick={() => {
                             setOpen(false);
-                            navigate("/config/preferencias");
+                            navigate("/config/preferences");
                           }}
                         >
                           {t("firstRun.defaultPasswordChange")}
@@ -427,7 +419,13 @@ export function Notifications() {
                   <Row
                     icon={<UserPlus className={clsx("h-3.5 w-3.5", request.status === "approved" ? "text-lime" : "text-rose")} />}
                     title={t(request.status === "approved" ? "notifications.requestApproved" : "notifications.requestRejected", { name: request.name || request.key })}
-                    detail={request.status === "approved" ? t("lobby.joinDetail") : undefined}
+                    detail={
+                      request.status === "approved"
+                        ? t("lobby.joinDetail")
+                        : retryWaitMinutes(request.retry_at) > 0
+                          ? t("lobby.admissionRejectedWait", { minutes: retryWaitMinutes(request.retry_at) })
+                          : t("lobby.admissionRejectedMayAsk")
+                    }
                     footer={
                       <>
                         {request.status === "approved" && (
@@ -505,8 +503,8 @@ export function Notifications() {
                 <Row
                   key={j.id}
                   icon={<Scissors className="h-3.5 w-3.5" />}
-                  title={localizeServerText(locale, j.title ?? j.step)}
-                  detail={j.message ? localizeServerText(locale, j.message) : undefined}
+                  title={j.title ?? j.step}
+                  detail={j.message ? j.message : undefined}
                   progress={j.progress}
                   footer={
                     <span className="font-mono text-[0.7rem] text-faint">
@@ -532,15 +530,15 @@ export function Notifications() {
                           : "notifications.transferFrom",
                         { host: job.peer_host },
                       ),
-                      // O motivo importa quando deu errado, e a etapa enquanto
-                      // corre. Num `done` o detalhe é o caminho de destino —
-                      // ruído para um resumo, e a tela de Transferências o tem.
-                      job.state === "done" ? "" : localizeServerText(locale, job.detail),
+                      // The reason matters when it went wrong, and the step while
+                      // it runs. On a `done` the detail is the destination path -
+                      // noise for a summary, and the Transfers screen has it.
+                      job.state === "done" ? "" : job.detail,
                     ]
                       .filter(Boolean)
                       .join(" · ")}
-                    // Uma transferência terminada não tem barra: ela não está
-                    // mais andando, e uma barra parada em 100% sugere que sim.
+                    // A finished transfer has no bar: it is no longer
+                    // running, and a bar stuck at 100% suggests that it is.
                     progress={
                       done
                         ? undefined
@@ -571,11 +569,11 @@ export function Notifications() {
                 <Row
                   key={o.id}
                   icon={<Inbox className="h-3.5 w-3.5" />}
-                  // O que está sendo oferecido é o título; quem oferece e
-                  // quanto pesa são o subtítulo. Ao contrário, "atena quer
-                  // enviar qwen3:8b · L0–15" não cabe numa linha e a faixa de
-                  // camadas — a informação que decide — é justamente o que a
-                  // reticência come.
+                  // What is being offered is the title; who offers and
+                  // how much it weighs are the subtitle. Otherwise, "atena wants to
+                  // send qwen3:8b · L0-15" does not fit on one line and the range of
+                  // layers - the information that decides - is precisely what the
+                  // ellipsis eats.
                   title={transferTitle({
                     name: o.name,
                     model_label: o.pom?.model.label,
@@ -583,10 +581,10 @@ export function Notifications() {
                     end_layer: o.end_layer,
                   })}
                   aside={transferHash(o.name)}
-                  // O caminho completo na máquina de origem enchia cinco
-                  // linhas do painel e não ajuda a decidir. O tamanho, sim: é
-                  // o que se aceita gravar em disco. O caminho continua na
-                  // tela de Transferências, onde há largura para ele.
+                  // The full path on the source machine filled five
+                  // lines of the panel and does not help to decide. The size does: it is
+                  // what one agrees to write to disk. The path stays on the
+                  // Transfers screen, where there is width for it.
                   detail={t("notifications.offerTitle", {
                     host: o.from_host,
                     size: bytes(o.size_bytes),
@@ -618,51 +616,27 @@ export function Notifications() {
 
               {authorityOffers.map((offer) => {
                 const pending = isPendingOffer(offer);
-                const isTransfer = offer.kind === "principal_transfer";
-                const isPromotion = offer.kind === "node_promotion";
                 return (
                   <Row
                     key={offer.id}
-                    icon={
-                      offer.kind === "node_relinquish_notice" ? (
-                        <Info className="h-3.5 w-3.5 text-amber" />
-                      ) : (
-                        <Inbox className="h-3.5 w-3.5" />
-                      )
-                    }
+                    icon={<Inbox className="h-3.5 w-3.5" />}
                     title={
-                      isTransfer
-                        ? pending
-                          ? t("notifications.principalTransferTitle")
-                          : offer.status === "accepted"
-                            ? t("notifications.principalTransferAccepted")
-                            : t("notifications.principalTransferRejected")
-                        : isPromotion
-                          ? pending
-                            ? t("notifications.nodePromotionTitle")
-                            : offer.status === "accepted"
-                              ? t("notifications.nodePromotionAccepted")
-                              : t("notifications.nodePromotionRejected")
-                          : t("notifications.nodeRelinquishTitle")
+                      pending
+                        ? t("notifications.principalTransferTitle")
+                        : offer.status === "accepted"
+                          ? t("notifications.principalTransferAccepted")
+                          : t("notifications.principalTransferRejected")
                     }
                     detail={
-                      isTransfer
-                        ? pending
-                          ? t("notifications.principalTransferDetail", { host: offer.from_host })
-                          : offer.status === "accepted"
-                            ? t("notifications.principalTransferAcceptedDetail", { host: offer.from_host })
-                            : t("notifications.principalTransferRejectedDetail", { host: offer.from_host })
-                        : isPromotion
-                          ? pending
-                            ? t("notifications.nodePromotionDetail", { host: offer.from_host })
-                            : offer.status === "accepted"
-                              ? t("notifications.nodePromotionAcceptedDetail", { host: offer.from_host })
-                              : t("notifications.nodePromotionRejectedDetail", { host: offer.from_host })
-                          : t("notifications.nodeRelinquishDetail", { host: offer.from_host })
+                      pending
+                        ? t("notifications.principalTransferDetail", { host: offer.from_host })
+                        : offer.status === "accepted"
+                          ? t("notifications.principalTransferAcceptedDetail", { host: offer.from_host })
+                          : t("notifications.principalTransferRejectedDetail", { host: offer.from_host })
                     }
-                    tone={offer.kind === "node_relinquish_notice" ? "amber" : "iris"}
+                    tone="iris"
                     footer={
-                      pending && (isTransfer || isPromotion) ? (
+                      pending ? (
                         <>
                           <Button
                             size="sm"
@@ -691,7 +665,7 @@ export function Notifications() {
             <button
               onClick={() => {
                 setOpen(false);
-                navigate(authorityOffers.length > 0 ? "/config/administracao" : "/transferencias");
+                navigate(authorityOffers.length > 0 ? "/config/administration" : "/transfers");
               }}
               className="w-full border-t border-line px-4 py-2.5 text-center text-[0.8rem] text-muted transition-colors hover:bg-line/40 hover:text-fg"
             >

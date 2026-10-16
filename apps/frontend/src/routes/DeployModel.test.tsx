@@ -1,17 +1,17 @@
 // @vitest-environment jsdom
 /**
- * A tela de implantar tem que dizer por que o botão está cinza.
+ * The deploy screen has to say why the button is grey.
  *
- * O defeito que estes testes guardam: `validated` comparava as linhas da tela
- * - que a tela mantém em ordem de camada - contra `plan.steps` posição a
- * posição, e o nó devolvia os passos agrupados por máquina de destino. Bastava
- * uma máquina ficar com duas faixas para a ordem divergir. E como *todos* os
- * painéis de explicação renderizavam sob
- * `validated`, o operador ficava exatamente com o que o captain relatou: botão
- * desabilitado e nenhuma explicação na tela.
+ * The defect these tests guard: `validated` compared the rows of the screen
+ * - which the screen keeps in layer order - against `plan.steps` position by
+ * position, and the node returned the steps grouped by target machine. It took
+ * just one machine holding two ranges for the order to diverge. And since *all*
+ * the explanation panels rendered under
+ * `validated`, the operator was left with exactly what the captain reported: a
+ * disabled button and no explanation on screen.
  *
- * Os dois lados entram aqui: a comparação deixou de depender da ordem, e a
- * explicação deixou de depender da comparação.
+ * Both sides come in here: the comparison stopped depending on the order, and
+ * the explanation stopped depending on the comparison.
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -19,13 +19,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DeployPlan, DeployStep, Job } from "../lib/types";
 
 const post = vi.fn();
-let pomDesenv = false;
+let pomDevMode = false;
 let jobsResponse: { jobs: Job[] } = { jobs: [] };
 vi.mock("../lib/api", () => ({
   api: {
     get: vi.fn((url: string) =>
       url === "/api/ui/node"
-        ? Promise.resolve({ connection_key: "", pom_desenv: pomDesenv })
+        ? Promise.resolve({ connection_key: "", pom_dev_mode: pomDevMode })
         : url === "/api/ui/jobs"
         ? Promise.resolve(jobsResponse)
         : url === "/api/ui/cluster"
@@ -86,9 +86,9 @@ function step(
 }
 
 /**
- * O plano como o nó o devolvia: agrupado por máquina, e por isso fora da ordem
- * de camadas. `ksia` fica com duas faixas, então a resposta chega fora da
- * ordem do pipeline.
+ * The plan as the node returned it: grouped by machine, and therefore out of
+ * layer order. `ksia` holds two ranges, so the response arrives out of
+ * pipeline order.
  */
 function planOutOfLayerOrder(): DeployPlan {
   const ranges: Array<[number, number]> = [
@@ -188,7 +188,7 @@ function planWithUnassignedMiddleRange(): DeployPlan {
 }
 
 function mount(metadata_complete: boolean | undefined = true, dev = false) {
-  pomDesenv = dev;
+  pomDevMode = dev;
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, refetchInterval: false } },
   });
@@ -218,12 +218,12 @@ describe("DeployModel", () => {
   beforeEach(() => {
     post.mockReset();
     jobsResponse = { jobs: [] };
-    pomDesenv = false;
+    pomDevMode = false;
     localStorage.clear();
   });
   afterEach(cleanup);
 
-  it("mostra um único aviso quando a seleção ainda aguarda metadados", async () => {
+  it("shows a single warning when the selection is still waiting for metadata", async () => {
     const p = planOutOfLayerOrder();
     p.blocked = "a seleção da fatia L0-7 ainda aguarda os metadados do GGUF";
     post.mockResolvedValue(p);
@@ -238,7 +238,7 @@ describe("DeployModel", () => {
     expect(screen.getAllByText(/metadados do GGUF/)).toHaveLength(1);
   });
 
-  it("libera uma seleção completa enquanto outro modelo ainda enriquece", async () => {
+  it("allows a complete selection while another model is still being enriched", async () => {
     const p = planOutOfLayerOrder();
     p.blocked = null;
     post.mockResolvedValue(p);
@@ -251,7 +251,7 @@ describe("DeployModel", () => {
     expect(screen.queryByText(/metadados do GGUF/i)).toBeNull();
   });
 
-  it("não bloqueia uma seleção completa quando um peer antigo não informa o estado", async () => {
+  it("does not block a complete selection when an old peer does not report the state", async () => {
     const p = planOutOfLayerOrder();
     p.blocked = null;
     post.mockResolvedValue(p);
@@ -263,7 +263,7 @@ describe("DeployModel", () => {
     });
   });
 
-  it("mantém a seleção incompleta bloqueada com a faixa que falta no aviso", async () => {
+  it("keeps the incomplete selection blocked with the missing range in the warning", async () => {
     const p = planOutOfLayerOrder();
     p.blocked = "a seleção da fatia L8-15 ainda aguarda os metadados do GGUF";
     p.complete = false;
@@ -277,7 +277,7 @@ describe("DeployModel", () => {
     expect((screen.getByRole("button", { name: /^Implantar$/ }) as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it("mantém os combos de cache KV e aplica a escolha sem botão", async () => {
+  it("keeps the KV cache combos and applies the choice without a button", async () => {
     const p = planOutOfLayerOrder();
     p.blocked = null;
     post.mockImplementation((url: string, body?: { cache_type_k?: string; cache_type_v?: string }) =>
@@ -296,7 +296,7 @@ describe("DeployModel", () => {
     });
     fireEvent.click(screen.getByRole("tab", { name: "Globais" }));
 
-    // Os combos do cache KV moram na categoria "Configurações padrões".
+    // The KV cache combos live in the "Configurações padrões" category.
     expect(screen.getByText("Configurações padrões")).toBeTruthy();
     const cacheK = screen.getByRole("combobox", { name: "Cache K" });
     const cacheV = screen.getByRole("combobox", { name: "Cache V" });
@@ -315,7 +315,7 @@ describe("DeployModel", () => {
     });
   });
 
-  it("oferece f32 no seletor de precisão usado pelo Deploy Studio e envia a escolha", async () => {
+  it("offers f32 in the precision selector used by the Deploy Studio and sends the choice", async () => {
     const p = planOutOfLayerOrder();
     p.blocked = null;
     post.mockImplementation((url: string) =>
@@ -341,7 +341,7 @@ describe("DeployModel", () => {
     });
   });
 
-  it("mostra e envia a visão quando o plano fatiado encontra um mmproj", async () => {
+  it("shows and sends vision when the sliced plan finds an mmproj", async () => {
     const p = planOutOfLayerOrder();
     p.blocked = null;
     p.mmproj_path = "/models/mmproj-qwen-f16.gguf";
@@ -426,7 +426,7 @@ describe("DeployModel", () => {
     });
   });
 
-  it("explica quando o plano fatiado não tem mmproj", async () => {
+  it("explains when the sliced plan has no mmproj", async () => {
     const p = planOutOfLayerOrder();
     p.blocked = null;
     p.mmproj_path = null;
@@ -442,11 +442,11 @@ describe("DeployModel", () => {
     expect(screen.queryByRole("checkbox", { name: "Ativar visão" })).toBeNull();
   });
 
-  it("explica a recusa de um gap mesmo quando os passos chegam fora da ordem", async () => {
+  it("explains the refusal of a gap even when the steps arrive out of order", async () => {
     post.mockResolvedValue(planWithUnassignedMiddleRange());
     mount();
 
-    // O motivo da recusa aparece - era exatamente ele que sumia.
+    // The reason for the refusal shows - it was exactly what went missing.
     await waitFor(() => {
       expect(screen.getByText(/Não dá para implantar deste jeito/)).toBeTruthy();
     });
@@ -456,7 +456,7 @@ describe("DeployModel", () => {
     expect((button as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it("mantém a recusa de sobreposição no caminho do botão", async () => {
+  it("keeps the overlap refusal on the button path", async () => {
     const invalid = planOutOfLayerOrder();
     invalid.blocked = "as camadas L5-10 estão em duas fatias escolhidas ao mesmo tempo";
     invalid.complete = false;
@@ -471,7 +471,7 @@ describe("DeployModel", () => {
     expect((screen.getByRole("button", { name: /^Implantar$/ }) as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it("libera o botão quando o plano descreve as mesmas linhas em outra ordem", async () => {
+  it("enables the button when the plan describes the same rows in another order", async () => {
     const ok = planOutOfLayerOrder();
     ok.blocked = null;
     ok.steps = [
@@ -489,7 +489,7 @@ describe("DeployModel", () => {
     });
   });
 
-  it("libera uma máquina com faixas não contíguas quando a cobertura é válida", async () => {
+  it("allows a machine with non-contiguous ranges when the coverage is valid", async () => {
     const ok = planOutOfLayerOrder();
     ok.blocked = null;
     ok.steps = [
@@ -507,7 +507,7 @@ describe("DeployModel", () => {
     });
   });
 
-  it("submete o plano válido ao handler real de implantação", async () => {
+  it("submits the valid plan to the real deployment handler", async () => {
     const ok = planOutOfLayerOrder();
     post.mockImplementation((url: string) =>
       url === "/api/ui/deploy"
@@ -528,7 +528,7 @@ describe("DeployModel", () => {
     });
   });
 
-  it("exibe o motivo de uma desimplantação automática que bloqueou o deploy", async () => {
+  it("displays the reason of an automatic undeploy that blocked the deploy", async () => {
     const ok = planOutOfLayerOrder();
     ok.blocked = null;
     post.mockImplementation((url: string) =>
@@ -554,7 +554,7 @@ describe("DeployModel", () => {
     expect((await screen.findByRole("alert")).textContent).toMatch(/ksia não ficou ociosa/);
   });
 
-  it("libera todas as faixas quando uma única máquina cobre o modelo", async () => {
+  it("allows all ranges when a single machine covers the model", async () => {
     const ok = planOutOfLayerOrder();
     ok.blocked = null;
     ok.steps = [0, 8, 16, 24].map((start, index) => step(start, start + 7, "ksia", index + 1));
@@ -568,13 +568,13 @@ describe("DeployModel", () => {
     });
   });
 
-  it("nomeia cada faixa sem máquina em vez de calar", async () => {
+  it("names each range without a machine instead of staying quiet", async () => {
     const p = planOutOfLayerOrder();
     p.blocked = "a fatia L8-15 está sem máquina";
     p.complete = false;
     p.missing = [[8, 15]];
-    // Agrupado como o nó agrupava: as duas faixas sem máquina saíam juntas,
-    // então L24-31 vinha antes de L16-23.
+    // Grouped as the node grouped: the two ranges with no machine came out together,
+    // so L24-31 came before L16-23.
     p.steps = [
       step(0, 7, "ksia", 1),
       step(8, 15, "", 2),
@@ -591,7 +591,7 @@ describe("DeployModel", () => {
     expect((screen.getByRole("button", { name: /^Implantar$/ }) as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it("desenha RTT entre os hops e mostra as camadas da máquina no inspetor", async () => {
+  it("draws RTT between the hops and shows the machine layers in the inspector", async () => {
     const p = planOutOfLayerOrder();
     p.blocked = null;
     p.route_options = [
@@ -615,7 +615,7 @@ describe("DeployModel", () => {
     expect(screen.getAllByText("L0–7").length).toBeGreaterThan(0);
   });
 
-  it("usa o RTT da máquina quando o plano não traz opções de rota", async () => {
+  it("uses the machine RTT when the plan brings no route options", async () => {
     const p = planOutOfLayerOrder();
     p.blocked = null;
     p.route_options = [];
@@ -634,7 +634,7 @@ describe("DeployModel", () => {
     expect(within(canvas!).getByText("RTT 4.4 ms")).toBeTruthy();
   });
 
-  it("não renderiza novamente os painéis legados abaixo do canvas", async () => {
+  it("does not render the legacy panels below the canvas again", async () => {
     const p = planOutOfLayerOrder();
     p.blocked = null;
     post.mockResolvedValue(p);
@@ -645,7 +645,7 @@ describe("DeployModel", () => {
     expect(screen.queryByText("O que cada uma tem e quanto lhe sobra")).toBeNull();
   });
 
-  it("reaproveita os controles do canvas e permite atribuir uma camada à máquina selecionada", async () => {
+  it("reuses the canvas controls and allows assigning a layer to the selected machine", async () => {
     const p = planOutOfLayerOrder();
     p.blocked = null;
     post.mockResolvedValue(p);
@@ -677,7 +677,7 @@ describe("DeployModel", () => {
     });
   });
 
-  it("não troca silenciosamente a faixa de outra máquina ao atribuir uma camada", async () => {
+  it("does not silently swap the range of another machine when assigning a layer", async () => {
     const p = planOutOfLayerOrder();
     p.blocked = null;
     post.mockResolvedValue(p);
@@ -697,7 +697,7 @@ describe("DeployModel", () => {
     });
   });
 
-  it("remove a linha sem máquina quando a faixa é atribuída pelo mapa", async () => {
+  it("removes the row without a machine when the range is assigned from the map", async () => {
     const p = planWithUnassignedMiddleRange();
     post.mockResolvedValue(p);
     mount();
@@ -717,17 +717,17 @@ describe("DeployModel", () => {
   });
 
   /**
-   * O defeito que este teste guarda: no bloco "Camadas disponíveis neste peer"
-   * a faixa já atribuída virava um botão `disabled`. Selecionar era um caminho
-   * só de ida - o operador conseguia pôr duas faixas na mesma máquina e não
-   * conseguia mais tirar nenhuma delas. Só existia remoção por máquina inteira
-   * ("Remover da implantação"), nunca por faixa.
+   * The defect this test guards: in the "Camadas disponíveis neste peer" block
+   * the range already assigned became a `disabled` button. Selecting was a one
+   * way path - the operator could put two ranges on the same machine and could
+   * no longer take either of them off. Removal existed only per whole machine
+   * ("Remover da implantação"), never per range.
    *
-   * A intenção original do guarda continua valendo: atribuir uma faixa a outro
-   * peer nunca remove *silenciosamente* o que o peer já serve. Um clique do
-   * operador na faixa marcada não é remoção silenciosa - é a ordem dele.
+   * The original intent of the guard still holds: assigning a range to another
+   * peer never *silently* removes what the peer already serves. A click by the
+   * operator on the marked range is not silent removal - it is their order.
    */
-  it("tira a seleção de uma camada já atribuída à máquina", async () => {
+  it("deselects a layer already assigned to the machine", async () => {
     const p = planOutOfLayerOrder();
     p.blocked = null;
     post.mockResolvedValue(p);
@@ -735,7 +735,7 @@ describe("DeployModel", () => {
 
     await waitFor(() => expect(screen.getByText("Camadas nesta máquina")).toBeTruthy());
 
-    // L0-7 já é de ksia no plano: o botão tem que oferecer a saída, não estar cinza.
+    // L0-7 already belongs to ksia in the plan: the button has to offer the way out, not be grey.
     const selected = screen.getByRole("button", { name: "Remover L0–7 de ksia" });
     expect((selected as HTMLButtonElement).disabled).toBe(false);
 
@@ -747,14 +747,14 @@ describe("DeployModel", () => {
         .reverse()
         .find((body) => Array.isArray(body.selection));
       expect(body?.selection?.some((row) => row.start_layer === 0 && row.target_node_id === "ksia")).toBe(false);
-      // As faixas das outras máquinas ficam onde estavam.
+      // The ranges of the other machines stay where they were.
       expect(body?.selection?.some((row) => row.start_layer === 8 && row.target_node_id === "salem")).toBe(true);
       expect(body?.selection?.some((row) => row.start_layer === 24 && row.target_node_id === "mac")).toBe(true);
     });
   });
 
-  /** Tirar e pôr de volta: o mesmo botão faz os dois sentidos. */
-  it("volta a atribuir a mesma camada depois de tirá-la", async () => {
+  /** Take off and put back: the same button does both directions. */
+  it("assigns the same layer again after removing it", async () => {
     const p = planOutOfLayerOrder();
     p.blocked = null;
     post.mockResolvedValue(p);
@@ -772,19 +772,19 @@ describe("DeployModel", () => {
   });
 
   /**
-   * O defeito que estes testes guardam: o interruptor de juntar fatias vizinhas
-   * existia, foi apagado na reescrita do canvas (6340c49) e ninguém percebeu,
-   * porque tudo em volta dele sobreviveu - o estado `merge`, o campo da API e
-   * as strings dos dois idiomas. Sobrou uma recusa que manda o operador
-   * "juntar as fatias vizinhas na tela" apontando para um controle que não
-   * existia mais, e a capacidade do backend (`splitter::merge`) ficou
-   * inalcançável pela interface.
+   * The defect these tests guard: the switch to join neighbouring slices
+   * existed, was deleted in the canvas rewrite (6340c49) and nobody noticed,
+   * because everything around it survived - the `merge` state, the API field and
+   * the strings of both languages. What was left was a refusal telling the
+   * operator to "juntar as fatias vizinhas na tela", pointing at a control that
+   * no longer existed, and the backend's capability (`splitter::merge`) became
+   * unreachable through the interface.
    *
-   * Por isso o teste cobre os dois lados: que o controle está na tela e que
-   * ele chega ao nó. Um controle renderizado e desligado da requisição seria
-   * o mesmo defeito com outra cara.
+   * That is why the test covers both sides: that the control is on screen and
+   * that it reaches the node. A control rendered and disconnected from the
+   * request would be the same defect with another face.
    */
-  it("oferece o interruptor de juntar fatias vizinhas na aba Globais", async () => {
+  it("offers the switch to merge neighboring slices in the Globals tab", async () => {
     const p = planOutOfLayerOrder();
     post.mockResolvedValue(p);
     mount();
@@ -794,12 +794,12 @@ describe("DeployModel", () => {
 
     const toggle = screen.getByRole("checkbox", { name: "Juntar fatias vizinhas na mesma máquina" });
     expect(toggle.getAttribute("aria-checked")).toBe("false");
-    // Faixas não contíguas na mesma máquina agora são válidas sem merge.
+    // Non-contiguous ranges on the same machine are now valid without merge.
     expect(screen.queryByText(/ksia ficou com duas faixas/)).toBeNull();
     expect((screen.getByRole("button", { name: /^Implantar$/ }) as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it("manda merge ao nó quando o operador liga juntar fatias vizinhas", async () => {
+  it("sends merge to the node when the operator turns on merging neighboring slices", async () => {
     const p = planOutOfLayerOrder();
     post.mockResolvedValue(p);
     mount();
@@ -825,7 +825,7 @@ describe("DeployModel", () => {
     });
   });
 
-  it("inclui no canvas um peer adicionado por duplo clique", async () => {
+  it("includes in the canvas a peer added by double click", async () => {
     const p = planOutOfLayerOrder();
     p.blocked = null;
     p.steps = p.steps.filter((item) => item.target_node_id !== "mac");
@@ -841,7 +841,7 @@ describe("DeployModel", () => {
     });
   });
 
-  it("inclui no canvas um peer arrastado da barra inferior", async () => {
+  it("includes in the canvas a peer dragged from the bottom bar", async () => {
     const p = planOutOfLayerOrder();
     p.blocked = null;
     p.steps = p.steps.filter((item) => item.target_node_id !== "mac");
@@ -859,7 +859,7 @@ describe("DeployModel", () => {
     });
   });
 
-  it("oculta controles de desenvolvimento sem POM_DESENV", () => {
+  it("hides development controls without POM_DEV_MODE", () => {
     post.mockResolvedValue(planOutOfLayerOrder());
     mount();
     expect(screen.queryByRole("radio", { name: "Tensor" })).toBeNull();
@@ -868,7 +868,7 @@ describe("DeployModel", () => {
     expect(screen.queryByRole("button", { name: "Voltar ao plano do nó" })).toBeNull();
   });
 
-  it("manda todos os peers como candidatos quando a estratégia é completa", async () => {
+  it("sends all peers as candidates when the strategy is complete", async () => {
     const p = planOutOfLayerOrder();
     p.blocked = null;
     post.mockResolvedValue(p);
@@ -885,7 +885,7 @@ describe("DeployModel", () => {
     });
   });
 
-  it("separa configurações globais e da máquina em tabs", async () => {
+  it("separates global and machine settings in tabs", async () => {
     post.mockResolvedValue(planOutOfLayerOrder());
     mount();
 
@@ -898,7 +898,7 @@ describe("DeployModel", () => {
     expect(screen.getByText("Camadas nesta máquina")).toBeTruthy();
   });
 
-  it("remove uma máquina do canvas e devolve o peer ao rodapé", async () => {
+  it("removes a machine from the canvas and returns the peer to the footer", async () => {
     const p = planOutOfLayerOrder();
     p.blocked = null;
     post.mockImplementation((_url: string, body?: { selection?: Array<{ target_node_id: string }> }) => {
@@ -924,7 +924,7 @@ describe("DeployModel", () => {
     });
   });
 
-  it("não anima GPU de uma máquina sem GPU", async () => {
+  it("does not animate the GPU of a machine without GPU", async () => {
     const p = planOutOfLayerOrder();
     p.blocked = null;
     p.machines = p.machines.map((machine) => ({ ...machine, gpu_used_pct: null }));

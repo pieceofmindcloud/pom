@@ -66,7 +66,7 @@ export type Guide = {
 
 const ptBR: Guide[] = [
   {
-    id: "visao-geral",
+    id: "overview",
     label: "O que é esta plataforma",
     summary: "Máquinas comuns servindo um modelo grande, juntas",
     title: "O que é esta plataforma",
@@ -109,7 +109,7 @@ const ptBR: Guide[] = [
     ],
   },
   {
-    id: "primeiros-passos",
+    id: "getting-started",
     label: "Primeiros passos",
     summary: "Da primeira máquina a uma rede com duas",
     title: "Primeiros passos",
@@ -155,7 +155,7 @@ const ptBR: Guide[] = [
     ],
   },
   {
-    id: "perfis",
+    id: "profiles",
     label: "Os três perfis",
     summary: "Administrador, nó e inferência",
     title: "Os três perfis",
@@ -199,7 +199,7 @@ const ptBR: Guide[] = [
     ],
   },
   {
-    id: "requisicao",
+    id: "request",
     label: "O caminho de uma pergunta",
     summary: "Do prompt ao token, máquina por máquina",
     title: "O caminho de uma pergunta",
@@ -238,7 +238,7 @@ const ptBR: Guide[] = [
     ],
   },
   {
-    id: "fatiar-implantar",
+    id: "slice-and-deploy",
     label: "Do modelo ao cluster servindo",
     summary: "Fatiar por tamanho, distribuir, pôr em serviço",
     title: "Do modelo ao cluster servindo",
@@ -301,7 +301,7 @@ const ptBR: Guide[] = [
         kind: "p",
         text: "Para conferir, abra Implantações: a versão ativa mostra os parâmetros usados, e Reimplantar esta versão volta a qualquer versão anterior.",
       },
-      { kind: "faq", items: [{q: "Preciso fatiar sempre?", a: "Não. Um modelo que cabe inteiro numa máquina é implantado como modelo inteiro, com uma única máquina no mapa."}, {q: "Pipeline ou tensor parallelism?", a: "Pipeline é a opção recomendada entre máquinas pela internet: uma travessia por fronteira de camadas por token. No tensor parallelism cada camada é repartida e as máquinas somam resultados várias vezes por token, então ele pede uma rede rápida."}] },
+      { kind: "faq", items: [{q: "Preciso fatiar sempre?", a: "Não. Um modelo que cabe inteiro numa máquina é implantado como modelo inteiro, numa máquina só. Mais máquinas podem entrar no mapa, desde que as faixas delas cubram todas as camadas."}, {q: "Pipeline ou tensor parallelism?", a: "Pipeline é a opção recomendada entre máquinas pela internet: uma travessia por fronteira de camadas por token. No tensor parallelism cada camada é repartida e as máquinas somam resultados várias vezes por token, então ele pede uma rede rápida."}] },
       { kind: "deep", text: "Fatiamento, tabela de tipos e planejamento por tamanho", doc: "docs/subsystems/slicing.md" },
       { kind: "deep", text: "Implantação, fusão e ciclo de vida da fatia", doc: "docs/subsystems/deployment.md" },
       { kind: "deep", text: "Pipeline e tensor parallelism", doc: "docs/subsystems/parallelism.md" },
@@ -309,7 +309,7 @@ const ptBR: Guide[] = [
     ],
   },
   {
-    id: "usar-api",
+    id: "using-the-api",
     label: "Usar a API",
     summary: "Chaves de API, rotas compatíveis e harnesses",
     title: "Usar a API",
@@ -355,7 +355,7 @@ const ptBR: Guide[] = [
     ],
   },
   {
-    id: "rede-internet",
+    id: "network-and-internet",
     label: "Rede local e internet",
     summary: "Como as máquinas se acham e quais portas abrir",
     title: "Rede local e internet",
@@ -444,7 +444,7 @@ const ptBR: Guide[] = [
     ],
   },
   {
-    id: "operar",
+    id: "operating",
     label: "Operar e diagnosticar",
     summary: "Subir, conferir e achar o que quebrou",
     title: "Operar e diagnosticar",
@@ -489,7 +489,7 @@ const ptBR: Guide[] = [
     ],
   },
   {
-    id: "acesso",
+    id: "access",
     label: "Acesso e segurança",
     summary: "Senha, chaves e o que cada uma abre",
     title: "Acesso e segurança",
@@ -530,7 +530,7 @@ const ptBR: Guide[] = [
 
 const en: Guide[] = [
   {
-    id: "visao-geral",
+    id: "overview",
     label: "What this platform is",
     summary: "Ordinary machines serving one large model, together",
     title: "What this platform is",
@@ -573,7 +573,7 @@ const en: Guide[] = [
     ],
   },
   {
-    id: "primeiros-passos",
+    id: "getting-started",
     label: "Getting started",
     summary: "From the first machine to a network of two",
     title: "Getting started",
@@ -619,7 +619,7 @@ const en: Guide[] = [
     ],
   },
   {
-    id: "perfis",
+    id: "profiles",
     label: "The three profiles",
     summary: "Administrator, node and inference",
     title: "The three profiles",
@@ -663,7 +663,7 @@ const en: Guide[] = [
     ],
   },
   {
-    id: "requisicao",
+    id: "request",
     label: "The path of a question",
     summary: "From prompt to token, machine by machine",
     title: "The path of a question",
@@ -702,7 +702,7 @@ const en: Guide[] = [
     ],
   },
   {
-    id: "fatiar-implantar",
+    id: "slice-and-deploy",
     label: "From model to serving cluster",
     summary: "Slice by size, distribute, put into service",
     title: "From model to serving cluster",
@@ -765,7 +765,7 @@ const en: Guide[] = [
         kind: "p",
         text: "To check, open Deployments: the active version shows the parameters used, and Redeploy this version goes back to any earlier version.",
       },
-      { kind: "faq", items: [{q: "Do I always have to slice?", a: "No. A model that fits whole on one machine is deployed as a whole model, with a single machine on the map."}, {q: "Pipeline or tensor parallelism?", a: "Pipeline is the recommended option between machines across the internet: one crossing per layer boundary per token. In tensor parallelism each layer is split and the machines sum results several times per token, so it needs a fast network."}] },
+      { kind: "faq", items: [{q: "Do I always have to slice?", a: "No. A model that fits whole on one machine is deployed as a whole model, on that one machine. More machines can join the map, as long as their ranges cover every layer."}, {q: "Pipeline or tensor parallelism?", a: "Pipeline is the recommended option between machines across the internet: one crossing per layer boundary per token. In tensor parallelism each layer is split and the machines sum results several times per token, so it needs a fast network."}] },
       { kind: "deep", text: "Slicing, type table and size-based planning", doc: "docs/subsystems/slicing.md" },
       { kind: "deep", text: "Deployment, merge and slice lifecycle", doc: "docs/subsystems/deployment.md" },
       { kind: "deep", text: "Pipeline and tensor parallelism", doc: "docs/subsystems/parallelism.md" },
@@ -773,7 +773,7 @@ const en: Guide[] = [
     ],
   },
   {
-    id: "usar-api",
+    id: "using-the-api",
     label: "Using the API",
     summary: "API keys, compatible routes and harnesses",
     title: "Using the API",
@@ -819,7 +819,7 @@ const en: Guide[] = [
     ],
   },
   {
-    id: "rede-internet",
+    id: "network-and-internet",
     label: "Local network and internet",
     summary: "How machines find each other and which ports to open",
     title: "Local network and internet",
@@ -908,7 +908,7 @@ const en: Guide[] = [
     ],
   },
   {
-    id: "operar",
+    id: "operating",
     label: "Operate and diagnose",
     summary: "Bring it up, check it, find what broke",
     title: "Operate and diagnose",
@@ -953,7 +953,7 @@ const en: Guide[] = [
     ],
   },
   {
-    id: "acesso",
+    id: "access",
     label: "Access and security",
     summary: "Password, keys and what each one opens",
     title: "Access and security",

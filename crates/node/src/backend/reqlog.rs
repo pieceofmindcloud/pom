@@ -84,7 +84,7 @@ impl Caller {
     pub fn operator() -> Self {
         Self {
             key_id: "connection-key".into(),
-            key_label: "chave de conexão".into(),
+            key_label: "connection key".into(),
             key_node_id: None,
         }
     }
@@ -92,7 +92,7 @@ impl Caller {
     pub fn anonymous() -> Self {
         Self {
             key_id: "anonymous".into(),
-            key_label: "sem token".into(),
+            key_label: "without a token".into(),
             key_node_id: None,
         }
     }
@@ -406,7 +406,7 @@ impl AuditLog {
             .name("pom-audit-writer".into())
             .spawn(move || run_writer(writer_database, receiver))
         {
-            error!(error = %e, "não foi possível iniciar o escritor da auditoria");
+            error!(error = %e, "could not start the audit writer");
         }
         Arc::new(Self {
             database,
@@ -448,7 +448,7 @@ impl AuditLog {
                         })
                         .is_err()
                     {
-                        warn!(%peer_id, "envio de auditoria para admin perdido por fila cheia");
+                        warn!(%peer_id, "audit send to admin lost because the queue is full");
                     }
                 }
             }
@@ -463,7 +463,7 @@ impl AuditLog {
             .and_then(|slot| slot.clone());
         if let Some(sender) = sender {
             if let Err(error) = sender.try_send(event) {
-                warn!(error = %error, "evento de auditoria não entrou na fila de réplica");
+                warn!(error = %error, "audit event did not enter the replica queue");
             }
         }
     }
@@ -482,13 +482,13 @@ impl AuditLog {
             AuditEvent::Begin(request) => {
                 let request_id = request.id.clone();
                 (
-                    "iniciar auditoria",
+                    "start audit",
                     request_id,
                     self.sender.try_send(Command::Begin(request)),
                 )
             }
             AuditEvent::Complete { id, completion } => (
-                "concluir auditoria",
+                "complete audit",
                 id.clone(),
                 self.sender.try_send(Command::Complete { id, completion }),
             ),
@@ -498,7 +498,7 @@ impl AuditLog {
                 operation,
                 request_id = %request_id,
                 error = %error,
-                "operação de auditoria perdida antes da gravação"
+                "audit operation lost before being written"
             );
         }
         self.replicate(replication);
@@ -591,12 +591,12 @@ impl AuditLog {
     pub async fn list(&self, query: AuditQuery) -> Result<AuditList> {
         let database = self.database.clone();
         tokio::task::spawn_blocking(move || {
-            database.with_write("consultar auditoria", |connection| {
+            database.with_write("query audit", |connection| {
                 AuditDb::from_shared(connection).list(&query)
             })
         })
         .await
-        .context("aguardar consulta do banco de auditoria")?
+        .context("wait for the audit database query")?
     }
 
     /// Read the completed trace for one request without putting SQLite work in
@@ -605,12 +605,12 @@ impl AuditLog {
         let database = self.database.clone();
         let id = id.to_owned();
         tokio::task::spawn_blocking(move || {
-            database.with_write("consultar telemetria", |connection| {
+            database.with_write("query telemetry", |connection| {
                 AuditDb::from_shared(connection).telemetry(&id)
             })
         })
         .await
-        .context("aguardar consulta da telemetria")?
+        .context("wait for the telemetry query")?
     }
 
     /// Read recent completed traces for the dashboard. The caller filters them
@@ -619,23 +619,23 @@ impl AuditLog {
         let database = self.database.clone();
         let limit = limit.clamp(1, 100);
         tokio::task::spawn_blocking(move || {
-            database.with_write("consultar última telemetria", |connection| {
+            database.with_write("query last telemetry", |connection| {
                 AuditDb::from_shared(connection).recent_telemetries(limit)
             })
         })
         .await
-        .context("aguardar consulta da última telemetria")?
+        .context("wait for the last telemetry query")?
     }
 
     pub async fn stats(&self, query: AuditQuery) -> Result<AuditStats> {
         let database = self.database.clone();
         tokio::task::spawn_blocking(move || {
-            database.with_write("agregar auditoria", |connection| {
+            database.with_write("aggregate audit", |connection| {
                 AuditDb::from_shared(connection).stats(&query)
             })
         })
         .await
-        .context("aguardar agregação do banco de auditoria")?
+        .context("wait for the audit database aggregation")?
     }
 
     #[cfg(test)]
@@ -643,22 +643,22 @@ impl AuditLog {
         let (sender, receiver) = mpsc::channel();
         self.sender
             .send(Command::Flush(sender))
-            .expect("enfileirar barreira da auditoria");
+            .expect("enqueue the audit barrier");
         receiver
             .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("aguardar escritor da auditoria");
+            .expect("wait for the audit writer");
     }
 }
 
 fn run_writer(database: Arc<crate::db::PomDb>, receiver: mpsc::Receiver<Command>) {
-    if let Err(error) = database.with_write("recuperar auditorias incompletas", |connection| {
+    if let Err(error) = database.with_write("recover incomplete audits", |connection| {
         AuditDb::from_shared(connection)
-            .mark_in_progress_incomplete("servidor reiniciou antes do fim")
+            .mark_in_progress_incomplete("server restarted before the end")
     }) {
         error!(
-            operation = "recuperar auditorias incompletas",
+            operation = "recover incomplete audits",
             error = %error,
-            "não foi possível inicializar o escritor da auditoria"
+            "could not initialize the audit writer"
         );
         return;
     }
@@ -666,16 +666,16 @@ fn run_writer(database: Arc<crate::db::PomDb>, receiver: mpsc::Receiver<Command>
         let (operation, request_id, result) = match command {
             Command::Begin(request) => {
                 let request_id = request.id.clone();
-                let result = database.with_write("iniciar auditoria", |connection| {
+                let result = database.with_write("start audit", |connection| {
                     AuditDb::from_shared(connection).begin(&request)
                 });
-                ("iniciar auditoria", request_id, result)
+                ("start audit", request_id, result)
             }
             Command::Complete { id, completion } => {
-                let result = database.with_write("concluir auditoria", |connection| {
+                let result = database.with_write("complete audit", |connection| {
                     AuditDb::from_shared(connection).complete(&id, &completion)
                 });
-                ("concluir auditoria", id, result)
+                ("complete audit", id, result)
             }
             #[cfg(test)]
             Command::Flush(done) => {
@@ -688,7 +688,7 @@ fn run_writer(database: Arc<crate::db::PomDb>, receiver: mpsc::Receiver<Command>
                 operation,
                 request_id = %request_id,
                 error = %e,
-                "falha ao gravar o registro de auditoria; operação perdida"
+                "failed to write the audit record; operation lost"
             );
         }
     }
@@ -729,7 +729,7 @@ impl AuditDb<Connection> {
         configure_connection(&connection)?;
         ensure_schema(&connection)?;
         let mut db = Self { connection };
-        db.mark_in_progress_incomplete("servidor reiniciou antes do fim")?;
+        db.mark_in_progress_incomplete("server restarted before the end")?;
         Ok(db)
     }
 }
@@ -809,7 +809,7 @@ impl<C: ConnectionAccess> AuditDb<C> {
             ],
         )?;
         if updated == 0 {
-            anyhow::bail!("registro de auditoria {id} não existe");
+            anyhow::bail!("audit record {id} does not exist");
         }
         transaction.execute(
             "DELETE FROM audit_request_hops WHERE request_id = ?",
@@ -840,7 +840,7 @@ impl<C: ConnectionAccess> AuditDb<C> {
         self.connection_mut().execute(
             "UPDATE audit_requests
              SET status = 'incomplete', completed_at = COALESCE(completed_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-                 error = COALESCE(error, 'não concluiu em 15 minutos')
+                 error = COALESCE(error, 'did not complete in 15 minutes')
              WHERE status = 'in_progress'
                AND julianday(received_at) < julianday('now', ?)",
             params![format!("-{STALE_AFTER_MINUTES} minutes")],
@@ -1369,16 +1369,13 @@ pub async fn list_requests(
     State(state): State<crate::gateway::GatewayState>,
     Query(query): Query<LogQuery>,
 ) -> impl IntoResponse {
-    let plugin_status = state
-        .plugins
-        .status(crate::plugins::LOGS_PLUGIN_CODE)
-        .await;
+    let plugin_status = state.plugins.status(crate::plugins::LOGS_PLUGIN_CODE).await;
     if !plugin_status.is_some_and(|status| status.has_feature("request_logs")) {
         return (
             StatusCode::FORBIDDEN,
             Json(json!({
                 "code": "enterprise_required",
-                "error": "Logs de Requisições exigem uma licença Enterprise.",
+                "error": "Request Logs require an Enterprise license.",
                 "manage_url": enterprise_protocol::PLUGIN_MANAGE_URL,
             })),
         )
@@ -1409,10 +1406,10 @@ pub async fn list_requests(
     match state.audit.list(query).await {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
         Err(e) => {
-            warn!(error = %e, "consulta do banco de auditoria falhou");
+            warn!(error = %e, "audit database query failed");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": "não foi possível consultar a auditoria" })),
+                Json(json!({ "error": "could not query the audit" })),
             )
                 .into_response()
         }
@@ -1426,16 +1423,13 @@ pub async fn stats_requests(
     State(state): State<crate::gateway::GatewayState>,
     Query(query): Query<LogQuery>,
 ) -> impl IntoResponse {
-    let plugin_status = state
-        .plugins
-        .status(crate::plugins::LOGS_PLUGIN_CODE)
-        .await;
+    let plugin_status = state.plugins.status(crate::plugins::LOGS_PLUGIN_CODE).await;
     if !plugin_status.is_some_and(|status| status.has_feature("statistics")) {
         return (
             StatusCode::FORBIDDEN,
             Json(json!({
                 "code": "enterprise_required",
-                "error": "Estatísticas exigem uma licença Enterprise.",
+                "error": "Statistics require an Enterprise license.",
                 "manage_url": enterprise_protocol::PLUGIN_MANAGE_URL,
             })),
         )
@@ -1466,10 +1460,10 @@ pub async fn stats_requests(
     match state.audit.stats(query).await {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
         Err(e) => {
-            warn!(error = %e, "agregação do banco de auditoria falhou");
+            warn!(error = %e, "audit database aggregation failed");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": "não foi possível agregar a auditoria" })),
+                Json(json!({ "error": "could not aggregate the audit" })),
             )
                 .into_response()
         }
@@ -1577,7 +1571,7 @@ mod tests {
         db.begin(&request("req-restarted", "key-b", "b")).unwrap();
         db.begin(&request("req-ok", "key-c", "c")).unwrap();
         db.complete("req-ok", &completion(AuditStatus::Ok)).unwrap();
-        db.mark_in_progress_incomplete("servidor reiniciou antes do fim")
+        db.mark_in_progress_incomplete("server restarted before the end")
             .unwrap();
 
         let rows = db.list(&AuditQuery::default()).unwrap().entries;
@@ -1588,7 +1582,7 @@ mod tests {
         assert_eq!(status["req-running"].0, "incomplete");
         assert_eq!(
             status["req-running"].1.as_deref(),
-            Some("servidor reiniciou antes do fim")
+            Some("server restarted before the end")
         );
         assert_eq!(status["req-restarted"].0, "incomplete");
         assert_eq!(status["req-ok"].0, "ok");
@@ -1752,7 +1746,7 @@ mod tests {
             }));
         }
         for worker in workers {
-            worker.join().expect("thread de auditoria");
+            worker.join().expect("audit thread");
         }
         audit.flush();
 
@@ -1795,7 +1789,7 @@ mod tests {
             std::process::id(),
             uuid::Uuid::new_v4().simple()
         ));
-        let database = Arc::new(crate::db::PomDb::open(&path).expect("banco de teste"));
+        let database = Arc::new(crate::db::PomDb::open(&path).expect("test database"));
         let audit = AuditLog::new(database);
         let (outbound, mut received) = tokio::sync::mpsc::channel(4);
         audit.start_replication(Arc::new(network), outbound);
@@ -1803,11 +1797,11 @@ mod tests {
 
         let message = tokio::time::timeout(std::time::Duration::from_secs(2), received.recv())
             .await
-            .expect("fanout de auditoria no prazo")
-            .expect("evento para admin secundário");
+            .expect("audit fanout in time")
+            .expect("event for the secondary admin");
         match message.event {
             AuditEvent::Begin(request) => assert_eq!(request.id, "replicated-request"),
-            AuditEvent::Complete { .. } => panic!("início esperado antes da conclusão"),
+            AuditEvent::Complete { .. } => panic!("start expected before the completion"),
         }
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(format!("{}-wal", path.display()));

@@ -1,10 +1,10 @@
 use super::*;
 use crate::profile::{NodeProfile, ProfileAction};
-// ── Somar ou tirar uma maquina de um modelo ja no ar ─────────────────────────
+// ── Adding or removing a machine of a model already on the air ───────────────
 //
-// Os dois caminhos tocam **uma** maquina. `deploy_endpoint` reimplanta o
-// conjunto inteiro, e usar aquele caminho aqui pararia a inferencia de quem ja
-// esta servindo - exatamente o que somar uma maquina existe para evitar.
+// Both paths touch **one** machine. `deploy_endpoint` redeploys the
+// whole set, and using that path here would stop the inference of whoever is already
+// serving - exactly what adding a machine exists to avoid.
 
 #[derive(Debug, Deserialize)]
 pub struct AddNodeOptionsRequest {
@@ -51,9 +51,9 @@ pub(crate) fn add_node_option_survey_kinds(kind: DeployKind) -> Vec<DeployKind> 
 #[derive(Debug, Deserialize)]
 pub struct AddNodeRequest {
     pub group: String,
-    /// A implantação que ganha a máquina. Vazio enquanto a tela não manda:
-    /// aí o nó entra sem registro, servindo a faixa, e a implantação segue
-    /// sendo identificada pelo rótulo como antes.
+    /// The deployment that gains the machine. Empty while the screen does not send it:
+    /// then the node joins without a record, serving the range, and the deployment keeps
+    /// being identified by the label as before.
     #[serde(default)]
     pub deploy_id: String,
     /// Which catalog the range is looked up in. A whole model already in
@@ -70,9 +70,13 @@ pub struct AddNodeRequest {
     pub n_gpu_layers: Option<u32>,
     #[serde(default)]
     pub offload_kqv: Option<bool>,
-    /// Valores de instalação do destino, aplicados antes do novo processo
-    /// subir. Eles são opcionais para clientes antigos, que mantêm a config
-    /// já persistida no peer.
+    /// The new machine's own parameters (context, sessions, GPU layers, KV placement). They launch this machine only;
+    /// the deployment's version keeps its parameters.
+    #[serde(default)]
+    pub overrides: Option<crate::deployment::NodeOverrides>,
+    /// Install values of the target, applied before the new process
+    /// comes up. They are optional for old clients, which keep the config
+    /// already persisted on the peer.
     #[serde(default)]
     pub cache_type_k: Option<crate::config::KvCacheType>,
     #[serde(default)]
@@ -82,14 +86,13 @@ pub struct AddNodeRequest {
 pub struct RemoveNodeRequest {
     pub group: String,
     pub target_node_id: String,
-    /// A implantação exata evita misturar duas implantações do mesmo modelo.
+    /// The exact deployment avoids mixing two deployments of the same model.
     #[serde(default)]
     pub deploy_id: String,
 }
 
-const ADD_NODE_ADMIN_ONLY: &str =
-    "somente o administrador pode adicionar uma máquina à implantação";
-const UNDEPLOY_ADMIN_ONLY: &str = "somente o administrador pode desimplantar a implantação";
+const ADD_NODE_ADMIN_ONLY: &str = "only the administrator can add a machine to the deployment";
+const UNDEPLOY_ADMIN_ONLY: &str = "only the administrator can undeploy the deployment";
 
 pub(super) fn deployment_authority(
     profile: NodeProfile,
@@ -101,8 +104,8 @@ pub(super) fn deployment_authority(
         .ok_or_else(|| refusal.to_string())
 }
 
-/// Encontra a implantação ativa que corresponde ao modelo, inclusive quando
-/// o painel ainda não carregou a tela de histórico e não consegue mandar o id.
+/// Finds the active deployment that matches the model, including when
+/// the panel has not loaded the history screen yet and cannot send the id.
 pub(super) async fn record_for_group(
     state: &GatewayState,
     group: &str,
@@ -151,14 +154,14 @@ async fn target_json(
         .await
         .into_iter()
         .find(|peer| peer.node_id == target_node_id)
-        .ok_or_else(|| "a máquina escolhida não está no cluster".to_string())?;
+        .ok_or_else(|| "the chosen machine is not in the cluster".to_string())?;
     state
         .control_get(&peer, &format!("/api/ui/{path}"), PEER_TIMEOUT)
         .await
-        .map_err(|e| format!("peer inacessível: {e:#}"))?
+        .map_err(|e| format!("peer unreachable: {e:#}"))?
         .json()
         .await
-        .map_err(|e| format!("resposta inválida do peer: {e}"))
+        .map_err(|e| format!("invalid peer response: {e}"))
 }
 
 async fn apply_target_cache_types(
@@ -174,16 +177,16 @@ async fn apply_target_cache_types(
     let current_k = current
         .get("cache_type_k")
         .cloned()
-        .ok_or_else(|| "a máquina não informou o tipo de cache K".to_string())
+        .ok_or_else(|| "the machine did not report the K cache type".to_string())
         .and_then(|value| {
-            serde_json::from_value(value).map_err(|e| format!("cache K inválido: {e}"))
+            serde_json::from_value(value).map_err(|e| format!("invalid K cache: {e}"))
         })?;
     let current_v = current
         .get("cache_type_v")
         .cloned()
-        .ok_or_else(|| "a máquina não informou o tipo de cache V".to_string())
+        .ok_or_else(|| "the machine did not report the V cache type".to_string())
         .and_then(|value| {
-            serde_json::from_value(value).map_err(|e| format!("cache V inválido: {e}"))
+            serde_json::from_value(value).map_err(|e| format!("invalid V cache: {e}"))
         })?;
     let cache_type_k = requested_k.unwrap_or(current_k);
     let cache_type_v = requested_v.unwrap_or(current_v);
@@ -193,7 +196,7 @@ async fn apply_target_cache_types(
         cfg.cache_type_k = cache_type_k;
         cfg.cache_type_v = cache_type_v;
         cfg.save()
-            .map_err(|e| format!("não deu para gravar pom.json: {e}"))?;
+            .map_err(|e| format!("could not write pom.json: {e}"))?;
         return Ok(());
     }
 
@@ -202,7 +205,7 @@ async fn apply_target_cache_types(
         .await
         .into_iter()
         .find(|peer| peer.node_id == target_node_id)
-        .ok_or_else(|| "a máquina escolhida não está no cluster".to_string())?;
+        .ok_or_else(|| "the chosen machine is not in the cluster".to_string())?;
     let response = state
         .control_post_json(
             &peer,
@@ -211,12 +214,12 @@ async fn apply_target_cache_types(
             PEER_TIMEOUT,
         )
         .await
-        .map_err(|e| format!("peer inacessível: {e:#}"))?;
+        .map_err(|e| format!("peer unreachable: {e:#}"))?;
     if response.status().is_success() {
         Ok(())
     } else {
         Err(format!(
-            "a máquina recusou a configuração do cache: HTTP {}",
+            "the machine refused the cache configuration: HTTP {}",
             response.status()
         ))
     }
@@ -249,7 +252,7 @@ pub(super) async fn add_node_options_endpoint(
         }
     }
     if !target_seen {
-        return bad(json!({ "error": "a máquina escolhida não está no cluster" }));
+        return bad(json!({ "error": "the chosen machine is not in the cluster" }));
     }
 
     let mut options = Vec::new();
@@ -306,7 +309,7 @@ pub(super) async fn add_node_options_endpoint(
     .into_response()
 }
 
-/// Faixas que este grupo tem no ar agora, uma por peer que o esta servindo.
+/// Ranges this group has on the air now, one per peer serving it.
 pub(super) async fn live_ranges(
     state: &GatewayState,
     group: &str,
@@ -325,12 +328,12 @@ pub(super) async fn live_ranges(
         .collect()
 }
 
-/// Faixas que pertencem à cabeça fatiada de um deployment misto.
+/// Ranges that belong to the sliced head of a mixed deployment.
 ///
-/// O registro preserva a diferença entre o GGUF inteiro e uma fatia mesmo
-/// quando ambos cobrem todas as camadas. Só o primeiro sai desta lista: a
-/// posição do novo shard não pode contar o modelo inteiro como um estágio do
-/// pipeline fatiado.
+/// The record preserves the difference between the whole GGUF and a slice even
+/// when both cover all the layers. Only the first one leaves this list: the
+/// position of the new shard cannot count the whole model as a stage of the
+/// sliced pipeline.
 fn sliced_route_ranges(
     record: Option<&crate::deployment::Deployment>,
     live: &[(String, u32, u32)],
@@ -367,12 +370,21 @@ pub(super) async fn add_node_endpoint(
             .into_response();
     }
 
+    if state.all_peers().await.iter().any(|peer| {
+        peer.node_id == req.target_node_id && crate::gateway::peer_is_infer(&state, peer)
+    }) {
+        return bad(json!({
+            "reason": "infer_target",
+            "error": "this machine was admitted for inference only and cannot serve a model",
+        }));
+    }
+
     if req.start_layer > req.end_layer {
-        return bad(json!({ "error": "faixa de camadas invertida" }));
+        return bad(json!({ "error": "inverted layer range" }));
     }
 
     if !req.deploy_id.is_empty() && !crate::deployment::is_deploy_id(&req.deploy_id) {
-        return bad(json!({ "error": format!("deploy_id inválido: {}", req.deploy_id) }));
+        return bad(json!({ "error": format!("invalid deploy_id: {}", req.deploy_id) }));
     }
 
     let existing_record = if req.deploy_id.is_empty() {
@@ -386,7 +398,7 @@ pub(super) async fn add_node_endpoint(
         .unwrap_or_else(|| req.deploy_id.clone());
     if !req.deploy_id.is_empty() && existing_record.is_none() {
         return bad(json!({
-            "error": format!("implantação {} desconhecida", req.deploy_id)
+            "error": format!("unknown deployment {}", req.deploy_id)
         }));
     }
     let params = req
@@ -398,24 +410,80 @@ pub(super) async fn add_node_endpoint(
                 .and_then(|record| record.active().map(|version| version.params.clone()))
         })
         .unwrap_or_default();
+    let overrides = req.overrides.clone().unwrap_or_default();
+    if let Err(message) = overrides.validate() {
+        return bad(json!({ "error": message }));
+    }
+    // The new machine launches with its own parameters; the deployment's version keeps the base ones.
+    let node_params = overrides.apply(&params);
 
-    // Re-varre em vez de confiar na tela: a previa pode ter um minuto, e uma
-    // maquina que saiu nesse meio tempo receberia uma fatia.
+    // The machine's engine: an inference service of a plugin (its own `inference_service`), or llama.cpp when none.
+    // The same rules as a deployment (`deploy_block`): the machine offers it and it is ready; a service that does not
+    // run layer slices takes the whole model on this machine.
+    if let Some(service) = node_params.inference_service.as_deref() {
+        let whole = req.kind == DeployKind::Whole;
+        if let Some(reason) = crate::plugin_engine::deploy_block(
+            &state,
+            service,
+            whole,
+            std::slice::from_ref(&req.target_node_id),
+        )
+        .await
+        {
+            return bad(json!({ "error": reason }));
+        }
+        if !whole {
+            let stages = crate::plugin_engine::services_of(&state, &req.target_node_id)
+                .await
+                .and_then(|services| {
+                    services
+                        .into_iter()
+                        .find(|entry| entry["plugin_code"] == service && entry["kind"] == "inference")
+                })
+                .and_then(|entry| entry["stages"].as_bool())
+                .unwrap_or(false);
+            if !stages {
+                return bad(json!({
+                    "error": format!("the inference service {service} runs the whole model on one machine: add the whole model here"),
+                }));
+            }
+        }
+    }
+
+    // Re-surveys instead of trusting the screen: the preview may be a minute old, and a
+    // machine that left in the meantime would receive a slice.
+    // The slice is looked up in the same surveys the options were built from (`add_node_option_survey_kinds`): a slice
+    // the dialog offers is the one this checks, whichever survey found it.
+    let requested_kind = match req.kind {
+        DeployKind::Whole => HeldKind::Whole,
+        _ => HeldKind::Shard,
+    };
+    let mut target_label = String::new();
+    let mut held_shard = None;
+    for survey_kind in add_node_option_survey_kinds(req.kind) {
+        let machines = survey(&state, &req.group, survey_kind, None, None)
+            .await
+            .machines;
+        if let Some(machine) = machines.iter().find(|m| m.node_id == req.target_node_id) {
+            target_label = machine.label();
+            if held_shard.is_none() {
+                held_shard = machine
+                    .holds_kind(req.start_layer, req.end_layer, Some(requested_kind))
+                    .cloned();
+            }
+        }
+    }
+    if target_label.is_empty() {
+        return bad(json!({ "error": "the chosen machine is not in the cluster" }));
+    }
     let machines = survey(&state, &req.group, req.kind, None, None)
         .await
         .machines;
-    let Some(target) = machines.iter().find(|m| m.node_id == req.target_node_id) else {
-        return bad(json!({ "error": "a maquina escolhida nao esta no cluster" }));
-    };
-    let requested_kind = match req.kind {
-        DeployKind::Whole => Some(HeldKind::Whole),
-        _ => Some(HeldKind::Shard),
-    };
-    let Some(shard) = target.holds_kind(req.start_layer, req.end_layer, requested_kind) else {
+    let Some(shard) = held_shard else {
         return bad(json!({
             "error": format!(
-                "{} nao tem {}; mande para la antes",
-                target.label(),
+                "{} does not have {}; send it there first",
+                target_label,
                 req.kind.unit(&req.group, req.start_layer, req.end_layer)
             )
         }));
@@ -429,23 +497,29 @@ pub(super) async fn add_node_endpoint(
         (!deployment_id.is_empty()).then_some(deployment_id.as_str()),
     )
     .await;
-    let outras: Vec<(u32, u32)> = live
+    let others: Vec<(u32, u32)> = live
         .iter()
         .filter(|(id, _, _)| id != &req.target_node_id)
         .map(|(_, i, f)| (*i, *f))
         .collect();
-    let sobrepostas = overlapping_layers(&outras, (req.start_layer, req.end_layer));
+    let overlapping = overlapping_layers(&others, (req.start_layer, req.end_layer));
 
-    let candidatos = candidates(&machines);
-    let Some(total_layers) = model_size(&candidatos).value() else {
+    let candidates = candidates(&machines);
+    // The slices may not carry their model's layer count (it is read from each GGUF header, which the catalog reads
+    // later). A deployment in service already knows it: that is the record's count.
+    let known = existing_record
+        .as_ref()
+        .map(|record| record.model.total_layers)
+        .filter(|total| *total > 0);
+    let Some(total_layers) = model_size(&candidates).value().or(known) else {
         return bad(json!({
-            "error": format!("as fatias de {} nao dizem o total de camadas", req.group)
+            "error": format!("the slices of {} do not state the total number of layers", req.group)
         }));
     };
     if req.end_layer >= total_layers {
         return bad(json!({
             "error": format!(
-                "{} passa do fim de um modelo de {total_layers} camadas",
+                "{} goes past the end of a model with {total_layers} layers",
                 req.kind.unit(&req.group, req.start_layer, req.end_layer)
             )
         }));
@@ -462,11 +536,11 @@ pub(super) async fn add_node_endpoint(
         return bad(json!({ "error": error }));
     }
 
-    // `peer_index`/`peer_count` alimentam duas decisoes so: se este no exporta
-    // o estado residual e se ele pula os embeddings. As duas perguntam "sou o
-    // ultimo?", e a resposta vem da ordem das camadas no cluster - nao da
-    // posicao numa lista de alvos que este caminho, por existir para tocar uma
-    // maquina so, nunca vai montar.
+    // `peer_index`/`peer_count` feed only two decisions: whether this node exports
+    // the residual state and whether it skips the embeddings. Both ask "am I the
+    // last?", and the answer comes from the layer order in the cluster - not from the
+    // position in a list of targets that this path, existing to touch a single
+    // machine, will never build.
     let pipeline_ranges = sliced_route_ranges(existing_record.as_ref(), &live, total_layers);
     let (peer_index, peer_count) = if req.kind == DeployKind::Whole {
         (0, 1)
@@ -484,8 +558,8 @@ pub(super) async fn add_node_endpoint(
             deployment_name: req.group.clone(),
             total_layers,
             use_mmproj: false,
-            // Um alvo so: o `launch` para a inferencia dos alvos que recebe, e
-            // esta lista tem exatamente a maquina que esta entrando.
+            // A single target: `launch` stops the inference of the targets it receives, and
+            // this list has exactly the machine that is joining.
             targets: vec![LaunchTarget {
                 node_id: target_node_id.clone(),
                 source_model_path,
@@ -497,8 +571,8 @@ pub(super) async fn add_node_endpoint(
                 n_gpu_layers: req.n_gpu_layers,
                 offload_kqv: req.offload_kqv,
                 no_embeddings: None,
-                // Um alvo por requisição, mas a posição é a do pipeline: sem
-                // isto o nó somado se diz o último da divisão.
+                // One target per request, but the position is the pipeline's: without
+                // this the added node says it is the last of the split.
                 peer_index: Some(peer_index),
                 peer_count: Some(peer_count),
                 tp: None,
@@ -508,15 +582,15 @@ pub(super) async fn add_node_endpoint(
                 mmproj_file: None,
                 use_mmproj: false,
             }],
-            // Quem e a entrada do pipeline nao muda por isto: so quem fica com
-            // a camada 0 recebe o prompt, e o `launch` so marca `primary` no
-            // alvo que ele recebe.
+            // Who is the pipeline's entry does not change because of this: only whoever holds
+            // layer 0 receives the prompt, and `launch` only marks `primary` on the
+            // target it receives.
             primary_node_id: if req.start_layer == 0 {
                 Some(target_node_id.clone())
             } else {
                 None
             },
-            params: params.clone(),
+            params: node_params.clone(),
         }),
     )
     .await;
@@ -573,9 +647,14 @@ pub(super) async fn add_node_endpoint(
             source_model_path: (!target.source_model_path.is_empty())
                 .then(|| target.source_model_path.clone()),
             tp_rank: None,
-            config: crate::webui::params_for(&params, &target),
+            config: crate::webui::params_for(&node_params, &target),
         });
         let version = record.append_version(params, nodes, state.network.node_id.as_str());
+        if !overrides.is_empty() {
+            if let Err(e) = record.set_node_overrides(&target_node_id, overrides.clone()) {
+                warn!("add node: the overrides of {target_node_id} were not recorded: {e}");
+            }
+        }
         publish_record(&state, &record).await;
         (Some(version), record.kind)
     } else {
@@ -584,7 +663,7 @@ pub(super) async fn add_node_endpoint(
 
     Json(json!({
         "applied": true,
-        "overlapping_layers": sobrepostas,
+        "overlapping_layers": overlapping,
         "peer_index": peer_index,
         "peer_count": peer_count,
         "deploy_id": (!deployment_id.is_empty()).then_some(deployment_id),
@@ -600,7 +679,7 @@ pub(super) async fn remove_node_endpoint(
     Json(req): Json<RemoveNodeRequest>,
 ) -> Response {
     if !req.deploy_id.is_empty() && !crate::deployment::is_deploy_id(&req.deploy_id) {
-        return bad(json!({ "error": format!("deploy_id inválido: {}", req.deploy_id) }));
+        return bad(json!({ "error": format!("invalid deploy_id: {}", req.deploy_id) }));
     }
     let record = if req.deploy_id.is_empty() {
         record_for_group(&state, &req.group).await
@@ -611,23 +690,23 @@ pub(super) async fn remove_node_endpoint(
         .as_ref()
         .map(|deployment| deployment.deploy_id.as_str())
         .or_else(|| (!req.deploy_id.is_empty()).then_some(req.deploy_id.as_str()));
-    let vivas = live_ranges(&state, &req.group, deployment_id).await;
-    let Some((_, inicio, fim)) = vivas
+    let live = live_ranges(&state, &req.group, deployment_id).await;
+    let Some((_, start, end)) = live
         .iter()
         .find(|(id, _, _)| id == &req.target_node_id)
         .cloned()
     else {
-        return bad(json!({ "error": "essa maquina nao esta servindo este modelo" }));
+        return bad(json!({ "error": "this machine is not serving this model" }));
     };
-    let restantes: Vec<(u32, u32)> = vivas
+    let remaining: Vec<(u32, u32)> = live
         .iter()
         .filter(|(id, _, _)| id != &req.target_node_id)
         .map(|(_, i, f)| (*i, *f))
         .collect();
-    let descobertas = uncovered_after_removal(&restantes, (inicio, fim));
+    let discovered = uncovered_after_removal(&remaining, (start, end));
 
-    // Quem libera a memoria e o dono dela, como no botao "Liberar fatia": este
-    // no so encaminha o pedido.
+    // Whoever frees the memory is its owner, as in the "Liberar fatia" button: this
+    // node only forwards the request.
     if req.target_node_id == state.network.node_id {
         state.runtime.stop().await;
     } else {
@@ -637,7 +716,7 @@ pub(super) async fn remove_node_endpoint(
             .into_iter()
             .find(|peer| peer.node_id == req.target_node_id)
         else {
-            return bad(json!({ "error": "a máquina escolhida não está no cluster" }));
+            return bad(json!({ "error": "the chosen machine is not in the cluster" }));
         };
         match state
             .control_post_empty(&peer, "/api/ui/unload", crate::webui::PEER_STOP_TIMEOUT)
@@ -645,9 +724,9 @@ pub(super) async fn remove_node_endpoint(
         {
             Ok(r) if r.status().is_success() => {}
             Ok(r) => {
-                return bad(json!({ "error": format!("o peer recusou: HTTP {}", r.status()) }));
+                return bad(json!({ "error": format!("the peer refused: HTTP {}", r.status()) }));
             }
-            Err(e) => return bad(json!({ "error": format!("peer inacessivel: {e}") })),
+            Err(e) => return bad(json!({ "error": format!("peer unreachable: {e}") })),
         }
     }
 
@@ -668,15 +747,15 @@ pub(super) async fn remove_node_endpoint(
             publish_record(&state, &record).await;
             (Some(record.deploy_id), Some(version), serving)
         } else {
-            (None, None, !vivas.is_empty())
+            (None, None, !live.is_empty())
         }
     } else {
-        (None, None, !vivas.is_empty())
+        (None, None, !live.is_empty())
     };
 
     Json(json!({
         "removed": true,
-        "uncovered_layers": descobertas,
+        "uncovered_layers": discovered,
         "deploy_id": deploy_id,
         "version": version,
         "serving": serving,
@@ -684,61 +763,61 @@ pub(super) async fn remove_node_endpoint(
     .into_response()
 }
 
-// ── Tirando a pipeline inteira do ar ─────────────────────────────────────────
+// ── Taking the whole pipeline off the air ───────────────────────────────────
 //
-// O contrário de "Implantar na rede". Remover uma máquina do modelo já existia
-// (`/api/ui/deploy/node/remove`), mas desfazer a implantação inteira era
-// clicar máquina por máquina, na ordem certa, torcendo para não esquecer
-// nenhuma — e uma esquecida é RAM e VRAM presas numa fatia que não serve mais
-// para nada, porque o pipeline só planeja com a cobertura fechada.
+// The opposite of "Implantar na rede". Removing a machine from the model already existed
+// (`/api/ui/deploy/node/remove`), but undoing the whole deployment meant
+// clicking machine by machine, in the right order, hoping not to forget
+// any - and a forgotten one is RAM and VRAM stuck in a slice that serves
+// no purpose anymore, because the pipeline only plans with closed coverage.
 //
-// **O que isto NÃO faz: mexer no disco.** Nenhuma fatia é apagada. Desimplantar
-// é devolver a memória; os arquivos continuam onde estão e a mesma implantação
-// volta com um clique em vez de com 17 minutos de transferência por máquina.
-// Apagar fatias é o que a tela de Modelos faz, com o seu próprio pedido de
-// confirmação, e é uma decisão diferente desta.
+// **What this does NOT do: touch the disk.** No slice is deleted. Undeploying
+// is giving the memory back; the files stay where they are and the same deployment
+// comes back with one click instead of 17 minutes of transfer per machine.
+// Deleting slices is what the Models screen does, with its own confirmation
+// request, and it is a different decision from this one.
 
-/// O perfil do nó que recebeu o pedido decide se a pipeline inteira pode sair
-/// do ar. O descarregamento encaminhado aos peers continua sendo a operação
-/// local de cada máquina e não passa por este portão.
+/// The profile of the node that received the request decides whether the whole pipeline can come
+/// off the air. The unload forwarded to the peers remains the local
+/// operation of each machine and does not go through this gate.
 
 #[derive(Debug, Deserialize)]
 pub struct UndeployRequest {
-    /// Modelo cuja pipeline sai do ar. Vazio significa "a que estiver no ar",
-    /// que é o caso do painel: ele mostra uma pipeline de cada vez.
+    /// Model whose pipeline comes off the air. Empty means "the one that is on the air",
+    /// which is the panel's case: it shows one pipeline at a time.
     #[serde(default)]
     pub group: String,
-    /// A implantação exata que sai do ar.
+    /// The exact deployment that comes off the air.
     ///
-    /// É a saída para o beco em que `resolve_group` batia: com duas
-    /// implantações no ar - inclusive **do mesmo modelo**, que agora é
-    /// possível - o rótulo não distingue, e o id sim.
+    /// It is the way out of the dead end `resolve_group` hit: with two
+    /// deployments on the air - including **of the same model**, which is now
+    /// possible - the label does not distinguish, and the id does.
     #[serde(default)]
     pub deploy_id: String,
 }
 
-/// O que aconteceu com **uma** máquina. Uma linha por máquina, sempre — inclusive
-/// para a que não respondeu.
+/// What happened to **one** machine. One row per machine, always - including
+/// for the one that did not answer.
 #[derive(Debug, Serialize)]
 pub struct UndeployOutcome {
     pub node_id: String,
     pub hostname: String,
     pub start_layer: u32,
     pub end_layer: u32,
-    /// `true` só quando a máquina confirmou. Um peer calado é `false` com o
-    /// motivo em `error`; contá-lo como sucesso seria dizer que a memória foi
-    /// liberada sem ninguém ter dito isso.
+    /// `true` only when the machine confirmed. A silent peer is `false` with the
+    /// reason in `error`; counting it as a success would be saying the memory was
+    /// freed without anyone having said so.
     pub released: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
-/// Descarrega o modelo de todas as máquinas que servem `group`.
+/// Unloads the model from all the machines that serve `group`.
 ///
-/// Responde 200 com o relatório mesmo quando alguma máquina falha: metade
-/// desimplantada é o estado real do cluster, e escondê-lo atrás de um erro
-/// deixaria o operador sem saber em quais máquinas ainda há memória presa.
-/// Só pedido inválido (nenhuma pipeline no ar, ou ambiguidade sobre qual) é 400.
+/// Answers 200 with the report even when some machine fails: half
+/// undeployed is the real state of the cluster, and hiding it behind an error
+/// would leave the operator not knowing on which machines memory is still stuck.
+/// Only an invalid request (no pipeline on the air, or ambiguity about which) is 400.
 pub(super) async fn undeploy_endpoint(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
@@ -756,35 +835,35 @@ pub(super) async fn undeploy_endpoint(
     }
 
     let peers = state.all_peers().await;
-    let alvo = match resolve_target(&req.deploy_id, &req.group, &peers) {
+    let target = match resolve_target(&req.deploy_id, &req.group, &peers) {
         Ok(a) => a,
         Err(e) => return bad(json!({ "error": e })),
     };
 
-    // Re-varre em vez de confiar na tela, como o `deploy`: uma máquina que saiu
-    // no meio tempo não pode virar uma linha de falha inventada.
+    // Re-surveys instead of trusting the screen, like `deploy`: a machine that left
+    // in the meantime must not become an invented failure row.
     let serving: Vec<PeerInfo> = peers
         .into_iter()
-        .filter(|p| p.total_layers > 0 && alvo.matches(p))
+        .filter(|p| p.total_layers > 0 && target.matches(p))
         .collect();
     if serving.is_empty() {
         return bad(json!({
-            "error": format!("nenhuma máquina está servindo {}", alvo.describe())
+            "error": format!("no machine is serving {}", target.describe())
         }));
     }
 
-    let group = alvo.label();
+    let group = target.label();
     info!(
-        "desimplantando {} de {} máquina(s)",
-        alvo.describe(),
+        "undeploying {} from {} machine(s)",
+        target.describe(),
         serving.len()
     );
 
     let key = state.auth.read().await.connection_key.clone();
     let self_id = state.network.node_id.clone();
 
-    // Em paralelo: com onze peers e o prazo de um controle por peer, em série a
-    // tela ficaria quase um minuto sem resposta.
+    // In parallel: with eleven peers and the deadline of one control call per peer, in series the
+    // screen would sit almost a minute without an answer.
     let mut results: Vec<UndeployOutcome> =
         futures::future::join_all(serving.into_iter().map(|peer| {
             let state = state.clone();
@@ -812,23 +891,23 @@ pub(super) async fn undeploy_endpoint(
     let released = results.iter().filter(|r| r.released).count();
     let failed = results.len() - released;
     if failed > 0 {
-        warn!("{failed} máquina(s) não confirmaram a desimplantação de {group}");
+        warn!("{failed} machine(s) did not confirm the undeploy of {group}");
     }
 
-    // O registro só é esquecido depois: um registro apagado com máquinas ainda
-    // servindo deixaria memória presa sem nada que a nomeasse. Neste nó basta
-    // apagar o arquivo; os outros participantes apagam o seu ao serem
-    // descarregados, e um que não respondeu guarda o dele - que é o certo, já
-    // que ele ainda está no ar.
-    if let UndeployTarget::Deployment { deploy_id, .. } = &alvo {
+    // The record is only forgotten afterwards: a record deleted with machines still
+    // serving would leave stuck memory with nothing naming it. On this node it is enough to
+    // delete the file; the other participants delete theirs when they are
+    // unloaded, and one that did not answer keeps its own - which is right, since
+    // it is still on the air.
+    if let UndeployTarget::Deployment { deploy_id, .. } = &target {
         if let Err(e) = state.database.remove_deployment(deploy_id) {
-            warn!("não deu para esquecer a implantação {deploy_id}: {e:#}");
+            warn!("could not forget the deployment {deploy_id}: {e:#}");
         }
     }
 
     Json(json!({
         "group": group,
-        "deploy_id": match &alvo {
+        "deploy_id": match &target {
             UndeployTarget::Deployment { deploy_id, .. } => Some(deploy_id.clone()),
             UndeployTarget::Label(_) => None,
         },
@@ -839,11 +918,11 @@ pub(super) async fn undeploy_endpoint(
     .into_response()
 }
 
-/// Qual pipeline o pedido quer derrubar.
+/// Which pipeline the request wants to take down.
 ///
-/// Vazio e uma só no ar é a intenção óbvia. Vazio com duas é ambiguidade que
-/// esta função se recusa a resolver por conta própria: derrubar a errada custa
-/// uma reimplantação inteira.
+/// Empty and only one on the air is the obvious intent. Empty with two is an ambiguity that
+/// this function refuses to resolve on its own: taking down the wrong one costs
+/// a whole redeployment.
 pub(super) fn resolve_group(requested: &str, peers: &[PeerInfo]) -> Result<String, String> {
     if !requested.is_empty() {
         return Ok(requested.to_string());
@@ -856,22 +935,22 @@ pub(super) fn resolve_group(requested: &str, peers: &[PeerInfo]) -> Result<Strin
     models.sort();
     models.dedup();
     match models.len() {
-        0 => Err("nenhuma pipeline no ar para desimplantar".to_string()),
+        0 => Err("no pipeline up to undeploy".to_string()),
         1 => Ok(models.remove(0)),
         _ => Err(format!(
-            "há mais de uma pipeline no ar ({}); diga qual desimplantar",
+            "there is more than one pipeline up ({}); say which one to undeploy",
             models.join(", ")
         )),
     }
 }
 
-/// O que uma desimplantação vai derrubar: uma implantação, ou tudo que serve um
-/// rótulo.
+/// What an undeployment will take down: a deployment, or everything that serves a
+/// label.
 pub(super) enum UndeployTarget {
-    /// Escolha exata. É o que distingue duas implantações do mesmo modelo.
+    /// Exact choice. It is what distinguishes two deployments of the same model.
     Deployment { deploy_id: String, label: String },
-    /// Todo mundo que serve este rótulo, que é o comportamento de sempre e o
-    /// único possível com peers que não anunciam implantação.
+    /// Everyone who serves this label, which is the behavior as always and the
+    /// only one possible with peers that do not announce a deployment.
     Label(String),
 }
 
@@ -891,21 +970,21 @@ impl UndeployTarget {
     pub(super) fn describe(&self) -> String {
         match self {
             UndeployTarget::Deployment { deploy_id, label } if label.is_empty() => {
-                format!("a implantação {deploy_id}")
+                format!("the deployment {deploy_id}")
             }
             UndeployTarget::Deployment { deploy_id, label } => {
-                format!("{label} (implantação {deploy_id})")
+                format!("{label} (deployment {deploy_id})")
             }
             UndeployTarget::Label(l) => l.clone(),
         }
     }
 }
 
-/// Qual implantação o pedido quer derrubar.
+/// Which deployment the request wants to take down.
 ///
-/// Com `deploy_id`, não há o que deduzir - é aquela, e o rótulo serve só para a
-/// mensagem. Sem ele, cai na regra antiga sobre rótulos, que continua sendo a
-/// certa num cluster onde cada modelo está no ar uma vez só.
+/// With `deploy_id`, there is nothing to deduce - it is that one, and the label serves only for the
+/// message. Without it, it falls back to the old rule about labels, which remains
+/// the right one in a cluster where each model is on the air only once.
 pub(super) fn resolve_target(
     deploy_id: &str,
     group: &str,
@@ -913,7 +992,7 @@ pub(super) fn resolve_target(
 ) -> Result<UndeployTarget, String> {
     if !deploy_id.is_empty() {
         if !crate::deployment::is_deploy_id(deploy_id) {
-            return Err(format!("deploy_id inválido: {deploy_id}"));
+            return Err(format!("invalid deploy_id: {deploy_id}"));
         }
         let label = peers
             .iter()
@@ -928,10 +1007,10 @@ pub(super) fn resolve_target(
     resolve_group(group, peers).map(UndeployTarget::Label)
 }
 
-/// Libera a memória de **uma** máquina, pela mesma porta do botão que já existe.
+/// Frees the memory of **one** machine, through the same door as the button that already exists.
 ///
-/// Quem mata o processo de inferência é sempre o dono da memória: este nó só
-/// encaminha, exatamente como `remove_node_endpoint`.
+/// Whoever kills the inference process is always the owner of the memory: this node only
+/// forwards, exactly like `remove_node_endpoint`.
 pub(super) async fn release_one(
     state: &GatewayState,
     peer: &PeerInfo,
@@ -947,8 +1026,8 @@ pub(super) async fn release_one(
         .await
     {
         Ok(r) if r.status().is_success() => Ok(()),
-        Ok(r) => Err(format!("a máquina recusou: HTTP {}", r.status())),
-        Err(e) => Err(format!("máquina inacessível: {e}")),
+        Ok(r) => Err(format!("the machine refused: HTTP {}", r.status())),
+        Err(e) => Err(format!("machine unreachable: {e}")),
     }
 }
 
@@ -972,8 +1051,8 @@ pub(super) async fn refusal(response: Response) -> String {
                 .map(|s| s.to_string())
         });
     match body {
-        Some(reason) => format!("o launch recusou: {reason}"),
-        None => format!("o launch recusou: HTTP {status}"),
+        Some(reason) => format!("the launch refused: {reason}"),
+        None => format!("the launch refused: HTTP {status}"),
     }
 }
 
@@ -986,6 +1065,17 @@ pub(super) async fn gateway_of(state: &GatewayState, node_id: &str) -> Option<St
         .and_then(|p| state.gateway_base(p))
 }
 
+pub(super) async fn peer_of(
+    state: &GatewayState,
+    node_id: &str,
+) -> Option<crate::network::PeerInfo> {
+    state
+        .all_peers()
+        .await
+        .into_iter()
+        .find(|p| p.node_id == node_id)
+}
+
 /// Poll the machines doing the copying until they are all finished.
 ///
 /// The bar tracks bytes rather than file count, because the slices are wildly
@@ -994,31 +1084,18 @@ pub(super) async fn gateway_of(state: &GatewayState, node_id: &str) -> Option<St
 pub(super) async fn wait_for_transfers(
     state: &GatewayState,
     _key: &str,
-    watching: &[(String, String, String)],
+    watching: &[(crate::network::PeerInfo, String)],
     job_id: &str,
 ) -> Result<(), String> {
     loop {
         let mut done = 0usize;
         let mut fraction_sum = 0.0;
 
-        for (node_id, gateway, id) in watching {
-            let cliente = state
-                .peer_http
-                .for_peer(node_id)
-                .map_err(|e| format!("sem cliente para {gateway}: {e}"))?;
-            let request = state
-                .control_get_request(
-                    cliente
-                        .get(format!("{gateway}/api/transfer/jobs"))
-                        .timeout(PEER_TIMEOUT),
-                    "/api/transfer/jobs",
-                )
+        for (peer, id) in watching {
+            let body: serde_json::Value = state
+                .control_get(peer, "/api/transfer/jobs", PEER_TIMEOUT)
                 .await
-                .map_err(|e| format!("não foi possível assinar a consulta de {gateway}: {e}"))?;
-            let body: serde_json::Value = request
-                .send()
-                .await
-                .map_err(|e| format!("perdi contato com {gateway}: {e}"))?
+                .map_err(|e| format!("lost contact with {}: {e:#}", peer.hostname))?
                 .json()
                 .await
                 .unwrap_or(json!({}));
@@ -1044,10 +1121,10 @@ pub(super) async fn wait_for_transfers(
                 }
                 Some("failed") => {
                     return Err(format!(
-                        "a cópia falhou: {}",
+                        "the copy failed: {}",
                         job.get("error")
                             .and_then(|e| e.as_str())
-                            .unwrap_or("sem detalhe")
+                            .unwrap_or("no detail")
                     ));
                 }
                 _ => {

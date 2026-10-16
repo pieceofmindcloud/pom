@@ -25,7 +25,7 @@
  * navigation column and the reading column scroll independently, so a long
  * document never drags the tree out of reach.
  *
- * Address: `?tab=`, `?guia=` and `?doc=` - every page is a shareable link.
+ * Address: `?tab=`, `?guide=` and `?doc=` - every page is a shareable link.
  */
 import clsx from "clsx";
 import { AnimatePresence, motion } from "framer-motion";
@@ -33,7 +33,7 @@ import { ArrowLeft, BookOpen, ChevronRight, FileText, Layers, Search, X } from "
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Markdown } from "../components/Markdown";
-import { Empty, Input, Panel } from "../components/ui";
+import { Empty, Input, Panel, Tabs } from "../components/ui";
 import { GuideView } from "../guides/Guide";
 import { guidesFor } from "../guides/content";
 import { useI18n } from "../i18n/provider";
@@ -344,49 +344,33 @@ function CrateGroups({
 /** The two audiences, switched at the top of the navigation column. */
 function TabSwitch({ tab, onChange }: { tab: Tab; onChange: (t: Tab) => void }) {
   const { t } = useI18n();
-  const options: { id: Tab; label: string; icon: typeof BookOpen }[] = [
-    { id: "guias", label: t("docs.tab.guides"), icon: BookOpen },
-    { id: "referencia", label: t("docs.tab.reference"), icon: Layers },
-  ];
   return (
-    <div role="tablist" className="flex items-center gap-1 rounded-lg border border-line bg-raised p-1">
-      {options.map((o) => {
-        const active = tab === o.id;
-        const Icon = o.icon;
-        return (
-          <button
-            key={o.id}
-            role="tab"
-            aria-selected={active}
-            onClick={() => onChange(o.id)}
-            className={clsx(
-              "flex flex-1 items-center justify-center gap-1.5 rounded-md px-2.5 py-1.5 text-[0.78rem] font-medium transition-colors",
-              active ? "bg-iris/15 text-fg ring-1 ring-inset ring-iris/25" : "text-muted hover:text-fg",
-            )}
-          >
-            <Icon className="h-3.5 w-3.5" />
-            {o.label}
-          </button>
-        );
-      })}
-    </div>
+    <Tabs
+      fill
+      value={tab}
+      onChange={onChange}
+      items={[
+        { value: "guides", label: t("docs.tab.guides"), icon: <BookOpen /> },
+        { value: "reference", label: t("docs.tab.reference"), icon: <Layers /> },
+      ]}
+    />
   );
 }
 
-type Tab = "guias" | "referencia";
+type Tab = "guides" | "reference";
 
 export function Documentation() {
   const { t, locale } = useI18n();
   const [params, setParams] = useSearchParams();
   const [query, setQuery] = useState("");
   const readerRef = useRef<HTMLDivElement>(null);
-  // No celular a barra lateral ocupa a tela inteira e o leitor fica escondido
-  // até uma seleção explícita; um deep link (`?doc=`/`?guia=` já na URL ao
-  // montar) conta como essa seleção e abre direto no conteúdo. `Voltar` no
-  // topo do leitor apenas fecha essa vista - o `?doc=`/`?guia=` continua
-  // valendo, então recarregar a página não perde o lugar.
+  // On a phone the sidebar takes the whole screen and the reader stays hidden
+  // until an explicit selection; a deep link (`?doc=`/`?guide=` already in the
+  // URL on mount) counts as that selection and opens straight on the content.
+  // `Voltar` at the top of the reader only closes that view - the
+  // `?doc=`/`?guide=` still holds, so reloading the page does not lose the place.
   const [mobileReaderOpen, setMobileReaderOpen] = useState(
-    () => Boolean(params.get("doc") || params.get("guia")),
+    () => Boolean(params.get("doc") || params.get("guide")),
   );
 
   const entries = manifest.entries;
@@ -396,19 +380,19 @@ export function Documentation() {
   const pluginGuides = pluginDocs.filter((document) => document.kind === "guide");
   const pluginReference = pluginDocs.filter((document) => document.kind === "reference");
 
-  const tab: Tab = params.get("tab") === "referencia" ? "referencia" : "guias";
+  const tab: Tab = params.get("tab") === "reference" ? "reference" : "guides";
   const selectedPluginReference = pluginReference.find((document) => document.key === params.get("doc"));
   const selectedId = byId.has(params.get("doc") ?? "")
     ? (params.get("doc") as string)
     : entries[0]?.id ?? "";
   const selected = selectedId ? byId.get(selectedId) : undefined;
   const selectedContent = selected ? CONTENT[`../docs/${selected.id}`] : undefined;
-  const selectedPluginGuide = pluginGuides.find((document) => document.key === params.get("guia"));
-  const guideId = guides.some((g) => g.id === params.get("guia"))
-    ? (params.get("guia") as string)
+  const selectedPluginGuide = pluginGuides.find((document) => document.key === params.get("guide"));
+  const guideId = guides.some((g) => g.id === params.get("guide"))
+    ? (params.get("guide") as string)
     : guides[0]?.id ?? "";
   const guide = guides.find((g) => g.id === guideId);
-  const activePluginDocument = tab === "guias" ? selectedPluginGuide : selectedPluginReference;
+  const activePluginDocument = tab === "guides" ? selectedPluginGuide : selectedPluginReference;
   const [pluginContent, setPluginContent] = useState<Record<string, string>>({});
   const [pluginContentError, setPluginContentError] = useState<Record<string, boolean>>({});
   const [pluginContentLoading, setPluginContentLoading] = useState<string | null>(null);
@@ -449,7 +433,7 @@ export function Documentation() {
 
   const openDoc = useCallback(
     (id: string) => {
-      setParams({ tab: "referencia", doc: id }, { replace: true });
+      setParams({ tab: "reference", doc: id }, { replace: true });
       setMobileReaderOpen(true);
       toTop();
     },
@@ -458,7 +442,7 @@ export function Documentation() {
 
   const openGuide = useCallback(
     (id: string) => {
-      setParams({ tab: "guias", guia: id }, { replace: true });
+      setParams({ tab: "guides", guide: id }, { replace: true });
       setMobileReaderOpen(true);
       toTop();
     },
@@ -467,7 +451,7 @@ export function Documentation() {
 
   const switchTab = (next: Tab) => {
     if (next === tab) return;
-    setParams(next === "guias" ? { tab: "guias", guia: guideId } : { tab: "referencia", doc: selectedId }, {
+    setParams(next === "guides" ? { tab: "guides", guide: guideId } : { tab: "reference", doc: selectedId }, {
       replace: true,
     });
     toTop();
@@ -521,10 +505,10 @@ export function Documentation() {
   return (
     <div className="flex h-full min-h-0 w-full">
       {/*
-        No celular esta barra ocupa a tela inteira e o leitor fica escondido
-        até uma seleção; a partir de `sm:` as duas colunas voltam a conviver,
-        independentemente de `mobileReaderOpen` - esse estado só existe para o
-        celular.
+        On a phone this bar takes the whole screen and the reader stays hidden
+        until a selection; from `sm:` up the two columns live side by side again,
+        regardless of `mobileReaderOpen` - that state only exists for the
+        phone.
       */}
       <nav
         className={clsx(
@@ -536,7 +520,7 @@ export function Documentation() {
           <TabSwitch tab={tab} onChange={switchTab} />
         </div>
 
-        {tab === "referencia" && (
+        {tab === "reference" && (
           <div className="shrink-0 border-b border-line p-3">
             <label className="relative block">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-faint" />
@@ -568,7 +552,7 @@ export function Documentation() {
           scrollbar.
         */}
         <div className="min-h-0 flex-1 overflow-y-auto p-2">
-          {tab === "guias" ? (
+          {tab === "guides" ? (
             <div className="flex flex-col gap-0.5">
               {guides.map((g) => {
                 const active = g.id === guideId;
@@ -598,13 +582,13 @@ export function Documentation() {
                     {t("docs.pluginGuides")}
                   </p>
                   {pluginGuides.map((document) => {
-                    const active = document.key === params.get("guia");
+                    const active = document.key === params.get("guide");
                     return (
                       <button
                         key={document.key}
                         type="button"
                         onClick={() => {
-                          setParams({ tab: "guias", guia: document.key }, { replace: true });
+                          setParams({ tab: "guides", guide: document.key }, { replace: true });
                           setMobileReaderOpen(true);
                           toTop();
                         }}
@@ -655,13 +639,13 @@ export function Documentation() {
                       type="button"
                       onClick={() => {
                         const parameter: Record<string, string> = document.kind === "guide"
-                          ? { tab: "guias", guia: document.key }
-                          : { tab: "referencia", doc: document.key };
+                          ? { tab: "guides", guide: document.key }
+                          : { tab: "reference", doc: document.key };
                         setParams(parameter, { replace: true });
                         setMobileReaderOpen(true);
                         toTop();
                       }}
-                      aria-pressed={document.key === params.get(document.kind === "guide" ? "guia" : "doc")}
+                      aria-pressed={document.key === params.get(document.kind === "guide" ? "guide" : "doc")}
                       className="flex min-w-0 flex-col items-start rounded-md px-2 py-1.5 text-left text-muted transition-colors hover:bg-line/40 hover:text-fg"
                     >
                       <span className="w-full truncate text-[0.8rem] leading-snug">{document.title}</span>
@@ -685,7 +669,7 @@ export function Documentation() {
                       key={document.key}
                       type="button"
                       onClick={() => {
-                        setParams({ tab: "referencia", doc: document.key }, { replace: true });
+                        setParams({ tab: "reference", doc: document.key }, { replace: true });
                         setMobileReaderOpen(true);
                         toTop();
                       }}
@@ -735,10 +719,10 @@ export function Documentation() {
           mobileReaderOpen ? "block" : "hidden",
         )}
       >
-        {/* Só faz sentido abaixo de `sm:` - a partir daí as duas colunas
-            convivem e voltar é só escolher outro item na barra, já visível.
-            Montado apenas quando a vista mobile está aberta, para o estado
-            ficar inspecionável sem depender de um breakpoint real. */}
+        {/* It only makes sense below `sm:` - from there up the two columns live
+            side by side and going back is just picking another item in the bar, already
+            visible. Mounted only when the mobile view is open, so the state
+            stays inspectable without depending on a real breakpoint. */}
         {mobileReaderOpen && (
           <div className="sticky top-0 z-10 flex items-center border-b border-line bg-surface/95 px-2 py-1.5 backdrop-blur-sm sm:hidden">
             <button
@@ -752,7 +736,7 @@ export function Documentation() {
           </div>
         )}
         <div className="mx-auto w-full max-w-[62rem] px-6 py-7 sm:px-10">
-          {tab === "guias" ? (
+          {tab === "guides" ? (
             selectedPluginGuide ? (
               <PluginDocument
                 document={selectedPluginGuide}

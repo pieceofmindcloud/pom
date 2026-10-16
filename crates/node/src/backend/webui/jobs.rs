@@ -2,14 +2,14 @@ use super::*;
 // ── Applying a configuration ─────────────────────────────────────────────────
 
 /// Which inference engine the operator asks the runtime to use for a model.
-/// `Dense` é o padrão e `Auto` continua sendo uma escolha explícita guiada
-/// pela metadata; todas as variantes são persistidas com a implantação para
-/// que todos os peers recebam a mesma escolha.
+/// `Dense` is the default and `Auto` remains an explicit choice guided by the
+/// metadata; every variant is persisted with the deployment so that all peers
+/// receive the same choice.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InferenceMode {
-    /// llama.cpp é o padrão seguro do produto. Auto continua disponível quando
-    /// a seleção guiada pela metadata é pedida explicitamente.
+    /// llama.cpp is the product's safe default. Auto remains available when
+    /// the metadata-guided selection is requested explicitly.
     #[default]
     Dense,
     Auto,
@@ -19,39 +19,51 @@ pub enum InferenceMode {
 /// Sampling and context knobs. Defaults match `run-p1.sh`, which is the
 /// configuration the two-peer cluster was validated with.
 ///
-/// `PartialEq` porque o registro de implantação guarda uma cópia por nó
-/// (`deployment::DeploymentNode::config`) e comparar dois registros é como se
-/// verifica que uma reimplantação mudou alguma coisa.
+/// `PartialEq` because the deployment record keeps one copy per node
+/// (`deployment::DeploymentNode::config`) and comparing two records is how one
+/// checks that a redeploy changed something.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct RuntimeParams {
-    /// Preferência de motor. `Dense` seleciona llama.cpp por padrão; `Auto`
-    /// deixa um pedido explícito escolher pela metadata GGUF real.
+    /// Engine preference. `Dense` selects llama.cpp by default; `Auto`
+    /// lets an explicit request choose by the real GGUF metadata.
     #[serde(default)]
     pub inference_mode: InferenceMode,
+    /// Who runs the model. `None` is the POM's own engine (llama.cpp, the
+    /// distributed pipeline). A plugin code (`"strata"`) is a whole-model
+    /// inference service that plugin offers: the target machine asks the
+    /// plugin to load the model instead of starting llama.cpp, and the
+    /// gateway sends it the rendered prompt. See `crate::plugin_engine`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inference_service: Option<String>,
+    /// The settings of that service's engine, by the keys it publishes
+    /// (`PluginService::settings`). Passed to `engine.load` as they are; the
+    /// plugin validates them. Empty for llama.cpp.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub engine_settings: std::collections::BTreeMap<String, serde_json::Value>,
     #[serde(default = "d_gpu_layers")]
     pub n_gpu_layers: u32,
     #[serde(default = "d_n_ctx")]
     pub n_ctx: u32,
     #[serde(default = "d_true")]
     pub offload_kqv: bool,
-    /// Precisão do estado oculto nas fronteiras entre peers. f16 segue como
-    /// padrão; f32 preserva as ativações com o dobro do payload. f8 e i4 são
-    /// escolhas explícitas com perda.
+    /// Hidden-state precision at the boundaries between peers. f16 remains the
+    /// default; f32 preserves the activations at twice the payload. f8 and i4
+    /// are explicit lossy choices.
     #[serde(default)]
     pub hidden_state_dtype: crate::wire::WireDtype,
-    /// Deixa o `common_fit_params` do llama.cpp ajustar a alocação à memória
-    /// livre. No TP o runtime desliga esta opção, porque o fit nativo não
-    /// suporta `split-mode tensor`.
+    /// Lets llama.cpp's `common_fit_params` fit the allocation to free
+    /// memory. In TP the runtime turns this option off, because the native fit
+    /// does not support `split-mode tensor`.
     #[serde(default = "d_true")]
     pub fit_memory: bool,
-    /// VRAM que o `fit` deixa livre em cada dispositivo para absorver variação
-    /// de alocador, workspaces tardios e processos que apareçam depois.
+    /// VRAM that `fit` leaves free on each device to absorb allocator
+    /// variation, late workspaces and processes that show up afterwards.
     #[serde(default = "d_fit_memory_margin_mb")]
     pub fit_memory_margin_mb: u32,
     #[serde(default = "d_n_batch")]
     pub n_batch: u32,
-    /// Microlote físico (`n_ubatch` do llama.cpp) enquanto o fit de memória
-    /// está ligado; nunca maior que `n_batch`.
+    /// Physical micro-batch (llama.cpp's `n_ubatch`) while the memory fit is
+    /// on; never larger than `n_batch`.
     #[serde(default = "d_n_ubatch")]
     pub n_ubatch: u32,
     #[serde(default = "d_max_new")]
@@ -73,7 +85,7 @@ pub struct RuntimeParams {
     /// Prompt tokens per round trip through the pipeline.
     #[serde(default = "d_prefill_chunk")]
     pub prefill_chunk_tokens: u32,
-    /// Máximo de pedaços de prefill em voo durante a sobreposição.
+    /// Maximum number of prefill chunks in flight during the overlap.
     #[serde(default = "d_prefill_max_inflight_chunks")]
     pub prefill_max_inflight_chunks: u32,
     #[serde(default = "d_temp")]
@@ -86,24 +98,24 @@ pub struct RuntimeParams {
     pub repeat_penalty: f32,
     #[serde(default = "d_repeat_last_n")]
     pub repeat_last_n: u32,
-    /// Subtraída uma vez do logit de cada token visto na janela. 0 desliga.
+    /// Subtracted once from the logit of each token seen in the window. 0 turns it off.
     #[serde(default)]
     pub presence_penalty: f32,
-    /// Subtraída do logit por ocorrência do token na janela. 0 desliga.
+    /// Subtracted from the logit per occurrence of the token in the window. 0 turns it off.
     #[serde(default)]
     pub frequency_penalty: f32,
-    /// Corta candidatos abaixo desta fração do mais provável. 0 desliga.
+    /// Cuts candidates below this fraction of the most likely one. 0 turns it off.
     #[serde(default)]
     pub min_p: f32,
-    /// Semente do gerador do sampler, aplicada quando a implantação carrega.
-    /// O padrão é o valor fixo que o POM sempre usou.
+    /// Seed of the sampler's generator, applied when the deployment loads.
+    /// The default is the fixed value POM has always used.
     #[serde(
         with = "llama_engine::llm::seed_text",
         default = "llama_engine::llm::seed_text::default_seed"
     )]
     pub seed: u64,
-    /// Sampler DRY do llama.cpp: penaliza o token que estenderia uma sequência
-    /// já vista. `dry_multiplier` 0 desliga.
+    /// llama.cpp's DRY sampler: penalizes the token that would extend a
+    /// sequence already seen. `dry_multiplier` 0 turns it off.
     #[serde(default)]
     pub dry_multiplier: f32,
     #[serde(default = "d_dry_base")]
@@ -112,8 +124,8 @@ pub struct RuntimeParams {
     pub dry_allowed_length: u32,
     #[serde(default = "d_dry_penalty_last_n")]
     pub dry_penalty_last_n: u32,
-    /// Limite de tokens de um bloco de raciocínio (`--reasoning-budget` do
-    /// llama.cpp): ao atingi-lo, a tag de fim é forçada. -1 não limita.
+    /// Token limit of a reasoning block (llama.cpp's `--reasoning-budget`):
+    /// on reaching it, the end tag is forced. -1 means no limit.
     #[serde(default = "d_reasoning_budget")]
     pub reasoning_budget: i32,
     #[serde(default = "d_true")]
@@ -130,31 +142,32 @@ pub struct RuntimeParams {
     pub speculative_k: u32,
     #[serde(default = "d_speculative_lookup_window")]
     pub speculative_lookup_window: u32,
-    /// Predição multi-token pelo bloco `nextn` do modelo. Interruptor
-    /// separado do de cima de propósito: são mecanismos diferentes, e só
-    /// este usa peso treinado do modelo. Ver `crate::mtp`. Ligado por padrão:
-    /// o gateway só o usa quando o plano suporta (`mtp_enabled_for_plan`).
+    /// Multi-token prediction through the model's `nextn` block. A switch
+    /// separate from the one above on purpose: they are different mechanisms,
+    /// and only this one uses trained model weights. See `crate::mtp`. On by
+    /// default: the gateway only uses it when the plan supports it
+    /// (`mtp_enabled_for_plan`).
     #[serde(default = "d_true")]
     pub mtp_enabled: bool,
     #[serde(default = "d_mtp_draft_tokens")]
     pub mtp_draft_tokens: u32,
     #[serde(default = "d_mtp_min_probability")]
     pub mtp_min_probability: f32,
-    /// Permite recuar o MTP para a RAM quando a VRAM não comportar o contexto.
+    /// Allows MTP to fall back to RAM when the VRAM cannot hold the context.
     #[serde(default = "d_mtp_cpu_fallback_enabled")]
     pub mtp_cpu_fallback_enabled: bool,
-    /// Onde o bloco MTP fica: `auto`, `vram` ou `ram`.
+    /// Where the MTP block lives: `auto`, `vram` or `ram`.
     #[serde(default)]
     pub mtp_placement: llama_engine::MtpPlacement,
-    /// Todos os experts roteados de um MoE ficam na RAM e a CPU os calcula
-    /// (o `--cpu-moe` do llama.cpp); a VRAM fica com o resto do modelo. Pula o
-    /// ajuste de memória, que recusa overrides definidos antes dele.
+    /// All routed experts of a MoE stay in RAM and the CPU computes them
+    /// (llama.cpp's `--cpu-moe`); the VRAM keeps the rest of the model. Skips
+    /// the memory fit, which refuses overrides defined before it.
     #[serde(default)]
     pub moe_experts_in_ram: bool,
-    /// Cache na GPU, em MiB, dos experts que ficaram na RAM: os usados há
-    /// pouco são servidos da VRAM, só as faltas sobem pelo PCIe (lotes de até
-    /// 32 tokens). `0` desliga. Com o ajuste de memória ligado, o ajuste conta
-    /// o cache e deixa menos camadas de experts inteiras na GPU.
+    /// GPU cache, in MiB, of the experts that stayed in RAM: the recently used
+    /// ones are served from VRAM, only the misses go up over PCIe (batches of up
+    /// to 32 tokens). `0` turns it off. With the memory fit on, the fit counts
+    /// the cache and leaves fewer whole expert layers on the GPU.
     #[serde(default)]
     pub moe_cache_mib: u32,
     /// The gateway picks each request's prefill chunk (between 32 tokens and
@@ -162,10 +175,10 @@ pub struct RuntimeParams {
     /// prompt goes in chunks of exactly `prefill_chunk_tokens`.
     #[serde(default = "d_adaptive_prefill_chunks")]
     pub adaptive_prefill_chunks: bool,
-    /// Descarrega os pesos depois de um período sem requisições neste peer.
+    /// Unloads the weights after a period with no requests on this peer.
     #[serde(default)]
     pub unload_if_idle: bool,
-    /// Minutos de inatividade antes de liberar RAM/VRAM.
+    /// Minutes of inactivity before releasing RAM/VRAM.
     #[serde(default = "d_idle_minutes")]
     pub idle_minutes: u32,
 }
@@ -236,7 +249,7 @@ pub(super) fn d_speculative_lookup_window() -> u32 {
 pub(super) fn d_mtp_draft_tokens() -> u32 {
     3
 }
-/// O mesmo piso que a tela grava ao ligar o MTP (`MTP_MIN_PROBABILITY`).
+/// The same floor the screen writes when turning MTP on (`MTP_MIN_PROBABILITY`).
 pub(super) fn d_mtp_min_probability() -> f32 {
     0.75
 }
@@ -269,6 +282,8 @@ impl Default for RuntimeParams {
     fn default() -> Self {
         Self {
             inference_mode: InferenceMode::Dense,
+            inference_service: None,
+            engine_settings: Default::default(),
             n_gpu_layers: d_gpu_layers(),
             n_ctx: d_n_ctx(),
             offload_kqv: d_true(),
@@ -328,6 +343,8 @@ impl From<&NodeConfig> for RuntimeParams {
     fn from(c: &NodeConfig) -> Self {
         Self {
             inference_mode: c.inference_mode,
+            inference_service: c.inference_service.clone(),
+            engine_settings: c.engine_settings.clone(),
             n_gpu_layers: c.n_gpu_layers,
             n_ctx: c.n_ctx,
             offload_kqv: c.offload_kqv,
@@ -390,8 +407,8 @@ pub struct ApplyRequest {
     /// preserved exactly instead of collapsing model families into profiles.
     #[serde(default)]
     pub model_label: Option<String>,
-    /// Nome operacional da implantação, separado da identidade técnica do
-    /// modelo. Vazio mantém compatibilidade com chamadas antigas.
+    /// Operational name of the deployment, separate from the model's technical
+    /// identity. Empty keeps compatibility with old calls.
     #[serde(default)]
     pub deployment_name: String,
     pub start_layer: u32,
@@ -401,25 +418,26 @@ pub struct ApplyRequest {
     pub peer_index: u32,
     #[serde(default)]
     pub primary: bool,
-    /// Identidade de tensor parallelism deste nó (caminho C). `None` = nó sem
-    /// TP. Presente, **todo** rank extrai o próprio shard de tensor - o rank 0
-    /// inclusive. O `role` só diz quem hospeda a coletiva (`rank0_url`); ver
-    /// `tp_shard_to_extract`.
+    /// Tensor parallelism identity of this node (path C). `None` = node without
+    /// TP. When present, **every** rank extracts its own tensor shard - rank 0
+    /// included. The `role` only says who hosts the collective (`rank0_url`);
+    /// see `tp_shard_to_extract`.
     #[serde(default)]
     pub tp: Option<crate::network::TpIdentity>,
     /// Set when the source is already a shard (or covers the whole model) and
     /// no slicing is needed.
     #[serde(default)]
     pub skip_split: bool,
-    /// A implantação de que este nó vai fazer parte. Ver `deployment.rs`.
+    /// The deployment this node is going to be part of. See `deployment.rs`.
     #[serde(default)]
     pub deploy_id: String,
-    /// Hash da parte que este nó tem que carregar, quando quem manda já sabe
-    /// qual é - o caso normal numa implantação, em que o `.pom` já existe.
+    /// Hash of the part this node has to load, when the sender already knows
+    /// which one it is - the normal case in a deployment, where the `.pom`
+    /// already exists.
     ///
-    /// É o que faz o reaproveitamento ser uma pergunta sobre **conteúdo** em
-    /// vez de sobre nome de arquivo: ou a parte com este hash está no disco, ou
-    /// ela não está, e adivinhar não é uma das opções.
+    /// It is what makes reuse a question about **content** instead of about a
+    /// file name: either the part with this hash is on disk, or it is not, and
+    /// guessing is not one of the options.
     #[serde(default)]
     pub part_sha256: Option<String>,
     /// Local slices to join into one file before serving. When present, the

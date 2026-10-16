@@ -3,7 +3,7 @@
 A plugin can ship, together with its backend, its own menu, screens, routes,
 profiles and texts. POM only implements the generic mechanism (the
 `pom-plugin-ui/v1` contract); the frontend knows no specific plugin. The native
-routes `/logs` and `/estatisticas` remain as **advertising fallbacks** of
+routes `/logs` and `/statistics` remain as **advertising fallbacks** of
 `EnterpriseFeatureShowcase`, but a manifest can declare one of them to replace
 the screen at that URL. Other plugin screens live under each `plugin_code`'s
 namespace. The real code of Request Logs and Statistics lives in
@@ -43,11 +43,12 @@ namespace. The real code of Request Logs and Statistics lives in
 |---|---|
 | `schema`, `plugin_code` | `pom-plugin-ui/v1`; the code must be the installed plugin's |
 | `icon_image` | optional; path of a `.png` asset. The frontend uses it in the menu and falls back to `menu[].icon` when the image fails or is missing |
+| `lifecycle` | optional; `resident` (default, the process starts with POM and the heartbeat restarts it) or `on_demand` (see "On-demand processes"). Any other value refuses the manifest |
 | `description` | optional; short text per language (`en` required, up to 2000 bytes each), shown on the Plugins screen card |
 | `screenshots` | optional; up to 8 images (`.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`) as paths relative to the root of the plugin's GitHub repository or `https://` URLs without credentials. They are not assets and the node never serves them: relative paths become `https://raw.githubusercontent.com/<owner>/<repo>/HEAD/<path>` and the browser loads them straight from GitHub |
-| `menu[]` | `id` (unique in the manifest, including children), `label` per language (`en` required), `icon` (a known name, otherwise generic), `to`, optional `roles` (`admin`/`node`/`infer`); with neither `roles` nor the legacy `profiles` field, every profile is eligible. `group` is accepted but does not organize items |
-| `menu[].children[]` | optional; submenus with `id`, `label`, `icon`, `to` and `roles` (intersected with the parent's). With children, the item becomes an expandable section of the sidebar; the parent's `to` is still required for hosts without submenu support |
-| `routes[]` | `path`, `screen`, optional `roles` (`admin`/`node`/`infer`) or legacy `profiles` (`admin`/`node`/`infer`, non-empty), `full_bleed`; with neither, every profile is eligible |
+| `menu[]` | `id` (unique in the manifest, including children), `label` per language (`en` required), `icon` (a known name, otherwise generic), `to`, optional `roles` (`admin`/`node`/`infer`) or legacy `profiles`; both fields are validated and retained for compatibility, but do not restrict plugin UI visibility in the current POM. `group` is accepted but does not organize items |
+| `menu[].children[]` | optional; submenus with `id`, `label`, `icon`, `to` and optional role metadata. With children, the item becomes an expandable section of the sidebar; the parent's `to` is still required for hosts without submenu support |
+| `routes[]` | `path`, `screen`, optional `roles` (`admin`/`node`/`infer`) or legacy `profiles` (`admin`/`node`/`infer`, non-empty), `full_bleed`; role metadata is validated and retained, but does not restrict plugin routes in the current POM |
 | `screens{}` | `module` (ES asset), `export` (default `default`), `styles[]` |
 | `i18n{}` | language -> JSON asset; if present, `en` is required |
 | `documentation` | optional; current format with `guides[]` and `reference[]`, each entry with `id`, a localized `title` (with `en`) and a relative Markdown asset under `docs/`; a published list of `docs/*.md` paths is also normalized into guides |
@@ -80,7 +81,7 @@ them into the workspace.
 }
 ~~~
 
-The `/admin-ui/documentacao` screen adds the guides and reference of active
+The `/admin-ui/documentation` screen adds the guides and reference of active
 plugins to the system documentation. It downloads each Markdown file through
 the assets route only when the person opens it; an inactive plugin or an
 invalid manifest publishes no pages.
@@ -97,7 +98,7 @@ structures make the host ignore the whole manifest. A menu target must also be
 covered by a declared route.
 
 Different plugins can use the same relative path: their targets end up at, for
-example, `/base/example` and `/analytics/example`. `/logs` and `/estatisticas`
+example, `/base/example` and `/analytics/example`. `/logs` and `/statistics`
 are native extension points: if exactly one active plugin declares one of
 them, its route and menu use the native URL and replace the matching fallback.
 If two plugins claim the same point, neither takes the native URL and both stay
@@ -114,15 +115,21 @@ registry normalizes each target once and both navigation and the router
 consume that same path. The `/admin-ui` basename is still applied by
 `BrowserRouter`, including on direct reloads and browser history navigation.
 
-The route's profiles decide who enters the plugin screen - including `infer`,
-whose reduced POM list does not apply to these routes. `menu[].roles`
-restricts the link's visibility and the matching direct route;
-`routes[].roles` takes precedence over `routes[].profiles`, and the effective
-list is the intersection with the menus that cover the target. For existing
-manifests, `menu[].profiles` is still accepted as an equivalent when `roles`
-was not declared; `roles` wins when both fields appear. With none of the menu
-or route fields, every profile is eligible. A profile outside the effective
-list gets the normal refusal.
+Every active plugin menu and route is available to `admin`, `node` and `infer`
+profiles. Each node owns its installed plugins, so manifest `roles` and legacy
+`profiles` are validated and preserved for compatibility with older hosts but
+do not gate this POM's plugin UI. The POM's native route restrictions still
+apply: for example, `infer` cannot open `/logs`, `/statistics` or
+`/deployments`, even when a plugin claims an extension point. Plugin APIs and
+sensitive operations must enforce their own authorization on the backend.
+
+The registry lives in `lib/pluginUi.ts`: `setPluginUi` validates and installs a
+manifest, `resolvePluginRoute` resolves a declared target (including the single
+native claim of `/logs` and `/statistics`), `pluginRouteProfiles` and
+`pluginMenuItems` answer what the router and the menu may show, `pluginLabel`
+resolves `pluginDisplayName`, `pluginAssetUrl` resolves a declared asset, and
+`pluginSlot(id)` returns the first active claimant of a native slot. The
+registry knows no specific plugin.
 
 ## Screens
 
@@ -143,8 +150,76 @@ compatibly. Version 2 added `context()` (current language and theme), `events`,
 Version 3 added `TelemetryLine` (the basic one-line telemetry) and the
 `chat.telemetry` slot; the detailed telemetry view left the POM, so
 `ExecutionTelemetry` is kept only for bundles built against version 2 and now
-renders that basic line. The plugin's CSS uses the same color tokens (CSS
-variables) as POM.
+renders that basic line. Version 4 added `plugin(code).rpc`. Version 5 added
+`ui.Tabs`, the panel's tab row: folder tabs over the content below, the chosen
+one marked by a teal line on top, drawn from the theme's `--tab-*` tokens
+(`--tab-bar`, `--tab-ink`, `--tab-ink-on`, `--tab-line`, `--tab-card`,
+`--tab-accent`, `--tab-icon`, full colours in both themes). Version 6 added
+`ready()`, the screen's "finished rendering" signal described below. The plugin's CSS
+uses the same color tokens (CSS variables) as POM.
+
+## Opening a plugin screen
+
+Importing the module and mounting it is not having the screen on screen: the
+first page of the audit or the first insights answer is still on its way, and
+showing the screen that early is a page that fills in front of the person. So
+`PluginScreen` keeps the puzzle animation of `components/PluginLoading.tsx` -
+the same three pieces the Chat draws when the network serves no model
+(`MissingPiece`, `variant="loading"`, its fourth piece hovering over the slot)
+- and takes it away on the first of two things:
+
+- the plugin calls `__POM_HOST__.ready()` (host version 6) once its own content
+  is on screen; or
+- `PLUGIN_READY_GRACE_MS` (2 s, `lib/pluginReady.ts`) ends.
+
+The screen is mounted from the moment its module arrives, under the animation
+and out of sight (`.pom-plugin-pending` in `index.css`: laid out for real, so
+its charts and tables measure a real box, but invisible, `aria-hidden` and
+unreachable). It has to be mounted to be able to give the signal. When the gate
+opens the wrapper becomes `.pom-plugin-open` (`display: contents`), so the
+screen sits exactly where it would without the wrapper and is never remounted.
+
+The gate is armed by the mount and disarmed when it goes away, so a `ready()`
+from a component the host is not waiting on - a slot inside a native screen,
+for example - resolves nothing. **The signal is never required**: a plugin that
+does not know it is opened by the wait, and a plugin built for an older host
+simply has no `ready` to call. POM owns no plugin's decision about when its own
+content is complete.
+
+The same animation also covers the moment before the node answers
+`GET /api/ui/plugins/ui`: while that answer is on its way the registry cannot
+know whether a plugin claims `/logs` or `/statistics`, so `App.tsx` draws the
+pieces instead of the advertising card of `EnterpriseFeatureShowcase` - the
+fallback would otherwise flash in front of the plugin that is about to take the
+screen.
+
+## On-demand processes
+
+A plugin whose manifest declares `"lifecycle": "on_demand"` keeps its license
+and installation, but its host process runs only while the operator has it
+open. The node does not start it at boot, and the heartbeat does not restart
+it; the node reads the flag from the last `ui.manifest` it saved in `pom.db`
+(`plugin_ui_manifest:<code>`), so the decision holds before any process exists.
+A resident plugin behaves as before.
+
+- The menu keeps listing the plugin with its saved manifest while the process
+  is stopped (`GET /api/ui/plugins/ui` returns `on_demand` and `running`).
+- Clicking the menu item calls `POST /api/ui/plugins/<code>/open`, which starts
+  the process, and then opens the screen. Reached by address while stopped, the
+  screen shows the puzzle of `components/MissingPiece.tsx` with its fourth
+  piece paused, "The <name> piece is paused", why (closed, it uses no memory,
+  processor or GPU, and keeps its settings), that it can be closed again with
+  the X, and an "Open <name>" button.
+- A running on-demand plugin shows an X badge in the menu; `POST
+  /api/ui/plugins/<code>/close` stops the process and leaves the plugin
+  installed and licensed.
+- Both routes refuse plugins whose manifest is not on demand (409) and are
+  same-origin only.
+- Installing a plugin still starts its process, as before. A plugin whose
+  manifest has never been saved has no menu entry until it runs once; the
+  saved manifest is what keeps the menu after a restart.
+- While the process is stopped, the plugin's services and inference engine are
+  unavailable to the cluster, the same as any stopped host.
 
 ## Plugin RPC
 
@@ -157,7 +232,9 @@ operation and checks only the name, the size (256 KiB), the same origin and
 that the plugin is active. `profile` is the node's persisted profile
 (`admin`, `node` or `infer`), so the plugin decides who may call each
 operation; the enterprise plugin, for example, answers its directory and
-insights only for `admin`.
+insights only for `admin`. On the browser side the helper is
+`scopedPluginApi(code).rpc(op, params)` (`lib/pluginEvents.ts`), which posts to
+that route for one plugin only.
 
 ## Slots inside native screens
 
@@ -229,13 +306,13 @@ applies to new data and the plugin decides how to preserve its legacy data.
 ## Local rebuild in development
 
 The local Compose mounts `POM_DEV_PLUGINS_DIR` (default `..`, the workspace directory containing the sibling plugin repositories) at
-`/opt/pom/dev-plugins` and enables `POM_DESENV=1`. The optional cluster
-`docker-compose.dev-plugins.yml` keeps each source bind read-only and overrides
+`/opt/pom/dev-plugins` and enables `POM_DEV_MODE=1`. The optional cluster
+overlay in `pom-cluster-config` keeps each source bind read-only and overrides
 the build image to `dev-runtime`; that target includes Rust/Cargo and native
 tools, exposes the toolchain to the non-root node user and sets `CARGO_HOME`
 to a writable cache in the project data volume. The release
 `runtime` image still has no compiler. The panel offers the rebuild block on every
-profile when `/api/ui/node` confirms `pom_desenv=true`.
+profile when `/api/ui/node` confirms `pom_dev_mode=true`.
 
 The backend discovers direct child directories named `pom-plugin-*` under the
 source mount; a mounted directory is listed only when its Cargo manifest and
@@ -251,6 +328,31 @@ manifest paths. `CARGO_TARGET_DIR` points to
 so read-only source binds are supported; the installed artifact must canonicalize
 inside that build directory. There is no shell command and no build argument
 taken from the request.
+
+A plugin whose build needs more than `cargo` (a UI bundle, a runtime archive)
+declares it in its manifest, and the rebuild runs those steps after
+`cargo metadata` and before `cargo build`:
+
+```json
+"development": {
+  "rebuild": [
+    { "run": ["scripts/dev-ui.sh"] },
+    { "run": ["scripts/dev-runtime.sh", "--quick"], "os": ["linux", "macos"] }
+  ]
+}
+```
+
+`run` is a script inside the source (relative, no `..`, at most 8 steps of 16
+plain-string arguments) and its arguments; `os` (`linux`, `macos`, `windows`)
+limits a step to those systems. A `.sh` script runs through `bash`, anything
+else as a program, in the source directory, with no input and 20 minutes at
+most. The source mount is read-only, so the steps write to
+`POM_PLUGIN_OUT_DIR` (`<build directory>/pom-prepare`); they also get
+`POM_PLUGIN_PLATFORM` (`linux-x86_64`, `macos-aarch64`, ...) and
+`POM_PLUGIN_SOURCE_DIR`, and `cargo build` gets the same three variables, so
+the plugin's `build.rs` embeds what the steps produced. Their output goes to
+`pom-prepare/rebuild.log`, never to the response; a failed step stops the
+rebuild with stage `prepare` and its exit code.
 
 The local build can install a plugin even when it has never been installed or activated. It writes a separate development-install record, starts only that plugin's isolated host, and grants no licensed features or license state. If a licensed or GitHub installation already exists, the local artifact replaces its running binary without changing that entitlement. The operation never activates or renews a license, calls GitHub or the license server, changes the release selection or restarts the POM process. The response exposes success or the step/exit code, never the compiler's stderr. The GitHub release install flow stays independent and unchanged.
 
@@ -296,7 +398,8 @@ reachable without the node knowing any plugin.
 ```
 
 `id` and `kind` are lowercase slugs, `name` and the optional `version` and
-`detail` are short single-line texts, and `status` is one of `ready`,
+`detail` are short single-line texts, `architectures` is an optional list of
+GGUF architecture slugs (up to 16, meaningful for kind `inference`), and `status` is one of `ready`,
 `starting`, `installing`, `waiting` or `error`. The node drops an entry that
 does not follow the contract (at most 8 per plugin), asks the plugins at most
 every 5 s and publishes the result in `plugin_services` of `GET /api/ui/node`.
@@ -324,6 +427,37 @@ its port and API key only when `caller.head` is true. The body is capped at
 
 `GET /api/internal/plugins/services` (signed or key-authenticated peer call)
 returns the same service list, so a peer can find which machine serves what.
+
+**Inference services.** A service of kind `inference` runs whole models in
+place of llama.cpp and lists the GGUF `architectures` its engine runs. It may
+also publish `settings`, the engine settings a deployment can set: up to 32
+entries of `{key, type, label, description?, min?, max?, options?}`, where
+`key` is lowercase words with dots or underscores, `type` is `number`,
+`integer`, `boolean`, `enum` (with `options`) or `list`, and `label` and
+`description` are texts per language with `en` required. The node checks only
+that shape; the deploy inspector draws them, an empty field keeps the
+engine's default, and the values travel in `RuntimeParams.engine_settings` to
+`engine.load` (`params.settings`), where the plugin validates them. A setting
+may carry `placement: "pom"`: the deploy inspector then draws it in the POM
+settings card, whatever the slices (whole model or slices), not in the engine's
+card; the node passes the field on unchanged. A service
+that also runs POM layer slices, one stage per machine, publishes
+`stages: true`, and lists in `pom_settings` the POM deployment settings that
+apply to it, by their `RuntimeParams` name: `prefill_max_inflight_chunks` and
+`hidden_state_dtype` are the known ones, any other name is dropped. The deploy
+inspector draws only the declared ones, in their own card. Such a
+plugin implements four operations the node calls through its own local host,
+never from another machine or a browser: `engine.load` (`params`:
+`model_path`, `model_label`, `n_ctx`, `max_sessions`, `kv`, `gpus`,
+`settings`, and for a slice `link`),
+`engine.unload`, `engine.status` (`state` among `idle`, `installing`,
+`preparing`, `loading`, `ready`, `stopping`, `error`, with `detail`, `n_ctx`,
+`busy`) and `engine.upstream` (`{status: "ready", port, token}` of a loopback
+server whose `POST /pom/generate` takes the rendered prompt and streams NDJSON),
+plus `engine.link` (`{status, port?, token?}`) for a service with `stages`: the
+loopback port of an earlier stage's link and its secret.
+The deployment and generation contract is in `inference.md`, section 7.1, and
+`deployment.md`, section 1.6.
 
 ## Transparent retrieval (RAG)
 
@@ -527,7 +661,8 @@ namespace, string values, ceilings) and hands them to `setPluginMessages`
 (`i18n/locales.ts`), which puts them in the same `formatMessage` map without
 ever overwriting a POM key and removes them when the plugin leaves. A missing,
 unreadable or invalid catalog is dropped with a warning: it falls back to `en`
-or the key. **POM owns no plugin text.**
+or the key. **POM owns no plugin text.** `syncPluginCatalogs` is what installs
+the catalogs of every active plugin in the selected locales.
 
 ## Tests
 
@@ -546,7 +681,11 @@ or the key. **POM owns no plugin text.**
 - Frontend: `lib/pluginUi.test.ts` (registry, namespaces, collisions, paths,
   profiles, menu and submenus), `lib/pluginEvents.test.ts` (envelope, SDK, DOM
   and iframe channels, replay, commands and refusals), `lib/pluginI18n.test.ts`
-  (install, selected languages, missing/invalid), `routes/Plugins.test.tsx`
+  (install, selected languages, missing/invalid), `lib/pluginReady.test.ts`
+  (the gate: signal, wait, no gate without a mount, re-arm),
+  `components/PluginScreen.test.tsx` (the pieces while the screen opens, the
+  screen mounted out of sight under them, the signal opening it early, the wait
+  opening a plugin that never signals), `routes/Plugins.test.tsx`
   (immediate manifest invalidation after lifecycle actions, GitHub card above
   activation, compatible releases with the latest preselected, preferences
   through the gear and the refusal reason), `App.test.tsx` (fallback, screen by

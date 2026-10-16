@@ -1,11 +1,11 @@
 /**
- * Peers de mentira com a forma inteira que o nó serve.
+ * Fake peers with the whole shape the node serves.
  *
- * Um objeto parcial passa pelo `?.` de um componente e explode no seguinte -
- * `node` sem `status`, por exemplo, derruba o canvas na chave de layout. Aqui
- * o padrão é completo e o teste sobrescreve só o campo de que fala.
+ * A partial object gets past the `?.` of one component and blows up in the next -
+ * `node` without `status`, for example, takes the canvas down at the layout key.
+ * Here the default is complete and the test overrides only the field it is about.
  *
- * Só testes importam este arquivo; nada do app depende dele.
+ * Only tests import this file; nothing in the app depends on it.
  */
 import type { ClusterView, NodeInfo, PeerView, SystemLoad } from "../lib/types";
 
@@ -66,7 +66,8 @@ export function fakeNode(over: Partial<NodeInfo> = {}): NodeInfo {
     active_model: "qwen35",
     build_commit: "abc1234",
     dev_update: false,
-    pom_desenv: false,
+    pom_dev_mode: false,
+    node_name: null,
     advertise_addr: null,
     effective_address: "10.0.0.1:42777",
     tls_required: false,
@@ -81,7 +82,7 @@ export function fakeNode(over: Partial<NodeInfo> = {}): NodeInfo {
   };
 }
 
-/** Um peer sem fatia: `model` vazio e zero camadas, como o nó anuncia. */
+/** A peer with no slice: empty `model` and zero layers, as the node announces. */
 export function fakePeer(over: Partial<PeerView> & Pick<PeerView, "node_id">): PeerView {
   return {
     short_id: over.node_id,
@@ -103,7 +104,7 @@ export function fakePeer(over: Partial<PeerView> & Pick<PeerView, "node_id">): P
   };
 }
 
-/** Um peer servindo uma faixa do modelo, com as capabilities coerentes. */
+/** A peer serving a range of the model, with coherent capabilities. */
 export function fakeSlicePeer(
   node_id: string,
   start_layer: number,

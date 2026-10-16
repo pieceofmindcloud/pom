@@ -1,21 +1,21 @@
 /**
- * Quão rápida é a fatia de uma máquina, comparada com as outras do mesmo
- * modelo.
+ * How fast a machine's slice is, compared with the others of the same
+ * model.
  *
- * A comparação é relativa, e não contra um número fixo, porque o tok/s de uma
- * fatia depende de quantas camadas ela carrega e de qual modelo é: 40 tok/s é
- * ótimo para metade de um 70B e péssimo para um quarto de um 8B. O que o
- * operador precisa ver é quem segura o token na pipeline - o tempo de um token
- * é a soma das fatias, e a mais lenta é a que mais custa.
+ * The comparison is relative, not against a fixed number, because a slice's
+ * tok/s depends on how many layers it carries and on which model it is: 40 tok/s
+ * is great for half of a 70B and terrible for a quarter of an 8B. What the
+ * operator needs to see is who holds the token back in the pipeline - a token's
+ * time is the sum of the slices, and the slowest one costs the most.
  *
- * Com uma fatia só medida não há com quem comparar: o tom é `solo`, neutro,
- * em vez de um verde que afirmaria o que ninguém mediu.
+ * With only one slice measured there is nobody to compare with: the tone is
+ * `solo`, neutral, instead of a green that would claim what nobody measured.
  */
 export type SpeedTone = "fast" | "medium" | "slow" | "solo" | "unknown";
 
-/** A partir de quanto da fatia mais rápida uma fatia ainda é "rápida". */
+/** From what fraction of the fastest slice a slice is still "fast". */
 export const FAST_RATIO = 0.75;
-/** Abaixo disso, a fatia é "lenta": segura o token. */
+/** Below this, the slice is "slow": it holds the token back. */
 export const MEDIUM_RATIO = 0.4;
 
 function measured(value: number | null | undefined): value is number {

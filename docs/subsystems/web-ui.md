@@ -10,7 +10,7 @@ fallback.
 
 UI labels are quoted below in English (the `en` locale); the Portuguese
 labels live in `apps/frontend/src/i18n/messages.csv`. Route paths keep their
-Portuguese names (`/implantar`, `/modelos`, ...) because they are part of the
+Portuguese names (`/deploy`, `/models`, ...) because they are part of the
 URL contract.
 
 The name and logo the screen shows come from the root `brand.json`, copied
@@ -171,7 +171,7 @@ the boundary.
 `src/App.tsx`. `Deployments` uses the rocket (`Rocket`) and `History` the clock
 (`History`): both sections used to use `Boxes`, the same icon as `Models`, and
 two sections with the same drawing cannot be told apart at a glance. The
-`/implantar` leaf keeps `Rocket` without clashing with the section, because the
+`/deploy` leaf keeps `Rocket` without clashing with the section, because the
 Sidebar draws no leaf icons. Inside `Models`, the order is `Find HF models`,
 `Full models`, `Slice models`, `Shards`. The side menu can be minimized: in
 that state it only shows icons, with a 64px brand header to line up with the
@@ -180,8 +180,9 @@ leaf navigates to its route. In the minimized state, navigation uses
 `overflow-visible` without `overflow-y-auto`, because that combination makes the
 browser compute horizontal overflow as auto and clips the submenus; `z-index`
 does not get past that clip. The minimized choice is persisted in the browser.
-`App` decides setup vs panel with `useIsSetupMode()` (a probe of
-`/api/ui/node` with `auth: false`; 404 = only the setup router exists). Routes:
+`App` has no setup branch: `useAdminSurface()` probes `/api/ui/node` with
+`auth: false` and only chooses between the panel, the password gate and the
+local-only notice. Routes:
 
 - `/` -> Dashboard; `/chat` -> Chat (outside `<Routes>`/the transition because
   it owns a live stream and the scroll; unmounting it to animate would drop
@@ -189,20 +190,22 @@ does not get past that clip. The minimized choice is persisted in the browser.
   visual pattern as the AI Chat, and follows the end of the history when the
   person is at the bottom; `/admin-ui/chat` is the compact alias used by the
   macOS menu bar app and renders the same Chat without the administrative
-  chrome. Both surfaces show `ChatSurfaceTabs`, which switches between `/chat`
-  and `/network-chat` in both directions. The `Network Chat` entry shows the
+  chrome. The two Chat surfaces are reached from the Sidebar's nav entries
+  (`nav.ts`: `nav.chat` to `/chat`, `nav.networkChat` to `/network-chat`), and
+  `NetworkChat.tsx` uses `Tabs` (`components/ui.tsx`) to switch between the
+  network room and the lobby room. The `Network Chat` entry shows the
   number of messages received since the last read, and entering the screen
   clears the badge. On a mobile viewport, online users start hidden and show up
   through the `See online` button. The AI/NETWORK tabs are the first strip of
   the content on both chat screens, above the header and the conversation.
-- `/modelos` -> WholeModels; `/modelos/remotos` -> RemoteModels; and
-  `/modelos/fatiar` -> SliceModels, with the jobs panel and slicing progress
+- `/models` -> WholeModels; `/models/remote` -> RemoteModels; and
+  `/models/slice` -> SliceModels, with the jobs panel and slicing progress
   embedded
-- `/fatias` -> Shards; `/fatias/implantar` -> redirects to `/implantar` (old
+- `/shards` -> Shards; `/shards/deploy` -> redirects to `/deploy` (old
   link)
-- Those four routes, plus `/transferencias` and `/transferencias/enviar`, are
+- Those four routes, plus `/transfers` and `/transfers/send`, are
   full screen (`isFullBleed` in `App.tsx`), under the same contract as
-  `/implantacoes`/`/implantacoes/logs`: a fixed header
+  `/deployments`/`/deployments/logs`: a fixed header
   (`FullBleedHeader`/`FullBleedToolbar`, `components/ui.tsx`) and a table or
   its own content scrolling inside, instead of the central column with
   `max-w-[1400px]`. `WholeModels`, `Shards` and the `RemoteModels` search became
@@ -214,20 +217,20 @@ does not get past that clip. The minimized choice is persisted in the browser.
   the same editor in a window. The deploy inspector offers the same pickers
   (head projector, tail MTP draft) prefilled from the link, and says whether
   the target already has the file or will copy it.
-- `/implantar` -> DeployModel (a top-level entry to put slices into service)
-- `/implantacoes` -> Deployments (the record of deployments, activating the
+- `/deploy` -> DeployModel (a top-level entry to put slices into service)
+- `/deployments` -> Deployments (the record of deployments, activating the
   default one, versions per `deploy_id`, redeploying by version or by new
   parameters, and undeploying). Full screen, like Logs, and clicking a
   version's row opens on the right the **same** inspector as the deploy screen,
   read-only, with the parameters that version started with
-- `/implantacoes/logs` -> DeploymentLogs, a terminal console of the whole
+- `/deployments/logs` -> DeploymentLogs, a terminal console of the whole
   cluster's process log, in arrival order at the principal and filterable by
   `deploy_id`; not to be confused with the request audit at `/logs`. The
   history is capped on the principal at the last seven days or 500,000
   records, whichever comes first; `cluster_logs_min_level` in `pom.json`
   controls the minimum captured level and defaults to `info`.
-- `/transferencias` -> Transfers; `/transferencias/enviar` -> SendFile
-- `/logs` and `/estatisticas` -> `EnterpriseFeatureShowcase`, the sales page
+- `/transfers` -> Transfers; `/transfers/send` -> SendFile
+- `/logs` and `/statistics` -> `EnterpriseFeatureShowcase`, the sales page
   of the Statistics and Logs plugin (public catalog and Stripe checkout), when
   no active plugin declares the target. A single manifest declaration replaces
   the fallback at that URL, including for Enterprise. Other plugin screens come
@@ -235,11 +238,12 @@ does not get past that clip. The minimized choice is persisted in the browser.
   example, `plugin_code: "base"` and `/example` open at
   `/admin-ui/base/example`. Menu and matcher use the same normalized table; new
   menus show up in manifest order, before Documentation. If two plugins claim
-  `/logs` or `/estatisticas`, both use their namespaces and the native fallback
-  stays. `/logs/estatisticas` remains a native alias of `/estatisticas`.
-  `menu[].roles` filters the menu and direct access to the matching route;
-  without `roles` or the legacy `profiles` field, all three profiles are
-  accepted, always respecting the route's profiles.
+  `/logs` or `/statistics`, both use their namespaces and the native fallback
+  stays. `/logs/statistics` remains a native alias of `/statistics`.
+  Plugin menus and screens are available to all profiles; manifest `roles` and
+  legacy `profiles` are validated and preserved but do not gate this POM's UI.
+  Native route restrictions remain in force, so `infer` cannot open `/logs`,
+  `/statistics` or `/deployments`, even when a plugin claims an extension point.
 - `/plugins` -> Plugins, the showcase of publishable items returned by
   `https://license.pieceofmind.cloud/v1/plugins`, crossed by `code` with the
   local license and install state. Open to every profile: plugins are local to
@@ -268,10 +272,10 @@ does not get past that clip. The minimized choice is persisted in the browser.
   `PluginStatus.installation_error`; when the activation POST fails, the screen
   rereads the local status to show that diagnosis. Deactivation asks for
   confirmation. The route uses `FullBleedHeader` and internal scrolling like
-  `/modelos`; the Plugins panel uses `overscroll-y-contain` so scrolling at the
+  `/models`; the Plugins panel uses `overscroll-y-contain` so scrolling at the
   edge does not propagate to the page. The document stays without scrolling;
   the inner areas define their own limits. Loading, error and empty catalog
-  have their own states. On `admin`, when `pom_desenv=true` in `/api/ui/node`,
+  have their own states. On `admin`, when `pom_dev_mode=true` in `/api/ui/node`,
   the column also queries the local development sources and offers
   build/install even for a plugin that has never been activated; those controls
   do not show up for other profiles or for nodes without the flag. A
@@ -281,9 +285,65 @@ does not get past that clip. The minimized choice is persisted in the browser.
   logs. The
   GitHub release flow stays separate. See `docs/subsystems/plugins-ui.md`,
   section "Local rebuild in development".
-- `/documentacao` -> Documentation (full screen; see its own section below)
-- `/redes-publicas` -> PublicNetworks, a full-bleed catalog of public networks
-  discovered through the pkarr layer. The table groups by country/city and sorts
+- `/documentation` -> Documentation (full screen; see its own section below)
+- `/public-networks` -> PublicNetworks, a full-bleed catalog of public networks
+  discovered through the pkarr layer. The list is paged and searched on the
+  node, over its table of every network it has heard of
+  (`GET /api/ui/networks/known`, `http-api.md`): the screen paints from that
+  table at once and, when the live listing (`GET /api/public/networks`, which
+  records what it finds) answers, reads the page again; a row the live
+  listing did not return says when it was last seen. The search box, the
+  country, city and distance filters and the order (distance, name) go to the
+  node; latency is measured in the browser and reorders the page. Each name
+  is preceded by its discovery icon (public globe, hidden eye-off, off
+  wifi-off), the same Network settings and the quick setup draw. Clicking a
+  row selects it (iris band) and opens a side panel drawn like the
+  Dashboard's property inspector, in small print: the network's name, whether
+  it takes new members (each role, network node and inference node, with its
+  icon, name and state), description, channels (links) and rules (always
+  open) - nothing the row already shows, and no keys or fingerprints - with
+  the network's actions at the bottom (quick setup, ask to join, lobby,
+  leave, more details, trust document, remove). "More details" opens a near full-screen window with every field,
+  technical ones included. A network whose record says `lobby_chat` (its
+  Chat is on) offers "Talk and ask to join" and a "Lobby" button. Every lobby
+  (`LobbyChat` with `layout="page"`) replaces the list and the page header on
+  the same screen, with "Back to networks" at its top left; open lobbies stay
+  in a tab strip over the list (and in the lobby header when more than one is
+  open) and keep polling, so several conversations run at once. Without
+  `lobby_chat` there is nothing to talk in: the button is "Ask to join" and
+  the full-screen lobby shows only the hardware card and the request. Only a
+  network whose lobby answers `lobby_disabled` falls back to a window. Two
+  kinds of rows stay at the top of every page whatever the order, filtered
+  client-side by the same search, country, city and distance as the list
+  (`GET /api/ui/networks/pinned`): the
+  network this machine is in, tagged "Your network", shown even when it is
+  not public; then the private networks added on this machine, tagged
+  "Private - added here" with an amber band. "Add network" in the header
+  imports one from a JSON file holding its trust document
+  (`POST /api/ui/networks/custom`), and an added row can be removed from the
+  list. Only the row of this machine's own network exports its trust
+  document as `<name>-trust.json`, the file another machine imports; another
+  network's document is not offered for download. While the own network's
+  discovery is off or hidden, its principal (`authority_level: primary` and
+  `can_edit`) gets "Quick setup" in the header, on the row and in the side
+  panel: `components/NetworkQuickSetup.tsx`, a step-by-step window
+  (discovery, information, who can join and accepted roles, location, review)
+  that saves through `POST /api/ui/network/settings` like Network settings. An added network is
+  joined like a public one, through its lobby; its admin only needs discovery
+  on "Hidden", since the lobby follows discovery. The network Chat is not
+  needed to ask for admission; without it the lobby window shows no
+  conversation, only the hardware card and the request panel. Network
+  settings asks the quick setup's questions in its order and drawing
+  (discovery, information, who can join, location, then this machine's relay,
+  saved at once), with plain text fields and no Markdown preview. The quick
+  setup also has the relay step, suggesting "Relay for any network" to
+  strengthen the distributed network; it is saved after the network. Both
+  leave the relay out while the relay report says `reachable: false`: behind
+  a NAT the machine cannot relay for anyone. "Who can join" and "Accepting new members" appear
+  only with discovery on or hidden; "Who can join" has "Anyone without
+  approval" (`auto_approve`), which admits every request on arrival and
+  carries its warning in the choice. The location (city, pin, geographic
+  label) is shown only on a public network. The table groups by country/city and sorts
   by the approximate distance authorized in the browser; it shows the computed
   metrics when the local cluster matches the network and marks as unavailable
   what the public catalog does not provide. The join button reuses the trust
@@ -291,12 +351,14 @@ does not get past that clip. The minimized choice is persisted in the browser.
   already belongs to, Join is replaced by "Leave network" for a member and by
   no action at all for the principal. A network whose `accepted_enrollments`
   is empty shows a disabled "Closed" button; with a partial list Join stays
-  enabled and the wizard's first screen disables the roles that are not
+  enabled and the join dialog disables the roles that are not
   accepted. The principal edits the list in Network settings ("Accepting new
-  members"). A network with `lobby_chat` gets a "Chat" button that opens
-  `components/LobbyChat.tsx`: a conversation with that network's lobby through
-  this node, with the hardware card the network will see. The same component
-  runs in the setup wizard, whose join step lists the federated directory
+  members"). Every listed network gets a button that opens
+  `components/LobbyChat.tsx`: that network's lobby through this node, with
+  the hardware card the network will see and the admission request. The
+  conversation is shown only when that network has its Chat on; otherwise the
+  window is just the card and the request. The same component
+  is used by the deprecated setup wizard, whose join step lists the federated directory
   (`PublicDirectoryPanel`), so a machine that has joined nothing can ask first;
   the list comes from the installation's relays and from the relay key or
   node address typed in the panel.
@@ -316,23 +378,21 @@ does not get past that clip. The minimized choice is persisted in the browser.
   Network settings calls visibility "Discovery" and offers off or on (listed);
   the announced-but-not-listed value stays selectable only where already set.
   It no longer offers the open admission mode.
-- `/setup` -> `Setup`, the real first access wizard, **full screen** and with
-  the access gate's identity (see "First access wizard" below). It is out of
-  the normal path: a node without a network creates a local one and opens the
-  panel, and the wizard only appears when the node was started with `--setup`.
-- `/config/rede` -> NetworkSettings; `/config/rede/participantes` -> the
-  participant list for `admin` and `node`; `/config/preferencias` ->
-  Preferences; `/config/preferencias/admin` -> administrative preferences;
-  `/config/sobre` -> About, the last item of Settings, with links to the
+- There is no `/setup` route: the address falls to the not-found page. See
+  "First access wizard" below.
+- `/config/network` -> NetworkSettings; `/config/network/participants` -> the
+  participant list for `admin` and `node`; `/config/preferences` ->
+  Preferences; `/config/preferences/admin` -> administrative preferences;
+  `/config/about` -> About, the last item of Settings, with links to the
   repository's AGPL-3.0 `LICENSE` and the official GNU page, an LGPD
   privacy/security notice and site links, a contact form
   (`https://pieceofmind.cloud/contact.html`) and official repositories; it also
   shows the state of the plugin tied to the `pom_core` update and the on-demand
   check. When an update is available, the screen itself offers to apply and
   restart; it also shows the catalog of direct dependencies grouped by license;
-  `/config/confianca` gathers this machine, sharing and connection keys;
-  `/config/keys/api` -> TokenKeys; `/config/armazenamento` -> ModelPaths
-  (`/config/pastas` remains an alias). When `POM_MODEL_DIRS` or `POM_SHARD_DIR`
+  `/config/trust` gathers this machine, sharing and connection keys;
+  `/config/keys/api` -> TokenKeys; `/config/storage` -> ModelPaths
+  (`/config/folders` remains an alias). When `POM_MODEL_DIRS` or `POM_SHARD_DIR`
   sets a folder (`model_dirs_env`/`shard_dir_env` in `/api/ui/paths`), the
   matching field is locked, with the variable's name in a badge and a note:
   editing there would have no effect. Saving a folder that does not exist yet
@@ -361,13 +421,23 @@ the normal `NAV` projection.
 
 ### First access wizard
 
-`routes/Setup.tsx` is the real wizard, served by the loopback router
+**This wizard is deprecated and unreachable.** It is not the first run wizard
+("First run wizard and guide" below), which runs on a configured node. A node
+without a network creates a local one and serves the interface, and that is
+the only way to start.
+`App.tsx` neither imports nor routes `routes/Setup.tsx` or
+`routes/SetupWizard.tsx`, the shell probe has no "setup" answer, and the node
+never starts the `/api/setup/*` router (`http-api.md`, "Setup routes are not
+served"). The files and their tests are kept until the wizard is removed for
+good; the rest of this section describes that dormant code. Do not link to it.
+
+`routes/Setup.tsx` was the real wizard, served by the loopback router
 `/api/setup/*`. It only asks what cannot be decided later
 (`routes/setupWizardFlow.ts`):
 
 - **Administrator, 3 steps:** Start (role and machine name, with a hardware
-  summary), Network (name and **Private** or **Public**; country and city only
-  for public, because they go to pkarr and the directory) and Invitation
+  summary), Network (name and **Private** or **Public**; the location only
+  for public, because it goes to pkarr and the directory) and Invitation
   (connection key, when private, and the `trust.json` to download or copy). The
   preferred address is optional, starts empty under "Advanced" and is only a
   hint (IP or DNS name); `trust.json` carries no IP - a joining node finds the
@@ -426,9 +496,9 @@ The screen title is "Find models on Hugging Face". The detail queries
 the configuration before starting. The download picks one of those folders; the
 job persisted in `GET /api/ui/jobs` records the final path and
 `ModelDownloadsPanel` shows progress, cancellation and retry. That panel also
-shows up in `/transferencias`, next to file transfers.
+shows up in `/transfers`, next to file transfers.
 
-In `/config/preferencias`, `HuggingFaceSettingsPanel` offers the optional token
+In `/config/preferences`, `HuggingFaceSettingsPanel` offers the optional token
 for private and gated models. The field is `password`, starts empty and only
 shows the mask returned by the backend. Saving or removing calls
 `/api/ui/model-provider/config`, invalidates the status and makes the provider
@@ -443,15 +513,15 @@ machine; `infer` has a reduced view to talk to the models, read the
 documentation, manage its own API key and ask to join the network's processing.
 Any of the three can activate and install plugins on its own machine.
 `GET /api/ui/node` is the source the browser uses and the toolbar shows the
-label through i18n. The same snapshot carries `pom_desenv`, true only when the
-process was started with exactly `POM_DESENV=1`. `DeployModel` and History
+label through i18n. The same snapshot carries `pom_dev_mode`, true only when the
+process was started with exactly `POM_DEV_MODE=1`. `DeployModel` and History
 completely hide `Configurações POM (DESENV)` ("POM settings (DEV)", the
 inference engine and idle unloading) when the flag is false; the whole sampler
 (min-p, frequency, DRY), the seed and where MTP runs are default settings
 shown to everyone, in the deploy inspector and in History's redeploy panel
-(the same inspector, editable, on the right side of the list). On the `/implantar` screen, Tensor, the
+(the same inspector, editable, on the right side of the list). On the `/deploy` screen, Tensor, the
 Simple/Complete strategies and the "Back to the node's plan" button are also
-hidden when `pom_desenv` is false. This is only local visibility: the UI and the
+hidden when `pom_dev_mode` is false. This is only local visibility: the UI and the
 backend keep the deployment values received over the network, even when the
 node cannot edit them.
 
@@ -472,8 +542,11 @@ from the coordinator's tracker.
 
 `src/lib/access.ts` combines the native routes with the profiles from the
 plugin registry (`lib/pluginUi.ts`); a native route missing from the table is
-open to `admin` and `node`. Today `/implantar` and `/implantacoes` are
-administrator only. The native showcases `/logs` and `/estatisticas` stay
+open to `admin` and `node`. Today `/deploy` and `/deployments` are
+administrator only. A plain node keeps the Models section (search, full
+models, slicing, shards) for its own files, but deploys nothing, not even a
+full model on itself: to deploy, it returns to its own network, where it is
+the admin. The native showcases `/logs` and `/statistics` stay
 reachable for discovery; plugin screens follow the profiles declared in the
 manifest. For `infer`, the list of allowed and denied native routes lives in
 `INFER_ROUTES` and `INFER_DENIED_ROUTES`. In the Chat, run telemetry and its
@@ -539,24 +612,26 @@ also enforces `infer`'s local view: `/api/ui/cluster` and
 `/api/ui/cluster/models` do not fan out to peers, `/admin/nodes` answers 403 and
 another machine's details answer 403. There is no profile switch in the UI.
 
-On the `/config/rede` screen, an `infer` sees its own machine's data and sends
-`POST /api/ui/network/request-node`. The request shows up in the admins'
-notification bell, and any principal or secondary admin can approve or refuse
-it. The node only changes profile after the server's approval. The principal
-administrator can promote a node with `POST /admin/nodes/{id}/promote-admin`;
+On the `/config/network` screen, an `infer` sees its own machine's data. Nothing
+changes a role in place, in the interface or on the node: the role is decided
+when the network admits the machine, so the card only explains that serving
+models takes leaving and asking for admission again as a network node. A
+`node` likewise has no way to step down to `infer` without rejoining. The principal
+administrator (a secondary admin sees this screen and the rest of the
+interface as a node does, plus the deploy screens: the profile context
+carries `secondary`, and principal-only controls check it) can promote a
+node (never an inference node, which the
+candidate list leaves out; the "Cluster version" panel on this screen and on
+Administrators shows the trust chain version this node holds, marks it
+outdated when a peer announces a newer one and syncs by itself, and the
+participants list shows each machine's version, amber when it differs) with `POST /admin/nodes/{id}/promote-admin`;
 the gateway requires effective principal authority, and the target validates
 the Ed25519 grant in the chain of trust. The `connection_key` stays only the
 transport credential between nodes.
 
-On the same screen, a `node` can ask to step down itself with
-`POST /api/ui/network/relinquish-node`. The confirmation warns that new
-inferences are diverted first, that inferences in progress drain without being
-cut and that only then does the profile change and the slice get released. If
-there is no replacement able to serve the same range, the UI warns that the
-range will be uncovered and the generations that need it will fail clearly. The
-admin only gets a notice without buttons in the bell.
 
-`/config/administracao` shows the principal, the secondary admins, the
+
+`/config/administration` shows the principal, the secondary admins, the
 promotion chain and the successor's eligibility. Only the principal can promote
 or demote. Resigning shows the successor determined by the last promoted one
 and explicitly refuses the cases with no secondaries or no active secondary.
@@ -565,7 +640,7 @@ bell; until acceptance, nothing changes and the principal stays principal. The
 page and the bell consume presentation contracts, without carrying key,
 signature or grant storage decisions.
 
-`/config/confianca` is the machine's **trust root**, and it is the work that
+`/config/trust` is the machine's **trust root**, and it is the work that
 comes before everything above. It shows the state - **Anchored** or **Not yet
 anchored** - at a glance, and, when there is a root, the SHA-256 fingerprint in
 groups of eight, with a copy button, next to the cluster and the root's
@@ -587,7 +662,7 @@ translates (see `http-api.md`, "Anchoring the root from the UI").
 administrative surface - putting this screen behind the administrator profile
 would make it unreachable exactly in the state it exists to serve. And whoever
 receives the anchor is usually a `node` or an `infer`. That is why
-`/config/confianca` is not in `RESTRICTED` (`lib/access.ts`), shows up in the
+`/config/trust` is not in `RESTRICTED` (`lib/access.ts`), shows up in the
 Settings menu and is promoted to `infer`'s main menu.
 
 The `Topbar` header keeps the node's identification, profile, notifications and
@@ -652,8 +727,8 @@ routes.
   `Intl.PluralRules`). `provider.tsx` exposes `useI18n().t` and the
   `LanguageSelect`. `index.html` has a pre-paint script that stamps `lang` from
   the stored locale/the browser locale, so the first render is already in the
-  right language. `localizeServerText` maps Portuguese strings an old binary
-  may send into the UI's language.
+  right language. Text written by the node (errors, refusal reasons, job
+  steps) is English at the source and is shown as it arrives, in both locales.
 - **`src/routes/`** - one screen per route, all through react-query talking to
   the node's HTTP gateway; none keeps cluster state in the browser. The main
   screens are described below.
@@ -695,11 +770,27 @@ ingresses with pkarr discovery when the active network is public. The
 canonical geo label (`com.<country>.<city>.<node>`) is a field of the record,
 never the pkarr key. The local index persists labels already observed and
 accepts `geo_prefix`/`geo_suffix`, allowing candidates to be filtered before the
-HTTP probes. The `/redes-publicas` page is full-bleed, like Logs, and shows a
-table with name, organization, country/city, label, nodes, latency, VRAM,
-models and reachability. **No IP is listed**: reachability comes from
+HTTP probes. The `/public-networks` page is full-bleed, like Logs, and shows a
+table with name, organization, place, reachability, nodes, latency, VRAM and
+models. The place (city, state, country) is **not** what the network wrote: the
+node looks up the coordinates each listed network publishes in its own offline
+city database (`gateway::resolve_places`, `geo::resolve`) and rewrites the
+fields before answering, so the country and city filters work on those names
+and a network without coordinates is listed without a place. The discovery
+label stays in the details window. The toolbar sorts by distance (default),
+by latency or by name and filters by distance (100, 500 or 2000 km).
+Distances are computed in the browser from this network's own location, or
+from the browser's location after the operator presses "Use my browser's
+location" - the screen never asks for it by itself and the position never
+leaves the browser. Latency is measured only on request ("Measure latency",
+or choosing the latency order): the node asks each listed network twice
+through the lobby connection (`GET /api/ui/network-chat/lobby/latency`) and
+the column shows the smaller round trip, "no answer" for a network that stayed
+silent, and the average between its own machines for the local network. **No IP is listed**: reachability comes from
 `GET /api/public/networks/locate`, which the node resolves from the publisher's
-key through pkarr (`direct`, `relayed` or `unresolved`); the details show the
+key through pkarr (`direct`, `relayed` or `unresolved`). A check that could not
+be made - the node refused the key or did not answer - shows as "Could not
+check" (`unknown`), never as a network missing from the DHT. The details show the
 publisher key and the dedicated relays (`relay_hints`). The local cluster's metrics are computed from
 `ClusterView` when the network matches; the other fields show as unavailable
 because the current public catalog does not provide them. The trust document
@@ -860,23 +951,61 @@ operator does not need to infer the degradation from missing logs.
 
 ## Settings / Network and Preferences
 
-`/config/rede` gathers the Network Information: public name, organization,
+`/config/network` gathers the Network Information: public name, organization,
 description, rules, channels, visibility and location. Node and infer get read
-only, while admin can edit. Country and city are selects fed by
-`GET /api/ui/network/geo-reference`, which reads the local `geo_countries` and
-`geo_cities` tables; the country code is not shown. The same screen computes
-nodes, average latency, known VRAM and models from `ClusterView`.
-`/config/rede/participantes` reuses the known nodes card and is available to
+only, while admin can edit. The same screen computes nodes, average latency, known VRAM and models from
+`ClusterView`.
+
+### Network location
+
+A network declares where it is so the Networks screen can sort by distance.
+The declaration is the principal's, made in `LocationEditor` (Network settings
+and the setup wizard), and it follows four rules:
+
+- **The browser's location is asked only on request.** The dialog has a "Use
+  my browser's location" button; nothing calls `navigator.geolocation` before
+  it is pressed. Browsers share a location only on HTTPS or on localhost, so
+  on a plain `http://<address>` panel the button explains that and the
+  administrator places the point on the map or picks a city by name.
+- **The city is never typed.** It is a row of the offline database embedded
+  in the node (`crates/node/src/utils/geo.rs`, the unmodified cities export
+  of the Countries States Cities Database, ODbL 1.0, about 150 thousand
+  places). Placing a point asks `GET /api/ui/network/geo/nearest`, which
+  answers the closest cities by distance to each city's reference point (not
+  by boundary, so the administrator chooses among the nearest); the search
+  asks `/geo/cities?country=&q=`. The settings carry the row's `city_id`, and
+  the node rewrites country, state and city names from that row on every save.
+- **The administrator chooses what is published** (`location_precision`):
+  `approximate` (default) snaps the point to a grid of about 10 km and
+  declares `accuracy_m` 10000, `city` publishes the city's reference point,
+  `exact` publishes the point as placed. The node applies this before storing
+  anything: a more exact point than the chosen one is never written to
+  `pom.json`, sent to members or published. The point reaches the node in the
+  save and in the nearest-city lookup, which stores nothing.
+- **The location is not part of the trust document.** Country, city,
+  coordinates and the discovery label are settings the principal changes at
+  any time; they travel to members with the other network settings and to
+  everyone else in the signed directory record. The location is declared, not
+  verified: nothing proves a network is where it says.
+
+The map is Leaflet with OpenStreetMap tiles, loaded only while the dialog is
+open; those tile requests are the one thing in this flow that leaves the node,
+and the dialog says so. Without internet the map stays empty and the button
+and the search still work. The Networks screen computes distances in the
+viewer's browser, never sends the viewer's position anywhere, and writes
+"about N km" for a network whose `accuracy_m` is a kilometre or more. The
+About screen credits both data sources.
+`/config/network/participants` reuses the known nodes card and is available to
 admin and node. Each peer shows the **route in use**, not the address it
 announces: a badge (Direct, Direct (P2P), Direct (hole punch), Via relay, No
 route) and that route's address - the relay's, when the hole punch did not
 close. The announced one stays in the row's `title`. See `p2p-network.md`,
 "Diagnosis".
 
-`/config/confianca` gathers this machine, network sharing and connection keys.
-`/config/preferencias` holds the administrative exposure, the `ThermalPanel`,
+`/config/trust` gathers this machine, network sharing and connection keys.
+`/config/preferences` holds the administrative exposure, the `ThermalPanel`,
 the `HuggingFaceSettingsPanel` and the link to storage.
-`/config/preferencias/admin` keeps the administrative preferences for TLS,
+`/config/preferences/admin` keeps the administrative preferences for TLS,
 QUIC, process logs between nodes, network chat and local discovery. The split
 reorganizes the same operations and keeps the existing authorization.
 
@@ -918,7 +1047,7 @@ fallback.
 
 ## Deployment process logs
 
-`DeploymentLogs.tsx`, at `/implantacoes/logs`, is the terminal console of the
+`DeploymentLogs.tsx`, at `/deployments/logs`, is the terminal console of the
 cluster's process and not the request audit of `/logs`. The black background
 and monospace font leave each line with the machine name, level and origin
 time; the lines come from the admin's local replica in arrival order and the
@@ -965,8 +1094,8 @@ besides the turns:
   The sets follow the wait: `wake` while `chat/capabilities` reports
   `asleep` - a machine of the pipeline unloaded its model for idleness or is
   loading it again - then `pieces`, `assemble` and `long` as the seconds pass.
-- The single file field reads `GET /api/ui/chat/capabilities`, which aggregates
-  the active head and the coverage without reusing the topology the `infer`
+- The single file field reads `GET /api/ui/chat/capabilities?model=<chosen>`,
+  which aggregates the chosen model's head and coverage without reusing the topology the `infer`
   profile cannot query. It accepts any file type, button and drag and drop.
   Images require `vision: supported`; `unsupported` keeps the model without
   vision and `unavailable` says the read was refused or could not finish,
@@ -975,13 +1104,45 @@ besides the turns:
   four bytes per token, reserves 10% for safety and tries JPEG quality and
   resolution up to 2048 px on the longer side, without going over 512 px for
   normal images. The aspect ratio is kept, and the bubble and the pending
-  attachment show "Resized automatically" when the image was changed.
+  attachment show "Resized automatically" when the image was changed. Sent images
+  stay whole in the bubble, with a caption and alternative text.
+- The dictation button only renders when the browser exposes Web Speech, and it
+  dictates in the interface's locale.
 - The `Think` button uses the `thinking` field of the same capabilities read
   and only shows up when the head's global `no_thinking` is off. The choice is
   sent as `thinking_enabled` on each Chat call and stays in the `ChatSession`
   persisted in `localStorage`, so it carries across messages of the same
   conversation until the user changes the toggle. The head still enforces the
   global off, even if an old session carries `true`.
+- A model's thinking is shown closed: one line, "Thinking" with pulsing dots
+  while no answer text arrived and "Thought" after, with the count of thinking
+  tokens (one per stream delta that added to the reasoning,
+  `ChatStreamState.reasoningTokens`, kept as `ChatMessage.reasoningTokens`).
+  The text opens only on a click.
+- While the network serves no model, the Chat draws no composer and no RAG
+  menu: an empty conversation shows `components/MissingPiece.tsx`, three
+  puzzle pieces in the brand colours locking together around an empty,
+  pulsing slot, under the POM mark, with "One piece is missing". A profile
+  that may open `/deploy` gets the next steps (download a model, deploy it,
+  talk): the local catalog (`/api/ui/models`, asked only on that screen)
+  decides whether downloading is done and deploying is the current step;
+  any other profile is told to ask an administrator. "How POM works" opens
+  the documentation, and "See earlier conversations" reopens the latest
+  conversation with turns, drawn only when one exists. A conversation with
+  turns keeps them and puts that line in place of the composer.
+- An empty conversation opens like other chat tools: no title bar, only the
+  POM mark (`components/ChatHero.tsx`, the site's mark for the active theme,
+  rising from below after a short pause; the line and the nodes follow it),
+  a line that opens "P O M" into PIECE OF MIND, PLACE OF MIND, POWER OF
+  MACHINES and PLATFORM OF MIND in turn, the access gate's three linked nodes,
+  and the composer centred under them, drawn larger there. The composer is
+  one element with a framer-motion `layoutId`: the first message carries it to
+  the bottom bar of the conversation. Its placeholder is one of the
+  `chat.prompt.*` lines, in the tone of the waiting lines, chosen from the
+  conversation id (`promptPlaceholderKey`) so it does not change while typing;
+  the network Chat keeps "Write to the network". While no conversation has
+  messages, the conversation list and its New chat are not drawn, beside the
+  Chat or in the infer menu.
 - Text files are still refused before sending when the estimated size exceeds
   the model's effective context: first `context_length` from `/v1/models`, then
   the active node's `n_ctx`. Images use the same budget, but are reduced before
@@ -1032,8 +1193,9 @@ up in the browser history.
 - **The title is edited by clicking it** and is saved (`titled` keeps the first
   message from overwriting the chosen name).
 
-`chatStream` separates `<think>` from the visible content without leaking the
-delimiter between chunks; `finishChatStream` records the summary of TTFT,
+`chatStream` appends structured `reasoning_content` directly and keeps the
+`<think>` splitter as a legacy fallback without leaking delimiters between
+chunks; `finishChatStream` records the summary of TTFT,
 prompt preprocessing speed, output generation speed and end-to-end total, plus
 the per-hop trace. The Chat shows the basic numbers in the telemetry line; the
 remaining fields (`server_ttft_ms`, `engine_ttft_ms`, `client_ttft_ms`, network
@@ -1083,7 +1245,7 @@ pipeline, it explains that there are no edges between peers.
 
 Four decisions that are not cosmetic:
 
-- **The screen is full width** (`App.tsx` lists `/documentacao` next to `/` in
+- **The screen is full width** (`App.tsx` lists `/documentation` next to `/` in
   `isFullBleed`) and scrolls inside: the navigation column and the reading
   column are flex children with `min-h-0`, each with its own scroll. Without
   that `min-h-0` the child grows with the content and overflow never kicks in -
@@ -1101,9 +1263,9 @@ Four decisions that are not cosmetic:
   navigation column takes the full width and the reader is hidden
   (`mobileReaderOpen`); picking a guide or document opens the reader full screen
   with a Back button fixed at the top (it only exists mounted while that view is
-  open). Back only touches that local state - `?doc=`/`?guia=` stay intact, so
+  open). Back only touches that local state - `?doc=`/`?guide=` stay intact, so
   reloading the page does not lose the place. A deep link that already arrives
-  with `?doc=`/`?guia=` in the URL counts as the same selection and opens
+  with `?doc=`/`?guide=` in the URL counts as the same selection and opens
   straight in the reader. From `sm:` on the two columns live together again,
   regardless of that state.
 
@@ -1199,8 +1361,8 @@ machine restarted. Today the fingerprint is only model + set of ranges.
 - **Slice** (`SliceModels`): Pipeline and Tensor Parallelism are a pair of tabs
   (`role="tablist"`) at the top of the source panel, not a checkbox - each mode
   has its own controls below. The Tensor Parallelism tab only exists when
-  `useNode().data.pom_desenv === true` (`NodeInfo.pom_desenv`, the same
-  `POM_DESENV=1` that already hides the DEV sections of `DeploymentInspector`);
+  `useNode().data.pom_dev_mode === true` (`NodeInfo.pom_dev_mode`, the same
+  `POM_DEV_MODE=1` that already hides the DEV sections of `DeploymentInspector`);
   without the flag the screen never offers nor sends
   `mode: "tensor_parallel"` - the only possible mode is pipeline, and a `mode`
   already set to `tensor_parallel` when the `/api/ui/node` answer arrives later
@@ -1256,7 +1418,7 @@ machine restarted. Today the fingerprint is only model + set of ranges.
   help button by their title that opens their guide from Documentation in a
   dialog (`components/GuideDialog.tsx`, guides `config-padrao`, `config-pom`
   and `config-beta` in `guides/deploySettings.ts`). The DEV section only
-  shows up when `NodeInfo.pom_desenv` is on; without the flag the UI removes
+  shows up when `NodeInfo.pom_dev_mode` is on; without the flag the UI removes
   its controls from the DOM. The `[i]` comes **before** the name, not after:
   with names of different widths, icons to the right of the text came out
   jagged, and before the name they form a straight column from top to bottom
@@ -1289,7 +1451,8 @@ machine restarted. Today the fingerprint is only model + set of ranges.
   globals - `[i]`, name, control); when a machine is selected, the inspector also
   shows the layers it will run. The hidden-state precision
   (f32/f16/f8/i4g64/i4g128) only shows up when the state crosses a peer boundary
-  - a slice pipeline with distinct adjacent ranges; for a whole model, Tensor or
+  - a pipeline with distinct adjacent ranges, of slices or of a whole model spread
+  over its own slices; for a whole model on one range, Tensor or
   slices on a single machine, the state is never serialized and the selector
   would be inert. f16 is still the default; f32 is a lossless option with four
   bytes per value, while f8 and i4 are lossy. In the globals, the whole model
@@ -1351,9 +1514,12 @@ machine restarted. Today the fingerprint is only model + set of ranges.
   "Remove from deployment". Peers already on the map no longer show up in the
   bottom bar; dragging or double-clicking an available peer adds the card
   without redrawing the topology until a range is assigned. For a whole model,
-  the map accepts one machine. When switching from slices to that mode, the map
-  is left empty so the operator picks the machine; after a choice, trying to add
-  a second one shows a warning and keeps the chosen machine. In Tensor, only
+  the map is left empty when switching from slices, so the operator picks the
+  machine, which takes the whole file. More machines can be added: each gets a
+  range it holds in the Machine tab (the whole file as a replica, or a slice of
+  the same model), the coverage ribbon appears, and the node accepts the map
+  while the ranges cover every layer. Under an inference service the whole
+  model stays on one machine and a second one is refused with a warning. In Tensor, only
   peers on the map enter as primary/worker, even if others have the model.
   GPU, RAM and load are updated by the cluster view every 5 seconds; the
   Dashboard map shows the last effective RTT and transport observed in the
@@ -1431,14 +1597,14 @@ machine restarted. Today the fingerprint is only model + set of ranges.
   `POM_DEV_AUTO_ACCEPT_TRANSFERS=1` (a variable of the receiving process, read
   at startup) accepts every offer without a click - dev only. Peers on the same
   machine share the hostname, so the destination and the availability label
-  carry the start of the `node_id` when the name repeats (`uniqueName`,
-  `routes/Shards.tsx`). Offers, active and finished transfers in `Transfers`
+  carry the start of the `node_id` when the name repeats (`uniquePeerName` in
+  `lib/peerName.ts`, used by `routes/Shards.tsx`). Offers, active and finished transfers in `Transfers`
   are each a full-width table (it used to be a list of cards), with the
   accept/refuse/cancel action in the last column.
 
 ### Network information and joining materials
 
-`/config/rede` fetches `GET /api/ui/network/info` and shows the same card to
+`/config/network` fetches `GET /api/ui/network/info` and shows the same card to
 every profile. Node and infer see name, description, rules, organization,
 channels, visibility, country, city and location read-only. The authorized
 administrator edits those fields and saves through
@@ -1465,19 +1631,107 @@ these calls.
 
 The panel also exposes `Forget network`, with a destructive confirmation. That
 action calls `POST /api/ui/network/leave`, which revokes the local trust,
-prepares `pom.json` for setup and restarts this node; then the UI goes back to
-`/setup`. It is deliberately different from `Leave network`, in the
+empties `pom.json` of the network and restarts this node, which comes back in
+its own network (restored from standby, or a fresh local one). It is deliberately different from `Leave network`, in the
 `This machine` panel, which calls `POST /api/ui/leave` and only takes the
 machine out of the cluster without erasing its local configuration. That action
 is also available to a node profile without administrative authority and does
 not depend on a loaded model or a Ready state: the handler stops the runtime,
 clears the deployment journal and unannounces the machine before answering.
 
+## First run wizard and guide
+
+A machine that starts with no configuration creates its local network, and
+its operator is walked through the first things to do: a wizard on a screen
+of its own, then hints on the panel. Both are one list of steps kept by the
+node (`GUIDE_STEPS` in `webui/guide.rs`), and only the `admin` profile sees
+them.
+
+### The wizard
+
+`components/FirstRunWizard.tsx` replaces the whole shell, past the access
+gate, while the current step is one of its two (`useFirstRunWizard` in
+`App.tsx`). It asks nothing about the kind of network: the network is the
+machine's own, and joining another one comes later, from the Networks screen.
+
+1. **Names** (`names`) - two fields on one screen. The machine name is
+   pre-filled with the name the machine goes by (the system hostname until
+   it is given one) and saved with `POST /api/ui/network/node-name`. The
+   network name is pre-filled with the name the network was created with,
+   under a warning that it is advertised to everyone if the network is made
+   public, and saved with `POST /api/ui/network/settings`, the rest of the
+   settings untouched. The step is reported only after both saves.
+2. **Follow the instructions** (`bootstrap`) - no field: it says that hints on
+   the screen point at what to do next, and its button opens the panel.
+
+Each name field has its own "Random" button that fills in a random name of two
+words and a number (`lib/randomName.ts`). Neither name may be empty, a
+failed save keeps the operator on the screen with the error, and "Back" only
+changes the screen shown. A reload resumes at the first step not done. The
+wizard draws on the `.pom-login*` / `.pom-setup*` shell of the access gate,
+with the language switch in the corner.
+
+### The hints
+
+After the wizard the panel opens and the interface points at the next things
+to do, one hint at a time (`components/FirstRunGuide.tsx`):
+
+1. **Download a small model** - Find HF models. The guide fills the search
+   with `Qwen/Qwen2.5-0.5B-Instruct-GGUF` (`GUIDE_MODEL_REPO` in
+   `lib/guide.ts`) once, on arrival, and the balloon follows the clicks: the
+   result row, a file in the details window (Q4_K_M when listed), then the
+   confirmation. While the download runs the balloon moves to the corner and
+   says to wait. Done when a download of that repository finishes or the
+   local catalog holds a file of that model.
+2. **Deploy the model** - Deploy to network: "Whole model", then this machine
+   in the peer strip, then the Deploy button once it is enabled (and a "loading"
+   text while the job runs). Done when the
+   cluster reports an active model.
+3. **Send a first prompt** - Chat, the message field. Done when an answer
+   finishes streaming.
+4. **Join another network** - the Networks screen, pointing at the first Join
+   button. Joining ends the guide; so does "Finish", because staying on the
+   machine's own network is a valid choice.
+
+The first three have no save to report them, so the guide watches the node for
+their outcome while each is the current step (`DownloadWatcher`,
+`DeployWatcher`, `ChatWatcher`). A machine that already has the model, a
+deployment or an answer passes the step at once. The download needs the
+Hugging Face CLI on the node, like every download on that screen; without it
+the search does not run and the step can only be skipped.
+
+Each hint is a balloon that floats beside its target, with a ring around the
+target. While the operator is on another screen it points at the menu entry
+that leads to the step (the link, or the section that hides it); on the
+step's own screen it points at the control. A step lists its targets from the
+last click to the first, and the first one on screen wins, each with its own
+text. The target is found by attribute -
+`data-guide-nav` and `data-guide-section` in the Sidebar, `data-guide` (and
+`data-guide-repo` on a search result) on the controls - and looked up again
+five times a second, since scrolling, menus and windows move it. With nothing to point at (a narrow screen with the menu closed, an
+empty list) the same text sits in the bottom right corner. Every balloon
+offers "Skip this step" and "Hide these hints", and motion stops under
+`prefers-reduced-motion`.
+
+The progress lives in the node, not in the browser: `first_run_guide` in
+`pom.json` lists the steps done, and is absent when there is no guide. Only
+the startup that created the configuration from nothing sets it; a machine
+that left a network and got a fresh local one is not new, and
+`Config::prepare_for_setup` (joining or leaving a network) drops it. When the
+last step is done or the operator hides the guide the field is removed and
+the guide never comes back, and neither does the wizard. A step is reported
+through `useGuideActions().complete(...)` (`lib/guide.ts`,
+`GET|POST /api/ui/guide`).
+
 ## A machine has a single name
 
 `node_name` in `pom.json` is how the operator names the machine, and it is the
-name the node announces to peers (`network.hostname`). Every screen reads that
-name; the "Send to..." selector of `/fatias` used to read `sysmon`, the
+name the node announces to peers (`Network::hostname()`). The operator sets it
+on the My machine screen ("Machine name", `POST /api/ui/network/node-name`),
+with no restart: the next announce carries it. The first run wizard asks for
+it through the same route. Without a `node_name` the machine goes by the system hostname. Every
+screen reads that
+name; the "Send to..." selector of `/shards` used to read `sysmon`, the
 operating system's raw hostname, and was the only place in the app that called
 the machine by another name. On a machine with two nodes it was worse: both
 reported the same OS hostname, the list saw a collision and broke the tie with
@@ -1502,6 +1756,6 @@ the slice is identified by its range (`keyOf`), not by index. Tests in
 - DEFECT NOTED: in a narrow window (~420 px) the content column overflows
   horizontally and the panels come out cut on the right - `node_id`, help text
   and buttons fall outside the viewport. It is not a single screen: it
-  reproduces the same on `/config/rede` and on `/config/preferencias`, so it is
+  reproduces the same on `/config/network` and on `/config/preferences`, so it is
   the frame's, not the panel's. Checked in a headless capture at 420x900 on
   both screens.

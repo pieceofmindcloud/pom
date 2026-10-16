@@ -1,4 +1,4 @@
-/// Tirar a pipeline inteira do ar.
+/// Taking the whole pipeline down.
 #[cfg(test)]
 mod undeploy_tests {
     use super::*;
@@ -18,7 +18,7 @@ mod undeploy_tests {
         state
     }
 
-    /// Um peer servindo `qwen35` na faixa dada.
+    /// A peer serving `qwen35` on the given range.
     fn peer(node_id: &str, host: &str, gateway_port: u16, range: (u32, u32)) -> PeerInfo {
         let mut p = crate::gateway::testkit::peer(node_id, host, gateway_port);
         p.model = "qwen35".into();
@@ -65,8 +65,8 @@ mod undeploy_tests {
         )
     }
 
-    /// Uma máquina que responde `/api/ui/unload` com o status pedido, contando
-    /// quantas vezes foi chamada.
+    /// A machine that answers `/api/ui/unload` with the requested status,
+    /// counting how many times it was called.
     async fn fake_machine(status: axum::http::StatusCode) -> (u16, Arc<AtomicU32>) {
         let hits = Arc::new(AtomicU32::new(0));
         let counter = hits.clone();
@@ -88,19 +88,19 @@ mod undeploy_tests {
         (port, hits)
     }
 
-    /// Duas implantações do mesmo modelo: derrubar uma tem que deixar a outra
-    /// servindo.
+    /// Two deployments of the same model: taking one down has to leave the
+    /// other serving.
     ///
-    /// Antes do `deploy_id` isto era inexprimível nos dois sentidos - não dava
-    /// para ter as duas no ar, e `resolve_group` só sabia falar de rótulos, de
-    /// modo que um "desimplantar qwen35" teria levado as duas junto.
+    /// Before `deploy_id` this was inexpressible both ways - it was not possible
+    /// to have both up, and `resolve_group` could only talk about labels, so an
+    /// "undeploy qwen35" would have taken both along.
     #[tokio::test]
     async fn undeploying_one_deployment_leaves_the_other_serving() {
-        let (porta_a, chamadas_a) = fake_machine(axum::http::StatusCode::OK).await;
-        let (porta_b, chamadas_b) = fake_machine(axum::http::StatusCode::OK).await;
+        let (port_a, calls_a) = fake_machine(axum::http::StatusCode::OK).await;
+        let (port_b, calls_b) = fake_machine(axum::http::StatusCode::OK).await;
 
-        let mut a = peer("no-a", "maquina-a", porta_a, (0, 31));
-        let mut b = peer("no-b", "maquina-b", porta_b, (0, 31));
+        let mut a = peer("no-a", "maquina-a", port_a, (0, 31));
+        let mut b = peer("no-b", "maquina-b", port_b, (0, 31));
         a.deploy_id = "d-aaaaaaaa".into();
         b.deploy_id = "d-bbbbbbbb".into();
 
@@ -118,25 +118,25 @@ mod undeploy_tests {
         assert_eq!(resp.status(), axum::http::StatusCode::OK);
         let body = body_of(resp).await;
 
-        assert_eq!(body["released"], 1, "só a implantação escolhida sai do ar");
+        assert_eq!(body["released"], 1, "only the chosen deployment goes down");
         assert_eq!(
             body["results"].as_array().unwrap().len(),
             1,
-            "a outra implantação nem aparece no relatório"
+            "the other deployment does not even appear in the report"
         );
-        assert_eq!(chamadas_a.load(Ordering::SeqCst), 1);
+        assert_eq!(calls_a.load(Ordering::SeqCst), 1);
         assert_eq!(
-            chamadas_b.load(Ordering::SeqCst),
+            calls_b.load(Ordering::SeqCst),
             0,
-            "a máquina da outra implantação não pode ser tocada"
+            "the machine of the other deployment cannot be touched"
         );
     }
 
-    /// Um id que ninguém serve não pode virar "derruba o rótulo inteiro".
+    /// An id nobody serves must not become "take the whole label down".
     #[tokio::test]
     async fn an_unknown_deployment_id_releases_nothing() {
-        let (porta, chamadas) = fake_machine(axum::http::StatusCode::OK).await;
-        let mut a = peer("no-a", "maquina-a", porta, (0, 31));
+        let (port, calls) = fake_machine(axum::http::StatusCode::OK).await;
+        let mut a = peer("no-a", "maquina-a", port, (0, 31));
         a.deploy_id = "d-aaaaaaaa".into();
 
         let state = admin_state(vec![a]).await;
@@ -151,12 +151,12 @@ mod undeploy_tests {
         )
         .await;
         assert_eq!(resp.status(), axum::http::StatusCode::BAD_REQUEST);
-        assert_eq!(chamadas.load(Ordering::SeqCst), 0);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
-    /// O relatório tem uma linha por máquina, e uma máquina que não confirmou
-    /// **não** conta como liberada. Fingir sucesso aqui deixaria memória presa
-    /// numa caixa que o operador acha que esvaziou.
+    /// The report has one line per machine, and a machine that did not confirm
+    /// does **not** count as released. Faking success here would leave memory
+    /// stuck in a box the operator thinks he emptied.
     #[tokio::test]
     async fn every_machine_is_reported_and_a_silent_one_is_not_a_success() {
         let (ok_port, ok_hits) = fake_machine(axum::http::StatusCode::OK).await;
@@ -185,8 +185,8 @@ mod undeploy_tests {
         assert_eq!(body["failed"], 1);
 
         let results = body["results"].as_array().unwrap();
-        assert_eq!(results.len(), 2, "uma linha por máquina, sempre");
-        // Ordenado pela camada inicial: o relatório se lê na ordem do pipeline.
+        assert_eq!(results.len(), 2, "one row per machine, always");
+        // Sorted by start layer: the report reads in pipeline order.
         assert_eq!(results[0]["hostname"], "ksia");
         assert_eq!(results[0]["released"], true);
         assert!(results[0].get("error").is_none());
@@ -195,20 +195,20 @@ mod undeploy_tests {
         assert_eq!(results[1]["released"], false);
         assert!(
             results[1]["error"].as_str().unwrap().contains("500"),
-            "o motivo tem que ser o que a máquina disse: {}",
+            "the reason must be what the machine said: {}",
             results[1]["error"]
         );
 
-        // As duas foram mesmo chamadas: nenhuma foi pulada por causa da outra.
+        // Both were really called: neither was skipped because of the other.
         assert_eq!(ok_hits.load(Ordering::SeqCst), 1);
         assert_eq!(bad_hits.load(Ordering::SeqCst), 1);
     }
 
-    /// Uma máquina fora do ar é falha com motivo, não uma linha que some.
+    /// A machine that is down is a failure with a reason, not a line that vanishes.
     #[tokio::test]
     async fn an_unreachable_machine_still_gets_a_line() {
         let (ok_port, _) = fake_machine(axum::http::StatusCode::OK).await;
-        // Porta que ninguém atende: reservada e imediatamente devolvida.
+        // A port nobody answers: reserved and immediately given back.
         let dead = {
             let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             l.local_addr().unwrap().port()
@@ -239,8 +239,8 @@ mod undeploy_tests {
         assert!(results[1]["error"].is_string());
     }
 
-    /// Sem pipeline no ar não há o que desimplantar, e dizer isso é melhor que
-    /// devolver um relatório vazio que se lê como sucesso.
+    /// With no pipeline up there is nothing to undeploy, and saying so is better
+    /// than returning an empty report that reads as success.
     #[tokio::test]
     async fn undeploying_nothing_is_a_refusal_not_an_empty_report() {
         let state = admin_state(vec![]).await;
@@ -256,18 +256,18 @@ mod undeploy_tests {
         assert_eq!(resp.status(), axum::http::StatusCode::BAD_REQUEST);
     }
 
-    /// Qual pipeline derrubar: óbvio com uma, recusa com duas. Derrubar a
-    /// errada custa uma reimplantação inteira, então o palpite não é nosso.
+    /// Which pipeline to take down: obvious with one, a refusal with two. Taking
+    /// the wrong one down costs a whole redeployment, so the guess is not ours.
     #[test]
     fn the_group_is_only_guessed_when_there_is_no_doubt() {
-        let uma = vec![peer("a", "h", 1, (0, 15)), peer("b", "h", 2, (16, 31))];
-        assert_eq!(resolve_group("", &uma).unwrap(), "qwen35");
-        assert_eq!(resolve_group("outro", &uma).unwrap(), "outro");
+        let one = vec![peer("a", "h", 1, (0, 15)), peer("b", "h", 2, (16, 31))];
+        assert_eq!(resolve_group("", &one).unwrap(), "qwen35");
+        assert_eq!(resolve_group("outro", &one).unwrap(), "outro");
 
-        let mut duas = uma.clone();
-        duas[1].model = "llama3".into();
-        let erro = resolve_group("", &duas).unwrap_err();
-        assert!(erro.contains("llama3") && erro.contains("qwen35"), "{erro}");
+        let mut two = one.clone();
+        two[1].model = "llama3".into();
+        let error = resolve_group("", &two).unwrap_err();
+        assert!(error.contains("llama3") && error.contains("qwen35"), "{error}");
 
         assert!(resolve_group("", &[]).is_err());
     }
@@ -279,12 +279,12 @@ mod undeploy_tests {
             (
                 "/api/ui/deploy/node",
                 r#"{"group":"qwen35","target_node_id":"no-2","start_layer":0,"end_layer":15}"#,
-                "somente o administrador pode adicionar uma máquina à implantação",
+                "only the administrator can add a machine to the deployment",
             ),
             (
                 "/api/ui/undeploy",
                 r#"{"group":"qwen35"}"#,
-                "somente o administrador pode desimplantar a implantação",
+                "only the administrator can undeploy the deployment",
             ),
         ];
 
@@ -321,7 +321,7 @@ mod undeploy_tests {
         assert_eq!(add_response.status(), axum::http::StatusCode::BAD_REQUEST);
         assert_eq!(
             body_of(add_response).await["error"],
-            "faixa de camadas invertida"
+            "inverted layer range"
         );
 
         let undeploy_request = Request::post("/api/ui/undeploy")
@@ -337,7 +337,7 @@ mod undeploy_tests {
         assert!(body_of(undeploy_response).await["error"]
             .as_str()
             .unwrap()
-            .contains("nenhuma"));
+            .contains("no machine"));
     }
 
     #[tokio::test]

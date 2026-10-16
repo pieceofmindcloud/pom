@@ -59,7 +59,7 @@ async fn large_private_trust_documents_are_fragmented_and_reassembled() {
     admin
         .set_admin_material(true, trust_document.clone(), "secret-key")
         .await
-        .expect("documentos privados maiores que um datagrama devem ser aceitos");
+        .expect("private documents larger than a datagram must be accepted");
 
     let request_id = node.begin_search(None).await.unwrap();
     let probe = node.take_outbound_for_test().await.unwrap();
@@ -85,7 +85,7 @@ async fn large_private_trust_documents_are_fragmented_and_reassembled() {
         node.handle_for_test(message, admin_address).await;
     }
 
-    let result = node.peek_result().await.expect("handshake completo");
+    let result = node.peek_result().await.expect("complete handshake");
     assert_eq!(result.request_id, request_id);
     assert_eq!(result.connection_key, "secret-key");
     assert_eq!(result.trust_document, trust_document);
@@ -140,8 +140,8 @@ async fn admin_requires_proof_before_emitting_secret() {
     };
     admin.handle_for_test(forged, endpoint(42777)).await;
     assert!(admin.take_outbound_for_test().await.is_none());
-    // O computador aparece ao procurar a rede, mas uma prova forjada nunca o
-    // marca como tendo recebido a raiz.
+    // The computer shows up when it looks for the network, but a forged proof
+    // never marks it as having received the root.
     let peers = admin.status().await.peers;
     assert_eq!(peers.len(), 1);
     assert!(!peers[0].joined);

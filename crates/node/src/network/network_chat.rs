@@ -1,9 +1,8 @@
-//! Canal global de conversa sobre o enxame libp2p.
+//! Global chat channel over the libp2p swarm.
 //!
-//! Os tipos e limites ficam neste módulo para que o protocolo, o gateway e a
-//! interface compartilhem a mesma fronteira. O worker do swarm é adicionado
-//! depois da validação destes contratos; nada aqui depende do túnel de
-//! inferência.
+//! The types and limits live in this module so that the protocol, the gateway and
+//! the interface share the same boundary. The swarm worker is added after these
+//! contracts are validated; nothing here depends on the inference tunnel.
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -35,8 +34,8 @@ impl NetworkChatLimits {
     pub const PLUGIN_CODE_BYTES: usize = 64;
 }
 
-/// Quantos avisos de plugin ficam na memória de cada nó e por quanto tempo.
-/// Avisos não são histórico de conversa: não vão para o `pom.db`.
+/// How many plugin notices stay in each node's memory and for how long.
+/// Notices are not conversation history: they do not go to `pom.db`.
 const NOTICE_CAPACITY: usize = 50;
 const NOTICE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 const NOTICE_LEVELS: [&str; 4] = ["info", "success", "warning", "error"];
@@ -70,9 +69,9 @@ pub enum ChatAction {
         is_typing: bool,
         sent_at: DateTime<Utc>,
     },
-    /// Aviso enviado por um plugin aos usuários da rede (`pom-plugin-events/v1`,
-    /// comando `notification.notify` com `scope: "network"`). Viaja pelo mesmo
-    /// caminho autenticado do Chat, mas fica só na memória de cada nó.
+    /// Notice sent by a plugin to the network's users (`pom-plugin-events/v1`,
+    /// command `notification.notify` with `scope: "network"`). It travels the same
+    /// authenticated path as the Chat, but stays only in each node's memory.
     PluginNotice {
         message_id: String,
         room_id: String,
@@ -243,9 +242,7 @@ impl ChatAction {
                     Ok(())
                 }
             }
-            Self::LobbyPresence { room_id, .. }
-                if room_id != crate::network_lobby::LOBBY_ROOM =>
-            {
+            Self::LobbyPresence { room_id, .. } if room_id != crate::network_lobby::LOBBY_ROOM => {
                 Err("lobby_room_invalid")
             }
             Self::Text { .. }
@@ -259,8 +256,8 @@ impl ChatAction {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ChatRequest {
     pub action: ChatAction,
-    /// Credencial do cliente. O principal valida este campo no frame original;
-    /// uma retransmissão o deixa vazio para não espalhar segredo pela rede.
+    /// Client credential. The principal validates this field on the original frame;
+    /// a relay leaves it empty so the secret is not spread across the network.
     pub api_key: String,
     #[serde(default)]
     pub relayed: bool,
@@ -307,13 +304,13 @@ pub struct ChatEvent {
     pub mime_type: Option<String>,
     pub file_data: Vec<u8>,
     pub sent_at: String,
-    /// Só em `plugin_notice`: o plugin que emitiu o aviso.
+    /// Only in `plugin_notice`: the plugin that issued the notice.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plugin_code: Option<String>,
-    /// Só em `plugin_notice`: título do aviso.
+    /// Only in `plugin_notice`: the notice title.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    /// Só em `plugin_notice`: `info`, `success`, `warning` ou `error`.
+    /// Only in `plugin_notice`: `info`, `success`, `warning` or `error`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub level: Option<String>,
 }
@@ -478,8 +475,8 @@ enum PersistCommand {
     Action(ChatAction),
 }
 
-/// Estado do canal. O envio para o swarm é sempre `try_send`; o serviço não
-/// conhece nem compartilha a fila de frames de inferência.
+/// Channel state. Sending to the swarm is always `try_send`; the service neither
+/// knows nor shares the inference frame queue.
 pub struct NetworkChat {
     database: Arc<crate::db::PomDb>,
     auth: Arc<RwLock<crate::config::Config>>,
@@ -766,15 +763,21 @@ impl NetworkChat {
             && config.network.visibility == crate::config::NetworkVisibility::Public
     }
 
-    /// Whether this network opened a lobby to non-members: a public network
-    /// with the network Chat on and the operator's lobby switch set.
+    /// Whether this network has a lobby for non-members: discovery not off.
+    /// There is no switch, because the lobby is the only way in. A hidden
+    /// (private) network answers too: nobody lists it, and whoever was handed
+    /// its trust document reaches the principal by key. It does not depend on
+    /// the network Chat: with the Chat off the lobby still takes admission
+    /// requests, and only its conversation is closed (`enabled`).
     pub async fn lobby_enabled(&self) -> bool {
-        if !self.enabled() {
-            return false;
-        }
-        let config = self.auth.read().await;
-        config.network.lobby_chat
-            && config.network.visibility == crate::config::NetworkVisibility::Public
+        self.auth.read().await.network.visibility != crate::config::NetworkVisibility::Local
+    }
+
+    /// Whether an admission request is approved on arrival, with no admin
+    /// deciding it (`NetworkAccessPolicy::AutoApprove`).
+    pub async fn auto_approves(&self) -> bool {
+        self.auth.read().await.network.access_policy
+            == crate::config::NetworkAccessPolicy::AutoApprove
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<ChatEvent> {
@@ -788,7 +791,7 @@ impl NetworkChat {
         typing.values().map(|(event, _)| event.clone()).collect()
     }
 
-    /// Avisos de plugin recebidos nas últimas 24 h, do mais antigo ao mais novo.
+    /// Plugin notices received in the last 24 h, from oldest to newest.
     pub fn notice_snapshot(&self) -> Vec<ChatEvent> {
         let now = Instant::now();
         let mut notices = self.notices.lock().expect("network chat notices lock");
@@ -802,12 +805,12 @@ impl NetworkChat {
             .try_send(ChatOutbound { request, reply })
             .map_err(|_| {
                 self.dropped.fetch_add(1, Ordering::Relaxed);
-                anyhow::anyhow!("fila do Chat da rede está cheia")
+                anyhow::anyhow!("network Chat queue is full")
             })?;
         tokio::time::timeout(Duration::from_secs(5), receiver)
             .await
-            .context("tempo esgotado aguardando o principal")?
-            .context("principal encerrou o envio do Chat da rede")
+            .context("timed out waiting for the principal")?
+            .context("the principal closed the network Chat send")
     }
 
     pub fn history(&self, room_id: &str, limit: usize) -> Result<Vec<ChatEvent>> {
@@ -819,9 +822,9 @@ impl NetworkChat {
             .collect())
     }
 
-    /// Valida a ação original no principal. O `transport_node_id` já foi
-    /// amarrado pelo PeerId no discovery, então a API key não pode ser usada
-    /// por outro nó apenas trocando o campo JSON.
+    /// Validates the original action on the principal. The `transport_node_id` was
+    /// already bound to the PeerId in discovery, so the API key cannot be used by
+    /// another node just by changing the JSON field.
     pub async fn validate_original(
         &self,
         action: &ChatAction,
@@ -920,7 +923,7 @@ impl NetworkChat {
             .try_send(PersistCommand::Action(action.clone()))
             .map_err(|_| {
                 self.dropped.fetch_add(1, Ordering::Relaxed);
-                anyhow::anyhow!("fila de persistência do Chat da rede está cheia")
+                anyhow::anyhow!("network Chat persistence queue is full")
             })?;
         let _ = self.live.send(ChatEvent::from_action(&action));
         Ok(true)

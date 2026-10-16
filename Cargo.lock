@@ -3279,6 +3279,7 @@ checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 [[package]]
 name = "llama-cpp-sys-2"
 version = "0.1.154"
+source = "git+ssh://git@github.com/pieceofmindcloud/pom-plugin-llama.cpp.git?rev=b503e388b0dc65cf81a9df6c7909d33f0be7217b#b503e388b0dc65cf81a9df6c7909d33f0be7217b"
 dependencies = [
  "bindgen",
  "cc",
@@ -3291,9 +3292,9 @@ dependencies = [
 [[package]]
 name = "llama-engine"
 version = "0.1.0"
+source = "git+ssh://git@github.com/pieceofmindcloud/pom-plugin-llama.cpp.git?rev=b503e388b0dc65cf81a9df6c7909d33f0be7217b#b503e388b0dc65cf81a9df6c7909d33f0be7217b"
 dependencies = [
  "anyhow",
- "brand",
  "cc",
  "chrono",
  "half",
@@ -3305,8 +3306,6 @@ dependencies = [
  "sha2 0.10.9",
  "tokio",
  "tracing",
- "tracing-subscriber",
- "uuid",
 ]
 
 [[package]]
@@ -3716,6 +3715,7 @@ dependencies = [
  "clap",
  "ed25519-dalek 2.2.0",
  "enterprise-protocol",
+ "flate2",
  "futures",
  "h3",
  "h3-quinn",

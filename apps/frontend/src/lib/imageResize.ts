@@ -1,3 +1,4 @@
+import { formatMessage, getActiveLocale } from "../i18n/locales";
 /** The existing attachment estimate treats four bytes as one input token. */
 export const IMAGE_BYTES_PER_TOKEN = 4;
 /** Keep room for the prompt and the projector's own framing. */
@@ -17,7 +18,7 @@ export interface ResizedVisionImage {
 
 export class ImageResizeLimitError extends Error {
   constructor() {
-    super("a imagem ainda excede o contexto disponível mesmo em 512 px");
+    super(formatMessage(getActiveLocale(), "chat.imageStillTooLarge"));
     this.name = "ImageResizeLimitError";
   }
 }
@@ -37,7 +38,7 @@ export function resizeDimensions(
   height: number,
   maxSide = MAX_VISION_IMAGE_SIDE,
 ): { width: number; height: number } {
-  if (width <= 0 || height <= 0) throw new Error("imagem sem dimensões válidas");
+  if (width <= 0 || height <= 0) throw new Error(formatMessage(getActiveLocale(), "chat.imageNoDimensions"));
   const scale = Math.min(1, maxSide / Math.max(width, height));
   return {
     width: Math.max(1, Math.round(width * scale)),
@@ -55,7 +56,7 @@ function imageElement(file: File): Promise<HTMLImageElement> {
     };
     image.onerror = () => {
       URL.revokeObjectURL(url);
-      reject(new Error("não foi possível ler a imagem"));
+      reject(new Error(formatMessage(getActiveLocale(), "chat.imageUnreadable")));
     };
     image.src = url;
   });
@@ -77,7 +78,7 @@ function fileDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error ?? new Error("não foi possível ler a imagem"));
+    reader.onerror = () => reject(reader.error ?? new Error(formatMessage(getActiveLocale(), "chat.imageUnreadable")));
     reader.readAsDataURL(file);
   });
 }
@@ -127,7 +128,7 @@ export async function resizeImageForVision(
   const context = canvas.getContext("2d");
   if (!context) {
     bitmap?.close();
-    throw new Error("o navegador não oferece um canvas 2D");
+    throw new Error(formatMessage(getActiveLocale(), "chat.noCanvas2d"));
   }
 
   try {

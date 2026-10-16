@@ -92,7 +92,7 @@ async fn asset(AxumPath(path): AxumPath<String>, uri: Uri, method: axum::http::M
         .next()
         .is_some_and(|last| last.contains('.'))
     {
-        return (StatusCode::NOT_FOUND, "asset não encontrado").into_response();
+        return (StatusCode::NOT_FOUND, "asset not found").into_response();
     }
 
     serve(&base, "index.html")
@@ -159,8 +159,7 @@ fn missing_bundle(base: &Path) -> Response {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         format!(
-            "A interface não foi encontrada em {}. Rode `npm run build` em apps/frontend \
-             (ou aponte POM_UI_DIST para o bundle).",
+            "The interface was not found in {}. Run `npm run build` in apps/frontend (or point POM_UI_DIST to the bundle).",
             base.display()
         ),
     )
@@ -221,7 +220,7 @@ mod tests {
         for p in ["api/ui/node", "v1/models", "admin/nodes", "health"] {
             assert!(
                 API_PREFIXES.iter().any(|pre| p.starts_with(pre)),
-                "{p} devia ser tratado como rota de API"
+                "{p} should be treated as an API route"
             );
         }
         for p in [
@@ -233,7 +232,7 @@ mod tests {
         ] {
             assert!(
                 !API_PREFIXES.iter().any(|pre| p.starts_with(pre)),
-                "{p} e uma rota de tela e devia cair no index.html"
+                "{p} is a screen route and should fall to index.html"
             );
         }
     }

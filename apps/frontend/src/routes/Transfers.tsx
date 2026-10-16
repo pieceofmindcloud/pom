@@ -64,7 +64,7 @@ export function Transfers() {
         title={t("transfers.title")}
         subtitle={t("transfers.subtitle")}
         actions={
-          <Link to="/transferencias/enviar">
+          <Link to="/transfers/send">
             <Button variant="primary" icon={<Upload className="h-3.5 w-3.5" />}>
               {t("transfers.sendFile")}
             </Button>

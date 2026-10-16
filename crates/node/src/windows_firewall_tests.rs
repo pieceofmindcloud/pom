@@ -3,7 +3,7 @@ use super::windows_firewall::{
 };
 
 #[test]
-fn regras_de_firewall_usam_a_porta_efetiva_e_os_quatro_protocolos() {
+fn firewall_rules_use_the_effective_port_and_the_four_protocols() {
     let rules = desired_rules(42778).unwrap();
 
     assert_eq!(
@@ -21,12 +21,12 @@ fn regras_de_firewall_usam_a_porta_efetiva_e_os_quatro_protocolos() {
 }
 
 #[test]
-fn regra_de_firewall_recusa_offset_que_estoura_a_porta() {
+fn a_firewall_rule_refuses_an_offset_that_overflows_the_port() {
     assert!(desired_rules(u16::MAX).is_err());
 }
 
 #[test]
-fn recusa_persistida_nao_dispara_novo_uac_automaticamente() {
+fn a_persisted_refusal_does_not_trigger_a_new_uac_automatically() {
     let declined = SetupRecord {
         p2p_port: 42777,
         attempted: true,

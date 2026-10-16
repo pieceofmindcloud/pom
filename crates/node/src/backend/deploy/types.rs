@@ -54,8 +54,8 @@ pub enum DeployKind {
     /// One un-sliced GGUF, served whole by a single machine.
     Whole,
     /// One model split across a group of machines by tensor parallelism
-    /// (caminho C): um primary + K workers. O primary segura o modelo inteiro;
-    /// cada worker extrai o próprio shard de tensor da própria cópia local.
+    /// (path C): one primary + K workers. The primary holds the whole model;
+    /// each worker extracts its own tensor shard from its own local copy.
     TensorParallel,
 }
 
@@ -81,11 +81,11 @@ pub(crate) fn normalize_deployment_name(
         .filter(|value| !value.is_empty())
         .unwrap_or(fallback.trim());
     if name.is_empty() {
-        return Err("o nome da implantação não pode ficar vazio".to_string());
+        return Err("the deployment name cannot be empty".to_string());
     }
     if name.chars().count() > MAX_DEPLOYMENT_NAME_CHARS {
         return Err(format!(
-            "o nome da implantação pode ter no máximo {MAX_DEPLOYMENT_NAME_CHARS} caracteres"
+            "the deployment name can have at most {MAX_DEPLOYMENT_NAME_CHARS} characters"
         ));
     }
     Ok(name.to_string())
@@ -103,18 +103,18 @@ impl DeployKind {
     /// something that is not on their screen.
     pub(super) fn unit(self, group: &str, start: u32, end: u32) -> String {
         match self {
-            DeployKind::Shards => format!("a fatia L{start}-{end}"),
-            DeployKind::Whole => format!("o modelo {group}"),
-            DeployKind::TensorParallel => format!("o grupo tensor-parallel {group}"),
+            DeployKind::Shards => format!("slice L{start}-{end}"),
+            DeployKind::Whole => format!("the model {group}"),
+            DeployKind::TensorParallel => format!("the tensor-parallel group {group}"),
         }
     }
 
     /// The same thing, indefinite, for a sentence about its weight.
     pub(super) fn indefinite(self) -> &'static str {
         match self {
-            DeployKind::Shards => "uma fatia",
-            DeployKind::Whole => "um modelo",
-            DeployKind::TensorParallel => "um grupo tensor-parallel",
+            DeployKind::Shards => "a slice",
+            DeployKind::Whole => "a model",
+            DeployKind::TensorParallel => "a tensor-parallel group",
         }
     }
 }
@@ -124,8 +124,8 @@ pub struct DeployRequest {
     /// The shard set, named the way the catalog groups it — or, with
     /// `kind: "whole"`, the model's own name in the catalog.
     pub group: String,
-    /// Nome operacional da implantação. `group` continua sendo a identidade
-    /// técnica do modelo usada pelo catálogo e pelo roteamento.
+    /// Operational name of the deployment. `group` remains the model's
+    /// technical identity used by the catalog and by routing.
     #[serde(default)]
     pub deployment_name: Option<String>,
     #[serde(default)]
@@ -151,9 +151,9 @@ pub struct DeployRequest {
     /// range as its own pipeline step.
     #[serde(default)]
     pub merge: bool,
-    /// Grupo de tensor parallelism (caminho C). Presente só com
-    /// `kind: "tensor_parallel"`: o primary serve o modelo inteiro e os
-    /// workers extraem o próprio shard de tensor.
+    /// Tensor parallelism group (path C). Present only with
+    /// `kind: "tensor_parallel"`: the primary serves the whole model and the
+    /// workers extract their own tensor shard.
     #[serde(default)]
     pub tp: Option<TpLaunch>,
     /// Start the selected model with its catalogued mmproj projector.
@@ -173,6 +173,12 @@ pub struct DeployRequest {
     /// MTP draft chosen on the screen (file, embedded or none). Same rules.
     #[serde(default)]
     pub mtp_choice: Option<SidecarChoice>,
+    /// Keep the machines outside this plan that already serve the same model:
+    /// their deployment stays in service beside the new one. `false` releases
+    /// them before the deploy. A machine of the plan is always taken over,
+    /// because a node serves one model at a time.
+    #[serde(default)]
+    pub keep_existing: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -192,16 +198,16 @@ pub struct WholeLayerOptions {
     pub reason: Option<String>,
 }
 
-/// Especificação de um grupo de tensor parallelism para o deploy.
+/// Specification of a tensor parallelism group for the deploy.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct TpLaunch {
-    /// Quantos ranks no grupo (1 primary + size-1 workers).
+    /// How many ranks in the group (1 primary + size-1 workers).
     pub size: u32,
-    /// node_id do primary (rank 0). A URL da coletiva (POST /v1/tp/reduce) é
-    /// derivada daqui — da porta de inferência anunciada pelo próprio nó —, não
-    /// digitada pelo operador.
+    /// node_id of the primary (rank 0). The URL of the collective (POST
+    /// /v1/tp/reduce) is derived from here - from the inference port announced
+    /// by the node itself -, not typed by the operator.
     pub primary_node_id: String,
-    /// node_ids dos workers (rank 1..size-1), na ordem dos ranks.
+    /// node_ids of the workers (rank 1..size-1), in rank order.
     pub worker_node_ids: Vec<String>,
 }
 

@@ -1,15 +1,15 @@
 /**
- * O cache de KV de **uma** máquina, no card dela.
+ * The KV cache of **one** machine, on its card.
  *
- * Dois lugares guardam KV fora do contexto do modelo: o diretório de snapshots
- * em disco (`kv-slots`), que o próprio nó mede e publica em `node.kv_cache`, e
- * o cache em RAM do servidor de inferência (`cache_ram` no `/health`), que só
- * existe com um modelo carregado. A linha mostra os dois e oferece esvaziá-los.
+ * Two places hold KV outside the model's context: the snapshot directory
+ * on disk (`kv-slots`), which the node itself measures and publishes in `node.kv_cache`, and
+ * the RAM cache of the inference server (`cache_ram` in `/health`), which only
+ * exists with a loaded model. The row shows both and offers to empty them.
  *
- * O disco aparece mesmo sem modelo carregado: os snapshots são de tudo o que a
- * máquina já serviu, e é justamente depois de trocar de modelo que eles sobram.
- * Como em `LeaveNode`, o pedido vai ao nó local com o `node_id` do alvo
- * (`/api/ui/kv-cache/clear`), porque só o dono de um disco apaga dele.
+ * The disk shows up even without a loaded model: the snapshots are of everything the
+ * machine has already served, and it is precisely after switching models that they are left over.
+ * As in `LeaveNode`, the request goes to the local node with the target's `node_id`
+ * (`/api/ui/kv-cache/clear`), because only the owner of a disk deletes from it.
  */
 import { useState } from "react";
 import { Trash2 } from "lucide-react";
@@ -32,11 +32,11 @@ export function KvCache({
 }: {
   nodeId: string;
   hostname: string;
-  /** No próprio nó o pedido é local, sem repasse e sem `node_id`. */
+  /** On the node itself the request is local, with no forwarding and no `node_id`. */
   isSelf: boolean;
-  /** Ausente num nó antigo, que ainda não publica o campo. */
+  /** Absent on an old node, which does not publish the field yet. */
   disk: KvCacheDisk | undefined;
-  /** Ausente sem modelo carregado, ou num nó antigo. */
+  /** Absent without a loaded model, or on an old node. */
   ram: KvCacheRam | undefined;
   className?: string;
 }) {

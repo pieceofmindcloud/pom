@@ -1,11 +1,12 @@
 /**
- * Como o Painel lê a lista de peers do nó.
+ * How the Panel reads the node's peer list.
  *
- * Duas perguntas diferentes, e a tela precisa das duas: "quem serve o modelo
- * ativo, na ordem em que a requisição passa" (`pipelinePeers`) e "quem está na
- * rede" (`networkPeers`). A segunda inclui máquina conectada e sem fatia
- * implantada, que é justamente a que não aparece em lugar nenhum quando só se
- * olha o pipeline - e é onde se vai procurar espaço para a próxima fatia.
+ * Two different questions, and the screen needs both: "who serves the active
+ * model, in the order the request passes" (`pipelinePeers`) and "who is on the
+ * network" (`networkPeers`). The second includes a machine that is connected
+ * with no deployed slice, which is precisely the one that appears nowhere when
+ * you only look at the pipeline - and it is where you look for room for the
+ * next slice.
  */
 import type { ClusterView, PeerView } from "./types";
 
@@ -18,19 +19,20 @@ export function pipelinePeers(cluster: ClusterView): PeerView[] {
 }
 
 /**
- * A máquina anuncia uma fatia? `model` vazio com `total_layers` zerado é o que
- * o nó manda para quem está na rede sem nada implantado (`webui::cluster`), e
- * não é uma faixa "0-0": é a ausência de faixa.
+ * Does the machine announce a slice? An empty `model` with a zeroed `total_layers`
+ * is what the node sends for whoever is on the network with nothing deployed
+ * (`webui::cluster`), and it is not a "0-0" range: it is the absence of a range.
  */
 export function hasSlice(peer: PeerView): boolean {
   return Boolean(peer.model) && peer.total_layers > 0;
 }
 
 /**
- * A rede inteira, separada em quem faz parte da implantação ativa e quem não.
+ * The whole network, split into whoever is part of the active deployment and
+ * whoever is not.
  *
- * A primeira lista mantém a ordem do pipeline; a segunda vai por nome, que é
- * como o operador procura uma máquina que ainda não tem papel.
+ * The first list keeps the pipeline order; the second goes by name, which is
+ * how the operator looks for a machine that has no role yet.
  */
 export function networkPeers(cluster: ClusterView): {
   pipeline: PeerView[];

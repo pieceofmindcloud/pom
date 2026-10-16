@@ -1,5 +1,5 @@
-//! Capacidade de implantação calculada a partir de evidência do modelo,
-//! runtime e topologia do plano.
+//! Deployment capability computed from model evidence, runtime and
+//! plan topology.
 
 use serde::{Deserialize, Serialize};
 
@@ -17,8 +17,8 @@ pub(crate) struct Capability {
     pub state: CapabilityState,
     pub source: String,
     pub reason: String,
-    /// Limitação de execução que não prova ausência da capacidade no modelo.
-    /// A UI mostra este aviso, mas mantém o controle acionável.
+    /// Execution limitation that does not prove the capability is absent from
+    /// the model. The UI shows this warning but keeps the control actionable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warning: Option<String>,
 }
@@ -95,35 +95,35 @@ pub(crate) fn evaluate_no_embeddings(peers: &[PeerTopology]) -> NoEmbeddingsEval
                 return PeerEmbeddingsDecision {
                     node_id: peer.node_id.clone(),
                     safe: None,
-                    reason: "posição inicial do peer não foi informada".to_string(),
+                    reason: "peer start position was not provided".to_string(),
                 };
             };
             let Some(end) = peer.end_layer else {
                 return PeerEmbeddingsDecision {
                     node_id: peer.node_id.clone(),
                     safe: None,
-                    reason: "posição final do peer não foi informada".to_string(),
+                    reason: "peer end position was not provided".to_string(),
                 };
             };
             let Some(total) = peer.total_layers else {
                 return PeerEmbeddingsDecision {
                     node_id: peer.node_id.clone(),
                     safe: None,
-                    reason: "total de camadas do plano não foi informado".to_string(),
+                    reason: "total layers of the plan was not provided".to_string(),
                 };
             };
             let Some(index) = peer.peer_index else {
                 return PeerEmbeddingsDecision {
                     node_id: peer.node_id.clone(),
                     safe: None,
-                    reason: "posição do peer na cadeia não foi informada".to_string(),
+                    reason: "peer position in the chain was not provided".to_string(),
                 };
             };
             let Some(count) = peer.peer_count else {
                 return PeerEmbeddingsDecision {
                     node_id: peer.node_id.clone(),
                     safe: None,
-                    reason: "quantidade de peers da cadeia não foi informada".to_string(),
+                    reason: "number of peers in the chain was not provided".to_string(),
                 };
             };
             if total == 0 || count == 0 || index >= count || start > end || end >= total {
@@ -131,7 +131,7 @@ pub(crate) fn evaluate_no_embeddings(peers: &[PeerTopology]) -> NoEmbeddingsEval
                     node_id: peer.node_id.clone(),
                     safe: None,
                     reason: format!(
-                        "topologia inválida para L{start}-{end}: total={total}, peer={index} de {count}"
+                        "invalid topology for L{start}-{end}: total={total}, peer={index} of {count}"
                     ),
                 };
             }
@@ -145,15 +145,15 @@ pub(crate) fn evaluate_no_embeddings(peers: &[PeerTopology]) -> NoEmbeddingsEval
                 safe: Some(safe),
                 reason: if safe {
                     if single_peer {
-                        "peer único, sem exportação de residual".to_string()
+                        "single peer, no residual export".to_string()
                     } else if serves_last_layer {
-                        "peer serve a última camada, sem exportação de residual".to_string()
+                        "peer serves the last layer, no residual export".to_string()
                     } else {
-                        "último peer da cadeia, sem exportação de residual".to_string()
+                        "last peer of the chain, no residual export".to_string()
                     }
                 } else {
                     format!(
-                        "peer intermediário L{start}-{end} precisa exportar o residual para o próximo peer"
+                        "intermediate peer L{start}-{end} must export the residual to the next peer"
                     )
                 },
             }
@@ -161,16 +161,16 @@ pub(crate) fn evaluate_no_embeddings(peers: &[PeerTopology]) -> NoEmbeddingsEval
         .collect::<Vec<_>>();
 
     let capability = if decisions.is_empty() {
-        unknown("topologia do plano", "nenhum peer selecionado")
+        unknown("plan topology", "no peer selected")
     } else if decisions.iter().any(|peer| peer.safe.is_none()) {
         unknown(
-            "topologia do plano",
-            "a posição ou a cobertura de pelo menos um peer não pôde ser confirmada",
+            "plan topology",
+            "the position or the coverage of at least one peer could not be confirmed",
         )
     } else {
         supported(
-            "topologia do plano",
-            "o backend confirmou a posição e a necessidade de residual de cada peer",
+            "plan topology",
+            "the backend confirmed the position and the residual requirement of each peer",
         )
     };
 
@@ -195,7 +195,7 @@ pub(crate) fn validate_no_embeddings(
         .collect::<Vec<_>>();
     if !unsafe_peers.is_empty() {
         return Err(format!(
-            "não é seguro desativar embeddings em todos os peers: {}",
+            "it is not safe to disable embeddings on all peers: {}",
             unsafe_peers.join("; ")
         ));
     }
@@ -258,6 +258,6 @@ mod tests {
         assert!(evaluation
             .capability
             .reason
-            .contains("não pôde ser confirmada"));
+            .contains("could not be confirmed"));
     }
 }

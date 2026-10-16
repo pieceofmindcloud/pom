@@ -3,8 +3,6 @@
  * and whether this machine is even taking part.
  */
 import {
-  ArrowDownToLine,
-  ArrowUp,
   Ban,
   Network,
   Radio,
@@ -17,37 +15,36 @@ import {
   Undo2,
 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { ClusterVersion } from "../components/ClusterVersion";
 import { Confirm } from "../components/Confirm";
+import { formatClusterVersion } from "../lib/clusterVersion";
 import { MachineIcon } from "../components/MachineIcon";
 import { Markdown } from "../components/Markdown";
-import { MarkdownField } from "../components/MarkdownField";
+import { AccessFields, DiscoveryChoices, InfoFields, SetupSection } from "../components/NetworkQuickSetup";
+import { RelayOptions } from "../components/RelayOptions";
 import {
   Badge,
   Button,
   Dot,
   Empty,
   ErrorState,
-  Field,
   Footnote,
-  Input,
   KeyValue,
   Mono,
   PageHeader,
   Panel,
   PanelHeader,
-  Select,
   Skeleton,
 } from "../components/ui";
 import { api } from "../lib/api";
-import { adminAuthorityApi } from "../lib/adminAuthority";
 import { layerRange } from "../lib/format";
 import { useAdminNodes, useCluster, useInvalidate, useNetworkInfo, useNode, useWindowsFirewall } from "../lib/queries";
-import { useGeoReference } from "../lib/queries";
+import { LocationEditor } from "../components/LocationEditor";
+import { NETWORK_GEO, placeLabel } from "../lib/geo";
 import { networkStats } from "../lib/networkStats";
 import { admissionsApi, useAdmissions } from "../lib/admissions";
 import { useToast } from "../lib/toast";
-import { ENROLLMENT_ROLES } from "../lib/types";
-import type { AdminNode, ClusterView, EnrollmentRole, GeoReferenceResponse, NetworkInfoView, NetworkSettings as NetworkSettingsData, PeerRoute, TraversalView, WindowsFirewallStatus } from "../lib/types";
+import type { AdminNode, ClusterView, EnrollmentRole, NetworkInfoView, NetworkSettings as NetworkSettingsData, PeerRoute, TraversalView, WindowsFirewallStatus } from "../lib/types";
 import { useI18n } from "../i18n/provider";
 
 export function NetworkSettings({ participantsOnly = false }: { participantsOnly?: boolean }) {
@@ -56,15 +53,16 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
   const cluster = useCluster();
   const networkInfo = useNetworkInfo(Boolean(node.data));
   const firewall = useWindowsFirewall(Boolean(node.data));
-  const geoReference = useGeoReference(Boolean(node.data));
   const isInfer = node.data?.profile === "infer";
   /*
-   * Ler o retrato da rede é de `node` e de `admin`; bloquear e desbloquear
-   * uma máquina continua sendo ato de administrador, e só com a concessão -
-   * `profile: admin` sozinho não concede capacidade. Oferecer o botão a quem
-   * vai levar 403 é o defeito de menu que esta base já nomeia.
+   * Reading the network's picture belongs to `node` and `admin`; blocking and
+   * unblocking a machine remains an administrator's act, and only with the grant -
+   * `profile: admin` alone grants no capability. Offering the button to someone
+   * who will get a 403 is the menu defect this codebase already names.
    */
-  const isAdmin = node.data?.authority_level != null;
+  // Members, admissions and settings are the principal's: a secondary admin
+  // reads this screen as a node does.
+  const isAdmin = node.data?.authority_level === "primary";
   const networkEditable = networkInfo.data?.can_edit ?? isAdmin;
   const nodes = useAdminNodes(participantsOnly && node.data !== undefined && !isInfer);
   const toast = useToast();
@@ -72,11 +70,6 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
 
   const [pending, setPending] = useState<{ id: string; hostname: string } | null>(null);
   const [busy, setBusy] = useState(false);
-  const [nodeRequestBusy, setNodeRequestBusy] = useState(false);
-  const [nodeRequestState, setNodeRequestState] = useState<"none" | "pending" | "rejected">("none");
-  const [nodeRequestLoaded, setNodeRequestLoaded] = useState(false);
-  const [relinquishConfirm, setRelinquishConfirm] = useState(false);
-  const [relinquishing, setRelinquishing] = useState(false);
   const [forgetNetworkConfirm, setForgetNetworkConfirm] = useState(false);
   const [forgettingNetwork, setForgettingNetwork] = useState(false);
 
@@ -88,12 +81,6 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
     if (!networkInfo.data || (networkDraft && networkEditable)) return;
     setNetworkDraft(networkInfo.data.network);
   }, [networkDraft, networkEditable, networkInfo.data]);
-
-  useEffect(() => {
-    if (nodeRequestLoaded || !node.data) return;
-    setNodeRequestState(node.data.node_promotion_request ?? "none");
-    setNodeRequestLoaded(true);
-  }, [node.data, nodeRequestLoaded]);
 
   async function saveNetworkInfo() {
     if (!networkDraft) return;
@@ -158,34 +145,6 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
     }
   }
 
-  async function requestNodePromotion() {
-    setNodeRequestBusy(true);
-    try {
-      await adminAuthorityApi.requestNodePromotion();
-      setNodeRequestState("pending");
-      toast.success(t("network.requestNodeSent"), t("network.requestNodePending"));
-      invalidate();
-    } catch (e) {
-      toast.fromError(t("network.requestNodeFailed"), e);
-    } finally {
-      setNodeRequestBusy(false);
-    }
-  }
-
-  async function relinquishNode() {
-    setRelinquishing(true);
-    try {
-      await adminAuthorityApi.relinquishNode();
-      toast.success(t("network.relinquishNodeStarted"));
-      invalidate();
-    } catch (e) {
-      toast.fromError(t("network.relinquishNodeFailed"), e);
-    } finally {
-      setRelinquishing(false);
-      setRelinquishConfirm(false);
-    }
-  }
-
   async function forgetNetwork() {
     setForgettingNetwork(true);
     try {
@@ -221,7 +180,6 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
           <NetworkInfoPanel
             info={networkInfo.data}
             draft={networkDraft}
-            geo={geoReference.data}
             editable={networkEditable}
             saving={networkSaving}
             forgetting={forgettingNetwork}
@@ -234,60 +192,31 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
           />
         )}
 
+        {/* Whoever cannot edit the network still decides how this machine
+            relays; the editor draws it as the form's last question. */}
+        {networkDraft && !networkEditable && <RelayOptions />}
+
         {isAdmin && <AdmittedMachines t={t} />}
+
+        <ClusterVersion />
 
         <NetworkMetricsPanel metrics={metrics} t={t} />
 
         {cluster.data?.traversal && <TraversalPanel traversal={cluster.data.traversal} t={t} />}
 
+        {/* An inference node does not become a network node in place: the
+            role is what the network admitted it as, so changing it means
+            leaving and asking to be admitted again with the other role. */}
         {isInfer && (
           <Panel>
             <PanelHeader
               eyebrow={t("network.profile")}
               title={t("profile.infer")}
               subtitle={t("network.inferRequestDetail")}
-              actions={
-                nodeRequestState === "pending" ? (
-                  <Badge tone="amber">{t("network.requestNodePending")}</Badge>
-                ) : (
-                  <Button
-                    variant="primary"
-                    loading={nodeRequestBusy}
-                    icon={<ArrowUp className="h-3.5 w-3.5" />}
-                    onClick={() => void requestNodePromotion()}
-                  >
-                    {t("network.requestNode")}
-                  </Button>
-                )
-              }
             />
-            {nodeRequestState === "rejected" && (
-              <p className="border-t border-line px-5 py-3 text-sm text-rose">
-                {t("network.requestNodeRejected")}
-              </p>
-            )}
           </Panel>
         )}
 
-        {node.data?.profile === "node" && (
-          <Panel>
-            <PanelHeader
-              eyebrow={t("network.profile")}
-              title={t("network.relinquishNode")}
-              subtitle={t("network.relinquishNodeDescription")}
-              actions={
-                <Button
-                  variant="danger"
-                  loading={relinquishing}
-                  icon={<ArrowDownToLine className="h-3.5 w-3.5" />}
-                  onClick={() => setRelinquishConfirm(true)}
-                >
-                  {t("network.relinquishNode")}
-                </Button>
-              }
-            />
-          </Panel>
-        )}
 
       </div>
 
@@ -300,16 +229,6 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
         busy={busy}
         onConfirm={() => pending && void setBlocked(pending.id, true)}
         onCancel={() => setPending(null)}
-      />
-      <Confirm
-        open={relinquishConfirm}
-        title={t("network.relinquishNodeTitle")}
-        description={t("network.relinquishNodeDescription")}
-        confirmLabel={t("network.relinquishNode")}
-        tone="danger"
-        busy={relinquishing}
-        onConfirm={() => void relinquishNode()}
-        onCancel={() => setRelinquishConfirm(false)}
       />
       <Confirm
         open={forgetNetworkConfirm}
@@ -404,11 +323,11 @@ function NetworkMetricsPanel({ metrics, t }: { metrics: ReturnType<typeof networ
 }
 
 /**
- * Em que degrau a travessia de NAT parou. Dois nós atrás de NAT que não se
- * enxergam falham em um de três lugares - o AutoNAT nunca confirmou um
- * endereço, nenhum relé aceitou reserva, ou o hole punch falhou - e antes
- * deste painel a única forma de saber qual era ler o log de depuração na
- * máquina certa no momento certo.
+ * On which rung the NAT traversal stopped. Two nodes behind NAT that cannot
+ * see each other fail in one of three places - AutoNAT never confirmed an
+ * address, no relay accepted a reservation, or the hole punch failed - and
+ * before this panel the only way to know which was to read the debug log on
+ * the right machine at the right moment.
  */
 function TraversalPanel({ traversal, t }: { traversal: TraversalView; t: (key: string, values?: Record<string, string | number>) => string }) {
   const natTone = traversal.nat === "public" ? "aqua" : traversal.nat === "private" ? "amber" : "neutral";
@@ -446,9 +365,9 @@ function TraversalPanel({ traversal, t }: { traversal: TraversalView; t: (key: s
 }
 
 /**
- * Rota em uso com um peer: direta (HTTP ou P2P, esta às vezes por hole punch)
- * ou pelo relé, quando o hole punch não fechou. É o que o operador precisa ver;
- * o endereço anunciado fica no `title` da linha.
+ * Route in use with a peer: direct (HTTP or P2P, the latter sometimes by hole
+ * punch) or through the relay, when the hole punch did not close. It is what the
+ * operator needs to see; the announced address stays in the row's `title`.
  */
 function RouteBadge({ route, t }: { route: PeerRoute | null | undefined; t: (key: string, values?: Record<string, string | number>) => string }) {
   switch (route?.kind) {
@@ -470,6 +389,8 @@ function routeAddress(route: PeerRoute | null | undefined, t: (key: string, valu
 }
 
 function ParticipantsPanel({ nodes, cluster, isAdmin, setPending, setBlocked, t }: { nodes: ReturnType<typeof useAdminNodes>; cluster: ClusterView | undefined; isAdmin: boolean; setPending: (value: { id: string; hostname: string } | null) => void; setBlocked: (id: string, blocked: boolean) => Promise<void>; t: (key: string, values?: Record<string, string | number>) => string }) {
+  // The version this node holds; a machine showing another one is out of step.
+  const ownVersion = nodes.data?.find((n) => n.is_self)?.trust_version;
   const systemOf = (id: string) => cluster?.peers.find((peer) => peer.node_id === id)?.node?.system ?? null;
   return (
     <>
@@ -477,7 +398,7 @@ function ParticipantsPanel({ nodes, cluster, isAdmin, setPending, setBlocked, t 
       {nodes.isLoading && <Skeleton className="h-48 w-full" />}
       {nodes.data && <Panel>
         <PanelHeader title={t("network.knownCount", { count: nodes.data.length })} subtitle={t("network.knownDetail")} />
-        {nodes.data.length === 0 ? <Empty icon={<Network className="h-5 w-5" />} title={t("network.noNodes")}>{t("network.noNodesDetail")}</Empty> : <div className="divide-y divide-line">{nodes.data.map((n: AdminNode) => <div key={n.node_id} className="flex flex-wrap items-center gap-x-4 gap-y-2 px-5 py-3.5"><MachineIcon system={systemOf(n.node_id)} size="sm" /><div className="min-w-[12rem] flex-1"><div className="flex flex-wrap items-center gap-2"><span className="font-medium text-fg">{n.hostname || n.short_id}</span>{n.is_self && <Badge tone="neutral" className="px-1.5 py-0 text-[0.62rem]">{t("network.here")}</Badge>}{n.blocked && <Badge tone="rose">{t("network.blockedLabel")}</Badge>}{n.verified && <Badge tone="aqua">{t("network.verified")}</Badge>}{!n.is_self && <RouteBadge route={n.route} t={t} />}</div><p className="mt-0.5 font-mono text-[0.7rem] text-faint" title={n.addr ? t("network.routeAdvertised", { addr: n.addr }) : undefined}>{n.short_id} · {n.is_self ? n.addr || t("network.noAddress") : routeAddress(n.route, t)}</p></div>{n.total_layers ? <Mono className="shrink-0 text-iris">{layerRange(n.start_layer ?? 0, n.end_layer ?? 0)}</Mono> : null}<span className="flex shrink-0 items-center gap-1.5 text-[0.78rem] text-muted"><Dot tone={n.connected ? "aqua" : "neutral"} />{n.connected ? t("network.connected") : t("network.away")}</span>{isAdmin && !n.is_self && <Button size="sm" variant={n.blocked ? "outline" : "danger"} icon={n.blocked ? <Undo2 className="h-3.5 w-3.5" /> : <Ban className="h-3.5 w-3.5" />} onClick={() => n.blocked ? void setBlocked(n.node_id, false) : setPending({ id: n.node_id, hostname: n.hostname || n.short_id })}>{n.blocked ? t("network.unblock") : t("network.block")}</Button>}</div>)}</div>}
+        {nodes.data.length === 0 ? <Empty icon={<Network className="h-5 w-5" />} title={t("network.noNodes")}>{t("network.noNodesDetail")}</Empty> : <div className="divide-y divide-line">{nodes.data.map((n: AdminNode) => <div key={n.node_id} className="flex flex-wrap items-center gap-x-4 gap-y-2 px-5 py-3.5"><MachineIcon system={systemOf(n.node_id)} size="sm" /><div className="min-w-[12rem] flex-1"><div className="flex flex-wrap items-center gap-2"><span className="font-medium text-fg">{n.hostname || n.short_id}</span>{n.is_self && <Badge tone="neutral" className="px-1.5 py-0 text-[0.62rem]">{t("network.here")}</Badge>}{n.blocked && <Badge tone="rose">{t("network.blockedLabel")}</Badge>}{n.verified && <Badge tone="aqua">{t("network.verified")}</Badge>}{!n.is_self && <RouteBadge route={n.route} t={t} />}</div><p className="mt-0.5 font-mono text-[0.7rem] text-faint" title={n.addr ? t("network.routeAdvertised", { addr: n.addr }) : undefined}>{n.short_id} · {n.is_self ? n.addr || t("network.noAddress") : routeAddress(n.route, t)}{n.trust_version ? <span className={n.trust_version !== ownVersion ? "text-amber" : undefined} title={t(n.trust_version !== ownVersion ? "network.clusterVersionDiffers" : "network.clusterVersionSame")}> · {t("network.clusterVersionShort", { version: formatClusterVersion(n.trust_version) })}</span> : null}</p></div>{n.total_layers ? <Mono className="shrink-0 text-iris">{layerRange(n.start_layer ?? 0, n.end_layer ?? 0)}</Mono> : null}<span className="flex shrink-0 items-center gap-1.5 text-[0.78rem] text-muted"><Dot tone={n.connected ? "aqua" : "neutral"} />{n.connected ? t("network.connected") : t("network.away")}</span>{isAdmin && !n.is_self && <Button size="sm" variant={n.blocked ? "outline" : "danger"} icon={n.blocked ? <Undo2 className="h-3.5 w-3.5" /> : <Ban className="h-3.5 w-3.5" />} onClick={() => n.blocked ? void setBlocked(n.node_id, false) : setPending({ id: n.node_id, hostname: n.hostname || n.short_id })}>{n.blocked ? t("network.unblock") : t("network.block")}</Button>}</div>)}</div>}
         <Footnote className="border-t border-line px-5 py-3" icon={<ShieldOff className="h-3.5 w-3.5" />}>{t("network.identityNote")}</Footnote>
       </Panel>}
     </>
@@ -490,7 +411,6 @@ function NetworkInfoPanel({
   editable,
   saving,
   forgetting,
-  geo,
   onChange,
   onSave,
   onForgetNetwork,
@@ -501,7 +421,6 @@ function NetworkInfoPanel({
   editable: boolean;
   saving: boolean;
   forgetting: boolean;
-  geo: GeoReferenceResponse | undefined;
   onChange: (next: NetworkSettingsData) => void;
   onSave: () => void;
   onForgetNetwork?: () => void;
@@ -509,9 +428,7 @@ function NetworkInfoPanel({
 }) {
   const update = (patch: Partial<NetworkSettingsData>) => onChange({ ...draft, ...patch });
   const publicNetwork = draft.visibility === "public";
-  const selectedCountry = geo?.countries.find((country) => country.code === draft.country_code);
-  const selectedCities = selectedCountry?.cities ?? [];
-  const currentCountryOption = draft.country_code && !selectedCountry ? <option value={draft.country_code}>{draft.country_name || t("network.notProvided")}</option> : null;
+  const discoverable = draft.visibility !== "local";
   return (
     <Panel>
       <PanelHeader
@@ -535,103 +452,21 @@ function NetworkInfoPanel({
         }
       />
       {editable ? (
-        <div className="grid min-w-0 gap-4 px-5 py-5 md:grid-cols-2">
-          <Field label={t("network.publicName")} hint={publicNetwork ? t("network.publicNameRequired") : undefined}>
-            <Input required={publicNetwork} value={draft.public_name} onChange={(event) => update({ public_name: event.target.value })} />
-          </Field>
-          <Field label={t("network.organization")}>
-            <Input value={draft.organization} onChange={(event) => update({ organization: event.target.value })} />
-          </Field>
-          <Field label={t("network.description")} className="md:col-span-2">
-            <MarkdownField value={draft.description} onChange={(description) => update({ description })} previewTestId="markdown-preview-description" previewLabel={t("network.markdownPreview")} ariaLabel={t("network.description")} />
-          </Field>
-          <Field label={t("network.rules")} className="md:col-span-2">
-            <MarkdownField value={draft.rules} onChange={(rules) => update({ rules })} previewTestId="markdown-preview-rules" previewLabel={t("network.markdownPreview")} ariaLabel={t("network.rules")} />
-          </Field>
-          <Field label={t("network.channels")} className="md:col-span-2">
-            <MarkdownField value={draft.channels} onChange={(channels) => update({ channels })} previewTestId="markdown-preview-channels" previewLabel={t("network.markdownPreview")} ariaLabel={t("network.channels")} />
-          </Field>
-          <Field label={t("network.visibility")}>
-            <Select value={draft.visibility} onChange={(event) => update({ visibility: event.target.value as NetworkSettingsData["visibility"] })}>
-              <option value="local">{t("network.visibilityLocal")}</option>
-              {/* Discovery is on or off. "On, not listed" announces the
-                  network but no relay lists it, so nobody can find it to ask
-                  for admission; it stays selectable only where already set. */}
-              {draft.visibility === "private" && <option value="private">{t("network.visibilityPrivate")}</option>}
-              <option value="public">{t("network.visibilityPublic")}</option>
-            </Select>
-          </Field>
-          <Field label={t("network.accessPolicy")}>
-            <Select value={draft.access_policy} onChange={(event) => update({ access_policy: event.target.value as NetworkSettingsData["access_policy"] })}>
-              <option value="authorized">{t("network.accessAuthorized")}</option>
-              {/* The open mode is no longer offered. A network already on it
-                  keeps showing it, so saving another field does not silently
-                  close the network to its current members. */}
-              {draft.access_policy === "anyone_with_anchor" && <option value="anyone_with_anchor">{t("network.accessAnyoneWithAnchor")}</option>}
-              <option value="local_only">{t("network.accessLocalOnly")}</option>
-            </Select>
-          </Field>
-          <Field label={t("network.acceptedEnrollments")} hint={t("network.acceptedEnrollmentsHint")} className="md:col-span-2">
-            <div className="flex flex-wrap gap-x-5 gap-y-2">
-              {ENROLLMENT_ROLES.map((role) => (
-                <label key={role} className="flex items-center gap-2 text-sm text-fg">
-                  <input
-                    type="checkbox"
-                    checked={draft.accepted_enrollments.includes(role)}
-                    onChange={(event) => update({ accepted_enrollments: ENROLLMENT_ROLES.filter((item) => item === role ? event.target.checked : draft.accepted_enrollments.includes(item)) })}
-                  />
-                  {t(`network.enrollment.${role}`)}
-                </label>
-              ))}
-            </div>
-          </Field>
-          <Field label={t("network.lobbyChat")} hint={t("network.lobbyChatHint")} className="md:col-span-2">
-            <label className="flex items-center gap-2 text-sm text-fg">
-              <input
-                type="checkbox"
-                checked={Boolean(draft.lobby_chat)}
-                disabled={!publicNetwork}
-                onChange={(event) => update({ lobby_chat: event.target.checked })}
-              />
-              {t("network.lobbyChatEnable")}
-            </label>
-          </Field>
-          <Field label={t("network.publicStats")} hint={t("network.publicStatsHint")} className="md:col-span-2">
-            <label className="flex items-center gap-2 text-sm text-fg">
-              <input
-                type="checkbox"
-                checked={Boolean(draft.public_stats)}
-                disabled={!publicNetwork}
-                onChange={(event) => update({ public_stats: event.target.checked })}
-              />
-              {t("network.publicStatsEnable")}
-            </label>
-          </Field>
-          <Field label={t("network.country")} hint={publicNetwork ? t("network.countryRequired") : undefined}>
-            <Select required={publicNetwork} value={draft.country_code} onChange={(event) => {
-              const country = geo?.countries.find((item) => item.code === event.target.value);
-              const city = country?.cities[0];
-              update({ country_code: event.target.value, country_name: country?.name ?? draft.country_name, city: city?.name ?? "", location: city ? { latitude: city.latitude, longitude: city.longitude } : null });
-            }}>
-              <option value="">{t("network.chooseCountry")}</option>
-              {currentCountryOption}
-              {(geo?.countries ?? []).map((country) => <option key={country.code} value={country.code}>{country.name}</option>)}
-            </Select>
-          </Field>
-          <Field label={t("network.city")} hint={publicNetwork ? t("network.cityRequired") : undefined}>
-            <Select required={publicNetwork} value={draft.city} onChange={(event) => {
-              const city = selectedCities.find((item) => item.name === event.target.value);
-              update({ city: event.target.value, location: city ? { latitude: city.latitude, longitude: city.longitude } : draft.location });
-            }}>
-              <option value="">{t("network.chooseCity")}</option>
-              {draft.city && !selectedCities.some((city) => city.name === draft.city) && <option value={draft.city}>{draft.city}</option>}
-              {selectedCities.map((city) => <option key={city.id} value={city.name}>{city.name}</option>)}
-            </Select>
-          </Field>
-          <div className="min-w-0 md:col-span-2">
-            <KeyValue label={t("network.geoLabel")}><Mono className="break-all">{draft.geo_label || t("network.notPublished")}</Mono></KeyValue>
-            {draft.location && <p className="mt-3 text-xs text-faint">{t("network.locationCoordinates", { latitude: draft.location.latitude, longitude: draft.location.longitude })}</p>}
-          </div>
+        /* The same questions, in the same order and drawing, as the quick
+           setup of the Networks screen: one identity for both. A question a
+           discovery choice makes meaningless is not drawn. */
+        <div className="min-w-0 space-y-7 px-5 py-5">
+          <SetupSection step="discovery" number={1} t={t}><DiscoveryChoices draft={draft} update={update} t={t} /></SetupSection>
+          <SetupSection step="info" number={2} t={t}><InfoFields draft={draft} update={update} t={t} /></SetupSection>
+          {discoverable && <SetupSection step="access" number={3} t={t}><AccessFields draft={draft} update={update} t={t} full /></SetupSection>}
+          {publicNetwork && (
+            <SetupSection step="location" number={4} t={t}>
+              <LocationEditor value={draft} source={NETWORK_GEO} required t={t} onChange={(place) => update(place)} />
+              <div className="mt-4 min-w-0"><KeyValue label={t("network.geoLabel")}><Mono className="break-all">{draft.geo_label || t("network.notPublished")}</Mono></KeyValue></div>
+            </SetupSection>
+          )}
+          {/* This machine's own setting, applied as soon as it changes. */}
+          <RelayOptions section={(content) => <SetupSection step="relay" number={2 + (discoverable ? 1 : 0) + (publicNetwork ? 1 : 0) + 1} t={t}>{content}</SetupSection>} />
         </div>
       ) : (
         <dl className="grid min-w-0 gap-x-6 gap-y-4 px-5 py-5 sm:grid-cols-2">
@@ -641,13 +476,11 @@ function NetworkInfoPanel({
           <KeyValue label={t("network.rules")}>{draft.rules ? <Markdown>{draft.rules}</Markdown> : <span>{t("network.notProvided")}</span>}</KeyValue>
           <KeyValue label={t("network.channels")}>{draft.channels ? <Markdown>{draft.channels}</Markdown> : <span>{t("network.notProvided")}</span>}</KeyValue>
           <KeyValue label={t("network.visibility")}><span>{visibilityLabel(draft.visibility, t)}</span></KeyValue>
-          <KeyValue label={t("network.accessPolicy")}><span>{accessLabel(draft.access_policy, t)}</span></KeyValue>
-          <KeyValue label={t("network.acceptedEnrollments")}><span>{acceptedEnrollmentsLabel(draft.accepted_enrollments, t)}</span></KeyValue>
-          <KeyValue label={t("network.publicStats")}><span>{t(draft.public_stats && publicNetwork ? "network.publicStatsOn" : "network.publicStatsOff")}</span></KeyValue>
-          <KeyValue label={t("network.lobbyChat")}><span>{t(draft.lobby_chat && publicNetwork ? "network.lobbyChatOn" : "network.lobbyChatOff")}</span></KeyValue>
-          <KeyValue label={t("network.country")}><span>{draft.country_name || t("network.notProvided")}</span></KeyValue>
-          <KeyValue label={t("network.city")}><span>{draft.city || t("network.notProvided")}</span></KeyValue>
-          {draft.location && <KeyValue label={t("network.location")}><span>{t("network.locationCoordinates", { latitude: draft.location.latitude, longitude: draft.location.longitude })}</span></KeyValue>}
+          {discoverable && <KeyValue label={t("network.accessPolicy")}><span>{accessLabel(draft.access_policy, t)}</span></KeyValue>}
+          {discoverable && <KeyValue label={t("network.acceptedEnrollments")}><span>{acceptedEnrollmentsLabel(draft.accepted_enrollments, t)}</span></KeyValue>}
+          {publicNetwork && <KeyValue label={t("network.publicStats")}><span>{t(draft.public_stats ? "network.publicStatsOn" : "network.publicStatsOff")}</span></KeyValue>}
+          {publicNetwork && <KeyValue label={t("location.title")}><span className="break-words">{placeLabel(draft) || t("network.notProvided")}</span></KeyValue>}
+          {publicNetwork && draft.location && <KeyValue label={t("network.location")}><span>{t("network.locationCoordinates", { latitude: draft.location.latitude, longitude: draft.location.longitude })}</span></KeyValue>}
         </dl>
       )}
       {info?.network.visibility === "public" && <Footnote className="border-t border-line px-5 py-3" icon={<Radio className="h-3.5 w-3.5" />}>{t("network.publicInfoPropagation")}</Footnote>}
@@ -725,5 +558,5 @@ export function acceptedEnrollmentsLabel(roles: EnrollmentRole[], t: (key: strin
 }
 
 function accessLabel(value: NetworkSettingsData["access_policy"], t: (key: string, values?: Record<string, string | number>) => string) {
-  return t(`network.access${value === "anyone_with_anchor" ? "AnyoneWithAnchor" : value === "local_only" ? "LocalOnly" : "Authorized"}`);
+  return t(`network.access${value === "anyone_with_anchor" ? "AnyoneWithAnchor" : value === "auto_approve" ? "AutoApprove" : value === "local_only" ? "LocalOnly" : "Authorized"}`);
 }

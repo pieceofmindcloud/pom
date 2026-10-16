@@ -14,8 +14,8 @@ pub struct PlanRequest {
     /// file actually is.
     #[serde(default)]
     pub layout_node_id: Option<String>,
-    /// Parâmetros usados para cobrar o KV junto com o peso. Ausentes usam os
-    /// defaults da tela de runtime e os tipos globais da instalação.
+    /// Parameters used to charge the KV together with the weight. Absent ones use the
+    /// defaults of the runtime screen and the installation's global types.
     #[serde(default)]
     pub n_ctx: Option<u32>,
     #[serde(default)]
@@ -42,17 +42,17 @@ pub(super) async fn plan_split_endpoint(
                 .find(|p| p.node_id == *target)
                 .and_then(|p| p.gateway_url());
             let Some(base) = base else {
-                return bad_request(format!("peer {target} não está acessível para ler o GGUF"));
+                return bad_request(format!("peer {target} is not reachable to read the GGUF"));
             };
-            // Resolvido antes de mover `req`: `target` empresta dele.
-            let cliente = match state.peer_http.for_peer(target) {
+            // Resolved before moving `req`: `target` borrows from it.
+            let client = match state.peer_http.for_peer(target) {
                 Ok(c) => c,
-                Err(e) => return bad_request(format!("sem cliente para o peer {target}: {e}")),
+                Err(e) => return bad_request(format!("no client for peer {target}: {e}")),
             };
             let mut forwarded = req;
             // Clear the hop marker so the receiving peer measures locally.
             forwarded.layout_node_id = None;
-            return match cliente
+            return match client
                 .post(format!("{base}/api/ui/plan"))
                 .bearer_auth(state.auth.read().await.connection_key.clone())
                 .json(&forwarded)
@@ -63,10 +63,10 @@ pub(super) async fn plan_split_endpoint(
                     let status = r.status();
                     match r.json::<serde_json::Value>().await {
                         Ok(v) => (status, Json(v)).into_response(),
-                        Err(e) => bad_request(format!("resposta inválida do peer: {e}")),
+                        Err(e) => bad_request(format!("invalid peer response: {e}")),
                     }
                 }
-                Err(e) => bad_request(format!("peer não respondeu: {e}")),
+                Err(e) => bad_request(format!("peer did not answer: {e}")),
             };
         }
     }
@@ -75,16 +75,16 @@ pub(super) async fn plan_split_endpoint(
     let layout_path = path.clone();
     let layout = match tokio::task::spawn_blocking(move || gguf::read_layout(&layout_path)).await {
         Ok(Ok(l)) => l,
-        Ok(Err(e)) => return bad_request(format!("não foi possível ler o GGUF: {e}")),
-        Err(e) => return bad_request(format!("leitura do GGUF falhou: {e}")),
+        Ok(Err(e)) => return bad_request(format!("could not read the GGUF: {e}")),
+        Err(e) => return bad_request(format!("GGUF read failed: {e}")),
     };
 
     let info = match tokio::task::spawn_blocking(move || gguf::read_info(&path)).await {
         Ok(Ok(info)) => info,
         Ok(Err(e)) => {
-            return bad_request(format!("não foi possível ler a geometria KV do GGUF: {e}"))
+            return bad_request(format!("could not read the KV geometry of the GGUF: {e}"))
         }
-        Err(e) => return bad_request(format!("leitura da geometria KV falhou: {e}")),
+        Err(e) => return bad_request(format!("KV geometry read failed: {e}")),
     };
 
     let reserve = req.reserve_pct.unwrap_or(DEFAULT_RESERVE_PCT);
@@ -104,29 +104,29 @@ pub(super) async fn plan_split_endpoint(
 
 // ── Deploy Studio: capacity preview ──────────────────────────────────────────
 //
-// Pré-visualização de VRAM/RAM para uma faixa que este peer já serve *neste
-// instante* - nunca fatia, nunca funde, nunca escreve. `crate::deploy` chama
-// esta rota uma vez por passo (`Step`) do plano em preparo, com o caminho
-// local que a própria varredura já leu do catálogo do peer
-// (`HeldShard.path`), então não há resolução por hash aqui: um arquivo que
-// não existe no caminho informado é recusado, não procurado.
+// VRAM/RAM preview for a range that this peer already serves *right
+// now* - it never slices, never merges, never writes. `crate::deploy` calls
+// this route once per step (`Step`) of the plan being prepared, with the local path
+// that the scan itself already read from the peer's catalog
+// (`HeldShard.path`), so there is no hash resolution here: a file that
+// does not exist at the given path is refused, not searched for.
 //
-// A prévia é uma estimativa analítica: `plan::range_cost` cobra peso e KV pela
-// mesma aritmética do planejador de fatiamento (`gguf::read_layout` +
-// `kv_budget::kv_bytes_for_layers`) e a VRAM livre atual distribui o resultado
-// entre as GPUs. O fit nativo pertence somente ao carregamento real, porque o
-// llama.cpp não oferece uma fronteira de concorrência para sondagens externas.
+// The preview is an analytic estimate: `plan::range_cost` charges weight and KV with the
+// same arithmetic as the slicing planner (`gguf::read_layout` +
+// `kv_budget::kv_bytes_for_layers`) and the current free VRAM distributes the result
+// among the GPUs. The native fit belongs only to the real load, because
+// llama.cpp does not offer a concurrency boundary for external probes.
 
-/// Pedido de uma pré-visualização, para exatamente um passo do plano.
+/// Request for a preview, for exactly one step of the plan.
 ///
-/// Um peer que serve duas faixas não-adjacentes carrega dois arquivos em dois
-/// processos - a pré-visualização segue essa mesma granularidade, uma
-/// chamada por `Step`; `crate::deploy` soma os resultados por máquina.
+/// A peer that serves two non-adjacent ranges loads two files in two
+/// processes - the preview follows that same granularity, one
+/// call per `Step`; `crate::deploy` sums the results per machine.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CapacityPreviewRequest {
-    /// Caminho local já resolvido pelo coordenador (`HeldShard.path` do
-    /// próprio catálogo deste peer). Nunca é uma faixa virtual: o coordenador
-    /// só chama esta rota para um passo `ready`.
+    /// Local path already resolved by the coordinator (`HeldShard.path` from this
+    /// peer's own catalog). Never a virtual range: the coordinator
+    /// only calls this route for a `ready` step.
     pub model_path: String,
     pub start_layer: u32,
     pub end_layer: u32,
@@ -152,37 +152,37 @@ pub(super) fn default_preview_peer_count() -> u32 {
 pub struct GpuCapacityProjection {
     pub index: u32,
     pub vram_total_mb: u64,
-    /// Uso atual medido agora, antes desta implantação.
+    /// Current usage measured now, before this deployment.
     pub vram_used_mb: u64,
-    /// Uso projetado: `vram_used_mb` mais a fração deste passo que cairia
-    /// neste dispositivo.
+    /// Projected usage: `vram_used_mb` plus the fraction of this step that would land
+    /// on this device.
     pub vram_projected_mb: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CapacityPreview {
-    /// `vram_projected_mb <= vram_total_mb` em todo dispositivo pela conta
-    /// analítica. `true` também numa máquina sem GPU - não há VRAM para faltar.
+    /// `vram_projected_mb <= vram_total_mb` on every device by the analytic
+    /// calculation. `true` also on a machine without a GPU - there is no VRAM to run short of.
     pub fits: bool,
-    /// `fits`, mas a conta crua não cabe e o `fit_memory` habilitado pode aparar
-    /// o pedido porque as camadas foram deixadas no padrão. Amber na tela;
-    /// heurística, não resultado do llama.cpp.
+    /// `fits`, but the raw calculation does not fit and the enabled `fit_memory` may trim
+    /// the request because the layers were left at the default. Amber on the screen;
+    /// heuristic, not a llama.cpp result.
     #[serde(default)]
     pub degraded: bool,
-    /// Frase pronta para o operador, quando há algo a dizer: ajuste possível,
-    /// divisão estimada ou KV na RAM.
+    /// A ready-made sentence for the operator, when there is something to say: possible adjustment,
+    /// estimated split or KV in RAM.
     pub note: Option<String>,
-    /// Valor pedido pelo operador. O carregamento real pode reduzi-lo.
+    /// Value requested by the operator. The real load may reduce it.
     pub effective_n_gpu_layers: Option<u32>,
-    /// Janela pedida pelo operador. O carregamento real pode reduzi-la.
+    /// Window requested by the operator. The real load may reduce it.
     pub effective_n_ctx: Option<u32>,
     pub gpus: Vec<GpuCapacityProjection>,
 }
 
-/// Distribui `projected_bytes` entre as GPUs da máquina.
+/// Distributes `projected_bytes` among the machine's GPUs.
 ///
-/// A divisão é proporcional à VRAM livre de cada dispositivo agora. Ela é uma
-/// estimativa deliberada: só o carregamento real conhece a decisão final do
+/// The split is proportional to each device's free VRAM right now. It is a
+/// deliberate estimate: only the real load knows the final decision of
 /// llama.cpp.
 pub(super) fn split_projection(
     projected_bytes: u64,
@@ -229,7 +229,7 @@ pub(super) fn split_projection(
         })
         .collect();
     let note = (devices.len() > 1).then(|| {
-        "divisão entre GPUs estimada pela VRAM livre atual; o carregamento confirma o layout final"
+        "split between GPUs estimated from the current free VRAM; loading confirms the final layout"
             .to_string()
     });
     (projections, fits, note)
@@ -260,14 +260,14 @@ pub(super) async fn capacity_preview_endpoint(
     let path = std::path::PathBuf::from(&req.model_path);
     if !path.is_file() {
         return bad_request(format!(
-            "arquivo não encontrado localmente: {}",
+            "file not found locally: {}",
             req.model_path
         ));
     }
     let Some(_preview_slot) = try_capacity_preview_slot() else {
         return (
             StatusCode::TOO_MANY_REQUESTS,
-            "pré-visualizações de capacidade demais em andamento",
+            "too many capacity previews in progress",
         )
             .into_response();
     };
@@ -306,41 +306,41 @@ pub(super) async fn capacity_preview_endpoint(
     let engine_cfg =
         match crate::runtime::engine_config_from_node(&cfg, need_embeddings, false, Vec::new()) {
             Ok(engine_cfg) => engine_cfg,
-            Err(e) => return bad_request(format!("configuração inválida: {e}")),
+            Err(e) => return bad_request(format!("invalid configuration: {e}")),
         };
 
-    // Este é o pedido, não uma decisão do motor nativo. O carregamento
-    // real continua sendo a autoridade sobre camadas efetivas, contexto e
-    // divisão entre GPUs.
+    // This is the request, not a decision of the native engine. The real
+    // load remains the authority on effective layers, context and
+    // split between GPUs.
     let effective_n_gpu_layers = engine_cfg.n_gpu_layers;
     let effective_n_ctx = engine_cfg.n_ctx;
 
     let layout_path = path.clone();
     let layout = match tokio::task::spawn_blocking(move || gguf::read_layout(&layout_path)).await {
         Ok(Ok(l)) => l,
-        Ok(Err(e)) => return bad_request(format!("não foi possível ler o GGUF: {e}")),
-        Err(e) => return bad_request(format!("leitura do GGUF falhou: {e}")),
+        Ok(Err(e)) => return bad_request(format!("could not read the GGUF: {e}")),
+        Err(e) => return bad_request(format!("GGUF read failed: {e}")),
     };
     let info_path = path.clone();
     let info = match tokio::task::spawn_blocking(move || gguf::read_info(&info_path)).await {
         Ok(Ok(info)) => info,
         Ok(Err(e)) => {
-            return bad_request(format!("não foi possível ler a geometria KV do GGUF: {e}"))
+            return bad_request(format!("could not read the KV geometry of the GGUF: {e}"))
         }
-        Err(e) => return bad_request(format!("leitura da geometria KV falhou: {e}")),
+        Err(e) => return bad_request(format!("KV geometry read failed: {e}")),
     };
 
-    // Camadas locais ao arquivo desta fatia - `blk.0..`, não a numeração
-    // global do modelo (ver `split_model.py`).
+    // Layers local to this slice's file - `blk.0..`, not the model's global
+    // numbering (see `split_model.py`).
     let local_layer_count = layout.layer_count();
     let gpu_layers_local = effective_n_gpu_layers.max(0).min(local_layer_count as i32) as u32;
     let is_last = req.end_layer + 1 >= req.total_layers;
     let (weight_bytes, kv_bytes) = if gpu_layers_local == 0 {
         (0, 0)
     } else {
-        // `cache_type_k`/`cache_type_v` vêm da config da instalação (como no
-        // launch real), então a quantização do cache já entra na conta: o
-        // `kv_budget::row_bytes` tem o tamanho de bloco de cada tipo.
+        // `cache_type_k`/`cache_type_v` come from the installation config (as in the
+        // real launch), so the cache quantization already enters the calculation:
+        // `kv_budget::row_bytes` has the block size of each type.
         let kv = plan::KvPlanParams {
             n_ctx: effective_n_ctx,
             max_sessions: req.params.max_sessions.max(1),
@@ -358,14 +358,14 @@ pub(super) async fn capacity_preview_endpoint(
             Ok((weight_bytes, kv_bytes, _total)) => (weight_bytes, kv_bytes),
             Err(e) => {
                 return bad_request(format!(
-                    "não foi possível calcular a projeção de memória: {e}"
+                    "could not compute the memory projection: {e}"
                 ))
             }
         }
     };
-    // O cache KV só pesa na VRAM quando fica na GPU (`offload_kqv`). Sem isso
-    // ele mora na RAM do host, mesmo para as camadas que estão na GPU, e não
-    // deve inflar a projeção de VRAM.
+    // The KV cache only weighs on VRAM when it stays on the GPU (`offload_kqv`). Without that
+    // it lives in host RAM, even for the layers that are on the GPU, and
+    // must not inflate the VRAM projection.
     let kv_in_vram = cfg.offload_kqv;
     let projected_bytes = weight_bytes.saturating_add(if kv_in_vram { kv_bytes } else { 0 });
 
@@ -378,12 +378,12 @@ pub(super) async fn capacity_preview_endpoint(
         local_layer_count,
     );
     let mut notes = vec![
-        "pré-visualização analítica; o carregamento real confirma as camadas, o contexto e a divisão entre GPUs"
+        "analytic preview; the real load confirms the layers, the context and the split between GPUs"
             .to_string(),
     ];
     if degraded {
         notes.push(
-            "a conta crua não cabe; com fit_memory e camadas no padrão, a carga real pode aparar o pedido"
+            "the raw estimate does not fit; with fit_memory and default layers, the real load may trim the request"
                 .to_string(),
         );
     }
@@ -392,7 +392,7 @@ pub(super) async fn capacity_preview_endpoint(
     }
     if !kv_in_vram && kv_bytes > 0 {
         notes.push(format!(
-            "cache KV na RAM (offload desligado): ~{} MiB fora da VRAM",
+            "KV cache in RAM (offload off): ~{} MiB outside VRAM",
             kv_bytes / (1024 * 1024)
         ));
     }

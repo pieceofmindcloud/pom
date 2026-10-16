@@ -93,6 +93,7 @@ export function DownloadModelDialog({
             loading={busy}
             disabled={blocked}
             icon={<HardDriveDownload className="h-3.5 w-3.5" />}
+            data-guide="model-download-confirm"
             onClick={() => void download()}
           >
             {t("remoteModels.confirmDownload")}

@@ -3,6 +3,7 @@ import { useMemo, useState } from "react";
 import { Confirm, Modal } from "./Confirm";
 import { Badge, Button, Empty, ErrorState, Field, Input, Mono, PageHeader, Select, Skeleton } from "./ui";
 import { api } from "../lib/api";
+import { copyText } from "../lib/clipboard";
 import { since } from "../lib/format";
 import { useApiKeys, useCluster, useNode } from "../lib/queries";
 import { useToast } from "../lib/toast";
@@ -11,20 +12,22 @@ import { useProfile } from "../lib/profile";
 import type { ApiKey, IssuedApiKey } from "../lib/types";
 
 /**
- * O token recém-criado, na única vez em que ele existe fora do cliente.
+ * The newly created token, the only time it exists outside the client.
  *
- * A rede guarda só o hash e o trecho visível: fechar esta janela sem copiar é
- * perder o token, e por isso ela não fecha clicando fora nem tem "cancelar" -
- * só o botão que diz que a cópia foi feita.
+ * The network keeps only the hash and the visible fragment: closing this window without copying
+ * loses the token, and that is why it does not close by clicking outside nor has a "cancel" -
+ * only the button that says the copy was made.
  */
 function IssuedSecret({ issued, onDone }: { issued: IssuedApiKey | null; onDone: () => void }) {
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);
   const copy = () => {
     if (!issued) return;
-    void navigator.clipboard.writeText(issued.key);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1600);
+    void copyText(issued.key).then((ok) => {
+      if (!ok) return;
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    });
   };
   return <Modal open={issued !== null} title={t("keys.issuedTitle")} onClose={() => undefined} footer={<Button variant="primary" onClick={() => { setCopied(false); onDone(); }}>{t("keys.issuedDone")}</Button>}>
     {issued && <div className="space-y-3">
@@ -39,12 +42,13 @@ function IssuedSecret({ issued, onDone }: { issued: IssuedApiKey | null; onDone:
 
 export function ApiKeysTable() {
   const { t } = useI18n();
-  const { profile } = useProfile();
+  const { profile, secondary } = useProfile();
   const node = useNode();
   const cluster = useCluster();
   const keys = useApiKeys();
   const toast = useToast();
-  const isAdmin = profile === "admin";
+  // Other machines' keys are the principal's to see and issue.
+  const isAdmin = profile === "admin" && !secondary;
   const inference = profile === "infer";
   const ownId = node.data?.node_id;
   const [createOpen, setCreateOpen] = useState(false);
@@ -70,7 +74,7 @@ export function ApiKeysTable() {
         try {
           await Promise.all(previousKeys.map((key) => api.del(`/admin/api-keys/${encodeURIComponent(key.id)}`)));
         } catch (error) {
-          try { await api.del(`/admin/api-keys/${encodeURIComponent(created.id)}`); } catch { /* A próxima leitura expõe o estado. */ }
+          try { await api.del(`/admin/api-keys/${encodeURIComponent(created.id)}`); } catch { /* The next read exposes the state. */ }
           throw error;
         }
       }

@@ -13,11 +13,14 @@ import { ChatSessionProvider } from "./lib/chatStore";
 import { useAdminSurface, usePluginUi } from "./lib/queries";
 import { pluginUiSnapshot, resolvePluginRoute, setPluginUi } from "./lib/pluginUi";
 import { PluginScreen } from "./components/PluginScreen";
+import { PluginLoading } from "./components/PluginLoading";
 import { PluginBridge } from "./components/PluginBridge";
 import { syncPluginCatalogs } from "./lib/pluginI18n";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Sidebar } from "./components/Sidebar";
 import { Topbar } from "./components/Topbar";
+import { FirstRunGuide } from "./components/FirstRunGuide";
+import { FirstRunWizard, useFirstRunWizard } from "./components/FirstRunWizard";
 import { EnterpriseFeatureShowcase } from "./components/EnterpriseFeatureShowcase";
 import { useI18n } from "./i18n/provider";
 import pomMark from "./assets/pom-mark-dark.png";
@@ -32,7 +35,7 @@ function AdminAccessGate({ onAuthenticated }: { onAuthenticated: () => void }) {
   const [failed, setFailed] = useState(false);
   const formRef = useRef<HTMLFormElement>(null);
 
-  /** Balança o formulário numa senha recusada, salvo com movimento reduzido. */
+  /** Shakes the form on a refused password, except with reduced motion. */
   function shake() {
     const form = formRef.current;
     if (!form || typeof form.animate !== "function") return;
@@ -72,17 +75,17 @@ function AdminAccessGate({ onAuthenticated }: { onAuthenticated: () => void }) {
     }
   }
 
-  // Mesma assinatura visual da página inicial do pieceofmind.cloud: o painel
-  // escuro flutuante com a marca, sobre o fundo do tema. Só a senha é pedida.
+  // Same visual signature as the pieceofmind.cloud home page: the floating
+  // dark panel with the brand, over the theme background. Only the password is asked.
   return (
     <main className="pom-login">
-      {/* O idioma sai do navegador (inglês para quem não usa português); as
-          bandeiras trocam na hora, como na página inicial do site. */}
+      {/* The language comes from the browser (English for those not using Portuguese); the
+          flags switch instantly, as on the site's home page. */}
       <BrandLanguageSwitch />
       <section className="pom-login-panel">
         <img className="pom-login-mark" src={pomMark} alt="POM" width={815} height={320} />
         <p className="pom-login-sub">PIECE OF MIND</p>
-        {/* Um pedaço da mente viajando entre máquinas: decorativo. */}
+        {/* A piece of mind traveling between machines: decorative. */}
         <span className="pom-login-link" aria-hidden="true"><i /><i /><i /></span>
         <form ref={formRef} className="pom-login-form" autoComplete="on" onSubmit={(event) => void authenticate(event)}>
           <label className="sr-only" htmlFor="admin-access-password">{t("accessGate.passwordLabel")}</label>
@@ -149,8 +152,6 @@ function AdminAccessUnavailable() {
  * screen, editor and visualization before the operator opens it.
  */
 export const routeLoaders = {
-  setup: () => import("./routes/Setup").then(({ Setup }) => Setup),
-  setupWizard: () => import("./routes/SetupWizard").then(({ SetupWizard }) => SetupWizard),
   publicNetworks: () => import("./routes/PublicNetworks").then(({ PublicNetworks }) => PublicNetworks),
   chat: () => import("./routes/Chat").then(({ Chat }) => Chat),
   networkChat: () => import("./routes/NetworkChat").then(({ NetworkChat }) => NetworkChat),
@@ -185,8 +186,6 @@ function lazyRoute<T extends React.ComponentType<any>>(loader: () => Promise<T>)
   return lazy(() => loader().then((Component) => ({ default: Component })));
 }
 
-const Setup = lazyRoute(routeLoaders.setup);
-const SetupWizard = lazyRoute(routeLoaders.setupWizard);
 const PublicNetworks = lazyRoute(routeLoaders.publicNetworks);
 const Chat = lazyRoute(routeLoaders.chat);
 const NetworkChat = lazyRoute(routeLoaders.networkChat);
@@ -252,81 +251,80 @@ export default function App() {
   const location = useLocation();
   const { profile } = useProfile();
   const pluginUi = usePluginUi();
-  // O registro é lido por `canAccessRoute` e pelo menu; precisa estar em dia
-  // antes de qualquer filho consultar o guarda.
+  // The registry is read by `canAccessRoute` and by the menu; it must be up to date
+  // before any child consults the guard.
   setPluginUi(pluginUi.data?.plugins);
   const pluginRoute = resolvePluginRoute(location.pathname);
-  // Cada plugin traz os próprios textos; acompanha plugins ativos e idioma.
+  // Each plugin brings its own texts; follows active plugins and language.
   const activePlugins = pluginUiSnapshot();
   useEffect(() => {
     void syncPluginCatalogs(activePlugins ?? [], locale);
   }, [activePlugins, locale]);
   /*
-   * O guarda de perfil fica aqui, e não dentro de cada rota, porque aqui ele
-   * é um só: `/chat` renderiza fora do `<Routes>` (ver abaixo), então um guarda
-   * por rota deixaria justamente essa de fora. Esconder o item no menu não
-   * basta - o endereço continua digitável.
+   * The profile guard lives here, and not inside each route, because here it
+   * is a single one: `/chat` renders outside `<Routes>` (see below), so a guard
+   * per route would leave exactly that one out. Hiding the item in the menu is not
+   * enough - the address is still typeable.
    *
-   * Quem decide é `lib/access.ts`, a mesma tabela que filtra o menu.
+   * The decision is made by `lib/access.ts`, the same table that filters the menu.
    */
   const allowed = canAccessRoute(location.pathname, profile);
   /*
-   * Telas fornecidas por plugins (`lib/pluginUi.ts`) usam o namespace do
-   * próprio `plugin_code` dentro do basename `/admin-ui`. Um manifesto pode
-   * reivindicar `/logs` ou `/estatisticas` para substituir o fallback nativo
-   * correspondente quando não houver outro plugin com a mesma reivindicação.
+   * Screens provided by plugins (`lib/pluginUi.ts`) use the namespace of the
+   * plugin's own `plugin_code` inside the `/admin-ui` basename. A manifest may
+   * claim `/logs` or `/statistics` to replace the corresponding native fallback
+   * when there is no other plugin with the same claim.
    */
   const enterprisePath = isEnterprisePath(location.pathname);
+  /*
+   * `/logs` and `/statistics` are also POM's advertising fallbacks. Until the node
+   * answers `GET /api/ui/plugins/ui` the registry cannot know whether a plugin
+   * claims them, so the advertising card would flash in front of a plugin that is
+   * about to take the screen: the pieces animation is drawn while that answer is
+   * still on its way.
+   */
+  const pluginUiPending = pluginUi.isPending === true;
   const isChat = allowed && location.pathname === "/chat";
   const isEmbeddedChat = allowed && location.pathname === "/admin-ui/chat";
   // Screens that own the whole viewport and scroll inside themselves, instead
   // of sitting in the centred, padded column the other pages use.
   const isDashboard = location.pathname === "/";
-  // Barrada, a tela volta para a coluna central: o aviso é um cartão pequeno, e
-  // o layout de tela cheia não rola por dentro.
+  // Barred, the screen goes back to the centred column: the notice is a small card, and
+  // the full-screen layout does not scroll internally.
   const isFullBleed =
     allowed &&
     (isDashboard ||
-      location.pathname === "/documentacao" ||
-      location.pathname === "/implantar" ||
-      location.pathname === "/implantacoes" ||
+      location.pathname === "/documentation" ||
+      location.pathname === "/deploy" ||
+      location.pathname === "/deployments" ||
       pluginRoute?.route.full_bleed === true ||
-      location.pathname === "/implantacoes/logs" ||
-      location.pathname === "/redes-publicas" ||
+      location.pathname === "/deployments/logs" ||
+      location.pathname === "/public-networks" ||
       location.pathname === "/network-chat" ||
       location.pathname === "/config/keys/api" ||
-      location.pathname === "/modelos" ||
-      location.pathname === "/modelos/remotos" ||
-      location.pathname === "/modelos/fatiar" ||
+      location.pathname === "/models" ||
+      location.pathname === "/models/remote" ||
+      location.pathname === "/models/slice" ||
       location.pathname === "/plugins" ||
-      location.pathname === "/fatias" ||
-      location.pathname === "/transferencias" ||
-      location.pathname === "/transferencias/enviar");
-  /*
-   * O assistente é a única tela que sai da moldura inteira: ele guia a
-   * configuração do zero, com barra de progresso e uma pergunta por vez, e o
-   * menu ao lado convida a sair pelo meio para uma tela que ainda não faz
-   * sentido. Renderiza como o `Setup` do primeiro arranque - sem Sidebar, sem
-   * Topbar -, e não só sem enchimento como as outras de tela cheia.
-   */
-  const isWizard = allowed && location.pathname === "/setup";
-  /*
-   * A node with no `pom.json` runs a router carrying only `/api/setup/*`,
-   * so `/api/ui/node` answers 404. That miss is the signal.
-   *
-   * Deliberately not probed with a setup mutation endpoint. Setup mode is
-   * detected by the normal surface probe, while `/api/setup/*` is reserved for
-   * the real first-access wizard.
-   */
+      location.pathname === "/shards" ||
+      location.pathname === "/transfers" ||
+      location.pathname === "/transfers/send");
   const adminSurface = useAdminSurface();
   const [adminReady, setAdminReady] = useState(false);
+  // A machine on its first run names itself and its network before the panel
+  // opens. Asked only past the gate, where the guide route answers.
+  const wizard = useFirstRunWizard(
+    profile === "admin" &&
+      !isEmbeddedChat &&
+      (adminSurface.data === "available" || (adminSurface.data === "requires-password" && adminReady)),
+  );
 
   /*
-   * A sessão administrativa pode morrer com a aba aberta: ela vive na memória
-   * do nó, e um reinício ou as 8 h de validade a levam. Quem refaz a sonda é
-   * o próprio `useAdminSurface`; aqui só se esquece que esta aba já passou
-   * pelo portão, senão a resposta "requires-password" continuaria escondida
-   * atrás de um `adminReady` que ficou de uma sessão que não existe mais.
+   * The administrative session may die with the tab open: it lives in the node's
+   * memory, and a restart or the 8 h validity takes it away. Who redoes the probe is
+   * `useAdminSurface` itself; here we only forget that this tab already went
+   * through the gate, otherwise the "requires-password" answer would stay hidden
+   * behind an `adminReady` left over from a session that no longer exists.
    */
   useEffect(() => onAdminSessionLost(() => setAdminReady(false)), []);
 
@@ -334,29 +332,19 @@ export default function App() {
   // a guess flashes the wrong screen, so hold the paint for one request.
   if (adminSurface.isLoading) return <div className="h-full bg-ink" />;
   if (adminSurface.isError || !adminSurface.data) return <AdminAccessUnavailable />;
-  if (adminSurface.data === "setup") {
-    return (
-      <ErrorBoundary>
-        <Suspense fallback={<RouteFallback fullScreen />}>
-          <Setup />
-        </Suspense>
-      </ErrorBoundary>
-    );
-  }
-
   if (adminSurface.data === "local-only") return <AdminLocalOnly />;
   if (adminSurface.data === "requires-password" && !adminReady) {
     return <AdminAccessGate onAuthenticated={() => setAdminReady(true)} />;
   }
 
   /*
-   * O painel nativo da barra de status do macOS carrega esta rota dentro de um
-   * `WKWebView` estreito. Ela renderiza o mesmo Chat sem Sidebar nem Topbar,
-   * porque o chrome administrativo não cabe na largura de um telemóvel.
+   * The native macOS status bar panel loads this route inside a narrow
+   * `WKWebView`. It renders the same Chat without Sidebar or Topbar,
+   * because the administrative chrome does not fit the width of a phone.
    *
-   * Fica deliberadamente **depois** do portão de acesso acima: o painel usa a
-   * mesma sessão com cookie `HttpOnly` que o navegador, e não um caminho de
-   * credencial próprio.
+   * It deliberately sits **after** the access gate above: the panel uses the
+   * same `HttpOnly` cookie session as the browser, and not a credential path
+   * of its own.
    */
   if (isEmbeddedChat) {
     return (
@@ -370,12 +358,11 @@ export default function App() {
     );
   }
 
-  if (isWizard) {
+  if (wizard.loading) return <div className="h-full bg-ink" />;
+  if (wizard.step) {
     return (
       <ErrorBoundary>
-        <Suspense fallback={<RouteFallback fullScreen />}>
-          <SetupWizard />
-        </Suspense>
+        <FirstRunWizard step={wizard.step} />
       </ErrorBoundary>
     );
   }
@@ -393,6 +380,9 @@ export default function App() {
         </ErrorBoundary>
         <ErrorBoundary fallback={null}>
           <Sidebar />
+        </ErrorBoundary>
+        <ErrorBoundary fallback={null}>
+          <FirstRunGuide enabled={profile === "admin"} />
         </ErrorBoundary>
         <div className="flex min-w-0 flex-1 flex-col">
           <ErrorBoundary
@@ -415,9 +405,9 @@ export default function App() {
               <Suspense fallback={<RouteFallback />}>
                 {!allowed && location.pathname === "/" ? (
                   /*
-                   * O `/` é o Painel, que o `infer` não abre. Mandá-lo para a
-                   * recusa faria a interface abrir num beco: a tela inicial do
-                   * perfil é quem responde por ele.
+                   * The `/` is the Dashboard, which `infer` does not open. Sending it to the
+                   * refusal would make the interface open in a dead end: the profile's
+                   * home screen is what answers for it.
                    */
                   <Navigate to={homeRoute(profile)} replace />
                 ) : !allowed ? (
@@ -426,10 +416,10 @@ export default function App() {
                       <Forbidden />
                     </Page>
                   </div>
-                ) : location.pathname === "/logs/estatisticas" ? (
-                  // Alias antigo, preservado fora do `<Routes>` porque o
-                  // destino também é uma rota de plugin ou a vitrine Enterprise.
-                  <Navigate to="/estatisticas" replace />
+                ) : location.pathname === "/logs/statistics" ? (
+                  // Old alias, kept outside `<Routes>` because the
+                  // destination is also a plugin route or the Enterprise showcase.
+                  <Navigate to="/statistics" replace />
                 ) : pluginRoute ? (
                   <div className={pluginRoute.route.full_bleed ? "h-full w-full" : "mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8"}>
                     <PluginScreen
@@ -438,7 +428,11 @@ export default function App() {
                     />
                   </div>
                 ) : enterprisePath ? (
-                  <EnterpriseFeatureShowcase kind={location.pathname.startsWith("/logs") ? "logs" : "statistics"} />
+                  pluginUiPending ? (
+                    <PluginLoading />
+                  ) : (
+                    <EnterpriseFeatureShowcase kind={location.pathname.startsWith("/logs") ? "logs" : "statistics"} />
+                  )
                 ) : isChat ? (
                   <Chat />
                 ) : (
@@ -446,34 +440,34 @@ export default function App() {
                     <AnimatePresence mode="wait">
                       <Routes location={location} key={location.pathname}>
                         <Route path="/" element={<Page><Dashboard /></Page>} />
-                        <Route path="/redes-publicas" element={<Page><PublicNetworks /></Page>} />
+                        <Route path="/public-networks" element={<Page><PublicNetworks /></Page>} />
                         <Route path="/network-chat" element={<Page><NetworkChat /></Page>} />
-                        <Route path="/modelos" element={<Page><WholeModels /></Page>} />
-                        <Route path="/modelos/remotos" element={<Page><RemoteModels /></Page>} />
-                        <Route path="/modelos/fatiar" element={<Page><SliceModels /></Page>} />
-                        <Route path="/fatias" element={<Page><Shards /></Page>} />
-                        <Route path="/implantar" element={<Page><DeployModel /></Page>} />
-                        <Route path="/implantacoes" element={<Page><Deployments /></Page>} />
-                        <Route path="/implantacoes/logs" element={<Page><DeploymentLogs /></Page>} />
+                        <Route path="/models" element={<Page><WholeModels /></Page>} />
+                        <Route path="/models/remote" element={<Page><RemoteModels /></Page>} />
+                        <Route path="/models/slice" element={<Page><SliceModels /></Page>} />
+                        <Route path="/shards" element={<Page><Shards /></Page>} />
+                        <Route path="/deploy" element={<Page><DeployModel /></Page>} />
+                        <Route path="/deployments" element={<Page><Deployments /></Page>} />
+                        <Route path="/deployments/logs" element={<Page><DeploymentLogs /></Page>} />
                         {/* Keep the former deploy URL working for old bookmarks. */}
-                        <Route path="/fatias/implantar" element={<Navigate to="/implantar" replace />} />
-                        <Route path="/transferencias" element={<Page><Transfers /></Page>} />
-                        <Route path="/transferencias/enviar" element={<Page><SendFile /></Page>} />
+                        <Route path="/shards/deploy" element={<Navigate to="/deploy" replace />} />
+                        <Route path="/transfers" element={<Page><Transfers /></Page>} />
+                        <Route path="/transfers/send" element={<Page><SendFile /></Page>} />
                         <Route path="/plugins" element={<Page><Plugins /></Page>} />
-                        <Route path="/documentacao" element={<Page><Documentation /></Page>} />
-                        <Route path="/config/rede" element={<Page><NetworkSettings /></Page>} />
-                        <Route path="/config/rede/participantes" element={<Page><NetworkParticipants /></Page>} />
-                        <Route path="/config/minha-maquina" element={<Page><MyMachine /></Page>} />
-                        <Route path="/config/administracao" element={<Page><AdminAuthority /></Page>} />
-                        <Route path="/config/compartilhamento" element={<Page><NetworkSharing /></Page>} />
-                        <Route path="/config/confianca" element={<Page><TrustAnchor /></Page>} />
-                        <Route path="/config/preferencias" element={<Page><Preferences /></Page>} />
-                        <Route path="/config/preferencias/admin" element={<Page><Preferences administrative /></Page>} />
-                        <Route path="/config/sobre" element={<Page><About /></Page>} />
+                        <Route path="/documentation" element={<Page><Documentation /></Page>} />
+                        <Route path="/config/network" element={<Page><NetworkSettings /></Page>} />
+                        <Route path="/config/network/participants" element={<Page><NetworkParticipants /></Page>} />
+                        <Route path="/config/my-machine" element={<Page><MyMachine /></Page>} />
+                        <Route path="/config/administration" element={<Page><AdminAuthority /></Page>} />
+                        <Route path="/config/sharing" element={<Page><NetworkSharing /></Page>} />
+                        <Route path="/config/trust" element={<Page><TrustAnchor /></Page>} />
+                        <Route path="/config/preferences" element={<Page><Preferences /></Page>} />
+                        <Route path="/config/preferences/admin" element={<Page><Preferences administrative /></Page>} />
+                        <Route path="/config/about" element={<Page><About /></Page>} />
                         <Route path="/config/keys/api" element={<Page><TokenKeys /></Page>} />
-                        <Route path="/config/keys/conexao" element={<Page><ConnectionKeys /></Page>} />
-                        <Route path="/config/pastas" element={<Page><ModelPaths /></Page>} />
-                        <Route path="/config/armazenamento" element={<Page><ModelPaths /></Page>} />
+                        <Route path="/config/keys/connection" element={<Page><ConnectionKeys /></Page>} />
+                        <Route path="/config/folders" element={<Page><ModelPaths /></Page>} />
+                        <Route path="/config/storage" element={<Page><ModelPaths /></Page>} />
                         <Route path="*" element={<Page><NotFound /></Page>} />
                       </Routes>
                     </AnimatePresence>

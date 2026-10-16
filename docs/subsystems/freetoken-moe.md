@@ -169,8 +169,8 @@ On 2026-09-02, the proof of a real Q6_K block closed the cause of the
 `d[2]` at the end of the 210 bytes. The Rust decoder and `k_dot_q6_k` read `d`
 at the start, also shifting every other field. The fix uses the real
 `block_q6_K` offsets in both executors. The proofs
-`q6_k_gate_up_oito_experts_hidden_2048_e_finito` and
-`q6_k_gate_up_heterogeneo_oito_experts_hidden_2048_e_finito` use finite input
+`q6_k_gate_up_eight_experts_hidden_2048_is_finite` and
+`heterogeneous_q6_k_gate_up_eight_experts_hidden_2048_is_finite` use finite input
 and eight experts, and the first also checks the expert indexes loaded from the
 GGUF. CUDA validation requires `nvcc` on the GPU machine; there was neither a
 Qwen3.6 GGUF nor a CUDA compiler in that local worktree.
@@ -399,7 +399,7 @@ and stage (`hidden_input_non_finite` or `forward_output_non_finite`), stopping
 the request instead of silently contaminating the next layer.
 
 The ignored test
-`llm::moe_route_tests::callback_global_emite_diagnostico_em_thread_externa_e_registra_gate`
+`llm::moe_route_tests::global_callback_emits_the_diagnostic_on_an_external_thread_and_records_the_gate`
 installs the global dispatcher with an equivalent `.init`, creates a
 `std::thread` outside the Tokio runtime and requires in the same sink the
 configuration, `callback_entry_default`, `callback_entry` with the MoE target and
@@ -411,7 +411,7 @@ The `llama.cpp` callback receives the route in the token-major order that
 results from `ggml_get_rows` with dimensions `[1, experts_used, tokens]`: slot is
 the fastest index within each token. The Rust normalization validates and keeps
 that order, without transposing. The unit test
-`llm::moe_route_tests::rota_do_get_rows_do_llama_cpp_ja_chega_em_ordem_token_major`
+`llm::moe_route_tests::the_llama_cpp_get_rows_route_already_arrives_in_token_major_order`
 pins the contract against the physical sequence produced by the C++ builder.
 
 The `resolve_fused_ops: ... enabled` messages do not prove a fused operation was
@@ -1483,11 +1483,11 @@ validated as finite scalars, loaded into the payload/descriptor and applied in
 the gate, up and down products. The shared tensor `ffn_*_shexp` stays out of
 that inventory.
 
-The tests `expert_shared_nao_entra_no_inventario_de_rota` and
-`inventario_de_rota_separa_exps_de_shexp_e_dos_sidecars` confirm that only the
+The tests `the_shared_expert_stays_out_of_the_route_inventory` and
+`route_inventory_separates_exps_from_shexp_and_the_sidecars` confirm that only the
 four `*_exps.weight` tensors are classified as route: `*_shexp` and
 `.scale`/`.input_scale` stay out. The test
-`sidecars_fundidos_usam_componente_e_fallback_separado_corretos` confirms the
+`fused_sidecars_use_the_right_component_and_split_fallback` confirms the
 association of component 0/1 in the fused tensor's sidecars and the fallback to
 the separate gate/up sidecars. So the hypotheses of a counted shared expert and
 a sidecar tied to the wrong component do not explain the NaN observed on Ornith.
@@ -1712,7 +1712,7 @@ miss's new free memory measurement. If the expert named by the
 of idle entries, admission refuses and includes device, key, requested bytes and
 available limit. There is no allocation attempt to find out whether it fits, nor
 a silent fallback to a residency that would eat the graph's workspace. The test
-`cache_device_recusa_expert_quando_workspace_medido_consumiu_o_orcamento` covers
+`device_cache_refuses_an_expert_when_the_measured_workspace_used_up_the_budget` covers
 the tight case with a fake allocator. That fix was a local implementation;
 promotion requires a CUDA build on the check branch and validation in the real
 environment, without touching the service during the operator's measurement.
@@ -1726,7 +1726,7 @@ only removes an entry without a lease. The payload's contiguity, geometry and
 numeric validation are still checked before admission, so residency does not
 relax the correctness proof.
 
-The unit test `cache_device_hit_reutiliza_handle_sem_novo_upload` uses a fake
+The unit test `device_cache_hit_reuses_the_handle_without_a_new_upload` uses a fake
 allocator and proves one upload for two accesses; the adjacent tests prove an
 active lease and a refusal by the measured budget. Those tests do not replace
 CUDA validation. That commit still had to be built on the CUDA test server with
@@ -1751,7 +1751,7 @@ the host. The CPU path stays token by token and is not changed by this phase.
 
 This change claims no tok/s gain without a measurement. It must be validated
 with the numeric proof of the same hidden state, weights and route before any
-benchmark. The CUDA test `executor_cuda_nvfp4_lote_de_rotas_agrega_tokens_no_device`
+benchmark. The CUDA test `cuda_nvfp4_executor_route_batch_aggregates_tokens_on_the_device`
 compares two tokens, four route pairs and the device aggregation against the CPU
 decoder. The CUDA build test on the CUDA test server stays mandatory before
 promotion; no deploy, model swap or throughput measurement is part of that step
@@ -1811,7 +1811,7 @@ executor, with `k_dot` choosing each tensor's already validated decoder. A dtype
 outside that set uses the external CPU decoder when it exists; if it does not,
 admission refuses the combination before loading and lists the dtypes that
 blocked the bridge. The mixed route's specific differential comparison is in the
-test `executor_cuda_k_quants_heterogeneos_preserva_q2k_q3k_q4k_do_decoder_cpu`,
+test `heterogeneous_cuda_k_quants_executor_matches_cpu_decoder_q2k_q3k_q4k`,
 with an absolute tolerance of `1e-4` and a report of the relative difference too;
 it was run with real CUDA before declaring the combination proven.
 
@@ -1893,7 +1893,7 @@ before the 100 iterations of each point. The reproducible command was:
 POM_MOE_CUDA_PROFILE=1 CARGO_TARGET_DIR=/data/ftk-cuda-target \
 CUDACXX=/usr/local/cuda-12/bin/nvcc \
 cargo test -p node --features vulkan,cuda --bin pom \
-  mede_banda_h2d_d2h_do_lote_nvfp4 -- --ignored --nocapture
+  measures_the_h2d_d2h_band_of_the_nvfp4_batch -- --ignored --nocapture
 ```
 
 Observed output:
@@ -1994,7 +1994,7 @@ The sidecar produced by the test contained `cpu_wall_ms=925.491047`,
 `0.9959`. That is a synthetic measurement of one geometry, not an E2E
 measurement of the real model. The CUDA test server only had the Gemma4 `.pom`
 manifest at the queried path, without the slices' GGUFs, so the ignored proofs
-`executor_cuda_nvfp4_lote_preserva_geometria_do_gguf_real` and
+`cuda_nvfp4_executor_batch_preserves_the_real_gguf_geometry` and
 `nvfp4_matches_llama_cpp_from_first_layer_and_stage` did not run for lack of
 the required file. No performance gain is attributed to the co-executed path on
 the basis of that test.
@@ -2139,7 +2139,7 @@ the expected one, absolute error and relative error. The isolated CPU fixture
 passed:
 
 ```text
-CARGO_TARGET_DIR="$PWD/target/ftk-cuda-check" cargo test -p node --bin pom cada_iq_priorizado_tem_bloco_e_dequantizacao_determinados -- --nocapture
+CARGO_TARGET_DIR="$PWD/target/ftk-cuda-check" cargo test -p node --bin pom each_prioritized_iq_has_a_defined_block_and_dequantization -- --nocapture
 1 passed, 891 filtered out
 ```
 
@@ -2162,7 +2162,7 @@ IQ iq2_s estágios: gate_up=None, activation=None, down=None
 IQ iq4_xs estágios: gate_up=None, activation=None, down=None
 ```
 
-The heterogeneous proof `executor_cuda_iq_heterogeneo_preserva_gate_up_down_por_dtype`
+The heterogeneous proof `heterogeneous_cuda_iq_executor_preserves_gate_up_down_per_dtype`
 also returned `1 passed`. The historical divergence was not reproduced and there
 was no kernel change; the only production change of that phase was re-enabling
 the three dtypes after that evidence. The test constructor was removed in the
@@ -2323,8 +2323,8 @@ The dispatcher keeps refusing both an active dtype without a decoder and an ID
 outside the enumeration before reading the payload.
 `Q4LoadError::UnsupportedTensorType` renders `dtype=<id> (<name>)`; for an
 unknown ID, the name is `desconhecido` ("unknown"). The tests
-`dtype_desconhecido_informa_id_e_nome` and
-`dtype_ativo_sem_decoder_informa_id_e_nome` cover, respectively, the cases 999
+`an_unknown_dtype_reports_id_and_name` and
+`an_active_dtype_without_a_decoder_reports_id_and_name` cover, respectively, the cases 999
 and Q8_1. So the gap is observable and named, never a silent interpretation as
 another format.
 
@@ -2362,7 +2362,7 @@ previous IQ path and lets gate, up and down use different dtypes; a missing
 bridge with an external decoder in any tensor refuses the load and reports the
 blocking dtype.
 
-The ignored test `qwen_ud_iq3_s_real_inventaria_dtypes_por_tensor` requires
+The ignored test `real_qwen_ud_iq3_s_inventories_dtypes_per_tensor` requires
 `POM_REAL_MOE_GGUF` and the real file `Qwen3.6-35B-A3B-UD-IQ3_S.gguf`; it
 validates 40 layers, 256 experts and the dtypes `{21, 22, 23}`. The observed
 geometry is `[2048, 512, 256]` in gate/up and `[512, 2048, 256]` in down. A
@@ -2663,7 +2663,7 @@ Warmup cancellation is also checked after a candidate is obtained. So a read
 that finished after a real request arrived cannot admit bytes of future layers
 and evict the active working set. The path still lets a single admission
 already in progress finish, but does not start another one after cancellation.
-The test `warmup_cancelado_depois_de_obter_candidato_nao_admite_payload` pins
+The test `a_warmup_cancelled_after_getting_a_candidate_admits_no_payload` pins
 that boundary.
 
 This phase removes redundant copies, allocations and synchronizations, but does
@@ -3152,7 +3152,7 @@ not benefit directly from that collective.
   local environment without getting a model and starting an own runtime.
 - The filtered CUDA battery still has a historical NVFP4 numeric failure, not
   introduced by warmup. At `ef36059` and at `c292403`, the isolated test
-  `executor_cuda_nvfp4_lote_de_rotas_agrega_tokens_no_device` reproduced
+  `cuda_nvfp4_executor_route_batch_aggregates_tokens_on_the_device` reproduced
   `13.464294 != 164.57135`. The IQ proof of `86226c7` did not reproduce the old
   IQ differences; the three dtypes passed the differential proof and must not
   be protected by a wider tolerance.

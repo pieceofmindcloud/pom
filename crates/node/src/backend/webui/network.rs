@@ -70,20 +70,81 @@ pub(crate) async fn network_settings_policy(
     .into_response()
 }
 
-/// A referência geográfica do setup também é necessária ao editor autenticado
-/// da rede, que usa a mesma tabela SQLite para evitar nomes livres divergentes.
-pub(crate) async fn geo_reference(
-    _auth: ConnectionAuth,
-    State(state): State<GatewayState>,
-) -> Response {
-    match state.database.geo_reference() {
-        Ok(countries) => Json(json!({ "countries": countries })).into_response(),
-        Err(error) => network_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "geo_reference_failed",
-            &format!("ler referência geográfica: {error:#}"),
-        ),
+#[derive(Debug, serde::Deserialize)]
+pub(crate) struct GeoCitiesQuery {
+    country: String,
+    #[serde(default)]
+    q: String,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub(crate) struct GeoNearestQuery {
+    latitude: f64,
+    longitude: f64,
+    limit: Option<usize>,
+}
+
+fn geo_unavailable(error: String) -> Response {
+    network_error(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "geo_database_failed",
+        &error,
+    )
+}
+
+pub(super) fn geo_countries_response() -> Response {
+    match crate::geo::database() {
+        Ok(database) => Json(json!({
+            "countries": database.countries(),
+            "release": crate::geo::RELEASE,
+        }))
+        .into_response(),
+        Err(error) => geo_unavailable(error),
     }
+}
+
+pub(super) fn geo_cities_response(query: GeoCitiesQuery) -> Response {
+    match crate::geo::database() {
+        Ok(database) => Json(json!({
+            "cities": database.search(&query.country, &query.q, query.limit),
+        }))
+        .into_response(),
+        Err(error) => geo_unavailable(error),
+    }
+}
+
+pub(super) fn geo_nearest_response(query: GeoNearestQuery) -> Response {
+    match crate::geo::database() {
+        Ok(database) => Json(json!({
+            "cities": database.nearest(query.latitude, query.longitude, query.limit),
+        }))
+        .into_response(),
+        Err(error) => geo_unavailable(error),
+    }
+}
+
+/// Reads of the offline city database (`geo.rs`) for the location editor.
+/// They answer from the binary: nothing is looked up on the internet and
+/// nothing is stored.
+pub(crate) async fn geo_countries(_auth: ConnectionAuth) -> Response {
+    geo_countries_response()
+}
+
+/// Cities of one country matching the typed text.
+pub(crate) async fn geo_cities(
+    _auth: ConnectionAuth,
+    axum::extract::Query(query): axum::extract::Query<GeoCitiesQuery>,
+) -> Response {
+    geo_cities_response(query)
+}
+
+/// The cities closest to a coordinate, which is how a pin becomes a city.
+pub(crate) async fn geo_nearest(
+    _auth: ConnectionAuth,
+    axum::extract::Query(query): axum::extract::Query<GeoNearestQuery>,
+) -> Response {
+    geo_nearest_response(query)
 }
 
 pub(crate) async fn save_network_settings(
@@ -91,16 +152,11 @@ pub(crate) async fn save_network_settings(
     State(state): State<GatewayState>,
     Json(settings): Json<NetworkSettings>,
 ) -> Response {
-    let profile = state.auth.read().await.profile;
-    if state
-        .admin_trust
-        .effective_authority(&state.authority_principal, profile)
-        .is_none()
-    {
+    if !super::local_is_primary(&state).await {
         return network_error(
             StatusCode::FORBIDDEN,
             "admin_authority_required",
-            "somente um administrador autorizado pode editar a rede",
+            "only an authorized administrator can edit the network",
         );
     }
 
@@ -130,9 +186,7 @@ async fn apply_network_settings_with_key(
     settings.description = settings.description.trim().to_string();
     settings.rules = settings.rules.trim().to_string();
     settings.channels = settings.channels.trim().to_string();
-    settings.country_code = settings.country_code.trim().to_ascii_uppercase();
-    settings.country_name = settings.country_name.trim().to_string();
-    settings.city = settings.city.trim().to_string();
+    crate::geo::apply_location(&mut settings)?;
     settings.accepted_enrollments = settings.accepted_enrollments.normalized();
     let discovery_before = state.auth.read().await.network.visibility != NetworkVisibility::Local;
     let discovery_after = settings.visibility != NetworkVisibility::Local;
@@ -165,13 +219,13 @@ async fn apply_network_settings_with_key(
             cfg.connection_key = crate::webui::fresh_connection_key();
         }
         cfg.save()
-            .map_err(|error| format!("salvar configuração da rede: {error:#}"))?;
+            .map_err(|error| format!("save network configuration: {error:#}"))?;
         cfg.connection_key.clone()
     };
     state
         .database
         .save_network_settings(&settings)
-        .map_err(|error| format!("salvar detalhes da rede: {error:#}"))?;
+        .map_err(|error| format!("save network details: {error:#}"))?;
 
     // Discovery is the difference between `local` and the other two: off, the
     // node announces nothing and no key lookup finds it; on, it goes looking
@@ -181,13 +235,13 @@ async fn apply_network_settings_with_key(
     } else if !discovery_before && discovery_after {
         let assignment = state.local_assignment.read().await.clone();
         if let Err(error) = state.network.rejoin(assignment.as_ref()).await {
-            warn!("não foi possível voltar a anunciar a rede: {error:#}");
+            warn!("could not resume announcing the network: {error:#}");
         }
     }
 
     if let Some(publisher) = &state.pkarr_publisher {
         if let Err(error) = publisher.set_geo_label(&settings.geo_label).await {
-            warn!("não foi possível republicar o rótulo geo no pkarr: {error:#}");
+            warn!("could not republish the geo label on pkarr: {error:#}");
         }
     }
 
@@ -210,7 +264,7 @@ async fn fanout_network_settings(
             continue;
         }
         let Ok(client) = state.peer_http.for_peer(&peer.node_id) else {
-            warn!(peer = %peer.node_id, "não foi possível criar cliente para sincronizar detalhes da rede");
+            warn!(peer = %peer.node_id, "could not create a client to sync the network details");
             continue;
         };
         let mut updated = false;
@@ -235,7 +289,7 @@ async fn fanout_network_settings(
             {
                 Ok(request) => request,
                 Err(error) => {
-                    warn!(peer = %peer.node_id, "não foi possível assinar detalhes da rede: {error:#}");
+                    warn!(peer = %peer.node_id, "could not sign the network details: {error:#}");
                     break;
                 }
             };
@@ -251,7 +305,7 @@ async fn fanout_network_settings(
         if updated {
             synced += 1;
         } else {
-            warn!(peer = %peer.node_id, "peer não confirmou os detalhes atualizados da rede");
+            warn!(peer = %peer.node_id, "peer did not confirm the updated network details");
         }
     }
     synced
@@ -289,10 +343,12 @@ pub(crate) async fn notify_principal_of_departure(state: &GatewayState) {
         {
             Ok(response) if response.status().is_success() => return,
             Ok(response) => warn!(
-                "saída da rede: o principal respondeu {} ao aviso",
+                "leaving the network: the principal answered {} to the notice",
                 response.status()
             ),
-            Err(error) => warn!("saída da rede: o principal não recebeu o aviso: {error:#}"),
+            Err(error) => {
+                warn!("leaving the network: the principal did not receive the notice: {error:#}")
+            }
         }
     }
     // Otherwise by the principal's key, over the lobby connection. That one
@@ -311,11 +367,11 @@ pub(crate) async fn notify_principal_of_departure(state: &GatewayState) {
     match tokio::time::timeout(Duration::from_secs(10), client.request(&key, request)).await {
         Ok(Ok(response)) if response.accepted => {}
         Ok(Ok(response)) => warn!(
-            "saída da rede: o principal recusou o aviso: {:?}",
+            "leaving the network: the principal refused the notice: {:?}",
             response.error
         ),
-        Ok(Err(error)) => warn!("saída da rede: o principal está inalcançável: {error:#}"),
-        Err(_) => warn!("saída da rede: o aviso ao principal passou do prazo"),
+        Ok(Err(error)) => warn!("leaving the network: the principal is unreachable: {error:#}"),
+        Err(_) => warn!("leaving the network: the notice to the principal exceeded the deadline"),
     }
 }
 
@@ -328,10 +384,10 @@ pub(crate) fn spawn_departure_worker(state: GatewayState) {
             for node_id in state.network_chat.rotations_wanted().await {
                 match rotate_connection_key(&state, &node_id).await {
                     Ok(Some(synced)) => {
-                        info!(node = %node_id, synced, "membro saiu: chave de conexão renovada")
+                        info!(node = %node_id, synced, "member left: connection key renewed")
                     }
                     Ok(None) => {}
-                    Err(error) => warn!("não foi possível renovar a chave de conexão: {error}"),
+                    Err(error) => warn!("could not renew the connection key: {error}"),
                 }
             }
         }
@@ -383,7 +439,7 @@ pub(crate) async fn member_left(
     state.network_chat.member_departed(&body.node_id);
     match rotate_connection_key(&state, &body.node_id).await {
         Ok(Some(synced)) => {
-            info!(node = %body.node_id, synced, "membro saiu: chave de conexão renovada");
+            info!(node = %body.node_id, synced, "member left: connection key renewed");
             Json(json!({ "rotated": true, "synced_peers": synced })).into_response()
         }
         Ok(None) => Json(json!({ "rotated": false })).into_response(),
@@ -414,7 +470,7 @@ async fn rotate_connection_key(
         crate::auth::begin_key_transition(&previous, &config.connection_key, effective_at);
         config
             .save()
-            .map_err(|error| format!("salvar a nova chave de conexão: {error:#}"))?;
+            .map_err(|error| format!("save the new connection key: {error:#}"))?;
         (config.network.clone(), config.connection_key.clone())
     };
     let settings = state
@@ -459,7 +515,7 @@ pub(crate) fn spawn_member_list_keeper(state: GatewayState) {
                     .network_chat
                     .record_member(&peer.node_id, &peer.hostname, role)
                 {
-                    info!(node = %peer.node_id, "membro registrado na lista da rede");
+                    info!(node = %peer.node_id, "member recorded in the network list");
                 }
             }
         }
@@ -492,8 +548,7 @@ pub(crate) fn spawn_key_reclaimer(state: GatewayState) {
             {
                 continue;
             }
-            let Some(key) =
-                crate::pkarr_node::PkarrNode::public_key_uri_from_hex(&primary.pubkey)
+            let Some(key) = crate::pkarr_node::PkarrNode::public_key_uri_from_hex(&primary.pubkey)
             else {
                 continue;
             };
@@ -506,12 +561,12 @@ pub(crate) fn spawn_key_reclaimer(state: GatewayState) {
             let granted = match client.request(&key, request).await {
                 Ok(response) => response.admission.and_then(|view| view.grant),
                 Err(error) => {
-                    tracing::debug!("chave da rede: o principal não respondeu: {error:#}");
+                    tracing::debug!("network key: the principal did not answer: {error:#}");
                     continue;
                 }
             };
             let Some(grant) = granted else {
-                tracing::debug!("chave da rede: esta máquina não está na lista de membros");
+                tracing::debug!("network key: this machine is not in the member list");
                 continue;
             };
             let new_key = grant.connection_key.trim();
@@ -521,8 +576,8 @@ pub(crate) fn spawn_key_reclaimer(state: GatewayState) {
             }
             config.connection_key = new_key.to_string();
             match config.save() {
-                Ok(()) => info!("chave de conexão da rede renovada a partir do principal"),
-                Err(error) => warn!("não foi possível salvar a nova chave de conexão: {error:#}"),
+                Ok(()) => info!("network connection key renewed from the principal"),
+                Err(error) => warn!("could not save the new connection key: {error:#}"),
             }
         }
     });
@@ -533,14 +588,15 @@ pub(crate) async fn internal_network_settings(
     State(state): State<GatewayState>,
     Json(envelope): Json<NetworkSettingsEnvelope>,
 ) -> Response {
-    let is_admin = auth.principal().is_some_and(|issuer| {
-        crate::admin_trust::control_issuer_is_admin(&state.admin_trust.document(), issuer)
-    });
+    // Network settings come from the principal alone.
+    let is_admin = auth
+        .principal()
+        .is_some_and(|issuer| crate::gateway::issuer_is_principal(&state, issuer));
     if !is_admin {
         return network_error(
             StatusCode::FORBIDDEN,
             "admin_authority_required",
-            "a alteração da rede precisa ser assinada por uma autoridade administrativa",
+            "the network change must be signed by an administrative authority",
         );
     }
     match apply_network_settings_with_key(
@@ -591,7 +647,7 @@ pub(crate) fn spawn_network_settings_ratchet(state: GatewayState) {
             let probe = crate::peer_client::PeerClients::new(PEER_TIMEOUT);
             probe.set_tls(announced_tls);
             let Ok(client) = probe.for_peer(&principal) else {
-                warn!(principal = %principal, "não foi possível criar cliente para sincronizar a rede");
+                warn!(principal = %principal, "could not create a client to sync the network");
                 continue;
             };
             let mut fetched = None;
@@ -668,10 +724,10 @@ pub(crate) fn spawn_network_settings_ratchet(state: GatewayState) {
             {
                 Ok(_) => {
                     state.network.mark_network_settings_synced();
-                    info!(principal = %principal, "detalhes completos da rede adotados do principal");
+                    info!(principal = %principal, "complete network details adopted from the principal");
                 }
                 Err(error) => {
-                    warn!(principal = %principal, "detalhes da rede recebidos mas inválidos: {error}");
+                    warn!(principal = %principal, "network details received but invalid: {error}");
                 }
             }
         }
@@ -689,7 +745,7 @@ async fn network_info_view(state: &GatewayState) -> NetworkInfoView {
     let can_edit = state
         .admin_trust
         .effective_authority(&state.authority_principal, config.profile)
-        .is_some();
+        == Some(crate::admin_trust::EffectiveAuthority::Primary);
     NetworkInfoView { network, can_edit }
 }
 
@@ -811,6 +867,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_pin_is_answered_with_the_cities_around_it() {
+        let response = geo_nearest_response(GeoNearestQuery {
+            latitude: -25.43,
+            longitude: -49.27,
+            limit: Some(2),
+        });
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let cities = body["cities"].as_array().unwrap();
+        assert_eq!(cities.len(), 2);
+        assert_eq!(cities[0]["name"], "Curitiba");
+        assert_eq!(cities[0]["country_code"], "BR");
+        assert!(cities[0]["distance_km"].as_f64().unwrap() < 5.0);
+
+        let response = geo_cities_response(GeoCitiesQuery {
+            country: "br".into(),
+            q: "curitib".into(),
+            limit: None,
+        });
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["cities"][0]["name"], "Curitiba");
+    }
+
+    #[tokio::test]
     async fn changing_visibility_preserves_the_internal_credential() {
         let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK
             .lock()
@@ -844,15 +930,13 @@ mod tests {
         assert_eq!(state.auth.read().await.connection_key, "chave");
 
         let public = NetworkSettings {
-            country_code: "BR".into(),
-            country_name: "Brasil".into(),
-            city: "Curitiba".into(),
+            city_id: Some(crate::geo::test_city_id()),
             visibility: NetworkVisibility::Public,
             ..private.clone()
         };
         apply_network_settings_with_key(&state, public, false, None, None)
             .await
-            .expect("transição para rede pública");
+            .expect("transition to a public network");
         let public_config = state.auth.read().await;
         assert_eq!(public_config.connection_key, "chave");
         assert_eq!(
@@ -863,7 +947,7 @@ mod tests {
 
         apply_network_settings_with_key(&state, private, false, None, None)
             .await
-            .expect("retorno para rede privada");
+            .expect("return to a private network");
         let private_config = state.auth.read().await;
         assert_eq!(private_config.connection_key, "chave");
         assert_eq!(

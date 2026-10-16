@@ -198,7 +198,7 @@ only the generic boundary, reusable by any future `plugin_code`:
   screens: they live in `pom-plugin-logs` (`ui/`) and arrive through the
   generic plugin UI mechanism (manifest, screens and i18n installed together
   with the backend) - see `plugins-ui.md`. POM only keeps the sales fallback
-  (`EnterpriseFeatureShowcase`) for `/logs` and `/estatisticas` when the plugin
+  (`EnterpriseFeatureShowcase`) for `/logs` and `/statistics` when the plugin
   is not active: a commercial page with the data, screenshots and price from
   the public catalog and the buy button, which opens Stripe checkout (see
   "Checkout through the node" below). An earlier version (97bb0e91) showed only
@@ -249,7 +249,7 @@ Plugins are local to each node, so activating a license, registering a GitHub
 repository, installing, updating and using a plugin's UI is allowed to the
 `admin`, `node` and `infer` profiles on their own machine, including the
 development rebuild (`/api/ui/plugins/dev-sources*`), which also requires
-`POM_DESENV=1`. The `infer` UI lists Plugins and the installed plugins' menus
+`POM_DEV_MODE=1`. The `infer` UI lists Plugins and the installed plugins' menus
 below its conversations. The rule
 lives in `ROUTE_RULES` (`backend/webui/routes/mod.rs`).
 
@@ -283,7 +283,7 @@ The **Plugins** screen (`/plugins`, `apps/frontend/src/routes/Plugins.tsx`) is
 the only one that activates, updates and deactivates plugins - it replaced the
 old single-product `Enterprise.tsx` screen. It does NOT handle updating the
 `pom` binary itself: that lives entirely in the **About** screen
-(`/config/sobre`), behind `GET /api/ui/pom-update/status` and
+(`/config/about`), behind `GET /api/ui/pom-update/status` and
 `POST /api/ui/pom-update/check|apply` - see
 `## Authorized binary detection and update` below. The two screens and the two
 route families never mix, in code or in the UI.
@@ -389,7 +389,7 @@ silently replaced; no license server query is made to decide whether the
 repository needs a license.
 
 The local development build/install is open to every profile on its own
-machine and requires `POM_DESENV=1`: the source is picked from an allowlist mounted under
+machine and requires `POM_DEV_MODE=1`: the source is picked from an allowlist mounted under
 `/opt/pom/dev-plugins`. It can install a development-only plugin with no prior
 license or GitHub installation, persisting it separately in
 `plugin_dev_install:<code>`; this starts the host but grants no licensed
@@ -438,7 +438,7 @@ and, on every save, the node also sends `host.event` with
   to the admin `activation-batches` flow and transferring grants/artifacts
   between peers.
 - **Phase 5 - frontend:** delivered `/enterprise`, activation, refresh and the
-  active state. `/logs` and `/estatisticas` stay visible and clickable without
+  active state. `/logs` and `/statistics` stay visible and clickable without
   a license, showing the Enterprise invitation instead of empty data.
 - **Phase 6 - release/hardening:** delivered `build-enterprise-plugin.sh`,
   `pom-release.sh`, atomic install and Ed25519/hash/ABI verification.
@@ -467,7 +467,7 @@ and, on every save, the node also sends `host.event` with
   public showcase and activates/updates/deactivates per `plugin_code`. The
   `pom_core` update detection/application left `EnterpriseState` and got its
   own file, `pom_core_update.rs` (`PomCoreUpdater`), with its own full screen
-  at `/config/sobre` - never again sharing code or UI with the Plugins screen.
+  at `/config/about` - never again sharing code or UI with the Plugins screen.
   **Contract assumption**, now confirmed against the real server:
   `ActivationPayload`/`ActivationResponse`/`GrantBody` carry `plugin_code`, and
   activation is one call per `plugin_code` (the client learns which ones to

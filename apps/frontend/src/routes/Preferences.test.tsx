@@ -79,7 +79,7 @@ function mount(child: React.ReactNode) {
 }
 
 describe("Preferences", () => {
-  it("mostra as duas configurações que saíram de Rede", () => {
+  it("shows the two settings that left Network", () => {
     mount(<Preferences />);
 
     expect(screen.getByText("Preferências")).toBeTruthy();
@@ -88,7 +88,7 @@ describe("Preferences", () => {
     expect(screen.getByText("••••••••cret")).toBeTruthy();
   });
 
-  it("no perfil infer, esconde a proteção térmica da GPU e o Hugging Face", () => {
+  it("in the infer profile, hides the GPU thermal protection and Hugging Face", () => {
     render(
       <LocaleProvider initialLocale="pt-BR">
         <ProfileProvider initialProfile="infer">
@@ -100,7 +100,7 @@ describe("Preferences", () => {
     expect(screen.queryByText("Hugging Face")).toBeNull();
   });
 
-  it("mantém a leitura da política e salva alterações no endpoint térmico", async () => {
+  it("keeps the policy reading and saves changes to the thermal endpoint", async () => {
     mocks.post.mockResolvedValue({ limit_c: 82, hysteresis_c: 7, cooldown_secs: 45 });
     mount(<Preferences />);
 
@@ -119,7 +119,7 @@ describe("Preferences", () => {
     });
   });
 
-  it("mostra QUIC ao lado de TLS e salva a preferência do principal", async () => {
+  it("shows QUIC next to TLS and saves the principal preference", async () => {
     mocks.post.mockResolvedValue({ quic_enabled: true });
     mount(<Preferences administrative />);
 
@@ -133,7 +133,7 @@ describe("Preferences", () => {
     });
   });
 
-  it("mantém a descoberta local desligada e permite ativá-la pela preferência administrativa", async () => {
+  it("keeps local discovery off and allows enabling it through the administrative preference", async () => {
     mocks.post.mockResolvedValue({ enabled: true, active: true, searching: false, found: false, port: 42777 });
     mount(<Preferences administrative />);
 
@@ -145,7 +145,7 @@ describe("Preferences", () => {
     });
   });
 
-  it("mostra os logs de processo entre nós só com o plugin de Logs ativo nesta máquina", () => {
+  it("shows the process logs between nodes only with the Logs plugin active on this machine", () => {
     mount(<Preferences administrative />);
     expect(screen.getByText("Logs de processo entre nós")).toBeTruthy();
 
@@ -156,7 +156,7 @@ describe("Preferences", () => {
     mocks.logsPluginActive = true;
   });
 
-  it("esconde a política incompatível com o transporte ativo", () => {
+  it("hides the policy incompatible with the active transport", () => {
     mocks.node.quic_enabled = true;
     mount(<Preferences administrative />);
 
@@ -172,7 +172,7 @@ describe("Preferences", () => {
     expect(screen.queryByText("Transporte QUIC")).toBeNull();
   });
 
-  it("define e guarda a senha quando a interface passa para a rede", async () => {
+  it("sets and stores the password when the interface moves to the network", async () => {
     mocks.post.mockResolvedValue({
       saved: true,
       restart: false,
@@ -201,7 +201,7 @@ describe("Preferences", () => {
     });
   });
 
-  it("mantém o salvamento da credencial do Hugging Face", async () => {
+  it("keeps the saving of the Hugging Face credential", async () => {
     mocks.saveHuggingFaceToken.mockResolvedValue({
       configured: true,
       masked: "••••••••cret",
@@ -221,7 +221,7 @@ describe("Preferences", () => {
 });
 
 describe("ThermalPanel", () => {
-  it("aceita exatamente 70 °C e 60 segundos", () => {
+  it("accepts exactly 70 °C and 60 seconds", () => {
     const onSave = vi.fn();
     mount(
       <ThermalPanel
@@ -237,7 +237,7 @@ describe("ThermalPanel", () => {
     expect(onSave).toHaveBeenCalledWith({ limit_c: 70, hysteresis_c: 8, cooldown_secs: 60 });
   });
 
-  it("recusa temperatura de corte abaixo de 70 °C", () => {
+  it("refuses a cutoff temperature below 70 °C", () => {
     const onSave = vi.fn();
     mount(
       <ThermalPanel
@@ -253,7 +253,7 @@ describe("ThermalPanel", () => {
     expect(screen.getByText(/temperatura de corte deve ser de pelo menos 70 °C/i)).toBeTruthy();
   });
 
-  it("recusa tempo de resfriamento acima de 60 segundos", () => {
+  it("refuses a cooldown time above 60 seconds", () => {
     const onSave = vi.fn();
     mount(
       <ThermalPanel
@@ -269,7 +269,7 @@ describe("ThermalPanel", () => {
     expect(screen.getByText(/tempo de resfriamento deve ser de no máximo 60 segundos/i)).toBeTruthy();
   });
 
-  it("continua enviando a política editada quando usado isoladamente", () => {
+  it("keeps sending the edited policy when used standalone", () => {
     const onSave = vi.fn();
     mount(
       <ThermalPanel

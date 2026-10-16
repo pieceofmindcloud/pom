@@ -7,7 +7,6 @@
  * rest", and the rounding to whole layers is shown rather than hidden — the
  * asked-for size, the layer range it became and the real size, side by side.
  */
-import clsx from "clsx";
 import { AnimatePresence, motion } from "framer-motion";
 import { Cpu, Layers, Play, Plus, Scissors, Trash2, TriangleAlert } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -26,6 +25,7 @@ import {
   ScrollX,
   Select,
   Skeleton,
+  Tabs,
 } from "../components/ui";
 import { api } from "../lib/api";
 import { bytes, layerRange, num } from "../lib/format";
@@ -40,7 +40,6 @@ import {
   type TpSlicePlan,
 } from "../lib/types";
 import { useI18n } from "../i18n/provider";
-import { localizeServerText } from "../i18n/locales";
 import { SlicingJobsPanel } from "../components/SlicingJobsPanel";
 
 /** One row of the builder. Empty means "the rest of the model". */
@@ -78,19 +77,19 @@ function asPlan(value: unknown, invalidPlanMessage: string): SlicePlan {
 }
 
 export function SliceModels() {
-  const { t, locale } = useI18n();
+  const { t } = useI18n();
   const [params] = useSearchParams();
   const catalog = useLocalCatalog();
   const node = useNode();
   const toast = useToast();
   const invalidate = useInvalidate();
-  // Tensor Parallelism é um recurso de desenvolvimento: o backend só o marca
-  // disponível com `POM_DESENV=1` (`NodeInfo.pom_desenv`). Fora disso a tela
-  // nem oferece a opção, e o modo nunca sai de "pipeline".
-  const pomDesenv = node.data?.pom_desenv === true;
+  // Tensor Parallelism is a development feature: the backend only marks it
+  // available with `POM_DEV_MODE=1` (`NodeInfo.pom_dev_mode`). Outside that the
+  // screen does not even offer the option, and the mode never leaves "pipeline".
+  const pomDevMode = node.data?.pom_dev_mode === true;
 
-  // Fatiar é sobre modelos inteiros: fatias têm `shard_range` e não podem ser
-  // fatiadas de novo.
+  // Slicing is about whole models: slices have `shard_range` and cannot be
+  // sliced again.
   const models = (catalog.data?.models ?? []).filter(isWholeModel);
   const [path, setPath] = useState(params.get("path") ?? "");
   const [mode, setMode] = useState<SliceMode>("pipeline");
@@ -110,12 +109,12 @@ export function SliceModels() {
     if (!path && models.length > 0) setPath(models[0].path);
   }, [models, path]);
 
-  // A flag pode chegar depois do primeiro render (a leitura de `/api/ui/node`
-  // é assíncrona); um modo TP escolhido antes disso não pode sobreviver à
-  // confirmação de que o desenvolvimento está desligado.
+  // The flag can arrive after the first render (the read of `/api/ui/node`
+  // is asynchronous); a TP mode chosen before that cannot survive the
+  // confirmation that development is off.
   useEffect(() => {
-    if (!pomDesenv && mode === "tensor_parallel") setMode("pipeline");
-  }, [pomDesenv, mode]);
+    if (!pomDevMode && mode === "tensor_parallel") setMode("pipeline");
+  }, [pomDevMode, mode]);
 
   const model = models.find((m) => m.path === path);
   const metadataComplete = catalog.data?.metadata_complete ?? true;
@@ -374,49 +373,23 @@ export function SliceModels() {
                   </div>
                 )}
                 {/*
-                  Tensor Parallelism é um recurso de desenvolvimento: o botão
-                  só existe quando o backend confirma `POM_DESENV=1`. Uma vista
-                  só não é escolha, então sem a flag este grupo nem aparece e o
-                  modo nunca sai de "pipeline" (mesmo padrão de
+                  Tensor Parallelism is a development feature: the button
+                  only exists when the backend confirms `POM_DEV_MODE=1`. A single
+                  view is not a choice, so without the flag this group does not even
+                  show and the mode never leaves "pipeline" (same pattern as
                   `DeploymentInspector`).
                 */}
-                {pomDesenv && (
-                  <div
-                    role="tablist"
-                    aria-label={t("slice.modeGroupAria")}
-                    className="flex items-center gap-1 rounded-lg border border-line bg-raised p-1"
-                  >
-                    <button
-                      type="button"
-                      role="tab"
-                      aria-selected={!tensorMode}
-                      onClick={() => setMode("pipeline")}
-                      className={clsx(
-                        "flex flex-1 items-center justify-center gap-1.5 rounded-md px-2.5 py-1.5 text-[0.78rem] font-medium transition-colors",
-                        !tensorMode
-                          ? "bg-iris/15 text-fg ring-1 ring-inset ring-iris/25"
-                          : "text-muted hover:text-fg",
-                      )}
-                    >
-                      <Layers className="h-3.5 w-3.5" />
-                      {t("slice.modePipeline")}
-                    </button>
-                    <button
-                      type="button"
-                      role="tab"
-                      aria-selected={tensorMode}
-                      onClick={() => setMode("tensor_parallel")}
-                      className={clsx(
-                        "flex flex-1 items-center justify-center gap-1.5 rounded-md px-2.5 py-1.5 text-[0.78rem] font-medium transition-colors",
-                        tensorMode
-                          ? "bg-iris/15 text-fg ring-1 ring-inset ring-iris/25"
-                          : "text-muted hover:text-fg",
-                      )}
-                    >
-                      <Cpu className="h-3.5 w-3.5" />
-                      {t("slice.modeTensorShort")}
-                    </button>
-                  </div>
+                {pomDevMode && (
+                  <Tabs
+                    fill
+                    label={t("slice.modeGroupAria")}
+                    value={tensorMode ? "tensor_parallel" : "pipeline"}
+                    onChange={setMode}
+                    items={[
+                      { value: "pipeline", label: t("slice.modePipeline"), icon: <Layers /> },
+                      { value: "tensor_parallel", label: t("slice.modeTensorShort"), icon: <Cpu /> },
+                    ]}
+                  />
                 )}
                 {tensorMode && (
                   <p className="flex items-start gap-2 text-[0.75rem] leading-relaxed text-muted">
@@ -748,7 +721,7 @@ export function SliceModels() {
                           className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${plan.blocked ? "text-rose" : "text-amber"}`}
                         />
                         <span className="text-[0.82rem] leading-relaxed text-muted">
-                          {localizeServerText(locale, w)}
+                          {w}
                         </span>
                       </li>
                     ))}

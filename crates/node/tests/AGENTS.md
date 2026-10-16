@@ -1,12 +1,11 @@
-# tests/ - testes de integração do node
+# tests/ - node integration tests
 
-- `mtp_arch.rs` inclui o extrator usado por `crates/llama-engine/build.rs` para
-  que as regras de tokenização, mapeamento e falha ruidosa também rodem no
-  harness normal do Cargo. O teste não lê nem altera o fork do `llama.cpp`.
-- `startup_config.rs` executa o binário `pom` com um `POM_HOME` temporário
-  dentro do worktree e prova que uma configuração inválida chega ao `main`
-  Rust com mensagem e status diferente de zero, inclusive no loop AppKit do
-  macOS.
+- `mtp_arch.rs` includes the extractor used by `crates/llama-engine/build.rs` so
+  that the tokenization, mapping and loud-failure rules also run in the normal
+  Cargo harness. The test neither reads nor alters the `llama.cpp` fork.
+- `startup_config.rs` runs the `pom` binary with a temporary `POM_HOME` inside
+  the worktree and proves that an invalid configuration reaches the Rust `main`
+  with a message and a non-zero status, including on the macOS AppKit loop.
 
 ## Maintaining this file
 

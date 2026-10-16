@@ -23,11 +23,11 @@ use std::sync::OnceLock;
 
 const BRAND_JSON: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../brand.json"));
 
-/// Os campos de imagem e a descrição não são lidos pelo binário: quem os usa é
-/// a interface, que recebe **este mesmo arquivo** por
-/// `apps/frontend/scripts/build-brand.mjs`. Eles ficam aqui porque o struct é o
-/// contrato do arquivo - deixá-los de fora faria um `brand.json` com campo
-/// errado passar despercebido no lado Rust.
+/// The image fields and the description are not read by the binary: the one that
+/// uses them is the interface, which receives **this same file** through
+/// `apps/frontend/scripts/build-brand.mjs`. They stay here because the struct is
+/// the file's contract - leaving them out would let a `brand.json` with a wrong
+/// field go unnoticed on the Rust side.
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 pub struct Brand {
@@ -40,7 +40,7 @@ pub struct Brand {
     pub description: String,
     /// Lowercase identifier used for files, env vars and wire names ("pom").
     pub slug: String,
-    /// Lockup completo (marca + letreiro), por tema: `light` e `dark`.
+    /// Full lockup (mark + wordmark), per theme: `light` and `dark`.
     #[serde(default)]
     pub logo: BTreeMap<String, String>,
     /// Repository-relative path of the mark alone (no wordmark).
@@ -53,10 +53,10 @@ pub struct Brand {
     pub favicon: String,
     #[serde(default)]
     pub icons: BTreeMap<String, String>,
-    /// Bandeira por locale, usada pelo seletor de idioma da interface.
+    /// Flag per locale, used by the interface's language selector.
     #[serde(default)]
     pub flags: BTreeMap<String, String>,
-    /// Ícones de aplicativo por plataforma (macOS/Windows/Linux).
+    /// Application icons per platform (macOS/Windows/Linux).
     #[serde(default)]
     pub app_icons: BTreeMap<String, String>,
 }
@@ -66,7 +66,7 @@ pub struct Brand {
 pub fn brand() -> &'static Brand {
     static BRAND: OnceLock<Brand> = OnceLock::new();
     BRAND.get_or_init(|| {
-        serde_json::from_str(BRAND_JSON).expect("brand.json na raiz do repositório está malformado")
+        serde_json::from_str(BRAND_JSON).expect("brand.json at the repository root is malformed")
     })
 }
 

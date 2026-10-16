@@ -1,10 +1,10 @@
-//! Host IPC mínimo, só para o teste de regressão em `plugins.rs`. Fala o
-//! mesmo protocolo de frame (u32 big-endian + JSON) que `plugin_host.rs`
-//! usa contra o `pom-plugin-host` real, mas sem nenhuma lógica de plugin: só
-//! responde `ready`, registra cada `ingest` e cada `query` numa linha do
-//! arquivo apontado por `POM_FAKE_HOST_LOG` e sai em `shutdown`. Das
-//! consultas, aceita `host.configure` e responde `ui.upstream` com o JSON de
-//! `POM_FAKE_HOST_UPSTREAM`, quando definido.
+//! Minimal IPC host, only for the regression test in `plugins.rs`. It speaks the
+//! same frame protocol (u32 big-endian + JSON) that `plugin_host.rs`
+//! uses against the real `pom-plugin-host`, but with no plugin logic at all: it only
+//! answers `ready`, records each `ingest` and each `query` on a line of the
+//! file pointed to by `POM_FAKE_HOST_LOG` and exits on `shutdown`. Of the
+//! queries, it accepts `host.configure` and answers `ui.upstream` with the JSON of
+//! `POM_FAKE_HOST_UPSTREAM`, when set.
 
 use serde_json::{json, Value};
 use std::fs::OpenOptions;
@@ -22,19 +22,19 @@ fn read_frame<R: Read>(reader: &mut R) -> io::Result<Option<Value>> {
     let mut buffer = vec![0u8; len];
     reader.read_exact(&mut buffer)?;
     Ok(Some(
-        serde_json::from_slice(&buffer).expect("frame JSON válido"),
+        serde_json::from_slice(&buffer).expect("valid JSON frame"),
     ))
 }
 
 fn write_frame<W: Write>(writer: &mut W, value: &Value) -> io::Result<()> {
-    let bytes = serde_json::to_vec(value).expect("serializar frame");
+    let bytes = serde_json::to_vec(value).expect("serialize frame");
     writer.write_all(&(bytes.len() as u32).to_be_bytes())?;
     writer.write_all(&bytes)?;
     writer.flush()
 }
 
 fn main() {
-    let log_path = std::env::var("POM_FAKE_HOST_LOG").expect("POM_FAKE_HOST_LOG ausente");
+    let log_path = std::env::var("POM_FAKE_HOST_LOG").expect("POM_FAKE_HOST_LOG missing");
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut reader = stdin.lock();
@@ -44,8 +44,8 @@ fn main() {
         .create(true)
         .append(true)
         .open(&log_path)
-        .expect("abrir log do fake host");
-    writeln!(log, "POM_PLUGIN_DB={database_path}").expect("gravar caminho do banco do plugin");
+        .expect("open the fake host log");
+    writeln!(log, "POM_PLUGIN_DB={database_path}").expect("write the plugin database path");
 
     loop {
         let Some(request) = read_frame(&mut reader).expect("ler frame IPC") else {
@@ -67,25 +67,25 @@ fn main() {
                         json!({"id": id, "ok": true, "result": {"status": "ready"}, "error": null})
                     }
                 };
-                write_frame(&mut writer, &reply).expect("responder ready");
+                write_frame(&mut writer, &reply).expect("respond ready");
             }
             "ingest" => {
                 let mut file = OpenOptions::new()
                     .create(true)
                     .append(true)
                     .open(&log_path)
-                    .expect("abrir log do fake host");
+                    .expect("open the fake host log");
                 writeln!(
                     file,
                     "{}",
                     request.get("payload").cloned().unwrap_or(Value::Null)
                 )
-                .expect("gravar evento");
+                .expect("write event");
                 write_frame(
                     &mut writer,
                     &json!({"id": id, "ok": true, "result": {}, "error": null}),
                 )
-                .expect("responder ingest");
+                .expect("respond ingest");
             }
             "query" => {
                 let payload = request.get("payload").cloned().unwrap_or(Value::Null);
@@ -93,8 +93,8 @@ fn main() {
                     .create(true)
                     .append(true)
                     .open(&log_path)
-                    .expect("abrir log do fake host");
-                writeln!(file, "query {payload}").expect("gravar consulta");
+                    .expect("open the fake host log");
+                writeln!(file, "query {payload}").expect("write query");
                 let operation = payload
                     .get("operation")
                     .and_then(Value::as_str)
@@ -118,25 +118,25 @@ fn main() {
                         }, "error": null})
                     }
                     _ => {
-                        json!({"id": id, "ok": false, "result": null, "error": "operação desconhecida"})
+                        json!({"id": id, "ok": false, "result": null, "error": "unknown operation"})
                     }
                 };
-                write_frame(&mut writer, &reply).expect("responder query");
+                write_frame(&mut writer, &reply).expect("respond query");
             }
             "shutdown" => {
                 write_frame(
                     &mut writer,
                     &json!({"id": id, "ok": true, "result": {}, "error": null}),
                 )
-                .expect("responder shutdown");
+                .expect("respond shutdown");
                 break;
             }
             _ => {
                 write_frame(
                     &mut writer,
-                    &json!({"id": id, "ok": false, "result": null, "error": "método desconhecido"}),
+                    &json!({"id": id, "ok": false, "result": null, "error": "unknown method"}),
                 )
-                .expect("responder erro");
+                .expect("respond error");
             }
         }
     }

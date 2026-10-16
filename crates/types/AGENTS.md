@@ -24,7 +24,7 @@ that the workspace exposes a library crate; it carries no behavior.
 - Sibling crates that may eventually consume it: `routing-contract` and the
   `node` crate (see `crates/AGENTS.md`).
 
-## Pendências
+## Open items
 
-A extração dos tipos de domínio compartilhados ainda não foi concluída; ver
+The extraction of shared domain types has not been completed yet; see
 `TODO.md`, item 25.

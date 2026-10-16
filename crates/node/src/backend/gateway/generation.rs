@@ -36,33 +36,35 @@ fn prefill_rebuild_reason(error: &anyhow::Error) -> Option<&'static str> {
         return Some(rebuild.reason);
     }
     if crate::relay::is_unknown_session_error(error) {
-        return Some("a sessão remota não existe mais");
+        return Some("the remote session no longer exists");
     }
     if crate::relay::is_delivery_ambiguous(error) {
-        return Some("a resposta se perdeu depois do envio e o peer pode ter processado o chunk");
+        return Some(
+            "the response was lost after sending and the peer may have processed the chunk",
+        );
     }
     if crate::relay::is_prefill_state_error(error) {
-        return Some("as posições do KV remoto não coincidem com o próximo chunk");
+        return Some("the remote KV positions do not match the next chunk");
     }
     if crate::relay::is_transport_relay_failure(error)
         && !crate::relay::is_pre_delivery_error(error)
     {
-        return Some("um hop downstream falhou depois que a cabeça aceitou o chunk");
+        return Some("a downstream hop failed after the head accepted the chunk");
     }
     None
 }
 
-/// Regista o desfecho de uma requisição que termina antes de planear a
+/// Records the outcome of a request that ends before planning the
 /// pipeline.
 ///
-/// Todo pedido aceite tem de deixar exatamente uma linha de desfecho. Sem
-/// isto, as saídas antecipadas desta função eram mudas: o registo mostrava o
-/// pedido a chegar, mostrava o ajuste do limite de saída, e depois nada - nem
-/// `Pipeline planejado`, nem erro. Do lado do cliente isso é um pedido
-/// pendurado, e foi o que pôs o agente em recuo exponencial a repetir o mesmo
-/// pedido em produção a 2026-09-08.
+/// Every accepted request must leave exactly one outcome line. Without
+/// this, the early exits of this function were silent: the log showed the
+/// request arriving, showed the output limit adjustment, and then nothing - neither
+/// `Pipeline planejado` nor an error. From the client's side that is a hanging request,
+/// and it is what put the agent into exponential backoff repeating the same
+/// request in production on 2026-09-08.
 fn log_early_outcome(outcome: &str, reason: &str) {
-    warn!("⛔ requisição encerrada antes do plano ({outcome}): {reason}");
+    warn!("⛔ request ended before the plan ({outcome}): {reason}");
 }
 
 /// Wakes every idle step selected for this request at once and waits until
@@ -159,12 +161,12 @@ async fn wake_remote_peer(
                             .map(str::to_owned)
                     })
                     .unwrap_or_else(|| format!("HTTP {status}"));
-                anyhow::bail!("reload_model falhou para {node_id}: {reason}");
+                anyhow::bail!("reload_model failed for {node_id}: {reason}");
             }
             Err(error) => Some(format!("{error:#}")),
         };
         if let Some(reason) = transient {
-            debug!("reload_model para {node_id} ainda sem resposta: {reason}");
+            debug!("reload_model for {node_id} still unanswered: {reason}");
             if let Ok(mut slot) = last_error.lock() {
                 *slot = Some(format!("{node_id}: {reason}"));
             }
@@ -186,7 +188,7 @@ async fn reload_idle_pipeline_with_timeout(
     }
     let started = Instant::now();
     info!(
-        "⏰ pipeline ociosa: acordando {} peer(s) antes do prefill ({})",
+        "⏰ idle pipeline: waking {} peer(s) before the prefill ({})",
         idle.len(),
         idle.iter()
             .map(|peer| peer.node_id.chars().take(8).collect::<String>())
@@ -204,7 +206,9 @@ async fn reload_idle_pipeline_with_timeout(
                     .reload_from_idle()
                     .await
                     .map(|_| ())
-                    .map_err(|error| anyhow::anyhow!("reload_model falhou para {node_id}: {error}"));
+                    .map_err(|error| {
+                        anyhow::anyhow!("reload_model failed for {node_id}: {error}")
+                    });
             }
             wake_remote_peer(state, peer, last_error).await
         }
@@ -217,13 +221,13 @@ async fn reload_idle_pipeline_with_timeout(
                 .lock()
                 .ok()
                 .and_then(|slot| slot.clone())
-                .map(|reason| format!(" (última falha: {reason})"))
+                .map(|reason| format!(" (last failure: {reason})"))
                 .unwrap_or_default();
-            anyhow::anyhow!("reload_model da pipeline excedeu {timeout:?}{detail}")
+            anyhow::anyhow!("reload_model of the pipeline exceeded {timeout:?}{detail}")
         })?;
     results?;
     info!(
-        "✅ pipeline acordada em {:.1}s",
+        "✅ pipeline woken in {:.1}s",
         started.elapsed().as_secs_f64()
     );
     Ok(true)
@@ -237,9 +241,11 @@ async fn wait_for_woken_announcements(state: &GatewayState, woken: &[String]) {
     let deadline = Instant::now() + IDLE_ANNOUNCE_WAIT;
     loop {
         let peers = state.all_peers().await;
-        let pending = woken
-            .iter()
-            .any(|node_id| peers.iter().any(|peer| &peer.node_id == node_id && peer.idle));
+        let pending = woken.iter().any(|node_id| {
+            peers
+                .iter()
+                .any(|peer| &peer.node_id == node_id && peer.idle)
+        });
         if !pending || Instant::now() >= deadline {
             return;
         }
@@ -279,8 +285,8 @@ mod reload_tests {
     async fn spawn_gated_server(state: ReloadBarrier) -> (u16, tokio::task::JoinHandle<()>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
-            .expect("porta de teste");
-        let port = listener.local_addr().expect("endereço de teste").port();
+            .expect("test port");
+        let port = listener.local_addr().expect("test address").port();
         let router = Router::new()
             .route("/api/internal/reload_model", post(gated_reload))
             .with_state(state);
@@ -293,8 +299,8 @@ mod reload_tests {
     async fn spawn_hanging_server() -> (u16, tokio::task::JoinHandle<()>, Arc<AtomicBool>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
-            .expect("porta de teste");
-        let port = listener.local_addr().expect("endereço de teste").port();
+            .expect("test port");
+        let port = listener.local_addr().expect("test address").port();
         let reached = Arc::new(AtomicBool::new(false));
         let router = Router::new()
             .route("/api/internal/reload_model", post(hanging_reload))
@@ -353,13 +359,13 @@ mod reload_tests {
 
         tokio::time::timeout(Duration::from_secs(1), waiting_for_both)
             .await
-            .expect("os dois peers planejados devem receber o evento em paralelo");
+            .expect("both planned peers must receive the event in parallel");
         barrier.release.notify_waiters();
         tokio::time::timeout(Duration::from_secs(1), reload)
             .await
-            .expect("reload paralelo não pode ficar bloqueado")
-            .expect("task de reload")
-            .expect("ambos os peers devem confirmar o reload");
+            .expect("a parallel reload cannot stay blocked")
+            .expect("reload task")
+            .expect("both peers must confirm the reload");
 
         first_task.abort();
         second_task.abort();
@@ -384,7 +390,11 @@ mod reload_tests {
                 Json(serde_json::json!({ "event": "reload_model", "error": reason })),
             );
         }
-        let state = if call >= peer.ready_at { "ready" } else { "loading" };
+        let state = if call >= peer.ready_at {
+            "ready"
+        } else {
+            "loading"
+        };
         (
             StatusCode::OK,
             Json(serde_json::json!({ "event": "reload_model", "state": state })),
@@ -394,8 +404,8 @@ mod reload_tests {
     async fn spawn_loading_server(peer: LoadingPeer) -> (u16, tokio::task::JoinHandle<()>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
-            .expect("porta de teste");
-        let port = listener.local_addr().expect("endereço de teste").port();
+            .expect("test port");
+        let port = listener.local_addr().expect("test address").port();
         let router = Router::new()
             .route("/api/internal/reload_model", post(loading_reload))
             .with_state(peer);
@@ -424,8 +434,8 @@ mod reload_tests {
         let woke =
             reload_idle_pipeline_with_timeout(&state, &plan, &[peer], Duration::from_secs(5))
                 .await
-                .expect("o peer fica pronto na terceira resposta");
-        assert!(woke, "a pipeline estava ociosa e foi acordada");
+                .expect("the peer becomes ready on the third response");
+        assert!(woke, "the pipeline was idle and was woken");
         assert_eq!(calls.load(Ordering::SeqCst), 3);
         server.abort();
     }
@@ -436,7 +446,7 @@ mod reload_tests {
         let (port, server) = spawn_loading_server(LoadingPeer {
             calls: calls.clone(),
             ready_at: 1,
-            refusal: Some("o modelo aguarda resfriamento"),
+            refusal: Some("the model is waiting for cooldown"),
         })
         .await;
         let mut peer = crate::gateway::testkit::peer("idle-hot", "hot", port);
@@ -447,9 +457,9 @@ mod reload_tests {
         let error =
             reload_idle_pipeline_with_timeout(&state, &plan, &[peer], Duration::from_secs(5))
                 .await
-                .expect_err("a recusa do peer encerra a espera");
-        assert!(error.to_string().contains("resfriamento"), "{error}");
-        assert_eq!(calls.load(Ordering::SeqCst), 1, "uma recusa não é repetida");
+                .expect_err("the peer refusal ends the wait");
+        assert!(error.to_string().contains("cooldown"), "{error}");
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "a refusal is not repeated");
         server.abort();
     }
 
@@ -476,14 +486,14 @@ mod reload_tests {
         let error =
             reload_idle_pipeline_with_timeout(&state, &plan, &[peer], Duration::from_millis(50))
                 .await
-                .expect_err("um peer preso deve devolver erro com timeout");
+                .expect_err("a stuck peer must return an error with a timeout");
         assert!(
             reached.load(Ordering::SeqCst),
-            "a requisição deve chegar ao peer preso"
+            "the request must reach the stuck peer"
         );
         assert!(
             !error.to_string().is_empty(),
-            "a recusa deve explicar a falha"
+            "the refusal must explain the failure"
         );
         server_task.abort();
     }
@@ -494,7 +504,7 @@ mod generation_pump_tests {
     use super::*;
 
     #[tokio::test]
-    async fn desconexao_do_cliente_cancela_a_geracao_mesmo_sem_evento() {
+    async fn client_disconnect_cancels_the_generation_even_without_an_event() {
         let (client_tx, client_rx) = mpsc::channel(1);
         let (_inner_tx, inner_rx) = mpsc::channel(1);
         let cancellation = crate::prefill::Cancellation::new();
@@ -507,15 +517,15 @@ mod generation_pump_tests {
         drop(client_rx);
         let result = tokio::time::timeout(Duration::from_secs(1), pump)
             .await
-            .expect("a bomba deve observar a desconexão")
-            .expect("a bomba não deve entrar em panic");
+            .expect("the bomb must observe the disconnect")
+            .expect("the bomb must not panic");
 
         assert!(result.is_none());
         assert!(cancellation.is_cancelled());
     }
 
     #[tokio::test]
-    async fn falha_de_prefill_preserva_telemetria_parcial_ate_a_auditoria() {
+    async fn a_prefill_failure_preserves_partial_telemetry_up_to_the_audit() {
         let mut trace = crate::prefill::RequestTrace::from_plan(
             "test-model",
             &crate::pipeline::PipelinePlan {
@@ -530,25 +540,25 @@ mod generation_pump_tests {
             trace: Box::new(trace),
         });
         let partial_trace = crate::prefill::partial_trace(&transport_failure)
-            .expect("erro de transporte preserva trace parcial");
+            .expect("a transport error preserves the partial trace");
         let (client_tx, _client_rx) = mpsc::channel(1);
         let (inner_tx, inner_rx) = mpsc::channel(1);
         let cancellation = crate::prefill::Cancellation::new();
         inner_tx
             .send(GenEvent::FailedWithTelemetry {
-                error: "transporte falhou após progresso".into(),
+                error: "transport failed after progress".into(),
                 trace: Some(partial_trace),
             })
             .await
             .unwrap();
         let result = forward_generation_events(client_tx, inner_rx, cancellation)
             .await
-            .expect("falha terminal preservada");
+            .expect("terminal failure preserved");
         let GenEvent::FailedWithTelemetry {
             trace: Some(trace), ..
         } = result
         else {
-            panic!("o evento terminal deve preservar trace parcial")
+            panic!("the terminal event must preserve the partial trace")
         };
         let response_telemetry = audit_telemetry(None, Some(trace)).unwrap();
         assert_eq!(response_telemetry["model"], "test-model");
@@ -558,12 +568,95 @@ mod generation_pump_tests {
     }
 }
 
-/// Escolhe a pipeline pelo menor tempo de entrega estimado. `None` quando não
-/// há caminho viável: aí o planejador guloso (cobertura, RTT e carga local)
-/// decide como antes.
+/// How many more requests in flight the head holding a conversation may carry than the least busy head before the
+/// conversation moves (its session is then fetched by the new head only if that transfer pays, see `plugin_session`).
+const SESSION_MOVE_LOAD_GAP: u32 = 2;
+
+/// The first stage an unpinned request starts from. A pin (the Chat's explicit head) stays as it is. Without one, and with
+/// more than one layer-0 head of the model, the heads take turns in round robin, and a busy head is passed over for the
+/// next free one (`fastest::rotate_head`). `None` when there is nothing to choose between.
+async fn auto_head(
+    state: &GatewayState,
+    peers: &[crate::network::PeerInfo],
+    model: &str,
+    deploy_id: Option<&str>,
+    pinned: Option<&str>,
+    prefix: (&str, &str, bool),
+    conversation: Option<(&str, &str)>,
+) -> Option<String> {
+    if let Some(pinned) = pinned {
+        return Some(pinned.to_owned());
+    }
+    let heads: Vec<String> = crate::fastest::candidates(peers, model, deploy_id)
+        .into_iter()
+        .filter(|peer| peer.start_layer == 0)
+        .map(|peer| peer.node_id.clone())
+        .collect();
+    if heads.len() < 2 {
+        return None;
+    }
+    // A conversation of a plugin engine goes back to the head that ran its last turn: its KV session is in that head's
+    // batch slot. Only a conversation that is new here, or whose head is gone, takes the rotation below.
+    if let Some((model, key)) = conversation {
+        if let Some(holder) = crate::plugin_session::holder_of(model, key).filter(|head| heads.contains(head)) {
+            let perf = state.admission_health.perf_snapshot();
+            let mut busy = Vec::with_capacity(heads.len());
+            for head in &heads {
+                let live = state.loads.load(head).await;
+                let reported = perf.get(head).map(|p| p.active_generations).unwrap_or(0);
+                busy.push((head.clone(), live.max(reported)));
+            }
+            let least = busy.iter().map(|(_, load)| *load).min().unwrap_or(0);
+            let holder_load = busy.iter().find(|(head, _)| *head == holder).map(|(_, load)| *load).unwrap_or(0);
+            // the conversation stays on its head unless that head is clearly busier than the least busy one; then the
+            // rotation below picks a free head, and that head fetches the session only when the transfer pays
+            if holder_load <= least + SESSION_MOVE_LOAD_GAP {
+                info!("first stage: the conversation {key} is already on {holder}");
+                return Some(holder);
+            }
+            info!("first stage: {holder} has {holder_load} in flight against {least} on the least busy head; \
+                   the conversation may move");
+        }
+    }
+    // A session already in service for this prompt goes back to the head that holds it: its cache is reused there.
+    // Only a new session takes the rotation below.
+    let (prefix_model, cache_prompt, prefix_eligible) = prefix;
+    if prefix_eligible {
+        let held = state
+            .prefix_cache
+            .snapshots()
+            .into_iter()
+            .filter(|snapshot| {
+                !snapshot.busy
+                    && snapshot.key.model == prefix_model
+                    && cache_prompt.starts_with(&snapshot.prompt)
+            })
+            .max_by_key(|snapshot| snapshot.prompt.len())
+            .and_then(|snapshot| snapshot.key.hops.first().and_then(|hop| hop.split('@').next().map(str::to_owned)));
+        if let Some(head) = held.filter(|head| heads.contains(head)) {
+            info!("first stage: the session is already on {head}");
+            return Some(head);
+        }
+    }
+    let perf = state.admission_health.perf_snapshot();
+    let mut queue = std::collections::HashMap::new();
+    for head in &heads {
+        let live = state.loads.load(head).await;
+        let reported = perf.get(head).map(|p| p.active_generations).unwrap_or(0);
+        queue.insert(head.clone(), live.max(reported));
+    }
+    let turn = crate::pipeline::next_head_turn(model);
+    let chosen = crate::fastest::rotate_head(&heads, turn, |head| queue.get(head).copied().unwrap_or(0))?;
+    info!("first stage by rotation over {} heads: {chosen}", heads.len());
+    Some(chosen)
+}
+
+/// Picks the pipeline with the lowest estimated delivery time. `None` when there
+/// is no viable path: then the greedy planner (coverage, RTT and local load)
+/// decides as before.
 ///
-/// Candidatos: o melhor caminho da programação dinâmica e cada caminho que já
-/// tem o prefixo deste prompt retido, estimado com o prefill economizado.
+/// Candidates: the best path of the dynamic programming and every path that already
+/// has this prompt's prefix retained, estimated with the prefill saved.
 #[allow(clippy::too_many_arguments)]
 async fn plan_by_delivery_time(
     state: &GatewayState,
@@ -578,8 +671,8 @@ async fn plan_by_delivery_time(
     requested_tokens: u32,
     prefix_eligible: bool,
 ) -> Option<(crate::pipeline::PipelinePlan, crate::fastest::ReturnMode)> {
-    // A rota fixada é a medida do transporte que o frame vai usar; o RTT de
-    // topologia fica para quem ainda não foi analisado.
+    // The pinned route is the measure of the transport the frame will use; the topology
+    // RTT is left for whoever has not been analyzed yet.
     let mut requester_rtt = route_rtt.clone();
     requester_rtt.extend(crate::route_plan::book().rtt_map(crate::route_plan::Plane::Inference));
     let perf = state.admission_health.perf_snapshot();
@@ -641,7 +734,7 @@ async fn plan_by_delivery_time(
     }
 
     info!(
-        "pipeline por tempo de entrega: {} ~{:.0} ms, resposta {} (prefill {:.0} ms, {:.1} ms/token, filas {:?}, prefixo {} tokens)",
+        "pipeline by delivery time: {} ~{:.0} ms, response {} (prefill {:.0} ms, {:.1} ms/token, queues {:?}, prefix {} tokens)",
         plan.hop_chain(),
         estimate.total_ms,
         estimate.return_mode.as_str(),
@@ -673,12 +766,12 @@ pub(super) async fn generate_stream_inner(
         stops,
         cache_key,
         preferred_head,
-        request_details: _,
+        request_details,
         probe,
     } = input;
     let mut budget = budget.normalized();
     if cancellation.is_cancelled() {
-        log_early_outcome("cancelado", "o cliente desistiu antes do início");
+        log_early_outcome("cancelado", "the client gave up before the start");
         return;
     }
     // Size the prompt up before any peer sees it — see `prompt_token_budget`.
@@ -686,21 +779,23 @@ pub(super) async fn generate_stream_inner(
     let validation_wall = wall_clock_ms();
     if let Some(cfg) = state.runtime.config().await {
         if let Some(error) = prompt_budget_error(&cfg, &prompt) {
-            log_early_outcome("recusado", &error);
+            log_early_outcome("refused", &error);
             let _ = tx.send(GenEvent::Failed(error)).await;
             return;
         }
     } else {
-        // Um gateway sem modelo local não tinha admissão nenhuma: o prompt
-        // atravessava inteiro, chegava ao decode do peer e derrubava o
-        // processo com `CUDA error: out of memory` (ksia, 2026-09-08). A
-        // capacidade anunciada pelo peer que serve este modelo é a mesma que
-        // `/v1/models` publica, e vale como teto aqui. Fica antes de qualquer
-        // sondagem de saúde de propósito: um pedido já inadmissível não
-        // justifica uma volta na rede, muito menos um prefill.
-        let (capacity, capacity_pending) = state.runtime_capacity_for_model(Some(&model)).await;
-        // Capacidade pendente é ausência de informação, não permissão: quem
-        // decide nesse caso continua sendo o peer.
+        // A gateway without a local model had no admission at all: the prompt
+        // went through whole, reached the peer's decode and brought down the
+        // process with `CUDA error: out of memory` (ksia, 2026-09-08). The
+        // capacity announced by the peer that serves this model is the same one
+        // `/v1/models` publishes, and it counts as the ceiling here. It sits before any
+        // health probe on purpose: an already inadmissible request does not
+        // justify a round trip on the network, much less a prefill.
+        let (capacity, capacity_pending) = state
+            .runtime_capacity_for_model(Some(&model), preferred_head.as_deref())
+            .await;
+        // Pending capacity is an absence of information, not permission: whoever
+        // decides in that case is still the peer.
         if let Some(capacity) = capacity.filter(|_| !capacity_pending) {
             if let Some(error) =
                 prompt_budget_error_of(capacity.n_ctx, capacity.max_new_tokens, &prompt)
@@ -713,7 +808,10 @@ pub(super) async fn generate_stream_inner(
     // One session's window (`n_ctx_per_session`): the same capacity the
     // admission above uses, applied again to the total after prefill, with the
     // real prompt size (`OutputBudget::within_session_window`).
-    let session_window = match state.runtime_capacity_for_model(Some(&model)).await {
+    let session_window = match state
+        .runtime_capacity_for_model(Some(&model), preferred_head.as_deref())
+        .await
+    {
         (Some(capacity), false) => Some(capacity.n_ctx),
         _ => state.runtime.config().await.map(|cfg| cfg.n_ctx),
     };
@@ -725,8 +823,8 @@ pub(super) async fn generate_stream_inner(
         "validation",
     );
 
-    // `qwen3:8b@d-4f2a91c3` escolhe **qual** implantação atende; o nome pelado
-    // deixa a escolha para quem monta o pipeline. Ver `deployment::split_selector`.
+    // `qwen3:8b@d-4f2a91c3` chooses **which** deployment serves; the bare name
+    // leaves the choice to whoever builds the pipeline. See `deployment::split_selector`.
     let (model, deploy_id) = crate::deployment::split_selector(&model);
     let prefix_model = format!(
         "{}|deployment={}|chat_template={chat_template}|thinking_enabled={thinking_enabled}",
@@ -740,13 +838,15 @@ pub(super) async fn generate_stream_inner(
     // them, the second plans again over the pipeline that is now loaded. The
     // plan of the first pass is not used for inference - an idle peer
     // announces no runtime capabilities, so that plan would run degraded.
+    // the conversation a plugin engine keeps in a batch slot, for the head that ran its last turn
+    let conversation = crate::plugin_session::session_of(&request_details);
     let mut woke_idle = false;
     let (mut plan, planned_return) = loop {
         let orchestration_started = Instant::now();
         let orchestration_wall = wall_clock_ms();
-        // O anúncio P2P pode chegar depois da carga local. A admissão devolve a
-        // fotografia executável do `/health` junto com cada peer, para que o
-        // planejador não transforme essa janela de propagação num buraco falso.
+        // The P2P announcement may arrive after the local load. The admission returns the
+        // executable snapshot of `/health` along with each peer, so that the
+        // planner does not turn this propagation window into a false hole.
         let peers = ready_for_pipeline(
             &state.peer_http,
             &state.admission_health,
@@ -782,44 +882,64 @@ pub(super) async fn generate_stream_inner(
             .collect::<std::collections::HashMap<_, _>>();
         let selection_started = Instant::now();
         let selection_wall = wall_clock_ms();
-        // Planejamento por tempo de entrega (`fastest`): velocidade medida de cada
-        // peer, fila de toda a rede, RTT de cada aresta e o prefixo já retido.
-        // Sem nenhum caminho viável por ele, o planejador guloso de antes decide.
-        let fastest = plan_by_delivery_time(
+        let head = auto_head(
             &state,
             &peers,
             model,
             deploy_id,
-            total_layers,
-            &route_rtt,
             preferred_head.as_deref(),
-            &prefix_model,
-            &cache_prompt,
-            budget.total,
-            images.is_empty(),
+            (&prefix_model, &cache_prompt, images.is_empty()),
+            conversation.as_ref().map(|key| (model, key.as_str())),
         )
         .await;
-        let (planned, planned_return) = match fastest {
-            Some((plan, mode)) => (Some(plan), Some(mode)),
-            None => (
-                crate::pipeline::plan_pipeline_with_rtt_from_head(
-                    &peers,
+        // Planning by delivery time (`fastest`): measured speed of each
+        // peer, queue of the whole network, RTT of each edge and the prefix already retained.
+        // With no viable path through it, the earlier greedy planner decides.
+        // One engine per pipeline: a peer of another engine is not a hop of it. The planner tries the head's engine (or
+        // each engine, llama.cpp first) and keeps the first one that plans a path.
+        let mut planned = None;
+        let mut planned_return = None;
+        for engine in crate::plugin_engine::pipeline_engines(&peers, head.as_deref()) {
+            let group = crate::plugin_engine::peers_of_engine(&peers, engine.as_deref());
+            let fastest = plan_by_delivery_time(
+                &state,
+                &group,
+                model,
+                deploy_id,
+                total_layers,
+                &route_rtt,
+                head.as_deref(),
+                &prefix_model,
+                &cache_prompt,
+                budget.total,
+                images.is_empty(),
+            )
+            .await;
+            let picked = match fastest {
+                Some((plan, mode)) => Some((plan, Some(mode))),
+                None => crate::pipeline::plan_pipeline_with_rtt_from_head(
+                    &group,
                     model,
                     deploy_id,
                     total_layers,
                     &state.loads,
                     &route_rtt,
-                    preferred_head.as_deref(),
+                    head.as_deref(),
                 )
-                .await,
-                None,
-            ),
-        };
+                .await
+                .map(|plan| (plan, None)),
+            };
+            if let Some((plan, mode)) = picked {
+                planned = Some(plan);
+                planned_return = mode;
+                break;
+            }
+        }
         let Some(plan) = planned else {
             let error = format!(
-                "Nenhum pipeline válido para o modelo '{model}' (verifique a cobertura de camadas 0..{total_layers})"
+                "No valid pipeline for model '{model}' (check the layer coverage 0..{total_layers})"
             );
-            log_early_outcome("recusado", &error);
+            log_early_outcome("refused", &error);
             let _ = tx.send(GenEvent::Failed(error)).await;
             return;
         };
@@ -851,7 +971,10 @@ pub(super) async fn generate_stream_inner(
                     "pipeline_wake",
                 );
                 if cancellation.is_cancelled() {
-                    log_early_outcome("cancelado", "o cliente desistiu enquanto a pipeline acordava");
+                    log_early_outcome(
+                        "cancelado",
+                        "the client gave up while the pipeline was waking",
+                    );
                     return;
                 }
                 woke_idle = true;
@@ -865,13 +988,58 @@ pub(super) async fn generate_stream_inner(
     };
     // The window read before the wake came from peers with no loaded runtime.
     let session_window = if woke_idle {
-        match state.runtime_capacity_for_model(Some(model)).await {
+        match state
+            .runtime_capacity_for_model(Some(model), preferred_head.as_deref())
+            .await
+        {
             (Some(capacity), false) => Some(capacity.n_ctx),
             _ => session_window,
         }
     } else {
         session_window
     };
+
+    // A whole model served by a plugin's inference service takes the prompt
+    // this gateway rendered, not hidden states. There is no fallback to the
+    // pipeline: the plan said who serves this model. See `plugin_engine`.
+    if let Some(code) = crate::plugin_engine::plugin_of_plan(&plan) {
+        let refusal: Option<&str> = None;
+        if let Some(error) = refusal {
+            log_early_outcome("refused", error);
+            let _ = tx.send(GenEvent::Failed(error.to_string())).await;
+            return;
+        }
+        crate::plugin_engine::generate(
+            &state,
+            &plan,
+            &code,
+            model,
+            trace_id.clone(),
+            crate::plugin_engine::EngineRequest {
+                prompt,
+                chat_template,
+                thinking_enabled,
+                max_tokens: budget.total,
+                stops,
+                session: crate::plugin_session::session_of(&request_details),
+                request_details,
+                probe_labels: probe
+                    .as_ref()
+                    .map(|probe| probe.labels.clone())
+                    .unwrap_or_default(),
+                probe_prefix_bytes: probe.as_ref().and_then(|probe| probe.retain_prefix_bytes),
+                images: images
+                    .iter()
+                    .map(|bytes| crate::plugin_engine::image_data_url(bytes))
+                    .collect(),
+            },
+            &tx,
+            &cancellation,
+            request_started,
+        )
+        .await;
+        return;
+    }
 
     // The gateway may be a middle or tail peer. Vision is an admission fact
     // of the selected head, so only reject here when this process owns that
@@ -884,24 +1052,24 @@ pub(super) async fn generate_stream_inner(
     {
         let mmproj_path = state.runtime.config().await.and_then(|cfg| cfg.mmproj_path);
         if let Some(error) = crate::openai::image_vision_error(&images, mmproj_path.as_deref()) {
-            log_early_outcome("recusado", error);
+            log_early_outcome("refused", error);
             let _ = tx.send(GenEvent::Failed(error.to_string())).await;
             return;
         }
     }
 
-    // A rota e escolhida por quem vai discar, nao por quem planejou: o plano
-    // pode ter vindo de uma maquina noutra rede, e so este no mediu os
-    // candidatos. Resolver aqui, uma vez, fixa o endereco de cada hop para a
-    // sessao inteira - o cache KV do outro lado e por sessao, e trocar de
-    // endereco na metade e pior que a rota lenta.
+    // The route is chosen by whoever will dial, not by whoever planned: the plan
+    // may have come from a machine on another network, and only this node measured the
+    // candidates. Resolving here, once, fixes the address of each hop for the
+    // whole session - the KV cache on the other side is per session, and switching
+    // address midway is worse than the slow route.
     let route_started = Instant::now();
     let route_wall = wall_clock_ms();
     {
-        let mut fixadas = std::collections::HashMap::new();
+        let mut pinned = std::collections::HashMap::new();
         for step in plan.steps.iter_mut() {
             step.inference_url =
-                crate::pipeline::resolve_step_url(step, &state.network.routes, &mut fixadas);
+                crate::pipeline::resolve_step_url(step, &state.network.routes, &mut pinned);
         }
     }
     record_gateway_span(
@@ -933,9 +1101,9 @@ pub(super) async fn generate_stream_inner(
     );
     let mut session_id = prefix_lease.session_id().to_string();
     let mut reuse_prefix = prefix_lease.is_hit() && images.is_empty();
-    // Camada de disco (Phase 3): um miss em memória que casa um snapshot
-    // automático em disco - típico depois de um reinício - restaura o KV em
-    // todos os hops em vez de refazer o prefill a frio. Ver
+    // Disk layer (Phase 3): an in-memory miss that matches an automatic
+    // snapshot on disk - typical after a restart - restores the KV on
+    // all the hops instead of redoing the prefill cold. See
     // `crate::prefix_cache::PrefixDiskIndex`.
     let mut disk_restore_hash: Option<String> = None;
     if !reuse_prefix && images.is_empty() {
@@ -964,13 +1132,13 @@ pub(super) async fn generate_stream_inner(
                         reuse_prefix = true;
                         disk.touch(&entry.key_hash);
                         info!(
-                            "♻️  prefixo restaurado do disco: {restored_tokens} tokens em {} hop(s)",
+                            "♻️  prefix restored from disk: {restored_tokens} tokens on {} hop(s)",
                             plan.steps.len()
                         );
                         disk_restore_hash = Some(entry.key_hash);
                     }
                     Err(error) => {
-                        warn!("restauração de prefixo do disco falhou ({error}); seguindo a frio");
+                        warn!("prefix restore from disk failed ({error}); continuing cold");
                         disk.forget(&entry.key_hash);
                     }
                 }
@@ -995,9 +1163,9 @@ pub(super) async fn generate_stream_inner(
         "session_acquire",
     );
 
-    // A sessão não pode trocar de réplica depois que o primeiro prefill criou
-    // o KV. O plano é fixado uma vez e esta afinidade é a referência explícita
-    // usada para revisar qualquer transformação futura da rota.
+    // The session cannot switch replica after the first prefill created
+    // the KV. The plan is fixed once and this affinity is the explicit reference
+    // used to review any future transformation of the route.
     let route_affinity = crate::pipeline::RouteAffinity::from_plan(
         deploy_id.unwrap_or_default(),
         &session_id,
@@ -1005,9 +1173,9 @@ pub(super) async fn generate_stream_inner(
     );
     debug_assert!(route_affinity.matches_plan(&plan));
 
-    // Para onde a cauda entrega a resposta. `None` quando esta máquina não
-    // sabe nenhum endereço de si mesma — aí a cadeia volta a borbulhar, que é
-    // lento mas nunca fica sem resposta.
+    // Where the tail delivers the reply. `None` when this machine does not
+    // know any address of its own - then the chain goes back to bubbling, which is
+    // slow but never ends up without an answer.
     let direct = crate::direct::DirectReply::new(
         state.reply_inbox.clone(),
         crate::direct::self_reply_urls(
@@ -1025,21 +1193,21 @@ pub(super) async fn generate_stream_inner(
                 state.network.libp2p_addrs(),
             )
     });
-    // O modo de volta é escolhido junto com o caminho pelo planejador por
-    // tempo de entrega (`fastest::plan_fastest`): anel quando a resposta
-    // chega antes voltando pelas conexões da ida - ou quando a cauda não tem
-    // volta até aqui. O anel dispensa o `reply_to`. Com o planejador guloso de
-    // reserva, a regra `return_path_prefers_ring` decide.
-    // `POM_RETURN_MODE` vale também para o planejador guloso de reserva.
+    // The return mode is chosen together with the path by the delivery-time
+    // planner (`fastest::plan_fastest`): ring when the reply
+    // arrives sooner coming back over the outbound connections - or when the tail has no
+    // way back to here. The ring dispenses with `reply_to`. With the greedy fallback
+    // planner, the `return_path_prefers_ring` rule decides.
+    // `POM_RETURN_MODE` also applies to the greedy fallback planner.
     let planned_return = crate::fastest::forced_return_mode().or(planned_return);
     let direct = match (direct, planned_return) {
         (Some(_), Some(crate::fastest::ReturnMode::Ring)) => {
             info!(
-                "resposta pelo anel ({})",
+                "response through the ring ({})",
                 if crate::fastest::forced_return_mode().is_some() {
-                    "imposta por POM_RETURN_MODE"
+                    "imposed by POM_RETURN_MODE"
                 } else {
-                    "escolhida no planejamento"
+                    "chosen in the planning"
                 }
             );
             None
@@ -1054,7 +1222,7 @@ pub(super) async fn generate_stream_inner(
                 &crate::route_plan::book().kind_map(crate::route_plan::Plane::Inference),
             ) {
                 Some(reason) => {
-                    info!("resposta pelo anel: {reason}");
+                    info!("response through the ring: {reason}");
                     None
                 }
                 None => Some(reply),
@@ -1064,7 +1232,7 @@ pub(super) async fn generate_stream_inner(
     };
 
     info!(
-        "🔀 Pipeline planejado: {} hops [{}] session={} max_tokens={} (perna {}) resposta={}",
+        "🔀 Pipeline planned: {} hops [{}] session={} max_tokens={} (leg {}) response={}",
         plan.steps.len(),
         plan.hop_chain(),
         &session_id[..8],
@@ -1082,12 +1250,12 @@ pub(super) async fn generate_stream_inner(
     );
 
     let mut tokens_generated: u32 = 0;
-    // Pernas costuradas até agora. Começa em 1: toda resposta tem uma.
+    // Legs stitched so far. Starts at 1: every reply has one.
     let mut legs: u32 = 1;
     let mut retained_prefix_tokens: Option<u32> = None;
-    // Quantos tokens do prompt a cabeça de fato não reprocessou. Não é a
-    // escolha do cache, é o que o pipeline executou - ver
-    // `PrefillOutcome::cached_tokens`. Sai no `GenSummary` e daí para
+    // How many prompt tokens the head actually did not reprocess. It is not the
+    // cache's choice, it is what the pipeline executed - see
+    // `PrefillOutcome::cached_tokens`. It comes out in `GenSummary` and from there to
     // `usage.prompt_tokens_details.cached_tokens`.
 
     // Chunk size, wire precision, and the speculative-decoding knobs all come
@@ -1115,10 +1283,10 @@ pub(super) async fn generate_stream_inner(
         let cfg = state.runtime.config().await;
         let n_batch = cfg.as_ref().map(|c| c.n_batch).unwrap_or(512);
         (
-            // Um pedaço é decodificado como um `llama_batch` no head; maior que
-            // `n_batch` aborta o llama.cpp. `prompt_chunk_tokens` é o mesmo
-            // clamp de `prompt_budget_error`, e é ele que vale - não o valor
-            // cru do knob.
+            // A chunk is decoded as one `llama_batch` on the head; larger than
+            // `n_batch` aborts llama.cpp. `prompt_chunk_tokens` is the same
+            // clamp as `prompt_budget_error`, and it is the one that counts - not the raw
+            // value of the knob.
             cfg.as_ref()
                 .map(|config| {
                     if !config.adaptive_prefill_chunks {
@@ -1151,8 +1319,8 @@ pub(super) async fn generate_stream_inner(
                 .map(|c| c.speculative_lookup_window)
                 .unwrap_or(3),
             cfg.as_ref().map(|c| c.mtp_enabled),
-            // O parâmetro é "quantos tokens rascunhar"; a largura do lote é
-            // isso mais o token já confirmado.
+            // The parameter is "how many tokens to draft"; the batch width is
+            // that plus the already confirmed token.
             speculative_k_of(
                 cfg.as_ref().map(|c| c.mtp_draft_tokens).unwrap_or(3) + 1,
                 n_batch,
@@ -1169,14 +1337,14 @@ pub(super) async fn generate_stream_inner(
         mtp_enabled,
         mtp_k,
         pipeline_hops = plan.steps.len(),
-        "decisão de especulação MTP do pipeline"
+        "MTP speculation decision of the pipeline"
     );
 
-    // Qual das duas especulações roda nesta requisição. O MTP vem primeiro
-    // quando os dois estão ligados: ele usa uma cabeça treinada do próprio
-    // modelo, enquanto o lookup só acerta em saída repetitiva. Nunca os dois
-    // na mesma rodada - o lote é um só, e misturar as fontes tornaria a taxa
-    // de aceitação impossível de atribuir.
+    // Which of the two speculations runs on this request. MTP comes first
+    // when both are on: it uses a head trained on the model itself,
+    // while lookup only hits on repetitive output. Never both
+    // in the same round - the batch is a single one, and mixing the sources would make
+    // the acceptance rate impossible to attribute.
     let (speculative_enabled, speculative_k, draft_source) = if mtp_enabled {
         (true, mtp_k, crate::prefill::DraftSource::Mtp)
     } else {
@@ -1189,14 +1357,14 @@ pub(super) async fn generate_stream_inner(
 
     let mut stop_matcher = StopMatcher::new(stops);
 
-    // O evento final não pode sair antes de a sessão estar arrumada.
+    // The final event cannot go out before the session is tidied.
     //
-    // Um chat manda o turno seguinte assim que o stream fecha. Enquanto o
-    // rewind e a liberação rodavam *depois* do `[DONE]`, a requisição seguinte
-    // chegava no meio deles - medido: 54 ms antes de a liberação do turno
-    // anterior terminar - e pegava o cache num estado que ninguém tinha
-    // acabado de escrever. Aqui os eventos de token seguem na hora, ao vivo, e
-    // só o terminal (`Done`/`Failed`) espera a arrumação.
+    // A chat sends the next turn as soon as the stream closes. While the
+    // rewind and the release ran *after* `[DONE]`, the following request
+    // arrived in the middle of them - measured: 54 ms before the previous turn's
+    // release finished - and caught the cache in a state that nobody had
+    // just finished writing. Here the token events go out right away, live, and
+    // only the terminal one (`Done`/`Failed`) waits for the tidying.
     let client_tx = tx;
     let (tx, inner_rx) = mpsc::channel::<GenEvent>(64);
     let pump = tokio::spawn(forward_generation_events(
@@ -1212,11 +1380,11 @@ pub(super) async fn generate_stream_inner(
     async {
         // ── Prefill: the prompt goes in chunk by chunk, and the last peer hands
         // back the first token once the whole prompt is in.
-        // Reusar prefixo é otimização, nunca motivo para a requisição falhar.
-        // Um peer pode ter despejado a sessão, reiniciado ou divergido do que
-        // este gateway acha que ele guarda; nesse caso a primeira tentativa
-        // morre com posições fora de ordem. A segunda vai fria, que é
-        // exatamente o comportamento de antes desta funcionalidade existir.
+        // Reusing a prefix is an optimization, never a reason for the request to fail.
+        // A peer may have evicted the session, restarted or diverged from what
+        // this gateway thinks it holds; in that case the first attempt
+        // dies with out-of-order positions. The second goes cold, which is
+        // exactly the behavior from before this feature existed.
         let prefill_attempt = |reuse: bool, resume: Option<crate::prefill::PrefillResumable>| {
             crate::prefill::run_with_options(
                 &plan,
@@ -1250,13 +1418,12 @@ pub(super) async fn generate_stream_inner(
         if let Err(e) = &prefill_result {
             if crate::relay::is_frame_size_error(e) {
                 warn!(
-                    "prefill falhou por limite de frame ({e}); \
-                     não é recuperável repetindo o mesmo chunk"
+                    "prefill failed because of the frame limit ({e}); it is not recoverable by repeating the same chunk"
                 );
             } else if !crate::prefill::is_cancelled(e) {
                 if let Some(rp) = crate::prefill::resume_point(e) {
                     warn!(
-                        "prefill falhou antes de entregar o pedaço {} (posição {}, {e}); retomando nesse ponto e preservando o KV",
+                        "prefill failed before delivering chunk {} (position {}, {e}); resuming at that point and preserving the KV",
                         rp.from_chunk, rp.start_pos
                     );
                     prefill_result = prefill_attempt(reuse_prefix, Some(rp)).await;
@@ -1272,7 +1439,7 @@ pub(super) async fn generate_stream_inner(
                         crate::relay::is_unknown_session_error(e);
                     cold_recovery_attempted = true;
                     warn!(
-                        "prefill precisa de reconstrução fria ({reason}; {e}); limpando as sessões remotas uma vez"
+                        "prefill needs a cold rebuild ({reason}; {e}); clearing the remote sessions once"
                     );
                     prefill_result = prefill_attempt(false, None).await;
                     if let Some(trace) = prefill_result
@@ -1292,7 +1459,7 @@ pub(super) async fn generate_stream_inner(
                         unknown_session_recovery_attempted =
                             crate::relay::is_unknown_session_error(error);
                         warn!(
-                            "prefill retomado ainda exige reconstrução fria ({reason}; {error}); limpando as sessões remotas uma vez"
+                            "resumed prefill still requires a cold rebuild ({reason}; {error}); clearing the remote sessions once"
                         );
                         prefill_result = prefill_attempt(false, None).await;
                         if let Some(trace) = prefill_result
@@ -1330,12 +1497,12 @@ pub(super) async fn generate_stream_inner(
                 } else if disk_restore_hash.is_some()
                     && o.trace.prefix_reuse_status.as_deref() == Some("full")
                 {
-                    // O reuso veio de um snapshot em disco, não de uma sessão
-                    // que ficou viva em memória.
+                    // The reuse came from a snapshot on disk, not from a session
+                    // that stayed alive in memory.
                     o.trace.prefix_reuse_status = Some("disk".to_owned());
                 }
                 info!(
-                    "📥 prompt de {} tokens em {} pedaço(s), {} do cache · {:.1}s até a primeira palavra",
+                    "📥 prompt of {} tokens in {} chunk(s), {} from the cache · {:.1}s to the first word",
                     o.prompt_tokens,
                     o.chunks,
                     o.cached_tokens,
@@ -1345,20 +1512,20 @@ pub(super) async fn generate_stream_inner(
                 o
             }
             Err(e) if crate::prefill::is_cancelled(&e) => {
-                info!("cliente desconectou durante o prefill; cancelando pipeline");
+                info!("client disconnected during the prefill; cancelling the pipeline");
                 return;
                 }
                 Err(e) => {
                 let message = if unknown_session_recovery_attempted
                     || crate::relay::is_unknown_session_error(&e)
                 {
-                    "Prefill falhou: um peer perdeu o estado da sessão; o sistema tentou reconstruir o contexto, mas não conseguiu concluir e o pedido não foi executado. Tente enviar a mensagem novamente quando o cluster estiver estável.".to_string()
+                    "Prefill failed: a peer lost the session state; the system tried to rebuild the context, but could not finish and the request was not executed. Try sending the message again when the cluster is stable.".to_string()
                 } else if cold_recovery_attempted {
-                    "Prefill falhou: uma falha de transporte deixou incerto se o peer processou o último chunk. O sistema tentou reconstruir o contexto uma vez, mas não conseguiu concluir e o pedido não foi executado. Tente enviar a mensagem novamente quando o cluster estiver estável.".to_string()
+                    "Prefill failed: a transport failure left it uncertain whether the peer processed the last chunk. The system tried to rebuild the context once, but could not finish and the request was not executed. Try sending the message again when the cluster is stable.".to_string()
                 } else {
-                    format!("Prefill falhou: {}", crate::prefill::failure_cause(&e))
+                    format!("Prefill failed: {}", crate::prefill::failure_cause(&e))
                 };
-                warn!("prefill falhou: {e:#}");
+                warn!("prefill failed: {e:#}");
                 let _ = tx
                     .send(GenEvent::FailedWithTelemetry {
                         error: message,
@@ -1411,7 +1578,7 @@ pub(super) async fn generate_stream_inner(
         note_leg_boundary(budget, tokens_generated, &mut legs);
         match send_text_with_stop(&tx, &mut stop_matcher, &first.text).await {
             StopSend::Disconnected => {
-                info!("cliente desconectou logo após o prompt");
+                info!("client disconnected right after the prompt");
                 return;
             }
             StopSend::Stopped(stop_sequence) => {
@@ -1485,12 +1652,12 @@ pub(super) async fn generate_stream_inner(
             sliced_mtp_requested,
             sliced_mtp,
             plan_supports_mtp,
-            "caminho de decode do pipeline"
+            "decode path of the pipeline"
         );
         if mtp_enabled && plan.steps.len() >= 2 && !sliced_mtp_requested {
             info!(
                 reason = sliced_mtp_disable_reason(&plan),
-                "pipeline fatiado sem MTP: seguindo com a capacidade disponível"
+                "sliced pipeline without MTP: continuing with the available capability"
             );
         }
         let mut remote_stream = if remote_stream_capable {
@@ -1531,7 +1698,7 @@ pub(super) async fn generate_stream_inner(
                     Some(stream)
                 }
                 Err(error) => {
-                    warn!("transporte remoto por lotes falhou: {error}");
+                    warn!("batched remote transport failed: {error}");
                     let summary = summary_for(
                         &plan,
                         request_started,
@@ -1552,36 +1719,36 @@ pub(super) async fn generate_stream_inner(
         };
 
         if plan.supports_speculation() && speculative_enabled {
-            // Vira `false` na primeira rodada em que a cabeça recusar o
-            // rascunho. Pedir de novo só repetiria a recusa, e o pedido custa
-            // caro por um motivo que não se vê: no caminho legado,
-            // `step_speculative` continua no anel borbulhado (2N travessias por
-            // token). O transporte remoto já mantém o laço no head e chega
-            // aqui pela fila de callbacks, sem pedir outro quadro ao gateway.
-            // O MTP fatiado é a outra metade da mesma rodada: no caminho
-            // legado a cauda devolve o rascunho e o gateway o injeta; no
-            // stream remoto a cabeça o instala dentro do próprio ciclo. Só
-            // há MTP fatiado com 2+ hops - com um é o modelo inteiro, que já
-            // usa `step_speculative`.
-            let mut especulando = true;
-            // Rascunho que a cauda devolveu na rodada anterior, esperando
-            // para ser injetado na próxima. `draft_sent` é lido antes do
-            // `take`: distingue a rodada 1 (nenhum rascunho viajou ainda, e a
-            // recusa da cabeça é esperada) das seguintes (o rascunho foi
-            // mandado — ignorado aí é motivo para parar).
+            // Becomes `false` on the first round in which the head refuses the
+            // draft. Asking again would only repeat the refusal, and the request is
+            // expensive for a reason that cannot be seen: on the legacy path,
+            // `step_speculative` stays on the bubbling ring (2N crossings per
+            // token). The remote transport already keeps the loop on the head and arrives
+            // here through the callback queue, without asking the gateway for another frame.
+            // Sliced MTP is the other half of the same round: on the
+            // legacy path the tail returns the draft and the gateway injects it; in the
+            // remote stream the head installs it within its own cycle. Sliced
+            // MTP exists only with 2+ hops - with one it is the whole model, which already
+            // uses `step_speculative`.
+            let mut speculating = true;
+            // Draft that the tail returned in the previous round, waiting
+            // to be injected in the next. `draft_sent` is read before the
+            // `take`: it distinguishes round 1 (no draft has traveled yet, and the
+            // head's refusal is expected) from the following ones (the draft was
+            // sent - being ignored there is a reason to stop).
             let mut stored_draft: Option<Vec<i32>> = None;
             while remaining_generation_steps(budget.total, tokens_generated) > 0 {
                 if cancellation.is_cancelled() {
                     return;
                 }
                 let remote_stream_mode = remote_stream.is_some();
-                let draft_sent = especulando
+                let draft_sent = speculating
                     && sliced_mtp
                     && !remote_stream_mode
                     && stored_draft.is_some();
                 let res = if let Some(stream) = remote_stream.as_mut() {
                     stream.next(&cancellation).await
-                } else if especulando {
+                } else if speculating {
                     if sliced_mtp {
                         crate::prefill::step(
                             &plan,
@@ -1639,14 +1806,14 @@ pub(super) async fn generate_stream_inner(
                 let step = match res {
                     Ok(step) => step,
                     Err(e) => {
-                        let rodada = if especulando {
-                            "rodada especulativa"
+                        let round = if speculating {
+                            "speculative round"
                         } else {
-                            "rodada de decodificação"
+                            "decode round"
                         };
-                        warn!("Erro na {rodada} (token {tokens_generated}): {e}");
+                        warn!("Error in the {round} (token {tokens_generated}): {e}");
                         if tokens_generated > 0 {
-                            info!("devolvendo {tokens_generated} tokens parciais");
+                            info!("returning {tokens_generated} partial tokens");
                             let summary = summary_for(
                                 &plan,
                                 request_started,
@@ -1662,14 +1829,14 @@ pub(super) async fn generate_stream_inner(
                         } else {
                             let _ = tx
                                 .send(GenEvent::Failed(format!(
-                                    "Pipeline falhou na {rodada}: {e}"
+                                    "Pipeline failed in the {round}: {e}"
                                 )))
                                 .await;
                         }
                         return;
                     }
                 };
-                if especulando {
+                if speculating {
                     if sliced_mtp {
                         if remote_stream_mode {
                             if !sliced_mtp_round_continues(remote_stream_mode, draft_sent, &step) {
@@ -1682,18 +1849,18 @@ pub(super) async fn generate_stream_inner(
                                 let detail = step
                                     .speculation_disabled_detail
                                     .as_deref()
-                                    .unwrap_or("cauda não informou a causa da desativação");
+                                    .unwrap_or("the tail did not report the cause of the deactivation");
                                 info!(
                                     reason,
                                     detail,
-                                    "pipeline fatiado sem rascunho MTP: seguindo sem especulação"
+                                    "sliced pipeline without an MTP draft: continuing without speculation"
                                 );
-                                especulando = false;
+                                speculating = false;
                             }
                         } else {
-                            // Dois motivos para desistir: um rascunho já
-                            // enviado foi recusado, ou a rodada inicial não
-                            // produziu o primeiro rascunho.
+                            // Two reasons to give up: a draft already
+                            // sent was refused, or the initial round did not
+                            // produce the first draft.
                             if !sliced_mtp_round_continues(remote_stream_mode, draft_sent, &step) {
                                 let reason = step
                                     .speculation_disabled_reason
@@ -1704,23 +1871,23 @@ pub(super) async fn generate_stream_inner(
                                 let detail = step
                                     .speculation_disabled_detail
                                     .as_deref()
-                                    .unwrap_or("cauda não informou a causa da desativação");
+                                    .unwrap_or("the tail did not report the cause of the deactivation");
                                 info!(
                                     reason,
                                     detail,
-                                    "pipeline fatiado sem rascunho MTP: seguindo sem especulação"
+                                    "sliced pipeline without an MTP draft: continuing without speculation"
                                 );
-                                especulando = false;
+                                speculating = false;
                             } else {
                                 stored_draft = step.next_draft;
                             }
                         }
                     } else if !step.speculated {
-                        // A cabeça recusou rascunhar — hoje só acontece se
-                        // ela é de uma versão anterior a este fix, ou se o
-                        // rascunho por repetição não achou nada para propor.
-                        info!("nenhum hop rascunhou: seguindo sem especulação");
-                        especulando = false;
+                        // The head refused to draft - today this only happens if
+                        // it is from a version prior to this fix, or if the
+                        // repetition draft found nothing to propose.
+                        info!("no hop drafted: continuing without speculation");
+                        speculating = false;
                     }
                 }
                 trace.merge(&step.trace);
@@ -1743,7 +1910,7 @@ pub(super) async fn generate_stream_inner(
                     note_leg_boundary(budget, tokens_generated, &mut legs);
                     match send_text_with_stop(&tx, &mut stop_matcher, text).await {
                         StopSend::Disconnected => {
-                            info!("cliente desconectou após {tokens_generated} tokens");
+                            info!("client disconnected after {tokens_generated} tokens");
                             return;
                         }
                         StopSend::Stopped(stop_sequence) => {
@@ -1785,11 +1952,11 @@ pub(super) async fn generate_stream_inner(
                         None,
                     );
                     info!(
-                        "✅ Pipeline completo ({}): {} tokens em {:.1}s ({:.1} tok/s)",
-                        if especulando {
+                        "✅ Pipeline complete ({}): {} tokens in {:.1}s ({:.1} tok/s)",
+                        if speculating {
                             "especulativo"
                         } else {
-                            "sem especulação"
+                            "without speculation"
                         },
                         tokens_generated,
                         summary.timings.total_ms as f64 / 1000.0,
@@ -1828,9 +1995,7 @@ pub(super) async fn generate_stream_inner(
                         // confirmed rather than trust the cache further —
                         // same shape as the `Err(e)` branch above.
                         warn!(
-                            "rollback parcial recusado por algum hop após \
-                             {tokens_generated} tokens: encerrando a geração \
-                             em vez de arriscar cache contaminado"
+                            "partial rollback refused by some hop after {tokens_generated} tokens: ending the generation instead of risking a contaminated cache"
                         );
                         if tokens_generated > 0 {
                             let summary = summary_for(
@@ -1848,7 +2013,7 @@ pub(super) async fn generate_stream_inner(
                         } else {
                             let _ = tx
                                 .send(GenEvent::Failed(
-                                    "rollback especulativo recusado pelo hop".to_string(),
+                                    "speculative rollback refused by the hop".to_string(),
                                 ))
                                 .await;
                         }
@@ -1889,7 +2054,7 @@ pub(super) async fn generate_stream_inner(
                     if step.accepted.is_empty() {
                         let _ = tx
                             .send(GenEvent::Failed(
-                                "Pipeline não devolveu token confirmado".to_string(),
+                                "Pipeline returned no confirmed token".to_string(),
                             ))
                             .await;
                         return;
@@ -1905,7 +2070,7 @@ pub(super) async fn generate_stream_inner(
                         match send_text_with_stop(&tx, &mut stop_matcher, text).await {
                             StopSend::Disconnected => {
                                 // Client hung up; stop burning GPU time on a dead request.
-                                info!("cliente desconectou após {tokens_generated} tokens");
+                                info!("client disconnected after {tokens_generated} tokens");
                                 return;
                             }
                             StopSend::Stopped(stop_sequence) => {
@@ -1952,7 +2117,7 @@ pub(super) async fn generate_stream_inner(
                             None,
                         );
                         info!(
-                            "✅ Pipeline completo: {} tokens em {:.1}s ({:.1} tok/s)",
+                            "✅ Pipeline complete: {} tokens in {:.1}s ({:.1} tok/s)",
                             tokens_generated,
                             summary.timings.total_ms as f64 / 1000.0,
                             summary.timings.total_tokens_per_sec
@@ -1962,10 +2127,10 @@ pub(super) async fn generate_stream_inner(
                     }
                 }
                 Err(e) => {
-                    warn!("Erro no passo {tokens_generated} do pipeline: {e}");
+                    warn!("Error at step {tokens_generated} of the pipeline: {e}");
                     if tokens_generated > 0 {
                         // Some output is better than none — the original behaviour.
-                        info!("devolvendo {tokens_generated} tokens parciais");
+                        info!("returning {tokens_generated} partial tokens");
                         let summary = summary_for(
                             &plan,
                             request_started,
@@ -1981,7 +2146,7 @@ pub(super) async fn generate_stream_inner(
                     } else {
                         let _ = tx
                             .send(GenEvent::Failed(format!(
-                                "Pipeline falhou no passo {tokens_generated}: {e}"
+                                "Pipeline failed at step {tokens_generated}: {e}"
                             )))
                             .await;
                     }
@@ -1995,18 +2160,18 @@ pub(super) async fn generate_stream_inner(
     drop(tx);
     let terminal = pump.await.ok().flatten();
 
-    // O lease sai daqui de um jeito só: publicado se todos os hops confirmaram
-    // que a sessão ficou parada no fim do prompt, descartado com a sessão
-    // liberada em qualquer outro caso.
+    // The lease leaves here in only one way: published if all the hops confirmed
+    // that the session stayed parked at the end of the prompt, discarded along with the released
+    // session in any other case.
     let mut lease = Some(prefix_lease);
     if let Some(retained_tokens) = retained_prefix_tokens {
         if rewind_sessions(&plan, &session_id, retained_tokens, &state.peer_http).await {
             if let Some(lease) = lease.take() {
                 lease.commit(cache_prompt.clone(), retained_tokens);
             }
-            // Phase 3: grava o prefixo retido em disco, best-effort e fora do
-            // caminho da resposta. A sessão fica parada (retida) em todos os
-            // hops até o próximo turno, então há tempo para o `save`.
+            // Phase 3: writes the retained prefix to disk, best-effort and outside the
+            // response path. The session stays parked (retained) on all the
+            // hops until the next turn, so there is time for the `save`.
             if let Some(disk) = state.prefix_disk.clone() {
                 let plan = plan.clone();
                 let clients = state.peer_http.clone();
@@ -2015,9 +2180,9 @@ pub(super) async fn generate_stream_inner(
                 let sid = session_id.clone();
                 tokio::spawn(async move {
                     let hash = prefix_key_hash(&key, &prompt);
-                    // Debounce: se o prefixo retido cresceu pouco desde o
-                    // último snapshot desta linhagem, só renova o carimbo e
-                    // não regrava (cada spill é um serialize de KV + fan-out).
+                    // Debounce: if the retained prefix grew little since the
+                    // last snapshot of this lineage, it only renews the stamp and
+                    // does not rewrite (each spill is a KV serialize + fan-out).
                     if let Some(ancestor) =
                         disk.longest_prefix_match(&key.model, &key.hops, &prompt)
                     {
@@ -2026,7 +2191,7 @@ pub(super) async fn generate_stream_inner(
                         {
                             disk.touch(&ancestor.key_hash);
                             debug!(
-                                "spill de prefixo pulado: +{} tokens desde {} (< {})",
+                                "prefix spill skipped: +{} tokens since {} (< {})",
                                 retained_tokens.saturating_sub(ancestor.cached_tokens),
                                 &ancestor.key_hash[..8.min(ancestor.key_hash.len())],
                                 crate::prefix_cache::SLOT_AUTO_MIN_GROWTH_TOKENS,
@@ -2047,13 +2212,13 @@ pub(super) async fn generate_stream_inner(
                                 erase_snapshot(&plan, &auto_slot_name(&stale), &clients).await;
                             }
                         }
-                        Err(error) => debug!("spill de prefixo em disco: {error}"),
+                        Err(error) => debug!("prefix spill to disk: {error}"),
                     }
                 });
             }
         } else {
             warn!(
-                "não foi possível preservar o prefixo da sessão {}; liberando KV",
+                "could not preserve the prefix of session {}; releasing the KV",
                 &session_id[..8.min(session_id.len())]
             );
         }
@@ -2068,13 +2233,13 @@ pub(super) async fn generate_stream_inner(
     }
 }
 
-/// Encaminha os eventos da geração para o adaptador HTTP e transforma o
-/// desaparecimento do consumidor em cancelamento explícito.
+/// Forwards the generation events to the HTTP adapter and turns the
+/// consumer's disappearance into an explicit cancellation.
 ///
-/// O `Sender::closed` precisa ser observado em paralelo ao recebimento de
-/// eventos. Manter outro clone do sender no gerador impede que um monitor
-/// baseado somente em `closed` veja a desconexão, e um produtor remoto pode
-/// continuar consumindo KV mesmo depois de o SSE ter sido abandonado.
+/// `Sender::closed` must be observed in parallel with the receiving of
+/// events. Keeping another clone of the sender in the generator keeps a monitor
+/// based only on `closed` from seeing the disconnection, and a remote producer can
+/// keep consuming KV even after the SSE has been abandoned.
 async fn forward_generation_events(
     client_tx: mpsc::Sender<GenEvent>,
     mut inner_rx: mpsc::Receiver<GenEvent>,
@@ -2110,14 +2275,14 @@ async fn forward_generation_events(
     terminal
 }
 
-/// Confirma em cada peer que a sessão ficou parada no fim do prompt, pronta
-/// para o turno seguinte. Falha em um hop invalida a entrada inteira: manter só
-/// parte da cadeia criaria um buraco silencioso.
+/// Confirms on each peer that the session stayed parked at the end of the prompt, ready
+/// for the next turn. A failure on one hop invalidates the whole entry: keeping only
+/// part of the chain would create a silent hole.
 ///
-/// Do lado do peer isto **não** recua nada - a geração correu numa sequência de
-/// KV separada e some inteira (ver `infer_server::handle_rewind`). Por isso o
-/// prazo aqui é curto: é escrituração, não inferência, e o evento final do
-/// stream espera por ela.
+/// On the peer's side this rolls **nothing** back - the generation ran in a separate
+/// KV sequence that disappears whole (see `infer_server::handle_rewind`). That is why the
+/// deadline here is short: it is bookkeeping, not inference, and the stream's final event
+/// waits for it.
 fn inference_route_candidates(step: &crate::pipeline::PipelineStep) -> Vec<String> {
     let mut candidates = Vec::with_capacity(step.inference_candidates.len() + 1);
     if !step.inference_url.is_empty() {
@@ -2133,21 +2298,21 @@ fn inference_route_candidates(step: &crate::pipeline::PipelineStep) -> Vec<Strin
     candidates
 }
 
-/// POST de um corpo JSON pequeno a uma rota de ciclo de vida de sessão de um
-/// peer, pelo mesmo transporte que o decode: QUIC primeiro quando a preferência
-/// do cluster é QUIC, e HTTP/HTTPS como reserva.
+/// POST of a small JSON body to a session lifecycle route of a
+/// peer, through the same transport as the decode: QUIC first when the cluster's
+/// preference is QUIC, and HTTP/HTTPS as a fallback.
 ///
-/// Por que não só `http.post(...).json(...)`: toda requisição precisa carregar
-/// o marcador interno e o bearer da `connection_key` quando configurado. Isso
-/// mantém o mesmo contrato de autenticação no HTTP, HTTPS e no fallback de
-/// QUIC; sem o header, `require_inference_auth` responde `401 missing
-/// Authorization header` e deixa a sessão retida. QUIC também pode ser aceito
-/// pelo marcador sobre transporte cifrado na rede pública. Uma falha de
-/// transporte QUIC cai para o caminho HTTP; um 404/405 significa peer sem a
-/// rota HTTP/3 e também cai para HTTP.
+/// Why not just `http.post(...).json(...)`: every request must carry
+/// the internal marker and the `connection_key` bearer when configured. This
+/// keeps the same authentication contract on HTTP, HTTPS and on the QUIC
+/// fallback; without the header, `require_inference_auth` answers `401 missing
+/// Authorization header` and leaves the session retained. QUIC can also be accepted
+/// by the marker over encrypted transport on the public network. A QUIC
+/// transport failure falls back to the HTTP path; a 404/405 means a peer without the
+/// HTTP/3 route and also falls back to HTTP.
 ///
-/// `Ok(body)` em qualquer 2xx (corpo desserializado, `Null` se ilegível);
-/// `Err(motivo)` quando nenhum endereço respondeu 2xx.
+/// `Ok(body)` on any 2xx (deserialized body, `Null` if unreadable);
+/// `Err(reason)` when no address answered 2xx.
 async fn post_session_lifecycle(
     http: &crate::peer_client::PeerClients,
     step: &crate::pipeline::PipelineStep,
@@ -2156,11 +2321,11 @@ async fn post_session_lifecycle(
     session_id: &str,
     timeout: Duration,
 ) -> Result<serde_json::Value, String> {
-    // A rota fixada pelo plano de rotas vale também para o ciclo de vida da
-    // sessão: um peer que só o túnel alcança não responde nos endereços
-    // anunciados, e tentar QUIC e TCP neles antes gastava o prazo inteiro - o
-    // rewind falhava (prefixo perdido) e o release também (KV preso no peer,
-    // que passava a aparecer com fila para o planejador).
+    // The route pinned by the route plan also applies to the session
+    // lifecycle: a peer reachable only through the tunnel does not answer on the
+    // announced addresses, and trying QUIC and TCP on them before used up the whole deadline - the
+    // rewind failed (prefix lost) and so did the release (KV stuck on the peer,
+    // which then showed up with a queue for the planner).
     let tunnel = crate::infer_tunnel::tunnel_sender().filter(|_| step.libp2p_peer_id.is_some());
     let pinned_tunnel = crate::route_plan::book()
         .kind_map(crate::route_plan::Plane::Inference)
@@ -2175,7 +2340,7 @@ async fn post_session_lifecycle(
     }
     let result = post_session_lifecycle_direct(http, step, path, body, session_id, timeout).await;
     match (result, tunnel) {
-        (Err(direct), Some(tunnel)) if !direct.contains(" respondeu HTTP ") => {
+        (Err(direct), Some(tunnel)) if !direct.contains(" answered HTTP ") => {
             crate::relay::post_json_via_tunnel(http, tunnel, step, path, body, session_id, timeout)
                 .await
                 .map_err(|error| format!("{direct}; libp2p-tunnel: {error}"))
@@ -2184,7 +2349,7 @@ async fn post_session_lifecycle(
     }
 }
 
-/// QUIC e depois HTTP nos endereços anunciados do peer.
+/// QUIC and then HTTP on the peer's announced addresses.
 async fn post_session_lifecycle_direct(
     http: &crate::peer_client::PeerClients,
     step: &crate::pipeline::PipelineStep,
@@ -2197,7 +2362,7 @@ async fn post_session_lifecycle_direct(
     let candidates = inference_route_candidates(step);
     let payload = match serde_json::to_vec(body) {
         Ok(payload) => payload,
-        Err(error) => return Err(format!("corpo JSON inválido: {error}")),
+        Err(error) => return Err(format!("invalid JSON body: {error}")),
     };
     let mut last_error = None;
 
@@ -2223,19 +2388,19 @@ async fn post_session_lifecycle_direct(
                     );
                 }
                 Ok(response) if matches!(response.status.as_u16(), 404 | 405) => {
-                    last_error = Some(format!("quic: HTTP {} (sem rota HTTP/3)", response.status));
+                    last_error = Some(format!("quic: HTTP {} (no HTTP/3 route)", response.status));
                     break;
                 }
                 Ok(response) => {
                     return Err(format!(
-                        "{path} em {} respondeu HTTP {}",
+                        "{path} on {} answered HTTP {}",
                         step.node_id, response.status
                     ));
                 }
                 Err(error) => {
                     last_error = Some(format!("quic: {error}"));
                     warn!(
-                        "{path} por QUIC em {} falhou ({error}), tentando TCP",
+                        "{path} over QUIC on {} failed ({error}), trying TCP",
                         step.node_id
                     );
                 }
@@ -2243,12 +2408,12 @@ async fn post_session_lifecycle_direct(
         }
     }
 
-    let Ok(cliente) = http.for_peer(&step.node_id) else {
-        return Err(last_error.unwrap_or_else(|| "sem cliente para o peer".to_string()));
+    let Ok(client) = http.for_peer(&step.node_id) else {
+        return Err(last_error.unwrap_or_else(|| "no client for the peer".to_string()));
     };
     for base in http.route_order(&route_key, &candidates) {
         let url = format!("{}{path}", base.trim_end_matches('/'));
-        let request = cliente.post(&url).json(body).timeout(timeout);
+        let request = client.post(&url).json(body).timeout(timeout);
         match http
             .authorize_inference_request_for_session(request, Some(session_id))
             .await
@@ -2263,7 +2428,7 @@ async fn post_session_lifecycle_direct(
                 .is_some() =>
             {
                 http.remember_route_failure(&route_key, &base);
-                last_error = Some(format!("{base}: respondeu outro nó"));
+                last_error = Some(format!("{base}: another node answered"));
             }
             Ok(response) if response.status().is_success() => {
                 http.remember_route_success(&route_key, &base);
@@ -2283,7 +2448,7 @@ async fn post_session_lifecycle_direct(
             }
         }
     }
-    Err(last_error.unwrap_or_else(|| "nenhum endereço anunciado".to_string()))
+    Err(last_error.unwrap_or_else(|| "no announced address".to_string()))
 }
 
 pub(super) async fn rewind_sessions(
@@ -2314,7 +2479,7 @@ pub(super) async fn rewind_sessions(
                         == Some(retained_tokens as u64) =>
             {
                 info!(
-                    "prefix rewind confirmado: peer={} session={} retained_tokens={} n_past={}",
+                    "prefix rewind confirmed: peer={} session={} retained_tokens={} n_past={}",
                     step.node_id,
                     &session_id[..8.min(session_id.len())],
                     retained_tokens,
@@ -2325,7 +2490,7 @@ pub(super) async fn rewind_sessions(
             }
             Ok(body) => {
                 warn!(
-                    "prefix rewind recusado: peer={} session={} retained_tokens={} resposta={}",
+                    "prefix rewind refused: peer={} session={} retained_tokens={} response={}",
                     step.node_id,
                     &session_id[..8.min(session_id.len())],
                     retained_tokens,
@@ -2335,7 +2500,7 @@ pub(super) async fn rewind_sessions(
             }
             Err(error) => {
                 warn!(
-                    "prefix rewind falhou: peer={} session={} retained_tokens={} erro={error}",
+                    "prefix rewind failed: peer={} session={} retained_tokens={} error={error}",
                     step.node_id,
                     &session_id[..8.min(session_id.len())],
                     retained_tokens,
@@ -2367,7 +2532,7 @@ pub(super) async fn release_sessions(
         )
         .await
         {
-            warn!("release de sessão em {} falhou: {error}", step.node_id);
+            warn!("session release on {} failed: {error}", step.node_id);
         }
     }
 }
@@ -2411,16 +2576,16 @@ pub(super) async fn rollback_sessions(
             Ok(body) if body.get("rolled_back").and_then(|v| v.as_bool()) == Some(true) => {}
             Ok(body) => {
                 warn!(
-                    "rollback de sessão em {} recusado: {}",
+                    "session rollback on {} refused: {}",
                     step.node_id,
                     body.get("reason")
                         .and_then(|v| v.as_str())
-                        .unwrap_or("sem motivo informado")
+                        .unwrap_or("no reason given")
                 );
                 all_ok = false;
             }
             Err(error) => {
-                warn!("rollback de sessão em {} falhou: {error}", step.node_id);
+                warn!("session rollback on {} failed: {error}", step.node_id);
                 all_ok = false;
             }
         }
@@ -2428,19 +2593,19 @@ pub(super) async fn rollback_sessions(
     all_ok
 }
 
-// ── Snapshots de KV cache da implantação (`--slot-save-path`) ────────────────
+// ── KV cache snapshots of the deployment (`--slot-save-path`) ────────────────
 
-/// Nome do arquivo de snapshot que cada hop grava: o nome operacional mais o
-/// `node_id` daquele hop, para um único diretório guardar a fatia de cada peer
-/// sem colisão. `sanitize_slot_name` no lado do peer aceita `[A-Za-z0-9._-]`, e
-/// o `node_id` é hex de hash.
+/// Name of the snapshot file each hop writes: the operational name plus the
+/// `node_id` of that hop, so a single directory holds each peer's slice
+/// without collision. `sanitize_slot_name` on the peer's side accepts `[A-Za-z0-9._-]`, and
+/// the `node_id` is a hash hex.
 pub(super) fn slot_name_for_step(snapshot_name: &str, node_id: &str) -> String {
     format!("{snapshot_name}__{node_id}")
 }
 
-/// Todos os hops precisam anunciar `inference/slot-persist-v1`. Um snapshot de
-/// implantação é tudo-ou-nada: sem a cap em algum hop, aquele peer não sabe
-/// gravar a fatia dele e o snapshot ficaria com um buraco.
+/// All the hops must announce `inference/slot-persist-v1`. A deployment
+/// snapshot is all-or-nothing: without the cap on some hop, that peer does not know how to
+/// write its slice and the snapshot would be left with a hole.
 pub(super) fn plan_supports_slot_persist(plan: &PipelinePlan) -> Result<(), String> {
     if let Some(step) = plan
         .steps
@@ -2448,8 +2613,7 @@ pub(super) fn plan_supports_slot_persist(plan: &PipelinePlan) -> Result<(), Stri
         .find(|step| !step.supports(crate::pipeline::CAP_SLOT_PERSIST))
     {
         return Err(format!(
-            "o hop {} (camadas {}-{}) não tem slot_save_path configurado; \
-             o snapshot exige a capability em todos os peers",
+            "hop {} (layers {}-{}) has no slot_save_path configured; the snapshot requires the capability on all peers",
             step.node_id, step.start_layer, step.end_layer
         ));
     }
@@ -2495,7 +2659,7 @@ pub(super) async fn slot_call_step(
             .await
             .map_err(|error| {
                 let error = error.to_string();
-                if error.contains(" respondeu HTTP ") {
+                if error.contains(" answered HTTP ") {
                     SlotCallError::Refused(format!(
                         "{} refused the snapshot: {error}",
                         step.node_id
@@ -2583,7 +2747,7 @@ async fn slot_call_direct(
                 payload
                     .as_str()
                     .or_else(|| payload.get("error").and_then(|v| v.as_str()))
-                    .unwrap_or("sem detalhe")
+                    .unwrap_or("no detail")
             )));
         }
         clients.remember_route_success(&route_key, &base);
@@ -2594,8 +2758,8 @@ async fn slot_call_direct(
     )))
 }
 
-/// Constrói o índice de disco do cache de prefixo, ou `None` quando
-/// `slot_persist_prefix_cache` está desligado ou não há `slot_save_path`.
+/// Builds the disk index of the prefix cache, or `None` when
+/// `slot_persist_prefix_cache` is off or there is no `slot_save_path`.
 pub(crate) fn build_prefix_disk_index(
     config: &crate::config::Config,
 ) -> Option<Arc<crate::prefix_cache::PrefixDiskIndex>> {
@@ -2610,13 +2774,13 @@ pub(crate) fn build_prefix_disk_index(
     ))
 }
 
-/// Nome de snapshot de um prefixo automático: `auto__<key_hash>`. Por hop, o
-/// arquivo vira `auto__<key_hash>__<node_id>.bin` (`slot_name_for_step`).
+/// Snapshot name of an automatic prefix: `auto__<key_hash>`. Per hop, the
+/// file becomes `auto__<key_hash>__<node_id>.bin` (`slot_name_for_step`).
 pub(super) fn auto_slot_name(key_hash: &str) -> String {
     format!("auto__{key_hash}")
 }
 
-/// Hash estável do prefixo de uma conversa: identifica o conjunto de `.bin`.
+/// Stable hash of a conversation's prefix: identifies the set of `.bin`.
 pub(super) fn prefix_key_hash(key: &crate::prefix_cache::PrefixRouteKey, prompt: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -2631,9 +2795,9 @@ pub(super) fn prefix_key_hash(key: &crate::prefix_cache::PrefixRouteKey, prompt:
     hex::encode(&hasher.finalize()[..16])
 }
 
-/// Resolve o pipeline que atende um modelo hoje, para as rotas de snapshot do
-/// operador. Reusa o mesmo planejador da geração; é observação, não altera
-/// roteamento nem balanceamento.
+/// Resolves the pipeline that serves a model today, for the operator's snapshot
+/// routes. Reuses the same planner as the generation; it is observation, it does not change
+/// routing or balancing.
 pub(crate) async fn resolve_plan_for_model(
     state: &GatewayState,
     model: &str,
@@ -2644,16 +2808,16 @@ pub(crate) async fn resolve_plan_for_model(
         .find(|p| p.model == model || p.deploy_id == model)
         .map(|p| p.total_layers)
         .filter(|n| *n > 0)
-        .ok_or_else(|| format!("nenhum peer serve o modelo '{model}'"))?;
+        .ok_or_else(|| format!("no peer serves the model '{model}'"))?;
     let deploy_id = peers.iter().find(|p| p.deploy_id == model).map(|_| model);
     crate::pipeline::plan_pipeline(&peers, model, deploy_id, total_layers, &state.loads)
         .await
-        .ok_or_else(|| format!("nenhum pipeline cobre 0..{total_layers} do modelo '{model}'"))
+        .ok_or_else(|| format!("no pipeline covers 0..{total_layers} of the model '{model}'"))
 }
 
-/// Grava um snapshot de KV de uma implantação: cada hop persiste a fatia dele
-/// no `slot_save_path` local. Tudo-ou-nada - se um hop falha, os que já
-/// gravaram são apagados e o erro descreve qual hop parou.
+/// Writes a KV snapshot of a deployment: each hop persists its slice
+/// in the local `slot_save_path`. All-or-nothing - if a hop fails, those that already
+/// wrote are deleted and the error describes which hop stopped.
 pub(crate) async fn snapshot_deployment(
     plan: &PipelinePlan,
     snapshot_name: &str,
@@ -2679,7 +2843,7 @@ pub(crate) async fn snapshot_deployment(
             }
             Err(error) => {
                 warn!(
-                    "snapshot '{snapshot_name}' falhou em {}: {error}",
+                    "snapshot '{snapshot_name}' failed on {}: {error}",
                     step.node_id
                 );
                 for prev in &done {
@@ -2694,15 +2858,15 @@ pub(crate) async fn snapshot_deployment(
         }
     }
     info!(
-        "snapshot '{snapshot_name}' gravado em {} hop(s), {total_bytes} bytes",
+        "snapshot '{snapshot_name}' written on {} hop(s), {total_bytes} bytes",
         plan.steps.len()
     );
     Ok(total_bytes)
 }
 
-/// Restaura um snapshot de implantação numa **nova** sessão em todos os hops.
-/// Cada hop tem que voltar com a mesma fronteira de tokens; qualquer
-/// divergência libera a nova sessão em todos e devolve erro.
+/// Restores a deployment snapshot into a **new** session on all the hops.
+/// Each hop has to come back with the same token boundary; any
+/// divergence releases the new session on all of them and returns an error.
 pub(crate) async fn restore_deployment(
     plan: &PipelinePlan,
     snapshot_name: &str,
@@ -2724,14 +2888,14 @@ pub(crate) async fn restore_deployment(
                     .get("restored_tokens")
                     .and_then(|v| v.as_u64())
                     .map(|n| n as u32)
-                    .ok_or_else(|| format!("{} não informou restored_tokens", step.node_id))
+                    .ok_or_else(|| format!("{} did not report restored_tokens", step.node_id))
             });
         match result {
             Ok(tokens) => match agreed {
                 Some(prev) if prev != tokens => {
                     release_sessions(plan, new_session_id, clients).await;
                     return Err(format!(
-                        "hops divergiram na restauração: {} restaurou {tokens}, outro restaurou {prev}",
+                        "hops diverged in the restore: {} restored {tokens}, another restored {prev}",
                         step.node_id
                     ));
                 }
@@ -2739,7 +2903,7 @@ pub(crate) async fn restore_deployment(
             },
             Err(error) => {
                 warn!(
-                    "restore '{snapshot_name}' falhou em {}: {error}",
+                    "restore '{snapshot_name}' failed on {}: {error}",
                     step.node_id
                 );
                 release_sessions(plan, new_session_id, clients).await;
@@ -2748,12 +2912,12 @@ pub(crate) async fn restore_deployment(
         }
     }
     let tokens = agreed.unwrap_or(0);
-    info!("snapshot '{snapshot_name}' restaurado como sessão {new_session_id} ({tokens} tokens)");
+    info!("snapshot '{snapshot_name}' restored as session {new_session_id} ({tokens} tokens)");
     Ok(tokens)
 }
 
-/// Apaga um snapshot de implantação. Melhor esforço: um hop que já não tem o
-/// arquivo não é erro.
+/// Deletes a deployment snapshot. Best effort: a hop that no longer has the
+/// file is not an error.
 pub(crate) async fn erase_snapshot(
     plan: &PipelinePlan,
     snapshot_name: &str,
@@ -2765,7 +2929,7 @@ pub(crate) async fn erase_snapshot(
             "slot_name": slot_name_for_step(snapshot_name, &step.node_id),
         });
         if let Err(error) = slot_call_step(step, body, clients).await {
-            warn!("erase de '{snapshot_name}' em {}: {error}", step.node_id);
+            warn!("erase of '{snapshot_name}' on {}: {error}", step.node_id);
         }
     }
 }
@@ -2775,34 +2939,30 @@ pub(super) fn estimate_tokens(prompt: &str) -> u32 {
     prompt.chars().count().div_ceil(CHARS_PER_TOKEN) as u32
 }
 
-/// A recusa por prompt acima da capacidade, a partir de números soltos.
+/// The refusal for a prompt above capacity, from loose numbers.
 ///
-/// Existe separada de [`prompt_budget_error`] porque o gateway que **não**
-/// carrega modelo nenhum precisa da mesma admissão: era exatamente esse o
-/// caminho do defeito de 2026-09-08, em que um prompt de 30 mil caracteres
-/// atravessava o gateway sem config local, chegava ao decode do peer e
-/// derrubava o processo inteiro com `CUDA error: out of memory`. Recusar aqui
-/// é o que mantém o nó vivo para os outros pedidos.
+/// It exists separately from [`prompt_budget_error`] because the gateway that **does not**
+/// load any model needs the same admission: that was exactly the
+/// path of the 2026-09-08 defect, in which a 30-thousand-character prompt
+/// went through the gateway without a local config, reached the peer's decode and
+/// brought the whole process down with `CUDA error: out of memory`. Refusing here
+/// is what keeps the node alive for the other requests.
 pub fn prompt_budget_error_of(n_ctx: u32, max_new_tokens: u32, prompt: &str) -> Option<String> {
     let budget = prompt_budget_of(n_ctx, 1, max_new_tokens);
     let estimated = estimate_tokens(prompt);
     (estimated > budget).then(|| {
         format!(
-            "Prompt grande demais: ~{estimated} tokens estimados contra um limite de \
-             {budget}. Cada sessão recebe n_ctx ({n_ctx}) menos max_new_tokens \
-             ({max_new_tokens}). Aumente n_ctx em Configurar → ajustes avançados, \
-             reduza max_new_tokens, ou reduza o tamanho do prompt."
+            "Prompt too large: ~{estimated} tokens estimated against a limit of {budget}. Each session gets n_ctx ({n_ctx}) minus max_new_tokens ({max_new_tokens}). Increase n_ctx in Configure → advanced settings, reduce max_new_tokens, or reduce the prompt size."
         )
     })
 }
 
 pub fn prompt_budget_error(cfg: &crate::runtime::NodeConfig, prompt: &str) -> Option<String> {
     let error = prompt_budget_error_of(cfg.n_ctx, cfg.max_new_tokens, prompt)?;
-    // O nó que tem o modelo em casa sabe mais: acrescenta por que `n_batch`
-    // não é o limite, que é a confusão que o operador faz primeiro.
+    // The node that has the model at home knows more: it adds why `n_batch`
+    // is not the limit, which is the confusion the operator makes first.
     Some(format!(
-        "{error} O prompt vai em pedaços de {} tokens, então n_batch ({}) não limita \
-         o prompt.",
+        "{error} The prompt goes in chunks of {} tokens, so n_batch ({}) does not limit the prompt.",
         prompt_chunk_tokens(cfg),
         cfg.n_batch,
     ))
@@ -2847,15 +3007,15 @@ mod audit_replication_tests {
     use libp2p::PeerId;
     use std::collections::{HashMap, HashSet};
 
-    // Reprodução representativa pela visão dos admins:
-    // Setup: um admin emissor e dois admins receptores em Network::testkit,
-    // sem UDP, serviços ou dados de produção.
-    // Entrada: um AuditEvent Begin e Complete aceito pelo host do plugin.
-    // Gatilho: a resposta positiva do plugin deve acionar o fanout do POM.
-    // Máscara: quando o plugin não está ativo, o fallback AuditLog já replicava.
-    // Sintoma: com plugin ativo, os dois admins remotos não recebiam nenhum evento.
-    // Este teste cobre o fanout até a fila libp2p, não os processos POM reais nem
-    // o cdylib extraído; não afirma equivalência com essa execução E2E completa.
+    // Representative reproduction from the admins' point of view:
+    // Setup: one sender admin and two receiver admins in Network::testkit,
+    // without UDP, services or production data.
+    // Input: an AuditEvent Begin and Complete accepted by the plugin host.
+    // Trigger: the plugin's positive answer must trigger the POM fanout.
+    // Mask: when the plugin is not active, the AuditLog fallback already replicated.
+    // Symptom: with the plugin active, the two remote admins received no event.
+    // This test covers the fanout up to the libp2p queue, not the real POM processes nor
+    // the extracted cdylib; it does not claim equivalence with that full E2E execution.
     #[tokio::test]
     async fn plugin_accepted_inference_log_reaches_every_admin_peer() {
         let network = Arc::new(
@@ -2868,7 +3028,7 @@ mod audit_replication_tests {
                 None,
             )
             .await
-            .expect("rede isolada"),
+            .expect("isolated network"),
         );
         network.set_profile(crate::profile::NodeProfile::Admin);
 
@@ -2887,7 +3047,7 @@ mod audit_replication_tests {
             std::process::id(),
             uuid::Uuid::new_v4().simple()
         ));
-        let database = Arc::new(crate::db::PomDb::open(&path).expect("banco isolado"));
+        let database = Arc::new(crate::db::PomDb::open(&path).expect("isolated database"));
         let audit = crate::reqlog::AuditLog::new(database);
         let (outbound, mut received) = mpsc::channel(8);
         audit.start_replication(network, outbound);
@@ -2934,8 +3094,8 @@ mod audit_replication_tests {
         while received_by_peer.values().map(Vec::len).sum::<usize>() < 4 {
             let delivery = tokio::time::timeout(Duration::from_secs(2), received.recv())
                 .await
-                .expect("fanout para os admins no prazo")
-                .expect("canal de replicação aberto");
+                .expect("fanout to the admins in time")
+                .expect("replication channel open");
             received_by_peer
                 .entry(delivery.peer_id)
                 .or_default()
@@ -3018,6 +3178,7 @@ pub fn spawn_logged_generation_with_stops(
     tokio::spawn(async move {
         let mut generated: u32 = 0;
         let mut result = String::new();
+        let mut reasoning_open = false;
         // `None` means the client hung up before the generation ended, which is
         // its own outcome and worth seeing in the log.
         let mut outcome: Option<Result<GenSummary, String>> = None;
@@ -3027,6 +3188,19 @@ pub fn spawn_logged_generation_with_stops(
             let terminal = match &event {
                 GenEvent::Token(text) => {
                     generated += 1;
+                    if reasoning_open {
+                        result.push_str("</think>");
+                        reasoning_open = false;
+                    }
+                    result.push_str(text);
+                    None
+                }
+                GenEvent::Reasoning(text) => {
+                    generated += 1;
+                    if !reasoning_open {
+                        result.push_str("<think>");
+                        reasoning_open = true;
+                    }
                     result.push_str(text);
                     None
                 }
@@ -3044,6 +3218,10 @@ pub fn spawn_logged_generation_with_stops(
                 outcome = terminal;
                 break;
             }
+        }
+
+        if reasoning_open {
+            result.push_str("</think>");
         }
 
         let summary_trace = outcome.as_ref().and_then(|outcome| {
@@ -3091,7 +3269,7 @@ pub fn spawn_logged_generation_with_stops(
                 Some(generated),
                 Some(started.elapsed().as_millis() as u64),
                 "abandoned",
-                Some("o cliente desconectou antes do fim".to_string()),
+                Some("the client disconnected before the end".to_string()),
             ),
         };
 
@@ -3182,15 +3360,12 @@ pub(crate) fn record_rejected(
         {
             audit.replicate_event(begin_event);
             if plugins
-                .ingest_audit_event(
-                    crate::plugins::LOGS_PLUGIN_CODE,
-                    complete_event.clone(),
-                )
+                .ingest_audit_event(crate::plugins::LOGS_PLUGIN_CODE, complete_event.clone())
                 .await
             {
                 audit.replicate_event(complete_event);
             } else {
-                tracing::warn!(request_id = %id, "conclusão de auditoria não entrou no plugin");
+                tracing::warn!(request_id = %id, "audit completion did not enter the plugin");
             }
         } else {
             audit.ingest_local_event(begin_event);
@@ -3199,23 +3374,43 @@ pub(crate) fn record_rejected(
     });
 }
 
-/// Run a generation to completion and return the whole text.
+/// The two semantic streams of one completed generation.
+#[derive(Debug, Default)]
+pub struct GeneratedOutput {
+    pub text: String,
+    pub reasoning: String,
+}
+
+/// Run a generation to completion while preserving reasoning separately from
+/// visible answer text.
+pub async fn generate_blocking_output_with_stops(
+    route: &'static str,
+    caller: crate::reqlog::Caller,
+    input: GenerationInput,
+) -> std::result::Result<(GeneratedOutput, GenSummary), String> {
+    let (tx, mut rx) = mpsc::channel(64);
+    spawn_logged_generation_with_stops(route, caller, input, tx);
+
+    let mut output = GeneratedOutput::default();
+    while let Some(event) = rx.recv().await {
+        match event {
+            GenEvent::Token(t) => output.text.push_str(&t),
+            GenEvent::Reasoning(t) => output.reasoning.push_str(&t),
+            GenEvent::Done(summary) => return Ok((output, summary)),
+            GenEvent::Failed(e) => return Err(e),
+            GenEvent::FailedWithTelemetry { error, .. } => return Err(error),
+        }
+    }
+    Err("generation ended without a response".to_string())
+}
+
+/// Run a generation to completion and return only visible answer text.
 pub async fn generate_blocking_with_stops(
     route: &'static str,
     caller: crate::reqlog::Caller,
     input: GenerationInput,
 ) -> std::result::Result<(String, GenSummary), String> {
-    let (tx, mut rx) = mpsc::channel(64);
-    spawn_logged_generation_with_stops(route, caller, input, tx);
-
-    let mut text = String::new();
-    while let Some(event) = rx.recv().await {
-        match event {
-            GenEvent::Token(t) => text.push_str(&t),
-            GenEvent::Done(summary) => return Ok((text, summary)),
-            GenEvent::Failed(e) => return Err(e),
-            GenEvent::FailedWithTelemetry { error, .. } => return Err(error),
-        }
-    }
-    Err("geração terminou sem resposta".to_string())
+    generate_blocking_output_with_stops(route, caller, input)
+        .await
+        .map(|(output, summary)| (output.text, summary))
 }

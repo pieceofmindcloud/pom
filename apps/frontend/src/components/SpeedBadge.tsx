@@ -3,7 +3,7 @@ import { useI18n } from "../i18n/provider";
 import type { SpeedRating } from "../lib/peerSpeed";
 import type { ChatTelemetryPeerPerf } from "../lib/types";
 
-/** As duas notas de uma máquina: decode e prefill. */
+/** The two grades of a machine: decode and prefill. */
 export type PeerSpeed = { decode: SpeedRating; prefill: SpeedRating };
 
 const SPEED_TONE_CLASS: Record<SpeedRating["tone"], string> = {
@@ -15,9 +15,9 @@ const SPEED_TONE_CLASS: Record<SpeedRating["tone"], string> = {
 };
 
 /**
- * Decode e prefill como selos, coloridos pela comparação com a fatia mais
- * rápida do modelo (`rateSpeed`). O número exato e a regra das cores ficam no
- * `title`: no card, a cor é que tem de saltar aos olhos.
+ * Decode and prefill as badges, colored by comparison with the fastest slice of
+ * the model (`rateSpeed`). The exact number and the color rule stay in the
+ * `title`: on the card, the color is what has to jump out.
  */
 function SpeedBadge({ kind, value, rating, compact = false }: { kind: "decode" | "prefill"; value: number | null | undefined; rating: SpeedRating; compact?: boolean }) {
   const { t } = useI18n();

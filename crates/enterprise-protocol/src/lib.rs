@@ -244,10 +244,10 @@ pub struct ValidatePayload {
 pub struct ValidateResponse {
     pub license_id: String,
     pub status: String,
-    /// Os `plugin_code` que esta licença concede hoje. O servidor de licenças
-    /// é um catálogo de plugins: a licença concede uma LISTA de códigos, e as
-    /// features de cada plugin vêm do manifesto do release instalado
-    /// (`PluginManifest::feature_set`), não da licença.
+    /// The `plugin_code`s this license grants today. The license server is a
+    /// plugin catalog: the license grants a LIST of codes, and the
+    /// features of each plugin come from the manifest of the installed release
+    /// (`PluginManifest::feature_set`), not from the license.
     pub licensed_plugins: Vec<String>,
     pub activation_required: bool,
     pub license_expires_at: Option<String>,
@@ -299,7 +299,7 @@ pub struct ActivationResponse {
     pub activation_token: String,
     pub lease_id: String,
     pub lease_token: String,
-    /// Os `plugin_code` que a licença concede, como em [`ValidateResponse`].
+    /// The `plugin_code`s the license grants, as in [`ValidateResponse`].
     pub licensed_plugins: Vec<String>,
     pub license_expires_at: Option<String>,
     pub activation_count: Option<u32>,
@@ -352,7 +352,7 @@ pub struct LicenseStatusResponse {
     pub license_id: String,
     pub activation_id: String,
     pub lease_id: String,
-    /// Os `plugin_code` que a licença concede, como em [`ValidateResponse`].
+    /// The `plugin_code`s the license grants, as in [`ValidateResponse`].
     pub licensed_plugins: Vec<String>,
     pub license_expires_at: Option<String>,
     pub activation_count: Option<u32>,

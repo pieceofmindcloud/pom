@@ -1,11 +1,11 @@
-//! Shell nativo do Windows: janela WebView2 e ícone na área de notificação.
+//! Native Windows shell: WebView2 window and notification area icon.
 //!
-//! O processo continua sendo o mesmo binário Rust que serve o gateway. Tao
-//! entrega a janela Win32, Wry usa o WebView2 instalado pelo Windows e
-//! `tray-icon` registra o menu da bandeja. Não há console nem Electron: o
-//! processo filho nativo é acompanhado por um supervisor leve no mesmo
-//! executável. `main.rs` declara `windows_subsystem = "windows"` no alvo
-//! Windows.
+//! The process is still the same Rust binary that serves the gateway. Tao
+//! provides the Win32 window, Wry uses the WebView2 installed by Windows and
+//! `tray-icon` registers the tray menu. There is no console and no Electron: the
+//! native child process is watched by a lightweight supervisor in the same
+//! executable. `main.rs` declares `windows_subsystem = "windows"` on the
+//! Windows target.
 
 pub const TRAY_SHOW_ID: &str = "pom.show";
 pub const TRAY_QUIT_ID: &str = "pom.quit";
@@ -18,7 +18,7 @@ pub const CRASH_RELAUNCH_DELAY_SECS: u64 = 1;
 fn wait_for_gateway_ready(receiver: &std::sync::mpsc::Receiver<()>) -> Result<(), String> {
     receiver
         .recv()
-        .map_err(|_| "o serviço Windows terminou antes de o gateway ficar pronto".to_string())
+        .map_err(|_| "the Windows service ended before the gateway became ready".to_string())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -40,8 +40,8 @@ pub fn menu_action(id: &str) -> Option<WindowAction> {
     }
 }
 
-/// Só uma saída bem-sucedida representa `Sair` na camada supervisora.
-/// `None` cobre encerramento por exceção ou sinal, que deve ser relançado.
+/// Only a successful exit represents `Quit` in the supervisor layer.
+/// `None` covers termination by exception or signal, which must be relaunched.
 pub fn should_relaunch(exit_code: Option<i32>) -> bool {
     exit_code != Some(0)
 }
@@ -73,10 +73,10 @@ mod native {
 
     fn tray_icon() -> Result<Icon> {
         let image = load_from_memory(include_bytes!("../../../assets/brand/pom-icon-32.png"))
-            .context("não deu para ler o ícone da bandeja do Windows")?
+            .context("could not read the Windows tray icon")?
             .to_rgba8();
         Icon::from_rgba(image.clone().into_raw(), image.width(), image.height())
-            .map_err(|error| anyhow!("não deu para montar o ícone da bandeja: {error}"))
+            .map_err(|error| anyhow!("could not build the tray icon: {error}"))
     }
 
     fn restore_window(window: &tao::window::Window) {
@@ -97,20 +97,20 @@ mod native {
     }
 
     fn run_supervisor() -> Result<()> {
-        let executable = std::env::current_exe().context("não foi possível localizar o pom.exe")?;
+        let executable = std::env::current_exe().context("could not locate pom.exe")?;
         let args = std::env::args_os().skip(1).collect::<Vec<_>>();
         loop {
             let status = ProcessCommand::new(&executable)
                 .args(&args)
                 .env(super::SUPERVISED_CHILD_ENV, "1")
                 .status()
-                .with_context(|| format!("não foi possível iniciar {}", executable.display()))?;
+                .with_context(|| format!("could not start {}", executable.display()))?;
             if !super::should_relaunch(status.code()) {
                 return Ok(());
             }
             tracing::error!(
                 exit_code = ?status.code(),
-                "POM encerrou sem saída do usuário; relançando o processo Windows"
+                "POM ended without a user exit; relaunching the Windows process"
             );
             thread::sleep(Duration::from_secs(super::CRASH_RELAUNCH_DELAY_SECS));
         }
@@ -139,32 +139,32 @@ mod native {
         if wait_for_gateway_ready(&gateway_ready).is_err() {
             return service
                 .join()
-                .map_err(|_| anyhow!("thread do serviço Windows terminou em pânico"))?;
+                .map_err(|_| anyhow!("Windows service thread ended in a panic"))?;
         }
 
         let window = WindowBuilder::new()
             .with_title("POM")
             .with_inner_size(LogicalSize::new(WINDOW_SIZE.0, WINDOW_SIZE.1))
             .build(&event_loop)
-            .map_err(|error| anyhow!("não deu para abrir a janela Windows: {error}"))?;
+            .map_err(|error| anyhow!("could not open the Windows window: {error}"))?;
         let webview = WebViewBuilder::new()
             .with_url(crate::gateway_url(port))
             .build(&window)
-            .context("não deu para iniciar o WebView2; confirme que o runtime está instalado")?;
+            .context("could not start WebView2; confirm that the runtime is installed")?;
 
         let menu = Menu::new();
-        let show_item = MenuItem::with_id(TRAY_SHOW_ID, "Abrir POM", true, None);
-        let quit_item = MenuItem::with_id(TRAY_QUIT_ID, "Sair do POM", true, None);
+        let show_item = MenuItem::with_id(TRAY_SHOW_ID, "Open POM", true, None);
+        let quit_item = MenuItem::with_id(TRAY_QUIT_ID, "Quit POM", true, None);
         menu.append(&show_item)
-            .context("não deu para adicionar Restaurar ao menu da bandeja")?;
+            .context("could not add Restore to the tray menu")?;
         menu.append(&quit_item)
-            .context("não deu para adicionar Sair ao menu da bandeja")?;
+            .context("could not add Quit to the tray menu")?;
         let tray = TrayIconBuilder::new()
             .with_tooltip("POM")
             .with_menu(Box::new(menu))
             .with_icon(tray_icon()?)
             .build()
-            .context("não deu para instalar o ícone na bandeja do Windows")?;
+            .context("could not install the icon in the Windows tray")?;
 
         let proxy = event_loop.create_proxy();
         MenuEvent::set_event_handler(Some(move |event| {
@@ -203,25 +203,25 @@ mod native {
             }
         });
 
-        // Desregistre o callback antes de destruir a bandeja e libere os
-        // objetos na ordem inversa da criação. `process::exit` sem esse trecho
-        // deixava a classe Win32 do WebView2 viva e produzia ERROR 1412 no
-        // teardown, mascarando a causa real de uma queda do serviço.
+        // Unregister the callback before destroying the tray and release the
+        // objects in the reverse order of creation. `process::exit` without this
+        // block left the WebView2 Win32 class alive and produced ERROR 1412 on
+        // teardown, masking the real cause of a service crash.
         MenuEvent::set_event_handler::<fn(MenuEvent)>(None);
         drop(tray);
         drop(webview);
         drop(window);
 
         if user_quit {
-            // Assim como o Sair do AppKit, não aguardamos um servidor Tokio
-            // sem canal cooperativo: terminar o processo encerra o serviço e
-            // remove o ícone da bandeja de forma determinística.
+            // As with AppKit's Quit, we do not wait for a Tokio server with no
+            // cooperative channel: ending the process stops the service and
+            // removes the tray icon deterministically.
             std::process::exit(0);
         }
 
         service
             .join()
-            .map_err(|_| anyhow!("thread do serviço Windows terminou em pânico"))?
+            .map_err(|_| anyhow!("Windows service thread ended in a panic"))?
     }
 }
 
@@ -233,32 +233,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fechar_a_janela_esconde_na_bandeja() {
+    fn closing_the_window_hides_to_the_tray() {
         assert_eq!(close_action(), WindowAction::HideToTray);
     }
 
     #[test]
-    fn menu_da_bandeja_separa_restaurar_de_sair() {
+    fn the_tray_menu_separates_restore_from_quit() {
         assert_eq!(menu_action(TRAY_SHOW_ID), Some(WindowAction::ShowWindow));
         assert_eq!(menu_action(TRAY_QUIT_ID), Some(WindowAction::Quit));
         assert_eq!(menu_action("unknown"), None);
     }
 
     #[test]
-    fn janela_do_shell_tem_tamanho_de_desktop() {
+    fn the_shell_window_is_desktop_sized() {
         assert!(WINDOW_SIZE.0 > 1000.0);
         assert!(WINDOW_SIZE.1 > 800.0);
     }
 
     #[test]
-    fn supervisor_so_relanca_saida_anormal() {
+    fn the_supervisor_only_relaunches_an_abnormal_exit() {
         assert!(!should_relaunch(Some(0)));
         assert!(should_relaunch(Some(1)));
         assert!(should_relaunch(None));
     }
 
     #[test]
-    fn shell_aguarda_o_sinal_de_gateway_pronto_antes_da_webview() {
+    fn the_shell_waits_for_the_gateway_ready_signal_before_the_webview() {
         let (ready_sender, ready_receiver) = std::sync::mpsc::sync_channel(0);
         let (started_sender, started_receiver) = std::sync::mpsc::sync_channel(0);
         let (finished_sender, finished_receiver) = std::sync::mpsc::sync_channel(0);

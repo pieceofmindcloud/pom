@@ -274,9 +274,9 @@ mod tests {
                     state,
                     require_admin_for_surface,
                 ));
-            // Bloquear ou promover uma máquina continua administrativo mesmo
-            // depois de a leitura do mesmo prefixo (`GET /admin/nodes`) abrir
-            // para `node`.
+            // Blocking or promoting a machine stays administrative even after
+            // the read of the same prefix (`GET /admin/nodes`) opens up
+            // to `node`.
             for path in [
                 "/admin/nodes/outra/block",
                 "/admin/nodes/outra/promote-admin",
@@ -302,13 +302,16 @@ mod tests {
                     .await
                     .unwrap();
                 let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-                assert_eq!(body["error"], "perfil sem autorização para esta rota");
+                assert_eq!(body["error"], "profile not authorized for this route");
             }
         }
     }
 
+    /// The connection key says "a member", not which one: every member holds
+    /// it, inference nodes included. An administrative route asked by another
+    /// node takes a request signed by an admin of the trust chain.
     #[tokio::test]
-    async fn authenticated_node_to_node_admin_routes_ignore_receiver_profile() {
+    async fn node_to_node_admin_routes_need_an_admin_signature_not_just_the_key() {
         let state = testkit::state_with("connection-secret", vec![]).await;
         {
             let mut auth = state.auth.write().await;
@@ -317,48 +320,321 @@ mod tests {
             auth.admin_exposure = crate::config::AdminExposure::Network;
         }
         let app = Router::new()
-            .route("/api/ui/deployments", get(|| async { StatusCode::OK }))
             .route("/api/ui/stop-inference", get(|| async { StatusCode::OK }))
             .with_state(state.clone())
             .layer(middleware::from_fn_with_state(
-                state,
+                state.clone(),
                 require_admin_for_surface,
             ));
-
-        // A leitura de deployments é NodeAdmin; a ação abaixo continua
-        // AdminOnly e é o caso que verifica a separação de autoridade.
-        for path in ["/api/ui/stop-inference"] {
-            let mut browser_request = Request::get(path)
-                .header("authorization", "Bearer connection-secret")
-                .body(axum::body::Body::empty())
-                .unwrap();
-            browser_request
+        let path = "/api/ui/stop-inference";
+        let from_peer = |mut request: Request<axum::body::Body>| {
+            request
                 .extensions_mut()
                 .insert(crate::serve::PeerAddr("192.0.2.7:1234".parse().unwrap()));
-            assert_eq!(
-                app.clone().oneshot(browser_request).await.unwrap().status(),
-                StatusCode::FORBIDDEN,
-                "browser request must not inherit node authority for {path}"
-            );
+            request
+        };
 
-            let mut internal_request = Request::get(path)
+        let browser = from_peer(
+            Request::get(path)
+                .header("authorization", "Bearer connection-secret")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        );
+        assert_eq!(
+            app.clone().oneshot(browser).await.unwrap().status(),
+            StatusCode::FORBIDDEN,
+            "a browser request does not inherit node authority"
+        );
+
+        // The key and the node-to-node marker, with no signature: any member
+        // could send this.
+        let key_only = from_peer(
+            Request::get(path)
                 .header("authorization", "Bearer connection-secret")
                 .header(crate::auth::INTERNAL_NODE_REQUEST_HEADER, "1")
                 .body(axum::body::Body::empty())
-                .unwrap();
-            internal_request
-                .extensions_mut()
-                .insert(crate::serve::PeerAddr("192.0.2.7:1234".parse().unwrap()));
+                .unwrap(),
+        );
+        let refused = app.clone().oneshot(key_only).await.unwrap();
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            testkit::body_of(refused).await["reason"],
+            "signature_required"
+        );
+
+        // Signed by the principal of the trust chain.
+        let mut signed = Request::get(path);
+        for (name, value) in state
+            .signed_control_headers("GET", path, b"")
+            .unwrap()
+            .iter()
+        {
+            signed = signed.header(name, value);
+        }
+        let signed = from_peer(signed.body(axum::body::Body::empty()).unwrap());
+        assert_eq!(app.oneshot(signed).await.unwrap().status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn what_a_node_may_ask_of_another_depends_on_who_it_is() {
+        use crate::webui::RouteScope::{
+            AdminOnly, CommonOrInternal, DeployAdmin, InferNodeAdmin, NodeAdmin,
+        };
+        let mut worker = testkit::peer("worker", "worker", 8090);
+        worker.profile = crate::profile::NodeProfile::Node;
+        let mut infer = testkit::peer("infer", "infer", 8091);
+        infer.profile = crate::profile::NodeProfile::Infer;
+        let state = testkit::state_with("principal", vec![worker, infer]).await;
+        let principal_of = |node_id: &str| crate::admin_trust::AuthorityPrincipal {
+            node_id: node_id.into(),
+            peer_id: String::new(),
+            pubkey: format!("pubkey-of-{node_id}"),
+        };
+        let admin = state.authority_principal.clone();
+
+        // Routes that govern the network: the principal's signature, nothing less.
+        assert_eq!(
+            caller_may_ask(&state, AdminOnly, None).await,
+            Err("signature_required")
+        );
+        assert_eq!(
+            caller_may_ask(&state, AdminOnly, Some(&admin)).await,
+            Ok(())
+        );
+        assert_eq!(
+            caller_may_ask(&state, AdminOnly, Some(&principal_of("worker"))).await,
+            Err("principal_required")
+        );
+        assert_eq!(
+            caller_may_ask(&state, AdminOnly, Some(&principal_of("infer"))).await,
+            Err("principal_required")
+        );
+        // Deploy routes: an admin's signature, and a plain member is not one.
+        assert_eq!(
+            caller_may_ask(&state, DeployAdmin, None).await,
+            Err("signature_required")
+        );
+        assert_eq!(
+            caller_may_ask(&state, DeployAdmin, Some(&admin)).await,
+            Ok(())
+        );
+        assert_eq!(
+            caller_may_ask(&state, DeployAdmin, Some(&principal_of("worker"))).await,
+            Err("admin_required")
+        );
+
+        // Routes of a serving node: a peer that is not an inference node.
+        assert_eq!(
+            caller_may_ask(&state, NodeAdmin, None).await,
+            Err("signature_required")
+        );
+        assert_eq!(
+            caller_may_ask(&state, NodeAdmin, Some(&admin)).await,
+            Ok(())
+        );
+        assert_eq!(
+            caller_may_ask(&state, NodeAdmin, Some(&principal_of("worker"))).await,
+            Ok(())
+        );
+        assert_eq!(
+            caller_may_ask(&state, NodeAdmin, Some(&principal_of("infer"))).await,
+            Err("infer_caller")
+        );
+        assert_eq!(
+            caller_may_ask(&state, NodeAdmin, Some(&principal_of("stranger"))).await,
+            Err("unknown_caller")
+        );
+
+        // A machine admitted as an inference node stays one for the principal
+        // whatever it announces: the role is granted at admission.
+        state
+            .network_chat
+            .request_admission(
+                "worker",
+                Default::default(),
+                crate::config::EnrollmentRole::Infer,
+            )
+            .unwrap();
+        assert_eq!(
+            caller_may_ask(&state, NodeAdmin, Some(&principal_of("worker"))).await,
+            Err("infer_caller")
+        );
+
+        // Inference and the common routes are open to every member.
+        for scope in [InferNodeAdmin, CommonOrInternal] {
+            assert_eq!(caller_may_ask(&state, scope, None).await, Ok(()));
             assert_eq!(
-                app.clone()
-                    .oneshot(internal_request)
-                    .await
-                    .unwrap()
-                    .status(),
-                StatusCode::OK,
-                "authenticated node request must reach {path}"
+                caller_may_ask(&state, scope, Some(&principal_of("infer"))).await,
+                Ok(())
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_secondary_admin_deploys_and_does_nothing_else() {
+        use crate::webui::RouteScope::{AdminOnly, DeployAdmin, NodeAdmin};
+        use axum::http::Method;
+        // A network with a principal and one secondary admin, seen from a
+        // third member that holds the same chain.
+        let secondary_node = testkit::state_with_secondary_admin("secondary", vec![]).await;
+        let chain = secondary_node.admin_trust.document();
+        let secondary = secondary_node.authority_principal.clone();
+        let principal = chain.primary.clone();
+        let mut member = testkit::state_with("member", vec![]).await;
+        member.admin_trust = Arc::new(crate::admin_trust::AdminTrust::in_memory(chain).unwrap());
+
+        // Between nodes: the secondary's signature opens the deploy routes
+        // and a node's routes, and none of the routes that govern the network.
+        assert_eq!(
+            caller_may_ask(&member, DeployAdmin, Some(&secondary)).await,
+            Ok(())
+        );
+        assert_eq!(
+            caller_may_ask(&member, NodeAdmin, Some(&secondary)).await,
+            Ok(())
+        );
+        assert_eq!(
+            caller_may_ask(&member, AdminOnly, Some(&secondary)).await,
+            Err("principal_required")
+        );
+        assert_eq!(
+            caller_may_ask(&member, AdminOnly, Some(&principal)).await,
+            Ok(())
+        );
+        assert!(issuer_is_principal(&member, &principal));
+        assert!(!issuer_is_principal(&member, &secondary));
+
+        // On its own screen: the same split.
+        let app = Router::new()
+            .route(
+                "/api/ui/undeploy",
+                axum::routing::post(|| async { StatusCode::OK }),
+            )
+            .route(
+                "/api/ui/deploy",
+                axum::routing::post(|| async { StatusCode::OK }),
+            )
+            .route(
+                "/api/ui/network/admissions",
+                get(|| async { StatusCode::OK }),
+            )
+            .route(
+                "/api/ui/network/settings",
+                axum::routing::post(|| async { StatusCode::OK }),
+            )
+            .route(
+                "/admin/nodes/x/promote-admin",
+                axum::routing::post(|| async { StatusCode::OK }),
+            )
+            .route(
+                "/admin/nodes/x/block",
+                axum::routing::post(|| async { StatusCode::OK }),
+            )
+            .route(
+                "/admin/authority/secondaries/secondary/demote",
+                axum::routing::post(|| async { StatusCode::OK }),
+            )
+            .route(
+                "/admin/regenerate-key",
+                axum::routing::post(|| async { StatusCode::OK }),
+            )
+            .with_state(secondary_node.clone())
+            .layer(middleware::from_fn_with_state(
+                secondary_node.clone(),
+                require_admin_for_surface,
+            ));
+        let ask = |method: Method, path: &'static str| {
+            let app = app.clone();
+            async move {
+                let mut request = Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .body(axum::body::Body::empty())
+                    .unwrap();
+                request
+                    .extensions_mut()
+                    .insert(crate::serve::PeerAddr("127.0.0.1:1234".parse().unwrap()));
+                app.oneshot(request).await.unwrap().status()
+            }
+        };
+        assert_eq!(ask(Method::POST, "/api/ui/deploy").await, StatusCode::OK);
+        assert_eq!(ask(Method::POST, "/api/ui/undeploy").await, StatusCode::OK);
+        for (method, path) in [
+            (Method::GET, "/api/ui/network/admissions"),
+            (Method::POST, "/api/ui/network/settings"),
+            (Method::POST, "/admin/nodes/x/promote-admin"),
+            (Method::POST, "/admin/nodes/x/block"),
+            // Not even its own demotion: the chain changes by the principal's hand.
+            (
+                Method::POST,
+                "/admin/authority/secondaries/secondary/demote",
+            ),
+            (Method::POST, "/admin/regenerate-key"),
+        ] {
+            assert_eq!(ask(method, path).await, StatusCode::FORBIDDEN, "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_inference_node_refuses_a_model_even_from_an_admin() {
+        let state = testkit::state_with("connection-secret", vec![]).await;
+        {
+            let mut auth = state.auth.write().await;
+            auth.connection_key = "connection-secret".into();
+            auth.profile = crate::profile::NodeProfile::Infer;
+        }
+        let app = Router::new()
+            .route(
+                "/api/ui/apply",
+                axum::routing::post(|| async { StatusCode::OK }),
+            )
+            .route(
+                "/api/transfer/offer",
+                axum::routing::post(|| async { StatusCode::OK }),
+            )
+            .route(
+                "/api/ui/unload",
+                axum::routing::post(|| async { StatusCode::OK }),
+            )
+            .with_state(state.clone())
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                require_admin_for_surface,
+            ));
+        let signed_post = |path: &'static str| {
+            let mut request = Request::post(path);
+            for (name, value) in state
+                .signed_control_headers("POST", path, b"")
+                .unwrap()
+                .iter()
+            {
+                request = request.header(name, value);
+            }
+            let mut request = request.body(axum::body::Body::empty()).unwrap();
+            request
+                .extensions_mut()
+                .insert(crate::serve::PeerAddr("192.0.2.7:1234".parse().unwrap()));
+            request
+        };
+        // Signed by the principal itself, and still refused: this machine was
+        // admitted for inference only.
+        for path in ["/api/ui/apply", "/api/transfer/offer"] {
+            let refused = app.clone().oneshot(signed_post(path)).await.unwrap();
+            assert_eq!(refused.status(), StatusCode::FORBIDDEN, "{path}");
+            assert_eq!(
+                testkit::body_of(refused).await["reason"],
+                "infer_profile",
+                "{path}"
+            );
+        }
+        // Nothing to hold means nothing to refuse about letting go.
+        assert_eq!(
+            app.oneshot(signed_post("/api/ui/unload"))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
     }
 
     #[tokio::test]
@@ -471,8 +747,8 @@ mod tests {
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
-    /// Uma requisição pelo middleware, no perfil pedido, sem credencial
-    /// interna: é assim que o navegador do operador chega ao seu próprio nó.
+    /// A request through the middleware, in the requested profile, with no internal
+    /// credential: this is how the operator's browser reaches its own node.
     #[cfg(test)]
     async fn browser_request(
         profile: crate::profile::NodeProfile,
@@ -506,45 +782,47 @@ mod tests {
         app.oneshot(request).await.unwrap().status()
     }
 
-    /// A recusa que interessa é a do perfil. Qualquer outro estado - a rota
-    /// existir, o corpo agradar, o banco responder - é assunto do handler.
+    /// The refusal that matters is the profile's. Any other state - the route
+    /// existing, the body being acceptable, the database answering - is the handler's business.
     fn refused_by_profile(status: StatusCode) -> bool {
         status == StatusCode::FORBIDDEN
     }
 
-    /// Cada rota que este trabalho reclassificou: quem deve alcançar alcança,
-    /// e quem não deve continua recusado. Uma tabela só, para a próxima
-    /// mudança de escopo ter onde encostar.
+    /// Each route this work reclassified: whoever should reach it does,
+    /// and whoever should not stays refused. A single table, so the next
+    /// scope change has somewhere to attach.
     #[tokio::test]
     async fn the_reclassified_routes_open_for_the_right_profiles_only() {
         use crate::profile::NodeProfile::{Admin, Infer, Node};
 
-        // (método, caminho, perfis que **entram**)
+        // (method, path, profiles that **get in**)
         let cases: &[(&str, &str, &[crate::profile::NodeProfile])] = &[
-            // A tela Rede do `node` lê o retrato da rede.
+            // The `node` Network screen reads the network snapshot.
             ("GET", "/admin/nodes", &[Node, Admin]),
-            // Administrar aquelas máquinas continua sendo do administrador.
+            // Administering those machines stays with the administrator.
             ("POST", "/admin/nodes/outra/block", &[Admin]),
             ("POST", "/admin/nodes/outra/unblock", &[Admin]),
             ("DELETE", "/admin/nodes/outra", &[Admin]),
             ("POST", "/admin/nodes/outra/promote-admin", &[Admin]),
-            // Girar a chave do cluster corta todos os outros nós.
+            // Rotating the cluster key cuts off every other node.
             ("POST", "/admin/regenerate-key", &[Admin]),
-            // A API key é a credencial de quem atende `/v1`, e todo perfil
-            // atende - inclusive o `infer`, cujo rodapé abre esta tela.
+            // The API key is the credential of whoever serves `/v1`, and every profile
+            // serves - including `infer`, whose footer opens this screen.
             ("GET", "/admin/api-keys", &[Infer, Node, Admin]),
             ("POST", "/admin/api-keys", &[Infer, Node, Admin]),
             ("DELETE", "/admin/api-keys/abc", &[Infer, Node, Admin]),
-            // Sair da rede é abdicar do próprio posto.
+            // Leaving the network is abdicating one's own post.
             ("POST", "/api/ui/leave", &[Infer, Node, Admin]),
             ("POST", "/api/ui/rejoin", &[Infer, Node, Admin]),
-            // Corrigir o endereço anunciado descreve esta própria máquina.
+            // Fixing the announced address describes this very machine.
             (
                 "POST",
                 "/api/ui/network/advertise-addr",
                 &[Infer, Node, Admin],
             ),
-            // O que não foi tocado continua onde estava.
+            // And so does its name.
+            ("POST", "/api/ui/network/node-name", &[Infer, Node, Admin]),
+            // What was not touched stays where it was.
             ("GET", "/api/ui/deployments", &[Node, Admin]),
             ("GET", "/api/ui/models", &[Node, Admin]),
         ];
@@ -555,21 +833,21 @@ mod tests {
                 if allowed.contains(&profile) {
                     assert!(
                         !refused_by_profile(status),
-                        "{profile} devia alcançar {method} {path}, veio {status}"
+                        "{profile} should reach {method} {path}, got {status}"
                     );
                 } else {
                     assert!(
                         refused_by_profile(status),
-                        "{profile} não devia alcançar {method} {path}, veio {status}"
+                        "{profile} should not reach {method} {path}, got {status}"
                     );
                 }
             }
         }
     }
 
-    /// Reproduz a chamada do navegador no caso que falhava ao vivo: o `infer`
-    /// atravessa o middleware, grava apenas a própria configuração e o próximo
-    /// anúncio já carrega o endereço novo.
+    /// The relay options belong to whoever runs the machine, an `infer`
+    /// included: saving writes this node's own configuration and the next
+    /// announce already carries the new offer.
     #[tokio::test]
     async fn an_infer_node_can_save_its_own_address_and_announce_it_next() {
         let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK
@@ -653,7 +931,181 @@ mod tests {
                     "candidatos={addr_candidates:?}"
                 );
             }
-            other => panic!("esperava Announce, veio {other:?}"),
+            other => panic!("expected Announce, got {other:?}"),
+        }
+    }
+
+    /// A network created at first run never shows the setup wizard, so the
+    /// My machine screen is where the operator names the machine.
+    #[tokio::test]
+    async fn the_machine_is_renamed_from_the_screen_without_a_restart() {
+        let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = testkit::state_with("infer-node", vec![]).await;
+        {
+            let mut auth = state.auth.write().await;
+            auth.connection_key = "connection-secret".into();
+            auth.profile = crate::profile::NodeProfile::Infer;
+        }
+        struct ConfigPathGuard {
+            previous: Option<std::ffi::OsString>,
+            path: std::path::PathBuf,
+        }
+        impl Drop for ConfigPathGuard {
+            fn drop(&mut self) {
+                match &self.previous {
+                    Some(previous) => std::env::set_var("POM_CONFIG", previous),
+                    None => std::env::remove_var("POM_CONFIG"),
+                }
+                std::fs::remove_file(&self.path).ok();
+            }
+        }
+        let config_path = std::env::current_dir()
+            .unwrap()
+            .join(format!(".pom-test-node-name-{}.json", std::process::id()));
+        std::fs::remove_file(&config_path).ok();
+        let _config_path_guard = ConfigPathGuard {
+            previous: std::env::var_os("POM_CONFIG"),
+            path: config_path.clone(),
+        };
+        std::env::set_var("POM_CONFIG", &config_path);
+        let app = Router::new()
+            .merge(crate::webui::routes())
+            .with_state(state.clone())
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                require_admin_for_surface,
+            ));
+        let rename = |name: String| {
+            let mut request = Request::post("/api/ui/network/node-name")
+                .header("authorization", "Bearer connection-secret")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    serde_json::json!({ "node_name": name }).to_string(),
+                ))
+                .unwrap();
+            request
+                .extensions_mut()
+                .insert(crate::serve::PeerAddr("127.0.0.1:1234".parse().unwrap()));
+            app.clone().oneshot(request)
+        };
+
+        let response = rename("  Mesa do laboratório  ".into()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let answer: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(answer["hostname"], "Mesa do laboratório");
+        assert_eq!(
+            state.auth.read().await.node_name.as_deref(),
+            Some("Mesa do laboratório")
+        );
+        // The peers learn it from the next announce.
+        let wire = state.network.gossip_announce_bytes(None).unwrap();
+        let announce: serde_json::Value = serde_json::from_slice(&wire).unwrap();
+        assert_eq!(announce["hostname"], "Mesa do laboratório");
+
+        let response = rename("x".repeat(65)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(state.network.hostname(), "Mesa do laboratório");
+
+        // An empty name gives the machine its system hostname back.
+        let response = rename(String::new()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let answer: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(answer["node_name"].is_null());
+        assert_eq!(state.auth.read().await.node_name, None);
+        assert_eq!(
+            state.network.hostname(),
+            crate::sysmon::sample().await.hostname
+        );
+    }
+
+    #[tokio::test]
+    async fn the_relay_options_are_saved_and_applied_without_a_restart() {
+        let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = testkit::state_with("infer-node", vec![]).await;
+        {
+            let mut auth = state.auth.write().await;
+            auth.connection_key = "connection-secret".into();
+            auth.profile = crate::profile::NodeProfile::Infer;
+        }
+        struct ConfigPathGuard {
+            previous: Option<std::ffi::OsString>,
+            path: std::path::PathBuf,
+        }
+        impl Drop for ConfigPathGuard {
+            fn drop(&mut self) {
+                match &self.previous {
+                    Some(previous) => std::env::set_var("POM_CONFIG", previous),
+                    None => std::env::remove_var("POM_CONFIG"),
+                }
+                std::fs::remove_file(&self.path).ok();
+            }
+        }
+        let config_path = std::env::current_dir()
+            .unwrap()
+            .join(format!(".pom-test-relay-{}.json", std::process::id()));
+        std::fs::remove_file(&config_path).ok();
+        let _config_path_guard = ConfigPathGuard {
+            previous: std::env::var_os("POM_CONFIG"),
+            path: config_path.clone(),
+        };
+        std::env::set_var("POM_CONFIG", &config_path);
+        let app = Router::new()
+            .merge(crate::webui::routes())
+            .with_state(state.clone())
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                require_admin_for_surface,
+            ));
+        // The internet reaches this node: by default it relays for its
+        // cluster and lets files cross.
+        state.network.relay_gate().set_reachable(true);
+        assert_eq!(
+            state.network.relay_gate().offer(),
+            Some(crate::network::RelayOffer { transfers: true })
+        );
+
+        let mut request = Request::post("/api/ui/network/relay")
+            .header("authorization", "Bearer connection-secret")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                r#"{"everyone":false,"cluster":true,"transfers":false}"#,
+            ))
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(crate::serve::PeerAddr("127.0.0.1:1234".parse().unwrap()));
+        let response = app.oneshot(request).await.unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "body={}",
+            String::from_utf8_lossy(&body)
+        );
+        let answer: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(answer["transfers"], false);
+        assert_eq!(answer["serving"], true);
+
+        assert!(!state.auth.read().await.relay.transfers);
+        let wire = state.network.gossip_announce_bytes(None).unwrap();
+        match serde_json::from_slice(&wire).unwrap() {
+            crate::network::P2PMessage::Announce { relay, .. } => {
+                assert_eq!(relay, Some(crate::network::RelayOffer { transfers: false }));
+            }
+            other => panic!("expected Announce, got {other:?}"),
         }
     }
 
@@ -689,10 +1141,10 @@ mod tests {
         );
     }
 
-    /// Sair é abdicar; mandar **outra** máquina sair é ato de administrador.
-    /// Sem esta trava, o escopo mais largo da rota daria a qualquer nó o poder
-    /// de expulsar um peer - o repasse viaja com a credencial interna, que o
-    /// alvo não julga pelo perfil de quem pediu.
+    /// Leaving is abdicating; telling **another** machine to leave is an administrator's act.
+    /// Without this lock, the route's wider scope would give any node the power
+    /// to expel a peer - the relay travels with the internal credential, which the
+    /// target does not judge by the profile of whoever asked.
     #[tokio::test]
     async fn only_an_administrator_takes_another_machine_off_the_network() {
         use crate::profile::NodeProfile::{Infer, Node};
@@ -730,14 +1182,14 @@ mod tests {
             let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
             assert_eq!(
                 body["error"],
-                "só um administrador tira outra máquina da rede"
+                "only an administrator removes another machine from the network"
             );
         }
     }
 
-    /// A frase da recusa é para a pessoa e muda com o idioma; o navegador
-    /// precisa de um valor estável para saber que a sessão administrativa
-    /// acabou e voltar ao portão, em vez de imprimir o 401 cru dentro da tela.
+    /// The refusal phrase is for the person and changes with the language; the browser
+    /// needs a stable value to know that the administrative session
+    /// ended and go back to the gate, instead of printing the raw 401 inside the screen.
     #[tokio::test]
     async fn a_dead_administrative_session_names_itself_to_the_browser() {
         let state = testkit::state_with("connection-secret", vec![]).await;
@@ -790,9 +1242,9 @@ mod tests {
         );
     }
 
-    /// A chave de conexão volta ao `/api/ui/node`: a tela "Chave de Conexão" a
-    /// mostra e o navegador a guarda para autenticar o que exige
-    /// `ConnectionAuth`. Sem ela, aquela tela lia `undefined.length`.
+    /// The connection key comes back to `/api/ui/node`: the "Connection Key" screen
+    /// shows it and the browser keeps it to authenticate what requires
+    /// `ConnectionAuth`. Without it, that screen read `undefined.length`.
     #[tokio::test]
     async fn the_node_view_carries_the_connection_key_for_the_operator_browser() {
         let state = testkit::state_with("connection-secret", vec![]).await;
@@ -825,7 +1277,7 @@ mod tests {
         let cases = [
             (
                 crate::profile::NodeProfile::Infer,
-                "/api/ui/network/request-node",
+                "/api/ui/infer/heads",
                 "/api/ui/models",
             ),
             (
@@ -873,7 +1325,7 @@ mod tests {
                 .await
                 .unwrap();
             let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-            assert_eq!(body["error"], "perfil sem autorização para esta rota");
+            assert_eq!(body["error"], "profile not authorized for this route");
             assert_eq!(body["path"], refused_path);
             assert_eq!(body["profile"], profile.to_string());
         }
@@ -1018,7 +1470,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let error = ensure_gateway_port_available(port, None)
             .await
-            .expect_err("a porta ocupada precisa falhar");
+            .expect_err("the busy port must fail");
         assert!(error.to_string().contains(&port.to_string()));
     }
 
@@ -1089,8 +1541,8 @@ mod tests {
         assert_eq!(many.into_vec(), vec!["END", "DONE"]);
     }
 
-    /// O orçamento pedido pelo cliente é validado aqui; capacidade e contexto
-    /// efetivos são resolvidos a partir do runtime ativo.
+    /// The budget requested by the client is validated here; effective capacity and
+    /// context are resolved from the active runtime.
     #[test]
     fn api_generate_max_tokens_defaults_accepts_and_rejects_zero_only() {
         let absent: GenerateRequest = serde_json::from_str(r#"{"prompt":"oi"}"#).unwrap();
@@ -1108,7 +1560,7 @@ mod tests {
     fn api_generate_max_tokens_rejects_zero_instead_of_silently_clamping() {
         assert_eq!(
             resolve_request_max_tokens(Some(0)),
-            Err("max_tokens deve ser maior que zero".into())
+            Err("max_tokens must be greater than zero".into())
         );
     }
 
@@ -1181,6 +1633,7 @@ mod tests {
         let summary = |finish_reason: Option<&str>, partial: bool| GenSummary {
             source: "pipeline:node-a".into(),
             tokens_generated: 4000,
+            reasoning_tokens: 0,
             tokens_per_sec: 1.0,
             duration_ms: 1,
             timings: timing_metrics(1, 1, 1, 1, 4000),
@@ -1211,10 +1664,10 @@ mod tests {
         assert_eq!(audit_status_for_summary(&decision), "partial");
     }
 
-    /// O endereco anunciado tem que ganhar do IP da LAN. Esta entrada viaja
-    /// dentro de `next_hops`, e um hop noutro site que receba `192.168.x.y`
-    /// disca um endereco que nao existe para ele - a requisicao morre sem
-    /// chegar a lugar nenhum, e so quando este no NAO e a cabeca do pipeline.
+    /// The announced address has to win over the LAN IP. This entry travels
+    /// inside `next_hops`, and a hop at another site that receives `192.168.x.y`
+    /// dials an address that does not exist for it - the request dies without
+    /// getting anywhere, and only when this node is NOT the head of the pipeline.
     #[test]
     fn an_advertised_address_beats_the_lan_ip_for_the_self_entry() {
         assert_eq!(
@@ -1226,8 +1679,8 @@ mod tests {
         );
     }
 
-    /// Sem endereco anunciado o IP da LAN continua valendo: num cluster de uma
-    /// rede so ele e alcancavel, e o loopback nao seria.
+    /// Without an announced address the LAN IP still holds: in a single-network
+    /// cluster only it is reachable, and loopback would not be.
     #[test]
     fn without_an_advertised_address_the_lan_ip_is_kept() {
         assert_eq!(
@@ -1325,23 +1778,23 @@ mod tests {
     fn prompt_over_capacity_is_rejected_without_local_runtime_config() {
         let prompt = "a".repeat(30_289);
         let error = prompt_budget_error_of(7_000, 200, &prompt)
-            .expect("um prompt acima da capacidade do peer precisa ser recusado");
+            .expect("a prompt above the peer capacity must be refused");
 
-        assert!(error.contains("Prompt grande demais"));
+        assert!(error.contains("Prompt too large"));
         assert!(error.contains("~10097"));
-        assert!(error.contains("limite de 6800"));
-        assert!(error.contains("Aumente n_ctx"));
+        assert!(error.contains("limit of 6800"));
+        assert!(error.contains("Increase n_ctx"));
     }
 
-    /// Reprodução do defeito de 2026-09-08 na ksia, ponta a ponta: um gateway
-    /// **sem modelo local** recebe um prompt de 30 mil caracteres para um
-    /// modelo que só o peer serve. Antes, a admissão só existia quando havia
-    /// config local, o prompt seguia para o prefill e o decode do peer abortava
-    /// o processo inteiro em `ggml-cuda.cu` com `CUDA error: out of memory`.
-    /// Agora a capacidade anunciada pelo peer recusa antes de qualquer peso ser
-    /// tocado, e o nó continua de pé.
+    /// Reproduction of the 2026-09-08 defect on ksia, end to end: a gateway
+    /// **with no local model** receives a 30 thousand character prompt for a
+    /// model that only the peer serves. Before, admission only existed when there was
+    /// a local config, the prompt went on to prefill and the peer's decode aborted
+    /// the whole process in `ggml-cuda.cu` with `CUDA error: out of memory`.
+    /// Now the capacity announced by the peer refuses before any weight is
+    /// touched, and the node stays up.
     #[tokio::test]
-    async fn gateway_sem_modelo_local_recusa_prompt_acima_da_capacidade_do_peer() {
+    async fn a_gateway_without_a_local_model_refuses_a_prompt_above_the_peer_capacity() {
         let mut peer = testkit::peer("peer-gpu", "ksia", 39_991);
         peer.model = "ornith".into();
         peer.inference_port = Some(39_992);
@@ -1350,7 +1803,7 @@ mod tests {
         let state = testkit::state_with("gateway", vec![peer]).await;
         assert!(
             state.runtime.config().await.is_none(),
-            "este gateway não pode ter modelo local, senão o teste cobre o caminho antigo"
+            "this gateway cannot have a local model, otherwise the test covers the old path"
         );
 
         let error = crate::gateway::generate_blocking_with_stops(
@@ -1374,13 +1827,13 @@ mod tests {
             },
         )
         .await
-        .expect_err("um prompt acima da capacidade do peer precisa ser recusado");
+        .expect_err("a prompt above the peer capacity must be refused");
 
         assert!(
-            error.contains("Prompt grande demais"),
-            "a recusa precisa ser a mensagem acionável, e não uma falha de transporte: {error}"
+            error.contains("Prompt too large"),
+            "the refusal must be the actionable message, and not a transport failure: {error}"
         );
-        assert!(error.contains("Aumente n_ctx"), "{error}");
+        assert!(error.contains("Increase n_ctx"), "{error}");
     }
 
     #[test]
@@ -1458,31 +1911,34 @@ mod budget_tests {
     use super::*;
     use crate::runtime::NodeConfig;
 
-    /// A reprodução do defeito, em forma de conta: a implantação **não** pode
-    /// mais decidir quanto a requisição inteira gera. Era exatamente isto que
-    /// devolvia 1000 tokens a quem pediu 4000, calado.
+    /// The reproduction of the defect, in the form of an equation: the deployment **cannot**
+    /// decide anymore how much the whole request generates. That was exactly what
+    /// returned 1000 tokens to whoever asked for 4000, silently.
     #[test]
     fn the_deployment_ceiling_bounds_a_leg_and_no_longer_bounds_the_request() {
         let limit = output_token_limit(4_000, Some(1_000), Some(200_000), 18);
         assert_eq!(limit.requested, 4_000);
         assert_eq!(limit.deployment, Some(1_000));
-        assert_eq!(limit.effective, 4_000, "o cliente recebe o que pediu");
-        assert_eq!(limit.leg, 1_000, "uma geração de backend continua em 1000");
+        assert_eq!(
+            limit.effective, 4_000,
+            "the client receives what it asked for"
+        );
+        assert_eq!(limit.leg, 1_000, "one backend generation stays at 1000");
         assert!(!limit.was_clamped());
         assert!(limit.continuation_possible());
         assert_eq!(limit.effective.div_ceil(limit.leg), 4, "quatro pernas");
     }
 
-    /// O contexto que sobrou continua apertando sem recusar - ele sai de uma
-    /// **estimativa** do prompt, e recusar por estimativa rejeitaria pedido
-    /// válido. O `x_pom` conta a verdade (`was_clamped`), que é o canal certo
-    /// para um número aproximado.
+    /// The context that remains still tightens without refusing - it comes from an
+    /// **estimate** of the prompt, and refusing by estimate would reject a valid
+    /// request. `x_pom` tells the truth (`was_clamped`), which is the right channel
+    /// for an approximate number.
     #[test]
     fn the_remaining_context_still_clamps_because_it_is_an_estimate() {
         let limit = output_token_limit(50_000, Some(32_768), Some(40_000), 39_000);
         assert_eq!(limit.context_available, Some(1_000));
         assert_eq!(limit.effective, 1_000);
-        assert_eq!(limit.leg, 1_000, "a perna nunca passa do total");
+        assert_eq!(limit.leg, 1_000, "the leg never exceeds the total");
         assert!(!limit.continuation_possible());
         assert!(limit.was_clamped());
     }
@@ -1509,7 +1965,7 @@ mod budget_tests {
     fn output_limit_contract_has_no_removed_absolute_capacity_field() {
         let limit = output_token_limit(32_000, Some(32_000), Some(100_000), 0);
         let value = serde_json::to_value(limit).unwrap();
-        let fields = value.as_object().expect("limites de saída serializados");
+        let fields = value.as_object().expect("serialized output limits");
         let legacy_field = ["absolute", "max", "tokens"].join("_");
 
         assert_eq!(fields.len(), 5);
@@ -1524,7 +1980,7 @@ mod budget_tests {
         assert!(limit
             .rejection_reason()
             .unwrap()
-            .contains("todo o contexto"));
+            .contains("whole available context"));
     }
 
     #[test]
@@ -1548,7 +2004,7 @@ mod budget_tests {
         assert!(limit
             .rejection_reason()
             .unwrap()
-            .contains("todos os peers da pipeline planejada"));
+            .contains("all the peers of the planned pipeline"));
     }
 
     #[tokio::test]
@@ -1570,7 +2026,7 @@ mod budget_tests {
         assert!(limit
             .rejection_reason()
             .unwrap()
-            .contains("pipeline planejada"));
+            .contains("planned pipeline"));
     }
 
     #[tokio::test]
@@ -1595,11 +2051,65 @@ mod budget_tests {
         alternative.runtime_capacity = None;
 
         let state = crate::gateway::testkit::state_with("self", vec![ready, alternative]).await;
-        let (_, pending) = state.runtime_capacity_for_model(Some("qwen")).await;
+        let (_, pending) = state.runtime_capacity_for_model(Some("qwen"), None).await;
 
         assert!(
             !pending,
             "a route not selected by the planner cannot block the request"
+        );
+    }
+
+    /// Two machines serve the whole model and one is still loading: the route
+    /// is the ready one, and a request is not held until the other finishes -
+    /// unless it chose the loading machine as its head.
+    #[tokio::test]
+    async fn a_replica_still_loading_does_not_hold_the_ready_one() {
+        let replica = |id: &str, port: u16, ready: bool| {
+            let mut peer = crate::gateway::testkit::peer(id, id, port);
+            peer.model = "qwen".into();
+            peer.inference_port = Some(port + 100);
+            peer.start_layer = 0;
+            peer.end_layer = 31;
+            peer.total_layers = 32;
+            peer.runtime_capacity = ready.then_some(RuntimeCapacity {
+                n_ctx: 8_192,
+                max_new_tokens: 256,
+            });
+            peer
+        };
+        // the loading one sorts first, so it would win every tie
+        let loading = replica("a-loading", 8080, false);
+        let ready = replica("z-ready", 8081, true);
+        let loading_id = loading.node_id.clone();
+        let ready_id = ready.node_id.clone();
+        let state = crate::gateway::testkit::state_with("self", vec![loading, ready]).await;
+
+        let peers = state.all_peers().await;
+        let planned = state
+            .planned_peers_for_model(&peers, "qwen", None)
+            .await
+            .unwrap();
+        assert_eq!(planned.len(), 1);
+        assert_eq!(
+            planned[0].node_id, ready_id,
+            "the ready replica is the route"
+        );
+        let (capacity, pending) = state.runtime_capacity_for_model(Some("qwen"), None).await;
+        assert!(!pending && capacity.is_some());
+        let chose_ready = state
+            .request_output_limit_for_head(Some("qwen"), Some(&ready_id), 32, "oi")
+            .await;
+        assert!(!chose_ready.capacity_pending());
+        // a request that named the loading machine still waits for it
+        let (_, pending) = state
+            .runtime_capacity_for_model(Some("qwen"), Some(&loading_id))
+            .await;
+        assert!(
+            pending
+                || state
+                    .planned_peers_for_model(&peers, "qwen", Some(&loading_id))
+                    .await
+                    .is_none()
         );
     }
 
@@ -1626,7 +2136,7 @@ mod budget_tests {
         tail.runtime_capacity = None;
 
         let state = crate::gateway::testkit::state_with("self", vec![head, tail]).await;
-        let (_, pending) = state.runtime_capacity_for_model(Some("qwen")).await;
+        let (_, pending) = state.runtime_capacity_for_model(Some("qwen"), None).await;
 
         assert!(
             !pending,
@@ -1634,8 +2144,8 @@ mod budget_tests {
         );
     }
 
-    /// O laço tem que ficar dentro do orçamento total mesmo quando a perna não
-    /// divide o total, e a perna nunca pode ser zero (divisão por zero no
+    /// The loop has to stay within the total budget even when the leg does not
+    /// divide the total, and the leg can never be zero (division by zero in
     /// `note_leg_boundary`).
     #[test]
     fn the_budget_normalizes_to_usable_numbers() {
@@ -1657,9 +2167,9 @@ mod budget_tests {
         );
     }
 
-    /// A contagem de pernas é o que torna a costura inspecionável. Ela avança
-    /// ao fechar a perna, e **não** avança na última - `legs` é quantas
-    /// pernas a resposta usou, não quantas caberiam.
+    /// The leg count is what makes the seam inspectable. It advances
+    /// when a leg closes, and does **not** advance on the last one - `legs` is how many
+    /// legs the response used, not how many would fit.
     #[test]
     fn legs_are_counted_as_the_loop_crosses_each_deployment_budget() {
         let budget = OutputBudget { total: 10, leg: 4 };
@@ -1683,7 +2193,7 @@ mod budget_tests {
         for tokens in 1..=100u32 {
             note_leg_boundary(budget, tokens, &mut legs);
         }
-        assert_eq!(legs, 1, "acabar o total não abre perna nenhuma");
+        assert_eq!(legs, 1, "finishing the total opens no leg");
     }
 
     fn cfg(n_ctx: u32, n_batch: u32, max_new: u32, max_sessions: u32) -> NodeConfig {
@@ -1701,6 +2211,8 @@ mod budget_tests {
             peer_index: 0,
             primary: true,
             inference_mode: Default::default(),
+            inference_service: None,
+            engine_settings: Default::default(),
             inference_port: 8181,
             n_gpu_layers: 99,
             n_ctx,
@@ -1878,7 +2390,7 @@ mod remote_stream_selection_tests {
     }
 
     #[test]
-    fn stream_remoto_de_dois_hops_desliga_mtp_sincrono_por_ciclo() {
+    fn a_two_hop_remote_stream_turns_off_synchronous_mtp_per_cycle() {
         let mut multi = plan(
             "remote-head",
             [
@@ -1917,7 +2429,7 @@ mod remote_stream_selection_tests {
     }
 
     #[test]
-    fn stream_remoto_fatiado_pede_mtp_quando_o_plano_suporta() {
+    fn a_sliced_remote_stream_asks_for_mtp_when_the_plan_supports_it() {
         let sliced = remote_stream_speculation(
             &multi_plan_with_mtp(),
             true,
@@ -1927,7 +2439,7 @@ mod remote_stream_selection_tests {
             4,
             crate::prefill::DraftSource::Mtp,
         )
-        .expect("um plano fatiado com MTP deve pedir MTP no stream remoto");
+        .expect("a sliced plan with MTP must ask for MTP in the remote stream");
         assert_eq!(sliced.source, crate::infer_server::DraftSource::Mtp);
         assert_eq!(sliced.k, 4);
     }
@@ -1961,7 +2473,7 @@ mod remote_stream_selection_tests {
     }
 
     #[test]
-    fn remote_stream_de_um_hop_preserva_mtp_do_modelo_inteiro() {
+    fn a_one_hop_remote_stream_preserves_the_whole_model_mtp() {
         let single = plan("remote-head", mtp_capabilities());
         let speculate = remote_stream_speculation(
             &single,
@@ -1972,19 +2484,19 @@ mod remote_stream_selection_tests {
             4,
             crate::prefill::DraftSource::Mtp,
         )
-        .expect("MTP do modelo inteiro não depende de draft fatiado");
+        .expect("whole model MTP does not depend on a sliced draft");
         assert_eq!(speculate.source, crate::infer_server::DraftSource::Mtp);
     }
 
     #[test]
-    fn gateway_sem_runtime_local_usa_capacidade_mtp_remota() {
+    fn a_gateway_without_a_local_runtime_uses_the_remote_mtp_capability() {
         assert!(mtp_enabled_for_plan(None, true));
         assert!(!mtp_enabled_for_plan(None, false));
         assert!(!mtp_enabled_for_plan(Some(false), true));
     }
 
     #[test]
-    fn stream_de_dois_hops_nao_desliga_mtp_apos_o_token_de_aquecimento() {
+    fn a_two_hop_stream_does_not_turn_off_mtp_after_the_warmup_token() {
         let step = crate::prefill::SpeculativeStep {
             accepted: vec![(4, "A".into())],
             done: false,
@@ -2002,14 +2514,14 @@ mod remote_stream_selection_tests {
     }
 
     #[test]
-    fn stream_remoto_nao_pede_rollback_extra_por_lote() {
+    fn a_remote_stream_asks_for_no_extra_rollback_per_batch() {
         assert!(!gateway_rollback_needed(true, 1, 4));
         assert!(gateway_rollback_needed(false, 1, 4));
         assert!(!gateway_rollback_needed(true, 4, 4));
     }
 
     #[test]
-    fn peer_sem_capacidade_mtp_fatiado_degrada_com_razao() {
+    fn a_peer_without_sliced_mtp_capability_degrades_with_a_reason() {
         let mut multi = plan(
             "remote-head",
             vec![crate::pipeline::CAP_REMOTE_TOKEN_STREAM.into()],
@@ -2056,6 +2568,8 @@ mod peer_visibility_tests {
             node_id: id.into(),
             pubkey: String::new(),
             cluster_id: None,
+            trust_version: None,
+            relay: None,
             addr: "127.0.0.1:42777".into(),
             addr_candidates: Vec::new(),
             model: "qwen35".into(),
@@ -2124,10 +2638,10 @@ mod peer_visibility_tests {
         stalled.inference_port = Some(stalled_port);
 
         let health = super::AdmissionHealth::default();
-        let clientes = crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600));
+        let clients = crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600));
         let state = crate::gateway::testkit::state_with("eu", vec![]).await;
         let reachable = ready_for_pipeline(
-            &clientes,
+            &clients,
             &health,
             &state.network,
             vec![healthy.clone(), stalled.clone()],
@@ -2138,30 +2652,30 @@ mod peer_visibility_tests {
         assert_eq!(reachable.len(), 1);
         assert_eq!(reachable[0].node_id, "healthy");
 
-        // A defesa tem que continuar de pé na requisição seguinte: o peer que
-        // reprovou fica fora, agora sem custar sequer a sonda.
-        let inicio = std::time::Instant::now();
+        // The defense has to stay up on the next request: the peer that
+        // failed stays out, now without even costing the probe.
+        let start = std::time::Instant::now();
         let reachable = ready_for_pipeline(
-            &clientes,
+            &clients,
             &health,
             &state.network,
             vec![healthy, stalled],
             Duration::from_millis(25),
         )
         .await;
-        let em_quarentena = inicio.elapsed();
+        let in_quarantine = start.elapsed();
 
         assert_eq!(reachable.len(), 1);
         assert_eq!(reachable[0].node_id, "healthy");
         assert!(
-            em_quarentena < Duration::from_millis(25),
-            "peer em quarentena voltou a ser sondado: {em_quarentena:?}"
+            in_quarantine < Duration::from_millis(25),
+            "peer in quarantine was probed again: {in_quarantine:?}"
         );
     }
 
-    /// Um peer cujo primeiro endereço anunciado não responde - o IPv6 que
-    /// ninguém alcança, no caso real - entra no plano pelo endereço seguinte,
-    /// e esse endereço fica lembrado como o que respondeu.
+    /// A peer whose first announced address does not answer - the IPv6 that
+    /// nobody reaches, in the real case - enters the plan through the next address,
+    /// and that address is remembered as the one that answered.
     #[tokio::test]
     async fn the_admission_probe_tries_every_inference_address() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2256,10 +2770,7 @@ mod peer_visibility_tests {
             &crate::pipeline::LoadTracker::new(),
         )
         .await;
-        assert!(
-            plan.is_some(),
-            "a cobertura confirmada pelo health deve planejar"
-        );
+        assert!(plan.is_some(), "the coverage confirmed by health must plan");
     }
 
     #[tokio::test]
@@ -2280,7 +2791,7 @@ mod peer_visibility_tests {
         let local = peers
             .iter()
             .find(|peer| peer.node_id == "self")
-            .expect("o gateway sempre inclui o peer local");
+            .expect("the gateway always includes the local peer");
         assert_eq!(local.deploy_id, "deployment-42");
     }
 }
@@ -2292,7 +2803,7 @@ mod replicated_admin_logs_tests {
     use tower::ServiceExt;
 
     #[tokio::test]
-    async fn secondary_lista_replicas_locais_sem_principal() {
+    async fn secondary_lists_local_replicas_without_the_principal() {
         let state = testkit::secondary_admin_state("secondary").await;
         assert!(state.network.peers.read().await.is_empty());
 
@@ -2352,7 +2863,7 @@ mod replicated_admin_logs_tests {
             .cluster_logs
             .list(Some("deploy-1"), Some(10))
             .await
-            .expect("logs locais");
+            .expect("local logs");
         let requests = state
             .audit
             .list(crate::reqlog::AuditQuery::default())
@@ -2384,7 +2895,7 @@ mod replicated_admin_logs_tests {
             let mut request = Request::get(path)
                 .header("authorization", "Bearer chave")
                 .body(axum::body::Body::empty())
-                .expect("requisição de teste");
+                .expect("test request");
             request
                 .extensions_mut()
                 .insert(crate::serve::PeerAddr("127.0.0.1:1234".parse().unwrap()));
@@ -2439,10 +2950,7 @@ mod replicated_admin_logs_tests {
             .expect("logs plugin entry");
         assert_eq!(logs["active"], false);
         assert_eq!(logs["state"], "needs_activation");
-        assert_eq!(
-            logs["manage_url"],
-            "https://pieceofmind.cloud/plugins/"
-        );
+        assert_eq!(logs["manage_url"], "https://pieceofmind.cloud/plugins/");
 
         let check = app
             .clone()
@@ -2487,6 +2995,90 @@ mod replicated_admin_logs_tests {
         assert_eq!(error["manage_url"], "https://pieceofmind.cloud/plugins/");
     }
 
+    /// A node on its own local network hears no announce: the networks it
+    /// lists come from the relays. The locate route has to answer for them,
+    /// and still refuse a key the node never listed.
+    #[tokio::test]
+    async fn a_network_listed_by_a_relay_can_be_located() {
+        let state = testkit::state_with("local-node", vec![]).await;
+        let listed_key = pkarr::Keypair::random().to_uri_string();
+        let stranger_key = pkarr::Keypair::random().to_uri_string();
+        let locate = |key: String| {
+            super::locate_public_network(State(state.clone()), Query(super::LocateQuery { key }))
+        };
+
+        let response = locate(listed_key.clone()).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let mut view: PublicNetworkView = serde_json::from_value(serde_json::json!({
+            "cluster_id": "remote",
+            "name": "Rede remota",
+            "fingerprint": "fp-remote",
+            "trust_document": "{}",
+            "organization": "",
+            "description": "",
+            "rules": "",
+            "channels": "",
+            "country_code": "BR",
+            "country_name": "Brasil",
+            "city": "Curitiba",
+            "geo_label": "br.curitiba",
+            "access_policy": "anyone_with_anchor",
+            "location": null,
+            "discovered_via": "node",
+        }))
+        .unwrap();
+        view.publisher_key = listed_key.clone();
+        super::remember_listed_publishers(&[view]);
+
+        // The testkit has no pkarr node, so the answer is "unresolved" - what
+        // matters is that the route answered instead of refusing the key.
+        let response = locate(listed_key).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let answer: serde_json::Value = body_of(response).await;
+        assert_eq!(answer["reachability"], "unresolved");
+
+        let response = locate(stranger_key).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn a_listed_network_is_placed_by_its_coordinates_not_by_its_words() {
+        let listed = |location: Option<(f64, f64)>| -> super::PublicNetworkView {
+            serde_json::from_value(serde_json::json!({
+                "cluster_id": "rede",
+                "name": "Rede",
+                "fingerprint": "f",
+                "trust_document": "",
+                "organization": "",
+                "description": "",
+                "rules": "",
+                "channels": "",
+                "country_code": "JP",
+                "country_name": "Japan",
+                "city": "Tokyo",
+                "geo_label": "com.jp.tokyo.node",
+                "access_policy": "anyone_with_anchor",
+                "location": location.map(|(latitude, longitude)| serde_json::json!({
+                    "latitude": latitude,
+                    "longitude": longitude,
+                })),
+                "discovered_via": "pkarr",
+            }))
+            .unwrap()
+        };
+        let mut networks = vec![listed(Some((-25.43, -49.27))), listed(None)];
+        super::resolve_places(&mut networks);
+
+        // It said Tokyo and pointed at Curitiba: the point is what counts.
+        assert_eq!(networks[0].city, "Curitiba");
+        assert_eq!(networks[0].state, "Paraná");
+        assert_eq!(networks[0].country_code, "BR");
+        // Without coordinates there is no place to show, whatever it said.
+        assert!(networks[1].city.is_empty() && networks[1].country_code.is_empty());
+        assert!(networks[1].country_name.is_empty() && networks[1].state.is_empty());
+    }
+
     #[tokio::test]
     async fn a_listed_network_is_accepted_only_when_it_certifies_itself() {
         let state = testkit::state_with("listing-node", vec![]).await;
@@ -2504,12 +3096,13 @@ mod replicated_admin_logs_tests {
             channels: String::new(),
             country_code: "BR".into(),
             country_name: "Brasil".into(),
+            state: String::new(),
             city: "Curitiba".into(),
             geo_label: "br.curitiba".into(),
             access_policy: crate::config::NetworkAccessPolicy::AnyoneWithAnchor,
             accepted_enrollments: Default::default(),
-            lobby_chat: true,
             public_stats: false,
+            lobby_chat: false,
             location: None,
             discovered_via: "pkarr".into(),
             directory_replicas: Vec::new(),
@@ -2524,15 +3117,12 @@ mod replicated_admin_logs_tests {
             super::validated_listed_network(view(fingerprint.clone(), "pk:someone-else")).unwrap();
         assert_eq!(accepted.publisher_key, expected_key);
         assert_eq!(accepted.discovered_via, "node");
-        assert!(accepted.lobby_chat);
 
         assert!(super::validated_listed_network(view("not-the-fingerprint".into(), "")).is_none());
         // A relay keeps a publication only from the network's own principal.
-        let published = super::validated_publication(
-            view(fingerprint.clone(), ""),
-            &document.primary.pubkey,
-        )
-        .unwrap();
+        let published =
+            super::validated_publication(view(fingerprint.clone(), ""), &document.primary.pubkey)
+                .unwrap();
         assert_eq!(published.discovered_via, "published");
         assert_eq!(published.publisher_key, expected_key);
         let stranger = crate::identity::Identity::generate().public_key_hex();
@@ -2548,7 +3138,7 @@ mod replicated_admin_logs_tests {
         let state = testkit::state_with("private-node", vec![]).await;
         state.auth.write().await.network.visibility = crate::config::NetworkVisibility::Private;
         let trust_document = serde_json::to_string(&state.admin_trust.document())
-            .expect("documento de teste deve serializar");
+            .expect("test document must serialize");
         let network = crate::public_directory::PublicDirectoryNetwork {
             cluster_id: "test-cluster".into(),
             name: "Rede federada".into(),
@@ -2564,8 +3154,8 @@ mod replicated_admin_logs_tests {
             geo_label: "br.curitiba".into(),
             access_policy: crate::config::NetworkAccessPolicy::AnyoneWithAnchor,
             accepted_enrollments: Default::default(),
-            lobby_chat: false,
             public_stats: false,
+            lobby_chat: false,
             location: None,
             relay_hints: Vec::new(),
             directory_replicas: Vec::new(),
@@ -2576,7 +3166,7 @@ mod replicated_admin_logs_tests {
             crate::public_directory::current_time_secs().unwrap(),
             network.clone(),
         )
-        .expect("registro de teste deve ser assinado");
+        .expect("test record must be signed");
         let attacker = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
         let forged = crate::public_directory::SignedPublicDirectoryRecord::sign(
             &attacker,
@@ -2584,7 +3174,7 @@ mod replicated_admin_logs_tests {
             crate::public_directory::current_time_secs().unwrap(),
             network,
         )
-        .expect("registro forjado deve ter uma prova de trabalho válida");
+        .expect("forged record must have a valid proof of work");
         let response = accept_public_directory_record(State(state.clone()), Json(forged)).await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert!(state
@@ -2639,20 +3229,20 @@ mod replicated_admin_logs_tests {
     }
 }
 
-/// Um nó de verdade, montado à mão, para os testes que exercitam rotas.
+/// A real node, assembled by hand, for the tests that exercise routes.
 ///
-/// Existe porque três módulos precisavam do mesmo andaime — `transfer`,
-/// `deploy` e `webui` todos testam handlers que só falam a verdade com um
-/// `GatewayState` inteiro atrás deles. A tabela de peers é semeada à mão e o
-/// socket de teste fica preso à loopback, então um teste nunca anuncia na LAN
-/// nem esbarra num cluster de verdade.
+/// It exists because three modules needed the same scaffolding - `transfer`,
+/// `deploy` and `webui` all test handlers that only tell the truth with a whole
+/// `GatewayState` behind them. The peer table is seeded by hand and the test
+/// socket is bound to loopback, so a test never announces on the LAN
+/// nor bumps into a real cluster.
 #[cfg(test)]
 pub(crate) mod testkit {
     use super::*;
     use crate::config::Config;
     use tokio::sync::RwLock;
 
-    /// Um peer alcançável no `gateway_port` dado, na loopback.
+    /// A peer reachable at the given `gateway_port`, on loopback.
     pub(crate) fn peer(node_id: &str, hostname: &str, gateway_port: u16) -> PeerInfo {
         let authority_pubkey = hex::encode(
             ed25519_dalek::SigningKey::from_bytes(&[7; 32])
@@ -2665,6 +3255,8 @@ pub(crate) mod testkit {
             node_id: node_id.into(),
             pubkey: authority_pubkey,
             cluster_id: None,
+            trust_version: None,
+            relay: None,
             addr: format!("127.0.0.1:{gateway_port}"),
             addr_candidates: Vec::new(),
             model: String::new(),
@@ -2697,15 +3289,15 @@ pub(crate) mod testkit {
         }
     }
 
-    /// Este nó, com `peers` já na tabela.
+    /// This node, with `peers` already in the table.
     pub(crate) async fn state_with(node_id: &str, peers: Vec<PeerInfo>) -> GatewayState {
         state_named(node_id, "", peers).await
     }
 
-    /// Um estado cujo nó local é admin secundário de uma cadeia real de teste.
-    /// A âncora pertence a outro nó e a concessão local é assinada pelo
-    /// principal antes de ser aplicada, então mudar apenas `profile` não pode
-    /// transformar este estado em principal.
+    /// A state whose local node is a secondary admin of a real test chain.
+    /// The anchor belongs to another node and the local grant is signed by the
+    /// principal before being applied, so changing only `profile` cannot
+    /// turn this state into the principal.
     pub(crate) async fn state_with_secondary_admin(
         node_id: &str,
         peers: Vec<PeerInfo>,
@@ -2723,13 +3315,13 @@ pub(crate) mod testkit {
             primary.clone(),
             &primary_signing_key,
         )
-        .expect("concessão raiz de teste");
+        .expect("test root grant");
         let grant = admin_trust
             .signed_secondary_grant(&primary_signing_key, secondary.clone(), &primary.node_id)
-            .expect("concessão secundária de teste");
+            .expect("test secondary grant");
         admin_trust
             .apply_secondary_grant(grant, &secondary, crate::profile::NodeProfile::Node)
-            .expect("aplicação da concessão secundária de teste");
+            .expect("application of the test secondary grant");
 
         state
             .network
@@ -2741,15 +3333,15 @@ pub(crate) mod testkit {
         state
     }
 
-    /// Um admin secundário com uma cadeia de confiança válida, usado para
-    /// provar que as leituras dependem da réplica local e não do principal.
+    /// A secondary admin with a valid trust chain, used to
+    /// prove that reads depend on the local replica and not on the principal.
     pub(crate) async fn secondary_admin_state(node_id: &str) -> GatewayState {
         state_with_secondary_admin(node_id, vec![]).await
     }
 
-    /// O mesmo, com um **nome anunciado** — o que `node_name` do `pom.json`
-    /// produz em `with_identity`, e o nome pelo qual o cluster inteiro chama
-    /// esta máquina. Distinto do hostname cru do sistema operacional.
+    /// The same, with an **announced name** - what `node_name` in `pom.json`
+    /// produces in `with_identity`, and the name by which the whole cluster calls
+    /// this machine. Distinct from the operating system's raw hostname.
     pub(crate) async fn state_named(
         node_id: &str,
         hostname: &str,
@@ -2771,7 +3363,7 @@ pub(crate) mod testkit {
                 None,
             )
             .await
-            .expect("socket UDP em porta efêmera")
+            .expect("UDP socket on an ephemeral port")
             .with_identity(crate::profile::NodeProfile::Node, hostname.into()),
         );
         {
@@ -2786,7 +3378,7 @@ pub(crate) mod testkit {
             std::process::id(),
             uuid::Uuid::new_v4().simple()
         ));
-        let database = Arc::new(crate::db::PomDb::open(&database_path).expect("banco de teste"));
+        let database = Arc::new(crate::db::PomDb::open(&database_path).expect("test database"));
         let (capture, receiver) =
             crate::cluster_logs::LogCapture::new(crate::cluster_logs::LOG_CAPTURE_QUEUE_CAPACITY);
         let cluster_logs = crate::cluster_logs::ClusterLogs::new(capture, receiver);
@@ -2801,7 +3393,7 @@ pub(crate) mod testkit {
             authority_principal.clone(),
             &authority_signing_key,
         )
-        .expect("concessão raiz de teste");
+        .expect("test root grant");
         let auth = Arc::new(RwLock::new(Config {
             gpus: None,
             thermal: Default::default(),
@@ -2831,6 +3423,7 @@ pub(crate) mod testkit {
             inference_port: None,
             bootstrap_nodes: vec![],
             relay_peers: vec![],
+            relay: Default::default(),
             advertise_addr: None,
             api_keys: vec![],
             blocked_nodes: vec![],
@@ -2841,6 +3434,7 @@ pub(crate) mod testkit {
             network: Default::default(),
             resources: Default::default(),
             setup_model: None,
+            first_run_guide: None,
         }));
         let (network_chat, _) =
             crate::network_chat::NetworkChat::new(database.clone(), auth.clone(), false);
@@ -2886,8 +3480,8 @@ pub(crate) mod testkit {
         }
     }
 
-    /// Uma configuração de nó com a decodificação especulativa ligada — o
-    /// interruptor do operador que o gateway lê antes de cada geração.
+    /// A node configuration with speculative decoding turned on - the
+    /// operator's switch that the gateway reads before each generation.
     pub(crate) fn spec_config() -> crate::runtime::NodeConfig {
         crate::runtime::NodeConfig {
             deploy_id: String::new(),
@@ -2903,6 +3497,8 @@ pub(crate) mod testkit {
             peer_index: 0,
             primary: true,
             inference_mode: Default::default(),
+            inference_service: None,
+            engine_settings: Default::default(),
             inference_port: 8181,
             n_gpu_layers: 0,
             n_ctx: 8192,
@@ -2960,12 +3556,12 @@ pub(crate) mod testkit {
         }
     }
 
-    /// Faz o estado saber um endereço de si mesmo que responde de verdade.
+    /// Makes the state know an address of itself that really answers.
     ///
-    /// A resposta direta só existe quando a cauda tem para onde entregar
-    /// (`DirectReply::new`), e o endereço sai de `self_reply_hosts` + o
-    /// `gateway_port`. Sem um servidor ali o modo direto de um teste esperaria
-    /// prazo do frame inteiro.
+    /// The direct reply only exists when the tail has somewhere to deliver to
+    /// (`DirectReply::new`), and the address comes from `self_reply_hosts` + the
+    /// `gateway_port`. Without a server there, a test's direct mode would wait for the
+    /// whole frame's deadline.
     pub(crate) async fn with_self_reachable_gateway(mut state: GatewayState) -> GatewayState {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -2992,23 +3588,23 @@ pub(crate) mod testkit {
         state.gateway_port = port;
         let net = Network::testkit("eu".into(), "pk".into(), vec![], None, None, Some(port))
             .await
-            .expect("socket UDP em porta efêmera");
-        // Primeiro da lista de `self_reply_hosts`, então a cauda acerta na
-        // primeira tentativa em vez de esperar o timeout de um IP de LAN.
+            .expect("UDP socket on an ephemeral port");
+        // First in the `self_reply_hosts` list, so the tail hits on the
+        // first try instead of waiting for the timeout of a LAN IP.
         net.set_advertise_addr(Some("127.0.0.1:42777"));
         {
-            let antigos = state.network.peers.read().await.clone();
-            *net.peers.write().await = antigos;
+            let old_ones = state.network.peers.read().await.clone();
+            *net.peers.write().await = old_ones;
         }
         state.network = Arc::new(net);
         state
     }
 
-    /// O corpo JSON de uma resposta, para o teste poder afirmar sobre ele.
+    /// The JSON body of a response, so the test can assert on it.
     pub(crate) async fn body_of(response: axum::response::Response) -> serde_json::Value {
         let bytes = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
             .await
-            .expect("corpo legível");
-        serde_json::from_slice(&bytes).expect("corpo JSON")
+            .expect("readable body");
+        serde_json::from_slice(&bytes).expect("JSON body")
     }
 }

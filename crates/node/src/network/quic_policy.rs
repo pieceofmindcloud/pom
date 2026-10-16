@@ -1,5 +1,5 @@
-//! Política de QUIC do cluster. O anúncio só desperta a busca autenticada;
-//! nunca é uma fonte de verdade, pelo mesmo motivo da política de TLS.
+//! QUIC policy of the cluster. The announce only wakes the authenticated fetch;
+//! it is never a source of truth, for the same reason as the TLS policy.
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -36,10 +36,10 @@ struct QuicReply {
     quic_enabled: bool,
 }
 
-/// Pergunta ao principal a política QUIC por todos os endereços dele, o que
-/// já respondeu primeiro, e por último pelo túnel libp2p (`/api/cluster/quic`
-/// está na lista do túnel). Só o primeiro endereço anunciado falhava para
-/// sempre com um principal atrás de NAT ou num IPv6 inalcançável.
+/// Asks the principal for the QUIC policy through all of its addresses, the one
+/// that answered first before the others, and last through the libp2p tunnel
+/// (`/api/cluster/quic` is on the tunnel's list). Only the first announced address
+/// failed forever with a principal behind NAT or on an unreachable IPv6.
 pub(crate) async fn fetch_from_principal(
     clients: &PeerClients,
     principal_id: &str,
@@ -58,13 +58,11 @@ pub(crate) async fn fetch_from_principal(
             tunnel,
         )
         .await
-        .context("não deu para falar com o principal para confirmar QUIC")?;
-    let body: QuicReply = resp
-        .json()
-        .context("resposta da política QUIC não parseou")?;
+        .context("could not reach the principal to confirm QUIC")?;
+    let body: QuicReply = resp.json().context("QUIC policy response did not parse")?;
     info!(
         quic_enabled = body.quic_enabled,
-        announced_tls, "política QUIC confirmada pelo principal"
+        announced_tls, "QUIC policy confirmed by the principal"
     );
     Ok(body.quic_enabled)
 }
@@ -74,7 +72,7 @@ pub fn adopt_or_keep(local: bool, fetched: Result<bool>) -> PolicyOutcome {
         Ok(value) if value != local => PolicyOutcome::Adopt(value),
         Ok(_) => PolicyOutcome::Unchanged,
         Err(error) => {
-            warn!("busca da política QUIC falhou, mantendo o valor local ({local}): {error}");
+            warn!("QUIC policy fetch failed, keeping the local value ({local}): {error}");
             PolicyOutcome::Unchanged
         }
     }
@@ -98,7 +96,7 @@ pub fn spawn_ratchet(
                 continue;
             };
             if peer.gateway_port.is_none() {
-                warn!("principal {principal} não anuncia porta de gateway; política QUIC não pôde ser confirmada");
+                warn!("principal {principal} does not announce a gateway port; QUIC policy could not be confirmed");
                 continue;
             }
             let bases = net.order_gateway_bases(
@@ -126,14 +124,14 @@ pub fn spawn_ratchet(
                     let mut cfg = auth.write().await;
                     cfg.quic_enabled = value;
                     if let Err(error) = cfg.save() {
-                        warn!("política QUIC confirmada mas não gravada: {error}");
+                        warn!("QUIC policy confirmed but not written: {error}");
                     }
                 }
                 clients.set_quic(value);
-                crate::peer_client::set_quic_ativo(value);
+                crate::peer_client::set_quic_enabled(value);
                 info!(
                     quic_enabled = value,
-                    "política QUIC do cluster adotada do principal"
+                    "cluster QUIC policy adopted from the principal"
                 );
             }
         }
@@ -147,7 +145,7 @@ mod tests {
     const PRINCIPAL: &str = "aaaa0000";
 
     #[test]
-    fn anuncio_que_concorda_nao_faz_nada() {
+    fn an_agreeing_announce_does_nothing() {
         assert_eq!(
             on_announce(true, true, true, PRINCIPAL),
             PolicyOutcome::Unchanged
@@ -159,7 +157,7 @@ mod tests {
     }
 
     #[test]
-    fn anuncio_do_principal_dispara_busca_sem_adotar_gossip() {
+    fn a_principal_announce_triggers_a_fetch_without_adopting_gossip() {
         assert_eq!(
             on_announce(false, true, true, PRINCIPAL),
             PolicyOutcome::Fetch {
@@ -173,10 +171,11 @@ mod tests {
     }
 
     #[test]
-    fn default_off_e_falha_preservam_o_valor_local() {
+    fn on_by_default_and_a_failed_fetch_keeps_the_local_value() {
         let cfg: crate::config::Config =
             serde_json::from_str(r#"{"profile":"node","connection_key":"k"}"#).unwrap();
-        assert!(!cfg.quic_enabled);
+        assert!(cfg.quic_enabled);
+        assert!(cfg.network_chat_enabled);
         assert_eq!(
             adopt_or_keep(false, Err(anyhow::anyhow!("offline"))),
             PolicyOutcome::Unchanged
@@ -185,7 +184,7 @@ mod tests {
     }
 
     #[test]
-    fn politica_confirmada_adota_apenas_o_valor_do_principal() {
+    fn a_confirmed_policy_adopts_only_the_principal_value() {
         assert_eq!(adopt_or_keep(false, Ok(true)), PolicyOutcome::Adopt(true));
         assert_eq!(adopt_or_keep(true, Ok(true)), PolicyOutcome::Unchanged);
     }

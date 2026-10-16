@@ -15,11 +15,6 @@ impl axum::extract::FromRef<SetupState> for AuthState {
 }
 
 #[derive(Debug, Serialize)]
-pub struct SetupGeoResponse {
-    pub countries: Vec<crate::db::GeoCountryReference>,
-}
-
-#[derive(Debug, Serialize)]
 pub struct SetupHardwareResponse {
     pub system: SystemLoad,
     pub gpu_detected: bool,
@@ -163,10 +158,6 @@ fn trust_metadata_from_network(
         organization: network.organization.trim().to_string(),
         visibility: network.visibility,
         access_policy: network.access_policy,
-        country_code: network.country_code.trim().to_ascii_uppercase(),
-        country_name: network.country_name.trim().to_string(),
-        city: network.city.trim().to_string(),
-        geo_label: network.geo_label.trim().to_string(),
         relay_hints: super::trust::relay_hint_keys(relay_peers),
         directory_replicas: directory.replicas,
     })
@@ -178,10 +169,6 @@ pub(super) fn network_from_trust_metadata(
     crate::config::NetworkSettings {
         public_name: metadata.public_name.clone(),
         organization: metadata.organization.clone(),
-        country_code: metadata.country_code.clone(),
-        country_name: metadata.country_name.clone(),
-        city: metadata.city.clone(),
-        geo_label: metadata.geo_label.clone(),
         visibility: metadata.visibility,
         access_policy: metadata.access_policy,
         ..Default::default()
@@ -269,15 +256,20 @@ pub async fn get_setup_hardware(State(state): State<SetupState>) -> impl IntoRes
     Json(setup_hardware(state.config, public_directory).await)
 }
 
-pub async fn get_setup_geo_reference(State(state): State<SetupState>) -> Response {
-    match state.database.geo_reference() {
-        Ok(countries) => Json(SetupGeoResponse { countries }).into_response(),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("não foi possível ler a referência geográfica: {error:#}") })),
-        )
-            .into_response(),
-    }
+/// The wizard's reads of the offline city database; same answers as the
+/// operator routes in `network.rs`.
+pub async fn get_setup_geo_countries() -> Response {
+    super::network::geo_countries_response()
+}
+
+pub async fn get_setup_geo_cities(Query(query): Query<super::network::GeoCitiesQuery>) -> Response {
+    super::network::geo_cities_response(query)
+}
+
+pub async fn get_setup_geo_nearest(
+    Query(query): Query<super::network::GeoNearestQuery>,
+) -> Response {
+    super::network::geo_nearest_response(query)
 }
 
 pub fn reference_models() -> Vec<SetupModel> {
@@ -299,7 +291,7 @@ pub fn reference_models() -> Vec<SetupModel> {
         repo_id: Some(repo_id.to_string()),
         path: None,
         size_gb: Some(size_gb),
-        quantization: Some("GGUF · referência".to_string()),
+        quantization: Some("GGUF · reference".to_string()),
         memory_gb: Some(memory_gb),
         installed: false,
         recommended: name.contains("3B") || name.contains("4B"),
@@ -357,7 +349,7 @@ pub async fn preview_setup_anchor(Json(request): Json<SetupAnchorPreviewRequest>
     if cluster_id.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "o nome público da rede é obrigatório" })),
+            Json(json!({ "error": "the public network name is required" })),
         )
             .into_response();
     }
@@ -380,7 +372,7 @@ pub async fn preview_setup_anchor(Json(request): Json<SetupAnchorPreviewRequest>
         Err(error) => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({ "error": format!("metadados da rede inválidos: {error:#}") })),
+                Json(json!({ "error": format!("invalid network metadata: {error:#}") })),
             )
                 .into_response();
         }
@@ -403,7 +395,7 @@ pub async fn preview_setup_anchor(Json(request): Json<SetupAnchorPreviewRequest>
         },
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("não foi possível criar a raiz: {error:#}") })),
+            Json(json!({ "error": format!("could not create the root: {error:#}") })),
         )
             .into_response(),
     }
@@ -450,21 +442,21 @@ pub async fn start_setup_auto_discovery(
     if state.config.read().await.profile != crate::profile::NodeProfile::Admin {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({ "error": "somente o administrador cria a espera local" })),
+            Json(json!({ "error": "only the administrator creates the local standby" })),
         )
             .into_response();
     }
     if request.trust_document.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "o documento de confiança é obrigatório" })),
+            Json(json!({ "error": "the trust document is required" })),
         )
             .into_response();
     }
     if let Err(error) = crate::admin_trust::parse_transported(&request.trust_document) {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": format!("raiz inválida: {error:#}") })),
+            Json(json!({ "error": format!("invalid root: {error:#}") })),
         )
             .into_response();
     }
@@ -473,10 +465,12 @@ pub async fn start_setup_auto_discovery(
         .set_admin_material(true, request.trust_document, request.connection_key)
         .await
     {
-        Ok(()) => get_setup_auto_discovery_status(State(state)).await.into_response(),
+        Ok(()) => get_setup_auto_discovery_status(State(state))
+            .await
+            .into_response(),
         Err(error) => (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": format!("não foi possível iniciar a descoberta local: {error:#}") })),
+            Json(json!({ "error": format!("could not start local discovery: {error:#}") })),
         )
             .into_response(),
     }
@@ -484,8 +478,8 @@ pub async fn start_setup_auto_discovery(
 
 #[derive(Deserialize, Default)]
 pub struct SetupAutoDiscoverySearchRequest {
-    /// Nome que o wizard mostra desta máquina; vai no pedido para o
-    /// administrador ver quem está entrando.
+    /// Name the wizard shows for this machine; it goes in the request so the
+    /// administrator can see who is joining.
     #[serde(default)]
     pub node_name: String,
 }
@@ -507,7 +501,7 @@ pub async fn search_setup_auto_discovery(
             .into_response(),
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("não foi possível procurar admins locais: {error:#}") })),
+            Json(json!({ "error": format!("could not look for local admins: {error:#}") })),
         )
             .into_response(),
     }
@@ -579,20 +573,16 @@ fn brand_network_fallback() -> String {
 /// later, in Network settings. `config` is either blank or the preference
 /// shell left by leaving a network; machine preferences in it are kept.
 ///
-/// It is what the wizard's admin path does, minus the screens. A trust root
-/// already on disk is somebody's decision and is never overwritten: the call
-/// fails and the caller falls back to the wizard.
+/// A trust root found on disk here belongs to a network whose configuration is
+/// gone, so this node can no longer take part in it. It is never overwritten
+/// or deleted: it is moved to `setup-backups/<date>/` and the node goes on
+/// with a network of its own.
 pub async fn bootstrap_local_network(
     mut config: crate::config::Config,
     database: &crate::db::PomDb,
 ) -> anyhow::Result<crate::config::Config> {
     let trust_path = crate::config::admin_trust_path();
-    if trust_path.exists() {
-        anyhow::bail!(
-            "{} already exists; remove it or run with --setup",
-            trust_path.display()
-        );
-    }
+    set_aside_orphan_trust(&trust_path)?;
     let name = match config.node_name.as_deref().map(str::trim) {
         Some(name) if !name.is_empty() => local_network_name(name),
         _ => local_network_name(&sysmon::sample().await.hostname),
@@ -638,12 +628,46 @@ pub async fn bootstrap_local_network(
     }
     config.save()?;
     for (dir, error) in config.create_default_storage_dirs() {
-        warn!("não foi possível criar a pasta padrão {}: {error}", dir.display());
+        warn!(
+            "could not create the default folder {}: {error}",
+            dir.display()
+        );
     }
     if let Err(error) = database.save_network_settings(&config.network) {
-        warn!("não foi possível salvar os detalhes da rede no banco: {error:#}");
+        warn!("could not save the network details in the database: {error:#}");
     }
     Ok(config)
+}
+
+/// Moves a trust root left without its configuration, and its replay file,
+/// into `setup-backups/<date>/`.
+fn set_aside_orphan_trust(trust_path: &std::path::Path) -> anyhow::Result<()> {
+    let present: Vec<_> = [
+        trust_path.to_path_buf(),
+        crate::admin_trust::replay_path_for(trust_path),
+    ]
+    .into_iter()
+    .filter(|path| path.exists())
+    .collect();
+    if present.is_empty() {
+        return Ok(());
+    }
+    let backup = crate::config::project_root()
+        .join("setup-backups")
+        .join(chrono::Local::now().format("%Y%m%d-%H%M%S").to_string());
+    std::fs::create_dir_all(&backup)?;
+    for path in &present {
+        let Some(name) = path.file_name() else {
+            continue;
+        };
+        std::fs::rename(path, backup.join(name))
+            .with_context(|| format!("could not set aside {}", path.display()))?;
+    }
+    warn!(
+        "a trust root without its network configuration was moved to {}",
+        backup.display()
+    );
+    Ok(())
 }
 
 pub async fn install_setup_trust_anchor(
@@ -676,7 +700,7 @@ pub async fn save_setup(
         _ => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "perfil inválido" })),
+                Json(json!({ "error": "invalid profile" })),
             )
                 .into_response();
         }
@@ -685,7 +709,7 @@ pub async fn save_setup(
     let trust_document = if req.trust_document.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "a raiz de confiança é obrigatória" })),
+            Json(json!({ "error": "the trust root is required" })),
         )
             .into_response();
     } else {
@@ -694,7 +718,7 @@ pub async fn save_setup(
             Err(error) => {
                 return (
                     StatusCode::BAD_REQUEST,
-                    Json(json!({ "error": format!("raiz inválida: {error:#}") })),
+                    Json(json!({ "error": format!("invalid root: {error:#}") })),
                 )
                     .into_response();
             }
@@ -705,14 +729,14 @@ pub async fn save_setup(
         if trust_document.setup.is_none() {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "a raiz administrativa precisa carregar os dados da rede" })),
+                Json(json!({ "error": "the administrative root must carry the network data" })),
             )
                 .into_response();
         }
         if req.cluster_id.trim().is_empty() || req.cluster_id.trim() != document_cluster_id {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "a raiz pertence a outra rede" })),
+                Json(json!({ "error": "the root belongs to another network" })),
             )
                 .into_response();
         }
@@ -722,61 +746,62 @@ pub async fn save_setup(
         ) {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({ "error": format!("raiz não conferida: {error:#}") })),
+                Json(json!({ "error": format!("root not verified: {error:#}") })),
             )
                 .into_response();
         }
     }
     // `bootstrap` and `advertise_addr` are local hints typed by the operator
     // (they may be DNS names), never read from the trust document.
-    let (mut network, directory_inputs, relay_hints) =
-        if profile == crate::profile::NodeProfile::Admin {
-            (
-                req.network.clone(),
-                req.public_directory.clone(),
-                Vec::new(),
+    let (mut network, directory_inputs, relay_hints) = if profile
+        == crate::profile::NodeProfile::Admin
+    {
+        (
+            req.network.clone(),
+            req.public_directory.clone(),
+            Vec::new(),
+        )
+    } else {
+        let Some(metadata) = trust_document.setup.as_ref() else {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "the root does not contain the initial network settings" })),
             )
-        } else {
-            let Some(metadata) = trust_document.setup.as_ref() else {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({ "error": "a raiz não contém as configurações iniciais da rede" })),
-                )
-                    .into_response();
-            };
-            (
-                network_from_trust_metadata(metadata),
-                metadata.directory_replicas.clone(),
-                metadata.relay_hints.clone(),
-            )
+                .into_response();
         };
+        (
+            network_from_trust_metadata(metadata),
+            metadata.directory_replicas.clone(),
+            metadata.relay_hints.clone(),
+        )
+    };
     let bootstrap = req.bootstrap.trim().to_string();
     let advertise_addr = req.advertise_addr.clone();
     network.public_name = network.public_name.trim().to_string();
-    network.country_code = network.country_code.trim().to_ascii_uppercase();
-    network.country_name = network.country_name.trim().to_string();
-    network.city = network.city.trim().to_string();
-    if let Err(error) = crate::config::validate_network_settings(&network) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": error.to_string() })),
-        )
-            .into_response();
-    }
-    let public_directory = match crate::public_directory::PublicDirectorySettings::from_urls(
-        directory_inputs.iter(),
-    )
-    .and_then(|settings| settings.effective_with_env())
-    {
-        Ok(settings) => settings,
-        Err(error) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": format!("ingresso do diretório público inválido: {error:#}") })),
-            )
-                .into_response();
+    // Only the machine that creates the network decides its location. A
+    // joining node starts from the signed descriptor, which carries none, and
+    // adopts the rest of the settings from the principal after its first
+    // authenticated announce.
+    if profile == crate::profile::NodeProfile::Admin {
+        if let Err(error) = crate::geo::apply_location(&mut network).and_then(|()| {
+            crate::config::validate_network_settings(&network).map_err(|error| error.to_string())
+        }) {
+            return (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))).into_response();
         }
-    };
+    }
+    let public_directory =
+        match crate::public_directory::PublicDirectorySettings::from_urls(directory_inputs.iter())
+            .and_then(|settings| settings.effective_with_env())
+        {
+            Ok(settings) => settings,
+            Err(error) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": format!("invalid public directory ticket: {error:#}") })),
+                )
+                    .into_response();
+            }
+        };
     network.geo_label = if network.country_code.is_empty() || network.city.is_empty() {
         String::new()
     } else {
@@ -792,15 +817,15 @@ pub async fn save_setup(
             StatusCode::CONFLICT,
             Json(json!({
                 "reason": "connection_key_required",
-                "error": "redes privadas exigem a chave compartilhada da rede"
+                "error": "private networks require the shared network key"
             })),
         )
             .into_response();
     }
 
-    // A interface sai do primeiro acesso aberta à rede com a senha padrão:
-    // o wizard não pergunta senha, e o painel pede a troca no primeiro uso.
-    // Uma senha enviada explicitamente continua valendo.
+    // The interface leaves the first access open to the network with the default
+    // password: the wizard does not ask for a password, and the panel asks for
+    // the change on first use. A password sent explicitly remains valid.
     let admin_password = if req.admin_password.is_empty() {
         crate::auth::DEFAULT_ADMIN_PASSWORD.to_string()
     } else {
@@ -814,14 +839,14 @@ pub async fn save_setup(
     {
         Ok(Ok(hash)) => hash,
         Ok(Err(error)) => return bad_request(error.to_string()),
-        Err(error) => return bad_request(format!("não foi possível proteger a senha: {error}")),
+        Err(error) => return bad_request(format!("could not protect the password: {error}")),
     };
 
     let expected = crate::admin_trust::anchor_fingerprint(&trust_document);
     if !crate::admin_trust::fingerprint_matches(&req.trust_fingerprint, &expected) {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "a impressão digital da raiz não confere" })),
+            Json(json!({ "error": "the root fingerprint does not match" })),
         )
             .into_response();
     }
@@ -829,14 +854,14 @@ pub async fn save_setup(
     if path.exists() {
         return (
             StatusCode::CONFLICT,
-            Json(json!({ "error": "este nó já tem uma raiz de confiança; reancoragem é manual" })),
+            Json(json!({ "error": "this node already has a trust root; re-anchoring is manual" })),
         )
             .into_response();
     }
     if let Err(error) = crate::admin_trust::AdminTrust::install_document(path, trust_document) {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("não foi possível salvar a raiz: {error:#}") })),
+            Json(json!({ "error": format!("could not save the root: {error:#}") })),
         )
             .into_response();
     }
@@ -887,7 +912,7 @@ pub async fn save_setup(
         if let Err(error) = policy.validate() {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({ "error": format!("limite térmico inválido: {error}") })),
+                Json(json!({ "error": format!("invalid thermal limit: {error}") })),
             )
                 .into_response();
         }
@@ -916,29 +941,32 @@ pub async fn save_setup(
     let save_result = cfg.save();
     if save_result.is_ok() {
         for (dir, error) in cfg.create_default_storage_dirs() {
-            warn!("não foi possível criar a pasta padrão {}: {error}", dir.display());
+            warn!(
+                "could not create the default folder {}: {error}",
+                dir.display()
+            );
         }
     }
     drop(cfg);
     match save_result {
         Ok(()) => {
             if let Err(error) = state.database.save_network_settings(&network_for_db) {
-                warn!("não foi possível salvar os detalhes da rede no banco: {error:#}");
+                warn!("could not save the network details in the database: {error:#}");
             }
             if let Err(error) = state
                 .database
                 .save_public_directory_settings(&public_directory)
             {
-                warn!("não foi possível salvar os ingressos do diretório público: {error:#}");
+                warn!("could not save the public directory tickets: {error:#}");
             }
             // Trigger restart: spawn a new instance and exit.
             // The new instance will find the config file and start in full mode.
             tokio::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(800)).await;
                 let e = crate::respawn::respawn_self();
-                tracing::error!("respawn falhou, o nó segue no ar: {e}");
+                tracing::error!("respawn failed, the node stays up: {e}");
             });
-            Json(json!({"saved": true, "restart": true, "message": "Configuracao salva. Reiniciando..."})).into_response()
+            Json(json!({"saved": true, "restart": true, "message": "Configuration saved. Restarting..."})).into_response()
         }
         Err(e) => (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -950,12 +978,12 @@ pub async fn save_setup(
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-/// Um blob do store do Ollama: `<raiz>/blobs/sha256-…`, com `<raiz>/manifests`
-/// ao lado.
+/// A blob of the Ollama store: `<root>/blobs/sha256-...`, with `<root>/manifests`
+/// beside it.
 ///
-/// O manifesto é que dá nome ao modelo, e ele não é reescrito quando o blob é
-/// apagado por fora. A conferência do `manifests/` ao lado importa porque a
-/// biblioteca do LM Studio também tem uma pasta `blobs/` — vazia (ver
+/// The manifest is what names the model, and it is not rewritten when the blob
+/// is deleted from outside. Checking for the neighbouring `manifests/` matters
+/// because the LM Studio library also has a `blobs/` folder - empty (see
 /// `catalog::detect_source`).
 pub(super) fn is_ollama_blob(path: &std::path::Path) -> bool {
     let Some(parent) = path.parent() else {
@@ -973,15 +1001,16 @@ pub(super) fn is_ollama_blob(path: &std::path::Path) -> bool {
 #[derive(Debug, Deserialize)]
 pub struct DeleteRequest {
     pub path: String,
-    /// Sem isto, avisos viram 409 e nada é apagado.
+    /// Without this, warnings become 409 and nothing is deleted.
     #[serde(default)]
     pub force: bool,
 }
 
-/// Apaga um GGUF do disco desta máquina.
+/// Deletes a GGUF from this machine's disk.
 ///
-/// Avisa, mas não impede: quem opera decide. O que não se faz é apagar em
-/// silêncio algo que está no ar — a resposta nomeia o que segura o arquivo.
+/// It warns but does not prevent: whoever operates decides. What is not done
+/// is silently deleting something that is live - the response names what
+/// holds the file.
 pub(super) async fn delete_model(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
@@ -992,13 +1021,13 @@ pub(super) async fn delete_model(
         Err(_) => {
             return (
                 StatusCode::NOT_FOUND,
-                Json(json!({ "error": format!("arquivo não encontrado: {}", req.path) })),
+                Json(json!({ "error": format!("file not found: {}", req.path) })),
             )
                 .into_response()
         }
     };
 
-    // O mesmo portão que governa o que sai da máquina governa o que some dela.
+    // The same gate that governs what leaves the machine governs what disappears from it.
     if let Err(e) = crate::transfer::ensure_gguf(&path) {
         return bad_request(e);
     }
@@ -1009,8 +1038,9 @@ pub(super) async fn delete_model(
         .unwrap_or(0);
     let mut warnings = Vec::new();
 
-    // Servindo agora: apagar tira o modelo do ar sem que nada na tela diga, e
-    // o nó segue anunciando cobertura até a próxima requisição quebrar.
+    // Serving now: deleting takes the model offline without anything on the
+    // screen saying so, and the node keeps announcing coverage until the next
+    // request breaks.
     if let Some(cfg) = state.runtime.config().await {
         if std::path::Path::new(&cfg.model_path)
             .canonicalize()
@@ -1020,14 +1050,14 @@ pub(super) async fn delete_model(
             warnings.push(json!({
                 "kind": "serving",
                 "message": format!(
-                    "este nó está servindo as camadas {}-{} deste arquivo; apagar tira o modelo do ar",
+                    "this node is serving layers {}-{} of this file; deleting takes the model offline",
                     cfg.start_layer, cfg.end_layer
                 ),
             }));
         }
     }
 
-    // Em trânsito: apagar por baixo de uma transferência em curso.
+    // In transit: deleting from under a transfer in progress.
     let target = path.to_string_lossy().to_string();
     let in_flight: Vec<String> = state
         .transfers
@@ -1041,14 +1071,14 @@ pub(super) async fn delete_model(
     for id in &in_flight {
         warnings.push(json!({
             "kind": "transfer",
-            "message": format!("há uma transferência em curso com este arquivo (job {id})"),
+            "message": format!("there is a transfer in progress with this file (job {id})"),
         }));
     }
 
     if is_ollama_blob(&path) {
         warnings.push(json!({
             "kind": "ollama_store",
-            "message": "este arquivo está dentro do store do Ollama; apagá-lo deixa o manifesto do Ollama órfão. O certo lá é `ollama rm`",
+            "message": "this file is inside the Ollama store; deleting it leaves the Ollama manifest orphaned. The right way there is `ollama rm`",
         }));
     }
 
@@ -1067,11 +1097,11 @@ pub(super) async fn delete_model(
     if let Err(e) = tokio::fs::remove_file(&path).await {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("não deu para apagar: {e}") })),
+            Json(json!({ "error": format!("could not delete: {e}") })),
         )
             .into_response();
     }
-    info!("🗑️  apagado do disco: {}", path.display());
+    info!("🗑️  deleted from disk: {}", path.display());
     Json(json!({ "deleted": true, "path": target, "freed_bytes": size })).into_response()
 }
 

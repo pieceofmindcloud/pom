@@ -175,7 +175,8 @@ was validated offline by inspecting the workflows,
 
 ### Development Docker with a release or a local fork
 
-The cluster's Docker builds use `POM_LLAMA_CPP_MODE=release` by default.
+The Compose files build with `POM_LLAMA_CPP_MODE=release` by default;
+`scripts/build-docker.sh` called without the variable builds in `source`.
 `build-docker.sh` queries the remote `pom-tensor-parallel` branch, derives the
 same tag as `get-tag-name` in the workflow and passes the exact tag to Docker.
 It also accepts `POM_LLAMA_CPP_RELEASE_TAG` to pin an already chosen release.
@@ -219,6 +220,20 @@ In `source`, the Dockerfile keeps the normal CMake build and picks the CUDA
 prebuilt mode; the other GitHub Actions builds still compile the fork from
 source.
 `scripts/test-docker-build-mode.sh` tests the selection without real Docker.
+
+**The two modes do not run on the same processors.** In `release` the GGML CPU
+backend is a set of modules built with `GGML_CPU_ALL_VARIANTS`, and the runtime
+loads the one the processor supports. In `source` (and in every plain
+`cargo build`) the CPU backend is linked into the binary and compiled with
+ggml's defaults for x86-64 - SSE 4.2, AVX, AVX2, BMI2, FMA and F16C - with no
+check before using them: on a processor without AVX2 (an old one, or a virtual
+machine given a generic CPU model) the first vector instruction is SIGILL.
+`vendor/llama-cpp-sys-2/build.rs` sets the `ggml_cpu_linked` cfg when the CPU
+backend is linked, `ggml_cpu_built_with()` reads what it was compiled for, and
+`llm::init_backend` (`crates/llama-engine/src/llm/config.rs`) compares that
+with the processor before every `llama_backend_init`: the load is refused with
+the missing instruction sets named and the node stays up. A machine like that
+needs a `release` mode image, or the host processor exposed to the guest.
 
 ### Measurement on macOS
 
@@ -300,7 +315,7 @@ logo files. Renaming the product means editing that file - and, only for the
 executable, the `[[bin]]` in `crates/node/Cargo.toml`, which cargo requires as
 a literal.
 
-- **Binary**: embeds the file at compile time (`utils/brand.rs`,
+- **Binary**: embeds the file at compile time (`crates/brand/src/lib.rs`,
   `include_str!`), so the name travels inside the executable and there is no
   file to ship next to it. Everything that carried the old name now derives
   from the `slug`: `brand::config_filename()` (`pom.json`),
@@ -354,7 +369,7 @@ whoever opened it (Finder opens at `/`), with the screen answering 500.
 before trying the project root; the release script copies `dist` there.
 
 To rename the product again: edit `brand.json`, change the `[[bin]]`, produce
-the new images in `assets/brand/` and run `scripts/migrar-para-pom.sh` (or the
+the new images in `assets/brand/` and run `scripts/migrate-to-pom.sh` (or the
 equivalent) on each machine, because config and keys already written to disk
 still carry the previous name.
 
@@ -362,7 +377,7 @@ still carry the previous name.
 
 The commit shown in `/api/ui/node` (`build_commit`) identifies a peer without
 a shell. `build.rs` compiles a fallback: `git rev-parse --short HEAD` + the
-suffix `-sujo` ("dirty") if `git status --porcelain` shows changes, or
+suffix `-dirty` if `git status --porcelain` shows changes, or
 `desconhecido` ("unknown") if git cannot be read. At runtime, `build_commit()`
 prefers `POM_BUILD_COMMIT` when it is not empty. Docker injects that variable in
 the final stage from the commit read on the host; it does not enter the build
@@ -548,7 +563,7 @@ loses offload on the first click.
   artifacts instead of copying them. A build can skip the cache with
   `KACHE_DISABLED=1`.
 - **`scripts/build-docker.sh`**: reads the commit **on the host**
-  (`git rev-parse --short HEAD`, suffix `-sujo` if the tree has changes),
+  (`git rev-parse --short HEAD`, suffix `-dirty` if the tree has changes),
   resolves the fork mode (published release by default or local source),
   prepares a temporary named context and exports `POM_BUILD_COMMIT`,
   `LLAMA_CPP_CACHE_KEY`, the release tag/repo and `POM_CUDA_ARCH_CACHE_KEY`
@@ -576,16 +591,16 @@ loses offload on the first click.
   `node-cpu`. The mixed-GPU machine uses `docker-compose.yml` by default;
   `docker-compose.salem.yml` can also be selected directly. The CUDA server's
   compose left this repository and lives in `pom-cluster-config`; device IDs, volumes
-  and data are runtime configuration, not distinct build requirements.
-  `pom-docker.sh` also generates a remote Compose with GPU reservations for
-  the CUDA server. The services keep the model and state volumes in
+  and data are runtime configuration, not distinct build requirements. That
+  external repository also generates the remote Compose with GPU reservations
+  for the CUDA server. The services keep the model and state volumes in
   `tests/fixtures/<name>`. Each service sets `POM_HOME=/data`,
-  `POM_UI_DIST=/app/apps/frontend/dist`, `POM_DESENV=1` and the explicit path
+  `POM_UI_DIST=/app/apps/frontend/dist`, `POM_DEV_MODE=1` and the explicit path
   `POM_PLUGIN_HOST=/usr/local/bin/pom-plugin-host` (the UI would not be under
   the mounted data directory). `POM_DEV_PLUGINS_DIR` (default `..`, the
   workspace directory containing the sibling plugin repositories) mounts the
-  local sources at `/opt/pom/dev-plugins`. The optional cluster overlay
-  `pom-cluster-config/pom-jair/<host>/docker-compose.dev-plugins.yml` mounts
+  local sources at `/opt/pom/dev-plugins`. The optional cluster overlay in
+  `pom-cluster-config` (one Compose file per host) mounts
   those sources read-only, selects `dev-runtime` and keeps Cargo's writable
   cache in the project data volume. Rust artifacts are written to
   `<project_root>/.pom-dev-plugin-builds`.
@@ -594,11 +609,9 @@ loses offload on the first click.
   the IPC is through child-parent pipes. Configured nodes use the ports
   persisted in `pom.json`, hence the generator below. For the first boot without
   `/data/pom.json`, `node-cpu` passes `--port 42807 --gateway-port 8083`: these
-  are fallback ports only for setup mode and avoid fighting over the default
-  listeners of the first GPU node on the `host` network. Outside the `host`
-  network (bridge with `-p 8080:8080`), setup mode is already reachable through
-  the published port: it binds to `0.0.0.0` by default (`--setup-bind` changes
-  the IP). After the save the configured gateway binds to `[::]`. The generator
+  are the ports the local network created at first boot is written with, and
+  avoid fighting over the default listeners of the first GPU node on the
+  `host` network. The gateway binds to `[::]`. The generator
   writes to `tests/fixtures/node-<N>`; the services keep mounting the
   directories named by hardware role to preserve the state already persisted.
   Do not change those paths when aligning service names; see
@@ -642,11 +655,11 @@ loses offload on the first click.
 
 ## No Python runtime
 
-The supported runtime is **Rust** (`crates/node/src/inference/infer_server.rs`
+The supported runtime is **Rust** (`crates/node/src/inference/infer_server/`
 is the inference server; `crates/node/src/models/splitter.rs` the slicer).
 The old Python scripts (`inference_server.py`, `split_model.py`) and the
 legacy launchers were removed from the repository together with the `old/`
-folder. The ggml type table in `gguf.rs` is checked against `GGML_TRUTH` in the
+folder. The ggml type table in the engine's `gguf` module is checked against `GGML_TRUTH` in the
 file itself (a build test), not against any Python environment. The Python
 scripts that remain in `scripts/` are operational tools (for example
 `gen-node-configs.py`), not part of the build.
@@ -656,7 +669,7 @@ scripts that remain in `scripts/` are operational tools (for example
 The bring-up procedure is in `operations.md`; the node takes no model or layer
 flags on the command line.
 
-- `scripts/bench-rotas.sh` - generation measurement battery that compares four
+- `scripts/bench-routes.sh` - generation measurement battery that compares four
   origins and five prompts, writes a stable CSV with the counters and the
   per-request MTP acceptance rate at the end of the existing columns and
   prints medians per cell. `POM_BENCH_API_KEY` must hold the active inference
@@ -673,14 +686,13 @@ repository (not even in git history).
 | Variable | Effect |
 |---|---|
 | `POM_HOME` | First step of `project_root()` resolution: config, `models/`, UI. Without it: a cwd that looks like the project, then walking up from the executable's directory. Two nodes on the same machine need distinct homes (the `node_id` identity also lives in the project root). |
-| `POM_PORT`, `POM_BOOTSTRAP`, `POM_ADVERTISE_ADDR`, `POM_OLLAMA_URL`, `POM_GATEWAY_PORT`, `POM_SETUP_BIND`, `POM_PKARR_PEERS`, `POM_PUBLIC_ADDR`, `POM_RELAY_PEERS`, `POM_SERVE_RELAY`, `POM_NO_DEFAULT_RELAYS`, `POM_NO_DISCOVERY`, `POM_NO_PKARR` | One per command line option (`--port`, `--bootstrap`, ...; the `ARG_ENV` table in `main.rs`). The flag beats the variable, which beats the default; the booleans accept `1/0`, `true/false`, `yes/no`, `on/off`. The variable beats `pom.json`: `POM_PORT` and `POM_GATEWAY_PORT` replace the stored port, unlike `--port`/`--gateway-port`, which only apply in setup mode; `POM_BOOTSTRAP` and `POM_RELAY_PEERS` add to the config lists, like the flags. |
-| `POM_FORCE_SETUP=<token>` / `--setup` (alias `--wizard`) | Forces the first access wizard on an already configured machine, to test it: before opening the database, `pom.json`, the trust root and `pom.db` (with WAL/SHM) move to `<project_root>/setup-backups/<date-time>/` and the node starts in setup mode. The identity (`.pom-node.key`) stays. To go back, stop the node and move the files back. **Once per request**, so the restart after the save does not go back to the wizard: the flag uses the `POM_SETUP_FORCED` marker in the environment inherited by the restart; the variable keeps the last consumed token in `<project_root>/.pom-setup-forced`, because in Docker the restart recreates the container with the compose environment. The same token does not force again. `scripts/up.sh <cluster> --wizard`, in the `pom-cluster-config` repository, generates a new token per call. |
+| `POM_PORT`, `POM_BOOTSTRAP`, `POM_ADVERTISE_ADDR`, `POM_OLLAMA_URL`, `POM_GATEWAY_PORT`, `POM_PKARR_PEERS`, `POM_PUBLIC_ADDR`, `POM_RELAY_PEERS`, `POM_SERVE_RELAY`, `POM_NO_CLUSTER_RELAY`, `POM_NO_RELAY_TRANSFERS`, `POM_NO_DEFAULT_RELAYS`, `POM_NO_DISCOVERY`, `POM_NO_PKARR` | One per command line option (`--port`, `--bootstrap`, ...; the `ARG_ENV` table in `main.rs`). The flag beats the variable, which beats the default; the booleans accept `1/0`, `true/false`, `yes/no`, `on/off`. The variable beats `pom.json`: `POM_PORT` and `POM_GATEWAY_PORT` replace the stored port, unlike `--port`/`--gateway-port`, which only apply while there is no `pom.json`; `POM_BOOTSTRAP` and `POM_RELAY_PEERS` add to the config lists, like the flags. |
 | `POM_RETURN_MODE` | `direct` or `ring` forces the gateway's reply return mode (planner and decision), to test a path the planner would not pick - for example direct delivery to a gateway behind NAT, which the ring would hide. Absent or `auto`, the planner picks. With `direct`, a missing return path becomes an inference failure. See `parallelism.md`. |
 | `POM_SLICE_BENCH` | `0` turns off the slice speed test when the model loads (`infer_server/perf.rs`). |
 | `POM_CONFIG` | Path of `pom.json` (default `<project_root>/pom.json`). |
 | `POM_DB_DIR` | Directory of `pom.db` and its WAL/SHM files. If absent or empty, uses `<project_root>`; the directory is created at startup. |
 | `POM_DEV` | The common Compose sends `1` for development configuration; it is not the flag that enables local rebuilds. |
-| `POM_DESENV` | Only the exact value `1` enables the panel and the AdminOnly plugin rebuild/reinstall routes. The local Compose sends that value. |
+| `POM_DEV_MODE` | Only the exact value `1` enables the panel and the AdminOnly plugin rebuild/reinstall routes. The local Compose sends that value. |
 | `POM_DEV_PLUGINS_DIR` | Host directory with known plugin sources (`..` by default, the workspace containing the sibling plugin repositories), mounted at `/opt/pom/dev-plugins` in the local Compose. |
 | `POM_UI_DIST` | Where `webapp.rs` reads the UI bundle (default `<project_root>/apps/frontend/dist`). The Docker image sets it explicitly. |
 | `POM_MODEL_DIRS` / `POM_SHARD_DIR` | Whole-model folders (several, separated like `PATH`: `:` on Unix, `;` on Windows) and the slice folder. They beat `model_dirs`/`shard_dir` in `pom.json` and are not persisted; empty counts as absent. The Storage screen locks the field set by one of them. |
@@ -722,52 +734,44 @@ Linux one does not delete the macOS package that was already there.
 
 ### The llama.cpp fork is the step that cannot be missing
 
-`vendor/llama-cpp-sys-2/llama.cpp` is a **versioned symlink** to the
-repository root, and the folder it points to (`/llama.cpp/`) is in
-`.gitignore`. On a clean checkout, `llama-cpp-sys-2`'s own `build.rs` detects
-the broken symlink and automatically clones the public fork
-`pereirajair/llama.cpp`, branch `pom-tensor-parallel`, before walking the
-native files. So CI, releases and local `cargo build` follow the same path,
-without pinning a fork commit.
+The engine lives in the private repository `pom-plugin-llama.cpp`
+(`llama-engine` and `llama-cpp-sys-2`). The POM depends on it by git, pinned to
+a `rev` in `Cargo.toml` (`[patch.crates-io]`) and in `crates/node/Cargo.toml`.
+Cargo fetches it over SSH through the system `git`, enabled by
+`[net] git-fetch-with-cli = true` in `.cargo/config.toml`. Changing the engine
+means: commit and push `pom-plugin-llama.cpp`, then move both `rev`s.
 
-That branch also carries the local fix to `common_fit_params`: free memory is
-captured before the dry context, because the recurrent state buffers are real
-even with `no_alloc=true`. The project does not version the content the symlink
-points to, so updating the fork is part of updating the dependency.
+The fork of llama.cpp is not in either repository. `llama-cpp-sys-2` finds it
+through `LLAMA_SOURCE`, which `.cargo/config.toml` sets to `llama.cpp`
+relative to the POM root (`[env]`, `force = false`). So the fork is the root's
+`llama.cpp` (a checkout or a symlink, ignored by git), and a `LLAMA_SOURCE` set
+by the environment (CI, Docker) wins. If the source is missing or has no `ggml`,
+the build stops with the manual clone command. The branch is
+`pom-tensor-parallel` of the fork. The project does not version the fork's
+content, so updating it is part of updating the dependency.
 
-On Windows the checkout can materialize the symlink as a text file or a
-reparse point. `build.rs` does not follow that entry: it removes the
-placeholder and installs the clone directly at the path Cargo reads
-(`<manifest_dir>/llama.cpp`). That leaves a real directory for `WalkDir` and
-avoids `PermissionDenied` on the depth-zero entry. On Unix, the clone is
-installed at the symlink's relative target, keeping the versioned layout. If
-the clone cannot be downloaded, the error lists the full command for manual
-preparation, instead of leaving `walkdir`'s raw `NotFound`.
+The binding's build also applies a local fix to `common_fit_params`: free
+memory is captured before the dry context, because the recurrent state buffers
+are real even with `no_alloc=true`.
 
-Before the native build, `release-windows.yml` compiles and runs
-`vendor/llama-cpp-sys-2/src/build_support.rs` with the runner's `rustc`. That
-smoke test confirms on Windows itself that a versioned symlink does not become
-the root walked by `WalkDir` and that the Unix target stays preserved.
+Before the native build, `release-windows.yml` locates `build_support.rs` in the
+checkout cargo fetched for `llama-cpp-sys-2` (`cargo metadata`) and runs it with
+the runner's `rustc`. That smoke test confirms on Windows that a versioned
+symlink does not become the root walked by `WalkDir` and that the Unix target
+stays preserved.
 
 ### Preparing a local worktree
 
-The versioned symlink at `vendor/llama-cpp-sys-2/llama.cpp` resolves to
-`<worktree>/llama.cpp`, but the root's content is ignored by git. The first
-`cargo build -p node` already triggers the automatic preparation. To reuse a
-local checkout of the fork without copying it into the worktree, set
-`LLAMA_SOURCE`:
+A new worktree needs a `llama.cpp` at its root, with `ggml`, for
+`LLAMA_SOURCE` to find it. Point the variable at another checkout to reuse one:
 
 ```bash
-LLAMA_SOURCE=/path/to/llama.cpp
-test -d "$LLAMA_SOURCE/ggml"
-cargo build -p node
+LLAMA_SOURCE=/path/to/llama.cpp cargo build -p node
 ```
 
-If `llama.cpp` already exists at the worktree root, confirm it is the fork's
-checkout and contains `ggml`; an existing directory without `ggml` is not
-overwritten automatically. `POM_LLAMA_CPP_REPOSITORY` and `POM_LLAMA_CPP_REF`
-can point the automatic preparation to another remote or branch during tests,
-without making that reference a fixed project dependency.
+`POM_LLAMA_CPP_REPOSITORY` and `POM_LLAMA_CPP_REF` belong to the
+`llama-cpp-sys-2` preparation and are only read when no source is available,
+so tests can point it at another remote or branch.
 
 ### The UI must go in the package
 

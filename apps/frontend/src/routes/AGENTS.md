@@ -2,35 +2,41 @@
 
 Each screen of the panel, one file per route, wired up in `../App.tsx`. Every
 screen is backed by React Query hooks from `../lib/queries.ts` and speaks to the
-node's HTTP gateway (`src/webui.rs`, `src/gateway.rs`); none of them keep
+node's HTTP gateway (`crates/node/src/backend/webui/`, `backend/gateway/`); none of them keep
 cluster state in the browser. All copy goes through the i18n provider
-(`../i18n/provider.tsx`); several screens additionally pass server-side error
-strings through `localizeServerText` (`../i18n/locales.ts`), which the backend
-writes as translation keys.
+(`../i18n/provider.tsx`). Text written by the node (error messages, refusal
+reasons, job steps) is English at the source and is shown as it arrives.
+
+`PublicNetworks.tsx` carries the `data-guide` attribute the first run guide's
+balloon points at (`components/FirstRunGuide.tsx`). So do `RemoteModels.tsx` (search field,
+result rows by `data-guide-repo`), `DeployModel.tsx` ("Whole model", the peer
+strip, the Deploy button while enabled) and `Chat.tsx` (the message field);
+those three steps report nothing, the guide watches for their outcome.
 
 Per-file list:
 
-- `SetupWizard.tsx` - Protótipo navegável do primeiro acesso, mantido na rota
-  `/setup` mesmo depois da configuração inicial. Renderiza **fora da moldura**,
-  como o `Setup.tsx` do primeiro arranque: sem Sidebar e sem Topbar (o
-  `isWizard` do `App.tsx` devolve antes do shell). O assistente guia a
-  configuração do zero, e o menu ao lado convidava a sair pelo meio para uma
-  tela que ainda não faz sentido. Usa `setupWizardTypes.ts` para
-  o estado central e `setupWizardMocks.ts` para hardware, nós, modelos,
-  capabilities, redes públicas e saúde simulados; os seis caminhos terminam
-  no mesmo resumo e não fazem chamadas ao backend; ver `TODO.md`, item 22. O `Setup.tsx` continua
-  sendo a tela real de bootstrap quando `/api/ui/node` retorna 404.
+## First access
+- **`SetupWizard.tsx` and `Setup.tsx` are deprecated and unreachable.**
+  `App.tsx` neither imports nor routes them, there is no `/setup` path and the
+  node does not serve `/api/setup/*`. The files and their tests are kept until
+  the wizard is removed for good; the two entries below describe that dormant
+  code. Do not link to it.
 
-- `Setup.tsx` - Wizard real de primeiro acesso, na identidade do portão de
-  acesso (painel escuro com a marca e a trilha de passos animada como os nós
-  do site). Três passos para o administrador (Início, Rede, Convite) e dois
-  para nó e inferência (Início, Entrar), definidos em `setupWizardFlow.ts`.
-  Pergunta só papel, nome da máquina, nome e visibilidade da rede (privada ou
-  pública; país e cidade só na pública) e, para quem entra, a raiz e a chave -
-  trazidas pela descoberta local (`LocalDiscoveryPanel`) ou coladas em
-  `TrustFields`, que só monta quando o bloco manual é aberto. No convite, cada
-  computador que procura a rede aparece em `DiscoveredMachineCard` com nome,
-  sistema, IP (da LAN, só no wizard local), CPU, RAM e GPU. The admin's
+- `SetupWizard.tsx` - a navigable prototype of the first access. It uses `setupWizardTypes.ts` for
+  the central state and `setupWizardMocks.ts` for simulated hardware, nodes, models,
+  capabilities, public networks and health; the six paths end
+  in the same summary and make no calls to the backend; see `TODO.md`, item 22.
+
+- `Setup.tsx` - the real first-access wizard, in the identity of the access
+  gate (a dark panel with the mark and the animated step trail like the site's
+  nodes). Three steps for the administrator (Start, Network, Invitation) and two
+  for node and inference (Start, Join), defined in `setupWizardFlow.ts`.
+  It only asks for the role, the machine name, the network's name and visibility (private or
+  public; the location, through `LocationEditor`, only on the public one) and, for whoever joins, the root and the key -
+  brought by the local discovery (`LocalDiscoveryPanel`) or pasted in
+  `TrustFields`, which only mounts when the manual block is opened. In the invitation, every
+  computer looking for the network appears in `DiscoveredMachineCard` with name,
+  system, IP (from the LAN, only in the local wizard), CPU, RAM and GPU. The admin's
   preferred address is optional and never pre-filled: the network is found by
   the principal's key, and neither the trust root nor joining from Public
   networks brings an IP bootstrap. When the wizard was opened from Public
@@ -45,79 +51,124 @@ Per-file list:
   keys out of the `public_directory` sent on save: "Join" fills the trust fields like the manual block and clears any
   connection key, and "Chat" opens `LobbyChat` against `/api/setup/lobby`
   without a session. A listed network with `public_stats` shows a line with
-  its nodes, VRAM and models (`DirectoryNetworkStats`). Pastas, disco, reservas, senha (`admin`) e
-  workspace (`~/pom_workspace`) são padrões ajustados depois. As telas conversam
-  com `/api/setup/*`; não confundir com o protótipo `SetupWizard.tsx`. Ver
-  `docs/subsystems/web-ui.md`, "Wizard de primeiro acesso".
+  its nodes, VRAM and models (`DirectoryNetworkStats`). Folders, disk, reserves, password (`admin`) and
+  workspace (`~/pom_workspace`) are defaults adjusted afterwards. The screens talk
+  to `/api/setup/*`; do not confuse it with the prototype `SetupWizard.tsx`. See
+  `docs/subsystems/web-ui.md`, "First-access wizard".
 
-- `PublicNetworks.tsx` - Diretório full-bleed de redes públicas, no mesmo
-  padrão de Logs: tabela rolável com nome público, organização, localização,
-  label geo-hierárquico, alcance, nós, latência, VRAM, modelos e ação de
-  entrada. Usa `/api/public/networks`. **No IP is shown**: reachability comes
-  from `usePublicLocator` (`lib/publicLocator.ts`), which asks the node
-  (`/api/public/networks/locate?key=<publisher_key>`) whether the publisher key
-  has a direct route, only a relay or no pkarr record at all; the details show
-  the publisher key and the `relay_hints`. Métricas agregadas só aparecem quando o cluster local
-  corresponde à rede exibida, pois o catálogo público atual não as fornece.
-  Os filtros de país e cidade são derivados do próprio catálogo; ao escolher um
-  país, o combo de cidade mostra apenas as cidades daquele país.
-  O nome de cada rede abre um `Modal` com todo o registro público, incluindo
-  descrição, regras e o campo único de canais Discord ou Telegram renderizados
-  como Markdown; a confirmação de entrada continua sendo uma ação separada.
-  The action column depends on membership: the row whose fingerprint matches
-  `/api/public/network` (the network this node is already in) never offers
-  Join. A member gets "Leave network" (`POST /api/ui/network/leave`, same
-  confirmation as Forget network in `NetworkSettings.tsx`); the principal
-  (`authority_level === "primary"` from `useNode`) gets no action there.
-  The screen is titled "Networks". For a network this node is not in, the one
-  action opens the lobby window (`LobbyChat`), where admission is requested;
-  without `lobby_chat` the button is disabled ("No lobby"). The old path that
-  left the network and opened the wizard is gone.
-  A network advertising an empty `accepted_enrollments` can still be talked to
-  but offers no admission request; the list (or "Any role" when the record has
-  none) is shown in the details modal and travels to the wizard in the
-  `sessionStorage` handoff. A network with `lobby_chat` also gets "Chat", which
-  opens `../components/LobbyChat` against `/api/ui/network-chat/lobby`. A
-  network with `public_stats` that this node is not in gets its nodes, VRAM and
-  models columns from `usePublicStats` (`../lib/publicStats`); latency stays
-  unavailable for it.
-  O documento assinado fica em `sessionStorage` só durante a transição; o nó sai
-  da rede atual e o wizard real retoma com a rede pública pronta para revisão.
+## Network, plugins and this machine
+- `PublicNetworks.tsx` - Full-bleed directory of public networks: a
+  scrolling table with name, organization, place, reach, nodes, latency, VRAM,
+  models and the action. The list is a page of the node's table of known
+  networks (`GET /api/ui/networks/known`, 25 per page, prev/next under the
+  table): it paints from there at once, then `refreshLive` asks
+  `/api/public/networks` (which records what it finds) and reads the page
+  again. A row the live listing did not return shows "Not seen now - last
+  seen ..." (`network-cached-<fingerprint>`). The search box (debounced
+  300 ms), country, city (narrowed by country), distance radius and order go
+  to the node as query parameters, and any change returns to page 1; the
+  country and city options come from the answer. **No IP is shown**:
+  reachability comes from `usePublicLocator` (`lib/publicLocator.ts`), which
+  asks the node (`/api/public/networks/locate?key=<publisher_key>`) whether
+  the publisher key has a direct route, only a relay or no pkarr record, and
+  reports a check that failed as `unknown`. The place column is what the node
+  resolved from each network's coordinates. Distances are measured from this
+  network's location (`useNetworkInfo`) or, after "Use my browser's
+  location", from the browser, and sent to the node only as the sort and
+  radius origin; the screen never asks the browser by itself. Latency comes
+  from `usePublicLatencies`, only after "Measure latency" or the latency
+  order, which reorders the current page.
+  Clicking a row selects it (iris band, `aria-selected`) and opens
+  `NetworkSidePanel` on the right, in the inspector's look and small print:
+  the name, the enrollment state (`network-enrollment-state`, one line per
+  role with its icon from `ENROLLMENT_ICONS`), description,
+  channels and rules (always open), only the fields the owner filled,
+  nothing the row already shows. Its footer (`network-panel-actions`) holds
+  the actions: "Quick setup" (see below), "Ask to join" and "Lobby" for
+  another network (closed ones only get the lobby), "Leave network" for a
+  member, "More details", the trust document export (own network only) and,
+  for an imported network, remove. "More details" opens
+  `PublicNetworkDetails`, a `Modal size="full"` with every field, technical
+  ones (fingerprint, publisher key, relays, trust document) included.
+  A lobby opens in place of the list and the page header (`LobbyChat
+  layout="page"`, "Back to networks" at the top left), also for a network
+  whose Chat is off (request side only); only a lobby that answers
+  `lobby_disabled` falls back to a window (`onUnavailable`). Open lobbies are
+  kept in a tab strip over the list ("Networks" plus one closable tab per
+  lobby, and a switcher in the lobby header with two or more) and stay
+  mounted and polling while hidden, so the operator can talk in several at
+  once. "Ask to join" opens the lobby with the focus on the admission request.
+  The principal of a network whose discovery is off or hidden gets "Quick
+  setup" (`../components/NetworkQuickSetup.tsx`) in the header, on its row
+  and in the panel.
+  The action column depends on membership: the network this node is in never
+  offers Join. A member gets "Leave network" (`POST /api/ui/network/leave`);
+  the principal (`authority_level === "primary"`) gets no action there.
+  Pinned rows come from `GET /api/ui/networks/pinned` and stay on top of every
+  page, outside the order but filtered here by the same search (accents
+  folded), country, city and radius: this machine's network
+  ("own") and the networks imported here ("custom", amber band). The node
+  leaves both out of the known list. "Add network" reads a JSON file and posts
+  its text to `/api/ui/networks/custom`; only the own network's row exports
+  `trust_document` as `<name>-trust.json`. A network with an empty `accepted_enrollments` is
+  marked closed and can still be talked to. A network with `public_stats`
+  that this node is not in gets its nodes, VRAM and models from
+  `usePublicStats` (`../lib/publicStats`).
 
-- `NetworkSettings.tsx` - Mantém o retrato operacional da rede separado das
-  preferências locais **e** da identidade desta máquina, que vive em
-  `MyMachine.tsx` (rota `/config/minha-maquina`). Node e infer recebem uma
-  leitura somente leitura com nome, descrição, regras, organização, canais,
-  visibilidade e localização; um administrador autorizado pode editar o bloco
-  completo. A edição grava no nó, propaga o envelope assinado aos peers e
-  atualiza a descoberta pública. The editable block includes "Accepting new
-  members", one checkbox per `EnrollmentRole` (`ENROLLMENT_ROLES` in
-  `lib/types.ts`); unchecking all of them advertises the network as closed.
-  "Lobby chat" (`lobby_chat`) lets machines that are not members talk to the
-  network; the checkbox is disabled unless the network is public. The leave
+- `NetworkSettings.tsx` - it keeps the network's operational portrait separate from the
+  local preferences **and** from this machine's identity, which lives in
+  `MyMachine.tsx` (route `/config/my-machine`). Node and infer get a
+  read-only read with the name, description, rules, organization, channels,
+  visibility and location; an authorized administrator may edit the whole
+  block. Editing writes on the node, propagates the signed envelope to the peers and
+  updates the public discovery. The editable block asks the questions of the
+  Networks screen's quick setup, in the same order and drawing, with the
+  components `../components/NetworkQuickSetup.tsx` exports (`SetupSection`,
+  `DiscoveryChoices`, `InfoFields`, `AccessFields` with `full`, then
+  `LocationEditor`): discovery, information, who can join, location, and
+  last this machine's relay (`RelayOptions` with `section`, saved at once,
+  not by the Save button), only when the internet reaches this machine. Who
+  cannot edit the network gets the relay as a panel below the read-only
+  block, under the same condition. It
+  includes "Accepting new members", one card per `EnrollmentRole`
+  (`ENROLLMENT_ROLES` in `lib/types.ts`) with its icon; unchecking all of them
+  advertises the network as closed.
+  There is no lobby option: the lobby follows discovery. "Who can join"
+  (`access_policy`) and "Accepting new members" are shown only with discovery
+  on or hidden, and the published stats only on a public network; with
+  discovery off they are not rendered at all. The location editor and the
+  geographic label are rendered only on a public network, the only kind the
+  directory places on a map. "Who can join" offers "Approved
+  by an admin", "Anyone without approval" (`auto_approve`, its warning is the
+  choice's own text) and "This machine only"; a network still on the legacy
+  open mode sees it as a fourth choice. Discovery offers
+  "Hidden" (`private`) again: no relay lists the network, and another machine
+  reaches it by importing its trust document on the Networks screen. The leave
   action ("Return to my own network", `POST /api/ui/network/leave`) is not
   drawn on the machine's own network (`NodeInfo.own_network` with no
   `standby_network`): that network is inherent to the machine. An admin also
   sees `AdmittedMachines`, the approved admission records, with "Revoke"
   behind a confirmation (`admissionsApi.decide(id, "forget")`). "Published
-  stats" (`public_stats`) follows the same rule. País e cidade usam a referência de geografia
-  do nó em selects, sem expor o código do país. `TraversalPanel` mostra o campo
-  `traversal` de `/api/ui/cluster` - estado do AutoNAT, endereços diretos e
-  circuitos publicados, reservas de relé e hole punches - porque dois nós atrás
-  de NAT que não se enxergam falham num de três degraus e antes disso descobrir
-  qual exigia log de depuração na máquina certa; nó antigo não manda o campo e
-  o painel não aparece. A tela também agrega nós,
-  latência média, VRAM e modelos conhecidos. A lista de participantes foi
-  movida para a rota `/config/rede/participantes`, apenas para `admin` e
-  `node`. O painel de informações também oferece `Esquecer rede`, que pede
-  confirmação e chama `POST /api/ui/network/leave` para limpar a configuração
-  local e reiniciar no setup - continua aqui porque é sobre a rede, não sobre
-  esta máquina. No Windows, quando suportado, a mesma tela mostra o estado das
-  quatro regras de firewall derivadas da porta P2P efetiva e oferece `Tentar
-  novamente` após uma recusa do UAC; essa ação é independente da implantação.
-  Descrição, regras e o campo único de canais Discord ou Telegram são editados
-  como Markdown com prévia ao vivo e, quando a tela é somente leitura, usam o
-  mesmo renderer Markdown compartilhado pelo Chat.
+  stats" (`public_stats`) follows the same rule. The location is edited with
+  `../components/LocationEditor` (map, browser location on request, city from
+  the node's offline database, and what the network publishes); the discovery
+  label is shown read-only below it. `TraversalPanel` shows the
+  `traversal` field of `/api/ui/cluster` - the AutoNAT state, the direct addresses and
+  the published circuits, the relay reservations and the hole punches - because two nodes behind
+  a NAT that cannot see each other fail at one of three steps, and before this knowing which one
+  required debug logs on the right machine; an older node does not send the field and
+  the panel does not appear. The screen also aggregates nodes,
+  the average latency, VRAM and known models. The participants list was
+  moved to the route `/config/network/participants`, for `admin` and
+  `node` only. The information panel also offers `Esquecer rede` ("Forget network"), which asks
+  for confirmation and calls `POST /api/ui/network/leave` to clear the local configuration
+  and restart in the setup - it stays here because it is about the network, not about
+  this machine. On Windows, when supported, the same screen shows the state of the
+  four firewall rules derived from the effective P2P port and offers `Tentar
+  novamente` ("Try again") after a UAC refusal; that action is independent of the deployment.
+  Description and rules are edited as plain Markdown text with no live
+  preview, and the channels in one line; the read-only view renders them with
+  the Markdown renderer the Chat uses.
 - `Plugins.tsx` - `/plugins` combines the public catalog at
   `https://license.pieceofmind.cloud/v1/plugins` with local state from
   `GET /api/ui/plugins`, using `code` as the identity. The public client lives
@@ -128,7 +179,7 @@ Per-file list:
   fall back to English. License validity, granted plugins, activation
   candidates and usage by `plugin_code` come from the node's authenticated
   state, never the public catalog. The full-bleed screen follows the header and
-  inner container used by `/modelos`. `state` represents license validity;
+  inner container used by `/models`. `state` represents license validity;
   `active` is true only after the host completes its handshake and is ready.
   Local state may publish `installation_error`, shown on the card with an
   actionable detail; a failed activation refreshes status before the screen
@@ -180,7 +231,7 @@ Per-file list:
 
   Updating the `pom` binary is separate in `About.tsx` (see
   `crates/node/src/pom_core_update.rs`). With
-  `NodeInfo.pom_desenv=true`, on any profile, the screen queries local sources and allows
+  `NodeInfo.pom_dev_mode=true`, on any profile, the screen queries local sources and allows
   building and installing even inactive plugins. A local build is separate
   from license state, grants no licensed features and does not activate a
   license; an existing licensed/GitHub installation keeps its entitlement.
@@ -190,17 +241,32 @@ Per-file list:
   data is selected for the local node's `system.os`/`system.arch`; if the
   catalog does not publish that target, the screen shows no release rather than
   suggesting one for another platform.
-- `MyMachine.tsx` - "Minha Máquina" (rota `/config/minha-maquina`, entrada
-  própria no menu Rede, acessível também ao `infer`). Contém exatamente o que
-  saiu de `NetworkSettings.tsx`: o painel "Esta máquina" (hostname, `node_id`,
-  portas, perfil, autoridade efetiva, e `Sair da rede`/`Voltar para a rede` via
-  `POST /api/ui/leave`/`/api/ui/rejoin` - abdicação, não privilégio, disponível
-  a todo perfil) e "Endereço anunciado" (`POST /api/ui/network/advertise-addr`,
-  mostra o endereço efetivo usado pelos peers). `Sair da rede` aqui é diferente
-  de `Esquecer rede` em `NetworkSettings.tsx`: um desliga a máquina do cluster,
-  o outro apaga a configuração local e reinicia no setup.
+- `MyMachine.tsx` - "My Machine" (route `/config/my-machine`, its own
+  entry in the Network menu, also accessible to `infer`). It contains exactly what
+  left `NetworkSettings.tsx`: the "This machine" panel (hostname, `node_id`,
+  ports, profile, effective authority, and `Sair da rede`/`Voltar para a rede` ("Leave the network"/"Return to the network") via
+  `POST /api/ui/leave`/`/api/ui/rejoin` - abdication, not privilege, available
+  to every profile) and "Announced address" (`POST /api/ui/network/advertise-addr`,
+  it shows the effective address the peers use). Between the two sits "Machine
+  name" (`POST /api/ui/network/node-name`): the field holds the configured
+  `node_name` and, while empty, shows the hostname in use as its placeholder.
+  The relay options moved to `NetworkSettings.tsx`. `Sair da rede` ("Leave the network") here is different
+  from `Esquecer rede` ("Forget network") in `NetworkSettings.tsx`: one disconnects the machine from the cluster,
+  the other erases the local configuration and restarts in the setup.
 
+## Chat
 - `Chat.tsx` - The chat: `POST /v1/chat/completions` with `stream: true`,
+  with no title bar on an empty conversation, `../components/MissingPiece`
+  and no composer or RAG while the network serves no model (with
+  `NoModelSteps` - download, deploy, talk, current step from
+  `useLocalCatalog` - for a profile that may deploy, and "See earlier
+  conversations" only when one exists), capabilities
+  asked for the chosen model (`useChatCapabilities(model)`), otherwise
+  opening an empty conversation on `../components/ChatHero` with the composer
+  centred (one `layoutId` element that moves to the bottom bar on the first
+  message; the conversation list and its New chat are not drawn while no
+  conversation has messages, `hasConversations`, in the infer menu as well) and showing a model's thinking closed (`ThinkingBlock`: label and
+  thinking-token count, text on click),
   exactly what a harness gets. Imports `../lib/chatStore` (sessions, localStorage
   and the shared active-session controller) and `../components/ChatSessionList`,
   `../lib/chatStream` (leitura de deltas SSE, erros e métricas), `../lib/chatScroll`
@@ -227,19 +293,19 @@ Per-file list:
   assistant message keeps its summary and full telemetry without a reload.
   Each hop's backend telemetry separates the llama.cpp evaluation call from
   explicit backend synchronization.
-  O perfil `infer` oculta desta tela a origem, os resumos de tempo e
-  throughput e o painel detalhado de telemetria; isso é apresentação, não
-  autorização.
-  No mesmo composer, `InferenceHeadChoice` mostra por qual cabeça de camada 0
-  a próxima inferência entrará para qualquer perfil com modelo selecionado,
-  mas só aparece quando há mais de uma candidata. Deixa explícito quando não
-  há candidata ou quando a seleção caiu no fallback sem RTT fresco.
-  A escolha do combo é controlada pelo `ChatScreen` e segue na próxima chamada
-  como `inference_head`; o backend valida o `node_id` e preserva a cabeça no
-  plano e no `x_pom.source` da telemetria.
-  O botão `Think` só aparece quando `/api/ui/chat/capabilities` retorna
-  `thinking: "supported"`. Seu valor é salvo em `ChatSession` e enviado como
-  `thinking_enabled` a cada mensagem, persistindo até nova ação do usuário.
+  The `infer` profile hides the source, the timing and throughput summaries and the
+  detailed telemetry panel on this screen; that is presentation, not
+  authorization.
+  In the same composer, `InferenceHeadChoice` shows through which layer-0 head
+  the next inference will enter for any profile with a model selected,
+  but it only appears when there is more than one candidate. It makes it explicit when there is
+  no candidate or when the selection fell to the fallback without a fresh RTT.
+  The combo's choice is controlled by the `ChatScreen` and travels in the next call
+  as `inference_head`; the backend validates the `node_id` and keeps the head in
+  the plan and in the telemetry's `x_pom.source`.
+  The `Think` button only appears when `/api/ui/chat/capabilities` returns
+  `thinking: "supported"`. Its value is saved in `ChatSession` and sent as
+  `thinking_enabled` on every message, persisting until a new user action.
   Missing snapshots stay visible as missing data. The environment card also
   renders the effective MoE executor and its concrete reason from `/health`.
   Phase rows also render hidden-state bytes sent/received and the effective
@@ -247,18 +313,18 @@ Per-file list:
   encode/decode work from the general frame timings. Its picker uses
   `../lib/chatModels` to hide deployment-qualified
   ids from chat presentation only; deployment screens and backend model
-  resolution retain those ids. Um frame de erro compatível com OpenAI dentro
-  do stream fica junto de qualquer resposta parcial e mostra a mensagem exata
-  do servidor; o texto genérico de resposta vazia só é usado quando nenhum
-  erro foi enviado. Erros longos quebram linha, continuam selecionáveis e têm
-  um controle de cópia localizado.
-  A rota `/admin-ui/chat` reutiliza a mesma tela sem o shell administrativo para
-  caber no popover nativo de 390 x 844 pontos. `OpenNativeChatWindowButton` é
-  deliberadamente invisível no navegador comum e só publica `open` na ponte
-  WebKit `pomOpenWindow`, que abre a janela maior sem criar um fluxo paralelo de
-  autenticação.
-- `NetworkChat.tsx` - Página própria `/network-chat`, com o mesmo padrão visual
-  do Chat de IA. It reads the
+  resolution retain those ids. An OpenAI-compatible error frame inside
+  the stream sits beside any partial answer and shows the server's exact
+  message; the generic empty-answer text is only used when no
+  error was sent. Long errors wrap lines, stay selectable and have
+  a local copy control.
+  The route `/admin-ui/chat` reuses the same screen without the administrative shell to
+  fit in the native popover of 390 x 844 points. `OpenNativeChatWindowButton` is
+  deliberately invisible in a common browser and it only publishes `open` on the
+  WebKit bridge `pomOpenWindow`, which opens the larger window without creating a parallel flow of
+  authentication.
+- `NetworkChat.tsx` - its own page `/network-chat`, with the same visual pattern
+  as the AI Chat. It reads the
   authenticated snapshot and sends text, file and typing actions through the
   node's libp2p-backed gateway. It resolves `node_id` to the node hostname/name
   map used by the dashboard, downloads persisted file blobs on demand, and
@@ -266,16 +332,17 @@ Per-file list:
   ids come from `lib/id.ts`, so sending over plain HTTP does not call the
   secure-context-only `crypto.randomUUID` API. The message viewport follows new
   messages while it is near the bottom, and the page uses the full-bleed
-  `PageHeader` pattern instead of a rounded outer panel. No
-  celular, participantes ficam ocultos até o botão `Ver online` ser acionado;
-  a entrada da Sidebar recebe o contador de mensagens não lidas e a abertura
-  da rota marca o snapshot atual como lido. When the snapshot says
+  `PageHeader` pattern instead of a rounded outer panel. On the
+  phone, the participants stay hidden until the `Ver online` ("See online") button is pressed;
+  the Sidebar entry receives the counter of unread messages and opening
+  the route marks the current snapshot as read. When the snapshot says
   `lobbyEnabled`, a tab pair switches between the `network` and `lobby` rooms
   (`useNetworkChat(room)`). The lobby tab lists the candidates with
   `LobbyHardwareCard`, sends text with `room_id: "lobby"`, and offers neither
   files nor typing, because machines that are not members read that room.
+## Information screens
 - `Documentation.tsx` - Two audiences, one screen, switched by a tab pair at
-  the top of the navigation column (`?tab=guias|referencia`).
+  the top of the navigation column (`?tab=guides|referencia`).
   **Guides** (`../guides/`) are written for people: ordered pages with SVG
   diagrams, rendered by `GuideView` from `Block[]` data. **Reference** is the
   repository's living markdown, written for agents, self-contained and
@@ -285,7 +352,7 @@ Per-file list:
   `import.meta.glob` + the manifest - no node route, so it renders on any
   machine serving `dist/`, even one that never had the repo.
   Three decisions that are not cosmetic:
-  - **The screen is full-bleed** (`App.tsx` lists `/documentacao` alongside `/`
+  - **The screen is full-bleed** (`App.tsx` lists `/documentation` alongside `/`
     in `isFullBleed`) and owns its scrolling: the nav column and the reader
     scroll independently, each a flex child with `min-h-0`. Without that
     `min-h-0` the child grows to its content and the overflow never engages -
@@ -304,10 +371,10 @@ Per-file list:
   - **Mobile is two screens sharing one address.** Below `sm:` the nav column
     takes the full width and the reader is hidden (`mobileReaderOpen` state);
     picking a guide/doc entry opens the reader full-screen with a `Voltar`
-    button pinned at its top (`sm:hidden`, only mounted while open). `Voltar`
-    only flips that local state - it never touches `?doc=`/`?guia=`, so the
+    ("Back") button pinned at its top (`sm:hidden`, only mounted while open). `Voltar`
+    only flips that local state - it never touches `?doc=`/`?guide=`, so the
     selection survives the round trip. A deep link present at mount
-    (`?doc=`/`?guia=` already in the URL) counts as that same selection and
+    (`?doc=`/`?guide=` already in the URL) counts as that same selection and
     opens straight into the reader. From `sm:` up both columns render side by
     side regardless of the flag, exactly like before.
   Search filters label, path *and* body, and replaces the tree with a flat
@@ -315,29 +382,29 @@ Per-file list:
   `Documentation.test.tsx` covers the contract: guides first (a person must not
   land on agent markdown), the guide->reference deep link, no `.md` or
   `AGENTS.md` in the list, section header opens the overview, collapse works
-  while holding the selection, the two scroll containers, `?doc=`/`?guia=` deep
-  links, search + clear, empty state, and the mobile nav/reader/Voltar
+  while holding the selection, the two scroll containers, `?doc=`/`?guide=` deep
+  links, search + clear, empty state, and the mobile nav/reader/`Voltar`
   contract. Loading the embedded set requires
   `src/docs/` to exist, which `npm test`'s `pretest` hook guarantees.
-- `About.tsx` - Tela informativa em `/config/sobre`, última folha de
-  Configurações. Mostra o `LICENSE` AGPL-3.0 do repositório e a página oficial
-  GNU, o aviso de risco/LGPD e links para o site (`pieceofmind.cloud`), contato
-  (`contact.html`) e repositórios oficiais. É a ÚNICA tela que trata da atualização do binário
-  `pom` em si: verifica
-  sob demanda pela rota autenticada `/api/ui/pom-update/check`
-  (`usePomCoreUpdateStatus`), e quando há release disponível, mostra e aplica
-  ali mesmo (`/api/ui/pom-update/apply`) - não delega mais para a tela de
-  Plugins. Mostra também, à parte, o estado do plugin `enterprise`
-  (`useEnterpriseStatus`) como contexto de por que a atualização do pom pode
-  estar indisponível (o mecanismo hoje empresta o lease desse plugin - ver
-  `crates/node/src/pom_core_update.rs`); ativar/desativar plugins é feito em
-  `/plugins`, nunca aqui. Também lista as dependências diretas do frontend e
-  do workspace Rust agrupadas pela licença declarada, com versão, ecossistema,
-  filtro por texto e link do repositório. O catálogo é
-  `../lib/licenses.generated.ts`, gerado por `scripts/build-licenses.mjs`; o
-  teste em `About.test.tsx` cobre a licença, o aviso e links, os dois
-  ecossistemas, o filtro e a verificação/aplicação sob demanda da atualização.
-- `Dashboard.tsx` — Cluster overview: the admin sees cluster
+- `About.tsx` - an information screen at `/config/about`, the last leaf of
+  Settings. It shows the repository's AGPL-3.0 `LICENSE` and the official GNU
+  page, the risk/LGPD notice and links to the site (`pieceofmind.cloud`), contact
+  (`contact.html`) and the official repositories. It is the ONLY screen that handles the update of the
+  `pom` binary itself: it checks
+  on demand through the authenticated route `/api/ui/pom-update/check`
+  (`usePomCoreUpdateStatus`), and when a release is available it shows and applies it
+  right there (`/api/ui/pom-update/apply`) - it no longer delegates to the
+  Plugins screen. It also shows, separately, the state of the `enterprise` plugin
+  (`useEnterpriseStatus`) as context for why the pom update may
+  be unavailable (the mechanism today borrows that plugin's lease - see
+  `crates/node/src/pom_core_update.rs`); activating/deactivating plugins is done in
+  `/plugins`, never here. It also lists the frontend's and the Rust workspace's direct
+  dependencies grouped by the declared license, with version, ecosystem,
+  a text filter and the repository link. The catalog is
+  `../lib/licenses.generated.ts`, generated by `scripts/build-licenses.mjs`; the
+  test in `About.test.tsx` covers the license, the notice and links, the two
+  ecosystems, the filter and the on-demand check/application of the update.
+- `Dashboard.tsx` - Cluster overview: the admin sees cluster
   coverage/machines/model/in-flight stats; node and infer see local model,
   slice and in-flight requests instead. Admins see the Add button only when
   `ClusterView.active_model` is nonempty. With no active model, Details is the
@@ -357,9 +424,9 @@ Per-file list:
   route for the headline while keeping alternatives visible. An observed
   `pipeline_cost` from a completed chat execution remains available when every
   execution leg and compute measurement is known.
-  O detalhe local diferencia `idle` de `serving`: o primeiro mantém o nó
-  ativo, mas informa que o modelo foi descarregado e será recarregado no
-  próximo pedido.
+  The local detail distinguishes `idle` from `serving`: the first keeps the node
+  active, but it says the model was unloaded and will be reloaded on the
+  next request.
   The details grid lists the **whole network**, not just the pipeline:
   `networkPeers` (`../lib/networkPeers`) splits `c.peers` into the active
   deployment first (in layer order, `dashboard.groupDeployed*`) and the rest of
@@ -386,7 +453,7 @@ Per-file list:
   moved to `PeerDetailCard`: `RemoveNode` (out of the model, only when serving
   a slice) and `LeaveNode` (out of the whole network, always). The
   development-only update-and-restart action is not rendered in the card. Next to
-  "Adicionar nó" there is a `UndeployPipeline` button for an administrator
+  "Adicionar nó" ("Add node") there is a `UndeployPipeline` button for an administrator
   when a model is live - `undeployTargets` is the list the confirmation shows
   (peers on `group` with `total_layers > 0`, sorted by start layer); the node
   re-scans the cluster before acting, so the list is just the preview. The flow
@@ -395,31 +462,32 @@ Per-file list:
   pipeline routes from `useNetworkRtt`, with the same badge presentation used
   by deployment. A whole-model deployment with one head still queries this
   endpoint even though its graph has no routing edge.
-  A versão ativa do deployment também pode ser aberta num inspetor de leitura
-  à direita, usando o mesmo layout e os mesmos valores configurados no Deploy
-  Studio. No perfil `admin`, `DeploymentLogDock` fica recolhido no rodapé e
-  expande para cima com os logs em tempo real e auto-scroll.
+  The deployment's active version can also be opened in a read inspector
+  on the right, using the same layout and the same values configured in the Deploy
+  Studio. On the `admin` profile, `DeploymentLogDock` stays collapsed in the footer and
+  expands upwards with the logs in real time and auto-scroll.
 - In `Dashboard`, node and infer profiles do not reuse the administrator's
   cluster verdict: they show the local model, its real layer slice and local
   in-flight request count. A missing `/api/ui/node` response is rendered as
   unavailable, never as an empty model, incomplete pipeline or zero.
-- `DeployModel.tsx` — "Implantar na rede". Full-bleed Deploy Studio with a
+## Deploy
+- `DeployModel.tsx` - "Deploy on the network". Full-bleed Deploy Studio with a
   top mode bar, separate technical model and operational deployment name,
   central peer map and compact property inspector. Tensor mode, Simple/Complete
-  strategy and "Voltar ao plano do nó" are visible only when `pom_desenv` is true.
-  (`../components/DeploymentInspector`, o mesmo componente que o Histórico usa
-  em somente leitura) and draggable bottom peer strip. O que continua no
-  `DeployModel` e não migrou para o inspetor são as seções que só a tela de
-  implantar tem: grupo TP, tensor paralelo e a aba da máquina. Three shapes, chosen by the
+  strategy and "Voltar ao plano do nó" ("Return to the node's plan") are visible only when `pom_dev_mode` is true.
+  (`../components/DeploymentInspector`, the same component the History uses
+  in read-only) and a draggable bottom peer strip. What stays in
+  `DeployModel` and did not move to the inspector are the sections only the deploy
+  screen has: the TP group, tensor parallel and the machine tab. Three shapes, chosen by the
   mode bar at the top and carried to the node as `kind`: **a set of shards**
   (below), **a whole model** (one model picker from `../lib/wholeModels`, with
-  the deployment map as its only machine choice and no coverage
-  ribbon/"included"/merge), or **tensor parallel** (`tensor_parallel`): when the catalog
+  the deployment map as its machine choice and no "included"/merge; the
+  coverage ribbon shows once a second machine is on the map), or **tensor parallel** (`tensor_parallel`): when the catalog
   has `tp_parts`, the picker groups the round by TP width and the inspector
   shows one-based ranks such as `1of2` and `2of2`; otherwise it uses the
   whole-model runtime path. Canvas membership is canonical: rows plus preferred
   peers, with every live peer added by the Complete strategy except in whole
-  mode, which remains limited to one machine. Tensor selectors
+  mode, where the operator adds each machine. Tensor selectors
   reuse those map cards; pre-sliced TP accepts any mapped peer because the node
   can transfer the needed rank, while whole-model TP filters mapped cards to
   peers that hold the local GGUF. Eligible Tensor cards expose the accessible
@@ -432,25 +500,40 @@ Per-file list:
   silence the screen. Deploy memory is namespaced `whole:<name>`, because a
   shard set and a model routinely share a name. Tests:
   `DeployModel.whole.test.tsx`, `../lib/wholeModels.test.ts`.
-  Em modelo inteiro, o inspetor não repete os fatos do GGUF nem oferece um
-  seletor de máquina: o mapa é a única escolha. Ao trocar de fatias para esse
-  modo, a tela limpa o mapa e deixa o operador adicionar a máquina desejada;
-  depois disso, tentar incluir uma segunda máquina mostra o aviso e preserva
-  a escolha única.
+  In whole-model mode, the inspector does not repeat the GGUF's facts nor offer a
+  machine selector: the map is the only choice. When switching from slices to that
+  mode, the screen clears the map and lets the operator add the machine they want.
+  The first machine takes the whole file. A second one enters without a range
+  and gets one in the Machine tab, among the ranges it holds: the whole file
+  again (a replica) or a slice of the same model. The node accepts the map while
+  the ranges cover every layer, and with two distinct ranges the plan is a
+  pipeline (hidden-state precision included). Under an inference service the
+  whole model stays on one machine: a second one is refused with a warning.
   On the first tensor request, `tpPayload` uses the first rank-0 holder as a
   provisional primary so the map can load; workers remain opt-in map members.
-  A lista de modelos pode aparecer antes do fim da leitura dos cabeçalhos GGUF.
-  Esse estado global não desabilita a tela: o plano é que decide se a seleção
-  atual tem os metadados necessários. Se uma faixa selecionada ainda não pode
-  ser resolvida, o backend devolve um único `blocked` específico para essa
-  seleção; um modelo não escolhido, peer ausente ou peer sem o campo
-  `metadata_complete` não bloqueia a implantação.
+  The model list may appear before the reading of the GGUF headers finishes.
+  That global state does not disable the screen: the plan is what decides whether the current
+  selection has the metadata it needs. If a selected range still cannot
+  be resolved, the backend returns a single `blocked` specific to that
+  selection; a model not chosen, an absent peer or a peer without the
+  `metadata_complete` field does not block the deployment.
   For a real MoE model, identified by `DeployPlan.is_moe` from GGUF metadata,
-  the Globais inspector shows the inference engine selector and sends
+  the Global inspector shows the inference engine selector and sends
   `RuntimeParams.inference_mode` in whole-model, sliced and TP requests. Dense
   models hide it. A MoE Tensor Parallelism plan keeps the selector visible but
   is blocked with the backend's explicit unsupported reason, so the UI cannot
   imply that the request will use another engine silently.
+- `DeployModel.tsx` - "Inference service": when a machine publishes a plugin
+  service of kind `inference` (`lib/inferenceServices.ts`), a select next to
+  the mode bar offers it beside llama.cpp. Choosing it fixes the whole-model
+  mode, lists only the whole models of the architectures the service declares,
+  keeps only the machines running it in the peer strip, sends
+  `params.inference_service` with the plan and the deploy, and reduces the
+  Globais inspector to the settings the engine reads
+  (`DeploymentInspector.inferenceService`) plus, in a separate card, the POM
+  settings the service declares (`pomSettings`). The Machine tab leaves out
+  GPU layers and KV cache on the GPU, which only llama.cpp reads. Deploy memory is keyed per
+  service. Test: `DeployModel.service.test.tsx`.
 - `DeployModel.tsx` - the slice shape: picks a slice set (`group`), lets the
   planner place ranges on the central map, and exposes a 19rem collapsible
   inspector. Its colored global section includes context, batching, sampling,
@@ -467,26 +550,32 @@ Per-file list:
   be assigned to the selected peer. Choosing a range replaces that peer's
   active range; the same range on a second peer remains a replica. Coverage is
   a compact footer indicator. The inspector uses Global/Machine tab bars.
-  O inspetor começa diretamente pelas abas Globais e Máquina, sem o título
-  anterior e sem padding externo; alertas de capacidade aparecem como ícones
-  âmbar ao lado do controle e abrem a mensagem inteira por hover, foco ou
-  clique, inclusive quando a origem contém identificadores sem espaços.
+  The inspector starts directly with the Global and Machine tabs, without the earlier
+  title and without external padding; capacity alerts appear as amber icons
+  beside the control and open the whole message by hover, focus or
+  click, including when the source carries identifiers without spaces.
   `fit_memory` is on by default for shards and whole-model deployment, and the
   screen disables it for tensor parallelism because llama.cpp cannot auto-fit
   `split-mode tensor`.
-  Cada botão numérico do inspetor carrega um `InfoTip` (`[i]` no hover/foco/
-  toque) com o que o parâmetro faz e como afeta a inferência; os controles que
-  usavam `<label>` viraram `<div>` com `aria-label` no `<input>` porque um
-  `<button>` dentro de `<label>` quebra o nome acessível.
-  Os cards do mapa são um **preview do pós-deploy**, não do estado atual: com
-  `machine.capacity` no plano, mostram VRAM projetada por GPU que se recalcula
-  a cada ajuste de contexto/lote/sessões (mesmo debounce). Três estados:
-  verde (cabe), amber (`degraded` - a conta crua não cabe, mas o `fit_memory`
-  pode aparar o pedido; é heurística), rósea (`!fits` - a conta não cabe sem
-  ajuste automático). Amber e
-  rósea abrem um `Confirm` (`capacityAsked`, separado do de cobertura parcial)
-  nomeando as máquinas e a razão, com título/texto conforme o caso;
-  `canDeploy` não muda - é aviso, não bloqueio.
+  Each numeric button of the inspector carries an `InfoTip` (`[i]` on hover/focus/
+  touch) with what the parameter does and how it affects the inference; the controls that
+  used `<label>` became a `<div>` with an `aria-label` on the `<input>` because a
+  `<button>` inside a `<label>` breaks the accessible name.
+  The map's cards are a **preview of the post-deploy**, not of the current state: with
+  `machine.capacity` in the plan, they show the projected VRAM per GPU, recalculated
+  on every context/batch/sessions adjustment (same debounce). Three states:
+  green (it fits), amber (`degraded` - the raw count does not fit, but `fit_memory`
+  can trim the request; it is a heuristic), pink (`!fits` - the count does not fit without
+  the automatic adjustment). Amber and
+  pink open a `Confirm` (`capacityAsked`, separate from the partial-coverage one)
+  naming the machines and the reason, with a title/text per case;
+  `canDeploy` does not change - it is a warning, not a block.
+  A third window (`inServiceAsked`, a `Modal`) comes last, when the live
+  cluster shows machines this deploy touches: the machines of the plan that
+  serve any model are listed as taken over ("Replace and deploy"), and the
+  machines outside the plan that serve this same model get the choice between
+  "Undeploy and deploy" and "Keep in parallel", which sends
+  `keep_existing: true`. The three confirms chain through `attemptDeploy`.
   Topology edits are debounced 260 ms and validated by
   `POST /api/ui/deploy/plan`. Runtime parameters, per-machine GPU/KV overrides
   and the operational name stay local while editing: their changes do not
@@ -507,97 +596,99 @@ Per-file list:
   map is explanatory: capacity/load come from the live
   cluster and RTT comes from the directional survey in the plan;
   adding a peer without a range only adds its card and keeps existing positions;
-  in whole-model mode, the map has one machine only and adding another peer is
-  refused with a warning;
+  in whole-model mode, another peer joins the map without a range, except under
+  an inference service, where it is refused with a warning;
   in pre-sliced tensor mode, adding a peer makes it eligible for a rank even
   without a local rank file, while whole-model tensor mode still requires the
   local GGUF; neither path adds an off-map peer implicitly;
   assigning a range is what validates a new selection. Choosing a range removes
   an empty placeholder for that same range, while an already assigned copy on
   another machine remains as a replica. Removing a card deletes
-  that peer's routes and returns it to the bottom strip. `DeployNetworkCanvas` reutiliza os controles do
-  canvas do Painel, desenha nós por faixa, pontes somente entre estágios
-  consecutivos e alternativas com RTT direcional, orienta a curva pelos lados
-  enfrentados dos cards, mantém métricas de GPU/RAM/carga atualizadas pelo cluster e não
-  repete no rodapé peers já desenhados. Em viewport estreito, o mapa ganha
-  altura mínima e rolagem interna para não cortar cards nem criar overflow na
-  página. Arrastar ou dar duplo clique adiciona
-  um peer disponível ao plano; a atribuição de uma faixa disponível edita
-  somente aquela seleção, preserva as faixas existentes no peer como réplicas
-  explícitas e volta ao backend para validação.
-- A lista de rodadas de fatias usa `ShardSet.group` como chave técnica e
-  `model_label` como texto; quando há duas rodadas do mesmo modelo, o seletor
-  mostra o prefixo do `pom_id` para desambiguar sem trocar o grupo enviado ao
-  backend.
-- As opções globais condicionadas pelo modelo usam `DeployPlan.capabilities`:
-  `unsupported` fica oculto; `unknown` permanece visível, desabilitado e
-  explica a fonte e o motivo. `no_embeddings` é a exceção de produto:
-  permanece visível, e o backend valida atomicamente a topologia por peer antes
-  de aplicar o controle.
-- O fechamento do inspetor é uma barra visual de 3px em altura total, com uma
-  área de clique e foco maior e invisível. Ela fica fora do scroll do conteúdo,
-  então continua ancorada na altura da tela durante rolagem e resize; ao fechar,
-  o controle de reabertura permanece na coluna compacta existente.
-- `Deployments.tsx` - lista as implantações registradas no cluster via
-  `useDeployments`, diferencia "no ar" de "padrão", ordena o histórico pela
-  última ativação (`deployment.activated_at`) e mostra a coluna "Última
-  ativação". Tela cheia, como a de Logs:
-  cabeçalho fixo, tabela rolando por dentro e, quando há versão escolhida, um
-  inspetor à direita (`lg:grid-cols-[minmax(0,1fr)_minmax(19rem,24rem)]`).
-  Uma implantação ativa com todos os peers vivos ociosos aparece como
-  `idle`, separada de `noAir`.
-  Clicar na linha de uma versão abre o `DeploymentInspector` em `readOnly` com
-  `version.params` - o mesmo inspetor da tela de implantar, sem duplicar a
-  lista de propriedades. O cache KV **não** entra ali: é da instalação e do
-  momento, não da versão, e mostrar o valor de hoje ao lado do que subiu ontem
-  seria inventar um registro que ninguém guardou. Cada linha expande
-  (`VersionList`) e mostra `deployment.versions` da mais nova para a mais
-  antiga, com a badge "Ativa" em `active_version` e um botão "Reimplantar esta
-  versão" (`redeployDeployment(id, { version })`). "Reimplantar com novos
-  parâmetros" (na linha) e "Editar e reimplantar" (no inspetor de uma versão)
-  abrem à direita, no lugar do inspetor de leitura, o `RedeployPanel`: o mesmo
-  `DeploymentInspector` editável da tela de implantar, semeado com a versão
-  ativa ou com a versão aberta (não com o `nodes[0].config`), mais os ajustes
-  por máquina (`n_gpu_layers`, KV na GPU) e "Recarregar com estes valores", que
-  manda só `params` + `per_node` - o backend decide reusar ou anexar versão. O
-  lado direito mostra uma coisa de cada vez. Também
-  ativa uma implantação e a desimplanta pelo `deploy_id`. O painel do job de
-  reimplantação mostra `job.outputs` (`"<host>: <motivo>"`) abaixo da mensagem.
-  Teste: `Deployments.test.tsx` (expansão, badge da ativa, `{version}` na API).
-- `DeploymentLogs.tsx` - consola full-bleed do log de processo do cluster em
-  `/implantacoes/logs`. Consulta a réplica local do admin, atualiza a cada
-  segundo, mantém a ordem de chegada devolvida pela API e pode filtrar por
-  `deploy_id`; mantém apenas o terminal em preto, acompanha o fim enquanto o
-  leitor está no fim, pausa o acompanhamento ao rolar para cima, oferece um
-  botão de estado visível para reativá-lo e copia as últimas 500 linhas. Não é a
-  auditoria de requisições, que é do plugin `enterprise`.
-- `Keys.tsx` - Two screens in one file. `TokenKeys` delega a tabela full-bleed
+  that peer's routes and returns it to the bottom strip. `DeployNetworkCanvas` reuses the controls of
+  the Dashboard's canvas, draws nodes per range, bridges only between consecutive
+  stages and alternatives with a directional RTT, steers the curve by the facing
+  sides of the cards, keeps the GPU/RAM/load metrics updated by the cluster and does
+  not repeat peers already drawn in the footer. On a narrow viewport, the map gains
+  a minimum height and internal scrolling so it does not cut cards nor create overflow on
+  the page. Dragging or double-clicking adds
+  an available peer to the plan; assigning an available range edits
+  only that selection, keeps the ranges already on the peer as explicit
+  replicas and goes back to the backend for validation.
+- The list of slicing rounds uses `ShardSet.group` as the technical key and
+  `model_label` as the text; when there are two rounds of the same model, the selector
+  shows the `pom_id` prefix to disambiguate without changing the group sent to
+  the backend.
+- The global options conditioned by the model use `DeployPlan.capabilities`:
+  `unsupported` stays hidden; `unknown` stays visible, disabled and
+  explains the source and the reason. `no_embeddings` is the product exception:
+  it stays visible, and the backend validates the topology atomically per peer before
+  applying the control.
+- The inspector's closing edge is a visual bar 3px tall at full height, with a
+  larger and invisible click and focus area. It sits outside the content's scroll,
+  so it stays anchored to the screen height during scrolling and resizing; when closed,
+  the reopening control stays in the existing compact column.
+- `Deployments.tsx` - it lists the deployments registered in the cluster through
+  `useDeployments`, tells "no ar" ("live") apart from "padrão" ("default"), orders the history by the
+  last activation (`deployment.activated_at`) and shows the "Última
+  ativação" ("Last activation") column. A full screen, like Logs':
+  a fixed header, the table scrolling inside and, when a version is chosen, an
+  inspector on the right (`lg:grid-cols-[minmax(0,1fr)_minmax(19rem,24rem)]`).
+  An active deployment with every live peer idle appears as
+  `idle`, separated from `noAir`.
+  Clicking a version's row opens the `DeploymentInspector` in `readOnly` with
+  `version.params` - the same inspector of the deploy screen, without duplicating the
+  property list. The KV cache does **not** enter there: it belongs to the installation and to
+  the moment, not to the version, and showing today's value beside what came up yesterday
+  would be inventing a record nobody kept. Each row expands
+  (`VersionList`) and shows `deployment.versions` from the newest to the
+  oldest, with the "Ativa" ("Active") badge on `active_version` and a button "Reimplantar esta
+  versão" ("Redeploy this version") (`redeployDeployment(id, { version })`). "Reimplantar com novos
+  parâmetros" ("Redeploy with new parameters", on the row) and "Editar e reimplantar" ("Edit and redeploy", in a version's
+  inspector) open on the right, in place of the read inspector, the `RedeployPanel`: the same
+  editable `DeploymentInspector` of the deploy screen, seeded with the
+  active version or with the version opened (not with `nodes[0].config`), plus the per-machine
+  adjustments (`n_gpu_layers`, KV on the GPU) and "Recarregar com estes valores" ("Reload with these values"), which
+  sends only `params` + `per_node` - the backend decides whether to reuse or append a version. The
+  right side shows one thing at a time. It also
+  activates a deployment and undeploys it by `deploy_id`. The redeploy job's
+  panel shows `job.outputs` (`"<host>: <motivo>"`) below the message.
+  Test: `Deployments.test.tsx` (expansion, the active badge, `{version}` in the API).
+## Logs, keys and the audit
+- `DeploymentLogs.tsx` - the full-bleed console of the cluster's process log on
+  `/deployments/logs`. It queries the admin's local replica, refreshes every
+  second, keeps the arrival order the API returns and can filter by
+  `deploy_id`; it keeps only the black terminal, follows the end while the
+  reader is at the end, pauses the follow when scrolling up, offers a visible state button to
+  reactivate it and copies the last 500 lines. It is not the
+  request audit, which belongs to the `enterprise` plugin.
+- `Keys.tsx` - Two screens in one file. `TokenKeys` delegates the full-bleed table
   `ApiKeysTable`: per-node API tokens for
   harnesses - `GET/POST /admin/api-keys`, `DELETE /admin/api-keys/:id`. The
   list carries only `key_hint` and the tracking id; the secret appears once,
   in the `IssuedSecret` window right after creation.
-  No perfil `infer`, mostra só a chave ativa deste nó, esconde o seletor de nó
-  e, ao gerar uma chave nova, revoga a anterior. As rotas de API key são
-  `infer+node+admin`: são a credencial de quem atende `/v1`, e todo perfil
-  atende. `ConnectionKeys`: the cluster operator key, read from
-  `NodeInfo.connection_key`. Ver a chave é de quem opera esta máquina - ela já
-  está no `pom.json` dela e a tela só existe atrás da fronteira administrativa.
-  **Trocá-la** (`POST /admin/regenerate-key`) é outra coisa: a chave é a mesma
-  no cluster inteiro e girá-la corta todos os outros nós, então o botão só
-  aparece com `authority_level` presente. O administrador escolhe o nó ao
-  criar e vê os próprios tokens completos, enquanto os tokens de outros nós
-  ficam mascarados; node e infer veem e criam somente os seus.
-- Logs de Requisições e Estatísticas **não existem aqui**: são telas do plugin
-  `enterprise`, entregues por `pom-plugin-logs` pelo mecanismo de UI de plugin
-  (`docs/subsystems/plugins-ui.md`). `App.tsx` mostra o fallback
-  `../components/EnterpriseFeatureShowcase.tsx` quando o plugin não está ativo.
+  On the `infer` profile, it shows only this node's active key, hides the node selector
+  and, when generating a new key, revokes the previous one. The API key routes are
+  `infer+node+admin`: they are the credential of whoever serves `/v1`, and every profile
+  serves. `ConnectionKeys`: the cluster operator key, read from
+  `NodeInfo.connection_key`. Seeing the key belongs to whoever operates this machine - it already
+  is in that machine's `pom.json` and the screen only exists behind the administrative boundary.
+  **Changing it** (`POST /admin/regenerate-key`) is another thing: the key is the same
+  across the whole cluster and rotating it cuts every other node, so the button only
+  appears when `authority_level` is present. The administrator chooses the node when
+  creating one and sees their own full tokens, while the tokens of other nodes
+  stay masked; node and infer see and create only their own.
+- Request Logs and Statistics **do not exist here**: they are screens of the
+  `enterprise` plugin, delivered by `pom-plugin-logs` through the plugin UI
+  mechanism (`docs/subsystems/plugins-ui.md`). `App.tsx` shows the fallback
+  `../components/EnterpriseFeatureShowcase.tsx` when the plugin is not active.
+## Settings leaves
 - `ModelPaths.tsx` - edits `model_dirs`, `shard_dir` and `shard_max_gb` via
-  `POST /api/ui/paths`. The Armazenamento screen rejects a slice folder equal to
+  `POST /api/ui/paths`. The Storage screen (`Armazenamento`) rejects a slice folder equal to
   or inside a whole-model folder, shows current usage and the slice limit, and
-  keeps `/config/pastas` as an alias.
+  keeps `/config/folders` as an alias.
 - `NetworkSettings.tsx` - This node's membership and network information
   screen. Its `NetworkParticipants` export reuses the known-node area at
-  `/config/rede/participantes`; the route is allowed only to `admin` and
+  `/config/network/participants`; the route is allowed only to `admin` and
   `node`, and block/unblock mutations remain admin-only. Each peer row shows
   the route actually in use (`AdminNode.route`: `RouteBadge` + `routeAddress`),
   never the advertised `addr`, which only goes into the row's `title`. A
@@ -608,50 +699,52 @@ Per-file list:
   `GET /admin/nodes` (`node+admin`: reading the roster is what this screen
   shows). Block/unblock (`POST /admin/nodes/:id/block|unblock`) stays
   `admin-only` and the buttons are rendered only when `authority_level` is
-  present - `profile: admin` alone grants nothing. The "Papel" row was replaced
+  present - `profile: admin` alone grants nothing. The "Papel" ("Role") row was replaced
   by the effective authority: the old `NodeInfo.role` left `/api/ui/node` with
   the trust model and was rendering an empty cell.
-  O perfil `infer` também abre `/config/rede`, mas o backend devolve somente a
-  própria máquina e oferece `POST /api/ui/network/request-node`; o pedido
-  aparece no sino para aprovação de qualquer admin. Um `node` pode descer para
-  infer por `POST /api/ui/network/relinquish-node`: novas inferências saem do
-  encaminhamento, as atuais drenam e só então a fatia é liberada. O
+  The `infer` profile also opens `/config/network`, but the backend returns only its
+  own machine. The screen no longer offers turning an `infer` into a
+  `node`: the role is what the network admitted the machine as, and changing
+  it means leaving and asking for admission again. The card says so and has
+  no action. A `node` has no step down to `infer` either. Both node routes
+  are gone: roles are set at admission and changing one means rejoining. O
   administrador principal pode promover um nó via
   `POST /admin/nodes/:id/promote-admin`.
 - `AdminAuthority.tsx` - Admin authority screen backed by
   `GET /api/ui/network/admin-authority`. It shows the principal, secondary
   administrators, promotion chain and resignation eligibility. Its mutations
-  are isolated in `lib/adminAuthority.ts`; pending principal-transfer and
-  infer-to-node offers are answered by `Notifications`.
-- `TrustAnchor.tsx` - a raiz de confiança da máquina e os dois lados de ancorar
-  a autoridade, atrás de `GET/POST /api/ui/network/trust-anchor`. Mostra a
-  impressão digital da âncora em grupos de oito com botão de cópia, e o estado
-  **ancorado** ou **por ancorar** num relance. Num nó ainda sem raiz, mostra o
-  formulário que cola a cadeia assinada, calcula a impressão digital e mantém a
-  confirmação explícita da conferência pelo canal confiável. Fora do loopback o formulário dá lugar à
-  explicação; a decisão continua sendo do servidor, que devolve um `reason`
-  estável (`not_loopback`, `already_anchored`, `invalid_document`,
-  `fingerprint_mismatch`, `install_failed`) para a tela traduzir a recusa em
-  vez de repetir o texto do servidor. Vive fora do gate de perfil - ver o
-  cabeçalho do arquivo e `lib/access.ts`. Teste: `TrustAnchor.test.tsx`.
-- `Preferences.tsx` - Local settings screen under Configurações: owns the
+  are isolated in `lib/adminAuthority.ts`; pending principal-transfer offers
+  are answered by `Notifications`.
+- `TrustAnchor.tsx` - the machine's trust root and the two sides of anchoring
+  the authority, behind `GET/POST /api/ui/network/trust-anchor`. It shows the
+  anchor's fingerprint in groups of eight with a copy button, and the state
+  **anchored** or **to anchor** at a glance. On a node still without a root, it shows the
+  form that pastes the signed chain, computes the fingerprint and keeps the
+  explicit confirmation of the check through the trusted channel. Outside loopback the form gives way to the
+  explanation; the decision stays with the server, which returns a stable `reason`
+  (`not_loopback`, `already_anchored`, `invalid_document`,
+  `fingerprint_mismatch`, `install_failed`) so the screen translates the refusal
+  instead of repeating the server's text. It lives outside the profile gate - see
+  the file's header and `lib/access.ts`. Test: `TrustAnchor.test.tsx`.
+- `Preferences.tsx` - Local settings screen under Settings (`Configurações`): owns the
   administrative exposure mode and gateway port, accepts a password only in
   network mode, and saves its Argon2id hash to `pom.json` through
   `POST /api/ui/access`. It also mounts `TlsPanel`, which moves the cluster TLS
   choice out of Network and explains when it is useful, plus `ThermalPanel` and
-  `HuggingFaceSettingsPanel`. Também monta o interruptor de logs do cluster,
-  disponível apenas ao principal e aplicado em tempo real, e `QuicPanel`, que
-  alterna a preferência HTTP/3 em `POST /api/ui/network/quic` com o mesmo
-  controle de autoridade. The access password is a human credential and is not the
-  cluster `connection_key`. A rota `/config/preferencias/admin` renderiza
-  somente TLS, QUIC, logs de processo entre nós e chat da rede, além do
-  interruptor de descoberta local, desligado por padrão; a rota normal mantém
-  exposição, Hugging Face e proteção térmica; Armazenamento só tem entrada no menu.
-- `NotFound.tsx` — 404 fallback with a link back to `/`.
-- `Forbidden.tsx` — a tela que o perfil ativo não abre. Não é `NotFound`: o
-  endereço existe, o que falta é o perfil, então o texto nomeia o perfil ativo e
-  manda usar o nó autorizado em vez de mandar procurar defeito de rota. Quem a
-  escolhe é o guarda em `../App.tsx`, pela tabela de `../lib/access.ts`.
+  `HuggingFaceSettingsPanel`. It also mounts the cluster logs switch,
+  available only to the principal and applied in real time, and `QuicPanel`, which
+  toggles the HTTP/3 preference in `POST /api/ui/network/quic` with the same
+  authority control. The access password is a human credential and is not the
+  cluster `connection_key`. The route `/config/preferences/admin` renders
+  only TLS, QUIC, process logs between nodes and the network chat, besides the
+  local discovery switch, off by default; the normal route keeps
+  exposure, Hugging Face and thermal protection; Storage only has a menu entry.
+- `NotFound.tsx` - 404 fallback with a link back to `/`.
+- `Forbidden.tsx` - the screen the active profile does not open. It is not `NotFound`: the
+  address exists, what is missing is the profile, so the text names the active profile and
+  tells you to use the authorized node instead of telling you to look for a route fault. Who
+  picks it is the guard in `../App.tsx`, through the table in `../lib/access.ts`.
+## Models, slicing and transfers
 - `SendFile.tsx` - offers a `.gguf` from the local catalog via
   `POST /api/transfer/send` (`{to_node_id, filename}`). The UI displays the
   friendly name and full path, but sends only the basename; the backend resolves
@@ -663,7 +756,7 @@ Per-file list:
   `tp_parts` are separate sections; TP groups are ordered by group size and
   rows use the one-based labels `1of2`, `2of2`, and so on, with the zero-based
   rank shown alongside. Sends via `POST /api/transfer/send`; deletes via
-  `../lib/deleteModel`. `uniqueName` disambiguates same-hostname peers with
+  `../lib/deleteModel`. `uniquePeerName` (`../lib/peerName`) disambiguates same-hostname peers with
   the node_id prefix. Full-bleed shell; each `ShardCard` carries the set's
   vision / MTP link editor (`SidecarLinkEditor`), with the compatible files of
   every machine from `useClusterCatalog`.
@@ -671,8 +764,8 @@ Per-file list:
   Parallelism are a segmented tab pair (`role="tablist"`), not a checkbox -
   each mode owns its own controls (Pipeline: size list, one explicit layer
   range, or Tensor Parallelism's rank count). The Tensor Parallelism tab only
-  mounts when `useNode().data.pom_desenv === true` (the same
-  `POM_DESENV=1`-gated pattern as `DeploymentInspector`);
+  mounts when `useNode().data.pom_dev_mode === true` (the same
+  `POM_DEV_MODE=1`-gated pattern as `DeploymentInspector`);
   without it the screen never offers or sends `mode: "tensor_parallel"`, and an
   effect snaps a stale selection back to `"pipeline"` if the flag turns out
   false after the first render. Pipeline builds a by-size plan
@@ -692,21 +785,21 @@ Per-file list:
   declared part and an explicit instruction to keep the set together before
   POM slicing; incomplete sets surface the backend reason and leave the start
   action disabled.
-- `Transfers.tsx` — Shows remote model downloads from `useModelDownloads` in
+- `Transfers.tsx` - Shows remote model downloads from `useModelDownloads` in
   the same in-progress screen as pending offers (accept/reject via
   `POST /api/transfer/offers/:id/accept|reject`), active transfers (bytes +
   speed + ETA + cancel via `POST /api/transfer/jobs/:id/cancel`), and finished
   ones. Model downloads reuse `ModelDownloadsPanel`, so their backend progress,
   configured destination path and cancel/retry actions stay visible here.
-  State classification from `../lib/transferStatus`. `cancelled` é
-  mostrada como **recusada**, em âmbar, e não como falha vermelha: foi decisão
-  de alguém, não erro. Fatias aparecem por modelo e faixa de camadas
-  (`../lib/transferLabel`), com o hash curto ao lado. Full-bleed shell; ofertas,
-  ativas e terminadas são cada uma uma tabela de largura total em vez da lista
-  de cartões anterior, com cabeçalho fixo e ações na última coluna.
-- `WholeModels.tsx` — Full-model catalog from `useLocalCatalog`, one full-width
+  State classification from `../lib/transferStatus`. `cancelled` is
+  shown as **refused**, in amber, and not as a red failure: it was someone's decision,
+  not an error. Slices appear by model and layer range
+  (`../lib/transferLabel`), with the short hash beside them. Full-bleed shell; offers,
+  active and finished ones are each a full-width table instead of the earlier
+  list of cards, with a fixed header and actions in the last column.
+- `WholeModels.tsx` - Full-model catalog from `useLocalCatalog`, one full-width
   table row (`ModelRow`) per model with actions: slice (links to
-  `/modelos/fatiar?path=`), send (`/transferencias/enviar?path=`), delete
+  `/models/slice?path=`), send (`/transfers/send?path=`), delete
   (`../lib/deleteModel`). A dedicated "Vision (mmproj)" column shows the
   projector's basename (`../lib/format::optionalBasename`) when
   `DiscoveredModel.mmproj_path` is set, or "no projector" otherwise - the
@@ -714,21 +807,22 @@ Per-file list:
   the screen only renders it; the cell's "Vision and MTP" button opens the
   same `SidecarLinkEditor` as Shards in a window. `ScannedRoots`
   lists the scanned folders and per-folder file counts. Full-bleed shell.
-- `RemoteModels.tsx` - mostra modelos GGUF em alta pela API pública do Hugging
-  Face ao abrir, sem credenciais; a busca autenticada usa debounce em
-  `/api/ui/model-provider/search`, com filtro, ordenação, paginação por URL,
-  detalhes lazy e confirmação de download. O status de login fica compacto
-  dentro da barra de busca, com ação explícita de Buscar. O
-  detalhe resolve a licença pelo provider e marca modelos gated antes do
-  download. O diálogo mostra as pastas de modelos resolvidas pelo backend. Os
-  jobs aparecem no `ModelDownloadsPanel`, também em Transferências, então trocar
-  de rota ou recarregar não perde uma transferência. Full-bleed shell; os
-  resultados são uma tabela de largura total (nome/tags, estado, downloads,
-  curtidas, atualizado, ação), não mais um grid de cartões - `RemoteModelCard`
-  foi removido por ficar sem uso.
+- `RemoteModels.tsx` - it shows trending GGUF models through the public Hugging
+  Face API on opening, without credentials; the authenticated search uses debounce in
+  `/api/ui/model-provider/search`, with a filter, sorting, pagination by URL,
+  lazy details and a download confirmation. The login status stays compact
+  inside the search bar, with an explicit Search action. The
+  detail resolves the license through the provider and marks gated models before the
+  download. The dialog shows the model folders resolved by the backend. The
+  jobs appear in the `ModelDownloadsPanel`, also in Transfers, so changing
+  the route or reloading does not lose a transfer. Full-bleed shell; the
+  results are a full-width table (name/tags, state, downloads,
+  likes, updated, action), no longer a grid of cards - `RemoteModelCard`
+  was removed for being unused.
 
 Key logic carriers:
 
+## Cross-cutting behaviour
 - `ChatSessionProvider.startStream` (`lib/chatStore.ts`) - snapshots turns
   before the placeholder reply, streams deltas into `consumeChatDelta` (keeps
   reasoning/content split), merges `x_pom` metrics via `finishChatStream`,
@@ -746,12 +840,12 @@ Key logic carriers:
 - `DeployModel` and `Deployments` both edit the runtime knobs through
   `DeploymentInspector` (the Deploy Studio inspector, and the History redeploy
   panel), so a new property cannot reach one screen and miss the other.
-  As duas telas leem `NodeInfo.pom_desenv` de `useNode`; o Deploy Studio, o
-  inspetor do histórico e o painel de reimplantação falham fechados. A flag só
-  esconde os controles de desenvolvimento locais; o estado de planejamento,
-  lançamento e reimplantação mantém os valores recebidos da implantação,
-  mesmo quando este nó não pode editá-los.
-- `DeployModel.rowsOf`/`sameRows` (DeployModel.tsx) — the selection model:
+  Both screens read `NodeInfo.pom_dev_mode` from `useNode`; the Deploy Studio, the history's
+  inspector and the redeploy panel fail closed. The flag only
+  hides the local development controls; the state of planning,
+  launching and redeploying keeps the values received from the deployment,
+  even when this node cannot edit them.
+- `DeployModel.rowsOf`/`sameRows` (DeployModel.tsx) - the selection model:
   merged steps expand back into per-slice rows and the planner answer is compared
   with the displayed rows after sorting by layer.
 - `DeployModel.validated`/`syncing`/`answered`/`whyNot` (DeployModel.tsx) - why
@@ -764,7 +858,7 @@ Key logic carriers:
   button. `whyNot` puts the one-line reason next to
   the disabled button, including the two states with no panel at all (nothing
   selected, answer still in flight). Regression test: `DeployModel.test.tsx`.
-- `DeployModel.deploy` (DeployModel.tsx:602) — posts the current rows/settings
+- `DeployModel.deploy` (DeployModel.tsx:602) - posts the current rows/settings
   (from `rows`/`eff`, not the nullable edit state), remembers them via
   `rememberDeploy`, and tracks the returned job id.
 - `SliceModels.asPlan` (SliceModels.tsx:56) - shape guard on pipeline and TP
@@ -772,10 +866,10 @@ Key logic carriers:
 - `Setup.save` (Setup.tsx) - posts the complete first-access payload, including
   trust document, typed fingerprint, resource policy, storage and network
   visibility, then reloads after the node respawns.
-- `ModelPaths.save` (ModelPaths.tsx:55) — trims/filters the folder list, posts,
+- `ModelPaths.save` (ModelPaths.tsx:55) - trims/filters the folder list, posts,
   and re-syncs state from the server's answer (which is authoritative).
 
-Backend endpoints used (see `src/webui.rs` / `src/gateway.rs` / `src/openai.rs`
+Backend endpoints used (see `backend/webui/` / `backend/gateway/` / `backend/openai.rs`
 in the repo root): `/v1/chat/completions`, `/v1/models`, `/api/ui/cluster`,
 `/api/ui/cluster/models`, `/api/ui/node`, `/api/ui/models`, `/api/ui/paths`,
 `/api/ui/jobs`, `/api/ui/requests`, `/api/ui/requests/stats`, `/api/ui/deploy/plan`, `/api/ui/deploy`,
@@ -789,43 +883,15 @@ in the repo root): `/v1/chat/completions`, `/v1/models`, `/api/ui/cluster`,
 `/api/setup/admin-anchor/preview`, `/api/setup/health`, `/api/setup/save`,
 `/api/public/networks`, `/api/public/network`,
 `/api/ui/model-provider/search`, `/api/ui/model-provider/details`,
-`/api/ui/model-provider/storage`, `/api/ui/model-provider/downloads` e
+`/api/ui/model-provider/storage`, `/api/ui/model-provider/downloads` and
 `/api/ui/model-provider/downloads/:id/{cancel,retry}`.
 
-### Deploy e chat multimodais
+## Multimodal deploy and chat
 
-`DeployModel.tsx` exibe a opção de visão para modelo inteiro e para conjunto de
-fatias quando o plano expõe `mmproj_candidates`. Once the plan has answered,
-the options are **only** those of the layer-0 machine
-(`currentPlan.mmproj_candidates` and `mmproj_path`); the catalog, which mixes
-every machine's paths, only fills the list while the first plan loads, and a
-selection that is not among the head's options is replaced. The list is
-preselected with the plan's path and lets the operator pick another local
-format at deploy time. Without candidates, it shows `mmproj_reason` or a
-localized hint. The plan request carries no projector; the deployment sends
-`vision` and, only with vision on, `mmproj_path`, and the route redoes the
-survey and the plan before validating the path chosen for the head.
-The vision and MTP pickers of the inspector (`DeployPlan.sidecars`) send
-`vision_choice` / `mtp_choice` with the plan and the deploy; "use the model's
-link" sends nothing and leaves the saved link in charge.
-`Chat.tsx` usa um único
-campo de ficheiro sem filtro de extensão, aceita arrastar e largar com retorno
-visual e redimensiona imagens antes de enviá-las ao endpoint OpenAI. Imagens
-exigem visão disponível; outros tipos são convertidos para texto no pedido.
-A imagem recebe o orçamento efetivo do modelo, usando `context_length` de
-`/v1/models` ou o `n_ctx` local como fallback, com quatro bytes por token e
-margem de segurança de 10%. Qualidade JPEG e resolução descem até 512 px,
-preservando a proporção; a etiqueta `Redimensionada automaticamente` fica no
-anexo quando isso ocorreu. A visão e a
-cobertura do Chat vêm de
-`GET /api/ui/chat/capabilities`, uma leitura agregada da implantação que também
-funciona nos perfis `node` e `infer`; recusa ou falha fica como indisponível,
-nunca como modelo vazio ou cobertura zero. O mesmo endpoint informa se o
-thinking global permite renderizar o botão `Think`; a escolha da sessão vai no
-`thinking_enabled` de cada chamada e permanece entre mensagens. Imagens enviadas ficam inteiras na
-bolha da mensagem, com legenda e texto alternativo. O botão de ditado só é
-renderizado quando o navegador expõe Web Speech e usa o locale da interface.
-
+The deploy side (the head's `mmproj_candidates`, `vision_choice` / `mtp_choice`, what the plan and
+the deploy carry) is `docs/subsystems/http-api.md`. The Chat side (the file field, the resize to fit
+the effective budget, the "Resized automatically" label, the `Think` button and dictation) is
+`docs/subsystems/web-ui.md`, "Chat".
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.

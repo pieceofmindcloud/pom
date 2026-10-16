@@ -76,6 +76,6 @@ describe("resizeImageForVision", () => {
         new File(["original"], "paisagem.png", { type: "image/png" }),
         100,
       ),
-    ).rejects.toThrow("contexto disponível");
+    ).rejects.toThrow("available context");
   });
 });

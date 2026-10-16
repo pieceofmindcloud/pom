@@ -13,7 +13,7 @@ boundary enforced on the server.
 
 Ports, for orientation: UDP P2P `--port` (42777), libp2p TCP = UDP + 10000
 (52777), HTTP gateway `--gateway-port` (8080), and the inference server on
-`inference_port` in `pom.json` (8181, `inference/infer_server.rs`, a separate
+`inference_port` in `pom.json` (8181, `inference/infer_server/`, a separate
 router that serves `/v1/prefill`, `/v1/step`, `/v1/step-stream`, `/v1/link`,
 `/health` - it does not go through this gateway). The gateway also registers
 `/v1/link` for the full-duplex return of `remote-stream`; both listeners use the
@@ -44,7 +44,7 @@ signature are used separately in the handshake to prove the peer's identity.
 `start_gateway_with_ready` registers, in this order (webapp is deliberately
 last):
 
-- **Base** (`gateway.rs`): `POST /api/generate` (+ alias `POST /generate`),
+- **Base** (`gateway/`): `POST /api/generate` (+ alias `POST /generate`),
   `GET /peers`, `GET /health`, `POST /handshake` (`session::handle_handshake`),
   `POST /v1/relay-result` (`direct::RELAY_RESULT_PATH`, 1 MB body limit),
   `POST /v1/remote-stream-result` (`direct::REMOTE_STREAM_RESULT_PATH`, the
@@ -65,19 +65,24 @@ last):
   view includes `accepted_enrollments`, the list of enrollment roles (`node`,
   `infer`) the network advertises as open; an empty list means it is not
   accepting new members. It is edited by the principal through `POST
-  /api/ui/network/settings` and is advisory - no route enforces it. `lobby_chat`
-  is `true` while the network answers lobby chat from non-members (the
-  `network.lobby_chat` switch and the network Chat are both on), and
-  `public_stats` says it publishes models, node count and VRAM.
+  /api/ui/network/settings` and is advisory - no route enforces it. Every
+  listed network answers its lobby to non-members (the network Chat only adds
+  the conversation, and a lobby answer says `messages_closed: true` without
+  it). `access_policy` is `authorized`, `auto_approve` (admission requests are
+  approved on arrival) or `local_only`; `public_stats` says the network
+  publishes models, node count and VRAM; `lobby_chat` says its Chat is on,
+  so its lobby carries a conversation (left out of the signed record when
+  false, so records signed before the field existed still verify).
 - **Lobby, candidate side** (`webui/lobby.rs`): `GET
   /api/ui/network-chat/lobby?key=pk:...` and `POST /api/ui/network-chat/lobby`
   (`{key, message_id, text}`) make this node talk to **another** network's
   principal before joining it (`p2p-network.md`, 6.1). Both answer
   `{accepted, error, node_id, card, messages}`: a refusal by the principal is
   `accepted: false` with its code, and a transport failure is `502`. They sit
-  under the `/api/ui/network-chat` scope. The setup router serves the same
+  under the `/api/ui/network-chat` scope. The deprecated setup router (not
+  served, see "Setup routes are not served") had the same
   handlers at `GET|POST /api/setup/lobby`, plus `GET
-  /api/setup/public-networks?replicas=<csv>`. Setup mode has no cluster and no
+  /api/setup/public-networks?replicas=<csv>`. Setup mode had no cluster and no
   pkarr discovery, so it asks the given addresses (plus the installation's
   configured replicas), each in two ways: as a directory replica (signed
   records, merged with the cache) and as a node (`GET
@@ -93,19 +98,66 @@ last):
   networks it hears through gossip even when its own network is not public.
   On every node that route also merges what its relays answer to `Directory`,
   which is the only source for a node with discovery off.
+- **Known networks**: `GET /api/ui/networks/known` (every profile, behind the
+  operator session, `webui/known_networks.rs`) pages the node's table of every
+  public network it has heard of (`known_public_networks` in `pom.db`). The
+  live listings (`GET /api/public/networks`, `GET /api/setup/public-networks`
+  and a relay's background directory scan) record what they return there,
+  already validated and with the place resolved; a row not seen for 90 days
+  leaves, and the table keeps at most 5000 rows. It is a cache for the
+  screen: nothing decides trust or admission from it. Query: `q` (every word
+  must appear in name, cluster id, organization, description, city, state or
+  country; case and common Latin accents are folded), `country` (code, or the
+  name when a network has none), `city`, `sort` (`distance` - needs
+  `latitude`/`longitude`, else most recently seen first -, `name` or
+  `recent`), `within_km` (with the coordinates), `page` (1-based) and
+  `page_size` (default 25, at most 100). It leaves out this node's own network
+  and the imported ones, which the screen pins above every page. The answer
+  is `{networks: [{network, first_seen_at, last_seen_at}], total, page,
+  page_size, countries: [{code, name}], cities}`; times are Unix seconds, a
+  page past the end answers the last one, and `countries`/`cities` (the latter
+  narrowed by `country`) cover every known network, for the filters.
+- **Pinned networks**: `GET /api/ui/networks/pinned` (every profile, behind
+  the operator session) answers `{own, custom}`: the network this node is in
+  whatever its visibility, and the networks imported on this machine. Each
+  entry is `{network, visibility}`, `network` in the shape of
+  `/api/public/networks` with `discovered_via: "custom"` for an imported one.
+  `POST /api/ui/networks/custom` takes `{trust_document}` (the JSON text of a
+  trust document), validates its signatures and stores it in `pom.db`; a
+  refusal carries `reason`: `invalid_document` (400), `own_network` or
+  `too_many` (409, at most 64). Importing a known network again replaces its
+  copy. `DELETE /api/ui/networks/custom/:fingerprint` forgets one (404 when
+  unknown). Importing joins nothing and never touches the trust root:
+  admission is still asked through the lobby. An imported entry only knows
+  what the document signs (name at creation, organization, access policy,
+  relay keys), and is assumed to have its lobby open.
 - **Published stats of another network**: `GET
-  /api/ui/network-chat/lobby/info?key=pk:...` (and `GET /api/setup/lobby/info`
-  in setup mode) asks that network's principal for `{models, node_count,
+  /api/ui/network-chat/lobby/info?key=pk:...` asks that network's principal for `{models, node_count,
   vram_total_mb}` and answers `{accepted, error, info}`. `info: null` with
   `accepted: true` means the principal is still computing; ask again in a few
   seconds. Only meaningful for networks whose view has `public_stats: true`.
+- **Latency to another network**: `GET
+  /api/ui/network-chat/lobby/latency?key=pk:...` answers `{rtt_ms}`, the round
+  trip from this node to the node publishing under that key, over the lobby's
+  keyed connection (direct or relayed). The node sends `Describe` twice and
+  keeps the smaller time, because the first exchange also pays for resolving
+  the key and connecting; any answer counts, and silence is `502` with
+  `{error}`. Cached for 60 s per key. It leaves no presence in the other
+  network's lobby.
+- **Place of a listed network**: in `GET /api/public/networks` and `GET
+  /api/setup/public-networks`, `country_code`, `country_name`, `state` and
+  `city` are rewritten from the network's `location` and this node's offline
+  city database, and emptied when it publishes no coordinates. The names the
+  network itself sent are not shown.
 - **Admission** (`webui/lobby.rs`, `p2p-network.md` 6.1). On the candidate:
   `POST /api/ui/network-chat/lobby/admission` (`{key, role, name}`) asks the
   network under `key` to admit this machine; `GET
   /api/ui/network-chat/lobby/requests` lists this node's requests as `{key,
   name, role, status}` and `POST .../requests/forget` drops one locally; every
   lobby answer carries `admission` with the same shape, plus `standing: true`
-  when the approval was not asked for now (the machine was admitted before). None of them ever
+  when the approval was not asked for now (the machine was admitted before),
+  and `retry_at` (Unix seconds on this node's clock) when it was declined and
+  must still wait before asking again. None of them ever
   returns the grant. `POST /api/ui/network/join` (`{key}`) joins a network that
   approved this machine, replacing the one it is in, and restarts the node
   (`409 not_approved` without a grant, `502 grant_invalid` when the granted
@@ -114,6 +166,45 @@ last):
   declared hardware, measured latency and whether it connects through a relay,
   and `POST /api/ui/network/admissions` (`{node_id, decision}` with `approve`,
   `reject` or `forget`) decides one.
+- **Roles between nodes** (`gateway/state.rs::require_admin_for_surface`).
+  The profile table in `webui/routes/mod.rs` gates what a **browser** may
+  reach on a node. A node-to-node request passes that table, and is checked
+  for two other things instead:
+  - **The receiver is an inference node.** It answers `403` with `reason:
+    "infer_profile"` to every route in `INFER_NODE_REFUSES` - `/api/ui/apply`,
+    `/api/ui/launch`, `/api/ui/deploy`, `/api/ui/reconfigure`,
+    `/api/ui/slice`, `/api/transfer` - before anything else, so an admin's
+    signed request is refused too.
+  - **Who the caller is** (`caller_may_ask`). An `AdminOnly` route needs the
+    control envelope signed by the **principal** (`reason:
+    "signature_required"` for the key alone, `"principal_required"`
+    otherwise). A `DeployAdmin` route needs it signed by any admin of the
+    trust chain, principal or secondary (`"admin_required"`). A
+    `NodeAdmin` route needs it signed by an admin or by an admitted peer that
+    is not an inference node (`"infer_caller"`, `"unknown_caller"`). A
+    forwarded `POST /api/ui/leave` - one node taking another out of the
+    network - also needs the principal's signature, although the route is
+    open to every profile for a node leaving by itself.
+  - **What a secondary admin may do.** `DeployAdmin` is the only scope it
+    has beyond a node's: `/api/ui/deploy/*`, `/api/ui/deployments` (writes),
+    `/api/ui/apply`, `/api/ui/launch`, `/api/ui/undeploy`,
+    `/api/ui/stop-inference`, `/api/ui/unload` and `/api/ui/reconfigure`.
+    Everything else that was `AdminOnly` now needs the principal, in the
+    browser (`require_admin_for_surface` asks for `EffectiveAuthority::Primary`)
+    and between nodes: `/admin/*` (block, remove, promote, demote, resign,
+    regenerate the key, slots), admissions, network settings and their
+    fan-out, TLS/QUIC/logs policy, the trust share, slice release, the KV
+    cache, sidecar links, the cluster log. A secondary cannot demote itself:
+    demotion is a principal route. API keys of other nodes are synced only
+    under the principal's signature (`require_signed_principal`); a node's
+    own chat key is unchanged. The one signature a secondary still gives is
+    its acceptance of a principal transfer the principal offered to it. Routes of
+    the other scopes - `/v1`, `/api/generate`, the node's own description, the
+    `/api/internal` and `/api/cluster` sync routes - are unchanged.
+  `gateway::peer_is_infer` is the one definition of "inference node": a peer
+  that announces the profile, or, on the principal, one whose admission record
+  says so. The deploy survey leaves such peers out, and `launch` and add-node
+  refuse them as targets (`reason: "infer_target"`).
 - **Leaving and the own network** (`p2p-network.md` 6.1). `POST
   /api/ui/network/leave` leaves a network this node joined and restores its
   own from standby (`restored_own_network` in the answer); on the node's own
@@ -134,7 +225,10 @@ last):
   /api/public/networks/locate?key=pk:...` resolves the key through pkarr on the
   node and answers `{reachability: "direct"|"relayed"|"unresolved", relays}`; it
   only accepts keys the node already lists (404 otherwise) and caches the answer
-  for 30 s.
+  for 30 s. "Lists" includes the publishers of the networks the last
+  `GET /api/public/networks` returned, kept for 30 min: a node on its own local
+  network hears no announce, so the networks it shows come from the relays and
+  are known nowhere else.
 - **OpenAI** (`openai.rs`): `GET /v1/models`, `GET /v1/models/:id`,
   `POST /v1/chat/completions` + OPTIONS, `POST /v1/completions` + OPTIONS.
 - **Typed decisions** (`decisions.rs`): `POST /v1/systemone`, alias
@@ -147,7 +241,7 @@ last):
   `inference.md` 3.9.
 - **Anthropic** (`messages.rs`): `POST /v1/messages` + OPTIONS,
   `POST /v1/messages/count_tokens` + OPTIONS.
-- **Dashboard** (`webui.rs`): the `/api/ui/*` plane (see below).
+- **Dashboard** (`webui/`): the `/api/ui/*` plane (see below).
 - **Deployment** (`deploy/`): `/api/ui/deploy/*` + `POST /api/ui/undeploy`.
 - **Transfer** (`transfer.rs`): `/api/transfer/*` (see `file-transfer.md`).
 - **Dev update** (`devupdate.rs`): `POST /api/ui/dev/update`,
@@ -160,8 +254,9 @@ last):
   notifications are idempotent and have three attempts with a bounded timeout.
 - **UI** (`webapp.rs`): `GET /` redirects to `/admin-ui/`, which serves the
   bundle from disk (`config::ui_dist_dir()`); assets and SPA routes live under
-  that mount. The API fallback stays a JSON 404, and a miss with an extension
-  becomes "asset not found".
+  that mount. `API_PREFIXES` is the list of path prefixes that are never handed
+  to the SPA fallback. The API fallback stays a JSON 404, and a miss with an
+  extension becomes "asset not found".
 
 The registration of the UI control routes is organized in
 `crates/node/src/backend/webui/routes/`: `common.rs` for generic routes,
@@ -181,7 +276,9 @@ source of the scope the gateway enforces:
 - `infer+node+admin`: generation, the `/v1` API, chat history, the infer to
   node entry request, the API keys (`/admin/api-keys`, the credential of whoever
   serves `/v1`, and every profile serves), correcting this machine's own
-  advertised address (`POST /api/ui/network/advertise-addr`), leaving/rejoining
+  advertised address (`POST /api/ui/network/advertise-addr`), its own name
+  (`POST /api/ui/network/node-name`), its own relay
+  options (`GET`/`POST /api/ui/network/relay`), leaving/rejoining
   the network (`/api/ui/leave`, `/api/ui/rejoin`) and the node's local plugins
   (`/api/ui/plugins*`: activating licenses, GitHub repositories, installing,
   updating and the plugin UIs);
@@ -235,9 +332,9 @@ that signature and depend on TLS transport. `/api/setup/hardware`,
 `/api/setup/trust-anchor`, `/api/setup/health`,
 `/api/setup/auto-discovery/status`, `/api/setup/auto-discovery/start`,
 `/api/setup/auto-discovery/search`, `/api/setup/public-networks`,
-`/api/setup/lobby`, `/api/setup/lobby/info` and `/api/setup/save` only exist in the
-first access router; `/api/setup/save` installs the root and `pom.json` before
-restarting. The routes of port 8181 (`/v1/prefill`, `/v1/step`,
+`/api/setup/lobby`, `/api/setup/lobby/info` and `/api/setup/save` only existed in the
+first access router, which is no longer started (see "Setup routes are not
+served"). The routes of port 8181 (`/v1/prefill`, `/v1/step`,
 `/v1/step-stream`, `/v1/link`, `/v1/session/*`, `/v1/tp/reduce`, `/health`) are
 explicitly out of this policy's scope.
 
@@ -246,9 +343,9 @@ presentation contract of the principal, secondary admins, the promotion chain
 and succession eligibility. The screen's isolated mutations are
 `POST /admin/nodes/:id/promote-admin`, `POST /admin/authority/resign` and
 `POST /admin/authority/secondaries/:id/demote`; the principal is the only
-origin allowed to promote, resign and demote. The infer to node request is
-`POST /api/ui/network/request-node` and the voluntary step down from node to
-infer is `POST /api/ui/network/relinquish-node`. The authority offer states
+origin allowed to promote, resign and demote. There is no route that changes a node's role in place: a role is
+set when the network admits the machine, and changing it means leaving and
+asking for admission again. The authority offer states
 share `GET /api/transfer/offers` and its answers
 `POST /api/transfer/offers/{id}/accept|reject`, so the UI uses the same bell as
 slice offers. For a succession offer, `accept` requires the successor's signed
@@ -266,13 +363,18 @@ anchor, the root grant, the chain of secondary grants, demotions and
 succession. Consumed nonces are **not** kept in that document, which is shared
 and replaced wholesale by `reconcile`: they live in the local replay ledger next
 to it (`<chain>.replay.json`, also 0600), state of a single node.
+A node holds at most one grant in force: it can be promoted again only after
+its earlier grant was demoted, and the new promotion is a new grant in the
+chain. Every change to the chain is validated and written to disk on a copy
+before it replaces the one in memory (`AdminTrust::commit`), so a refused
+change leaves the node anchored and at the version it had.
 `profile: admin` alone creates no capability:
 without a valid chain the node stays without access to the `admin-only` routes
 and emits a diagnostic at startup.
 
 `GET /api/ui/network/admin-authority` only exposes the presentation view. The
 principal promotes with `POST /admin/nodes/:id/promote-admin`; the delivery
-carries the full signed chain to the target. `POST /admin/authority/resign`
+carries the full signed chain to the target, and then to every other member. `POST /admin/authority/resign`
 opens a signed offer to the last active secondary, and
 `POST /api/transfer/offers/{id}/accept` only completes when the successor
 presents the signed acceptance. `POST /admin/authority/secondaries/:id/demote`
@@ -346,7 +448,8 @@ standalone HTML page, with no bundle and no navigation, with status 403 and the
 messages in English and Portuguese. In `network`, the static login screen is
 public, but the administrative data requires `X-POM-Access-Token` on the first
 call; the server then issues an in-memory session identified by an `HttpOnly`,
-`SameSite=Strict` cookie, valid for 8 hours and only on administrative paths.
+`SameSite=Strict` cookie, valid for the single `ADMIN_SESSION_TTL` (8 hours) and
+only on administrative paths.
 The cookie name carries the `Host` port (`<slug>_admin_session_<port>`,
 `auth::admin_session_cookie_name`): cookies do not separate by port, and two
 nodes on the same host (`<host>:8080` and `<host>:8081`) logged each other out on
@@ -379,15 +482,19 @@ password is needed, the port, `boot_id` (random per run of the process, which
 is how the interface repeats a notice once per start) and `default_password` - the password in effect
 is still the first access default (`admin`, `auth::DEFAULT_ADMIN_PASSWORD`). It
 is a flag written in `pom.json` (`admin_password_default`) next to the hash, so
-this public route never runs Argon2; `POST /api/setup/save` sets it (the UI
-leaves setup in `network` mode with that password) and `POST /api/ui/access`
+this public route never runs Argon2; creating the local network at first run
+sets it (in `network` mode with that password) and `POST /api/ui/access`
 updates it on every password change.
 
-In **setup mode** (no `pom.json`), `main.rs` mounts a smaller router: the routes
-`/api/setup/hardware`, `/api/setup/models`, `/api/setup/admin-anchor/preview`,
-`/api/setup/trust-anchor`, `/api/setup/health`, `/api/setup/save` and the UI.
-They are not in the main router and only exist before the initial
-configuration.
+### Setup routes are not served
+
+The first access wizard is deprecated. A node without `pom.json` creates a
+local network and starts the main router, so the wizard's smaller router
+(`start_setup_mode` in `main.rs`, with every `/api/setup/*` route) is never
+started and those routes answer 404. No flag, variable or startup failure
+leads to it. The handlers are kept in the source until the wizard is removed
+for good, and the passages of this document that describe `/api/setup/*`
+describe that dormant code.
 
 ## 2. Routes by group
 
@@ -549,10 +656,20 @@ both providers' shape: the client reads the terminal stop reason and repeats
 the request with a higher ceiling, without executing anything. The shared
 scanner recognizes the markers declared in `CALL_FORMATS`, keeps text before
 the call, turns every complete call into `tool_calls` and, in SSE, into
-indexed deltas. An incomplete marker the **model** left half-done comes back as
+indexed deltas. The canonical prompt/replay format remains
+`<tool_call><function=…><parameter=…>`, while recovery also accepts a sole
+object parameter named `arguments` and the older
+`<function_calls><invoke name="…"><parameter name="…">` dialect (including
+multiple invokes in one container). An incomplete marker the **model** left half-done comes back as
 literal content so it does not disappear; one the **ceiling** cut comes back
 structured, and that is the difference between `TagScanner::finish` and
-`finish_truncated`. Every valid answer carries the `x_pom` extension (outside
+`finish_truncated`. Plugin engines can also send reasoning as a distinct `GenEvent::Reasoning`.
+For OpenAI chat responses it is serialized as `reasoning_content`, never
+`content`; this is the llama.cpp-compatible field Pi turns into its thinking
+block and “Thinking…” state. Completion-token usage still comes from the
+engine's generated-token count and therefore includes reasoning tokens, as the
+provider APIs do, but reasoning is not user-visible answer text.
+Every valid answer carries the `x_pom` extension (outside
 the schema) with the proof of distributed execution and its own `timings`
 object; the OpenAI `stop` field (string or list) goes through the gateway's
 incremental matcher: a suffix that may still be the prefix of a stop is held
@@ -594,6 +711,9 @@ The limits come from the effective runtime and the network: `context_length`,
 `max_input_tokens`, `max_tokens` and `top_provider.max_completion_tokens` are
 the smallest `n_ctx` among the peers of the planned pipeline that serve the
 model/deployment, the capacity of the **request**, not the ceiling of a leg.
+The planned pipeline starts at the head the request chose (`inference_head`),
+and a replica still loading is not planned while a ready one serves the same
+range: a ready machine answers while another of the deployment loads.
 Announcing the deployment's `max_new_tokens` here would make the client ask
 for less than the node delivers. The same peer minimum is used by each
 request's validation. A peer only enters that capacity after its `/health`
@@ -601,6 +721,23 @@ confirms the model is loaded; during a restart, the previous announcement is
 withdrawn. An idle peer chosen by the plan is woken by `reload_model` before
 generation and the request waits for its `/health`; the planned idle peers are
 woken in parallel, with a 15-minute ceiling for the barrier.
+A model served by a plugin's inference service (`inference.md`, section 7.1)
+runs through `POST /api/internal/plugins/:code/engine/generate` on the machine
+that serves it: a signed call from a live peer, whose NDJSON answer streams
+back from the plugin's loopback generation server. Its conversation sessions
+travel the same way: `POST /api/internal/plugins/:code/engine/session/file?key=&kind=`
+(one raw file, up to 1 GiB, `kind` = `full`, `delta`, `full_ids` or `delta_meta`)
+and `POST /api/internal/plugins/:code/engine/session/apply` (`{key}`), with the
+same checks. When the model is split
+across machines on such a service, the machine of a later slice reaches the
+earlier one through `GET /api/internal/plugins/:code/engine/link/:deploy`
+(the stage's link secret) and
+`POST /api/internal/plugins/:code/engine/link/:deploy/:conn/:seq` (frame
+number `seq` of the engines' stage link, up to 64 MiB, passed on after frame
+`seq - 1`; the answer frame is the body, `410` when that number was already
+passed on or the connection was reset). An empty body to
+`.../:deploy/:conn` closes the connection. Both take only a signed call from the live peer that
+serves the next slice of that deployment.
 `POST /api/internal/reload_model` answers at once with `state: "loading"` or
 `"ready"` (503 with `error` when the load cannot happen) and the gateway
 repeats it until every peer is ready. A live peer on an
@@ -753,7 +890,41 @@ offers as `GET /api/transfer/offers`). `list_nodes` adds entries for blocked nod
 effective authority in the separate file is `Primary`. The principal signs a
 `secondary` grant with its Ed25519 identity; the target only accepts the change
 after validating the manual anchor and the full chain, while it is still a
-`node`. `GET /api/ui/network/admin-authority` is the view of the chain and the
+`node`. An inference node is refused before anything is signed (409, reason
+`infer_target`): its role is set at admission. If the target answers and does
+not become an admin, the principal takes the grant back with a signed
+demotion; if the target does not answer, the answer is 202 with
+`pending: true` and the grant stands until the target fetches the chain.
+
+**Every member holds the current chain**, not only the promoted or demoted
+node: a member that does not know a secondary admin refuses its commands.
+After a promotion or a demotion the principal posts the chain to each member
+(`POST /api/internal/admin-trust/reconcile`, signed by an admin of the
+receiver's current chain). The receiver sets its profile from the chain it
+adopts: `admin` while the chain grants it authority, `node` when it no longer
+does, and an inference node stays one.
+
+**The chain has a version**, `AdminTrust::chain_version`:
+`<transfers>.<grants>.<demotions>.<open transfer>-<hash>`, the hash being the
+first 16 hex digits of the SHA-256 of the document. The three counters order
+two copies; the hash tells apart two copies the counters call equal. A node
+adopts a copy with higher counters **from any member**, because every
+signature in it is checked from the anchor (`admin_trust::reconcile_from`) -
+which is what lets a node that was away catch up while the principal is
+offline. A copy with lower counters is refused. Two different copies with
+equal counters cannot be ordered, and only the principal's replaces the local
+one.
+
+Each node announces its version (`trust_version` in the Announce; a hint,
+never proof). Every 30 s a node compares its own with what its peers announce
+(`admin.rs::spawn_trust_chain_keeper`) and, only when one is ahead, asks up
+to three of them with `POST /api/internal/admin-trust/chain` and body
+`{have: <version>}`; the answer is `{current: true}` or
+`{current: false, document}`. `GET /api/ui/node` reports
+`cluster_version: {version, outdated, newer_on}`, `GET /admin/nodes` carries
+each node's `trust_version`, and `POST /api/ui/network/trust-sync` (every
+profile, on its own node) runs one round at once and answers the same status
+plus `updated`. `GET /api/ui/network/admin-authority` is the view of the chain and the
 members. Resigning is a signed offer to the last active secondary and only the
 acceptance signed by that successor's key changes the principal. A secondary
 can neither promote nor demote another.
@@ -773,7 +944,8 @@ prefix cache (`slot_persist_prefix_cache`) is on in this gateway.
 `POST /api/ui/kv-cache/clear` (AdminOnly) empties the KV cache of **one**
 machine. The body is `{node_id?}`: absent or the node's own id acts locally,
 another id is forwarded to that machine, since only the owner of a disk deletes
-from it. Locally it removes every `.bin` and `.json` of the snapshot directory,
+from it. Locally it removes every `.bin` and `.json` of the snapshot directory
+and every file of its `strata-sessions/` subfolder (the plugin engines' conversation sessions),
 resets this gateway's automatic prefix index and calls
 `POST /v1/session/cache/clear` on the local inference server. Sessions that are
 live in the model context are untouched. The answer is `{cleared, node_id,
@@ -812,7 +984,21 @@ directional probe; the gateway's and peers' probes stay as a fallback and cover
 a single head with no edge in the graph. The run RTT with remote processing
 stays in the trace), `chat/history` (authenticated GET/POST/DELETE for the
 durable conversation history), `dev/update` + `dev/restart`,
-`network/advertise-addr`, `network/tls`, `thermal`. `leave` accepts an optional
+`guide` (the first run guide, open to every profile: GET answers `{active,
+steps, done}`; POST takes `{done: "<step>"}` for a step done or skipped, or
+`{dismiss: true}`, and answers the new state. The steps are `names`
+and `bootstrap` (the first run wizard), then `download_model`,
+`deploy_model`, `chat` and `join` (the hints); the progress is `first_run_guide` in `pom.json`,
+removed when the last step is done or the guide is dismissed, after which
+both calls answer `active: false`. An unknown step is 400),
+`network/advertise-addr`, `network/node-name` (POST `{node_name}`, at most 64
+characters and no control characters; empty goes back to the system hostname;
+it writes `node_name` to the config and renames the node live, answering
+`{node_name, hostname}`), `network/relay` (GET answers the relay options in
+effect, which of them the command line fixed, whether the internet reaches the
+node and whether it accepts reservations now; POST takes
+`{everyone, cluster, transfers}`, writes the `relay` section of the config
+file and applies it live), `network/tls`, `thermal`. `leave` accepts an optional
 `LeaveRequest { node_id }` and **forwards** to the peer when the id is someone
 else's (the panel only talks to its own node).
 
@@ -855,12 +1041,14 @@ node) and use `ConnectionAuth`:
   without uninstalling the already installed plugin;
 - `POST /api/ui/plugins/github-repositories/:id/install` receives
   `{release_id}` to download and install exactly that chosen release.
-- With `POM_DESENV=1`, `GET /api/ui/plugins/dev-sources` only lists known
+- With `POM_DEV_MODE=1`, `GET /api/ui/plugins/dev-sources` only lists known
   repositories and valid mounted sources;
   `POST /api/ui/plugins/dev-sources/:repository/rebuild-install` builds and
   installs or rebuilds the local plugin without requiring an existing
   activation. These two routes stay AdminOnly. The server validates the paths,
-  only uses fixed Cargo commands and does not return the build's stdout/stderr.
+  only uses fixed Cargo commands plus the rebuild steps the plugin's manifest
+  declares (`development.rebuild`, scripts inside the source; see
+  `plugins-ui.md`) and does not return the build's stdout/stderr.
   A development-only install has no licensed features; rebuilding an existing
   licensed or GitHub install preserves that install's entitlement and never
   activates a license.
@@ -910,8 +1098,8 @@ manifest again, downloads the artifact and schedules the swap and the restart.
 The action is never triggered by the daily detection. See
 `enterprise-licensing.md`.
 
-`GET /api/ui/node` includes `pom_desenv`, the decision captured at startup: it
-is only true when `POM_DESENV` is exactly `1`. A missing variable, `0` and any
+`GET /api/ui/node` includes `pom_dev_mode`, the decision captured at startup: it
+is only true when `POM_DEV_MODE` is exactly `1`. A missing variable, `0` and any
 other text leave the flag false. The flag only controls the visibility of the
 controls in the browser: the plan, deploy, apply, reconfigure and redeploy
 handlers keep the fields of the `Configurações POM (DESENV)` ("POM settings
@@ -921,7 +1109,8 @@ controls. When `inference_mode` does not exist, `RuntimeParams` uses `dense`
 
 `GET /api/ui/infer/heads?model=<id>` is the dedicated read of the inference
 heads, allowed for the `infer` and `admin` profiles: it returns only the live
-machines announcing a range starting at L0 for the requested model, plus the
+machines announcing a range starting at L0 for the requested model and already
+serving it (a machine still loading its model is left out), plus the
 chosen head, in-flight load and the RTT/age of each candidate. The planner
 requires full coverage; coverage comes first and, among equivalent ranges, a
 score weighs fresh RTT and in-flight load before the `node_id` tie-break. The
@@ -942,7 +1131,11 @@ choice. A missing field keeps the default on; `false` reaches the prefill
 metadata up to the deployment's head, which combines it with the global
 `no_thinking` before applying the template. The hub, ring and direct reply
 relays keep the field together with the existing metadata.
-`GET /api/ui/chat/capabilities` publishes `thinking: "supported"`,
+`GET /api/ui/chat/capabilities?model=<label>` answers for the model the Chat
+chose (a `@<deploy_id>` suffix is ignored) and, without `model`, for the model
+the network serves (`displayed_model`), never only for the one this node
+loads: a coordinating node loads none, and its Chat read
+`coverage: unavailable` for a model served elsewhere. It publishes `thinking: "supported"`,
 `"unsupported"` or `"unavailable"` for the UI, based on the global
 configuration of the active model's head. Its `asleep` flag is true while a
 machine of the active pipeline has its model unloaded for idleness or is
@@ -1058,7 +1251,9 @@ a size; vision cannot be `embedded`. `DeployRequest` accepts `vision_choice`
 and `mtp_choice` (`{ mode, file: { file_name, size_bytes } }`) and
 `DeployPlan.sidecars` answers with the compatible files of the network (each
 with every holder and its path), the resolved `vision` (head) and `mtp` (tail)
-slots and whether each is already there or will be copied.
+slots and whether each is already there or will be copied. `DeployRequest.keep_existing`
+(default `false`) keeps in service the machines outside the plan that already
+serve the same model (`deployment.md`, section 1).
 `/api/ui/models` and `/api/ui/cluster/models` carry `sidecars` per machine.
 
 **`GET` and `POST /api/ui/model-provider/config`** require `ConnectionAuth` and
@@ -1141,9 +1336,10 @@ only carries `{ offers }`; free disk space is an internal transfer decision,
 not part of the UI's read contract.
 
 `GET /api/ui/cluster` uses the same conditional contract. Each gateway keeps
-the already built snapshot for up to 2 seconds, protected by a fingerprint of
-the known state of peers, runtime, configuration and deployment. A known change
-swaps the fingerprint and forces a new collection before the TTL ends. The
+the already built snapshot for up to `CLUSTER_CACHE_TTL` (2 seconds), protected
+by a fingerprint of the known state of peers, runtime, configuration and
+deployment. A known change swaps the fingerprint and forces a new collection
+before the TTL ends. The
 `ETag` only ignores `system.sampled_at`, which is sampling noise; metrics and
 topology still invalidate the version. `x-state-version` is monotonic for
 changed snapshots.
@@ -1245,11 +1441,29 @@ an effective administrative authority. Node and infer use that snapshot as
 read-only information.
 
 `POST /api/ui/network/settings` is an administrative mutation. The server
-normalizes and validates name, visibility, country and city, writes the block
+normalizes and validates name, visibility and location (`geo::apply_location`:
+the `city_id` must exist in the offline city database, the country, state and
+city names are rewritten from it, and `location` is reduced to
+`location_precision` - `exact`, `approximate` or `city` - before anything is
+stored), writes the block
 to `pom.json` and SQLite, republishes the geo label in the pkarr record and
 sends the same configuration to each peer. The call between nodes uses the
 signed control envelope; a private network adds the `connection_key` only as a
 transport guard. The receiver checks the sender's authority before persisting.
+
+The location editor reads the offline city database embedded in the node
+through three `GET` routes, open to every profile (`InferNodeAdmin`) and
+mirrored under `/api/setup/geo/` in the dormant wizard router:
+
+| Route | Answer |
+|---|---|
+| `/api/ui/network/geo/countries` | `{countries: [{code, name}], release}`, ordered by name |
+| `/api/ui/network/geo/cities?country=BR&q=cur&limit=12` | `{cities}` of that country whose name matches, names that start with the text first, accents folded |
+| `/api/ui/network/geo/nearest?latitude=&longitude=&limit=6` | `{cities}` closest to the coordinate, each with `distance_km` to the city's reference point |
+
+A city is `{id, name, state, country_code, country_name, latitude,
+longitude}`; `limit` is clamped to 1..50. They answer from memory, store
+nothing and contact nobody. See `web-ui.md`, "Network location".
 
 `GET /api/ui/network/trust-share` is only for the authorized administrator. It
 returns the root document with the real file name for download and includes
@@ -1261,7 +1475,7 @@ from `pom.json` and the directory ingresses from `pom.db`, signs and persists
 the block before returning it. If the local authority cannot rebuild the data,
 the download fails instead of delivering an incomplete root.
 
-Setup exposes local discovery on the same loopback listener, without requiring
+The dormant wizard router exposes local discovery on its own listener, without requiring
 a session: `GET /api/setup/auto-discovery/status` reads the step's state, while
 the admin uses `POST /api/setup/auto-discovery/start` to keep the initial
 listening and node or infer uses `POST /api/setup/auto-discovery/search`
@@ -1390,7 +1604,7 @@ zero. The audit at `GET /api/ui/requests` keeps that same object in
 
 ## 5. Route tests - there is a single scaffold (`gateway::testkit`)
 
-`gateway::testkit` (`#[cfg(test)]` in `gateway.rs`) builds a whole
+`gateway::testkit` (`#[cfg(test)] mod testkit` in `gateway/tests.rs`) builds a whole
 `GatewayState` with the peer table seeded by hand: `peer(node_id, hostname,
 gateway_port)` builds a loopback `PeerInfo`, `state_with(node_id, peers)`
 builds the state (with a real `Network` on an ephemeral UDP port, but

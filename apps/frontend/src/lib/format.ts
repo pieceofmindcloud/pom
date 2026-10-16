@@ -118,7 +118,7 @@ export function deployModelDisplayName(name: string): string {
  * Whether a node is actually answering for its layers.
  *
  * One function instead of `state === "..."` spread over the panels: the values
- * come from `ServerState` in `src/runtime.rs`, and every screen that compares
+ * come from `ServerState` in `src/inference/runtime.rs`, and every screen that compares
  * them by hand is one rename away from showing a live cluster as idle.
  */
 export function isServing(state: ServerState | undefined): boolean {

@@ -1,22 +1,22 @@
 /**
- * Tirar a pipeline inteira do ar, de uma vez.
+ * Take the whole pipeline offline, at once.
  *
- * O contrário de "Implantar na rede". "Descarregar modelo" já existia, mas vale
- * para uma máquina só: desfazer uma implantação de quatro caixas era quatro
- * idas ao painel de cada uma, e a que ficasse esquecida seguiria com a fatia
- * ocupando RAM e VRAM sem servir para nada — o pipeline só planeja com a
- * cobertura fechada, então uma máquina de fora não é meia pipeline, é nenhuma.
+ * The opposite of "Deploy to the network". "Unload model" already existed, but it applies
+ * to a single machine: undoing a four-box deployment was four
+ * trips to each one's panel, and the one that got forgotten would keep its slice
+ * taking RAM and VRAM while serving nothing - the pipeline only plans with
+ * closed coverage, so a machine left out is not half a pipeline, it is none.
  *
- * Duas coisas que esta tela deve ao operador:
+ * Two things this screen owes the operator:
  *
- * * **Perguntar antes**, nomeando as máquinas que vão ser liberadas. A ação
- *   alcança todo o cluster e não se desfaz clicando de novo.
- * * **Relatar máquina a máquina.** Um peer que não respondeu continua com a
- *   memória presa, e é exatamente isso que o operador precisa saber para ir
- *   até ele. Um "pronto!" que engole a falha manda a pessoa embora achando que
- *   liberou memória que continua ocupada.
+ * * **Ask first**, naming the machines that will be freed. The action
+ *   reaches the whole cluster and is not undone by clicking again.
+ * * **Report machine by machine.** A peer that did not answer still has its
+ *   memory held, and that is exactly what the operator needs to know to go
+ *   to it. A "done!" that swallows the failure sends the person away thinking they
+ *   freed memory that is still occupied.
  *
- * Nada é apagado do disco — ver `undeploy_endpoint` em `deploy.rs`.
+ * Nothing is erased from disk - see `undeploy_endpoint` in `deploy.rs`.
  */
 import { useState } from "react";
 import { CircleCheck, CircleX, PowerOff } from "lucide-react";
@@ -27,7 +27,6 @@ import { useToast } from "../lib/toast";
 import { Confirm, Modal } from "./Confirm";
 import { Button } from "./ui";
 import { useI18n } from "../i18n/provider";
-import { localizeServerText } from "../i18n/locales";
 
 export interface UndeployTarget {
   node_id: string;
@@ -41,19 +40,19 @@ export function UndeployPipeline({
   targets,
   deployId,
 }: {
-  /** Modelo que está no ar. */
+  /** Model that is live. */
   group: string;
-  /** Máquinas que servem esse modelo agora, na ordem do pipeline. */
+  /** Machines that serve this model now, in pipeline order. */
   targets: UndeployTarget[];
   /**
-   * Qual implantação sai do ar. Sem ele, sai quem estiver servindo o rótulo —
-   * o comportamento do painel, que mostra uma pipeline de cada vez. Com ele o
-   * pedido é exato, que é o que a tela de implantações precisa quando o mesmo
-   * modelo está no ar duas vezes.
+   * Which deployment goes offline. Without it, whoever is serving the label goes -
+   * the panel's behavior, which shows one pipeline at a time. With it the
+   * request is exact, which is what the deployments screen needs when the same
+   * model is live twice.
    */
   deployId?: string;
 }) {
-  const { t, locale } = useI18n();
+  const { t } = useI18n();
   const [asking, setAsking] = useState(false);
   const [busy, setBusy] = useState(false);
   const [report, setReport] = useState<UndeployReport | null>(null);
@@ -79,7 +78,7 @@ export function UndeployPipeline({
     } catch (e) {
       toast.error(
         t("undeploy.failedTitle"),
-        localizeServerText(locale, e instanceof Error ? e.message : String(e)),
+        e instanceof Error ? e.message : String(e),
       );
     } finally {
       setBusy(false);

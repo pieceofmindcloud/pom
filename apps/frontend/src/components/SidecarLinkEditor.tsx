@@ -37,10 +37,11 @@ export function SidecarLinkEditor({
   const { t } = useI18n();
   const toast = useToast();
   const queryClient = useQueryClient();
-  const { profile } = useProfile();
+  const { profile, secondary } = useProfile();
   const links = useSidecarLinks();
   const [saving, setSaving] = useState<SidecarKind | null>(null);
-  const isAdmin = profile === "admin";
+  // Saved on the principal; a secondary admin reads the links like a node.
+  const isAdmin = profile === "admin" && !secondary;
   const visionOptions = useMemo(() => sidecarOptions(peers, "mmproj", model), [peers, model]);
   const mtpOptions = useMemo(() => sidecarOptions(peers, "mtp", model), [peers, model]);
   const linkOf = (kind: SidecarKind) =>

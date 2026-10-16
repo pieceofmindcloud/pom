@@ -1,6 +1,6 @@
 import { TrustAnchor } from "./TrustAnchor";
 
-/** A tela única reúne confiança, esta máquina e a chave de conexão. */
+/** The single screen brings together trust, this machine and the connection key. */
 export function NetworkSharing() {
   return <TrustAnchor sharing />;
 }

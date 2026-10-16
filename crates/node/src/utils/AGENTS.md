@@ -1,37 +1,42 @@
-# utils/ - apoio sem estado de rede
+# utils/ - support code with no network state
 
-> **Mudança de crate:** `brand.rs` virou o crate `crates/brand`; `sysmon.rs`
-> foi para `crates/llama-engine` (usa a FFI do ggml para listar GPUs). `node`
-> re-exporta ambos em `main.rs` (`use ::brand as brand;`,
-> `pub use llama_engine::sysmon`), então `crate::brand::…` e `crate::sysmon::…`
-> seguem valendo. `sysmon` recebe a raiz do projeto por `sysmon::set_disk_root`
-> no arranque, em vez de chamar `config::project_root()`.
-> `KvCacheType` saiu de `config.rs` para `llama_engine::kv_cache` e é
-> re-exportado por `crate::config`.
+> **Crate change:** `brand.rs` became the crate `crates/brand`; `sysmon.rs`
+> moved to `crates/llama-engine` (it uses the ggml FFI to list GPUs). `node`
+> re-exports both in `main.rs` (`use ::brand as brand;`,
+> `pub use llama_engine::sysmon`), so `crate::brand::…` and `crate::sysmon::…`
+> keep working. `sysmon` receives the project root through `sysmon::set_disk_root`
+> at startup, instead of calling `config::project_root()`.
+> `KvCacheType` left `config.rs` for `llama_engine::kv_cache` and is
+> re-exported by `crate::config`.
 
-Caminhos de configuração, o respawn do processo e o monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
-(no caso de `config` e `sysmon`) por praticamente todo o resto do crate.
+Configuration paths, the respawn of this process, and the system monitor.
+Nothing here talks to peers; everything is used by `main.rs` and
+(in the case of `config` and `sysmon`) by practically the rest of the crate.
 
-## Arquivos
+## Files
 
-- `config.rs` - o `Config` persistido em `pom.json` e a resolução do project
-  root, do diretório do `pom.db` e da UI. `POM_DB_DIR` aponta o banco para um
-  volume; sem ele, fica na raiz do projeto. O estado operacional usa
-  `backend::db::PomDb`; os campos legados continuam serializáveis em `pom.json`
-  para não destruir a cópia de segurança antiga. O campo obrigatório
-  `profile` é o perfil oficial do nó; um `pom.json` antigo sem ele exige novo
-  setup, sem migração.
-  `NetworkSettings` guarda nome, organização, descrição, regras, canais,
-  visibilidade (`local`, `private`, `public`), política de acesso e localização
-  geo (país, cidade, coordenadas e label canônico). `setup_pending` permite
-  preservar preferências locais ao sair da rede e voltar ao wizard mesmo com
-  `pom.json` presente.
-  `ResourcePolicy` guarda os percentuais de RAM e CPU reservados ao sistema.
-  O primeiro acesso usa `~/.pom/models` e `~/.pom/models_sliced` como padrões
-  e grava `shard_max_gb` para limitar as fatias compartilhadas.
-  `cluster_logs_min_level` também vive no JSON, aceita
-  `trace`, `debug`, `info`, `warn` e `error`, e assume `info` quando ausente;
-  ele só controla o que `CaptureLayer` enfileira.
+- `config.rs` - the `Config` persisted in `pom.json` and the resolution of the
+  project root, the `pom.db` directory and the UI. `POM_DB_DIR` points the
+  database at a volume; without it, it stays in the project root. Operational
+  state uses `backend::db::PomDb`; the legacy fields stay serializable in
+  `pom.json` so an old backup is not destroyed. The required field `profile` is
+  the node's official profile; an old `pom.json` without it requires a new setup,
+  with no migration.
+  `NetworkSettings` holds name, organization, description, rules, channels,
+  visibility (`local`, `private`, `public`), access policy and geo location
+  (country, city, coordinates and canonical label). `setup_pending` marks a `pom.json` that is only a
+  preference shell (the node left a network): startup then creates a local
+  network instead of loading it. `first_run_guide` is the progress of the
+  first run guide (`backend/webui/guide.rs`): `None` when there is no guide,
+  else the ids of the steps done; `prepare_for_setup` drops it.
+  `ResourcePolicy` holds the RAM and CPU percentages reserved for the system.
+  The first access uses `~/.pom/models` and `~/.pom/models_sliced` as defaults
+  and writes `shard_max_gb` to limit the shared slices.
+  `cluster_logs_min_level` also lives in the JSON, accepts
+  `trace`, `debug`, `info`, `warn` and `error`, and assumes `info` when absent;
+  it only controls what `CaptureLayer` queues.
+- `geo.rs` - offline city database and the rule that turns a pinned point
+  into a network's published location (see below).
 - `crash.rs` - native crash report, installed first thing in `main`: on
   SIGSEGV/SIGBUS/SIGILL/SIGFPE/SIGABRT it writes the signal, the faulting
   address, the thread and the native stack as `binary(+offset)` to stderr
@@ -42,60 +47,61 @@ Caminhos de configuração, o respawn do processo e o monitor de sistema. Nada a
   same build. A kernel line `in pom[X,...]` gives the **file** offset: add the
   difference between the executable `LOAD` segment's `p_vaddr` and `p_offset`
   (`readelf -lW`) before `addr2line`.
-- `respawn.rs` - reiniciar este processo preservando o argv do arranque,
-  criando uma nova sessão em Unix e redirecionando stdout/stderr para
-  `<project_root>/pom.log` para que falhas logo após o reinício deixem rastro.
-  `respawn_at` recebe o caminho capturado antes de uma troca atômica, evitando
-  o caminho `(deleted)` que `current_exe()` pode devolver em Unix.
-- `sysmon.rs` - amostragem de RAM/VRAM/disco por plataforma, com cache.
-- `thermal.rs` - política de temperatura, histerese e cooldown como máquina de
-  estados pura, sem dependência de fornecedor ou hardware. A validação exige
-  corte de no mínimo 70 °C e cooldown de no máximo 60 segundos.
+- `respawn.rs` - restart this process preserving the startup argv, creating a new
+  session on Unix and redirecting stdout/stderr to `<project_root>/pom.log` so
+  failures right after the restart leave a trace. `respawn_at` receives the path
+  captured before an atomic rename, avoiding the `(deleted)` path that
+  `current_exe()` can return on Unix.
+- `sysmon.rs` - RAM/VRAM/disk sampling per platform, with a cache.
+- `thermal.rs` - temperature policy, hysteresis and cooldown as a pure state
+  machine, with no vendor or hardware dependency. Validation requires a cutoff of
+  at least 70 °C and a cooldown of at most 60 seconds.
 
-## Funções-chave
+## Key functions
 
 `config.rs`:
-- `brand.rs` - a identidade do produto, lida de `brand.json` na raiz do
-  repositório em tempo de compilação (`include_str!`). É a fonte única do nome,
-  do slogan e dos arquivos de logo, e **todo nome derivado sai daqui**:
+- `brand.rs` - the product identity, read from `brand.json` at the repository
+  root at compile time (`include_str!`). It is the single source of the name, the
+  slogan and the logo files, and **every derived name comes from here**:
   `config_filename()` (`pom.json`), `env_var("HOME")` (`POM_HOME`),
-  `gguf_key("start_layer")` (`pom.start_layer`), `dns_record()` (`_pom`) e o
-  nome das chaves de identidade. Renomear o produto é editar `brand.json` - e,
-  só para o executável, o `[[bin]]` do `Cargo.toml`, que o cargo exige literal.
-  O frontend lê o mesmo arquivo (`apps/frontend/scripts/build-brand.mjs`), então
-  tela e binário não têm como discordar sobre o nome.
+  `gguf_key("start_layer")` (`pom.start_layer`), `dns_record()` (`_pom`) and the
+  identity key names. Renaming the product means editing `brand.json` - and,
+  only for the executable, the `[[bin]]` of `Cargo.toml`, which cargo requires to
+  be literal. The frontend reads the same file
+  (`apps/frontend/scripts/build-brand.mjs`), so screen and binary cannot disagree
+  about the name.
 
-- `project_root` - `$POM_HOME` → cwd que "parece o projeto" → subindo do
-  diretório do executável. É de onde saem `models/`, `venv/` e a config; sem
-  isto um `ssh host '/caminho/pom'` lia outra config e não achava fatia
-  nenhuma.
-- `Config::load`/`save`/`config_path` - `$POM_CONFIG` ou
+- `project_root` - `$POM_HOME` → a cwd that "looks like the project" → upward
+  from the executable's directory. This is where `models/`, `venv/` and the config
+  come from; without it, an `ssh host '/path/pom'` read another config and found
+  no slice at all.
+- `Config::load`/`save`/`config_path` - `$POM_CONFIG` or
   `<project_root>/pom.json`.
-  `Config::save` grava com permissão exclusiva do proprietário (`0600` no
-  Unix), inclusive quando o arquivo já existia; o campo opcional
-  `huggingface_token` é segredo e o `Debug` de `Config` o mascara. O runtime
-  lê chaves, política térmica e token do `pom.db`, sem usar esses campos como
-  fallback. Ao carregar, a credencial administrativa legada em texto é
-  migrada uma vez para hash Argon2id; o arquivo nunca persiste a senha pura.
-- `normalize_peer_addr` - completa a porta que falta em endereço digitado
-  (IPv6 puro sem porta vira `invalid port value` no resolver, repetido para
-  sempre no log); mantém o que está gravado igual ao que se imprime.
-- `ui_dist_dir` - `$POM_UI_DIST` ou `<project_root>/apps/frontend/dist`
-  (a UI é lida do disco em runtime por `webapp.rs`).
-- `model_dir_paths`/`shard_dir_path` - onde procurar modelos inteiros e onde
-  escrever/ler fatias. A configuração criada pelo wizard usa `~/.pom/models` e
-  `~/.pom/models_sliced`; configurações existentes ainda conservam sua escolha.
-  `model_dirs` vazio não procura em lugar nenhum. `shard_max_gb` limita somente
-  a pasta de fatias e assume 100 GB quando falta em um `pom.json` antigo.
-  `POM_MODEL_DIRS` (várias pastas, separadas como o `PATH`) e `POM_SHARD_DIR`
-  vencem os campos do `pom.json` nesses dois acessores (`model_dirs_from_env`,
-  `shard_dir_from_env`); não são persistidas, e vazias contam como ausentes.
-  `POST /api/ui/paths` não grava o campo que uma variável define, e
-  `GET /api/ui/paths` devolve o nome dela em `model_dirs_env`/`shard_dir_env`.
-- `workspace_root_path` - raiz absoluta efetiva da workspace compartilhada por
-  projetos do usuário e dados dinâmicos de plugins. O campo persistido é
-  opcional para configurações antigas e o default é `~/pom_workspace`, sem
-  pergunta no wizard e separado das pastas de modelos.
+  `Config::save` writes with owner-only permission (`0600` on Unix), even when the
+  file already existed; the optional field `huggingface_token` is a secret and
+  `Config`'s `Debug` masks it. The runtime reads keys, thermal policy and token
+  from the `pom.db`, without using those fields as a fallback. On load, the legacy
+  plaintext administrative credential is migrated once to an Argon2id hash; the
+  file never persists the plain password.
+- `normalize_peer_addr` - completes the missing port in a typed address (a bare
+  IPv6 without a port becomes `invalid port value` in the resolver, repeated
+  forever in the log); it keeps what is stored identical to what is printed.
+- `ui_dist_dir` - `$POM_UI_DIST` or `<project_root>/apps/frontend/dist`
+  (the UI is read from disk at runtime by `webapp.rs`).
+- `model_dir_paths`/`shard_dir_path` - where to look for whole models and where
+  to write/read slices. The configuration created by the wizard uses
+  `~/.pom/models` and `~/.pom/models_sliced`; existing configurations keep their
+  choice. An empty `model_dirs` searches nowhere. `shard_max_gb` limits only the
+  slices folder and assumes 100 GB when missing from an old `pom.json`.
+  `POM_MODEL_DIRS` (several folders, separated like `PATH`) and `POM_SHARD_DIR`
+  override the `pom.json` fields in those two accessors (`model_dirs_from_env`,
+  `shard_dir_from_env`); they are not persisted, and empty counts as absent.
+  `POST /api/ui/paths` does not save a field that a variable defines, and
+  `GET /api/ui/paths` returns its name in `model_dirs_env`/`shard_dir_env`.
+- `workspace_root_path` - the effective absolute root of the workspace shared by
+  the user's projects and the plugins' dynamic data. The persisted field is
+  optional for old configurations and the default is `~/pom_workspace`, with no
+  question in the wizard and separate from the model folders.
 - `create_default_storage_dirs` creates POM's own default folders when they
   are the effective ones (`~/.pom/models` among the model folders,
   `~/.pom/models_sliced`, `~/pom_workspace`), at node start, after setup and
@@ -104,78 +110,95 @@ Caminhos de configuração, o respawn do processo e o monitor de sistema. Nada a
   never created at start (it may be on an unmounted drive); saving one in
   Storage does create it, from an absolute path (`check_dir`,
   `check_workspace_dir` in `backend/webui/catalog.rs`).
-- A configuração não possui teto absoluto de saída. A capacidade efetiva é
-  observada no runtime depois do carregamento do modelo e chega ao gateway por
-  `n_ctx`; o gateway agrega o menor valor entre os peers vivos. O único limite
-  de geração definido no deploy é `max_new_tokens`, que limita uma perna.
-  Consulte `docs/subsystems/deployment.md`, seção 1.3, e
-  `docs/subsystems/inference.md`, seção 9.1.
-- `cache_type_k`/`cache_type_v` - tipo numérico do cache K/V para todos os
-  contextos llama.cpp desta instalação. O padrão é `f16`; os valores aceitos
-  são `f32`, `f16`, `bf16`, `q8_0`, `q4_0`, `q4_1`, `iq4_nl`, `q5_0` e
-  `q5_1`. Esses campos vivem no `pom.json` e não fazem parte dos parâmetros
-  por máquina de uma implantação.
-- `cluster_logs_min_level` - limiar mínimo da captura de logs de implantação;
-  o console mantém sua política `RUST_LOG` independente. A retenção é fixa no
-  principal e não é uma preferência da auditoria de requisições.
-- `DEFAULT_INFERENCE_PORT` (8181) - anunciado desde o arranque mesmo antes de
-  a fatia ser atribuída (sem ele o `apply` recusava todo modelo).
+- The configuration has no absolute output ceiling. The effective capacity is
+  observed at runtime after the model loads and reaches the gateway through
+  `n_ctx`; the gateway aggregates the smallest value among the live peers. The
+  only generation limit defined in the deploy is `max_new_tokens`, which bounds
+  one leg. See `docs/subsystems/deployment.md`, section 1.3, and
+  `docs/subsystems/inference.md`, section 9.1.
+- `cache_type_k`/`cache_type_v` - the numeric K/V cache type for every llama.cpp
+  context of this installation. The default is `f16`; the accepted values are
+  `f32`, `f16`, `bf16`, `q8_0`, `q4_0`, `q4_1`, `iq4_nl`, `q5_0` and `q5_1`.
+  These fields live in the `pom.json` and are not part of a deployment's
+  per-machine parameters.
+- `cluster_logs_min_level` - the minimum threshold of the deployment log capture;
+  the console keeps its own `RUST_LOG` policy independent. Retention is fixed on
+  the principal and is not a preference of the request audit.
+- `DEFAULT_INFERENCE_PORT` (8181) - announced from startup even before a slice is
+  assigned (without it the `apply` refused every model).
 
 `respawn.rs`:
-- `remember_argv`/`original_argv` - captura o argv (sem argv[0]) no início do
-  main; é o que preserva `--advertise-addr` etc. num restart (o respawn ingênuo
-  com `Command::new(current_exe())` perdia os argumentos).
-- `respawn_self` - spawna `current_exe` + argv original em uma sessão
-  independente, com stdout/stderr em `pom.log`, e sai (exit 0); se abrir o log
-  ou o spawn falhar retorna o erro e o nó segue vivo para reportar.
-- `respawn_at` - mesma política de `respawn_self`, mas usando o executável
-  fornecido pela atualização autorizada depois do rename.
+- `remember_argv`/`original_argv` - captures the argv (without argv[0]) at the
+  start of main; that is what preserves `--advertise-addr` etc. across a restart
+  (a naive respawn with `Command::new(current_exe())` lost the arguments).
+- `respawn_self` - spawns `current_exe` + the original argv in an independent
+  session, with stdout/stderr in `pom.log`, and exits (exit 0); if opening the
+  log or the spawn fails it returns the error and the node stays alive to report.
+- `respawn_at` - the same policy as `respawn_self`, but using the executable
+  supplied by the authorized update after the rename.
 
 `sysmon.rs`:
-- `sample` - leitura com cache de 1,2 s (`nvidia-smi` custa um spawn por leitura;
-  a UI polia mais rápido do que os números mudam). As consultas frequentes ao
-  `nvidia-smi` rodam em `spawn_blocking` com `std::process::Command`, sem usar
-  o reaper SIGCHLD do Tokio, para não interromper o socket UDP da DHT pkarr.
-- `read_memory` - Linux `/proc/meminfo` (MemAvailable, não MemFree); macOS
-  `sysctl hw.memsize` + `vm_stat` (active + wired + compressor = "Memory Used"
-  do Activity Monitor, e devolve wired para os buffers do Metal); Windows
-  `GlobalMemoryStatusEx` declarado à mão para não arrastar `windows-sys`.
-- `read_gpu`/`nvidia_smi` - VRAM total/em uso e processos por placa NVIDIA;
-  `current_process_gpu_memory_mb` faz a sondagem síncrona do uso do PID atual
-  para correlacionar o processo com o snapshot do fit, e devolve `None` quando
-  o driver não informa a linha.
-  Apple Silicon reporta `GpuKind::Unified` com a nota honesta (sem VRAM
-  dedicada para medir) em vez de inventar número. Essa variante só é construída
-  no macOS, e fora dele o `dead_code` acusava - daí o `cfg_attr(not(macos),
-  allow)` nela. Tirá-la por `cfg` seria pior: `gpu_kind` é campo serializado, e
-  `deploy::free_memory_mb` lê o de **outras** máquinas para decidir se a fatia
-  cabe.
-  o nome segue uma política comum: descrição do backend correspondente,
-  `pci.ids` no Linux e identificador da placa como último recurso. O wrapper
-  `llama_rs_backend_devices_json` expõe a descrição e o `device_id` do ggml;
-  o `device_id` PCI é usado para associar a descrição Vulkan à Radeon certa em
-  máquinas com várias placas. Apple Silicon reporta `GpuKind::Unified` com a
-  nota honesta (sem VRAM dedicada para medir) em vez de inventar número, usando
-  a descrição Metal e depois `system_profiler` para o nome. Essa variante só é
-  construída no macOS, e fora dele o `dead_code` acusava - daí o
-  `cfg_attr(not(macos), allow)` nela. Tirá-la por `cfg` seria pior:
-  `gpu_kind` é campo serializado, e `deploy::free_memory_mb` lê o de
-  **outras** máquinas para decidir se a fatia cabe.
-- `sample_disk` - `df -m` no project root (não no cwd); Windows
-  `GetDiskFreeSpaceExW`. `sample_disk_at` recebe o destino configurado e mede
-  o volume que contém esse caminho, inclusive quando a pasta ainda não existe.
-  A tela usa essa variante para conferir se a saída de uma fatia cabe no disco
-  real apontado pelo operador.
+- `sample` - a read with a 1.2 s cache (`nvidia-smi` costs a spawn per read; the
+  UI polled faster than the numbers changed). The frequent `nvidia-smi` queries
+  run in `spawn_blocking` with `std::process::Command`, without using Tokio's
+  SIGCHLD reaper, so they do not interrupt the DHT pkarr UDP socket.
+- `read_memory` - Linux `/proc/meminfo` (MemAvailable, not MemFree); macOS
+  `sysctl hw.memsize` + `vm_stat` (active + wired + compressor = the Activity
+  Monitor's "Memory Used", and it returns wired for the Metal buffers); Windows
+  `GlobalMemoryStatusEx` declared by hand to avoid dragging in `windows-sys`.
+- `read_gpu`/`nvidia_smi` - total/used VRAM and processes per NVIDIA card;
+  `current_process_gpu_memory_mb` does the synchronous probe of the current PID's
+  usage to correlate the process with the fit snapshot, and returns `None` when
+  the driver does not report the line.
+  Apple Silicon reports `GpuKind::Unified` with the honest note (no dedicated
+  VRAM to measure) instead of inventing a number. That variant is only built on
+  macOS, and outside it `dead_code` complained - hence the `cfg_attr(not(macos),
+  allow)` on it. Removing it by `cfg` would be worse: `gpu_kind` is a serialized
+  field, and `deploy::free_memory_mb` reads the one of **other** machines to
+  decide whether the slice fits.
+  The name follows a common policy: the matching backend's description,
+  `pci.ids` on Linux, and the card identifier as a last resort. The wrapper
+  `llama_rs_backend_devices_json` exposes the ggml description and `device_id`;
+  the PCI `device_id` is what pairs the Vulkan description with the right Radeon
+  on machines with several cards. Apple Silicon reports `GpuKind::Unified` with
+  the honest note (no dedicated VRAM to measure) instead of inventing a number,
+  using the Metal description and then `system_profiler` for the name. That
+  variant is only built on macOS, and outside it `dead_code` complained - hence
+  the `cfg_attr(not(macos), allow)` on it. Removing it by `cfg` would be worse:
+  `gpu_kind` is a serialized field, and `deploy::free_memory_mb` reads the one of
+  **other** machines to decide whether the slice fits.
+- `sample_disk` - `df -m` on the project root (not on the cwd); Windows
+  `GetDiskFreeSpaceExW`. `sample_disk_at` receives the configured destination and
+  measures the volume containing that path, even when the folder does not exist
+  yet. The screen uses this variant to check whether a slice's output fits on the
+  real disk the operator pointed at.
 
-`sysmon.rs` também publica `GpuStat.temperature_c`: NVIDIA vem da mesma linha
-`nvidia-smi` que enumera VRAM e utilização, Radeon vem de `amdgpu`/hwmon, e
-GPU unificada fica explicitamente sem leitura. `None` significa temperatura
-desconhecida e nunca é convertido em alarme pela proteção térmica.
+`sysmon.rs` also publishes `GpuStat.temperature_c`: NVIDIA comes from the same
+`nvidia-smi` line that enumerates VRAM and utilization, Radeon comes from
+`amdgpu`/hwmon, and a unified GPU stays explicitly without a reading. `None`
+means unknown temperature and is never turned into an alarm by the thermal
+protection.
 
-`config.rs` mantém `validate_network_settings` como a validação única do bloco
-de rede. Ela é usada tanto pelo wizard quanto pela edição posterior e exige
-nome público, país e cidade quando a visibilidade é pública; redes locais e
-privadas podem deixar esses campos vazios.
+`config.rs` keeps `validate_network_settings` as the single validation of the
+network block. The wizard and the later editing both use it, and it requires a
+public name and a city (`city_id`) when the visibility is public; local and
+private networks may leave the location empty.
+
+`geo.rs` is the offline database of countries, states and cities: the
+unmodified `assets/geo/csv-cities.csv.gz` (Countries States Cities Database,
+ODbL 1.0, pinned by `RELEASE` and a checksum test) embedded in the binary and
+decoded on first use. `GeoDatabase::nearest` answers the cities around a
+coordinate, `resolve` the single closest one with a small memo (it names the
+place of every listed network on each poll of the Networks screen), `search` the cities of a country by name (accents folded), `city`
+one row by id. `apply_location` is the only writer of a network's location:
+`NetworkSettings.city_id` must be a row of the database, the country, state
+and city names are copied from that row (never the operator's text), and
+`location` is reduced to `location_precision` before it is stored - `exact`
+keeps the pin, `approximate` (the default) snaps it to a 0.1 degree grid with
+`accuracy_m` 10000, `city` stores the city's reference point. A pin more than
+200 km from the chosen city is refused. The result is stable under
+reapplication, which is what lets every member apply the settings the
+principal sends. See `assets/geo/README.md` for the update procedure.
 
 `NetworkSettings.accepted_enrollments` (`AcceptedEnrollments`, a list of
 `EnrollmentRole`: `node`, `infer`) is what the network advertises as open to
@@ -184,9 +207,16 @@ closed. It is an advertisement for the public directory only: admission
 (`Network::public_peer_is_admitted`) does not read it and current members are
 never affected.
 
-`NetworkSettings.lobby_chat` opens the lobby room of the network Chat to
-machines that are not members (`network/network_lobby.rs`). It is off by
-default and only takes effect on a public network with the network Chat on.
+The lobby, where machines that are not members ask to be admitted
+(`network/network_lobby.rs`), has no setting: it exists whenever discovery is
+on (`public` or `private`). It does not need the network Chat: the Chat only
+adds the conversation to the lobby. `NetworkSettings.access_policy` says who
+decides a request: `authorized` (an admin), `auto_approve` (the principal
+approves every request on arrival) or `local_only`.
+`Config.quic_enabled` and `Config.network_chat_enabled` are on by default:
+`main.rs::blank_config` starts a new network with both, and a config
+without the fields reads them as on. Members still adopt the principal's
+value through the authenticated read.
 `NetworkSettings.visibility` is what the interface calls discovery: `local`
 announces nothing (the node runs detached and publishes no pkarr record),
 `private` announces without being listed, `public` is listed.
@@ -196,16 +226,16 @@ connection key: a public network left on `anyone_with_anchor`.
 total VRAM to non-members, answered live by the principal; off by default and
 public networks only.
 
-## Ligações
+## Links
 
-- **`config`** é usado por quase tudo: `main.rs`, `network/identity.rs`
-  (`key_path`), `models/catalog.rs` (pastas varridas), `backend/transfer.rs`
-  (`safe_model_path`), `backend/webapp.rs` (`ui_dist_dir`), `backend/deploy.rs`,
-  `webui.rs`.
-- **`display`** só em `main.rs` (banner + loop de refresh).
-- **`respawn`** é chamado pelo `backend/devupdate.rs` (atualizar e reiniciar
-  pela interface) e por `main.rs` no arranque.
-- **`sysmon`** em `main.rs` (hostname) e `webui.rs` (endpoints `/api/ui/*`).
+- **`config`** is used by nearly everything: `main.rs`, `network/identity.rs`
+  (`key_path`), `models/catalog.rs` (the folders scanned), `backend/transfer.rs`
+  (`safe_model_path`), `backend/webapp.rs` (`ui_dist_dir`), `backend/deploy/`,
+  `backend/webui/`.
+- **`display`** only in `main.rs` (banner + refresh loop).
+- **`respawn`** is called by `backend/devupdate.rs` (update and restart through
+  the interface) and by `main.rs` at startup.
+- **`sysmon`** in `main.rs` (hostname) and `backend/webui/` (`/api/ui/*` endpoints).
 
 ## Maintaining this file
 

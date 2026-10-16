@@ -9,31 +9,32 @@ export function isActiveTransfer(state: TransferJob["state"]) {
 }
 
 /**
- * Só uma transferência em andamento pode ser cancelada.
+ * Only a transfer in progress can be cancelled.
  *
- * Oferecer o botão numa que já terminou convidaria o operador a uma ação sem
- * efeito, e num download já verificado sugeriria que dá para desfazer o
- * arquivo que já está no disco — o que a rota não faz.
+ * Offering the button on one that has already finished would invite the operator to an action
+ * with no effect, and on an already verified download it would suggest that the
+ * file already on disk can be undone - which the route does not do.
  */
 export function canCancel(state: TransferJob["state"]) {
   return state === "running" || state === "verifying";
 }
 
-/** Por quanto tempo o desfecho de uma transferência fica no sino. */
+/** For how long a transfer's outcome stays in the bell. */
 export const RECENTLY_FINISHED_MS = 5 * 60 * 1000;
 
 /**
- * Terminou agora há pouco — o que o sino ainda precisa mostrar.
+ * Finished a moment ago - what the bell still needs to show.
  *
- * O sino listava só o que estava em andamento, então "concluída", "falhou" e
- * "recusada" sumiam da tela no instante em que aconteciam: quem recebia via a
- * barra andar e depois nada, e quem enviava não via desfecho nenhum. O
- * resultado só sobrevivia na tela de Transferências, que foi exatamente o
- * relato de campo.
+ * The bell listed only what was in progress, so "completed", "failed" and
+ * "refused" vanished from the screen at the instant they happened: the receiver
+ * saw the bar move and then nothing, and the sender saw no outcome at all. The
+ * result only survived on the Transfers screen, which was exactly the field
+ * report.
  *
- * `finished_at` ausente é um nó de versão anterior, que não carimba a hora:
- * ali não dá para saber se acabou agora ou ontem, e inventar "agora" encheria
- * o sino de transferências velhas a cada carregamento da página.
+ * A missing `finished_at` is a node of an earlier version, which does not stamp
+ * the time: there it is impossible to know whether it ended just now or
+ * yesterday, and inventing "now" would fill the bell with old transfers on every
+ * page load.
  */
 export function isRecentlyFinished(job: TransferJob, now: number = Date.now()) {
   if (!isFinishedTransfer(job.state)) return false;
@@ -43,7 +44,7 @@ export function isRecentlyFinished(job: TransferJob, now: number = Date.now()) {
   return now - at < RECENTLY_FINISHED_MS;
 }
 
-/** O que o sino mostra: o que está andando, mais o que acabou de terminar. */
+/** What the bell shows: what is running, plus what has just finished. */
 export function isWorthNotifying(job: TransferJob, now: number = Date.now()) {
   return isActiveTransfer(job.state) || isRecentlyFinished(job, now);
 }

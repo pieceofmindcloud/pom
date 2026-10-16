@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 /**
- * As duas promessas desta tela: perguntar antes de alcançar o cluster inteiro,
- * e contar máquina a máquina o que aconteceu. A segunda é a que mais custa se
- * quebrar em silêncio — um relatório que arredonda para "pronto!" manda o
- * operador embora achando que liberou memória que continua presa.
+ * The two promises of this screen: ask before reaching the whole cluster,
+ * and count machine by machine what happened. The second is the one that costs most if it
+ * breaks silently - a report that rounds off to "done!" sends the
+ * operator away thinking they freed memory that is still held.
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -27,7 +27,7 @@ function mount() {
   );
 }
 
-/** Um clique, com o React já tendo processado o que ele disparou. */
+/** One click, with React having already processed what it triggered. */
 function click(el: Element) {
   act(() => {
     fireEvent.click(el);
@@ -49,7 +49,7 @@ describe("UndeployPipeline", () => {
     vi.restoreAllMocks();
   });
 
-  it("nomeia as máquinas antes de perguntar, e não manda nada sem o clique", async () => {
+  it("names the machines before asking, and sends nothing without the click", async () => {
     const fetchMock = answer({});
     vi.stubGlobal("fetch", fetchMock);
     mount();
@@ -60,11 +60,11 @@ describe("UndeployPipeline", () => {
     expect(screen.getByText("macbook")).toBeTruthy();
     expect(screen.getByText("L0–15")).toBeTruthy();
     expect(screen.getByText("L16–31")).toBeTruthy();
-    // A pergunta ainda está aberta: nada saiu.
+    // The question is still open: nothing went out.
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("relata cada máquina, e a que não confirmou não vira sucesso", async () => {
+  it("reports each machine, and the one that did not confirm does not become a success", async () => {
     const fetchMock = answer({
       group: "qwen35",
       released: 1,
@@ -94,8 +94,8 @@ describe("UndeployPipeline", () => {
     click(screen.getByRole("button", { name: "Desimplantar em todas" }));
 
     await waitFor(() => expect(screen.getByText(/não confirmaram/i)).toBeTruthy());
-    // O motivo da máquina que falhou aparece literalmente: é por onde o
-    // operador descobre em qual caixa a memória continua presa.
+    // The failed machine's reason appears literally: it is how the
+    // operator finds out in which box the memory is still held.
     expect(screen.getByText(/connection refused/i)).toBeTruthy();
     expect(screen.getByText(/^liberada$/i)).toBeTruthy();
 
@@ -105,7 +105,7 @@ describe("UndeployPipeline", () => {
     expect(JSON.parse(init.body as string)).toEqual({ group: "qwen35" });
   });
 
-  it("com todas liberadas, o relatório diz isso e não inventa falha", async () => {
+  it("with all released, the report says so and invents no failure", async () => {
     vi.stubGlobal(
       "fetch",
       answer({

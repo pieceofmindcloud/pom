@@ -1,16 +1,16 @@
 // @vitest-environment jsdom
 /**
- * A janela tem que sair de onde o botão está.
+ * The window has to come out from where the button is.
  *
- * `position: fixed` para de valer contra a janela do navegador quando algum
- * ancestral tem `transform`, `filter` ou `backdrop-filter` — ele vira o bloco
- * de contenção. A barra do topo e o cabeçalho do Painel têm `backdrop-blur`, e
- * as confirmações abertas de lá eram centralizadas dentro de uma faixa de
- * ~76 px: medido no navegador, a janela nascia em `y = -66` numa viewport de
- * 2029 px, com o título fora da tela.
+ * `position: fixed` stops applying against the browser window when some
+ * ancestor has `transform`, `filter` or `backdrop-filter` - it becomes the
+ * containing block. The top bar and the Dashboard header have `backdrop-blur`, and
+ * the confirmations opened from there were centered inside a strip of
+ * ~76 px: measured in the browser, the window was born at `y = -66` in a viewport of
+ * 2029 px, with the title off screen.
  *
- * jsdom não calcula layout, então o que se afirma aqui é a causa e não o
- * sintoma: a janela é filha do `body`, longe de qualquer ancestral borrado.
+ * jsdom does not compute layout, so what is asserted here is the cause and not the
+ * symptom: the window is a child of `body`, far from any blurred ancestor.
  */
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -20,7 +20,7 @@ import { Confirm, Modal } from "./Confirm";
 describe("Confirm", () => {
   afterEach(cleanup);
 
-  it("desenha a janela no body, não dentro do ancestral com backdrop-blur", () => {
+  it("draws the window in the body, not inside the ancestor with backdrop-blur", () => {
     render(
       <div className="backdrop-blur-md">
         <Confirm
@@ -35,12 +35,12 @@ describe("Confirm", () => {
     );
 
     const dialog = screen.getByRole("dialog");
-    // O véu é o pai da janela; acima dele tem que estar o `body`.
+    // The veil is the window's parent; above it there must be the `body`.
     expect(dialog.parentElement?.parentElement).toBe(document.body);
     expect(dialog.closest(".backdrop-blur-md")).toBeNull();
   });
 
-  it("não desenha nada enquanto está fechada", () => {
+  it("draws nothing while it is closed", () => {
     render(
       <Confirm
         open={false}
@@ -55,33 +55,33 @@ describe("Confirm", () => {
   });
 
   /**
-   * Uma janela abre outra: a confirmação de "Sair da rede" nasce de dentro do
-   * card que a janela de detalhes mostra. Como as duas escutam o Esc no
-   * `document`, sem a pilha um Esc só fecharia as duas, e quem desistiu da
-   * confirmação perderia também a tela que estava lendo.
+   * One window opens another: the "Leave the network" confirmation is born from inside the
+   * card that the details window shows. Since both listen for Esc on
+   * `document`, without the stack one Esc would close both, and whoever gave up on the
+   * confirmation would also lose the screen they were reading.
    */
-  it("o Esc fecha só a janela de cima", () => {
-    const fecharDeBaixo = vi.fn();
-    const fecharDeCima = vi.fn();
-    function Tela() {
-      const [confirmando, setConfirmando] = useState(false);
+  it("Esc closes only the top window", () => {
+    const closeFromBelow = vi.fn();
+    const closeFromAbove = vi.fn();
+    function Screen() {
+      const [confirming, setConfirming] = useState(false);
       return (
         <>
           <Modal
             open
             title="Detalhes de ksia"
-            onClose={fecharDeBaixo}
-            footer={<button onClick={() => setConfirmando(true)}>Sair da rede</button>}
+            onClose={closeFromBelow}
+            footer={<button onClick={() => setConfirming(true)}>Sair da rede</button>}
           >
             card
           </Modal>
-          <Modal open={confirmando} title="Tirar ksia da rede?" onClose={fecharDeCima} footer={null}>
+          <Modal open={confirming} title="Tirar ksia da rede?" onClose={closeFromAbove} footer={null}>
             conteúdo
           </Modal>
         </>
       );
     }
-    render(<Tela />);
+    render(<Screen />);
     act(() => {
       fireEvent.click(screen.getByText("Sair da rede"));
     });
@@ -89,7 +89,7 @@ describe("Confirm", () => {
     act(() => {
       fireEvent.keyDown(document, { key: "Escape" });
     });
-    expect(fecharDeCima).toHaveBeenCalledTimes(1);
-    expect(fecharDeBaixo).not.toHaveBeenCalled();
+    expect(closeFromAbove).toHaveBeenCalledTimes(1);
+    expect(closeFromBelow).not.toHaveBeenCalled();
   });
 });

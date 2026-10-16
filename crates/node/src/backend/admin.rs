@@ -1,6 +1,6 @@
 use crate::admin_trust::{
     AdminTransferAcceptance, AdminTransferOffer, AdminTrustDocument, AuthorityPrincipal,
-    EffectiveAuthority, NodePromotionCommand, NodePromotionRequest,
+    EffectiveAuthority,
 };
 use crate::auth::{AuthState, ConnectionAuth, InternalNodeAuth};
 use crate::config::ApiKey;
@@ -33,8 +33,7 @@ pub fn admin_routes() -> Router<crate::gateway::GatewayState> {
             post(demote_secondary),
         )
         .route("/api/ui/network/admin-authority", get(admin_authority_view))
-        .route("/api/ui/network/request-node", post(request_node_promotion))
-        .route("/api/ui/network/relinquish-node", post(relinquish_node))
+        .route("/api/ui/network/trust-sync", post(sync_trust_chain))
         .route("/admin/nodes/:id", delete(remove_node))
         .route("/admin/regenerate-key", post(regenerate_key))
         .route("/admin/api-keys", get(list_api_keys).post(generate_api_key))
@@ -49,10 +48,6 @@ pub fn admin_routes() -> Router<crate::gateway::GatewayState> {
 const SYNC_TIMEOUT: Duration = Duration::from_millis(50);
 #[cfg(not(test))]
 const SYNC_TIMEOUT: Duration = Duration::from_secs(2);
-#[cfg(test)]
-const PROMOTION_REQUEST_TIMEOUT: Duration = Duration::from_millis(500);
-#[cfg(not(test))]
-const PROMOTION_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const SYNC_ATTEMPTS: usize = 3;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -111,7 +106,7 @@ async fn principal_peer_for(
     })
 }
 
-/// Endereços do gateway do peer, o que já respondeu primeiro
+/// Gateway addresses of the peer, the one that already answered first
 /// (`Network::gateway_bases`).
 fn gateway_urls(network: &crate::network::Network, peer: &crate::network::PeerInfo) -> Vec<String> {
     network.gateway_bases(peer)
@@ -132,7 +127,7 @@ async fn post_internal_json<T: Serialize>(
 ) -> anyhow::Result<reqwest::Response> {
     let urls = gateway_urls(&state.network, peer);
     if urls.is_empty() && crate::peer_client::TunnelPeer::from_peer(peer).is_none() {
-        anyhow::bail!("o peer não anuncia porta de gateway");
+        anyhow::bail!("the peer does not announce a gateway port");
     }
     let client = state.peer_http.for_peer(&peer.node_id)?;
     let body_bytes = serde_json::to_vec(body)?;
@@ -380,16 +375,12 @@ fn internal_routes() -> Router<crate::gateway::GatewayState> {
             post(internal_reconcile_admin_trust),
         )
         .route(
+            "/api/internal/admin-trust/chain",
+            post(internal_trust_chain),
+        )
+        .route(
             "/api/internal/admin-trust/complete-transfer",
             post(internal_complete_transfer),
-        )
-        .route(
-            "/api/internal/profile/authorize-node",
-            post(internal_authorize_node),
-        )
-        .route(
-            "/api/internal/profile/accept-node",
-            post(internal_accept_node_promotion),
         )
         .route("/api/internal/reload_model", post(internal_reload_model))
         .route(
@@ -417,7 +408,7 @@ async fn internal_reload_model(
     if event.get("event").and_then(|value| value.as_str()) != Some("reload_model") {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "evento desconhecido" })),
+            Json(json!({ "error": "unknown event" })),
         );
     }
     match state.runtime.wake_from_idle().await {
@@ -456,6 +447,16 @@ async fn require_signed_admin(
     auth.principal().is_some_and(|issuer| {
         crate::admin_trust::control_issuer_is_admin(&state.admin_trust.document(), issuer)
     })
+}
+
+/// A mutation that governs the network is signed by the principal itself. A
+/// secondary admin deploys models and nothing else.
+async fn require_signed_principal(
+    state: &crate::gateway::GatewayState,
+    auth: &InternalNodeAuth,
+) -> bool {
+    auth.principal()
+        .is_some_and(|issuer| crate::gateway::issuer_is_principal(state, issuer))
 }
 
 /// A public-network node may mint exactly one class of key without being an
@@ -589,18 +590,22 @@ async fn admin_authority_view(
         &local_hostname,
         &peers,
     );
-    let secondary_principals = document
+    // A node promoted again after a demotion has two grants and is one admin.
+    let mut secondary_principals: Vec<crate::admin_trust::AuthorityPrincipal> = Vec::new();
+    for grant in document
         .grants
         .iter()
         .filter(|grant| grant.level == crate::admin_trust::AdminLevel::Secondary)
-        .map(|grant| grant.subject.clone())
-        .filter(|subject| {
-            state
+    {
+        if !secondary_principals.contains(&grant.subject)
+            && state
                 .admin_trust
-                .effective_authority(subject, NodeProfile::Admin)
+                .effective_authority(&grant.subject, NodeProfile::Admin)
                 == Some(EffectiveAuthority::Secondary)
-        })
-        .collect::<Vec<_>>();
+        {
+            secondary_principals.push(grant.subject.clone());
+        }
+    }
     let secondary = secondary_principals
         .iter()
         .map(|subject| member_view(subject, &state.network.node_id, &local_hostname, &peers))
@@ -689,222 +694,12 @@ async fn admin_authority_view(
     })
 }
 
-async fn request_node_promotion(
-    _auth: ConnectionAuth,
-    State(state): State<crate::gateway::GatewayState>,
-) -> axum::response::Response {
-    if state.auth.read().await.profile != NodeProfile::Infer {
-        return (
-            StatusCode::CONFLICT,
-            Json(json!({ "error": "somente um nó infer pode pedir entrada no processamento" })),
-        )
-            .into_response();
-    }
-    let request = match state.admin_trust.node_promotion_request(
-        &state.authority_signing_key,
-        state.authority_principal.clone(),
-    ) {
-        Ok(request) => request,
-        Err(error) => {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(json!({ "error": format!("pedido de entrada recusado: {error}") })),
-            )
-                .into_response()
-        }
-    };
-    let peers = state.network.alive_peers().await;
-    let Some(peer) = peers.into_iter().find(|peer| {
-        let Some(peer_id) = peer.libp2p_peer_id.as_deref() else {
-            return false;
-        };
-        if peer.pubkey.is_empty() {
-            return false;
-        }
-        let admin = AuthorityPrincipal {
-            node_id: peer.node_id.clone(),
-            peer_id: peer_id.to_string(),
-            pubkey: peer.pubkey.clone(),
-        };
-        state
-            .admin_trust
-            .effective_authority(&admin, NodeProfile::Admin)
-            .is_some()
-            && peer.profile == NodeProfile::Admin
-            && peer.gateway_port.is_some()
-    }) else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({ "error": "não há um admin ativo para autorizar o pedido" })),
-        )
-            .into_response();
-    };
-    match post_internal_json(
-        &state,
-        &peer,
-        "/api/internal/profile/authorize-node",
-        &request,
-        PROMOTION_REQUEST_TIMEOUT,
-    )
-    .await
-    {
-        Ok(response) => {
-            let status = response.status();
-            let body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "o admin não respondeu".into());
-            (status, body).into_response()
-        }
-        Err(error) => (
-            StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": format!("o pedido não chegou ao admin: {error}") })),
-        )
-            .into_response(),
-    }
-}
-
-async fn internal_authorize_node(
-    auth: InternalNodeAuth,
-    State(state): State<crate::gateway::GatewayState>,
-    Json(request): Json<NodePromotionRequest>,
-) -> axum::response::Response {
-    if auth.principal().is_none() {
-        return StatusCode::FORBIDDEN.into_response();
-    }
-    if state
-        .admin_trust
-        .effective_authority(&state.authority_principal, state.auth.read().await.profile)
-        .is_none()
-    {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "o emissor não é um admin vigente" })),
-        )
-            .into_response();
-    }
-    let Some(peer) = state.network.alive_peers().await.into_iter().find(|peer| {
-        peer.node_id == request.subject.node_id
-            && peer.pubkey == request.subject.pubkey
-            && peer.libp2p_peer_id.as_deref() == Some(request.subject.peer_id.as_str())
-    }) else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "o nó solicitante não está ativo" })),
-        )
-            .into_response();
-    };
-    let command = match state
-        .admin_trust
-        .authorize_node_promotion_request(&state.authority_signing_key, request)
-    {
-        Ok(command) => command,
-        Err(error) => {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(json!({ "error": format!("pedido de entrada recusado: {error}") })),
-            )
-                .into_response()
-        }
-    };
-    match post_internal_json(
-        &state,
-        &peer,
-        "/api/internal/profile/accept-node",
-        &command,
-        SYNC_TIMEOUT,
-    )
-    .await
-    {
-        Ok(response) => {
-            let status = response.status();
-            let body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "o nó solicitante não respondeu".into());
-            (status, body).into_response()
-        }
-        Err(error) => (
-            StatusCode::BAD_GATEWAY,
-            Json(
-                json!({ "error": format!("a autorização não chegou ao nó solicitante: {error}") }),
-            ),
-        )
-            .into_response(),
-    }
-}
-
-async fn internal_accept_node_promotion(
-    auth: InternalNodeAuth,
-    State(state): State<crate::gateway::GatewayState>,
-    Json(command): Json<NodePromotionCommand>,
-) -> axum::response::Response {
-    if !require_signed_admin(&state, &auth).await {
-        return StatusCode::FORBIDDEN.into_response();
-    }
-    let mut cfg = state.auth.write().await;
-    if let Err(error) =
-        state
-            .admin_trust
-            .apply_node_promotion(command, &state.authority_principal, cfg.profile)
-    {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": format!("autorização administrativa recusada: {error}") })),
-        )
-            .into_response();
-    }
-    cfg.profile = NodeProfile::Node;
-    if let Err(error) = cfg.save() {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("não foi possível salvar o perfil: {error}") })),
-        )
-            .into_response();
-    }
-    drop(cfg);
-    state.network.set_profile(NodeProfile::Node);
-    state.cluster_logs.set_admin_receiver(false);
-    state.audit.set_admin_receiver(false);
-    Json(json!({ "profile": "node", "node_id": state.network.node_id })).into_response()
-}
-
-async fn relinquish_node(
-    _auth: ConnectionAuth,
-    State(state): State<crate::gateway::GatewayState>,
-) -> axum::response::Response {
-    let mut cfg = state.auth.write().await;
-    if cfg.profile != NodeProfile::Node {
-        return (
-            StatusCode::CONFLICT,
-            Json(json!({ "error": "somente um nó pode voltar a infer" })),
-        )
-            .into_response();
-    }
-    cfg.profile = NodeProfile::Infer;
-    if let Err(error) = cfg.save() {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("não foi possível salvar o perfil: {error}") })),
-        )
-            .into_response();
-    }
-    drop(cfg);
-    state.network.set_profile(NodeProfile::Infer);
-    Json(json!({
-        "profile": "infer",
-        "node_id": state.network.node_id,
-        "warning": "este nó deixou de participar do processamento da rede"
-    }))
-    .into_response()
-}
-
 async fn internal_upsert_api_key(
     auth: InternalNodeAuth,
     State(state): State<crate::gateway::GatewayState>,
     Json(key): Json<ApiKey>,
 ) -> impl IntoResponse {
-    let admin = require_signed_admin(&state, &auth).await;
+    let admin = require_signed_principal(&state, &auth).await;
     let self_owned_chat_key = auth
         .principal()
         .is_some_and(|issuer| is_self_owned_chat_key(&key, issuer));
@@ -912,16 +707,16 @@ async fn internal_upsert_api_key(
         return StatusCode::FORBIDDEN.into_response();
     }
     if let Err(error) = state.database.insert_api_key(&key) {
-        tracing::warn!("não foi possível registrar a API key: {error:#}");
+        tracing::warn!("could not register the API key: {error:#}");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
-    // A chave interna nova de um nó aposenta a anterior, cujo segredo o nó já
-    // não tem: sem isto ela ficaria ativa no principal, sem dono.
+    // A node's new internal key retires the previous one, whose secret the node no
+    // longer has: without this it would stay active on the principal, ownerless.
     if let Err(error) = state
         .database
         .revoke_superseded_node_keys(&state.network.node_id)
     {
-        tracing::warn!("não foi possível revogar chaves internas substituídas: {error:#}");
+        tracing::warn!("could not revoke replaced internal keys: {error:#}");
     }
     match refresh_api_key_snapshot(&state).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
@@ -934,7 +729,7 @@ async fn internal_revoke_api_key(
     State(state): State<crate::gateway::GatewayState>,
     Json(request): Json<RevokeRequest>,
 ) -> impl IntoResponse {
-    if !require_signed_admin(&state, &auth).await {
+    if !require_signed_principal(&state, &auth).await {
         return StatusCode::FORBIDDEN.into_response();
     }
     match state
@@ -954,7 +749,7 @@ async fn internal_revoke_origin(
     State(state): State<crate::gateway::GatewayState>,
     Json(request): Json<RevokeOriginRequest>,
 ) -> impl IntoResponse {
-    if !require_signed_admin(&state, &auth).await {
+    if !require_signed_principal(&state, &auth).await {
         return StatusCode::FORBIDDEN.into_response();
     }
     match state
@@ -1014,9 +809,9 @@ async fn internal_validate_api_key(
 
 // ── Snapshots de KV cache (`--slot-save-path`) ───────────────────────────────
 
-/// Lista os snapshots que o **nó local** conhece, lidos do `/health` da própria
-/// porta de inferência. É uma vista rápida; um snapshot de implantação tem uma
-/// fatia por hop e o nome do arquivo carrega o `node_id` de cada um.
+/// Lists the snapshots that the **local node** knows, read from the `/health` of its own
+/// inference port. It is a quick view; a deployment snapshot has one
+/// slice per hop and the file name carries each one's `node_id`.
 async fn list_slots(
     _auth: ConnectionAuth,
     State(state): State<crate::gateway::GatewayState>,
@@ -1036,7 +831,7 @@ async fn list_slots(
             }
         }
     }
-    // Cache de prefixo persistente (Phase 3), quando ligado neste gateway.
+    // Persistent prefix cache (Phase 3), when turned on in this gateway.
     if let Some(disk) = &state.prefix_disk {
         let (files, bytes) = disk.stats();
         view["prefix_auto_cache"] = json!({
@@ -1052,24 +847,24 @@ async fn list_slots(
 
 #[derive(Debug, Deserialize)]
 struct SlotActionQuery {
-    /// `save`, `restore` ou `erase`.
+    /// `save`, `restore` or `erase`.
     action: String,
 }
 
 #[derive(Debug, Deserialize, Default)]
 struct SlotActionBody {
-    /// Modelo (ou `deploy_id`) cujo pipeline recebe a ação.
+    /// Model (or `deploy_id`) whose pipeline receives the action.
     model: String,
-    /// Sessão viva a fotografar (`save`). Vem do `x_pom` de uma resposta.
+    /// Live session to snapshot (`save`). Comes from the `x_pom` of a response.
     #[serde(default)]
     session_id: String,
-    /// Nova sessão a criar em `restore`.
+    /// New session to create in `restore`.
     #[serde(default)]
     dest_session_id: String,
 }
 
-/// `POST /admin/slots/{name}?action=save|restore|erase` - orquestra um snapshot
-/// de KV pela implantação inteira. Ver `gateway::snapshot_deployment`.
+/// `POST /admin/slots/{name}?action=save|restore|erase` - orchestrates a KV
+/// snapshot across the whole deployment. See `gateway::snapshot_deployment`.
 async fn slot_action(
     _auth: ConnectionAuth,
     State(state): State<crate::gateway::GatewayState>,
@@ -1078,7 +873,7 @@ async fn slot_action(
     Json(body): Json<SlotActionBody>,
 ) -> axum::response::Response {
     if body.model.trim().is_empty() {
-        return bad_request("informe 'model'");
+        return bad_request("provide 'model'");
     }
     let plan = match crate::gateway::resolve_plan_for_model(&state, body.model.trim()).await {
         Ok(plan) => plan,
@@ -1087,7 +882,7 @@ async fn slot_action(
     match query.action.as_str() {
         "save" => {
             if body.session_id.trim().is_empty() {
-                return bad_request("save exige 'session_id' de uma sessão viva");
+                return bad_request("save requires the 'session_id' of a live session");
             }
             match crate::gateway::snapshot_deployment(
                 &plan,
@@ -1123,7 +918,7 @@ async fn slot_action(
             crate::gateway::erase_snapshot(&plan, &name, &state.peer_http).await;
             Json(json!({ "erased": true, "slot_name": name })).into_response()
         }
-        other => bad_request(format!("ação desconhecida: {other}")),
+        other => bad_request(format!("unknown action: {other}")),
     }
 }
 
@@ -1159,7 +954,7 @@ async fn list_nodes(
     {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({ "error": "o perfil infer só pode ver a própria máquina" })),
+            Json(json!({ "error": "the infer profile can only see its own machine" })),
         )
             .into_response();
     }
@@ -1176,10 +971,11 @@ async fn list_nodes(
                 "short_id": &p.node_id[..p.node_id.len().min(12)],
                 "hostname": p.hostname,
                 "addr": p.addr,
-                // Por onde este nó fala com o peer de fato; `addr` é só o que
-                // ele anuncia, e pode ser um endereço que ninguém alcança.
+                // Through where this node actually talks to the peer; `addr` is only what
+                // it announces, and may be an address nobody can reach.
                 "route": (p.node_id != self_id).then(|| state.network.peer_route(p)),
                 "profile": p.profile,
+                "trust_version": p.trust_version,
                 "model": p.model,
                 "start_layer": p.start_layer,
                 "end_layer": p.end_layer,
@@ -1230,14 +1026,14 @@ async fn promote_node_to_admin(
     {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({ "error": "somente o administrador pode promover um nó" })),
+            Json(json!({ "error": "only the administrator can promote a node" })),
         )
             .into_response();
     }
     if node_id == state.network.node_id {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "o administrador já é este nó" })),
+            Json(json!({ "error": "the administrator is already this node" })),
         )
             .into_response();
     }
@@ -1251,21 +1047,33 @@ async fn promote_node_to_admin(
     else {
         return (
             StatusCode::NOT_FOUND,
-            Json(json!({ "error": "nó desconhecido ou fora da rede" })),
+            Json(json!({ "error": "unknown node or outside the network" })),
         )
             .into_response();
     };
     let Some(peer_id) = peer.libp2p_peer_id.clone() else {
         return (
             StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": "o peer não anuncia sua identidade libp2p" })),
+            Json(json!({ "error": "the peer does not announce its libp2p identity" })),
         )
             .into_response();
     };
     if peer.pubkey.is_empty() {
         return (
             StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": "o peer não anuncia a chave de autoridade libp2p" })),
+            Json(json!({ "error": "the peer does not announce the libp2p authority key" })),
+        )
+            .into_response();
+    }
+    // Refused before anything is signed: an inference node's role is set at
+    // admission, and a grant recorded for one would stay in the chain.
+    if crate::gateway::peer_is_infer(&state, &peer) {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "an inference node cannot be made an administrator",
+                "reason": "infer_target"
+            })),
         )
             .into_response();
     }
@@ -1283,7 +1091,7 @@ async fn promote_node_to_admin(
         Err(error) => {
             return (
                 StatusCode::CONFLICT,
-                Json(json!({ "error": format!("não foi possível emitir a concessão: {error}") })),
+                Json(json!({ "error": format!("could not issue the grant: {error}") })),
             )
                 .into_response();
         }
@@ -1294,7 +1102,7 @@ async fn promote_node_to_admin(
     {
         return (
             StatusCode::CONFLICT,
-            Json(json!({ "error": format!("não foi possível registrar a concessão: {error}") })),
+            Json(json!({ "error": format!("could not record the grant: {error}") })),
         )
             .into_response();
     }
@@ -1307,24 +1115,51 @@ async fn promote_node_to_admin(
         SYNC_TIMEOUT,
     )
     .await;
-    match response {
+    // The target answered and did not become an admin: the grant is taken
+    // back with a signed demotion, so the chain never names an admin that
+    // is not one. Silence is different - the grant stands and the target
+    // adopts it when it next asks for the chain.
+    let refusal = match response {
         Ok(response) if response.status().is_success() => {
-            Json(json!({ "profile": "admin", "node_id": node_id })).into_response()
+            let body: serde_json::Value = response.json().await.unwrap_or_default();
+            (body["profile"] != "admin").then(|| {
+                (
+                    StatusCode::CONFLICT,
+                    json!({ "error": "the node did not accept the administrator role" })
+                        .to_string(),
+                )
+            })
         }
         Ok(response) => {
             let status = response.status();
             let body = response
                 .text()
                 .await
-                .unwrap_or_else(|_| "promoção recusada pelo nó".to_string());
-            (status, body).into_response()
+                .unwrap_or_else(|_| "promotion refused by the node".to_string());
+            Some((status, body))
         }
-        Err(error) => (
-            StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": format!("a promoção não chegou ao nó: {error}") })),
-        )
-            .into_response(),
+        Err(error) => {
+            tracing::warn!(node = %node_id, "promotion recorded, not yet delivered to the node: {error:#}");
+            spawn_trust_fanout(&state, Some(node_id.clone()));
+            return (
+                StatusCode::ACCEPTED,
+                Json(json!({ "profile": "admin", "node_id": node_id, "pending": true })),
+            )
+                .into_response();
+        }
+    };
+    if let Some((status, body)) = refusal {
+        if let Err(error) = state
+            .admin_trust
+            .demote_secondary(&state.authority_signing_key, grant.subject.clone())
+        {
+            tracing::warn!(node = %node_id, "promotion refused and not undone: {error:#}");
+        }
+        return (status, body).into_response();
     }
+    publish_chain_version(&state);
+    spawn_trust_fanout(&state, Some(node_id.clone()));
+    Json(json!({ "profile": "admin", "node_id": node_id })).into_response()
 }
 
 async fn internal_reconcile_admin_trust(
@@ -1335,55 +1170,276 @@ async fn internal_reconcile_admin_trust(
     if !require_signed_admin(&state, &auth).await {
         return StatusCode::FORBIDDEN.into_response();
     }
+    // The principal's own copy settles two copies the counters call equal.
+    let from_principal = auth
+        .principal()
+        .is_some_and(|issuer| issuer.pubkey == state.admin_trust.current_primary().pubkey);
+    match adopt_trust_chain(&state, document, from_principal).await {
+        Ok(profile) => {
+            Json(json!({ "profile": profile, "node_id": state.network.node_id })).into_response()
+        }
+        Err((status, error)) => (status, Json(json!({ "error": error }))).into_response(),
+    }
+}
+
+/// Takes a newer copy of the trust chain and brings this node in line with
+/// it. Every member receives the chain, not only the node it promotes or
+/// demotes: a member that does not know a secondary admin refuses its
+/// commands. The profile follows the chain - admin while it grants this node
+/// authority, node when it no longer does - except for an inference node,
+/// whose role is set at admission and never raised by a grant.
+pub(crate) async fn adopt_trust_chain(
+    state: &crate::gateway::GatewayState,
+    document: AdminTrustDocument,
+    from_principal: bool,
+) -> Result<NodeProfile, (StatusCode, String)> {
     let mut cfg = state.auth.write().await;
-    if !document
-        .grants
-        .iter()
-        .any(|grant| grant.subject == state.authority_principal)
-        || !matches!(cfg.profile, NodeProfile::Node | NodeProfile::Admin)
-    {
-        return (
-            StatusCode::CONFLICT,
-            Json(json!({ "error": "a cadeia não é uma concessão para este nó" })),
-        )
-            .into_response();
-    }
-    if let Err(error) = state.admin_trust.reconcile(document) {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": format!("cadeia administrativa recusada: {error}") })),
-        )
-            .into_response();
-    }
+    state
+        .admin_trust
+        .reconcile_from(document, from_principal)
+        .map_err(|error| {
+            (
+                StatusCode::FORBIDDEN,
+                format!("administrative chain refused: {error}"),
+            )
+        })?;
+    publish_chain_version(state);
     state
         .network
         .set_policy_principal_pubkey(state.admin_trust.current_primary().pubkey);
-    cfg.profile = if state
+    let granted = state
         .admin_trust
         .effective_authority(&state.authority_principal, NodeProfile::Admin)
-        .is_some()
-    {
-        NodeProfile::Admin
-    } else {
-        NodeProfile::Node
+        .is_some();
+    let profile = match cfg.profile {
+        NodeProfile::Infer => NodeProfile::Infer,
+        _ if granted => NodeProfile::Admin,
+        _ => NodeProfile::Node,
     };
-    let profile = cfg.profile;
-    if let Err(error) = cfg.save() {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("não foi possível salvar o perfil: {error}") })),
-        )
-            .into_response();
+    if profile != cfg.profile {
+        cfg.profile = profile;
+        cfg.save().map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("could not save the profile: {error}"),
+            )
+        })?;
     }
     drop(cfg);
-    state
-        .network
-        .set_policy_principal_pubkey(state.admin_trust.current_primary().pubkey);
     state.network.set_profile(profile);
     let admin_receiver = profile == NodeProfile::Admin;
     state.cluster_logs.set_admin_receiver(admin_receiver);
     state.audit.set_admin_receiver(admin_receiver);
-    Json(json!({ "profile": profile, "node_id": state.network.node_id })).into_response()
+    Ok(profile)
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct TrustChainQuery {
+    #[serde(default)]
+    have: String,
+}
+
+/// The chain a member asks the principal for: the whole document, or only
+/// "you are current" when the caller already has this version. The document
+/// is not a secret - a public network publishes it - and the caller checks
+/// its signatures before adopting it.
+async fn internal_trust_chain(
+    _auth: InternalNodeAuth,
+    State(state): State<crate::gateway::GatewayState>,
+    Json(query): Json<TrustChainQuery>,
+) -> axum::response::Response {
+    if query.have == state.admin_trust.chain_version() {
+        return Json(json!({ "current": true })).into_response();
+    }
+    Json(json!({ "current": false, "document": state.admin_trust.document() })).into_response()
+}
+
+/// Sends the current chain to every member but `skip`, each on its own task:
+/// a promotion or demotion has to be known by all of them, and one slow peer
+/// must not hold the others. A peer that misses it asks later
+/// (`spawn_trust_chain_keeper`).
+fn spawn_trust_fanout(state: &crate::gateway::GatewayState, skip: Option<String>) {
+    let state = state.clone();
+    tokio::spawn(async move {
+        let document = state.admin_trust.document();
+        for peer in state.network.alive_peers().await {
+            if peer.node_id == state.network.node_id || skip.as_deref() == Some(&peer.node_id) {
+                continue;
+            }
+            let state = state.clone();
+            let document = document.clone();
+            tokio::spawn(async move {
+                let sent = post_internal_json(
+                    &state,
+                    &peer,
+                    "/api/internal/admin-trust/reconcile",
+                    &document,
+                    SYNC_TIMEOUT,
+                )
+                .await;
+                match sent {
+                    Ok(response) if response.status().is_success() => {}
+                    Ok(response) => tracing::debug!(
+                        node = %peer.node_id,
+                        "administrative chain: the peer answered {}",
+                        response.status()
+                    ),
+                    Err(error) => tracing::debug!(
+                        node = %peer.node_id,
+                        "administrative chain did not reach the peer: {error:#}"
+                    ),
+                }
+            });
+        }
+    });
+}
+
+/// Announces the version of the local chain. Called wherever the chain
+/// changes; the keeper repeats it, so a missed call only delays the news.
+pub(crate) fn publish_chain_version(state: &crate::gateway::GatewayState) {
+    state
+        .network
+        .set_trust_version(state.admin_trust.chain_version());
+}
+
+/// How often a node compares its chain with what its peers announce. The
+/// comparison is local; a request is only made when a peer is ahead.
+const TRUST_CHAIN_CHECK: Duration = Duration::from_secs(30);
+/// How many peers one round asks before giving up until the next.
+const TRUST_CHAIN_SOURCES: usize = 3;
+
+/// The peers whose announced chain is worth fetching, best first: any member
+/// ahead of this node by the counters, and the principal whenever its copy
+/// differs at the same counters. The announced version is only a hint of
+/// where to look - what is fetched is verified signature by signature.
+async fn chain_sources(
+    state: &crate::gateway::GatewayState,
+) -> Vec<(crate::network::PeerInfo, bool)> {
+    let mine = state.admin_trust.chain_version();
+    let Some(my_counters) = crate::admin_trust::version_counters(&mine) else {
+        return Vec::new();
+    };
+    let primary = state.admin_trust.current_primary();
+    let mut sources = state
+        .network
+        .alive_peers()
+        .await
+        .into_iter()
+        .filter_map(|peer| {
+            let theirs = peer.trust_version.as_deref()?;
+            if theirs == mine {
+                return None;
+            }
+            let counters = crate::admin_trust::version_counters(theirs)?;
+            let is_principal = peer.pubkey == primary.pubkey;
+            (counters > my_counters || (counters == my_counters && is_principal)).then_some((
+                counters,
+                is_principal,
+                peer,
+            ))
+        })
+        .collect::<Vec<_>>();
+    sources.sort_by(|a, b| (b.0, b.1).cmp(&(a.0, a.1)));
+    sources
+        .into_iter()
+        .map(|(_, is_principal, peer)| (peer, is_principal))
+        .collect()
+}
+
+/// One round of catching up: asks the best sources in turn until one hands
+/// over a chain this node adopts. `Ok(true)` when the chain changed.
+async fn sync_trust_chain_once(state: &crate::gateway::GatewayState) -> bool {
+    publish_chain_version(state);
+    if state.network.is_detached() {
+        return false;
+    }
+    for (peer, is_principal) in chain_sources(state)
+        .await
+        .into_iter()
+        .take(TRUST_CHAIN_SOURCES)
+    {
+        match refresh_trust_chain(state, &peer, is_principal).await {
+            Ok(true) => {
+                tracing::info!(
+                    node = %peer.node_id,
+                    version = %state.admin_trust.chain_version(),
+                    "administrative chain updated from a peer"
+                );
+                return true;
+            }
+            Ok(false) => {}
+            Err(error) => tracing::debug!(
+                node = %peer.node_id,
+                "administrative chain: the peer did not deliver a newer chain: {error:#}"
+            ),
+        }
+    }
+    false
+}
+
+/// Keeps this node's chain current. A peer that announces a newer version -
+/// the principal or any other member, so it works with the principal offline -
+/// is asked for its copy. This is what reaches a node that was away when a
+/// promotion or demotion was sent around.
+pub(crate) fn spawn_trust_chain_keeper(state: crate::gateway::GatewayState) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(TRUST_CHAIN_CHECK);
+        loop {
+            ticker.tick().await;
+            sync_trust_chain_once(&state).await;
+        }
+    });
+}
+
+/// Asks `peer` for its chain and adopts it when it is newer.
+async fn refresh_trust_chain(
+    state: &crate::gateway::GatewayState,
+    peer: &crate::network::PeerInfo,
+    from_principal: bool,
+) -> anyhow::Result<bool> {
+    let response = state
+        .control_post_json(
+            peer,
+            "/api/internal/admin-trust/chain",
+            &json!({ "have": state.admin_trust.chain_version() }),
+            SYNC_TIMEOUT,
+        )
+        .await?;
+    if !response.status().is_success() {
+        anyhow::bail!("the peer answered {}", response.status());
+    }
+    let body: serde_json::Value = response.json().await?;
+    let Some(document) = body.get("document").filter(|value| !value.is_null()) else {
+        return Ok(false);
+    };
+    let document: AdminTrustDocument = serde_json::from_value(document.clone())?;
+    let before = state.admin_trust.chain_version();
+    adopt_trust_chain(state, document, from_principal)
+        .await
+        .map_err(|(_, error)| anyhow::anyhow!(error))?;
+    Ok(state.admin_trust.chain_version() != before)
+}
+
+/// What the interface shows about this node's copy of the chain.
+pub(crate) async fn chain_status(state: &crate::gateway::GatewayState) -> serde_json::Value {
+    let sources = chain_sources(state).await;
+    json!({
+        "version": state.admin_trust.chain_version(),
+        "outdated": !sources.is_empty(),
+        "newer_on": sources.iter().map(|(peer, _)| peer.hostname.clone()).collect::<Vec<_>>(),
+    })
+}
+
+/// `POST /api/ui/network/trust-sync`: catch up now instead of waiting for
+/// the keeper. Every profile may ask it of its own node.
+async fn sync_trust_chain(
+    _auth: ConnectionAuth,
+    State(state): State<crate::gateway::GatewayState>,
+) -> axum::response::Response {
+    let updated = sync_trust_chain_once(&state).await;
+    let mut status = chain_status(&state).await;
+    status["updated"] = json!(updated);
+    Json(status).into_response()
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1403,7 +1459,7 @@ async fn internal_complete_transfer(
     if completion.offer.issuer != state.authority_principal {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({ "error": "a oferta não foi emitida por este principal" })),
+            Json(json!({ "error": "the offer was not issued by this principal" })),
         )
             .into_response();
     }
@@ -1413,7 +1469,7 @@ async fn internal_complete_transfer(
     {
         return (
             StatusCode::CONFLICT,
-            Json(json!({ "error": format!("transferência administrativa recusada: {error}") })),
+            Json(json!({ "error": format!("administrative transfer refused: {error}") })),
         )
             .into_response();
     }
@@ -1425,7 +1481,7 @@ async fn internal_complete_transfer(
     if let Err(error) = cfg.save() {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("não foi possível salvar o perfil: {error}") })),
+            Json(json!({ "error": format!("could not save the profile: {error}") })),
         )
             .into_response();
     }
@@ -1443,7 +1499,7 @@ async fn resign_authority(
     if require_principal(&state).await.is_err() {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({ "error": "somente o principal pode resignar" })),
+            Json(json!({ "error": "only the principal can resign" })),
         )
             .into_response();
     }
@@ -1452,7 +1508,7 @@ async fn resign_authority(
         None => {
             return (
                 StatusCode::CONFLICT,
-                Json(json!({ "error": "não há um secundário elegível para sucessão" })),
+                Json(json!({ "error": "there is no secondary eligible for succession" })),
             )
                 .into_response()
         }
@@ -1465,7 +1521,7 @@ async fn resign_authority(
     }) else {
         return (
             StatusCode::CONFLICT,
-            Json(json!({ "error": "o último secundário promovido não está ativo" })),
+            Json(json!({ "error": "the last promoted secondary is not active" })),
         )
             .into_response();
     };
@@ -1478,7 +1534,7 @@ async fn resign_authority(
         Err(error) => {
             return (
                 StatusCode::CONFLICT,
-                Json(json!({ "error": format!("resignação recusada: {error}") })),
+                Json(json!({ "error": format!("resignation refused: {error}") })),
             )
                 .into_response()
         }
@@ -1501,12 +1557,12 @@ async fn resign_authority(
             let body = response
                 .text()
                 .await
-                .unwrap_or_else(|_| "o sucessor recusou a oferta".into());
+                .unwrap_or_else(|_| "the successor refused the offer".into());
             (status, body).into_response()
         }
         Err(error) => (
             StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": format!("a oferta não chegou ao sucessor: {error}") })),
+            Json(json!({ "error": format!("the offer did not reach the successor: {error}") })),
         )
             .into_response(),
     }
@@ -1519,21 +1575,21 @@ pub(crate) async fn accept_authority_transfer(
     let Some(offer) = state.admin_trust.pending_transfer() else {
         return (
             StatusCode::NOT_FOUND,
-            Json(json!({ "error": "oferta de principal não existe" })),
+            Json(json!({ "error": "principal offer does not exist" })),
         )
             .into_response();
     };
     if offer.offer_id != offer_id || offer.successor != state.authority_principal {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({ "error": "esta oferta não é destinada a este peer" })),
+            Json(json!({ "error": "this offer is not addressed to this peer" })),
         )
             .into_response();
     }
     if state.auth.read().await.profile != NodeProfile::Admin {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({ "error": "o sucessor precisa continuar admin até aceitar" })),
+            Json(json!({ "error": "the successor must remain admin until it accepts" })),
         )
             .into_response();
     }
@@ -1546,7 +1602,7 @@ pub(crate) async fn accept_authority_transfer(
         Err(error) => {
             return (
                 StatusCode::CONFLICT,
-                Json(json!({ "error": format!("aceitação recusada: {error}") })),
+                Json(json!({ "error": format!("acceptance refused: {error}") })),
             )
                 .into_response()
         }
@@ -1564,7 +1620,7 @@ pub(crate) async fn accept_authority_transfer(
             "accepted": true,
             "offer_id": offer.offer_id,
             "synchronized": false,
-            "reason": "o principal anterior está offline; a cadeia aceita permanece persistida"
+            "reason": "the previous principal is offline; the accepted chain remains persisted"
         }))
         .into_response();
     };
@@ -1586,7 +1642,7 @@ pub(crate) async fn accept_authority_transfer(
             "accepted": true,
             "offer_id": offer_id,
             "synchronized": false,
-            "reason": format!("principal anterior respondeu {}", response.status())
+            "reason": format!("previous principal answered {}", response.status())
         }))
         .into_response(),
         Err(error) => Json(json!({
@@ -1607,7 +1663,7 @@ async fn demote_secondary(
     if require_principal(&state).await.is_err() {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({ "error": "somente o principal pode despromover um secundário" })),
+            Json(json!({ "error": "only the principal can demote a secondary" })),
         )
             .into_response();
     }
@@ -1624,7 +1680,7 @@ async fn demote_secondary(
     else {
         return (
             StatusCode::NOT_FOUND,
-            Json(json!({ "error": "o nó não é um admin secundário" })),
+            Json(json!({ "error": "the node is not a secondary admin" })),
         )
             .into_response();
     };
@@ -1636,11 +1692,13 @@ async fn demote_secondary(
         Err(error) => {
             return (
                 StatusCode::CONFLICT,
-                Json(json!({ "error": format!("despromoção recusada: {error}") })),
+                Json(json!({ "error": format!("demotion refused: {error}") })),
             )
                 .into_response()
         }
     };
+    publish_chain_version(&state);
+    spawn_trust_fanout(&state, Some(subject.node_id.clone()));
     let Some(peer) = state
         .network
         .alive_peers()
@@ -1666,12 +1724,12 @@ async fn demote_secondary(
         }
         Ok(response) => (
             StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": format!("o secundário recusou a mutação assinada: {}", response.status()) })),
+            Json(json!({ "error": format!("the secondary refused the signed mutation: {}", response.status()) })),
         )
             .into_response(),
         Err(error) => (
             StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": format!("a despromoção não chegou ao secundário: {error}") })),
+            Json(json!({ "error": format!("the demotion did not reach the secondary: {error}") })),
         )
             .into_response(),
 }
@@ -1692,11 +1750,11 @@ async fn block_node(
         .database
         .revoke_api_keys_by_origin(&node_id, &state.network.node_id)
     {
-        tracing::error!("não foi possível revogar as API keys da origem: {error}");
+        tracing::error!("could not revoke the API keys of the origin: {error}");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
     if let Err(error) = notify_origin_revoked(&state, &node_id, &state.network.node_id).await {
-        tracing::warn!("revogação central da origem falhou: {error:#}");
+        tracing::warn!("central revocation of the origin failed: {error:#}");
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
     let _ = refresh_api_key_snapshot(&state).await;
@@ -1745,10 +1803,10 @@ async fn list_api_keys(
     let keys = match state.database.api_keys() {
         Ok(keys) => keys,
         Err(error) => {
-            tracing::error!("não foi possível ler as API keys: {error:#}");
+            tracing::error!("could not read the API keys: {error:#}");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": "não foi possível ler as API keys" })),
+                Json(json!({ "error": "could not read the API keys" })),
             )
                 .into_response();
         }
@@ -1780,7 +1838,7 @@ struct GenerateKeyRequest {
 /// Tokens accumulate rather than replace each other: the operator hands one out
 /// per node (and per harness), and the request log attributes each generation
 /// back to the one that paid for it. Minting used to deactivate every existing
-/// key, which made "a token per node" impossible — the second one silently
+/// key, which made "a token per node" impossible - the second one silently
 /// revoked the first.
 async fn generate_api_key(
     _auth: ConnectionAuth,
@@ -1796,10 +1854,10 @@ async fn generate_api_key(
     {
         Ok(key) => key,
         Err(error) => {
-            tracing::error!("não foi possível guardar a API key: {error}");
+            tracing::error!("could not store the API key: {error}");
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(json!({ "error": "não foi possível guardar a API key" })),
+                Json(json!({ "error": "could not store the API key" })),
             )
                 .into_response();
         }
@@ -1824,23 +1882,23 @@ pub(crate) async fn chat_key(
             tracing::warn!("could not prepare the chat key: {error:#}");
             (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(json!({ "error": "não foi possível preparar a chave do chat" })),
+                Json(json!({ "error": "could not prepare the chat key" })),
             )
                 .into_response()
         }
     }
 }
 
-/// A API key que este nó usa para chamar a própria `/v1`: a do Chat da
-/// interface e a entregue aos plugins (`host.configure`). É a única classe de
-/// chave que um nó sem autoridade administrativa pode registrar no principal
-/// (`is_self_owned_chat_key`), por isso os plugins não recebem uma própria.
-/// Devolve a chave e se ela acabou de ser criada.
+/// The API key this node uses to call its own `/v1`: the interface's Chat one
+/// and the one handed to plugins (`host.configure`). It is the only class of
+/// key that a node without administrative authority can register on the principal
+/// (`is_self_owned_chat_key`), which is why plugins do not get one of their own.
+/// Returns the key and whether it was just created.
 ///
-/// O segredo fica no cofre local do nó (`PomDb::node_api_key`); o registro
-/// guarda só o hash. Se o cofre não tem segredo, ou o segredo não bate mais
-/// com uma chave ativa (revogada, ou um banco migrado de antes do hash, que
-/// perdeu o texto), uma chave nova é emitida e as antigas do nó são revogadas.
+/// The secret stays in the node's local vault (`PomDb::node_api_key`); the record
+/// keeps only the hash. If the vault has no secret, or the secret no longer matches
+/// an active key (revoked, or a database migrated from before the hash, which
+/// lost the text), a new key is issued and the node's old ones are revoked.
 pub(crate) async fn node_chat_key(
     state: &crate::gateway::GatewayState,
 ) -> anyhow::Result<(IssuedApiKey, bool)> {
@@ -1870,10 +1928,10 @@ pub(crate) async fn node_chat_key(
         .database
         .save_node_api_key(&issued.key.id, &issued.secret)?;
     for id in stale {
-        // A chave anterior não tem mais dono: ninguém sabe o segredo dela.
+        // The previous key no longer has an owner: nobody knows its secret.
         let _ = state.database.revoke_api_key(&id, &node_id);
         if let Err(error) = notify_key_revoked(state, &id, &node_id).await {
-            tracing::warn!("revogação central da chave antiga do nó falhou: {error:#}");
+            tracing::warn!("central revocation of the old node key failed: {error:#}");
         }
     }
     let _ = refresh_api_key_snapshot(state).await;
@@ -1891,16 +1949,16 @@ async fn revoke_api_key(
     let existed = match state.database.revoke_api_key(&key, &revoked_by) {
         Ok(existed) => existed,
         Err(error) => {
-            tracing::error!("não foi possível revogar a API key: {error}");
+            tracing::error!("could not revoke the API key: {error}");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": "não foi possível revogar a API key" })),
+                Json(json!({ "error": "could not revoke the API key" })),
             )
                 .into_response();
         }
     };
     if let Err(error) = notify_key_revoked(&state, &key, &revoked_by).await {
-        tracing::warn!("revogação central da API key falhou: {error:#}");
+        tracing::warn!("central revocation of the API key failed: {error:#}");
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
     let _ = refresh_api_key_snapshot(&state).await;
@@ -1915,9 +1973,9 @@ mod tests {
     use axum::http::{HeaderMap, Request};
     use tower::ServiceExt;
 
-    /// A rota `/admin` devolve as mesmas ofertas de `GET /api/transfer/offers`,
-    /// não uma lista vazia fixa: um consumidor da rota de administração tem que
-    /// enxergar o que está esperando resposta.
+    /// The `/admin` route returns the same offers as `GET /api/transfer/offers`,
+    /// not a fixed empty list: a consumer of the administration route has to
+    /// see what is waiting for an answer.
     #[tokio::test]
     async fn transfer_offers_returns_the_real_offers() {
         let state = crate::gateway::testkit::state_with("eu", vec![]).await;
@@ -1942,8 +2000,8 @@ mod tests {
             .into_response();
         let body = crate::gateway::testkit::body_of(response).await;
 
-        let offers = body["offers"].as_array().expect("campo offers");
-        assert_eq!(offers.len(), 1, "a rota /admin não pode devolver vazio");
+        let offers = body["offers"].as_array().expect("offers field");
+        assert_eq!(offers.len(), 1, "the /admin route cannot return empty");
         assert_eq!(offers[0]["name"], "fatia_0_15.gguf");
         assert_eq!(offers[0]["from_host"], "ksia");
     }
@@ -1970,7 +2028,7 @@ mod tests {
         assert!(state.database.api_key_for_token(&secret).unwrap().is_some());
         assert!(secret.starts_with(crate::auth::API_KEY_PREFIX));
 
-        // Depois de criada, a chave só aparece pelo trecho visível.
+        // Once created, the key only shows up through its visible fragment.
         let response = admin_routes()
             .with_state(state.clone())
             .oneshot(
@@ -1998,7 +2056,7 @@ mod tests {
             .unwrap();
         if response.status() != StatusCode::OK {
             let body = crate::gateway::testkit::body_of(response).await;
-            panic!("resposta inesperada: {body}");
+            panic!("unexpected response: {body}");
         }
         assert!(state.database.api_key_for_token(&secret).unwrap().is_none());
         assert_eq!(state.database.api_key_revocations().unwrap()[0].1, "eu");
@@ -2011,9 +2069,9 @@ mod tests {
             .any(|key| key.id == key_id && !key.active));
     }
 
-    /// A chave do próprio nó: o segredo fica no cofre local, o registro só
-    /// tem o hash, e um cofre vazio (banco migrado) troca a chave e revoga a
-    /// antiga, que ninguém mais saberia usar.
+    /// The node's own key: the secret stays in the local vault, the record only
+    /// has the hash, and an empty vault (migrated database) swaps the key and revokes the
+    /// old one, which nobody would know how to use any more.
     #[tokio::test]
     async fn node_chat_key_keeps_its_secret_local_and_rotates_an_orphan() {
         let state = crate::gateway::testkit::state_with("eu", vec![]).await;
@@ -2225,8 +2283,8 @@ mod tests {
                     if !trusted {
                         return (StatusCode::UNAUTHORIZED, Json(json!({}))).into_response();
                     }
-                    // Só o hash chega ao principal; o teste o reconhece
-                    // pelos tokens que conhece.
+                    // Only the hash reaches the principal; the test recognizes it
+                    // by the tokens it knows.
                     let token = ["remote-valid", "admin-error", "admin-timeout"]
                         .into_iter()
                         .find(|token| crate::auth::api_key_hash(token) == request.key_hash)
@@ -2318,14 +2376,14 @@ mod tests {
         let signed_request = |path: &str, body: Vec<u8>| {
             let headers = state
                 .signed_control_headers("POST", path, &body)
-                .expect("assinar comando de teste");
+                .expect("sign test command");
             Request::post(path)
                 .header("content-type", "application/json")
                 .header(
                     crate::auth::INTERNAL_NODE_REQUEST_HEADER,
                     headers
                         .get(crate::auth::INTERNAL_NODE_REQUEST_HEADER)
-                        .expect("marcador interno")
+                        .expect("internal marker")
                         .to_str()
                         .unwrap(),
                 )
@@ -2333,7 +2391,7 @@ mod tests {
                     crate::auth::CONTROL_SIGNATURE_HEADER,
                     headers
                         .get(crate::auth::CONTROL_SIGNATURE_HEADER)
-                        .expect("assinatura interna")
+                        .expect("internal signature")
                         .to_str()
                         .unwrap(),
                 )
@@ -2439,208 +2497,320 @@ mod tests {
         ));
     }
 
-    struct EnvironmentValue {
-        key: &'static str,
-        previous: Option<std::ffi::OsString>,
+    /// A principal with its chain, and the keys of two other machines.
+    struct ChainLab {
+        principal_key: ed25519_dalek::SigningKey,
+        principal: AuthorityPrincipal,
+        trust: crate::admin_trust::AdminTrust,
+        member: (ed25519_dalek::SigningKey, AuthorityPrincipal),
+        other: (ed25519_dalek::SigningKey, AuthorityPrincipal),
     }
 
-    impl EnvironmentValue {
-        fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
-            let previous = std::env::var_os(key);
-            std::env::set_var(key, value);
-            Self { key, previous }
-        }
-    }
-
-    impl Drop for EnvironmentValue {
-        fn drop(&mut self) {
-            if let Some(previous) = &self.previous {
-                std::env::set_var(self.key, previous);
-            } else {
-                std::env::remove_var(self.key);
-            }
-        }
-    }
-
-    async fn promotion_state_pair(
-        admin_port: u16,
-        infer_port: u16,
-        stale_infer_host: &str,
-    ) -> (crate::gateway::GatewayState, crate::gateway::GatewayState) {
-        let admin_key = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
-        let infer_key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-        let admin_principal =
-            AuthorityPrincipal::from_signing_key("admin", "peer-admin", &admin_key);
-        let infer_principal =
-            AuthorityPrincipal::from_signing_key("infer", "peer-infer", &infer_key);
-        let admin_trust = crate::admin_trust::AdminTrust::bootstrap_primary_in_memory(
-            "promotion-lab",
-            admin_principal.clone(),
-            &admin_key,
+    fn chain_lab() -> ChainLab {
+        let principal_key = ed25519_dalek::SigningKey::from_bytes(&[21; 32]);
+        let principal =
+            AuthorityPrincipal::from_signing_key("principal", "peer-principal", &principal_key);
+        let trust = crate::admin_trust::AdminTrust::bootstrap_primary_in_memory(
+            "chain-lab",
+            principal.clone(),
+            &principal_key,
         )
-        .expect("admin ancorado no laboratório");
-        let infer_trust = crate::admin_trust::AdminTrust::in_memory(admin_trust.document())
-            .expect("âncora transportada para o infer");
-
-        let admin_peer = {
-            let mut peer = crate::gateway::testkit::peer("admin", "admin", admin_port);
-            peer.profile = NodeProfile::Admin;
-            peer.pubkey = admin_principal.pubkey.clone();
-            peer.libp2p_peer_id = Some(admin_principal.peer_id.clone());
-            peer
+        .unwrap();
+        let key = |seed: u8, name: &str| {
+            let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+            let principal =
+                AuthorityPrincipal::from_signing_key(name, format!("peer-{name}"), &key);
+            (key, principal)
         };
-        let infer_peer = {
-            let mut peer = crate::gateway::testkit::peer("infer", "infer", infer_port);
-            peer.profile = NodeProfile::Infer;
-            peer.pubkey = infer_principal.pubkey.clone();
-            peer.libp2p_peer_id = Some(infer_principal.peer_id.clone());
-            peer.addr = format!("{stale_infer_host}:42777");
-            peer.addr_candidates = vec!["127.0.0.1:42777".into()];
-            peer
-        };
-
-        let mut admin = crate::gateway::testkit::state_with("admin", vec![infer_peer]).await;
-        let mut infer = crate::gateway::testkit::state_with("infer", vec![admin_peer]).await;
-
-        {
-            let mut auth = admin.auth.write().await;
-            auth.profile = NodeProfile::Admin;
-            auth.connection_key = "shared-connection".into();
+        ChainLab {
+            principal_key,
+            principal,
+            trust,
+            member: key(22, "member"),
+            other: key(23, "other"),
         }
-        admin.network.set_profile(NodeProfile::Admin);
-        admin.admin_trust = std::sync::Arc::new(admin_trust);
-        admin.authority_signing_key = std::sync::Arc::new(admin_key.clone());
-        admin.authority_principal = admin_principal.clone();
-        admin.gateway_port = admin_port;
-
-        {
-            let mut auth = infer.auth.write().await;
-            auth.profile = NodeProfile::Infer;
-            auth.connection_key = "shared-connection".into();
-        }
-        infer.network.set_profile(NodeProfile::Infer);
-        infer.admin_trust = std::sync::Arc::new(infer_trust);
-        infer.authority_signing_key = std::sync::Arc::new(infer_key.clone());
-        infer.authority_principal = infer_principal.clone();
-        infer.gateway_port = infer_port;
-
-        (admin, infer)
     }
 
-    async fn spawn_admin_router(
-        listener: tokio::net::TcpListener,
-        state: crate::gateway::GatewayState,
-    ) -> std::net::SocketAddr {
-        let address = listener.local_addr().unwrap();
-        let app = Router::new()
-            .merge(admin_routes())
-            .merge(crate::webapp::routes())
-            .with_state(state);
-        tokio::spawn(async move {
-            axum::serve(listener, app)
-                .await
-                .expect("gateway do laboratório");
-        });
-        address
+    impl ChainLab {
+        /// A node of this network holding the chain as it is now.
+        async fn node(
+            &self,
+            identity: &(ed25519_dalek::SigningKey, AuthorityPrincipal),
+            profile: NodeProfile,
+        ) -> crate::gateway::GatewayState {
+            let mut state = crate::gateway::testkit::state_with(&identity.1.node_id, vec![]).await;
+            state.auth.write().await.profile = profile;
+            state.network.set_profile(profile);
+            state.admin_trust = std::sync::Arc::new(
+                crate::admin_trust::AdminTrust::in_memory(self.trust.document()).unwrap(),
+            );
+            state.authority_signing_key = std::sync::Arc::new(identity.0.clone());
+            state.authority_principal = identity.1.clone();
+            state
+        }
+
+        fn promote(&self, subject: &AuthorityPrincipal) {
+            let grant = self
+                .trust
+                .signed_secondary_grant(&self.principal_key, subject.clone(), "principal")
+                .unwrap();
+            self.trust
+                .record_secondary_grant(grant, &self.principal_key)
+                .unwrap();
+        }
     }
 
     #[tokio::test]
-    async fn infer_promotion_reaches_admin_and_returns_over_a_live_candidate() {
+    async fn every_member_adopts_a_promotion_not_only_the_promoted_node() {
         let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let _scheme_lock = crate::peer_client::POLITICA_GLOBAL.lock().unwrap();
-        crate::peer_client::set_tls_ativo(false);
-        let config_path = std::env::temp_dir().join(format!(
-            "pom-promotion-lab-{}-{}.json",
-            std::process::id(),
-            Uuid::new_v4().simple()
+        let lab = chain_lab();
+        let promoted = lab.node(&lab.member, NodeProfile::Node).await;
+        let bystander = lab.node(&lab.other, NodeProfile::Node).await;
+        let infer_bystander = lab.node(&lab.other, NodeProfile::Infer).await;
+        // Before the chain arrives, the bystander does not know the admin.
+        lab.promote(&lab.member.1);
+        assert!(!crate::admin_trust::control_issuer_is_admin(
+            &bystander.admin_trust.document(),
+            &lab.member.1
         ));
-        let _config = EnvironmentValue::set("POM_CONFIG", &config_path);
-        std::fs::write(&config_path, "{}").expect("configuração de teste");
 
-        let admin_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("listener admin");
-        let admin_port = admin_listener.local_addr().unwrap().port();
-        let infer_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("listener infer");
-        let infer_port = infer_listener.local_addr().unwrap().port();
-
-        let (admin, infer) = promotion_state_pair(admin_port, infer_port, "[::1]").await;
-        {
-            let mut peers = infer.network.peers.write().await;
-            let admin_peer = peers.get_mut("admin").expect("admin no infer");
-            admin_peer.addr = "[2001:db8::dead]:42777".into();
-            admin_peer.addr_candidates = vec!["127.0.0.1:42777".into()];
-        }
-        assert_eq!(admin.admin_trust.replay_len(), 0);
-        assert_eq!(infer.admin_trust.replay_len(), 0);
-        let admin_address = spawn_admin_router(admin_listener, admin.clone()).await;
-        let infer_address = spawn_admin_router(infer_listener, infer.clone()).await;
-
-        let response = reqwest::Client::new()
-            .post(format!(
-                "http://{infer_address}/api/ui/network/request-node"
-            ))
-            .bearer_auth("shared-connection")
-            .send()
-            .await
-            .expect("pedido do infer");
-        let status = response.status();
-        let body = response.text().await.unwrap();
+        let chain = lab.trust.document();
         assert_eq!(
-            admin.admin_trust.replay_len(),
-            2,
-            "a ida chegou ao admin: status={status}, body={body}, infer_replay={}, infer_profile={:?}",
-            infer.admin_trust.replay_len(),
-            infer.auth.read().await.profile,
+            adopt_trust_chain(&promoted, chain.clone(), true)
+                .await
+                .unwrap(),
+            NodeProfile::Admin
         );
+        assert_eq!(promoted.network.profile(), NodeProfile::Admin);
+        // The bystander keeps its role and now accepts the new admin.
         assert_eq!(
-            status,
-            StatusCode::OK,
-            "o admin deve receber a ida e voltar pelo candidato vivo; admin={admin_address}, body={body}"
-        );
-        assert_eq!(infer.auth.read().await.profile, NodeProfile::Node);
-        assert_eq!(infer.network.profile(), NodeProfile::Node);
-        assert_eq!(
-            crate::config::Config::load().unwrap().profile,
+            adopt_trust_chain(&bystander, chain.clone(), false)
+                .await
+                .unwrap(),
             NodeProfile::Node
         );
+        assert!(crate::admin_trust::control_issuer_is_admin(
+            &bystander.admin_trust.document(),
+            &lab.member.1
+        ));
+        assert_eq!(
+            adopt_trust_chain(&infer_bystander, chain.clone(), false)
+                .await
+                .unwrap(),
+            NodeProfile::Infer
+        );
 
-        let _ = std::fs::remove_file(config_path);
+        // A demotion travels the same way and takes the role back.
+        lab.trust
+            .demote_secondary(&lab.principal_key, lab.member.1.clone())
+            .unwrap();
+        let demoted = lab.trust.document();
+        assert_eq!(
+            adopt_trust_chain(&promoted, demoted.clone(), true)
+                .await
+                .unwrap(),
+            NodeProfile::Node
+        );
+        adopt_trust_chain(&bystander, demoted, false).await.unwrap();
+        assert!(!crate::admin_trust::control_issuer_is_admin(
+            &bystander.admin_trust.document(),
+            &lab.member.1
+        ));
+        // The copy from before the demotion is older and cannot undo it.
+        let (status, _) = adopt_trust_chain(&bystander, chain, false)
+            .await
+            .unwrap_err();
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        // Promoting the same node again is a new grant every member adopts.
+        lab.promote(&lab.member.1);
+        let again = lab.trust.document();
+        assert_eq!(
+            adopt_trust_chain(&promoted, again.clone(), true)
+                .await
+                .unwrap(),
+            NodeProfile::Admin
+        );
+        adopt_trust_chain(&bystander, again, false).await.unwrap();
+        assert!(crate::admin_trust::control_issuer_is_admin(
+            &bystander.admin_trust.document(),
+            &lab.member.1
+        ));
     }
 
     #[tokio::test]
-    async fn infer_receives_an_explicit_admin_refusal() {
-        let _scheme_lock = crate::peer_client::POLITICA_GLOBAL.lock().unwrap();
-        crate::peer_client::set_tls_ativo(false);
-        let admin_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("listener admin");
-        let admin_port = admin_listener.local_addr().unwrap().port();
-        let infer_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("listener infer");
-        let infer_port = infer_listener.local_addr().unwrap().port();
-        let (admin, infer) = promotion_state_pair(admin_port, infer_port, "127.0.0.2").await;
-        admin.auth.write().await.profile = NodeProfile::Node;
-        spawn_admin_router(admin_listener, admin).await;
-        let infer_address = spawn_admin_router(infer_listener, infer).await;
+    async fn a_grant_never_raises_an_inference_node() {
+        let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let lab = chain_lab();
+        let infer = lab.node(&lab.member, NodeProfile::Infer).await;
+        lab.promote(&lab.member.1);
+        assert_eq!(
+            adopt_trust_chain(&infer, lab.trust.document(), false)
+                .await
+                .unwrap(),
+            NodeProfile::Infer
+        );
+        assert_eq!(infer.auth.read().await.profile, NodeProfile::Infer);
+    }
 
-        let response = reqwest::Client::new()
-            .post(format!(
-                "http://{infer_address}/api/ui/network/request-node"
-            ))
-            .bearer_auth("shared-connection")
-            .send()
-            .await
-            .expect("pedido do infer");
-        let status = response.status();
-        let body = response.text().await.unwrap();
+    #[tokio::test]
+    async fn the_principal_refuses_to_promote_an_inference_node_before_signing() {
+        let lab = chain_lab();
+        let mut peer = crate::gateway::testkit::peer("member", "member", 1);
+        peer.profile = NodeProfile::Infer;
+        peer.pubkey = lab.member.1.pubkey.clone();
+        peer.libp2p_peer_id = Some(lab.member.1.peer_id.clone());
+        let mut state = crate::gateway::testkit::state_with("principal", vec![peer]).await;
+        state.auth.write().await.profile = NodeProfile::Admin;
+        state.admin_trust = std::sync::Arc::new(
+            crate::admin_trust::AdminTrust::in_memory(lab.trust.document()).unwrap(),
+        );
+        state.authority_signing_key = std::sync::Arc::new(lab.principal_key.clone());
+        state.authority_principal = lab.principal.clone();
+        let before = state.admin_trust.chain_version();
 
-        assert_eq!(status, StatusCode::FORBIDDEN);
-        assert!(body.contains("o emissor não é um admin vigente"), "{body}");
+        let response =
+            promote_node_to_admin(ConnectionAuth, State(state.clone()), Path("member".into()))
+                .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            crate::gateway::testkit::body_of(response).await["reason"],
+            "infer_target"
+        );
+        // Nothing was signed: the chain is exactly as it was.
+        assert_eq!(state.admin_trust.chain_version(), before);
+    }
+
+    #[tokio::test]
+    async fn a_member_is_only_sent_the_chain_when_its_copy_differs() {
+        let lab = chain_lab();
+        let principal = lab
+            .node(
+                &(lab.principal_key.clone(), lab.principal.clone()),
+                NodeProfile::Admin,
+            )
+            .await;
+        let ask = |have: String| {
+            let principal = principal.clone();
+            async move {
+                crate::gateway::testkit::body_of(
+                    internal_trust_chain(
+                        InternalNodeAuth { principal: None },
+                        State(principal),
+                        Json(TrustChainQuery { have }),
+                    )
+                    .await,
+                )
+                .await
+            }
+        };
+        let current = ask(principal.admin_trust.chain_version()).await;
+        assert_eq!(current["current"], true);
+        assert!(current.get("document").is_none());
+        let stale = ask("0.0.0.0-old".into()).await;
+        assert_eq!(stale["current"], false);
+        assert_eq!(stale["document"]["primary"]["node_id"], "principal");
+    }
+
+    #[tokio::test]
+    async fn a_secondary_admin_is_not_the_principal() {
+        let lab = chain_lab();
+        lab.promote(&lab.member.1);
+        let secondary = lab.node(&lab.member, NodeProfile::Admin).await;
+        // With no principal named yet, the profile decides (single-node case).
+        assert!(secondary.network.is_principal());
+        secondary
+            .network
+            .set_policy_principal_pubkey(lab.principal.pubkey.clone());
+        assert!(!secondary.network.is_principal());
+    }
+
+    #[tokio::test]
+    async fn a_node_catches_up_from_any_member_ahead_of_it() {
+        let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let lab = chain_lab();
+        // A node that was away holds the chain from before the promotion.
+        let mut away = lab.node(&lab.other, NodeProfile::Node).await;
+        let old = away.admin_trust.chain_version();
+        lab.promote(&lab.member.1);
+        let new = lab.trust.chain_version();
+        assert_ne!(old, new);
+
+        // The principal is offline; another member announces the new version.
+        let announcing = |version: &str| {
+            let mut peer = crate::gateway::testkit::peer("member", "member", 1);
+            peer.pubkey = lab.member.1.pubkey.clone();
+            peer.trust_version = Some(version.to_string());
+            peer
+        };
+        let seen = |peer| async {
+            let mut state = crate::gateway::testkit::state_with("other", vec![peer]).await;
+            state.admin_trust = away.admin_trust.clone();
+            state.authority_principal = lab.other.1.clone();
+            state
+        };
+        let state = seen(announcing(&new)).await;
+        let status = chain_status(&state).await;
+        assert_eq!(status["outdated"], true);
+        assert_eq!(status["newer_on"][0], "member");
+        // A peer at the same version, or behind, is nobody to ask.
+        assert_eq!(
+            chain_status(&seen(announcing(&old)).await).await["outdated"],
+            false
+        );
+        assert_eq!(
+            chain_status(&seen(announcing("not-a-version")).await).await["outdated"],
+            false
+        );
+
+        // Its copy is adopted although it does not come from the principal,
+        // because every signature in it is the principal's.
+        away.auth.write().await.profile = NodeProfile::Node;
+        adopt_trust_chain(&away, lab.trust.document(), false)
+            .await
+            .unwrap();
+        assert_eq!(away.admin_trust.chain_version(), new);
+        assert_eq!(away.network.trust_version().as_deref(), Some(new.as_str()));
+
+        // A forged copy is refused whoever sends it.
+        let mut forged = lab.trust.document();
+        forged.grants.last_mut().unwrap().subject = lab.other.1.clone();
+        assert!(adopt_trust_chain(&away, forged, true).await.is_err());
+    }
+
+    #[test]
+    fn two_copies_with_equal_counters_are_settled_by_the_principal_only() {
+        let lab = chain_lab();
+        let member = crate::admin_trust::AdminTrust::in_memory(lab.trust.document()).unwrap();
+        // The principal grants the same seat twice, in two histories: the
+        // counters match, the content does not.
+        let fork = crate::admin_trust::AdminTrust::in_memory(lab.trust.document()).unwrap();
+        for (trust, subject) in [(&lab.trust, &lab.member.1), (&fork, &lab.other.1)] {
+            let grant = trust
+                .signed_secondary_grant(&lab.principal_key, subject.clone(), "principal")
+                .unwrap();
+            trust
+                .record_secondary_grant(grant, &lab.principal_key)
+                .unwrap();
+        }
+        assert_ne!(lab.trust.chain_version(), fork.chain_version());
+        assert_eq!(
+            crate::admin_trust::version_counters(&lab.trust.chain_version()),
+            crate::admin_trust::version_counters(&fork.chain_version())
+        );
+
+        assert!(member.reconcile_from(lab.trust.document(), false).unwrap());
+        // The same copy again is a no-op.
+        assert!(!member.reconcile_from(lab.trust.document(), false).unwrap());
+        // The other history: refused from a member, accepted from the principal.
+        assert!(member.reconcile_from(fork.document(), false).is_err());
+        assert!(member.reconcile_from(fork.document(), true).unwrap());
+        assert_eq!(member.chain_version(), fork.chain_version());
     }
 }

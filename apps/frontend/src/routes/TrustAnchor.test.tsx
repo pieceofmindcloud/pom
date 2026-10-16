@@ -34,7 +34,7 @@ vi.mock("../lib/toast", () => ({
   useToast: () => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), fromError: vi.fn() }),
 }));
 
-// Importado depois dos mocks: a tela lê `ApiError` no módulo.
+// Imported after the mocks: the screen reads `ApiError` in the module.
 const { TrustAnchor } = await import("./TrustAnchor");
 
 const view = (overrides: Partial<TrustAnchorView> = {}): TrustAnchorView => ({
@@ -70,7 +70,7 @@ const FINGERPRINT = "a".repeat(64);
 const CHAIN = JSON.stringify({ anchor: { principal: { pubkey: "public-key-from-admin" } } });
 
 describe("TrustAnchor", () => {
-  it("mostra a impressão digital e o estado de um nó ancorado, sem formulário", () => {
+  it("shows the fingerprint and the state of an anchored node, without a form", () => {
     mount(
       view({
         anchored: true,
@@ -83,7 +83,7 @@ describe("TrustAnchor", () => {
     );
 
     expect(screen.getByTestId("anchor-state").textContent).toContain("Ancorado");
-    // Em blocos de oito, que é como se confere a olho.
+    // In blocks of eight, which is how one checks by eye.
     expect(screen.getByTestId("anchor-fingerprint").textContent?.replace(/\s/g, "")).toBe(
       FINGERPRINT,
     );
@@ -91,7 +91,7 @@ describe("TrustAnchor", () => {
     expect(screen.queryByTestId("anchor-document")).toBeNull();
   });
 
-  it("um nó por ancorar mostra o estado e o formulário, sem fingerprint calculada ainda", () => {
+  it("a node yet to be anchored shows the state and the form, with no computed fingerprint yet", () => {
     mount(view());
 
     expect(screen.getByTestId("anchor-state").textContent).toContain("Por ancorar");
@@ -100,7 +100,7 @@ describe("TrustAnchor", () => {
     expect(screen.getByTestId("anchor-fingerprint-confirm")).toBeTruthy();
   });
 
-  it("calcula a impressão digital do documento e deixa a conferência explícita", async () => {
+  it("computes the fingerprint of the document and makes the check explicit", async () => {
     mount(view());
     const chain = screen.getByTestId("anchor-document") as HTMLTextAreaElement;
 
@@ -113,7 +113,7 @@ describe("TrustAnchor", () => {
     expect((screen.getByTestId("anchor-fingerprint-confirm") as HTMLInputElement).checked).toBe(false);
   });
 
-  it("envia a fingerprint calculada depois da confirmação do operador", async () => {
+  it("sends the computed fingerprint after the operator confirmation", async () => {
     install.mockResolvedValue({ anchored: true, fingerprint: FINGERPRINT });
     mount(view());
 
@@ -127,7 +127,7 @@ describe("TrustAnchor", () => {
     await waitFor(() => expect(anchorQuery.refetch).toHaveBeenCalled());
   });
 
-  it("traduz a recusa por impressão digital errada em vez de repetir o texto do servidor", async () => {
+  it("translates the wrong-fingerprint refusal instead of repeating the server text", async () => {
     install.mockRejectedValue(
       new FakeApiError(400, "a impressão digital conferida não corresponde à âncora desta cadeia", {
         reason: "fingerprint_mismatch",
@@ -144,7 +144,7 @@ describe("TrustAnchor", () => {
     expect(refusal.textContent).toContain("não corresponde à cadeia colada");
   });
 
-  it("explica a recusa de um nó já ancorado", async () => {
+  it("explains the refusal of an already anchored node", async () => {
     install.mockRejectedValue(
       new FakeApiError(409, "este nó já tem raiz de confiança", { reason: "already_anchored" }),
     );
@@ -159,8 +159,8 @@ describe("TrustAnchor", () => {
     expect(refusal.textContent).toContain("reancoragem manual");
   });
 
-  /** Vendo o nó de outra máquina, a tela não oferece o que o servidor recusa. */
-  it("não desenha o formulário fora do loopback", () => {
+  /** Viewing another machine's node, the screen does not offer what the server refuses. */
+  it("does not draw the form outside loopback", () => {
     mount(view({ loopback: false, can_install: false }));
 
     expect(screen.queryByTestId("anchor-document")).toBeNull();

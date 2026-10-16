@@ -25,9 +25,9 @@ import {
 } from "./api";
 
 /**
- * Senha administrativa gravada no primeiro acesso (`auth::DEFAULT_ADMIN_PASSWORD`
- * no nó). Não é segredo: enquanto estiver em vigor, `/api/access` diz
- * `default_password` e a interface entra sem perguntá-la e pede a troca.
+ * Administrative password written on first access (`auth::DEFAULT_ADMIN_PASSWORD`
+ * on the node). It is not a secret: while it is in force, `/api/access` says
+ * `default_password` and the interface enters without asking for it and asks for a change.
  */
 export const DEFAULT_ADMIN_PASSWORD = "admin";
 import { modelDownloadJobs } from "./modelProvider";
@@ -53,7 +53,6 @@ import type {
   NetworkInfoView,
   NetworkChatRoom,
   NetworkChatSnapshot,
-  GeoReferenceResponse,
   NetworkOffer,
   PathsResponse,
   PeerCatalog,
@@ -66,6 +65,7 @@ import type {
   DevelopmentPluginSources,
   PomCoreUpdateStatus,
 } from "./types";
+import { formatMessage, getActiveLocale } from "../i18n/locales";
 
 /**
  * Answer `fallback` instead of failing when the node does not know the route.
@@ -103,7 +103,6 @@ export const keys = {
   networkInfo: ["network-info"] as const,
   windowsFirewall: ["windows-firewall"] as const,
   networkChat: ["network-chat"] as const,
-  geoReference: ["geo-reference"] as const,
   adminNodes: ["admin-nodes"] as const,
   apiKeys: ["api-keys"] as const,
   plugins: ["plugins"] as const,
@@ -128,39 +127,7 @@ export const keys = {
   huggingFaceTokenConfig: ["hugging-face-token-config"] as const,
 };
 
-/**
- * Whether this node has no configuration yet and is running the setup router.
- *
- * Deliberately its own query rather than a read of `useNode()`'s error: that one
- * polls every few seconds, and react-query clears `error` while a retry is in
- * flight, so keying the whole shell off it made the app flip from the setup
- * screen to the dashboard and back between polls. This asks once, never retries
- * and never goes stale — the answer cannot change without the node restarting,
- * and that reloads the page anyway.
- *
- * `undefined` means "still asking", and callers have to wait rather than guess,
- * or the setup screen flashes on every cold load of a configured node.
- */
-export function useIsSetupMode() {
-  return useQuery({
-    queryKey: ["setup-mode"],
-    queryFn: async () => {
-      try {
-        await api.get<unknown>("/api/ui/node", { auth: false });
-        return false;
-      } catch (e) {
-        // Only a 404 means "this router has no /api/ui at all". A node that is
-        // merely unreachable is not a node asking to be configured.
-        return e instanceof ApiError && e.status === 404;
-      }
-    },
-    retry: false,
-    staleTime: Infinity,
-    refetchOnWindowFocus: false,
-  }).data;
-}
-
-export type AdminSurfaceState = "setup" | "available" | "requires-password" | "local-only";
+export type AdminSurfaceState = "available" | "requires-password" | "local-only";
 
 /**
  * One probe decides which shell is safe to render. A valid server session
@@ -170,21 +137,21 @@ export type AdminSurfaceState = "setup" | "available" | "requires-password" | "l
 export function useAdminSurface() {
   const client = useQueryClient();
   /*
-   * A sonda decide qual casca é segura desenhar e roda uma vez por
-   * carregamento (`staleTime: Infinity`). Só que a sessão administrativa vive
-   * na memória do nó: um reinício, ou as 8 h de validade, a derrubam com a aba
-   * aberta. Sem refazer a sonda, cada tela passava a imprimir o
-   * "missing administrative access password" cru no lugar do seu conteúdo, e o
-   * operador não tinha caminho de volta ao portão que não fosse recarregar na
-   * mão.
+   * The probe decides which shell is safe to draw and runs once per
+   * load (`staleTime: Infinity`). But the administrative session lives
+   * in the node's memory: a restart, or the 8 h of validity, drops it with the tab
+   * open. Without redoing the probe, each screen started printing the raw
+   * "missing administrative access password" in place of its content, and the
+   * operator had no way back to the gate other than reloading by
+   * hand.
    */
   useEffect(
     () =>
       onAdminSessionLost(() => {
-        // Só uma aba que achava ter sessão sonda de novo. A própria sonda
-        // responde 401 enquanto não há sessão, e esse 401 também avisa
-        // "sessão perdida": sem este filtro cada resposta pedia outra sonda,
-        // milhares por minuto, e o portão remontava sem parar.
+        // Only a tab that believed it had a session probes again. The probe itself
+        // answers 401 while there is no session, and that 401 also signals
+        // "session lost": without this filter each answer asked for another probe,
+        // thousands per minute, and the gate remounted nonstop.
         if (client.getQueryData(keys.adminSurface) !== "available") return;
         if (client.isFetching({ queryKey: keys.adminSurface }) > 0) return;
         void client.invalidateQueries({ queryKey: keys.adminSurface });
@@ -198,7 +165,6 @@ export function useAdminSurface() {
         await api.get<unknown>("/api/ui/node", { auth: false });
         return "available";
       } catch (error) {
-        if (error instanceof ApiError && error.status === 404) return "setup";
         let access: AdminAccessStatus | null = null;
         try {
           access = await api.get<AdminAccessStatus>("/api/access", { auth: false });
@@ -208,8 +174,8 @@ export function useAdminSurface() {
         if (error instanceof ApiError && error.status === 403 && access?.admin_exposure === "localhost") {
           return "local-only";
         }
-        // Enquanto a senha for a padrão do primeiro acesso, o portão não a
-        // pergunta: a aba entra com ela e o aviso pede a troca.
+        // While the password is the first-access default, the gate does not
+        // ask for it: the tab enters with it and the notice asks for the change.
         if (access?.default_password) {
           setAdminAccessToken(DEFAULT_ADMIN_PASSWORD);
           try {
@@ -401,8 +367,9 @@ export function useCluster() {
  * Keeping one query source means a message received off the chat screen is
  * visible to the menu without mounting the chat route.
  */
-export function useNetworkChat(room: NetworkChatRoom = "network") {
+export function useNetworkChat(room: NetworkChatRoom = "network", enabled = true) {
   return useQuery({
+    enabled,
     // The main room keeps the bare key: the menu's unread counter and the
     // plugin bridge share that cache entry.
     queryKey: room === "network" ? keys.networkChat : [...keys.networkChat, room],
@@ -426,12 +393,20 @@ const unavailableChatCapabilities: ChatCapabilities = {
  * it. Keep that uncertainty explicit so the composer never invents a missing
  * model or missing vision support.
  */
-export function useChatCapabilities() {
+/**
+ * What the Chat can do with `model` (vision, thinking, coverage). Without a
+ * model the node answers for the one the network serves, never only for the
+ * one it loads itself: a coordinating node loads none.
+ */
+export function useChatCapabilities(model = "") {
   return useQuery({
-    queryKey: keys.chatCapabilities,
+    queryKey: [...keys.chatCapabilities, model],
     queryFn: () =>
       api
-        .getConditional<ChatCapabilities>("/api/ui/chat/capabilities", { auth: false })
+        .getConditional<ChatCapabilities>(
+          model ? `/api/ui/chat/capabilities?model=${encodeURIComponent(model)}` : "/api/ui/chat/capabilities",
+          { auth: false },
+        )
         .catch(() => unavailableChatCapabilities),
     refetchInterval: 5000,
     staleTime: 2000,
@@ -439,12 +414,12 @@ export function useChatCapabilities() {
 }
 
 /**
- * Como uma máquina carregou o modelo, buscado só com o card aberto.
+ * How a machine loaded the model, fetched only with the card open.
  *
- * `enabled` é o ponto: isto sai do `/health` do peer, e pedir por peer a cada
- * ciclo do Painel seria um leque de chamadas por uma tela que quase sempre está
- * fechada. Um nó antigo sem a rota devolve 404, e aí a seção some em vez de
- * virar erro - mesmo critério do `optional` acima.
+ * `enabled` is the point: this comes from the peer's `/health`, and asking per
+ * peer on every Panel cycle would be a fan of calls for a screen that is almost
+ * always closed. An old node without the route returns 404, and then the section
+ * disappears instead of becoming an error - same criterion as the `optional` above.
  */
 export function usePeerRuntime(nodeId: string, enabled: boolean) {
   return useQuery({
@@ -454,7 +429,7 @@ export function usePeerRuntime(nodeId: string, enabled: boolean) {
         api.get<PeerRuntime>(`/api/ui/peer/${encodeURIComponent(nodeId)}/runtime`, {
           auth: false,
         }),
-        { loaded: false, reason: "rota indisponível neste nó" } as PeerRuntime,
+        { loaded: false, reason: formatMessage(getActiveLocale(), "peer.routeUnavailable") } as PeerRuntime,
       ),
     enabled,
     refetchInterval: 15_000,
@@ -462,7 +437,7 @@ export function usePeerRuntime(nodeId: string, enabled: boolean) {
   });
 }
 
-/** Snapshot de saúde dos peers que acabaram de participar de uma execução. */
+/** Health snapshot of the peers that have just taken part in an execution. */
 export function usePeerRuntimes(nodeIds: string[], enabled: boolean, executionId?: string) {
   return useQueries({
     queries: nodeIds.map((nodeId) => ({
@@ -472,7 +447,7 @@ export function usePeerRuntimes(nodeIds: string[], enabled: boolean, executionId
           api.get<PeerRuntime>(`/api/ui/peer/${encodeURIComponent(nodeId)}/runtime`, {
             auth: false,
           }),
-          { loaded: false, reason: "rota indisponível neste nó" } as PeerRuntime,
+          { loaded: false, reason: formatMessage(getActiveLocale(), "peer.routeUnavailable") } as PeerRuntime,
         ),
       enabled,
       retry: false,
@@ -481,7 +456,7 @@ export function usePeerRuntimes(nodeIds: string[], enabled: boolean, executionId
   });
 }
 
-/** RTT direcional das arestas da execução, consultado apenas após o stream. */
+/** Directional RTT of the execution's edges, queried only after the stream. */
 export function useChatTelemetryNetwork(nodeIds: string[], enabled: boolean, executionId?: string) {
   return useQuery({
     queryKey: keys.chatTelemetry(executionId, nodeIds),
@@ -496,7 +471,7 @@ export function useChatTelemetryNetwork(nodeIds: string[], enabled: boolean, exe
   });
 }
 
-/** Último RTT observado nas arestas de inferência, para o mapa do Painel. */
+/** Last RTT observed on the inference edges, for the Panel's map. */
 export function useNetworkRtt(nodeIds: string[], enabled: boolean) {
   return useQuery({
     queryKey: keys.networkRtt(nodeIds),
@@ -511,7 +486,7 @@ export function useNetworkRtt(nodeIds: string[], enabled: boolean) {
   });
 }
 
-/** Cabeças do modelo que este nó infer pode escolher, sem abrir a rede toda. */
+/** Heads of the model this infer node can choose, without opening the whole network. */
 export function useInferenceHeads(model: string, enabled: boolean) {
   return useQuery({
     queryKey: keys.inferenceHeads(model),
@@ -526,8 +501,9 @@ export function useInferenceHeads(model: string, enabled: boolean) {
   });
 }
 
-export function useLocalCatalog() {
+export function useLocalCatalog(enabled = true) {
   return useQuery({
+    enabled,
     queryKey: keys.models,
     queryFn: () => api.get<CatalogResponse>("/api/ui/models", { auth: false }),
     // A fast inventory is useful immediately, but keep asking while the node
@@ -605,11 +581,11 @@ export function useJobs() {
 }
 
 /**
- * As implantações do cluster.
+ * The cluster's deployments.
  *
- * Intervalo maior que o do painel: a lista muda quando alguém implanta ou
- * desimplanta, não a cada batida do coração, e cada chamada aqui é um fan-out
- * do nó para todos os peers.
+ * A longer interval than the panel's: the list changes when someone deploys or
+ * undeploys, not on every heartbeat, and each call here is a fan-out from the
+ * node to all the peers.
  */
 export function useDeployments() {
   return useQuery({
@@ -619,7 +595,7 @@ export function useDeployments() {
   });
 }
 
-/** Logs de processo em ordem de chegada à réplica local. */
+/** Process logs in arrival order at the local replica. */
 /** The cluster's process log, kept by the logs plugin; idle while it is not active here. */
 export function useClusterLogs(deployId?: string, enabled = true) {
   const query = new URLSearchParams();
@@ -644,13 +620,13 @@ export function useTransfers() {
 }
 
 /**
- * Ofertas de fatia esperando uma resposta.
+ * Slice offers waiting for an answer.
  *
- * Na mesma cadência das transferências, e não mais lenta: uma oferta é uma
- * pergunta parada esperando por um humano, não uma barra de progresso. Enquanto
- * o remetente hasheava o arquivo antes de oferecer, este intervalo era ruído
- * (medidos 3 min 23 s de MD5 numa fatia de 4,2 GB contra 5 s de polling); com a
- * oferta saindo em milissegundos, o que sobra da espera é justamente isto.
+ * At the same cadence as the transfers, and not slower: an offer is a stalled
+ * question waiting for a human, not a progress bar. While the sender hashed the
+ * file before offering, this interval was noise (3 min 23 s of MD5 measured on a
+ * 4.2 GB slice against 5 s of polling); with the offer going out in milliseconds,
+ * what remains of the wait is precisely this.
  */
 export function useOffers() {
   return useQuery({
@@ -679,10 +655,10 @@ export function useAdminAuthority(enabled = true) {
 }
 
 /**
- * O estado de ancoragem desta máquina.
+ * The anchoring state of this machine.
  *
- * Sem polling curto: uma raiz de confiança muda por um gesto do operador, não
- * sozinha, e a tela refaz a leitura depois de instalar.
+ * No short polling: a trust root changes by an operator's gesture, not on its
+ * own, and the screen rereads after installing.
  */
 export function useTrustAnchor() {
   return useQuery({
@@ -706,15 +682,6 @@ export function useWindowsFirewall(enabled = true) {
     queryFn: () => api.get<WindowsFirewallStatus>("/api/ui/network/firewall"),
     enabled,
     refetchInterval: 5000,
-  });
-}
-
-export function useGeoReference(enabled = true) {
-  return useQuery({
-    queryKey: keys.geoReference,
-    queryFn: () => api.get<GeoReferenceResponse>("/api/ui/network/geo-reference"),
-    enabled,
-    staleTime: Infinity,
   });
 }
 

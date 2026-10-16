@@ -78,7 +78,7 @@ fn try_capacity_preview_slot() -> Option<SemaphorePermit<'static>> {
 /// UI payload, not a larger server response containing sampling timestamps or
 /// other transport-only noise.
 pub(crate) fn etag_for_json<T: Serialize>(body: &T) -> String {
-    let bytes = serde_json::to_vec(body).expect("JSON de estado da UI deve serializar");
+    let bytes = serde_json::to_vec(body).expect("UI state JSON must serialize");
     format!("\"{}\"", hex::encode(Sha256::digest(bytes)))
 }
 
@@ -113,11 +113,11 @@ fn json_response_with_etag(
     };
     response.headers_mut().insert(
         header::ETAG,
-        HeaderValue::from_str(etag).expect("ETag de SHA256 é um header válido"),
+        HeaderValue::from_str(etag).expect("a SHA256 ETag is a valid header"),
     );
     response.headers_mut().insert(
         header::HeaderName::from_static("x-state-version"),
-        HeaderValue::from_str(version).expect("versão de estado é um header válido"),
+        HeaderValue::from_str(version).expect("state version is a valid header"),
     );
     if !not_modified {
         response.headers_mut().insert(
@@ -130,7 +130,7 @@ fn json_response_with_etag(
 
 /// Return a conditional JSON response, keeping 304 bodies empty.
 pub(crate) fn conditional_json<T: Serialize>(headers: &HeaderMap, body: &T) -> Response {
-    let bytes = serde_json::to_vec(body).expect("JSON de estado da UI deve serializar");
+    let bytes = serde_json::to_vec(body).expect("UI state JSON must serialize");
     let etag = etag_for_json(body);
     json_response_with_etag(headers, bytes, &etag, &etag)
 }
@@ -142,7 +142,7 @@ pub(crate) fn conditional_json_with_version<T: Serialize>(
     etag: &str,
     version: u64,
 ) -> Response {
-    let bytes = serde_json::to_vec(body).expect("JSON de estado da UI deve serializar");
+    let bytes = serde_json::to_vec(body).expect("UI state JSON must serialize");
     json_response_with_etag(headers, bytes, etag, &version.to_string())
 }
 
@@ -151,11 +151,15 @@ mod auto_discovery;
 mod catalog_cache;
 mod cluster;
 mod jobs;
+mod known_networks;
+pub(crate) use known_networks::remember_public_networks;
+mod guide;
 mod jobs_apply;
 mod kv_cache;
 mod lifecycle;
 mod lobby;
 mod network;
+mod networks;
 mod params;
 mod routes;
 mod setup;
@@ -168,12 +172,15 @@ mod trust;
 pub use auto_discovery::*;
 pub use catalog_cache::*;
 pub use cluster::*;
+pub use guide::*;
 pub use jobs::*;
 pub use jobs_apply::*;
+pub use known_networks::*;
 pub use kv_cache::*;
 pub use lifecycle::*;
 pub use lobby::*;
 pub use network::*;
+pub use networks::*;
 pub use params::*;
 pub use routes::*;
 pub use setup::*;

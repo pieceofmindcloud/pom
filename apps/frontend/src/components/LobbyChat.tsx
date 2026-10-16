@@ -1,5 +1,6 @@
-import { Send } from "lucide-react";
+import { ArrowLeft, Send } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { Confirm, Modal } from "./Confirm";
 import { LobbyHardwareCard } from "./LobbyHardwareCard";
 import { Button, Input, Select } from "./ui";
@@ -7,7 +8,7 @@ import { api } from "../lib/api";
 import { isNearBottom } from "../lib/chatScroll";
 import { randomId } from "../lib/id";
 import { useI18n } from "../i18n/provider";
-import { admissionsApi } from "../lib/admissions";
+import { admissionsApi, retryWaitMinutes } from "../lib/admissions";
 import { ENROLLMENT_ROLES } from "../lib/types";
 import type { EnrollmentRole, LobbyExchange } from "../lib/types";
 
@@ -24,6 +25,7 @@ export type LobbyEndpoint = "/api/ui/network-chat/lobby" | "/api/setup/lobby";
 /** The refusal codes of the principal that deserve their own sentence. */
 const ERROR_KEYS: Record<string, string> = {
   lobby_disabled: "lobby.errorDisabled",
+  lobby_messages_closed: "lobby.messagesClosed",
   node_blocked: "lobby.errorBlocked",
   already_member: "lobby.errorMember",
   rate_limited: "lobby.errorRate",
@@ -46,10 +48,29 @@ function errorKey(code: string | null | undefined): string {
  * again every few seconds while the window is open, and that same request is
  * what keeps this machine listed in the lobby.
  */
-export function LobbyChat({ network, endpoint, onClose }: {
+export function LobbyChat({ network, endpoint, onClose, layout = "modal", backLabel, headerActions, focusAdmission = false, onUnavailable }: {
   network: { name: string; publisher_key: string; accepted_enrollments?: EnrollmentRole[] } | null;
   endpoint: LobbyEndpoint;
   onClose: () => void;
+  /**
+   * `page` fills the screen that hosts it, with a back button in place of the
+   * window's close, so a screen can keep several lobbies open side by side
+   * and switch between them. The wizard keeps the window.
+   */
+  layout?: "modal" | "page";
+  /** The back button's text in `page` layout. */
+  backLabel?: string;
+  /** Drawn at the right of the `page` header, e.g. the other open lobbies. */
+  headerActions?: ReactNode;
+  /** Opened to ask for admission: the role picker takes the focus once it shows. */
+  focusAdmission?: boolean;
+  /**
+   * In `page` layout, called when the network answers that its lobby is off:
+   * there is nothing to show in a full screen, and the host falls back to a
+   * window. A lobby whose Chat is off still fills the screen with the
+   * request side.
+   */
+  onUnavailable?: () => void;
 }) {
   const { t } = useI18n();
   const [exchange, setExchange] = useState<LobbyExchange | null>(null);
@@ -61,6 +82,8 @@ export function LobbyChat({ network, endpoint, onClose }: {
   const [joinConfirm, setJoinConfirm] = useState(false);
   const [joining, setJoining] = useState(false);
   const messagesRef = useRef<HTMLDivElement>(null);
+  const admissionRef = useRef<HTMLDivElement>(null);
+  const page = layout === "page";
   const autoFollow = useRef(true);
   const key = network?.publisher_key ?? "";
   // The setup router has no session to present, and asking for one would
@@ -96,7 +119,13 @@ export function LobbyChat({ network, endpoint, onClose }: {
   }, [adopt, auth, endpoint, key]);
 
   const messages = exchange?.messages ?? [];
+  // The network Chat is off there: the window is only the request side, with
+  // no conversation to show.
+  const closed = exchange?.messages_closed === true;
   const latest = messages[messages.length - 1]?.message_id;
+  useEffect(() => {
+    if (page && !exchange && failure === "lobby.errorDisabled") onUnavailable?.();
+  }, [exchange, failure, onUnavailable, page]);
   useEffect(() => {
     const element = messagesRef.current;
     if (element && autoFollow.current) element.scrollTop = element.scrollHeight;
@@ -127,6 +156,20 @@ export function LobbyChat({ network, endpoint, onClose }: {
   const acceptedRoles = ENROLLMENT_ROLES.filter((option) => !network?.accepted_enrollments || network.accepted_enrollments.includes(option));
   const askRole = acceptedRoles.includes(role) ? role : acceptedRoles[0];
   const admission = exchange?.admission ?? null;
+  // A decline holds for a while. Once it is over the machine may ask again,
+  // so the form comes back; the lobby poll re-renders this every few seconds.
+  const waitMinutes = admission?.status === "rejected" ? retryWaitMinutes(admission.retry_at) : 0;
+  const mayAsk = !admission || (admission.status === "rejected" && waitMinutes === 0);
+
+  const admissionFormShown = canAsk && Boolean(exchange) && mayAsk && acceptedRoles.length > 0;
+  const focused = useRef(false);
+  useEffect(() => {
+    if (!focusAdmission || focused.current || !admissionFormShown) return;
+    focused.current = true;
+    const select = admissionRef.current?.querySelector("select");
+    select?.focus();
+    select?.scrollIntoView?.({ block: "nearest" });
+  }, [admissionFormShown, focusAdmission]);
 
   async function requestAdmission() {
     if (!key || !askRole || asking) return;
@@ -153,16 +196,19 @@ export function LobbyChat({ network, endpoint, onClose }: {
   }
 
   if (!network) return null;
-  return (
-    <Modal open size="lg" title={t("lobby.title", { name: network.name })} onClose={onClose} footer={<Button variant="ghost" onClick={onClose}>{t("common.close")}</Button>}>
-      <div className="grid min-w-0 gap-4 md:grid-cols-[minmax(0,1fr)_14rem]">
-        <div className="flex min-w-0 flex-col">
+  const title = t("lobby.title", { name: network.name });
+  const content = (
+    <>
+      <div className={page
+        ? `grid h-full min-h-0 min-w-0 gap-4 ${closed ? "content-start overflow-y-auto py-2" : "md:grid-cols-[minmax(0,1fr)_18rem]"}`
+        : closed ? "min-w-0" : "grid min-w-0 gap-4 md:grid-cols-[minmax(0,1fr)_14rem]"}>
+        {!closed && <div className={page ? "flex min-h-0 min-w-0 flex-col" : "flex min-w-0 flex-col"}>
           <p className="mb-3 text-xs leading-relaxed text-muted">{t("lobby.detail")}</p>
           <div
             ref={messagesRef}
             data-testid="lobby-messages"
             onScroll={(event) => { autoFollow.current = isNearBottom(event.currentTarget); }}
-            className="h-72 space-y-2.5 overflow-y-auto rounded-lg border border-line bg-ink p-3"
+            className={`${page ? "min-h-0 flex-1" : "h-72"} space-y-2.5 overflow-y-auto overscroll-y-contain rounded-lg border border-line bg-ink p-3`}
           >
             {messages.length === 0 && <p className="py-8 text-center text-sm text-faint">{t(exchange ? "lobby.empty" : failure ? failure : "lobby.connecting")}</p>}
             {messages.map((message) => {
@@ -194,18 +240,20 @@ export function LobbyChat({ network, endpoint, onClose }: {
               <Send className="h-4 w-4" />
             </Button>
           </div>
-        </div>
-        <div className="min-w-0">
+        </div>}
+        <div className={page ? `min-h-0 min-w-0 overflow-y-auto ${closed ? "mx-auto w-full max-w-lg rounded-xl border border-line bg-raised/50 p-4 sm:p-5" : ""}` : "min-w-0"} data-testid="lobby-request">
           <p className="eyebrow mb-2">{t("lobby.yourCard")}</p>
           {exchange ? <LobbyHardwareCard nodeId={exchange.node_id} card={exchange.card} self /> : <p className="text-xs text-faint">{t("lobby.connecting")}</p>}
-          <p className="mt-2 text-[0.68rem] leading-relaxed text-faint">{t("lobby.cardNote")}</p>
+          <p className="mt-2 text-[0.68rem] leading-relaxed text-faint">{t(closed ? "lobby.cardNoteRequest" : "lobby.cardNote")}</p>
+          {closed && failure && <p role="alert" className="mt-2 text-xs text-amber">{t(failure)}</p>}
           {canAsk && exchange && (
             <div className="mt-4 border-t border-line pt-3" data-testid="lobby-admission">
               <p className="eyebrow mb-2">{t("lobby.admission")}</p>
-              {!admission && (acceptedRoles.length === 0 ? (
+              {admission?.status === "rejected" && waitMinutes === 0 && <p className="mb-2 text-xs leading-relaxed text-muted">{t("lobby.admissionRejectedMayAsk")}</p>}
+              {mayAsk && (acceptedRoles.length === 0 ? (
                 <p className="text-xs text-faint">{t("publicNetworks.closedDetail")}</p>
               ) : (
-                <div className="space-y-2">
+                <div ref={admissionRef} className="space-y-2">
                   <Select compact aria-label={t("lobby.admissionRole")} value={askRole} onChange={(event) => setRole(event.target.value as EnrollmentRole)}>
                     {acceptedRoles.map((option) => <option key={option} value={option}>{t(`network.enrollment.${option}`)}</option>)}
                   </Select>
@@ -214,7 +262,11 @@ export function LobbyChat({ network, endpoint, onClose }: {
                 </div>
               ))}
               {admission?.status === "pending" && <p className="text-xs leading-relaxed text-amber">{t("lobby.admissionPending", { role: t(`network.enrollment.${admission.role}`) })}</p>}
-              {admission?.status === "rejected" && <p className="text-xs leading-relaxed text-rose">{t("lobby.admissionRejected")}</p>}
+              {admission?.status === "rejected" && waitMinutes > 0 && (
+                <p className="text-xs leading-relaxed text-rose" data-testid="lobby-admission-wait">
+                  {t("lobby.admissionRejectedWait", { minutes: waitMinutes })}
+                </p>
+              )}
               {admission?.status === "approved" && !admission.standing && (
                 <div className="space-y-2">
                   <p className="text-xs leading-relaxed text-lime">{t("lobby.admissionApproved", { role: t(`network.enrollment.${admission.role}`) })}</p>
@@ -235,6 +287,23 @@ export function LobbyChat({ network, endpoint, onClose }: {
         </div>
       </div>
       <Confirm open={joinConfirm} title={t("lobby.joinTitle", { name: network.name })} description={t("lobby.joinDetail")} confirmLabel={t("lobby.joinNow")} tone="danger" busy={joining} onConfirm={() => void join()} onCancel={() => !joining && setJoinConfirm(false)} />
+    </>
+  );
+  if (page) {
+    return (
+      <section aria-label={title} className="flex h-full min-h-0 min-w-0 flex-col" data-testid="lobby-page">
+        <div className="flex shrink-0 items-center gap-3 border-b border-line bg-raised/60 px-3 py-2 sm:px-4">
+          <Button size="sm" variant="ghost" onClick={onClose} icon={<ArrowLeft className="h-3.5 w-3.5" />}>{backLabel ?? t("common.close")}</Button>
+          <h2 className="min-w-0 flex-1 truncate font-display text-sm font-semibold text-fg">{title}</h2>
+          {headerActions}
+        </div>
+        <div className="min-h-0 flex-1 overflow-hidden p-3 text-sm leading-relaxed text-muted sm:p-4">{content}</div>
+      </section>
+    );
+  }
+  return (
+    <Modal open size={closed ? "md" : "lg"} title={title} onClose={onClose} footer={<Button variant="ghost" onClick={onClose}>{t("common.close")}</Button>}>
+      {content}
     </Modal>
   );
 }

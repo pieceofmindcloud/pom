@@ -1,44 +1,45 @@
-//! Bancada da especulação: **uma rodada especulativa que não rascunha ainda
-//! tem que gerar texto**.
+//! Speculation bench: **a speculative round that does not draft still has
+//! to generate text**.
 //!
-//! O contrato do fio já diz que a cabeça pode recusar o rascunho — está escrito
-//! no doc de `step_blocking::incoming_draft`: `draft` ausente significa "esta
-//! rodada não é especulativa, vale o formato antigo de um token".
+//! The wire contract already says the head may refuse the draft - it is written
+//! in the doc of `step_blocking::incoming_draft`: an absent `draft` means "this
+//! round is not speculative, the old one-token format applies".
 //!
-//! **Correção de 2026-08-16, depois desta bancada ter sido escrita**: a cabeça
-//! achava que recusava "sempre que o cache KV do modelo não desloca"
-//! (`kv_can_shift`) e chamava isso de propriedade de todo modelo híbrido ou
-//! recorrente. Era engano nos dois pontos — `kv_can_shift`
-//! (`llama_memory_can_shift`) é sobre o K-shift do `--ctx-shift` de referência
-//! do llama.cpp, nada a ver com desfazer um rascunho, e nada neste projeto liga
-//! `--ctx-shift`; e o Qwen3.5/3.8 (`LLM_ARCH_QWEN35`) tem suporte dedicado a
-//! rollback recorrente parcial no llama.cpp
-//! (`llm_arch_supports_rs_rollback`/`cparams.n_rs_seq`), que só precisava ser
-//! ligado (`EngineConfig::rs_seq_window`). `should_draft` não recebe mais
-//! `kv_can_shift` - hoje toda invocação de lookup rascunha, e a única recusa
-//! que sobra é MTP sem cabeça `nextn` local e sem rascunho pronto. O que esta
-//! bancada media (recusa antes de rascunhar, seguida de resposta direta) não
-//! tem mais como acontecer no caminho de lookup; o defeito real que pode
-//! acontecer agora é *depois* de rascunhar - `gateway::rollback_sessions`
-//! recusado -, que é uma bancada diferente.
+//! **Correction of 2026-08-16, after this bench was written**: the head
+//! thought it refused "whenever the model's KV cache does not shift"
+//! (`kv_can_shift`) and called that a property of every hybrid or recurrent
+//! model. It was a mistake on both counts - `kv_can_shift`
+//! (`llama_memory_can_shift`) is about the K-shift of llama.cpp's reference
+//! `--ctx-shift`, nothing to do with undoing a draft, and nothing in this project
+//! turns `--ctx-shift` on; and Qwen3.5/3.8 (`LLM_ARCH_QWEN35`) has dedicated
+//! support for partial recurrent rollback in llama.cpp
+//! (`llm_arch_supports_rs_rollback`/`cparams.n_rs_seq`), which only needed to be
+//! switched on (`EngineConfig::rs_seq_window`). `should_draft` no longer takes
+//! `kv_can_shift` - today every lookup invocation drafts, and the only refusal
+//! left is MTP with no local `nextn` head and no draft ready. What this
+//! bench measured (refusal before drafting, followed by a direct reply) can
+//! no longer happen on the lookup path; the real defect that can happen
+//! now is *after* drafting - `gateway::rollback_sessions`
+//! refused -, which is a different bench.
 //!
-//! O que faltava era a outra metade do contrato: quem pediu a especulação não
-//! sabia ler a resposta antiga, e tratava uma resposta legítima como erro fatal.
-//! O efeito visível é a requisição morrer com **um** token e `partial: true`,
-//! que foi o que o captain viu em 2026-08-15 no Qwen3.8-27B. Essa metade
-//! continua valendo e é o que os testes abaixo ainda provam.
+//! What was missing was the other half of the contract: whoever asked for the
+//! speculation could not read the old reply, and treated a legitimate reply as a
+//! fatal error. The visible effect is the request dying with **one** token and
+//! `partial: true`, which is what the captain saw on 2026-08-15 on Qwen3.8-27B.
+//! That half still holds and is what the tests below still prove.
 //!
-//! Aqui o caminho de orquestração é o de produção inteiro —
+//! Here the orchestration path is the whole production one -
 //! `generate_stream_with_stops`,
 //! `prefill::run`, `prefill::step_speculative`, `relay::send_frame`,
-//! `infer_server::forward_direct`, `direct::deliver_result` — e os hops falsos
-//! decidem com as funções de produção em pessoa (`should_draft`, `find_draft`,
-//! `longest_match`). O único fingimento é o motor: em vez de decodificar, o hop
-//! devolve tensores zerados e tokens de um alfabeto fixo.
+//! `infer_server::forward_direct`, `direct::deliver_result` - and the fake hops
+//! decide with the production functions themselves (`should_draft`, `find_draft`,
+//! `longest_match`). The only pretence is the engine: instead of decoding, the hop
+//! returns zeroed tensors and tokens from a fixed alphabet.
 //!
-//! **Limite desta bancada:** sem GGUF e sem llama.cpp nesta máquina, o motor de
-//! verdade não entra. O que ela prova é o contrato entre os processos, que é
-//! onde o defeito mora; o que ela não prova é o que o llama.cpp faz com o lote.
+//! **Limit of this bench:** with no GGUF and no llama.cpp on this machine, the
+//! real engine does not come in. What it proves is the contract between the
+//! processes, which is where the defect lives; what it does not prove is what
+//! llama.cpp does with the batch.
 
 #![cfg(test)]
 
@@ -56,32 +57,32 @@ use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-/// Pequeno de propósito: a bancada mede protocolo, não memória.
+/// Small on purpose: the bench measures protocol, not memory.
 const HIDDEN_DIM: usize = 8;
-/// Tokens que o prompt do teste vale para a cabeça falsa.
+/// Tokens the test prompt is worth to the fake head.
 const PROMPT_TOKENS: u32 = 6;
 
-// ── O hop falso ───────────────────────────────────────────────────────────────
+// ── The fake hop ──────────────────────────────────────────────────────────────
 
-/// Um peer de inferência falso.
+/// A fake inference peer.
 #[derive(Clone)]
 struct Hop {
     is_head: bool,
-    /// Estado por sessão que a bancada precisa: quantos tokens já saíram, para
-    /// o "motor" devolver texto diferente a cada rodada e parar no fim.
+    /// Per-session state the bench needs: how many tokens have already come
+    /// out, so the "engine" returns different text each round and stops at the end.
     emitted: Arc<AtomicU64>,
-    /// Quantas vezes `/v1/step` foi servido neste hop — é o `decode.calls` dos
-    /// hops, visto de dentro.
+    /// How many times `/v1/step` was served on this hop - it is the hops'
+    /// `decode.calls`, seen from the inside.
     step_calls: Arc<AtomicU64>,
-    /// Quantos desses passos vieram com `reply_to`, ou seja pelo caminho da
-    /// resposta direta. `step_speculative` nunca manda esse campo, então este
-    /// contador é a prova de que a cadeia saiu do anel.
+    /// How many of those steps came with `reply_to`, that is, through the direct
+    /// reply path. `step_speculative` never sends that field, so this
+    /// counter is the proof that the chain left the ring.
     direct_steps: Arc<AtomicU64>,
 }
 
-/// Tokens que o motor falso "amostra", em ordem. Termina antes de acabar para
-/// que um teste de `max_tokens` alto ainda feche por EOS.
-const ALFABETO: [&str; 8] = ["A", "B", "C", "D", "E", "F", "G", "H"];
+/// Tokens the fake engine "samples", in order. It ends before running out so
+/// that a test with a high `max_tokens` still closes by EOS.
+const ALPHABET: [&str; 8] = ["A", "B", "C", "D", "E", "F", "G", "H"];
 
 fn frame(meta: &Value, tensor: Option<(&[f32], TensorShape)>) -> Response {
     match wire::encode(meta, tensor, WireDtype::F16) {
@@ -103,15 +104,15 @@ async fn fake_ok() -> impl IntoResponse {
     Json(json!({"ok": true}))
 }
 
-/// A bancada não tem cache de verdade para um rollback poder falhar contra -
-/// só o llama.cpp real decide isso (`n_rs_seq`/`seq_rm`, ver o doc do módulo).
-/// A forma da resposta importa: `gateway::rollback_sessions` lê o corpo, não
-/// só o status HTTP, então `fake_ok` (`{"ok": true}`) leria como recusado.
+/// The bench has no real cache for a rollback to fail against -
+/// only the real llama.cpp decides that (`n_rs_seq`/`seq_rm`, see the module doc).
+/// The shape of the reply matters: `gateway::rollback_sessions` reads the body,
+/// not only the HTTP status, so `fake_ok` (`{"ok": true}`) would read as refused.
 async fn fake_rollback() -> impl IntoResponse {
     Json(json!({"rolled_back": true}))
 }
 
-/// Lido com as mesmas regras do `infer_server` real.
+/// Read with the same rules as the real `infer_server`.
 struct Incoming {
     meta: Value,
     inbound_bytes: usize,
@@ -121,7 +122,7 @@ struct Incoming {
 }
 
 fn read(body: &Bytes) -> Incoming {
-    let (meta, _tensor) = wire::decode(body).expect("quadro válido");
+    let (meta, _tensor) = wire::decode(body).expect("valid frame");
     let declared: Option<Vec<crate::pipeline::PipelineStep>> = meta
         .get("next_hops")
         .and_then(|v| serde_json::from_value(v.clone()).ok());
@@ -140,7 +141,7 @@ fn read(body: &Bytes) -> Incoming {
     }
 }
 
-/// Espelha `infer_server::relay_and_bubble`.
+/// Mirrors `infer_server::relay_and_bubble`.
 async fn bubble(
     hops: &[crate::pipeline::PipelineStep],
     path: &str,
@@ -201,10 +202,10 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
     if inc.is_last {
         local["done"] = json!(false);
         if is_final_chunk {
-            // O primeiro token da geração, amostrado pela cauda.
+            // The first token of the generation, sampled by the tail.
             let i = hop.emitted.fetch_add(1, Ordering::Relaxed) as usize;
             local["token_id"] = json!(i as u32);
-            local["text"] = json!(ALFABETO[i % ALFABETO.len()]);
+            local["text"] = json!(ALPHABET[i % ALPHABET.len()]);
         }
     }
 
@@ -279,9 +280,9 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
     }
 }
 
-/// Mesma árvore de decisão de `step_blocking`, com as funções de produção nos
-/// pontos que importam: `should_draft` decide se a cabeça rascunha,
-/// `find_draft` monta o rascunho e `longest_match` verifica na cauda.
+/// Same decision tree as `step_blocking`, with the production functions at the
+/// points that matter: `should_draft` decides whether the head drafts,
+/// `find_draft` builds the draft and `longest_match` verifies at the tail.
 async fn fake_step(State(hop): State<Hop>, body: Bytes) -> Response {
     hop.step_calls.fetch_add(1, Ordering::Relaxed);
     let inc = read(&body);
@@ -295,17 +296,17 @@ async fn fake_step(State(hop): State<Hop>, body: Bytes) -> Response {
         .get("draft")
         .and_then(|v| serde_json::from_value(v.clone()).ok());
 
-    // ── Cabeça: decide o rascunho, exatamente como `step_blocking` ───────────
+    // ── Head: decides the draft, exactly like `step_blocking` ────────────────
     let mut head_draft: Option<Vec<i32>> = None;
     let mut n_positions = 1usize;
     if hop.is_head {
-        // `mtp_ready` é falso nesta bancada: ela move quadros entre processos
-        // fingidos, sem motor nenhum, então a única fonte de rascunho que ela
-        // pode exercer de verdade é o lookup.
+        // `mtp_ready` is false on this bench: it moves frames between fake
+        // processes, with no engine at all, so the only draft source it
+        // can really exercise is the lookup.
         if crate::infer_server::should_draft(speculate.clone(), false) {
-            let spec = speculate.expect("should_draft implica speculate");
-            // Histórico fabricado com um padrão que se repete, para
-            // `find_draft` ter o que achar.
+            let spec = speculate.expect("should_draft implies speculate");
+            // History fabricated with a repeating pattern, so that
+            // `find_draft` has something to find.
             let history: Vec<i32> = (0..24).map(|i| i % 4).collect();
             let draft = crate::infer_server::find_draft(&history, spec.m as usize, spec.k);
             n_positions = 1 + draft.len();
@@ -319,19 +320,20 @@ async fn fake_step(State(hop): State<Hop>, body: Bytes) -> Response {
     let mut local = json!({"processing_ms": 0, "node_timings": {}});
     if inc.is_last {
         if let Some(draft) = draft {
-            // Verificação: o motor falso "amostra" o alfabeto em ordem, então
-            // nenhum rascunho casa — `longest_match` devolve 0 e a rodada
-            // confirma um token, que é o pior caso legítimo.
+            // Verification: the fake engine "samples" the alphabet in order, so
+            // no draft matches - `longest_match` returns 0 and the round
+            // confirms one token, which is the legitimate worst case.
             let mut sampled: Vec<i32> = Vec::new();
             let mut texts: Vec<String> = Vec::new();
             for _ in 0..n_positions {
                 let i = hop.emitted.fetch_add(1, Ordering::Relaxed) as usize;
                 sampled.push(i as i32);
-                texts.push(ALFABETO[i % ALFABETO.len()].to_string());
+                texts.push(ALPHABET[i % ALPHABET.len()].to_string());
             }
             let keep =
                 (crate::infer_server::longest_match(&sampled, &draft) + 1).min(sampled.len());
-            // O que passou do aceite não saiu: devolve ao contador.
+            // What went past the accepted count did not go out: give it back
+            // to the counter.
             hop.emitted
                 .fetch_sub((n_positions - keep) as u64, Ordering::Relaxed);
             let accepted: Vec<Value> = sampled[..keep]
@@ -344,12 +346,12 @@ async fn fake_step(State(hop): State<Hop>, body: Bytes) -> Response {
             local["accept_count"] = json!(keep as u32);
             local["batch_width"] = json!(n_positions as u32);
         } else {
-            // Formato antigo, de um token — é o que o contrato manda quando
-            // `draft` está ausente.
+            // Old format, one token - it is what the contract requires when
+            // `draft` is absent.
             let i = hop.emitted.fetch_add(1, Ordering::Relaxed) as usize;
             local["done"] = json!(false);
             local["token_id"] = json!(i as u32);
-            local["text"] = json!(ALFABETO[i % ALFABETO.len()]);
+            local["text"] = json!(ALPHABET[i % ALPHABET.len()]);
         }
     } else {
         local["done"] = json!(false);
@@ -436,30 +438,30 @@ async fn spawn_hop(hop: Hop) -> String {
     format!("http://{addr}")
 }
 
-// ── O cenário, montado no caminho do usuário final ────────────────────────────
+// ── The scenario, built on the end user's path ────────────────────────────────
 
-/// O que o cliente vê no fim de um `generate_stream_with_stops`.
-struct Visto {
-    texto: String,
+/// What the client sees at the end of a `generate_stream_with_stops`.
+struct Seen {
+    text: String,
     tokens: u32,
     partial: bool,
     timings: Option<crate::gateway::GenerationTimings>,
-    /// `decode.calls` de cada hop do trace — o número que o captain leu no
-    /// `x_pom` e viu zerado nos dois.
+    /// `decode.calls` of each hop in the trace - the number the captain read
+    /// in `x_pom` and saw zeroed on both.
     decode_calls: Vec<u32>,
-    /// Quantas vezes cada hop serviu `/v1/step`, visto de dentro dos hops.
+    /// How many times each hop served `/v1/step`, seen from inside the hops.
     step_calls: Vec<u64>,
-    /// Desses, quantos chegaram pelo caminho da resposta direta.
+    /// Of those, how many arrived through the direct reply path.
     direct_steps: Vec<u64>,
-    falhou: Option<String>,
+    failed: Option<String>,
 }
 
-/// Sobe dois hops falsos, um gateway de verdade com a config do captain e roda
-/// uma geração pelo mesmo caminho que `/v1/chat/completions` usa.
-async fn gerar(direto: bool, max_tokens: u32, n_batch: u32) -> Visto {
-    // Com `RUST_LOG=info` a bancada imprime as mesmas linhas que o captain leu
-    // no servidor — é assim que se confere que ela reproduz o caso dele, e não
-    // um primo.
+/// Brings up two fake hops, a real gateway with the captain's config and runs
+/// a generation through the same path `/v1/chat/completions` uses.
+async fn generate(direct: bool, max_tokens: u32, n_batch: u32) -> Seen {
+    // With `RUST_LOG=info` the bench prints the same lines the captain read
+    // on the server - that is how one checks it reproduces his case, and not
+    // a cousin of it.
     static LOG: std::sync::Once = std::sync::Once::new();
     LOG.call_once(|| {
         let _ = tracing_subscriber::fmt()
@@ -496,7 +498,7 @@ async fn gerar(direto: bool, max_tokens: u32, n_batch: u32) -> Visto {
         crate::pipeline::CAP_RELAY_CHAIN.to_string(),
         crate::pipeline::CAP_SPECULATE_LOOKUP.to_string(),
     ];
-    if direto {
+    if direct {
         caps.push(crate::pipeline::CAP_RELAY_DIRECT.to_string());
     }
 
@@ -504,14 +506,14 @@ async fn gerar(direto: bool, max_tokens: u32, n_batch: u32) -> Visto {
         .iter()
         .enumerate()
         .map(|(i, url)| {
-            let porta: u16 = url.rsplit(':').next().unwrap().parse().unwrap();
+            let port: u16 = url.rsplit(':').next().unwrap().parse().unwrap();
             let mut p = crate::gateway::testkit::peer(
                 &format!("hop{i}"),
                 &format!("m{i}"),
                 9000 + i as u16,
             );
             p.addr = "127.0.0.1:42777".into();
-            p.inference_port = Some(porta);
+            p.inference_port = Some(port);
             p.model = "lab".into();
             p.start_layer = i as u32;
             p.end_layer = i as u32;
@@ -526,8 +528,8 @@ async fn gerar(direto: bool, max_tokens: u32, n_batch: u32) -> Visto {
     config.n_batch = n_batch;
     state.runtime.seed_config_for_test(config).await;
 
-    // O gateway de verdade, na loopback, para a cauda ter onde entregar a
-    // resposta direta. Sem ele o modo direto esperaria o prazo inteiro.
+    // The real gateway, on loopback, so the tail has somewhere to deliver the
+    // direct reply. Without it direct mode would wait out the whole deadline.
     let state = crate::gateway::testkit::with_self_reachable_gateway(state).await;
 
     let (tx, mut rx) = tokio::sync::mpsc::channel(64);
@@ -537,7 +539,7 @@ async fn gerar(direto: bool, max_tokens: u32, n_batch: u32) -> Visto {
             state,
             inference_token: "test-api-key".into(),
             model: "lab".into(),
-            prompt: "um prompt qualquer para a bancada".into(),
+            prompt: "some prompt for the bench".into(),
             images: Vec::new(),
             chat_template: true,
             thinking_enabled: true,
@@ -551,124 +553,125 @@ async fn gerar(direto: bool, max_tokens: u32, n_batch: u32) -> Visto {
         tx,
     ));
 
-    let mut visto = Visto {
-        texto: String::new(),
+    let mut seen = Seen {
+        text: String::new(),
         tokens: 0,
         partial: false,
         timings: None,
         decode_calls: Vec::new(),
         step_calls: Vec::new(),
         direct_steps: Vec::new(),
-        falhou: None,
+        failed: None,
     };
     while let Some(ev) = rx.recv().await {
         match ev {
-            crate::gateway::GenEvent::Token(t) => visto.texto.push_str(&t),
+            crate::gateway::GenEvent::Token(t) => seen.text.push_str(&t),
+            crate::gateway::GenEvent::Reasoning(_) => {}
             crate::gateway::GenEvent::Done(sum) => {
-                visto.tokens = sum.tokens_generated;
-                visto.partial = sum.partial;
-                visto.timings = Some(sum.timings);
-                visto.decode_calls = sum
+                seen.tokens = sum.tokens_generated;
+                seen.partial = sum.partial;
+                seen.timings = Some(sum.timings);
+                seen.decode_calls = sum
                     .trace
                     .as_ref()
                     .map(|t| t.hops.iter().map(|h| h.decode.calls).collect())
                     .unwrap_or_default();
             }
-            crate::gateway::GenEvent::Failed(e) => visto.falhou = Some(e),
+            crate::gateway::GenEvent::Failed(e) => seen.failed = Some(e),
             crate::gateway::GenEvent::FailedWithTelemetry { error, .. } => {
-                visto.falhou = Some(error)
+                seen.failed = Some(error)
             }
         }
     }
     let _ = bg.await;
-    visto.step_calls = step_calls
+    seen.step_calls = step_calls
         .iter()
         .map(|c| c.load(Ordering::Relaxed))
         .collect();
-    visto.direct_steps = direct_steps
+    seen.direct_steps = direct_steps
         .iter()
         .map(|c| c.load(Ordering::Relaxed))
         .collect();
-    visto
+    seen
 }
 
-// ── A lei ─────────────────────────────────────────────────────────────────────
+// ── The law ───────────────────────────────────────────────────────────────────
 //
-// As três leis que provavam a recusa-antes-de-rascunhar via `kv_can_shift`
-// saíram daqui em 2026-08-16 (ver o doc do módulo): a única recusa que
-// `should_draft` ainda faz é MTP sem cabeça `nextn` local e sem rascunho
-// pronto, que esta bancada (só lookup, sem MTP) não constrói. O que
-// continua valendo — toda invocação de lookup rascunha, direto ou pelo
-// anel — está provado abaixo.
+// The three laws that proved refusal-before-drafting via `kv_can_shift`
+// left here on 2026-08-16 (see the module doc): the only refusal
+// `should_draft` still makes is MTP with no local `nextn` head and no draft
+// ready, which this bench (lookup only, no MTP) does not build. What
+// still holds - every lookup invocation drafts, direct or through the
+// ring - is proved below.
 
-/// Quem rascunha continua no anel, que é o único caminho que
-/// `step_speculative` conhece — sem resposta direta negociada.
+/// Whoever drafts stays on the ring, which is the only path
+/// `step_speculative` knows - with no direct reply negotiated.
 #[tokio::test]
-async fn quem_rascunha_no_anel_gera_o_texto_inteiro() {
-    let visto = gerar(false, 5, 512).await;
+async fn the_drafter_on_the_ring_generates_the_whole_text() {
+    let seen = generate(false, 5, 512).await;
 
-    assert_eq!(visto.falhou, None, "a geração não pode falhar");
-    assert_eq!(visto.tokens, 5);
-    assert!(!visto.partial);
-    assert_eq!(visto.texto, "ABCDE");
-    let timings = visto.timings.expect("a resposta deve trazer os tempos");
-    assert_eq!(timings.generation_tokens, visto.tokens);
+    assert_eq!(seen.failed, None, "the generation cannot fail");
+    assert_eq!(seen.tokens, 5);
+    assert!(!seen.partial);
+    assert_eq!(seen.text, "ABCDE");
+    let timings = seen.timings.expect("the response must carry the times");
+    assert_eq!(timings.generation_tokens, seen.tokens);
     assert!(timings.ttft_ms >= timings.prefill_ms);
     // A sub-millisecond fake prefill is intentionally unmeasurable at the
     // public millisecond resolution; the contract here is that the prompt
     // was processed, not that a rate is fabricated from a zero duration.
     assert!(timings.prefill_tokens > 0);
     assert!(
-        visto.direct_steps.iter().all(|c| *c == 0),
-        "sem resposta direta negociada, nenhum passo pode sair por ali: {:?}",
-        visto.direct_steps
+        seen.direct_steps.iter().all(|c| *c == 0),
+        "without a negotiated direct reply, no step can go out that way: {:?}",
+        seen.direct_steps
     );
-    assert!(visto.decode_calls.iter().all(|c| *c > 0));
+    assert!(seen.decode_calls.iter().all(|c| *c > 0));
 }
 
-/// E com resposta direta negociada: toda rodada especula, então nenhuma
-/// pode ser desviada — sem isto o teste anterior passaria por acidente.
+/// And with a direct reply negotiated: every round speculates, so none
+/// can be diverted - without this the previous test would pass by accident.
 #[tokio::test]
-async fn quem_rascunha_com_resposta_direta_nao_e_desviado_para_ela() {
-    let visto = gerar(true, 5, 512).await;
-    assert_eq!(visto.falhou, None);
-    assert_eq!(visto.tokens, 5);
-    assert!(!visto.partial);
-    assert_eq!(visto.texto, "ABCDE");
-    let timings = visto.timings.expect("a resposta deve trazer os tempos");
-    assert_eq!(timings.generation_tokens, visto.tokens);
+async fn the_drafter_with_direct_reply_is_not_diverted_to_it() {
+    let seen = generate(true, 5, 512).await;
+    assert_eq!(seen.failed, None);
+    assert_eq!(seen.tokens, 5);
+    assert!(!seen.partial);
+    assert_eq!(seen.text, "ABCDE");
+    let timings = seen.timings.expect("the response must carry the times");
+    assert_eq!(timings.generation_tokens, seen.tokens);
     assert!(timings.ttft_ms >= timings.prefill_ms);
     // See the no-ring case above: this fake can complete below one millisecond.
     assert!(timings.prefill_tokens > 0);
     assert_eq!(
-        visto.direct_steps[0], 0,
-        "toda rodada especulou, então nenhuma podia sair pelo caminho direto"
+        seen.direct_steps[0], 0,
+        "every round speculated, so none could go out through the direct path"
     );
-    assert!(visto.decode_calls.iter().all(|c| *c > 0));
+    assert!(seen.decode_calls.iter().all(|c| *c > 0));
 }
 
 #[tokio::test]
-async fn resposta_de_um_token_mantem_as_taxas_finitas() {
-    let visto = gerar(false, 1, 512).await;
+async fn a_one_token_response_keeps_the_rates_finite() {
+    let seen = generate(false, 1, 512).await;
 
-    assert_eq!(visto.falhou, None);
-    assert_eq!(visto.tokens, 1);
-    let timings = visto.timings.expect("a resposta deve trazer os tempos");
+    assert_eq!(seen.failed, None);
+    assert_eq!(seen.tokens, 1);
+    let timings = seen.timings.expect("the response must carry the times");
     assert_eq!(timings.generation_tokens, 1);
     assert!(timings.total_tokens_per_sec.is_finite());
     assert!(timings.generation_tokens_per_sec.is_none_or(f64::is_finite));
 }
 
-/// `n_batch=512` limita apenas a largura de uma rodada no motor, não o
-/// orçamento de saída pedido ao gateway.
+/// `n_batch=512` only limits the width of one round in the engine, not the
+/// output budget requested from the gateway.
 #[tokio::test]
-async fn um_orcamento_acima_de_n_batch_nao_e_truncado() {
+async fn a_budget_above_n_batch_is_not_truncated() {
     for n_batch in [512, 8] {
-        let visto = gerar(false, 2048, n_batch).await;
+        let seen = generate(false, 2048, n_batch).await;
 
-        assert_eq!(visto.falhou, None, "a geração não pode falhar");
-        assert_eq!(visto.tokens, 2048, "n_batch={n_batch} não pode ser o teto");
-        assert!(!visto.partial);
-        assert_eq!(visto.step_calls, vec![2047, 2047]);
+        assert_eq!(seen.failed, None, "the generation cannot fail");
+        assert_eq!(seen.tokens, 2048, "n_batch={n_batch} cannot be the cap");
+        assert!(!seen.partial);
+        assert_eq!(seen.step_calls, vec![2047, 2047]);
     }
 }

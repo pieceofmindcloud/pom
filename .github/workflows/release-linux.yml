@@ -1,23 +1,23 @@
 name: Release · Linux
 
-# Só roda quando você mandar, e roda no **runner self-hosted `ksia`** - não
-# consome cota nenhuma. Se a ksia estiver desligada o job fica na fila em vez de
-# falhar. Ver `docs/subsystems/build-and-run.md`, "Release pelo GitHub
+# It only runs when you ask for it, and it runs on the **self-hosted runner `ksia`** - it
+# consumes no quota at all. If ksia is switched off the job waits in the queue instead of
+# failing. See `docs/subsystems/build-and-run.md`, "Release through GitHub
 # Actions".
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Versão da release (ex.: v0.3.0)'
+        description: 'Release version (e.g. v0.3.0)'
         required: true
         type: string
       cuda:
-        description: 'Compilar também a variante CUDA (soma ~20 min só de toolkit)'
+        description: 'Also build the CUDA variant (adds ~20 min of toolkit alone)'
         required: false
         default: false
         type: boolean
       prerelease:
-        description: 'Publicar como prerelease'
+        description: 'Publish as a prerelease'
         required: false
         default: true
         type: boolean
@@ -26,9 +26,9 @@ permissions:
   contents: write
 
 jobs:
-  # Um job só: em runner self-hosted não há multiplicador de minuto, então
-  # separar a interface em outro job só acrescentaria uma ida e volta de
-  # artefato entre dois jobs que rodariam na mesma máquina de qualquer jeito.
+  # A single job: on a self-hosted runner there is no minute multiplier, so
+  # splitting the interface into another job would only add a round trip of
+  # artifacts between two jobs that would run on the same machine anyway.
   build:
     name: Linux x86_64 (${{ matrix.variante.label }})
     runs-on: [self-hosted, Linux, X64, ksia]
@@ -43,40 +43,40 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # A variante CUDA entra na matriz só quando pedida - o toolkit sozinho
-        # leva ~20 min e quase toda release é só CPU. Montar a matriz com
-        # `fromJSON` em vez de pular passos com `if:` é deliberado: em GitHub
-        # Actions a **string** "false" é verdadeira, então um `if: matrix.algo`
-        # alimentado por um input booleano roda sempre. Aqui a variante que não
-        # foi pedida simplesmente não existe.
+        # The CUDA variant only enters the matrix when it is asked for - the toolkit alone
+        # takes ~20 min and almost every release is CPU only. Building the matrix with
+        # `fromJSON` instead of skipping steps with `if:` is deliberate: in GitHub
+        # Actions the **string** "false" is truthy, so an `if: matrix.algo`
+        # fed by a boolean input always runs. Here the variant that was not
+        # asked for simply does not exist.
         variante: ${{ fromJSON(inputs.cuda && '[{"label":"CPU","features":"","suffix":"cpu"},{"label":"CUDA","features":"cuda","suffix":"cuda"}]' || '[{"label":"CPU","features":"","suffix":"cpu"}]') }}
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Preparar/cachear checkout do llama.cpp
+      - name: Prepare/cache the llama.cpp checkout
         id: llama-cache
         uses: ./.github/actions/llama-cache
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Ativar cache de compilação
+      - name: Enable the build cache
         uses: mozilla-actions/sccache-action@v0.0.11
 
-      # Sem `Swatinem/rust-cache`: ele existe para devolver o `target/` a um
-      # runner que nasce vazio. Aqui o workspace persiste entre execuções, o
-      # `target/` já está lá, e restaurar por cima só gastaria tempo e disco -
-      # que nesta máquina é justamente o recurso apertado.
+      # No `Swatinem/rust-cache`: it exists to hand a `target/` to a
+      # runner that starts empty. Here the workspace persists between runs, the
+      # `target/` is already there, and restoring over it would only spend time and disk -
+      # which on this machine is exactly the scarce resource.
 
-      - name: Conferir dependências da máquina
+      - name: Check the machine's dependencies
         run: |
-          # Num runner self-hosted as dependências são provisionadas uma vez na
-          # máquina, não instaladas a cada execução: o runner roda como usuário
-          # `github-runner`, sem sudo, de propósito. Falhar aqui, nomeando o que
-          # falta, é melhor que morrer lá dentro do build do llama.cpp.
+          # On a self-hosted runner the dependencies are provisioned once on the
+          # machine, not installed on every run: the runner runs as the user
+          # `github-runner`, without sudo, on purpose. Failing here, naming what
+          # is missing, is better than dying deep inside the llama.cpp build.
           #
-          # `mold` não é opcional: o `.cargo/config.toml` força `-fuse-ld=mold`
-          # no Linux, então sem ele o link falha. `libclang` é do bindgen.
+          # `mold` is not optional: `.cargo/config.toml` forces `-fuse-ld=mold`
+          # on Linux, so without it the link fails. `libclang` is for bindgen.
           faltou=""
           for p in cmake clang mold git; do
             command -v "$p" >/dev/null || faltou="$faltou $p"
@@ -86,45 +86,56 @@ jobs:
             command -v nvcc >/dev/null || faltou="$faltou nvcc(cuda-toolkit)"
           fi
           if [ -n "$faltou" ]; then
-            echo "faltando na ksia:$faltou" >&2
-            echo "instale como root: apt-get install -y cmake clang mold libclang-dev" >&2
+            echo "missing on ksia:$faltou" >&2
+            echo "install as root: apt-get install -y cmake clang mold libclang-dev" >&2
             exit 1
           fi
 
-      - name: Espaço em disco
+      - name: Disk space
         run: |
-          # Um `target/` deste projeto mede ~9 GB, e a ksia já rodou apertada de
-          # disco. Avisar antes é melhor que quebrar no meio do link.
+          # A `target/` of this project measures ~9 GB, and ksia has already run short of
+          # disk. Warning beforehand is better than breaking in the middle of the link.
           livre=$(df -BG --output=avail . | tail -1 | tr -dc '0-9')
-          echo "livre: ${livre}G"
-          [ "$livre" -ge 15 ] || echo "::warning::só ${livre}G livres; um build completo usa ~9G"
+          echo "free: ${livre}G"
+          [ "$livre" -ge 15 ] || echo "::warning::only ${livre}G free; a full build uses ~9G"
 
-      # Fixa o Node em vez de confiar no que a máquina tem no PATH: o runner
-      # self-hosted grava um retrato do PATH de quem o configurou, e a ksia traz
-      # Node 18. Aqui a versão é a mesma que o projeto usa em desenvolvimento,
-      # baixada para o cache de ferramentas do runner.
+      # Pins Node instead of trusting what the machine has on PATH: the self-hosted
+      # runner stores a snapshot of the PATH of whoever configured it, and ksia brings
+      # Node 18. Here the version is the same one the project uses in development,
+      # downloaded into the runner's tool cache.
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
           cache-dependency-path: apps/frontend/package-lock.json
 
-      - name: Interface web
+      - name: Web interface
         run: |
           npm ci
           npm run build
         working-directory: apps/frontend
 
-      - name: Compilar
-        # `CUDAARCHS` vazio de propósito, e não por esquecimento: sem ele o CMake
-        # do llama.cpp escolhe a lista larga (compute_50 até 121a), que é o que
-        # uma release precisa - o binário vai para máquinas que não são esta.
+      - name: SSH access to the engine repository (pom-plugin-llama.cpp)
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.PLUGIN_REPO_SSH_KEY }}
+
+      - name: github.com key in known_hosts
+        shell: bash
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+
+      - name: Compile
+        # `CUDAARCHS` empty on purpose, and not by oversight: without it the llama.cpp CMake
+        # picks the wide list (compute_50 up to 121a), which is what a release needs - the
+        # binary goes to machines that are not this one.
         #
-        # A linha existe porque este job roda num runner **self-hosted**: a
-        # máquina é de desenvolvimento e pode ter `CUDAARCHS` no ambiente para
-        # encurtar o build local (o `pom-ksia.sh` faz isso). Herdar aquele valor
-        # aqui produziria, em silêncio, uma release que só roda na GPU de quem
-        # compilou. Limpar a variável é o que impede isso.
+        # The line exists because this job runs on a **self-hosted** runner: the
+        # machine is a development one and may have `CUDAARCHS` in the environment to
+        # shorten the local build (`pom-ksia.sh` does that). Inheriting that value
+        # here would silently produce a release that only runs on the GPU of whoever
+        # compiled. Clearing the variable is what prevents it.
         env:
           CUDAARCHS: ''
         run: |
@@ -134,23 +145,23 @@ jobs:
             cargo build --release --locked -p node -p pom-plugin-host
           fi
 
-      # O binário fica na raiz do pacote com `apps/` ao lado: `project_root()`
-      # sobe a partir do diretório do executável, então o pacote funciona
-      # descompactado em qualquer lugar, sem `POM_HOME`.
-      - name: Montar o pacote
+      # The binary sits at the package root with `apps/` beside it: `project_root()`
+      # walks up from the executable's directory, so the package works unpacked
+      # anywhere, with no `POM_HOME`.
+      - name: Assemble the package
         run: |
           nome="pom-${{ inputs.version }}-x86_64-unknown-linux-gnu-${{ matrix.variante.suffix }}"
-          # O workspace persiste entre execuções neste runner: limpar a sobra da
-          # release anterior evita empacotar o pacote velho junto.
+          # The workspace persists between runs on this runner: clearing the leftovers from
+          # the previous release avoids packaging the old package along with it.
           rm -rf pacote pom-*.tar.gz "$nome"
           mkdir -p pacote/apps/frontend
           cp -R apps/frontend/dist pacote/apps/frontend/dist
           cp target/release/pom pacote/
-          # Sem o host ao lado do pom nenhum plugin instala.
+          # Without the host beside the pom no plugin installs.
           cp target/release/pom-plugin-host pacote/
           cp README.md pacote/ 2>/dev/null || true
-          # Um executável Unix não carrega ícone: no Linux quem o mostra é o
-          # .desktop apontando para a árvore hicolor.
+          # A Unix executable does not carry an icon: on Linux the one that shows it is the
+          # .desktop pointing at the hicolor tree.
           mkdir -p pacote/share
           cp -R assets/brand/linux/hicolor pacote/share/
           cp assets/brand/pom.desktop pacote/share/
@@ -162,18 +173,18 @@ jobs:
           name: pacote-linux-${{ matrix.variante.suffix }}
           path: pom-*.tar.gz
           if-no-files-found: error
-          # Só passam entre os jobs desta execução; a release guarda os pacotes.
+          # Only they pass between the jobs of this run; the release keeps the packages.
           retention-days: 2
 
-  # Cada sistema publica o próprio pacote na mesma tag. O primeiro workflow a
-  # rodar cria a release, os outros anexam o arquivo deles - é isso que deixa os
-  # três independentes: rodar só o de Linux não apaga o pacote de macOS que já
-  # estava lá.
+  # Each system publishes its own package on the same tag. The first workflow to
+  # run creates the release, the others attach their file - that is what keeps the
+  # three independent: running only the Linux one does not erase the macOS package that
+  # was already there.
   release:
-    name: Publicar
+    name: Publish
     needs: build
-    # Também na ksia: gastar cota só para baixar dois arquivos e anexá-los à
-    # release seria o único minuto cobrado deste workflow.
+    # Also on ksia: spending quota just to download two files and attach them to the
+    # release would be the only billed minute of this workflow.
     runs-on: [self-hosted, Linux, X64, ksia]
     steps:
       - uses: actions/download-artifact@v4
@@ -181,10 +192,10 @@ jobs:
           pattern: pacote-linux-*
           merge-multiple: true
           path: pacotes
-      - name: Conferir que sobrou alguma coisa
+      - name: Check that something was produced
         run: |
           ls -la pacotes
-          test -n "$(ls -A pacotes)" || { echo "nenhum pacote foi produzido"; exit 1; }
+          test -n "$(ls -A pacotes)" || { echo "no package was produced"; exit 1; }
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.version }}

@@ -12,7 +12,7 @@ pub(crate) fn step_blocking(
     capture_block: Option<u32>,
     // Present only for the head — everyone else either forwards
     // `incoming_draft` untouched (not the tail) or verifies against it (the
-    // tail). Ver `Speculate` para por que a fonte do rascunho viaja junto.
+    // tail). See `Speculate` for why the draft's source travels along.
     speculate: Option<Speculate>,
     // What a previous hop already decided, forwarded via the wire `draft`
     // field. `None` means this round isn't speculative at all (the
@@ -21,15 +21,15 @@ pub(crate) fn step_blocking(
     // through the *new* wire format, since the caller committed to it by
     // asking to speculate in the first place.
     incoming_draft: Option<Vec<i32>>,
-    // A composição do lote decodificado na cabeça, viajando pela wire (`tokens`)
-    // para a cauda. É o que alimenta o `observe` da cabeça `nextn` dentro do
-    // `decode_hidden`: a cauda sabe *quais* tokens o tronco decodificou, e sem
-    // eles a cabeça de rascunho não se mantém em dia. `None` é peer antigo que
-    // não encaminha o campo — aí o `decode_hidden` desliga o MTP com aviso.
+    // The composition of the batch decoded at the head, traveling on the wire
+    // (`tokens`) to the tail. It is what feeds the `nextn` head's `observe` inside
+    // `decode_hidden`: the tail knows *which* tokens the trunk decoded, and without
+    // them the draft head does not stay up to date. `None` is an old peer that
+    // does not forward the field - `decode_hidden` then turns MTP off with a warning.
     batch_tokens: Option<Vec<i32>>,
-    // Largura de lote que o gateway quer na rodada seguinte, vinda da cabeça
-    // via `mtp_k` na wire. Só a cauda usa (para rascunhar a medida certa); a
-    // cabeça a ecoa a partir do próprio `speculate` (`mtp_k_hint`).
+    // Batch width the gateway wants in the next round, coming from the head
+    // via `mtp_k` on the wire. Only the tail uses it (to draft the right size); the
+    // head echoes it from its own `speculate` (`mtp_k_hint`).
     mtp_k: Option<u32>,
     queued_at: Instant,
     scheduler_wait_us: u64,
@@ -72,13 +72,14 @@ pub(crate) fn step_blocking(
     timings.selected_path = s.inference_path;
 
     let setup_started = Instant::now();
-    // A geração deste turno corre numa cópia do KV do prompt: a partir daqui
-    // nada mais escreve na sequência do prompt, e é isso que a deixa
-    // reutilizável no turno seguinte sem remover nada do cache.
+    // This turn's generation runs on a copy of the prompt's KV: from here on
+    // nothing else writes to the prompt sequence, and that is what leaves it
+    // reusable on the next turn without removing anything from the cache.
     s.open_generation(&sid_key)?;
-    let session = s.sessions.get_mut(&sid_key).ok_or_else(|| {
-        anyhow::anyhow!("sessão '{}' desconhecida — faça o prefill antes", sid_key)
-    })?;
+    let session = s
+        .sessions
+        .get_mut(&sid_key)
+        .ok_or_else(|| anyhow::anyhow!("unknown session '{}' — run the prefill first", sid_key))?;
     session.last_used = Instant::now();
     let n_past = session.n_past;
     let seq_id = session.seq_id();
@@ -99,16 +100,16 @@ pub(crate) fn step_blocking(
     let decode_started = Instant::now();
     let engine_timing;
     let mut head_draft: Option<Vec<i32>> = None;
-    // A composição do lote que este hop decodificou, para o reply não-cauda.
-    // Inicializada nos dois branches (tensor e cabeça) antes de qualquer
-    // leitura, por isso sem valor inicial — ver o uso no reply_meta.
+    // The composition of the batch this hop decoded, for the non-tail reply.
+    // Initialized in both branches (tensor and head) before any
+    // read, hence no initial value - see the use in reply_meta.
     let reply_tokens;
-    // Ecoado no reply não-cauda: na cabeça nasce do `speculate` (mtp_k_hint),
-    // nos hops do meio repassa o que chegou da wire. É como a cauda descobre a
-    // largura de lote que o gateway quer na rodada seguinte.
+    // Echoed in the non-tail reply: at the head it is born from `speculate`
+    // (mtp_k_hint), at middle hops it forwards what arrived from the wire. It is
+    // how the tail finds out the batch width the gateway wants in the next round.
     let mut mtp_k_echo: Option<u32> = None;
-    // O limite é por decodificação, não por sessão. O mesmo lock serializa
-    // esta troca e o decode que a consome.
+    // The limit is per decode, not per session. The same lock serializes
+    // this swap and the decode that consumes it.
     if let Err(error) = s.engine.set_capture_layer(capture_block) {
         if capture_block.is_some() {
             bail!("{error}");
@@ -133,17 +134,17 @@ pub(crate) fn step_blocking(
     if let Some((hidden, shape)) = tensor {
         // Middle/last peer receiving a hidden state. `decode_hidden` already
         // handles any `n_tokens` — a speculative batch needs no special
-        // handling here beyond what chunked prefill already exercises. A cauda
-        // de pipeline fatiado tem o bloco `nextn`: o `decode_hidden` alimenta
-        // o `observe` com a composição do lote (`batch_tokens`, vinda da
-        // cabeça via `tokens` na wire); sem ela, ele desliga o MTP com aviso.
+        // handling here beyond what chunked prefill already exercises. The tail
+        // of a sliced pipeline has the `nextn` block: `decode_hidden` feeds
+        // `observe` with the batch composition (`batch_tokens`, coming from the
+        // head via `tokens` on the wire); without it, it turns MTP off with a warning.
         n_tokens = shape[0];
         let logits_all = incoming_draft.is_some() || !is_last;
-        // Rodada sem `mtp_k` nem rascunho MTP não vai rascunhar: a cauda não
-        // aceita nem produz `next_draft` nela (ver o bloco do `mtp_tail_reason`
-        // abaixo). Rodar o `observe` da cabeça `nextn` mesmo assim era um
-        // segundo decode por token no caminho crítico - no stream remoto de
-        // dois ou mais hops, todo token.
+        // A round with neither `mtp_k` nor an MTP draft will not draft: the tail
+        // neither accepts nor produces `next_draft` in it (see the
+        // `mtp_tail_reason` block below). Running the `nextn` head's `observe`
+        // anyway was a second decode per token on the critical path - on the
+        // remote stream with two or more hops, every token.
         engine_timing = if mtp_verification {
             s.engine.decode_hidden(
                 &hidden,
@@ -158,15 +159,15 @@ pub(crate) fn step_blocking(
             s.engine
                 .decode_hidden_without_mtp(&hidden, &shape, n_tokens, n_past, seq_id, logits_all)?
         };
-        // `batch_tokens` segue vivo: a cauda usa-o no gate do `next_draft`
-        // (verificação) e no caminho plain.
+        // `batch_tokens` stays alive: the tail uses it in the `next_draft` gate
+        // (verification) and in the plain path.
         reply_tokens = batch_tokens.clone();
-        // `Option<u32>` é Copy — o `mtp_k` do parâmetro continua vivo para o
-        // caminho plain da cauda.
+        // `Option<u32>` is Copy - the parameter's `mtp_k` stays alive for the
+        // tail's plain path.
         mtp_k_echo = mtp_k;
     } else {
         // First peer: receives the token ID sampled by the previous last peer.
-        let tid = token_id.ok_or_else(|| anyhow::anyhow!("primeiro peer precisa de token_id"))?;
+        let tid = token_id.ok_or_else(|| anyhow::anyhow!("the first peer needs a token_id"))?;
         // Only the tail pushed to `recent_tokens` before this fix, so on a
         // real (head != tail) multi-hop pipeline the head's own history was
         // permanently empty — harmless until something needed it (repetition
@@ -178,15 +179,15 @@ pub(crate) fn step_blocking(
             .recent_tokens
             .push(tid);
 
-        // A largura de lote que o gateway quer na rodada seguinte, extraída do
-        // `speculate` que a cabeça recebeu e ecoada na resposta — é como a
-        // cauda descobre a medida do rascunho (ver `mtp_k` no doc do parâmetro).
+        // The batch width the gateway wants in the next round, extracted from the
+        // `speculate` the head received and echoed in the reply - it is how the
+        // tail finds out the draft size (see `mtp_k` in the parameter's doc).
         let mtp_k_hint = speculate
             .as_ref()
             .filter(|s| s.source == DraftSource::Mtp)
             .map(|s| s.k);
-        let pode_rascunhar = should_draft(speculate.clone(), s.engine.mtp_ready());
-        let batch: Vec<i32> = if let Some(spec) = speculate.filter(|_| pode_rascunhar) {
+        let can_draft = should_draft(speculate.clone(), s.engine.mtp_ready());
+        let batch: Vec<i32> = if let Some(spec) = speculate.filter(|_| can_draft) {
             let draft: Vec<i32> = if let Some(premade) = spec.draft {
                 premade
             } else {
@@ -237,12 +238,12 @@ pub(crate) fn step_blocking(
         n_tokens = batch.len();
         let logits_all = head_draft.is_some() || !is_last;
         engine_timing = s.engine.decode_tokens(&batch, n_past, seq_id, logits_all)?;
-        // A composição do lote decodificado na cabeça — o que a cauda precisa
-        // para o `observe`. Viaja no reply não-cauda e é ecoada até ela.
+        // The composition of the batch decoded at the head - what the tail needs
+        // for `observe`. It travels in the non-tail reply and is echoed up to it.
         reply_tokens = Some(batch);
-        // Ecoa a largura de lote pedida para a cauda rascunhar. `mtp_k` do
-        // parâmetro fica vivo para o caminho plain da cauda (o `or` usa uma
-        // cópia).
+        // Echoes the requested batch width for the tail to draft. The parameter's
+        // `mtp_k` stays alive for the tail's plain path (the `or` uses a
+        // copy).
         if let Some(k) = mtp_k_hint.or(mtp_k) {
             mtp_k_echo = Some(k);
         }
@@ -346,11 +347,11 @@ pub(crate) fn step_blocking(
 
             let accept_len = longest_match(&sampled, &draft);
             record_mtp_verification(&mut timings, mtp_verification, draft.len(), accept_len);
-            // A cabeça `nextn` guarda uma linha de estado oculto por posição
-            // decodificada; qual delas alimenta a próxima rodada só se sabe
-            // depois de a verificação dizer até onde o rascunho valeu. Sem
-            // isto ela pareia o token confirmado com o `h` de uma posição que
-            // foi descartada, e o rascunho seguinte degenera em silêncio.
+            // The `nextn` head keeps one hidden-state row per decoded position;
+            // which of them feeds the next round is only known after the
+            // verification says how far the draft was good. Without this it pairs
+            // the confirmed token with the `h` of a position that was
+            // discarded, and the next draft silently degenerates.
             s.engine.mtp_accept(accept_len);
 
             let keep = (accept_len + 1).min(sampled.len());
@@ -383,16 +384,16 @@ pub(crate) fn step_blocking(
                 }
             }
 
-            // Rascunho para a rodada seguinte. Numa máquina só ele alimenta
-            // o mesmo processo; num pipeline fatiado ele viaja no reply que já
-            // sobe pela cadeia. O stream remoto o instala na cabeça antes do
-            // próximo `step`; o caminho direto legado o leva ao gateway para
-            // injeção - sempre sem travessia extra.
+            // Draft for the next round. On a single machine it feeds the same
+            // process; on a sliced pipeline it travels in the reply that already
+            // goes up the chain. The remote stream installs it at the head before
+            // the next `step`; the legacy direct path carries it to the gateway for
+            // injection - always with no extra traversal.
             //
-            // O `batch_tokens` presente é o que garante que esta é a cauda de
-            // um pipeline (a composição do lote veio de fora, via `tokens`):
-            // numa máquina só a cabeça é a própria cauda e não há para onde
-            // devolver o rascunho.
+            // The `batch_tokens` being present is what guarantees that this is the
+            // tail of a pipeline (the batch composition came from outside, via
+            // `tokens`): on a single machine the head is its own tail and there is
+            // nowhere to send the draft back.
             let (mtp_tail_reason, mut speculation_disabled_detail) = if mtp_k.is_some() {
                 if let Some(reason) = mtp_tail_speculation_reason(
                     s.engine.mtp_ready(),
@@ -410,7 +411,7 @@ pub(crate) fn step_blocking(
                 } else if batch_tokens.is_none() {
                     (
                         Some(SPECULATION_REASON_MTP_INPUT_MISSING),
-                        Some("cauda recebeu estado oculto sem o campo tokens".to_owned()),
+                        Some("tail received a hidden state without the tokens field".to_owned()),
                     )
                 } else {
                     (None, None)
@@ -421,9 +422,9 @@ pub(crate) fn step_blocking(
             let mut speculation_disabled_reason = None;
             let next_draft: Option<Vec<i32>> =
                 if !done && batch_tokens.is_some() && mtp_tail_reason.is_none() {
-                    // A sessão já avançou `n_tokens`; só as primeiras `keep`
-                    // posições foram confirmadas, então o próximo slot livre do
-                    // tronco é `n_past - (n_tokens - keep)`.
+                    // The session has already advanced `n_tokens`; only the first `keep`
+                    // positions were confirmed, so the trunk's next free slot
+                    // is `n_past - (n_tokens - keep)`.
                     let session_n_past = s.sessions[&sid_key].n_past;
                     let n_past_next = session_n_past - (n_tokens as u32 - keep as u32);
                     let id0 = *accepted_ids.last().unwrap_or(&eos);
@@ -446,7 +447,7 @@ pub(crate) fn step_blocking(
                     if dr.is_empty() {
                         speculation_disabled_reason = Some(SPECULATION_REASON_TAIL_DRAFT_EMPTY);
                         speculation_disabled_detail =
-                            Some("nextn não produziu tokens para a rodada seguinte".to_owned());
+                            Some("nextn produced no tokens for the next round".to_owned());
                         None
                     } else {
                         Some(dr)
@@ -462,7 +463,7 @@ pub(crate) fn step_blocking(
                 if new_n_past < n_past_after_batch
                     && !s.engine.kv_remove(seq_id, new_n_past as i32, -1)
                 {
-                    bail!("rollback especulativo remoto recusado na cauda");
+                    bail!("remote speculative rollback refused at the tail");
                 }
                 s.sessions.get_mut(&sid_key).unwrap().n_past = new_n_past;
             }
@@ -472,8 +473,8 @@ pub(crate) fn step_blocking(
                 .unwrap()
                 .recent_tokens
                 .extend_from_slice(accepted_ids);
-            // Ver a nota gêmea abaixo: réplica não encerra sessão. E o fim de
-            // turno retém o prompt - ver `InferState::retain_prompt`.
+            // See the twin note below: a replica does not end the session. And the end
+            // of the turn retains the prompt - see `InferState::retain_prompt`.
             if done && !crate::tp::is_replica() {
                 s.retain_prompt(&sid_key);
             }
@@ -544,9 +545,9 @@ pub(crate) fn step_blocking(
             .unwrap()
             .recent_tokens
             .push(next_id);
-        // A réplica de um grupo TP não encerra sessão: quem decide o fim da
-        // geração é o rank 0. Ver `tp::is_replica`. E o fim de turno retém o
-        // prompt - ver `InferState::retain_prompt`.
+        // A TP group's replica does not end the session: whoever decides the end
+        // of the generation is rank 0. See `tp::is_replica`. And the end of the
+        // turn retains the prompt - see `InferState::retain_prompt`.
         if done && !crate::tp::is_replica() {
             s.retain_prompt(&sid_key);
         }
@@ -577,14 +578,14 @@ pub(crate) fn step_blocking(
             );
         }
 
-        // A cauda de um pipeline fatiado também rascunha na rodada em que a
-        // cabeça recusou — a primeira, quando ainda não há rascunho pronto
-        // para viajar. O `mtp_k` veio da cabeça (via `mtp_k` na wire): é a
-        // largura de lote que o gateway quer na rodada seguinte. O
-        // `mtp_accept(0)` confirma o `pending_h` da linha do token recém
-        // decodificado; sem ele o draft seguinte usaria a linha de uma posição
-        // anterior e parearia errado. Rodada de modelo inteiro recusada não
-        // tem `mtp_k` — nada a devolver, e não há segunda máquina esperando.
+        // The tail of a sliced pipeline also drafts in the round in which the
+        // head refused - the first one, when there is no ready draft yet
+        // to travel. The `mtp_k` came from the head (via `mtp_k` on the wire): it is
+        // the batch width the gateway wants in the next round. The
+        // `mtp_accept(0)` confirms the `pending_h` of the row of the token just
+        // decoded; without it the next draft would use the row of an earlier
+        // position and pair wrongly. A refused whole-model round
+        // has no `mtp_k` - nothing to send back, and there is no second machine waiting.
         let (mtp_tail_reason, mut speculation_disabled_detail) = if mtp_k.is_some() {
             if let Some(reason) =
                 mtp_tail_speculation_reason(s.engine.mtp_ready(), s.engine.mtp_unavailable_reason())
@@ -601,7 +602,7 @@ pub(crate) fn step_blocking(
             } else if batch_tokens.is_none() {
                 (
                     Some(SPECULATION_REASON_MTP_INPUT_MISSING),
-                    Some("cauda recebeu estado oculto sem o campo tokens".to_owned()),
+                    Some("tail received a hidden state without the tokens field".to_owned()),
                 )
             } else {
                 (None, None)
@@ -633,7 +634,7 @@ pub(crate) fn step_blocking(
                 if dr.is_empty() {
                     speculation_disabled_reason = Some(SPECULATION_REASON_TAIL_DRAFT_EMPTY);
                     speculation_disabled_detail =
-                        Some("nextn não produziu tokens para a rodada seguinte".to_owned());
+                        Some("nextn produced no tokens for the next round".to_owned());
                     None
                 } else {
                     Some(dr)
@@ -683,10 +684,10 @@ pub(crate) fn step_blocking(
     if let Some(draft) = &draft {
         reply_meta["draft"] = json!(draft);
     }
-    // A composição do lote decodificado (ver `batch_tokens`) e a largura de
-    // lote da próxima rodada (ver `mtp_k`) viajam da cabeça para a cauda —
-    // são o que mantém a cabeça `nextn` da cauda em dia e rascunhando a
-    // medida certa.
+    // The composition of the decoded batch (see `batch_tokens`) and the batch
+    // width of the next round (see `mtp_k`) travel from the head to the tail -
+    // they are what keeps the tail's `nextn` head up to date and drafting the
+    // right size.
     if let Some(tokens) = &reply_tokens {
         reply_meta["tokens"] = json!(tokens);
     }
@@ -723,9 +724,9 @@ pub(crate) fn step_blocking(
     Ok(TimedReply { bytes, timings })
 }
 
-/// Registra somente drafts submetidos à verificação do alvo. O `next_draft`
-/// pode ser preparado no fim de uma rodada que termina pelo orçamento, sem
-/// nunca ser verificado; contá-lo no denominador distorceria a aceitação.
+/// Records only drafts submitted to target verification. The `next_draft`
+/// may be prepared at the end of a round that ends by budget, without
+/// ever being verified; counting it in the denominator would distort acceptance.
 fn record_mtp_verification(
     timings: &mut NodeTimings,
     mtp_verification: bool,
@@ -744,7 +745,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn telemetria_mtp_separa_propostas_aceites_e_rejeitadas() {
+    fn mtp_telemetry_separates_accepted_and_rejected_proposals() {
         let mut timings = NodeTimings::default();
 
         record_mtp_verification(&mut timings, true, 7, 5);
@@ -755,7 +756,7 @@ mod tests {
     }
 
     #[test]
-    fn telemetria_mtp_nao_conta_verificacao_que_nao_e_mtp() {
+    fn mtp_telemetry_does_not_count_a_verification_that_is_not_mtp() {
         let mut timings = NodeTimings::default();
 
         record_mtp_verification(&mut timings, false, 7, 5);

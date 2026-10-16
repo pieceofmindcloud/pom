@@ -64,6 +64,7 @@ vi.mock("../lib/queries", () => ({
     isError: false,
   }),
   useCluster: () => ({ data: null }),
+  useLocalCatalog: () => ({ data: undefined }),
   useChatCapabilities: () => ({
     data: {
       vision: "supported",
@@ -73,7 +74,7 @@ vi.mock("../lib/queries", () => ({
       rag_collections: ragScenario.collections,
     },
   }),
-  useServableModels: () => ({ data: [{ id: "qwen", context_length: 4 }] }),
+  useServableModels: () => ({ data: [{ id: "qwen", context_length: 4, max_tokens: 3 }] }),
   useInferenceHeads: () => headQuery,
   useChatTelemetryNetwork: () => ({ data: undefined, isLoading: false, isError: false }),
   usePeerRuntimes: () => [],
@@ -143,7 +144,77 @@ afterEach(() => {
 });
 
 describe("Chat", () => {
-  it("mostra a escolha de cabeça também no perfil admin quando há duas candidatas", () => {
+  it("opens an empty conversation on the POM mark with the composer under it, and moves it down on the first message", async () => {
+    mountChat();
+
+    const empty = await screen.findByTestId("chat-empty");
+    expect(empty.querySelector('[data-testid="chat-hero"] img[alt="POM"]')).toBeTruthy();
+    expect(screen.getByTestId("chat-hero-phrase").getAttribute("aria-label")).toBe("PIECE OF MIND");
+    // The composer sits inside the opening screen, not in a bottom bar, and
+    // is drawn larger there, inviting with one of the platform's lines.
+    const box = screen.getByRole("textbox");
+    expect(empty.contains(box)).toBe(true);
+    expect(box.className).toContain("min-h-[5.5rem]");
+    expect([
+      "Pergunte a qualquer pedaço da mente...",
+      "Todas as peças estão ouvindo. O que você quer saber?",
+      "Uma mente, várias máquinas. Manda a pergunta...",
+      "As GPUs estão prontas para trocar figurinhas...",
+      "Dê um quebra-cabeça para a rede montar...",
+      "Sua pergunta vai de máquina em máquina. Capriche...",
+    ]).toContain(box.getAttribute("placeholder"));
+
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "oi" } });
+    fireEvent.click(screen.getByRole("button", { name: /enviar/i }));
+
+    await screen.findByText("primeiro segundo");
+    expect(screen.queryByTestId("chat-empty")).toBeNull();
+    expect(screen.queryByTestId("chat-hero")).toBeNull();
+    expect(screen.getByRole("textbox").className).toContain("min-h-[2.25rem]");
+  });
+
+  it("keeps a finished answer's thinking closed, with its token count, until asked", () => {
+    const message: ChatMessage = {
+      id: "a1",
+      role: "assistant",
+      content: "Resposta",
+      reasoning: "passo um, passo dois",
+      reasoningTokens: 3,
+      at: new Date().toISOString(),
+    };
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <ProfileProvider initialProfile="admin">
+          <Bubble message={message} streaming={false} />
+        </ProfileProvider>
+      </LocaleProvider>,
+    );
+
+    const toggle = screen.getByRole("button", { name: /Pensou/ });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.getByTestId("chat-thinking-tokens").textContent).toBe("3 tokens");
+    expect(screen.queryByText("passo um, passo dois")).toBeNull();
+
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("passo um, passo dois")).toBeTruthy();
+  });
+
+  it("says the model is still thinking while no answer text arrived", () => {
+    const message: ChatMessage = { id: "a2", role: "assistant", content: "", reasoning: "hmm", reasoningTokens: 1, at: new Date().toISOString() };
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <ProfileProvider initialProfile="admin">
+          <Bubble message={message} streaming />
+        </ProfileProvider>
+      </LocaleProvider>,
+    );
+    expect(screen.getByRole("button", { name: /Pensando/ }).getAttribute("aria-expanded")).toBe("false");
+    expect(screen.getByTestId("chat-thinking-tokens").textContent).toBe("1 token");
+    expect(screen.queryByText("hmm")).toBeNull();
+  });
+
+  it("shows the head choice in the admin profile too when there are two candidates", () => {
     headQuery.data = {
       model: "qwen",
       status: "selected",
@@ -187,7 +258,7 @@ describe("Chat", () => {
     expect(screen.getByRole("combobox", { name: "Cabeça de inferência" })).toBeTruthy();
   });
 
-  it("envia a cabeça escolhida para a requisição do Chat", async () => {
+  it("sends the chosen head in the Chat request", async () => {
     headQuery.data = {
       model: "qwen",
       status: "selected",
@@ -236,7 +307,15 @@ describe("Chat", () => {
     await waitFor(() => expect(streamScenario.lastBody?.inference_head).toBe("salem"));
   });
 
-  it("envia o toggle Think por inferência e mantém a escolha na conversa", async () => {
+  it("asks for the output capacity of the model, not the size of one deployment leg", async () => {
+    mountChat();
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "oi" } });
+    fireEvent.click(screen.getByRole("button", { name: "Enviar" }));
+    // /v1/models says 3; the deployment's max_new_tokens (64) is only the leg.
+    await waitFor(() => expect(streamScenario.lastBody?.max_tokens).toBe(3));
+  });
+
+  it("sends the Think toggle per inference and keeps the choice in the conversation", async () => {
     mountChat();
     const think = screen.getByRole("button", { name: "Think" });
     expect(think.getAttribute("aria-pressed")).toBe("true");
@@ -253,7 +332,7 @@ describe("Chat", () => {
     await waitFor(() => expect(streamScenario.lastBody?.thinking_enabled).toBe(false));
   });
 
-  it("oferece o RAG num ícone com menu, desligado até a pessoa escolher", async () => {
+  it("offers RAG in an icon with a menu, off until the person chooses", async () => {
     ragScenario.available = true;
     ragScenario.collections = ["folha", "manuais"];
     mountChat();
@@ -261,7 +340,7 @@ describe("Chat", () => {
     expect(rag.getAttribute("aria-pressed")).toBe("false");
     expect(screen.queryByRole("menu")).toBeNull();
 
-    // Desligado é o padrão, e vai dito no pedido: o gateway não busca nada.
+    // Off is the default, and it is stated in the request: the gateway fetches nothing.
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "primeira" } });
     fireEvent.click(screen.getByRole("button", { name: "Enviar" }));
     await waitFor(() => expect(streamScenario.lastBody?.rag).toBe(false));
@@ -280,7 +359,7 @@ describe("Chat", () => {
     expect(streamScenario.lastBody && "rag_collection" in streamScenario.lastBody).toBe(false);
   });
 
-  it("limita a busca à coleção escolhida no menu e desliga pela primeira opção", async () => {
+  it("limits the search to the collection chosen in the menu and turns off with the first option", async () => {
     ragScenario.available = true;
     ragScenario.collections = ["folha", "manuais"];
     mountChat();
@@ -298,7 +377,7 @@ describe("Chat", () => {
     expect(screen.getByRole("button", { name: "RAG" }).getAttribute("aria-pressed")).toBe("false");
   });
 
-  it("não oferece o ditado numa página sem HTTPS, onde o navegador nega o microfone", () => {
+  it("does not offer dictation on a page without HTTPS, where the browser denies the microphone", () => {
     // The recognizer exists; only the page is insecure.
     vi.stubGlobal("SpeechRecognition", class {});
     const secure = Object.getOwnPropertyDescriptor(window, "isSecureContext");
@@ -315,7 +394,7 @@ describe("Chat", () => {
     }
   });
 
-  it("não mostra o RAG nem o menciona no pedido sem um servidor de RAG na rede", async () => {
+  it("does not show RAG or mention it in the request without a RAG server on the network", async () => {
     mountChat();
     expect(screen.queryByRole("button", { name: "RAG" })).toBeNull();
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "primeira" } });
@@ -324,13 +403,13 @@ describe("Chat", () => {
     expect(streamScenario.lastBody && "rag" in streamScenario.lastBody).toBe(false);
   });
 
-  it("não mostra Think quando a implantação desabilita thinking", () => {
+  it("does not show Think when the deployment disables thinking", () => {
     thinkingScenario.enabled = false;
     mountChat();
     expect(screen.queryByRole("button", { name: "Think" })).toBeNull();
   });
 
-  it("continua o stream e mostra o buffer ao remontar a rota", async () => {
+  it("continues the stream and shows the buffer when the route remounts", async () => {
     let release!: () => void;
     const pending = new Promise<void>((resolve) => { release = resolve; });
     streamScenario.release = () => release();
@@ -379,7 +458,7 @@ describe("Chat", () => {
     expect(streamScenario.signalAborted).toBe(false);
   });
 
-  it("renderiza a imagem inteira e mantém o nome como legenda", () => {
+  it("renders the whole image and keeps the name as the caption", () => {
     const message: ChatMessage = {
       id: "user-1",
       role: "user",
@@ -402,7 +481,7 @@ describe("Chat", () => {
     expect(screen.getByText("paisagem.png")).toBeTruthy();
   });
 
-  it("transcreve ditado quando o navegador oferece Web Speech", () => {
+  it("transcribes dictation when the browser offers Web Speech", () => {
     class FakeRecognition {
       lang = "";
       continuous = false;
@@ -437,13 +516,13 @@ describe("Chat", () => {
     expect(instance?.stop).toHaveBeenCalled();
   });
 
-  it("oculta o microfone quando Web Speech não existe", () => {
+  it("hides the microphone when Web Speech does not exist", () => {
     resetBrowserSpeech();
     mountChat();
     expect(screen.queryByRole("button", { name: /ditado/i })).toBeNull();
   });
 
-  it("usa um único seletor sem accept restritivo e recusa arquivos não-imagem acima do contexto", async () => {
+  it("uses a single picker without a restrictive accept and refuses non-image files above the context", async () => {
     const { container } = mountChat();
     const inputs = container.querySelectorAll<HTMLInputElement>('input[type="file"]');
     expect(inputs).toHaveLength(1);
@@ -457,7 +536,7 @@ describe("Chat", () => {
     expect(screen.queryByText("dados.bin")).toBeNull();
   });
 
-  it("miniaturiza uma imagem grande para o orçamento antes de anexá-la", async () => {
+  it("downsizes a large image to the budget before attaching it", async () => {
     const { container } = mountChat();
     const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
     const file = new File([new Uint8Array(1_172_228)], "paisagem.png", { type: "image/png" });
@@ -470,7 +549,7 @@ describe("Chat", () => {
     expect(screen.getByText(/redimensionada automaticamente/i)).toBeTruthy();
   });
 
-  it("envia ao modelo os bytes da imagem miniaturizada", async () => {
+  it("sends the model the bytes of the downsized image", async () => {
     const { container } = mountChat();
     const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
     const file = new File([new Uint8Array(1_172_228)], "paisagem.png", { type: "image/png" });
@@ -487,7 +566,7 @@ describe("Chat", () => {
     });
   });
 
-  it("mostra uma recusa específica quando o contexto não comporta nem a miniatura mínima", async () => {
+  it("shows a specific refusal when the context does not fit even the minimum thumbnail", async () => {
     imageResizeScenario.reject = true;
     const { container } = mountChat();
     const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
@@ -500,7 +579,7 @@ describe("Chat", () => {
     expect(screen.queryByText("paisagem.png")).toBeNull();
   });
 
-  it("aceita um arquivo de qualquer tipo quando cabe no contexto", async () => {
+  it("accepts a file of any type when it fits in the context", async () => {
     const { container } = mountChat();
     const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
     const file = new File(["ok"], "dados.bin", { type: "application/octet-stream" });

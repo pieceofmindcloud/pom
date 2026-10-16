@@ -1,7 +1,7 @@
 use super::super::*;
 
-/// Rotas da UI que pertencem a todos os perfis. O middleware de autorização
-/// continua sendo a barreira real; este arquivo é a organização legível do
+/// UI routes that belong to every profile. The authorization middleware
+/// remains the real barrier; this file is the readable organization of the
 /// router.
 pub(super) fn routes() -> Router<GatewayState> {
     Router::new()
@@ -21,12 +21,58 @@ pub(super) fn routes() -> Router<GatewayState> {
             post(crate::plugin_ui::plugin_rpc),
         )
         .route(
+            "/api/ui/plugins/:code/open",
+            post(crate::plugin_ui::plugin_open),
+        )
+        .route(
+            "/api/ui/plugins/:code/close",
+            post(crate::plugin_ui::plugin_close),
+        )
+        .route(
             "/api/internal/plugins/services",
             get(crate::rag::list_services),
         )
         .route(
             "/api/internal/plugins/:code/peer/:op",
             post(crate::plugin_services::plugin_peer_call),
+        )
+        .route(
+            "/api/internal/plugins/:code/engine/generate",
+            post(crate::plugin_engine::engine_generate_route),
+        )
+        .route(
+            "/api/internal/plugins/:code/engine/session/chunk",
+            post(crate::plugin_session::engine_session_chunk_route).layer(
+                axum::extract::DefaultBodyLimit::max(crate::plugin_session::SESSION_PIECE + 4096),
+            ),
+        )
+        .route(
+            "/api/internal/plugins/:code/engine/session/apply",
+            post(crate::plugin_session::engine_session_apply_route),
+        )
+        .route(
+            "/api/internal/plugins/:code/engine/session/offer",
+            get(crate::plugin_session::engine_session_offer_route),
+        )
+        .route(
+            "/api/internal/plugins/:code/engine/session/file",
+            get(crate::plugin_session::engine_session_file_route),
+        )
+        .route(
+            "/api/internal/plugins/:code/engine/link/:deploy",
+            get(crate::plugin_stage_link::link_secret_route),
+        )
+        .route(
+            "/api/internal/plugins/:code/engine/link/:deploy/:conn",
+            post(crate::plugin_stage_link::link_frame_route).layer(
+                axum::extract::DefaultBodyLimit::max(crate::plugin_stage_link::MAX_FRAME),
+            ),
+        )
+        .route(
+            "/api/internal/plugins/:code/engine/link/:deploy/:conn/:seq",
+            post(crate::plugin_stage_link::link_frame_seq_route).layer(
+                axum::extract::DefaultBodyLimit::max(crate::plugin_stage_link::MAX_FRAME),
+            ),
         )
         .route(
             "/api/ui/pom-update/status",
@@ -37,7 +83,8 @@ pub(super) fn routes() -> Router<GatewayState> {
         .route("/api/ui/cluster/models", get(cluster_models))
         .route(
             "/api/ui/model-sidecar-links",
-            get(super::super::sidecars::sidecar_links).post(super::super::sidecars::save_sidecar_link),
+            get(super::super::sidecars::sidecar_links)
+                .post(super::super::sidecars::save_sidecar_link),
         )
         .route("/api/ui/peer/:node_id/runtime", get(peer_runtime))
         .route("/api/ui/network/rtt", get(network_rtt))
@@ -50,7 +97,9 @@ pub(super) fn routes() -> Router<GatewayState> {
             "/api/ui/network/firewall/retry",
             post(crate::windows_firewall::retry),
         )
-        .route("/api/ui/network/geo-reference", get(geo_reference))
+        .route("/api/ui/network/geo/countries", get(geo_countries))
+        .route("/api/ui/network/geo/cities", get(geo_cities))
+        .route("/api/ui/network/geo/nearest", get(geo_nearest))
         .route("/api/ui/chat/telemetry", post(chat_telemetry))
         .route(
             "/api/ui/network-chat",
@@ -64,15 +113,26 @@ pub(super) fn routes() -> Router<GatewayState> {
             "/api/ui/network-chat/lobby",
             get(lobby_fetch).post(lobby_post),
         )
+        .route("/api/ui/networks/pinned", get(pinned_networks))
+        .route("/api/ui/networks/known", get(known_networks))
+        .route("/api/ui/networks/custom", post(import_custom_network))
+        .route(
+            "/api/ui/networks/custom/:fingerprint",
+            delete(remove_custom_network),
+        )
         .route("/api/ui/network-chat/lobby/info", get(lobby_info))
-        .route("/api/ui/network-chat/lobby/admission", post(lobby_admission))
+        .route("/api/ui/network-chat/lobby/latency", get(lobby_latency))
+        .route(
+            "/api/ui/network-chat/lobby/admission",
+            post(lobby_admission),
+        )
         .route("/api/ui/network-chat/lobby/requests", get(lobby_requests))
         .route(
             "/api/ui/network-chat/lobby/requests/forget",
             post(lobby_request_forget),
         )
-        // Ancorar a confiança de admin é o único trabalho que precisa de tela
-        // **antes** de existir autoridade: ver o cabeçalho de `webui/trust.rs`.
+        // Anchoring admin trust is the only job that needs a screen
+        // **before** any authority exists: see the header of `webui/trust.rs`.
         .route(
             "/api/ui/network/trust-anchor",
             get(trust_anchor).post(install_trust_anchor),

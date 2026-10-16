@@ -188,7 +188,7 @@ describe("Plugins", () => {
     localStorage.clear();
   });
 
-  it("envia a license key uma vez, limpa o campo e nunca a grava no storage", async () => {
+  it("sends the license key once, clears the field and never writes it to storage", async () => {
     mocks.catalog.data = { plugins: [publicPlugin("alpha")] };
     mocks.plugins.data = [pluginStatus("alpha")];
     mocks.post.mockResolvedValue({ activated: ["alpha"] });
@@ -210,7 +210,7 @@ describe("Plugins", () => {
     }));
   });
 
-  it("explica uma recusa sem exibir a chave na mensagem", async () => {
+  it("explains a refusal without displaying the key in the message", async () => {
     mocks.catalog.data = { plugins: [publicPlugin("alpha")] };
     mocks.plugins.data = [pluginStatus("alpha")];
     mocks.post.mockRejectedValue(new Error("licença inválida"));
@@ -225,7 +225,7 @@ describe("Plugins", () => {
     expect(screen.queryByText("PM-invalid")).toBeNull();
   });
 
-  it("mostra uma falha de instalação sem apresentar o plugin como pronto", () => {
+  it("shows an installation failure without presenting the plugin as ready", () => {
     mocks.catalog.data = { plugins: [publicPlugin("logs", { display_name: "Enterprise" })] };
     mocks.plugins.data = [pluginStatus("logs", {
       state: "active",
@@ -243,7 +243,7 @@ describe("Plugins", () => {
     expect(screen.getByLabelText("Chave de licença")).toBeTruthy();
   });
 
-  it("lista vários plugins públicos e mostra os metadados disponíveis", () => {
+  it("lists several public plugins and shows the available metadata", () => {
     const purchasedCode = "alpha_beta";
     mocks.catalog.data = {
       plugins: [
@@ -298,7 +298,7 @@ describe("Plugins", () => {
     expect(screen.getByRole("button", { name: "Instalar atualização" })).toBeTruthy();
   });
 
-  it("registra o repositório GitHub de um plugin gratuito do catálogo só quando o operador clica", async () => {
+  it("registers the GitHub repository of a free catalog plugin only when the operator clicks", async () => {
     mocks.post.mockResolvedValue({});
     mocks.catalog.data = {
       plugins: [
@@ -318,7 +318,7 @@ describe("Plugins", () => {
     }));
   });
 
-  it("mostra a release do sistema local em vez da última release global", () => {
+  it("shows the release of the local system instead of the latest global release", () => {
     mocks.catalog.data = {
       plugins: [publicPlugin("cross-platform", {
         releases: [
@@ -348,7 +348,7 @@ describe("Plugins", () => {
     expect(mocks.navigateToPluginPurchase).toHaveBeenCalledWith(pluginCode);
   });
 
-  it("mantém plugins locais ativos mesmo se não vierem no catálogo público", () => {
+  it("keeps local plugins active even if they do not come in the public catalog", () => {
     mocks.catalog.data = { plugins: [publicPlugin("public-plugin")] };
     mocks.plugins.data = [pluginStatus("local-active", { active: true, state: "active" })];
     renderPage();
@@ -358,7 +358,7 @@ describe("Plugins", () => {
     expect(screen.getAllByRole("button", { name: "Desativar" })).toHaveLength(1);
   });
 
-  it("mostra estado vazio quando não há plugin público com release válida", () => {
+  it("shows an empty state when there is no public plugin with a valid release", () => {
     mocks.catalog.data = { plugins: [] };
     mocks.plugins.data = [pluginStatus("local-inactive")];
     renderPage();
@@ -367,7 +367,7 @@ describe("Plugins", () => {
     expect(screen.queryByText("local-inactive")).toBeNull();
   });
 
-  it("mostra estado de carregamento enquanto o catálogo público está em andamento", () => {
+  it("shows a loading state while the public catalog is in progress", () => {
     mocks.catalog.data = undefined;
     mocks.catalog.isLoading = true;
     mocks.plugins.data = [];
@@ -377,7 +377,7 @@ describe("Plugins", () => {
     expect(screen.queryByText("Nenhum plugin disponível no momento.")).toBeNull();
   });
 
-  it("espera o estado local de licença antes de anunciar catálogo vazio", () => {
+  it("waits for the local license state before announcing an empty catalog", () => {
     mocks.catalog.data = { plugins: [] };
     mocks.plugins.data = [];
     mocks.plugins.isLoading = true;
@@ -386,7 +386,7 @@ describe("Plugins", () => {
     expect(screen.queryByText("Nenhum plugin disponível no momento.")).toBeNull();
   });
 
-  it("informa erro do catálogo e preserva os plugins locais ativos", () => {
+  it("reports a catalog error and preserves the active local plugins", () => {
     mocks.catalog.data = undefined;
     mocks.catalog.isError = true;
     mocks.catalog.error = new Error("catalog offline");
@@ -397,7 +397,7 @@ describe("Plugins", () => {
     expect(screen.getByRole("heading", { name: "local-active" })).toBeTruthy();
   });
 
-  it("não desenha imagens quando o catálogo não as fornece", () => {
+  it("draws no images when the catalog does not provide them", () => {
     mocks.catalog.data = { plugins: [publicPlugin("no-images")] };
     mocks.plugins.data = [pluginStatus("no-images")];
     renderPage();
@@ -609,7 +609,7 @@ describe("Plugins", () => {
     const leaseDate = new Intl.DateTimeFormat("pt-BR", { dateStyle: "medium", timeStyle: "short" })
       .format(new Date("2026-09-28T12:00:00.000Z"));
 
-    // O card compacto não repete a última consulta de update nem as features.
+    // The compact card does not repeat the last update lookup nor the features.
     expect(within(card as HTMLElement).queryByText(updateDate)).toBeNull();
     expect(within(card as HTMLElement).queryByText("Funcionalidades")).toBeNull();
     expect(within(card as HTMLElement).getByText("Última instalação")).toBeTruthy();
@@ -689,7 +689,7 @@ describe("Plugins", () => {
     expect(mocks.navigateToPluginPurchase).toHaveBeenCalledWith("alpha");
   });
 
-  it("recarrega o catálogo após erro", () => {
+  it("reloads the catalog after an error", () => {
     mocks.catalog.data = undefined;
     mocks.catalog.isError = true;
     mocks.catalog.error = new Error("catalog offline");
@@ -700,7 +700,7 @@ describe("Plugins", () => {
     expect(mocks.catalog.refetch).toHaveBeenCalled();
   });
 
-  it("mostra e aplica a atualização do plugin ativo", async () => {
+  it("shows and applies the update of the active plugin", async () => {
     mocks.catalog.data = { plugins: [publicPlugin("sigma")] };
     mocks.plugins.data = [pluginStatus("sigma", {
       active: true,
@@ -922,7 +922,7 @@ describe("Plugins", () => {
   });
 
   it("rebuilds and reinstalls only an active mounted source without using the GitHub release route", async () => {
-    mocks.node.data = { profile: "admin", pom_desenv: true, system: { os: "linux", arch: "x86_64" } };
+    mocks.node.data = { profile: "admin", pom_dev_mode: true, system: { os: "linux", arch: "x86_64" } };
     mocks.developmentSources.data = {
       mount_available: true,
       sources: [{
@@ -955,7 +955,7 @@ describe("Plugins", () => {
   });
 
   it("builds and installs an inactive mounted source without requiring a license", async () => {
-    mocks.node.data = { profile: "admin", pom_desenv: true, system: { os: "linux", arch: "x86_64" } };
+    mocks.node.data = { profile: "admin", pom_dev_mode: true, system: { os: "linux", arch: "x86_64" } };
     mocks.developmentSources.data = {
       mount_available: true,
       sources: [{
@@ -984,7 +984,7 @@ describe("Plugins", () => {
   });
 
   it("keeps license activation available for a running local development build", () => {
-    mocks.node.data = { profile: "admin", pom_desenv: true, system: { os: "linux", arch: "x86_64" } };
+    mocks.node.data = { profile: "admin", pom_dev_mode: true, system: { os: "linux", arch: "x86_64" } };
     mocks.catalog.data = { plugins: [publicPlugin("logs")] };
     mocks.plugins.data = [pluginStatus("logs", {
       active: true,
@@ -998,7 +998,7 @@ describe("Plugins", () => {
   });
 
   it("shows a safe build failure stage and exit code without compiler output", async () => {
-    mocks.node.data = { profile: "admin", pom_desenv: true, system: { os: "linux", arch: "x86_64" } };
+    mocks.node.data = { profile: "admin", pom_dev_mode: true, system: { os: "linux", arch: "x86_64" } };
     mocks.developmentSources.data = {
       mount_available: true,
       sources: [{
@@ -1023,17 +1023,17 @@ describe("Plugins", () => {
 
   it("offers local rebuilds to every profile when development mode is on", () => {
     for (const profile of ["node", "infer"]) {
-      mocks.node.data = { profile, pom_desenv: true, system: { os: "linux", arch: "x86_64" } };
+      mocks.node.data = { profile, pom_dev_mode: true, system: { os: "linux", arch: "x86_64" } };
       const { unmount } = renderPage();
       expect(screen.getByText("Builds locais de desenvolvimento")).toBeTruthy();
       unmount();
     }
-    mocks.node.data = { profile: "infer", pom_desenv: false, system: { os: "linux", arch: "x86_64" } };
+    mocks.node.data = { profile: "infer", pom_dev_mode: false, system: { os: "linux", arch: "x86_64" } };
     renderPage();
     expect(screen.queryByText("Builds locais de desenvolvimento")).toBeNull();
   });
 
-  it("desativa um plugin sem chamar rota de atualização do pom_core", async () => {
+  it("deactivates a plugin without calling the pom_core update route", async () => {
     mocks.catalog.data = { plugins: [publicPlugin("sigma")] };
     mocks.plugins.data = [pluginStatus("sigma", {
       active: true,

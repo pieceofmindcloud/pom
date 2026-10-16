@@ -96,8 +96,8 @@ async fn quic_policy_probe_only_accepts_the_configured_principal_identity() {
     network.set_quic_probe(sender);
     network.set_policy_principal_pubkey("authority-primary");
 
-    // Um admin secundário pode anunciar a mesma capacidade, mas não pode
-    // reverter a preferência que o principal acabou de gravar.
+    // A secondary admin may announce the same capability, but cannot
+    // revert the preference the principal has just written.
     network.trigger_quic_probe("secondary", "authority-secondary", true, false);
     assert!(receiver.try_recv().is_err());
 
@@ -182,7 +182,7 @@ async fn plugin_notices_are_validated_kept_in_memory_and_never_persisted() {
         recipient_node_id: None,
         plugin_code: plugin_code.into(),
         title: "Deploy pronto".into(),
-        body: "O modelo foi implantado.".into(),
+        body: "The model was deployed.".into(),
         level: level.into(),
         sent_at: chrono::Utc::now(),
     };
@@ -190,7 +190,7 @@ async fn plugin_notices_are_validated_kept_in_memory_and_never_persisted() {
     assert!(notice("n0", "Base", "info").validate().is_err());
     assert!(notice("n0", "base", "loud").validate().is_err());
     assert!(chat.accept(notice("n1", "base", "success")).unwrap());
-    // Uma retransmissão do mesmo aviso não duplica.
+    // A retransmission of the same notice does not duplicate it.
     assert!(chat.accept(notice("n1", "base", "success")).unwrap());
     let notices = chat.notice_snapshot();
     assert_eq!(notices.len(), 1);
@@ -243,7 +243,10 @@ async fn lobby_presence_is_kept_in_memory_and_never_vouched_for_by_an_api_key() 
         guests[0].1.hostname.len(),
         crate::network_lobby::LobbyLimits::CARD_TEXT_BYTES
     );
-    assert!(database.network_chat_messages("lobby", 10).unwrap().is_empty());
+    assert!(database
+        .network_chat_messages("lobby", 10)
+        .unwrap()
+        .is_empty());
 
     // A member cannot originate a presence, whatever its key.
     let error = chat
@@ -252,13 +255,21 @@ async fn lobby_presence_is_kept_in_memory_and_never_vouched_for_by_an_api_key() 
         .unwrap_err();
     assert_eq!(error.to_string(), "lobby_presence_not_allowed");
 
-    // The lobby is off until the network is public and the switch is set.
+    // The lobby follows discovery, with no switch of its own. A hidden
+    // network answers too: it is reached by whoever holds its trust document.
     assert!(!chat.lobby_enabled().await);
-    auth.write().await.network.lobby_chat = true;
-    assert!(!chat.lobby_enabled().await);
+    assert!(!chat.auto_approves().await);
+    auth.write().await.network.access_policy = crate::config::NetworkAccessPolicy::AutoApprove;
+    assert!(chat.auto_approves().await);
+    auth.write().await.network.visibility = crate::config::NetworkVisibility::Private;
+    assert!(chat.lobby_enabled().await);
     auth.write().await.network.visibility = crate::config::NetworkVisibility::Public;
     assert!(chat.lobby_enabled().await);
+    // The network Chat off closes the conversation, not the lobby: it still
+    // takes admission requests.
     chat.set_enabled(false);
+    assert!(chat.lobby_enabled().await);
+    auth.write().await.network.visibility = crate::config::NetworkVisibility::Local;
     assert!(!chat.lobby_enabled().await);
     let _ = std::fs::remove_file(path);
 }
@@ -289,7 +300,8 @@ async fn the_member_list_takes_admitted_peers_and_keeps_out_one_that_just_left()
     // Recording again changes nothing, and never overrides a decision.
     assert!(!chat.record_member("old-member", "outro-nome", Infer));
     assert_eq!(chat.admission_of("old-member").unwrap().role, Node);
-    chat.request_admission("candidate", Default::default(), Infer).unwrap();
+    chat.request_admission("candidate", Default::default(), Infer)
+        .unwrap();
     assert!(!chat.record_member("candidate", "x", Node));
     assert_eq!(
         chat.admission_of("candidate").unwrap().status,

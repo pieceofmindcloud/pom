@@ -25,6 +25,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libshaderc-dev \
     libvulkan-dev \
     glslc \
+    git \
+    openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
@@ -54,7 +56,7 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
 
 ARG POM_LLAMA_CPP_MODE=release
 ARG POM_LLAMA_CPP_RELEASE_TAG=""
-ARG POM_LLAMA_CPP_RELEASE_REPOSITORY=pereirajair/llama.cpp
+ARG POM_LLAMA_CPP_RELEASE_REPOSITORY=pieceofmindcloud/llama.cpp
 
 # This release layer depends only on its tag and repository, not POM/Rust sources.
 RUN set -eu; \
@@ -113,9 +115,27 @@ RUN set -eu; \
 # ── 1. the llama.cpp fork ─────────────────────────────────────────────────────
 # `llama-fork` is a named build context. It defaults to ./llama.cpp, but
 # POM_LLAMA_CPP_SOURCE_DIR can point at another local checkout for source mode.
-# The vendored sys crate's symlink resolves to this copied tree in the image.
+# llama-cpp-sys-2 and llama-engine come from pom-plugin-llama.cpp (a git dependency
+# pinned in Cargo.toml). Its build reads this copied tree through LLAMA_SOURCE.
 COPY --from=llama-fork . /build/llama.cpp/
-COPY vendor/ vendor/
+
+# ── 1b. the llama engine from a published release ─────────────────────────────
+# POM_PLUGIN_LLAMA_RELEASE (a tag of pom-plugin-llama.cpp, e.g. v0.1.0) makes the
+# build use that release's source archive instead of fetching the locked commit
+# over SSH. The archive is downloaded with the token of the `pom_gh_token` secret
+# (optional, only needed here). The layer depends on the tag alone, so it is
+# reused across builds of the same release. Its files keep the archive's mtimes,
+# so Cargo's fingerprints stay valid while the release does not change.
+ARG POM_PLUGIN_LLAMA_RELEASE=""
+RUN --mount=type=secret,id=pom_gh_token,required=false \
+    if [ -n "$POM_PLUGIN_LLAMA_RELEASE" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends gh && rm -rf /var/lib/apt/lists/* && \
+      GH_TOKEN="$(cat /run/secrets/pom_gh_token)" gh release download "$POM_PLUGIN_LLAMA_RELEASE" \
+        -R pieceofmindcloud/pom-plugin-llama.cpp -p 'pom-plugin-llama.cpp-*.tar.gz' -D /tmp/engine && \
+      mkdir -p /build/pom-plugin-llama.cpp && \
+      tar -xzf /tmp/engine/pom-plugin-llama.cpp-*.tar.gz --strip-components=1 -C /build/pom-plugin-llama.cpp && \
+      rm -rf /tmp/engine; \
+    fi
 
 # ── 2. the backend ────────────────────────────────────────────────────────────
 # `brand.json` and `assets/` are inputs of the Rust build, not only of the
@@ -125,6 +145,14 @@ COPY Cargo.toml Cargo.lock brand.json ./
 COPY .cargo/ .cargo/
 COPY assets/ assets/
 COPY crates/ crates/
+# With a release, point both git dependencies at the extracted archive (only in
+# this image's copy of the manifests; the repository keeps the git pins).
+RUN if [ -n "$POM_PLUGIN_LLAMA_RELEASE" ]; then \
+      sed -i -E 's#^llama-cpp-sys-2 = \{ git = "[^"]*", rev = "[0-9a-f]+" \}#llama-cpp-sys-2 = { path = "/build/pom-plugin-llama.cpp/vendor/llama-cpp-sys-2" }#' Cargo.toml && \
+      sed -i -E 's#^llama-engine = \{ git = "[^"]*", rev = "[0-9a-f]+" \}#llama-engine = { path = "/build/pom-plugin-llama.cpp/crates/llama-engine" }#' crates/node/Cargo.toml && \
+      grep -q 'path = "/build/pom-plugin-llama.cpp' Cargo.toml && \
+      grep -q 'path = "/build/pom-plugin-llama.cpp' crates/node/Cargo.toml; \
+    fi
 
 # Fork cache identity passed from the host by scripts/build-docker.sh: the
 # release tag in prebuilt mode, or the local commit plus source delta in source
@@ -145,7 +173,12 @@ ENV XDG_CACHE_HOME=/build/target
 # load dynamically; POM's custom CUDA MoE kernels are linked into this executable.
 # `kache init` sets Cargo's `rustc-wrapper` and the build-script C/C++ `[env]`
 # keys; `--no-service` because a build container has no service manager.
-RUN --mount=type=cache,target=/root/.cargo/registry \
+# The engine repository is private and fetched over SSH: the build forwards the
+# host's agent (`docker compose build` with `ssh: [default]`, see
+# docker-compose.common.yml). github.com's host key is pinned here.
+RUN mkdir -p -m 0700 /root/.ssh && ssh-keyscan github.com >> /root/.ssh/known_hosts
+RUN --mount=type=ssh \
+    --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.cargo/git \
     --mount=type=cache,target=/build/target,id=pom-target-v2-${LLAMA_CPP_CACHE_KEY}-${CUDA_VERSION}-${POM_CUDA_ARCH_CACHE_KEY}-${RUST_TOOLCHAIN},sharing=locked \
     if [ "$POM_LLAMA_CPP_MODE" = release ]; then \
@@ -219,11 +252,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # would happily "offload" a model onto a CPU device. This also makes the AMD
 # index the Vulkan index by construction (sysmon::icd_amd / the ksia note).
 RUN find /usr/share/vulkan/icd.d -type f ! -name 'radeon_icd*.json' -delete
-# O runtime NVIDIA acrescenta aos processos os grupos donos dos dispositivos
-# do host (por exemplo render, gid 992 na ksia), que não têm nome dentro da
-# imagem. A dica de sudo do /etc/bash.bashrc do Ubuntu roda `groups` em todo
-# shell interativo e imprimia "groups: cannot find name for group id 992" nos
-# terminais dos plugins. A dica continua; só o aviso some.
+# The NVIDIA runtime adds the host's device-owning groups to the processes
+# (for example render, gid 992 on the ksia machine), which have no name inside the
+# image. The sudo hint in Ubuntu's /etc/bash.bashrc runs `groups` in every
+# interactive shell and used to print "groups: cannot find name for group id 992" in the
+# plugin terminals. The hint stays; only the warning goes away.
 RUN sed -i 's/\$(groups)/$(groups 2>\/dev\/null)/' /etc/bash.bashrc \
     && grep -q 'groups 2>/dev/null' /etc/bash.bashrc
 
@@ -244,6 +277,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake \
     curl \
     git \
+    jq \
     libclang-dev \
     libssl-dev \
     nodejs \

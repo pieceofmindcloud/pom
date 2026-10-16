@@ -1,53 +1,53 @@
-//! Ligação persistente entre dois andares da pipeline (`transport/link-v1`).
+//! Persistent link between two stages of the pipeline (`transport/link-v1`).
 //!
-//! O commit dos lotes remotos tirou a travessia por ficha do trecho
-//! **gateway → cabeça**: um control frame vai uma vez e os tokens voltam em
-//! lotes por callback. O laço da cabeça também usa o mesmo canal para cada
-//! ativação do hop seguinte quando a capability está presente - `POST /v1/step`
-//! continua sendo a rota lógica, mas o request HTTP e o enquadramento vivem
-//! em um fluxo persistente por aresta.
+//! The commit of remote batches removed the per-token traversal from the
+//! **gateway → head** stretch: a control frame goes once and the tokens come back in
+//! batches by callback. The head's loop also uses the same channel for each
+//! activation of the next hop when the capability is present - `POST /v1/step`
+//! remains the logical route, but the HTTP request and the framing live
+//! in one persistent stream per edge.
 //!
-//! A dependência causal do transformer proíbe adiantar o token seguinte de uma
-//! sessão, mas não obriga a reconstruir a chamada. Aqui a aresta da pipeline
-//! ganha **um canal**: um único `POST /v1/link` cujo corpo de ida é um fluxo de
-//! quadros binários e cujo corpo de volta é outro fluxo de quadros binários. A
-//! rede por baixo é a mesma de sempre - o cliente pinado por peer, a mesma
-//! credencial, a mesma conexão TCP/TLS do pool. O que deixa de existir é a
-//! abstração de requisição refeita por ativação.
+//! The transformer's causal dependency forbids getting ahead of a session's next
+//! token, but it does not force the call to be rebuilt. Here the pipeline edge
+//! gets **one channel**: a single `POST /v1/link` whose outbound body is a stream
+//! of binary frames and whose return body is another stream of binary frames. The
+//! network underneath is the same as always - the client pinned per peer, the same
+//! credential, the same pooled TCP/TLS connection. What ceases to exist is the
+//! request abstraction rebuilt per activation.
 //!
-//! ## Enquadramento
+//! ## Framing
 //!
-//! Cada quadro, nas duas direções:
+//! Each frame, in both directions:
 //!
 //! ```text
-//! [4B BE tamanho do resto][2B BE status][2B BE tamanho do id][id][corpo]
+//! [4B BE size of the rest][2B BE status][2B BE size of the id][id][body]
 //! ```
 //!
-//! * `status` é `0` numa ida e o código HTTP numa volta. Uma recusa do peer
-//!   chega assim, com o mesmo significado que teria no caminho por requisição,
-//!   e vira [`crate::relay::HttpRefusal`] no chamador.
-//! * `id` é o `batch_id` do quadro `frame/v1-batch`, que é a identidade que o
-//!   [`crate::relay::BatchCoordinator`] já usa. É ele quem correlaciona ida e
-//!   volta, e é ele que permite **várias sessões no mesmo canal**: os quadros
-//!   não voltam em ordem, voltam identificados.
-//! * `corpo` é o `frame/v1-batch` inteiro. A rota vai no `kind` do próprio
-//!   quadro, então não há caminho duplicado no envelope.
+//! * `status` is `0` on the way out and the HTTP code on the way back. A refusal
+//!   from the peer arrives this way, with the same meaning it would have on the
+//!   per-request path, and becomes [`crate::relay::HttpRefusal`] in the caller.
+//! * `id` is the `batch_id` of the `frame/v1-batch` frame, which is the identity
+//!   that [`crate::relay::BatchCoordinator`] already uses. It is what correlates
+//!   outbound and return, and it is what allows **several sessions on the same
+//!   channel**: frames do not come back in order, they come back identified.
+//! * `body` is the whole `frame/v1-batch`. The route goes in the frame's own
+//!   `kind`, so there is no duplicated path in the envelope.
 //!
-//! ## Degradação
+//! ## Degradation
 //!
-//! Falha de transporte no canal **não mata a geração**: a chamada volta pelo
-//! caminho de sempre (túnel libp2p, depois HTTP ou HTTPS por requisição) com
-//! `transport_fallback=true`, e o canal morto sai do pool. Um destino que
-//! recusou abrir fica em quarentena por [`OPEN_FAILURE_COOLDOWN`], para que a
-//! tentativa de abrir não se pague por ficha num cluster onde o endereço
-//! direto não serve.
+//! A transport failure on the channel **does not kill the generation**: the call
+//! goes back through the usual path (libp2p tunnel, then HTTP or HTTPS per
+//! request) with `transport_fallback=true`, and the dead channel leaves the pool.
+//! A destination that refused to open is quarantined for
+//! [`OPEN_FAILURE_COOLDOWN`], so that the attempt to open is not paid per token
+//! in a cluster where the direct address does not serve.
 //!
-//! ## Limpeza
+//! ## Cleanup
 //!
-//! Toda entrega pendente vive num registro por canal e sai dele no `Drop` do
-//! guarda - em qualquer caminho de saída: resposta, erro, prazo, cancelamento
-//! do chamador. Quando o canal morre, o leitor drena o registro inteiro com
-//! erro antes de sumir, e nenhum chamador fica pendurado.
+//! Every pending delivery lives in a per-channel registry and leaves it on the
+//! guard's `Drop` - on any exit path: reply, error, deadline, cancellation
+//! by the caller. When the channel dies, the reader drains the whole registry
+//! with an error before disappearing, and no caller is left hanging.
 
 use crate::wire;
 use anyhow::{anyhow, Result};
@@ -60,42 +60,42 @@ use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 use tracing::{debug, warn};
 
-/// Rota do canal persistente. Fica na porta de inferência, sob a mesma
-/// credencial das demais rotas `/v1`.
+/// Route of the persistent channel. It sits on the inference port, under the same
+/// credential as the other `/v1` routes.
 pub const LINK_PATH: &str = "/v1/link";
 
-/// Cabeçalho fixo do envelope: status e tamanho do id.
+/// Fixed header of the envelope: status and id size.
 const ENVELOPE_HEAD: usize = 4;
 
-/// Teto de um quadro do canal. Sobra sobre o corpo máximo de inferência para o
-/// envelope; um quadro maior que isto é erro de protocolo e derruba o canal.
+/// Ceiling of a channel frame. It leaves room over the maximum inference body for
+/// the envelope; a frame larger than this is a protocol error and brings the channel down.
 const MAX_LINK_FRAME_BYTES: usize = wire::MAX_FRAME_PAYLOAD_BYTES + 4096;
 
-/// Quantos quadros de ida cabem em voo antes de o remetente esperar. É a
-/// contrapressão do canal: um hop lento segura quem o alimenta em vez de
-/// deixar a memória crescer.
+/// How many outbound frames fit in flight before the sender waits. It is the
+/// channel's backpressure: a slow hop holds back whoever feeds it instead of
+/// letting memory grow.
 const OUTBOUND_QUEUE: usize = 64;
 
-// O prazo de uma chamada no canal é o do frame em curso
-// (`relay::frame_time_left`), o mesmo de todos os transportes da tentativa.
+// The deadline of a call on the channel is that of the current frame
+// (`relay::frame_time_left`), the same as all of the attempt's transports.
 
-/// Quanto tempo um destino fica sem nova tentativa de abrir canal depois de
-/// uma falha de abertura. Deve acompanhar a memória de rotas: são a mesma
-/// decisão de não pagar novamente uma URL que falhou.
+/// How long a destination goes without a new attempt to open a channel after
+/// an open failure. It must follow the route memory: they are the same
+/// decision of not paying again for a URL that failed.
 const OPEN_FAILURE_COOLDOWN: Duration = crate::peer_client::ROUTE_FAILURE_COOLDOWN;
 
-/// Só vale para receber os cabeçalhos da abertura. Depois que o canal abre,
-/// o corpo continua vivo até `CHANNEL_LIFETIME`, sem transformar uma geração
-/// longa em uma conexão interrompida prematuramente.
+/// It only applies to receiving the opening headers. After the channel opens,
+/// the body stays alive until `CHANNEL_LIFETIME`, without turning a long
+/// generation into a prematurely interrupted connection.
 #[cfg(not(test))]
 const LINK_OPEN_TIMEOUT: Duration = Duration::from_millis(400);
 
 #[cfg(test)]
 const LINK_OPEN_TIMEOUT: Duration = Duration::from_millis(50);
 
-/// Fronteira de entrega do canal persistente. Falhas na abertura ocorrem
-/// antes de qualquer frame de inferência; depois de enfileirar o frame, a
-/// resposta pode se perder embora o peer já tenha processado o pedido.
+/// Delivery boundary of the persistent channel. Failures on opening happen
+/// before any inference frame; after the frame is enqueued, the
+/// reply may be lost even though the peer has already processed the request.
 #[derive(Debug)]
 pub(crate) struct LinkDeliveryError {
     pub before_frame: bool,
@@ -126,16 +126,16 @@ impl std::fmt::Display for LinkDeliveryError {
 
 impl std::error::Error for LinkDeliveryError {}
 
-/// Teto de vida de um canal. O cliente HTTP do peer é construído com timeout
-/// total, e o corpo em fluxo conta para ele: sem um teto explícito o canal
-/// morreria no timeout comum de requisição. Quando este prazo vence, o canal
-/// cai, a chamada em voo degrada para o caminho por requisição e o canal
-/// seguinte é aberto na chamada seguinte.
+/// Lifetime ceiling of a channel. The peer's HTTP client is built with a total
+/// timeout, and the streamed body counts toward it: without an explicit ceiling the channel
+/// would die at the common request timeout. When this deadline expires, the channel
+/// drops, the in-flight call degrades to the per-request path and the next
+/// channel is opened on the next call.
 const CHANNEL_LIFETIME: Duration = Duration::from_secs(12 * 3600);
 
-/// O que uma travessia pelo canal devolve. Espelha o que o caminho por
-/// requisição mede, menos o que não existe aqui: não há cabeçalhos de resposta
-/// por ficha para cronometrar.
+/// What a traversal through the channel returns. It mirrors what the per-request
+/// path measures, minus what does not exist here: there are no per-token
+/// response headers to time.
 #[derive(Debug)]
 pub struct LinkResponse {
     pub body: Vec<u8>,
@@ -150,18 +150,18 @@ pub struct LinkResponse {
 
 // ── Envelope ─────────────────────────────────────────────────────────────────
 
-/// Monta `[tamanho][status][id][corpo]`.
+/// Builds `[size][status][id][body]`.
 pub fn encode_envelope(status: u16, id: &str, body: &[u8]) -> Result<Vec<u8>> {
     if id.len() > u16::MAX as usize {
-        return Err(anyhow!("identificador de quadro longo demais"));
+        return Err(anyhow!("frame identifier too long"));
     }
     let rest = ENVELOPE_HEAD
         .checked_add(id.len())
         .and_then(|len| len.checked_add(body.len()))
-        .ok_or_else(|| anyhow!("quadro do canal excede o limite numérico"))?;
+        .ok_or_else(|| anyhow!("channel frame exceeds the numeric limit"))?;
     if rest > MAX_LINK_FRAME_BYTES {
         return Err(anyhow!(
-            "quadro do canal excede o limite de {MAX_LINK_FRAME_BYTES} bytes"
+            "channel frame exceeds the limit of {MAX_LINK_FRAME_BYTES} bytes"
         ));
     }
     let mut out = Vec::with_capacity(4 + rest);
@@ -173,7 +173,7 @@ pub fn encode_envelope(status: u16, id: &str, body: &[u8]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Um quadro já separado do fluxo.
+/// A frame already separated from the stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Envelope {
     pub status: u16,
@@ -181,11 +181,11 @@ pub struct Envelope {
     pub body: Vec<u8>,
 }
 
-/// Acumula bytes de um fluxo e devolve quadros inteiros conforme eles fecham.
+/// Accumulates bytes from a stream and returns whole frames as they complete.
 ///
-/// Guardado à parte do transporte de propósito: é a única parte do canal com
-/// aritmética de deslocamento, e é a que precisa de teste próprio contra
-/// fragmentação arbitrária.
+/// Kept apart from the transport on purpose: it is the only part of the channel
+/// with offset arithmetic, and the one that needs its own test against
+/// arbitrary fragmentation.
 #[derive(Default)]
 pub struct FrameReader {
     buffer: Vec<u8>,
@@ -200,8 +200,8 @@ impl FrameReader {
         self.buffer.extend_from_slice(chunk);
     }
 
-    /// Próximo quadro inteiro, se já chegou. `Ok(None)` é "ainda não";
-    /// `Err` é protocolo quebrado e o canal não continua.
+    /// Next whole frame, if it has already arrived. `Ok(None)` is "not yet";
+    /// `Err` is a broken protocol and the channel does not continue.
     pub fn next(&mut self) -> Result<Option<Envelope>> {
         if self.buffer.len() < 4 {
             return Ok(None);
@@ -214,11 +214,11 @@ impl FrameReader {
         ]) as usize;
         if rest > MAX_LINK_FRAME_BYTES {
             return Err(anyhow!(
-                "quadro do canal anuncia {rest} bytes, acima do limite de {MAX_LINK_FRAME_BYTES}"
+                "channel frame announces {rest} bytes, above the limit of {MAX_LINK_FRAME_BYTES}"
             ));
         }
         if rest < ENVELOPE_HEAD {
-            return Err(anyhow!("quadro do canal curto demais: {rest} bytes"));
+            return Err(anyhow!("channel frame too short: {rest} bytes"));
         }
         let total = 4 + rest;
         if self.buffer.len() < total {
@@ -228,10 +228,10 @@ impl FrameReader {
         let id_len = u16::from_be_bytes([self.buffer[6], self.buffer[7]]) as usize;
         let id_end = 8 + id_len;
         if id_end > total {
-            return Err(anyhow!("identificador do quadro excede o quadro"));
+            return Err(anyhow!("frame identifier exceeds the frame"));
         }
         let id = String::from_utf8(self.buffer[8..id_end].to_vec())
-            .map_err(|_| anyhow!("identificador do quadro não é UTF-8"))?;
+            .map_err(|_| anyhow!("frame identifier is not UTF-8"))?;
         let body = self.buffer[id_end..total].to_vec();
         self.buffer.drain(..total);
         Ok(Some(Envelope { status, id, body }))
@@ -240,15 +240,15 @@ impl FrameReader {
 
 // ── Lado servidor ────────────────────────────────────────────────────────────
 
-/// Serve um canal: lê quadros do corpo da requisição, despacha cada um pela
-/// rota que o próprio quadro nomeia (`kind`) e devolve as respostas pelo corpo
-/// da resposta, identificadas pelo `batch_id`.
+/// Serves a channel: reads frames from the request body, dispatches each one by
+/// the route the frame itself names (`kind`) and returns the replies through the
+/// response body, identified by `batch_id`.
 ///
-/// Frames de inferência são despachados em tarefas próprias: um item lento de
-/// uma sessão não bloqueia o quadro de outra. Callbacks `remote-stream` são
-/// encaminhados por uma fila serial limitada, pois sua ordem é a ordem dos
-/// tokens observados pelo gateway; isso preserva a causalidade sem transformar
-/// o ACK em espera no produtor.
+/// Inference frames are dispatched in their own tasks: a slow item of
+/// one session does not block another's frame. `remote-stream` callbacks are
+/// forwarded through a bounded serial queue, since their order is the order of
+/// the tokens observed by the gateway; this preserves causality without turning
+/// the ACK into a wait on the producer.
 pub fn serve<D, F>(body: axum::body::Body, dispatch: D) -> axum::response::Response
 where
     D: Fn(String, Bytes) -> F + Send + Sync + 'static,
@@ -275,7 +275,7 @@ where
             let chunk = match chunk {
                 Ok(chunk) => chunk,
                 Err(error) => {
-                    debug!("canal de inferência encerrou a leitura: {error}");
+                    debug!("inference channel stopped reading: {error}");
                     break;
                 }
             };
@@ -298,7 +298,7 @@ where
                     }
                     Ok(None) => break,
                     Err(error) => {
-                        warn!("canal de inferência recebeu quadro inválido: {error}");
+                        warn!("inference channel received an invalid frame: {error}");
                         return;
                     }
                 }
@@ -311,7 +311,7 @@ where
         .status(axum::http::StatusCode::OK)
         .header("content-type", "application/octet-stream")
         .body(axum::body::Body::from_stream(stream))
-        .expect("resposta de canal sempre montável")
+        .expect("channel response is always buildable")
 }
 
 fn is_remote_stream_callback(body: &[u8]) -> bool {
@@ -326,18 +326,19 @@ where
 {
     let path = match wire::peek_batch_header(&envelope.body) {
         Ok(header) => header.kind,
-        Err(error) => return refusal(&envelope.id, 400, format!("quadro inválido: {error}")),
+        Err(error) => return refusal(&envelope.id, 400, format!("invalid frame: {error}")),
     };
     let response = match dispatch(path, Bytes::from(envelope.body.clone())).await {
         Ok(response) => response,
         Err(error) => return refusal(&envelope.id, 400, error.to_string()),
     };
     let status = response.status().as_u16();
-    let bytes =
-        match axum::body::to_bytes(response.into_body(), wire::MAX_FRAME_PAYLOAD_BYTES).await {
-            Ok(bytes) => bytes,
-            Err(error) => return refusal(&envelope.id, 500, format!("resposta ilegível: {error}")),
-        };
+    let bytes = match axum::body::to_bytes(response.into_body(), wire::MAX_FRAME_PAYLOAD_BYTES)
+        .await
+    {
+        Ok(bytes) => bytes,
+        Err(error) => return refusal(&envelope.id, 500, format!("unreadable response: {error}")),
+    };
     match encode_envelope(status, &envelope.id, &bytes) {
         Ok(frame) => frame,
         Err(error) => refusal(&envelope.id, 500, error.to_string()),
@@ -346,10 +347,10 @@ where
 
 fn refusal(id: &str, status: u16, message: String) -> Vec<u8> {
     encode_envelope(status, id, message.as_bytes()).unwrap_or_else(|_| {
-        // O identificador é o único campo de tamanho livre, e ele veio do fio
-        // já limitado. Se ainda assim não couber, o quadro vazio mantém o canal
-        // coerente em vez de emudecer a chamada.
-        encode_envelope(status, "", b"").expect("envelope vazio sempre cabe")
+        // The identifier is the only free-size field, and it came from the wire
+        // already bounded. If it still does not fit, the empty frame keeps the channel
+        // consistent instead of silencing the call.
+        encode_envelope(status, "", b"").expect("an empty envelope always fits")
     })
 }
 
@@ -365,9 +366,9 @@ struct Channel {
     alive: Arc<AtomicBool>,
 }
 
-/// Resultado assíncrono do ACK de um callback. O envio continua fora do
-/// caminho crítico, mas o produtor remoto precisa saber quando o gateway
-/// respondeu `410 Gone` para não continuar gerando numa sessão abandonada.
+/// Asynchronous result of a callback's ACK. Sending stays off the critical
+/// path, but the remote producer needs to know when the gateway
+/// answered `410 Gone` so as not to keep generating in an abandoned session.
 #[derive(Clone)]
 pub struct CallbackStatus {
     gateway_gone: Arc<AtomicBool>,
@@ -391,9 +392,9 @@ impl CallbackStatus {
     }
 }
 
-/// Remove a entrega pendente em **qualquer** caminho de saída: resposta,
-/// erro, prazo, ou o chamador desistindo. Sem isto um cancelamento deixaria o
-/// registro crescendo com tickets que ninguém mais espera.
+/// Removes the pending delivery on **any** exit path: reply,
+/// error, deadline, or the caller giving up. Without this a cancellation would leave the
+/// registry growing with tickets that nobody waits for any more.
 struct PendingGuard {
     pending: Arc<Mutex<HashMap<String, Pending>>>,
     id: String,
@@ -410,13 +411,13 @@ impl Drop for PendingGuard {
 #[derive(Default)]
 struct Pool {
     channels: tokio::sync::Mutex<HashMap<String, Arc<Channel>>>,
-    /// Guarda somente a abertura de uma aresta. A rede nunca é aguardada com
-    /// o mapa de canais segurado; chaves diferentes podem abrir em paralelo.
+    /// Guards only the opening of an edge. The network is never awaited while
+    /// the channel map is held; different keys may open in parallel.
     opening: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     blocked: Mutex<HashMap<String, Instant>>,
-    /// Aberturas por destino, não um total do processo: a bancada precisa
-    /// provar que **aquela** aresta abriu uma ligação só, e um contador global
-    /// contaria as arestas dos testes vizinhos.
+    /// Openings per destination, not a process-wide total: the bench needs to
+    /// prove that **that** edge opened just one connection, and a global counter
+    /// would count the neighboring tests' edges.
     opened: Mutex<HashMap<String, u64>>,
 }
 
@@ -439,9 +440,9 @@ fn target_key(node_id: &str, base_url: &str) -> String {
     format!("{node_id}@{}", base_url.trim_end_matches('/'))
 }
 
-/// Quantos canais esta aresta abriu. Existe para a bancada provar que a
-/// ligação é **uma** para muitas fichas, e não uma por ficha. Em produção,
-/// quem diz por onde a travessia passou é o `transport` do trace.
+/// How many channels this edge opened. It exists for the bench to prove that the
+/// link is **one** for many tokens, and not one per token. In production,
+/// what says which way the traversal went is the trace's `transport`.
 #[cfg(test)]
 pub fn channels_opened(node_id: &str, base_url: &str) -> u64 {
     pool()
@@ -452,7 +453,7 @@ pub fn channels_opened(node_id: &str, base_url: &str) -> u64 {
         .unwrap_or(0)
 }
 
-/// Se esta aresta tem canal vivo no pool.
+/// Whether this edge has a live channel in the pool.
 #[cfg(test)]
 pub async fn has_channel(node_id: &str, base_url: &str) -> bool {
     pool()
@@ -508,12 +509,14 @@ async fn channel_for(
         }
     }
     if quarantined(&key) {
-        return Err(anyhow!("canal com {node_id} em quarentena após falha"));
+        return Err(anyhow!(
+            "channel with {node_id} quarantined after a failure"
+        ));
     }
 
-    // O guarda é por aresta. Duas travessias da mesma aresta compartilham a
-    // abertura, mas uma tentativa lenta para outro destino não para este
-    // processo inteiro.
+    // The guard is per edge. Two traversals of the same edge share the
+    // opening, but a slow attempt to another destination does not stop this
+    // whole process.
     let opening = opening_lock(&key);
     let _opening = opening.lock().await;
     {
@@ -526,7 +529,9 @@ async fn channel_for(
     }
 
     if quarantined(&key) {
-        return Err(anyhow!("canal com {node_id} em quarentena após falha"));
+        return Err(anyhow!(
+            "channel with {node_id} quarantined after a failure"
+        ));
     }
 
     match open(clients, node_id, base_url, session_id).await {
@@ -556,8 +561,8 @@ async fn open(
     let request = http
         .post(&url)
         .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
-        // O timeout do cliente vale para a requisição inteira, e a nossa dura
-        // a geração toda. Ver `CHANNEL_LIFETIME`.
+        // The client's timeout applies to the whole request, and ours lasts
+        // the whole generation. See `CHANNEL_LIFETIME`.
         .timeout(CHANNEL_LIFETIME)
         .body(reqwest::Body::wrap_stream(rx.map(Ok::<_, std::io::Error>)));
     let response = clients
@@ -566,11 +571,11 @@ async fn open(
         .send();
     let response = tokio::time::timeout(LINK_OPEN_TIMEOUT, response)
         .await
-        .map_err(|_| anyhow!("canal com {node_id} não abriu antes do timeout de conexão"))?
-        .map_err(|error| anyhow!("canal com {node_id} não abriu: {error}"))?;
+        .map_err(|_| anyhow!("channel with {node_id} did not open before the connection timeout"))?
+        .map_err(|error| anyhow!("channel with {node_id} did not open: {error}"))?;
     if !response.status().is_success() {
         return Err(anyhow!(
-            "canal com {node_id} recusado com HTTP {}",
+            "channel with {node_id} refused with HTTP {}",
             response.status()
         ));
     }
@@ -589,12 +594,12 @@ async fn open(
     tokio::spawn(async move {
         let mut stream = response.bytes_stream();
         let mut reader = FrameReader::new();
-        let mut cause = String::from("canal encerrado pelo peer");
+        let mut cause = String::from("channel closed by the peer");
         'outer: while let Some(chunk) = stream.next().await {
             let chunk = match chunk {
                 Ok(chunk) => chunk,
                 Err(error) => {
-                    cause = format!("leitura do canal falhou: {error}");
+                    cause = format!("channel read failed: {error}");
                     break;
                 }
             };
@@ -612,13 +617,13 @@ async fn open(
                             debug!(
                                 peer = %node,
                                 id = %envelope.id,
-                                "resposta do canal chegou depois da desistência"
+                                "channel response arrived after giving up"
                             );
                         }
                     }
                     Ok(None) => break,
                     Err(error) => {
-                        cause = format!("quadro inválido no canal: {error}");
+                        cause = format!("invalid frame on the channel: {error}");
                         break 'outer;
                     }
                 }
@@ -635,17 +640,17 @@ async fn open(
         }
     });
 
-    debug!(peer = node_id, url = %url, "canal de inferência aberto");
+    debug!(peer = node_id, url = %url, "inference channel open");
     Ok(channel)
 }
 
-/// Envia um quadro `frame/v1-batch` inteiro pelo canal persistente e espera a
-/// resposta correlacionada pelo `batch_id`.
+/// Sends a whole `frame/v1-batch` frame through the persistent channel and waits for the
+/// reply correlated by `batch_id`.
 ///
-/// Devolve erro em qualquer falha de transporte - é o chamador quem decide
-/// degradar para o caminho por requisição. Uma recusa HTTP do peer volta como
-/// [`crate::relay::HttpRefusal`], igual ao caminho por requisição, porque ela
-/// é a resposta considerada do peer e trocar de transporte não a muda.
+/// Returns an error on any transport failure - it is the caller who decides to
+/// degrade to the per-request path. An HTTP refusal from the peer comes back as
+/// [`crate::relay::HttpRefusal`], the same as on the per-request path, because it
+/// is the peer's considered answer and switching transport does not change it.
 #[cfg(test)]
 pub async fn send_batch(
     clients: &crate::peer_client::PeerClients,
@@ -658,11 +663,11 @@ pub async fn send_batch(
     send_batch_with_candidates(clients, node_id, base_url, &[], batch_id, body, peer_label).await
 }
 
-/// Abre o canal persistente pela primeira rota saudável anunciada. A abertura
-/// é a única fase em que o endereço ainda não está memorizado como saudável;
-/// uma falha de conexão é registrada e a alternativa seguinte assume já nesta
-/// chamada. Depois que um canal abre, `send_batch` mantém sua semântica de não
-/// repetir um frame já enviado em outra rota.
+/// Opens the persistent channel through the first healthy advertised route. The opening
+/// is the only phase in which the address is not yet memorized as healthy;
+/// a connection failure is recorded and the next alternative takes over already in this
+/// call. After a channel opens, `send_batch` keeps its semantics of not
+/// repeating an already sent frame on another route.
 #[allow(dead_code)]
 pub async fn send_batch_with_candidates(
     clients: &crate::peer_client::PeerClients,
@@ -695,8 +700,8 @@ pub async fn send_batch_with_session(
     .await
 }
 
-/// Variante usada pelo trace detalhado. O modo normal passa `None` e não
-/// aloca spans nem faz trabalho adicional no caminho quente.
+/// Variant used by the detailed trace. Normal mode passes `None` and does not
+/// allocate spans or do additional work on the hot path.
 pub async fn send_batch_with_session_profile(
     clients: &crate::peer_client::PeerClients,
     node_id: &str,
@@ -727,7 +732,7 @@ pub async fn send_batch_with_session_profile(
     let open_deadline = Instant::now() + LINK_OPEN_TIMEOUT.saturating_mul(2);
     for base in ordered {
         let Some(open_budget) = open_deadline.checked_duration_since(Instant::now()) else {
-            last_error = "orçamento de abertura do canal esgotado".to_string();
+            last_error = "channel open budget exhausted".to_string();
             break;
         };
         let setup_started = Instant::now();
@@ -745,7 +750,7 @@ pub async fn send_batch_with_session_profile(
             }
             Err(_) => {
                 last_error = format!(
-                    "canal não abriu dentro do orçamento de {} ms",
+                    "channel did not open within the budget of {} ms",
                     LINK_OPEN_TIMEOUT.as_millis()
                 );
                 quarantine(&target_key(node_id, &base));
@@ -789,12 +794,12 @@ pub async fn send_batch_with_session_profile(
         }
     }
     Err(anyhow::Error::new(LinkDeliveryError::before_frame(
-        format!("canal com {node_id} não abriu dentro do orçamento: {last_error}"),
+        format!("channel with {node_id} did not open within the budget: {last_error}"),
     )))
 }
 
-/// Variante de ACK HTTP exercitada pelos testes do canal persistente. O
-/// caminho de produção do `remote-stream` usa a variante sem espera por ACK.
+/// ACK HTTP variant exercised by the persistent channel's tests. The
+/// `remote-stream` production path uses the variant that does not wait for the ACK.
 #[cfg(test)]
 async fn send_body_with_session(
     clients: &crate::peer_client::PeerClients,
@@ -851,7 +856,7 @@ async fn send_body_with_session(
         }
     }
     Err(anyhow!(
-        "canal de retorno com {node_id} não abriu por nenhuma rota: {last_error}"
+        "return channel with {node_id} did not open through any route: {last_error}"
     ))
 }
 
@@ -871,11 +876,11 @@ fn set_effective_link_transport(response: &mut LinkResponse, base_url: &str) {
     }
 }
 
-/// Enfileira um frame de callback no canal persistente e não espera o ACK HTTP
-/// correspondente. O próprio canal continua full-duplex: a tarefa leitora
-/// drena as respostas e o `pending` acompanha falhas assíncronas. A fila de
-/// saída limitada a [`OUTBOUND_QUEUE`] mantém contrapressão local sem impor
-/// um round-trip por token ao produtor remoto.
+/// Enqueues a callback frame on the persistent channel and does not wait for the
+/// corresponding HTTP ACK. The channel itself stays full-duplex: the reader task
+/// drains the replies and `pending` tracks asynchronous failures. The outbound
+/// queue limited to [`OUTBOUND_QUEUE`] keeps local backpressure without imposing
+/// a round-trip per token on the remote producer.
 pub async fn send_body_without_response_with_session(
     clients: &crate::peer_client::PeerClients,
     node_id: &str,
@@ -929,7 +934,7 @@ pub async fn send_body_without_response_with_session(
         }
     }
     Err(anyhow!(
-        "canal de retorno com {node_id} não enfileirou por nenhuma rota: {last_error}"
+        "return channel with {node_id} did not enqueue through any route: {last_error}"
     ))
 }
 
@@ -964,9 +969,9 @@ async fn send_frame_on_channel(
         let mut map = channel
             .pending
             .lock()
-            .map_err(|_| anyhow!("registro de entregas do canal corrompido"))?;
+            .map_err(|_| anyhow!("channel delivery record corrupted"))?;
         if map.contains_key(batch_id) {
-            return Err(anyhow!("batch_id repetido no canal: {batch_id}"));
+            return Err(anyhow!("repeated batch_id on the channel: {batch_id}"));
         }
         map.insert(batch_id.to_string(), Pending { reply: reply_tx });
     }
@@ -982,14 +987,14 @@ async fn send_frame_on_channel(
         .clone()
         .send(Bytes::from(frame))
         .await
-        .map_err(|_| anyhow!("canal com {node_id} fechou antes do envio"))?;
+        .map_err(|_| anyhow!("channel with {node_id} closed before the send"))?;
     let send_finished = Instant::now();
 
     let envelope = match tokio::time::timeout(crate::relay::frame_time_left(), reply_rx).await {
         Ok(Ok(Ok(envelope))) => envelope,
         Ok(Ok(Err(error))) => return Err(anyhow!("{peer_label}: {error}")),
-        Ok(Err(_)) => return Err(anyhow!("{peer_label}: canal encerrou sem responder")),
-        Err(_) => return Err(anyhow!("{peer_label}: canal não respondeu a tempo")),
+        Ok(Err(_)) => return Err(anyhow!("{peer_label}: channel closed without answering")),
+        Err(_) => return Err(anyhow!("{peer_label}: channel did not answer in time")),
     };
     let received = Instant::now();
     if !(200..300).contains(&envelope.status) {
@@ -1035,10 +1040,10 @@ async fn send_frame_on_channel(
     })
 }
 
-/// Envia um frame de callback sem converter o ACK do receptor em uma barreira
-/// no emissor. O ACK continua associado a um `Pending`, para que a tarefa
-/// leitora observe HTTP 4xx/5xx e perda do canal, mas não é aguardado pelo
-/// caminho de geração.
+/// Sends a callback frame without turning the receiver's ACK into a barrier
+/// on the sender. The ACK stays tied to a `Pending`, so that the reader
+/// task observes HTTP 4xx/5xx and loss of the channel, but the generation
+/// path does not wait for it.
 async fn send_frame_without_response(
     channel: &Arc<Channel>,
     node_id: &str,
@@ -1048,7 +1053,7 @@ async fn send_frame_without_response(
     channel_key: String,
 ) -> Result<CallbackStatus> {
     if !channel.alive.load(Ordering::Acquire) {
-        return Err(anyhow!("canal com {node_id} já está encerrado"));
+        return Err(anyhow!("channel with {node_id} is already closed"));
     }
     let frame = encode_envelope(0, batch_id, &body)?;
     let (reply_tx, reply_rx) = oneshot::channel();
@@ -1056,9 +1061,9 @@ async fn send_frame_without_response(
         let mut map = channel
             .pending
             .lock()
-            .map_err(|_| anyhow!("registro de entregas do canal corrompido"))?;
+            .map_err(|_| anyhow!("channel delivery record corrupted"))?;
         if map.contains_key(batch_id) {
-            return Err(anyhow!("batch_id repetido no canal: {batch_id}"));
+            return Err(anyhow!("repeated batch_id on the channel: {batch_id}"));
         }
         map.insert(batch_id.to_string(), Pending { reply: reply_tx });
     }
@@ -1071,7 +1076,7 @@ async fn send_frame_without_response(
         .clone()
         .send(Bytes::from(frame))
         .await
-        .map_err(|_| anyhow!("{peer_label}: canal fechou antes do envio"))?;
+        .map_err(|_| anyhow!("{peer_label}: channel closed before the send"))?;
 
     let pending = channel.pending.clone();
     let channel = channel.clone();
@@ -1079,7 +1084,7 @@ async fn send_frame_without_response(
     let batch_id = batch_id.to_string();
     let status = CallbackStatus::new();
     let ack_status = status.clone();
-    // Lido antes do `spawn`: a tarefa destacada não herda o prazo do frame.
+    // Read before the `spawn`: the detached task does not inherit the frame's deadline.
     let ack_timeout = crate::relay::frame_time_left();
     tokio::spawn(async move {
         let failed = match tokio::time::timeout(ack_timeout, reply_rx).await {
@@ -1090,7 +1095,7 @@ async fn send_frame_without_response(
                 } else {
                     ack_status.transport_failed.store(true, Ordering::Release);
                 }
-                Some(format!("peer respondeu HTTP {}", envelope.status))
+                Some(format!("peer answered HTTP {}", envelope.status))
             }
             Ok(Ok(Err(error))) => {
                 ack_status.transport_failed.store(true, Ordering::Release);
@@ -1098,11 +1103,11 @@ async fn send_frame_without_response(
             }
             Ok(Err(_)) => {
                 ack_status.transport_failed.store(true, Ordering::Release);
-                Some("canal encerrou sem responder".to_string())
+                Some("channel closed without answering".to_string())
             }
             Err(_) => {
                 ack_status.transport_failed.store(true, Ordering::Release);
-                Some("canal não respondeu ACK a tempo".to_string())
+                Some("channel did not answer the ACK in time".to_string())
             }
         };
         drop(guard);
@@ -1112,7 +1117,7 @@ async fn send_frame_without_response(
                 entries.remove(&batch_id);
             }
             forget(&channel_key, &channel).await;
-            warn!(peer = %node_id, batch = %batch_id, %error, "ACK assíncrono do callback falhou; canal descartado");
+            warn!(peer = %node_id, batch = %batch_id, %error, "async ACK of the callback failed; channel discarded");
         }
     });
     Ok(status)
@@ -1137,11 +1142,11 @@ mod tests {
                 dtype: wire::WireDtype::F16,
             }],
         )
-        .expect("quadro válido")
+        .expect("valid frame")
     }
 
     #[test]
-    fn o_leitor_remonta_quadros_partidos_em_qualquer_ponto() {
+    fn the_reader_reassembles_frames_split_at_any_point() {
         let a = encode_envelope(0, "um", b"corpo-um").unwrap();
         let b = encode_envelope(503, "dois", b"corpo-dois").unwrap();
         let mut stream = a.clone();
@@ -1158,7 +1163,7 @@ mod tests {
             while let Some(envelope) = reader.next().unwrap() {
                 got.push(envelope);
             }
-            assert_eq!(got.len(), 2, "corte em {cut} perdeu um quadro");
+            assert_eq!(got.len(), 2, "cut at {cut} lost a frame");
             assert_eq!(got[0].id, "um");
             assert_eq!(got[0].status, 0);
             assert_eq!(got[0].body, b"corpo-um");
@@ -1169,7 +1174,7 @@ mod tests {
     }
 
     #[test]
-    fn o_leitor_recusa_quadro_acima_do_teto() {
+    fn the_reader_refuses_a_frame_above_the_cap() {
         let mut reader = FrameReader::new();
         reader.push(&(u32::MAX).to_be_bytes());
         assert!(reader.next().is_err());
@@ -1199,13 +1204,13 @@ mod tests {
         format!("http://{addr}")
     }
 
-    /// Ecoa o quadro recebido como resposta, respondendo `atraso_ms` depois.
+    /// Echoes the received frame as the reply, answering `delay_ms` later.
     fn echo_after(
         delay: std::collections::HashMap<String, u64>,
     ) -> impl Fn(String, Bytes) -> axum::response::Response + Clone + Send + Sync + 'static {
         move |path: String, body: Bytes| {
-            let header = wire::peek_batch_header(&body).expect("quadro válido");
-            let (_, items) = wire::decode_batch_items(&body).expect("itens válidos");
+            let header = wire::peek_batch_header(&body).expect("valid frame");
+            let (_, items) = wire::decode_batch_items(&body).expect("valid items");
             let delay = delay.get(&header.batch_id).copied().unwrap_or(0);
             let out = wire::encode_batch_items(
                 path,
@@ -1221,7 +1226,7 @@ mod tests {
                     })
                     .collect::<Vec<_>>(),
             )
-            .expect("resposta válida");
+            .expect("valid response");
             let response = axum::response::Response::builder()
                 .status(200)
                 .header("content-type", "application/octet-stream")
@@ -1230,8 +1235,8 @@ mod tests {
             if delay == 0 {
                 response
             } else {
-                // Um handler síncrono não pode dormir; o atraso é simulado
-                // devolvendo um corpo que só fecha depois.
+                // A synchronous handler cannot sleep; the delay is simulated
+                // by returning a body that only closes later.
                 let (mut tx, rx) = futures::channel::mpsc::channel::<Bytes>(1);
                 let (parts, body) = response.into_parts();
                 tokio::spawn(async move {
@@ -1248,7 +1253,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn muitas_travessias_compartilham_um_canal() {
+    async fn many_traversals_share_one_channel() {
         let url = spawn_link_server(echo_after(Default::default())).await;
         let clients = crate::peer_client::PeerClients::new(Duration::from_secs(5));
         for index in 0..8 {
@@ -1256,23 +1261,23 @@ mod tests {
             let body = batch("/v1/step", &id, "item-0");
             let response = send_batch(&clients, "hop", &url, &id, Bytes::from(body), "hop")
                 .await
-                .expect("travessia pelo canal");
+                .expect("traversal through the channel");
             let header = wire::peek_batch_header(&response.body).unwrap();
             assert_eq!(header.batch_id, id);
         }
         assert_eq!(
             channels_opened("hop", &url),
             1,
-            "oito travessias não podem abrir oito ligações"
+            "eight traversals cannot open eight links"
         );
     }
 
     #[tokio::test]
-    async fn callback_persistente_aceita_ack_que_nao_e_batch() {
+    async fn a_persistent_callback_accepts_an_ack_that_is_not_a_batch() {
         let url = spawn_link_server(|_path: String, _body: Bytes| {
             axum::response::Response::builder()
                 .status(200)
-                .body(axum::body::Body::from("callback aceito"))
+                .body(axum::body::Body::from("callback accepted"))
                 .unwrap()
         })
         .await;
@@ -1290,14 +1295,14 @@ mod tests {
             None,
         )
         .await
-        .expect("callback deve reutilizar o canal persistente");
+        .expect("the callback must reuse the persistent channel");
 
-        assert_eq!(response.body, b"callback aceito");
+        assert_eq!(response.body, b"callback accepted");
         assert_eq!(channels_opened("gateway", &url), 1);
     }
 
     #[tokio::test]
-    async fn callbacks_persistentes_nao_esperam_ack_de_cada_frame() {
+    async fn persistent_callbacks_do_not_wait_for_an_ack_per_frame() {
         let mut delays = std::collections::HashMap::new();
         for index in 0..8 {
             delays.insert(format!("frame-{index}"), 200u64);
@@ -1319,22 +1324,22 @@ mod tests {
                 Some("session-full-duplex"),
             )
             .await
-            .expect("o frame deve ser enfileirado sem esperar o ACK");
+            .expect("the frame must be enqueued without waiting for the ACK");
         }
 
         let elapsed = started.elapsed();
         assert!(
             elapsed < Duration::from_millis(150),
-            "o emissor esperou ACK por frame: {elapsed:?}"
+            "the emitter waited for an ACK per frame: {elapsed:?}"
         );
     }
 
     #[tokio::test]
-    async fn callback_assincrono_sinaliza_gateway_desaparecido() {
+    async fn an_async_callback_signals_a_vanished_gateway() {
         let url = spawn_link_server(|_path: String, _body: Bytes| {
             axum::response::Response::builder()
                 .status(410)
-                .body(axum::body::Body::from("stream desconhecido"))
+                .body(axum::body::Body::from("unknown stream"))
                 .unwrap()
         })
         .await;
@@ -1354,7 +1359,7 @@ mod tests {
             Some("session-gone"),
         )
         .await
-        .expect("o callback deve ser enfileirado sem esperar o ACK");
+        .expect("the callback must be enqueued without waiting for the ACK");
 
         tokio::time::timeout(Duration::from_secs(1), async {
             while !status.gateway_gone() {
@@ -1362,12 +1367,12 @@ mod tests {
             }
         })
         .await
-        .expect("o ACK 410 assíncrono deve ser observado");
+        .expect("the async 410 ACK must be observed");
         assert!(!status.transport_failed());
     }
 
     #[tokio::test]
-    async fn sessoes_diferentes_nao_se_bloqueiam_no_mesmo_canal() {
+    async fn different_sessions_do_not_block_each_other_on_the_same_channel() {
         let mut delays = std::collections::HashMap::new();
         delays.insert("lenta".to_string(), 300u64);
         let url = spawn_link_server(echo_after(delays)).await;
@@ -1377,7 +1382,7 @@ mod tests {
         let fast_body = batch("/v1/step", "rapida", "item-0");
         let slow_clients = clients.clone();
         let slow_url = url.clone();
-        // A sessão lenta leva 300 ms; o frame dela declara um prazo que cabe.
+        // The slow session takes 300 ms; its frame declares a deadline that fits.
         let slow = tokio::spawn(crate::relay::with_frame_deadline(
             Instant::now() + Duration::from_secs(2),
             async move {
@@ -1404,27 +1409,27 @@ mod tests {
             "hop",
         )
         .await
-        .expect("a sessão rápida atravessa");
+        .expect("the fast session crosses");
         let fast_elapsed = started.elapsed();
-        let slow_ms = slow.await.unwrap().expect("a sessão lenta atravessa");
+        let slow_ms = slow.await.unwrap().expect("the slow session crosses");
 
         assert!(
             fast_elapsed < Duration::from_millis(200),
-            "a sessão rápida esperou {fast_elapsed:?} pela lenta - o canal está bloqueando por cabeça de fila"
+            "the fast session waited {fast_elapsed:?} for the slow one - the channel is head-of-line blocking"
         );
         assert!(
             slow_ms >= 250,
-            "a sessão lenta devia ter demorado, veio {slow_ms}ms"
+            "the slow session should have taken long, got {slow_ms}ms"
         );
         let _ = fast;
     }
 
     #[tokio::test]
-    async fn recusa_do_peer_volta_como_recusa_http() {
+    async fn a_peer_refusal_comes_back_as_an_http_refusal() {
         let url = spawn_link_server(|_path: String, _body: Bytes| {
             axum::response::Response::builder()
                 .status(400)
-                .body(axum::body::Body::from("sessão desconhecida"))
+                .body(axum::body::Body::from("unknown session"))
                 .unwrap()
         })
         .await;
@@ -1432,33 +1437,33 @@ mod tests {
         let body = batch("/v1/step", "b", "item-0");
         let error = send_batch(&clients, "hop", &url, "b", Bytes::from(body), "hop")
             .await
-            .expect_err("uma recusa não pode virar sucesso");
+            .expect_err("a refusal cannot become a success");
         let refusal = error
             .downcast_ref::<crate::relay::HttpRefusal>()
-            .expect("recusa do peer preserva o status");
+            .expect("a peer refusal preserves the status");
         assert_eq!(refusal.status, 400);
-        assert!(refusal.body.contains("sessão desconhecida"));
+        assert!(refusal.body.contains("unknown session"));
     }
 
-    /// Um quadro recusado pelo despachante - é assim que a credencial
-    /// reconferida por quadro recusa - vira recusa **daquele quadro**, e o
-    /// canal continua servindo os seguintes.
+    /// A frame refused by the dispatcher - which is how the credential
+    /// re-checked per frame refuses - becomes a refusal of **that frame**, and the
+    /// channel keeps serving the following ones.
     #[tokio::test]
-    async fn quadro_recusado_pelo_despachante_nao_derruba_o_canal() {
+    async fn a_frame_refused_by_the_dispatcher_does_not_bring_down_the_channel() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let recusar = Arc::new(AtomicBool::new(true));
-        let servidor = recusar.clone();
+        let refuse = Arc::new(AtomicBool::new(true));
+        let server = refuse.clone();
         let router = Router::new().route(
             LINK_PATH,
             post(move |body: axum::body::Body| {
-                let servidor = servidor.clone();
+                let server = server.clone();
                 async move {
                     serve(body, move |path, bytes| {
-                        let servidor = servidor.clone();
+                        let server = server.clone();
                         async move {
-                            if servidor.swap(false, Ordering::Relaxed) {
-                                return Err(anyhow!("credencial de inferência inválida"));
+                            if server.swap(false, Ordering::Relaxed) {
+                                return Err(anyhow!("invalid inference credential"));
                             }
                             let header = wire::peek_batch_header(&bytes).unwrap();
                             let (_, items) = wire::decode_batch_items(&bytes).unwrap();
@@ -1497,19 +1502,19 @@ mod tests {
             &clients,
             "estrito",
             &url,
-            "recusado",
-            Bytes::from(batch("/v1/step", "recusado", "item-0")),
+            "refused",
+            Bytes::from(batch("/v1/step", "refused", "item-0")),
             "estrito",
         )
         .await
-        .expect_err("o quadro sem credencial válida tem que ser recusado");
+        .expect_err("a frame without a valid credential must be refused");
         let refusal = error
             .downcast_ref::<crate::relay::HttpRefusal>()
-            .expect("recusa por quadro preserva o status");
+            .expect("a per-frame refusal preserves the status");
         assert_eq!(refusal.status, 400);
-        assert!(refusal.body.contains("credencial"));
+        assert!(refusal.body.contains("credential"));
 
-        let aceito = send_batch(
+        let accepted = send_batch(
             &clients,
             "estrito",
             &url,
@@ -1518,16 +1523,16 @@ mod tests {
             "estrito",
         )
         .await
-        .expect("o quadro seguinte usa o mesmo canal, que continua vivo");
+        .expect("the next frame uses the same channel, which stays alive");
         assert_eq!(
-            wire::peek_batch_header(&aceito.body).unwrap().batch_id,
+            wire::peek_batch_header(&accepted.body).unwrap().batch_id,
             "aceito"
         );
         assert_eq!(channels_opened("estrito", &url), 1);
     }
 
     #[tokio::test]
-    async fn abertura_de_aresta_morta_nao_bloqueia_outra() {
+    async fn opening_a_dead_edge_does_not_block_another() {
         use tokio::sync::Notify;
 
         let blackhole = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1535,7 +1540,7 @@ mod tests {
         let accepted = Arc::new(Notify::new());
         let accepted_task = accepted.clone();
         tokio::spawn(async move {
-            let (stream, _) = blackhole.accept().await.expect("aceitou a abertura morta");
+            let (stream, _) = blackhole.accept().await.expect("accepted the dead open");
             accepted_task.notify_one();
             let _stream = stream;
             std::future::pending::<()>().await;
@@ -1559,7 +1564,7 @@ mod tests {
 
         tokio::time::timeout(Duration::from_secs(1), accepted.notified())
             .await
-            .expect("a abertura morta começou");
+            .expect("the dead open started");
 
         let started = Instant::now();
         let healthy_result = tokio::time::timeout(
@@ -1574,22 +1579,22 @@ mod tests {
             ),
         )
         .await
-        .expect("a abertura de outra aresta não pode esperar o blackhole")
-        .expect("a aresta saudável deve atravessar");
+        .expect("opening another edge cannot wait for the blackhole")
+        .expect("the healthy edge must cross");
 
         assert_eq!(
             wire::peek_batch_header(&healthy_result.body)
-                .expect("resposta válida")
+                .expect("valid response")
                 .batch_id,
             "healthy"
         );
         println!(
-            "link_lab: aresta saudável respondeu enquanto a abertura morta estava em voo em {:?}",
+            "link_lab: healthy edge answered while the dead open was in flight in {:?}",
             started.elapsed()
         );
         assert!(
             started.elapsed() < LINK_OPEN_TIMEOUT / 2,
-            "a aresta saudável ficou parada por {:?}",
+            "the healthy edge was stalled for {:?}",
             started.elapsed()
         );
         assert!(dead_task.await.unwrap().is_err());
@@ -1597,8 +1602,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn destino_inalcancavel_falha_rapido_e_fica_em_quarentena() {
-        // Porta fechada: o canal não abre.
+    async fn an_unreachable_destination_fails_fast_and_is_quarantined() {
+        // Closed port: the channel does not open.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         drop(listener);
@@ -1618,19 +1623,19 @@ mod tests {
         let started = Instant::now();
         let error = send_batch(&clients, "morto", &url, "b2", Bytes::from(body), "morto")
             .await
-            .expect_err("segunda tentativa também falha");
+            .expect_err("the second attempt also fails");
         assert!(
-            error.to_string().contains("quarentena"),
-            "a segunda tentativa devia parar na memória de falha, veio: {error}"
+            error.to_string().contains("quarantined"),
+            "the second attempt should stop at the failure memory, got: {error}"
         );
         assert!(
             started.elapsed() < Duration::from_millis(100),
-            "a quarentena existe para não pagar a conexão morta de novo"
+            "the quarantine exists to not pay for the dead connection again"
         );
     }
 
     #[tokio::test]
-    async fn uma_abertura_blackhole_cai_para_a_rota_saudavel_e_nao_se_repete() {
+    async fn a_blackhole_open_falls_to_the_healthy_route_and_is_not_repeated() {
         let blackhole_hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let blackhole_hits_task = blackhole_hits.clone();
         let blackhole = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1661,7 +1666,7 @@ mod tests {
                 "blackhole-fallback",
             )
             .await
-            .expect("a rota saudável deve assumir o canal");
+            .expect("the healthy route must take over the channel");
             assert_eq!(
                 wire::peek_batch_header(&response.body).unwrap().batch_id,
                 batch_id
@@ -1671,16 +1676,16 @@ mod tests {
         assert_eq!(channels_opened("blackhole-fallback", &healthy), 1);
         assert!(
             started.elapsed() < Duration::from_millis(250),
-            "a abertura morta voltou a ser paga: {:?}",
+            "the dead open was paid again: {:?}",
             started.elapsed()
         );
     }
 
     #[tokio::test]
-    async fn a_morte_do_canal_nao_deixa_entrega_pendente() {
+    async fn a_dead_channel_leaves_no_pending_delivery() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        // Servidor que aceita o canal e some sem responder.
+        // Server that accepts the channel and vanishes without replying.
         let router = Router::new().route(
             LINK_PATH,
             post(|_body: axum::body::Body| async move {
@@ -1706,14 +1711,14 @@ mod tests {
         let body = batch("/v1/step", "b", "item-0");
         let error = send_batch(&clients, "mudo", &url, "b", Bytes::from(body), "mudo")
             .await
-            .expect_err("um canal que morre tem que devolver erro, não pendurar");
+            .expect_err("a channel that dies must return an error, not hang");
         assert!(
             error.to_string().contains("mudo"),
-            "o erro precisa nomear o peer: {error}"
+            "the error must name the peer: {error}"
         );
         assert!(
             !has_channel("mudo", &url).await,
-            "o canal morto tem que sair do pool para a chamada seguinte reabrir"
+            "the dead channel must leave the pool so the next call reopens"
         );
     }
 }

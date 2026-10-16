@@ -143,10 +143,10 @@ export function resolveLocale(
 
 /** Every key in the CSV, kept sorted for stable callers and diffs. */
 /*
- * Textos que pertencem a plugins. Cada plugin leva seu próprio catálogo
- * (`lib/pluginI18n.ts` carrega e valida); aqui eles só entram no mesmo mapa que
- * `formatMessage` já consulta, na chave `<plugin_code>.*`, e saem quando o
- * plugin sai. Chave que já existe no catálogo do POM nunca é sobrescrita.
+ * Texts that belong to plugins. Each plugin carries its own catalog
+ * (`lib/pluginI18n.ts` loads and validates it); here they only enter the same map that
+ * `formatMessage` already consults, under the key `<plugin_code>.*`, and leave when the
+ * plugin leaves. A key that already exists in the POM catalog is never overwritten.
  */
 const pluginKeys = new Map<string, Set<string>>();
 const pluginListeners = new Set<() => void>();
@@ -164,7 +164,7 @@ export function subscribePluginMessages(listener: () => void): () => void {
 
 export const pluginMessagesVersion = () => pluginVersion;
 
-/** Substitui todos os textos deste plugin nos idiomas dados. */
+/** Replaces all the texts of this plugin in the given languages. */
 export function setPluginMessages(code: string, catalogs: Partial<Record<Locale, Record<string, string>>>): void {
   clearPluginMessages(code, false);
   const owned = new Set<string>();
@@ -208,50 +208,4 @@ export function formatMessage(locale: Locale, key: string, values: MessageValues
     console.warn(`Could not format locale message "${key}"`, error);
     return message;
   }
-}
-
-/**
- * Nodes can still be running an older binary that sends human text in
- * Portuguese. Keep the UI language contract even during a rolling upgrade.
- */
-export function localizeServerText(locale: Locale, text: string, fallbackKey = "common.serverDetails"): string {
-  if (locale === "pt-BR" || !text) return text;
-  // Frases do nó que carregam um nome de máquina no fim. O nome não se
-  // traduz, o verbo sim - e sem isto o desfecho de uma transferência aparecia
-  // em português no meio da tela em inglês ("recusado por ksia").
-  const comNome: Array<[RegExp, string]> = [
-    [/^recusado por (.+)$/i, "refused by $1"],
-    [/^cancelado por (.+)$/i, "cancelled by $1"],
-  ];
-  for (const [padrao, molde] of comNome) {
-    const achou = text.match(padrao);
-    if (achou) return molde.replace("$1", achou[1]);
-  }
-  const known: Record<string, string> = {
-    pronto: "Ready",
-    erro: "Error",
-    falhou: "Failed",
-    gravando: "Writing",
-    "subindo os nós": "Starting nodes",
-    "atribuindo as faixas": "Assigning ranges",
-    "conferindo o arquivo na origem": "checking the file at the source",
-    "aceito; aguardando o início do envio": "accepted; waiting for the send to start",
-    "enviado por inteiro": "sent in full",
-    "lendo modelo": "Reading model",
-    "empacotando cabeçalho": "Packing header",
-    escrevendo: "Writing",
-    verificando: "Verifying",
-    "verificando espaço": "Checking disk space",
-    "somente o administrador pode adicionar uma máquina à implantação": formatMessage(
-      locale,
-      "deploy.adminOnlyAdd",
-    ),
-    "somente o administrador pode desimplantar a implantação": formatMessage(
-      locale,
-      "undeploy.adminOnly",
-    ),
-  };
-  if (known[text]) return known[text];
-  const portuguese = /[ãõç]|\b(não|nenhuma|nenhum|camadas|fatias|memória|modelo|máquina|servidor|falhou|pronto|erro)\b/i;
-  return portuguese.test(text) ? formatMessage(locale, fallbackKey) : text;
 }

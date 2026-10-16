@@ -1,41 +1,41 @@
-//! Bancada do reuso de prefixo entre turnos: **um acerto de cache tem que
-//! virar economia medida.**
+//! Bench for prefix reuse across turns: **a cache hit has to become
+//! measured savings.**
 //!
-//! O `prefix_cache_lab` ao lado prova a contabilidade do cache em memória - a
-//! *escolha*. Esta prova a *execução*: quantos tokens do prompt o pipeline
-//! deixou de reprocessar, turno a turno, pelo mesmo caminho que a tela de chat
-//! e um cliente OpenAI usam (`openai::render_prompt`,
+//! The `prefix_cache_lab` next door proves the in-memory cache's accounting -
+//! the *choice*. This one proves the *execution*: how many prompt tokens the
+//! pipeline stopped reprocessing, turn by turn, through the same path the chat
+//! screen and an OpenAI client use (`openai::render_prompt`,
 //! `openai::conversation_cache_key`, `gateway::generate_stream_with_stops`,
 //! `prefill::run_with_options`, `/v1/prefill`, `/v1/step`, `/v1/session/rewind`,
-//! `/v1/session/release`). Era exatamente aí que o sistema informava "sessão
-//! reusada" e executava outra coisa: em 100% dos turnos medidos em produção,
-//! `cached_tokens` aproveitado era zero.
+//! `/v1/session/release`). That was exactly where the system reported "session
+//! reused" and executed something else: in 100% of the turns measured in
+//! production, the `cached_tokens` put to use was zero.
 //!
-//! ## Os três transportes, não um
+//! ## The three transports, not one
 //!
-//! O prefill tem três caminhos - hub, anel e resposta direta - e cada um monta
-//! o pedido do hop seguinte num lugar diferente. Um teste que exercite só um
-//! deles passa enquanto os outros dois estão quebrados, que é a forma mais
-//! fácil de esta bancada mentir. Cada cenário roda nos três, com dois ou mais
-//! hops, para que cabeça e cauda sejam máquinas distintas como em produção e
-//! a propagação não fique presa a uma topologia de três nós.
+//! Prefill has three paths - hub, ring and direct reply - and each one builds
+//! the next hop's request in a different place. A test that exercises only one
+//! of them passes while the other two are broken, which is the easiest way
+//! for this bench to lie. Each scenario runs on all three, with two or more
+//! hops, so that head and tail are distinct machines as in production and
+//! the propagation is not tied to a three-node topology.
 //!
-//! ## O motor que os hops falsos imitam
+//! ## The engine the fake hops imitate
 //!
-//! O hop falso não é um motor complacente. Ele é o **mais restrito** que o
-//! produto tem que atender: um modelo recorrente/híbrido (`gated_delta_net` do
-//! Qwen3-Next, o Ornith de produção), onde `llama_memory_seq_rm` **recusa**
-//! qualquer remoção parcial maior que a janela de snapshots e só aceita apagar
-//! a sequência inteira - a causa da recusa está em
-//! `llama.cpp/src/llama-memory-recurrent.cpp::seq_rm`. Pedir a este hop que
-//! descarte posições do meio do KV é falha do teste, não recusa do modelo:
-//! foi essa dependência que a decisão do produto mandou tirar do desenho, e a
-//! bancada existe para que ela não volte por descuido.
+//! The fake hop is not a lenient engine. It is the **most restricted** one the
+//! product has to serve: a recurrent/hybrid model (the `gated_delta_net` of
+//! Qwen3-Next, the production Ornith), where `llama_memory_seq_rm` **refuses**
+//! any partial removal larger than the snapshot window and only accepts erasing
+//! the whole sequence - the cause of the refusal is in
+//! `llama.cpp/src/llama-memory-recurrent.cpp::seq_rm`. Asking this hop to
+//! discard positions from the middle of the KV is a test failure, not a refusal
+//! by the model: that was the dependency the product decision ordered out of
+//! the design, and the bench exists so that it does not come back by oversight.
 //!
-//! **Limite declarado:** sem GGUF nesta máquina não há llama.cpp de verdade.
-//! O que a bancada prova é o contrato entre gateway e peers - onde os quatro
-//! defeitos moravam. O que ela não prova é o que o llama.cpp faz com o lote;
-//! isso é medição em cluster, registrada no relato da tarefa.
+//! **Declared limit:** with no GGUF on this machine there is no real llama.cpp.
+//! What the bench proves is the contract between gateway and peers - where the
+//! four defects lived. What it does not prove is what llama.cpp does with the
+//! batch; that is cluster measurement, recorded in the task's write-up.
 
 #![cfg(test)]
 
@@ -56,24 +56,24 @@ use std::sync::{Arc, Mutex};
 const HIDDEN_DIM: usize = 8;
 const FAKE_PREFILL_MS_PER_TOKEN: u64 = 2;
 
-// ── O motor falso, com contabilidade de KV ────────────────────────────────────
+// ── The fake engine, with KV accounting ───────────────────────────────────────
 
-/// O KV de uma sessão neste hop, na mesma forma que `infer_server::Session`:
-/// a sequência do prompt e, separada, a da geração.
+/// The KV of a session on this hop, in the same shape as `infer_server::Session`:
+/// the prompt's sequence and, separately, the generation's.
 #[derive(Default, Clone)]
 struct FakeSession {
-    /// Tokens do prompt presentes no KV da sequência do prompt.
+    /// Prompt tokens present in the KV of the prompt sequence.
     prompt_kv: Vec<i32>,
-    /// Fronteira anotada quando o prompt acabou. O token depois dela e os
-    /// tokens gerados vivem na sequência de geração e são removidos juntos.
+    /// Boundary recorded when the prompt ended. The token after it and the
+    /// generated tokens live in the generation sequence and are removed together.
     prompt_len: u32,
-    /// Quantas posições existem na sequência de geração além do prefixo
-    /// estável. Inclui a cauda do prompt que não pode ser retida e a saída.
+    /// How many positions exist in the generation sequence beyond the stable
+    /// prefix. Includes the prompt tail that cannot be retained and the output.
     gen_len: u32,
-    /// Fronteira que a cabeça mediu para este prompt.
+    /// Boundary the head measured for this prompt.
     stable_len: u32,
-    /// O prompt-alvo deste turno, na cabeça (que é quem tokeniza).
-    alvo: Vec<i32>,
+    /// This turn's target prompt, on the head (which is the one that tokenizes).
+    target: Vec<i32>,
 }
 
 impl FakeSession {
@@ -85,25 +85,25 @@ impl FakeSession {
 #[derive(Default)]
 struct Engine {
     sessions: HashMap<String, FakeSession>,
-    /// Um item por pedaço de prompt ingerido, com quantos tokens custou.
+    /// One item per ingested prompt chunk, with how many tokens it cost.
     prompt_chunks: Vec<u32>,
-    /// Pedidos que exigiriam remover posições do meio do KV. Um motor
-    /// recorrente recusaria; a bancada anota para o teste falhar por isso.
-    remocoes_parciais: Vec<String>,
-    /// Sessões que sumiram antes de o gateway conseguir preservá-las.
-    rewind_em_sessao_desconhecida: u32,
-    /// Cada frame de prefill efetivamente ingerido pelo peer. O teste não pode
-    /// inferir a economia a partir do pedido do gateway: precisa comparar a
-    /// posição declarada com o contador remoto antes e depois do decode.
+    /// Requests that would require removing positions from the middle of the KV.
+    /// A recurrent engine would refuse; the bench records it so the test fails on it.
+    partial_removals: Vec<String>,
+    /// Sessions that vanished before the gateway managed to preserve them.
+    rewind_on_unknown_session: u32,
+    /// Each prefill frame actually ingested by the peer. The test cannot
+    /// infer the savings from the gateway's request: it has to compare the
+    /// declared position with the remote counter before and after the decode.
     frames: Vec<ObservedFrame>,
-    /// Falha controlada da bancada: remove a sessão antes de um chunk e faz o
-    /// peer responder como o servidor real quando o chamador ainda não pediu
-    /// um reset. O contador permite testar tanto a recuperação única quanto o
-    /// limite de uma tentativa.
+    /// Controlled failure of the bench: removes the session before a chunk and
+    /// makes the peer answer like the real server when the caller has not yet
+    /// asked for a reset. The counter allows testing both the single recovery
+    /// and the one-attempt limit.
     unknown_session_at_chunk: Option<u32>,
     unknown_session_failures_remaining: usize,
-    /// Falha HTTP transitória controlada para simular a ligação cortada depois
-    /// de a cabeça aceitar um pedaço, mas antes de o hop seguinte o aceitar.
+    /// Controlled transient HTTP failure to simulate the connection being cut
+    /// after the head accepts a chunk, but before the next hop accepts it.
     transport_failure_at_chunk: Option<u32>,
     transport_failures_remaining: usize,
 }
@@ -133,18 +133,18 @@ struct Hop {
     direct_forward_order: crate::infer_server::DirectForwardOrder,
 }
 
-/// O "tokenizador" da bancada: uma palavra, um token.
+/// The bench's "tokenizer": one word, one token.
 ///
-/// Estável e aditivo, como o de verdade num template de chat: acrescentar
-/// texto no fim do prompt acrescenta tokens no fim da lista, sem mexer nos
-/// anteriores. É a premissa que o reuso exige, e a bancada a torna explícita
-/// em vez de deixá-la implícita num GGUF ausente.
+/// Stable and additive, like the real one on a chat template: appending
+/// text at the end of the prompt appends tokens at the end of the list, without
+/// touching the earlier ones. It is the premise reuse requires, and the bench
+/// makes it explicit instead of leaving it implicit in an absent GGUF.
 fn tokenize(prompt: &str) -> Vec<i32> {
     prompt
         .split_whitespace()
-        .map(|palavra| {
+        .map(|word| {
             let mut h: i32 = 7;
-            for b in palavra.bytes() {
+            for b in word.bytes() {
                 h = h.wrapping_mul(31).wrapping_add(b as i32);
             }
             h
@@ -164,7 +164,7 @@ fn frame(meta: &Value, tensor: Option<(&[f32], TensorShape)>) -> Response {
     }
 }
 
-fn erro(msg: String) -> Response {
+fn error(msg: String) -> Response {
     (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response()
 }
 
@@ -185,9 +185,9 @@ struct Incoming {
     reply_to: Option<Value>,
 }
 
-/// Lido com as mesmas regras do `infer_server` real.
+/// Read with the same rules as the real `infer_server`.
 fn read(body: &Bytes) -> Incoming {
-    let (meta, tensor) = wire::decode(body).expect("quadro válido");
+    let (meta, tensor) = wire::decode(body).expect("valid frame");
     let declared: Option<Vec<crate::pipeline::PipelineStep>> = meta
         .get("next_hops")
         .and_then(|v| serde_json::from_value(v.clone()).ok());
@@ -207,7 +207,7 @@ fn read(body: &Bytes) -> Incoming {
     }
 }
 
-/// Espelha `infer_server::relay_and_bubble`.
+/// Mirrors `infer_server::relay_and_bubble`.
 async fn bubble(
     hops: &[crate::pipeline::PipelineStep],
     path: &str,
@@ -234,7 +234,7 @@ async fn bubble(
         |_| {},
     )
     .await
-    .map_err(|e| erro(e.to_string()))?;
+    .map_err(|e| error(e.to_string()))?;
 
     let mut bubbled = sent.meta.clone();
     bubbled["hop_timings"] = json!(crate::relay::bubble_hop_timings(&sent));
@@ -243,25 +243,25 @@ async fn bubble(
     Ok(bubbled)
 }
 
-/// `/v1/prefill`, com a mesma árvore de decisão do `infer_server` real:
-/// `reuse_prefix` no pedaço 0, `start_pos` mandando a partir de onde ingerir, e
-/// a resposta declarando o que **foi executado** (`reuse_prefix`,
-/// `cached_tokens`), que é o que os hops seguintes obedecem.
-/// O que a ingestão de um pedaço deixou pronto para a resposta.
-struct Ingerido {
+/// `/v1/prefill`, with the same decision tree as the real `infer_server`:
+/// `reuse_prefix` on chunk 0, `start_pos` saying where to ingest from, and
+/// the reply declaring what **was executed** (`reuse_prefix`,
+/// `cached_tokens`), which is what the following hops obey.
+/// What ingesting a chunk left ready for the reply.
+struct Ingested {
     n_tokens: usize,
     is_final_chunk: bool,
     local: Value,
 }
 
-/// Toda a contabilidade de KV, **síncrona**: o lock do motor falso nasce e
-/// morre aqui, longe de qualquer `await`.
-fn ingerir(hop: &Hop, inc: &Incoming, sid: &str) -> Result<Ingerido, String> {
+/// All the KV accounting, **synchronous**: the fake engine's lock is born and
+/// dies here, far from any `await`.
+fn ingest(hop: &Hop, inc: &Incoming, sid: &str) -> Result<Ingested, String> {
     let chunk_index = inc.meta["chunk_index"].as_u64().unwrap_or(0) as u32;
     let chunk_size = inc.meta["chunk_size"].as_u64().unwrap_or(512) as u32;
-    let reuse_pedido = inc.meta["reuse_prefix"].as_bool().unwrap_or(false);
+    let reuse_requested = inc.meta["reuse_prefix"].as_bool().unwrap_or(false);
     let start_pos = inc.meta["start_pos"].as_u64().map(|v| v as u32);
-    let is_final_chunk_recebido = inc.meta["is_final_chunk"].as_bool().unwrap_or(false);
+    let is_final_chunk_received = inc.meta["is_final_chunk"].as_bool().unwrap_or(false);
     let stable_from_head = inc.meta["stable_len"].as_u64().map(|v| v as u32);
 
     let mut engine = hop.engine.lock().unwrap();
@@ -271,120 +271,124 @@ fn ingerir(hop: &Hop, inc: &Incoming, sid: &str) -> Result<Ingerido, String> {
     {
         engine.unknown_session_failures_remaining -= 1;
         engine.sessions.remove(sid);
-        return Err(format!(
-            "sessão '{sid}' desconhecida - envie reset=true antes"
-        ));
+        return Err(format!("unknown session '{sid}' - send reset=true first"));
     }
 
     let mut reused = false;
     let mut cached_tokens = 0u32;
     if chunk_index == 0 {
-        let quer_reusar = reuse_pedido && engine.sessions.contains_key(sid);
-        if !quer_reusar {
-            // Reset: limpeza total, que todo motor aceita.
+        let wants_reuse = reuse_requested && engine.sessions.contains_key(sid);
+        if !wants_reuse {
+            // Reset: full cleanup, which every engine accepts.
             engine
                 .sessions
                 .insert(sid.to_string(), FakeSession::default());
         }
         if hop.is_head {
             let tokens = tokenize(inc.meta["prompt"].as_str().unwrap_or_default());
-            if quer_reusar {
-                // A regra de produção em pessoa, não uma cópia: se ela mudar,
-                // a bancada muda junto.
-                let sessao = engine.sessions.get(sid).cloned().unwrap_or_default();
-                let decisao = crate::infer_server::plan_prefix_reuse(
-                    &sessao.prompt_kv,
-                    sessao.n_past(),
+            if wants_reuse {
+                // The production rule itself, not a copy: if it changes,
+                // the bench changes with it.
+                let session = engine.sessions.get(sid).cloned().unwrap_or_default();
+                let decision = crate::infer_server::plan_prefix_reuse(
+                    &session.prompt_kv,
+                    session.n_past(),
                     &tokens,
                 );
-                reused = decisao.reused;
-                cached_tokens = decisao.cached_tokens;
+                reused = decision.reused;
+                cached_tokens = decision.cached_tokens;
                 if !reused {
                     engine
                         .sessions
                         .insert(sid.to_string(), FakeSession::default());
                 }
             }
-            let sessao = engine.sessions.entry(sid.to_string()).or_default();
-            sessao.gen_len = 0;
-            // O último token representa a cauda do template. Assim a bancada
-            // exercita a mesma separação que o servidor real faz com
-            // `stable_prefix_len`: o prompt retido nunca recebe a geração.
-            sessao.stable_len = tokens.len().saturating_sub(1) as u32;
-            sessao.alvo = tokens;
+            let session = engine.sessions.entry(sid.to_string()).or_default();
+            session.gen_len = 0;
+            // The last token stands for the template's tail. This way the bench
+            // exercises the same split the real server makes with
+            // `stable_prefix_len`: the retained prompt never receives the generation.
+            session.stable_len = tokens.len().saturating_sub(1) as u32;
+            session.target = tokens;
         } else {
-            let sessao = engine.sessions.entry(sid.to_string()).or_default();
-            sessao.gen_len = 0;
-            // O hop intermediário não tokeniza, portanto a decisão autoritativa
-            // vem no frame e precisa ser ecoada para o próximo hop.
-            reused = reuse_pedido;
+            let session = engine.sessions.entry(sid.to_string()).or_default();
+            session.gen_len = 0;
+            // The intermediate hop does not tokenize, so the authoritative decision
+            // comes in the frame and has to be echoed to the next hop.
+            reused = reuse_requested;
             if let Some(stable) = stable_from_head {
-                sessao.stable_len = stable;
+                session.stable_len = stable;
             }
         }
     }
 
     let n_past = engine.sessions.entry(sid.to_string()).or_default().n_past();
-    let esperado = start_pos.unwrap_or(if chunk_index == 0 {
+    let expected = start_pos.unwrap_or(if chunk_index == 0 {
         n_past
     } else {
         chunk_index * chunk_size
     });
-    if esperado < n_past {
-        // Um motor recorrente responderia `false` aqui. Anotar e recusar é o
-        // que faz a bancada falhar em vez de esconder o defeito.
-        engine.remocoes_parciais.push(format!(
-            "pedaço {chunk_index} pediu posição {esperado} com a sessão em {n_past}"
+    if expected < n_past {
+        // A recurrent engine would answer `false` here. Recording and refusing is
+        // what makes the bench fail instead of hiding the defect.
+        engine.partial_removals.push(format!(
+            "chunk {chunk_index} asked for position {expected} with the session at {n_past}"
         ));
-        return Err("este modelo não aceita descartar posições do meio do cache".into());
+        return Err(
+            "this model does not accept discarding positions from the middle of the cache".into(),
+        );
     }
-    if esperado > n_past {
+    if expected > n_past {
         return Err(format!(
-            "chunk fora de ordem: pos {esperado} com a sessão em {n_past}"
+            "chunk out of order: pos {expected} with the session at {n_past}"
         ));
     }
 
-    let (n_tokens, mais, total) = if hop.is_head {
-        let alvo = engine.sessions[sid].alvo.clone();
-        let restante = alvo.len().saturating_sub(esperado as usize);
-        let n = restante.min(chunk_size as usize);
+    let (n_tokens, more, total) = if hop.is_head {
+        let target = engine.sessions[sid].target.clone();
+        let remaining = target.len().saturating_sub(expected as usize);
+        let n = remaining.min(chunk_size as usize);
         if n == 0 {
-            return Err(format!("chunk {chunk_index} não tem tokens"));
+            return Err(format!("chunk {chunk_index} has no tokens"));
         }
-        let novos = alvo[esperado as usize..esperado as usize + n].to_vec();
-        let sessao = engine.sessions.get_mut(sid).unwrap();
-        let estavel = sessao.stable_len as usize;
-        let retidos = novos.len().min(estavel.saturating_sub(esperado as usize));
-        sessao.prompt_kv.extend_from_slice(&novos[..retidos]);
-        sessao.gen_len += novos.len().saturating_sub(retidos) as u32;
-        (n, esperado as usize + n < alvo.len(), alvo.len() as u32)
+        let new_items = target[expected as usize..expected as usize + n].to_vec();
+        let session = engine.sessions.get_mut(sid).unwrap();
+        let stable = session.stable_len as usize;
+        let retained = new_items
+            .len()
+            .min(stable.saturating_sub(expected as usize));
+        session.prompt_kv.extend_from_slice(&new_items[..retained]);
+        session.gen_len += new_items.len().saturating_sub(retained) as u32;
+        (n, expected as usize + n < target.len(), target.len() as u32)
     } else {
-        // Hop do meio/cauda: ingere o que a cabeça mandou, sem tokenizar.
+        // Middle/tail hop: ingests what the head sent, without tokenizing.
         let n = inc.tensor.as_ref().map(|(_, s)| s[0]).unwrap_or(1);
-        let sessao = engine.sessions.get_mut(sid).unwrap();
-        let retidos = n.min(sessao.stable_len.saturating_sub(esperado) as usize);
-        sessao.prompt_kv.extend(std::iter::repeat_n(0i32, retidos));
-        sessao.gen_len += (n - retidos) as u32;
+        let session = engine.sessions.get_mut(sid).unwrap();
+        let retained = n.min(session.stable_len.saturating_sub(expected) as usize);
+        session
+            .prompt_kv
+            .extend(std::iter::repeat_n(0i32, retained));
+        session.gen_len += (n - retained) as u32;
         (n, false, 0)
     };
     engine.prompt_chunks.push(n_tokens as u32);
 
     let is_final_chunk = if hop.is_head {
-        !mais
+        !more
     } else {
-        is_final_chunk_recebido
+        is_final_chunk_received
     };
     if is_final_chunk {
-        let sessao = engine.sessions.get_mut(sid).unwrap();
-        sessao.prompt_len = sessao.stable_len;
+        let session = engine.sessions.get_mut(sid).unwrap();
+        session.prompt_len = session.stable_len;
     }
 
     let n_past_after = engine.sessions[sid].n_past();
     engine.frames.push(ObservedFrame {
         session_id: sid.to_string(),
         chunk_index,
-        start_pos: esperado,
-        next_pos: esperado + n_tokens as u32,
+        start_pos: expected,
+        next_pos: expected + n_tokens as u32,
         n_past_before: n_past,
         n_past_after,
         reuse_prefix: reused,
@@ -393,12 +397,12 @@ fn ingerir(hop: &Hop, inc: &Incoming, sid: &str) -> Result<Ingerido, String> {
     let mut local = json!({
         "processing_ms": 0,
         "node_timings": {},
-        "start_pos": esperado,
-        "next_pos": esperado + n_tokens as u32,
+        "start_pos": expected,
+        "next_pos": expected + n_tokens as u32,
     });
     if hop.is_head {
         local["owns_tokens"] = json!(true);
-        local["more_chunks"] = json!(mais);
+        local["more_chunks"] = json!(more);
         local["n_prompt_tokens"] = json!(total);
     }
     local["stable_len"] = json!(engine.sessions[sid].stable_len);
@@ -414,7 +418,7 @@ fn ingerir(hop: &Hop, inc: &Incoming, sid: &str) -> Result<Ingerido, String> {
             local["text"] = json!("ok");
         }
     }
-    Ok(Ingerido {
+    Ok(Ingested {
         n_tokens,
         is_final_chunk,
         local,
@@ -429,7 +433,7 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
         .to_string();
     let chunk_index = inc.meta["chunk_index"].as_u64().unwrap_or(0) as u32;
     let chunk_size = inc.meta["chunk_size"].as_u64().unwrap_or(512) as u32;
-    let reuse_pedido = inc.meta["reuse_prefix"].as_bool().unwrap_or(false);
+    let reuse_requested = inc.meta["reuse_prefix"].as_bool().unwrap_or(false);
     let prefill_sequence_id = inc
         .meta
         .get("prefill_sequence_id")
@@ -459,27 +463,27 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
             engine.transport_failures_remaining -= 1;
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
-                "ligação de prefill cortada durante o pedaço",
+                "prefill link cut during the chunk",
             )
                 .into_response();
         }
     }
 
-    let Ingerido {
+    let Ingested {
         n_tokens,
         is_final_chunk,
         mut local,
-    } = match ingerir(&hop, &inc, &sid) {
+    } = match ingest(&hop, &inc, &sid) {
         Ok(ok) => {
             if let Some(turn) = local_turn {
                 turn.finish(true, ok.is_final_chunk);
             }
             ok
         }
-        Err(msg) if msg.contains("sessão") && msg.contains("desconhecida") => {
+        Err(msg) if msg.contains("session") && msg.contains("unknown") => {
             return (StatusCode::BAD_REQUEST, msg).into_response()
         }
-        Err(msg) => return erro(msg),
+        Err(msg) => return error(msg),
     };
 
     // Make the executed work visible in TTFT. The real engine's prefill cost
@@ -495,7 +499,7 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
     let residual = vec![0.0f32; n_tokens * HIDDEN_DIM];
     let shape = vec![n_tokens, HIDDEN_DIM];
 
-    // ── Resposta direta ─────────────────────────────────────────────────────
+    // ── Direct reply ────────────────────────────────────────────────────────
     if let Some(reply_to) = inc.reply_to {
         let hop_timings = crate::direct::accumulate(
             &inc.meta,
@@ -534,9 +538,9 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
                 "session_id": sid,
                 "chunk_index": chunk_index,
                 "chunk_size": chunk_size,
-                // As funções de produção, para o repasse ser o de produção.
+                // The production functions, so the forwarding is production's.
                 "reuse_prefix": crate::infer_server::reuse_prefix_for_forward(
-                    &local, reuse_pedido, chunk_index),
+                    &local, reuse_requested, chunk_index),
                 "is_final_chunk": is_final_chunk,
                 "start_pos": local["start_pos"].clone(),
                 "next_pos": local["next_pos"].clone(),
@@ -567,14 +571,14 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
         return crate::infer_server::direct_ack_with_progress(progress);
     }
 
-    // ── Anel ────────────────────────────────────────────────────────────────
+    // ── Ring ────────────────────────────────────────────────────────────────
     if !inc.next_hops.is_empty() {
         let base = json!({
             "session_id": sid,
             "chunk_index": chunk_index,
             "chunk_size": chunk_size,
             "reuse_prefix": crate::infer_server::reuse_prefix_for_forward(
-                &local, reuse_pedido, chunk_index),
+                &local, reuse_requested, chunk_index),
             "is_final_chunk": is_final_chunk,
             "start_pos": local["start_pos"].clone(),
             "next_pos": local["next_pos"].clone(),
@@ -597,7 +601,7 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
     }
 }
 
-/// `/v1/step`: um token gerado. Ele **não** entra na sequência do prompt.
+/// `/v1/step`: one generated token. It does **not** enter the prompt sequence.
 async fn fake_step(State(hop): State<Hop>, body: Bytes) -> Response {
     let inc = read(&body);
     let sid = inc.meta["session_id"]
@@ -605,17 +609,17 @@ async fn fake_step(State(hop): State<Hop>, body: Bytes) -> Response {
         .unwrap_or_default()
         .to_string();
 
-    let gerados = {
+    let generated = {
         let mut engine = hop.engine.lock().unwrap();
-        let Some(sessao) = engine.sessions.get_mut(&sid) else {
-            return erro("sessão desconhecida — faça o prefill antes".into());
+        let Some(session) = engine.sessions.get_mut(&sid) else {
+            return error("unknown session — run the prefill first".into());
         };
-        sessao.gen_len += 1;
-        sessao.gen_len
+        session.gen_len += 1;
+        session.gen_len
     };
 
-    // Três tokens por turno, depois EOS: o que se mede aqui é o prefill.
-    let done = gerados >= 3;
+    // Three tokens per turn, then EOS: what is measured here is the prefill.
+    let done = generated >= 3;
     let mut local = json!({"processing_ms": 0, "node_timings": {}});
     if inc.is_last {
         local["done"] = json!(done);
@@ -681,26 +685,26 @@ async fn fake_step(State(hop): State<Hop>, body: Bytes) -> Response {
     }
 }
 
-/// `/v1/session/rewind`: a retenção, do lado do peer. Apaga a sequência da
-/// geração inteira - remoção total - e devolve a sessão ao fim do prompt.
+/// `/v1/session/rewind`: retention, on the peer's side. It erases the whole
+/// generation sequence - full removal - and returns the session to the end of the prompt.
 async fn fake_rewind(State(hop): State<Hop>, Json(req): Json<Value>) -> impl IntoResponse {
     let sid = req["session_id"].as_str().unwrap_or_default().to_string();
-    let pedido = req["n_tokens"].as_u64().unwrap_or(0) as u32;
+    let request = req["n_tokens"].as_u64().unwrap_or(0) as u32;
     let mut engine = hop.engine.lock().unwrap();
-    let Some(sessao) = engine.sessions.get_mut(&sid) else {
-        engine.rewind_em_sessao_desconhecida += 1;
-        return Json(json!({"rewound": false, "reason": "sessão desconhecida"}));
+    let Some(session) = engine.sessions.get_mut(&sid) else {
+        engine.rewind_on_unknown_session += 1;
+        return Json(json!({"rewound": false, "reason": "unknown session"}));
     };
-    // A cauda não tokeniza, então o prompt dela é o número de posições que a
-    // cabeça mandou - o mesmo `prompt_len` do `infer_server`.
-    if pedido != sessao.prompt_len {
+    // The tail does not tokenize, so its prompt is the number of positions the
+    // head sent - the same `prompt_len` as `infer_server`.
+    if request != session.prompt_len {
         return Json(json!({
             "rewound": false,
-            "reason": format!("prompt não bate: {pedido} != {}", sessao.prompt_len),
+            "reason": format!("prompt does not match: {request} != {}", session.prompt_len),
         }));
     }
-    sessao.gen_len = 0;
-    Json(json!({"rewound": true, "n_past": sessao.prompt_len}))
+    session.gen_len = 0;
+    Json(json!({"rewound": true, "n_past": session.prompt_len}))
 }
 
 async fn fake_release(State(hop): State<Hop>, Json(req): Json<Value>) -> impl IntoResponse {
@@ -726,106 +730,106 @@ async fn spawn_hop(hop: Hop) -> String {
     format!("http://{addr}")
 }
 
-// ── A conversa, pelo caminho do usuário final ─────────────────────────────────
+// ── The conversation, through the end user's path ─────────────────────────────
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Transporte {
+enum Transport {
     Hub,
-    Anel,
-    Direto,
+    Ring,
+    Direct,
 }
 
-impl Transporte {
+impl Transport {
     fn caps(self) -> Vec<String> {
         match self {
-            Transporte::Hub => Vec::new(),
-            Transporte::Anel => vec![crate::pipeline::CAP_RELAY_CHAIN.to_string()],
-            Transporte::Direto => vec![
+            Transport::Hub => Vec::new(),
+            Transport::Ring => vec![crate::pipeline::CAP_RELAY_CHAIN.to_string()],
+            Transport::Direct => vec![
                 crate::pipeline::CAP_RELAY_CHAIN.to_string(),
                 crate::pipeline::CAP_RELAY_DIRECT.to_string(),
             ],
         }
     }
 
-    fn todos() -> [Transporte; 3] {
-        [Transporte::Hub, Transporte::Anel, Transporte::Direto]
+    fn all() -> [Transport; 3] {
+        [Transport::Hub, Transport::Ring, Transport::Direct]
     }
 }
 
-fn msg(role: &str, texto: &str) -> ChatMessage {
+fn msg(role: &str, text: &str) -> ChatMessage {
     ChatMessage {
         role: role.into(),
-        content: Content::Text(texto.into()),
+        content: Content::Text(text.into()),
         tool_calls: None,
     }
 }
 
 #[derive(Debug)]
-struct Turno {
-    /// Tokens de prompt que a cabeça reprocessou neste turno.
-    reprocessados: u32,
-    /// Pedaços que atravessaram o pipeline neste turno, na cabeça.
-    pedacos: u32,
-    /// O que o gateway reportou como aproveitado do cache.
+struct Turn {
+    /// Prompt tokens the head reprocessed in this turn.
+    reprocessed: u32,
+    /// Chunks that crossed the pipeline in this turn, on the head.
+    chunks: u32,
+    /// What the gateway reported as used from the cache.
     cached_tokens: u32,
     prompt_tokens: u32,
-    /// Tempo de prefill declarado pelo caminho de inferência. É a métrica
-    /// determinística do trabalho simulado; `first_word_us` inclui escalonamento
-    /// do processo e serve apenas para verificar que a telemetria existe.
+    /// Prefill time declared by the inference path. It is the deterministic
+    /// metric of the simulated work; `first_word_us` includes process
+    /// scheduling and only serves to check that the telemetry exists.
     prefill_ms: u64,
     first_word_us: u128,
-    /// Maior profundidade do pipeline de prefill observada e o teto efetivo.
+    /// Greatest prefill pipeline depth observed and the effective ceiling.
     pipeline_depth: u32,
     max_inflight: u32,
     overlap_enabled: bool,
-    falhou: Option<String>,
+    failed: Option<String>,
 }
 
-struct Medida {
-    turnos: Vec<Turno>,
-    cabeca: Arc<Mutex<Engine>>,
-    cauda: Arc<Mutex<Engine>>,
+struct Measurement {
+    turns: Vec<Turn>,
+    head: Arc<Mutex<Engine>>,
+    tail: Arc<Mutex<Engine>>,
     hops: Vec<Arc<Mutex<Engine>>>,
 }
 
-/// Roda `turnos` turnos de uma conversa que só cresce, pelo mesmo caminho que
-/// `/v1/chat/completions` usa - inclusive `render_prompt` e
-/// `conversation_cache_key`, que é onde a assimetria de renderização morava.
+/// Runs `turns` turns of a conversation that only grows, through the same path
+/// `/v1/chat/completions` uses - including `render_prompt` and
+/// `conversation_cache_key`, which is where the rendering asymmetry lived.
 ///
-/// Sem pausa nenhuma entre os turnos: é o comportamento normal de um chat, e
-/// era o que fazia o turno seguinte chegar antes da liberação do anterior.
-async fn conversa(transporte: Transporte, turnos: usize) -> Medida {
-    conversa_com(transporte, turnos, true).await
+/// No pause at all between the turns: it is the normal behavior of a chat, and
+/// it was what made the next turn arrive before the previous one's release.
+async fn conversation(transport: Transport, turns: usize) -> Measurement {
+    conversation_with(transport, turns, true).await
 }
 
-/// `esperar_o_fim = false` manda o turno seguinte assim que o evento final
-/// chega ao cliente, sem esperar a tarefa do gateway terminar - que é o que um
-/// chat de verdade faz e o que expôs a corrida do fim do turno: o `[DONE]` saía
-/// antes de o rewind rodar, e o turno seguinte chegava no meio da arrumação.
-async fn conversa_com(transporte: Transporte, turnos: usize, esperar_o_fim: bool) -> Medida {
-    conversa_com_hops(transporte, turnos, esperar_o_fim, 2).await
+/// `wait_for_end = false` sends the next turn as soon as the final event
+/// reaches the client, without waiting for the gateway task to finish - which
+/// is what a real chat does and what exposed the end-of-turn race: the `[DONE]`
+/// went out before the rewind ran, and the next turn arrived mid-cleanup.
+async fn conversation_with(transport: Transport, turns: usize, wait_for_end: bool) -> Measurement {
+    conversation_with_hops(transport, turns, wait_for_end, 2).await
 }
 
-async fn conversa_com_hops(
-    transporte: Transporte,
-    turnos: usize,
-    esperar_o_fim: bool,
+async fn conversation_with_hops(
+    transport: Transport,
+    turns: usize,
+    wait_for_end: bool,
     hop_count: usize,
-) -> Medida {
-    conversa_com_hops_fault(transporte, turnos, esperar_o_fim, hop_count, None).await
+) -> Measurement {
+    conversation_with_hops_fault(transport, turns, wait_for_end, hop_count, None).await
 }
 
-async fn conversa_com_hops_fault(
-    transporte: Transporte,
-    turnos: usize,
-    esperar_o_fim: bool,
+async fn conversation_with_hops_fault(
+    transport: Transport,
+    turns: usize,
+    wait_for_end: bool,
     hop_count: usize,
     fault: Option<(usize, u32, usize)>,
-) -> Medida {
-    conversa_com_hops_fault_kind(
-        transporte,
-        turnos,
-        esperar_o_fim,
+) -> Measurement {
+    conversation_with_hops_fault_kind(
+        transport,
+        turns,
+        wait_for_end,
         hop_count,
         fault,
         FaultKind::UnknownSession,
@@ -833,17 +837,17 @@ async fn conversa_com_hops_fault(
     .await
 }
 
-async fn conversa_com_hops_transport_fault(
-    transporte: Transporte,
-    turnos: usize,
-    esperar_o_fim: bool,
+async fn conversation_with_hops_transport_fault(
+    transport: Transport,
+    turns: usize,
+    wait_for_end: bool,
     hop_count: usize,
     fault: Option<(usize, u32, usize)>,
-) -> Medida {
-    conversa_com_hops_fault_kind(
-        transporte,
-        turnos,
-        esperar_o_fim,
+) -> Measurement {
+    conversation_with_hops_fault_kind(
+        transport,
+        turns,
+        wait_for_end,
         hop_count,
         fault,
         FaultKind::Transport,
@@ -851,25 +855,25 @@ async fn conversa_com_hops_transport_fault(
     .await
 }
 
-async fn conversa_com_hops_fault_kind(
-    transporte: Transporte,
-    turnos: usize,
-    esperar_o_fim: bool,
+async fn conversation_with_hops_fault_kind(
+    transport: Transport,
+    turns: usize,
+    wait_for_end: bool,
     hop_count: usize,
     fault: Option<(usize, u32, usize)>,
     fault_kind: FaultKind,
-) -> Medida {
-    // Os peers falsos só servem HTTP; `PeerInfo::inference_candidates` lê a
-    // política TLS global, que outros testes alternam em paralelo.
-    let _scheme_lock = crate::peer_client::POLITICA_GLOBAL.lock();
-    crate::peer_client::set_tls_ativo(false);
+) -> Measurement {
+    // The fake peers only serve HTTP; `PeerInfo::inference_candidates` reads the
+    // global TLS policy, which other tests toggle in parallel.
+    let _scheme_lock = crate::peer_client::GLOBAL_POLICY.lock();
+    crate::peer_client::set_tls_enabled(false);
 
     assert!(hop_count >= 1);
-    let motores: Vec<Arc<Mutex<Engine>>> = (0..hop_count)
+    let engines: Vec<Arc<Mutex<Engine>>> = (0..hop_count)
         .map(|_| Arc::new(Mutex::new(Engine::default())))
         .collect();
     let mut urls = Vec::new();
-    for (i, engine) in motores.iter().enumerate() {
+    for (i, engine) in engines.iter().enumerate() {
         urls.push(
             spawn_hop(Hop {
                 is_head: i == 0,
@@ -883,7 +887,7 @@ async fn conversa_com_hops_fault_kind(
 
     if let Some((hop_index, chunk_index, failures)) = fault {
         assert!(hop_index < hop_count);
-        let mut engine = motores[hop_index].lock().unwrap();
+        let mut engine = engines[hop_index].lock().unwrap();
         match fault_kind {
             FaultKind::UnknownSession => {
                 engine.unknown_session_at_chunk = Some(chunk_index);
@@ -896,28 +900,28 @@ async fn conversa_com_hops_fault_kind(
         }
     }
 
-    let caps = transporte.caps();
+    let caps = transport.caps();
     let peers: Vec<crate::network::PeerInfo> = urls
         .iter()
         .enumerate()
         .map(|(i, url)| {
-            let porta: u16 = url.rsplit(':').next().unwrap().parse().unwrap();
+            let port: u16 = url.rsplit(':').next().unwrap().parse().unwrap();
             let mut p = crate::gateway::testkit::peer(
                 &format!("hop{i}"),
                 &format!("m{i}"),
                 9000 + i as u16,
             );
             p.addr = "127.0.0.1:42777".into();
-            p.inference_port = Some(porta);
+            p.inference_port = Some(port);
             p.model = "lab".into();
             p.start_layer = i as u32;
             p.end_layer = i as u32;
             p.total_layers = hop_count as u32;
             p.inference_frame_capabilities = caps.clone();
             if matches!(fault_kind, FaultKind::Transport) {
-                // Mantém o endereço anunciado antigo na frente e deixa o
-                // `addr` atual como fallback. O cenário prova tanto a
-                // recuperação do prefill quanto o release pela rota viva.
+                // Keeps the old announced address in front and leaves the
+                // current `addr` as fallback. The scenario proves both the
+                // prefill recovery and the release through the live route.
                 p.addr_candidates = vec!["127.0.0.1:1".into()];
             }
             p
@@ -927,15 +931,15 @@ async fn conversa_com_hops_fault_kind(
     let state = crate::gateway::testkit::state_with("eu", peers).await;
     let mut config = crate::gateway::testkit::spec_config();
     config.speculative_decoding_enabled = false;
-    // Pedaços pequenos: é assim que a economia aparece como *menos pedaços*, e
-    // não só como menos tokens.
+    // Small chunks: that is how the savings show up as *fewer chunks*, and
+    // not only as fewer tokens.
     config.prefill_chunk_tokens = 4;
     state.runtime.seed_config_for_test(config).await;
     let state = crate::gateway::testkit::with_self_reachable_gateway(state).await;
 
-    let mut historico: Vec<ChatMessage> = Vec::new();
-    let mut medidos = Vec::new();
-    for turno in 0..turnos {
+    let mut history: Vec<ChatMessage> = Vec::new();
+    let mut measured_turns = Vec::new();
+    for turn in 0..turns {
         // The real discovery loop refreshes `last_seen`; this fixture has no
         // UDP traffic, so refresh the synthetic peers before every request.
         // Otherwise a busy full test process can let the 30-second liveness
@@ -948,17 +952,17 @@ async fn conversa_com_hops_fault_kind(
                 peer.last_seen = now;
             }
         }
-        let pergunta = if turno == 0 {
+        let question = if turn == 0 {
             "pergunta inicial com bastante contexto para aquecer o prompt e medir o custo frio"
                 .to_string()
         } else {
-            format!("followup curto {turno}")
+            format!("short followup {turn}")
         };
-        historico.push(msg("user", &pergunta));
-        let prompt = crate::openai::render_prompt(&historico, &[]);
-        let cache_key = crate::openai::conversation_cache_key(&historico, &[]);
+        history.push(msg("user", &question));
+        let prompt = crate::openai::render_prompt(&history, &[]);
+        let cache_key = crate::openai::conversation_cache_key(&history, &[]);
 
-        let antes = motores[0].lock().unwrap().prompt_chunks.len();
+        let before = engines[0].lock().unwrap().prompt_chunks.len();
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         let bg = tokio::spawn(crate::gateway::generate_stream_with_stops(
             crate::gateway::GenerationInput {
@@ -980,10 +984,10 @@ async fn conversa_com_hops_fault_kind(
             tx,
         ));
 
-        let mut resposta = String::new();
-        let mut medido = Turno {
-            reprocessados: 0,
-            pedacos: 0,
+        let mut response = String::new();
+        let mut measured = Turn {
+            reprocessed: 0,
+            chunks: 0,
             cached_tokens: 0,
             prompt_tokens: 0,
             prefill_ms: 0,
@@ -991,264 +995,270 @@ async fn conversa_com_hops_fault_kind(
             pipeline_depth: 0,
             max_inflight: 0,
             overlap_enabled: false,
-            falhou: None,
+            failed: None,
         };
         let started = std::time::Instant::now();
         let mut saw_first_word = false;
-        while let Some(evento) = rx.recv().await {
-            let terminal = match evento {
+        while let Some(event) = rx.recv().await {
+            let terminal = match event {
                 crate::gateway::GenEvent::Token(t) => {
                     if !saw_first_word && !t.is_empty() {
-                        medido.first_word_us = started.elapsed().as_micros();
+                        measured.first_word_us = started.elapsed().as_micros();
                         saw_first_word = true;
                     }
-                    resposta.push_str(&t);
+                    response.push_str(&t);
+                    false
+                }
+                crate::gateway::GenEvent::Reasoning(t) => {
+                    if !saw_first_word && !t.is_empty() {
+                        measured.first_word_us = started.elapsed().as_micros();
+                        saw_first_word = true;
+                    }
                     false
                 }
                 crate::gateway::GenEvent::Done(s) => {
                     if let Some(trace) = &s.trace {
-                        medido.cached_tokens = trace.cached_tokens;
-                        medido.prompt_tokens = trace.input_tokens;
-                        medido.prefill_ms = s.timings.prefill_ms;
-                        medido.pipeline_depth = trace.prefill_pipeline_depth_max;
-                        medido.max_inflight = trace.prefill_max_inflight_chunks;
-                        medido.overlap_enabled = trace.prefill_overlap_enabled;
+                        measured.cached_tokens = trace.cached_tokens;
+                        measured.prompt_tokens = trace.input_tokens;
+                        measured.prefill_ms = s.timings.prefill_ms;
+                        measured.pipeline_depth = trace.prefill_pipeline_depth_max;
+                        measured.max_inflight = trace.prefill_max_inflight_chunks;
+                        measured.overlap_enabled = trace.prefill_overlap_enabled;
                     }
                     true
                 }
                 crate::gateway::GenEvent::Failed(e) => {
-                    medido.falhou = Some(e);
+                    measured.failed = Some(e);
                     true
                 }
                 crate::gateway::GenEvent::FailedWithTelemetry { error, .. } => {
-                    medido.falhou = Some(error);
+                    measured.failed = Some(error);
                     true
                 }
             };
-            if terminal && !esperar_o_fim {
+            if terminal && !wait_for_end {
                 break;
             }
         }
-        if esperar_o_fim {
+        if wait_for_end {
             let _ = bg.await;
         }
         {
-            let e = motores[0].lock().unwrap();
-            let deste_turno = &e.prompt_chunks[antes..];
-            medido.reprocessados = deste_turno.iter().sum();
-            medido.pedacos = deste_turno.len() as u32;
+            let e = engines[0].lock().unwrap();
+            let this_turn = &e.prompt_chunks[before..];
+            measured.reprocessed = this_turn.iter().sum();
+            measured.chunks = this_turn.len() as u32;
         }
-        historico.push(msg(
+        history.push(msg(
             "assistant",
-            if resposta.is_empty() { "ok" } else { &resposta },
+            if response.is_empty() { "ok" } else { &response },
         ));
-        medidos.push(medido);
+        measured_turns.push(measured);
     }
-    Medida {
-        turnos: medidos,
-        cabeca: motores[0].clone(),
-        cauda: motores.last().unwrap().clone(),
-        hops: motores,
+    Measurement {
+        turns: measured_turns,
+        head: engines[0].clone(),
+        tail: engines.last().unwrap().clone(),
+        hops: engines,
     }
 }
 
-// ── O que a bancada afirma ────────────────────────────────────────────────────
+// ── What the bench asserts ────────────────────────────────────────────────────
 
-/// A reprodução do relatório, virada de cabeça para baixo: o que era 0 em 100%
-/// dos turnos tem que ser positivo do segundo em diante, e o custo do prefill
-/// tem que parar de crescer com a conversa.
+/// The report's reproduction, turned upside down: what was 0 in 100% of the
+/// turns has to be positive from the second one on, and the prefill cost
+/// has to stop growing with the conversation.
 #[tokio::test]
 async fn from_the_second_turn_on_the_prompt_is_not_reprocessed() {
-    for transporte in Transporte::todos() {
-        let medida = conversa(transporte, 4).await;
-        let turnos = &medida.turnos;
-        let contexto = format!("{transporte:?}");
+    for transport in Transport::all() {
+        let measurement = conversation(transport, 4).await;
+        let turns = &measurement.turns;
+        let context = format!("{transport:?}");
 
         eprintln!(
-            "[{contexto}] prefix-cache metrics: {}",
-            turnos
+            "[{context}] prefix-cache metrics: {}",
+            turns
                 .iter()
                 .enumerate()
                 .map(|(i, t)| format!(
                     "turn={i} cached={} prefill_ms={} ttft_us={} chunks={} prompt={} reprocessed={}",
-                    t.cached_tokens, t.prefill_ms, t.first_word_us, t.pedacos, t.prompt_tokens, t.reprocessados
+                    t.cached_tokens, t.prefill_ms, t.first_word_us, t.chunks, t.prompt_tokens, t.reprocessed
                 ))
                 .collect::<Vec<_>>()
                 .join("; ")
         );
 
-        for (i, t) in turnos.iter().enumerate() {
+        for (i, t) in turns.iter().enumerate() {
             assert!(
-                t.falhou.is_none(),
-                "[{contexto}] turno {i} falhou: {:?}",
-                t.falhou
+                t.failed.is_none(),
+                "[{context}] turn {i} failed: {:?}",
+                t.failed
             );
         }
 
         assert_eq!(
-            turnos[0].cached_tokens, 0,
-            "[{contexto}] o primeiro turno é frio por definição"
+            turns[0].cached_tokens, 0,
+            "[{context}] the first turn is cold by definition"
         );
         assert_eq!(
-            turnos[0].reprocessados, turnos[0].prompt_tokens,
-            "[{contexto}] o primeiro turno ingere o prompt inteiro"
+            turns[0].reprocessed, turns[0].prompt_tokens,
+            "[{context}] the first turn ingests the whole prompt"
         );
 
-        for (i, t) in turnos.iter().enumerate().skip(1) {
+        for (i, t) in turns.iter().enumerate().skip(1) {
             assert!(
                 t.cached_tokens > 0,
-                "[{contexto}] turno {i} não aproveitou nada do prefixo: {turnos:?}"
+                "[{context}] turn {i} reused nothing of the prefix: {turns:?}"
             );
             assert_eq!(
-                t.cached_tokens + t.reprocessados,
+                t.cached_tokens + t.reprocessed,
                 t.prompt_tokens,
-                "[{contexto}] turno {i}: cache + decodificado tem que dar o prompt"
+                "[{context}] turn {i}: cache + decoded must add up to the prompt"
             );
             assert_eq!(
                 t.cached_tokens,
-                turnos[i - 1].prompt_tokens.saturating_sub(1),
-                "[{contexto}] turno {i} devia aproveitar o prefixo estável do turno anterior"
+                turns[i - 1].prompt_tokens.saturating_sub(1),
+                "[{context}] turn {i} should reuse the stable prefix of the previous turn"
             );
             assert!(
                 t.first_word_us > 0,
-                "[{contexto}] turno {i} não registrou o tempo até a primeira palavra"
+                "[{context}] turn {i} did not record the time to the first word"
             );
         }
 
-        // A propriedade que o captain vê como tempo até a primeira palavra: o
-        // trabalho de um turno é do tamanho do texto **novo**, não da conversa
-        // inteira. Sem o reuso esta série cresce a cada turno - foi o TTFT
-        // plano de 3.8s com o prompt crescendo, e os 171s para acrescentar
-        // 1043 caracteres, do relatório.
-        let trabalho: Vec<u32> = turnos.iter().map(|t| t.reprocessados).collect();
-        let prompts: Vec<u32> = turnos.iter().map(|t| t.prompt_tokens).collect();
-        let pedacos: Vec<u32> = turnos.iter().map(|t| t.pedacos).collect();
+        // The property the captain sees as time to the first word: the
+        // work of a turn is the size of the **new** text, not of the whole
+        // conversation. Without reuse this series grows every turn - it was the
+        // flat 3.8s TTFT with the prompt growing, and the 171s to append
+        // 1043 characters, from the report.
+        let work: Vec<u32> = turns.iter().map(|t| t.reprocessed).collect();
+        let prompts: Vec<u32> = turns.iter().map(|t| t.prompt_tokens).collect();
+        let chunks: Vec<u32> = turns.iter().map(|t| t.chunks).collect();
         assert!(
             prompts.windows(2).all(|w| w[1] > w[0]),
-            "[{contexto}] a conversa tinha que estar crescendo: {prompts:?}"
+            "[{context}] the conversation had to be growing: {prompts:?}"
         );
         assert!(
-            trabalho[1..].iter().all(|t| *t < prompts[1]),
-            "[{contexto}] algum turno reprocessou o prompt quase inteiro: \
-             trabalho={trabalho:?} prompts={prompts:?}"
+            work[1..].iter().all(|t| *t < prompts[1]),
+            "[{context}] algum turno reprocessou o prompt quase inteiro: \
+             trabalho={work:?} prompts={prompts:?}"
         );
         assert!(
-            trabalho[1..].windows(2).all(|w| w[1] <= w[0] + 2),
-            "[{contexto}] o custo por turno cresce com a conversa: {trabalho:?}"
+            work[1..].windows(2).all(|w| w[1] <= w[0] + 2),
+            "[{context}] the cost per turn grows with the conversation: {work:?}"
         );
         assert!(
-            turnos[1..]
+            turns[1..]
                 .iter()
-                .all(|t| t.prefill_ms < turnos[0].prefill_ms),
-            "[{contexto}] o prefill medido não caiu depois do primeiro turno: {:?}",
-            turnos.iter().map(|t| t.prefill_ms).collect::<Vec<_>>()
+                .all(|t| t.prefill_ms < turns[0].prefill_ms),
+            "[{context}] the measured prefill did not drop after the first turn: {:?}",
+            turns.iter().map(|t| t.prefill_ms).collect::<Vec<_>>()
         );
-        // Menos tokens para ingerir são menos pedaços atravessando o pipeline,
-        // que é o número que o log de produção mostra.
+        // Fewer tokens to ingest are fewer chunks crossing the pipeline,
+        // which is the number the production log shows.
         assert!(
-            pedacos[1..].iter().all(|p| *p <= pedacos[0] + 1),
-            "[{contexto}] o número de pedaços cresceu com a conversa: {pedacos:?}"
+            chunks[1..].iter().all(|p| *p <= chunks[0] + 1),
+            "[{context}] the number of chunks grew with the conversation: {chunks:?}"
         );
 
-        for (nome, engine) in [("cabeça", &medida.cabeca), ("cauda", &medida.cauda)] {
+        for (name, engine) in [("head", &measurement.head), ("cauda", &measurement.tail)] {
             let engine = engine.lock().unwrap();
             assert!(
-                engine.remocoes_parciais.is_empty(),
-                "[{contexto}] o reuso dependeu de remoção parcial de KV na {nome}, \
-                 que o desenho proíbe: {:?}",
-                engine.remocoes_parciais
+                engine.partial_removals.is_empty(),
+                "[{context}] the reuse depended on a partial KV removal at the {name}, which the design forbids: {:?}",
+                engine.partial_removals
             );
             assert_eq!(
-                engine.rewind_em_sessao_desconhecida, 0,
-                "[{contexto}] a sessão da {nome} foi destruída antes de o gateway \
-                 preservar o prefixo"
+                engine.rewind_on_unknown_session, 0,
+                "[{context}] the session of the {name} was destroyed before the gateway preserved the prefix"
             );
-            for sessao in engine.sessions.values() {
+            for session in engine.sessions.values() {
                 assert_eq!(
-                    sessao.prompt_kv.len() as u32,
-                    sessao.prompt_len,
-                    "[{contexto}] {nome} reteve tokens da geração na sequência do prompt"
+                    session.prompt_kv.len() as u32,
+                    session.prompt_len,
+                    "[{context}] {name} retained generation tokens in the prompt sequence"
                 );
                 assert_eq!(
-                    sessao.gen_len, 0,
-                    "[{contexto}] {nome} deixou a sequência de geração viva após o rewind"
+                    session.gen_len, 0,
+                    "[{context}] {name} left the generation sequence alive after the rewind"
                 );
             }
         }
     }
 }
 
-/// O prefill de um prompt de vários pedaços tem que **encher o pipeline**: com
-/// a cadeia mais lenta que a cabeça, a bomba da cabeça corre à frente e vários
-/// pedaços ficam em voo ao mesmo tempo. O modo anel continua serializado.
+/// The prefill of a multi-chunk prompt has to **fill the pipeline**: with
+/// the chain slower than the head, the head's pump runs ahead and several
+/// chunks are in flight at the same time. Ring mode stays serialized.
 #[tokio::test]
-async fn prefill_multi_pedaco_enche_o_pipeline() {
-    // 4 hops: o downstream (3 hops) é ~3x o custo da cabeça, então a bomba da
-    // cabeça enche a janela. O prompt frio do turno 0 tem vários pedaços de 4
+async fn a_multi_chunk_prefill_fills_the_pipeline() {
+    // 4 hops: the downstream (3 hops) is ~3x the head's cost, so the head's
+    // pump fills the window. The cold prompt of turn 0 has several chunks of 4
     // tokens.
-    for transporte in [Transporte::Hub, Transporte::Direto] {
-        let medida = conversa_com_hops(transporte, 1, true, 4).await;
-        let t = &medida.turnos[0];
+    for transport in [Transport::Hub, Transport::Direct] {
+        let measurement = conversation_with_hops(transport, 1, true, 4).await;
+        let t = &measurement.turns[0];
         assert!(
-            t.falhou.is_none(),
-            "[{transporte:?}] turno falhou: {:?}",
-            t.falhou
+            t.failed.is_none(),
+            "[{transport:?}] turn failed: {:?}",
+            t.failed
         );
         assert!(
-            t.pedacos >= 2,
-            "[{transporte:?}] o prompt frio tinha que ter mais de um pedaço: {}",
-            t.pedacos
+            t.chunks >= 2,
+            "[{transport:?}] the cold prompt had to have more than one chunk: {}",
+            t.chunks
         );
         assert!(
             t.overlap_enabled,
-            "[{transporte:?}] a sobreposição devia estar ligada num plano de vários hops"
+            "[{transport:?}] the overlap should be on in a plan with several hops"
         );
         assert!(
             t.pipeline_depth >= 2,
-            "[{transporte:?}] o pipeline não encheu: profundidade {} (teto {})",
+            "[{transport:?}] the pipeline did not fill: depth {} (cap {})",
             t.pipeline_depth,
             t.max_inflight
         );
         assert!(
             t.pipeline_depth <= t.max_inflight,
-            "[{transporte:?}] profundidade {} acima do teto {}",
+            "[{transport:?}] depth {} above the cap {}",
             t.pipeline_depth,
             t.max_inflight
         );
     }
 
-    // No anel a sobreposição é dos hops (`ring_overlap`): o gateway continua
-    // com um pedaço por vez, e cada hop responde ao intermediário depois do
-    // próprio compute e repassa em segundo plano, em ordem.
-    let anel = conversa_com_hops(Transporte::Anel, 1, true, 4).await;
-    let t = &anel.turnos[0];
-    assert!(t.falhou.is_none(), "[Anel] turno falhou: {:?}", t.falhou);
+    // On the ring the overlap belongs to the hops (`ring_overlap`): the gateway
+    // stays at one chunk at a time, and each hop answers the intermediary after
+    // its own compute and forwards in the background, in order.
+    let ring = conversation_with_hops(Transport::Ring, 1, true, 4).await;
+    let t = &ring.turns[0];
+    assert!(t.failed.is_none(), "[Ring] turn failed: {:?}", t.failed);
     assert!(
         t.overlap_enabled,
-        "[Anel] a sobreposição dos hops devia estar pedida"
+        "[Ring] the hop overlap should be requested"
     );
     assert!(
         t.pipeline_depth <= 1,
-        "[Anel] o gateway não manda mais de um pedaço por vez: profundidade {}",
+        "[Ring] the gateway does not send more than one chunk at a time: depth {}",
         t.pipeline_depth
     );
 }
 
-/// Um peer pode perder o estado entre dois chunks de um prefill frio. O
-/// chamador tem o prompt inteiro e precisa reconstruir todos os hops desde o
-/// chunk 0; repetir apenas o hidden state atual deixaria o peer sem contexto.
+/// A peer can lose its state between two chunks of a cold prefill. The
+/// caller has the whole prompt and has to rebuild all the hops from
+/// chunk 0; repeating only the current hidden state would leave the peer without context.
 #[tokio::test]
 async fn unknown_session_during_prefill_is_recovered() {
-    for transporte in Transporte::todos() {
-        let medida = conversa_com_hops_fault(transporte, 1, true, 2, Some((1, 1, 1))).await;
-        let turno = &medida.turnos[0];
+    for transport in Transport::all() {
+        let measurement =
+            conversation_with_hops_fault(transport, 1, true, 2, Some((1, 1, 1))).await;
+        let turn = &measurement.turns[0];
         assert!(
-            turno.falhou.is_none(),
-            "{transporte:?} falhou depois de perder a sessão: {:?}",
-            turno.falhou
+            turn.failed.is_none(),
+            "{transport:?} failed after losing the session: {:?}",
+            turn.failed
         );
 
-        for (i, hop) in medida.hops.iter().enumerate() {
+        for (i, hop) in measurement.hops.iter().enumerate() {
             let engine = hop.lock().unwrap();
             assert_eq!(
                 engine
@@ -1257,50 +1267,50 @@ async fn unknown_session_during_prefill_is_recovered() {
                     .filter(|frame| frame.chunk_index == 0)
                     .count(),
                 2,
-                "{transporte:?} não reiniciou o prefill desde o chunk 0 no hop {i}: {:?}",
+                "{transport:?} did not restart the prefill from chunk 0 at hop {i}: {:?}",
                 engine.frames
             );
         }
         assert!(
-            turno.reprocessados > turno.prompt_tokens,
-            "{transporte:?} não registrou o custo da reconstrução fria: {turno:?}"
+            turn.reprocessed > turn.prompt_tokens,
+            "{transport:?} did not record the cost of the cold rebuild: {turn:?}"
         );
 
-        let hop = medida.hops[1].lock().unwrap();
+        let hop = measurement.hops[1].lock().unwrap();
         assert_eq!(
-            hop.rewind_em_sessao_desconhecida, 0,
-            "{transporte:?} terminou sem uma sessão preservável no peer recuperado"
+            hop.rewind_on_unknown_session, 0,
+            "{transport:?} ended without a preservable session on the recovered peer"
         );
     }
 }
 
-/// Uma perda persistente não pode fazer o gateway repetir o prefill para
-/// sempre. Depois de uma reconstrução, a falha chega ao cliente sem a
-/// instrução interna que só um peer poderia executar.
+/// A persistent loss must not make the gateway repeat the prefill
+/// forever. After one rebuild, the failure reaches the client without the
+/// internal instruction only a peer could execute.
 #[tokio::test]
 async fn unknown_session_recovery_is_bounded() {
-    for transporte in Transporte::todos() {
-        let medida = tokio::time::timeout(
+    for transport in Transport::all() {
+        let measurement = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            conversa_com_hops_fault(transporte, 1, true, 2, Some((1, 1, usize::MAX))),
+            conversation_with_hops_fault(transport, 1, true, 2, Some((1, 1, usize::MAX))),
         )
         .await
-        .expect("a recuperação de sessão desconhecida não pode ficar em loop");
-        let turno = &medida.turnos[0];
-        let mensagem = turno
-            .falhou
+        .expect("the unknown session recovery cannot loop");
+        let turn = &measurement.turns[0];
+        let message = turn
+            .failed
             .as_deref()
-            .expect("a recusa persistente devia chegar ao cliente");
+            .expect("the persistent refusal should reach the client");
         assert!(
-            !mensagem.contains("reset=true"),
-            "mensagem interna vazou: {mensagem}"
+            !message.contains("reset=true"),
+            "internal message leaked: {message}"
         );
         assert!(
-            mensagem.contains("o pedido não foi executado"),
-            "mensagem final não explica o impacto para o usuário: {mensagem}"
+            message.contains("the request was not executed"),
+            "the final message does not explain the impact to the user: {message}"
         );
 
-        for (i, hop) in medida.hops.iter().enumerate() {
+        for (i, hop) in measurement.hops.iter().enumerate() {
             let engine = hop.lock().unwrap();
             let cold_attempts = engine
                 .frames
@@ -1309,104 +1319,104 @@ async fn unknown_session_recovery_is_bounded() {
                 .count();
             assert!(
                 cold_attempts <= 2,
-                "{transporte:?} fez uma terceira tentativa fria no hop {i}: {cold_attempts}",
+                "{transport:?} made a third cold attempt at hop {i}: {cold_attempts}",
             );
         }
     }
 }
 
-/// Se a ligação cai depois de a cabeça aceitar o chunk, um motor recorrente
-/// não pode receber a repetição parcial: ele não sabe remover o meio do KV.
-/// A recuperação deve falhar sem pedir essa remoção e liberar as sessões que
-/// ficaram nos hops alcançados.
+/// If the connection drops after the head accepts the chunk, a recurrent engine
+/// cannot receive the partial repetition: it cannot remove the middle of the KV.
+/// The recovery must fail without asking for that removal and release the
+/// sessions left on the hops that were reached.
 #[tokio::test]
 async fn mid_prefill_transport_failure_does_not_corrupt_recurrent_session() {
-    for transporte in Transporte::todos() {
-        let medida = tokio::time::timeout(
+    for transport in Transport::all() {
+        let measurement = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            conversa_com_hops_transport_fault(transporte, 1, true, 2, Some((1, 1, 2))),
+            conversation_with_hops_transport_fault(transport, 1, true, 2, Some((1, 1, 2))),
         )
         .await
-        .expect("a falha de transporte não pode deixar a sessão pendurada");
-        let turno = &medida.turnos[0];
+        .expect("the transport failure cannot leave the session hanging");
+        let turn = &measurement.turns[0];
         assert!(
-            turno.falhou.is_some(),
-            "{transporte:?} devia devolver a falha persistente ao cliente"
+            turn.failed.is_some(),
+            "{transport:?} should return the persistent failure to the client"
         );
 
-        for (i, hop) in medida.hops.iter().enumerate() {
+        for (i, hop) in measurement.hops.iter().enumerate() {
             let engine = hop.lock().unwrap();
             assert!(
-                engine.remocoes_parciais.is_empty(),
-                "{transporte:?} pediu remoção parcial no hop {i}: {:?}",
-                engine.remocoes_parciais
+                engine.partial_removals.is_empty(),
+                "{transport:?} asked for a partial removal at hop {i}: {:?}",
+                engine.partial_removals
             );
             assert!(
                 engine.sessions.is_empty(),
-                "{transporte:?} deixou a sessão no hop {i}: {:?}",
+                "{transport:?} left the session at hop {i}: {:?}",
                 engine.sessions.keys().collect::<Vec<_>>()
             );
         }
     }
 }
 
-/// O defeito adicional do §7 do relatório: um chat manda o turno seguinte assim
-/// que o stream fecha, e a arrumação do turno anterior tinha que estar pronta
-/// antes disso. Aqui o cliente não espera a tarefa do gateway - ele age no
-/// evento final, como a tela de chat age no `[DONE]`.
+/// The additional defect of §7 of the report: a chat sends the next turn as soon
+/// as the stream closes, and the previous turn's cleanup had to be ready
+/// before that. Here the client does not wait for the gateway task - it acts on
+/// the final event, as the chat screen acts on `[DONE]`.
 #[tokio::test]
 async fn a_follow_up_sent_the_instant_the_stream_closes_still_hits() {
-    for transporte in Transporte::todos() {
-        let medida = conversa_com(transporte, 4, false).await;
-        let cached: Vec<u32> = medida.turnos.iter().map(|t| t.cached_tokens).collect();
-        for (i, t) in medida.turnos.iter().enumerate() {
+    for transport in Transport::all() {
+        let measurement = conversation_with(transport, 4, false).await;
+        let cached: Vec<u32> = measurement.turns.iter().map(|t| t.cached_tokens).collect();
+        for (i, t) in measurement.turns.iter().enumerate() {
             assert!(
-                t.falhou.is_none(),
-                "[{transporte:?}] turno {i} falhou: {:?}",
-                t.falhou
+                t.failed.is_none(),
+                "[{transport:?}] turn {i} failed: {:?}",
+                t.failed
             );
         }
         assert!(
             cached[1..].iter().all(|c| *c > 0),
-            "[{transporte:?}] turno imediato perdeu o cache: {cached:?}"
+            "[{transport:?}] the immediate turn lost the cache: {cached:?}"
         );
     }
 }
 
-/// O defeito D, isolado: a transição do turno 1 para o 2 é a que **nunca**
-/// acertava, porque o turno 1 renderizava cru e o 2 rotulado. Ela é a primeira
-/// que um chat de verdade encontra.
+/// Defect D, isolated: the transition from turn 1 to turn 2 is the one that
+/// **never** hit, because turn 1 rendered raw and turn 2 labeled. It is the
+/// first one a real chat meets.
 #[tokio::test]
 async fn the_first_to_second_turn_transition_hits() {
-    for transporte in Transporte::todos() {
-        let medida = conversa(transporte, 2).await;
+    for transport in Transport::all() {
+        let measurement = conversation(transport, 2).await;
         assert!(
-            medida.turnos[1].cached_tokens > 0,
-            "[{transporte:?}] a transição 1→2 não aproveitou nada: {:?}",
-            medida.turnos
+            measurement.turns[1].cached_tokens > 0,
+            "[{transport:?}] the 1→2 transition reused nothing: {:?}",
+            measurement.turns
         );
     }
 }
 
-/// A conversa real usa três máquinas no pipeline da ocorrência. O estado que
-/// vale para o contrato não é o índice lógico do pedaço, mas o contador remoto
-/// do peer que acabou de executar o frame.
+/// The real conversation uses three machines in the incident's pipeline. The
+/// state that counts for the contract is not the chunk's logical index, but the
+/// remote counter of the peer that has just executed the frame.
 #[tokio::test]
 async fn three_hop_follow_ups_keep_each_remote_position_in_sync() {
-    for transporte in [Transporte::Anel, Transporte::Direto] {
+    for transport in [Transport::Ring, Transport::Direct] {
         for hop_count in [3, 5] {
-            let medida = conversa_com_hops(transporte, 4, true, hop_count).await;
+            let measurement = conversation_with_hops(transport, 4, true, hop_count).await;
 
-            for (hop_index, engine) in medida.hops.iter().enumerate() {
+            for (hop_index, engine) in measurement.hops.iter().enumerate() {
                 let engine = engine.lock().unwrap();
                 assert!(
                     !engine.frames.is_empty(),
-                    "{transporte:?}/{hop_count} hops não executou prefill no hop {hop_index}"
+                    "{transport:?}/{hop_count} hops did not run the prefill at hop {hop_index}"
                 );
                 for frame in &engine.frames {
                     assert_eq!(
                         frame.start_pos, frame.n_past_before,
-                        "{transporte:?}/{hop_count} hops, sessão {}: chunk {} chegou na posição {} mas o peer estava em {}",
+                        "{transport:?}/{hop_count} hops, session {}: chunk {} arrived at position {} but the peer was at {}",
                         frame.session_id,
                         frame.chunk_index,
                         frame.start_pos,
@@ -1422,33 +1432,33 @@ async fn three_hop_follow_ups_keep_each_remote_position_in_sync() {
                         .collect::<std::collections::HashSet<_>>()
                         .len(),
                     1,
-                    "{transporte:?}/{hop_count} hops usou mais de uma sessão na mesma conversa no hop {hop_index}"
+                    "{transport:?}/{hop_count} hops used more than one session in the same conversation at hop {hop_index}"
                 );
             }
 
             assert!(
-                medida.turnos[1..]
+                measurement.turns[1..]
                     .iter()
-                    .all(|turno| turno.cached_tokens > 0),
-                "{transporte:?}/{hop_count} hops perdeu o cache nos follow-ups: {:?}",
-                medida.turnos
+                    .all(|turn| turn.cached_tokens > 0),
+                "{transport:?}/{hop_count} hops lost the cache in the follow-ups: {:?}",
+                measurement.turns
             );
         }
     }
 }
 
-/// Um nó inteiro também precisa avançar por posição absoluta. O caso reproduz
-/// a sessão retida em 42 tokens e um prompt seguinte que exige um segundo
-/// pedaço: `chunk_index * 512` não pode substituir o `next_pos` confirmado.
+/// A whole node also has to advance by absolute position. The case reproduces
+/// the session retained at 42 tokens and a following prompt that requires a
+/// second chunk: `chunk_index * 512` cannot replace the confirmed `next_pos`.
 #[tokio::test]
 async fn single_node_long_follow_up_does_not_send_chunk_by_index() {
-    let medida = conversa_com_hops(Transporte::Direto, 2, true, 1).await;
-    let engine = medida.cabeca.lock().unwrap();
+    let measurement = conversation_with_hops(Transport::Direct, 2, true, 1).await;
+    let engine = measurement.head.lock().unwrap();
     let first_session = engine
         .frames
         .first()
         .map(|frame| frame.session_id.clone())
-        .expect("o nó não recebeu o primeiro frame");
+        .expect("the node did not receive the first frame");
     let follow_up_frames: Vec<_> = engine
         .frames
         .iter()
@@ -1458,6 +1468,6 @@ async fn single_node_long_follow_up_does_not_send_chunk_by_index() {
         follow_up_frames
             .iter()
             .all(|frame| frame.start_pos == frame.n_past_before),
-        "um chunk foi enviado pela posição lógica, não pela posição remota: {follow_up_frames:?}"
+        "a chunk was sent by the logical position, not by the remote position: {follow_up_frames:?}"
     );
 }

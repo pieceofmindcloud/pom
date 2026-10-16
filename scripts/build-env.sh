@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 
-# Carregue este arquivo no shell que vai executar o Cargo:
+# Load this file in the shell that will run Cargo:
 #   source scripts/build-env.sh
 #
-# O helper nao altera o ambiente quando o sccache nao esta instalado. Assim,
-# uma maquina sem a ferramenta continua usando exatamente o caminho normal do
-# Cargo/CMake.
+# The helper does not change the environment when sccache is not installed. That
+# way, a machine without the tool keeps using exactly the normal Cargo/CMake
+# path.
 
 if ! command -v sccache >/dev/null 2>&1; then
     printf '%s\n' 'sccache nao encontrado no PATH; usando compiladores sem cache.' >&2

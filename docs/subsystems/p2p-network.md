@@ -4,7 +4,7 @@ The network subsystem solves the problem of a pom node finding the other nodes
 of the cluster and announcing itself to them. There are two worlds in the same
 directory (`crates/node/src/network/`): the native UDP transport
 (`network.rs`, `addrs.rs`, `identity.rs`, `route.rs`), which is the heart of the
-LAN, and the libp2p/pkarr path (`discovery.rs`, `pkarr_node.rs`, `bitswap.rs`),
+LAN, and the libp2p/pkarr path (`discovery.rs`, `pkarr_node.rs`),
 designed for the internet (Circuit Relay v2, DCuTR, AutoNAT, Kademlia,
 gossipsub, pkarr DHT). The house rule is that the address decision belongs to
 whoever is going to dial, not to whoever announced. The operator's
@@ -12,7 +12,7 @@ whoever is going to dial, not to whoever announced. The operator's
 accepts a DNS name), never an exclusive endpoint; `addr_candidates` and
 `RouteTable` keep the fallback (see `crates/node/src/network/AGENTS.md`).
 
-`main.rs` builds `Network` and `Discovery`; `backend/gateway.rs` and
+`main.rs` builds `Network` and `Discovery`; `backend/gateway/` and
 `routing/pipeline.rs` consume `PeerInfo` and `RouteTable`.
 
 ## 0. Identity is a key, the address is resolved
@@ -49,10 +49,10 @@ address, and an IP written into a document goes stale. Therefore:
    circuit right away; when it succeeds, the connection becomes direct and the
    edge is measured again. In libp2p the "relay" and "hole punch" steps cannot
    be separated: the punch is coordinated over the relayed connection.
-3. **Circuit through a member relay** - another cluster node running
-   `--serve-relay`. It only gets a reservation when no dedicated relay holds a
-   live one (see "Circuit reservation"), because it spends the bandwidth of a
-   node that serves inference.
+3. **Circuit through a member relay** - another node of the same cluster that
+   the internet reaches. It is kept **beside** the dedicated relay, not instead
+   of it, because a dedicated relay is a public one and carries no file
+   transfer (see "Who relays for whom").
 
 ## 1. Overview and topology
 
@@ -558,10 +558,10 @@ server), DCuTR, AutoNAT and the bitswap behaviour. It listens on the same
   through pkarr, filtering `is_relay`, and dialed again by the cold key dial
   while they do not connect). The setup of a joining node copies the trust
   document's `relay_hints` into `relay_peers`. `--no-default-relays` is still
-  accepted and has no practical effect today. With `--serve-relay` the relay server
-  accepts reservations (128 slots, 4 per peer, 1 h reservation) and circuits of
-  up to 24 h with no byte ceiling (`max_circuit_bytes: 0`); without it,
-  `max_reservations: 0`. Both libp2p limits apply to the whole circuit, not per
+  accepted and has no practical effect today. The relay server always has
+  capacity (128 slots, 4 per peer, 1 h reservation) and circuits of up to 24 h
+  with no byte ceiling (`max_circuit_bytes: 0`); who gets a reservation is
+  decided per request (see "Who relays for whom"). Both libp2p limits apply to the whole circuit, not per
   request: bytes in both directions add up since opening. The old ceiling, the
   size of a prefill frame, and the 120 s deadline dropped the circuit within
   minutes, and a peer only the relay reaches left the table. A dedicated relay
@@ -569,20 +569,42 @@ server), DCuTR, AutoNAT and the bitswap behaviour. It listens on the same
   `examples/relay-node/docker-compose.yml` is the example of a dedicated relay,
   outside the network it serves. Nodes behind NAT only need it as a bootstrap:
   the reservation is requested from every connected peer that offers relay.
+- **Who relays for whom:** `network::RelayGate`, consulted by the relay server
+  on every reservation request through libp2p's `reservation_rate_limiters`
+  (`discovery.rs` pushes the gate's `allows_reservation` into them, beside
+  libp2p's own limits). A node relays
+  for **everyone** when the operator asked for it (`--serve-relay`, or
+  `relay.everyone` in the config file): that is a public relay. Otherwise a
+  node the internet reaches (AutoNAT `Public`, or `--public-addr`) relays for
+  the **admitted members of its own cluster** and nobody else; this is on by
+  default and `relay.cluster: false` (`--no-cluster-relay`) turns it off. A
+  node behind NAT relays for nobody. Only the reservation is restricted: the
+  source of a circuit is not, because a candidate that is not a member yet
+  has to reach a principal behind NAT. The member list is refreshed from the
+  peers table every 5 s. While it accepts reservations, a node says so in its
+  `Announce` (`relay`, a `RelayOffer`), together with whether file transfers
+  may cross it (`relay.transfers`, on by default; `--no-relay-transfers`).
+  The three options are also on the My machine screen and change live
+  (`RelayGate::set`): new reservations follow them at once, one already
+  granted lasts until it expires, and the pkarr record's `is_relay` follows
+  `relay.everyone`. An option given on the command line wins over the saved
+  one for that run (`RelayOverrides`), and the screen shows it locked.
 - **Circuit reservation:** `reserve_circuit` asks
-  `listen_on(<relay>/p2p-circuit)` from a peer whose identify announces
-  `relay::HOP_PROTOCOL_NAME`, in ladder order (`discovery::RelayPolicy`):
-  **dedicated relay first** - the one in `relay_peers`, identified by its key
-  (`Discovery::new` receives the keys, and a relay whose pkarr has not resolved
-  yet is still dedicated) - and a **member relay** (another cluster node with
-  `--serve-relay`) only when no dedicated relay holds a live reservation and,
-  when a dedicated one is configured, after a 15 s grace period
-  (`DEDICATED_RELAY_GRACE`). A member seen before that waits in
-  `pending_members`. `apply_relay_policy`, every 5 s in the swarm loop,
-  reserves on pending members once the gap is confirmed, undoes
-  (`remove_listener`) member reservations when a dedicated relay holds one
-  again, and asks connected dedicated relays that lost theirs to reserve again.
-  `ListenerClosed` ends the reservation of the relay owning the listener.
+  `listen_on(<relay>/p2p-circuit)`. A **dedicated relay** - the one in
+  `relay_peers`, identified by its key (`Discovery::new` receives the keys, and
+  a relay whose pkarr has not resolved yet is still dedicated) - is asked as
+  soon as it connects. A **member relay** is a cluster node whose `Announce`
+  carries a relay offer; a node keeps a reservation on up to two of them
+  (`MEMBER_RELAY_RESERVATIONS`) **beside** the dedicated ones. They used to be
+  a fallback, dropped as soon as a dedicated relay held a reservation; a
+  dedicated relay carries no file transfer, so it cannot stand in for them.
+  On identify, a peer offering the hop protocol is asked right away when it is
+  dedicated or not a member (a relay outside the network, reached as a
+  bootstrap); a member is asked only when it announces the offer, and
+  `apply_relay_policy`, every 5 s in the swarm loop, picks up the ones whose
+  announce came later and asks connected dedicated relays that lost their
+  reservation again. `ListenerClosed` ends the reservation of the relay owning
+  the listener.
   `Network::set_dedicated_relays` keeps the dedicated set so `peer_route` can
   mark `relay_kind` (`dedicated`/`member`). The relay's dialable address comes from `relay_reservation_addrs`, in this order:
   the configured list (`--relay-peers`), the live announcement (an admitted
@@ -687,7 +709,8 @@ fits in 900 B (`MAX_RECORD_ADDRS` 4, `MAX_RECORD_RELAYS` 3).
   `/api/public/networks/locate` answers `unresolved`. Paths stay on UDP/mDNS on
   the LAN and on `bootstrap_nodes` (IP or internal DNS name) between segments.
   An internal relay with `--serve-relay` goes in with its key in `relay_peers`
-  (which marks it as dedicated) **and** its address in `bootstrap_nodes` (which
+  (which marks it as dedicated, and so as one that carries no file transfer)
+  **and** its address in `bootstrap_nodes` (which
   makes the dial happen). Without the flag, a failed publication waits twice as
   long after each consecutive failure, from 15 s up to 30 min
   (`gateway::PublishBackoff`), and only the 1st, 2nd, 4th, 8th... becomes a
@@ -845,10 +868,28 @@ and all of them require `InternalNodeAuth`. Without it, a node that only
 reaches the principal through the relay could not even prepare the Chat key
 ("could not prepare the chat key").
 
-What stays outside the tunnel: file transfer (weights do not go through a
-relay; each peer needs its own copy of the model) and the inference server's
-`/health` between peers. None of them takes part in admission, so a peer behind
-NAT already joins the cluster and routes without them.
+**Files and relays.** A file comes by direct HTTP when an address answers.
+When none connects, the download falls back to the tunnel, in bounded pieces,
+and then one rule holds: **a file never crosses a public relay**. A public
+relay is one configured in `relay_peers` (which includes `--relay-peers` and
+the trust document's hints), or any relay that is not an admitted member of
+this cluster. A piece travels only over a direct libp2p connection, dialed or
+hole punched, or over a circuit through a member relay whose announce allows
+transfers (`Network::connection_carries_transfers`). A relay only sees an
+encrypted stream and cannot tell a file from an inference frame, so the rule
+is held by the two ends: the serving node checks the connection every piece
+arrives on and refuses with 421, and the receiving node does not start without
+a connection that may carry the file. See `file-transfer.md`, section 5.0.
+
+**The tunnel frame is binary.** A request is
+`[u32 length][JSON head][u32 length][raw body]` and a response
+`[u16 status][u32 length][raw body]`. The body used to travel as a JSON array
+of numbers, about 3.6 bytes on the wire per byte of payload, paid on every
+frame that crossed a relay.
+
+What stays outside the tunnel: the inference server's `/health` between peers.
+It takes no part in admission, so a peer behind NAT joins the cluster and
+routes without it.
 
 ### Per-edge route plan (`route_plan.rs`)
 
@@ -1104,7 +1145,7 @@ anything about whom we are talking to. Without pinning the self-signed
 certificate would encrypt without authenticating, and a man in the middle would
 present their own self-signed certificate and be accepted.
 
-The test `fingerprint_do_certificado_e_o_mesmo_de_from_pubkey` ties both
+The test `the_certificate_fingerprint_is_the_same_as_from_pubkey` ties both
 computations together: if they ever diverge, pinning refuses everyone, and the
 test is what warns.
 
@@ -1124,7 +1165,7 @@ the machine has nothing to protect.
 verifier carries which node_id to expect and is fixed at construction. Without
 TLS it goes back to a single one, which is the previous behavior. The URL
 scheme (`http`/`https`) comes from a global process state,
-`peer_client::tls_ativo`, because it is a property of the node and not of the
+`peer_client::tls_enabled`, because it is a property of the node and not of the
 connection.
 
 The peer HTTP clients enable `TCP_NODELAY` on every TCP path, clear, TLS and
@@ -1142,7 +1183,7 @@ policy on, **every** query to a peer failed silently: the deploy screen said
 deploy anything. So the defect does not come back, `GatewayState` **no longer
 has** a shared client without pinning - there is only `peer_http`, and whoever
 talks to a target that is not a peer (loopback, Ollama) asks for
-`peer_http.plain()`, which says what it is doing. `webui::catalogo_sob_tls_tests`
+`peer_http.plain()`, which says what it is doing. `webui::catalog_under_tls_tests`
 pins the two routes the operator uses to deploy.
 
 **What is left out, and why:**
@@ -1237,7 +1278,8 @@ operator can flip it as often as they want.
 
 ### 5.1 Optional QUIC for inference
 
-`Config.quic_enabled` is a network-wide preference, off by default and only
+`Config.quic_enabled` is a network-wide preference, on by default (a new
+network starts with it, and a config without the field reads as on) and only
 editable by the principal at `POST /api/ui/network/quic`. The announcement
 carries `quic` only as a trigger: the peer confirms the value at
 `GET /api/cluster/quic`, authenticated by the `connection_key`, exactly like
@@ -1369,7 +1411,9 @@ strips the secret and carries `relayed: true`; a node that is not the principal
 does not accept that frame as an origin. A file stays within the protocol's
 frame limit and is not stored outside each node's local database.
 
-`network_chat_enabled` in the `Announce` is a trigger, never a value. The
+`network_chat_enabled` is on by default, like `quic_enabled`: a new network
+starts with its Chat, and the principal can turn it off. In the `Announce` it
+is a trigger, never a value. The
 `POST /api/ui/network/chat` switch writes the authoritative configuration on the
 real principal, whose `pubkey` comes from `AdminTrust`, and updates
 the announced atomic copy. When the UI is on a secondary admin, the same route
@@ -1404,13 +1448,27 @@ version policy).
 
 ### 6.1 Lobby: talking to a network before joining it
 
-A public network can open the `lobby` room of its Chat to machines that are
-**not** members, so an admin can talk to a candidate before admitting it. The
-code is `network/network_lobby.rs`; the switch is `network.lobby_chat`, off by
-default, and it only takes effect on a public network with the network Chat on
-(`NetworkChat::lobby_enabled`). The public directory record and
-`PublicNetworkView` carry `lobby_chat` so the directory only offers the chat
-where it will be answered.
+A network answers machines that are **not** members in its lobby, which is
+where they ask to be admitted and where an admin can talk to a candidate
+first. The code is `network/network_lobby.rs`. There is no switch: the lobby
+is the only way into a network, so it exists whenever discovery is on
+(`public` or `private`, never `local`; `NetworkChat::lobby_enabled`). It does
+not depend on the network Chat. With the Chat off the lobby still answers and
+takes admission requests; only the conversation is closed: a post is refused
+with `lobby_messages_closed`, no presence is relayed to members, and the
+answers to `Post`, `Fetch` and `Admission` carry `messages_closed: true`, on
+which the candidate's window shows no conversation at all.
+
+Who decides a request is `network.access_policy`. Under `authorized` an admin
+approves it from the bell. Under `auto_approve` the principal approves it on
+arrival (`NetworkChat::auto_approves`, applied in the lobby handler of
+`discovery.rs`): the role still has to be one of `accepted_enrollments`, a
+blocked machine is still refused, and a machine an admin rejected still waits
+out its retry time. The candidate then collects the grant like any approved
+one. A
+`private` network is listed by no relay: a candidate reaches its lobby by the
+principal's key, taken from the trust document its admin exported and the
+candidate imported on the Networks screen (`webui/networks.rs`).
 
 A candidate has no API key, no announce and no admission, so the star's
 credential does not apply. Its own request/response protocol is
@@ -1461,8 +1519,16 @@ network currently accepts. Every answer to that machine's `Post`, `Fetch` and
 trust document, the **connection key**, the relay keys and the network's
 current settings - is present only once an admin approved, and it leaves the
 principal only there: in an answer to the node whose signature over the
-transport was just verified, on that Noise connection. A rejected machine may
-ask again after an hour; an approval is never undone by asking again.
+transport was just verified, on that Noise connection. Admission, the member list, key claims, departures and the
+published stats belong to the **principal** alone: a secondary admin has the
+`admin` profile but refuses them (`Network::is_principal` compares this
+node's key with the principal of the local trust chain, and the network chat
+relay uses the same test). A rejected machine may
+ask again after an hour, and is told how long is left: a rejected `admission`
+carries `retry_after_secs` (`admission_retry_after`, counted from the
+decision on the principal's clock). The candidate turns it into a moment on
+its own clock (`retry_at`), so the screen can count down without the two
+clocks having to agree. An approval is never undone by asking again.
 
 The principal fills two things an admin weighs: `card.relayed`, from the
 connection it actually sees (`Network::libp2p_links`), overwriting whatever
@@ -1642,7 +1708,7 @@ an entry only when its trust document matches its fingerprint and
 `cluster_id`, and derives the publisher key from that document
 (`gateway::validated_listed_network`). A relay can omit a network; it cannot
 forge one or point it at another key. The descriptive fields (name, city,
-`lobby_chat`, `public_stats`) are as the answering node reports them.
+`public_stats`) are as the answering node reports them.
 
 Which relays a fresh installation asks: `DEFAULT_DIRECTORY_RELAYS`
 (`network_lobby.rs`, one relay key today), the `POM_DIRECTORY_RELAYS` environment

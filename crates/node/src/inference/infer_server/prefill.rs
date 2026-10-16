@@ -116,12 +116,12 @@ pub(super) async fn handle_prefill(
 ) -> Response {
     app.request_activity.mark_now();
     let _load_guard = app.loads.acquire(&app.load_node_id).await;
-    // Ver a nota gêmea em `handle_step`: o cabeçalho basta para saber se o
-    // quadro é um lote.
+    // See the twin note in `handle_step`: the header is enough to know whether
+    // the frame is a batch.
     if wire::peek_batch_header(&body).is_ok_and(|header| header.item_count > 1) {
         match wire::decode_batch(&body) {
             Ok(batch) => return handle_prefill_batch(app, headers, batch).await,
-            Err(error) => return err400(format!("quadro inválido: {error}")),
+            Err(error) => return err400(format!("invalid frame: {error}")),
         }
     }
     // A one-item frame is still a batch frame: the gateway's
@@ -145,14 +145,14 @@ pub(super) async fn handle_prefill(
     let scheduler = app.scheduler.clone();
     let processing_started = Instant::now();
     open_tp_decode(&state, &headers, "/v1/prefill", &body);
-    // Lido no começo porque `state` é consumido mais abaixo, e o valor é o
-    // mesmo em qualquer ponto do handler.
+    // Read at the start because `state` is consumed further down, and the value
+    // is the same at any point of the handler.
     let tls_handshake_ms = last_handshake_ms(&state);
     let inbound_bytes = body.len();
     let frame_decode_started = Instant::now();
     let (meta, tensor, inbound_wire_timing) = match wire::decode_inference_request_profiled(&body) {
         Ok(v) => v,
-        Err(e) => return err400(format!("quadro inválido: {e}")),
+        Err(e) => return err400(format!("invalid frame: {e}")),
     };
     let frame_decode_us = frame_decode_started.elapsed().as_micros() as u64;
     let wire_dtype = match meta.get("dtype").and_then(|value| value.as_str()) {
@@ -160,7 +160,7 @@ pub(super) async fn handle_prefill(
             Ok(dtype) => dtype,
             Err(error) => return err400(error),
         },
-        None => return err400("quadro sem dtype de estado oculto"),
+        None => return err400("frame without a hidden state dtype"),
     };
 
     let sid_key = match required_session_id(&meta) {
@@ -242,16 +242,16 @@ pub(super) async fn handle_prefill(
         None => None,
         Some(value) => {
             let Some(values) = value.as_array() else {
-                return err400("campo images inválido");
+                return err400("invalid images field");
             };
             let mut decoded = Vec::with_capacity(values.len());
             for value in values {
                 let Some(encoded) = value.as_str() else {
-                    return err400("campo images contém um item inválido");
+                    return err400("images field contains an invalid item");
                 };
                 match base64::engine::general_purpose::STANDARD.decode(encoded) {
                     Ok(bytes) => decoded.push(bytes),
-                    Err(error) => return err400(format!("imagem codificada inválida: {error}")),
+                    Err(error) => return err400(format!("invalid encoded image: {error}")),
                 }
             }
             Some(decoded)
@@ -263,9 +263,10 @@ pub(super) async fn handle_prefill(
         Ok(probe) => probe,
         Err(error) => return err400(error),
     };
-    // A composição dos tokens deste pedaço, gerada na cabeça (que tokenizou o
-    // prompt) e ecoada até a cauda — é o que alimenta o `observe` da cabeça
-    // `nextn` no `decode_hidden` (ver `prefill_blocking`). Ausente é peer antigo.
+    // The token composition of this chunk, produced at the head (which tokenized
+    // the prompt) and echoed down to the tail - it is what feeds the `observe` of
+    // the `nextn` head in `decode_hidden` (see `prefill_blocking`). Absent means
+    // an old peer.
     let chunk_tokens: Option<Vec<i32>> = meta
         .get("tokens")
         .and_then(|v| serde_json::from_value(v.clone()).ok());
@@ -273,7 +274,7 @@ pub(super) async fn handle_prefill(
         None => None,
         Some(value) => match serde_json::from_value::<Vec<[u32; 4]>>(value.clone()) {
             Ok(positions) => Some(positions),
-            Err(error) => return err400(format!("campo mrope_positions inválido: {error}")),
+            Err(error) => return err400(format!("invalid mrope_positions field: {error}")),
         },
     };
 
@@ -303,8 +304,8 @@ pub(super) async fn handle_prefill(
     // copy, taken before `sid_key` moves into the blocking closure below.
     let sid_for_forward = sid_key.clone();
 
-    // A sub-faixa que o remetente mandou executar. Recusa alta quando este nó
-    // não consegue rodar exatamente aquilo - nunca ajuste silencioso.
+    // The sub-range the sender asked to run. A loud refusal when this node
+    // cannot run exactly that - never a silent adjustment.
     let capture_block = {
         let (slice_start, slice_end) = {
             let st = match lock_inference_state(&state) {
@@ -315,7 +316,7 @@ pub(super) async fn handle_prefill(
         };
         match resolve_exec_range(&meta, slice_start, slice_end) {
             Ok(block) => block,
-            Err(motivo) => return err400(motivo),
+            Err(reason) => return err400(reason),
         }
     };
 
@@ -353,25 +354,24 @@ pub(super) async fn handle_prefill(
             return (
                 StatusCode::TOO_MANY_REQUESTS,
                 [(axum::http::header::RETRY_AFTER, "1")],
-                format!("fila de inferência cheia (limite {limit})"),
+                format!("inference queue full (limit {limit})"),
             )
                 .into_response();
         }
         Err(SchedulerSubmitError::Closed) => {
-            return err500("scheduler de inferência encerrado");
+            return err500("inference scheduler shut down");
         }
     };
 
     let mut reply = match result {
         Ok(Ok(reply)) => reply,
         Ok(Err(e)) => {
-            let code = if e.to_string().contains("desconhecida")
-                || e.to_string().contains("fora de ordem")
-            {
-                StatusCode::BAD_REQUEST
-            } else {
-                StatusCode::INTERNAL_SERVER_ERROR
-            };
+            let code =
+                if e.to_string().contains("unknown") || e.to_string().contains("out of order") {
+                    StatusCode::BAD_REQUEST
+                } else {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                };
             return (code, e.to_string()).into_response();
         }
         Err(e) => return err500(e),
@@ -416,12 +416,13 @@ pub(super) async fn handle_prefill(
     }
     preserve_batch_identity(&meta, &mut local_meta);
 
-    // Resposta direta — ver o bloco gêmeo em `handle_step`. A diferença é o
-    // `prompt_progress`: no anel borbulhado a cabeça sobrescrevia
-    // `more_chunks`/`n_prompt_tokens` na resposta que passava de volta por ela
-    // (`overlay_head_authoritative_fields`). Sem volta, ela manda os dois
-    // **adiante**, e quem entrega copia — só a cabeça tokenizou o prompt, e sem
-    // isso todo prompt de mais de um pedaço seria truncado no primeiro.
+    // Direct reply - see the twin block in `handle_step`. The difference is
+    // `prompt_progress`: in the bubbled ring the head overwrote
+    // `more_chunks`/`n_prompt_tokens` in the reply that passed back through it
+    // (`overlay_head_authoritative_fields`). With no way back, it sends both
+    // **forward**, and whoever delivers copies them - only the head tokenized the
+    // prompt, and without this every prompt longer than one chunk would be
+    // truncated at the first.
     if let Some(reply_to) = direct_reply_to(&meta) {
         let outbound_hidden_state_bytes = match wire::tensor_payload_len(
             local_tensor
@@ -459,7 +460,7 @@ pub(super) async fn handle_prefill(
             let failure = crate::relay::RelayFailure {
                 failed_node_id: hops[0].node_id.clone(),
                 kind: "protocol".into(),
-                message: "hop intermediário não produziu estado oculto".into(),
+                message: "intermediate hop produced no hidden state".into(),
             };
             tokio::spawn(async move {
                 crate::direct::deliver_failure(http_client(), &reply_to, failure).await;
@@ -520,7 +521,7 @@ pub(super) async fn handle_prefill(
             residual,
             shape,
             wire_dtype,
-            crate::relay::CHUNK_ATTEMPTS, // uma resposta perdida exige rebuild frio
+            crate::relay::CHUNK_ATTEMPTS, // a lost reply requires a cold rebuild
             reply_to,
             Some(direct_forward_order),
             prefill_sequence_id,
@@ -560,10 +561,10 @@ pub(super) async fn handle_prefill(
         .and_then(Value::as_bool)
         .unwrap_or(false);
 
-    // Anel com sobreposição: o repasse do pedaço anterior desta sessão tem de
-    // terminar antes deste seguir, para o próximo hop receber os pedaços em
-    // ordem. Esperá-lo aqui, depois do compute local, é o que sobrepõe o
-    // compute deste hop no pedaço k+1 ao do hop seguinte no pedaço k.
+    // Overlapping ring: the forward of this session's previous chunk has to
+    // finish before this one goes on, so the next hop receives the chunks in
+    // order. Waiting for it here, after the local compute, is what overlaps
+    // this hop's compute on chunk k+1 with the next hop's on chunk k.
     let relay_slot = ring_overlap.then(|| ring_relay_slot(&sid_for_forward));
     let mut relay_guard = match &relay_slot {
         Some(slot) => Some(slot.clone().lock_owned().await),
@@ -571,8 +572,8 @@ pub(super) async fn handle_prefill(
     };
     let previous = match relay_guard.as_mut().and_then(|guard| guard.take()) {
         Some(pending) => match pending.await {
-            // Pedaço 0 de uma sessão nova: o repasse que sobrou é de uma
-            // requisição abandonada e não diz nada sobre esta.
+            // Chunk 0 of a new session: the leftover forward belongs to an
+            // abandoned request and says nothing about this one.
             _ if chunk_index == 0 => None,
             Ok(Ok(bubbled)) => Some(bubbled),
             Ok(Err(response)) => {
@@ -582,7 +583,7 @@ pub(super) async fn handle_prefill(
             Err(join) => {
                 forget_ring_relay_slot(&sid_for_forward);
                 return err500(anyhow::anyhow!(
-                    "repasse do pedaço anterior abortou: {join}"
+                    "forward of the previous chunk aborted: {join}"
                 ));
             }
         },
@@ -597,8 +598,8 @@ pub(super) async fn handle_prefill(
             "chunk_size": chunk_size,
             "reuse_prefix": reuse_prefix_for_forward(&local_meta, reuse_prefix, chunk_index),
             "is_final_chunk": is_final_chunk_for_forward,
-            // O próximo hop recebe a própria sub-faixa, pelo mesmo motivo
-            // que este recebeu a sua: quem manda é que decide o pedaço.
+            // The next hop receives its own sub-range, for the same reason
+            // this one received its own: the sender is who decides the piece.
             "exec_start": hops[0].exec_start,
             "exec_end": hops[0].exec_end,
         });
@@ -630,11 +631,11 @@ pub(super) async fn handle_prefill(
     };
 
     if let (Some(guard), false) = (relay_guard.as_mut(), is_final_chunk_for_forward) {
-        // Pedaço intermediário: segue para o próximo hop em segundo plano e a
-        // resposta sai já, com o que só este hop sabe (posição, tokens) e a
-        // telemetria dos hops seguintes no pedaço anterior. Uma falha desse
-        // repasse volta no pedaço seguinte como 502, que o gateway trata como
-        // reconstrução - nunca como retomada.
+        // Intermediate chunk: it goes on to the next hop in the background and
+        // the reply leaves right away, with what only this hop knows (position,
+        // tokens) and the telemetry of the following hops on the previous chunk.
+        // A failure of that forward comes back on the next chunk as a 502, which
+        // the gateway treats as a rebuild - never as a resume.
         let processing_ms = local_meta["processing_ms"].clone();
         let node_timings = local_meta["node_timings"].clone();
         **guard = Some(tokio::spawn(async move {
@@ -676,7 +677,7 @@ pub(super) async fn handle_prefill(
         relay_meta,
         (&residual, shape),
         wire_dtype,
-        crate::relay::CHUNK_ATTEMPTS, // uma resposta perdida exige rebuild frio
+        crate::relay::CHUNK_ATTEMPTS, // a lost reply requires a cold rebuild
         local_meta["processing_ms"].clone(),
         local_meta["node_timings"].clone(),
     )
@@ -702,8 +703,8 @@ pub(super) async fn handle_prefill(
     }
 }
 
-/// O repasse em segundo plano do último pedaço intermediário de uma sessão
-/// (anel com sobreposição).
+/// The background forward of the last intermediate chunk of a session
+/// (overlapping ring).
 type RingRelay = tokio::task::JoinHandle<std::result::Result<Value, Response>>;
 type RingRelaySlot = Arc<tokio::sync::Mutex<Option<RingRelay>>>;
 
@@ -717,8 +718,8 @@ fn ring_relay_slot(session: &str) -> RingRelaySlot {
     let mut slots = ring_relay_slots()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    // Sessão abandonada no meio do prompt deixa a vaga para trás; as que não
-    // têm repasse pendente nem ninguém esperando saem aqui.
+    // A session abandoned in the middle of the prompt leaves its slot behind;
+    // the ones with no pending forward and nobody waiting are dropped here.
     if slots.len() > 256 {
         slots.retain(|_, slot| {
             Arc::strong_count(slot) > 1
@@ -748,13 +749,14 @@ pub(super) fn owns_tokens(local_meta: &Value) -> bool {
 /// Only the head (`owns_tokens`) can know whether this chunk was the last
 /// one — everyone else just passes through whatever `is_final_chunk` it was
 /// told, since it has no `prompt_tokens` of its own to check that against.
-/// Qual decisão de prefixo o hop seguinte deve obedecer.
+/// Which prefix decision the next hop must obey.
 ///
-/// A do peer que tokenizou, quando ele a informou (`reuse_prefix` no próprio
-/// meta), não a que o gateway pediu. A cabeça pode ter recomeçado a sessão -
-/// prefixo divergente, sessão despejada - e um hop reusando enquanto a cabeça
-/// recomeçou deixaria as posições do pipeline desalinhadas. Peer que não
-/// informa nada cai no pedido original, que é o comportamento anterior.
+/// The one of the peer that tokenized, when it reported it (`reuse_prefix` in
+/// its own meta), not the one the gateway asked for. The head may have
+/// restarted the session - diverging prefix, evicted session - and a hop
+/// reusing while the head restarted would leave the pipeline positions
+/// misaligned. A peer that reports nothing falls back to the original request,
+/// which is the previous behavior.
 pub(crate) fn reuse_prefix_for_forward(
     local_meta: &Value,
     requested: bool,
@@ -795,9 +797,9 @@ pub(crate) fn overlay_head_authoritative_fields(local_meta: &Value, bubbled: &mu
             "n_prompt_tokens",
             "start_pos",
             "next_pos",
-            // Quantos tokens do prompt não foram reprocessados, e se o prefixo
-            // foi de fato aproveitado. Só a cabeça sabe - a cauda responde
-            // sobre um prompt que ela nunca tokenizou.
+            // How many prompt tokens were not reprocessed, and whether the
+            // prefix was actually reused. Only the head knows - the tail
+            // answers about a prompt it never tokenized.
             "reuse_prefix",
             "cached_tokens",
             "prefix_match_tokens",
@@ -811,10 +813,10 @@ pub(crate) fn overlay_head_authoritative_fields(local_meta: &Value, bubbled: &mu
     }
 }
 
-/// Os mesmos dois campos autoritativos, empurrados **adiante** em vez de
-/// sobrepostos na volta — é o que a resposta direta precisa, já que a cabeça
-/// nunca mais vê o resultado. Quem não é a cabeça repassa intacto o que
-/// recebeu.
+/// The same two authoritative fields, pushed **forward** instead of overlaid
+/// on the way back - it is what the direct reply needs, since the head never
+/// sees the result again. Whoever is not the head passes on untouched what it
+/// received.
 pub(crate) fn prompt_progress_for_forward(inbound_meta: &Value, local_meta: &Value) -> Value {
     if owns_tokens(local_meta) {
         return json!({
@@ -822,7 +824,7 @@ pub(crate) fn prompt_progress_for_forward(inbound_meta: &Value, local_meta: &Val
             "n_prompt_tokens": local_meta["n_prompt_tokens"].clone(),
             "start_pos": local_meta["start_pos"].clone(),
             "next_pos": local_meta["next_pos"].clone(),
-            // Ver `overlay_head_authoritative_fields`: só a cabeça sabe.
+            // See `overlay_head_authoritative_fields`: only the head knows.
             "reuse_prefix": local_meta["reuse_prefix"].clone(),
             "cached_tokens": local_meta["cached_tokens"].clone(),
             "prefix_match_tokens": local_meta["prefix_match_tokens"].clone(),
@@ -836,9 +838,10 @@ pub(crate) fn prompt_progress_for_forward(inbound_meta: &Value, local_meta: &Val
         .unwrap_or(Value::Null)
 }
 
-/// A ponta da cadeia copia para o resultado o que a cabeça apurou do prompt.
-/// Sem isto o gateway leria o `more_chunks: false` que a cauda sempre responde
-/// — ela não tokenizou nada — e pararia o prefill no primeiro pedaço.
+/// The end of the chain copies into the result what the head worked out about
+/// the prompt. Without this the gateway would read the `more_chunks: false` the
+/// tail always answers - it tokenized nothing - and would stop the prefill at
+/// the first chunk.
 pub(crate) fn apply_prompt_progress(inbound_meta: &Value, result: &mut Value) {
     let Some(progress) = inbound_meta.get("prompt_progress") else {
         return;
@@ -874,12 +877,12 @@ pub(crate) fn preserve_batch_identity(request_meta: &Value, response_meta: &mut 
     }
 }
 
-/// Recusa um pedaço de prefill maior que o `n_batch` do contexto **antes** de
-/// chamar `llama_decode`, que dispara `GGML_ASSERT(n_tokens_all <=
-/// cparams.n_batch)` e aborta o processo inteiro. O gateway já clampa o tamanho
-/// do pedaço em `prompt_chunk_tokens`; esta guarda cobre um head cujo `n_batch`
-/// é menor que o do nó que planejou, e o item isolado que o scheduler deixa
-/// passar. O erro nomeia os knobs a ajustar.
+/// Refuses a prefill chunk larger than the context's `n_batch` **before**
+/// calling `llama_decode`, which fires `GGML_ASSERT(n_tokens_all <=
+/// cparams.n_batch)` and aborts the whole process. The gateway already clamps
+/// the chunk size in `prompt_chunk_tokens`; this guard covers a head whose
+/// `n_batch` is smaller than that of the node that planned, and the isolated
+/// item the scheduler lets through. The error names the knobs to adjust.
 pub(super) fn guard_chunk_fits_batch(
     engine: &LlmEngine,
     n_tokens: usize,
@@ -888,9 +891,7 @@ pub(super) fn guard_chunk_fits_batch(
     let n_batch = engine.n_batch();
     if n_tokens as u64 > n_batch as u64 {
         bail!(
-            "pedaço {chunk_index} tem {n_tokens} tokens, acima do n_batch={n_batch} deste nó; \
-             o llama.cpp abortaria. Reduza prefill_chunk_tokens para <= n_batch, ou aumente \
-             n_batch, nos ajustes avançados da implantação"
+            "chunk {chunk_index} has {n_tokens} tokens, above the n_batch={n_batch} of this node; llama.cpp would abort. Reduce prefill_chunk_tokens to <= n_batch, or increase n_batch, in the advanced settings of the deployment"
         );
     }
     Ok(())
@@ -923,15 +924,15 @@ fn logical_end_from_mrope_positions(
 ) -> Result<u32> {
     if positions.len() != physical_cells {
         bail!(
-            "estado oculto declara {physical_cells} células, mas recebeu {} posições M-RoPE",
+            "hidden state declares {physical_cells} cells, but received {} M-RoPE positions",
             positions.len()
         );
     }
     let next_pos = declared_next_pos.ok_or_else(|| {
-        anyhow::anyhow!("estado oculto M-RoPE sem next_pos lógico produzido pelo head")
+        anyhow::anyhow!("M-RoPE hidden state without a logical next_pos produced by the head")
     })?;
     if next_pos < start_pos {
-        bail!("next_pos M-RoPE {next_pos} recua da posição inicial {start_pos}");
+        bail!("M-RoPE next_pos {next_pos} goes back from the start position {start_pos}");
     }
     Ok(next_pos)
 }
@@ -950,7 +951,7 @@ pub(super) struct HeadProbe {
     pub(super) retain_prefix_bytes: Option<usize>,
 }
 
-/// Rótulos de uma decisão tipada (`probe`): 1 a 256 textos curtos.
+/// Labels of a typed decision (`probe`): 1 to 256 short texts.
 pub(super) fn parse_probe(meta: &Value) -> std::result::Result<Option<HeadProbe>, String> {
     let retain_prefix_bytes = meta
         .get("retain_prefix_bytes")
@@ -965,15 +966,15 @@ pub(super) fn parse_probe(meta: &Value) -> std::result::Result<Option<HeadProbe>
         }));
     };
     let labels: Vec<String> = serde_json::from_value(value.clone())
-        .map_err(|_| "campo probe deve ser uma lista de rótulos".to_owned())?;
+        .map_err(|_| "probe field must be a list of labels".to_owned())?;
     if labels.is_empty() || labels.len() > 256 {
-        return Err("campo probe aceita de 1 a 256 rótulos".into());
+        return Err("probe field accepts 1 to 256 labels".into());
     }
     if labels
         .iter()
         .any(|label| label.trim().is_empty() || label.len() > 32)
     {
-        return Err("rótulo de probe vazio ou maior que 32 bytes".into());
+        return Err("probe label empty or longer than 32 bytes".into());
     }
     Ok(Some(HeadProbe {
         labels,
@@ -981,8 +982,8 @@ pub(super) fn parse_probe(meta: &Value) -> std::result::Result<Option<HeadProbe>
     }))
 }
 
-/// Ids do primeiro token de cada rótulo, com e sem espaço inicial: o modelo
-/// pode começar a resposta de qualquer um dos dois jeitos.
+/// Ids of the first token of each label, with and without a leading space: the
+/// model may start the answer either way.
 pub(super) fn probe_token_groups(engine: &LlmEngine, labels: &[String]) -> Vec<Vec<i32>> {
     labels
         .iter()
@@ -1000,7 +1001,7 @@ pub(super) fn probe_token_groups(engine: &LlmEngine, labels: &[String]) -> Vec<V
         .collect()
 }
 
-/// Probabilidade de cada rótulo na posição seguinte ao prompt.
+/// Probability of each label at the position right after the prompt.
 pub(super) fn probe_reply(engine: &LlmEngine, logits: &[f32], labels: &[String]) -> Value {
     let groups = probe_token_groups(engine, labels);
     let result = crate::llm::probe_candidates(logits, &groups);
@@ -1033,11 +1034,11 @@ pub(super) fn prefill_blocking(
     probe: Option<HeadProbe>,
     tensor: Option<(Vec<f32>, TensorShape)>,
     capture_block: Option<u32>,
-    // A composição dos tokens deste pedaço, vinda da cabeça via `tokens` na
-    // wire. Só tem sentido no branch de estado oculto (a cabeça tokeniza o
-    // prompt; hops do meio ecoam): alimenta o `observe` da cabeça `nextn`
-    // dentro do `decode_hidden`. `None` é peer antigo que não encaminha o
-    // campo — o `decode_hidden` desliga o MTP com aviso.
+    // The token composition of this chunk, coming from the head via `tokens` on
+    // the wire. It only makes sense in the hidden state branch (the head
+    // tokenizes the prompt; middle hops echo): it feeds the `observe` of the
+    // `nextn` head inside `decode_hidden`. `None` is an old peer that does not
+    // forward the field - `decode_hidden` turns MTP off with a warning.
     chunk_tokens: Option<Vec<i32>>,
     mrope_positions: Option<Vec<[u32; 4]>>,
     queued_at: Instant,
@@ -1058,8 +1059,8 @@ pub(super) fn prefill_blocking(
         pipeline_session,
         ..Default::default()
     };
-    // O prefill espera no mesmo mutex do decode: um prompt grande de outra
-    // sessão segura este aqui, e é a mesma espera invisível.
+    // The prefill waits on the same mutex as the decode: a large prompt from
+    // another session holds this one back, and it is the same invisible wait.
     let lock_started = Instant::now();
     let mut s = lock_inference_state(&state)?;
     timings.lock_wait_us = lock_started.elapsed().as_micros() as u64;
@@ -1069,9 +1070,9 @@ pub(super) fn prefill_blocking(
     // ── Session setup ────────────────────────────────────────────────────────
 
     let setup_started = Instant::now();
-    // Reusar exige a sessão viva aqui. Ela pode ter sido despejada ou reciclada
-    // desde o turno anterior; nesse caso este peer simplesmente recomeça, e é a
-    // resposta dele (`reuse_prefix` no meta) que os hops seguintes obedecem.
+    // Reusing requires the session alive here. It may have been evicted or
+    // recycled since the previous turn; in that case this peer simply restarts,
+    // and it is its answer (`reuse_prefix` in the meta) that the next hops obey.
     if reuse_prefix && chunk_index == 0 {
         // The session may be parked in host RAM (`--cache-ram`).
         s.unpark_session(&sid_key);
@@ -1098,8 +1099,8 @@ pub(super) fn prefill_blocking(
     }
     s.get_or_create(&sid_key, chunk_index == 0 && !want_reuse)?;
     let mut prefix = PrefixDecision::default();
-    // Quem não tokeniza recebe a fronteira de quem tokenizou, para partir o
-    // prompt na mesma posição - ver `Session::stable_len`.
+    // Whoever does not tokenize receives the boundary from whoever did, to
+    // split the prompt at the same position - see `Session::stable_len`.
     if let Some(stable) = stable_len {
         s.sessions.get_mut(&sid_key).unwrap().stable_len = stable;
     }
@@ -1153,20 +1154,19 @@ pub(super) fn prefill_blocking(
         let session = s.sessions.get_mut(&sid_key).unwrap();
         if session.n_past > expected_pos {
             warn!(
-                "refazendo chunk {chunk_index} da sessão {}… (pos {expected_pos})",
+                "redoing chunk {chunk_index} of session {}… (pos {expected_pos})",
                 &sid_key[..8.min(sid_key.len())]
             );
             let seq_id = session.seq_id();
             if !s.engine.kv_remove(seq_id, expected_pos as i32, -1) {
                 bail!(
-                    "este modelo não aceita descartar posições do meio do cache, \
-                     então refazer o pedaço {chunk_index} corromperia a sessão"
+                    "this model does not accept discarding positions from the middle of the cache, so redoing chunk {chunk_index} would corrupt the session"
                 );
             }
             s.sessions.get_mut(&sid_key).unwrap().n_past = expected_pos;
         } else if session.n_past < expected_pos {
             bail!(
-                "chunk fora de ordem: recebi {chunk_index} (pos {expected_pos}) mas a sessão está em {}",
+                "chunk out of order: received {chunk_index} (pos {expected_pos}) but the session is at {}",
                 session.n_past
             );
         }
@@ -1175,10 +1175,10 @@ pub(super) fn prefill_blocking(
     // ── Decode ───────────────────────────────────────────────────────────────
     // Extract the session values we need as plain integers, drop the borrow,
     // then call the engine (which needs &mut s.engine).
-    // A partir da fronteira, o prompt deixa de ser reutilizável e passa a viver
-    // na cópia de geração junto com os tokens gerados - ver `Session::stable_len`.
-    // Um pedaço nunca atravessa a fronteira: ele para nela, e o seguinte começa
-    // já na outra sequência.
+    // From the boundary on, the prompt stops being reusable and lives in the
+    // generation copy together with the generated tokens - see
+    // `Session::stable_len`. A chunk never crosses the boundary: it stops at it,
+    // and the next one already starts in the other sequence.
     let stable = s.sessions[&sid_key].stable_len;
     if expected_pos >= stable && !has_images {
         s.open_generation(&sid_key)?;
@@ -1202,9 +1202,9 @@ pub(super) fn prefill_blocking(
         (session.n_past, session.seq_id(), toks)
     };
 
-    // Onde parar, quando o remetente pediu menos que a fatia inteira. Antes do
-    // decode e sob o mesmo lock, que é o que torna o ajuste válido só para
-    // esta decodificação.
+    // Where to stop, when the sender asked for less than the whole slice. Before
+    // the decode and under the same lock, which is what makes the adjustment
+    // valid only for this decode.
     if let Err(e) = s.engine.set_capture_layer(capture_block) {
         if capture_block.is_some() {
             bail!("{e}");
@@ -1245,11 +1245,11 @@ pub(super) fn prefill_blocking(
         )?;
     } else if has_images {
         if chunk_index != 0 || tensor.is_some() {
-            bail!("imagens só podem acompanhar o primeiro chunk de prefill");
+            bail!("images can only accompany the first prefill chunk");
         }
         let text = prompt
             .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("imagem sem prompt"))?;
+            .ok_or_else(|| anyhow::anyhow!("image without a prompt"))?;
         let use_tmpl = use_chat_template(chat_template, s.chat_template);
         let no_think = s.no_thinking || !thinking_enabled.unwrap_or(!s.no_thinking);
         let formatted = if use_tmpl {
@@ -1272,7 +1272,7 @@ pub(super) fn prefill_blocking(
         engine_timing = decoded.timings;
     } else {
         if tokens_for_chunk.is_empty() {
-            bail!("chunk {chunk_index} não tem tokens");
+            bail!("chunk {chunk_index} has no tokens");
         }
         n_tokens = tokens_for_chunk.len();
         guard_chunk_fits_batch(&s.engine, n_tokens, chunk_index)?;
@@ -1334,10 +1334,11 @@ pub(super) fn prefill_blocking(
     if owns_tokens && !more {
         is_final_chunk = true;
     }
-    // A fronteira entre prompt e geração, anotada por cada peer no pedaço em
-    // que o prompt acaba. É para cá que o fim do turno devolve a sessão, e é o
-    // que o `/v1/session/rewind` confere. Hops do meio não tokenizam nada, e
-    // por isso recebem `is_final_chunk` da cabeça em vez de deduzi-lo.
+    // The boundary between prompt and generation, recorded by each peer on the
+    // chunk where the prompt ends. This is where the end of the turn returns the
+    // session to, and it is what `/v1/session/rewind` checks. Middle hops
+    // tokenize nothing, so they receive `is_final_chunk` from the head instead
+    // of deducing it.
     if is_final_chunk {
         let session = s.sessions.get_mut(&sid_key).unwrap();
         session.prompt_len = n_past_now.min(session.stable_len);
@@ -1405,14 +1406,14 @@ pub(super) fn prefill_blocking(
             .unwrap()
             .recent_tokens
             .push(next_id);
-        // A réplica de um grupo TP não encerra sessão: quem decide o fim da
-        // geração é o rank 0. Ver `tp::is_replica`.
+        // The replica of a TP group does not end a session: the one that decides
+        // the end of the generation is rank 0. See `tp::is_replica`.
         //
-        // Encerrar aqui destruía a sessão antes de o rewind do gateway chegar,
-        // e o rewind respondia "sessão desconhecida" - o prefixo nunca entrava
-        // no cache. O fim do turno agora **retém** o prompt: some só a
-        // sequência da geração. Liberar de vez continua sendo ato explícito do
-        // gateway (`/v1/session/release`).
+        // Ending here destroyed the session before the gateway's rewind
+        // arrived, and the rewind answered "unknown session" - the prefix never
+        // entered the cache. The end of the turn now **retains** the prompt:
+        // only the generation sequence goes away. Releasing for good remains an
+        // explicit act of the gateway (`/v1/session/release`).
         if done && !crate::tp::is_replica() {
             s.retain_prompt(&sid_key);
         }
@@ -1436,7 +1437,7 @@ pub(super) fn prefill_blocking(
         let n_prompt_tokens = s
             .sessions
             .get(&sid_key)
-            .ok_or_else(|| anyhow::anyhow!("sessão '{sid_key}' desapareceu antes da resposta"))?
+            .ok_or_else(|| anyhow::anyhow!("session '{sid_key}' disappeared before the response"))?
             .prompt_tokens
             .len();
         let mut reply = terminal_prefill_meta(
@@ -1500,9 +1501,9 @@ pub(super) fn prefill_blocking(
     );
     apply_stable_len(&mut reply_meta, stable);
     apply_mrope_positions(&mut reply_meta, mrope_positions.as_deref());
-    // A composição real deste pedaço, para a cauda manter a cabeça `nextn` em
-    // dia (ver o doc de `chunk_tokens`). A cabeça conhece os tokens; hops do
-    // meio ecoam o que receberam.
+    // The real composition of this chunk, so the tail keeps the `nextn` head up
+    // to date (see the doc of `chunk_tokens`). The head knows the tokens; middle
+    // hops echo what they received.
     if owns_tokens {
         reply_meta["tokens"] = json!(tokens_for_chunk);
     } else if let Some(tokens) = &chunk_tokens {
@@ -1525,13 +1526,13 @@ pub(super) struct PreparedPrefill {
     pub(super) n_tokens: usize,
     pub(super) start_pos: u32,
     pub(super) chunk_index: u32,
-    /// O que este peer executou com o prefixo retido - ver `apply_prefix_decision`.
+    /// What this peer did with the retained prefix - see `apply_prefix_decision`.
     pub(super) prefix: PrefixDecision,
-    /// Decisão recebida da cabeça para ecoar quando este peer não tokeniza.
+    /// Decision received from the head to echo when this peer does not tokenize.
     pub(super) requested_reuse: bool,
     pub(super) requested_cached_tokens: u32,
     pub(super) requested_prefix_match_tokens: u32,
-    /// A fronteira medida - ver `Session::stable_len`.
+    /// The measured boundary - see `Session::stable_len`.
     pub(super) stable_len: u32,
     pub(super) is_last: bool,
     pub(super) is_final_chunk: bool,
@@ -1597,7 +1598,7 @@ pub(super) fn prefill_batch_blocking(
             next_pos,
             chat_template,
             thinking_enabled,
-            // Pedidos com sonda nunca entram em lote (`execute_scheduled_batch`).
+            // Requests with a probe never join a batch (`execute_scheduled_batch`).
             probe: _probe,
             tensor,
             capture_block,
@@ -1610,8 +1611,9 @@ pub(super) fn prefill_batch_blocking(
         } = job;
 
         let result = (|| -> Result<PreparedPrefill> {
-            // Mesmo contrato do caminho não-lotado (`prefill_blocking`): reuso
-            // só com a sessão viva, e quem tokeniza decide se o prefixo serve.
+            // Same contract as the non-batched path (`prefill_blocking`): reuse
+            // only with the session alive, and whoever tokenizes decides whether
+            // the prefix fits.
             if reuse_prefix && chunk_index == 0 {
                 s.unpark_session(&sid_key);
             }
@@ -1638,7 +1640,7 @@ pub(super) fn prefill_batch_blocking(
             }
             s.get_or_create(&sid_key, chunk_index == 0 && !want_reuse)?;
             let mut prefix = PrefixDecision::default();
-            // Ver `prefill_blocking`: quem não tokeniza recebe a fronteira.
+            // See `prefill_blocking`: whoever does not tokenize receives the boundary.
             if let Some(stable) = stable_len {
                 s.sessions.get_mut(&sid_key).unwrap().stable_len = stable;
             }
@@ -1684,21 +1686,20 @@ pub(super) fn prefill_batch_blocking(
                     let seq_id = session.seq_id();
                     if !s.engine.kv_remove(seq_id, expected_pos as i32, -1) {
                         bail!(
-                            "este modelo não aceita descartar posições do meio do cache, \
-                             então refazer o pedaço {chunk_index} corromperia a sessão"
+                            "this model does not accept discarding positions from the middle of the cache, so redoing chunk {chunk_index} would corrupt the session"
                         );
                     }
                     s.sessions.get_mut(&sid_key).unwrap().n_past = expected_pos;
                 } else if session.n_past < expected_pos {
                     bail!(
-                        "chunk fora de ordem: recebi {chunk_index} (pos {expected_pos}) mas a sessão está em {}",
+                        "chunk out of order: received {chunk_index} (pos {expected_pos}) but the session is at {}",
                         session.n_past
                     );
                 }
             }
 
-            // Ver `prefill_blocking`: o pedaço para na fronteira, e daí em
-            // diante decodifica na cópia de geração.
+            // See `prefill_blocking`: the chunk stops at the boundary, and from
+            // there on it decodes in the generation copy.
             let stable = s.sessions[&sid_key].stable_len;
             if expected_pos >= stable {
                 s.open_generation(&sid_key)?;
@@ -1714,7 +1715,7 @@ pub(super) fn prefill_batch_blocking(
                         s.engine.n_embd,
                         s.engine.n_embd_inp,
                         s.engine.n_embd_out,
-                        &format!("hidden state de {sid_key}"),
+                        &format!("hidden state of {sid_key}"),
                     )?;
                     (
                         session.seq_id(),
@@ -1738,7 +1739,7 @@ pub(super) fn prefill_batch_blocking(
                         .unwrap_or(&[])
                         .to_vec();
                     if tokens.is_empty() {
-                        bail!("chunk {chunk_index} não tem tokens");
+                        bail!("chunk {chunk_index} has no tokens");
                     }
                     let n_tokens = tokens.len();
                     (
@@ -1794,9 +1795,9 @@ pub(super) fn prefill_batch_blocking(
     }
 
     let need_residual = prepared.iter().any(|(_, item)| !item.is_last);
-    // Onde parar vale para o grafo inteiro, não por item: um lote com pedidos
-    // de sub-faixas diferentes não tem uma resposta certa. O agrupamento em
-    // lote é conveniência de desempenho; ele não pode decidir isto por conta.
+    // Where to stop holds for the whole graph, not per item: a batch with
+    // requests for different sub-ranges has no right answer. Batching is a
+    // performance convenience; it cannot decide this on its own.
     let capture_block = prepared[0].1.capture_block;
     if prepared
         .iter()
@@ -1806,7 +1807,7 @@ pub(super) fn prefill_batch_blocking(
             replies.push((
                 reply,
                 Err(anyhow::anyhow!(
-                    "lote com sub-faixas diferentes: cada uma pararia num bloco, e o grafo é um só"
+                    "batch with different sub-ranges: each would stop at a block, and the graph is a single one"
                 )),
             ));
         }
@@ -1851,9 +1852,9 @@ pub(super) fn prefill_batch_blocking(
         return replies;
     }
 
-    // Um `llama_decode` com mais tokens que `n_batch` aborta o processo. O
-    // scheduler já corta o lote em `n_batch`, mas deixa passar um item isolado
-    // maior que isso; recusa aqui é um pedido perdido, não o nó inteiro.
+    // A `llama_decode` with more tokens than `n_batch` aborts the process. The
+    // scheduler already cuts the batch at `n_batch`, but lets through an isolated
+    // item larger than that; a refusal here is one lost request, not the whole node.
     let batch_tokens: usize = prepared.iter().map(|(_, item)| item.n_tokens).sum();
     if let Err(error) = guard_chunk_fits_batch(&s.engine, batch_tokens, prepared[0].1.chunk_index) {
         let message = error.to_string();
@@ -1944,7 +1945,7 @@ pub(super) fn prefill_batch_blocking(
             if item.owns_tokens && !more {
                 is_final_chunk = true;
             }
-            // Ver `prefill_blocking`: a fronteira prompt/geração desta sessão.
+            // See `prefill_blocking`: the prompt/generation boundary of this session.
             if is_final_chunk {
                 let session = s.sessions.get_mut(&item.sid_key).unwrap();
                 session.prompt_len = n_past_now.min(session.stable_len);
@@ -2001,7 +2002,7 @@ pub(super) fn prefill_batch_blocking(
                     .range(&item.sid_key)
                     .and_then(|range| range.logits_index)
                     .ok_or_else(|| {
-                        anyhow::anyhow!("batch não produziu logits para {}", item.sid_key)
+                        anyhow::anyhow!("batch produced no logits for {}", item.sid_key)
                     })?;
                 let recent = s.sessions[&item.sid_key].recent_tokens.clone();
                 let logits = s.engine.logits_ith(logits_index as i32);
@@ -2027,8 +2028,8 @@ pub(super) fn prefill_batch_blocking(
                     .unwrap()
                     .recent_tokens
                     .push(next_id);
-                // Ver `prefill_blocking`: o fim do turno retém o prompt em vez
-                // de destruir a sessão.
+                // See `prefill_blocking`: the end of the turn retains the prompt
+                // instead of destroying the session.
                 if done && !crate::tp::is_replica() {
                     s.retain_prompt(&item.sid_key);
                 }
@@ -2130,36 +2131,36 @@ pub(super) fn prefill_batch_blocking(
 mod multimodal_position_tests {
     use super::*;
 
-    /// Reproduz a aritmética do defeito de produção: a imagem escreveu 208
-    /// células no KV a partir da posição 26, mas em M-RoPE ela só ocupa
-    /// `max(nx, ny) = 25` posições lógicas, logo o texto seguinte começa em
-    /// 51. Comparar 51 com 208 fazia o head pedir um segundo pedaço de um
-    /// prompt já inteiramente ingerido.
+    /// Reproduces the arithmetic of the production defect: the image wrote 208
+    /// cells to the KV starting at position 26, but in M-RoPE it only occupies
+    /// `max(nx, ny) = 25` logical positions, so the following text starts at
+    /// 51. Comparing 51 with 208 made the head ask for a second chunk of a
+    /// prompt already entirely ingested.
     #[test]
     fn mrope_media_does_not_compare_logical_position_with_physical_cells() {
-        let celulas_fisicas = 26 + 208 + 10;
-        let posicao_logica = 26 + 25 + 10;
-        assert!(posicao_logica < celulas_fisicas);
+        let physical_cells = 26 + 208 + 10;
+        let logical_position = 26 + 25 + 10;
+        assert!(logical_position < physical_cells);
         assert!(!prefill_has_more_chunks(
             true,
-            celulas_fisicas,
-            posicao_logica,
+            physical_cells,
+            logical_position,
             true
         ));
-        // Sem mídia as duas grandezas coincidem, e o corte em pedaços continua
-        // a valer: um prompt de texto por ingerir ainda pede outro pedaço.
+        // Without media the two quantities coincide, and chunking still
+        // applies: a text prompt yet to be ingested still asks for another chunk.
         assert!(prefill_has_more_chunks(
             true,
-            celulas_fisicas,
-            posicao_logica,
+            physical_cells,
+            logical_position,
             false
         ));
         assert!(!prefill_has_more_chunks(true, 244, 244, false));
         assert!(!prefill_has_more_chunks(false, 244, 51, false));
     }
 
-    /// O fim lógico de um lote de estado oculto M-RoPE é o `next_pos` que a
-    /// cabeça anunciou, nunca o número de linhas de embedding.
+    /// The logical end of an M-RoPE hidden state batch is the `next_pos` the
+    /// head announced, never the number of embedding rows.
     #[test]
     fn mrope_hidden_state_keeps_logical_end_separate_from_cell_count() {
         let positions: Vec<[u32; 4]> = (0..208)
@@ -2170,19 +2171,19 @@ mod multimodal_position_tests {
             logical_end_from_mrope_positions(26, &positions, 208, Some(51)).unwrap(),
             51
         );
-        // Contagem física divergente da tabela de posições é incoerência, não
-        // um dado a arredondar.
+        // A physical count that diverges from the position table is an
+        // inconsistency, not a value to round.
         assert!(logical_end_from_mrope_positions(26, &positions, 207, Some(51)).is_err());
-        // Sem `next_pos` da cabeça não há como inferir o fim lógico: falhar é
-        // melhor que assumir `start + células`.
+        // Without the head's `next_pos` there is no way to infer the logical
+        // end: failing is better than assuming `start + cells`.
         assert!(logical_end_from_mrope_positions(26, &positions, 208, None).is_err());
-        // Recuar da posição inicial é sempre incoerência.
+        // Going back from the start position is always an inconsistency.
         assert!(logical_end_from_mrope_positions(26, &positions, 208, Some(25)).is_err());
     }
 
-    /// Uma sessão cuja contagem física difere da lógica não pode servir de
-    /// prefixo reutilizável: `prompt_tokens` já não indexa o KV célula a
-    /// célula.
+    /// A session whose physical count differs from the logical one cannot
+    /// serve as a reusable prefix: `prompt_tokens` no longer indexes the KV
+    /// cell by cell.
     #[test]
     fn mrope_session_is_not_a_reusable_prefix() {
         let mut multimodal = Session::new(0);
@@ -2191,22 +2192,22 @@ mod multimodal_position_tests {
         multimodal.contains_media = true;
         assert!(!multimodal.positions_match_cells());
 
-        // Mesmo quando o projector não usa M-RoPE e as duas contagens batem,
-        // `prompt_tokens` continua a ser um preenchimento sem os ids reais das
-        // células de mídia: reutilizar esse prefixo compararia lixo.
-        let mut sem_mrope = Session::new(0);
-        sem_mrope.n_past = 244;
-        sem_mrope.prompt_cells = 244;
-        sem_mrope.contains_media = true;
-        assert!(!sem_mrope.positions_match_cells());
+        // Even when the projector does not use M-RoPE and the two counts match,
+        // `prompt_tokens` is still a filler without the real ids of the media
+        // cells: reusing that prefix would compare garbage.
+        let mut without_mrope = Session::new(0);
+        without_mrope.n_past = 244;
+        without_mrope.prompt_cells = 244;
+        without_mrope.contains_media = true;
+        assert!(!without_mrope.positions_match_cells());
 
-        let mut texto = Session::new(0);
-        texto.n_past = 244;
-        texto.prompt_cells = 244;
-        assert!(texto.positions_match_cells());
+        let mut text = Session::new(0);
+        text.n_past = 244;
+        text.prompt_cells = 244;
+        assert!(text.positions_match_cells());
     }
 
-    /// As posições M-RoPE atravessam a wire sem perder a forma de quatro eixos.
+    /// The M-RoPE positions cross the wire without losing the four-axis shape.
     #[test]
     fn mrope_positions_survive_the_wire() {
         let positions = vec![[26u32, 27, 28, 0], [26, 27, 29, 0]];
@@ -2216,9 +2217,9 @@ mod multimodal_position_tests {
             serde_json::from_value(meta["mrope_positions"].clone()).unwrap();
         assert_eq!(decoded, positions);
 
-        let mut vazio = json!({});
-        apply_mrope_positions(&mut vazio, None);
-        assert!(vazio.get("mrope_positions").is_none());
+        let mut empty = json!({});
+        apply_mrope_positions(&mut empty, None);
+        assert!(empty.get("mrope_positions").is_none());
     }
 }
 
@@ -2292,11 +2293,11 @@ pub(super) fn step_batch_blocking(
             ..
         } = job;
         let result = (|| -> Result<PreparedStep> {
-            // Tudo daqui em diante é token gerado, então nada mais toca a
-            // sequência do prompt - ver `InferState::open_generation`.
+            // Everything from here on is a generated token, so nothing else
+            // touches the prompt sequence - see `InferState::open_generation`.
             s.open_generation(&sid_key)?;
             let session = s.sessions.get_mut(&sid_key).ok_or_else(|| {
-                anyhow::anyhow!("sessão '{}' desconhecida - faça o prefill antes", sid_key)
+                anyhow::anyhow!("unknown session '{}' - run the prefill first", sid_key)
             })?;
             session.last_used = Instant::now();
             let seq_id = session.seq_id();
@@ -2310,7 +2311,7 @@ pub(super) fn step_batch_blocking(
                     s.engine.n_embd,
                     s.engine.n_embd_inp,
                     s.engine.n_embd_out,
-                    &format!("hidden state de {sid_key}"),
+                    &format!("hidden state of {sid_key}"),
                 )?;
                 PreparedStepInput::Hidden {
                     values: hidden,
@@ -2318,7 +2319,7 @@ pub(super) fn step_batch_blocking(
                 }
             } else {
                 let token =
-                    token_id.ok_or_else(|| anyhow::anyhow!("primeiro peer precisa de token_id"))?;
+                    token_id.ok_or_else(|| anyhow::anyhow!("the first peer needs a token_id"))?;
                 s.sessions
                     .get_mut(&sid_key)
                     .unwrap()
@@ -2355,9 +2356,9 @@ pub(super) fn step_batch_blocking(
     if prepared.is_empty() {
         return replies;
     }
-    // Um único grafo não consegue parar em dois blocos diferentes. Recusar o
-    // lote é seguro; escolher um dos limites faria uma sessão executar mais
-    // ou menos camadas que o remetente pediu.
+    // A single graph cannot stop at two different blocks. Refusing the batch
+    // is safe; picking one of the limits would make a session run more or
+    // fewer layers than the sender asked for.
     let capture_block = prepared[0].1.capture_block;
     if prepared
         .iter()
@@ -2367,7 +2368,7 @@ pub(super) fn step_batch_blocking(
             replies.push((
                 reply,
                 Err(anyhow::anyhow!(
-                    "lote com sub-faixas diferentes: cada uma pararia num bloco, e o grafo é um só"
+                    "batch with different sub-ranges: each would stop at a block, and the graph is a single one"
                 )),
             ));
         }
@@ -2501,7 +2502,7 @@ pub(super) fn step_batch_blocking(
                     .range(&item.sid_key)
                     .and_then(|range| range.logits_index)
                     .ok_or_else(|| {
-                        anyhow::anyhow!("batch não produziu logits para {}", item.sid_key)
+                        anyhow::anyhow!("batch produced no logits for {}", item.sid_key)
                     })?;
                 let recent = s.sessions[&item.sid_key].recent_tokens.clone();
                 let logits = s.engine.logits_ith(logits_index as i32);
@@ -2529,7 +2530,7 @@ pub(super) fn step_batch_blocking(
                     .unwrap()
                     .recent_tokens
                     .push(next_id);
-                // Fim de turno retém o prompt - ver `InferState::retain_prompt`.
+                // End of turn retains the prompt - see `InferState::retain_prompt`.
                 if done && !crate::tp::is_replica() {
                     s.retain_prompt(&item.sid_key);
                 }

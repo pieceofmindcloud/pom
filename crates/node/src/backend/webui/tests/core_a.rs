@@ -9,15 +9,15 @@ mod tests {
             .split_once("async fn capacity_preview_endpoint(")
             .and_then(|(_, rest)| rest.split_once("Which inference engine the operator asks"))
             .map(|(body, _)| body)
-            .expect("o teste precisa encontrar o endpoint de preview");
+            .expect("the test must find the preview endpoint");
         assert!(
             !endpoint.contains("preview_fit"),
-            "a pré-visualização não pode chamar o fit nativo do carregamento"
+            "the preview cannot call the native fit of the load"
         );
         for native_symbol in ["llama_backend_init", "llama_rs_fit_params"] {
             assert!(
                 !endpoint.contains(native_symbol),
-                "a pré-visualização não pode mencionar a FFI nativa: {native_symbol}"
+                "the preview cannot mention the native FFI: {native_symbol}"
             );
         }
     }
@@ -232,10 +232,10 @@ mod tests {
 
         let error = model_metadata_local(&state, &requested.to_string_lossy())
             .await
-            .expect_err("um catálogo pendente não pode ser tratado como pronto");
+            .expect_err("a pending catalog cannot be treated as ready");
         assert!(
-            error.contains("catálogo deste peer ainda está sendo descoberto"),
-            "erro inesperado: {error}"
+            error.contains("catalog of this peer is still being discovered"),
+            "unexpected error: {error}"
         );
 
         *catalog_cache().lock().await = None;
@@ -259,8 +259,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    /// Um alvo TP runtime extrai o próprio rank, mas um alvo que já aponta para
-    /// `tp_parts` usa o arquivo existente e não o fatia novamente.
+    /// A runtime TP target extracts its own rank, but a target that already points to
+    /// `tp_parts` uses the existing file and does not slice it again.
     #[test]
     fn every_rank_of_a_tp_group_extracts_its_own_shard() {
         let req = |tp: Option<crate::network::TpIdentity>| ApplyRequest {
@@ -297,12 +297,12 @@ mod tests {
         };
 
         let primary = req(Some(ident(0, "primary")));
-        let escolhido = tp_shard_to_extract(&primary).expect("o rank 0 runtime também fatia");
-        assert_eq!(escolhido.rank, 0);
+        let chosen = tp_shard_to_extract(&primary).expect("the runtime rank 0 also slices");
+        assert_eq!(chosen.rank, 0);
         assert_eq!(
-            (escolhido.rank, escolhido.size),
+            (chosen.rank, chosen.size),
             (0, 2),
-            "o shard que faltava no disco"
+            "the shard that was missing on disk"
         );
 
         let worker = req(Some(ident(1, "worker")));
@@ -312,28 +312,28 @@ mod tests {
         pre_sliced.skip_split = true;
         assert!(
             tp_shard_to_extract(&pre_sliced).is_none(),
-            "rank TP já fatiado deve ser carregado diretamente"
+            "an already sliced TP rank must be loaded directly"
         );
 
         assert!(
             tp_shard_to_extract(&req(None)).is_none(),
-            "nó sem TP não fatia por tensor"
+            "a node without TP does not slice by tensor"
         );
     }
 
-    /// A rota escolhida tem que chegar a interface: sem ela, "por onde este
-    /// salto vai" so se responde com shell na maquina.
+    /// The chosen route has to reach the interface: without it, "where does this
+    /// hop go" can only be answered with a shell on the machine.
     #[test]
     fn the_cluster_view_carries_the_chosen_route() {
-        let tabela = crate::route::RouteTable::new();
-        let vista = route_view_for("n1", &tabela);
-        assert!(vista.is_none(), "peer nao medido nao inventa rota");
+        let table = crate::route::RouteTable::new();
+        let view = route_view_for("n1", &table);
+        assert!(view.is_none(), "an unmeasured peer invents no route");
     }
 
-    /// Offload e cache KV sao as duas coisas que uma maquina pode discordar do
-    /// cluster, e discordar nao pode mexer em mais nada de que o pipeline
-    /// depende - contexto, batch e amostragem tem que continuar iguais nos dois
-    /// lados do salto.
+    /// Offload and KV cache are the two things a machine may disagree with the
+    /// cluster about, and disagreeing must not touch anything else the pipeline
+    /// depends on - context, batch and sampling have to remain equal on both
+    /// sides of the hop.
     #[test]
     fn only_the_hardware_settings_are_per_machine() {
         let base = RuntimeParams {
@@ -366,13 +366,13 @@ mod tests {
         let cpu_only = params_for(&base, &target(Some(0), Some(false)));
         assert_eq!(cpu_only.n_gpu_layers, 0);
         assert!(!cpu_only.offload_kqv);
-        assert_eq!(cpu_only.n_ctx, 32768, "o resto continua sendo do cluster");
+        assert_eq!(cpu_only.n_ctx, 32768, "the rest still belongs to the cluster");
 
-        // Sem sobreposicao, o numero do cluster vale — e sobrepor um nao mexe
-        // no outro.
-        let herdado = params_for(&base, &target(None, None));
-        assert_eq!(herdado.n_gpu_layers, 99);
-        assert!(herdado.offload_kqv);
+        // Without an override, the cluster's number holds - and overriding one
+        // does not touch the other.
+        let inherited = params_for(&base, &target(None, None));
+        assert_eq!(inherited.n_gpu_layers, 99);
+        assert!(inherited.offload_kqv);
         assert!(params_for(&base, &target(Some(0), None)).offload_kqv);
         assert_eq!(
             params_for(&base, &target(None, Some(false))).n_gpu_layers,
@@ -517,7 +517,7 @@ mod tests {
         assert!(!p.offload_kqv);
         assert!(!p.fit_memory);
         assert_eq!(p.fit_memory_margin_mb, 512);
-        assert_eq!(p.top_k, 40, "campos ausentes mantêm o padrão");
+        assert_eq!(p.top_k, 40, "missing fields keep the default");
     }
 
     #[test]
@@ -682,24 +682,24 @@ mod tests {
 
         set_job_phase(
             &id,
-            "lendo modelo",
-            "lendo a fonte",
+            "reading model",
+            "reading the source",
             Some("/models/model.gguf".into()),
         )
         .await;
-        set_job_byte_progress(&id, "lendo modelo", 64, 128, None).await;
+        set_job_byte_progress(&id, "reading model", 64, 128, None).await;
         let running = jobs().read().await.get(&id).cloned().unwrap();
-        assert_eq!(running.step, "lendo modelo");
+        assert_eq!(running.step, "reading model");
         assert_eq!(running.bytes_processed, Some(64));
         assert_eq!(running.total_bytes, Some(128));
         assert_eq!(running.current_file.as_deref(), Some("/models/model.gguf"));
 
-        set_job(&id, "failed", "erro", "falha depois da primeira fatia").await;
+        set_job(&id, "failed", "erro", "failure after the first slice").await;
         let failed = jobs().read().await.get(&id).cloned().unwrap();
         assert_eq!(failed.state, "failed");
         assert_eq!(
             failed.error.as_deref(),
-            Some("falha depois da primeira fatia")
+            Some("failure after the first slice")
         );
         assert!(failed.finished_at.is_some());
 
@@ -775,7 +775,7 @@ mod tests {
         )
         .unwrap_err()
         .to_string();
-        assert!(error.contains("fora do modelo"), "{error}");
+        assert!(error.contains("outside the model"), "{error}");
 
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -1050,34 +1050,34 @@ mod tests {
                 .await
                 .unwrap();
             let out_path = std::path::Path::new(&out);
-            // O nome é o conteúdo: quem junta não escolhe como chamar o
-            // resultado, o hash é que o nomeia.
-            let nome = out_path.file_stem().unwrap().to_string_lossy().into_owned();
+            // The name is the content: whoever merges does not choose what to
+            // call the result, the hash is what names it.
+            let name = out_path.file_stem().unwrap().to_string_lossy().into_owned();
             assert!(
-                crate::pom::is_sha256_hex(&nome),
-                "o modelo junto sai endereçado por conteúdo, não por convenção de nome: {nome}"
+                crate::pom::is_sha256_hex(&name),
+                "the merged model comes out content-addressed, not by a naming convention: {name}"
             );
             assert_eq!(
                 crate::pom::hash_file(out_path).unwrap().0,
-                nome,
-                "e o hash do arquivo tem que ser o nome dele"
+                name,
+                "and the hash of the file must be its name"
             );
             let layout = crate::gguf::read_layout(out_path).unwrap();
             assert_eq!(
                 layout.layer_count(),
                 32,
-                "as duas fatias juntas cobrem o modelo"
+                "the two slices together cover the model"
             );
             let merged_bytes = std::fs::read(out_path).unwrap();
             assert_eq!(
                 test_u32_array(&merged_bytes, "llama.attention.head_count_kv_by_layer"),
                 Some((0..32).collect()),
-                "a metadata de cabeças KV precisa cobrir as duas fatias"
+                "the KV heads metadata must cover both slices"
             );
             assert_eq!(
                 test_bool_array(&merged_bytes, "llama.attention.sliding_window_pattern"),
                 Some((0..32).map(|layer| layer % 2 == 0).collect()),
-                "a janela deslizante precisa cobrir as duas fatias"
+                "the sliding window must cover both slices"
             );
             assert!(out_path.metadata().unwrap().len() > a.metadata().unwrap().len());
 
@@ -1092,7 +1092,7 @@ mod tests {
             assert_eq!(
                 std::fs::read(out_path).unwrap() == marker,
                 false,
-                "um arquivo inválido no endereço de conteúdo não pode ser reaproveitado"
+                "an invalid file at the content address cannot be reused"
             );
             crate::gguf::read_layout(out_path).unwrap();
 
@@ -1121,7 +1121,7 @@ mod tests {
             let err = merge_parts(root.clone(), &req, &single, "job-1")
                 .await
                 .unwrap_err();
-            assert!(err.to_string().contains("menos de duas"), "{err}");
+            assert!(err.to_string().contains("fewer than two"), "{err}");
 
             let gap = vec![
                 MergeSource {
@@ -1138,7 +1138,7 @@ mod tests {
             let err = merge_parts(root.clone(), &req, &gap, "job-2")
                 .await
                 .unwrap_err();
-            assert!(err.to_string().contains("vizinhas"), "{err}");
+            assert!(err.to_string().contains("neighbors"), "{err}");
 
             std::fs::remove_dir_all(&root).ok();
         });

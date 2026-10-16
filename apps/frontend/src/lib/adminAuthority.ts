@@ -11,15 +11,13 @@ import { api } from "./api";
 export const adminAuthorityPaths = {
   view: "/api/ui/network/admin-authority",
   /**
-   * A raiz de confiança, e não o roster de autoridade.
+   * The trust root, not the authority roster.
    *
-   * Fica fora da superfície de admin de propósito: antes de ancorar, um nó
-   * com `profile: admin` não tem capacidade efetiva de admin, e é justamente
-   * aí que o operador precisa desta tela. Ver `webui/trust.rs`.
+   * It is kept out of the admin surface on purpose: before anchoring, a node
+   * with `profile: admin` has no effective admin capability, and that is
+   * exactly when the operator needs this screen. See `webui/trust.rs`.
    */
   trustAnchor: "/api/ui/network/trust-anchor",
-  requestNode: "/api/ui/network/request-node",
-  relinquishNode: "/api/ui/network/relinquish-node",
   resign: "/admin/authority/resign",
   demote: (nodeId: string) =>
     `/admin/authority/secondaries/${encodeURIComponent(nodeId)}/demote`,
@@ -29,12 +27,12 @@ export const adminAuthorityPaths = {
 
 export const trustAnchorApi = {
   /**
-   * Instala a âncora transportada pelo operador.
+   * Installs the anchor carried by the operator.
    *
-   * `fingerprint` é calculado localmente a partir do documento, e a tela exige
-   * que o operador confirme esse valor contra a mensagem separada do admin.
-   * O servidor continua recusando loopback ausente, nó já ancorado e valor que
-   * não corresponde à cadeia completa.
+   * `fingerprint` is computed locally from the document, and the screen requires
+   * the operator to confirm that value against the admin's separate message.
+   * The server still refuses a missing loopback, an already anchored node and a
+   * value that does not match the complete chain.
    */
   install(document: string, fingerprint: string) {
     return api.post<{ anchored: boolean; fingerprint: string }>(
@@ -53,11 +51,5 @@ export const adminAuthorityApi = {
   },
   demoteSecondary(nodeId: string) {
     return api.post(adminAuthorityPaths.demote(nodeId));
-  },
-  requestNodePromotion() {
-    return api.post(adminAuthorityPaths.requestNode);
-  },
-  relinquishNode() {
-    return api.post(adminAuthorityPaths.relinquishNode);
   },
 };

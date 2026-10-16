@@ -1,19 +1,19 @@
 /**
- * Como uma transferência se apresenta na tela.
+ * How a transfer presents itself on screen.
  *
- * O nome de uma fatia em disco é o **sha256** dela, e hash não identifica
- * nada que se leia: a notificação mostrava `df48d094c3d1023c0dab9e…` e o
- * operador não tinha como saber de que modelo era nem que camadas trazia. Quem
- * sabe as duas coisas é o `.pom`, que viaja com a oferta e é gravado antes do
- * primeiro byte de peso — o backend o lê e manda `model_label` e a faixa
- * junto com o job.
+ * A slice's name on disk is its **sha256**, and a hash does not identify
+ * anything readable: the notification showed `df48d094c3d1023c0dab9e…` and the
+ * operator had no way of knowing which model it was or which layers it carried.
+ * What knows both is the `.pom`, which travels with the offer and is written before the
+ * first weight byte - the backend reads it and sends `model_label` and the range
+ * along with the job.
  *
- * O hash não desaparece: ele continua sendo o que identifica a parte entre
- * máquinas e o que nomeia o arquivo em disco. Só deixa de ser o título.
+ * The hash does not disappear: it is still what identifies the part between
+ * machines and what names the file on disk. It just stops being the title.
  */
 import { layerRange } from "./format";
 
-/** O que basta para nomear uma fatia — job ou oferta. */
+/** What is enough to name a slice - job or offer. */
 export interface SliceNamed {
   name: string;
   model_label?: string | null;
@@ -22,24 +22,24 @@ export interface SliceNamed {
 }
 
 /**
- * O título: modelo e faixa de camadas, com o nome do arquivo como recurso
- * final. Um modelo inteiro não tem faixa e continua se chamando pelo nome.
+ * The title: model and layer range, with the file name as a last
+ * resort. A whole model has no range and keeps being called by its name.
  */
 export function transferTitle(item: SliceNamed): string {
-  const faixa =
+  const range =
     item.start_layer != null && item.end_layer != null
       ? layerRange(item.start_layer, item.end_layer)
       : null;
-  if (item.model_label && faixa) return `${item.model_label} · ${faixa}`;
+  if (item.model_label && range) return `${item.model_label} · ${range}`;
   if (item.model_label) return item.model_label;
-  if (faixa) return `${faixa} · ${item.name}`;
+  if (range) return `${range} · ${item.name}`;
   return item.name;
 }
 
 /**
- * O hash curto, quando o nome do arquivo é um sha256 — a identificação
- * secundária que fica ao lado, discreta. `null` quando o nome já é legível,
- * porque aí repeti-lo não acrescenta nada.
+ * The short hash, when the file name is a sha256 - the secondary identification
+ * that sits alongside, discreet. `null` when the name is already readable,
+ * because then repeating it adds nothing.
  */
 export function transferHash(name: string): string | null {
   const stem = name.replace(/\.gguf$/i, "");

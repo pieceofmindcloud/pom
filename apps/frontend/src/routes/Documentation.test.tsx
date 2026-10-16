@@ -1,14 +1,14 @@
 // @vitest-environment jsdom
 /**
- * A rota Documentação é auto-contida: o conteúdo viaja embutido no bundle
- * (`scripts/build-docs.mjs` gera `src/docs/` no build, os guias vivem em
- * `src/guides/`), então o que se testa aqui é o contrato entre a tela e esse
- * conjunto - duas abas para dois públicos, a árvore que navega o repositório,
- * a busca, e o endereço (`?tab=`, `?guia=`, `?doc=`).
+ * The Documentation route is self-contained: the content travels embedded in the
+ * bundle (`scripts/build-docs.mjs` generates `src/docs/` at build, the guides
+ * live in `src/guides/`), so what is tested here is the contract between the
+ * screen and that set - two tabs for two audiences, the tree that navigates the
+ * repository, the search, and the address (`?tab=`, `?guide=`, `?doc=`).
  *
- * O jsdom não calcula layout; os testes que valem a pena aqui são de
- * comportamento, não de posição. As afirmações sobre a rolagem são estruturais
- * (quem é o container que rola), porque é a estrutura que estava errada.
+ * jsdom does not compute layout; the tests worth having here are about
+ * behaviour, not position. The assertions about scrolling are structural
+ * (which container scrolls), because the structure is what was wrong.
  */
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -43,7 +43,7 @@ const documentedPlugin: ActivePluginUi = {
   },
 };
 
-function renderDoc(initialEntry = "/documentacao") {
+function renderDoc(initialEntry = "/documentation") {
   return render(
     <MemoryRouter
       initialEntries={[initialEntry]}
@@ -56,7 +56,7 @@ function renderDoc(initialEntry = "/documentacao") {
   );
 }
 
-/** Abre a aba de referência, que é onde a árvore e a busca vivem. */
+/** Opens the reference tab, which is where the tree and the search live. */
 function openReference() {
   fireEvent.click(screen.getByRole("tab", { name: "Reference" }));
 }
@@ -70,19 +70,19 @@ describe("Documentation", () => {
   afterEach(() => vi.restoreAllMocks());
   afterEach(() => setPluginUi([]));
 
-  it("abre nos guias, não no markdown de agente", () => {
+  it("opens on the guides, not on the agent markdown", () => {
     renderDoc();
-    // O primeiro guia é o "o que é esta plataforma"; o markdown da raiz não
-    // pode ser a primeira coisa que um humano vê.
+    // The first guide is the "what is this platform" one; the root markdown must
+    // not be the first thing a human sees.
     expect(screen.getByRole("heading", { name: "What this platform is", level: 2 })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "AGENTS.md - raiz" })).toBeNull();
   });
 
-  it("um guia leva o leitor à referência pelo link de aprofundamento", () => {
+  it("a guide takes the reader to the reference through the deep-dive link", () => {
     renderDoc();
     fireEvent.click(screen.getByRole("button", { name: /Discovery, advertised addresses/ }));
-    // O leitor imprime o assunto no próprio cabeçalho e o markdown entra sem o
-    // H1 dele, que só repetiria o mesmo em outra redação.
+    // The reader prints the subject in its own header and the markdown comes in
+    // without its H1, which would only repeat the same in other wording.
     expect(screen.getByRole("heading", { name: "P2P network and discovery", level: 2 })).toBeTruthy();
     expect(screen.queryByRole("heading", { level: 1 })).toBeNull();
     expect(screen.getByRole("tab", { name: "Reference" }).getAttribute("aria-selected")).toBe(
@@ -90,68 +90,68 @@ describe("Documentation", () => {
     );
   });
 
-  it("a lista de arquivos não mostra nome de arquivo nem AGENTS.md", () => {
+  it("the file list shows neither a file name nor AGENTS.md", () => {
     renderDoc();
     openReference();
-    // "backend/" e não "AGENTS.md - crates/node/src/backend/"; "P2P network
-    // and discovery" e não "p2p-network.md".
+    // "backend/" and not "AGENTS.md - crates/node/src/backend/"; "P2P network
+    // and discovery" and not "p2p-network.md".
     expect(screen.getByRole("button", { name: "Open backend/" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Open P2P network and discovery" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Open AGENTS\.md/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /\.md$/ })).toBeNull();
   });
 
-  it("o cabeçalho da seção abre a visão geral daquela pasta", () => {
+  it("the section header opens the overview of that folder", () => {
     renderDoc();
     openReference();
     fireEvent.click(screen.getByRole("button", { name: "docs/" }));
     expect(screen.getByRole("heading", { name: "docs/", level: 2 })).toBeTruthy();
   });
 
-  it("uma seção pode ser recolhida mesmo segurando o documento aberto", async () => {
-    renderDoc("/documentacao?tab=referencia&doc=docs/subsystems/inference.md");
+  it("a section can be collapsed even while holding the open document", async () => {
+    renderDoc("/documentation?tab=reference&doc=docs/subsystems/inference.md");
     const collapse = screen.getByRole("button", { name: "Collapse Subsystem docs" });
     expect(screen.getByRole("button", { name: "Open Inference path" })).toBeTruthy();
 
     fireEvent.click(collapse);
 
-    // O defeito antigo: a seção que continha a seleção voltava a abrir sozinha.
-    // A saída é animada, então a folha some no fim da animação, não no clique.
+    // The old defect: the section holding the selection opened again on its own.
+    // The exit is animated, so the leaf disappears at the end of the animation, not on the click.
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: "Open Inference path" })).toBeNull(),
     );
     expect(screen.getByRole("button", { name: "Expand Subsystem docs" })).toBeTruthy();
-    // Recolher não muda o que está sendo lido.
+    // Collapsing does not change what is being read.
     expect(screen.getByRole("heading", { name: "Inference path", level: 2 })).toBeTruthy();
   });
 
-  it("a lista de navegação rola sozinha, e não a página", () => {
+  it("the navigation list scrolls on its own, not the page", () => {
     const { container } = renderDoc();
     openReference();
-    // A regressão foi estrutural: sem `min-h-0` o filho flex cresce com o
-    // conteúdo e o overflow nunca engata, então a busca corria para fora da
-    // tela sem barra de rolagem.
+    // The regression was structural: without `min-h-0` the flex child grows with
+    // the content and the overflow never engages, so the search ran off the
+    // screen with no scrollbar.
     const scrollers = container.querySelectorAll(".overflow-y-auto");
     expect(scrollers.length).toBe(2);
     expect(scrollers[0].className).toContain("min-h-0");
   });
 
-  it("?doc= e ?guia= são endereços", () => {
-    renderDoc("/documentacao?tab=referencia&doc=docs/subsystems/inference.md");
+  it("?doc= and ?guide= are addresses", () => {
+    renderDoc("/documentation?tab=reference&doc=docs/subsystems/inference.md");
     expect(screen.getByRole("heading", { name: "Inference path", level: 2 })).toBeTruthy();
     cleanup();
 
-    renderDoc("/documentacao?tab=guias&guia=operar");
+    renderDoc("/documentation?tab=guides&guide=operating");
     expect(screen.getByRole("heading", { name: "Operate and diagnose", level: 2 })).toBeTruthy();
   });
 
-  it("a busca filtra por rótulo e corpo; limpar volta à árvore", () => {
+  it("the search filters by label and body; clearing returns to the tree", () => {
     renderDoc();
     openReference();
     const search = screen.getByLabelText("Search documentation");
     fireEvent.change(search, { target: { value: "transfer" } });
-    // Com busca ativa a árvore some; "Project root" ainda aparece como *dica*
-    // de seção num resultado, então o que tem de sumir é o cabeçalho.
+    // With an active search the tree disappears; "Project root" still shows as a
+    // section *hint* in a result, so what has to disappear is the header.
     expect(screen.queryByRole("button", { name: "Project root" })).toBeNull();
     expect(screen.getAllByRole("button", { name: /Open .*transfer/i }).length).toBeGreaterThan(0);
 
@@ -159,7 +159,7 @@ describe("Documentation", () => {
     expect(screen.getByRole("button", { name: "Project root" })).toBeTruthy();
   });
 
-  it("uma busca sem resultado avisa em vez de quebrar", () => {
+  it("a search without results warns instead of breaking", () => {
     renderDoc();
     openReference();
     fireEvent.change(screen.getByLabelText("Search documentation"), {
@@ -168,7 +168,7 @@ describe("Documentation", () => {
     expect(screen.getByText("No documentation matches")).toBeTruthy();
   });
 
-  it("exibe guias de um plugin instalado e carrega o Markdown sob demanda", async () => {
+  it("displays the guides of an installed plugin and loads the Markdown on demand", async () => {
     setPluginUi([documentedPlugin]);
     vi.spyOn(api, "getText").mockResolvedValue("# Plugin guide\n\nPlugin content");
     renderDoc();
@@ -185,15 +185,15 @@ describe("Documentation", () => {
     );
   });
 
-  describe("navegação mobile", () => {
-    it("começa na barra em tela inteira, sem o leitor nem o botão Voltar", () => {
+  describe("mobile navigation", () => {
+    it("starts on the full-screen bar, without the reader or the Back button", () => {
       const { container } = renderDoc();
       expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
       expect(container.querySelector("nav")?.className).not.toContain("hidden");
       expect(screen.getByTestId("docs-reader").className).toContain("hidden");
     });
 
-    it("selecionar um item abre o leitor em tela cheia com Voltar no topo", () => {
+    it("selecting an item opens the reader full screen with Back at the top", () => {
       const { container } = renderDoc();
       fireEvent.click(screen.getByRole("button", { name: /Discovery, advertised addresses/ }));
 
@@ -203,7 +203,7 @@ describe("Documentation", () => {
       expect(screen.getByTestId("docs-reader").className).not.toContain("hidden");
     });
 
-    it("Voltar fecha o leitor sem perder a seleção", () => {
+    it("Back closes the reader without losing the selection", () => {
       const { container } = renderDoc();
       fireEvent.click(screen.getByRole("button", { name: /Discovery, advertised addresses/ }));
       fireEvent.click(screen.getByRole("button", { name: "Back" }));
@@ -211,12 +211,12 @@ describe("Documentation", () => {
       expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
       expect(container.querySelector("nav")?.className).not.toContain("hidden");
       expect(screen.getByTestId("docs-reader").className).toContain("hidden");
-      // O conteúdo lido continua sendo o mesmo - só a vista mobile mudou.
+      // The content being read stays the same - only the mobile view changed.
       expect(screen.getByRole("heading", { name: "P2P network and discovery", level: 2 })).toBeTruthy();
     });
 
-    it("um deep link já chega como seleção, abrindo direto no leitor", () => {
-      renderDoc("/documentacao?tab=referencia&doc=docs/subsystems/inference.md");
+    it("a deep link already arrives as a selection, opening straight in the reader", () => {
+      renderDoc("/documentation?tab=reference&doc=docs/subsystems/inference.md");
       expect(screen.getByRole("button", { name: "Back" })).toBeTruthy();
       expect(screen.getByRole("heading", { name: "Inference path", level: 2 })).toBeTruthy();
     });

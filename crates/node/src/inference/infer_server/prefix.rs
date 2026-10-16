@@ -2,56 +2,61 @@ use super::*;
 
 // ── Session ───────────────────────────────────────────────────────────────────
 
-/// O que a cabeça **executou** com o prefixo retido no pedaço 0.
+/// What the head **did** with the retained prefix on chunk 0.
 ///
-/// Viaja de volta ao gateway e adiante para os hops seguintes. A distinção
-/// importa: o gateway escolhe *tentar* reusar, a cabeça é quem decide se deu, e
-/// era exatamente essa diferença que a telemetria antiga não mostrava.
+/// It travels back to the gateway and forward to the next hops. The distinction
+/// matters: the gateway chooses to *try* reusing, the head is who decides
+/// whether it worked, and it was exactly this difference that the old telemetry
+/// did not show.
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PrefixDecision {
     pub(crate) reused: bool,
     pub(crate) cached_tokens: u32,
-    /// Quantos tokens abriram o prefixo retido, mesmo quando a divergência
-    /// obrigou o prefill a recomeçar a frio.
+    /// How many tokens opened the retained prefix, even when the divergence
+    /// forced the prefill to restart cold.
     pub(crate) matched_tokens: u32,
 }
 
-/// A regra do reuso, sem sessão nem motor por perto.
+/// The reuse rule, with no session or engine around.
 ///
-/// `retidos` são exatamente os tokens do prompt do turno anterior que estão no
-/// KV, e portanto seu tamanho tem que ser `n_past`. O prefixo serve quando
-/// esses tokens ainda abrem o prompt novo e sobra pelo menos um token para
-/// decodificar:
-/// aí o prefill continua da posição `n_past` e **nenhuma posição sai do KV**,
-/// que é a diferença entre funcionar em todo modelo e depender de o motor
-/// aceitar `llama_memory_seq_rm` parcial.
+/// `retained` are exactly the prompt tokens of the previous turn that are in
+/// the KV, and therefore its size has to be `n_past`. The prefix fits when
+/// those tokens still open the new prompt and at least one token is left to
+/// decode:
+/// then the prefill continues from position `n_past` and **no position leaves
+/// the KV**, which is the difference between working on every model and
+/// depending on the engine accepting a partial `llama_memory_seq_rm`.
 ///
-/// Note que a comparação é contra `n_past`, não contra o prompt retido inteiro:
-/// o que o turno anterior guardou no KV termina antes do rabicho volátil do
-/// template de conversa (ver `stable_prefix_len`). Divergir depois de `n_past`
-/// é o caso **normal** - é onde a conversa cresceu.
+/// Note that the comparison is against `n_past`, not against the whole retained
+/// prompt: what the previous turn kept in the KV ends before the volatile tail
+/// of the chat template (see `stable_prefix_len`). Diverging after `n_past`
+/// is the **normal** case - it is where the conversation grew.
 ///
-/// Recusa quando os `n_past` tokens não abrem mais o prompt novo (a conversa
-/// foi editada, trocou de template, mudou a lista de ferramentas), quando não
-/// sobraria token para decodificar, e quando a sessão não tem prompt no KV.
-/// Recusar custa o reuso daquele turno e nunca a requisição.
-pub(crate) fn plan_prefix_reuse(retidos: &[i32], n_past: u32, novos: &[i32]) -> PrefixDecision {
-    let comum = retidos
+/// It refuses when the `n_past` tokens no longer open the new prompt (the
+/// conversation was edited, switched template, changed the tool list), when no
+/// token would be left to decode, and when the session has no prompt in the KV.
+/// Refusing costs the reuse of that turn and never the request.
+pub(crate) fn plan_prefix_reuse(
+    retained: &[i32],
+    n_past: u32,
+    new_items: &[i32],
+) -> PrefixDecision {
+    let common = retained
         .iter()
-        .zip(novos)
+        .zip(new_items)
         .take_while(|(old, new)| old == new)
         .count() as u32;
-    if retidos.len() as u32 != n_past {
+    if retained.len() as u32 != n_past {
         return PrefixDecision {
-            matched_tokens: comum.min(n_past),
+            matched_tokens: common.min(n_past),
             ..PrefixDecision::default()
         };
     }
-    // O último token do novo prompt tem de ser decodificado: é dele que saem os
-    // logits do primeiro token gerado.
-    let cabe_decodificar = (n_past as usize) < novos.len();
-    if n_past > 0 && comum >= n_past && cabe_decodificar {
+    // The last token of the new prompt has to be decoded: the logits of the
+    // first generated token come from it.
+    let can_decode = (n_past as usize) < new_items.len();
+    if n_past > 0 && common >= n_past && can_decode {
         PrefixDecision {
             reused: true,
             cached_tokens: n_past,
@@ -59,63 +64,65 @@ pub(crate) fn plan_prefix_reuse(retidos: &[i32], n_past: u32, novos: &[i32]) -> 
         }
     } else {
         PrefixDecision {
-            matched_tokens: comum.min(n_past),
+            matched_tokens: common.min(n_past),
             ..PrefixDecision::default()
         }
     }
 }
 
-/// Quantos tokens do começo deste prompt continuam valendo quando a conversa
-/// crescer - a fronteira entre o que vale a pena reter e o que é deste turno.
+/// How many tokens from the start of this prompt remain valid when the
+/// conversation grows - the boundary between what is worth retaining and what
+/// belongs to this turn.
 ///
-/// **Medido, não presumido.** O template de conversa fecha o prompt com o
-/// rabicho que abre o turno do assistente (`<|im_end|>\n<|im_start|>assistant\n`
-/// no chatml, outra coisa noutro modelo). Esse rabicho fica no *fim* do prompt,
-/// então o prompt de um turno nunca é prefixo do prompt do turno seguinte: o
-/// texto novo entra antes dele. Medido no Ornith-1.0-35B: prompt de 50 tokens,
-/// 45 estáveis, 5 voláteis - e era exatamente por 5 tokens que todo reuso era
-/// recusado, com a retenção e o cache funcionando perfeitamente.
+/// **Measured, not assumed.** The chat template closes the prompt with the
+/// tail that opens the assistant's turn (`<|im_end|>\n<|im_start|>assistant\n`
+/// in chatml, something else in another model). That tail sits at the *end* of
+/// the prompt, so the prompt of one turn is never a prefix of the prompt of the
+/// next turn: the new text goes in before it. Measured on Ornith-1.0-35B: a
+/// prompt of 50 tokens, 45 stable, 5 volatile - and it was exactly because of
+/// 5 tokens that every reuse was refused, with retention and the cache working
+/// perfectly.
 ///
-/// A sonda renderiza o mesmo prompt com a continuação que `render_prompt`
-/// acrescentaria e compara os tokens: o prefixo comum é, por construção, a
-/// parte que sobrevive. Vale para qualquer template e qualquer tokenizador,
-/// porque é medição e não suposição sobre o formato. Sonda conservadora custa
-/// alguns tokens de reuso; nunca corrompe, porque `plan_prefix_reuse` só
-/// aproveita o que está de fato no KV.
+/// The probe renders the same prompt with the continuation `render_prompt`
+/// would append and compares the tokens: the common prefix is, by construction,
+/// the part that survives. It holds for any template and any tokenizer,
+/// because it is a measurement and not an assumption about the format. A
+/// conservative probe costs a few tokens of reuse; it never corrupts, because
+/// `plan_prefix_reuse` only reuses what is actually in the KV.
 pub(super) fn stable_prefix_len(
     engine: &crate::llm::LlmEngine,
-    texto: &str,
+    text: &str,
     use_tmpl: bool,
     no_think: bool,
     tokens: &[i32],
 ) -> usize {
-    // A forma exata do que o turno seguinte acrescenta - ver `render_prompt`.
-    const CONTINUACAO: &str = "\n\nAssistant: x";
-    let sondado = if use_tmpl {
+    // The exact shape of what the next turn appends - see `render_prompt`.
+    const CONTINUATION: &str = "\n\nAssistant: x";
+    let probed_text = if use_tmpl {
         match engine.apply_chat_template(
-            &[("user", &format!("{texto}{CONTINUACAO}"))],
+            &[("user", &format!("{text}{CONTINUATION}"))],
             true,
             no_think,
         ) {
             Ok(rendered) => rendered,
-            // Sem sonda não há fronteira medida: não retenha nada que possa
-            // depender de um template que não conseguimos comparar.
+            // Without a probe there is no measured boundary: retain nothing that
+            // may depend on a template we could not compare.
             Err(_) => return 0,
         }
     } else {
-        format!("{texto}{CONTINUACAO}")
+        format!("{text}{CONTINUATION}")
     };
-    let sondados = engine.tokenize(&sondado, !use_tmpl, true);
-    let comum = tokens
+    let probed_tokens = engine.tokenize(&probed_text, !use_tmpl, true);
+    let common = tokens
         .iter()
-        .zip(&sondados)
+        .zip(&probed_tokens)
         .take_while(|(a, b)| a == b)
         .count();
     // Reserve the final prompt token for `gen_seq`. Without this cap, a raw
     // prompt whose continuation tokenizes independently could leave the whole
     // prompt in `prompt_seq`, putting the first generated token back into the
     // retained sequence.
-    retainable_prefix_len(comum, tokens.len())
+    retainable_prefix_len(common, tokens.len())
 }
 
 /// The stable boundary of a typed decision: only the text before `bytes`
@@ -128,27 +135,27 @@ pub(super) fn stable_prefix_len(
 /// keeps the ordinary boundary).
 pub(super) fn bounded_stable_len(
     engine: &crate::llm::LlmEngine,
-    texto: &str,
+    text: &str,
     bytes: usize,
     use_tmpl: bool,
     no_think: bool,
     tokens: &[i32],
 ) -> usize {
-    if bytes == 0 || bytes >= texto.len() || !texto.is_char_boundary(bytes) {
+    if bytes == 0 || bytes >= text.len() || !text.is_char_boundary(bytes) {
         return tokens.len();
     }
-    let cortado = format!("{}\u{7}", &texto[..bytes]);
-    let sondado = if use_tmpl {
-        match engine.apply_chat_template(&[("user", &cortado)], true, no_think) {
+    let truncated = format!("{}\u{7}", &text[..bytes]);
+    let probed_text = if use_tmpl {
+        match engine.apply_chat_template(&[("user", &truncated)], true, no_think) {
             Ok(rendered) => rendered,
             Err(_) => return 0,
         }
     } else {
-        cortado
+        truncated
     };
-    let sondados = engine.tokenize(&sondado, !use_tmpl, true);
-    let comum = common_prefix_len(tokens, &sondados);
-    retainable_prefix_len(comum, tokens.len())
+    let probed_tokens = engine.tokenize(&probed_text, !use_tmpl, true);
+    let common = common_prefix_len(tokens, &probed_tokens);
+    retainable_prefix_len(common, tokens.len())
 }
 
 pub(super) fn common_prefix_len(a: &[i32], b: &[i32]) -> usize {
@@ -159,15 +166,16 @@ pub(super) fn retainable_prefix_len(common: usize, prompt_len: usize) -> usize {
     common.min(prompt_len.saturating_sub(1))
 }
 
-/// A posição absoluta do KV em que este pedaço de prompt deve começar.
+/// The absolute KV position at which this prompt chunk must start.
 ///
-/// `start_pos` vem do peer que tokenizou. Ele só pode faltar no pedaço 0, onde
-/// a posição da própria sessão é a referência: zero numa sessão recomeçada,
-/// ou o fim do prefixo retido quando houve reuso. Para qualquer pedaço
-/// posterior, inferir a posição com `chunk_index * chunk_size` é incorreto:
-/// um pedaço anterior pode ter terminado no token 42, não no múltiplo 512.
-/// Recusar o frame sem posição nomeia a divergência e deixa o gateway fazer o
-/// fallback frio, em vez de misturar KV de sessões diferentes.
+/// `start_pos` comes from the peer that tokenized. It may only be missing on
+/// chunk 0, where the session's own position is the reference: zero in a
+/// restarted session, or the end of the retained prefix when there was reuse.
+/// For any later chunk, inferring the position with `chunk_index * chunk_size`
+/// is incorrect: an earlier chunk may have ended at token 42, not at the
+/// multiple 512. Refusing the frame without a position names the divergence and
+/// lets the gateway do the cold fallback, instead of mixing KV from different
+/// sessions.
 pub(super) fn expected_prefill_pos(
     start_pos: Option<u32>,
     chunk_index: u32,
@@ -177,7 +185,7 @@ pub(super) fn expected_prefill_pos(
         Some(position) => Ok(position),
         None if chunk_index == 0 => Ok(session_n_past),
         None => bail!(
-            "chunk {chunk_index} sem start_pos absoluto; não é seguro derivar a posição do índice"
+            "chunk {chunk_index} without an absolute start_pos; it is not safe to derive the position from the index"
         ),
     }
 }
@@ -282,8 +290,8 @@ mod decision_prefix_tests {
 mod prefix_rule_tests {
     use super::*;
 
-    /// O caso do relatório: o cache acerta, o pedaço 0 é julgado por zero, e o
-    /// reuso é desfeito antes de decodificar.
+    /// The case from the report: the cache hits, chunk 0 is judged against zero,
+    /// and the reuse is undone before decoding.
     #[test]
     fn chunk_zero_of_a_hit_starts_where_the_retained_prefix_ends() {
         assert_eq!(expected_prefill_pos(None, 0, 1523).unwrap(), 1523);
@@ -294,7 +302,7 @@ mod prefix_rule_tests {
         assert_eq!(expected_prefill_pos(None, 0, 0).unwrap(), 0);
     }
 
-    /// Do pedaço 1 em diante quem manda é a posição que o peer devolveu.
+    /// From chunk 1 on, what rules is the position the peer returned.
     #[test]
     fn later_chunks_follow_the_position_the_head_reported() {
         assert_eq!(expected_prefill_pos(Some(1600), 1, 1600).unwrap(), 1600);
@@ -314,15 +322,15 @@ mod prefix_rule_tests {
 
     #[test]
     fn a_conversation_that_only_grows_reuses_the_whole_previous_prompt() {
-        let turno1 = vec![10, 11, 12, 13];
-        let turno2 = vec![10, 11, 12, 13, 20, 21];
-        let d = plan_prefix_reuse(&turno1, 4, &turno2);
+        let turn1 = vec![10, 11, 12, 13];
+        let turn2 = vec![10, 11, 12, 13, 20, 21];
+        let d = plan_prefix_reuse(&turn1, 4, &turn2);
         assert!(d.reused);
         assert_eq!(d.cached_tokens, 4);
     }
 
-    /// Divergência no meio exigiria encolher o KV. Recomeçar é a resposta, e
-    /// ela não custa nada além do reuso daquele turno.
+    /// A divergence in the middle would require shrinking the KV. Restarting is
+    /// the answer, and it costs nothing beyond the reuse of that turn.
     #[test]
     fn a_prompt_that_diverges_restarts_instead_of_shrinking_the_cache() {
         let d = plan_prefix_reuse(&[10, 11, 12, 13], 4, &[10, 11, 99, 13, 20]);
@@ -331,8 +339,8 @@ mod prefix_rule_tests {
         assert_eq!(d.matched_tokens, 2);
     }
 
-    /// Prompt idêntico ao retido: não sobraria token para decodificar, e recuar
-    /// um só continuaria sendo remoção parcial. Recomeça.
+    /// Prompt identical to the retained one: no token would be left to decode,
+    /// and stepping back just one would still be a partial removal. It restarts.
     #[test]
     fn an_identical_prompt_restarts_because_nothing_would_be_left_to_decode() {
         let tokens = vec![10, 11, 12, 13];
@@ -348,13 +356,16 @@ mod prefix_rule_tests {
         assert_eq!(retainable_prefix_len(0, 0), 0);
     }
 
-    /// O KV pode ter menos posições que os tokens guardados (turno anterior
-    /// interrompido no meio do prefill). Reusar até `n_past` seria mentira
-    /// sobre o que está no cache.
+    /// The KV may hold fewer positions than the stored tokens (previous turn
+    /// interrupted in the middle of the prefill). Reusing up to `n_past` would
+    /// be a lie about what is in the cache.
     #[test]
     fn a_partially_ingested_prompt_is_not_offered_as_a_prefix() {
         let d = plan_prefix_reuse(&[10, 11, 12, 13], 2, &[10, 11, 12, 13, 20]);
-        assert!(!d.reused, "o retido tem 4 tokens mas só 2 estão no KV");
+        assert!(
+            !d.reused,
+            "the retained has 4 tokens but only 2 are in the KV"
+        );
     }
 
     #[test]
@@ -362,62 +373,59 @@ mod prefix_rule_tests {
         assert!(!plan_prefix_reuse(&[], 0, &[10, 11]).reused);
     }
 
-    /// Cada sessão tem uma sequência de prompt e a de geração emparelhada com
-    /// ela - ver `llm::kv_seq_budget`. Os dois conjuntos não podem se cruzar.
+    /// Each session has a prompt sequence and the generation one paired with
+    /// it - see `llm::kv_seq_budget`. The two sets cannot overlap.
     #[test]
     fn prompt_and_generation_sequences_never_collide() {
         let max_sessions = 4u32;
-        let orcamento = crate::llm::kv_seq_budget(max_sessions);
-        assert_eq!(orcamento, 8);
+        let budget = crate::llm::kv_seq_budget(max_sessions);
+        assert_eq!(budget, 8);
         let prompts: Vec<u32> = (0..max_sessions).collect();
-        let geracoes: Vec<u32> = prompts.iter().map(|s| s + max_sessions).collect();
-        for g in &geracoes {
-            assert!(
-                !prompts.contains(g),
-                "sequência {g} servindo aos dois papéis"
-            );
-            assert!(
-                *g < orcamento,
-                "sequência {g} fora do orçamento do contexto"
-            );
+        let generations: Vec<u32> = prompts.iter().map(|s| s + max_sessions).collect();
+        for g in &generations {
+            assert!(!prompts.contains(g), "sequence {g} serving both roles");
+            assert!(*g < budget, "sequence {g} outside the context budget");
         }
     }
 }
 
-/// Uma conversa viva neste peer, com o KV do prompt separado do KV da geração.
+/// A live conversation on this peer, with the prompt KV separate from the
+/// generation KV.
 ///
-/// **O prompt nunca é estendido.** `prompt_seq` recebe os pedaços do prompt e
-/// para aí; assim que o turno vai gerar, `open_generation` copia esse KV para
-/// `gen_seq` e todo token gerado cai na cópia. No fim do turno a cópia é
-/// apagada inteira - `kv_remove(gen, 0, -1)`, remoção total, que todo motor
-/// aceita - e `prompt_seq` continua exatamente com o prompt, pronto para o
-/// turno seguinte. É por isso que o reuso de prefixo não depende de o modelo
-/// aceitar remoção parcial de KV: nada precisa ser removido do meio.
+/// **The prompt is never extended.** `prompt_seq` receives the prompt chunks
+/// and stops there; as soon as the turn is about to generate, `open_generation`
+/// copies that KV to `gen_seq` and every generated token lands in the copy. At
+/// the end of the turn the copy is erased whole - `kv_remove(gen, 0, -1)`, a
+/// total removal, which every engine accepts - and `prompt_seq` still holds
+/// exactly the prompt, ready for the next turn. This is why prefix reuse does
+/// not depend on the model accepting partial KV removal: nothing needs to be
+/// removed from the middle.
 pub(super) struct Session {
-    /// Sequência do prompt. Só o prefill escreve nela.
+    /// Prompt sequence. Only the prefill writes to it.
     pub(super) prompt_seq: u32,
-    /// Sequência da geração deste turno, aberta na primeira decodificação de
-    /// token gerado. `None` entre turnos.
+    /// Generation sequence of this turn, opened on the first decode of a
+    /// generated token. `None` between turns.
     pub(super) gen_seq: Option<u32>,
-    /// Posição lógica seguinte do prompt em `prompt_seq`. Em M-RoPE, ela pode
-    /// ser menor que `prompt_cells`, porque várias células físicas partilham
-    /// uma posição temporal.
+    /// Next logical position of the prompt in `prompt_seq`. In M-RoPE, it may
+    /// be smaller than `prompt_cells`, because several physical cells share
+    /// one temporal position.
     pub(super) prompt_len: u32,
-    /// Onde acaba a parte do prompt que sobrevive ao turno seguinte, e portanto
-    /// onde a sequência de geração começa - ver `stable_prefix_len`. Tudo daqui
-    /// para a frente (o rabicho do template e os tokens gerados) vive na cópia
-    /// e some no fim do turno. `u32::MAX` é "ainda não sei", que mantém tudo na
-    /// sequência do prompt: é o estado dos hops antes de a cabeça informar.
+    /// Where the part of the prompt that survives into the next turn ends, and
+    /// therefore where the generation sequence starts - see `stable_prefix_len`.
+    /// Everything from here on (the template tail and the generated tokens)
+    /// lives in the copy and goes away at the end of the turn. `u32::MAX` is
+    /// "I do not know yet", which keeps everything in the prompt sequence: it is
+    /// the state of the hops before the head reports.
     pub(super) stable_len: u32,
-    /// Quantas células físicas o prefill escreveu em `prompt_seq`. É separado
-    /// de `n_past`: slots de KV são células, enquanto a posição M-RoPE é
-    /// lógica.
+    /// How many physical cells the prefill wrote to `prompt_seq`. It is separate
+    /// from `n_past`: KV slots are cells, while the M-RoPE position is
+    /// logical.
     pub(super) prompt_cells: u32,
-    /// Próxima posição lógica usada pelo motor neste prompt.
+    /// Next logical position used by the engine in this prompt.
     pub(super) n_past: u32,
-    /// O prompt desta sessão passou pelo `mtmd`. `prompt_tokens` então não são
-    /// os tokens reais das células de mídia, e nada que dependa desse
-    /// mapeamento pode correr - ver `positions_match_cells`.
+    /// The prompt of this session went through `mtmd`. `prompt_tokens` then are
+    /// not the real tokens of the media cells, and nothing that depends on that
+    /// mapping may run - see `positions_match_cells`.
     pub(super) contains_media: bool,
     pub(super) recent_tokens: Vec<i32>,
     /// Stored by the first peer so subsequent chunks don't re-tokenize.
@@ -426,19 +434,19 @@ pub(super) struct Session {
     /// between sessions because a byte prefix from one generation can only be
     /// completed by a later token in that same generation.
     pub(super) utf8: crate::llm::Utf8Assembler,
-    /// `true` entre turnos: o KV guarda só o prompt e ninguém está gerando.
-    /// Uma sessão retida é cache reclamável - `alloc_seq` pode despejá-la
-    /// quando falta slot, e o turno seguinte apenas perde o reuso.
+    /// `true` between turns: the KV holds only the prompt and nobody is
+    /// generating. A retained session is reclaimable cache - `alloc_seq` may
+    /// evict it when a slot is missing, and the next turn merely loses the reuse.
     pub(super) retained: bool,
     pub(super) last_used: Instant,
 }
 
 impl Session {
-    /// Verdadeiro quando cada célula física de KV do prompt corresponde a uma
-    /// posição lógica - o caso de texto puro. Um prompt M-RoPE com mídia
-    /// escreve várias células por posição, e aí `prompt_tokens` deixa de
-    /// indexar o KV célula a célula: nada que dependa desse mapeamento
-    /// (reuso de prefixo, snapshot) pode correr.
+    /// True when each physical KV cell of the prompt corresponds to one
+    /// logical position - the pure text case. An M-RoPE prompt with media
+    /// writes several cells per position, and then `prompt_tokens` stops
+    /// indexing the KV cell by cell: nothing that depends on that mapping
+    /// (prefix reuse, snapshot) may run.
     pub(super) fn positions_match_cells(&self) -> bool {
         self.prompt_cells == self.n_past && !self.contains_media
     }
@@ -460,33 +468,34 @@ impl Session {
         }
     }
 
-    /// Onde a próxima decodificação escreve: a cópia de geração quando o turno
-    /// já está gerando, a sequência do prompt enquanto ele ainda entra.
+    /// Where the next decode writes: the generation copy when the turn is
+    /// already generating, the prompt sequence while it is still coming in.
     pub(super) fn seq_id(&self) -> u32 {
         self.gen_seq.unwrap_or(self.prompt_seq)
     }
 
-    /// Conta somente células escritas na sequência que permanece entre turnos.
-    /// Depois de `open_generation`, chunks restantes do prefill vão para a
-    /// cópia de geração e não alteram o tamanho físico do prefixo retido.
+    /// Counts only cells written to the sequence that remains between turns.
+    /// After `open_generation`, remaining prefill chunks go to the generation
+    /// copy and do not change the physical size of the retained prefix.
     pub(super) fn record_prompt_sequence_cells(&mut self, written_seq: u32, cells: u32) {
         if written_seq == self.prompt_seq {
             self.prompt_cells = self.prompt_cells.saturating_add(cells);
         }
     }
 
-    /// Aplica em memória o que `retain_prompt` decidiu sobre o KV.
+    /// Applies in memory what `retain_prompt` decided about the KV.
     ///
-    /// `trimmed_to_stable` diz se `prompt_seq` ficou fisicamente com
-    /// exatamente `prompt_len` células - por já estar assim (nada além da
-    /// fronteira estável foi decodificado nela neste turno) ou por o motor ter
-    /// aceitado descartar o excedente. Só então `prompt_cells` e
-    /// `prompt_tokens` encolhem junto com `n_past`: sem isso, `prompt_cells`
-    /// fica maior que `n_past` para sempre e `positions_match_cells` recusa
-    /// todo reuso seguinte mesmo com o prefixo fisicamente intacto - era
-    /// exatamente esse o `prefix_match_tokens == 0` do relatório. Quando o
-    /// motor recusa a poda, a sessão continua retida com o prompt inteiro (sem
-    /// reuso neste turno), nunca com um estado incoerente.
+    /// `trimmed_to_stable` says whether `prompt_seq` physically ended up with
+    /// exactly `prompt_len` cells - because it already was so (nothing beyond
+    /// the stable boundary was decoded into it this turn) or because the engine
+    /// accepted discarding the excess. Only then do `prompt_cells` and
+    /// `prompt_tokens` shrink together with `n_past`: without this,
+    /// `prompt_cells` stays larger than `n_past` forever and
+    /// `positions_match_cells` refuses every following reuse even with the
+    /// prefix physically intact - that was exactly the
+    /// `prefix_match_tokens == 0` of the report. When the engine refuses the
+    /// trim, the session stays retained with the whole prompt (no reuse this
+    /// turn), never with an inconsistent state.
     pub(super) fn apply_retention(&mut self, prompt_len: u32, trimmed_to_stable: bool) {
         self.gen_seq = None;
         self.n_past = prompt_len;
@@ -513,9 +522,9 @@ impl Session {
 mod session_text_tests {
     use super::*;
 
-    /// Reproduz o caminho de emissão que alimenta o delta do chat: duas peças
-    /// de token chegam em chamadas distintas, mas o consumidor precisa ver o
-    /// caractere inteiro, não dois U+FFFD criados por conversões independentes.
+    /// Reproduces the emission path that feeds the chat delta: two token pieces
+    /// arrive in separate calls, but the consumer needs to see the whole
+    /// character, not two U+FFFD created by independent conversions.
     #[test]
     fn streaming_token_pieces_reach_the_consumer_as_one_utf8_character() {
         let mut session = Session::new(0);
@@ -527,7 +536,7 @@ mod session_text_tests {
         assert_eq!(emitted, "café");
     }
 
-    /// O fim da sessão precisa drenar um prefixo truncado uma única vez.
+    /// The end of the session needs to drain a truncated prefix exactly once.
     #[test]
     fn ending_stream_flushes_pending_bytes_without_leaking_them() {
         let mut session = Session::new(0);
@@ -537,7 +546,7 @@ mod session_text_tests {
         assert_eq!(session.finish_token_stream(), "");
     }
 
-    /// Duas requisições intercaladas não podem compartilhar o rabicho de UTF-8.
+    /// Two interleaved requests cannot share the UTF-8 tail.
     #[test]
     fn concurrent_sessions_keep_pending_utf8_isolated() {
         let mut first = Session::new(0);
@@ -574,163 +583,163 @@ mod retention_accounting_tests {
         assert!(session.positions_match_cells());
     }
 
-    /// Monta um caso em que células extras realmente ficaram em `prompt_seq`,
-    /// para exercitar a recusa de remoção de sufixo. O caminho normal de prefill
-    /// escreve os chunks após a fronteira estável em `gen_seq`.
-    fn sessao_de_fim_de_turno(retidos: &[i32], rabicho: u32) -> Session {
+    /// Builds a case in which extra cells really stayed in `prompt_seq`, to
+    /// exercise the refusal of suffix removal. The normal prefill path writes
+    /// the chunks after the stable boundary to `gen_seq`.
+    fn end_of_turn_session(retained: &[i32], trailing: u32) -> Session {
         let mut s = Session::new(0);
-        let total = retidos.len() as u32 + rabicho;
-        s.prompt_tokens = retidos.to_vec();
+        let total = retained.len() as u32 + trailing;
+        s.prompt_tokens = retained.to_vec();
         s.prompt_tokens
-            .extend(std::iter::repeat_n(999, rabicho as usize));
+            .extend(std::iter::repeat_n(999, trailing as usize));
         s.n_past = total;
         s.prompt_cells = total;
-        s.stable_len = retidos.len() as u32;
+        s.stable_len = retained.len() as u32;
         s
     }
 
-    /// Reproduz uma remoção de sufixo recusada: `prompt_cells` (célula física)
-    /// fica maior que `n_past` (posição lógica retida) quando a poda necessária
-    /// não acontece, e por isso `positions_match_cells` - o portão que
-    /// `adopt_prompt_prefix` consulta antes de sequer chamar `plan_prefix_reuse`
-    /// - nunca mais deixa passar. `prefix_match_tokens` sai 0 mesmo com o
-    /// prefixo fisicamente intacto.
+    /// Reproduces a refused suffix removal: `prompt_cells` (physical cell)
+    /// stays larger than `n_past` (retained logical position) when the needed
+    /// trim does not happen, and so `positions_match_cells` - the gate that
+    /// `adopt_prompt_prefix` consults before even calling `plan_prefix_reuse`
+    /// - never lets it through again. `prefix_match_tokens` comes out 0 even
+    /// with the prefix physically intact.
     #[test]
     fn without_trimming_the_stable_boundary_positions_never_match_again() {
-        let mut sessao = sessao_de_fim_de_turno(&[1, 2, 3, 4, 5], 5);
-        let prompt_len = sessao.stable_len; // 5, a fronteira medida no turno.
+        let mut session = end_of_turn_session(&[1, 2, 3, 4, 5], 5);
+        let prompt_len = session.stable_len; // 5, the boundary measured in the turn.
 
-        sessao.apply_retention(prompt_len, false);
+        session.apply_retention(prompt_len, false);
 
-        assert_eq!(sessao.n_past, 5);
+        assert_eq!(session.n_past, 5);
         assert_eq!(
-            sessao.prompt_cells, 10,
-            "sem poda, a contagem física fica presa no rabicho"
+            session.prompt_cells, 10,
+            "without pruning, the physical count stays stuck on the trailing bytes"
         );
         assert!(
-            !sessao.positions_match_cells(),
-            "o portão de reuso tem que recusar um estado fisicamente inconsistente"
+            !session.positions_match_cells(),
+            "the reuse gate must refuse a physically inconsistent state"
         );
     }
 
-    /// O conserto: quando o motor aceita (ou não havia nada para cortar),
-    /// `prompt_cells` e `prompt_tokens` encolhem junto com `n_past`, e o
-    /// portão volta a abrir para o turno seguinte.
+    /// The fix: when the engine accepts (or there was nothing to cut),
+    /// `prompt_cells` and `prompt_tokens` shrink together with `n_past`, and
+    /// the gate opens again for the next turn.
     #[test]
     fn trimming_the_stable_boundary_makes_positions_match_again() {
-        let mut sessao = sessao_de_fim_de_turno(&[1, 2, 3, 4, 5], 5);
-        let prompt_len = sessao.stable_len;
+        let mut session = end_of_turn_session(&[1, 2, 3, 4, 5], 5);
+        let prompt_len = session.stable_len;
 
-        sessao.apply_retention(prompt_len, true);
+        session.apply_retention(prompt_len, true);
 
-        assert_eq!(sessao.n_past, 5);
-        assert_eq!(sessao.prompt_cells, 5);
-        assert_eq!(sessao.prompt_tokens, vec![1, 2, 3, 4, 5]);
-        assert!(sessao.positions_match_cells());
-        assert_eq!(sessao.prompt_tokens.len() as u32, sessao.n_past);
+        assert_eq!(session.n_past, 5);
+        assert_eq!(session.prompt_cells, 5);
+        assert_eq!(session.prompt_tokens, vec![1, 2, 3, 4, 5]);
+        assert!(session.positions_match_cells());
+        assert_eq!(session.prompt_tokens.len() as u32, session.n_past);
     }
 
-    /// Ponta a ponta, sem motor nenhum: a mesma sequência de eventos do
-    /// relatório (segundo pedido com o mesmo prefixo) prova
-    /// `prefix_match_tokens > 0` e `reused == true` usando a regra de
-    /// produção (`plan_prefix_reuse`), pela mesma porta que
-    /// `adopt_prompt_prefix` usa (`positions_match_cells` +
-    /// `prompt_tokens.len() == n_past`). Este é o teste dirigido que a tarefa
-    /// pede: prova por código que o conserto elimina a condição que hoje
-    /// impede o match, sem precisar de GGUF nem de cluster.
+    /// End to end, with no engine at all: the same sequence of events as the
+    /// report (second request with the same prefix) proves
+    /// `prefix_match_tokens > 0` and `reused == true` using the production
+    /// rule (`plan_prefix_reuse`), through the same gate that
+    /// `adopt_prompt_prefix` uses (`positions_match_cells` +
+    /// `prompt_tokens.len() == n_past`). This is the targeted test the task
+    /// asks for: it proves by code that the fix removes the condition that
+    /// today prevents the match, without needing a GGUF or a cluster.
     #[test]
     fn a_second_turn_with_the_same_prefix_hits_after_the_fix() {
-        // Turno 1: prompt "system user1" (2 tokens retidos) + rabicho do
-        // template de chat (3 tokens: fim de turno + abertura do assistente).
+        // Turn 1: prompt "system user1" (2 retained tokens) + chat template
+        // tail (3 tokens: end of turn + assistant opening).
         let prompt_len = 2u32;
 
-        // Sem o conserto (trimmed_to_stable=false), o portão fica fechado
-        // para sempre - a regressão relatada.
-        let mut sem_conserto = sessao_de_fim_de_turno(&[10, 11], 3);
-        sem_conserto.apply_retention(prompt_len, false);
-        assert!(!sem_conserto.positions_match_cells());
+        // Without the fix (trimmed_to_stable=false), the gate stays closed
+        // forever - the reported regression.
+        let mut unrepaired = end_of_turn_session(&[10, 11], 3);
+        unrepaired.apply_retention(prompt_len, false);
+        assert!(!unrepaired.positions_match_cells());
 
-        // Com o conserto, o portão abre e a regra de produção decide.
-        let mut sessao = sessao_de_fim_de_turno(&[10, 11], 3);
-        sessao.apply_retention(prompt_len, true);
-        assert!(sessao.positions_match_cells());
-        assert_eq!(sessao.prompt_tokens.len() as u32, sessao.n_past);
+        // With the fix, the gate opens and the production rule decides.
+        let mut session = end_of_turn_session(&[10, 11], 3);
+        session.apply_retention(prompt_len, true);
+        assert!(session.positions_match_cells());
+        assert_eq!(session.prompt_tokens.len() as u32, session.n_past);
 
-        // Turno 2: a conversa cresceu (render_prompt garante que o texto
-        // cru do turno 1 é prefixo exato do turno 2 - ver `openai.rs`), então
-        // os tokens novos começam com exatamente o que ficou retido.
-        let turno2 = vec![10, 11, 20, 21, 22];
-        let decisao = plan_prefix_reuse(&sessao.prompt_tokens, sessao.n_past, &turno2);
+        // Turn 2: the conversation grew (render_prompt guarantees that the raw
+        // text of turn 1 is an exact prefix of turn 2 - see `openai.rs`), so
+        // the new tokens start with exactly what was retained.
+        let turn2 = vec![10, 11, 20, 21, 22];
+        let decision = plan_prefix_reuse(&session.prompt_tokens, session.n_past, &turn2);
 
         assert!(
-            decisao.reused,
-            "o segundo pedido com o mesmo prefixo tem que acertar"
+            decision.reused,
+            "the second request with the same prefix must hit"
         );
-        assert_eq!(decisao.cached_tokens, 2);
+        assert_eq!(decision.cached_tokens, 2);
         assert!(
-            decisao.matched_tokens > 0,
-            "prefix_match_tokens tem que ser > 0 no segundo pedido, não 0 como no relatório"
+            decision.matched_tokens > 0,
+            "prefix_match_tokens must be > 0 on the second request, not 0 as in the report"
         );
-        assert_eq!(decisao.matched_tokens, 2);
+        assert_eq!(decision.matched_tokens, 2);
     }
 }
 
-// ── Snapshots de KV cache (`--slot-save-path`) ───────────────────────────────
+// ── KV cache snapshots (`--slot-save-path`) ──────────────────────────────────
 
-/// Versão do arquivo sidecar. Sobe quando o formato do `.json` muda de forma
-/// incompatível; o `.bin` é o formato do próprio llama.cpp (`LLAMA_STATE_SEQ_*`).
+/// Version of the sidecar file. It goes up when the `.json` format changes
+/// incompatibly; the `.bin` is llama.cpp's own format (`LLAMA_STATE_SEQ_*`).
 pub(super) const SLOT_SIDECAR_VERSION: u32 = 1;
 
-/// Metadados que acompanham cada `<name>.bin`, gravados ao lado como
-/// `<name>.json`. O `.bin` do llama.cpp valida a geometria de KV (contagem de
-/// camadas, tipo e tamanho de linha) ao restaurar, mas **não** valida o modelo
-/// nem a faixa de camadas; é o que este sidecar cobre antes de tocar no motor.
+/// Metadata that goes with each `<name>.bin`, written beside it as
+/// `<name>.json`. The llama.cpp `.bin` validates the KV geometry (layer count,
+/// row type and size) on restore, but does **not** validate the model or the
+/// layer range; that is what this sidecar covers before touching the engine.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(super) struct SlotSidecar {
     pub(super) format_version: u32,
-    /// Rótulo técnico do modelo. Igual em todos os peers da implantação.
+    /// Technical label of the model. The same on every peer of the deployment.
     pub(super) model_label: String,
-    /// Caminho do GGUF neste peer (uma fatia, ou o modelo inteiro).
+    /// Path of the GGUF on this peer (a slice, or the whole model).
     pub(super) model_path: String,
     pub(super) start_layer: u32,
     pub(super) end_layer: u32,
     pub(super) total_layers: u32,
-    /// Largura do hidden state do motor carregado.
+    /// Hidden state width of the loaded engine.
     pub(super) n_embd: u32,
-    /// Quantos tokens de prompt o snapshot cobre (a fronteira estável retida,
-    /// `Session::prompt_len`). É a posição em que a sessão restaurada fica.
+    /// How many prompt tokens the snapshot covers (the retained stable boundary,
+    /// `Session::prompt_len`). It is the position the restored session sits at.
     pub(super) retained_tokens: u32,
-    /// Tokens reais do prompt quando este peer os conhece (a cabeça); vazio nos
-    /// hops que só viram hidden state. O `.bin` carrega um cabeçalho de tokens
-    /// próprio (consultivo), então este campo serve só ao reuso de prefixo.
+    /// Real prompt tokens when this peer knows them (the head); empty on the
+    /// hops that only saw hidden state. The `.bin` carries a token header of its
+    /// own (advisory), so this field only serves prefix reuse.
     #[serde(default)]
     pub(super) prompt_tokens: Vec<i32>,
-    /// RFC3339 de quando o snapshot foi gravado.
+    /// RFC3339 of when the snapshot was written.
     pub(super) saved_at: String,
-    /// Tamanho do `.bin` em bytes, como o llama.cpp reportou.
+    /// Size of the `.bin` in bytes, as llama.cpp reported it.
     pub(super) bin_bytes: u64,
 }
 
-/// Recusa um nome de snapshot que não seja um único componente de caminho
-/// seguro. Mesma disciplina de `transfer::safe_model_path`: sem separador, sem
-/// `..`, sem nome vazio ou oculto. O gateway compõe `"<nome>__<node_id>"`, e o
-/// `node_id` é hex de hash, então o conjunto `[A-Za-z0-9._-]` basta.
+/// Refuses a snapshot name that is not a single safe path component. Same
+/// discipline as `transfer::safe_model_path`: no separator, no `..`, no empty
+/// or hidden name. The gateway composes `"<nome>__<node_id>"`, and the
+/// `node_id` is the hex of a hash, so the set `[A-Za-z0-9._-]` is enough.
 pub(super) fn sanitize_slot_name(name: &str) -> Result<&str> {
     let name = name.trim();
     if name.is_empty() {
-        bail!("nome de snapshot vazio");
+        bail!("empty snapshot name");
     }
     if name.len() > 200 {
-        bail!("nome de snapshot longo demais (máx 200)");
+        bail!("snapshot name too long (max 200)");
     }
     if name.starts_with('.') {
-        bail!("nome de snapshot não pode começar com '.'");
+        bail!("snapshot name cannot start with '.'");
     }
     if !name
         .bytes()
         .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
     {
-        bail!("nome de snapshot só aceita letras, dígitos, '.', '_' e '-'");
+        bail!("snapshot name only accepts letters, digits, '.', '_' and '-'");
     }
     Ok(name)
 }
@@ -743,8 +752,8 @@ pub(super) fn slot_json_path(dir: &std::path::Path, name: &str) -> std::path::Pa
     dir.join(format!("{name}.json"))
 }
 
-/// Apaga o `.bin` e o `.json` de um snapshot. Devolve `true` quando algo foi
-/// removido; um snapshot ausente não é erro (mesma ética de
+/// Deletes the `.bin` and the `.json` of a snapshot. Returns `true` when
+/// something was removed; a missing snapshot is not an error (same ethic as
 /// `/v1/session/release`).
 pub(super) fn erase_slot(dir: &std::path::Path, name: &str) -> Result<bool> {
     let name = sanitize_slot_name(name)?;
@@ -753,15 +762,15 @@ pub(super) fn erase_slot(dir: &std::path::Path, name: &str) -> Result<bool> {
         match std::fs::remove_file(&path) {
             Ok(()) => removed = true,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(anyhow::anyhow!("apagar {}: {error}", path.display())),
+            Err(error) => return Err(anyhow::anyhow!("delete {}: {error}", path.display())),
         }
     }
     Ok(removed)
 }
 
-/// Conta sidecars sem abrir o conteúdo. /health é consultado a cada
-/// requisição de geração e não pode segurar o mutex do motor enquanto lê e
-/// interpreta cada JSON.
+/// Counts sidecars without opening the content. /health is queried on every
+/// generation request and cannot hold the engine mutex while it reads and
+/// parses each JSON.
 pub(super) fn count_slot_entries(dir: &std::path::Path) -> usize {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return 0;
@@ -777,8 +786,8 @@ pub(super) fn count_slot_entries(dir: &std::path::Path) -> usize {
         .count()
 }
 
-/// Resultado de `InferState::restore_slot`, ecoado na resposta da rota para o
-/// gateway conferir que todos os hops restauraram a mesma fronteira.
+/// Result of `InferState::restore_slot`, echoed in the route's response so the
+/// gateway can check that every hop restored the same boundary.
 pub(super) struct SlotRestoreOutcome {
     pub(super) restored_tokens: u32,
 }
@@ -810,7 +819,10 @@ mod slot_name_tests {
             "a b",
             "sÿm",
         ] {
-            assert!(sanitize_slot_name(bad).is_err(), "esperava recusar {bad:?}");
+            assert!(
+                sanitize_slot_name(bad).is_err(),
+                "expected to refuse {bad:?}"
+            );
         }
     }
 }
@@ -820,16 +832,16 @@ mod slot_count_tests {
     use super::count_slot_entries;
 
     #[test]
-    fn slot_count_usa_somente_entradas_do_diretorio() {
+    fn slot_count_uses_only_directory_entries() {
         let dir = std::env::temp_dir().join(format!("pom-slot-count-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir(&dir).expect("diretório temporário");
+        std::fs::create_dir(&dir).expect("temporary directory");
         std::fs::write(dir.join("quebrado.json"), b"conteudo que nao e json")
-            .expect("sidecar corrompido");
-        std::fs::write(dir.join("prefix-auto-index.json"), b"indice").expect("índice automático");
-        std::fs::write(dir.join("nao-e-slot.txt"), b"outro arquivo").expect("arquivo extra");
+            .expect("corrupted sidecar");
+        std::fs::write(dir.join("prefix-auto-index.json"), b"indice").expect("automatic index");
+        std::fs::write(dir.join("nao-e-slot.txt"), b"outro arquivo").expect("extra file");
 
         let count = count_slot_entries(&dir);
-        std::fs::remove_dir_all(&dir).expect("limpeza do diretório temporário");
+        std::fs::remove_dir_all(&dir).expect("cleanup of the temporary directory");
 
         assert_eq!(count, 1);
     }
@@ -856,44 +868,45 @@ pub(crate) struct InferState {
     pub(super) chat_template: bool,
     pub(super) start_layer: u32,
     pub(super) end_layer: u32,
-    /// Total de camadas da implantação (`NodeConfig::total_layers`). Guardado
-    /// para validar um snapshot de KV antes de restaurá-lo.
+    /// Total layers of the deployment (`NodeConfig::total_layers`). Kept to
+    /// validate a KV snapshot before restoring it.
     pub(super) total_layers: u32,
-    /// Rótulo técnico do modelo servido, compartilhado por todos os peers da
-    /// mesma implantação. Identidade do snapshot de KV.
+    /// Technical label of the served model, shared by every peer of the
+    /// same deployment. Identity of the KV snapshot.
     pub(super) model_label: String,
-    /// Identidade da implantação anunciada junto com o modelo, quando existe.
-    /// O gateway usa o campo do `/health` para corrigir uma fotografia P2P
-    /// atrasada antes de planejar uma requisição.
+    /// Identity of the deployment announced together with the model, when it
+    /// exists. The gateway uses the `/health` field to correct a stale P2P
+    /// snapshot before planning a request.
     pub(super) deploy_id: String,
-    /// Caminho do GGUF carregado neste peer. Identidade do snapshot de KV.
+    /// Path of the GGUF loaded on this peer. Identity of the KV snapshot.
     pub(super) model_path: String,
-    /// Diretório de snapshots de KV cache (`Config::slot_save_path`), ou `None`
-    /// quando o recurso está desligado nesta máquina. Ver `save_slot`.
+    /// Directory of KV cache snapshots (`Config::slot_save_path`), or `None`
+    /// when the feature is off on this machine. See `save_slot`.
     pub(super) slot_dir: Option<std::path::PathBuf>,
     /// Retained sessions whose KV left the context and is parked in host RAM
     /// (`NodeConfig::cache_ram_mib`). See `ram_cache.rs`.
     pub(super) ram_cache: KvRamCache,
-    /// Acordado sempre que um slot de sequência pode ter ficado livre (fim de
-    /// sessão, retenção, coleta de ociosidade, despejo). O `run_scheduler`
-    /// espera nele quando o item da frente é um prefill de sessão nova e não
-    /// há slot: a requisição fica na fila FIFO em vez de ser recusada com
-    /// "seq pool esgotado".
+    /// Woken whenever a sequence slot may have become free (end of session,
+    /// retention, idle collection, eviction). `run_scheduler` waits on it when
+    /// the front item is a prefill of a new session and there is no slot: the
+    /// request stays in the FIFO queue instead of being refused with
+    /// "seq pool exhausted".
     pub(super) slot_freed: Arc<tokio::sync::Notify>,
     pub(super) original_block_count: Option<u32>,
     pub(super) inference_path: crate::executor::InferencePath,
-    /// Corte de confiança do rascunho MTP — ver `NodeConfig::mtp_min_probability`.
+    /// Confidence cutoff of the MTP draft - see `NodeConfig::mtp_min_probability`.
     pub(super) mtp_min_probability: f32,
-    /// Duração do último handshake TLS aceito por este servidor, em ms.
+    /// Duration of the last TLS handshake accepted by this server, in ms.
     ///
-    /// Medida no laço de accept (`serve.rs`), que é onde o `TlsAcceptor` roda e
-    /// o tempo é exato. Sai daqui para o `meta` da resposta, e de lá para a
-    /// telemetria por salto do gateway. `None` quando o nó não tem TLS.
+    /// Measured in the accept loop (`serve.rs`), which is where the `TlsAcceptor`
+    /// runs and the time is exact. It goes from here to the reply's `meta`, and
+    /// from there to the gateway's per-hop telemetry. `None` when the node has
+    /// no TLS.
     pub(super) tls_handshake_ms: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
-    /// Identidade TP deste nó. O rank 0 precisa da lista de membros para pôr
-    /// os workers no mesmo decode; sem isso a barreira nunca fecha.
+    /// TP identity of this node. Rank 0 needs the member list to put the
+    /// workers on the same decode; without it the barrier never closes.
     pub(super) tp: Option<crate::network::TpIdentity>,
-    /// Velocidade medida desta fatia, publicada no `/health`. Ver `perf.rs`.
+    /// Measured speed of this slice, published in `/health`. See `perf.rs`.
     pub(super) perf: perf::SlicePerf,
 }
 
@@ -915,12 +928,13 @@ pub(super) fn record_terminal_engine(
     }
 }
 
-/// Anota no meta o que este peer **executou** com o prefixo retido.
+/// Records in the meta what this peer **did** with the retained prefix.
 ///
-/// Só o pedaço 0 carrega a decisão, porque só ele pode reusar. Os hops
-/// seguintes obedecem a este campo em vez do pedido original do gateway: quem
-/// tokeniza é quem sabe se o prefixo servia, e um hop reusando enquanto a
-/// cabeça recomeçou (ou o contrário) desalinha as posições de todo o pipeline.
+/// Only chunk 0 carries the decision, because only it can reuse. The next
+/// hops obey this field instead of the gateway's original request: whoever
+/// tokenizes is who knows whether the prefix fit, and a hop reusing while the
+/// head restarted (or the opposite) misaligns the positions of the whole
+/// pipeline.
 pub(super) fn apply_prefix_decision(
     meta: &mut Value,
     chunk_index: u32,
@@ -938,10 +952,10 @@ pub(super) fn apply_prefix_decision(
         meta["cached_tokens"] = json!(prefix.cached_tokens);
         meta["prefix_match_tokens"] = json!(prefix.matched_tokens);
     } else {
-        // Só a cabeça pode decidir se os tokens batem. Todos os hops
-        // intermediários devem transportar a decisão autoritativa recebida;
-        // recalculá-la como `false` faria o hop seguinte resetar a sessão e
-        // depois receber um hidden state com posição positiva.
+        // Only the head can decide whether the tokens match. Every
+        // intermediate hop must carry the authoritative decision it received;
+        // recomputing it as `false` would make the next hop reset the session
+        // and then receive a hidden state with a positive position.
         meta["reuse_prefix"] = json!(requested_reuse);
         meta["cached_tokens"] = json!(requested_cached_tokens);
         meta["prefix_match_tokens"] = json!(requested_prefix_match_tokens);
@@ -980,10 +994,10 @@ mod prefix_decision_tests {
         tokio::task::yield_now().await;
         first.finish(false, false);
         let error = match second.await.unwrap() {
-            Ok(_) => panic!("o chunk seguinte não pode ultrapassar uma falha"),
+            Ok(_) => panic!("the next chunk cannot overtake a failure"),
             Err(error) => error,
         };
-        assert!(error.to_string().contains("repasse direto falhou"));
+        assert!(error.to_string().contains("direct forward failed"));
     }
 
     #[test]
@@ -1026,8 +1040,8 @@ mod prefix_decision_tests {
     }
 }
 
-/// Anota no meta a fronteira medida por quem tokenizou, para os hops seguintes
-/// partirem o prompt na mesma posição. Ver `Session::stable_len`.
+/// Records in the meta the boundary measured by whoever tokenized, so the next
+/// hops split the prompt at the same position. See `Session::stable_len`.
 pub(super) fn apply_stable_len(meta: &mut Value, stable_len: u32) {
     if stable_len != u32::MAX {
         meta["stable_len"] = json!(stable_len);
@@ -1064,9 +1078,9 @@ pub(super) fn terminal_prefill_meta(
     })
 }
 
-/// A porta de inferência é um canal entre peers. Ela aceita somente a
-/// `connection_key` compartilhada, com o marcador de request interno; API keys
-/// pertencem às rotas de inferência do cliente no gateway.
+/// The inference port is a channel between peers. It accepts only the shared
+/// `connection_key`, with the internal request marker; API keys belong to the
+/// client's inference routes on the gateway.
 pub(super) async fn require_inference_auth(
     State(config): State<crate::auth::AuthState>,
     request: Request<axum::body::Body>,

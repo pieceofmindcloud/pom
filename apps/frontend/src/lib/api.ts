@@ -36,9 +36,10 @@ let chatApiKeyRequest: Promise<string> | null = null;
 
 export const ADMIN_ACCESS_TOKEN_HEADER = "X-POM-Access-Token";
 /**
- * O nó nomeia a recusa administrativa neste cabeçalho (`backend/auth.rs`). A
- * frase do corpo é para a pessoa e muda com o idioma; este valor é estável, e
- * é ele que separa "a sessão administrativa acabou" de qualquer outro 401.
+ * The node names the administrative refusal in this header (`backend/auth.rs`).
+ * The body's sentence is for the person and changes with the language; this
+ * value is stable, and it is what separates "the administrative session ended"
+ * from any other 401.
  */
 export const ADMIN_ERROR_HEADER = "x-pom-admin-error";
 const ADMIN_SESSION_LOST = ["missing-token", "invalid-token"];
@@ -46,12 +47,12 @@ const ADMIN_SESSION_LOST = ["missing-token", "invalid-token"];
 const adminSessionLostListeners = new Set<() => void>();
 
 /**
- * Avisa quando a sessão administrativa deixou de valer.
+ * Signals when the administrative session stopped being valid.
  *
- * A sessão vive na memória do nó e a senha humana vive na memória desta aba:
- * um reinício do nó, ou o fim das 8 h da sessão, derruba as duas sem que a
- * aba perceba. Antes disso cada tela imprimia o 401 cru do servidor e o
- * operador não tinha caminho de volta ao portão a não ser recarregar na mão.
+ * The session lives in the node's memory and the human password lives in this
+ * tab's memory: a node restart, or the end of the session's 8 h, drops both
+ * without the tab noticing. Before this, each screen printed the server's raw
+ * 401 and the operator had no way back to the gate other than reloading by hand.
  */
 export function onAdminSessionLost(handler: () => void): () => void {
   adminSessionLostListeners.add(handler);
@@ -60,7 +61,7 @@ export function onAdminSessionLost(handler: () => void): () => void {
   };
 }
 
-/** Descarta a credencial morta e acorda quem sabe voltar ao portão. */
+/** Discards the dead credential and wakes whoever knows how to return to the gate. */
 function noteAdminSessionLost(res: Response, path: string) {
   if (!isAdminSurfacePath(path)) return;
   const kind = res.headers.get(ADMIN_ERROR_HEADER);
@@ -161,11 +162,12 @@ export class ApiError extends Error {
     readonly status: number,
     message: string,
     /**
-     * Corpo decodificado da resposta, quando era JSON.
+     * Decoded body of the response, when it was JSON.
      *
-     * Uma recusa às vezes traz mais do que uma frase: a exclusão devolve 409
-     * com a lista de avisos que a tela precisa mostrar antes de perguntar se
-     * o operador quer forçar. Achatar isso numa string perderia a lista.
+     * A refusal sometimes carries more than a sentence: deletion returns 409
+     * with the list of warnings the screen needs to show before asking whether
+     * the operator wants to force it. Flattening that into a string would lose
+     * the list.
      */
     readonly body?: unknown,
   ) {
@@ -345,6 +347,22 @@ export function searchRemoteModels(
   return api.get<RemoteModelSearchResponse>(modelSearchPath(options), { signal });
 }
 
+/** Starts the process of an on-demand plugin (menu click). */
+export function openPlugin(code: string) {
+  return api.post<{ code: string; running: boolean }>(
+    `/api/ui/plugins/${encodeURIComponent(code)}/open`,
+    {},
+  );
+}
+
+/** Stops the process of an on-demand plugin (X badge). */
+export function closePlugin(code: string) {
+  return api.post<{ code: string; running: boolean }>(
+    `/api/ui/plugins/${encodeURIComponent(code)}/close`,
+    {},
+  );
+}
+
 export function getRemoteModelDetails(
   repoId: string,
   revision?: string,
@@ -400,12 +418,12 @@ export function retryRemoteModelDownload(downloadId: string) {
 }
 
 /**
- * Atualiza e reinicia uma máquina do cluster.
+ * Updates and restarts a machine of the cluster.
  *
- * Sem `nodeId`, ou com o `node_id` deste próprio nó, atualiza esta máquina.
- * Com o `node_id` de outro peer, este nó repassa a chamada para o
- * `/api/ui/dev/update` daquele peer (`src/devupdate.rs`) — o painel nunca fala
- * direto com outro peer, `api.ts` só usa caminhos relativos.
+ * Without `nodeId`, or with this node's own `node_id`, it updates this machine.
+ * With another peer's `node_id`, this node forwards the call to that peer's
+ * `/api/ui/dev/update` (`src/backend/devupdate.rs`) - the panel never talks directly to
+ * another peer, `api.ts` only uses relative paths.
  */
 export function devUpdate(nodeId?: string) {
   return api.post<{ job_id: string }>(
@@ -415,11 +433,11 @@ export function devUpdate(nodeId?: string) {
 }
 
 /**
- * Soma uma máquina a um modelo que já está no ar.
+ * Adds a machine to a model that is already online.
  *
- * Toca só o nó alvo: quem já está servindo não é reiniciado. A resposta traz
- * as camadas que ficaram sobrepostas, que é como o operador sabe se criou uma
- * rota paralela ou preencheu um buraco.
+ * It touches only the target node: whoever is already serving is not restarted.
+ * The response carries the layers that ended up overlapping, which is how the
+ * operator knows whether they created a parallel route or filled a gap.
  */
 export function addNode(req: {
   group: string;
@@ -444,7 +462,7 @@ export function addNode(req: {
   );
 }
 
-/** Inventário e configurações da máquina atualmente escolhida no diálogo. */
+/** Inventory and settings of the machine currently chosen in the dialog. */
 export function addNodeOptions(group: string, targetNodeId: string, signal?: AbortSignal) {
   return api.post<AddNodeOptionsResponse>(
     "/api/ui/deploy/node/options",
@@ -454,10 +472,10 @@ export function addNodeOptions(group: string, targetNodeId: string, signal?: Abo
 }
 
 /**
- * Tira uma máquina de um modelo, sem tocar nas outras.
+ * Removes a machine from a model, without touching the others.
  *
- * `uncovered_layers` vazio significa que outra máquina serve a mesma faixa: a
- * rede perde uma rota paralela e continua servindo.
+ * An empty `uncovered_layers` means another machine serves the same range: the
+ * network loses a parallel route and keeps serving.
  */
 export function removeNode(nodeId: string, group: string, deployId?: string) {
   return api.post<{
@@ -472,13 +490,13 @@ export function removeNode(nodeId: string, group: string, deployId?: string) {
   );
 }
 
-/** O que aconteceu com uma máquina numa desimplantação. */
+/** What happened to a machine in an undeployment. */
 export interface UndeployOutcome {
   node_id: string;
   hostname: string;
   start_layer: number;
   end_layer: number;
-  /** Só `true` quando aquela máquina confirmou. */
+  /** `true` only when that machine confirmed. */
   released: boolean;
   error?: string;
 }
@@ -491,12 +509,12 @@ export interface UndeployReport {
 }
 
 /**
- * Tira a pipeline inteira do ar: libera RAM e VRAM em **todas** as máquinas que
- * servem o modelo.
+ * Takes the whole pipeline offline: frees RAM and VRAM on **all** the machines
+ * that serve the model.
  *
- * Nada é apagado do disco — as fatias ficam onde estão e a mesma implantação
- * volta com um clique. A resposta é um relatório máquina a máquina, e uma que
- * não respondeu vem com `released: false` e o motivo.
+ * Nothing is deleted from disk - the slices stay where they are and the same
+ * deployment comes back with one click. The response is a machine-by-machine
+ * report, and one that did not answer comes with `released: false` and the reason.
  */
 export function undeployPipeline(group: string, deployId?: string) {
   return api.post<UndeployReport>("/api/ui/undeploy", {
@@ -505,24 +523,24 @@ export function undeployPipeline(group: string, deployId?: string) {
   });
 }
 
-/** Uma implantação com o que a tela precisa saber sobre o estado dela. */
+/** A deployment with what the screen needs to know about its state. */
 export interface DeploymentRow {
   deployment: Deployment;
-  /** Há peer vivo anunciando este `deploy_id`. */
+  /** A live peer is announcing this `deploy_id`. */
   serving: boolean;
-  /** Há peers vivos, mas todos os peers desta implantação estão ociosos. */
+  /** There are live peers, but all the peers of this deployment are idle. */
   idle?: boolean;
-  /** É esta que atende quem pede só o nome do modelo, sem sufixo `@`. */
+  /** This is the one that serves whoever asks for just the model name, without an `@` suffix. */
   is_default: boolean;
-  /** Quais nós guardam uma cópia do registro. */
+  /** Which nodes keep a copy of the record. */
   holders: string[];
 }
 
 /**
- * Todas as implantações do cluster.
+ * All the cluster's deployments.
  *
- * O registro de cada uma vive numa cópia por nó participante, então este nó
- * pergunta aos peers e junta — nenhuma máquina sozinha sabe a lista inteira.
+ * Each one's record lives in one copy per participating node, so this node
+ * asks the peers and merges - no single machine knows the whole list.
  */
 export function listDeployments() {
   return api.get<{ node_id: string; deployments: DeploymentRow[] }>(
@@ -531,15 +549,16 @@ export function listDeployments() {
 }
 
 /**
- * Reimplanta um `deploy_id` que já existe.
+ * Redeploys a `deploy_id` that already exists.
  *
- * Mesmo `deploy_id`, mesmas máquinas, mesmas faixas: as máquinas recarregam o
- * mesmo arquivo. Nada é planejado nem copiado, e quem estiver usando
- * `modelo@deploy_id` continua chegando no mesmo lugar.
+ * Same `deploy_id`, same machines, same ranges: the machines reload the same
+ * file. Nothing is planned or copied, and whoever is using `model@deploy_id`
+ * keeps reaching the same place.
  *
- * `version` reimplanta uma versão já registrada (sem anexar outra). `params`
- * reimplanta com parâmetros novos: iguais aos de uma versão existente reativam
- * aquela versão, diferentes anexam uma versão nova. Informe um dos dois.
+ * `version` redeploys an already registered version (without appending another).
+ * `params` redeploys with new parameters: ones equal to an existing version's
+ * reactivate that version, different ones append a new version. Provide one of
+ * the two.
  */
 export function redeployDeployment(
   deployId: string,
@@ -555,7 +574,7 @@ export function redeployDeployment(
   );
 }
 
-/** Faz desta a implantação que atende quem pede só o nome do modelo. */
+/** Makes this the deployment that serves whoever asks for just the model name. */
 export function activateDeployment(deployId: string) {
   return api.post<{ activated: boolean; deploy_id: string; model: string }>(
     `/api/ui/deployments/${encodeURIComponent(deployId)}/activate`,
@@ -564,12 +583,13 @@ export function activateDeployment(deployId: string) {
 }
 
 /**
- * Tira uma máquina da rede: ela descarrega o modelo, para de anunciar e esquece
- * os peers. O gateway dela continua servindo a interface, que é por onde ela
- * volta.
+ * Takes a machine out of the network: it unloads the model, stops announcing
+ * and forgets the peers. Its gateway keeps serving the interface, which is how
+ * it comes back.
  *
- * Sem `nodeId` sai esta máquina. Com o `node_id` de outra, este nó repassa o
- * pedido ao `/api/ui/leave` daquele peer — o painel só usa caminhos relativos.
+ * Without `nodeId` this machine leaves. With another's `node_id`, this node
+ * forwards the request to that peer's `/api/ui/leave` - the panel only uses
+ * relative paths.
  */
 export function leaveNetwork(nodeId?: string) {
   return api.post<{ detached: boolean }>(
@@ -579,9 +599,9 @@ export function leaveNetwork(nodeId?: string) {
 }
 
 /**
- * Esvazia o cache de KV de **uma** máquina: os snapshots em disco e o que o
- * servidor de inferência dela guarda em RAM. Como em `leaveNetwork`, o pedido
- * vai ao nó local, que repassa ao dono do disco.
+ * Empties the KV cache of **one** machine: the snapshots on disk and what its
+ * inference server keeps in RAM. As in `leaveNetwork`, the request goes to the
+ * local node, which forwards it to the disk's owner.
  */
 export function clearKvCache(nodeId?: string) {
   return api.post<KvCacheCleared>(

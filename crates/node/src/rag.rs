@@ -261,7 +261,7 @@ pub(crate) fn search_text(question: &str) -> Option<String> {
 const STOP_WORDS: &[&str] = &[
     "a", "à", "ao", "aos", "as", "às", "com", "como", "da", "das", "de", "dela", "dele", "do",
     "dos", "e", "é", "ela", "ele", "em", "entre", "era", "essa", "esse", "esta", "está", "este",
-    "eu", "foi", "há", "isso", "isto", "já", "mais", "mas", "me", "meu", "minha", "na", "não",
+    "eu", "foi", "há", "isso", "isto", "já", "mais", "mas", "me", "meu", "minha", "na", "no",
     "nas", "no", "nos", "o", "os", "ou", "para", "pela", "pelo", "por", "qual", "quais", "quando",
     "quanto", "que", "quem", "se", "sem", "ser", "seu", "sua", "são", "também", "tem", "um", "uma",
     "você", "vocês", "about", "an", "and", "are", "at", "be", "been", "but", "by", "can", "do",
@@ -390,7 +390,7 @@ async fn rewrite_with_model(
     match tokio::time::timeout(REWRITE_TIMEOUT, generation).await {
         Ok(Ok((reply, _))) => rewritten_query(&reply),
         Ok(Err(error)) => {
-            tracing::debug!(%error, "a geração da consulta de RAG falhou");
+            tracing::debug!(%error, "the RAG query generation failed");
             None
         }
         Err(_) => None,
@@ -806,7 +806,7 @@ pub(crate) async fn retrieve(
         Ok(None) | Err(_) => {
             // The server may have moved or stopped: ask again next time.
             lock_directory().refreshed = None;
-            tracing::debug!(node_id = %provider.node_id, "o servidor de RAG não respondeu à busca");
+            tracing::debug!(node_id = %provider.node_id, "the RAG server did not answer the search");
             return Outcome::Nothing;
         }
     };
@@ -1120,6 +1120,10 @@ mod tests {
             status: status.into(),
             version: None,
             detail: None,
+            architectures: Vec::new(),
+            settings: Vec::new(),
+            stages: false,
+            pom_settings: Vec::new(),
         };
         assert_eq!(rag_plugin(&[service("rag", "ready")]), Some("qdrant"));
         assert_eq!(rag_plugin(&[service("rag", "starting")]), None);

@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# bench-llamacpp.sh - benchmark do llama.cpp puro para comparar com o POM.
+# bench-llamacpp.sh - plain llama.cpp benchmark to compare against POM.
 #
-# Recebe o snapshot *.config.json do pom-bench, seleciona a implantacao servida,
-# verifica VRAM na ksia, sobe o llama-server do fork remoto do POM em 127.0.0.1
-# numa porta dedicada, mede os cinco prompts de bench-rotas e sempre derruba
-# apenas o processo que criou. CSV, summary.md, metadata.json e log local sao
-# produzidos no diretorio de saida. Veja --help e o report.md desta tarefa para
-# a CLI completa, as diferencas inevitaveis e como comparar as medianas.
+# Takes the *.config.json snapshot from pom-bench, selects the served deployment,
+# checks VRAM on ksia, starts the llama-server of the POM remote fork on
+# 127.0.0.1 on a dedicated port, measures the five bench-routes prompts and
+# always tears down only the process it created. CSV, summary.md, metadata.json
+# and the local log are produced in the output directory. See --help and this
+# task's report.md for the full CLI, the unavoidable differences and how to
+# compare the medians.
 
 set -euo pipefail
 

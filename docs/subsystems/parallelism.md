@@ -46,8 +46,9 @@ again.
 - **Speed** of each peer comes from `/health` (`perf`): a local test of the
   slice right after the model loads (64-token prefill and 8 decode steps,
   synthetic input, no network - `infer_server/perf.rs`) and the moving average
-  of real traffic. A peer with no measurement uses the average per-layer cost
-  of the measured ones.
+  of real traffic, kept per peer in `fastest::PeerPerf` and fed by
+  `AdmissionHealth::note_perf`. A peer with no measurement uses the average
+  per-layer cost of the measured ones.
 - **Network** comes from the pinned routes (`route_plan`): the requester uses
   its own; edges between two other peers come from the source peer's
   `/health` (`route_rtt_ms`, `gateway_rtt_ms`). An unmeasured edge counts as

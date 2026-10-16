@@ -14,28 +14,29 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `api.ts` - fetch wrapper over relative paths with same-origin credentials,
   connection-key auth, administrative-password auth only for `/api/ui/**` and
   `/admin/**`, conditional JSON GETs with ETag caching, the SSE reader and the deployment
-  registry actions (`listDeployments`, `redeployDeployment` - `{ params }` ou
-  `{ version }` para reimplantar uma versão registrada -, `activateDeployment`),
-  além do status autenticado do provider remoto. `addNodeOptions` consulta o
-  catálogo e a configuração da máquina alvo para o diálogo incremental;
-  `addNode` envia o tipo whole/shards e os overrides por máquina, enquanto
-  `removeNode` recebe o `deploy_id` para versionar a topologia correta.
-  `listDeployments` também preserva o estado `idle` quando os peers continuam
-  vivos, mas descarregaram o modelo.
+  registry actions (`listDeployments`, `redeployDeployment` - `{ params }` or
+  `{ version }` to redeploy a registered version -, `activateDeployment`),
+  plus the authenticated status of the remote provider. `addNodeOptions` queries
+  the target machine's catalog and configuration for the incremental dialog;
+  `addNode` sends the whole/shards type and the per-machine overrides, while
+  `removeNode` takes the `deploy_id` to version the correct topology.
+  `listDeployments` also preserves the `idle` state when the peers stay alive
+  but unloaded the model.
 - `postNetworkChat` - obtains the node-owned API key and includes it in every
   network-chat action body. The gateway still authenticates the browser with
   the connection key separately.
 - `downloadNetworkChatFile` - fetches a persisted network-chat file only when
   the operator asks to download it, so regular history polling carries metadata
   but not repeated file bytes.
-- `networkChatUnread.ts` - mantém o marcador local do último snapshot lido,
-  conta apenas mensagens recebidas depois dele e expõe o hook de polling usado
-  pelo badge da Sidebar; abrir o Chat da rede grava o snapshot como lido.
-- `id.ts` - gera ids compactos no formato UUID sem depender de
-  `crypto.randomUUID`, que não existe no contexto HTTP da LAN; usa
-  `getRandomValues` quando disponível e mantém um fallback para ids não
-  secretos em navegadores antigos.
+- `networkChatUnread.ts` - keeps the local marker of the last snapshot read,
+  counts only messages received after it and exposes the polling hook the
+  Sidebar badge uses; opening the Network Chat writes the snapshot as read.
+- `id.ts` - generates compact ids in UUID format without depending on
+  `crypto.randomUUID`, which does not exist in the LAN's HTTP context; it uses
+  `getRandomValues` when available and keeps a fallback for non-secret ids in
+  old browsers.
 - `chatScroll.ts` - whether the chat viewport is near the bottom (auto-scroll policy).
+- `clipboard.ts` - `copyText(text)`: every copy button goes through it. It uses `navigator.clipboard` only in a secure context (HTTPS or localhost) and falls back to a hidden `<textarea>` + `document.execCommand("copy")`, so copying works when the UI is opened over plain HTTP. Never call `navigator.clipboard` directly.
 - `chatModels.ts` - presentation-only options for the chat; hides deployment-qualified ids containing `@d-` while leaving the backend catalog unchanged.
 - `chatStore.ts` - conversation sessions persisted in `localStorage`, cross-tab
   synced; keeps the initial model mark, attachment structure and private request
@@ -51,7 +52,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   set (`wake`, `pieces`, `assemble`, `long`) from the `asleep` flag and the
   elapsed time, and the rotation inside it. Texts are `chat.wait.<set>.<n>`;
   `WAITING_SET_SIZE` has to match the catalog (a test checks it).
-- `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter, request-level `GenerationTimings` and request trace types, including observed phase `round_trip_ms`, selected path, executed engine, mixed/mismatch flags, MoE executor and reason, hidden-state bytes/dtype, bounded `transport_summary` (including `http`, `https`, `quic` and opportunistic `remote-stream` callbacks) and optional TP telemetry. It also carries trace spans, outside-node accounting, first-token boundaries, connection counts, decode counts and browser-local stream observations. Capture stages distinguish scheduler ask-to-ready from tensor-get call wall and postprocess; peer/client f32/f16 conversion, f8 conversion, frame serialization and QUIC body-send wait have separate totals. `backend_call_ms` names the llama.cpp evaluation call and `backend_sync_ms` its explicit barrier; neither is a pure kernel-time measure or a proxy for `POM_PROFILE_SYNC`.
+- `chatStream.ts` - incremental parse of streaming deltas; structured OpenAI `reasoning_content` plus the legacy `<think>`/`</think>` splitter, request-level `GenerationTimings` and request trace types, including observed phase `round_trip_ms`, selected path, executed engine, mixed/mismatch flags, MoE executor and reason, hidden-state bytes/dtype, bounded `transport_summary` (including `http`, `https`, `quic` and opportunistic `remote-stream` callbacks) and optional TP telemetry. It also carries trace spans, outside-node accounting, first-token boundaries, connection counts, decode counts and browser-local stream observations. Capture stages distinguish scheduler ask-to-ready from tensor-get call wall and postprocess; peer/client f32/f16 conversion, f8 conversion, frame serialization and QUIC body-send wait have separate totals. `backend_call_ms` names the llama.cpp evaluation call and `backend_sync_ms` its explicit barrier; neither is a pure kernel-time measure or a proxy for `POM_PROFILE_SYNC`.
   `stream_duration_ms` is measured locally from the first SSE data frame to
   receipt of `[DONE]`; it excludes TTFT and includes the terminal tail. The
   separate `time_last_token_to_response_end_ms` isolates that tail.
@@ -77,36 +78,46 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   the slot, not in the POM.
 - `deleteModel.ts` - two-step delete of a GGUF with a warnings/force round trip.
 - `deployMemory.ts` - last deploy per model remembered in `localStorage` for the Deploy screen, including the operational name and strategy when available. Keys are namespaced by kind (`whole:<name>` for a whole model), because a shard set and a model routinely share a name.
+- `inferenceServices.ts` - `inferenceServicesOf` groups the `inference` services that plugins publish in `node.plugin_services` (Strata, for example) by plugin code, with the GGUF architectures the engine runs, the settings it publishes and the machines that can take a model; `serviceRunsModel` is the architecture filter the Deploy screen applies to whole models.
 - `wholeModels.ts` - `wholeModelsOf` names each un-sliced model of the cluster catalog once, collecting its holders. `tensorParallelModelsOf` groups `ShardSet.tp_parts` by source group and TP width, preserving rank holders for the Deploy screen. The menu the Deploy screen needs before it has a plan; a model whose GGUF header gave no layer count stays in the list on purpose, so the node can say what is wrong with the file.
 - `format.ts` - number/time formatting in the active locale plus node-state
-  labels, incluindo o estado `idle` distinto de `serving` e `noAir`.
+  labels, including the `idle` state distinct from `serving` and `noAir`.
 - `thermal.ts` - pure temperature-band and highest-known-reading helpers used by
   the GPU badge; missing or non-finite readings stay explicitly unknown.
-- `gpu.ts` - `sumVram`/`vramUsedPct`: a VRAM somada das placas que a reportam,
-  `null` quando nenhuma reporta (memória unificada, placa sem leitura). É o que
-  o card em miniatura do Fluxo mostra - antes ele lia só `gpus[0]` e metade do
-  hardware de uma caixa com duas placas sumia da tela. Testes em `gpu.test.ts`.
+- `gpu.ts` - `sumVram`/`vramUsedPct`: the VRAM summed over the cards that
+  report it, `null` when none reports (unified memory, a card with no reading).
+  It is what the Flow's miniature card shows - before it read only `gpus[0]` and
+  half the hardware of a box with two cards vanished from the screen. Tests in
+  `gpu.test.ts`.
 - `networkGraph.ts` - flattens `ClusterView` into per-model layer-range lists for the canvas.
-- `networkLayout.ts` - posições dos nós do canvas persistidas por impressão
-  digital da implantação (o gateway arrastado entra como `GATEWAY_LAYOUT_ID`);
-  `CARD_SIZE`/`COMPACT_CARD_SIZE`/`GATEWAY_SIZE` alimentam arestas, arranjo e
-  arrasto, e `readCardModes`/`writeCardModes` guardam quais cards do Fluxo
-  estão minimizados.
-- `peerSpeed.ts` - `rateSpeed`: tom de decode/prefill de uma fatia pela razão
-  para a mais rápida do mesmo modelo; com uma só medida, `solo`.
+- `networkLayout.ts` - canvas node positions persisted by deployment
+  fingerprint (the dragged gateway enters as `GATEWAY_LAYOUT_ID`);
+  `CARD_SIZE`/`COMPACT_CARD_SIZE`/`GATEWAY_SIZE` feed edges, arrangement and
+  dragging, and `readCardModes`/`writeCardModes` keep which Flow cards are
+  minimized.
+- `peerSpeed.ts` - `rateSpeed`: the decode/prefill tone of a slice from its
+  ratio to the fastest of the same model; with a single measurement, `solo`.
 - `networkPeers.ts` - how the panel reads the peer list: who serves the active model (pipeline order) vs who is on the network without a slice.
+- `clusterVersion.ts` - the trust chain version a node reports
+  (`ClusterVersionStatus`), `formatClusterVersion` (counters plus the start of
+  the hash) and the sync call.
 - `admissions.ts` - admission requests on both sides: `useAdmissions` (what
   this network received, admin only), `useAdmissionRequests` (what this node
   asked of other networks) and `admissionsApi` (`decide`, `join`, `forget`).
   The grant never reaches the browser, so there is no type for it.
+- `publicLatency.ts` - `usePublicLatencies(keys, enabled, refreshKey)`: round
+  trip from this node to each listed network, from
+  `/api/ui/network-chat/lobby/latency`. Nothing is asked until `enabled`,
+  three networks are measured at a time, answers are cached 60 s, and a
+  network that does not answer is `"failed"`.
 - `publicStats.ts` - `usePublicStats(endpoint, key, enabled, refreshKey)`:
   models, node count and VRAM of a network this machine is not in, asked from
   that network's principal through the node. 30 s cache, one retry after 3 s
   when the principal answers that it is still computing, `null` otherwise.
-- `networkStats.ts` - agrega somente dados presentes no `ClusterView`: nós,
-  RTT médio, VRAM conhecida e modelos servidos. Cada métrica permanece nula
-  quando a fonte não a fornece, para a UI mostrar indisponível sem inventar
-  zero.
+- `networkStats.ts` - aggregates only data present in the `ClusterView`:
+  nodes, average RTT, known VRAM and served models. Each metric stays null
+  when the source does not provide it, so the UI shows unavailable without
+  inventing zero.
 - `polling.ts` - the fast 2s and idle 10s cadences used by jobs and offers.
 - `queries.ts` - every read the panel does, as react-query hooks with polling
   intervals. `useCluster`, `useJobs` and `useOffers` use conditional GETs;
@@ -130,58 +141,60 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `useInferenceHeads` polls the model head view every 15 s for every profile;
   this is a capability slice, not a general peer list.
   `useNetworkChat` polls the authenticated network-chat snapshot so the Sidebar
-  can show unread messages while the chat route está desmontada.
+  can show unread messages while the chat route is unmounted.
   It takes the room (`"network"` by default, `"lobby"` for the room that
   non-members read); only the main room uses the bare `keys.networkChat`
   entry the Sidebar counter and the plugin bridge share.
-  `useClusterLogs` lê o log de processo da réplica local do admin,
-  opcionalmente filtrado por `deploy_id`, e atualiza a consola a cada segundo.
-  `useGeoReference` consulta `/api/ui/network/geo-reference` para preencher os
-  selects de país e cidade da tela de Informações da Rede.
-  `useAdminSurface` is the one-shot shell probe: it distinguishes setup,
+  `useClusterLogs` reads the process log of the admin's local replica,
+  optionally filtered by `deploy_id`, and refreshes the console every second.
+  The city lookups of the location editor are not hooks: see `geo.ts`.
+  `useAdminSurface` is the one-shot shell probe: it distinguishes
   available, token-required and local-only states without exposing the token.
 - `stableRecord.ts` - preserves the identity of a shallow record while its
   values remain unchanged. It prevents effects that capture `useQueries` data
   from writing state on every render; the Chat regression test covers this
   navigation freeze.
-- `profile.tsx` - o perfil persistido que o nó entrega em `/api/ui/node`
-  (`admin`/`node`/`infer`), o provider e `useProfile()`. Não há setter nem
-  `localStorage`: o navegador só apresenta o valor e deriva dele o menu/guarda
-  de rota. **Não é autorização** - o backend continua sendo a fronteira.
-- `access.ts` - que rota cada perfil abre. `RESTRICTED` mapeia prefixo de rota
-  para a lista de perfis; para `infer`, `/chat`, `/network-chat`,
-  `/documentacao`, `/config/keys/api` e `/config/rede` são visíveis. A lista de
-  participantes da rede e as preferências administrativas continuam fechadas
-  para infer. No Chat, esse perfil também esconde os resumos e o painel de
-  telemetria.
-  `canAccessRoute(path, profile)` é
-  lida pelo guarda em `../App.tsx` **e** por `navForProfile` em
-  `../components/nav.ts`, de propósito: duas listas dariam menu que oferece o que
-  a rota recusa. As superfícies `/logs` e `/estatisticas` são exceções de
-  descoberta e permanecem abertas no menu para todos os perfis; o entitlement
-  é aplicado pelo `App` e pelo backend. Testes em `access.test.ts`.
+- `profile.tsx` - the persisted profile the node delivers at `/api/ui/node`
+  (`admin`/`node`/`infer`), the provider and `useProfile()`. There is no setter
+  nor `localStorage`: the browser only presents the value and derives the
+  menu/route guard from it. **It is not authorization** - the backend remains
+  the boundary.
+  `secondary` is true for an `admin` that is not the principal
+  (`authority_level === "secondary"`): it deploys models and otherwise sees
+  what a node sees, so principal-only controls check `!secondary`.
+- `access.ts` - which route each profile opens. `RESTRICTED` maps a route
+  prefix to the list of profiles; for `infer`, `/chat`, `/network-chat`,
+  `/documentation`, `/config/keys/api` and `/config/network` are visible. The
+  network participant list and the administrative preferences stay closed to
+  infer. In Chat, that profile also hides the summaries and the telemetry panel.
+  `canAccessRoute(path, profile)` is
+  read by the guard in `../App.tsx` **and** by `navForProfile` in
+  `../components/nav.ts`, on purpose: two lists would give a menu that offers
+  what the route refuses. Plugin routes stay open to every profile; the native
+  restrictions of `infer` still apply to `/logs`, `/statistics` and the other
+  POM surfaces. Tests in `access.test.ts`.
 - `theme.tsx` - dark/light theme provider backed by `data-theme` + `localStorage`.
 - `toast.tsx` - toast context (success/error/warning/info) with auto-dismiss.
 - `transferStatus.ts` - predicates over `TransferJob` for the transfers UI and for the bell.
-- `transferLabel.ts` - como uma fatia se nomeia na tela (modelo + camadas, hash de lado).
-- `modelProvider.ts` - serializa a busca remota, filtra jobs de download,
-  calcula a cadência derivada e só calcula percentual quando o backend conhece
-  o total de bytes. `useRemoteModelProviderStatus` em `queries.ts` lê o estado
-  estruturado do CLI e da sessão Hugging Face; `publicModelDiscovery.ts` consulta
-  a API pública do Hugging Face para listar GGUFs em alta sem credenciais.
-- `api.ts` e `queries.ts` também expõem `getHuggingFaceTokenConfig`,
-  `saveHuggingFaceToken` e `useHuggingFaceTokenConfig`; o tipo de resposta
-  contém apenas `configured`, `masked` e `source`, nunca o token bruto.
-- `peerName.ts` - como uma **máquina** se nomeia na tela: `peerDisplayName` (nome anunciado, id curto só como último recurso) e `uniquePeerName` (desempate por id quando dois nós dividem hostname). Usado por `routes/Shards.tsx`.
+- `transferLabel.ts` - how a slice names itself on screen (model + layers, hash on the side).
+- `modelProvider.ts` - serializes the remote search, filters download jobs,
+  computes the derived cadence and only computes a percentage when the backend
+  knows the total bytes. `useRemoteModelProviderStatus` in `queries.ts` reads the
+  structured state of the CLI and of the Hugging Face session; `publicModelDiscovery.ts`
+  queries the public Hugging Face API to list trending GGUFs without credentials.
+- `api.ts` and `queries.ts` also expose `getHuggingFaceTokenConfig`,
+  `saveHuggingFaceToken` and `useHuggingFaceTokenConfig`; the response type
+  contains only `configured`, `masked` and `source`, never the raw token.
+- `peerName.ts` - how a **machine** names itself on screen: `peerDisplayName` (announced name, short id only as a last resort) and `uniquePeerName` (tie-break by id when two nodes share a hostname). Used by `routes/Shards.tsx`.
 - `types.ts` - all API shapes served by the node, one authoritative source,
-  incluindo `ClusterLogEntry` e o estado de autoridade do interruptor de logs.
-  `PathsResponse` também inclui `workspace_root` e `default_workspace_root`,
-  a raiz persistente compartilhada por projetos e dados dinâmicos de plugins.
+  including `ClusterLogEntry` and the authority state of the logs switch.
+  `PathsResponse` also includes `workspace_root` and `default_workspace_root`,
+  the persistent root shared by projects and dynamic plugin data.
   `ShardSet.shards` is the pipeline `parts` array and `ShardSet.tp_parts` is
   the tensor-parallel array. TP `DiscoveredModel` entries carry `tp_rank` and
   `tp_size`, which the UI turns into one-based labels such as `1of4`.
-  O modo modelo inteiro não expõe cortes de GGUF no inspetor: o mapa escolhe
-  uma única máquina e o frontend não envia seleção de prefixo.
+  Whole-model mode does not expose GGUF cuts in the inspector: the map chooses
+  a single machine and the frontend sends no prefix selection.
   `SliceLayerOptions` carries the starts and architectural options for the
   single-range slicing controls, while `SizePlan` and `TpSlicePlan` carry the
   destination disk-space estimate shown before writing.
@@ -205,18 +218,17 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   complete deployed route for the Dashboard's Gateway card, costed by the
   backend like the planner (`network_ms`, `return_mode`, `total_ms`). The observed cost is optional because an asynchronous return
   callback may not expose a sender-side RTT.
-  `GpuStat.power_watts` é telemetria opcional: o card de detalhes mostra o
-  valor quando NVIDIA ou AMD expõe a potência da placa e mantém desconhecido
-  quando não há essa leitura.
-  `PluginStatus` é o contrato local de UM plugin independente (ver
-  `crates/node/src/plugins.rs`), consumido por `usePlugins`/`useEnterpriseStatus`
-  (o segundo é um seletor sobre o primeiro, para o `plugin_code` `"logs"`
-  especificamente). Quando inativo, `useEnterpriseStatus` remove caches de
-  auditoria para não reexibir dados antigos. A atualização do binário `pom`
-  em si é um contrato separado, `PomCoreUpdateStatus`/`usePomCoreUpdateStatus`
-  - nunca misture os dois: a tela de Plugins só aplica atualização de plugin,
-  e `About.tsx` só aplica atualização do `pom`, cada uma após confirmação
-  explícita do operador.
+  `GpuStat.power_watts` is optional telemetry: the detail card shows the value
+  when NVIDIA or AMD exposes the card's power and keeps it unknown when there is
+  no such reading.
+  `PluginStatus` is the local contract of ONE independent plugin (see
+  `crates/node/src/plugins.rs`), consumed by `usePlugins`/`useEnterpriseStatus`
+  (the second is a selector over the first, for the `plugin_code` `"logs"`
+  specifically). When inactive, `useEnterpriseStatus` drops audit caches so old
+  data is not shown again. Updating the `pom` binary itself is a separate
+  contract, `PomCoreUpdateStatus`/`usePomCoreUpdateStatus` - never mix the two:
+  the Plugins screen only applies plugin updates, and `About.tsx` only applies
+  the `pom` update, each after an explicit confirmation by the operator.
 - `speculation.ts` - the single speculation choice (`none`/`mtp`/`lookup`) over
   `mtp_enabled` + `speculative_decoding_enabled`, and `MTP_MIN_PROBABILITY`
   (0.75, the node's default), written when MTP is chosen.
@@ -246,7 +258,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   not depend on the commercial catalog. Each source reports `manifest_path`
   and may return the original UI manifest when its source is `ui/manifest.json`.
   `useDevelopmentPluginSources` queries mounted sources only for the admin
-  profile when `pom_desenv` is enabled. Its DTOs describe local builds and
+  profile when `pom_dev_mode` is enabled. Its DTOs describe local builds and
   installs without compiler output. It can install inactive plugins as
   development builds without a license or licensed features, and does not
   replace the GitHub release selection. `PluginStatus.development_install`
@@ -288,16 +300,16 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   (`backend/auth.rs`): `missing-token`/`invalid-token` on an administrative
   path drops the in-memory token and notifies. The header, not the sentence -
   the body text is for the person and changes with the locale. A profile 403
-  (`perfil sem autorização para esta rota`) is deliberately not this: sending
+  (`profile not authorized for this route`) is deliberately not this: sending
   an authenticated operator back to the gate would only make them re-enter to
   see the same refusal.
 - `brand.ts` - the product identity on the screen side: `brand` (name, tagline, slug, logo/mark/favicon URLs) from the generated `src/brand/brand.json`, same source the binary embeds. `storageKey(name)` prefixes every `localStorage` key with the slug (`pom.theme`, `pom.locale`, `pom.connectionKey`, `pom.chat.sessions`, `pom.deploy.last`, `pom.network-layout`), which is what makes renaming the product one edit - and why a rename drops local preferences, deliberately: they belong to another product's keys.
-- `licenses.generated.ts` - catálogo estático gerado por
-  `apps/frontend/scripts/build-licenses.mjs`, com nome, versão, licença,
-  repositório e ecossistema das dependências diretas listadas em Sobre. Não
-  edite manualmente: após mudar manifests, rode `npm run licenses` em
-  `apps/frontend` e versione o resultado.
-- `setConnectionKey` / `getConnectionKey` - module-level credential persisted in `localStorage` key `codai.connectionKey`; seeded by `useNode()` from `GET /api/ui/node`. A changed key also clears conditional GET snapshots.
+- `licenses.generated.ts` - static catalog generated by
+  `apps/frontend/scripts/build-licenses.mjs`, with name, version, license,
+  repository and ecosystem of the direct dependencies listed in About. Do not
+  edit by hand: after changing manifests, run `npm run licenses` in
+  `apps/frontend` and version the result too.
+- `setConnectionKey` / `getConnectionKey` - module-level credential persisted in `localStorage` key `pom.connectionKey`; seeded by `useNode()` from `GET /api/ui/node`. A changed key also clears conditional GET snapshots.
 - `ensureChatApiKey` / `forgetChatApiKey` - keep the UI-only `pom-[node_id]`
   key in memory and recreate it after revocation without exposing its value.
 - `streamSse(path, body, signal)` - async generator yielding each `data:`
@@ -317,18 +329,20 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   network-chat action and snapshot contract. `NetworkChatEvent` preserves
   `node_id` as the identity key instead of using hostname as a key; the route
   resolves that identity to the dashboard's display-name map at render time.
-- Authoritative shapes with pointers to their Rust origin (comments cite `src/webui.rs`, `src/sysmon.rs`, `src/runtime.rs`, `src/transfer.rs`, `src/admin.rs`, `src/reqlog.rs`, `src/plan.rs`, `src/deploy.rs`).
+- Authoritative shapes with pointers to their Rust origin (comments cite `src/backend/webui/`, `src/backend/transfer.rs`, `src/backend/admin.rs`, `src/backend/reqlog.rs`, `src/backend/deploy/`, `src/models/plan.rs`, `src/models/deployment.rs`, `src/inference/runtime.rs`, `src/utils/sysmon.rs`).
 - `ServerState` - `"disabled" | "starting" | "ready" | "idle" | "failed" | "thermal"`; `idle` means a live peer unloaded its model, while thermal is distinct from an unreachable or failed peer.
 - `ClusterView` / `PeerView` / `ModelCapability` - the network/dashboard model.
-  `ClusterView.traversal` (`TraversalView`) é o diagnóstico da travessia de NAT
-  do nó que respondeu, não do cluster; é opcional porque nó antigo não o manda.
-  `PeerView.rediscovering` distingue "endereço morreu, a rede já foi perguntada"
-  de `unreachable` ("atendeu e a leitura quebrou"); `ModelCoverage.unreadable_nodes`
-  nomeia as máquinas de que a cobertura depende sem conseguir ler, e é o que
-  impede o Painel de pintar "completo" em verde nesse estado. Ver
-  `docs/subsystems/p2p-network.md`, "Endereço que deixou de responder". A carga
-  em voo de `PeerView` é `null` quando o relatório vivo do peer não chegou;
-  zero só representa um peer que de fato reportou estar ocioso.
+  `ClusterView.traversal` (`TraversalView`) is the NAT traversal diagnosis of
+  the node that answered, not of the cluster; it is optional because an older
+  node does not send it.
+  `PeerView.rediscovering` distinguishes "the address died, the network was
+  already asked" from `unreachable` ("it answered and the reading broke");
+  `ModelCoverage.unreadable_nodes` names the machines the coverage depends on
+  without being able to read them, and it is what keeps the panel from painting
+  "complete" in green in that state. See
+  `docs/subsystems/p2p-network.md`, "Address that stopped answering". The
+  in-flight load of `PeerView` is `null` when the peer's live report did not
+  arrive; zero only represents a peer that actually reported being idle.
 - `ShardSet` identifies a slicing round with the technical `group`, readable
   `model_label`, `pom_id`, optional local `mmproj_path`,
   `mmproj_candidates` and `mmproj_reason`; `DeployPlan` carries the same
@@ -379,23 +393,24 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   secondary admins, promotion chain, resignation eligibility and notification
   states. `adminAuthority.ts` keeps mutations behind a contract and does not
   encode key, signature or grant-storage decisions.
-- `TrustAnchorView` e `TrustAnchorRefusal` descrevem a raiz de confiança: se o
-  nó está ancorado, a impressão digital pública, o cluster e a máquina da raiz,
-  se a ligação é loopback e se instalar é possível agora. `trustAnchorApi`
-  (também em `adminAuthority.ts`) envia a cadeia colada e a impressão digital
-  digitada; a tela nunca deriva a segunda da primeira, e `can_install` é
-  apresentação - quem recusa é o servidor.
-- `trustFingerprint.ts` - `fingerprintFromTrustDocument` calcula a impressão
-  digital pública (SHA-256 do `anchor.principal.pubkey`), a mesma do módulo Rust,
-  e devolve `null` para o que não é documento de confiança. Usa
-  `crypto.subtle` quando existe e, fora de contexto seguro (o wizard aberto por
-  HTTP no IP da máquina), o `sha256` em TypeScript puro do mesmo arquivo -
-  sem ele a impressão digital nunca aparecia e o "Continuar" do wizard ficava
-  desligado sem aviso.
+- `TrustAnchorView` and `TrustAnchorRefusal` describe the trust root: whether
+  the node is anchored, the public fingerprint, the cluster and the machine of
+  the root, whether the link is loopback and whether installing is possible now.
+  `trustAnchorApi`
+  (also in `adminAuthority.ts`) sends the pasted chain and the typed
+  fingerprint; the screen never derives the second from the first, and
+  `can_install` is presentation - the server is the one that refuses.
+- `trustFingerprint.ts` - `fingerprintFromTrustDocument` computes the public
+  fingerprint (SHA-256 of `anchor.principal.pubkey`), the same as the Rust
+  module, and returns `null` for anything that is not a trust document. It uses
+  `crypto.subtle` when it exists and, outside a secure context (the wizard
+  opened over HTTP on the machine's IP), the pure TypeScript `sha256` of the
+  same file - without it the fingerprint never appeared and the wizard's
+  "Continue" stayed disabled with no warning.
 
 ### queries.ts
 - `useAdminSurface()` - one-shot shell probe (`retry:false`, no focus refetch):
-  404 means setup, a valid server session means available, a localhost policy
+  a valid server session means available, a localhost policy
   refusal means the local-only state, and other refusals keep the token gate.
   It subscribes to `onAdminSessionLost` and re-probes: the administrative
   session lives in the node's memory, so a restart or the 8h expiry kills it
@@ -405,7 +420,6 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   probe's own 401 also signals "session lost", and invalidating an in-flight
   probe cancels and restarts it - thousands of probes a minute, the tab stuck
   on the dashboard.
-- `useIsSetupMode()` - one-shot probe (`retry:false`, `staleTime:Infinity`): 404 on `/api/ui/node` means the node runs only the setup router. Its own query so the shell does not flip between setup and dashboard on poll errors.
 - `useAdminAccess()` - public one-shot metadata for the administrative password
   gate; it never receives the password.
 - `useAdminAccessInfo()` - authenticated administrative settings, exposing only
@@ -417,41 +431,41 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   authority, which is what decides whether a screen offers an administrative
   act - `profile: admin` alone grants nothing.
 ### pluginCatalog.ts
-- `releaseForTarget(releases, os, arch)` seleciona somente uma release cujo
-  sistema e arquitetura coincidam com o nó local. Sem alvo conhecido ou sem
-  correspondência, retorna `null` para a UI não apresentar a release de outra
-  plataforma.
-- `usePeerRuntime(nodeId, enabled)` 15s (stale 10s) - o `/health` daquela
-  máquina, por `optional` (um nó sem a rota devolve 404 e a seção some). O
-  `enabled` só é ligado com o card de uma máquina servindo montado: perguntar
-  sempre seria um fan-out por peer a cada ciclo do Painel, por uma seção quase
-  sempre fechada.
+- `releaseForTarget(releases, os, arch)` selects only a release whose system and
+  architecture match the local node. With no known target or no match, it returns
+  `null` so the UI does not present another platform's release.
+- `usePeerRuntime(nodeId, enabled)` 15s (stale 10s) - that machine's `/health`,
+  as `optional` (a node without the route answers 404 and the section disappears).
+  The `enabled` flag is only turned on with the card of a serving machine mounted:
+  asking always would be a per-peer fan-out on every panel cycle, for a section
+  that is almost always closed.
 - `useCluster()` 5s with conditional GET, `useChatCapabilities()` 5s from
   `/api/ui/chat/capabilities` (vision, thinking availability and coverage
   aggregated for the active model), `useLocalCatalog()` 30s (stale 15s), `useClusterCatalog(enabled)`
   60s, `usePaths()` (stale 30s), `useCacheTypes()` (stale 30s), `useJobs()` 2s
   while running or 10s idle, `useTransfers()` 2s, `useOffers()` 2s while
-  waiting or 10s idle, `useAdminNodes()` 8s, `usePluginUi()` 30s (manifestos `pom-plugin-ui/v1` dos plugins ativos),
+  waiting or 10s idle, `useAdminNodes()` 8s, `usePluginUi()` 30s (the active
+  plugins' `pom-plugin-ui/v1` manifests),
   `useServableModels()` 30s. The latter preserves `context_length` and
   `max_input_tokens` from `/v1/models` for the Chat attachment guard. A refusal
   or transport failure in the capability read becomes the explicit
   `unavailable` state, never an empty capability.
-- `useCluster()` 5s with conditional GET, `useLocalCatalog()` 30s (stale 15s), `useClusterCatalog(enabled)` 60s, `usePaths()` (stale 30s), `useCacheTypes()` (stale 30s), `useJobs()` 2s while running or 10s idle, `useTransfers()` 2s, `useOffers()` 2s while waiting or 10s idle, `useAdminNodes()` 8s, `useRequestLog({node_id, user, api_key, model, prompt, from, to, limit, offset})` 3s, `useRequestStats({node_id, user, api_key, model, prompt, from, to}, enabled)` 30s while the statistics tab is open, `useServableModels()` 30s. Os dois catálogos mudam para polling de 2s enquanto `metadata_complete` é falso, então o inventário rápido é substituído pelos cabeçalhos sem esperar o intervalo normal.
+- `useCluster()` 5s with conditional GET, `useLocalCatalog()` 30s (stale 15s), `useClusterCatalog(enabled)` 60s, `usePaths()` (stale 30s), `useCacheTypes()` (stale 30s), `useJobs()` 2s while running or 10s idle, `useTransfers()` 2s, `useOffers()` 2s while waiting or 10s idle, `useAdminNodes()` 8s, `useRequestLog({node_id, user, api_key, model, prompt, from, to, limit, offset})` 3s, `useRequestStats({node_id, user, api_key, model, prompt, from, to}, enabled)` 30s while the statistics tab is open, `useServableModels()` 30s. The two catalogs switch to 2s polling while `metadata_complete` is false, so the quick inventory is replaced by the headers without waiting for the normal interval.
 - `optional(promise, fallback)` - swallows only 404 (an older node lacking a route is not an error to surface); used by jobs/transfers/offers/request log.
 - `useOffers()` uses 2s while an offer is waiting and 10s when empty. An offer
   is a question waiting on a human, not a progress bar. With the sender no
   longer hashing the file before offering, the active cadence keeps that
   question responsive without charging an idle tab the same rate.
-- `useTrustAnchor()` reads the anchoring state once, sem polling: uma raiz de
-  confiança muda por gesto do operador, e a tela refaz a leitura ao instalar.
+- `useTrustAnchor()` reads the anchoring state once, without polling: a trust
+  root changes by an act of the operator, and the screen redoes the read when
+  installing.
 - `useAdminAuthority()` reads the authority presentation contract every 8s;
   `useOffers()` normalizes legacy slice offers and also carries principal
-  transfer, infer-to-node approval and node-to-infer notice states for the
-  activity bell.
+  transfer states for the activity bell.
 - `invalidateAfterAction(qc)` / `useInvalidate()` - after a mutation, refetch node, cluster, jobs, admin-nodes and models at once.
 
 ### chatStore.ts
-- `useChatSessions()` - `localStorage` list (`codai.chat.sessions`) capped at `MAX_SESSIONS` 50, kept in sync across tabs via the `storage` event; returns `{sessions, upsert, remove, clear}`.
+- `useChatSessions()` - `localStorage` list (`pom.chat.sessions`) capped at `MAX_SESSIONS` 50, kept in sync across tabs via the `storage` event; returns `{sessions, upsert, remove, clear}`.
 - `ChatSessionProvider` / `useChatSessionController()` - one active session
   and the store actions shared by the Chat screen and `Sidebar`. The controller
   invokes the registered pre-change hook before a menu selection, new session or
@@ -471,24 +485,26 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `turnsOnly(messages)` - drops event marks and substitutes `requestContent` when a visible chat message carries private telemetry-analysis content.
 - `titleFrom(text)` / `emptySession(model)` / `newId()` - defaults and ids; `titleFrom` stops the first message from overwriting a `titled` session's chosen name.
 
-### Anexos
+### Attachments
 
-`imageResize.ts` reduz imagens para no máximo 2048 px no lado maior e preserva
-a proporção antes de montar o pedido multimodal. Quando há contexto conhecido,
-o orçamento é 90% de `context_length * 4` bytes, menos os anexos já presentes;
-a qualidade JPEG e o lado maior descem iterativamente até 512 px. O resultado
-carrega tamanho e a flag `resized`, para a tela avisar o operador. `chatStore`
-preserva as partes estruturadas do pedido para que anexos de imagem e de outros
-tipos sobrevivam ao histórico; texto e arquivos ainda são recusados quando
-ultrapassam o orçamento, mas imagem só falha se nem a miniatura mínima couber.
+`imageResize.ts` reduces images to at most 2048 px on the longest side and
+preserves the proportion before assembling the multimodal request. When a
+context is known, the budget is 90% of `context_length * 4` bytes, minus the
+attachments already present; the JPEG quality and the longest side step down
+iteratively to 512 px. The result carries the size and the `resized` flag, so
+the screen can warn the operator. `chatStore`
+preserves the request's structured parts so image attachments and attachments of
+other types survive the history; text and files are still refused when they
+exceed the budget, but an image only fails when not even the minimum thumbnail
+fits.
 
 ### chatStream.ts
-- `consumeChatDelta(previous, delta)` - pure state machine that separates `<think>` reasoning from visible content without leaking a split delimiter across chunk boundaries (partial suffix held in `pending`).
-- `streamErrorMessage(payload)` / `consumeChatError(previous, error)` - leem a mensagem real de um frame de erro compatível com OpenAI dentro do stream SSE e a mantêm junto do conteúdo já renderizado.
+- `consumeChatDelta(previous, delta)` - legacy pure state machine that separates `<think>` reasoning from visible content without leaking a split delimiter across chunk boundaries (partial suffix held in `pending`); `consumeReasoningDelta` appends the structured OpenAI `reasoning_content` path directly.
+- `streamErrorMessage(payload)` / `consumeChatError(previous, error)` - read the real message of an OpenAI-compatible error frame inside the SSE stream and keep it alongside the content already rendered.
 - `finishChatStream(previous, metrics)` - flushes an incomplete trailing delimiter as literal text and records the legacy total rate, separated TTFT/prefill/generation/total timings and trace.
 - `isPhasedHop(hop)` - discriminates `PhasedHopTrace` (split prefill/decode) from `LegacyHopTrace` so the telemetry table can render both shapes.
 - Types `RequestTrace`, `PhaseTrace`, `HopTrace` - the per-hop telemetry
-  contract from `inference/prefill.rs`/gateway. `PhaseTrace.selected_path` is
+  contract from `inference/prefill/support.rs` and `backend/gateway/`. `PhaseTrace.selected_path` is
   the GGUF selection, while `executed_engine` and `executed_engines` are the
   backend facts (`llama.cpp`, `moe` or unknown when absent). The mismatch and
   mixed flags are evidence from the request, not a UI guess.
@@ -506,31 +522,32 @@ ultrapassam o orçamento, mas imagem só falha se nem a miniatura mínima couber
   from queue wait, and profiling spans remain opt-in.
 
 ### deployMemory.ts
-- `rememberDeploy(group, memory)` / `recallDeploy(group)` - last deploy (selection, params, merge) per model group in `localStorage` `codai.deploy.last`, capped at 20 models, oldest dropped by `at`.
+- `rememberDeploy(group, memory)` / `recallDeploy(group)` - last deploy (selection, params, merge) per model group in `localStorage` `pom.deploy.last`, capped at 20 models, oldest dropped by `at`.
 - `usableSelection(remembered, ranges, machineIds)` - prunes remembered rows against what the cluster still offers (deleted slices, left machines); returns `null` when nothing survives so the caller keeps the node's own suggestion.
 
 ### profile.tsx / access.ts
-- `PROFILES` / `Profile` - `["admin", "node", "infer"]` e a união literal.
-- `DEFAULT_PROFILE` - `admin` somente enquanto `/api/ui/node` ainda não respondeu.
-  A resposta do nó substitui o fallback assim que chega.
-- `ProfileProvider({ children, initialProfile })` - lê o perfil de `useNode()`;
-  `initialProfile` existe somente para testes de apresentação. Escreve
-  `<html data-profile>` e não persiste estado no navegador.
-- `homeRoute(profile)` - a tela inicial do perfil: `/` para quem abre o Painel,
-  `/chat` para quem não abre. O `App.tsx` redireciona com ela em vez de mostrar
-  a recusa, senão o `infer` abriria a interface num beco - e a recusa mandava
-  trocar de perfil, controle que deixou de existir.
-- `routeProfiles(path)` - os perfis que entram, ou `null` quando a rota é livre.
-  Casa por segmento (`/logs` cobre futuras filhas, e **não** `/logs-antigos`) e
-  a chave mais específica vence.
-- `canAccessRoute(path, profile)` - para o `infer`, permite somente a vista de
-  conversa, documentação, API keys e rede local. É apresentação, não escopo de credencial; a fronteira
-  real ficou para `rdma-perfis-escopo-backend`. `components/nav.ts` usa o mesmo
-  resultado para manter a rede no menu principal do infer e mover documentação
-  e API keys para o rodapé.
+- `PROFILES` / `Profile` - `["admin", "node", "infer"]` and the literal union.
+- `DEFAULT_PROFILE` - `admin` only while `/api/ui/node` has not answered yet.
+  The node's answer replaces the fallback as soon as it arrives.
+- `ProfileProvider({ children, initialProfile })` - reads the profile from `useNode()`;
+  `initialProfile` exists only for presentation tests. It writes
+  `<html data-profile>` and persists no state in the browser.
+- `homeRoute(profile)` - the profile's starting screen: `/` for one that opens
+  the panel, `/chat` for one that does not. `App.tsx` redirects with it instead
+  of showing the refusal, otherwise `infer` would open the interface in a dead
+  end - and the refusal used to tell the person to switch profile, a control
+  that no longer exists.
+- `routeProfiles(path)` - the profiles that get in, or `null` when the route is
+  free. It matches by segment (`/logs` covers future children, and **not**
+  `/logs-antigos`) and the most specific key wins.
+- `canAccessRoute(path, profile)` - for `infer`, it allows only the conversation
+  view, documentation, API keys and the local network. It is presentation, not
+  credential scope; the real boundary stayed with `rdma-perfis-escopo-backend`.
+  `components/nav.ts` uses the same result to keep the network in the infer
+  profile's main menu and move documentation and API keys to the footer.
 
 ### theme.tsx
-- `ThemeProvider` / `useTheme` - reads the theme from `document.documentElement.dataset.theme` (index.html stamped it pre-paint), writes `data-theme` + `localStorage` `codai.theme`. Dark is the default; the system preference does not override.
+- `ThemeProvider` / `useTheme` - reads the theme from `document.documentElement.dataset.theme` (index.html stamped it pre-paint), writes `data-theme` + `localStorage` `pom.theme`. Dark is the default; the system preference does not override.
 
 ### toast.tsx
 - `ToastProvider` / `useToast` - `push(kind, title, detail)`; error/warning linger 9s, others 4.2s; keeps the last 4 toasts; `fromError` surfaces `ApiError.message` verbatim; clears auto-dismiss timers when the provider unmounts.
@@ -551,20 +568,25 @@ ultrapassam o orçamento, mas imagem só falha se nem a miniatura mínima couber
 
 ### network information
 
-`types.ts` define o retrato compartilhado `NetworkSettings` e o envelope de
-leitura `NetworkInfoView`. `useNetworkInfo` em `queries.ts` consulta
-`/api/ui/network/info` para todos os perfis e `invalidateAfterAction` invalida
-esse retrato após mutações de configuração. `useGeoReference` lê a referência
-SQLite de países e cidades para os selects da tela. A UI nunca guarda a chave
-de conexão no cache: os materiais de compartilhamento são buscados pelo admin
-somente em `/api/ui/network/trust-share`.
+`types.ts` defines the shared `NetworkSettings` portrait and the
+`NetworkInfoView` read envelope. `useNetworkInfo` in `queries.ts` queries
+`/api/ui/network/info` for every profile and `invalidateAfterAction` invalidates
+that portrait after configuration mutations. `geo.ts` is the client of the node's
+offline city database: `geoCountries`, `geoCities` and `geoNearest` against a
+`GeoSource` (`NETWORK_GEO` for the operator routes, `SETUP_GEO` for the
+wizard), `NetworkPlace` (the location fields of `NetworkSettings`),
+`publishedPoint` (a preview of what the node will publish for the chosen
+precision; the node applies the rule again) and `placeLabel`. The UI never keeps
+the connection key in the cache: the sharing materials are fetched by the admin
+only at `/api/ui/network/trust-share`.
 
 ### publicLocator.ts
 
 `usePublicLocator(key)` asks the node (`GET /api/public/networks/locate`) how
 the network of a publisher `pk:` key can be reached: `direct` (pkarr record
-with a public address), `relayed` (relays only), `unresolved` (no record) or
-`checking`. The browser never probes or receives an IP: the node, which speaks
+with a public address), `relayed` (relays only), `unresolved` (no record),
+`unknown` (the request failed or the node refused the key, which says nothing
+about the network) or `checking`. The browser never probes or receives an IP: the node, which speaks
 pkarr/libp2p, does the resolving. 30 s cache per key; the refresh button on the
 Public networks screen forces a new query.
 
@@ -596,10 +618,25 @@ would go.
 
 ### transferStatus.ts
 - `isFinishedTransfer` / `isActiveTransfer` / `canCancel` - state predicates; only `running`/`verifying` can be cancelled.
-- `isRecentlyFinished(job, now?)` / `isWorthNotifying(job, now?)` / `RECENTLY_FINISHED_MS` (5 min) - o que o **sino** mostra: o que anda mais o que acabou de terminar. Sem isto o desfecho sumia da tela no instante em que acontecia, e só sobrevivia na tela de Transferências. `finished_at` ausente (nó de versão anterior) nunca conta como recente: supor "agora" encheria o sino de transferências velhas a cada carregamento.
+- `isRecentlyFinished(job, now?)` / `isWorthNotifying(job, now?)` / `RECENTLY_FINISHED_MS` (5 min) - what the **bell** shows: what is running plus what just finished. Without this the outcome vanished from the screen at the instant it happened, and only survived on the Transfers screen. A missing `finished_at` (a node of an earlier version) never counts as recent: assuming "now" would fill the bell with old transfers on every load.
 
 ### transferLabel.ts
-- `transferTitle(item)` / `transferHash(name)` - como uma transferência ou uma oferta se apresenta: "qwen3:8b · L0–15" no título, sha256 curto ao lado. O nome de uma fatia em disco é o hash, e hash não identifica nada que se leia; o rótulo vem do `.pom`, que o nó manda junto com o job. Um modelo inteiro não tem faixa e continua se chamando pelo nome do arquivo, e um nó de versão anterior (que não manda nada disso) cai no nome também, sem quebrar a tela.
+- `transferTitle(item)` / `transferHash(name)` - how a transfer or an offer presents itself: "qwen3:8b · L0–15" in the title, a short sha256 on the side. A slice's name on disk is the hash, and a hash identifies nothing readable; the label comes from the `.pom`, which the node sends along with the job. A whole model has no range and keeps being called by its file name, and a node of an earlier version (which sends none of that) falls back to the name too, without breaking the screen.
+
+### guide.ts
+- `useGuide()` reads the first run guide's state from `/api/ui/guide`;
+  `currentGuideStep(state)` is the first step not done, or null.
+  `useGuideActions()` gives `complete(step)` and `dismiss()`: a screen calls
+  `complete` after its own save succeeded. Both are no-ops once the guide
+  ended and never throw, so they cannot disturb the save that triggered them.
+  `GUIDE_MODEL_REPO` is the model the guide has a new machine download.
+  `WIZARD_STEPS` and `isWizardStep` name the steps taken by the first run
+  wizard (`components/FirstRunWizard.tsx`) instead of a hint.
+
+### randomName.ts
+- `randomSlug()` - a random name of two words and a two digit number
+  (`quiet-harbor-42`), offered by the first run wizard for the machine and
+  the network.
 
 ### chatScroll.ts
 - `isNearBottom(metrics, threshold = 32)` - decides whether streaming keeps the chat pinned to the bottom.
@@ -619,13 +656,14 @@ would go.
 - `components/Notifications.tsx` and `routes/Transfers.tsx` use `transferStatus` and `transferLabel`.
 - `components/Sidebar.tsx` uses `theme`.
 - `i18n/locales.ts` is imported by `api.ts` and `chatStore.ts` (`getActiveLocale`) for non-React localized strings.
-- Backend endpoints hit from this folder: `/api/ui/node`, `/api/ui/cluster`, `/api/ui/models`, `/api/ui/cluster/models`, `/api/ui/peer/:node_id/runtime`, `/api/ui/paths`, `/api/ui/jobs`, `/api/ui/requests`, `/api/ui/requests/stats`, `/api/ui/network/info`, `/api/ui/network/geo-reference`, `/api/ui/models/delete`, `/api/ui/deployments`, `/api/ui/deploy/node`, `/api/ui/deploy/node/remove`, `/api/ui/undeploy`, `/api/ui/leave`, `/api/ui/dev/update`, `/api/transfer/jobs`, `/api/transfer/offers`, `/admin/nodes`, `/admin/api-keys`, `/v1/models`. As consultas aceitam `user` e `model` além dos filtros de período e identidade.
-- O Chat de qualquer perfil que tenha um modelo selecionado lê
-  `/api/ui/infer/heads?model=...`, que é autorizado por `InferNodeAdmin` e
-  devolve somente as candidatas de camada zero, o nó escolhido, carga e RTT
-  com idade. A carga é `null` se o relatório vivo do candidato não chegar, e a
-  UI mostra "indisponível" nesse caso. RTT fora da validade continua
-  identificável na resposta, mas não entra no mapa usado para escolher.
+- Backend endpoints hit from this folder: `/api/ui/node`, `/api/ui/cluster`, `/api/ui/models`, `/api/ui/cluster/models`, `/api/ui/peer/:node_id/runtime`, `/api/ui/paths`, `/api/ui/jobs`, `/api/ui/requests`, `/api/ui/requests/stats`, `/api/ui/network/info`, `/api/ui/network/geo/*`, `/api/ui/models/delete`, `/api/ui/deployments`, `/api/ui/deploy/node`, `/api/ui/deploy/node/remove`, `/api/ui/undeploy`, `/api/ui/leave`, `/api/ui/dev/update`, `/api/transfer/jobs`, `/api/transfer/offers`, `/admin/nodes`, `/admin/api-keys`, `/v1/models`. The queries accept `user` and `model` besides the period and identity filters.
+- The Chat of any profile with a model selected reads
+  `/api/ui/infer/heads?model=...`, which `InferNodeAdmin` authorizes and which
+  returns only the layer-zero candidates, the chosen node, load and RTT with
+  age. The load is `null` when the candidate's live report does not arrive, and
+  the UI shows "in-flight count unavailable" in that case. An RTT outside its
+  validity stays identifiable in the response, but it does not enter the map
+  used to choose.
 
 ## Maintaining this file
 
@@ -634,48 +672,28 @@ Do not repeat what the codebase already shows; point to the authoritative file o
 Prefer rewriting or pruning existing entries over appending new ones.
 When updating this file, preserve this bar for all agents and keep entries concise.
 
-## Interface de plugins
+## Plugin interface
 
-- `pluginUi.ts` - tipos do manifesto e o registro validado (`setPluginUi`) que
-  menu, guarda de perfil e roteador leem. Normaliza menu e rotas sob
-  `/<plugin_code>/...` no mesmo registro, exceto reivindicação única das
-  rotas nativas `/logs` e `/estatisticas`: `resolvePluginRoute`,
-  `pluginRouteProfiles`, `pluginMenuItems`, `pluginLabel`, `pluginAssetUrl`.
-  `roles` filtra o item e também limita o acesso direto à rota vinculada;
-  menus e rotas aceitam `roles` atual ou `profiles` legado, sem exigir ambos.
-  Se os dois aparecem, `roles` prevalece; sem nenhum, todos os perfis são
-  elegíveis. `icon_image` é validado como PNG declarado em `assets` e fica
-  disponível para o menu como fallback visual; `documentation` valida as
-  entradas Markdown dos guias e da referência. `menu[].children` vira seção
-  com submenus (`pluginMenuItems` devolve só os filhos visíveis ao perfil;
-  o `roles` do filho é interseção com o do pai) e `pluginDisplayName` dá o
-  nome humano do plugin. `slots` maps native extension slots to declared
-  screens; `pluginSlot(id)` returns the first active claimant. Não conhece
-  plugin algum.
-- `pluginHost.ts` - o SDK em `globalThis.__POM_HOST__` (React, React Query, kit de
-  design, i18n, tema, `api.get`...) que as telas de plugin usam em vez de
-  empacotar cópias próprias. Versão 2: `context()`, `events`, `protocol` e
-  `plugin(code)` (eventos e comandos com escopo do plugin). Version 3 adds
-  `components.TelemetryLine`; `components.ExecutionTelemetry` stays for
-  version-2 bundles and renders the same basic line. Version 4 adds
-  `plugin(code).rpc`.
-- `pluginEvents.ts` - o protocolo `pom-plugin-events/v1`: envelope, barramento
-  (`publishPluginEvent`, `subscribePluginEvents`, replay do último evento
-  global), entrega por `CustomEvent("pom:plugin-event")` e `postMessage` para
-  `iframe[data-pom-plugin]`, e os comandos `notification.notify`/`confirm`
-  (`runPluginCommand`, validados e sempre respondidos com
-  `notification.response`), também aceitos por `pom:plugin-request` e
-  `postMessage` da mesma origem. Quem executa é a `PluginBridge`.
-  `forwardNodeEvent` repassa os envelopes do nó (`deployment.started`,
-  `model.serving`, `model.stopped`, `preferences.changed`) preservando `id`.
-  `scopedPluginApi(code).rpc(op, params)` posts to the plugin's own API
-  (`/api/ui/plugins/<code>/rpc/<op>`).
-- `defaultPasswordNotice.ts` - the bell's default-password notice: read and
-  dismissed state in `localStorage` per `boot_id`, so it returns unread on
-  every start of the node and not on a page reload.
-- `pluginInbox.ts` - caixa de entrada dos plugins no sino: perguntas
-  `notification.confirm` com Aceitar/Recusar (só nesta aba) e avisos
-  `notification.notify` sem botões, não lidos até o sino abrir
-  (`markPluginNoticesRead`; ids lidos no `localStorage`).
-- `pluginI18n.ts` - carrega/valida/instala os catálogos de texto do plugin
-  (`syncPluginCatalogs`), nos idiomas selecionados. Ver `docs/subsystems/plugins-ui.md`.
+The mechanism lives in `docs/subsystems/plugins-ui.md`; these are the files that carry it.
+
+- `pluginUi.ts` - the manifest types and the validated registry the menu, the profile guard and the
+  router read (`setPluginUi`, `resolvePluginRoute`, `pluginRouteProfiles`, `pluginMenuItems`,
+  `pluginLabel`, `pluginAssetUrl`, `pluginSlot`). It knows no specific plugin.
+- `pluginHost.ts` - the SDK on `globalThis.__POM_HOST__` (React, React Query, the design kit, i18n,
+  theme, `api.get`...) that plugin screens use instead of packaging their own copies. Its version
+  history is in `plugins-ui.md`.
+- `pluginReady.ts` - the "finished rendering" signal of a plugin screen: `usePluginReady` arms the
+  gate on the host mount and opens it on `__POM_HOST__.ready()` or after `PLUGIN_READY_GRACE_MS`,
+  whichever comes first. The signal is never required to use a plugin.
+- `pluginEvents.ts` - the `pom-plugin-events/v1` protocol: envelope, bus, delivery to
+  `iframe[data-pom-plugin]`, the `notification.notify`/`confirm` commands, `forwardNodeEvent` for
+  the node's own envelopes, and `scopedPluginApi(code).rpc`. The one that executes is the
+  `PluginBridge` (`components/`).
+- `pluginInbox.ts` - the plugins' inbox in the bell: `notification.confirm` questions with
+  Accept/Decline (this tab only) and `notification.notify` warnings without buttons, unread until
+  the bell opens (`markPluginNoticesRead`; read ids in `localStorage`).
+- `defaultPasswordNotice.ts` - the bell's default-password notice: read and dismissed state in
+  `localStorage` per `boot_id`, so it returns unread on every start of the node and not on a page
+  reload.
+- `pluginI18n.ts` - loads/validates/installs the plugin's text catalogs (`syncPluginCatalogs`), in
+  the selected locales.

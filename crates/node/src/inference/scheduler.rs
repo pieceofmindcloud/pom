@@ -144,12 +144,12 @@ impl<T> SchedulerQueue<T> {
         Ok(())
     }
 
-    /// Há quanto tempo espera o prefill de sessão nova mais antigo da fila.
+    /// How long the oldest new-session prefill in the queue has been waiting.
     ///
-    /// É o relógio da carência de reclamação: enquanto ninguém espera, uma
-    /// sessão retida nunca é despejada; passada a carência, o escalonador
-    /// reclama o slot para que a requisição tenha desfecho em vez de ficar
-    /// pendurada esperando um slot que só sairia do `reap_idle`.
+    /// It is the clock of the reclaim grace period: while nobody waits, a
+    /// retained session is never evicted; once the grace period has passed, the
+    /// scheduler reclaims the slot so that the request gets an outcome instead
+    /// of hanging while it waits for a slot that only `reap_idle` would free.
     pub fn oldest_new_session_wait(
         &self,
         now: Instant,
@@ -183,12 +183,12 @@ impl<T> SchedulerQueue<T> {
         })
     }
 
-    /// Seleciona um microbatch da classe `class`, respeitando os limites e a
-    /// **admissão de sessão**: um `Prefill*` para uma sessão que ainda não
-    /// existe no motor (`is_existing` devolve `false`) consome um dos
-    /// `new_session_slots` disponíveis; esgotado o orçamento, o item fica na
-    /// fila em ordem em vez de ser despachado e recusado com "seq pool
-    /// esgotado". Decode e continuações de sessão viva não consomem slot.
+    /// Selects a microbatch of class `class`, respecting the limits and
+    /// **session admission**: a `Prefill*` for a session that does not yet
+    /// exist in the engine (`is_existing` returns `false`) consumes one of the
+    /// available `new_session_slots`; once the budget is exhausted, the item
+    /// stays in the queue in order instead of being dispatched and refused with
+    /// "seq pool exhausted". Decode and live-session continuations consume no slot.
     pub fn take_batch(
         &mut self,
         _now: Instant,
@@ -242,7 +242,7 @@ mod tests {
     use std::time::Instant;
 
     #[test]
-    fn replicas_da_mesma_fatia_nao_compartilham_capacidade_da_fila() {
+    fn replicas_of_the_same_slice_do_not_share_queue_capacity() {
         let mut a = SchedulerQueue::new(SchedulerConfig::test(1, 1));
         let mut b = SchedulerQueue::new(SchedulerConfig::test(1, 1));
         a.try_push(QueueItem::test("sess-a", WorkClass::DecodeTokens, 1))
@@ -254,7 +254,7 @@ mod tests {
     }
 
     #[test]
-    fn um_microbatch_nao_duplica_a_mesma_sessao() {
+    fn a_microbatch_does_not_duplicate_the_same_session() {
         let mut q = SchedulerQueue::new(SchedulerConfig::test(8, 4));
         q.try_push(QueueItem::test("sess-a", WorkClass::DecodeTokens, 1))
             .unwrap();
@@ -278,7 +278,7 @@ mod tests {
         q.try_push(QueueItem::test("wait-2", WorkClass::PrefillTokens, 10))
             .unwrap();
 
-        // "live" já tem sessão; os outros dois são novos e não há slot livre.
+        // "live" already has a session; the other two are new and no slot is free.
         let existing = |sid: &str| sid == "live";
         let batch = q.take_batch(Instant::now(), WorkClass::PrefillTokens, existing, 0);
         assert_eq!(
@@ -288,11 +288,11 @@ mod tests {
                 .map(|i| i.session_id.as_str())
                 .collect::<Vec<_>>(),
             ["live"],
-            "só a continuação da sessão viva entra"
+            "only the continuation of the live session gets in"
         );
-        assert_eq!(q.len(), 2, "os dois novos ficam na fila");
+        assert_eq!(q.len(), 2, "the two new ones stay in the queue");
 
-        // Abre um slot: o próximo da fila entra, o outro continua esperando.
+        // Opens a slot: the next in the queue gets in, the other keeps waiting.
         let batch = q.take_batch(Instant::now(), WorkClass::PrefillTokens, |_| false, 1);
         assert_eq!(
             batch
@@ -301,38 +301,42 @@ mod tests {
                 .map(|i| i.session_id.as_str())
                 .collect::<Vec<_>>(),
             ["wait-1"],
-            "FIFO: wait-1 antes de wait-2"
+            "FIFO: wait-1 before wait-2"
         );
         assert_eq!(q.len(), 1);
     }
 
-    /// O outro lado da corrida do incidente: com `max_sessions=1` e a sessão
-    /// do agente retida, o pedido pequeno não é admitido - fica na fila com a
-    /// espera medida, em vez de entrar despejando o prefixo de 62 mil tokens.
+    /// The other side of the incident's race: with `max_sessions=1` and the
+    /// agent's session retained, the small request is not admitted - it stays in
+    /// the queue with the wait measured, instead of evicting the 62 thousand token prefix.
     #[test]
-    fn prefill_novo_espera_em_vez_de_despejar_a_sessao_retida() {
+    fn a_new_prefill_waits_instead_of_evicting_the_retained_session() {
         let mut q = SchedulerQueue::new(SchedulerConfig::test(4, 1));
         q.try_push(QueueItem::test("title", WorkClass::PrefillTokens, 35))
             .unwrap();
 
-        // Nenhum slot livre: a sessão retida do agente é cache quente, não
-        // capacidade, então `new_session_slots` devolveu zero.
+        // No free slot: the agent's retained session is warm cache, not
+        // capacity, so `new_session_slots` returned zero.
         let batch = q.take_batch(Instant::now(), WorkClass::PrefillTokens, |_| false, 0);
-        assert!(batch.items.is_empty(), "o pedido pequeno não é admitido");
-        assert_eq!(q.len(), 1, "e continua na fila, sem ser recusado");
+        assert!(batch.items.is_empty(), "the small request is not admitted");
+        assert_eq!(
+            q.len(),
+            1,
+            "and it stays in the queue, without being refused"
+        );
 
-        // A espera é observável, que é o relógio da carência de reclamação.
+        // The wait is observable, which is the clock of the reclaim grace period.
         let waited = q.oldest_new_session_wait(Instant::now(), |_| false);
-        assert!(waited.is_some(), "a espera do prefill novo é medida");
+        assert!(waited.is_some(), "the wait of the new prefill is measured");
 
-        // Uma sessão já viva não é contada como espera de sessão nova.
+        // A session that is already live is not counted as a new-session wait.
         assert!(q
             .oldest_new_session_wait(Instant::now(), |_| true)
             .is_none());
     }
 
     #[test]
-    fn prefill_de_pipeline_nao_entra_na_carencia_de_pedido_avulso() {
+    fn a_pipeline_prefill_is_exempt_from_the_standalone_request_grace_period() {
         let mut q = SchedulerQueue::new(SchedulerConfig::test(4, 1));
         q.try_push(QueueItem::pipeline_test(
             "pipeline",
@@ -345,12 +349,12 @@ mod tests {
         assert!(
             q.oldest_new_session_wait(Instant::now(), |_| false)
                 .is_none(),
-            "uma requisição de pipeline não pode armar o timer do pedido avulso"
+            "a pipeline request cannot arm the standalone request timer"
         );
     }
 
     #[test]
-    fn fila_cheia_recusa_antes_de_alocar_trabalho() {
+    fn a_full_queue_refuses_before_allocating_work() {
         let mut q = SchedulerQueue::new(SchedulerConfig::test(1, 1));
         q.try_push(QueueItem::test("sess-a", WorkClass::PrefillTokens, 1))
             .unwrap();
@@ -361,7 +365,7 @@ mod tests {
     }
 
     #[test]
-    fn limites_do_scheduler_sao_clampados_ao_contexto_do_no() {
+    fn scheduler_limits_are_clamped_to_the_node_context() {
         let config = SchedulerConfig::from_values(true, 0, 4, 99, 4096, 2, 512);
         assert_eq!(config.max_queue_requests, 1);
         assert_eq!(config.batch_window, std::time::Duration::from_millis(4));

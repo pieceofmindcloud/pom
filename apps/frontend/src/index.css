@@ -37,6 +37,15 @@
   --plugin-buy-hover: 0 84 77;
   --plugin-buy-fg: 255 255 255;
 
+  /* Tabs (`ui.Tabs`), the POM-JEV look: full colours, not channels. */
+  --tab-bar: #f8f6f7;
+  --tab-ink: #6d6775;
+  --tab-ink-on: #18151b;
+  --tab-line: rgba(24, 21, 27, .12);
+  --tab-card: rgba(255, 255, 255, .78);
+  --tab-accent: #0b8279;
+  --tab-icon: #123f8f;
+
   color-scheme: light;
 }
 
@@ -60,6 +69,14 @@
   --plugin-buy-bg: 67 224 200;
   --plugin-buy-hover: 91 239 216;
   --plugin-buy-fg: 9 10 16;
+
+  --tab-bar: #0b0a0f;
+  --tab-ink: #8f8a99;
+  --tab-ink-on: #f4f2f7;
+  --tab-line: rgba(255, 255, 255, .14);
+  --tab-card: rgba(255, 255, 255, .045);
+  --tab-accent: #2fdcc8;
+  --tab-icon: #4f9bff;
 
   color-scheme: dark;
 }
@@ -113,6 +130,45 @@ body {
 }
 
 @layer components {
+  /* ui.Tabs */
+  .pom-tabs {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 2px;
+    padding: 6px 12px 0;
+    border-bottom: 1px solid var(--tab-line);
+    background: var(--tab-bar);
+  }
+  .pom-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px;
+    border: 1px solid transparent;
+    border-bottom: 0;
+    border-radius: 10px 10px 0 0;
+    color: var(--tab-ink);
+    background: transparent;
+    font-size: 12.5px;
+    font-weight: 700;
+    line-height: 1.2;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .pom-tab:hover:not(:disabled) { color: var(--tab-ink-on); }
+  .pom-tab:disabled { cursor: not-allowed; opacity: .4; }
+  .pom-tab:focus-visible { outline: 2px solid var(--tab-icon); outline-offset: -2px; }
+  .pom-tab-on {
+    margin-bottom: -1px;
+    color: var(--tab-ink-on);
+    border-color: var(--tab-line);
+    background: var(--tab-card);
+    box-shadow: inset 0 2px 0 var(--tab-accent);
+  }
+  .pom-tab-icon { display: inline-flex; color: var(--tab-icon); }
+  .pom-tab-icon svg { width: 14px; height: 14px; }
+  .pom-tabs-fill .pom-tab { flex: 1 1 0; justify-content: center; min-width: 0; }
+
   .panel {
     @apply rounded-xl border border-line bg-surface shadow-panel;
   }
@@ -288,9 +344,9 @@ body {
   color: rgb(var(--rose));
 }
 
-/* Tela de senha administrativa: a assinatura da página inicial do
-   pieceofmind.cloud (painel escuro flutuante, marca, gradiente navy -> teal).
-   O painel é escuro nos dois temas, como no site; só o fundo segue o tema. */
+/* Administrative password screen: the signature of the pieceofmind.cloud home page
+   (floating dark panel, brand mark, navy -> teal gradient).
+   The panel is dark in both themes, as on the site; only the background follows the theme. */
 .pom-login {
   display: grid;
   min-height: 100%;
@@ -303,31 +359,41 @@ body {
 .pom-login { position: relative; }
 .pom-login-langs {
   position: absolute; top: clamp(14px, 3vw, 22px); right: clamp(14px, 3vw, 28px);
-  display: inline-flex; align-items: center; gap: 2px; padding: 3px;
-  border: 1px solid rgba(24, 21, 27, .12); border-radius: 999px;
-  background: #fff;
   animation: pom-login-reveal .8s cubic-bezier(.22, 1, .36, 1) .5s both;
 }
-:root[data-theme="dark"] .pom-login-langs { border-color: rgba(255, 255, 255, .14); background: #16141d; }
 .pom-login-lang {
   display: inline-flex; align-items: center; gap: 6px;
-  padding: 4px 9px 4px 5px; border: 0; border-radius: 999px;
-  background: none; color: #6d6775;
+  padding: 4px 9px 4px 5px; border: 1px solid rgba(24, 21, 27, .12); border-radius: 999px;
+  background: #fff; color: #123f8f;
   font: 700 9.5px/1 ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   letter-spacing: .12em; cursor: pointer;
   transition: background .15s ease, color .15s ease;
 }
-:root[data-theme="dark"] .pom-login-lang { color: #8f8a99; }
+:root[data-theme="dark"] .pom-login-lang { border-color: rgba(255, 255, 255, .14); background: #16141d; color: #4f9bff; }
+.pom-login-lang:hover { background: rgba(18, 63, 143, .06); }
+:root[data-theme="dark"] .pom-login-lang:hover { background: rgba(79, 155, 255, .10); }
 .pom-login-lang img {
   width: 17px; height: 12px; border-radius: 2px; object-fit: cover;
-  box-shadow: 0 0 0 1px rgba(24, 21, 27, .07); opacity: .55;
-  transition: opacity .15s ease;
+  box-shadow: 0 0 0 1px rgba(24, 21, 27, .07);
 }
-.pom-login-lang:hover img { opacity: .85; }
-.pom-login-lang[aria-pressed="true"] { background: rgba(18, 63, 143, .10); color: #123f8f; }
-:root[data-theme="dark"] .pom-login-lang[aria-pressed="true"] { background: rgba(79, 155, 255, .14); color: #4f9bff; }
-.pom-login-lang[aria-pressed="true"] img { opacity: 1; }
 .pom-login-lang:focus-visible { outline: 2px solid #35c9f0; outline-offset: 2px; }
+.pom-login-lang-menu {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 5;
+  display: flex; flex-direction: column; gap: 2px; min-width: 11rem; padding: 4px;
+  border: 1px solid rgba(24, 21, 27, .12); border-radius: 14px;
+  background: #fff; box-shadow: 0 12px 32px -12px rgba(24, 21, 27, .28);
+}
+:root[data-theme="dark"] .pom-login-lang-menu { border-color: rgba(255, 255, 255, .14); background: #16141d; }
+.pom-login-lang-option {
+  display: flex; align-items: center; gap: 8px; padding: 6px 10px 6px 6px;
+  border: 0; border-radius: 10px; background: none; color: #6d6775;
+  font: 600 12px/1 "IBM Plex Sans", Inter, system-ui, sans-serif; white-space: nowrap; text-align: left; cursor: pointer;
+}
+:root[data-theme="dark"] .pom-login-lang-option { color: #8f8a99; }
+.pom-login-lang-option:hover { background: rgba(24, 21, 27, .05); }
+.pom-login-lang-option[aria-selected="true"] { background: rgba(18, 63, 143, .10); color: #123f8f; }
+:root[data-theme="dark"] .pom-login-lang-option[aria-selected="true"] { background: rgba(79, 155, 255, .14); color: #4f9bff; }
+.pom-login-lang-option:focus-visible { outline: 2px solid #35c9f0; outline-offset: -2px; }
 .pom-login-panel {
   animation: pom-login-rise .9s cubic-bezier(.22, 1, .36, 1) both;
   position: relative;
@@ -370,7 +436,7 @@ body {
   animation: pom-login-reveal .8s cubic-bezier(.22, 1, .36, 1) .42s both;
 }
 
-/* Três nós ligados por uma linha com um pulso de luz que viaja entre eles. */
+/* Three nodes joined by a line with a pulse of light travelling between them. */
 .pom-login-link {
   position: relative;
   display: flex; justify-content: space-between; align-items: center;
@@ -461,12 +527,37 @@ body {
 }
 .pom-login-error { margin: 2px 0 0; color: #ff9aa6; font-size: 13px; }
 
+/* Chat opening without a conversation (`components/ChatHero.tsx`): the site's brand mark
+   breathing, the line that opens "P O M" in each phrase and the three nodes of the gate,
+   in the colors of the active theme. */
+.pom-chat-hero { display: flex; flex-direction: column; align-items: center; text-align: center; margin-bottom: clamp(20px, 4vh, 36px); }
+.pom-chat-hero-mark {
+  display: block; width: min(220px, 56vw); height: auto; margin: 0 auto 14px;
+  animation: pom-login-breathe 5s ease-in-out 1s infinite;
+}
+.pom-chat-hero-sub {
+  display: flex; justify-content: center; gap: .9em; min-height: 1em; margin: 0 0 28px;
+  color: rgb(var(--muted)); white-space: nowrap;
+  font: 700 10px/1 ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  letter-spacing: .28em;
+}
+.pom-chat-hero-word { display: inline-flex; }
+.pom-chat-hero-initial {
+  background: linear-gradient(96deg, #4f9bff, #2fdcc8);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.pom-chat-hero-rest { display: inline-block; overflow: hidden; }
+/* The entrance timing is framer-motion's here; the gate's CSS reveal would
+   override the inline opacity and show the nodes before the mark. */
+.pom-chat-hero-link { margin: 0 auto; animation: none; }
+.pom-chat-hero-link i { background: rgb(var(--surface)); }
+
 /* ==========================================================================
-   Wizard de primeiro acesso (`routes/Setup.tsx`), na identidade do portão e do
-   site: o mesmo painel escuro flutuante com a marca, só mais largo e com o
-   conteúdo alinhado à esquerda. Dentro dele os tokens do tema escuro valem
-   sempre (`.pom-setup-scope`), para os campos compartilhados combinarem com o
-   painel também no tema claro.
+   First-access wizard (`routes/Setup.tsx`), in the identity of the gate and of
+   the site: the same floating dark panel with the brand mark, only wider and with the
+   content aligned to the left. Inside it the dark-theme tokens always apply
+   (`.pom-setup-scope`), so the shared fields match the
+   panel in the light theme too.
    ========================================================================== */
 .pom-setup-scope {
   --ink: 8 14 24;
@@ -495,11 +586,11 @@ body {
 .pom-setup-mark { width: min(170px, 46%); margin-bottom: 10px; }
 .pom-setup-sub { margin-bottom: 22px; }
 .pom-setup-body { min-height: 280px; }
-/* O seletor de idioma fica no canto; em tela estreita o painel desce para não cobri-lo. */
+/* The language selector sits in the corner; on a narrow screen the panel moves down so it does not cover it. */
 @media (max-width: 720px) { .pom-setup { padding-top: 64px; place-items: start center; } }
 .pom-setup-loading { margin: 0 auto; transform: scale(1.35); }
 
-/* Trilha de passos: os nós ligados do site, com o pulso viajando. */
+/* Step trail: the site's joined nodes, with the pulse travelling. */
 .pom-setup-trail { margin: 0 auto 30px; animation: pom-login-reveal .8s cubic-bezier(.22, 1, .36, 1) .34s both; }
 .pom-setup-trail ol {
   position: relative; display: flex; justify-content: space-between; gap: 8px;
@@ -604,10 +695,10 @@ body {
 @keyframes pom-setup-blink { 50% { opacity: .55; } }
 
 /* ==========================================================================
-   Página de venda do plugin Estatísticas e Logs (`EnterpriseFeatureShowcase`),
-   na linguagem do pieceofmind.cloud: hero escuro flutuante, gradiente navy ->
-   teal, eyebrows mono numerados, cards arredondados e botões pílula. O hero é
-   escuro nos dois temas, como no site; o resto segue o tema do POM.
+   Sales page of the Statistics and Logs plugin (`EnterpriseFeatureShowcase`),
+   in the language of pieceofmind.cloud: floating dark hero, navy ->
+   teal gradient, numbered mono eyebrows, rounded cards and pill buttons. The hero is
+   dark in both themes, as on the site; the rest follows the POM theme.
    ========================================================================== */
 .pom-store {
   --st-blue: #123f8f; --st-cyan: #0d7297; --st-teal: #0b8279;
@@ -807,4 +898,55 @@ body {
 @media (max-width: 600px) {
   .pom-store-gallery:has(.pom-store-shot-main) { grid-template-columns: 1fr; }
   .pom-store-shot-main { grid-column: auto; }
+}
+
+/* First run guide (`components/FirstRunGuide.tsx`): the balloon hovers and the
+   ring breathes around what it points at. */
+.tour-float {
+  animation: tour-float 2.2s ease-in-out infinite;
+}
+@keyframes tour-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-4px);
+  }
+}
+.tour-ring {
+  border: 2px solid rgb(var(--iris) / 0.9);
+  animation: tour-ring 1.8s ease-in-out infinite;
+}
+@keyframes tour-ring {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgb(var(--iris) / 0.45);
+  }
+  50% {
+    box-shadow: 0 0 0 7px rgb(var(--iris) / 0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tour-float,
+  .tour-ring {
+    animation: none;
+  }
+}
+
+/*
+ * A plugin screen mounted under the loading animation: laid out for real, so its
+ * own charts and tables measure a real box, but invisible and unreachable until
+ * the plugin says it finished rendering. `.pom-plugin-open` is layout-neutral, so
+ * the screen ends up exactly where it would be without the wrapper.
+ */
+.pom-plugin-pending {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.pom-plugin-open {
+  display: contents;
 }

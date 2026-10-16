@@ -8,13 +8,15 @@ shared `[workspace.package]` metadata, shared `[workspace.dependencies]` for
 
 - `brand` - the product identity from `/brand.json`, embedded with `include_str!`
   (was `node/src/utils/brand.rs`). Consumed by `node` and `llama-engine`.
-- `llama-engine` - **all** the code that talks to `llama-cpp-sys-2`: the FFI
-  wrapper (`llm`), MTP (`mtp`), the in-house MoE executor (`moe`), the TP reduce
-  barrier (`collective`), GGUF header parsing (`gguf`/`multipart`), KV budget
-  (`kv_budget`), and system/GPU monitoring (`sysmon`). Extracted from `node` so
-  editing backend/network/routing code does not rebuild it. Owns the C/CUDA
-  shims and the `mtp_arch` build step. Features `cuda`/`metal`/`vulkan` forward
-  to `llama-cpp-sys-2`.
+- `llama-engine` is **not in this workspace**: it lives in the repository
+  `pom-plugin-llama.cpp` (private), pinned by `rev` in `crates/node/Cargo.toml`.
+  It holds **all** the code that talks to `llama-cpp-sys-2`: the FFI wrapper
+  (`llm`), MTP (`mtp`), the in-house MoE executor (`moe`), the TP reduce barrier
+  (`collective`), GGUF header parsing (`gguf`/`multipart`), KV budget
+  (`kv_budget`), and system/GPU monitoring (`sysmon`), plus the C/CUDA shims and
+  the `mtp_arch` build step. `llama-cpp-sys-2` (the binding) lives there too and
+  is patched into the workspace from the same `rev`. The features
+  `cuda`/`metal`/`vulkan` forward to `llama-engine`.
 - `types` - infrastructure-free shared domain types (currently empty scaffolding)
 - `routing-contract` - versioned data contract for routing providers
 - `routing-base` - deterministic open-source routing provider
@@ -25,9 +27,12 @@ builds and tests the node crate. `resolver = "2"`.
 
 ## Dependency graph (verified by reading Cargo.tomls + grepping `use`)
 
-- `node` -> `routing-contract`, `llama-engine`, `brand` (all path deps in
-  `crates/node/Cargo.toml`).
-- `llama-engine` -> `brand`, `llama-cpp-sys-2` (patched to `vendor/`).
+- `node` -> `routing-contract`, `brand` (path deps) and `llama-engine` (git
+  dependency on `pom-plugin-llama.cpp`, see above).
+- `llama-engine` (external) -> `llama-cpp-sys-2` (external, patched from the same
+  repository). It no longer depends on `brand`: its GGUF key prefix is the
+  constant `llama_engine::GGUF_PREFIX`, which `node`'s test
+  `llama_engine_contract` checks against `brand::slug()`.
 - `routing-base` -> `routing-contract` (`crates/routing-base/Cargo.toml:7`).
 - `types` -> no dependencies, consumed by nothing.
 
@@ -69,20 +74,20 @@ content so far; `types` is a placeholder awaiting migration.
 - `routing-contract` is the seam a future private/closed routing provider would
   implement against; `routing-base` is the open one.
 
-## Pendências
+## Open items
 
-- O planner open-core ainda não está ligado ao caminho de produção; ver `TODO.md`,
-  item 5.
-- A extração de `config` e tipos compartilhados ainda não corresponde ao grafo
-  atual; ver `TODO.md`, item 6.
+- The open-core planner is not wired into the production path yet; see
+  `TODO.md`, item 5.
+- The extraction of `config` and shared types does not match the current graph
+  yet; see `TODO.md`, item 6.
 
-Os crates `enterprise-protocol`, `enterprise-plugin-fixture` e `plugin-host`
-formam a fronteira de licenciamento: o primeiro define DTOs e ABI C v1, o
-segundo é uma `cdylib` de teste e o terceiro é o único carregador de plugins.
-O licenciamento é por `plugin_code` independente, não de um produto único -
-`pom-plugin-host` sobe uma instância por plugin ativo, e os nomes com
-"enterprise" ficaram por história de git (o plugin de logs agora é `"logs"`). O contrato e as lacunas de extração
-estão em `docs/subsystems/enterprise-licensing.md`.
+The crates `enterprise-protocol`, `enterprise-plugin-fixture` and `plugin-host`
+form the licensing boundary: the first defines the DTOs and the C ABI v1, the
+second is a test `cdylib`, and the third is the only plugin loader. Licensing is
+per independent `plugin_code`, not for a single product - `pom-plugin-host`
+brings up one instance per active plugin, and the "enterprise" names remain only
+as git history (the logs plugin is now `"logs"`). The contract and the
+extraction gaps are in `docs/subsystems/enterprise-licensing.md`.
 
 ## Maintaining this file
 

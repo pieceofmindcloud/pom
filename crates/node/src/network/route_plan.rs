@@ -1,20 +1,20 @@
-//! Plano de rotas por aresta: por qual transporte este nó fala com cada peer.
+//! Route plan per edge: which transport this node uses to talk to each peer.
 //!
-//! A escada de transporte (QUIC, HTTP/HTTPS, túnel libp2p) redescobria a rota
-//! em todo frame: cada tentativa num endereço morto consumia o prazo do frame
-//! antes de chegar ao caminho que funciona. Aqui a rota é **medida uma vez**,
-//! em segundo plano, e fixada. O frame usa a rota fixada; se ela falhar, tenta
-//! de novo nela, depois passa para a próxima rota já medida da lista, e só com
-//! a lista esgotada volta à escada completa e pede uma nova análise.
+//! The transport ladder (QUIC, HTTP/HTTPS, libp2p tunnel) rediscovered the route
+//! on every frame: each attempt on a dead address consumed the frame's deadline
+//! before reaching the path that works. Here the route is **measured once**,
+//! in the background, and pinned. The frame uses the pinned route; if it fails, it tries
+//! again on it, then moves on to the next already measured route in the list, and only with
+//! the list exhausted goes back to the full ladder and asks for a new analysis.
 //!
-//! A medição é **por aresta com direção** e feita por quem envia: alcançar o
-//! peer B a partir de A não diz nada sobre alcançar A a partir de B (um nó
-//! atrás de NAT sai pela tailnet mas só é alcançado pelo túnel). Por isso cada
-//! processo mede as próprias arestas de saída e nada disto vai para o gossip.
+//! The measurement is **per directed edge** and made by the sender: reaching
+//! peer B from A says nothing about reaching A from B (a node
+//! behind NAT goes out through the tailnet but is only reached through the tunnel).
+//! So each process measures its own outgoing edges and none of this goes to gossip.
 //!
-//! Dois planos por peer, porque são portas e servidores diferentes:
-//! `Inference` (o servidor de inferência, destino de prefill e decode) e
-//! `Gateway` (o gateway, destino da volta da resposta direta e do
+//! Two plans per peer, because they are different ports and servers:
+//! `Inference` (the inference server, destination of prefill and decode) and
+//! `Gateway` (the gateway, destination of the direct response's return and of
 //! remote-stream).
 
 use std::collections::HashMap;
@@ -25,9 +25,9 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use tracing::{debug, info, warn};
 
-/// Validade de uma análise. Depois disso a aresta é medida de novo, mesmo
-/// sem falha: um caminho melhor pode ter surgido (hole punch novo, IPv6 que
-/// voltou).
+/// Validity of an analysis. After that the edge is measured again, even
+/// without a failure: a better path may have appeared (new hole punch, an IPv6 that
+/// came back).
 pub const PLAN_TTL: Duration = Duration::from_secs(180);
 
 /// How long after the last frame an edge stays pinned. It covers the gap
@@ -35,37 +35,37 @@ pub const PLAN_TTL: Duration = Duration::from_secs(180);
 /// holding an idle peer's route forever.
 pub const PIN_GRACE: Duration = Duration::from_secs(60);
 
-/// Espera antes de medir de novo uma aresta cuja última análise não achou rota
-/// nenhuma (peer ainda sem modelo, porta ainda fechada). Não é espera de
-/// frame: é só o intervalo entre duas análises em segundo plano.
+/// Wait before measuring again an edge whose last analysis found no route at
+/// all (peer still without a model, port still closed). It is not a frame
+/// wait: it is only the interval between two background analyses.
 const EMPTY_RETRY: Duration = Duration::from_secs(5);
 
-/// Cadência do planejador quando ninguém o acorda.
+/// Cadence of the planner when nobody wakes it.
 const PLANNER_TICK: Duration = Duration::from_secs(2);
 
-/// Teto de uma sonda direta (HTTP ou QUIC). A sonda roda fora do frame; o teto
-/// só separa "não respondeu" de "respondeu devagar".
+/// Ceiling of a direct probe (HTTP or QUIC). The probe runs off the frame; the
+/// ceiling only separates "did not answer" from "answered slowly".
 #[cfg(not(test))]
 pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 #[cfg(test)]
 pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_millis(100);
 
-/// Teto da sonda pelo túnel: pode precisar abrir um circuito pelo relé.
+/// Ceiling of the probe through the tunnel: it may need to open a relay circuit.
 const TUNNEL_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Falhas seguidas de uma rota fixada antes de passar para a próxima. A
-/// primeira falha repete a mesma rota ("tentar de novo"); a segunda troca.
+/// Consecutive failures of a pinned route before moving on to the next one. The
+/// first failure repeats the same route ("try again"); the second one switches.
 const FAILURES_BEFORE_FAILOVER: u32 = 2;
 
-/// Orçamento de estabelecimento de conexão para um peer já medido: três RTTs,
-/// com piso e teto. O teto é o orçamento de fallback do QUIC.
+/// Connection establishment budget for an already measured peer: three RTTs,
+/// with a floor and a ceiling. The ceiling is QUIC's fallback budget.
 const ESTABLISH_FLOOR: Duration = Duration::from_millis(100);
-/// Orçamento de estabelecimento antes da primeira medição do peer.
+/// Establishment budget before the peer's first measurement.
 const ESTABLISH_UNMEASURED: Duration = Duration::from_millis(150);
 
-/// Largura da faixa em que duas rotas contam como empatadas em RTT. Dentro
-/// dela vence o transporte preferido (QUIC, depois HTTP, depois túnel):
-/// sondas de milissegundos variam mais que isso de uma medição para outra.
+/// Width of the band in which two routes count as tied in RTT. Within
+/// it the preferred transport wins (QUIC, then HTTP, then tunnel):
+/// millisecond probes vary more than that from one measurement to the next.
 const RTT_TIE_BUCKET_MS: f64 = 2.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
@@ -110,14 +110,14 @@ impl RouteKind {
     }
 }
 
-/// Uma rota medida até um peer.
+/// A measured route to a peer.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PlannedRoute {
     pub kind: RouteKind,
-    /// URL base HTTP(S). Numa rota QUIC é a URL do mesmo host, que o cliente
-    /// HTTP/3 usa como autoridade; numa rota de túnel fica vazia.
+    /// HTTP(S) base URL. On a QUIC route it is the URL of the same host, which the
+    /// HTTP/3 client uses as authority; on a tunnel route it stays empty.
     pub base_url: String,
-    /// `host:porta` do endpoint HTTP/3, só numa rota QUIC.
+    /// `host:port` of the HTTP/3 endpoint, only on a QUIC route.
     pub quic_addr: Option<String>,
     #[serde(serialize_with = "serialize_ms")]
     pub rtt: Duration,
@@ -143,8 +143,8 @@ impl PlannedRoute {
     }
 }
 
-/// Ordena as rotas medidas: menor RTT primeiro, e dentro da mesma faixa de
-/// `RTT_TIE_BUCKET_MS` o transporte preferido.
+/// Orders the measured routes: lowest RTT first, and within the same
+/// `RTT_TIE_BUCKET_MS` band the preferred transport.
 pub fn rank(mut routes: Vec<PlannedRoute>) -> Vec<PlannedRoute> {
     routes.sort_by(|a, b| {
         let bucket = |r: &PlannedRoute| (r.rtt.as_secs_f64() * 1000.0 / RTT_TIE_BUCKET_MS) as u64;
@@ -157,15 +157,15 @@ pub fn rank(mut routes: Vec<PlannedRoute>) -> Vec<PlannedRoute> {
     routes
 }
 
-/// O que aconteceu com a aresta depois de uma falha da rota fixada.
+/// What happened to the edge after a failure of the pinned route.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FailureOutcome {
-    /// A mesma rota deve ser tentada de novo.
+    /// The same route must be tried again.
     Retry,
-    /// A rota fixada passou a ser a próxima da lista.
+    /// The pinned route is now the next one in the list.
     FailedOver(PlannedRoute),
-    /// Nenhuma rota medida sobrou: a aresta volta à escada completa e uma nova
-    /// análise foi pedida.
+    /// No measured route is left: the edge goes back to the full ladder and a new
+    /// analysis was requested.
     Exhausted,
 }
 
@@ -216,24 +216,24 @@ impl Drop for RouteUse<'_> {
     }
 }
 
-/// As rotas fixadas deste processo.
+/// This process's pinned routes.
 #[derive(Default)]
 pub struct RouteBook {
     edges: RwLock<HashMap<EdgeKey, EdgePlan>>,
     attempts: RwLock<HashMap<EdgeKey, Attempt>>,
     wake: tokio::sync::Notify,
-    /// Peers que este nó só alcança por circuito num relé: toda conexão libp2p
-    /// viva com eles é `/p2p-circuit`. Uma rota `tunnel` até um deles passa
-    /// por um servidor intermediário a cada frame. Refeito a cada volta do
-    /// planejador, porque o hole punch pode fechar depois da medição.
+    /// Peers this node only reaches through a relay circuit: every live libp2p
+    /// connection with them is `/p2p-circuit`. A `tunnel` route to one of them goes
+    /// through an intermediate server on every frame. Rebuilt on every pass of the
+    /// planner, because the hole punch may close after the measurement.
     relayed: RwLock<std::collections::BTreeSet<String>>,
     /// Frames in flight per edge; see `RouteUse`.
     usage: RwLock<HashMap<EdgeKey, EdgeUse>>,
 }
 
-/// O livro de rotas do processo. Global como o `tunnel_sender`: todo cliente
-/// de transporte do processo (gateway, servidor de inferência, relé) precisa
-/// ver a mesma decisão, e cada um tem o próprio `PeerClients`.
+/// The process's route book. Global like the `tunnel_sender`: every transport
+/// client of the process (gateway, inference server, relay) needs
+/// to see the same decision, and each one has its own `PeerClients`.
 pub fn book() -> &'static RouteBook {
     static BOOK: OnceLock<RouteBook> = OnceLock::new();
     BOOK.get_or_init(RouteBook::default)
@@ -289,7 +289,7 @@ impl RouteBook {
                 .is_some_and(|edges| edges.contains_key(key))
     }
 
-    /// Todas as rotas medidas da aresta, na ordem de preferência.
+    /// All the measured routes of the edge, in order of preference.
     pub fn routes(&self, node_id: &str, plane: Plane) -> Vec<PlannedRoute> {
         self.edges
             .read()
@@ -378,14 +378,14 @@ impl RouteBook {
         });
         if changed {
             info!(
-                "rota {} para {label}: {} [{} alternativa(s)]",
+                "route {} to {label}: {} [{} alternative(s)]",
                 plane.as_str(),
                 chosen.describe(),
                 routes.len() - 1
             );
         } else {
             debug!(
-                "rota {} para {label} confirmada: {}",
+                "route {} to {label} confirmed: {}",
                 plane.as_str(),
                 chosen.describe()
             );
@@ -411,7 +411,7 @@ impl RouteBook {
         }
     }
 
-    /// Anota uma falha da rota fixada e decide o próximo passo.
+    /// Records a failure of the pinned route and decides the next step.
     pub fn record_failure(&self, node_id: &str, plane: Plane) -> FailureOutcome {
         let outcome = {
             let Ok(mut edges) = self.edges.write() else {
@@ -438,13 +438,13 @@ impl RouteBook {
         let label = short(node_id);
         match &outcome {
             FailureOutcome::FailedOver(next) => warn!(
-                "rota {} para {label} falhou duas vezes; passando para {}",
+                "route {} to {label} failed twice; moving on to {}",
                 plane.as_str(),
                 next.describe()
             ),
             FailureOutcome::Exhausted => {
                 warn!(
-                    "rota {} para {label}: todas as rotas medidas falharam; nova análise pedida",
+                    "route {} to {label}: all measured routes failed; new analysis requested",
                     plane.as_str()
                 );
                 self.forget_attempt(node_id, plane);
@@ -455,7 +455,7 @@ impl RouteBook {
         outcome
     }
 
-    /// Descarta a análise da aresta e acorda o planejador.
+    /// Discards the edge's analysis and wakes the planner.
     pub fn request_reanalysis(&self, node_id: &str, plane: Plane) {
         if let Ok(mut edges) = self.edges.write() {
             edges.remove(&Self::key(node_id, plane));
@@ -470,9 +470,9 @@ impl RouteBook {
         }
     }
 
-    /// Reserva a análise de uma aresta quando ela é necessária: sem análise,
-    /// análise vencida, ou o peer mudou o que anuncia (`fingerprint`). Uma
-    /// análise que não achou rota só se repete depois de `EMPTY_RETRY`.
+    /// Reserves the analysis of an edge when it is needed: no analysis,
+    /// expired analysis, or the peer changed what it announces (`fingerprint`). An
+    /// analysis that found no route only repeats after `EMPTY_RETRY`.
     pub fn claim_measurement(&self, node_id: &str, plane: Plane, fingerprint: u64) -> bool {
         let key = Self::key(node_id, plane);
         // An edge in use is not probed: the probe would compete for the link
@@ -510,7 +510,7 @@ impl RouteBook {
         true
     }
 
-    /// Peers alcançados só por relé (ver o campo `relayed`), em ordem.
+    /// Peers reached only through a relay (see the `relayed` field), in order.
     pub fn relayed_nodes(&self) -> Vec<String> {
         self.relayed
             .read()
@@ -524,7 +524,7 @@ impl RouteBook {
         }
     }
 
-    /// Esquece as arestas de peers que saíram da tabela.
+    /// Forgets the edges of peers that left the table.
     pub fn retain_nodes(&self, alive: &[String]) {
         let keep = |key: &EdgeKey| alive.iter().any(|id| *id == key.0);
         if let Ok(mut edges) = self.edges.write() {
@@ -538,7 +538,7 @@ impl RouteBook {
         }
     }
 
-    /// RTT da rota fixada até cada peer num plano, em ms.
+    /// RTT of the pinned route to each peer in a plan, in ms.
     pub fn rtt_map(&self, plane: Plane) -> HashMap<String, f64> {
         let Ok(edges) = self.edges.read() else {
             return HashMap::new();
@@ -555,9 +555,9 @@ impl RouteBook {
             .collect()
     }
 
-    /// Transporte da rota fixada até cada peer num plano (`quic`, `http`,
-    /// `tunnel`). Publicado no `/health` para o gateway decidir por onde a
-    /// resposta volta (`fastest::return_path_prefers_ring`).
+    /// Transport of the pinned route to each peer in a plan (`quic`, `http`,
+    /// `tunnel`). Published in `/health` for the gateway to decide which way the
+    /// response returns (`fastest::return_path_prefers_ring`).
     pub fn kind_map(&self, plane: Plane) -> HashMap<String, String> {
         let Ok(edges) = self.edges.read() else {
             return HashMap::new();
@@ -574,7 +574,7 @@ impl RouteBook {
             .collect()
     }
 
-    /// Menor RTT medido até o peer, em qualquer plano.
+    /// Lowest RTT measured to the peer, in any plan.
     pub fn rtt(&self, node_id: &str) -> Option<Duration> {
         let edges = self.edges.read().ok()?;
         [Plane::Inference, Plane::Gateway]
@@ -584,10 +584,10 @@ impl RouteBook {
             .min()
     }
 
-    /// Quanto esperar para estabelecer uma conexão com este peer: três RTTs
-    /// medidos, entre `ESTABLISH_FLOOR` e `ceiling`; sem medição,
-    /// `ESTABLISH_UNMEASURED`. Uma conexão até um endereço morto não pode
-    /// consumir o prazo do frame.
+    /// How long to wait to establish a connection with this peer: three measured
+    /// RTTs, between `ESTABLISH_FLOOR` and `ceiling`; without a measurement,
+    /// `ESTABLISH_UNMEASURED`. A connection to a dead address cannot
+    /// consume the frame's deadline.
     pub fn establish_budget(&self, node_id: &str, ceiling: Duration) -> Duration {
         match self.rtt(node_id) {
             Some(rtt) => (rtt * 3).clamp(ESTABLISH_FLOOR, ceiling.max(ESTABLISH_FLOOR)),
@@ -595,8 +595,8 @@ impl RouteBook {
         }
     }
 
-    /// Identidade das rotas fixadas, sem tempos: muda quando uma rota é
-    /// trocada, e não a cada leitura. Serve de chave de cache.
+    /// Identity of the pinned routes, without times: it changes when a route is
+    /// switched, and not on every read. It serves as a cache key.
     pub fn signature(&self) -> Vec<String> {
         let mut out: Vec<String> = self
             .snapshot()
@@ -625,7 +625,7 @@ impl RouteBook {
         out
     }
 
-    /// Estado de todas as arestas, para diagnóstico.
+    /// State of all the edges, for diagnostics.
     pub fn snapshot(&self) -> Vec<EdgeSnapshot> {
         let Ok(edges) = self.edges.read() else {
             return Vec::new();
@@ -662,9 +662,9 @@ fn short(node_id: &str) -> &str {
     node_id.get(..12).unwrap_or(node_id)
 }
 
-// ── Medição ──────────────────────────────────────────────────────────────────
+// ── Measurement ──────────────────────────────────────────────────────────────
 
-/// O que se sabe de uma aresta antes de medi-la.
+/// What is known about an edge before measuring it.
 #[derive(Debug, Clone)]
 pub struct EdgeTarget {
     pub node_id: String,
@@ -672,8 +672,8 @@ pub struct EdgeTarget {
     pub http_bases: Vec<String>,
     pub quic_addrs: Vec<String>,
     pub(crate) tunnel: Option<crate::peer_client::TunnelPeer>,
-    /// Muda quando o peer anuncia outros endereços ou outro estado de
-    /// implantação: qualquer das duas coisas invalida a análise.
+    /// Changes when the peer announces other addresses or another deployment
+    /// state: either one invalidates the analysis.
     pub fingerprint: u64,
 }
 
@@ -704,8 +704,8 @@ impl EdgeTarget {
         peer.deploy_id.hash(&mut hasher);
         peer.start_layer.hash(&mut hasher);
         peer.end_layer.hash(&mut hasher);
-        crate::peer_client::tls_ativo().hash(&mut hasher);
-        crate::peer_client::quic_ativo().hash(&mut hasher);
+        crate::peer_client::tls_enabled().hash(&mut hasher);
+        crate::peer_client::quic_enabled().hash(&mut hasher);
         Self {
             node_id: peer.node_id.clone(),
             plane,
@@ -717,11 +717,11 @@ impl EdgeTarget {
     }
 }
 
-/// Mede todas as rotas de uma aresta em paralelo, cada uma com o transporte
-/// real: `GET /health` por HTTP(S) com o cliente fixado no certificado do
-/// peer, uma requisição HTTP/3 por endpoint QUIC e `/health` pelo túnel. Duas
-/// amostras por rota direta, e vale a menor: a primeira paga o handshake,
-/// que o frame não paga numa conexão já aberta.
+/// Measures all the routes of an edge in parallel, each one with the real
+/// transport: `GET /health` over HTTP(S) with the client pinned to the peer's
+/// certificate, one HTTP/3 request per QUIC endpoint and `/health` through the
+/// tunnel. Two samples per direct route, and the lowest counts: the first pays for
+/// the handshake, which the frame does not pay on an already open connection.
 pub async fn measure_edge(
     clients: &crate::peer_client::PeerClients,
     target: &EdgeTarget,
@@ -763,8 +763,8 @@ pub async fn measure_edge(
     routes
 }
 
-/// A URL HTTP do mesmo host de um endpoint QUIC, para servir de autoridade do
-/// pedido HTTP/3. Sem uma do mesmo host, a primeira.
+/// The HTTP URL of the same host as a QUIC endpoint, to serve as the authority of
+/// the HTTP/3 request. Without one from the same host, the first.
 fn base_for_quic(http_bases: &[String], quic_addr: &str) -> String {
     let host = quic_addr
         .rsplit_once(':')
@@ -793,10 +793,10 @@ async fn probe_http(
     let mut best: Option<Duration> = None;
     for _ in 0..2 {
         let started = Instant::now();
-        // Qualquer resposta HTTP prova o caminho: um servidor ainda
-        // carregando o modelo responde, e a rota até ele é a mesma.
+        // Any HTTP response proves the path: a server still
+        // loading the model answers, and the route to it is the same.
         match tokio::time::timeout(PROBE_TIMEOUT, client.get(&url).send()).await {
-            // Resposta de outro nó não é caminho até este.
+            // A response from another node is not a path to this one.
             Ok(Ok(response))
                 if crate::peer_client::answered_by_other_node(response.headers(), node_id)
                     .is_some() =>
@@ -828,8 +828,8 @@ async fn probe_quic(
     let mut best: Option<Duration> = None;
     for _ in 0..2 {
         let started = Instant::now();
-        // O cliente HTTP/3 só fala POST. Qualquer status (405 inclusive)
-        // prova que o handshake e o stream funcionam por este endpoint.
+        // The HTTP/3 client only speaks POST. Any status (405 included)
+        // proves that the handshake and the stream work through this endpoint.
         match clients
             .quic_post(
                 node_id,
@@ -905,10 +905,10 @@ async fn measure_and_install(clients: &crate::peer_client::PeerClients, target: 
     book().install(&target.node_id, target.plane, routes, target.fingerprint);
 }
 
-/// Planejador em segundo plano: mantém medidas as arestas deste nó até todos
-/// os peers vivos. Roda antes de qualquer requisição - a implantação que fica
-/// `serving` muda o `fingerprint` do peer e dispara a análise na hora - e é
-/// acordado quando uma aresta esgota as rotas medidas.
+/// Background planner: keeps this node's edges to all the live peers
+/// measured. It runs before any request - the deployment that becomes
+/// `serving` changes the peer's `fingerprint` and fires the analysis right away -
+/// and is woken when an edge exhausts the measured routes.
 pub fn spawn_planner(network: std::sync::Arc<crate::network::Network>) {
     tokio::spawn(async move {
         let clients = crate::peer_client::PeerClients::for_route_probes();
@@ -971,7 +971,7 @@ mod tests {
     }
 
     #[test]
-    fn menor_rtt_vence_e_empate_prefere_quic_depois_http() {
+    fn the_lowest_rtt_wins_and_a_tie_prefers_quic_then_http() {
         let ranked = rank(vec![
             route(RouteKind::Tunnel, "", 40),
             route(RouteKind::Http, "http://b", 27),
@@ -991,8 +991,8 @@ mod tests {
                 (RouteKind::Http, "http://a"),
             ]
         );
-        // Fora da faixa de empate, o RTT manda mesmo contra o transporte
-        // preferido.
+        // Outside the tie band, the RTT rules even against the preferred
+        // transport.
         let ranked = rank(vec![
             route(RouteKind::Quic, "q", 30),
             route(RouteKind::Tunnel, "", 10),
@@ -1017,7 +1017,7 @@ mod tests {
     /// With a frame in flight, the planner neither probes nor swaps the route;
     /// it only does so again after the last frame's grace period.
     #[test]
-    fn uma_aresta_em_uso_nao_e_remedida_nem_trocada() {
+    fn an_edge_in_use_is_neither_remeasured_nor_swapped() {
         let book = RouteBook::default();
         book.install(
             "peer",
@@ -1065,7 +1065,7 @@ mod tests {
     /// A generation longer than `PLAN_TTL` does not drop to the full ladder
     /// halfway: the expired analysis still holds while the edge is in use.
     #[test]
-    fn a_analise_vencida_vale_enquanto_a_aresta_esta_em_uso() {
+    fn an_expired_analysis_holds_while_the_edge_is_in_use() {
         let book = RouteBook::default();
         book.install(
             "peer",
@@ -1092,7 +1092,7 @@ mod tests {
     /// The frame's own failure still swaps the route on a pinned edge: the pin
     /// only holds the planner back.
     #[test]
-    fn a_falha_do_frame_troca_de_rota_mesmo_fixada() {
+    fn a_frame_failure_switches_route_even_when_pinned() {
         let book = RouteBook::default();
         book.install(
             "peer",
@@ -1120,7 +1120,9 @@ mod tests {
 
     #[test]
     fn the_tunnel_answering_for_a_closed_port_is_not_a_route() {
-        assert!(!tunnel_reply_proves_route(crate::infer_tunnel::NOTHING_LISTENING_STATUS));
+        assert!(!tunnel_reply_proves_route(
+            crate::infer_tunnel::NOTHING_LISTENING_STATUS
+        ));
         // The server answered, even while loading: the path exists.
         assert!(tunnel_reply_proves_route(200));
         assert!(tunnel_reply_proves_route(503));
@@ -1162,7 +1164,7 @@ mod tests {
     }
 
     #[test]
-    fn falha_repete_uma_vez_troca_de_rota_e_esgota_pedindo_nova_analise() {
+    fn a_failure_retries_once_switches_route_and_runs_out_asking_for_a_new_analysis() {
         let book = RouteBook::default();
         book.install(
             "peer",
@@ -1188,14 +1190,14 @@ mod tests {
         );
         match book.record_failure("peer", Plane::Inference) {
             FailureOutcome::FailedOver(next) => assert_eq!(next.kind, RouteKind::Tunnel),
-            other => panic!("esperava troca de rota, veio {other:?}"),
+            other => panic!("expected a route switch, got {other:?}"),
         }
         assert_eq!(
             book.active("peer", Plane::Inference).unwrap().kind,
             RouteKind::Tunnel
         );
 
-        // Um sucesso zera a contagem: uma falha isolada depois dele repete.
+        // A success resets the count: an isolated failure after it repeats.
         book.record_success("peer", Plane::Inference);
         assert_eq!(
             book.record_failure("peer", Plane::Inference),
@@ -1206,15 +1208,15 @@ mod tests {
             FailureOutcome::Exhausted
         );
         assert!(book.active("peer", Plane::Inference).is_none());
-        // Esgotada, a aresta pode ser medida de novo na hora.
+        // Exhausted, the edge can be measured again right away.
         assert!(book.claim_measurement("peer", Plane::Inference, 1));
     }
 
     #[test]
-    fn analise_so_se_repete_quando_vence_muda_ou_nao_achou_rota() {
+    fn analysis_only_repeats_when_expired_changed_or_no_route_was_found() {
         let book = RouteBook::default();
         assert!(book.claim_measurement("peer", Plane::Gateway, 7));
-        // Análise em curso ou recém-vazia não se repete antes de EMPTY_RETRY.
+        // An analysis in progress or just found empty does not repeat before EMPTY_RETRY.
         assert!(!book.claim_measurement("peer", Plane::Gateway, 7));
         book.install(
             "peer",
@@ -1223,16 +1225,16 @@ mod tests {
             7,
         );
         assert!(!book.claim_measurement("peer", Plane::Gateway, 7));
-        // O peer anunciou outros endereços: a análise vale de novo.
+        // The peer announced other addresses: the analysis is valid again.
         assert!(book.claim_measurement("peer", Plane::Gateway, 8));
-        // Pedido explícito de reanálise também.
+        // An explicit request for reanalysis too.
         book.request_reanalysis("peer", Plane::Gateway);
         assert!(book.active("peer", Plane::Gateway).is_none());
         assert!(book.claim_measurement("peer", Plane::Gateway, 8));
     }
 
     #[test]
-    fn orcamento_de_conexao_segue_o_rtt_medido() {
+    fn the_connection_budget_follows_the_measured_rtt() {
         let book = RouteBook::default();
         let ceiling = Duration::from_millis(300);
         assert_eq!(book.establish_budget("x", ceiling), ESTABLISH_UNMEASURED);
@@ -1263,7 +1265,7 @@ mod tests {
     }
 
     #[test]
-    fn autoridade_quic_vem_do_mesmo_host() {
+    fn the_quic_authority_comes_from_the_same_host() {
         let bases = vec![
             "http://[2804::1]:8181".to_string(),
             "http://100.85.81.27:8181".to_string(),

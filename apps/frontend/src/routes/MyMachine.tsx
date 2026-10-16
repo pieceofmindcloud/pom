@@ -1,7 +1,7 @@
 /**
- * Esta máquina isolada da rede: identidade, portas, autoridade efetiva e o
- * endereço anunciado aos peers. Separado de `NetworkSettings.tsx`, que mostra
- * o retrato geral da rede.
+ * This machine in isolation from the network: identity, ports, effective
+ * authority and the address announced to the peers. Separate from
+ * `NetworkSettings.tsx`, which shows the overall picture of the network.
  */
 import { LogIn, LogOut, Radio, Save } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -22,11 +22,14 @@ export function MyMachine() {
   const [advertiseAddr, setAdvertiseAddr] = useState("");
   const [addrSaving, setAddrSaving] = useState(false);
   const [addrLoaded, setAddrLoaded] = useState(false);
+  const [nodeName, setNodeName] = useState("");
+  const [nameSaving, setNameSaving] = useState(false);
 
   // Load once: re-syncing on every poll would fight the operator's typing.
   useEffect(() => {
     if (addrLoaded || !node.data) return;
     setAdvertiseAddr(node.data.advertise_addr ?? "");
+    setNodeName(node.data.node_name ?? "");
     setAddrLoaded(true);
   }, [node.data, addrLoaded]);
 
@@ -59,6 +62,23 @@ export function MyMachine() {
       toast.fromError(t("network.addrSaveFailed"), e);
     } finally {
       setAddrSaving(false);
+    }
+  }
+
+  async function saveNodeName() {
+    setNameSaving(true);
+    try {
+      const saved = await api.post<Pick<NodeInfo, "node_name" | "hostname">>(
+        "/api/ui/network/node-name",
+        { node_name: nodeName.trim() },
+      );
+      setNodeName(saved.node_name ?? "");
+      toast.success(t("myMachine.nameSaved"), t("myMachine.nameSavedDetail"));
+      invalidate();
+    } catch (e) {
+      toast.fromError(t("myMachine.nameSaveFailed"), e);
+    } finally {
+      setNameSaving(false);
     }
   }
 
@@ -100,11 +120,11 @@ export function MyMachine() {
               <KeyValue label={t("network.profile")}>
                 {t(`profile.${node.data.profile}`)}
               </KeyValue>
-              {/* O antigo "Papel" (principal/nó) saiu do `/api/ui/node` com o
-                  modelo de confiança e deixava a célula em branco. O que existe
-                  hoje é a autoridade efetiva, e ela responde à mesma pergunta:
-                  esta máquina manda em quê. `profile: admin` sem concessão
-                  aparece como sem autoridade, que é o que ele é. */}
+              {/* The old "Role" (principal/node) left `/api/ui/node` with the
+                  trust model and left the cell blank. What exists today
+                  is the effective authority, and it answers the same question:
+                  what this machine is in charge of. `profile: admin` without a grant
+                  shows as having no authority, which is what it is. */}
               <KeyValue label={t("network.authority")}>
                 {node.data.authority_level
                   ? t(`network.authority.${node.data.authority_level}`)
@@ -112,6 +132,36 @@ export function MyMachine() {
               </KeyValue>
             </dl>
           )}
+        </Panel>
+
+        <Panel>
+          <PanelHeader
+            title={t("myMachine.nameTitle")}
+            subtitle={t("myMachine.nameSubtitle")}
+            actions={
+              <Button
+                variant="primary"
+                icon={<Save className="h-3.5 w-3.5" />}
+                loading={nameSaving}
+                data-testid="node-name-save"
+                onClick={() => void saveNodeName()}
+                disabled={!addrLoaded}
+              >
+                {t("network.addrSave")}
+              </Button>
+            }
+          />
+          <div className="px-5 py-4">
+            <Field label={t("myMachine.nameLabel")} hint={t("myMachine.nameHint")}>
+              <Input
+                data-testid="node-name"
+                value={nodeName}
+                maxLength={64}
+                placeholder={node.data?.node_name ? "" : node.data?.hostname ?? ""}
+                onChange={(e) => setNodeName(e.target.value)}
+              />
+            </Field>
+          </div>
         </Panel>
 
         <Panel>
@@ -147,6 +197,7 @@ export function MyMachine() {
             </Footnote>
           </div>
         </Panel>
+
       </div>
     </>
   );

@@ -15,35 +15,35 @@ fn invalid_role_exits_with_config_error() {
     let home = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join(".test-runtime")
         .join(format!("invalid-role-{}", std::process::id()));
-    fs::create_dir_all(&home).expect("criar diretório de configuração de teste");
+    fs::create_dir_all(&home).expect("create the test configuration directory");
     let _home = TestHome(home.clone());
     fs::write(
         home.join("pom.json"),
         r#"{"role":"infer","profile":"infer"}"#,
     )
-    .expect("escrever configuração inválida");
+    .expect("write invalid configuration");
 
-    // A config é lida antes de qualquer outra coisa, então a falha sai logo,
-    // sem precisar de uma flag que encerre o processo.
+    // The config is read before anything else, so the failure comes out right away,
+    // without needing a flag that ends the process.
     let output = Command::new(env!("CARGO_BIN_EXE_pom"))
         .env("POM_HOME", &home)
         .env_remove("POM_CONFIG")
         .output()
-        .expect("executar pom com configuração inválida");
+        .expect("run pom with an invalid configuration");
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(
         !output.status.success(),
-        "configuração inválida terminou com status 0; stdout:\n{}\nstderr:\n{}",
+        "invalid configuration ended with status 0; stdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         stderr
     );
     assert!(
         stderr.contains("Failed to parse config"),
-        "a falha precisa nomear o erro de configuração; stderr:\n{stderr}"
+        "the failure must name the configuration error; stderr:\n{stderr}"
     );
     assert!(
         stderr.contains("role") && stderr.contains("infer"),
-        "a falha precisa nomear o valor inválido; stderr:\n{stderr}"
+        "the failure must name the invalid value; stderr:\n{stderr}"
     );
 }

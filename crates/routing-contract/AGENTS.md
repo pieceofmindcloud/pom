@@ -57,7 +57,7 @@ touching node internals.
   planner validates against this contract but does its own planning.
 - Siblings: see `crates/AGENTS.md`.
 
-## Pendências
+## Open items
 
-O contrato v1 ainda usa fim de faixa inclusivo; a evolução futura para fim
-exclusivo está em `TODO.md`, item 24.
+The v1 contract still uses an inclusive range end; the future move to an
+exclusive end is in `TODO.md`, item 24.

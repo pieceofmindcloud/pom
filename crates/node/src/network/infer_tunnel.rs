@@ -1,7 +1,7 @@
 //! libp2p request-response protocol carrying inference HTTP calls, as a
-//! Transporte preferencial de inferência para peers alcançados pelo swarm.
-//! Quando o túnel não está disponível ou falha por transporte, o chamador usa
-//! o cliente direto pinado como fallback.
+//! Preferred inference transport for peers reached through the swarm.
+//! When the tunnel is unavailable or fails at the transport level, the caller uses
+//! the pinned direct client as a fallback.
 //!
 //! Mirrors `bitswap.rs`'s shape ([4-byte BE length][JSON payload] framing
 //! over an `AsyncRead`/`AsyncWrite` stream), but carries one generic
@@ -24,41 +24,41 @@ use tokio::sync::{mpsc, oneshot};
 
 pub const INFER_TUNNEL_PROTOCOL: &str = "/pom/infer-tunnel/1.0.0";
 
-/// Qual servidor local atende a chamada que chegou pelo túnel.
+/// Which local server serves a call that arrived through the tunnel.
 ///
-/// O destino é escolhido pelo emissor mas **resolvido** pelo receptor: ele
-/// mapeia a variante para uma das duas portas que ele próprio escolheu
-/// (`inference_port`, `gateway_port`). Um par remoto nunca nomeia porta.
+/// The destination is chosen by the sender but **resolved** by the receiver: it
+/// maps the variant to one of the two ports it chose itself
+/// (`inference_port`, `gateway_port`). A remote peer never names a port.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TunnelTarget {
-    /// Servidor de inferência embutido (`/v1/prefill`, `/v1/step`, ...).
+    /// Embedded inference server (`/v1/prefill`, `/v1/step`, ...).
     #[default]
     Inference,
-    /// Gateway: o plano de controle. Ver `gateway_path_is_allowed`.
+    /// Gateway: the control plane. See `gateway_path_is_allowed`.
     Gateway,
 }
 
-/// Rotas do gateway que o túnel entrega. **Lista fechada, conferida no
-/// receptor.**
+/// Gateway routes that the tunnel delivers. **Closed list, checked at the
+/// receiver.**
 ///
-/// Encaminhar uma chamada do túnel para o gateway a faz chegar lá por
-/// `127.0.0.1`, e o gateway usa o endereço do socket (`serve::PeerAddr`) para
-/// decidir o que é local: `install_trust_anchor` libera a administração da
-/// rede com base **só** nisso. Um túnel que aceitasse qualquer caminho daria a
-/// qualquer peer do swarm um caminho para se tornar administrador. Por isso
-/// aqui não há prefixo nem curinga: só as rotas de que a admissão e as
-/// catracas de política precisam, cada uma já autenticada por conta própria.
-/// Cabeçalho com que o encaminhador do túnel marca o pedido que entrega ao
-/// gateway deste nó. O gateway (`serve::handle_conn`) só aceita a marca vinda
-/// do loopback e com o segredo deste processo (`tunnel_mark`), e então trata o
-/// pedido como remoto: tudo que sai do túnel chega por `127.0.0.1`, e sem a
-/// marca o modo localhost daria ao par do outro lado a administração do nó.
+/// Forwarding a tunnel call to the gateway makes it arrive there through
+/// `127.0.0.1`, and the gateway uses the socket address (`serve::PeerAddr`) to
+/// decide what is local: `install_trust_anchor` releases the network's administration
+/// based **only** on that. A tunnel that accepted any path would give
+/// any peer of the swarm a way to become an administrator. That is why
+/// there is no prefix or wildcard here: only the routes that admission and the
+/// policy gates need, each one already authenticated on its own.
+/// Header with which the tunnel forwarder marks the request it delivers to
+/// this node's gateway. The gateway (`serve::handle_conn`) only accepts the mark coming from
+/// loopback and carrying this process's secret (`tunnel_mark`), and then treats the
+/// request as remote: everything that leaves the tunnel arrives through `127.0.0.1`, and without the
+/// mark localhost mode would give the peer on the other side the node's administration.
 pub(crate) const TUNNEL_ORIGIN_HEADER: &str = "x-pom-tunnel-origin";
 
-/// Segredo aleatório deste processo para `TUNNEL_ORIGIN_HEADER`. Nunca sai do
-/// processo: um cliente local não o conhece e um par remoto também não, e o
-/// encaminhador sobrescreve qualquer valor que o par mande com esse nome.
+/// Random secret of this process for `TUNNEL_ORIGIN_HEADER`. It never leaves the
+/// process: a local client does not know it and neither does a remote peer, and the
+/// forwarder overwrites any value the peer sends under that name.
 pub(crate) fn tunnel_mark() -> &'static str {
     static MARK: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     MARK.get_or_init(|| hex::encode(rand::random::<[u8; 32]>()))
@@ -69,8 +69,8 @@ pub(crate) fn is_tunnel_mark(value: &[u8]) -> bool {
 }
 
 pub fn gateway_path_is_allowed(path: &str) -> bool {
-    // Query string não muda a rota, mas não pode servir para escapar da
-    // comparação exata.
+    // The query string does not change the route, but it must not serve to escape the
+    // exact comparison.
     let path = path.split(['?', '#']).next().unwrap_or(path);
     matches!(
         path,
@@ -84,21 +84,21 @@ pub fn gateway_path_is_allowed(path: &str) -> bool {
             // A member telling the principal it is leaving; a member behind
             // NAT reaches the principal only this way.
             | "/api/cluster/member-left"
-            // A volta da resposta direta. O gateway manda seus endereços no
-            // `reply_to` e a cauda entrega ali; atrás de NAT nenhum deles é
-            // alcançável a partir da outra ponta, e sem este caminho o quadro
-            // morre calado no prazo do frame. Ambas as rotas
-            // são autenticadas pelo ticket, que é único por quadro: entregar
-            // sem ticket válido devolve 410 e não alcança sessão nenhuma.
+            // The return of the direct reply. The gateway sends its addresses in
+            // `reply_to` and the tail delivers there; behind NAT none of them is
+            // reachable from the other end, and without this path the frame
+            // dies silently at the frame deadline. Both routes
+            // are authenticated by the ticket, which is unique per frame: delivering
+            // without a valid ticket returns 410 and reaches no session at all.
             | "/v1/relay-result"
             | "/v1/remote-stream-result"
-            // O plano de controle da implantação e das leituras do cluster, que
-            // `GatewayState::control_get`/`control_post_json` mandam pelo
-            // túnel quando nenhum endereço do peer responde - o caso de um
-            // peer atrás de NAT simétrico. Seguro só porque o pedido chega
-            // marcado (`TUNNEL_ORIGIN_HEADER`) e conta como remoto: cada rota
-            // autentica o nó chamador pela assinatura de controle ou pela
-            // chave de conexão, como faria numa chamada direta.
+            // The control plane for deployment and cluster reads, which
+            // `GatewayState::control_get`/`control_post_json` send through the
+            // tunnel when no address of the peer answers - the case of a
+            // peer behind symmetric NAT. Safe only because the request arrives
+            // marked (`TUNNEL_ORIGIN_HEADER`) and counts as remote: each route
+            // authenticates the calling node by the control signature or by the
+            // connection key, as it would in a direct call.
             | "/api/ui/node"
             | "/api/ui/models"
             | "/api/ui/model-metadata"
@@ -129,38 +129,75 @@ pub fn gateway_path_is_allowed(path: &str) -> bool {
             | "/api/internal/api-keys/validate"
             | "/api/internal/admin-trust/reconcile"
             | "/api/internal/admin-trust/complete-transfer"
-            | "/api/internal/profile/authorize-node"
-            | "/api/internal/profile/accept-node"
-            // A oferta de um arquivo: pequena e assinada como as outras. O
-            // download que ela provoca continua sendo HTTP direto.
+            | "/api/internal/admin-trust/chain"
+            // A file offer: small and signed like the others.
             | "/api/transfer/offer"
+            // A deployment asking the target to fetch its slice, and then
+            // following the copy. Without these a target behind NAT could
+            // receive a file but never be told to.
+            | "/api/transfer/pull"
+            | "/api/transfer/jobs"
+            // The file itself, when no direct address answers. Carried only
+            // over a connection that may carry it - see
+            // `is_transfer_data_path`.
+            | "/api/transfer/download"
+            | "/api/transfer/manifest"
+            | "/api/transfer/pom"
     )
 }
+
+/// The route that carries the bytes of a file. The receiving node refuses it
+/// on a connection that crosses a public relay
+/// (`Network::connection_carries_transfers`), with
+/// `TRANSFER_ROUTE_REFUSED_STATUS`.
+pub fn is_transfer_data_path(path: &str) -> bool {
+    path.split(['?', '#']).next().unwrap_or(path) == "/api/transfer/download"
+}
+
+/// How many bytes of a file one tunnel request asks for.
+pub const TRANSFER_CHUNK_BYTES: u64 = 4 * 1024 * 1024;
+/// The most a tunnel request may ask for. The answer is held in memory on
+/// both ends, so a request for a whole file is refused.
+pub const MAX_TRANSFER_CHUNK_BYTES: u64 = 2 * TRANSFER_CHUNK_BYTES;
+
+/// The closed byte range (`bytes=<first>-<last>`) a request asks for, as
+/// `(first, length)`. `None` for an open range or no range at all.
+pub fn closed_range(value: &str) -> Option<(u64, u64)> {
+    let (first, last) = value.trim().strip_prefix("bytes=")?.split_once('-')?;
+    let first: u64 = first.trim().parse().ok()?;
+    let last: u64 = last.trim().parse().ok()?;
+    (last >= first).then(|| (first, last - first + 1))
+}
+
+/// Whether a file chunk request asks for a bounded piece the tunnel can hold.
+pub fn transfer_chunk_is_bounded(headers: &[(String, String)]) -> bool {
+    headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("range"))
+        .and_then(|(_, value)| closed_range(value))
+        .is_some_and(|(_, length)| length <= MAX_TRANSFER_CHUNK_BYTES)
+}
+
+/// "Misdirected request": this connection does not carry file transfers. The
+/// sender may try again, because libp2p spreads requests over every
+/// connection it has with the peer.
+pub const TRANSFER_ROUTE_REFUSED_STATUS: u16 = 421;
 
 /// A single generic inference call, forwarded to the receiving peer's own
 /// loopback server chosen by `target` (`http://127.0.0.1:<porta><path>`)
 /// once it arrives — see `discovery.rs`'s handling of
 /// `DiscBehaviourEvent::InferTunnel`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct TunnelRequest {
-    /// Método HTTP a ser usado no loopback do peer. Peers antigos não enviam
-    /// esse campo e continuam sendo tratados como chamadas POST.
-    #[serde(default = "default_method")]
+    /// HTTP method used on the peer's loopback.
     pub method: String,
-    /// Servidor local que atende. Ausente num peer de binário anterior, que só
-    /// sabia falar com o servidor de inferência.
-    #[serde(default)]
+    /// Local server that answers.
     pub target: TunnelTarget,
     pub path: String,
     pub body: Vec<u8>,
-    /// Cabeçalhos necessários por rotas que não carregam seu metadado no corpo
-    /// (por exemplo, a barreira do reduce TP).
-    #[serde(default)]
+    /// Headers needed by routes that do not carry their metadata in the body
+    /// (for example, the TP reduce barrier).
     pub headers: Vec<(String, String)>,
-}
-
-fn default_method() -> String {
-    "POST".to_string()
 }
 
 impl TunnelRequest {
@@ -184,7 +221,7 @@ impl TunnelRequest {
         }
     }
 
-    /// Chamada do plano de controle, atendida pelo gateway do destino.
+    /// Control-plane call, served by the destination's gateway.
     pub fn gateway(
         method: &str,
         path: impl Into<String>,
@@ -207,9 +244,9 @@ pub struct TunnelResponse {
     pub body: Vec<u8>,
 }
 
-/// Falha do request/response com a fronteira de entrega conhecida. Erros de
-/// dial ocorrem antes de enviar o request; timeout ou conexão fechada depois
-/// do despacho não provam que o handler deixou de executar o frame.
+/// Request/response failure with a known delivery boundary. Dial errors
+/// occur before the request is sent; a timeout or closed connection after
+/// dispatch does not prove that the handler stopped executing the frame.
 #[derive(Debug)]
 pub struct TunnelDeliveryError {
     pub before_request: bool,
@@ -249,8 +286,8 @@ impl std::error::Error for TunnelDeliveryError {}
 /// intended caller.
 pub struct TunnelOutbound {
     pub peer_id: PeerId,
-    /// Endereços UDP anunciados pelo destino, usados para reconstruir as
-    /// multiaddresses TCP quando o swarm local ainda não recebeu o anúncio.
+    /// UDP addresses announced by the destination, used to rebuild the
+    /// TCP multiaddresses when the local swarm has not yet received the announce.
     pub addr_candidates: Vec<String>,
     pub request: TunnelRequest,
     pub reply: oneshot::Sender<Result<TunnelResponse, TunnelDeliveryError>>,
@@ -265,43 +302,59 @@ pub struct InferTunnelCodec;
 /// (`crate::wire`), so it must not be allowed to grow past what that frame
 /// format itself already permits — same bound `send_frame` enforces.
 const MAX_TUNNEL_PAYLOAD_BYTES: usize = crate::wire::MAX_FRAME_PAYLOAD_BYTES;
+/// Bound of the JSON head of a request (method, target, path, headers).
+const MAX_TUNNEL_HEAD_BYTES: usize = 64 * 1024;
 
-async fn read_msg<T, R>(io: &mut R) -> io::Result<T>
+/// What a request carries besides its body. The body travels raw after it:
+/// as a JSON array of numbers it cost about 3.6 bytes on the wire per byte,
+/// and a circuit through a relay paid that on every frame.
+#[derive(Serialize, Deserialize)]
+struct RequestHead {
+    method: String,
+    target: TunnelTarget,
+    path: String,
+    headers: Vec<(String, String)>,
+}
+
+fn too_large(what: &str, len: usize, bound: usize) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("tunnel {what} of {len} bytes exceeds the {bound}-byte bound"),
+    )
+}
+
+/// Reads `[u32 length][bytes]`, refusing a declared length past `bound`
+/// before allocating for it.
+async fn read_block<R>(io: &mut R, what: &str, bound: usize) -> io::Result<Vec<u8>>
 where
-    T: serde::de::DeserializeOwned,
     R: AsyncRead + Unpin + Send,
 {
     use futures::AsyncReadExt;
     let mut len_buf = [0u8; 4];
     io.read_exact(&mut len_buf).await?;
     let len = u32::from_be_bytes(len_buf) as usize;
-    if len > MAX_TUNNEL_PAYLOAD_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "tunnel frame of {len} bytes exceeds the {MAX_TUNNEL_PAYLOAD_BYTES}-byte bound"
-            ),
-        ));
+    if len > bound {
+        return Err(too_large(what, len, bound));
     }
     let mut data = vec![0u8; len];
     io.read_exact(&mut data).await?;
-    serde_json::from_slice(&data)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))
+    Ok(data)
 }
 
-async fn write_msg<T, W>(io: &mut W, msg: &T) -> io::Result<()>
+async fn write_block<W>(io: &mut W, what: &str, bound: usize, data: &[u8]) -> io::Result<()>
 where
-    T: Serialize,
     W: AsyncWrite + Unpin + Send,
 {
     use futures::AsyncWriteExt;
-    let data = serde_json::to_vec(msg)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    if data.len() > bound {
+        return Err(too_large(what, data.len(), bound));
+    }
     io.write_all(&(data.len() as u32).to_be_bytes()).await?;
-    io.write_all(&data).await?;
-    Ok(())
+    io.write_all(data).await
 }
 
+/// Binary framing. A request is `[u32][JSON head][u32][raw body]`; a response
+/// is `[u16 status][u32][raw body]`. Lengths are big-endian.
 #[async_trait]
 impl Codec for InferTunnelCodec {
     type Protocol = StreamProtocol;
@@ -312,7 +365,17 @@ impl Codec for InferTunnelCodec {
     where
         T: AsyncRead + Unpin + Send,
     {
-        read_msg(io).await
+        let head = read_block(io, "head", MAX_TUNNEL_HEAD_BYTES).await?;
+        let head: RequestHead = serde_json::from_slice(&head)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+        let body = read_block(io, "frame", MAX_TUNNEL_PAYLOAD_BYTES).await?;
+        Ok(TunnelRequest {
+            method: head.method,
+            target: head.target,
+            path: head.path,
+            body,
+            headers: head.headers,
+        })
     }
 
     async fn read_response<T>(
@@ -323,7 +386,14 @@ impl Codec for InferTunnelCodec {
     where
         T: AsyncRead + Unpin + Send,
     {
-        read_msg(io).await
+        use futures::AsyncReadExt;
+        let mut status = [0u8; 2];
+        io.read_exact(&mut status).await?;
+        let body = read_block(io, "frame", MAX_TUNNEL_PAYLOAD_BYTES).await?;
+        Ok(TunnelResponse {
+            status: u16::from_be_bytes(status),
+            body,
+        })
     }
 
     async fn write_request<T>(
@@ -335,7 +405,15 @@ impl Codec for InferTunnelCodec {
     where
         T: AsyncWrite + Unpin + Send,
     {
-        write_msg(io, &req).await
+        let head = serde_json::to_vec(&RequestHead {
+            method: req.method,
+            target: req.target,
+            path: req.path,
+            headers: req.headers,
+        })
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+        write_block(io, "head", MAX_TUNNEL_HEAD_BYTES, &head).await?;
+        write_block(io, "frame", MAX_TUNNEL_PAYLOAD_BYTES, &req.body).await
     }
 
     async fn write_response<T>(
@@ -347,7 +425,9 @@ impl Codec for InferTunnelCodec {
     where
         T: AsyncWrite + Unpin + Send,
     {
-        write_msg(io, &res).await
+        use futures::AsyncWriteExt;
+        io.write_all(&res.status.to_be_bytes()).await?;
+        write_block(io, "frame", MAX_TUNNEL_PAYLOAD_BYTES, &res.body).await
     }
 }
 
@@ -360,11 +440,11 @@ pub fn infer_tunnel_behaviour() -> request_response::Behaviour<InferTunnelCodec>
             StreamProtocol::new(INFER_TUNNEL_PROTOCOL),
             request_response::ProtocolSupport::Full,
         )],
-        // Teto de segurança, não o prazo de ninguém: cada chamador impõe o seu
-        // (`tunnel_gateway_call`, `send_frame_via_tunnel`). Chamadas de
-        // controle como `/api/ui/slice-ranges` esperam até uma hora pelo
-        // fatiamento; com 60 s aqui, elas morriam no túnel com o trabalho
-        // ainda correndo do outro lado.
+        // Safety ceiling, nobody's deadline: each caller imposes its own
+        // (`tunnel_gateway_call`, `send_frame_via_tunnel`). Control calls
+        // such as `/api/ui/slice-ranges` wait up to an hour for the
+        // slicing; with 60 s here, they died in the tunnel with the work
+        // still running on the other side.
         request_response::Config::default().with_request_timeout(Duration::from_secs(3600)),
     )
 }
@@ -372,18 +452,18 @@ pub fn infer_tunnel_behaviour() -> request_response::Behaviour<InferTunnelCodec>
 static TUNNEL_SENDER: std::sync::OnceLock<TunnelOutboundSender> = std::sync::OnceLock::new();
 static LOCAL_NODE_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
-/// Registra a identidade de descoberta deste processo para que os chamadores
-/// de relay não tentem abrir um túnel para o próprio nó.
+/// Registers this process's discovery identity so that relay callers
+/// do not try to open a tunnel to the node itself.
 pub fn set_local_node_id(node_id: String) {
     let _ = LOCAL_NODE_ID.set(node_id);
 }
 
-/// O `node_id` deste processo, quando já anotado.
+/// This process's `node_id`, once already recorded.
 pub fn local_node_id() -> Option<&'static str> {
     LOCAL_NODE_ID.get().map(String::as_str)
 }
 
-/// True quando o destino é este processo, não um peer remoto.
+/// True when the destination is this process, not a remote peer.
 pub fn is_local_node(node_id: &str) -> bool {
     LOCAL_NODE_ID.get().is_some_and(|local| local == node_id)
 }
@@ -410,14 +490,14 @@ pub fn tunnel_sender() -> Option<&'static TunnelOutboundSender> {
     TUNNEL_SENDER.get()
 }
 
-/// Mede a latência de ida e volta entre este nó e um peer pelo mesmo caminho
-/// libp2p/Noise usado para transportar os frames de inferência.
+/// Measures the round-trip latency between this node and a peer over the same
+/// libp2p/Noise path used to carry the inference frames.
 ///
-/// O endpoint remoto é `/health` no loopback do peer. A medição inclui a fila
-/// do swarm, eventual estabelecimento da conexão, o transporte, o
-/// encaminhamento local e o processamento do handler `/health`, sem carregar o
-/// custo de prefill, decode ou transferência de estado oculto. A medição é
-/// direcional: cada processo registra apenas o tempo da sua própria origem.
+/// The remote endpoint is `/health` on the peer's loopback. The measurement includes the swarm
+/// queue, any connection establishment, the transport, the local
+/// forwarding and the processing of the `/health` handler, without carrying the
+/// cost of prefill, decode or hidden-state transfer. The measurement is
+/// directional: each process records only the time from its own origin.
 pub async fn measure_rtt(
     sender: &TunnelOutboundSender,
     peer_id: PeerId,
@@ -444,9 +524,9 @@ pub async fn measure_rtt(
     Some(started.elapsed().as_secs_f64() * 1000.0)
 }
 
-/// `GET /health` do servidor de inferência de um peer pelo túnel, e o corpo
-/// quando ele responde 2xx. É a sonda de admissão ao plano
-/// (`gateway::ready_for_pipeline`) de um peer que nenhum endereço alcança.
+/// `GET /health` of a peer's inference server through the tunnel, and the body
+/// when it answers 2xx. It is the plan-admission probe
+/// (`gateway::ready_for_pipeline`) for a peer that no address reaches.
 pub(crate) async fn health_via_tunnel(
     peer: &crate::peer_client::TunnelPeer,
     timeout: Duration,
@@ -497,10 +577,10 @@ pub fn live_probe_swarm(peer: PeerId, addr: libp2p::Multiaddr) -> TunnelOutbound
         .expect("dns")
         .with_behaviour(|_| infer_tunnel_behaviour())
         .expect("behaviour")
-        // Mesmo tempo ocioso do enxame de produção (`Discovery::new`). O
-        // padrão do `SwarmBuilder` é zero: a conexão fecha assim que fica
-        // parada, e um desvio que só chega depois do HTTP direto expirar
-        // encontraria o caminho já derrubado.
+        // Same idle time as the production swarm (`Discovery::new`). The
+        // `SwarmBuilder` default is zero: the connection closes as soon as it goes
+        // idle, and a detour that only arrives after the direct HTTP expires
+        // would find the path already torn down.
         .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
         .build();
     swarm.add_peer_address(peer, addr.clone());
@@ -560,8 +640,8 @@ pub fn live_probe_swarm(peer: PeerId, addr: libp2p::Multiaddr) -> TunnelOutbound
 /// current, always-correct entry point stays the real Axum server; this is
 /// just a same-machine hop in front of it, at a sub-millisecond cost.
 ///
-/// Frames de inferência continuam sendo POSTs. A única exceção é o GET curto
-/// de `/health` usado pela medição direcional de RTT.
+/// Inference frames remain POSTs. The only exception is the short GET
+/// of `/health` used by the directional RTT measurement.
 /// The status `serve_loopback` answers when the peer's own server is not
 /// listening: the tunnel reached the peer, the destination did not exist.
 pub(crate) const NOTHING_LISTENING_STATUS: u16 = 502;
@@ -571,16 +651,16 @@ pub async fn serve_loopback(
     port: u16,
     request: TunnelRequest,
 ) -> TunnelResponse {
-    // Sempre texto claro no loopback: `serve::plain_allowed` libera loopback
-    // mesmo com o cluster em TLS estrito, e o certificado do nó não cobre
+    // Always cleartext on loopback: `serve::plain_allowed` allows loopback
+    // even with the cluster on strict TLS, and the node's certificate does not cover
     // `127.0.0.1`.
     let url = format!("http://127.0.0.1:{port}{}", request.path);
     let has_content_type = request
         .headers
         .iter()
         .any(|(name, _)| name.eq_ignore_ascii_case(reqwest::header::CONTENT_TYPE.as_str()));
-    // Método desconhecido cai em POST, o comportamento antigo para qualquer
-    // coisa que não fosse GET.
+    // An unknown method falls back to POST, the old behavior for anything
+    // that was not GET.
     let method = reqwest::Method::from_bytes(request.method.to_ascii_uppercase().as_bytes())
         .unwrap_or(reqwest::Method::POST);
     let mut request_builder = if method == reqwest::Method::GET {
@@ -626,11 +706,11 @@ pub async fn serve_loopback(
 mod tests {
     use super::*;
 
-    /// A escalada que a lista fechada existe para impedir: `install_trust_anchor`
-    /// libera a administração da rede olhando só se o socket é loopback, e
-    /// tudo que sai do túnel chega ao gateway por `127.0.0.1`.
+    /// The escalation the closed list exists to prevent: `install_trust_anchor`
+    /// releases the network's administration looking only at whether the socket is loopback, and
+    /// everything that leaves the tunnel reaches the gateway through `127.0.0.1`.
     #[test]
-    fn o_tunel_nao_carrega_rota_administrativa() {
+    fn the_tunnel_does_not_carry_an_administrative_route() {
         assert!(!gateway_path_is_allowed("/api/ui/trust/anchor"));
         assert!(!gateway_path_is_allowed("/api/ui/network/trust-anchor"));
         assert!(!gateway_path_is_allowed("/admin/config"));
@@ -639,10 +719,43 @@ mod tests {
         assert!(!gateway_path_is_allowed("/"));
     }
 
-    /// O plano de controle da implantação passa, e só porque o pedido chega
-    /// marcado como remoto (ver `serve::request_origin`).
     #[test]
-    fn o_tunel_carrega_o_plano_de_controle_da_implantacao() {
+    fn a_file_chunk_over_the_tunnel_is_a_bounded_range() {
+        let range = |value: &str| vec![("Range".to_string(), value.to_string())];
+        assert_eq!(closed_range("bytes=10-19"), Some((10, 10)));
+        assert_eq!(closed_range("bytes=10-"), None);
+        assert!(transfer_chunk_is_bounded(&range("bytes=0-4194303")));
+        assert!(!transfer_chunk_is_bounded(&range("bytes=0-")));
+        assert!(!transfer_chunk_is_bounded(&range("bytes=0-99999999999")));
+        assert!(!transfer_chunk_is_bounded(&[]));
+    }
+
+    #[test]
+    fn only_the_download_counts_as_file_bytes() {
+        assert!(is_transfer_data_path("/api/transfer/download?grant=abc"));
+        assert!(gateway_path_is_allowed("/api/transfer/download?grant=abc"));
+        assert!(!is_transfer_data_path("/api/transfer/offer"));
+        assert!(!is_transfer_data_path("/api/transfer/downloadx"));
+    }
+
+    /// A deployment tells the target to fetch its slice and then follows the
+    /// copy. Behind NAT the target has no address that answers, so both calls
+    /// must be able to cross the tunnel - and neither is file bytes.
+    #[test]
+    fn a_deployment_can_ask_for_a_pull_and_follow_it_through_the_tunnel() {
+        for path in ["/api/transfer/pull", "/api/transfer/jobs"] {
+            assert!(gateway_path_is_allowed(path), "{path}");
+            assert!(!is_transfer_data_path(path), "{path}");
+        }
+        // Cancelling and the offers inbox stay off the tunnel.
+        assert!(!gateway_path_is_allowed("/api/transfer/jobs/abc/cancel"));
+        assert!(!gateway_path_is_allowed("/api/transfer/offers"));
+    }
+
+    /// The deployment control plane passes, and only because the request arrives
+    /// marked as remote (see `serve::request_origin`).
+    #[test]
+    fn the_tunnel_carries_the_deployment_control_plane() {
         assert!(gateway_path_is_allowed("/api/ui/node"));
         assert!(gateway_path_is_allowed("/api/ui/apply"));
         assert!(gateway_path_is_allowed("/api/ui/deployments?local=true"));
@@ -652,7 +765,7 @@ mod tests {
     /// the principal through the relay must register the Chat key. The other
     /// internal routes stay out.
     #[test]
-    fn o_tunel_carrega_a_sincronizacao_com_o_principal() {
+    fn the_tunnel_carries_the_sync_with_the_principal() {
         for path in [
             "/api/internal/api-keys/upsert",
             "/api/internal/api-keys/revoke",
@@ -660,8 +773,7 @@ mod tests {
             "/api/internal/api-keys/validate",
             "/api/internal/admin-trust/reconcile",
             "/api/internal/admin-trust/complete-transfer",
-            "/api/internal/profile/authorize-node",
-            "/api/internal/profile/accept-node",
+            "/api/internal/admin-trust/chain",
         ] {
             assert!(gateway_path_is_allowed(path), "{path}");
         }
@@ -671,10 +783,10 @@ mod tests {
         assert!(!gateway_path_is_allowed("/api/internal/api-keys/upsert/x"));
     }
 
-    /// A marca é um segredo do processo: constante enquanto ele vive e nunca
-    /// um valor que um par do outro lado adivinharia.
+    /// The mark is a process secret: constant while it lives and never
+    /// a value that a peer on the other side would guess.
     #[test]
-    fn a_marca_do_tunel_e_um_segredo_estavel() {
+    fn the_tunnel_mark_is_a_stable_secret() {
         assert_eq!(tunnel_mark(), tunnel_mark());
         assert_eq!(tunnel_mark().len(), 64);
         assert!(is_tunnel_mark(tunnel_mark().as_bytes()));
@@ -682,10 +794,10 @@ mod tests {
         assert!(!is_tunnel_mark(b"1"));
     }
 
-    /// As rotas de que a admissão e as catracas de política dependem. Sem
-    /// `/handshake` aqui, um par atrás de NAT nunca entra na tabela `peers`.
+    /// The routes that admission and the policy gates depend on. Without
+    /// `/handshake` here, a peer behind NAT never enters the `peers` table.
     #[test]
-    fn o_tunel_carrega_o_plano_de_controle() {
+    fn the_tunnel_carries_the_control_plane() {
         for path in [
             "/handshake",
             "/health",
@@ -697,14 +809,14 @@ mod tests {
             "/v1/relay-result",
             "/v1/remote-stream-result",
         ] {
-            assert!(gateway_path_is_allowed(path), "{path} devia passar");
+            assert!(gateway_path_is_allowed(path), "{path} should pass");
         }
     }
 
-    /// Comparação exata, não prefixo: um sufixo não pode pendurar outra rota
-    /// numa permitida, e query string não pode servir de escape.
+    /// Exact comparison, not prefix: a suffix cannot hang another route
+    /// on an allowed one, and a query string cannot serve as an escape.
     #[test]
-    fn a_comparacao_da_lista_e_exata() {
+    fn the_list_comparison_is_exact() {
         assert!(!gateway_path_is_allowed(
             "/handshake/../api/ui/trust/anchor"
         ));
@@ -713,15 +825,6 @@ mod tests {
         assert!(gateway_path_is_allowed("/api/cluster/tls?verbose=1"));
     }
 
-    /// Um peer de binário anterior não manda `target`, e só sabia falar com o
-    /// servidor de inferência.
-    #[test]
-    fn um_pedido_sem_target_vai_para_a_inferencia() {
-        let json = br#"{"path":"/v1/step","body":[]}"#;
-        let request: TunnelRequest = serde_json::from_slice(json).expect("parse");
-        assert_eq!(request.target, TunnelTarget::Inference);
-        assert_eq!(request.method, "POST");
-    }
     use futures::io::Cursor;
 
     /// A request/response has to survive the exact framing a real
@@ -748,6 +851,36 @@ mod tests {
 
         assert_eq!(decoded.path, req.path);
         assert_eq!(decoded.body, req.body);
+    }
+
+    /// The body travels raw: the frame is the body plus a small head, not
+    /// several bytes of JSON per byte of payload.
+    #[tokio::test]
+    async fn the_body_is_not_inflated_on_the_wire() {
+        let mut codec = InferTunnelCodec;
+        let protocol = StreamProtocol::new(INFER_TUNNEL_PROTOCOL);
+        let body = vec![0xffu8; 100_000];
+        let req = TunnelRequest::gateway(
+            "GET",
+            "/api/transfer/download",
+            body.clone(),
+            vec![("range".into(), "bytes=0-99".into())],
+        );
+
+        let mut buf = Vec::new();
+        codec.write_request(&protocol, &mut buf, req).await.unwrap();
+        assert!(buf.len() < body.len() + 512, "frame of {} bytes", buf.len());
+
+        let decoded = codec
+            .read_request(&protocol, &mut Cursor::new(buf))
+            .await
+            .unwrap();
+        assert_eq!(decoded.target, TunnelTarget::Gateway);
+        assert_eq!(
+            decoded.headers,
+            vec![("range".to_string(), "bytes=0-99".to_string())]
+        );
+        assert_eq!(decoded.body, body);
     }
 
     #[tokio::test]
@@ -809,8 +942,10 @@ mod tests {
         let mut codec = InferTunnelCodec;
         let protocol = StreamProtocol::new(INFER_TUNNEL_PROTOCOL);
 
-        let oversized_len = (MAX_TUNNEL_PAYLOAD_BYTES as u32) + 1;
-        let mut buf = oversized_len.to_be_bytes().to_vec();
+        let head = br#"{"method":"POST","target":"inference","path":"/v1/step","headers":[]}"#;
+        let mut buf = (head.len() as u32).to_be_bytes().to_vec();
+        buf.extend_from_slice(head);
+        buf.extend_from_slice(&((MAX_TUNNEL_PAYLOAD_BYTES as u32) + 1).to_be_bytes());
         buf.extend_from_slice(b"doesn't matter, never read");
 
         let mut cursor = Cursor::new(buf);
@@ -974,39 +1109,38 @@ mod tests {
         assert_eq!(response.status, 502);
     }
 
-    /// Fala o protocolo do túnel contra um peer **de verdade**, pela internet.
+    /// Speaks the tunnel protocol against a **real** peer, over the internet.
     ///
-    /// O commit que criou o túnel registrou como lacuna conhecida que ele só
-    /// tinha sido exercitado em loopback e com enxames falsos. Isto é o que
-    /// fecha essa lacuna, e não pode virar teste de CI: depende de uma máquina
-    /// remota estar no ar. Fica `#[ignore]` e é dirigido por variável de
-    /// ambiente, como procedimento reproduzível.
-    ///
+    /// The commit that created the tunnel recorded as a known gap that it had only
+    /// been exercised on loopback and with fake swarms. This is what
+    /// closes that gap, and it cannot become a CI test: it depends on a
+    /// remote machine being up. It stays `#[ignore]` and is driven by an environment
+    /// variable, as a reproducible procedure.
     /// ```sh
     /// POM_TUNNEL_PROBE=/ip6/2804:f30:3:1a6f:96e1:21bd:f074:967/tcp/52777/p2p/12D3KooWRuq6eW5rXSTa87FgrrXrAHdYCGYv3vKuLxtiFn4vfTRM \
     ///   cargo test -p node --bin pom tunnel_reaches_a_live_peer -- --ignored --nocapture
     /// ```
     ///
-    /// O multiaddr sai do `libp2p_peer_id` que o peer anuncia mais o endereço
-    /// dele com a porta libp2p (UDP + 10000). Uma resposta qualquer já prova o
-    /// caminho: o 502 sintético de `serve_loopback` é gerado **na outra
-    /// máquina**, então até ele prova que o quadro atravessou.
+    /// The multiaddr comes from the `libp2p_peer_id` the peer announces plus its
+    /// address with the libp2p port (UDP + 10000). Any answer already proves the
+    /// path: the synthetic 502 of `serve_loopback` is generated **on the other
+    /// machine**, so even it proves the frame got across.
     #[tokio::test]
-    #[ignore = "precisa de um peer vivo; ver o doc do teste"]
+    #[ignore = "needs a live peer; see the test doc"]
     async fn tunnel_reaches_a_live_peer() {
         use libp2p::{noise, request_response::Event, swarm::SwarmEvent, tcp, yamux, Multiaddr};
 
         let Ok(target) = std::env::var("POM_TUNNEL_PROBE") else {
-            panic!("defina POM_TUNNEL_PROBE com o multiaddr do peer");
+            panic!("set POM_TUNNEL_PROBE to the multiaddr of the peer");
         };
-        let addr: Multiaddr = target.parse().expect("multiaddr inválido");
+        let addr: Multiaddr = target.parse().expect("invalid multiaddr");
         let peer_id = addr
             .iter()
             .find_map(|p| match p {
                 libp2p::multiaddr::Protocol::P2p(id) => Some(id),
                 _ => None,
             })
-            .expect("o multiaddr tem que terminar em /p2p/<peer-id>");
+            .expect("the multiaddr must end in /p2p/<peer-id>");
         let path =
             std::env::var("POM_TUNNEL_PROBE_PATH").unwrap_or_else(|_| "/v1/step".to_string());
 
@@ -1034,7 +1168,7 @@ mod tests {
         loop {
             let event = tokio::time::timeout_at(deadline, swarm.select_next_some())
                 .await
-                .expect("o peer não respondeu no prazo");
+                .expect("the peer did not answer within the deadline");
             match event {
                 SwarmEvent::Behaviour(Event::Message {
                     message:
@@ -1045,17 +1179,17 @@ mod tests {
                     ..
                 }) if request_id == id => {
                     println!(
-                        "túnel respondeu: status={} body={:?}",
+                        "tunnel answered: status={} body={:?}",
                         response.status,
                         String::from_utf8_lossy(&response.body[..response.body.len().min(200)])
                     );
                     return;
                 }
                 SwarmEvent::Behaviour(Event::OutboundFailure { error, .. }) => {
-                    panic!("o túnel falhou: {error}");
+                    panic!("the tunnel failed: {error}");
                 }
                 SwarmEvent::OutgoingConnectionError { error, .. } => {
-                    panic!("não deu para conectar: {error}");
+                    panic!("could not connect: {error}");
                 }
                 other => println!("… {other:?}"),
             }

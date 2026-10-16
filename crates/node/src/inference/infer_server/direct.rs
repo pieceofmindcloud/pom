@@ -1,17 +1,17 @@
 use super::*;
 
-// ── Resposta direta (`relay/v2-direct`) ──────────────────────────────────────
+// ── Direct reply (`relay/v2-direct`) ──────────────────────────────────────
 
-/// Para onde o resultado desta cadeia deve ir, quando quem despachou pediu
-/// resposta direta. Ausente em todo quadro do modo hub e do anel borbulhado —
-/// é este campo, e só ele, que liga o caminho novo.
+/// Where the result of this chain must go, when whoever dispatched it asked
+/// for a direct reply. Absent from every frame of hub mode and of the bubbled
+/// ring - this field, and only this field, turns the new path on.
 pub(crate) fn direct_reply_to(meta: &Value) -> Option<Value> {
     meta.get("reply_to").filter(|v| !v.is_null()).cloned()
 }
 
-/// O que este hop devolve a quem o chamou quando a cadeia responde direto: um
-/// aceite, e nada mais. A resposta de verdade não passa por aqui — ver
-/// [`crate::direct`].
+/// What this hop returns to its caller when the chain replies directly: an
+/// acknowledgement, and nothing else. The real reply does not pass through
+/// here - see [`crate::direct`].
 pub(crate) fn direct_ack() -> Response {
     direct_ack_with_progress(None)
 }
@@ -32,12 +32,12 @@ pub(crate) fn direct_ack_with_progress(progress: Option<Value>) -> Response {
     }
 }
 
-/// Repassa o residual ao próximo hop e some. Roda numa task própria: quem nos
-/// chamou já foi aceito e não espera mais nada daqui.
+/// Forwards the residual to the next hop and disappears. Runs in its own task:
+/// whoever called us has already been accepted and expects nothing more from here.
 ///
-/// Falhou o repasse, quem denuncia somos nós — direto ao gateway, nomeando o
-/// nó que realmente morreu. É o caminho que substitui o `RelayFailure` subindo
-/// pela pilha aninhada do anel borbulhado.
+/// If the forward fails, we are the one who reports it - straight to the gateway,
+/// naming the node that actually died. This is the path that replaces the
+/// `RelayFailure` climbing up the nested stack of the bubbled ring.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn forward_direct(
     hops: Vec<PipelineStep>,
@@ -139,7 +139,7 @@ pub(crate) async fn forward_direct_ordered(
                 }
             });
             warn!(
-                "repasse direto para {} falhou: {} - avisando o gateway",
+                "direct forward to {} failed: {} - notifying the gateway",
                 failure.failed_node_id, failure.message
             );
             crate::direct::deliver_failure(http_client(), &reply_to, failure).await;
@@ -174,19 +174,19 @@ pub(super) fn issue_kind_label(kind: Option<crate::relay::SendIssueKind>) -> &'s
 /// context authorise at most `m + 1` guesses), because a one-token match
 /// pointing anywhere in the history is nearly a coin flip and every extra
 /// drafted token widens the batch on every hop of the ring.
-/// Vale rascunhar nesta rodada?
+/// Is it worth drafting in this round?
 ///
-/// Especular é apostar: um rascunho recusado tem de ser desfeito do cache
-/// antes da rodada seguinte (`gateway::rollback_sessions`, via
-/// `/v1/session/rollback` -> `kv_remove` -> `llama_memory_seq_rm`).
+/// Speculating is a bet: a rejected draft must be undone in the cache before
+/// the next round (`gateway::rollback_sessions`, via `/v1/session/rollback`
+/// -> `kv_remove` -> `llama_memory_seq_rm`).
 ///
-/// `kv_can_shift` não decide se a cauda monta o próximo `next_draft`: ele é a
-/// capacidade de K-shift usada pelo `--ctx-shift` de referência do llama.cpp,
-/// não a capacidade de desfazer um rascunho. O rollback especulativo real usa
-/// `kv_remove` (`llama_memory_seq_rm`) depois de cada lote e falha fechado se o
-/// motor recusar a remoção. O caminho remoto faz esse rollback local em cada
-/// hop antes de borbulhar a resposta; o caminho legado mantém o endpoint
-/// `handle_rollback` e o fan-out do gateway.
+/// `kv_can_shift` does not decide whether the tail builds the next `next_draft`:
+/// it is the K-shift capability used by llama.cpp's reference `--ctx-shift`,
+/// not the ability to undo a draft. The real speculative rollback uses
+/// `kv_remove` (`llama_memory_seq_rm`) after each batch and fails closed if the
+/// engine refuses the removal. The remote path does this rollback locally on each
+/// hop before bubbling the reply; the legacy path keeps the `handle_rollback`
+/// endpoint and the gateway fan-out.
 pub(crate) fn mtp_tail_speculation_reason(
     mtp_ready: bool,
     mtp_unavailable_reason: Option<&str>,
@@ -207,34 +207,34 @@ pub(crate) fn should_draft(speculate: Option<Speculate>, mtp_ready: bool) -> boo
     match speculate {
         None => false,
         Some(s) if s.source == DraftSource::Mtp => {
-            // O rascunho pode nascer aqui (bloco `nextn` local, máquina
-            // única) ou vir pronto do gateway (a cauda de um pipeline
-            // fatiado o produziu na rodada anterior).
+            // The draft may be born here (local `nextn` block, single
+            // machine) or arrive ready from the gateway (the tail of a
+            // sliced pipeline produced it in the previous round).
             mtp_ready || s.draft.is_some()
         }
         Some(_) => true,
     }
 }
 
-/// O convite a rascunhar que a cabeça recebe numa rodada.
+/// The invitation to draft that the head receives in a round.
 ///
-/// `source` é o campo que separa os dois mecanismos, e ele existe porque eles
-/// **não** são a mesma coisa com números diferentes: `Lookup` é uma busca por
-/// repetição no texto já gerado (`find_draft`, nenhum peso envolvido) e `Mtp`
-/// é o bloco `nextn` treinado dentro do GGUF (`crate::mtp`). Um `speculate`
-/// sem `source` vem de um gateway antigo e vale `Lookup`, que é o que ele
-/// sempre quis dizer.
+/// `source` is the field that separates the two mechanisms, and it exists because
+/// they are **not** the same thing with different numbers: `Lookup` is a search
+/// for repetition in the text already generated (`find_draft`, no weights
+/// involved) and `Mtp` is the `nextn` block trained inside the GGUF
+/// (`crate::mtp`). A `speculate` without `source` comes from an old gateway and
+/// means `Lookup`, which is what it always meant.
 #[derive(Debug, Clone)]
 pub(crate) struct Speculate {
-    /// Largura do lote: o token confirmado mais até `k - 1` palpites.
+    /// Batch width: the confirmed token plus up to `k - 1` guesses.
     pub k: u32,
-    /// Janela de história do `find_draft`. Ignorada pelo `Mtp`, que não olha
-    /// história nenhuma.
+    /// History window of `find_draft`. Ignored by `Mtp`, which looks at no
+    /// history at all.
     pub m: u32,
     pub source: DraftSource,
-    /// Rascunho pronto, produzido pela cauda num pipeline fatiado. A cabeça usa
-    /// este em vez de chamar `mtp_draft`. `None` significa que a cabeça deve
-    /// produzir o próprio rascunho (modelo inteiro) ou que não há rascunho.
+    /// Ready-made draft, produced by the tail in a sliced pipeline. The head uses
+    /// this one instead of calling `mtp_draft`. `None` means the head must
+    /// produce its own draft (whole model) or that there is no draft.
     pub draft: Option<Vec<i32>>,
 }
 
@@ -245,7 +245,7 @@ pub(crate) enum DraftSource {
 }
 
 impl DraftSource {
-    /// O nome no fio (wire), espelhando o `DraftSource::wire` de `prefill.rs`.
+    /// The name on the wire, mirroring o `DraftSource::wire` de `prefill.rs`.
     pub(crate) fn wire(&self) -> &'static str {
         match self {
             DraftSource::Lookup => "lookup",
@@ -255,11 +255,11 @@ impl DraftSource {
 }
 
 impl Speculate {
-    /// Lê o convite do campo `speculate` do quadro.
+    /// Reads the invitation from the frame's `speculate` field.
     ///
-    /// Público ao crate porque a bancada `spec_lab` fala o protocolo de
-    /// verdade: uma segunda cópia desta leitura ali passaria a valer como
-    /// contrato sem nunca ter sido conferida contra esta.
+    /// Public to the crate because the `spec_lab` bench speaks the real
+    /// protocol: a second copy of this reading there would come to count as the
+    /// contract without ever having been checked against this one.
     pub(crate) fn from_meta(meta: &Value) -> Option<Self> {
         let v = meta.get("speculate")?;
         let draft = v.get("draft").and_then(|d| {
@@ -281,10 +281,10 @@ impl Speculate {
         })
     }
 
-    /// Serializa o convite para o campo `speculate` do quadro - a contraparte
-    /// de `from_meta`. O caminho direto legado usa o valor preenchido pelo
-    /// gateway; no stream remoto, a cabeça preenche o próprio valor antes da
-    /// rodada seguinte.
+    /// Serializes the invitation into the frame's `speculate` field - the
+    /// counterpart of `from_meta`. The legacy direct path uses the value filled in
+    /// by the gateway; on the remote stream, the head fills in its own value
+    /// before the next round.
     pub(crate) fn to_meta(&self) -> Value {
         let mut v = json!({"k": self.k, "m": self.m, "source": self.source.wire()});
         if let Some(draft) = &self.draft {
@@ -384,20 +384,20 @@ mod speculative_tests {
         })
     }
 
-    /// Um pedido de lookup sempre rascunha - a decisão de aceitar o desfazer
-    /// não é mais estática (`kv_can_shift`), é o `seq_rm` de verdade em
-    /// `handle_rollback`, checada em tempo real. Ver o doc de `should_draft`.
+    /// A lookup request always drafts - the decision to accept the undo is no
+    /// longer static (`kv_can_shift`), it is the real `seq_rm` in
+    /// `handle_rollback`, checked in real time. See the doc of `should_draft`.
     #[test]
     fn a_lookup_round_always_drafts_when_asked() {
         assert!(should_draft(lookup(4, 3), false));
         assert!(should_draft(lookup(4, 3), true));
     }
 
-    /// Pedir MTP a um motor sem a cabeça `nextn` e sem rascunho pronto é o
-    /// caso normal de uma fatia que não é a final: recusar é a resposta
-    /// certa, e o gateway lê a recusa (`speculated: false`) e para de pedir.
-    /// Rascunhar por lookup no lugar seria trocar o mecanismo por baixo de
-    /// quem pediu.
+    /// Asking an engine for MTP when it has no `nextn` head and no ready draft is
+    /// the normal case of a slice that is not the final one: refusing is the
+    /// right answer, and the gateway reads the refusal (`speculated: false`) and
+    /// stops asking. Drafting by lookup instead would swap the mechanism under
+    /// whoever asked.
     #[test]
     fn mtp_asked_of_an_engine_without_the_nextn_head_is_refused() {
         assert!(!should_draft(mtp(4), false));
@@ -405,21 +405,21 @@ mod speculative_tests {
     }
 
     #[test]
-    fn razoes_da_cauda_separam_nextn_modelo_e_prontidao() {
+    fn tail_reasons_separate_nextn_model_and_readiness() {
         assert_eq!(
             mtp_tail_speculation_reason(false, Some(crate::llm::MTP_NO_NEXTN_REASON)),
             Some(SPECULATION_REASON_TAIL_WITHOUT_NEXTN)
         );
         assert_eq!(
-            mtp_tail_speculation_reason(false, Some("falha de alocação")),
+            mtp_tail_speculation_reason(false, Some("allocation failure")),
             Some(SPECULATION_REASON_MTP_RUNTIME_DISABLED)
         );
         assert_eq!(mtp_tail_speculation_reason(true, None), None);
     }
 
-    /// Um rascunho MTP já pronto (a cauda de um pipeline fatiado produziu na
-    /// rodada anterior) faz a cabeça aceitar mesmo sem a cabeça `nextn` local
-    /// - ela só precisa verificar o lote, não gerá-lo.
+    /// A ready-made MTP draft (the tail of a sliced pipeline produced it in the
+    /// previous round) makes the head accept even without a local `nextn` head
+    /// - it only needs to verify the batch, not generate it.
     #[test]
     fn a_premade_mtp_draft_is_accepted_without_the_local_nextn_head() {
         let mut spec = mtp(4).unwrap();
@@ -427,21 +427,21 @@ mod speculative_tests {
         assert!(should_draft(Some(spec), false));
     }
 
-    /// Sem especulacao pedida, o resto nao importa.
+    /// With no speculation requested, the rest does not matter.
     #[test]
     fn without_speculation_asked_there_is_no_draft() {
         assert!(!should_draft(None, true));
         assert!(!should_draft(None, false));
     }
 
-    /// O campo `source` é o que separa os dois mecanismos no fio. Um quadro
-    /// de gateway antigo não o traz, e "ausente" tem que continuar querendo
-    /// dizer lookup: era a única especulação que existia quando ele foi
-    /// escrito.
+    /// The `source` field is what separates the two mechanisms on the wire. A
+    /// frame from an old gateway does not carry it, and "absent" must keep
+    /// meaning lookup: it was the only speculation that existed when it was
+    /// written.
     #[test]
     fn a_frame_without_a_draft_source_still_means_lookup() {
-        let spec =
-            Speculate::from_meta(&json!({"speculate": {"k": 4, "m": 3}})).expect("k e m bastam");
+        let spec = Speculate::from_meta(&json!({"speculate": {"k": 4, "m": 3}}))
+            .expect("k and m are enough");
         assert_eq!(spec.source, DraftSource::Lookup);
         assert_eq!((spec.k, spec.m), (4, 3));
     }
@@ -449,7 +449,7 @@ mod speculative_tests {
     #[test]
     fn a_frame_asking_for_mtp_says_so() {
         let spec = Speculate::from_meta(&json!({"speculate": {"k": 4, "m": 0, "source": "mtp"}}))
-            .expect("quadro completo");
+            .expect("complete frame");
         assert_eq!(spec.source, DraftSource::Mtp);
     }
 
@@ -488,39 +488,38 @@ mod speculative_tests {
         assert_eq!(find_draft(&history, 3, 2), vec![88]);
     }
 
-    /// A janela é o **maior** n-grama tentado, não o único. Sem o recuo, um
-    /// texto onde só o último token se repete não rascunha nada e a
-    /// especulação fica ociosa justamente onde ela é barata (verificar K
-    /// tokens num MoE custa quase o mesmo que verificar 1).
+    /// The window is the **largest** n-gram tried, not the only one. Without the
+    /// fallback, a text where only the last token repeats drafts nothing and
+    /// speculation sits idle exactly where it is cheap (verifying K tokens on a
+    /// MoE costs almost the same as verifying 1).
     #[test]
     fn find_draft_falls_back_to_a_shorter_ngram_when_the_window_does_not_match() {
-        // Janela 3 = [7,8,9], que nunca ocorreu antes. O sufixo [9] ocorreu,
-        // seguido de 42.
+        // Window 3 = [7,8,9], which never occurred before. The suffix [9] did
+        // occur, followed by 42.
         let history = [1, 9, 42, 43, 7, 8, 9];
         assert_eq!(find_draft(&history, 3, 4), vec![42, 43]);
     }
 
-    /// O n-grama mais longo continua tendo precedência: ele é a evidência mais
-    /// forte, e um casamento curto que aponte para outro lugar não pode
-    /// atropelá-lo.
+    /// The longest n-gram still takes precedence: it is the strongest evidence,
+    /// and a short match pointing elsewhere must not override it.
     #[test]
     fn find_draft_prefers_the_longest_ngram_available() {
         //           0  1  2  3   4  5  6  7
         let history = [5, 6, 7, 90, 9, 70, 5, 6, 7];
-        // Janela 3 ([5,6,7]) casa em 0..3, seguido de 90. O sufixo [7] casa
-        // mais tarde (índice 2) — mas o de 3 vence.
+        // Window 3 ([5,6,7]) matches at 0..3, followed by 90. The suffix [7]
+        // matches later (index 2) - but the 3-length one wins.
         assert_eq!(find_draft(&history, 3, 2), vec![90]);
     }
 
-    /// Um casamento de um token só é evidência fraca; ele rascunha menos que um
-    /// casamento longo. Rejeição não corrompe nada (a verificação é sempre
-    /// contra o token amostrado de verdade), mas cada token rascunhado a mais
-    /// alarga o batch de todo hop do anel.
+    /// A one-token match is only weak evidence; it drafts less than a long
+    /// match. Rejection corrupts nothing (verification is always against the
+    /// really sampled token), but every extra drafted token widens the batch on
+    /// every hop of the ring.
     #[test]
     fn find_draft_trusts_a_short_match_for_fewer_tokens() {
         let history = [4, 1, 2, 3, 9, 9, 9, 4];
-        // Sufixo [4] casa no índice 0; k=8 pediria 7 tokens, mas um casamento
-        // de comprimento 1 só autoriza 2.
+        // Suffix [4] matches at index 0; k=8 would ask for 7 tokens, but a
+        // match of length 1 only authorises 2.
         assert_eq!(find_draft(&history, 1, 8), vec![1, 2]);
     }
 

@@ -93,7 +93,7 @@ def check_config(
         fail(f"{filename}: build de desenvolvimento deve usar llama.cpp release por padrão")
     if build_args.get("CUDA_RUNTIME_FLAVOR") != "runtime":
         fail(f"{filename}: release prebuilt requer a imagem CUDA runtime")
-    if build_args.get("POM_LLAMA_CPP_RELEASE_REPOSITORY") != "pereirajair/llama.cpp":
+    if build_args.get("POM_LLAMA_CPP_RELEASE_REPOSITORY") != "pieceofmindcloud/llama.cpp":
         fail(f"{filename}: repositório da release prebuilt incorreto")
     if any(
         service["build"].get("context") != str(ROOT)
@@ -110,7 +110,7 @@ def check_config(
         environment = service.get("environment", {})
         if environment.get("POM_HOME") != "/data":
             fail(f"{filename}: {name} perdeu POM_HOME=/data")
-        if environment.get("POM_DESENV") != "1":
+        if environment.get("POM_DEV_MODE") != "1":
             fail(f"{filename}: {name} não habilita os controles de desenvolvimento")
         if environment.get("NVIDIA_DRIVER_CAPABILITIES") != "compute,utility":
             fail(f"{filename}: {name} alterou as capacidades NVIDIA")

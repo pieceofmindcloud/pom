@@ -10,14 +10,17 @@ import clsx from "clsx";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowUp,
+  BookOpen,
   Boxes,
   Check,
   ChevronDown,
   Copy,
   Database,
+  Download,
+  History,
+  MessageCircle,
   Mic,
   MicOff,
-  MessagesSquare,
   Paperclip,
   Pencil,
   Plus,
@@ -28,12 +31,17 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Markdown } from "../components/Markdown";
 import { ChatSessionList } from "../components/ChatSessionList";
+import { ChatHero } from "../components/ChatHero";
+import { MissingPiece } from "../components/MissingPiece";
+import { Link } from "react-router-dom";
+import { canAccessRoute } from "../lib/access";
 import { ChatWaitingLine } from "../components/ChatWaitingLine";
 import { PluginSlot, usePluginSlot } from "../components/PluginSlot";
 import { TelemetryLine } from "../components/TelemetryLine";
 import { InferenceHeadChoice } from "../components/InferenceHeadChoice";
-import { Badge, Button, Empty } from "../components/ui";
+import { Badge, Button } from "../components/ui";
 import { isNearBottom } from "../lib/chatScroll";
+import { copyText } from "../lib/clipboard";
 import {
   CHAT_TELEMETRY_SLOT,
   type ChatTelemetryEnvironment,
@@ -43,6 +51,7 @@ import {
 import type { ResolvedPluginSlot } from "../lib/pluginUi";
 import {
   ChatSessionProvider,
+  hasConversations,
   newId,
   titleFrom,
   turnsOnly,
@@ -63,6 +72,7 @@ import type { GenerationTimings, RequestTrace } from "../lib/chatStream";
 import {
   useChatTelemetryNetwork,
   useChatCapabilities,
+  useLocalCatalog,
   useCluster,
   useNode,
   usePeerRuntimes,
@@ -74,6 +84,7 @@ import { chatModelOptions } from "../lib/chatModels";
 import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
 import type { ClusterView, PeerRuntime } from "../lib/types";
+import { isWholeModel } from "../lib/types";
 import { useProfile } from "../lib/profile";
 
 export type { ChatTelemetryEnvironment } from "../lib/chatTelemetry";
@@ -174,14 +185,10 @@ export function ChatError({ message }: { message: string }) {
   const [copied, setCopied] = useState(false);
 
   const copy = async () => {
-    if (!navigator.clipboard) return;
-    try {
-      await navigator.clipboard.writeText(message);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1600);
-    } catch {
-      // The message remains selectable when the browser denies clipboard access.
-    }
+    // The message remains selectable when the copy fails.
+    if (!(await copyText(message))) return;
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1600);
   };
 
   return (
@@ -297,10 +304,12 @@ export function Bubble({
       ) : (
         <div className="min-w-0 flex-1">
           {message.reasoning && (
-            <details open={streaming} className="mb-3 rounded-xl border border-iris/25 bg-iris/[0.05] px-3 py-2.5">
-              <summary className="cursor-pointer select-none text-xs font-medium text-iris">{t("chat.thinking")}</summary>
-              <div className="mt-2 text-sm text-muted"><Markdown>{message.reasoning}</Markdown></div>
-            </details>
+            <ThinkingBlock
+              reasoning={message.reasoning}
+              tokens={message.reasoningTokens}
+              // Still thinking: no answer text has arrived yet.
+              live={streaming && !message.content}
+            />
           )}
           {message.content && <Markdown>{message.content}</Markdown>}
           {message.error && (
@@ -336,6 +345,112 @@ export function Bubble({
         </div>
       )}
     </motion.div>
+  );
+}
+
+/**
+ * What to do when the network serves no model, for whoever may deploy one:
+ * download a model, deploy it, talk. The step this machine is at is the
+ * highlighted one, with its link; the ones done are checked.
+ */
+function NoModelSteps({ hasLocalModel }: { hasLocalModel: boolean }) {
+  const { t } = useI18n();
+  const current = hasLocalModel ? 1 : 0;
+  const steps = [
+    { key: "download", to: "/models/remote", icon: Download },
+    { key: "deploy", to: "/deploy", icon: Boxes },
+    { key: "talk", to: null, icon: MessageCircle },
+  ] as const;
+  return (
+    <ol className="mx-auto mt-5 grid w-full max-w-md gap-2 text-left" data-testid="no-model-steps">
+      {steps.map((step, index) => {
+        const done = index < current;
+        const active = index === current;
+        const Icon = step.icon;
+        const body = (
+          <>
+            <span className={clsx(
+              "flex h-7 w-7 shrink-0 items-center justify-center rounded-full border text-xs font-semibold",
+              done ? "border-lime/50 bg-lime/10 text-lime" : active ? "border-iris bg-iris text-white" : "border-line text-faint",
+            )}>
+              {done ? <Check className="h-3.5 w-3.5" /> : index + 1}
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className={clsx("block text-sm font-medium", active ? "text-fg" : "text-muted")}>{t(`chat.noModelStep.${step.key}`)}</span>
+              <span className="block text-xs text-faint">{t(`chat.noModelStep.${step.key}Detail`)}</span>
+            </span>
+            <Icon className={clsx("h-4 w-4 shrink-0", active ? "text-iris" : "text-faint")} />
+          </>
+        );
+        const tone = clsx(
+          "flex items-center gap-3 rounded-xl border px-3 py-2.5 transition-colors",
+          active ? "border-iris/50 bg-iris/[0.08] hover:bg-iris/[0.12]" : "border-line",
+        );
+        return (
+          <li key={step.key} data-step={step.key} data-state={done ? "done" : active ? "current" : "next"}>
+            {active && step.to ? <Link to={step.to} className={tone}>{body}</Link> : <div className={tone}>{body}</div>}
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+/** How many invitations `chat.prompt.<n>` has in `messages.csv`. */
+const PROMPT_PLACEHOLDERS = 6;
+
+/**
+ * The composer's invitation, in the tone of the waiting lines: one per
+ * conversation, picked from its id, so it does not change while typing.
+ */
+export function promptPlaceholderKey(sessionId: string): string {
+  let hash = 0;
+  for (const char of sessionId) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  return `chat.prompt.${(hash % PROMPT_PLACEHOLDERS) + 1}`;
+}
+
+/**
+ * A model's thinking, closed: one line saying it thought and for how many
+ * tokens. The text opens only when the reader asks for it, while it is still
+ * being written as well.
+ */
+function ThinkingBlock({ reasoning, tokens, live }: { reasoning: string; tokens?: number; live: boolean }) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const count = tokens ?? 0;
+  return (
+    <div className="mb-3" data-testid="chat-thinking">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+        className="inline-flex items-center gap-2 rounded-full border border-iris/25 bg-iris/[0.05] px-3 py-1 text-xs font-medium text-iris transition-colors hover:bg-iris/[0.1] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iris"
+      >
+        {live && (
+          <span className="flex gap-0.5" aria-hidden="true">
+            {[0, 1, 2].map((i) => (
+              <span key={i} className="h-1 w-1 rounded-full bg-iris" style={{ animation: "pulse-soft 1.2s ease-in-out infinite", animationDelay: `${i * 0.16}s` }} />
+            ))}
+          </span>
+        )}
+        <span>{t(live ? "chat.thinkingLive" : "chat.thinkingDone")}</span>
+        {count > 0 && <span className="font-mono text-[0.68rem] text-iris/80" data-testid="chat-thinking-tokens">{t("chat.thinkingTokens", { count })}</span>}
+        <ChevronDown className={clsx("h-3 w-3 transition-transform", open && "rotate-180")} aria-hidden="true" />
+      </button>
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="overflow-hidden"
+          >
+            <div className="mt-2 rounded-xl border border-iris/20 bg-iris/[0.04] px-3 py-2.5 text-sm text-muted"><Markdown>{reasoning}</Markdown></div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
   );
 }
 
@@ -567,7 +682,6 @@ function ChatScreen() {
   } = useChatSessionController();
   const models = useServableModels();
   const cluster = useCluster();
-  const chatCapabilities = useChatCapabilities();
   const node = useNode();
   const toast = useToast();
 
@@ -697,6 +811,7 @@ function ChatScreen() {
   const model = session.model && available.includes(session.model)
     ? session.model
     : available[0] ?? node.data?.active_model ?? cluster.data?.active_model ?? "";
+  const chatCapabilities = useChatCapabilities(model);
   const streaming = streamingSessionId === session.id;
   const headQuery = useInferenceHeads(model, Boolean(model));
   const selectedInferenceHead = headQuery.data?.candidates.some(
@@ -973,8 +1088,14 @@ function ChatScreen() {
       history,
       replyId: reply.id,
       model,
-      maxTokens: node.data?.config?.max_new_tokens,
-      inferenceHead: selectedInferenceHead ?? undefined,
+      // The answer's whole budget is the model's output capacity (`/v1/models`);
+      // the deployment's `max_new_tokens` is only the size of one backend leg,
+      // and as the total it cut a reasoning model off before it answered.
+      maxTokens:
+        models.data?.find((entry) => entry.id === model)?.max_tokens ?? node.data?.config?.max_new_tokens,
+      // Sent only when the user picked a head: the default shown above is not a pin, so the planner
+      // chooses among the heads by their cost and queue.
+      inferenceHead: headChoice.model === model ? headChoice.nodeId ?? undefined : undefined,
       thinkingEnabled,
       ragEnabled: ragAvailable ? ragEnabled : undefined,
       ragCollection: ragAvailable && ragCollection ? ragCollection : undefined,
@@ -1047,104 +1168,23 @@ function ChatScreen() {
   }
 
   const noModel = available.length === 0 && !node.data?.active_model && !cluster.data?.active_model;
+  const canDeploy = canAccessRoute("/deploy", profile);
+  // Who may deploy is told the next step: download a model first if this
+  // machine has none, deploy it otherwise. Asked only on that screen.
+  const localCatalog = useLocalCatalog(noModel && canDeploy);
+  const hasLocalModel = Boolean(localCatalog.data?.models.some(isWholeModel) || localCatalog.data?.shard_sets.length);
+  // The most recent conversation with turns, to reopen the history from the empty screen.
+  const latestConversation = sessions.find((item) => item.messages.length > 0) ?? null;
   const firstTraceModel = session.messages.find((message) => message.trace?.model)?.trace?.model;
   const modelAtStart = session.modelAtStart ?? firstTraceModel ?? session.model ?? model;
 
-  return (
-    <div className="flex h-full min-h-0">
-      {!historyLivesInMainMenu && (
-        <ChatSessionList
-          sessions={sessions}
-          activeId={session.id}
-          onPick={selectSession}
-          onNew={startNewChat}
-          onDelete={deleteChatSession}
-        />
-      )}
-
-      <div className="flex min-w-0 flex-1 flex-col">
-        <div className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-line px-4 sm:px-6">
-          <div className="flex min-w-0 flex-1 items-center gap-2">
-            <TitleField
-              // A conversation nobody has spoken in has no name to keep, so it
-              // shows what the screen is instead of an empty title to rename.
-              title={session.messages.length ? session.title : t("chat.title")}
-              onRename={rename}
-            />
-            {chatCapabilities.data?.coverage === "incomplete" && (
-              <Badge tone="amber">{t("chat.incomplete")}</Badge>
-            )}
-            {chatCapabilities.data?.coverage === "unavailable" && (
-              <Badge tone="amber">{t("chat.coverageUnavailable")}</Badge>
-            )}
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            {!historyLivesInMainMenu && (
-              <Button
-                size="sm"
-                variant="ghost"
-                icon={<Plus className="h-3.5 w-3.5" />}
-                onClick={startNewChat}
-                className="md:hidden"
-              >
-                {t("chat.newShort")}
-              </Button>
-            )}
-          </div>
-        </div>
-
-        <div ref={thread} onScroll={(event) => { autoFollow.current = isNearBottom(event.currentTarget); }} className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
-          <div className="mx-auto w-full max-w-3xl px-4 py-6 sm:px-6">
-            {session.messages.length === 0 ? (
-              <div className="pt-[12vh]">
-                <Empty
-                  icon={<MessagesSquare className="h-5 w-5" />}
-                  title={
-                    noModel
-                      ? t("chat.noModel")
-                      : t("chat.ask")
-                  }
-                >
-                  {noModel
-                    ? t("chat.noModelDetail")
-                    : t("chat.askDetail")}
-                </Empty>
-              </div>
-            ) : (
-              <div className="space-y-6">
-                <AnimatePresence initial={false}>
-                  {modelAtStart && <ModelIntroMark model={modelAtStart} />}
-                  {session.messages.map((m) => {
-                    const telemetry = telemetryCapture?.messageId === m.id
-                      ? { ...telemetrySnapshots[m.id], ...telemetryCapture, environment: telemetryEnvironment }
-                      : telemetrySnapshots[m.id];
-                    return (
-                      <Bubble
-                        key={m.id}
-                        message={m}
-                        streaming={streaming && m.id === session.messages[session.messages.length - 1]?.id}
-                        onAsk={askAboutTelemetry}
-                        analysisDisabled={streaming || !model}
-                        telemetryPlugin={showTelemetry ? telemetryPlugin : null}
-                        telemetryTrace={telemetry?.trace}
-                        telemetryTimings={telemetry?.timings}
-                        telemetrySource={telemetry?.source}
-                        telemetryEnvironment={telemetry?.environment}
-                      />
-                    );
-                  })}
-                </AnimatePresence>
-                {streaming &&
-                  !session.messages[session.messages.length - 1]?.content && (
-                    <ChatWaitingLine asleep={chatCapabilities.data?.asleep === true} />
-                  )}
-              </div>
-            )}
-          </div>
-        </div>
-
-        <div className="shrink-0 border-t border-line bg-surface/80 px-4 py-3 backdrop-blur-md sm:px-6">
-          <div className="mx-auto w-full max-w-3xl">
+  /*
+   * The composer is one element in two places: centred under the opening
+   * screen while the conversation is empty, and at the bottom once it has
+   * turns. The shared `layoutId` makes the first message carry it down.
+   */
+  const composerBox = (
+    <motion.div layoutId="chat-composer" transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1] }} className="mx-auto w-full max-w-3xl">
             {attachments.length > 0 && (
               <div className="mb-2 flex flex-wrap gap-1.5">
                 {attachments.map((attachment) => (
@@ -1160,7 +1200,7 @@ function ChatScreen() {
                       />
                     ) : (
                       <span
-                        aria-label={`Formato ${attachmentFormat(attachment)}`}
+                        aria-label={t("chat.attachmentFormatAria", { format: attachmentFormat(attachment) })}
                         className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-aqua/30 bg-aqua/[0.08] px-1 text-center font-mono text-[0.58rem] font-semibold uppercase text-aqua"
                       >
                         {attachmentFormat(attachment)}
@@ -1186,13 +1226,15 @@ function ChatScreen() {
             )}
             <div
               role="group"
-              aria-label="Campo de mensagem"
+              aria-label={t("chat.messageFieldAria")}
               onDragEnter={handleDragEnter}
               onDragOver={handleDragOver}
               onDragLeave={handleDragLeave}
               onDrop={handleDrop}
               className={clsx(
-                "relative flex items-end gap-2 rounded-xl border bg-ink p-2 transition-colors duration-150 focus-within:border-iris/60 focus-within:ring-2 focus-within:ring-iris/20",
+                "relative flex items-end gap-2 border bg-ink transition-colors duration-150 focus-within:border-iris/60 focus-within:ring-2 focus-within:ring-iris/20",
+                // Alone on the opening screen the box is the whole page, so it is drawn larger.
+                session.messages.length === 0 ? "rounded-2xl p-3 shadow-lift" : "rounded-xl p-2",
                 dragActive ? "border-iris bg-iris/[0.08] ring-2 ring-iris/30" : "border-line",
               )}
             >
@@ -1228,9 +1270,10 @@ function ChatScreen() {
               </div>
               <textarea
                 ref={composer}
+                data-guide="chat-input"
                 rows={1}
                 value={draft}
-                placeholder={t("chat.placeholder")}
+                placeholder={t(promptPlaceholderKey(session.id))}
                 onChange={(e) => {
                   setDraft(e.target.value);
                   grow();
@@ -1241,7 +1284,10 @@ function ChatScreen() {
                     void send();
                   }
                 }}
-                className="max-h-[220px] min-h-[2.25rem] flex-1 resize-none bg-transparent px-2 py-1.5 text-[0.9rem] leading-relaxed text-fg placeholder:text-faint focus:outline-none"
+                className={clsx(
+                  "max-h-[220px] flex-1 resize-none bg-transparent px-2 py-1.5 leading-relaxed text-fg placeholder:text-faint focus:outline-none",
+                  session.messages.length === 0 ? "min-h-[5.5rem] text-base" : "min-h-[2.25rem] text-[0.9rem]",
+                )}
               />
               {streaming ? (
                 <Button
@@ -1330,8 +1376,135 @@ function ChatScreen() {
                 onChange={(nodeId) => setHeadChoice({ model, nodeId })}
               />
             )}
+    </motion.div>
+  );
+  const empty = session.messages.length === 0;
+  const showHistory = hasConversations(sessions);
+  // The composer remounts in its new place; the focus follows it there.
+  const wasEmpty = useRef(empty);
+  useEffect(() => {
+    if (wasEmpty.current && !empty && document.activeElement === document.body) composer.current?.focus();
+    wasEmpty.current = empty;
+  }, [empty]);
+
+  return (
+    <div className="flex h-full min-h-0">
+      {!historyLivesInMainMenu && showHistory && (
+        <ChatSessionList
+          sessions={sessions}
+          activeId={session.id}
+          onPick={selectSession}
+          onNew={startNewChat}
+          onDelete={deleteChatSession}
+        />
+      )}
+
+      <div className="flex min-w-0 flex-1 flex-col">
+        {/* An empty conversation has no title to show: the opening screen is the page. */}
+        {!empty && (
+        <div className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-line px-4 sm:px-6">
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            <TitleField
+              // A conversation nobody has spoken in has no name to keep, so it
+              // shows what the screen is instead of an empty title to rename.
+              title={session.messages.length ? session.title : t("chat.title")}
+              onRename={rename}
+            />
+            {chatCapabilities.data?.coverage === "incomplete" && (
+              <Badge tone="amber">{t("chat.incomplete")}</Badge>
+            )}
+            {chatCapabilities.data?.coverage === "unavailable" && (
+              <Badge tone="amber">{t("chat.coverageUnavailable")}</Badge>
+            )}
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            {!historyLivesInMainMenu && showHistory && (
+              <Button
+                size="sm"
+                variant="ghost"
+                icon={<Plus className="h-3.5 w-3.5" />}
+                onClick={startNewChat}
+                className="md:hidden"
+              >
+                {t("chat.newShort")}
+              </Button>
+            )}
           </div>
         </div>
+        )}
+
+        {empty ? (
+          <div className="flex min-h-0 flex-1 flex-col items-center justify-center overflow-y-auto px-4 py-8 sm:px-6" data-testid="chat-empty">
+            {noModel ? (
+              // Nothing to talk to: no composer, no RAG, only what is missing.
+              <MissingPiece
+                title={t("chat.noModel")}
+                detail={t(!canDeploy ? "chat.noModelAskAdmin" : hasLocalModel ? "chat.noModelDeployNext" : "chat.noModelDownloadNext")}
+              >
+                {canDeploy && <NoModelSteps hasLocalModel={hasLocalModel} />}
+                <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
+                  {latestConversation && (
+                    <Button size="sm" variant="outline" icon={<History className="h-3.5 w-3.5" />} onClick={() => selectSession(latestConversation)}>
+                      {t("chat.noModelHistory")}
+                    </Button>
+                  )}
+                  <Link to="/documentation" className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[0.8rem] font-medium text-muted transition-colors hover:bg-line/40 hover:text-fg">
+                    <BookOpen className="h-3.5 w-3.5" />
+                    {t("chat.noModelHowItWorks")}
+                  </Link>
+                </div>
+              </MissingPiece>
+            ) : (
+              <>
+                <ChatHero />
+                {composerBox}
+              </>
+            )}
+          </div>
+        ) : (
+          <>
+        <div ref={thread} onScroll={(event) => { autoFollow.current = isNearBottom(event.currentTarget); }} className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
+          <div className="mx-auto w-full max-w-3xl px-4 py-6 sm:px-6">
+              <div className="space-y-6">
+                <AnimatePresence initial={false}>
+                  {modelAtStart && <ModelIntroMark model={modelAtStart} />}
+                  {session.messages.map((m) => {
+                    const telemetry = telemetryCapture?.messageId === m.id
+                      ? { ...telemetrySnapshots[m.id], ...telemetryCapture, environment: telemetryEnvironment }
+                      : telemetrySnapshots[m.id];
+                    return (
+                      <Bubble
+                        key={m.id}
+                        message={m}
+                        streaming={streaming && m.id === session.messages[session.messages.length - 1]?.id}
+                        onAsk={askAboutTelemetry}
+                        analysisDisabled={streaming || !model}
+                        telemetryPlugin={showTelemetry ? telemetryPlugin : null}
+                        telemetryTrace={telemetry?.trace}
+                        telemetryTimings={telemetry?.timings}
+                        telemetrySource={telemetry?.source}
+                        telemetryEnvironment={telemetry?.environment}
+                      />
+                    );
+                  })}
+                </AnimatePresence>
+                {/* A model that is thinking already shows it in its own line. */}
+                {streaming &&
+                  !session.messages[session.messages.length - 1]?.content &&
+                  !session.messages[session.messages.length - 1]?.reasoning && (
+                    <ChatWaitingLine asleep={chatCapabilities.data?.asleep === true} />
+                  )}
+              </div>
+          </div>
+        </div>
+
+        <div className="shrink-0 border-t border-line bg-surface/80 px-4 py-3 backdrop-blur-md sm:px-6">
+          {noModel ? (
+            <p className="mx-auto w-full max-w-3xl text-center text-sm text-muted" data-testid="chat-no-model-bar">{t("chat.noModel")}</p>
+          ) : composerBox}
+        </div>
+          </>
+        )}
       </div>
     </div>
   );

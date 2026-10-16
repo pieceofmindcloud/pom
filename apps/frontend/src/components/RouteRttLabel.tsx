@@ -4,13 +4,13 @@ import { useI18n } from "../i18n/provider";
 type RouteRttLabelProps = {
   rttMs: number | null | undefined;
   transport?: string | null;
-  /** A aresta passa por um circuito num relé: destaque laranja e explicação. */
+  /** The edge goes through a circuit on a relay: orange highlight and explanation. */
   relayed?: boolean;
   left: number;
   top: number;
 };
 
-/** O selo de RTT compartilhado pelos mapas de implantação e do Painel. */
+/** The RTT badge shared by the deployment maps and the Dashboard's. */
 export function RouteRttLabel({ rttMs, transport, relayed = false, left, top }: RouteRttLabelProps) {
   const { t } = useI18n();
   const transportLabel = relayed

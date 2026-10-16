@@ -49,8 +49,8 @@ pub(crate) async fn start_gateway_with_ready(
             post(crate::webui::member_left),
         )
         .route("/handshake", post(session::handle_handshake))
-        // Onde a cauda de um pipeline entrega o resultado. A rota é interna ao
-        // pipeline: o Ticket é a credencial por quadro.
+        // Where the tail of a pipeline delivers the result. The route is internal
+        // to the pipeline: the Ticket is the per-frame credential.
         .route(
             crate::direct::RELAY_RESULT_PATH,
             post(handle_relay_result).layer(axum::extract::DefaultBodyLimit::max(1024 * 1024)),
@@ -90,7 +90,7 @@ pub(crate) async fn start_gateway_with_ready(
             verify_control_request,
         ))
         .layer(tower_http::compression::CompressionLayer::new())
-        // Toda resposta diz de qual nó veio; ver `peer_client::answered_by_other_node`.
+        // Every response says which node it came from; see `peer_client::answered_by_other_node`.
         .layer(middleware::map_response(crate::peer_client::stamp_node_id));
 
     // Both startup paths (with a model and gateway-only) come through here, so
@@ -106,13 +106,13 @@ pub(crate) async fn start_gateway_with_ready(
          — UI /  ·  OpenAI /v1/chat/completions  ·  Anthropic /v1/messages  ·  \
          POST /api/generate  ·  GET /peers /health"
     );
-    // Nagle atrasa uma escrita pequena até o ACK da anterior. No SSE cada token
-    // é uma escrita pequena, e a interação com o delayed-ACK do outro lado soma
-    // dezenas de ms ao que o cliente sente. O `reqwest` já desliga isso no lado
-    // cliente por padrão; o `axum::serve` deixava `tcp_nodelay` em `None`, então
-    // o lado servidor ficava com Nagle ligado em todas as respostas. O
-    // `tcp_nodelay` mudou de lugar, não sumiu: `serve` o aplica em cada conexão
-    // aceita, junto com a decisão entre TLS e texto claro.
+    // Nagle delays a small write until the ACK of the previous one. In SSE each
+    // token is a small write, and the interaction with the other side's
+    // delayed-ACK adds tens of ms to what the client feels. `reqwest` already
+    // turns this off on the client side by default; `axum::serve` left
+    // `tcp_nodelay` at `None`, so the server side kept Nagle on in every
+    // response. `tcp_nodelay` moved, it did not go away: `serve` applies it to
+    // each accepted connection, along with the decision between TLS and clear text.
     crate::serve::serve_with_quic(
         listener,
         app,
@@ -164,6 +164,9 @@ pub(crate) struct PublicNetworkView {
     pub channels: String,
     pub country_code: String,
     pub country_name: String,
+    /// State or region of the city. Only filled by `resolve_places`.
+    #[serde(default)]
+    pub state: String,
     pub city: String,
     pub geo_label: String,
     pub access_policy: crate::config::NetworkAccessPolicy,
@@ -171,14 +174,14 @@ pub(crate) struct PublicNetworkView {
     /// accepting new members and the directory disables its join button.
     #[serde(default)]
     pub accepted_enrollments: crate::config::AcceptedEnrollments,
-    /// The network answers lobby chat from non-members right now (the
-    /// operator's switch and the network Chat are both on).
-    #[serde(default)]
-    pub lobby_chat: bool,
     /// The network publishes models, node count and VRAM to non-members,
     /// asked live from its principal.
     #[serde(default)]
     pub public_stats: bool,
+    /// The network's Chat is on, so its lobby carries a conversation with
+    /// non-members; off, the lobby only takes admission requests.
+    #[serde(default)]
+    pub lobby_chat: bool,
     pub location: Option<crate::config::NetworkLocation>,
     pub discovered_via: String,
     #[serde(default)]
@@ -244,8 +247,8 @@ fn directory_network_from_view(
         geo_label: view.geo_label.clone(),
         access_policy: view.access_policy,
         accepted_enrollments: view.accepted_enrollments.clone(),
-        lobby_chat: view.lobby_chat,
         public_stats: view.public_stats,
+        lobby_chat: view.lobby_chat,
         location: view.location.clone(),
         relay_hints: view.relay_hints.clone(),
         directory_replicas: view.directory_replicas.clone(),
@@ -272,12 +275,13 @@ fn view_from_directory_record(
         channels: network.channels,
         country_code: network.country_code,
         country_name: network.country_name,
+        state: String::new(),
         city: network.city,
         geo_label: network.geo_label,
         access_policy: network.access_policy,
         accepted_enrollments: network.accepted_enrollments,
-        lobby_chat: network.lobby_chat,
         public_stats: network.public_stats,
+        lobby_chat: network.lobby_chat,
         location: network.location,
         discovered_via: "directory".to_string(),
         directory_replicas: network.directory_replicas,
@@ -301,17 +305,17 @@ fn validate_public_directory_semantics(
     record: &crate::public_directory::SignedPublicDirectoryRecord,
 ) -> Result<()> {
     let document = crate::admin_trust::parse_transported(&record.network.trust_document)
-        .map_err(|error| anyhow::anyhow!("cadeia pública inválida: {error:#}"))?;
+        .map_err(|error| anyhow::anyhow!("invalid public chain: {error:#}"))?;
     if document.anchor.cluster_id != record.network.cluster_id
         || crate::admin_trust::anchor_fingerprint(&document) != record.network.fingerprint
     {
         return Err(anyhow::anyhow!(
-            "o registro não corresponde à raiz de confiança anunciada"
+            "the record does not match the announced trust root"
         ));
     }
     if document.primary.pubkey != record.publisher_pubkey {
         return Err(anyhow::anyhow!(
-            "somente o principal da rede pode publicar seu registro"
+            "only the principal of the network can publish its record"
         ));
     }
     Ok(())
@@ -401,7 +405,10 @@ pub(crate) async fn listed_public_networks(
         let client = client.clone();
         async move {
             let response = client
-                .get(format!("{}/api/public/networks", base.trim_end_matches('/')))
+                .get(format!(
+                    "{}/api/public/networks",
+                    base.trim_end_matches('/')
+                ))
                 .timeout(Duration::from_secs(8))
                 .send()
                 .await
@@ -462,7 +469,7 @@ async fn merge_directory_replicas(
     let mut learned = Vec::new();
     for incoming in responses.into_iter().flatten().flatten() {
         if let Err(error) = validate_public_directory_semantics(&incoming) {
-            warn!("registro do diretório federado recusado: {error:#}");
+            warn!("federated directory record refused: {error:#}");
             continue;
         }
         let learned_record = incoming.clone();
@@ -473,7 +480,7 @@ async fn merge_directory_replicas(
                 learned.push(learned_record);
             }
             Ok(_) => {}
-            Err(error) => warn!("registro do diretório federado recusado: {error:#}"),
+            Err(error) => warn!("federated directory record refused: {error:#}"),
         }
     }
     let before = records.len();
@@ -489,7 +496,7 @@ async fn merge_directory_replicas(
     changed |= before != records.len();
     if changed {
         if let Err(error) = database.save_public_directory_records(&records) {
-            warn!("não foi possível salvar o cache do diretório federado: {error:#}");
+            warn!("could not save the federated directory cache: {error:#}");
         }
     }
     (records, learned)
@@ -523,7 +530,7 @@ async fn replicate_directory_records(
     let failures = sends.iter().filter(|result| result.is_err()).count();
     if failures > 0 {
         warn!(
-            "{} publicação(ões) de anti-entropia do diretório federado falharam",
+            "{} anti-entropy publication(s) of the federated directory failed",
             failures
         );
     }
@@ -534,7 +541,7 @@ async fn publish_local_directory_record(state: &GatewayState) -> Result<()> {
     if settings.replicas.is_empty() {
         return Ok(());
     }
-    if state.auth.read().await.profile != crate::profile::NodeProfile::Admin {
+    if !state.network.is_principal() {
         return Ok(());
     }
     let Some(local) = local_public_network(state).await else {
@@ -586,7 +593,7 @@ async fn publish_local_directory_record(state: &GatewayState) -> Result<()> {
     .await;
     for result in sends {
         if let Err(error) = result {
-            warn!("não foi possível publicar no ingresso do diretório federado: {error}");
+            warn!("could not publish to the federated directory ingress: {error}");
         }
     }
     Ok(())
@@ -598,7 +605,7 @@ pub(crate) fn spawn_public_directory_republisher(state: GatewayState) {
         ticker.tick().await;
         loop {
             if let Err(error) = publish_local_directory_record(&state).await {
-                warn!("publicação no diretório federado falhou: {error:#}");
+                warn!("publication to the federated directory failed: {error:#}");
             }
             ticker.tick().await;
         }
@@ -617,7 +624,7 @@ async fn public_directory_records(State(state): State<GatewayState>) -> impl Int
         record.validate(now).is_ok() && validate_public_directory_semantics(record).is_ok()
     });
     if let Err(error) = state.database.save_public_directory_records(&records) {
-        warn!("não foi possível podar o cache do diretório federado: {error:#}");
+        warn!("could not prune the federated directory cache: {error:#}");
     }
     Json(PublicDirectoryRecordsResponse {
         version: crate::public_directory::PUBLIC_DIRECTORY_VERSION,
@@ -645,7 +652,7 @@ pub(super) async fn accept_public_directory_record(
     match crate::public_directory::merge_record(&mut records, record, now) {
         Ok(outcome) => {
             if let Err(error) = state.database.save_public_directory_records(&records) {
-                return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": format!("não foi possível persistir o registro: {error:#}") }))).into_response();
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": format!("could not persist the record: {error:#}") }))).into_response();
             }
             let status = match outcome {
                 crate::public_directory::MergeOutcome::Inserted => StatusCode::CREATED,
@@ -666,11 +673,19 @@ pub(super) async fn accept_public_directory_record(
 }
 
 async fn local_public_network(state: &GatewayState) -> Option<PublicNetworkView> {
-    let (visibility, configured_network) = {
-        let config = state.auth.read().await;
-        (config.network.visibility, config.network.clone())
-    };
-    if visibility != crate::config::NetworkVisibility::Public || !state.admin_trust.is_anchored() {
+    let visibility = state.auth.read().await.network.visibility;
+    if visibility != crate::config::NetworkVisibility::Public {
+        return None;
+    }
+    local_network_view(state).await
+}
+
+/// The network this node is in, whatever its visibility, in the shape the
+/// listings use. Only the operator's own screen may show it: what goes out to
+/// other machines is [`local_public_network`].
+pub(crate) async fn local_network_view(state: &GatewayState) -> Option<PublicNetworkView> {
+    let configured_network = state.auth.read().await.network.clone();
+    if !state.admin_trust.is_anchored() {
         return None;
     }
     let network = state
@@ -700,20 +715,16 @@ async fn local_public_network(state: &GatewayState) -> Option<PublicNetworkView>
         channels: network.channels.clone(),
         country_code: network.country_code.clone(),
         country_name: network.country_name.clone(),
+        state: network.state.clone(),
         city: network.city.clone(),
         geo_label: network.geo_label.clone(),
         access_policy: network.access_policy,
         accepted_enrollments: network.accepted_enrollments.clone(),
-        lobby_chat: network.lobby_chat && state.network_chat.enabled(),
         public_stats: network.public_stats,
-        location: network
-            .location
-            .clone()
-            .map(|location| crate::config::NetworkLocation {
-                latitude: location.latitude,
-                longitude: location.longitude,
-                accuracy_m: None,
-            }),
+        lobby_chat: state.network_chat.enabled(),
+        // Already reduced to the precision the admin chose; `accuracy_m` is
+        // what tells a viewer the point is approximate.
+        location: network.location.clone(),
         discovered_via: "pkarr".to_string(),
         directory_replicas,
     })
@@ -759,6 +770,36 @@ fn locate_cache(
         std::sync::Mutex<std::collections::HashMap<String, (Instant, NetworkLocator)>>,
     > = std::sync::OnceLock::new();
     CACHE.get_or_init(Default::default)
+}
+
+/// How long a publisher stays locatable after the networks list showed it.
+const LISTED_PUBLISHER_TTL: Duration = Duration::from_secs(30 * 60);
+const LISTED_PUBLISHERS_MAX: usize = 1024;
+
+fn listed_publishers() -> &'static std::sync::Mutex<std::collections::HashMap<String, Instant>> {
+    static LISTED: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, Instant>>,
+    > = std::sync::OnceLock::new();
+    LISTED.get_or_init(Default::default)
+}
+
+/// Remembers the publishers of the networks this node has just listed, so the
+/// locate route answers for every row of the screen. A node on its own local
+/// network hears no announce: its list comes from the relays and is stored
+/// nowhere else.
+pub(crate) fn remember_listed_publishers(networks: &[PublicNetworkView]) {
+    let now = Instant::now();
+    let mut listed = listed_publishers().lock().expect("listed publishers lock");
+    listed.retain(|_, seen| now.duration_since(*seen) < LISTED_PUBLISHER_TTL);
+    for network in networks {
+        let Ok(key) = pkarr::PublicKey::try_from(network.publisher_key.trim()) else {
+            continue;
+        };
+        let key = key.to_uri_string();
+        if listed.len() < LISTED_PUBLISHERS_MAX || listed.contains_key(&key) {
+            listed.insert(key, now);
+        }
+    }
 }
 
 pub(crate) fn locator_from(record: Option<&crate::pkarr_node::PkarrRecord>) -> NetworkLocator {
@@ -807,6 +848,14 @@ async fn locatable_keys(state: &GatewayState) -> std::collections::HashSet<Strin
     keys.extend(
         peers
             .filter_map(|peer| crate::pkarr_node::PkarrNode::public_key_uri_from_hex(&peer.pubkey)),
+    );
+    keys.extend(
+        listed_publishers()
+            .lock()
+            .expect("listed publishers lock")
+            .iter()
+            .filter(|(_, seen)| seen.elapsed() < LISTED_PUBLISHER_TTL)
+            .map(|(key, _)| key.clone()),
     );
     keys
 }
@@ -886,7 +935,41 @@ pub(super) async fn public_networks(
             networks.push(network);
         }
     }
+    remember_listed_publishers(&networks);
+    resolve_places(&mut networks);
+    crate::webui::remember_public_networks(&state.database, &networks);
     Json(networks)
+}
+
+/// Rewrites the country, state and city of each listed network from the
+/// coordinates it publishes and this node's offline city database.
+///
+/// The names a network sends are text from another machine. What a viewer
+/// sees and filters by is what the local database says is at that point, so
+/// two nodes listing the same network name the place the same way and a
+/// network cannot claim one city while pointing at another. A network that
+/// publishes no coordinates is listed without a place.
+pub(crate) fn resolve_places(networks: &mut [PublicNetworkView]) {
+    for network in networks {
+        let place = network
+            .location
+            .as_ref()
+            .and_then(|location| crate::geo::resolve(location.latitude, location.longitude));
+        match place {
+            Some(city) => {
+                network.country_code = city.country_code;
+                network.country_name = city.country_name;
+                network.state = city.state;
+                network.city = city.name;
+            }
+            None => {
+                network.country_code.clear();
+                network.country_name.clear();
+                network.state.clear();
+                network.city.clear();
+            }
+        }
+    }
 }
 
 /// The public networks the relay under `key` knows, each checked against its
@@ -896,16 +979,22 @@ pub(crate) async fn relay_directory(key: &str) -> Vec<PublicNetworkView> {
     let Ok(client) = crate::network_lobby::client().await else {
         return Vec::new();
     };
-    let mut response = match client.request(key, crate::network_lobby::LobbyRequest::Directory).await {
+    let mut response = match client
+        .request(key, crate::network_lobby::LobbyRequest::Directory)
+        .await
+    {
         Ok(response) => response,
         Err(error) => {
-            debug!("lobby: relé {key} não respondeu ao diretório: {error:#}");
+            debug!("lobby: relay {key} did not answer the directory: {error:#}");
             return Vec::new();
         }
     };
     if response.accepted && response.pending {
         tokio::time::sleep(Duration::from_secs(3)).await;
-        if let Ok(again) = client.request(key, crate::network_lobby::LobbyRequest::Directory).await {
+        if let Ok(again) = client
+            .request(key, crate::network_lobby::LobbyRequest::Directory)
+            .await
+        {
             response = again;
         }
     }
@@ -990,7 +1079,7 @@ async fn collect_public_networks(
     }
 
     if let Err(error) = publish_local_directory_record(state).await {
-        warn!("não foi possível atualizar o registro local do diretório federado: {error:#}");
+        warn!("could not update the local record of the federated directory: {error:#}");
     }
     let directory_records = read_directory_records(state).await;
     for record in directory_records {
@@ -1018,10 +1107,8 @@ async fn collect_public_networks(
     };
     // Admitted peers are this node's own cluster: asking one of them by key
     // can only describe the network this node is already in.
-    let members: std::collections::HashSet<String> = candidates
-        .iter()
-        .map(|peer| peer.node_id.clone())
-        .collect();
+    let members: std::collections::HashSet<String> =
+        candidates.iter().map(|peer| peer.node_id.clone()).collect();
     if gathers {
         for peer in state.network.public_discovered_peers().await {
             if !candidates.iter().any(|known| known.node_id == peer.node_id) {
@@ -1136,7 +1223,7 @@ async fn collect_public_networks(
     }
 
     if let Err(error) = state.database.save_public_network_geo_cache(&geo_cache) {
-        warn!("não foi possível atualizar o índice geo de redes públicas: {error:#}");
+        warn!("could not update the geo index of public networks: {error:#}");
     }
 
     networks
@@ -1178,10 +1265,12 @@ pub(crate) fn spawn_directory_publisher(state: GatewayState) {
                 match client.request(&key, request).await {
                     Ok(response) if response.accepted => {}
                     Ok(response) => debug!(
-                        "lobby: relé {key} não listou a rede: {:?}",
+                        "lobby: relay {key} did not list the network: {:?}",
                         response.error
                     ),
-                    Err(error) => debug!("lobby: relé {key} inalcançável para publicar: {error:#}"),
+                    Err(error) => {
+                        debug!("lobby: relay {key} unreachable for publishing: {error:#}")
+                    }
                 }
             }
         }
@@ -1219,10 +1308,13 @@ pub(crate) fn spawn_directory_board_publisher(state: GatewayState) {
                 let scan = collect_public_networks(&state, &query);
                 match tokio::time::timeout(GATHER_TIMEOUT, scan).await {
                     Ok(found) => {
+                        let mut known = found.clone();
+                        resolve_places(&mut known);
+                        crate::webui::remember_public_networks(&state.database, &known);
                         gathered = found;
                         board.publish(own, Some(gathered.clone()));
                     }
-                    Err(_) => debug!("lobby: a varredura de redes públicas passou do prazo"),
+                    Err(_) => debug!("lobby: the public networks scan exceeded the deadline"),
                 }
             }
             tokio::time::sleep(crate::network_lobby::INFO_REFRESH).await;
@@ -1242,19 +1334,17 @@ pub(crate) async fn ensure_gateway_port_available(port: u16, current: Option<u16
     }
     crate::infer_server::listener_dual_stack(port)
         .map(|_| ())
-        .map_err(|error| {
-            anyhow::anyhow!("a porta da interface {port} não está disponível: {error}")
-        })
+        .map_err(|error| anyhow::anyhow!("the interface port {port} is not available: {error}"))
 }
 
 // ── Route handlers ────────────────────────────────────────────────────────────
 
-/// O que o principal responde à catraca dos outros nós.
+/// What the principal answers to the other nodes' ratchet.
 ///
-/// Autenticada pelo envelope assinado da cadeia de confiança. Em rede privada
-/// a chave compartilhada pode acompanhar a assinatura como guarda de transporte;
-/// isso impede um intruso de responder pelo principal e rebaixar o cluster para
-/// texto claro. Ver `tls_policy`.
+/// Authenticated by the signed envelope of the trust chain. On a private network
+/// the shared key may accompany the signature as a transport guard; this keeps
+/// an intruder from answering for the principal and downgrading the cluster to
+/// clear text. See `tls_policy`.
 pub(super) async fn cluster_tls(
     _auth: crate::auth::InternalNodeAuth,
     State(state): State<GatewayState>,
@@ -1287,9 +1377,9 @@ pub(super) async fn handle_remote_stream_result(
     crate::direct::handle_remote_stream_result(&state.reply_inbox, body).await
 }
 
-/// Serve o retorno do `remote-stream` pelo mesmo canal persistente enquadrado
-/// que o transporte entre as fatias. A credencial é reconferida para cada
-/// frame, porque a conexão pode sobreviver à troca da chave do cluster.
+/// Serves the `remote-stream` return over the same framed persistent channel
+/// as the transport between slices. The credential is rechecked for each
+/// frame, because the connection can outlive a change of the cluster key.
 pub(super) async fn handle_remote_stream_link(
     State(state): State<GatewayState>,
     headers: axum::http::HeaderMap,
@@ -1304,11 +1394,9 @@ pub(super) async fn handle_remote_stream_link(
         async move {
             crate::auth::validate_internal_node_headers(&auth, &headers)
                 .await
-                .map_err(|_| anyhow::anyhow!("credencial de peer inválida"))?;
+                .map_err(|_| anyhow::anyhow!("invalid peer credential"))?;
             if path != crate::direct::REMOTE_STREAM_RESULT_PATH {
-                return Err(anyhow::anyhow!(
-                    "rota de retorno remoto desconhecida: {path}"
-                ));
+                return Err(anyhow::anyhow!("unknown remote return route: {path}"));
             }
             Ok(crate::direct::handle_remote_stream_link(&inbox, bytes).await)
         }
@@ -1441,8 +1529,8 @@ pub(super) async fn handle_generate(
             budget: output_limit.budget(),
             stops,
             request_details,
-            // `/api/generate` recebe um prompt, não uma conversa: o prefixo é
-            // o próprio texto.
+            // `/api/generate` receives a prompt, not a conversation: the prefix
+            // is the text itself.
             cache_key: None,
             preferred_head: None,
         },

@@ -1,9 +1,9 @@
-//! HTTP/3 sobre QUIC para os hops de inferência.
+//! HTTP/3 over QUIC for the inference hops.
 //!
-//! O endpoint é opcional no cliente, mas o servidor o deixa pronto quando a
-//! identidade do nó existe. Isso permite ligar a política em tempo de execução
-//! sem reiniciar e mantém o fallback TCP disponível durante uma atualização
-//! parcial do cluster.
+//! The endpoint is optional on the client, but the server leaves it ready when the
+//! node's identity exists. This allows turning the policy on at runtime
+//! without restarting and keeps the TCP fallback available during a partial
+//! update of the cluster.
 
 use anyhow::{anyhow, Context, Result};
 use axum::body::{Body, Bytes};
@@ -20,26 +20,26 @@ use std::time::{Duration, Instant};
 use tokio::net::lookup_host;
 use tracing::{debug, info};
 
-/// Offsets a partir do `p2p_port` do próprio nó para as portas UDP dos
-/// endpoints HTTP/3.
+/// Offsets from the node's own `p2p_port` to the UDP ports of the
+/// HTTP/3 endpoints.
 ///
-/// A derivação **não** pode partir de `gateway_port`/`inference_port`: num
-/// cluster co-locado (host networking, todos os nós no mesmo namespace) esses
-/// números são consecutivos entre nós, então `porta + 1` cai exatamente na
-/// `gateway_port` do nó vizinho. Foi o que quebrou a descoberta na ksia -
-/// a porta QUIC de um nó ocupava a porta de gateway do seguinte.
+/// The derivation **cannot** start from `gateway_port`/`inference_port`: in a
+/// co-located cluster (host networking, all nodes in the same namespace) these
+/// numbers are consecutive between nodes, so `port + 1` lands exactly on the
+/// `gateway_port` of the neighboring node. That is what broke discovery on ksia -
+/// one node's QUIC port occupied the gateway port of the next one.
 ///
-/// O `p2p_port` já é único por nó co-locado (42777/42778/…). Os offsets são
-/// altos e distintos para que as bandas de gateway-QUIC e inference-QUIC não
-/// recolidam entre si nem com a faixa de `p2p_port`.
+/// The `p2p_port` is already unique per co-located node (42777/42778/…). The offsets
+/// are high and distinct so that the gateway-QUIC and inference-QUIC bands do not
+/// collide again with each other or with the `p2p_port` range.
 const GATEWAY_QUIC_OFFSET: u16 = 2000;
 const INFERENCE_QUIC_OFFSET: u16 = 1000;
 
-/// Porta UDP do HTTP/3 do gateway, derivada do `p2p_port` deste nó.
+/// UDP port of the gateway's HTTP/3, derived from this node's `p2p_port`.
 ///
-/// `None` quando `p2p_port` é 0 (bind efêmero pedido na config, ainda sem
-/// número real) ou quando o offset estoura `u16`: nos dois casos o QUIC fica
-/// desligado e o hop cai no TCP, em vez de arriscar uma colisão de porta.
+/// `None` when `p2p_port` is 0 (ephemeral bind requested in the config, still with
+/// no real number) or when the offset overflows `u16`: in both cases QUIC stays
+/// off and the hop falls back to TCP, instead of risking a port collision.
 pub fn gateway_quic_port(p2p_port: u16) -> Option<u16> {
     if p2p_port == 0 {
         return None;
@@ -47,8 +47,8 @@ pub fn gateway_quic_port(p2p_port: u16) -> Option<u16> {
     p2p_port.checked_add(GATEWAY_QUIC_OFFSET)
 }
 
-/// Porta UDP do HTTP/3 da inferência, derivada do `p2p_port` deste nó.
-/// Mesmas condições de `None` que [`gateway_quic_port`].
+/// UDP port of the inference HTTP/3, derived from this node's `p2p_port`.
+/// Same `None` conditions as [`gateway_quic_port`].
 pub fn inference_quic_port(p2p_port: u16) -> Option<u16> {
     if p2p_port == 0 {
         return None;
@@ -56,33 +56,33 @@ pub fn inference_quic_port(p2p_port: u16) -> Option<u16> {
     p2p_port.checked_add(INFERENCE_QUIC_OFFSET)
 }
 
-/// Limite local do handshake. O orçamento global de estabelecimento também
-/// cobre DNS e abertura do stream, então o fallback não espera a soma destes
-/// limites.
+/// Local handshake limit. The global establishment budget also
+/// covers DNS and opening the stream, so the fallback does not wait for the sum of
+/// these limits.
 pub(crate) const QUIC_ESTABLISH_TIMEOUT: Duration = Duration::from_millis(500);
 
-/// Orçamento curto para descobrir que o endpoint QUIC não está disponível.
-/// O envio do corpo e o processamento remoto usam o orçamento separado da
-/// chamada. Endereços anunciados continuam sendo alternativas dentro deste
-/// teto para que a queda para HTTP não espere uma sequência de timeouts.
+/// Short budget to find out that the QUIC endpoint is not available.
+/// Sending the body and the remote processing use the call's separate
+/// budget. Announced addresses remain alternatives within this
+/// ceiling so that the drop to HTTP does not wait for a sequence of timeouts.
 pub(crate) const QUIC_FALLBACK_BUDGET: Duration = Duration::from_millis(300);
 
-// Uma tentativa de transporte tem **um** prazo: o do frame, que o chamador
-// passa como `timeout`. Não há um teto menor aninhado dentro dele - um teto
-// fixo de 30 s matava prefill/decode legítimos mais longos no QUIC e no HTTP
-// enquanto o canal persistente e o túnel esperavam o prazo inteiro. Peer que
-// sumiu é detectado pela vida da conexão, em milissegundos: `QUIC_MAX_IDLE`
-// aqui e o keep-alive TCP de `peer_client` no HTTP.
+// A transport attempt has **one** deadline: the frame's, which the caller
+// passes as `timeout`. There is no smaller ceiling nested inside it - a fixed
+// ceiling of 30 s killed legitimate longer prefill/decode on QUIC and on HTTP
+// while the persistent channel and the tunnel waited for the whole deadline. A peer
+// that vanished is detected by the connection's liveness, in milliseconds:
+// `QUIC_MAX_IDLE` here and the TCP keep-alive of `peer_client` on HTTP.
 
-/// Uma falha de descoberta torna inútil repetir o mesmo handshake no próximo
-/// token. O caminho HTTP continua disponível imediatamente, e o QUIC volta a
-/// ser sondado depois desta janela para recuperar uma porta que foi reiniciada.
-/// É a janela única de memória de falha (`peer_client::FAILURE_MEMORY`).
+/// A discovery failure makes it pointless to repeat the same handshake on the next
+/// token. The HTTP path remains available immediately, and QUIC is probed
+/// again after this window to recover a port that was restarted.
+/// It is the single failure memory window (`peer_client::FAILURE_MEMORY`).
 const QUIC_FAILURE_QUARANTINE: Duration = crate::peer_client::FAILURE_MEMORY;
 
-/// Erro QUIC com certeza de entrega. Uma falha antes de abrir/enviar o corpo
-/// pode seguir para outro transporte; depois de iniciar o corpo, repetir pode
-/// executar o mesmo chunk duas vezes no KV remoto.
+/// QUIC error with delivery certainty. A failure before opening/sending the body
+/// can move on to another transport; after starting the body, repeating may
+/// run the same chunk twice on the remote KV.
 #[derive(Debug)]
 pub struct QuicDeliveryError {
     pub before_body: bool,
@@ -106,10 +106,10 @@ impl std::fmt::Display for QuicDeliveryError {
 
 impl std::error::Error for QuicDeliveryError {}
 
-/// Sem tráfego reconhecido por este período a conexão fecha com erro - é o
-/// que detecta um caminho UDP morto em ~1 s em vez dos 600 s do frame. O
-/// keep-alive mantém uma conexão viva-porém-lenta (o peer computando o
-/// prefill/decode) sob esse teto, porque cada PING volta reconhecido.
+/// With no acknowledged traffic for this period the connection closes with an error -
+/// that is what detects a dead UDP path in ~1 s instead of the frame's 600 s. The
+/// keep-alive keeps an alive-but-slow connection (the peer computing the
+/// prefill/decode) under this ceiling, because each PING comes back acknowledged.
 pub(crate) const QUIC_MAX_IDLE: Duration = Duration::from_millis(1200);
 pub(crate) const QUIC_KEEP_ALIVE: Duration = Duration::from_millis(250);
 
@@ -137,14 +137,14 @@ struct QuicSession {
 pub struct ClientPool {
     endpoint: Arc<tokio::sync::OnceCell<quinn::Endpoint>>,
     sessions: Arc<tokio::sync::Mutex<HashMap<String, Arc<QuicSession>>>>,
-    /// Motivo guardado junto do prazo: uma tentativa em quarentena reporta
-    /// "em quarentena" sozinho, escondendo o erro original que quarentenou o
-    /// endpoint (foi o caso do "invalid authority" na telemetria da ksia -
-    /// só a primeira tentativa mostrava a causa real, as 113 seguintes só
-    /// diziam "em quarentena").
+    /// Reason stored along with the deadline: an attempt in quarantine reports
+    /// "in quarantine" alone, hiding the original error that quarantined the
+    /// endpoint (that was the case of "invalid authority" in ksia's telemetry -
+    /// only the first attempt showed the real cause, the next 113 only
+    /// said "in quarantine").
     failed_until: Arc<tokio::sync::Mutex<HashMap<String, (Instant, String)>>>,
-    /// Orçamento fixo de estabelecimento, usado pelas sondas do plano de
-    /// rotas. Sem ele o orçamento sai do RTT medido do peer
+    /// Fixed establishment budget, used by the route plan
+    /// probes. Without it the budget comes from the peer's measured RTT
     /// (`route_plan::RouteBook::establish_budget`).
     establish_budget: Option<Duration>,
 }
@@ -159,9 +159,9 @@ impl ClientPool {
         }
     }
 
-    /// Pool das sondas do plano de rotas. A sonda é quem mede o RTT, então não
-    /// pode depender de um orçamento derivado dele: um peer ainda não medido
-    /// com RTT alto nunca teria o QUIC medido.
+    /// Pool of the route plan probes. The probe is what measures the RTT, so it
+    /// cannot depend on a budget derived from it: a not yet measured peer
+    /// with a high RTT would never have its QUIC measured.
     pub fn for_probes(budget: Duration) -> Self {
         Self {
             establish_budget: Some(budget),
@@ -190,7 +190,7 @@ impl ClientPool {
         body: Vec<u8>,
         timeout: Duration,
     ) -> Result<QuicResponse> {
-        let mut last_error = "nenhum endereço QUIC anunciado".to_string();
+        let mut last_error = "no QUIC address announced".to_string();
         let budget = self.establish_budget.unwrap_or_else(|| {
             crate::route_plan::book().establish_budget(peer_id, QUIC_FALLBACK_BUDGET)
         });
@@ -198,11 +198,11 @@ impl ClientPool {
         for advertised in quic_addresses {
             let key = format!("{peer_id}@{}", advertised.trim());
             if let Some(reason) = self.quic_quarantine_reason(&key).await {
-                last_error = format!("{advertised}: endpoint QUIC em quarentena ({reason})");
+                last_error = format!("{advertised}: QUIC endpoint in quarantine ({reason})");
                 continue;
             }
             if remaining_budget(fallback_deadline).is_none() {
-                last_error = "orçamento de estabelecimento QUIC esgotado".to_string();
+                last_error = "QUIC establishment budget exhausted".to_string();
                 break;
             }
             match self
@@ -260,7 +260,7 @@ impl ClientPool {
         loop {
             let session_timeout = remaining_budget(request_deadline).ok_or_else(|| {
                 anyhow!(QuicDeliveryError::new(
-                    "deadline de transporte HTTP/3 expirou antes do handshake",
+                    "HTTP/3 transport deadline expired before the handshake",
                     true,
                 ))
             })?;
@@ -275,7 +275,7 @@ impl ClientPool {
                 }
                 Err(_) => {
                     return Err(anyhow!(QuicDeliveryError::new(
-                        "deadline de transporte HTTP/3 expirou durante o handshake",
+                        "HTTP/3 transport deadline expired during the handshake",
                         true,
                     )))
                 }
@@ -330,7 +330,7 @@ impl ClientPool {
     ) -> Result<QuicResponse> {
         let operation_timeout = remaining_budget(request_deadline).ok_or_else(|| {
             anyhow!(QuicDeliveryError::new(
-                "deadline de transporte HTTP/3 expirou antes do stream",
+                "HTTP/3 transport deadline expired before the stream",
                 true,
             ))
         })?;
@@ -351,47 +351,47 @@ impl ClientPool {
             }
             let request = request_builder.body(())?;
             let mut sender = session.sender.lock().await.clone();
-            // Abrir o stream é controle: um RTT num link vivo. Passou de
-            // `QUIC_ESTABLISH_TIMEOUT` => caminho UDP morto, aborta já para o
-            // chamador cair no próximo transporte sem penalidade de espera.
+            // Opening the stream is control: one RTT on a live link. Past
+            // `QUIC_ESTABLISH_TIMEOUT` => dead UDP path, abort right away so the
+            // caller falls to the next transport with no waiting penalty.
             let stream_timeout = remaining_budget(fallback_deadline)
-                .ok_or_else(|| anyhow!("orçamento de descoberta QUIC esgotado antes do stream"))?
+                .ok_or_else(|| anyhow!("QUIC discovery budget exhausted before the stream"))?
                 .min(QUIC_ESTABLISH_TIMEOUT);
             let mut stream = tokio::time::timeout(stream_timeout, sender.send_request(request))
                 .await
-                .context("abertura do stream HTTP/3 não fechou no orçamento de RTT")??;
-            // Marcar antes de iniciar `send_data`: em uma falha daqui em
-            // diante o peer pode ter recebido parte ou todo o frame. O prazo
-            // deriva do orçamento total restante, não de um limite fixo que
-            // confunda upload de 5,2 MB com handshake.
+                .context("HTTP/3 stream open did not complete within the RTT budget")??;
+            // Mark before starting `send_data`: on a failure from here
+            // on the peer may have received part or all of the frame. The deadline
+            // derives from the remaining total budget, not from a fixed limit that
+            // would confuse a 5.2 MB upload with a handshake.
             body_may_have_been_sent = true;
             let body_timeout = remaining_budget(request_deadline)
-                .ok_or_else(|| anyhow!("deadline expirou antes do envio do corpo"))?;
+                .ok_or_else(|| anyhow!("deadline expired before sending the body"))?;
             let request_body_send_started = std::time::Instant::now();
             tokio::time::timeout(body_timeout, stream.send_data(Bytes::from(body)))
                 .await
-                .context("envio do corpo HTTP/3 travou")?
-                .map_err(|error| anyhow!("envio do corpo HTTP/3 falhou: {error}"))?;
+                .context("HTTP/3 body send stalled")?
+                .map_err(|error| anyhow!("HTTP/3 body send failed: {error}"))?;
             let finish_timeout = remaining_budget(request_deadline)
-                .ok_or_else(|| anyhow!("deadline expirou ao finalizar o corpo"))?;
+                .ok_or_else(|| anyhow!("deadline expired while finishing the body"))?;
             tokio::time::timeout(finish_timeout, stream.finish())
                 .await
-                .context("finalização do corpo HTTP/3 travou")?
-                .map_err(|error| anyhow!("finalização do corpo HTTP/3 falhou: {error}"))?;
+                .context("HTTP/3 body finish stalled")?
+                .map_err(|error| anyhow!("HTTP/3 body finish failed: {error}"))?;
             let request_body_send_us = request_body_send_started.elapsed().as_micros() as u64;
             let headers_started = std::time::Instant::now();
-            // A espera da resposta cobre o processamento remoto (prefill/decode
-            // legítimos passam de 1 s). Ela não tem timer próprio: o único
-            // prazo é o `operation_timeout` que envolve a tentativa inteira, e
-            // um peer que sumiu derruba a conexão por `QUIC_MAX_IDLE`.
+            // The wait for the response covers the remote processing (legitimate
+            // prefill/decode go past 1 s). It has no timer of its own: the only
+            // deadline is the `operation_timeout` that wraps the whole attempt, and
+            // a peer that vanished brings the connection down through `QUIC_MAX_IDLE`.
             let response = stream
                 .recv_response()
                 .await
-                .context("resposta HTTP/3 falhou")?;
+                .context("HTTP/3 response failed")?;
             let response_headers_ms = headers_started.elapsed().as_millis() as u64;
             let body_started = std::time::Instant::now();
             let mut output = Vec::new();
-            while let Some(mut chunk) = stream.recv_data().await.context("corpo HTTP/3 falhou")? {
+            while let Some(mut chunk) = stream.recv_data().await.context("HTTP/3 body failed")? {
                 while chunk.has_remaining() {
                     let take = chunk.remaining();
                     output.extend_from_slice(&chunk.copy_to_bytes(take));
@@ -414,7 +414,7 @@ impl ClientPool {
                 !body_may_have_been_sent,
             ))),
             Err(_) => Err(anyhow!(QuicDeliveryError::new(
-                format!("deadline de transporte HTTP/3 expirou após {:?}", timeout),
+                format!("HTTP/3 transport deadline expired after {:?}", timeout),
                 !body_may_have_been_sent,
             ))),
         }
@@ -442,24 +442,24 @@ impl ClientPool {
             return Ok((session, true));
         }
         let resolve_timeout = remaining_budget(fallback_deadline)
-            .ok_or_else(|| anyhow!("orçamento de descoberta QUIC esgotado antes do DNS"))?;
+            .ok_or_else(|| anyhow!("QUIC discovery budget exhausted before DNS"))?;
         let addr = tokio::time::timeout(resolve_timeout, resolve_addr(advertised))
             .await
-            .context("resolução do endereço QUIC excedeu o orçamento")??;
+            .context("QUIC address resolution exceeded the budget")??;
         ensure_local_route(addr)?;
         let tls = crate::tls::quic_client_config(peer_id)?;
         let mut config = quinn::ClientConfig::new(Arc::new(
             quinn::crypto::rustls::QuicClientConfig::try_from(tls)?,
         ));
-        // Mesmas janelas largas do servidor: o lado que puxa a resposta do
-        // prefill também recebe alguns MB de estado oculto.
+        // Same wide windows as the server: the side that pulls the prefill
+        // response also receives a few MB of hidden state.
         config.transport_config(Arc::new(inference_transport_config()));
         let endpoint = self.endpoint().await?;
-        // O handshake QUIC é 1-RTT (0-RTT quando há ticket). Um orçamento de
-        // sub-segundo é o que transforma "peer QUIC inalcançável" em um
-        // fallback imediato para TCP, em vez de segurar o hop de inferência.
+        // The QUIC handshake is 1-RTT (0-RTT when there is a ticket). A sub-second
+        // budget is what turns "unreachable QUIC peer" into an immediate
+        // fallback to TCP, instead of holding the inference hop.
         let establish_timeout = remaining_budget(fallback_deadline)
-            .ok_or_else(|| anyhow!("orçamento de descoberta QUIC esgotado antes do handshake"))?;
+            .ok_or_else(|| anyhow!("QUIC discovery budget exhausted before the handshake"))?;
         let connection = tokio::time::timeout(
             establish_timeout.min(QUIC_ESTABLISH_TIMEOUT),
             endpoint
@@ -469,7 +469,7 @@ impl ClientPool {
                 .connect_with(config, addr, &format!("peer.{}", crate::brand::slug()))?,
         )
         .await
-        .context("handshake QUIC não fechou no orçamento de RTT")??;
+        .context("QUIC handshake did not complete within the RTT budget")??;
         let connection_for_metrics = connection.clone();
         let (mut driver, sender) = h3::client::new(H3Connection::new(connection)).await?;
         tokio::spawn(async move {
@@ -486,8 +486,8 @@ impl ClientPool {
         Ok((session, false))
     }
 
-    /// `Some(motivo)` quando `key` está em quarentena - o motivo é o erro
-    /// original que causou a quarentena, não o texto "em quarentena".
+    /// `Some(reason)` when `key` is in quarantine - the reason is the original
+    /// error that caused the quarantine, not the text "in quarantine".
     async fn quic_quarantine_reason(&self, key: &str) -> Option<String> {
         let now = Instant::now();
         let mut failed_until = self.failed_until.lock().await;
@@ -531,29 +531,29 @@ pub fn server_config(id: &crate::identity::Identity) -> Result<Arc<quinn::Server
     Ok(Arc::new(config))
 }
 
-/// Janelas de controle de fluxo largas o suficiente para o handoff de prefill.
+/// Flow control windows wide enough for the prefill handoff.
 ///
-/// O corpo desse hop carrega o estado oculto de todo o prompt (centenas de
-/// posições x hidden_dim x 2 bytes = alguns MB). Com a janela padrão do quinn
-/// (~1 MiB por stream) um prompt real fica gaguejando à espera de crédito de
-/// janela, o que parecia "pendurado" mesmo antes de o timeout de `send_data`
-/// existir. `receive_window` cobre a conexão inteira e `stream_receive_window`
-/// cada stream; o `send_window` casa o lado que escreve.
+/// The body of that hop carries the hidden state of the whole prompt (hundreds of
+/// positions x hidden_dim x 2 bytes = a few MB). With quinn's default window
+/// (~1 MiB per stream) a real prompt keeps stuttering while waiting for window
+/// credit, which looked "hung" even before the `send_data` timeout
+/// existed. `receive_window` covers the whole connection and `stream_receive_window`
+/// each stream; `send_window` matches the writing side.
 pub(crate) fn inference_transport_config() -> quinn::TransportConfig {
     let mut transport = quinn::TransportConfig::default();
     transport.max_concurrent_bidi_streams(128u32.into());
     transport.stream_receive_window(quinn::VarInt::from_u32(16 * 1024 * 1024));
     transport.receive_window(quinn::VarInt::from_u32(64 * 1024 * 1024));
     transport.send_window(64 * 1024 * 1024);
-    // O quinn deixa `max_idle_timeout` desligado por padrão: uma conexão que
-    // vira buraco negro (peer sumiu, caminho UDP morto no meio de um handoff)
-    // nunca erra e o hop fica preso até o timeout de 600 s do frame. Com um
-    // idle timeout curto e keep-alive, um caminho morto falha em segundos e o
-    // `send_frame_with_protocol` cai para TCP.
+    // quinn leaves `max_idle_timeout` off by default: a connection that
+    // turns into a black hole (peer vanished, UDP path dead in the middle of a handoff)
+    // never errors and the hop stays stuck until the frame's 600 s timeout. With a
+    // short idle timeout and keep-alive, a dead path fails in seconds and
+    // `send_frame_with_protocol` falls back to TCP.
     transport.max_idle_timeout(Some(
         QUIC_MAX_IDLE
             .try_into()
-            .expect("QUIC_MAX_IDLE cabe em VarInt"),
+            .expect("QUIC_MAX_IDLE fits in VarInt"),
     ));
     transport.keep_alive_interval(Some(QUIC_KEEP_ALIVE));
     transport
@@ -566,8 +566,8 @@ pub async fn serve(
     shutdown: impl std::future::Future<Output = ()>,
 ) -> Result<()> {
     let socket = bind_quic_socket(format!("[::]:{port}").parse()?)?;
-    let runtime = quinn::default_runtime()
-        .ok_or_else(|| anyhow!("runtime QUIC assíncrono não está disponível"))?;
+    let runtime =
+        quinn::default_runtime().ok_or_else(|| anyhow!("async QUIC runtime is not available"))?;
     let endpoint = quinn::Endpoint::new(
         quinn::EndpointConfig::default(),
         Some(config.as_ref().clone()),
@@ -590,10 +590,10 @@ pub async fn serve(
                     match incoming.await {
                         Ok(connection) => {
                             if let Err(error) = serve_connection(connection, router).await {
-                                debug!("conexão HTTP/3 encerrada: {error}");
+                                debug!("HTTP/3 connection closed: {error}");
                             }
                         }
-                        Err(error) => debug!("handshake QUIC recusado: {error}"),
+                        Err(error) => debug!("QUIC handshake refused: {error}"),
                     }
                 });
             }
@@ -665,17 +665,19 @@ async fn serve_connection(connection: quinn::Connection, router: axum::Router) -
 
 fn authority(base_url: &str) -> Result<String> {
     let parsed = url::Url::parse(base_url)?;
-    let host = parsed.host().ok_or_else(|| anyhow!("URL QUIC sem host"))?;
+    let host = parsed
+        .host()
+        .ok_or_else(|| anyhow!("QUIC URL without a host"))?;
     let port = parsed
         .port_or_known_default()
-        .ok_or_else(|| anyhow!("URL QUIC sem porta"))?;
-    // `Url::host_str()` já devolve hosts IPv6 colchetados (`[::1]`); só
-    // `Url::host()` distingue a variante, então colchetar de novo em cima de
-    // `host_str()` sempre que ele "contém `:`" duplicava os colchetes em
-    // qualquer host IPv6 (`[[::1]]`) e o `http::Uri`/`Authority` rejeitava a
-    // string resultante como "invalid authority" - o motivo dominante dos
-    // fallbacks QUIC->HTTP num cluster IPv6. `url::Host` não tem essa
-    // ambiguidade: `Ipv6` já é o endereço nu.
+        .ok_or_else(|| anyhow!("QUIC URL without a port"))?;
+    // `Url::host_str()` already returns bracketed IPv6 hosts (`[::1]`); only
+    // `Url::host()` distinguishes the variant, so bracketing again on top of
+    // `host_str()` whenever it "contains `:`" doubled the brackets on
+    // any IPv6 host (`[[::1]]`) and `http::Uri`/`Authority` rejected the
+    // resulting string as "invalid authority" - the dominant reason for the
+    // QUIC->HTTP fallbacks in an IPv6 cluster. `url::Host` does not have that
+    // ambiguity: `Ipv6` is already the bare address.
     Ok(match host {
         url::Host::Ipv6(addr) => format!("[{addr}]:{port}"),
         url::Host::Ipv4(addr) => format!("{addr}:{port}"),
@@ -683,10 +685,10 @@ fn authority(base_url: &str) -> Result<String> {
     })
 }
 
-/// Falha na hora quando esta máquina não tem rota para a família do destino
-/// (um container sem IPv6 discando um IPv6 anunciado). O quinn só registra o
-/// `sendmsg` recusado e espera o orçamento de handshake inteiro; um `connect`
-/// de UDP consulta a tabela de rotas sem mandar pacote nenhum.
+/// Fails right away when this machine has no route to the destination's family
+/// (a container without IPv6 dialing an announced IPv6). quinn only logs the
+/// refused `sendmsg` and waits for the whole handshake budget; a UDP
+/// `connect` consults the routing table without sending any packet.
 fn ensure_local_route(addr: SocketAddr) -> Result<()> {
     let bind: SocketAddr = if addr.is_ipv4() {
         (std::net::Ipv4Addr::UNSPECIFIED, 0).into()
@@ -694,17 +696,15 @@ fn ensure_local_route(addr: SocketAddr) -> Result<()> {
         (std::net::Ipv6Addr::UNSPECIFIED, 0).into()
     };
     let socket = std::net::UdpSocket::bind(bind)
-        .map_err(|error| anyhow!("sem socket local para {addr}: {error}"))?;
+        .map_err(|error| anyhow!("no local socket for {addr}: {error}"))?;
     socket
         .connect(addr)
-        .map_err(|error| anyhow!("sem rota local para {addr}: {error}"))
+        .map_err(|error| anyhow!("no local route to {addr}: {error}"))
 }
 
 async fn resolve_addr(advertised: &str) -> Result<SocketAddr> {
     if advertised.contains("://") {
-        return Err(anyhow!(
-            "endereço QUIC precisa ser host:porta, não uma URL HTTP"
-        ));
+        return Err(anyhow!("QUIC address must be host:port, not an HTTP URL"));
     }
     if let Ok(addr) = advertised.parse::<SocketAddr>() {
         return quic_socket_addr(advertised, addr.port());
@@ -712,12 +712,12 @@ async fn resolve_addr(advertised: &str) -> Result<SocketAddr> {
     lookup_host(advertised)
         .await?
         .next()
-        .ok_or_else(|| anyhow!("endereço QUIC não resolveu"))
+        .ok_or_else(|| anyhow!("QUIC address did not resolve"))
 }
 
 fn quic_socket_addr(advertised_host: &str, quic_port: u16) -> Result<SocketAddr> {
     if advertised_host.contains("://") {
-        return Err(anyhow!("endereço anunciado não pode conter scheme"));
+        return Err(anyhow!("announced address cannot contain a scheme"));
     }
     let host = advertised_host
         .parse::<SocketAddr>()
@@ -760,45 +760,45 @@ mod tests {
     use tokio::sync::oneshot;
 
     #[test]
-    fn portas_quic_derivam_do_p2p_port_e_nao_estouram() {
+    fn quic_ports_derive_from_the_p2p_port_and_do_not_overflow() {
         assert_eq!(gateway_quic_port(42777), Some(44777));
         assert_eq!(inference_quic_port(42777), Some(43777));
-        // p2p efêmero ou offset que estoura u16 => QUIC desligado, não colisão.
+        // ephemeral p2p or an offset that overflows u16 => QUIC off, not a collision.
         assert_eq!(gateway_quic_port(0), None);
         assert_eq!(inference_quic_port(0), None);
         assert_eq!(gateway_quic_port(u16::MAX - 10), None);
     }
 
-    /// Cenário da ksia: 4 nós co-locados no mesmo namespace (host networking),
-    /// `p2p_port` 42777..=42780, gateways 8080..=8083, inferências 8180..=8183.
-    /// Nenhuma porta QUIC pode cair sobre a gateway_port/inference_port/p2p_port
-    /// de outro nó - era isso que `gateway_port + 1` fazia.
+    /// The ksia scenario: 4 co-located nodes in the same namespace (host networking),
+    /// `p2p_port` 42777..=42780, gateways 8080..=8083, inferences 8180..=8183.
+    /// No QUIC port may land on the gateway_port/inference_port/p2p_port
+    /// of another node - that is what `gateway_port + 1` did.
     #[test]
-    fn quatro_nos_colocados_nao_tem_colisao_de_porta() {
-        let mut todas = Vec::new();
+    fn four_colocated_nodes_have_no_port_collision() {
+        let mut all = Vec::new();
         for i in 0..4u16 {
             let p2p = 42777 + i;
             let gateway = 8080 + i;
             let inference = 8180 + i;
-            todas.push(("p2p", p2p));
-            todas.push(("gateway", gateway));
-            todas.push(("inference", inference));
-            todas.push(("gateway_quic", gateway_quic_port(p2p).unwrap()));
-            todas.push(("inference_quic", inference_quic_port(p2p).unwrap()));
+            all.push(("p2p", p2p));
+            all.push(("gateway", gateway));
+            all.push(("inference", inference));
+            all.push(("gateway_quic", gateway_quic_port(p2p).unwrap()));
+            all.push(("inference_quic", inference_quic_port(p2p).unwrap()));
         }
-        for a in 0..todas.len() {
-            for b in (a + 1)..todas.len() {
+        for a in 0..all.len() {
+            for b in (a + 1)..all.len() {
                 assert_ne!(
-                    todas[a].1, todas[b].1,
-                    "colisão de porta entre {} e {} ({})",
-                    todas[a].0, todas[b].0, todas[a].1
+                    all[a].1, all[b].1,
+                    "port collision between {} and {} ({})",
+                    all[a].0, all[b].0, all[a].1
                 );
             }
         }
     }
 
     #[test]
-    fn endpoint_quic_deriva_socketaddr_do_anuncio_e_nao_de_url_http() {
+    fn a_quic_endpoint_derives_the_socketaddr_from_the_announce_and_not_from_an_http_url() {
         assert_eq!(
             quic_socket_addr("[2001:db8::42]:42777", 8182).unwrap(),
             "[2001:db8::42]:8182".parse().unwrap()
@@ -810,18 +810,18 @@ mod tests {
         assert!(quic_socket_addr("http://[2001:db8::42]:8181", 8182).is_err());
     }
 
-    /// Regressão do bug de produção salem->ksia: `Url::host_str()` já devolve
-    /// hosts IPv6 colchetados, então colchetar de novo produzia
-    /// `[[::]]:porta`, que o `http::Uri`/`Authority` rejeita como "invalid
-    /// authority" - a causa raiz dos 114 fallbacks QUIC->HTTP na telemetria.
+    /// Regression of the salem->ksia production bug: `Url::host_str()` already returns
+    /// bracketed IPv6 hosts, so bracketing again produced
+    /// `[[::]]:port`, which `http::Uri`/`Authority` rejects as "invalid
+    /// authority" - the root cause of the 114 QUIC->HTTP fallbacks in the telemetry.
     #[test]
-    fn authority_nao_colcheta_host_ipv6_duas_vezes() {
+    fn authority_does_not_bracket_an_ipv6_host_twice() {
         let a = authority("https://[2804:d55:5579:1000:e6c8:310f:1a19:6e92]:43777").unwrap();
         assert_eq!(a, "[2804:d55:5579:1000:e6c8:310f:1a19:6e92]:43777");
         a.parse::<http::uri::Authority>()
-            .expect("authority precisa parsear como Authority válida");
+            .expect("authority must parse as a valid Authority");
 
-        // IPv4 e hostname DNS continuam funcionando (casos que já passavam).
+        // IPv4 and DNS hostnames keep working (cases that already passed).
         assert_eq!(
             authority("https://192.168.1.5:8181").unwrap(),
             "192.168.1.5:8181"
@@ -837,16 +837,16 @@ mod tests {
     }
 
     #[test]
-    fn socket_servidor_ipv6_wildcard_aceita_ipv4() {
+    fn an_ipv6_wildcard_server_socket_accepts_ipv4() {
         let socket = bind_quic_socket("[::]:0".parse().unwrap()).unwrap();
         assert!(
             !socket2::SockRef::from(&socket).only_v6().unwrap(),
-            "o socket QUIC do servidor precisa ser dual-stack"
+            "the server QUIC socket must be dual-stack"
         );
     }
 
     #[test]
-    fn tentativas_quic_compartilham_orcamento_antes_do_fallback_tcp() {
+    fn quic_attempts_share_a_budget_before_the_tcp_fallback() {
         let mut remaining = QUIC_FALLBACK_BUDGET;
         let mut spent = Duration::ZERO;
         let mut attempts = 0;
@@ -858,16 +858,13 @@ mod tests {
             remaining = remaining.saturating_sub(timeout);
         }
 
-        assert_eq!(
-            attempts, 1,
-            "um endpoint morto não deve serializar timeouts"
-        );
+        assert_eq!(attempts, 1, "a dead endpoint must not serialize timeouts");
         assert_eq!(spent, QUIC_FALLBACK_BUDGET);
         assert!(spent < Duration::from_secs(1));
     }
 
     #[tokio::test]
-    async fn cliente_e_servidor_http3_falam_com_o_certificado_do_no() {
+    async fn http3_client_and_server_talk_using_the_node_certificate() {
         let identity = crate::identity::Identity::generate();
         let probe = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let port = probe.local_addr().unwrap().port();
@@ -915,7 +912,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cliente_reconecta_quic_depois_do_restart_do_peer() {
+    async fn the_client_reconnects_quic_after_the_peer_restart() {
         let identity = crate::identity::Identity::generate();
         let probe = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let port = probe.local_addr().unwrap().port();
@@ -974,16 +971,16 @@ mod tests {
         stop_tx.send(()).unwrap();
         server.await.unwrap();
 
-        let response = result.expect("um restart remoto deve forçar um handshake QUIC novo");
+        let response = result.expect("a remote restart must force a new QUIC handshake");
         assert_eq!(response.status, StatusCode::OK);
         assert_eq!(response.body, b"before-restart");
     }
 
-    /// Um endpoint QUIC pode completar o handshake e aceitar o stream sem
-    /// produzir headers. A tentativa termina no prazo do frame, com erro
-    /// tipado de deadline de transporte, e não há outro timer aninhado nela.
+    /// A QUIC endpoint can complete the handshake and accept the stream without
+    /// producing headers. The attempt ends at the frame's deadline, with a typed
+    /// transport deadline error, and there is no other timer nested in it.
     #[tokio::test]
-    async fn endpoint_quic_alcancavel_sem_resposta_respeita_deadline_de_transporte() {
+    async fn a_reachable_unanswering_quic_endpoint_honors_the_transport_deadline() {
         let identity = crate::identity::Identity::generate();
         let probe = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let port = probe.local_addr().unwrap().port();
@@ -1019,13 +1016,13 @@ mod tests {
             ),
         )
         .await
-        .expect("endpoint HTTP/3 sem resposta não pode exceder o prazo do frame");
-        let error = result.expect_err("endpoint sem headers deve falhar");
+        .expect("an unanswering HTTP/3 endpoint cannot exceed the frame deadline");
+        let error = result.expect_err("an endpoint without headers must fail");
         assert!(
             error
                 .to_string()
-                .contains("deadline de transporte HTTP/3 expirou"),
-            "erro inesperado: {error:#}"
+                .contains("HTTP/3 transport deadline expired"),
+            "unexpected error: {error:#}"
         );
 
         stop_tx.send(()).unwrap();

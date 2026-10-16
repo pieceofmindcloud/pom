@@ -6,6 +6,7 @@ export type { GenerationTimings } from "./types";
 export interface StreamMetrics {
   tokens_per_sec?: number;
   tokens_generated?: number;
+  reasoning_tokens?: number;
   duration_ms?: number;
   timings?: GenerationTimings;
   /** TTFT measured by the browser from request dispatch to first token. */
@@ -77,21 +78,22 @@ export interface RequestTrace {
   https_fallback_reasons?: string[];
   model: string;
   input_tokens: number;
-  /** Tokens do prompt que o pipeline não reprocessou porque já estavam no KV
-   *  da sessão do turno anterior. Medida do executado, não da escolha do
-   *  cache. Ausente em trace de nó antigo. */
+  /** Prompt tokens the pipeline did not reprocess because they were already in the KV
+   *  of the previous turn's session. A measure of what was executed, not of the
+   *  cache's choice. Absent in a trace from an old node. */
   cached_tokens?: number;
-  /** Prefixo comum encontrado antes de decidir se o KV podia ser reaproveitado. */
+  /** Common prefix found before deciding whether the KV could be reused. */
   prefix_match_tokens?: number;
-  /** Resultado executado do reuso: full, cold, miss ou perda de sessão. */
+  /** Executed outcome of the reuse: full, cold, miss or session loss. */
   prefix_reuse_status?: string;
-  /** Motivo local de miss no gateway: cache vazio, rota alterada, prefixo divergente ou sessão ocupada. */
+  /** Local reason for a miss at the gateway: empty cache, changed route, diverging
+   *  prefix or busy session. */
   gateway_prefix_miss_reason?: string;
-  /** Tokens que cruzaram a fronteira de inferência nesta execução. */
+  /** Tokens that crossed the inference boundary in this execution. */
   prompt_tokens_transmitted?: number;
   output_tokens: number;
   prefill_ms: number;
-  /** Tamanho do pedaço de prompt efetivamente escolhido pelo gateway. */
+  /** Size of the prompt chunk effectively chosen by the gateway. */
   prefill_chunk_tokens?: number;
   total_bytes_sent: number;
   total_bytes_received: number;
@@ -100,7 +102,7 @@ export interface RequestTrace {
   telemetry?: TelemetrySummary;
   profiling_spans?: TelemetrySpan[];
   token_cycle?: TokenCycleTelemetry;
-  /** Pernas direcionais agregadas do ciclo lógico, quando observadas. */
+  /** Directional legs aggregated over the logical cycle, when observed. */
   pipeline_cycle?: PipelineCycleTelemetry;
   prefill_overlap_enabled?: boolean;
   prefill_max_inflight_chunks?: number;
@@ -280,8 +282,8 @@ export interface TransportSummaryEntry {
     | "http"
     | "https"
     | "quic"
-    // A ligação persistente entre andares: o mesmo HTTPS pinado, mas com o
-    // quadro entrando num corpo já aberto em vez de numa requisição nova.
+    // The persistent link between floors: the same pinned HTTPS, but with the
+    // frame entering an already open body instead of a new request.
     | "https-link"
     | "remote-stream"
     | "unknown";
@@ -295,7 +297,7 @@ export interface TransportSummaryEntry {
   rtt_median_ms: number;
   rtt_p95_ms: number;
   rtt_max_ms: number;
-  /** RTT de rede medido no transporte, sem o processamento remoto. */
+  /** Network RTT measured at the transport, without the remote processing. */
   net_rtt_min_ms: number;
   net_rtt_median_ms: number;
   net_rtt_p95_ms: number;
@@ -350,20 +352,20 @@ export interface PhaseTrace {
   response_body_ms: number;
   client_decode_ms: number;
   /**
-   * Chamadas deste salto que foram cifradas.
+   * Calls of this hop that were encrypted.
    *
-   * Contagem e não booleano: uma fase soma várias chamadas, e se só parte
-   * delas foi por TLS a tela precisa dizer isso em vez de escolher um dos dois.
+   * A count and not a boolean: a phase sums several calls, and if only some of
+   * them went over TLS the screen has to say so instead of choosing one of the two.
    */
   tls_calls: number;
   /**
-   * Soma dos handshakes TLS deste salto, medidos no servidor.
+   * Sum of this hop's TLS handshakes, measured on the server.
    *
-   * Quase sempre zero: o handshake acontece uma vez por conexão e as conexões
-   * ficam no pool. É custo de estabelecimento, não custo por token.
+   * Almost always zero: the handshake happens once per connection and the
+   * connections stay in the pool. It is an establishment cost, not a per-token cost.
    */
   tls_handshake_ms: number;
-  /** Distribuição limitada das travessias observadas deste hop. */
+  /** Bounded distribution of the traversals observed for this hop. */
   transport_summary?: TransportSummary;
   node_frame_decode_ms: number;
   node_input_prepare_ms: number;
@@ -398,24 +400,24 @@ export interface PhaseTrace {
   node_top_p_ms: number;
   node_selection_ms: number;
   node_token_text_ms: number;
-  /** Estado oculto que cruzou este hop nesta fase, separado dos bytes de frame. */
+  /** Hidden state that crossed this hop in this phase, separate from the frame bytes. */
   hidden_state_bytes_sent?: number;
   hidden_state_bytes_received?: number;
-  /** Formato efetivamente observado; ausente em traces anteriores à medição. */
+  /** Format actually observed; absent in traces from before the measurement. */
   hidden_state_dtype?: WireDtype;
   node_sampling_ms: number;
   node_encode_ms: number;
   node_p50_ms: number;
   node_p95_ms: number;
-  /** Caminho escolhido pelo GGUF, separado do motor que executou. */
+  /** Path chosen by the GGUF, separate from the engine that executed. */
   selected_path?: string;
-  /** Motor único observado nesta fase, ou unknown quando houve mistura. */
+  /** Single engine observed in this phase, or unknown when there was a mix. */
   executed_engine?: ExecutionEngine;
-  /** Evidência completa para diagnosticar uma fase mista. */
+  /** Complete evidence to diagnose a mixed phase. */
   executed_engines?: ExecutionEngine[];
   engine_mismatch?: boolean;
   mixed_execution?: boolean;
-  /** Executor MoE e razão observados nesta fase, quando o nó os publicou. */
+  /** MoE executor and reason observed in this phase, when the node published them. */
   moe_executor?: string;
   moe_executors?: string[];
   moe_executor_dtypes?: number[];
@@ -465,7 +467,7 @@ export interface LegacyHopTrace {
   node_encode_ms: number;
   node_decode_p50_ms: number;
   node_decode_p95_ms: number;
-  /** Peers antigos normalmente não informam estes campos. */
+  /** Old peers usually do not report these fields. */
   selected_path?: string;
   executed_engine?: ExecutionEngine;
   executed_engines?: ExecutionEngine[];
@@ -493,6 +495,12 @@ export function isPhasedHop(hop: HopTrace): hop is PhasedHopTrace {
 export interface ChatStreamState {
   content: string;
   reasoning: string;
+  /**
+   * Deltas that added to the reasoning. The node streams one generated token
+   * per delta, so this is the count of thinking tokens; the usage block has
+   * no separate reasoning figure.
+   */
+  reasoningTokens: number;
   pending: string;
   inReasoning: boolean;
   tokensPerSecond?: number;
@@ -508,7 +516,7 @@ const OPEN = "<think>";
 const CLOSE = "</think>";
 
 export function emptyChatStream(): ChatStreamState {
-  return { content: "", reasoning: "", pending: "", inReasoning: false };
+  return { content: "", reasoning: "", reasoningTokens: 0, pending: "", inReasoning: false };
 }
 
 function suffixThatMayStart(text: string, marker: string): number {
@@ -528,6 +536,23 @@ function append(state: ChatStreamState, text: string): ChatStreamState {
 
 /** Separates `<think>` blocks without leaking split delimiters into the reply. */
 export function consumeChatDelta(previous: ChatStreamState, delta: string): ChatStreamState {
+  const next = splitThinking(previous, delta);
+  return next.reasoning.length > previous.reasoning.length
+    ? { ...next, reasoningTokens: (previous.reasoningTokens ?? 0) + 1 }
+    : next;
+}
+
+/** Appends an OpenAI-compatible structured `reasoning_content` delta. */
+export function consumeReasoningDelta(previous: ChatStreamState, delta: string): ChatStreamState {
+  if (!delta) return previous;
+  return {
+    ...previous,
+    reasoning: previous.reasoning + delta,
+    reasoningTokens: (previous.reasoningTokens ?? 0) + 1,
+  };
+}
+
+function splitThinking(previous: ChatStreamState, delta: string): ChatStreamState {
   let state = { ...previous, pending: "" };
   let buffer = previous.pending + delta;
 
@@ -569,6 +594,7 @@ export function finishChatStream(previous: ChatStreamState, metrics?: StreamMetr
   let state = append({ ...previous, pending: "" }, previous.pending);
   if (metrics?.tokens_per_sec != null) state = { ...state, tokensPerSecond: metrics.tokens_per_sec };
   if (metrics?.tokens_generated != null) state = { ...state, tokensGenerated: metrics.tokens_generated };
+  if (metrics?.reasoning_tokens != null) state = { ...state, reasoningTokens: metrics.reasoning_tokens };
   if (metrics?.duration_ms != null) state = { ...state, durationMs: metrics.duration_ms };
   if (metrics?.timings) {
     state = {

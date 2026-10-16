@@ -1,16 +1,16 @@
-//! Cache de prefixos para manter sessões de conversa entre turnos.
+//! Prefix cache to keep conversation sessions alive between turns.
 //!
-//! O cache não guarda pesos nem tensors. Ele guarda apenas a identidade da
-//! sessão de KV que continua viva em cada peer, a forma textual usada para
-//! encontrar o maior prefixo comum e o tamanho de tokens confirmado pela
-//! cabeça. A sessão fica ocupada durante uma geração; uma segunda requisição
-//! nunca compartilha a mesma sequência por acidente.
+//! The cache holds no weights or tensors. It holds only the identity of the
+//! KV session that stays alive on each peer, the textual form used to
+//! find the longest common prefix and the token count confirmed by the
+//! head. A session is busy during a generation; a second request
+//! never shares the same sequence by accident.
 //!
-//! `PrefixCache` é o cache em memória. `PrefixDiskIndex` (Phase 3) é a camada
-//! de disco opcional: com `slot_persist_prefix_cache` ligado, o gateway grava
-//! um snapshot de KV por prefixo em `slot_save_path` e, num miss após
-//! reinício, restaura-o em vez de refazer o prefill a frio. Ver
-//! `docs/subsystems/inference.md` §3.1.1 e `gateway::build_prefix_disk_index`.
+//! `PrefixCache` is the in-memory cache. `PrefixDiskIndex` (Phase 3) is the optional
+//! disk layer: with `slot_persist_prefix_cache` on, the gateway writes
+//! one KV snapshot per prefix to `slot_save_path` and, on a miss after a
+//! restart, restores it instead of redoing the prefill cold. See
+//! `docs/subsystems/inference.md` §3.1.1 and `gateway::build_prefix_disk_index`.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -20,19 +20,19 @@ use std::time::Instant;
 
 const DEFAULT_CAPACITY: usize = 32;
 
-/// TTL padrão de um snapshot automático em disco sem uso, em segundos. Vale
-/// para a entrada do índice e, indiretamente, para o `.bin` que ela referencia.
-/// `updated_at` é renovado a cada gravação e a cada restauração. Ajustável por
+/// Default TTL of an unused automatic disk snapshot, in seconds. It applies
+/// to the index entry and, indirectly, to the `.bin` it references.
+/// `updated_at` is renewed on every write and every restore. Adjustable by
 /// `Config.slot_auto_ttl_secs` / `POM_SLOT_AUTO_TTL_SECS`.
 pub const DEFAULT_SLOT_AUTO_TTL_SECS: i64 = 7 * 24 * 3600;
 
-/// Orçamento padrão de disco para os snapshots automáticos de prefixo, somado
-/// entre todas as fatias. Ajustável por `Config.slot_auto_max_bytes`.
+/// Default disk budget for the automatic prefix snapshots, summed
+/// across all slices. Adjustable by `Config.slot_auto_max_bytes`.
 pub const DEFAULT_SLOT_AUTO_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
-/// Um turno cujo prefixo retido cresceu menos que isto desde o último snapshot
-/// da mesma linhagem não regrava: só renova o carimbo do ancestral. Corta a
-/// amplificação de escrita numa conversa com turnos curtos.
+/// A turn whose retained prefix grew by less than this since the last snapshot
+/// of the same lineage does not rewrite: it only renews the ancestor's stamp. It cuts
+/// write amplification in a conversation with short turns.
 pub const SLOT_AUTO_MIN_GROWTH_TOKENS: u32 = 256;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -74,10 +74,10 @@ struct State {
     entries: HashMap<String, Entry>,
 }
 
-/// Um cache pequeno e global por gateway. A capacidade é aplicada despejando
-/// entradas ociosas; leases ocupados nunca são forçados a sair e podem manter
-/// o total acima dela até terminarem. O limite é de quantidade, não orçamento
-/// de pesos: somente sessões de KV já contabilizadas pelo runtime permanecem.
+/// A small, global cache per gateway. Capacity is enforced by evicting
+/// idle entries; busy leases are never forced out and may keep
+/// the total above it until they finish. The limit is a count, not a weight
+/// budget: only KV sessions already accounted for by the runtime remain.
 #[derive(Debug)]
 pub struct PrefixCache {
     capacity: usize,
@@ -98,8 +98,8 @@ impl PrefixCache {
         })
     }
 
-    /// Reserva o maior prefixo textual compatível. Quando não há hit, a
-    /// sessão nova ainda sai como lease para ser inserida ao final do turno.
+    /// Reserves the longest compatible textual prefix. When there is no hit, the
+    /// new session still comes out as a lease to be inserted at the end of the turn.
     pub fn acquire(
         self: &Arc<Self>,
         key: PrefixRouteKey,
@@ -143,14 +143,14 @@ impl PrefixCache {
                 )
             }
             None => {
-                // Um miss estreia com identidade própria. Reciclar aqui a
-                // identidade de uma sessão ociosa era o que fazia um pedido
-                // avulso adotar o `session_id` de uma conversa quente: o
-                // prefixo dela ia embora com o prefill novo e o follow-up
-                // dela voltava com "rewind recusado: sessão desconhecida".
-                // Quem decide se há lugar para uma sessão nova é a admissão
-                // do escalonador (`new_session_slots`), não o cache. As
-                // entradas ociosas continuam limitadas por LRU no `commit`.
+                // A miss debuts with its own identity. Recycling here the
+                // identity of an idle session was what made a one-off request
+                // adopt the `session_id` of a hot conversation: its
+                // prefix went away with the new prefill and its follow-up
+                // came back with "rewind refused: unknown session".
+                // Who decides whether there is room for a new session is the admission
+                // of the scheduler (`new_session_slots`), not the cache. Idle
+                // entries stay bounded by LRU in `commit`.
                 (None, new_session_id, String::new(), 0)
             }
         };
@@ -167,11 +167,11 @@ impl PrefixCache {
         }
     }
 
-    /// Registra uma sessão **restaurada do disco** como um acerto ocupado. O
-    /// turno segue como um hit de prefixo normal: a cabeça reaproveita o
-    /// prompt retido pela regra só-acrescentar, `commit` publica a entrada
-    /// atualizada no fim, e `discard`/`Drop` a soltam se o prefill falhar.
-    /// Usado só pela camada de disco (`PrefixDiskIndex`).
+    /// Registers a session **restored from disk** as a busy hit. The
+    /// turn proceeds as a normal prefix hit: the head reuses the
+    /// retained prompt by the append-only rule, `commit` publishes the updated
+    /// entry at the end, and `discard`/`Drop` release it if the prefill fails.
+    /// Used only by the disk layer (`PrefixDiskIndex`).
     pub fn adopt(
         self: &Arc<Self>,
         key: PrefixRouteKey,
@@ -291,8 +291,8 @@ impl PrefixLease {
         self.miss_reason
     }
 
-    /// Publica a sessão depois que o gateway a rewindeu para o fim do prompt.
-    /// Consumir o lease impede que `Drop` desmarque uma entrada já atualizada.
+    /// Publishes the session after the gateway rewound it to the end of the prompt.
+    /// Consuming the lease prevents `Drop` from unmarking an already updated entry.
     pub fn commit(mut self, prompt: String, cached_tokens: u32) {
         self.cache.commit(
             self.entry_id.take(),
@@ -322,36 +322,36 @@ impl Drop for PrefixLease {
     }
 }
 
-// ── Camada de disco: prefixos que sobrevivem ao reinício ─────────────────────
+// ── Disk layer: prefixes that survive a restart ──────────────────────────────
 
-/// Uma entrada do índice de snapshots automáticos de prefixo. Aponta para um
-/// conjunto de `.bin` (um por hop, `auto__<key_hash>__<node_id>.bin`) que o
-/// `gateway::snapshot_deployment` gravou no `slot_save_path` de cada peer.
+/// An entry of the index of automatic prefix snapshots. It points to a
+/// set of `.bin` files (one per hop, `auto__<key_hash>__<node_id>.bin`) that
+/// `gateway::snapshot_deployment` wrote to each peer's `slot_save_path`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiskPrefixEntry {
-    /// `PrefixRouteKey::model` (modelo + deployment + chat_template).
+    /// `PrefixRouteKey::model` (model + deployment + chat_template).
     pub route_model: String,
     /// `PrefixRouteKey::hops`.
     pub route_hops: Vec<String>,
-    /// Identifica o arquivo: `hash(route + prompt)`, hex. Estável para o mesmo
-    /// prefixo de conversa, então um re-snapshot sobrescreve.
+    /// Identifies the file: `hash(route + prompt)`, hex. Stable for the same
+    /// conversation prefix, so a re-snapshot overwrites.
     pub key_hash: String,
-    /// A forma textual do prefixo (o `cache_key` do gateway), para o mesmo
-    /// casamento de maior prefixo que o cache em memória faz.
+    /// The textual form of the prefix (the gateway's `cache_key`), for the same
+    /// longest-prefix matching the in-memory cache does.
     pub prompt: String,
-    /// Tokens de prompt que o snapshot cobre (`retained_tokens`).
+    /// Prompt tokens the snapshot covers (`retained_tokens`).
     pub cached_tokens: u32,
-    /// Soma dos `.bin` de todos os hops, para o orçamento de disco.
+    /// Sum of the `.bin` files of all hops, for the disk budget.
     pub bytes: u64,
-    /// Unix secs do último uso (gravação ou restauração).
+    /// Unix secs of the last use (write or restore).
     pub updated_at: i64,
 }
 
-/// Índice local do gateway dos snapshots automáticos de prefixo. Persiste num
-/// JSON pequeno ao lado dos `.bin`; some quando o `slot_save_path` não está
-/// configurado ou `slot_persist_prefix_cache` está desligado (o `GatewayState`
-/// guarda um `Option`). O índice é do gateway: se o papel de gateway mudar de
-/// máquina, o novo gateway não enxerga estas entradas e cai no prefill frio.
+/// The gateway's local index of the automatic prefix snapshots. It persists in a
+/// small JSON next to the `.bin` files; it is absent when `slot_save_path` is not
+/// configured or `slot_persist_prefix_cache` is off (`GatewayState`
+/// holds an `Option`). The index belongs to the gateway: if the gateway role moves
+/// to another machine, the new gateway does not see these entries and falls back to cold prefill.
 #[derive(Debug)]
 pub struct PrefixDiskIndex {
     path: PathBuf,
@@ -361,7 +361,7 @@ pub struct PrefixDiskIndex {
 }
 
 impl PrefixDiskIndex {
-    /// Lê o índice do disco, poda o que passou do TTL e devolve o handle.
+    /// Reads the index from disk, prunes what is past the TTL and returns the handle.
     pub fn load(path: impl Into<PathBuf>, max_bytes: u64, ttl_secs: i64) -> Arc<Self> {
         let path = path.into();
         let ttl_secs = ttl_secs.max(1);
@@ -379,9 +379,9 @@ impl PrefixDiskIndex {
         })
     }
 
-    /// O maior prefixo em disco que é prefixo **estrito** do prompt pedido -
-    /// igual à regra só-acrescentar de `plan_prefix_reuse`, para não restaurar
-    /// um snapshot que a cabeça não conseguiria reaproveitar.
+    /// The longest prefix on disk that is a **strict** prefix of the requested prompt -
+    /// same as the append-only rule of `plan_prefix_reuse`, so as not to restore
+    /// a snapshot the head could not reuse.
     pub fn longest_prefix_match(
         &self,
         model: &str,
@@ -401,9 +401,9 @@ impl PrefixDiskIndex {
             .cloned()
     }
 
-    /// Insere ou atualiza a entrada de um `key_hash`, solta os ancestrais que
-    /// ele supersede e aplica TTL e orçamento. Devolve os `key_hash` que
-    /// saíram, para o chamador apagar os `.bin` correspondentes em cada hop.
+    /// Inserts or updates the entry for a `key_hash`, drops the ancestors
+    /// it supersedes and applies TTL and budget. Returns the `key_hash` values that
+    /// left, so the caller can delete the matching `.bin` files on each hop.
     pub fn record(
         &self,
         model: &str,
@@ -428,11 +428,11 @@ impl PrefixDiskIndex {
 
         let mut dropped = Vec::new();
 
-        // Supersessão: um snapshot mais longo na mesma rota cobre todo prefixo
-        // estrito dele, então uma conversa que cresce mantém um só `.bin` em
-        // vez de um por turno. Uma conversa que se ramifica (um turno anterior
-        // editado) perde o ponto intermediário e cai no ancestral que sobrar
-        // ou no prefill frio - aceitável para um cache.
+        // Supersession: a longer snapshot on the same route covers every strict
+        // prefix of it, so a growing conversation keeps a single `.bin`
+        // instead of one per turn. A conversation that branches (an earlier turn
+        // edited) loses the intermediate point and falls back to whatever ancestor remains
+        // or to cold prefill - acceptable for a cache.
         state.retain(|entry| {
             let superseded = entry.key_hash != key_hash
                 && entry.route_model == model
@@ -471,7 +471,7 @@ impl PrefixDiskIndex {
         dropped
     }
 
-    /// Marca uma entrada como usada agora (uma restauração bem-sucedida).
+    /// Marks an entry as used now (a successful restore).
     pub fn touch(&self, key_hash: &str) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(entry) = state.iter_mut().find(|entry| entry.key_hash == key_hash) {
@@ -480,7 +480,7 @@ impl PrefixDiskIndex {
         }
     }
 
-    /// Esquece uma entrada cujo `.bin` sumiu ou não serviu.
+    /// Forgets an entry whose `.bin` vanished or was not usable.
     pub fn forget(&self, key_hash: &str) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let before = state.len();
@@ -500,7 +500,7 @@ impl PrefixDiskIndex {
         dropped
     }
 
-    /// `(entradas, bytes)` para telemetria.
+    /// `(entries, bytes)` for telemetry.
     pub fn stats(&self) -> (usize, u64) {
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         (state.len(), state.iter().map(|entry| entry.bytes).sum())
@@ -563,7 +563,7 @@ mod tests {
         assert_eq!(
             cache.snapshots().len(),
             2,
-            "a está em uso e não pode ser despejado"
+            "a is in use and cannot be evicted"
         );
         held.discard();
         cache.acquire(key(), "d", "s4".into()).commit("d".into(), 1);
@@ -618,11 +618,11 @@ mod tests {
         active.discard();
     }
 
-    /// A corrida do incidente de 2026-09-08: um agente com 62 mil tokens
-    /// quentes e, no meio do turno, um pedido avulso de 35 caracteres
-    /// (geração de título). O pedido pequeno estreava com a identidade da
-    /// sessão grande, e o follow-up dela voltava com "rewind recusado: sessão
-    /// desconhecida" e reingeria tudo do zero.
+    /// The race from the incident of 2026-09-08: an agent with 62 thousand tokens
+    /// hot and, in the middle of the turn, a one-off request of 35 characters
+    /// (title generation). The small request debuted with the identity of the
+    /// large session, and its follow-up came back with "rewind refused: session
+    /// unknown" and re-ingested everything from scratch.
     #[test]
     fn a_small_concurrent_request_does_not_take_over_a_hot_sessions_identity() {
         let cache = PrefixCache::new(4);
@@ -631,13 +631,13 @@ mod tests {
             .acquire(key(), agent_prompt, "agent-session".into())
             .commit(agent_prompt.into(), 62_380);
 
-        // Pedido avulso: uma mensagem, zero ferramentas, prompt curto.
+        // One-off request: one message, zero tools, short prompt.
         let title = cache.acquire(key(), "resuma isto num título", "title-session".into());
         assert!(!title.is_hit());
         assert_eq!(title.session_id(), "title-session");
         title.discard();
 
-        // O turno seguinte do agente reencontra o próprio prefixo inteiro.
+        // The agent's next turn finds its own whole prefix again.
         let follow_up = cache.acquire(
             key(),
             &format!("{agent_prompt}\nmais uma pergunta"),
@@ -655,7 +655,7 @@ mod tests {
         let lease = cache.adopt(key(), "system", "disk-session".into(), 3);
         assert!(lease.is_hit());
         assert_eq!(lease.session_id(), "disk-session");
-        // Ocupada: uma segunda requisição não a compartilha.
+        // Busy: a second request does not share it.
         let other = cache.acquire(key(), "system\nmais", "outra".into());
         assert!(!other.is_hit());
         other.discard();
@@ -681,8 +681,8 @@ mod tests {
     fn disk_index_matches_the_longest_strict_prefix_only() {
         let (dir, idx) = tmp_index("match", DEFAULT_SLOT_AUTO_MAX_BYTES);
         let hops = vec!["h1".to_string(), "h2".to_string()];
-        // O longo entra primeiro; o curto depois **não** é supersedido (curto
-        // não cobre longo), então os dois coexistem para este teste de match.
+        // The long one goes in first; the short one afterwards is **not** superseded (short
+        // does not cover long), so both coexist for this match test.
         idx.record(
             "m",
             &hops,
@@ -693,23 +693,23 @@ mod tests {
         );
         idx.record("m", &hops, "h_sys", "system", 2, 1_000);
 
-        // Dois casam; o mais longo vence.
+        // Two match; the longest wins.
         assert_eq!(
             idx.longest_prefix_match("m", &hops, "system\nuser1\nassist1\nuser2\nuser3")
                 .expect("match")
                 .key_hash,
             "h_turn2"
         );
-        // Um ramo diverge cedo: só o prefixo do sistema casa.
+        // A branch diverges early: only the system prefix matches.
         assert_eq!(
             idx.longest_prefix_match("m", &hops, "system\noutra coisa")
-                .expect("cai no prefixo do sistema")
+                .expect("falls on the system prefix")
                 .key_hash,
             "h_sys"
         );
-        // Igualdade não casa (a cabeça não conseguiria reaproveitar).
+        // Equality does not match (the head could not reuse it).
         assert!(idx.longest_prefix_match("m", &hops, "system").is_none());
-        // Rota diferente não casa.
+        // A different route does not match.
         assert!(idx
             .longest_prefix_match("m", &["outro".to_string()], "system\nuser1\nx")
             .is_none());
@@ -721,19 +721,19 @@ mod tests {
         let (dir, idx) = tmp_index("sup", DEFAULT_SLOT_AUTO_MAX_BYTES);
         let r1 = vec!["h".to_string()];
         assert!(idx.record("m", &r1, "a", "sys", 1, 1_000).is_empty());
-        // Turno seguinte da mesma linhagem: solta o ancestral "a".
+        // Next turn of the same lineage: drops the ancestor "a".
         assert_eq!(idx.record("m", &r1, "b", "sys\nu1", 3, 1_000), vec!["a"]);
         assert_eq!(
             idx.record("m", &r1, "c", "sys\nu1\nu2", 5, 1_000),
             vec!["b"]
         );
-        assert_eq!(idx.stats().0, 1, "uma linhagem, um snapshot");
+        assert_eq!(idx.stats().0, 1, "one lineage, one snapshot");
 
-        // Outra rota não é tocada.
+        // Another route is not touched.
         idx.record("m", &["outro".to_string()], "d", "sys\nu1", 3, 1_000);
         assert_eq!(idx.stats().0, 2);
 
-        // Um ramo (turno anterior editado) diverge de "c" e coexiste com ele.
+        // A branch (earlier turn edited) diverges from "c" and coexists with it.
         assert!(idx
             .record("m", &r1, "e", "sys\nu1\nOUTRO", 5, 1_000)
             .is_empty());
@@ -747,9 +747,9 @@ mod tests {
         let hops = vec!["h".to_string()];
         idx.record("m", &hops, "a", "p-a", 1, 1_000);
         idx.record("m", &hops, "b", "p-b", 1, 1_000);
-        // Terceiro empurra o total a 3_000 > 2_500: o mais antigo ("a") sai.
-        // ("p-a"/"p-b"/"p-c" não são prefixos entre si, então a supersessão
-        // não dispara e o teste isola o orçamento.)
+        // The third pushes the total to 3_000 > 2_500: the oldest ("a") leaves.
+        // ("p-a"/"p-b"/"p-c" are not prefixes of each other, so supersession
+        // does not fire and the test isolates the budget.)
         let dropped = idx.record("m", &hops, "c", "p-c", 1, 1_000);
         assert!(dropped.contains(&"a".to_string()), "dropped = {dropped:?}");
         let (count, bytes) = idx.stats();
@@ -761,10 +761,10 @@ mod tests {
     #[test]
     fn disk_index_ttl_is_configurable_and_prunes_on_record() {
         let (dir, _idx) = tmp_index("ttl", DEFAULT_SLOT_AUTO_MAX_BYTES);
-        // TTL de 1 s via load abaixo; aqui usamos um índice novo com ttl curto.
+        // TTL of 1 s via load below; here we use a new index with a short ttl.
         let short = PrefixDiskIndex::load(dir.join("short.json"), DEFAULT_SLOT_AUTO_MAX_BYTES, 1);
         short.record("m", &["h".to_string()], "old", "p-old", 1, 10);
-        // Força o carimbo para o passado e regrava outra entrada: "old" expira.
+        // Forces the stamp into the past and rewrites another entry: "old" expires.
         {
             let mut st = short.state.lock().unwrap();
             st.iter_mut().for_each(|e| e.updated_at -= 10);

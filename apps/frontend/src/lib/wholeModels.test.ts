@@ -36,7 +36,7 @@ function tpPart(rank: number, size = 2): DiscoveredModel {
 }
 
 describe("wholeModelsOf", () => {
-  it("nomeia cada modelo uma vez e junta as máquinas que o têm", () => {
+  it("names each model once and gathers the machines that have it", () => {
     const out = wholeModelsOf([
       peer("ksia", [model({})]),
       peer("mac", [model({ id: "2", path: "/outro/qwen3.5-9b.gguf" })]),
@@ -46,9 +46,9 @@ describe("wholeModelsOf", () => {
     expect(out[0].holders).toEqual(["ksia", "mac"]);
   });
 
-  /** Fatia não é modelo inteiro: as duas listas saem da mesma varredura, e
-   *  `shard_range` é o que as separa - o mesmo critério do nó. */
-  it("ignora fatias", () => {
+  /** A slice is not a whole model: both lists come out of the same scan, and
+   *  `shard_range` is what separates them - the same criterion as the node. */
+  it("ignores slices", () => {
     const out = wholeModelsOf([
       peer("ksia", [
         model({ id: "s", name: "qwen_0_15.gguf", shard_range: [0, 15], shard_group: "qwen" }),
@@ -58,21 +58,21 @@ describe("wholeModelsOf", () => {
   });
 
   /**
-   * Um GGUF cujo cabeçalho não abriu continua na lista.
+   * A GGUF whose header did not open stays in the list.
    *
-   * Ele aparece na tela de Modelos; sumir daqui se leria como o cluster ter
-   * perdido o arquivo. Escolhê-lo rende uma recusa do nó que diz o que está
-   * errado com o arquivo, que é a informação útil.
+   * It shows on the Models screen; vanishing from here would read as the cluster
+   * having lost the file. Choosing it yields a refusal from the node that says
+   * what is wrong with the file, which is the useful information.
    */
-  it("mantém um modelo sem contagem de camadas, para o nó explicar", () => {
+  it("keeps a model without a layer count, for the node to explain", () => {
     const out = wholeModelsOf([peer("ksia", [model({ total_layers: null })])]);
     expect(out).toHaveLength(1);
     expect(out[0].total_layers).toBeNull();
   });
 
-  /** Uma máquina lendo o cabeçalho e outra não é fato sobre um arquivo, não
-   *  sobre o modelo: a resposta que existe vence a ausente. */
-  it("completa os dados que uma das cópias não trouxe", () => {
+  /** One machine reading the header and another not is a fact about a file, not
+   *  about the model: the answer that exists beats the absent one. */
+  it("fills in the data one of the copies did not bring", () => {
     const out = wholeModelsOf([
       peer("ksia", [model({ total_layers: null, quant: null, architecture: null })]),
       peer("mac", [model({ id: "2" })]),
@@ -82,7 +82,7 @@ describe("wholeModelsOf", () => {
     expect(out[0].architecture).toBe("qwen3");
   });
 
-  it("ordena por nome e devolve vazio sem peers", () => {
+  it("sorts by name and returns empty without peers", () => {
     const out = wholeModelsOf([
       peer("ksia", [model({ name: "zephyr" }), model({ id: "2", name: "alpaca" })]),
     ]);
@@ -90,7 +90,7 @@ describe("wholeModelsOf", () => {
     expect(wholeModelsOf(undefined)).toEqual([]);
   });
 
-  it("mantém ranks TP separados do modelo inteiro e agrupa por largura", () => {
+  it("keeps TP ranks separate from the whole model and groups by width", () => {
     const out = tensorParallelModelsOf([
       {
         ...peer("ksia", []),

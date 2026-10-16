@@ -13,10 +13,23 @@ let sidebarNodeData: NodeInfo | null = null;
 
 vi.mock("../lib/queries", () => ({
   useNode: () => ({ data: sidebarNodeData }),
+  // The plugin menu reads its lifecycle here; no plugin is active in these tests.
+  usePluginUi: () => ({ data: { plugins: [] } }),
+  keys: { pluginUi: ["plugin-ui"] },
 }));
 
+// The plugin menu invalidates the plugin list after open/close; no client is mounted here.
+vi.mock("@tanstack/react-query", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tanstack/react-query")>()),
+  useQueryClient: () => ({ invalidateQueries: () => Promise.resolve() }),
+}));
+
+const lobby = vi.hoisted(() => ({ enabledOnNetwork: true, unread: 3 }));
+
 vi.mock("../lib/networkChatUnread", () => ({
-  useNetworkChatUnread: () => ({ unreadCount: 2 }),
+  useNetworkChatUnread: () => ({ unreadCount: 2, snapshot: { lobbyEnabled: lobby.enabledOnNetwork } }),
+  // The real hook asks the lobby only when enabled; so does the fake.
+  useLobbyUnread: (enabled: boolean) => (enabled ? lobby.unread : 0),
 }));
 
 vi.mock("../lib/theme", () => ({
@@ -39,10 +52,14 @@ function RouteProbe() {
   return <output data-testid="route">{useLocation().pathname}</output>;
 }
 
+/** A conversation somebody wrote in: only those make the history appear. */
+const SPOKEN = [{ id: "m1", role: "user", content: "oi", at: "2026-09-06T10:00:00.000Z" }];
+
 describe("Sidebar", () => {
   afterEach(() => {
     cleanup();
     sidebarNodeData = null;
+    lobby.enabledOnNetwork = true;
     vi.useRealTimers();
     window.localStorage.clear();
   });
@@ -50,7 +67,7 @@ describe("Sidebar", () => {
   it("collapses to icon buttons and exposes child destinations in a hover flyout", () => {
     render(
       <MemoryRouter
-        initialEntries={["/modelos/fatiar"]}
+        initialEntries={["/models/slice"]}
         future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <LocaleProvider initialLocale="pt-BR">
@@ -62,16 +79,16 @@ describe("Sidebar", () => {
     fireEvent.click(screen.getByRole("button", { name: "Minimizar menu" }));
 
     expect(screen.getByRole("complementary").className).toContain("w-[68px]");
-    const navigation = screen.getByRole("navigation");
-    expect(navigation.className).toContain("overflow-visible");
-    expect(navigation.className).toContain("overscroll-y-contain");
-    expect(navigation.className).not.toContain("overflow-y-auto");
+    // The menu scrolls internally even when collapsed; the submenus are `fixed`, so they are not clipped.
+    const scroller = screen.getByRole("navigation").querySelector(".overflow-y-auto") as HTMLElement;
+    expect(scroller.className).toContain("overscroll-y-contain");
+    expect(scroller.className).toContain("overflow-x-hidden");
     expect(screen.getByRole("button", { name: "Modelos" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Fatiar modelos" })).toBeTruthy();
     expect(window.localStorage.getItem("pom.sidebar.collapsed")).toBe("true");
   });
 
-  it("abre o submenu minimizado por clique e navega pelo destino escolhido", () => {
+  it("opens the minimized submenu by click and navigates to the chosen destination", () => {
     render(
       <MemoryRouter initialEntries={["/"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <LocaleProvider initialLocale="pt-BR">
@@ -85,10 +102,10 @@ describe("Sidebar", () => {
     fireEvent.click(models);
     expect(models.getAttribute("aria-expanded")).toBe("true");
     fireEvent.click(screen.getByRole("link", { name: "Encontrar Modelos HF" }));
-    expect(screen.getByTestId("route").textContent).toBe("/modelos/remotos");
+    expect(screen.getByTestId("route").textContent).toBe("/models/remote");
   });
 
-  it("mantém o cabeçalho da logo com 64px, igual à toolbar", () => {
+  it("keeps the logo header at 64px, same as the toolbar", () => {
     render(
       <MemoryRouter initialEntries={["/"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <LocaleProvider initialLocale="pt-BR"><Sidebar /></LocaleProvider>
@@ -97,7 +114,7 @@ describe("Sidebar", () => {
     expect(screen.getByRole("complementary").firstElementChild?.className).toContain("h-16");
   });
 
-  it("reabre pelo clique na logo quando o menu está minimizado", () => {
+  it("reopens by clicking the logo when the menu is minimized", () => {
     render(
       <MemoryRouter
         initialEntries={["/"]}
@@ -119,7 +136,7 @@ describe("Sidebar", () => {
     );
   });
 
-  it("não minimiza ao passar o mouse sobre a logo", () => {
+  it("does not minimize when hovering the logo", () => {
     vi.useFakeTimers();
     render(
       <MemoryRouter
@@ -141,11 +158,11 @@ describe("Sidebar", () => {
   });
 
   /**
-   * O menu segue a mesma tabela que barra a rota (`lib/access.ts`). As telas
-   * Enterprise são a exceção de descoberta: o item permanece visível sem
-   * licença e a tela explica como ativá-lo.
+   * The menu follows the same table that blocks the route (`lib/access.ts`). The Enterprise
+   * screens are the discovery exception: the item stays visible without a
+   * license and the screen explains how to activate it.
    */
-  it("esconde do perfil do nó as entradas que ele não abre e mantém Enterprise", () => {
+  it("hides from the node profile the entries it cannot open and keeps Enterprise", () => {
     render(
       <MemoryRouter
         initialEntries={["/"]}
@@ -162,13 +179,13 @@ describe("Sidebar", () => {
     expect(screen.queryByText("Implantar na rede")).toBeNull();
     expect(screen.queryByText("Implantações")).toBeNull();
     expect(screen.getByText("Logs")).toBeTruthy();
-    // O que ninguém restringiu continua no lugar.
+    // What nobody restricted stays in place.
     expect(screen.getByText("Painel")).toBeTruthy();
     expect(screen.getByText("Modelos")).toBeTruthy();
     expect(screen.getByText("Configurações")).toBeTruthy();
   });
 
-  it("mantém o menu inteiro para o administrador", () => {
+  it("keeps the whole menu for the administrator", () => {
     render(
       <MemoryRouter
         initialEntries={["/"]}
@@ -189,7 +206,36 @@ describe("Sidebar", () => {
     expect(screen.getByTestId("network-chat-unread").textContent).toBe("2");
   });
 
-  it("oculta o indicador TLS das bandeiras", () => {
+  it("shows an administrator the lobby's new messages beside the network chat's", () => {
+    sidebarNodeData = fakeNode({ authority_level: "primary" });
+    const view = () => render(
+      <MemoryRouter initialEntries={["/"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <LocaleProvider initialLocale="pt-BR">
+          <ProfileProvider initialProfile="admin">
+            <Sidebar />
+          </ProfileProvider>
+        </LocaleProvider>
+      </MemoryRouter>,
+    );
+    view();
+    const badge = screen.getByTestId("network-chat-lobby-unread");
+    expect(badge.textContent).toBe("3");
+    expect(badge.getAttribute("aria-label")).toBe("3 mensagens novas no lobby");
+    expect(screen.getByTestId("network-chat-unread").textContent).toBe("2");
+    cleanup();
+
+    // No admin grant, or the lobby off: nothing to answer, no badge.
+    sidebarNodeData = fakeNode({ authority_level: null });
+    view();
+    expect(screen.queryByTestId("network-chat-lobby-unread")).toBeNull();
+    cleanup();
+    sidebarNodeData = fakeNode({ authority_level: "primary" });
+    lobby.enabledOnNetwork = false;
+    view();
+    expect(screen.queryByTestId("network-chat-lobby-unread")).toBeNull();
+  });
+
+  it("hides the TLS indicator from the flags", () => {
     sidebarNodeData = fakeNode({ tls_required: true });
     render(
       <MemoryRouter
@@ -202,24 +248,25 @@ describe("Sidebar", () => {
       </MemoryRouter>,
     );
 
-    const controls = screen.getByRole("group", { name: "Idioma" });
+    // The language selector is a flag with a submenu; the TLS one stays in the same group.
+    const controls = screen.getByRole("button", { name: /^(Idioma|Language):/ }).parentElement as HTMLElement;
     expect(within(controls).queryByTestId("tls-indicator")).toBeNull();
   });
 
-  it("transforma o menu do infer em histórico acionável e deixa docs/config no rodapé", () => {
+  it("turns the infer menu into an actionable history and leaves docs/config in the footer", () => {
     window.localStorage.setItem("pom.chat.sessions", JSON.stringify([
       {
         id: "active",
         title: "Conversa ativa",
         model: "qwen",
-        messages: [],
+        messages: SPOKEN,
         updatedAt: "2026-09-07T10:00:00.000Z",
       },
       {
         id: "older",
         title: "Conversa antiga",
         model: "qwen",
-        messages: [],
+        messages: SPOKEN,
         updatedAt: "2026-09-06T10:00:00.000Z",
       },
     ]));
@@ -264,24 +311,24 @@ describe("Sidebar", () => {
   });
 
   /**
-   * O histórico é o menu principal do `infer` e é visto de toda rota. Escolher
-   * uma conversa das configurações ou da documentação trocava a conversa ativa
-   * e deixava a tela onde estava - o menu parecia ter parado de responder.
+   * The history is the `infer` main menu and is seen from every route. Choosing
+   * a conversation from settings or documentation changed the active conversation
+   * and left the screen where it was - the menu seemed to have stopped responding.
    */
-  it("leva ao chat ao escolher uma conversa a partir de outra rota", () => {
+  it("goes to the chat when a conversation is chosen from another route", () => {
     window.localStorage.setItem("pom.chat.sessions", JSON.stringify([
       {
         id: "older",
         title: "Conversa antiga",
         model: "qwen",
-        messages: [],
+        messages: SPOKEN,
         updatedAt: "2026-09-06T10:00:00.000Z",
       },
     ]));
 
     render(
       <MemoryRouter
-        initialEntries={["/config/rede"]}
+        initialEntries={["/config/network"]}
         future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <LocaleProvider initialLocale="pt-BR">
@@ -295,16 +342,37 @@ describe("Sidebar", () => {
       </MemoryRouter>,
     );
 
-    expect(screen.getByTestId("route").textContent).toBe("/config/rede");
+    expect(screen.getByTestId("route").textContent).toBe("/config/network");
 
     fireEvent.click(screen.getAllByRole("button", { name: /Conversa antiga/ })[0]);
     expect(screen.getByTestId("route").textContent).toBe("/chat");
   });
 
-  it("leva ao chat ao começar uma conversa nova a partir da documentação", () => {
+  it("leaves the infer menu without history or New chat while there is no conversation", () => {
+    render(
+      <MemoryRouter initialEntries={["/chat"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <LocaleProvider initialLocale="pt-BR">
+          <ProfileProvider initialProfile="infer">
+            <ChatSessionProvider>
+              <Sidebar />
+            </ChatSessionProvider>
+          </ProfileProvider>
+        </LocaleProvider>
+      </MemoryRouter>,
+    );
+    expect(screen.queryByTestId("chat-session-list")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Conversa nova" })).toBeNull();
+    // The rest of the menu stays.
+    expect(screen.getByText("Rede")).toBeTruthy();
+  });
+
+  it("goes to the chat when a new conversation is started from the documentation", () => {
+    window.localStorage.setItem("pom.chat.sessions", JSON.stringify([
+      { id: "older", title: "Conversa antiga", model: "qwen", messages: SPOKEN, updatedAt: "2026-09-06T10:00:00.000Z" },
+    ]));
     render(
       <MemoryRouter
-        initialEntries={["/documentacao"]}
+        initialEntries={["/documentation"]}
         future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <LocaleProvider initialLocale="pt-BR">

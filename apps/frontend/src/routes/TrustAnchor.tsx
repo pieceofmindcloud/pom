@@ -1,22 +1,23 @@
 /**
- * A raiz de confiança desta máquina, e os dois gestos que a envolvem.
+ * This machine's root of trust, and the two gestures that involve it.
  *
- * **Por que esta tela não fica atrás do perfil de administrador.** Antes de
- * ancorar, um nó com `profile: admin` não tem capacidade efetiva de admin: o
- * gateway recusa o escopo `AdminOnly` exatamente nesse estado. Uma tela de
- * ancoragem trancada atrás do perfil seria inalcançável no único momento em
- * que serve para alguma coisa. Por isso ela é livre para os três perfis, e a
- * rota que a alimenta é `CommonOrInternal` - quem recebe a âncora costuma ser
- * um `node` ou um `infer`.
+ * **Why this screen does not sit behind the administrator profile.** Before
+ * anchoring, a node with `profile: admin` has no effective admin capability: the
+ * gateway refuses the `AdminOnly` scope in exactly that state. An anchoring
+ * screen locked behind the profile would be unreachable at the only moment it
+ * is good for anything. That is why it is free for the three profiles, and the
+ * route that feeds it is `CommonOrInternal` - whoever receives the anchor is
+ * usually a `node` or an `infer`.
  *
- * **O que a tela decide: nada.** Mostrar a impressão digital calculada é seguro
- * porque ela é pública e não concede nada. Instalar é decidido no servidor,
- * que exige loopback real, nó ainda sem âncora e a impressão digital conferida.
- * `can_install` aqui é só o que evita desenhar um formulário que vai ser
- * recusado; não é a trava.
+ * **What the screen decides: nothing.** Showing the computed fingerprint is safe
+ * because it is public and grants nothing. Installing is decided on the server,
+ * which requires real loopback, a node still without an anchor and the fingerprint
+ * checked. `can_install` here is only what avoids drawing a form that is going
+ * to be refused; it is not the lock.
  */
 import { Check, Copy, Download, Fingerprint, Laptop, RefreshCw, ShieldAlert, ShieldCheck } from "lucide-react";
 import { useEffect, useState } from "react";
+import { copyText } from "../lib/clipboard";
 import {
   Badge,
   Button,
@@ -49,9 +50,9 @@ const REFUSALS: readonly TrustAnchorRefusal[] = [
 ];
 
 /**
- * A recusa vem com um código estável ao lado da frase do servidor. A tela usa
- * o código para falar a língua do operador; um código que ela não conhece cai
- * na frase do servidor, que é melhor que uma genérica.
+ * The refusal comes with a stable code next to the server's sentence. The screen
+ * uses the code to speak the operator's language; a code it does not know falls
+ * back to the server's sentence, which is better than a generic one.
  */
 function refusalOf(error: unknown): TrustAnchorRefusal | null {
   if (!(error instanceof ApiError) || typeof error.body !== "object" || error.body === null) {
@@ -66,22 +67,19 @@ function FingerprintBlock({ fingerprint }: { fingerprint: string }) {
   const [copied, setCopied] = useState(false);
 
   async function copy() {
-    try {
-      await navigator.clipboard.writeText(fingerprint);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 2000);
-    } catch {
-      /* sem área de transferência: o valor continua legível e selecionável */
-    }
+    // Without a clipboard the value stays readable and selectable.
+    if (!(await copyText(fingerprint))) return;
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 2000);
   }
 
   return (
     <div className="flex flex-wrap items-start gap-2">
       <code
         data-testid="anchor-fingerprint"
-        // `break-words`, não `break-all`: os grupos de oito existem para
-        // conferir a olho, e quebrar no meio de um desfaz isso. Com espaços
-        // entre eles, a quebra cai na fronteira dos grupos.
+        // `break-words`, not `break-all`: the groups of eight exist to be checked
+        // by eye, and breaking in the middle of one undoes that. With spaces
+        // between them, the break falls on the group boundary.
         className="min-w-0 flex-1 select-all break-words rounded-lg border border-line bg-ink px-3 py-2 font-mono text-[0.78rem] leading-6 tracking-tight text-fg"
       >
         {groupFingerprint(fingerprint)}
@@ -102,14 +100,14 @@ export function TrustAnchor({ sharing = false }: { sharing?: boolean }) {
   const anchor = useTrustAnchor();
   const node = useNode();
   const toast = useToast();
-  const canShare = node.data?.authority_level != null;
+  const canShare = node.data?.authority_level === "primary";
   // The cluster's key is the operator's credential; node and infer never see it.
   const { profile } = useProfile();
   const [trustShare, setTrustShare] = useState<TrustShareView | null>(null);
   const [trustShareLoaded, setTrustShareLoaded] = useState(false);
   const [trustCopied, setTrustCopied] = useState<"document" | "key" | null>(null);
 
-  // Não `document`: o nome sombreia o global do DOM.
+  // Not `document`: the name shadows the DOM global.
   const [chain, setChain] = useState("");
   const [fingerprint, setFingerprint] = useState("");
   const [fingerprintPending, setFingerprintPending] = useState(false);
@@ -197,13 +195,10 @@ export function TrustAnchor({ sharing = false }: { sharing?: boolean }) {
   const canSubmit = chain.trim().length > 0 && fingerprint.trim().length > 0 && fingerprintConfirmed && !fingerprintPending && !installing;
 
   async function copySharedValue(kind: "document" | "key", value: string) {
-    try {
-      await navigator.clipboard.writeText(value);
-      setTrustCopied(kind);
-      window.setTimeout(() => setTrustCopied(null), 1800);
-    } catch {
-      // O valor permanece selecionável quando a área de transferência não existe.
-    }
+    // The value stays selectable when the copy fails.
+    if (!(await copyText(value))) return;
+    setTrustCopied(kind);
+    window.setTimeout(() => setTrustCopied(null), 1800);
   }
 
   function downloadSharedValue(value: string, filename: string) {

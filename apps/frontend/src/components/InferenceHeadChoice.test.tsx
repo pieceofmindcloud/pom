@@ -54,7 +54,7 @@ function mount(response: InferenceHeadsResponse) {
 }
 
 describe("InferenceHeadChoice", () => {
-  it("não mostra escolha quando só existe uma candidata", () => {
+  it("shows no choice when there is only one candidate", () => {
     mount({
       ...selected,
       candidates: [selected.candidates[0]],
@@ -65,7 +65,7 @@ describe("InferenceHeadChoice", () => {
     expect(screen.queryByText("ksia")).toBeNull();
   });
 
-  it("mostra um combo com todo o diagnóstico quando há várias candidatas", () => {
+  it("shows a combo with the full diagnostic when there are several candidates", () => {
     mount(selected);
 
     const combo = screen.getByRole("combobox", { name: "Cabeça de inferência" });
@@ -81,7 +81,7 @@ describe("InferenceHeadChoice", () => {
     })).toBeTruthy();
   });
 
-  it("mostra um estado acionável quando nenhum nó pode iniciar", () => {
+  it("shows an actionable state when no node can start", () => {
     mount({
       ...selected,
       status: "no_candidate",
@@ -93,7 +93,7 @@ describe("InferenceHeadChoice", () => {
     expect(screen.getByText(/inferência não pode começar/i)).toBeTruthy();
   });
 
-  it("diz quando a carga da candidata não pôde ser lida", () => {
+  it("says when the candidate load could not be read", () => {
     mount({
       ...selected,
       candidates: selected.candidates.map((candidate) =>
@@ -105,7 +105,7 @@ describe("InferenceHeadChoice", () => {
     expect(screen.queryByRole("option", { name: /0 em voo/i })).toBeNull();
   });
 
-  it("identifica o fallback quando ainda não há RTT fresco", () => {
+  it("identifies the fallback when there is no fresh RTT yet", () => {
     mount({
       ...selected,
       candidates: selected.candidates.map((candidate) => ({

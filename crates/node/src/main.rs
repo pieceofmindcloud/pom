@@ -21,20 +21,20 @@ fn build_commit_from(runtime: Option<&str>, compiled: &str) -> String {
 }
 
 /// Development-only controls are enabled only by an explicit process setting.
-pub(crate) const POM_DESENV_ENV: &str = "POM_DESENV";
-static POM_DESENV_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+pub(crate) const POM_DEV_MODE_ENV: &str = "POM_DEV_MODE";
+static POM_DEV_MODE_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
-pub(crate) fn pom_desenv_enabled_from(value: Option<&str>) -> bool {
+pub(crate) fn pom_dev_mode_enabled_from(value: Option<&str>) -> bool {
     value == Some("1")
 }
 
-pub(crate) fn initialize_pom_desenv() -> bool {
-    *POM_DESENV_ENABLED
-        .get_or_init(|| pom_desenv_enabled_from(std::env::var(POM_DESENV_ENV).ok().as_deref()))
+pub(crate) fn initialize_pom_dev_mode() -> bool {
+    *POM_DEV_MODE_ENABLED
+        .get_or_init(|| pom_dev_mode_enabled_from(std::env::var(POM_DEV_MODE_ENV).ok().as_deref()))
 }
 
-pub(crate) fn pom_desenv_enabled() -> bool {
-    initialize_pom_desenv()
+pub(crate) fn pom_dev_mode_enabled() -> bool {
+    initialize_pom_dev_mode()
 }
 
 #[path = "network/addrs.rs"]
@@ -43,11 +43,11 @@ pub mod addrs;
 pub(crate) mod admin;
 #[path = "backend/auth.rs"]
 mod auth;
-// `brand` e o cluster llama.cpp saíram para crates próprios (`crates/brand` e
-// `crates/llama-engine`) para que editar backend/rede/roteamento não os
-// reconstrua. Re-exportados abaixo para que `crate::brand::…`, `crate::llm::…`
-// etc. continuem resolvendo em todo o `node` sem tocar os ~40 arquivos que os
-// usam. Ver `docs/subsystems/build-and-run.md`.
+// `brand` and the llama.cpp cluster moved out to their own crates (`crates/brand`
+// and `crates/llama-engine`) so that editing backend/network/routing does not
+// rebuild them. Re-exported below so that `crate::brand::…`, `crate::llm::…`
+// etc. keep resolving across all of `node` without touching the ~40 files that
+// use them. See `docs/subsystems/build-and-run.md`.
 use ::brand;
 pub use llama_engine::{collective, gguf, kv_budget, llm, moe, mtp, multipart, sysmon, wire};
 #[path = "admin_trust.rs"]
@@ -93,6 +93,8 @@ mod executor;
 pub mod fastest;
 #[path = "backend/gateway/mod.rs"]
 mod gateway;
+#[path = "utils/geo.rs"]
+mod geo;
 #[path = "models/huggingface.rs"]
 mod huggingface;
 #[path = "network/identity.rs"]
@@ -131,11 +133,11 @@ mod network;
 mod network_chat;
 #[path = "network/network_chat_policy.rs"]
 mod network_chat_policy;
-#[path = "network/network_lobby.rs"]
-mod network_lobby;
 #[cfg(test)]
 #[path = "network/network_chat_tests.rs"]
 mod network_chat_tests;
+#[path = "network/network_lobby.rs"]
+mod network_lobby;
 #[path = "models/ollama.rs"]
 mod ollama;
 #[path = "backend/openai.rs"]
@@ -149,11 +151,19 @@ mod pkarr_node;
 #[path = "models/plan.rs"]
 mod plan;
 mod plugin_dev;
+#[path = "inference/engine_telemetry.rs"]
+mod engine_telemetry;
+#[path = "inference/plugin_engine.rs"]
+mod plugin_engine;
+#[path = "inference/plugin_session.rs"]
+mod plugin_session;
 mod plugin_github;
 #[path = "plugin_host.rs"]
 mod plugin_host;
 mod plugin_proxy;
 mod plugin_services;
+#[path = "inference/plugin_stage_link.rs"]
+mod plugin_stage_link;
 mod plugin_ui;
 #[path = "plugins.rs"]
 mod plugins;
@@ -171,6 +181,7 @@ mod prefix_cache_lab;
 #[cfg(test)]
 #[path = "inference/prefix_reuse_lab.rs"]
 mod prefix_reuse_lab;
+mod process_tree;
 #[path = "profile.rs"]
 pub(crate) mod profile;
 #[cfg(test)]
@@ -187,7 +198,6 @@ mod rag;
 mod relay;
 #[path = "backend/reqlog.rs"]
 mod reqlog;
-mod process_tree;
 #[path = "utils/respawn.rs"]
 mod respawn;
 #[path = "network/route.rs"]
@@ -285,7 +295,7 @@ enum Command {
 #[derive(Parser, Debug)]
 #[command(
     name = "pom",
-    about = "Inferência distribuída de LLM entre máquinas, sem servidor central",
+    about = "Distributed LLM inference across machines, with no central server",
     long_about = "Runs a node in a distributed LLM inference network.\n\
                   Models are deployed from the web UI served on --gateway-port;\n\
                   each node loads its slice and coordinates with peers to cover\n\
@@ -317,22 +327,13 @@ struct Args {
     #[arg(long, default_value = "")]
     advertise_addr: String,
 
-    /// Ollama base URL (model resolution, /health, e a porta anunciada aos peers)
+    /// Ollama base URL (model resolution, /health, and the port announced to peers)
     #[arg(long, default_value = "http://localhost:11434")]
     ollama_url: String,
 
     /// HTTP port for the gateway/API server (served by every node)
     #[arg(long, default_value_t = initial_ports::DEFAULT_GATEWAY_PORT)]
     gateway_port: u16,
-
-    /// IP the setup page listens on while the node has no pom.json. Defaults to
-    /// every interface so a fresh node (including one in a container with a
-    /// published port) is reachable for first access; hardening happens in the
-    /// setup itself. Pass 127.0.0.1 to keep the unauthenticated setup local.
-    /// The configured gateway always listens on every interface and ignores
-    /// this flag.
-    #[arg(long, default_value = "0.0.0.0")]
-    setup_bind: std::net::IpAddr,
 
     /// Pkarr public keys of known peers to dial on startup (comma-separated, format: pk:zbase32...).
     #[arg(long, default_value = "")]
@@ -353,17 +354,21 @@ struct Args {
     #[arg(long, default_value = "")]
     relay_peers: String,
 
-    /// Run a relay server that accepts circuit connections from other peers (requires public IP).
+    /// Relay for any node of any network: a public relay (requires a public
+    /// IP). Same as `relay.everyone` in the config file. Without it, a node
+    /// with a public address still relays for the members of its own cluster.
     #[arg(long)]
     serve_relay: bool,
 
-    /// Força o wizard de primeiro acesso mesmo com a máquina configurada: a
-    /// configuração atual (pom.json, raiz de confiança e banco local) é movida
-    /// para `setup-backups/<data>` e o nó sobe em modo setup. Para testar o
-    /// wizard; a identidade (`.pom-node.key`) é mantida. Por variável, use
-    /// `POM_FORCE_SETUP=<token>` (ver `force_setup_if_requested`).
-    #[arg(long, alias = "wizard")]
-    setup: bool,
+    /// Do not relay for the members of this node's cluster either
+    /// (`relay.cluster: false`).
+    #[arg(long)]
+    no_cluster_relay: bool,
+
+    /// Do not let file transfers of the cluster cross this node when it
+    /// relays (`relay.transfers: false`).
+    #[arg(long)]
+    no_relay_transfers: bool,
 
     /// Disable the built-in public IPFS relay nodes.
     #[arg(long)]
@@ -388,54 +393,49 @@ struct Args {
     #[arg(long)]
     no_pkarr: bool,
 
-    /// `--port` veio da variável de ambiente, não da linha de comando.
-    /// Preenchido por `parse_args`; ver `apply_env_overrides`.
+    /// `--port` came from the environment variable, not from the command line.
+    /// Filled in by `parse_args`; see `apply_env_overrides`.
     #[arg(skip)]
     port_from_env: bool,
 
-    /// `--gateway-port` veio da variável de ambiente. Ver `port_from_env`.
+    /// `--gateway-port` came from the environment variable. See `port_from_env`.
     #[arg(skip)]
     gateway_port_from_env: bool,
 
-    /// `--port` foi informado explicitamente na linha de comando.
+    /// `--port` was given explicitly on the command line.
     #[arg(skip)]
     port_from_cli: bool,
 
-    /// `--gateway-port` foi informado explicitamente na linha de comando.
+    /// `--gateway-port` was given explicitly on the command line.
     #[arg(skip)]
     gateway_port_from_cli: bool,
 }
 
-/// Variável de ambiente de cada opção da linha de comando, pelo id do clap.
+/// Environment variable of each command line option, by its clap id.
 ///
-/// Toda opção tem a sua: a linha de comando vence a variável, que vence o
-/// padrão (a ordem do clap). O nome sai de `brand::env_var`, por isso não pode
-/// ir no atributo `env` do derive, que exige literal.
+/// Every option has its own: the command line beats the variable, which beats
+/// the default (clap's order). The name comes from `brand::env_var`, so it
+/// cannot go in the derive's `env` attribute, which requires a literal.
 const ARG_ENV: &[(&str, &str)] = &[
     ("port", "PORT"),
     ("bootstrap", "BOOTSTRAP"),
     ("advertise_addr", "ADVERTISE_ADDR"),
     ("ollama_url", "OLLAMA_URL"),
     ("gateway_port", "GATEWAY_PORT"),
-    ("setup_bind", "SETUP_BIND"),
     ("pkarr_peers", "PKARR_PEERS"),
     ("public_addr", "PUBLIC_ADDR"),
     ("relay_peers", "RELAY_PEERS"),
     ("serve_relay", "SERVE_RELAY"),
+    ("no_cluster_relay", "NO_CLUSTER_RELAY"),
+    ("no_relay_transfers", "NO_RELAY_TRANSFERS"),
     ("no_default_relays", "NO_DEFAULT_RELAYS"),
     ("no_discovery", "NO_DISCOVERY"),
     ("no_pkarr", "NO_PKARR"),
 ];
 
-/// Opções cuja variável não é o mesmo valor da flag e por isso não passa pelo
-/// clap: `--setup` é booleana, e `POM_FORCE_SETUP` é um token lido em
-/// `force_setup_if_requested`, que força o wizard uma vez por valor.
-#[cfg(test)]
-const MANUAL_ARG_ENV: &[(&str, &str)] = &[("setup", "FORCE_SETUP")];
-
-/// A linha de comando com as variáveis de `ARG_ENV`. As flags booleanas leem a
-/// variável como `1/0`, `true/false`, `yes/no` ou `on/off`, como as outras
-/// variáveis booleanas do projeto.
+/// The command line with the variables of `ARG_ENV`. The boolean flags read the
+/// variable as `1/0`, `true/false`, `yes/no` or `on/off`, like the other
+/// boolean variables of the project.
 fn cli_command() -> clap::Command {
     let mut command = <Args as clap::CommandFactory>::command();
     for (id, suffix) in ARG_ENV {
@@ -466,14 +466,14 @@ fn parse_args() -> Args {
     args
 }
 
-/// A variável de ambiente vence o `pom.json`.
+/// The environment variable beats `pom.json`.
 ///
-/// Nas outras opções isso já sai da precedência normal, porque a linha de
-/// comando vence ou se soma à config. `--port` e `--gateway-port` são a
-/// exceção: na linha de comando elas só valem para o modo setup, e a porta
-/// gravada vence - é o que mantém uma troca de porta feita pela interface
-/// depois do respawn, que repete o argv. Vindas do ambiente, elas vencem a
-/// config.
+/// For the other options this already follows from the normal precedence,
+/// because the command line beats or adds to the config. `--port` and
+/// `--gateway-port` are the exception: on the command line they only apply to
+/// setup mode, and the saved port wins - it is what keeps a port change made
+/// through the interface after the respawn, which repeats the argv. Coming
+/// from the environment, they beat the config.
 fn apply_env_overrides(config: &mut config::Config, args: &Args) {
     if args.port_from_env {
         config.p2p_port = args.port;
@@ -483,16 +483,16 @@ fn apply_env_overrides(config: &mut config::Config, args: &Args) {
     }
 }
 
-/// O nó é um serviço Tokio, e a thread principal é dele em toda plataforma
-/// menos uma.
+/// The node is a Tokio service, and the main thread is its own on every
+/// platform but one.
 ///
-/// No macOS a thread principal pertence ao AppKit: `NSApplication` só aceita
-/// ser conduzida a partir dela, e é ela que atende o item da barra de status.
-/// No Windows, o Tao e a bandeja têm a mesma exigência de thread de UI. Por
-/// isso o serviço é movido para uma thread de fundo com o seu próprio runtime,
-/// e a principal fica no laço de eventos nativo. Nas outras plataformas nada
-/// disso existe e o runtime é construído aqui mesmo, de modo que quem corre o
-/// binário num servidor Linux não ganha dependência de interface gráfica.
+/// On macOS the main thread belongs to AppKit: `NSApplication` only accepts
+/// being driven from it, and it is the one that serves the status bar item.
+/// On Windows, Tao and the tray have the same UI thread requirement. That is
+/// why the service is moved to a background thread with its own runtime,
+/// and the main one stays in the native event loop. On the other platforms none
+/// of this exists and the runtime is built right here, so that whoever runs the
+/// binary on a Linux server gains no dependency on a graphical interface.
 fn main() -> Result<()> {
     // First of all: a native crash inside llama.cpp leaves no line in the
     // node's own log otherwise.
@@ -522,12 +522,12 @@ fn main() -> Result<()> {
         .with(cluster_logs::CaptureLayer::new(log_capture.clone()))
         .init();
 
-    let pom_desenv = initialize_pom_desenv();
-    info!("POM_DESENV habilitado: {pom_desenv}");
+    let pom_dev_mode = initialize_pom_dev_mode();
+    info!("POM_DEV_MODE enabled: {pom_dev_mode}");
 
-    // O `llama-engine` não conhece o layout do projeto nem a rede: injeta a raiz
-    // que o `sysmon` mede e as funções de estado da coletiva TP que o `llm`
-    // consulta de dentro do decode (`tp.rs` fica em `node`, ver `tp_probe`).
+    // `llama-engine` knows neither the project layout nor the network: inject the
+    // root that `sysmon` measures and the TP collective state functions that `llm`
+    // queries from inside the decode (`tp.rs` stays in `node`, see `tp_probe`).
     sysmon::set_disk_root(config::project_root());
     tp::install_probe();
 
@@ -539,8 +539,6 @@ fn main() -> Result<()> {
     if let Some(command) = args.command.as_ref() {
         return run_command(command);
     }
-
-    force_setup_if_requested(args.setup)?;
 
     if !config::Config::exists() {
         let gateway_was_default = args.gateway_port == initial_ports::DEFAULT_GATEWAY_PORT
@@ -563,7 +561,6 @@ fn main() -> Result<()> {
             args.port = selected.p2p;
         }
     }
-
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     let gateway_port = configured_gateway_port(&args);
 
@@ -597,7 +594,7 @@ fn run_command(command: &Command) -> Result<()> {
     match command {
         Command::Undeploy => {
             lastslice::force_disable()?;
-            info!("retomada automática de implantação bloqueada");
+            info!("automatic deployment resume blocked");
             Ok(())
         }
         Command::AdminAnchor {
@@ -626,7 +623,7 @@ fn anchor_admin(
     let destination = config::admin_trust_path();
     if destination.exists() && !replace {
         bail!(
-            "a cadeia administrativa já existe em {}; use --replace somente para uma reancoragem manual explícita",
+            "the administrative chain already exists in {}; use --replace only for an explicit manual re-anchoring",
             destination.display()
         );
     }
@@ -634,7 +631,7 @@ fn anchor_admin(
     let (document, local_root) = if let Some(source) = from_file {
         let source_store = crate::admin_trust::AdminTrust::load(source).with_context(|| {
             format!(
-                "não foi possível ler a cadeia transportada em {}",
+                "could not read the transported chain in {}",
                 source.display()
             )
         })?;
@@ -642,7 +639,7 @@ fn anchor_admin(
         if let Some(expected_cluster) = cluster_id {
             if expected_cluster != document.anchor.cluster_id {
                 bail!(
-                    "o cluster da cadeia transportada é {}, não {}",
+                    "the cluster of the transported chain is {}, not {}",
                     document.anchor.cluster_id,
                     expected_cluster
                 );
@@ -652,7 +649,9 @@ fn anchor_admin(
     } else {
         let cluster_id = cluster_id
             .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| anyhow::anyhow!("--cluster-id é obrigatório ao criar a raiz local"))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("--cluster-id is required when creating the local root")
+            })?;
         let (_signing_key, principal) = crate::admin_trust::local_authority_identity()?;
         let anchor =
             crate::admin_trust::TrustAnchor::for_principal(cluster_id.to_string(), principal);
@@ -675,17 +674,15 @@ fn anchor_admin(
     };
 
     let expected = crate::admin_trust::anchor_fingerprint(&document);
-    println!("impressão digital da autoridade: {expected}");
-    // A mesma conferência que a interface faz. Duas seriam duas políticas.
+    println!("authority fingerprint: {expected}");
+    // The same check the interface makes. Two would be two policies.
     if !fingerprint.is_some_and(|typed| crate::admin_trust::fingerprint_matches(typed, &expected)) {
         bail!(
-            "a impressão digital não foi confirmada; confira a linha acima e execute novamente com --fingerprint {expected} --confirm"
+            "the fingerprint was not confirmed; check the line above and run again with --fingerprint {expected} --confirm"
         );
     }
     if !confirm {
-        bail!(
-            "a impressão digital precisa de confirmação explícita; execute novamente com --confirm"
-        );
+        bail!("the fingerprint needs explicit confirmation; run again with --confirm");
     }
 
     if local_root {
@@ -711,7 +708,7 @@ fn anchor_admin(
         crate::admin_trust::AdminTrust::install_document(&destination, document)?;
     }
     println!(
-        "âncora administrativa instalada em {}",
+        "administrative anchor installed in {}",
         destination.display()
     );
     Ok(())
@@ -753,10 +750,13 @@ async fn async_main(
     let database = Arc::new(db::PomDb::open(config::database_path())?);
     info!("Local database: {}", database.path().display());
 
-    // ── Setup flow: a fresh node and a node that just left a network both
-    // serve only the setup page. The latter keeps pom.json as a local
-    // preference shell, so checking only for file existence would boot the old
-    // network again.
+    // A machine without a network makes a local one and goes straight to the
+    // interface: admin, named after the host, discovery off. Joining someone
+    // else's network comes later, from the Networks screen. `setup_pending`
+    // marks a pom.json that is only a preference shell, so checking only for
+    // file existence would boot a network that is gone. There is no other way
+    // to start: the setup wizard is not reachable, and a local network that
+    // cannot be created is a startup error.
     let mut existing_config = if config::Config::exists() {
         Some(config::Config::load()?)
     } else {
@@ -765,73 +765,50 @@ async fn async_main(
     if let Some(config) = existing_config.as_mut() {
         apply_env_overrides(config, &args);
     }
-    // A machine without a network makes a local one and goes straight to the
-    // interface: admin, named after the host, discovery off. Joining someone
-    // else's network comes later, from the Networks screen. The wizard is only
-    // reached when asked for explicitly.
     if existing_config
         .as_ref()
         .is_none_or(|config| config.setup_pending)
-        && !WIZARD_FORCED.load(std::sync::atomic::Ordering::Relaxed)
     {
+        // Only a machine that never had a configuration is walked through
+        // the first steps; one that just left a network is not new.
+        let first_run = existing_config.is_none();
         let base = existing_config
             .take()
             .unwrap_or_else(|| blank_config(args.gateway_port, args.port));
-        match webui::bootstrap_local_network(base.clone(), &database).await {
-            Ok(mut created) => {
-                info!(
-                    "No network configured - created the local network \"{}\"",
-                    created.network.public_name
-                );
-                apply_env_overrides(&mut created, &args);
-                existing_config = Some(created);
-            }
-            Err(error) => {
-                warn!("could not create a local network, falling back to setup: {error:#}");
-                existing_config = base.setup_pending.then_some(base);
-            }
+        let mut created = webui::bootstrap_local_network(base, &database)
+            .await
+            .context("could not create the local network")?;
+        if first_run {
+            created.first_run_guide = Some(Vec::new());
+            created.save()?;
         }
-    }
-    if existing_config
-        .as_ref()
-        .is_none_or(|config| config.setup_pending)
-    {
-        if existing_config.is_some() {
-            info!("Setup pending — starting in setup mode");
-        } else {
-            info!("No config found — starting in setup mode");
-        }
-        let gateway_port = existing_config
-            .as_ref()
-            .map_or(args.gateway_port, |config| config.gateway_port);
-        start_setup_mode(
-            args.setup_bind,
-            gateway_port,
-            args.port,
-            existing_config,
-            database.clone(),
-            gateway_ready,
-        )
-        .await?;
-        return Ok(());
+        info!(
+            "No network configured - created the local network \"{}\"",
+            created.network.public_name
+        );
+        apply_env_overrides(&mut created, &args);
+        existing_config = Some(created);
     }
 
     // ── Load existing config ─────────────────────────────────────────────────
-    let mut app_config = existing_config.expect("config já carregada antes do modo completo");
+    let mut app_config = existing_config.expect("config already loaded before the full mode");
     if app_config.connection_key.trim().is_empty() {
         app_config.connection_key = crate::webui::fresh_connection_key();
         app_config.save()?;
         info!("Generated a local admin credential for the configured node");
     }
     for (dir, error) in app_config.create_default_storage_dirs() {
-        warn!("não foi possível criar a pasta padrão {}: {error}", dir.display());
+        warn!(
+            "could not create the default folder {}: {error}",
+            dir.display()
+        );
     }
     log_capture.set_min_level(app_config.cluster_logs_min_level);
     let cluster_logs = cluster_logs::ClusterLogs::new(log_capture, log_receiver);
     let audit = reqlog::AuditLog::new(database.clone());
     app_config.api_keys = database.api_keys()?;
     if let Err(error) = database.save_network_settings(&app_config.network) {
-        warn!("não foi possível guardar os detalhes da rede no banco: {error:#}");
+        warn!("could not store the network details in the database: {error:#}");
     }
     app_config.thermal = database
         .thermal_policy()?
@@ -839,35 +816,36 @@ async fn async_main(
     app_config
         .thermal
         .validate()
-        .context("validar política térmica persistida")?;
+        .context("validate the persisted thermal policy")?;
     app_config.huggingface_token = database.huggingface_token()?;
     config::validate_gateway_port(app_config.gateway_port)?;
     info!("Profile: {}", app_config.profile);
 
-    // Antes de qualquer coisa que possa carregar modelo: os backends do ggml
-    // enumeram os dispositivos ao serem registrados, e depois disso a lista está
-    // congelada. Aplicar a escolha mais tarde não tiraria nem devolveria placa.
+    // Before anything that can load a model: the ggml backends enumerate
+    // the devices when they are registered, and after that the list is
+    // frozen. Applying the choice later would neither remove nor return a card.
     {
         let detected = sysmon::sample().await.gpus;
         match sysmon::apply_gpu_selection(app_config.gpus.as_deref(), &detected) {
             _ if app_config.gpus.is_none() => {
                 info!(
-                    "GPUs: todas as {} disponíveis (pom.json não restringe)",
+                    "GPUs: all {} available (pom.json does not restrict)",
                     detected.len()
                 );
             }
-            escolhidas if escolhidas.is_empty() => {
-                info!("GPUs: nenhuma - inferência em CPU (pom.json traz uma lista vazia)");
+            chosen if chosen.is_empty() => {
+                info!("GPUs: none - CPU inference (pom.json carries an empty list)");
             }
-            escolhidas => info!("GPUs: {}", escolhidas.join(", ")),
+            chosen => info!("GPUs: {}", chosen.join(", ")),
         }
     }
     let gateway_port = app_config.gateway_port;
 
     crate::gateway::ensure_gateway_port_available(app_config.gateway_port, None).await?;
 
-    // O nó sobe sempre sem modelo: o que ele serve vem da implantação feita pela
-    // interface, restaurada do journal da fatia (`lastslice`) num reinício.
+    // The node always comes up without a model: what it serves comes from the
+    // deployment made through the interface, restored from the slice journal
+    // (`lastslice`) on a restart.
     start_node(
         gateway_port,
         database.clone(),
@@ -879,7 +857,11 @@ async fn async_main(
         merged_bootstrap_nodes(&app_config.bootstrap_nodes, &args.bootstrap),
         merged_relay_peers(&app_config.relay_peers, &args.relay_peers),
         comma_list(&args.pkarr_peers),
-        args.serve_relay,
+        crate::network::RelayOverrides {
+            everyone: args.serve_relay,
+            no_cluster: args.no_cluster_relay,
+            no_transfers: args.no_relay_transfers,
+        },
         args.advertise_addr.clone(),
         args.public_addr.clone(),
         cluster_logs,
@@ -889,10 +871,10 @@ async fn async_main(
     .await
 }
 
-/// A porta de Ollama que este nó anuncia aos peers.
+/// The Ollama port this node announces to peers.
 ///
-/// Não depende de flag nenhuma: todo nó serve a API, e um nó que servisse o
-/// Ollama local sem anunciar a porta ficaria invisível para o roteamento.
+/// It depends on no flag: every node serves the API, and a node that served
+/// the local Ollama without announcing the port would be invisible to routing.
 fn advertised_ollama_port(ollama_url: &str) -> Option<u16> {
     parse_ollama_port(ollama_url)
 }
@@ -907,23 +889,27 @@ fn parse_ollama_port(url: &str) -> Option<u16> {
         .and_then(|s| s.parse::<u16>().ok())
 }
 
-/// Onde o último `POM_FORCE_SETUP` consumido fica gravado.
+/// Where the last consumed `POM_FORCE_SETUP` is recorded.
+#[allow(dead_code)]
 fn forced_setup_marker() -> std::path::PathBuf {
     config::project_root().join(format!(".{}-setup-forced", crate::brand::slug()))
 }
 
-/// Decide se o wizard é forçado nesta subida, uma vez por pedido.
+/// Decides whether the wizard is forced on this start, once per request.
 ///
-/// O save do wizard reinicia o nó, e o que força não pode valer de novo nesse
-/// reinício - senão a configuração recém-criada iria para o backup e o wizard
-/// voltaria para sempre. Dois caminhos, porque os reinícios são diferentes:
+/// The wizard's save restarts the node, and what forces it must not apply again
+/// on that restart - otherwise the freshly created configuration would go to the
+/// backup and the wizard would come back forever. Two paths, because the
+/// restarts are different:
 ///
-/// - `--setup`: o reinício reexecuta o binário com os mesmos argumentos e o
-///   mesmo ambiente, então a marca `POM_SETUP_FORCED` no ambiente basta.
-/// - `POM_FORCE_SETUP=<token>`: em Docker o processo 1 encerra no reinício e o
-///   container sobe com o ambiente do compose, sem marca nenhuma. O token
-///   consumido fica num arquivo do project root; o mesmo token não força de
-///   novo. `up.sh <cluster> --wizard` (repositório `pom-cluster-config`) gera um token novo por chamada.
+/// - `--setup`: the restart re-executes the binary with the same arguments and
+///   the same environment, so the `POM_SETUP_FORCED` mark in the environment is enough.
+/// - `POM_FORCE_SETUP=<token>`: in Docker process 1 exits on the restart and the
+///   container comes up with the compose environment, with no mark at all. The
+///   consumed token is kept in a file in the project root; the same token does
+///   not force again. `up.sh <cluster> --wizard` (`pom-cluster-config` repository)
+///   generates a new token per call.
+#[allow(dead_code)]
 fn force_setup_if_requested(cli_flag: bool) -> anyhow::Result<()> {
     if cli_flag {
         let consumed = crate::brand::env_var("SETUP_FORCED");
@@ -952,8 +938,9 @@ fn force_setup_if_requested(cli_flag: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Guarda a configuração atual e deixa o nó sem ela, para subir no wizard.
-/// Roda antes de abrir o banco.
+/// Stores the current configuration and leaves the node without it, to come up
+/// in the wizard. Runs before opening the database.
+#[allow(dead_code)]
 fn force_setup_mode() -> anyhow::Result<()> {
     WIZARD_FORCED.store(true, std::sync::atomic::Ordering::Relaxed);
     let database = config::database_path();
@@ -975,7 +962,7 @@ fn force_setup_mode() -> anyhow::Result<()> {
         .filter(|path| path.exists())
         .collect();
     if present.is_empty() {
-        info!("--setup: nenhuma configuração a guardar; subindo no wizard");
+        info!("--setup: no configuration to set aside; starting in the wizard");
         return Ok(());
     }
     let backup = config::project_root()
@@ -987,11 +974,11 @@ fn force_setup_mode() -> anyhow::Result<()> {
             continue;
         };
         std::fs::rename(path, backup.join(name)).map_err(|error| {
-            anyhow::anyhow!("--setup: não deu para guardar {}: {error}", path.display())
+            anyhow::anyhow!("--setup: could not set aside {}: {error}", path.display())
         })?;
     }
     warn!(
-        "--setup: configuração guardada em {} ({} arquivo(s)); para voltar, pare o nó e mova-os de volta",
+        "--setup: configuration set aside in {} ({} file(s)); to go back, stop the node and move them back",
         backup.display(),
         present.len()
     );
@@ -1003,56 +990,64 @@ fn force_setup_mode() -> anyhow::Result<()> {
 fn blank_config(gateway_port: u16, p2p_port: u16) -> config::Config {
     use crate::config::Config;
     Config {
-    profile: crate::profile::NodeProfile::Admin,
-    setup_pending: true,
-    local_auto_discovery: false,
-    tls_required: false,
-    quic_enabled: false,
-    cluster_logs_enabled: false,
-    network_chat_enabled: false,
-    cluster_logs_min_level: Default::default(),
-    // Modo setup nao carrega modelo: a escolha de GPU so passa a valer
-    // depois que a `pom.json` existir.
-    gpus: None,
-    thermal: Default::default(),
-    cache_type_k: config::KvCacheType::F16,
-    cache_type_v: config::KvCacheType::F16,
-    connection_key: String::new(),
-    gateway_port,
-    admin_exposure: config::AdminExposure::Localhost,
-    admin_access_token: None,
-    admin_password_default: false,
-    p2p_port,
-    inference_port: None,
-    bootstrap_nodes: vec![],
-    relay_peers: vec![],
-    advertise_addr: None,
-    network: Default::default(),
-    api_keys: vec![],
-    blocked_nodes: vec![],
-    // Um nó recém-configurado sobe com as bibliotecas detectadas; a tela de
-    // Modelos é onde essa lista deixa de ser um palpite.
-    model_dirs: None,
-    shard_dir: None,
-    workspace_root: None,
-    shard_max_gb: crate::storage::DEFAULT_SHARD_MAX_GB,
-    resources: Default::default(),
-    setup_model: None,
-    node_name: None,
-    huggingface_token: None,
-    slot_save_path: None,
-    slot_persist_prefix_cache: true,
-    slot_auto_max_bytes: None,
-    slot_auto_ttl_secs: None,
-    cache_ram_mib: None,
-}
+        profile: crate::profile::NodeProfile::Admin,
+        setup_pending: true,
+        local_auto_discovery: false,
+        tls_required: false,
+        // On from the start: a new network uses QUIC between its nodes and has
+        // its Chat, and the principal can turn either off in the preferences.
+        quic_enabled: true,
+        cluster_logs_enabled: false,
+        network_chat_enabled: true,
+        cluster_logs_min_level: Default::default(),
+        // Setup mode does not load a model: the GPU choice only takes effect
+        // once `pom.json` exists.
+        gpus: None,
+        thermal: Default::default(),
+        cache_type_k: config::KvCacheType::F16,
+        cache_type_v: config::KvCacheType::F16,
+        connection_key: String::new(),
+        gateway_port,
+        admin_exposure: config::AdminExposure::Localhost,
+        admin_access_token: None,
+        admin_password_default: false,
+        p2p_port,
+        inference_port: None,
+        bootstrap_nodes: vec![],
+        relay_peers: vec![],
+        relay: Default::default(),
+        advertise_addr: None,
+        network: Default::default(),
+        api_keys: vec![],
+        blocked_nodes: vec![],
+        // A freshly configured node comes up with the detected libraries; the
+        // Models screen is where that list stops being a guess.
+        model_dirs: None,
+        shard_dir: None,
+        workspace_root: None,
+        shard_max_gb: crate::storage::DEFAULT_SHARD_MAX_GB,
+        resources: Default::default(),
+        setup_model: None,
+        first_run_guide: None,
+        node_name: None,
+        huggingface_token: None,
+        slot_save_path: None,
+        slot_persist_prefix_cache: true,
+        slot_auto_max_bytes: None,
+        slot_auto_ttl_secs: None,
+        cache_ram_mib: None,
+    }
 }
 
-/// Set when `--setup` (or its environment token) asked for the wizard in this
-/// process. It is the only way into the wizard: a machine without a network
-/// otherwise creates a local one by itself (`webui::bootstrap_local_network`).
+/// Part of the deprecated wizard (see `start_setup_mode`): nothing sets it.
+#[allow(dead_code)]
 static WIZARD_FORCED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// The deprecated setup wizard's server: a router carrying only
+/// `/api/setup/*`. **Nothing calls it** - no flag, variable or startup failure
+/// leads here, and the interface has no screen for it. The code is kept until
+/// the wizard is removed for good; do not wire it back.
+#[allow(dead_code)]
 async fn start_setup_mode(
     bind_ip: std::net::IpAddr,
     gateway_port: u16,
@@ -1077,9 +1072,7 @@ async fn start_setup_mode(
     let setup_socket =
         tokio::net::UdpSocket::bind(SocketAddr::from(([0, 0, 0, 0], setup_p2p_port)))
             .await
-            .with_context(|| {
-                format!("não foi possível abrir a descoberta local na porta {setup_p2p_port}")
-            })?;
+            .with_context(|| format!("could not open local discovery on port {setup_p2p_port}"))?;
     setup_socket.set_broadcast(true)?;
     let local_discovery = crate::local_discovery::LocalDiscoveryRuntime::new(
         Arc::new(setup_socket),
@@ -1099,9 +1092,11 @@ async fn start_setup_mode(
         .route("/api/setup/hardware", get(webui::get_setup_hardware))
         .route("/api/setup/models", get(webui::get_setup_models))
         .route(
-            "/api/setup/geo-reference",
-            get(webui::get_setup_geo_reference),
+            "/api/setup/geo/countries",
+            get(webui::get_setup_geo_countries),
         )
+        .route("/api/setup/geo/cities", get(webui::get_setup_geo_cities))
+        .route("/api/setup/geo/nearest", get(webui::get_setup_geo_nearest))
         .route(
             "/api/setup/admin-anchor/preview",
             axum::routing::post(webui::preview_setup_anchor),
@@ -1275,9 +1270,9 @@ struct P2pStackArgs {
     profile: crate::profile::NodeProfile,
     node_display_name: String,
     advertise_addr: Option<String>,
-    /// Política inicial, aplicada antes da task de sondagem da `Network`.
-    /// Sem isso a URL já nascia em HTTPS pelo cliente global, mas a sonda
-    /// começava em HTTP e todos os RTTs remotos ficavam ausentes.
+    /// Initial policy, applied before the `Network` probing task.
+    /// Without it the URL was already born as HTTPS by the global client, but the
+    /// probe started on HTTP and all the remote RTTs were missing.
     tls_required: bool,
     cluster_logs: Arc<cluster_logs::ClusterLogs>,
     audit: Arc<reqlog::AuditLog>,
@@ -1296,7 +1291,11 @@ struct P2pStackArgs {
     /// the caller to resolve first would mean loading pkarr twice (once to
     /// resolve, once inside this function) or restructuring who loads it.
     relay_peer_keys: Vec<String>,
-    serve_relay: bool,
+    relay: config::RelayConfig,
+    relay_overrides: crate::network::RelayOverrides,
+    /// The operator declared a public address (`--public-addr`): the node
+    /// counts as reachable before AutoNAT says anything.
+    public_addr_configured: bool,
     use_default_relays: bool,
     no_discovery: bool,
     /// `--no-pkarr`: no pkarr client is created.
@@ -1423,8 +1422,17 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
         .with_advertise_addr(args.advertise_addr)
         .with_quic_ports(args.inference_quic_port, args.gateway_quic_port)
         .with_libp2p_peer_id(Some(libp2p_peer_id.clone()))
+        .with_relay_gate(
+            crate::network::RelayGate::new(
+                args.relay.everyone,
+                args.relay.cluster,
+                args.relay.transfers,
+            )
+            .with_overrides(args.relay_overrides),
+        )
         .with_admission(args.auth.clone(), args.admin_trust.clone()),
     );
+    net.relay_gate().set_reachable(args.public_addr_configured);
     net.set_policy_principal_pubkey(primary_authority_pubkey);
     net.set_tls(args.tls_required);
     net.set_cluster_logs_enabled(args.cluster_logs_enabled);
@@ -1437,13 +1445,13 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
     }
     if args.local_auto_discovery {
         if let Err(error) = net.set_local_auto_discovery(true).await {
-            warn!("descoberta local não pôde ser habilitada na inicialização: {error:#}");
+            warn!("local discovery could not be enabled at startup: {error:#}");
         }
     }
 
     if args.no_discovery {
         net.detach().await;
-        info!("🚫 --no-discovery: nó começa fora da rede, sem anunciar nem procurar peers");
+        info!("🚫 --no-discovery: the node starts outside the network, without announcing or looking for peers");
     }
 
     let assignment_shared: Arc<RwLock<Option<model::LayerAssignment>>> =
@@ -1471,7 +1479,6 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
         &bootstrap_nodes,
         &resolved_relay_addrs,
         &args.relay_peer_keys,
-        args.serve_relay,
         args.use_default_relays,
         net.clone(),
         libp2p_keypair,
@@ -1504,10 +1511,11 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
             let mut ticker = interval(Duration::from_secs(5));
             loop {
                 ticker.tick().await;
-                // Mesmo construtor do caminho UDP (`Network::self_announce`):
-                // capabilities, papel e hostname iguais, e publica **sempre**,
-                // com ou sem assignment. Um nó ainda sem modelo precisa ser
-                // visto pela internet do mesmo jeito que já era visto na LAN.
+                // Same constructor as the UDP path (`Network::self_announce`):
+                // same capabilities, role and hostname, and it **always**
+                // publishes, with or without an assignment. A node still without
+                // a model has to be seen from the internet the same way it was
+                // already seen on the LAN.
                 let data = {
                     let asgn = asgn_disc.read().await;
                     net_disc.gossip_announce_bytes(asgn.as_ref())
@@ -1578,8 +1586,9 @@ fn merged_bootstrap_nodes(from_config: &[String], cli: &str) -> Vec<String> {
     nodes
 }
 
-/// Tarefas de fundo que acompanham todo gateway.
+/// Background tasks that go with every gateway.
 fn spawn_gateway_companions(gw_state: &GatewayState, database: &Arc<db::PomDb>, bind_port: u16) {
+    crate::plugin_stage_link::install(gw_state.clone());
     crate::windows_firewall::spawn_startup_check(database.clone(), bind_port);
     crate::webui::spawn_network_settings_ratchet(gw_state.clone());
     crate::plugins::spawn_host_context(gw_state.clone());
@@ -1591,12 +1600,13 @@ fn spawn_gateway_companions(gw_state: &GatewayState, database: &Arc<db::PomDb>, 
     crate::webui::spawn_admission_poller(gw_state.clone());
     crate::webui::spawn_member_list_keeper(gw_state.clone());
     crate::webui::spawn_key_reclaimer(gw_state.clone());
+    crate::admin::spawn_trust_chain_keeper(gw_state.clone());
     crate::webui::spawn_departure_worker(gw_state.clone());
 }
 
-/// Sobe o nó configurado: rede, gateway com todas as rotas e, se houver, a
-/// fatia anotada por um reinício. O modelo nunca vem da linha de comando: ele é
-/// implantado pela interface.
+/// Brings up the configured node: network, gateway with all the routes and, if
+/// there is one, the slice recorded by a restart. The model never comes from the
+/// command line: it is deployed through the interface.
 async fn start_node(
     gateway_port: u16,
     database: Arc<db::PomDb>,
@@ -1608,7 +1618,7 @@ async fn start_node(
     bootstrap_nodes: Vec<String>,
     relay_peer_keys: Vec<String>,
     pkarr_peer_keys: Vec<String>,
-    serve_relay: bool,
+    relay_overrides: crate::network::RelayOverrides,
     advertise_addr_cli: String,
     public_addr_cli: String,
     cluster_logs: Arc<cluster_logs::ClusterLogs>,
@@ -1619,15 +1629,16 @@ async fn start_node(
     let identity = identity::Identity::load_or_create(&identity::key_path());
     let node_id = identity.node_id.0.clone();
     let pubkey = identity.public_key_hex();
-    // Chaves internas que um nó trocou antes de o principal saber aposentá-las
-    // (a troca da migração para hash): só a mais nova de cada nó vale.
+    // Internal keys a node swapped before the principal knew to retire them
+    // (the swap of the migration to hash): only the newest of each node counts.
     match database.revoke_superseded_node_keys(&node_id) {
         Ok(0) => {}
-        // A validação lê o banco, não o retrato em `api_keys`: nada a recarregar.
-        Ok(count) => info!("{count} chave(s) interna(s) substituída(s) revogada(s)"),
-        Err(error) => warn!("não foi possível revogar chaves internas substituídas: {error:#}"),
+        // Validation reads the database, not the snapshot in `api_keys`: nothing to reload.
+        Ok(count) => info!("{count} replaced internal key(s) revoked"),
+        Err(error) => warn!("could not revoke replaced internal keys: {error:#}"),
     }
     let plugins = plugins::PluginManager::runtime_with_database(&node_id, database.clone());
+    plugin_engine::install(plugins.clone());
 
     let node_display_name = match app_config.node_name.clone() {
         Some(name) => name,
@@ -1640,11 +1651,11 @@ async fn start_node(
     );
     let ollama_port = advertised_ollama_port(&ollama_url);
     let inference_port = Some(app_config.inference_port_or_default());
-    // Portas QUIC derivadas do `p2p_port` deste nó: ver `quic::gateway_quic_port`.
+    // QUIC ports derived from this node's `p2p_port`: see `quic::gateway_quic_port`.
     let inference_quic_port =
         inference_port.and_then(|_| crate::quic::inference_quic_port(app_config.p2p_port));
     let gateway_quic_port = crate::quic::gateway_quic_port(app_config.p2p_port);
-    peer_client::set_quic_ativo(app_config.quic_enabled);
+    peer_client::set_quic_enabled(app_config.quic_enabled);
     let auth_state: Arc<RwLock<config::Config>> = Arc::new(RwLock::new(app_config.clone()));
     let admin_trust = Arc::new(crate::admin_trust::AdminTrust::load_or_empty(
         config::admin_trust_path(),
@@ -1675,7 +1686,9 @@ async fn start_node(
         admin_trust: admin_trust.clone(),
         database: database.clone(),
         relay_peer_keys: relay_peer_keys.clone(),
-        serve_relay,
+        relay: app_config.relay,
+        relay_overrides,
+        public_addr_configured: !public_addr_cli.trim().is_empty(),
         use_default_relays: !no_default_relays,
         no_discovery,
         no_pkarr,
@@ -1693,11 +1706,7 @@ async fn start_node(
             .is_none()
     {
         warn!(
-            "perfil admin sem concessão administrativa válida; capacidade efetiva permanece node. \
-             Para ancorar o primeiro principal nesta máquina: `pom admin-anchor --cluster-id <nome>`, \
-             confira a impressão digital exibida e repita com `--fingerprint <valor> --confirm`. \
-             Para um nó que já tem principal no cluster, copie {} do admin por um canal seu e rode \
-             `pom admin-anchor --from <arquivo> --fingerprint <valor> --confirm`",
+            "admin profile without a valid administrative grant; the effective capability stays node. To anchor the first principal on this machine: `pom admin-anchor --cluster-id <name>`, check the fingerprint shown and repeat with `--fingerprint <value> --confirm`. For a node whose cluster already has a principal, copy {} from the admin through a channel of your own and run `pom admin-anchor --from <file> --fingerprint <value> --confirm`",
             config::admin_trust_filename()
         );
     }
@@ -1719,7 +1728,6 @@ async fn start_node(
             node.clone(),
             Some(gateway_port),
             None,
-            serve_relay,
             net.clone(),
             app_config.network.geo_label.clone(),
         ))
@@ -1742,23 +1750,24 @@ async fn start_node(
         .effective_authority(&authority_principal, app_config.profile)
         .is_some();
     net.set_policy_principal_pubkey(admin_trust.current_primary().pubkey);
+    net.set_trust_version(admin_trust.chain_version());
     cluster_logs.set_admin_receiver(local_is_admin);
     audit.set_admin_receiver(local_is_admin);
 
-    // ── TLS entre peers ──────────────────────────────────────────────────────
-    // O certificado é derivado da identidade que acabou de ser carregada e
-    // nunca vai para o disco (ver `tls.rs`). Ele existe desde o arranque mesmo
-    // com a flag desligada, porque é o que permite ligar TLS sem reiniciar: o
-    // servidor já sabe falar as duas línguas, e a flag só decide se texto claro
-    // remoto continua aceito.
-    // Endereços que entram no certificado do navegador: os locais desta
-    // máquina, o que o operador fixou, e o hostname. Sem eles o navegador
-    // reclamaria do host, e não do emissor.
+    // ── TLS between peers ────────────────────────────────────────────────────
+    // The certificate is derived from the identity that was just loaded and
+    // never goes to disk (see `tls.rs`). It exists from startup even with the
+    // flag off, because it is what allows turning TLS on without restarting: the
+    // server already speaks both languages, and the flag only decides whether
+    // remote clear text is still accepted.
+    // Addresses that go into the browser certificate: this machine's local
+    // ones, the one the operator pinned, and the hostname. Without them the
+    // browser would complain about the host, and not about the issuer.
     let tls_sans = serve::browser_sans(app_config.advertise_addr.as_deref());
     let quic_config = match serve::quic_server_config(&identity) {
         Ok(config) => Some(config),
         Err(error) => {
-            warn!("endpoint HTTP/3 indisponível, mantendo fallback TCP: {error}");
+            warn!("HTTP/3 endpoint unavailable, keeping the TCP fallback: {error}");
             None
         }
     };
@@ -1766,7 +1775,7 @@ async fn start_node(
         match serve::TlsServer::from_identity(&identity, app_config.tls_required, &tls_sans) {
             Ok(t) => Some(t),
             Err(e) => {
-                warn!("não deu para derivar o certificado deste nó, TLS indisponível: {e}");
+                warn!("could not derive the certificate of this node, TLS unavailable: {e}");
                 None
             }
         };
@@ -1869,12 +1878,12 @@ async fn start_node(
         crate::gateway::start_gateway_with_ready(gw_state, gateway_port, gateway_ready).await
     });
 
-    // Uma fatia anotada é um reinício pedido pela interface, não uma intenção
-    // nova: o nó volta servindo o que servia. O journal não é consumido antes
-    // de a tentativa ser persistida novamente, porque um crash nativo pode
-    // acontecer entre a leitura e o início do carregamento.
+    // A recorded slice is a restart requested by the interface, not a new
+    // intent: the node comes back serving what it served. The journal is not
+    // consumed before the attempt is persisted again, because a native crash can
+    // happen between the read and the start of the load.
     if lastslice::auto_resume_disabled() {
-        warn!("retomada automática bloqueada por comando undeploy");
+        warn!("automatic resume blocked by the undeploy command");
     } else {
         match lastslice::inspect() {
             lastslice::LastSlice::Serving(cfg) => {
@@ -1884,20 +1893,20 @@ async fn start_node(
                     Ok(attempt) if lastslice::should_resume(attempt) => {
                         match node_runtime.apply_after_restart(cfg).await {
                             Ok(()) => info!(
-                                "↩️  fatia restaurada após reinício: {label} {a}-{b} (tentativa {attempt})"
+                                "↩️  slice restored after restart: {label} {a}-{b} (attempt {attempt})"
                             ),
-                            Err(e) => warn!("não deu para restaurar a fatia anotada: {e}"),
+                            Err(e) => warn!("could not restore the recorded slice: {e}"),
                         }
                     }
                     Ok(attempt) => node_runtime.note_unloadable_slice(&cfg, attempt).await,
-                    Err(e) => warn!("não deu para restaurar a fatia anotada: {e}"),
+                    Err(e) => warn!("could not restore the recorded slice: {e}"),
                 }
             }
             lastslice::LastSlice::Idle(cfg) => {
                 let label = cfg.model_label.clone();
                 let (a, b) = (cfg.start_layer, cfg.end_layer);
                 node_runtime.restore_idle(cfg).await;
-                info!("↩️  fatia ociosa restaurada após reinício: {label} {a}-{b}");
+                info!("↩️  idle slice restored after restart: {label} {a}-{b}");
             }
             lastslice::LastSlice::Pending { cfg, attempts } => {
                 if attempts >= lastslice::MAX_AUTOMATIC_ATTEMPTS {
@@ -1908,14 +1917,14 @@ async fn start_node(
                             match node_runtime.apply_after_restart(cfg).await {
                                 Ok(()) => {
                                     info!(
-                                        "↩️  retomando implantação pendente na tentativa {attempt}"
+                                        "↩️  resuming the pending deployment on attempt {attempt}"
                                     )
                                 }
-                                Err(e) => warn!("não deu para retomar a implantação pendente: {e}"),
+                                Err(e) => warn!("could not resume the pending deployment: {e}"),
                             }
                         }
                         Ok(attempt) => node_runtime.note_unloadable_slice(&cfg, attempt).await,
-                        Err(e) => warn!("não deu para persistir a retomada da implantação: {e}"),
+                        Err(e) => warn!("could not persist the deployment resume: {e}"),
                     }
                 }
             }
@@ -1941,7 +1950,7 @@ fn application_log_filter() -> EnvFilter {
         .add_directive(
             format!("{MAINLINE_SOCKET_TARGET}=error")
                 .parse()
-                .expect("diretiva de log Mainline válida"),
+                .expect("valid Mainline log directive"),
         )
 }
 
@@ -1982,7 +1991,7 @@ fn windows_diagnostic_log_writer() -> std::sync::Mutex<WindowsDiagnosticLogWrite
         Ok(file) => WindowsDiagnosticLogWriter::File(file),
         Err(error) => {
             eprintln!(
-                "não foi possível abrir o log Windows em {}: {error}",
+                "could not open the Windows log in {}: {error}",
                 path.display()
             );
             WindowsDiagnosticLogWriter::Stderr(std::io::stderr())
@@ -1996,33 +2005,33 @@ mod main_tests {
     use super::*;
 
     #[test]
-    fn o_binario_windows_e_um_app_gui_e_o_shell_tem_tray_webview_e_saida() {
+    fn the_windows_binary_is_a_gui_app_and_the_shell_has_tray_webview_and_exit() {
         let main_source = include_str!("main.rs");
         let shell_source = include_str!("windows_status.rs");
 
         assert!(
             main_source.contains("#![cfg_attr(windows, windows_subsystem = \"windows\")]"),
-            "o executável Windows não pode alocar um console próprio"
+            "the Windows executable cannot allocate its own console"
         );
         assert!(
             shell_source.contains("WebViewBuilder"),
-            "o shell Windows precisa criar um WebView nativo"
+            "the Windows shell must create a native WebView"
         );
         assert!(
             shell_source.contains("TrayIconBuilder"),
-            "o shell Windows precisa instalar um ícone na bandeja"
+            "the Windows shell must install a tray icon"
         );
         assert!(
             shell_source.contains("MenuEvent::set_event_handler"),
-            "o shell Windows precisa encaminhar os cliques do menu ao loop nativo"
+            "the Windows shell must forward the menu clicks to the native loop"
         );
         assert!(
             shell_source.contains("WindowAction::HideToTray"),
-            "fechar a janela deve mantê-la disponível na bandeja"
+            "closing the window must keep it available in the tray"
         );
         assert!(
             shell_source.contains("WindowAction::Quit"),
-            "o menu da bandeja precisa ter uma saída terminal"
+            "the tray menu must have a terminal exit"
         );
     }
 
@@ -2078,9 +2087,9 @@ mod main_tests {
         );
     }
 
-    /// Toda opção visível da linha de comando tem variável de ambiente, com o
-    /// nome derivado da marca e sem repetir. `mut_arg` com id errado entra em
-    /// pânico: montar o comando aqui também prova que a tabela bate com `Args`.
+    /// Every visible command line option has an environment variable, with the
+    /// name derived from the brand and without repeats. `mut_arg` with a wrong id
+    /// panics: building the command here also proves the table matches `Args`.
     #[test]
     fn every_cli_option_has_its_env_var() {
         let command = cli_command();
@@ -2090,21 +2099,18 @@ mod main_tests {
                 continue;
             }
             let id = arg.get_id().as_str();
-            if MANUAL_ARG_ENV.iter().any(|(arg_id, _)| *arg_id == id) {
-                continue;
-            }
             let (_, suffix) = ARG_ENV
                 .iter()
                 .find(|(arg_id, _)| *arg_id == id)
-                .unwrap_or_else(|| panic!("--{id} sem variável de ambiente em ARG_ENV"));
-            let env = arg.get_env().expect("variável aplicada por cli_command");
+                .unwrap_or_else(|| panic!("--{id} without an environment variable in ARG_ENV"));
+            let env = arg.get_env().expect("variable applied by cli_command");
             assert_eq!(env.to_str(), Some(brand::env_var(suffix).as_str()));
-            assert!(names.insert(env.to_owned()), "variável repetida: {env:?}");
+            assert!(names.insert(env.to_owned()), "repeated variable: {env:?}");
         }
     }
 
-    /// As portas vindas do ambiente vencem o `pom.json`; da linha de comando,
-    /// não - a gravada continua valendo.
+    /// The ports coming from the environment beat `pom.json`; from the command
+    /// line, they do not - the saved one still applies.
     #[test]
     fn env_ports_override_the_config_and_cli_ports_do_not() {
         let config: config::Config =
@@ -2131,7 +2137,7 @@ mod main_tests {
     }
 
     #[test]
-    fn diagnostico_do_app_gui_tem_arquivo_estavel() {
+    fn the_gui_app_diagnostic_has_a_stable_file() {
         assert_eq!(windows_diagnostic_log_filename(), "pom.log");
     }
 
@@ -2140,27 +2146,20 @@ mod main_tests {
         let source = include_str!("main.rs");
         let gateway = source
             .find("Bind the gateway before restoring a persisted slice")
-            .expect("o arranque precisa iniciar o gateway");
+            .expect("the startup must start the gateway");
         let restore = source[gateway..]
             .find("match lastslice::inspect()")
             .map(|offset| gateway + offset)
-            .expect("o arranque precisa tratar a fatia persistida");
+            .expect("the startup must handle the persisted slice");
         assert!(
             gateway < restore,
-            "a restauração da fatia não pode atrasar o bind do gateway"
+            "restoring the slice cannot delay the gateway bind"
         );
     }
 
-    /// Todo nó anuncia a porta do Ollama da URL configurada, sem flag nenhuma:
-    /// quando o anúncio dependia de uma flag, um nó sem ela servia o Ollama
-    /// local sem que nenhum peer soubesse.
-    #[test]
-    fn wizard_is_an_alias_of_setup_and_defaults_off() {
-        assert!(!Args::parse_from(["pom"]).setup);
-        assert!(Args::parse_from(["pom", "--setup"]).setup);
-        assert!(Args::parse_from(["pom", "--wizard"]).setup);
-    }
-
+    /// Every node announces the Ollama port of the configured URL, with no flag:
+    /// when the announce depended on a flag, a node without it served the local
+    /// Ollama without any peer knowing.
     #[test]
     fn every_node_advertises_the_ollama_port() {
         let args = Args::parse_from(["pom"]);
@@ -2169,17 +2168,14 @@ mod main_tests {
 
     #[test]
     fn runtime_build_commit_overrides_the_compiled_fallback() {
-        assert_eq!(
-            build_commit_from(Some(" 97ec1e4 "), "desconhecido"),
-            "97ec1e4"
-        );
+        assert_eq!(build_commit_from(Some(" 97ec1e4 "), "unknown"), "97ec1e4");
         assert_eq!(build_commit_from(Some("  "), "2a456c8"), "2a456c8");
         assert_eq!(build_commit_from(None, "2a456c8"), "2a456c8");
     }
 
     #[test]
-    fn pom_desenv_accepts_only_exact_one() {
-        assert!(pom_desenv_enabled_from(Some("1")));
+    fn pom_dev_mode_accepts_only_exact_one() {
+        assert!(pom_dev_mode_enabled_from(Some("1")));
         for value in [
             None,
             Some(""),
@@ -2188,12 +2184,12 @@ mod main_tests {
             Some("01"),
             Some("1 "),
         ] {
-            assert!(!pom_desenv_enabled_from(value));
+            assert!(!pom_dev_mode_enabled_from(value));
         }
     }
 
-    /// `--advertise-addr` é mais específico que `--public-addr`, e os dois
-    /// vencem o que já estava salvo em `pom.json`.
+    /// `--advertise-addr` is more specific than `--public-addr`, and both
+    /// beat what was already saved in `pom.json`.
     #[test]
     fn advertise_addr_wins_over_public_addr_wins_over_config() {
         assert_eq!(
@@ -2217,7 +2213,23 @@ mod main_tests {
             application_log_filter()
                 .to_string()
                 .contains("mainline::rpc::socket=error"),
-            "timeouts de leitura do socket DHT devem ser silenciosos no log da aplicação"
+            "DHT socket read timeouts must be silent in the application log"
+        );
+    }
+}
+
+#[cfg(test)]
+mod llama_engine_contract {
+    /// `llama-engine` does not depend on `brand`: the prefix of the POM GGUF keys
+    /// (`pom.<suffix>`) is a constant of its own. This test guarantees it stays
+    /// equal to the `slug` of `brand.json`, so that the GGUF reader and the GGUF writer
+    /// use the same name.
+    #[test]
+    fn gguf_prefix_matches_the_brand_slug() {
+        assert_eq!(llama_engine::GGUF_PREFIX, brand::slug());
+        assert_eq!(
+            llama_engine::gguf_key("tp_size"),
+            brand::gguf_key("tp_size")
         );
     }
 }

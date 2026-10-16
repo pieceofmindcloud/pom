@@ -1,18 +1,18 @@
 // @vitest-environment jsdom
 /**
- * Depois de uma pergunta no chat, o menu parava de responder: a URL do link
- * clicado entrava na barra de endereços e a tela continuava sendo o chat. Só um
- * F5 devolvia a navegação.
+ * After a question in the chat, the menu stopped responding: the URL of the
+ * clicked link went into the address bar and the screen remained the chat. Only
+ * an F5 brought navigation back.
  *
- * A causa não estava no menu. Ao fim do stream o chat congela um retrato da
- * telemetria daquela execução, e o efeito que grava esse retrato comparava por
- * **referência** um mapa que nascia novo a cada render - `useQueries` devolve um
- * array novo toda vez. O efeito gravava estado, o estado disparava outro render,
- * e o React abortava a árvore com "Maximum update depth exceeded". Nada mais
- * commitava, inclusive a troca de rota.
+ * The cause was not in the menu. At the end of the stream the chat freezes a
+ * snapshot of that run's telemetry, and the effect that stores that snapshot
+ * compared by **reference** a map that was born new on every render -
+ * `useQueries` returns a new array every time. The effect stored state, the
+ * state triggered another render, and React aborted the tree with "Maximum
+ * update depth exceeded". Nothing else committed, the route change included.
  *
- * O teste percorre o caminho do usuário: abre `/chat`, envia uma pergunta, e
- * clica em "Painel" no menu. O que ele exige é a tela nova na tela.
+ * The test walks the user's path: it opens `/chat`, sends a question, and
+ * clicks "Painel" in the menu. What it requires is the new screen on screen.
  */
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -33,8 +33,8 @@ const nodeData = {
 };
 
 /**
- * O `x_pom` que o nó manda no último chunk. Um salto basta: o laço nascia do
- * mapa de runtimes por nó, e um nó já monta o mapa.
+ * The `x_pom` the node sends in the last chunk. One hop is enough: the loop was
+ * born from the per-node runtimes map, and one node already builds the map.
  */
 const trace: RequestTrace = {
   model: "qwen",
@@ -59,6 +59,12 @@ vi.mock("../lib/api", async (importOriginal) => {
   };
 });
 
+// The sidebar's plugin menu invalidates the plugin list; this file mounts no query client.
+vi.mock("@tanstack/react-query", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tanstack/react-query")>()),
+  useQueryClient: () => ({ invalidateQueries: () => Promise.resolve() }),
+}));
+
 vi.mock("../lib/imageResize", () => ({
   resizeImageForVision: async () => ({
     data: "data:image/jpeg;base64,ZmFrZQ==",
@@ -71,22 +77,25 @@ vi.mock("../lib/imageResize", () => ({
 }));
 
 /**
- * Um laço de render trava o worker para sempre - o defeito original queimava
- * 100% de CPU sem nunca devolver -, e teste que não termina não avisa ninguém.
- * O corte transforma a regressão numa falha legível.
+ * A render loop hangs the worker forever - the original defect burned 100% of
+ * CPU without ever returning -, and a test that does not finish warns nobody.
+ * The cut turns the regression into a readable failure.
  */
 const loop = vi.hoisted(() => ({ renders: 0, limit: 400, tripped: false }));
 
 const chatScenario = vi.hoisted(() => ({
   cluster: null as unknown,
   capabilities: null as unknown,
+  models: [{ id: "qwen" }] as { id: string }[],
+  /** Models on this machine's disk, for the "what next" steps. */
+  localModels: [] as { name: string; path: string; shard_range: null }[],
 }));
 
 /**
- * `usePeerRuntimes` devolve um array novo a cada chamada de propósito: é o que
- * `useQueries` faz de verdade, e é a instabilidade que o defeito explorava. Um
- * dublê que devolvesse sempre o mesmo array esconderia o defeito em vez de
- * prová-lo.
+ * `usePeerRuntimes` returns a new array on every call on purpose: it is what
+ * `useQueries` really does, and it is the instability the defect exploited. A
+ * double that always returned the same array would hide the defect instead of
+ * proving it.
  */
 vi.mock("../lib/queries", () => ({
   useAdminSurface: () => ({ data: "available", isLoading: false, isError: false }),
@@ -97,7 +106,8 @@ vi.mock("../lib/queries", () => ({
   useNetworkChat: () => ({ data: { messages: [] }, isSuccess: true }),
   useChatCapabilities: () => ({ data: chatScenario.capabilities }),
   useInvalidate: () => vi.fn(),
-  useServableModels: () => ({ data: [{ id: "qwen" }] }),
+  useServableModels: () => ({ data: chatScenario.models }),
+  useLocalCatalog: () => ({ data: { models: chatScenario.localModels, shard_sets: [] } }),
   useInferenceHeads: () => ({ data: undefined, isLoading: false, isError: false }),
   useChatTelemetryNetwork: () => ({ data: undefined, isLoading: false, isError: false }),
   usePeerRuntimes: (nodeIds: string[]) => {
@@ -115,6 +125,11 @@ vi.mock("../lib/queries", () => ({
 vi.mock("../components/Logo", () => ({
   LogoFull: () => <div aria-hidden="true" />,
   LogoMark: () => <div aria-hidden="true" />,
+}));
+// The first run wizard asks the node which step is due; this shell has none.
+vi.mock("../components/FirstRunWizard", () => ({
+  FirstRunWizard: () => null,
+  useFirstRunWizard: () => ({ loading: false, step: null }),
 }));
 vi.mock("./Dashboard", () => ({ Dashboard: () => <div>tela-painel</div> }));
 
@@ -146,10 +161,67 @@ afterEach(() => {
   loop.tripped = false;
   chatScenario.cluster = null;
   chatScenario.capabilities = null;
+  chatScenario.models = [{ id: "qwen" }];
+  chatScenario.localModels = [];
 });
 
-describe("navegação depois do chat", () => {
-  it("troca de tela ao clicar no menu depois de uma resposta", async () => {
+describe("navigation after the chat", () => {
+  it("opens an empty conversation without a title bar", async () => {
+    mount();
+    await screen.findByTestId("chat-empty");
+    expect(screen.queryByRole("heading", { name: "Chat", level: 1 })).toBeNull();
+    expect(screen.queryByText("cobertura indisponível")).toBeNull();
+  });
+
+  it("shows the missing puzzle piece, and no composer or RAG, while the network serves no model", async () => {
+    chatScenario.models = [];
+    chatScenario.capabilities = { vision: "unavailable", coverage: "unavailable", rag: "supported", rag_collections: ["docs"] };
+    mount("admin");
+
+    const missing = await screen.findByTestId("chat-missing-piece");
+    expect(missing.textContent).toContain("Falta uma peça: a rede não está servindo nenhum modelo");
+    expect(missing.querySelector('img[alt="POM"]')).toBeTruthy();
+    expect(screen.getAllByTestId("puzzle-piece")).toHaveLength(3);
+    expect(screen.getByTestId("missing-piece-slot")).toBeTruthy();
+    // No model on this machine: the next step is downloading one.
+    const steps = screen.getByTestId("no-model-steps");
+    expect(steps.querySelector('[data-step="download"]')?.getAttribute("data-state")).toBe("current");
+    expect(steps.querySelector('[data-step="download"] a')?.getAttribute("href")).toContain("/models/remote");
+    expect(screen.getByRole("link", { name: "Como o POM funciona" })).toBeTruthy();
+    // No conversation yet: no way to a history that does not exist.
+    expect(screen.queryByRole("button", { name: "Ver conversas anteriores" })).toBeNull();
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.queryByRole("button", { name: /RAG/i })).toBeNull();
+  });
+
+  it("points an administrator with a model on disk to deploying it, and offers the earlier conversations", async () => {
+    chatScenario.models = [];
+    chatScenario.localModels = [{ name: "qwen.gguf", path: "/models/qwen.gguf", shard_range: null }];
+    window.localStorage.setItem("pom.chat.sessions", JSON.stringify([
+      // The open one is new and empty; an older one has turns.
+      { id: "c0", title: "Nova", model: "qwen", messages: [], updatedAt: "2026-09-07T10:00:00.000Z" },
+      { id: "c1", title: "Conversa antiga", model: "qwen", messages: [{ id: "m1", role: "user", content: "oi de antes", at: "2026-09-06T10:00:00.000Z" }], updatedAt: "2026-09-06T10:00:00.000Z" },
+    ]));
+    mount("admin");
+
+    const steps = await screen.findByTestId("no-model-steps");
+    expect(steps.querySelector('[data-step="download"]')?.getAttribute("data-state")).toBe("done");
+    expect(steps.querySelector('[data-step="deploy"]')?.getAttribute("data-state")).toBe("current");
+    expect(steps.querySelector('[data-step="deploy"] a')?.getAttribute("href")).toContain("/deploy");
+
+    fireEvent.click(screen.getByRole("button", { name: "Ver conversas anteriores" }));
+    expect(await screen.findByText("oi de antes")).toBeTruthy();
+  });
+
+  it("asks a machine that cannot deploy to call an administrator", async () => {
+    chatScenario.models = [];
+    mount("infer");
+    const missing = await screen.findByTestId("chat-missing-piece");
+    expect(missing.textContent).toContain("Peça a um administrador");
+    expect(screen.queryByTestId("no-model-steps")).toBeNull();
+  });
+
+  it("switches screen when the menu is clicked after a response", async () => {
     mount();
 
     const composer = await screen.findByRole("textbox");
@@ -160,7 +232,7 @@ describe("navegação depois do chat", () => {
       fireEvent.click(screen.getByRole("button", { name: /enviar/i }));
     });
 
-    // A resposta chegou: o turno terminou e a telemetria foi congelada.
+    // The response arrived: the turn ended and the telemetry was frozen.
     await screen.findByText("Olá");
 
     act(() => {
@@ -171,16 +243,26 @@ describe("navegação depois do chat", () => {
     expect(loop.tripped).toBe(false);
   });
 
-  it("não duplica o histórico quando o infer já o tem no menu principal", async () => {
+  it("shows no conversation list or New chat while there is no conversation", async () => {
+    mount();
+    await screen.findByTestId("chat-empty");
+    expect(screen.queryByTestId("chat-session-list")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Conversa nova" })).toBeNull();
+  });
+
+  it("does not duplicate the history when infer already has it in the main menu", async () => {
+    window.localStorage.setItem("pom.chat.sessions", JSON.stringify([
+      { id: "older", title: "Conversa antiga", model: "qwen", messages: [{ id: "m1", role: "user", content: "oi", at: "2026-09-06T10:00:00.000Z" }], updatedAt: "2026-09-06T10:00:00.000Z" },
+    ]));
     mount("infer");
 
-    await screen.findByPlaceholderText("Escreva para a rede…");
+    await screen.findByRole("textbox");
     expect(screen.getAllByTestId("chat-session-list")).toHaveLength(1);
     expect(screen.getAllByRole("button", { name: "Conversa nova" })).toHaveLength(1);
     expect(screen.getByRole("button", { name: "Rede" })).toBeTruthy();
   });
 
-  it("mostra o alvo de largada, identifica o formato e remove o anexo sem apagar o rascunho", async () => {
+  it("shows the drop target, identifies the format and removes the attachment without erasing the draft", async () => {
     mount();
 
     const composer = await screen.findByRole("textbox");
@@ -210,7 +292,7 @@ describe("navegação depois do chat", () => {
     expect((composer as HTMLTextAreaElement).value).toBe("texto antes do anexo");
   });
 
-  it("aceita uma largada de qualquer tipo de ficheiro", async () => {
+  it("accepts a drop of any file type", async () => {
     mount();
 
     const dropTarget = await screen.findByRole("group", { name: "Campo de mensagem" });
@@ -224,7 +306,7 @@ describe("navegação depois do chat", () => {
   });
 
   it.each(["admin", "node", "infer"] as const)(
-    "recusa imagem largada quando o modelo não tem visão no perfil %s",
+    "refuses a dropped image when the model has no vision in the %s profile",
     async (profile) => {
       mount(profile);
 
@@ -239,7 +321,7 @@ describe("navegação depois do chat", () => {
   );
 
   it.each(["node", "infer"] as const)(
-    "libera anexo de imagem no perfil %s quando a rede agregada confirma visão e cobertura",
+    "allows an image attachment in the %s profile when the aggregated network confirms vision and coverage",
     async (profile) => {
       chatScenario.cluster = {
         active_model: "qwen",
@@ -265,7 +347,7 @@ describe("navegação depois do chat", () => {
     },
   );
 
-  it("mostra indisponível quando a leitura agregada é recusada, sem inventar cobertura vazia",
+  it("shows unavailable when the aggregated reading is refused, without inventing empty coverage",
     async () => {
       chatScenario.cluster = {
         active_model: "qwen",
@@ -274,6 +356,10 @@ describe("navegação depois do chat", () => {
         peers: [],
       };
       chatScenario.capabilities = { vision: "unavailable", coverage: "unavailable" };
+      // The title bar, where coverage shows, belongs to a conversation with turns.
+      window.localStorage.setItem("pom.chat.sessions", JSON.stringify([
+        { id: "c1", title: "Conversa", model: "qwen", messages: [{ id: "m1", role: "user", content: "oi", at: "2026-09-06T10:00:00.000Z" }], updatedAt: "2026-09-06T10:00:00.000Z" },
+      ]));
 
       mount("infer");
 

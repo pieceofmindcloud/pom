@@ -1,8 +1,8 @@
-//! Catraca autenticada da política de coleta de logs.
+//! Authenticated ratchet of the log collection policy.
 //!
-//! O booleano no `Announce` só desperta uma consulta. A resposta do principal,
-//! protegida pela chave de conexão, é a única fonte que pode mudar o valor
-//! local.
+//! The boolean in the `Announce` only triggers a query. The principal's answer,
+//! protected by the connection key, is the only source that can change the
+//! local value.
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -69,10 +69,10 @@ pub(crate) async fn fetch_from_principal_candidates(
             tunnel,
         )
         .await
-        .context("não deu para falar com o principal")?;
+        .context("could not reach the principal")?;
     let body: LogsReply = response
         .json()
-        .context("resposta da política de logs não parseou")?;
+        .context("logs policy response did not parse")?;
     Ok(body.logs_enabled)
 }
 
@@ -81,7 +81,7 @@ pub fn adopt_or_keep(local: bool, fetched: Result<bool>) -> PolicyOutcome {
         Ok(value) if value != local => PolicyOutcome::Adopt(value),
         Ok(_) => PolicyOutcome::Unchanged,
         Err(error) => {
-            warn!("busca da política de logs falhou, mantendo o valor local ({local}): {error}");
+            warn!("logs policy fetch failed, keeping the local value ({local}): {error}");
             PolicyOutcome::Unchanged
         }
     }
@@ -111,7 +111,7 @@ pub(crate) fn spawn_ratchet(
             let candidates =
                 net.order_gateway_bases(&peer.node_id, peer.gateway_candidates_with_tls(announced));
             if candidates.is_empty() {
-                warn!("principal {principal} não anuncia porta de gateway; política de logs não pôde ser confirmada");
+                warn!("principal {principal} does not announce a gateway port; logs policy could not be confirmed");
                 continue;
             }
             let (local, connection_key) = {
@@ -139,14 +139,14 @@ pub(crate) fn spawn_ratchet(
                     let mut cfg = auth.write().await;
                     cfg.cluster_logs_enabled = value;
                     if let Err(error) = cfg.save() {
-                        warn!("política de logs confirmada mas não gravada: {error}");
+                        warn!("logs policy confirmed but not written: {error}");
                     }
                 }
                 net.set_cluster_logs_enabled(value);
                 logs.set_enabled(value);
                 info!(
-                    "política de logs do cluster adotada do principal: {}",
-                    if value { "ligada" } else { "desligada" }
+                    "cluster logs policy adopted from the principal: {}",
+                    if value { "on" } else { "off" }
                 );
             }
         }
@@ -188,7 +188,7 @@ mod tests {
     }
 
     #[test]
-    fn anuncio_do_principal_discordante_dispara_busca() {
+    fn a_disagreeing_principal_announce_triggers_a_fetch() {
         assert_eq!(
             on_announce(false, true, true, PRINCIPAL),
             PolicyOutcome::Fetch {
@@ -198,7 +198,7 @@ mod tests {
     }
 
     #[test]
-    fn anuncio_de_no_comum_nunca_vira_fonte_da_politica() {
+    fn a_regular_node_announce_never_becomes_the_policy_source() {
         assert_eq!(
             on_announce(false, true, false, PRINCIPAL),
             PolicyOutcome::Unchanged
@@ -206,7 +206,7 @@ mod tests {
     }
 
     #[test]
-    fn falha_na_busca_preserva_o_valor_local() {
+    fn a_failed_fetch_preserves_the_local_value() {
         assert_eq!(
             adopt_or_keep(true, Err(anyhow::anyhow!("principal fora do ar"))),
             PolicyOutcome::Unchanged
@@ -217,11 +217,11 @@ mod tests {
         );
     }
 
-    /// Dois nós reais do testkit usam listeners TCP reais. O endereço primário
-    /// do principal aponta para um processo fantasma que responde 403, enquanto
-    /// o candidato anunciado aponta para o gateway correto. A sonda precisa
-    /// manter a identidade do principal, o marcador interno e a chave ao cair
-    /// para o segundo endereço.
+    /// Two real testkit nodes use real TCP listeners. The principal's primary
+    /// address points to a ghost process that answers 403, while the announced
+    /// candidate points to the correct gateway. The probe must keep the
+    /// principal's identity, the internal marker and the key when it falls
+    /// back to the second address.
     #[tokio::test]
     async fn probe_from_secondary_retries_a_ghost_gateway_candidate() {
         let principal = std::sync::Arc::new(
@@ -277,6 +277,8 @@ mod tests {
                 node_id: PRINCIPAL.into(),
                 pubkey: "principal-authority".into(),
                 cluster_id: None,
+                trust_version: None,
+                relay: None,
                 addr: format!("[::1]:{gateway_port}"),
                 addr_candidates: vec![format!("127.0.0.1:{gateway_port}")],
                 model: "model".into(),

@@ -123,11 +123,11 @@ impl AuthorityPrincipal {
 
     fn verifying_key(&self) -> Result<VerifyingKey> {
         let bytes: [u8; 32] = hex::decode(&self.pubkey)
-            .context("chave pública de autoridade não é hexadecimal")?
+            .context("authority public key is not hexadecimal")?
             .as_slice()
             .try_into()
-            .map_err(|_| anyhow::anyhow!("chave pública de autoridade tem tamanho inválido"))?;
-        VerifyingKey::from_bytes(&bytes).context("chave pública de autoridade inválida")
+            .map_err(|_| anyhow::anyhow!("authority public key has an invalid size"))?;
+        VerifyingKey::from_bytes(&bytes).context("invalid authority public key")
     }
 }
 
@@ -150,14 +150,6 @@ pub(crate) struct TrustNetworkMetadata {
     pub(crate) organization: String,
     pub(crate) visibility: crate::config::NetworkVisibility,
     pub(crate) access_policy: crate::config::NetworkAccessPolicy,
-    #[serde(default)]
-    pub(crate) country_code: String,
-    #[serde(default)]
-    pub(crate) country_name: String,
-    #[serde(default)]
-    pub(crate) city: String,
-    #[serde(default)]
-    pub(crate) geo_label: String,
     /// `pk:` keys of the dedicated relays the network uses. A key, never an
     /// address: the document carries nobody's IP. A joining node resolves the
     /// principal (and these relays) through pkarr at dial time.
@@ -181,7 +173,7 @@ impl TrustAnchor {
         if anchor.validates() {
             Ok(anchor)
         } else {
-            bail!("a impressão digital manual não corresponde à chave ancorada")
+            bail!("the manual fingerprint does not match the anchored key")
         }
     }
 
@@ -249,29 +241,6 @@ pub(crate) struct AdminTransferAcceptance {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) struct NodePromotionCommand {
-    pub(crate) version: u32,
-    pub(crate) command_id: String,
-    pub(crate) cluster_id: String,
-    pub(crate) issuer: AuthorityPrincipal,
-    pub(crate) subject: AuthorityPrincipal,
-    pub(crate) authority_epoch: u64,
-    pub(crate) nonce: String,
-    pub(crate) signature: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) struct NodePromotionRequest {
-    pub(crate) version: u32,
-    pub(crate) command_id: String,
-    pub(crate) cluster_id: String,
-    pub(crate) subject: AuthorityPrincipal,
-    pub(crate) authority_epoch: u64,
-    pub(crate) nonce: String,
-    pub(crate) signature: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct CompletedTransfer {
     offer: AdminTransferOffer,
     acceptance: AdminTransferAcceptance,
@@ -329,18 +298,18 @@ pub(crate) struct AdminTrust {
 }
 
 impl AdminTrust {
-    /// Um nó sem âncora e sem arquivo, para as bancadas de teste. O binário
-    /// usa `load_or_empty`, que guarda o caminho.
+    /// A node with no anchor and no file, for the test benches. The binary
+    /// uses `load_or_empty`, which keeps the path.
     #[cfg(test)]
     pub(crate) fn empty() -> Self {
         Self::empty_at(None)
     }
 
-    /// O mesmo estado sem âncora, mas ciente de onde a âncora vai ficar.
+    /// The same unanchored state, but aware of where the anchor will live.
     ///
-    /// Um nó por ancorar precisa lembrar o caminho: é ali que a instalação
-    /// pelo operador vai escrever, e sem isso `adopt_anchor` mudaria a
-    /// autoridade em memória sem deixar nada no disco.
+    /// A node yet to be anchored needs to remember the path: it is where the operator's
+    /// installation will write, and without it `adopt_anchor` would change the
+    /// authority in memory without leaving anything on disk.
     fn empty_at(path: Option<PathBuf>) -> Self {
         let signing_key = SigningKey::from_bytes(&[0; 32]);
         let principal = AuthorityPrincipal::from_signing_key("", "", &signing_key);
@@ -368,9 +337,9 @@ impl AdminTrust {
     pub(crate) fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         let content = std::fs::read_to_string(&path)
-            .with_context(|| format!("não foi possível ler {}", path.display()))?;
+            .with_context(|| format!("could not read {}", path.display()))?;
         let document = parse_transported(&content)
-            .with_context(|| format!("concessão administrativa inválida em {}", path.display()))?;
+            .with_context(|| format!("invalid administrative grant in {}", path.display()))?;
         Ok(Self {
             state: Arc::new(Mutex::new(document)),
             replay: Arc::new(Mutex::new(load_replay_ledger(Some(&path)))),
@@ -383,23 +352,23 @@ impl AdminTrust {
         match Self::load(&path) {
             Ok(store) => store,
             Err(error) => {
-                tracing::warn!("cadeia de confiança administrativa indisponível: {error:#}");
+                tracing::warn!("administrative trust chain unavailable: {error:#}");
                 Self::empty_at(Some(path))
             }
         }
     }
 
-    /// Se este nó já tem raiz de confiança. É o mesmo julgamento que decide a
-    /// capacidade efetiva de admin, e é o que a interface mostra como
-    /// "ancorado" ou "por ancorar".
+    /// Whether this node already has a trust root. It is the same judgment that decides the
+    /// effective admin capacity, and is what the interface shows as
+    /// "anchored" or "to be anchored".
     pub(crate) fn is_anchored(&self) -> bool {
         validate_document(&self.document()).is_ok()
     }
 
-    /// Identificador do enxame que esta máquina aceitou fora de banda.
+    /// Identifier of the swarm that this machine accepted out of band.
     ///
-    /// O valor serve apenas para selecionar a cadeia local. A admissão ainda
-    /// exige a tupla completa do principal em `admits_participant`.
+    /// The value only serves to select the local chain. Admission still
+    /// requires the principal's full tuple in `admits_participant`.
     pub(crate) fn cluster_id(&self) -> Option<String> {
         let document = self.document();
         validate_document(&document)
@@ -407,26 +376,26 @@ impl AdminTrust {
             .then(|| document.anchor.cluster_id)
     }
 
-    /// Há uma cadeia local válida ancorada exatamente neste `cluster_id`?
+    /// Is there a valid local chain anchored exactly at this `cluster_id`?
     ///
-    /// Ao contrário de [`Self::admits_participant`], não exige que o peer tenha
-    /// uma concessão de autoridade primária ou secundária. É a prova de
-    /// participação de `access_policy = anyone_with_anchor`: sob essa política o
-    /// operador declarou que segurar a âncora correspondente já é a prova de
-    /// pertencimento, então um nó worker comum que nunca recebeu concessão
-    /// continua sendo participante legítimo. A identidade do peer (nó ↔ chave ↔
-    /// PeerId, e o Announce assinado por esse PeerId) é conferida à parte por
-    /// quem chama.
+    /// Unlike [`Self::admits_participant`], it does not require the peer to have
+    /// a primary or secondary authority grant. It is the proof of
+    /// participation of `access_policy = anyone_with_anchor`: under that policy the
+    /// operator declared that holding the matching anchor is already the proof
+    /// of belonging, so an ordinary worker node that never received a grant
+    /// remains a legitimate participant. The peer's identity (node <-> key <->
+    /// PeerId, and the Announce signed by that PeerId) is checked separately by
+    /// the caller.
     pub(crate) fn anchors_cluster(&self, cluster_id: &str) -> bool {
         let document = self.document();
         validate_document(&document).is_ok() && document.anchor.cluster_id == cluster_id
     }
 
-    /// Confere uma prova de participação contra a cadeia já validada.
+    /// Checks a participation proof against the already-validated chain.
     ///
-    /// No formato atual, a cadeia só tem concessões de autoridade primária e
-    /// secundária. Elas são também as concessões de participação disponíveis
-    /// para a descoberta: o `profile` anunciado nunca substitui esta prova.
+    /// In the current format, the chain only has primary and secondary authority
+    /// grants. They are also the participation grants available
+    /// for discovery: the announced `profile` never replaces this proof.
     pub(crate) fn admits_participant(
         &self,
         cluster_id: &str,
@@ -449,21 +418,21 @@ impl AdminTrust {
         })
     }
 
-    /// Se já existe arquivo de confiança no disco, mesmo ilegível. Um arquivo
-    /// ilegível não é âncora, mas também não é coisa que a interface apague:
-    /// a recusa manda o operador para a reancoragem manual na máquina.
+    /// Whether a trust file already exists on disk, even if unreadable. An unreadable
+    /// file is not an anchor, but it is also not something the interface erases:
+    /// the refusal sends the operator to manual re-anchoring on the machine.
     pub(crate) fn anchor_file_exists(&self) -> bool {
         self.path.as_deref().is_some_and(Path::exists)
     }
 
-    /// Adota, num nó ainda sem raiz, a cadeia assinada que o operador
-    /// transportou, depois de ele conferir a impressão digital à mão.
+    /// Adopts, on a node that still has no root, the signed chain the operator
+    /// carried over, after checking the fingerprint by hand.
     ///
-    /// A assinatura só prova que a cadeia é coerente consigo mesma; o arquivo
-    /// não se auto-valida. Quem o valida é `typed_fingerprint`, o valor que o
-    /// operador trouxe pelo canal dele. Trocar uma âncora existente não é
-    /// gesto de interface: é reancoragem manual (`pom admin-anchor
-    /// --replace`), por isso um nó já ancorado recusa aqui.
+    /// The signature only proves that the chain is coherent with itself; the file
+    /// does not validate itself. What validates it is `typed_fingerprint`, the value the
+    /// operator brought through their own channel. Replacing an existing anchor is not
+    /// an interface gesture: it is manual re-anchoring (`pom admin-anchor
+    /// --replace`), so a node that is already anchored refuses here.
     pub(crate) fn adopt_anchor(
         &self,
         document: AdminTrustDocument,
@@ -471,17 +440,17 @@ impl AdminTrust {
     ) -> Result<()> {
         if self.anchor_file_exists() {
             bail!(
-                "este nó já tem um arquivo de confiança administrativa; trocar a raiz é reancoragem manual na máquina"
+                "this node already has an administrative trust file; changing the root is a manual re-anchoring on the machine"
             );
         }
         let mut current = self.state.lock().expect("admin trust lock poisoned");
         if validate_document(&current).is_ok() {
-            bail!("este nó já está ancorado; trocar a raiz é reancoragem manual na máquina");
+            bail!("this node is already anchored; changing the root is a manual re-anchoring on the machine");
         }
         validate_document(&document)?;
         let expected = anchor_fingerprint(&document);
         if !fingerprint_matches(typed_fingerprint, &expected) {
-            bail!("a impressão digital conferida não corresponde à âncora desta cadeia");
+            bail!("the checked fingerprint does not match the anchor of this chain");
         }
         persist_document(&document, self.path.as_deref())?;
         *current = document;
@@ -522,10 +491,10 @@ impl AdminTrust {
             .clone()
     }
 
-    /// Completa uma cadeia primária antiga com os metadados que o wizard já
-    /// persistiu na configuração local. A operação só é permitida ao
-    /// principal vigente da própria cadeia, pois esses dados passam a fazer
-    /// parte do documento assinado que será transportado para novos nós.
+    /// Completes an old primary chain with the metadata that the wizard already
+    /// persisted in the local configuration. The operation is only allowed to the
+    /// current principal of the chain itself, since this data becomes
+    /// part of the signed document that will be carried to new nodes.
     pub(crate) fn ensure_setup_metadata(
         &self,
         setup: TrustNetworkMetadata,
@@ -537,15 +506,15 @@ impl AdminTrust {
             return Ok(current.clone());
         }
         if current.anchor.principal != *principal || current.primary != *principal {
-            bail!("somente o principal vigente pode completar os metadados da rede");
+            bail!("only the current principal can complete the network metadata");
         }
         if principal.verifying_key()? != signing_key.verifying_key() {
-            bail!("a chave local não corresponde ao principal vigente");
+            bail!("the local key does not match the current principal");
         }
-        current.setup = Some(setup);
-        current.setup_signature = sign_bytes(signing_key, &setup_message(&current));
-        validate_document(&current)?;
-        persist_document(&current, self.path.as_deref())?;
+        let mut document = current.clone();
+        document.setup = Some(setup);
+        document.setup_signature = sign_bytes(signing_key, &setup_message(&document));
+        self.commit(&mut current, document)?;
         Ok(current.clone())
     }
 
@@ -560,7 +529,7 @@ impl AdminTrust {
             None,
             Some(envelope.issued_at.saturating_add(CONTROL_WINDOW_SECS)),
         )? {
-            bail!("comando de controle já foi processado");
+            bail!("control command was already processed");
         }
         Ok(())
     }
@@ -589,7 +558,7 @@ impl AdminTrust {
         expires_at: Option<i64>,
     ) -> Result<bool> {
         if nonce.is_empty() || command_id.is_empty() {
-            bail!("registro de replay administrativo incompleto");
+            bail!("incomplete administrative replay record");
         }
         let now = unix_now();
         let mut ledger = self.replay.lock().expect("replay ledger lock poisoned");
@@ -636,7 +605,7 @@ impl AdminTrust {
         )?;
         let principal = anchor.principal.clone();
         if principal.verifying_key()? != signing_key.verifying_key() {
-            bail!("a chave de bootstrap não corresponde ao principal ancorado");
+            bail!("the bootstrap key does not match the anchored principal");
         }
         let mut grant = AdminGrant {
             version: TRUST_VERSION,
@@ -696,7 +665,7 @@ impl AdminTrust {
         signing_key: &SigningKey,
     ) -> Result<Self> {
         if principal.verifying_key()? != signing_key.verifying_key() {
-            bail!("a chave de bootstrap não corresponde ao principal ancorado");
+            bail!("the bootstrap key does not match the anchored principal");
         }
         let anchor = TrustAnchor::for_principal(cluster_id, principal.clone());
         let mut grant = AdminGrant {
@@ -795,10 +764,10 @@ impl AdminTrust {
         let document = self.document();
         validate_document(&document)?;
         if document.primary.node_id != target_node_id {
-            bail!("somente o principal vigente pode emitir concessões");
+            bail!("only the current principal can issue grants");
         }
         if document.primary.pubkey != hex::encode(signing_key.verifying_key().as_bytes()) {
-            bail!("a chave emissora não é a do principal vigente");
+            bail!("the issuing key is not that of the current principal");
         }
         let previous_grant_hash = document.grants.last().map(grant_hash).transpose()?;
         let mut grant = AdminGrant {
@@ -828,30 +797,30 @@ impl AdminTrust {
         grant: AdminGrant,
         signing_key: &SigningKey,
     ) -> Result<()> {
-        let mut document = self.state.lock().expect("admin trust lock poisoned");
-        validate_document(&document)?;
+        let mut current = self.state.lock().expect("admin trust lock poisoned");
+        validate_document(&current)?;
+        let mut document = current.clone();
         if document.pending_transfer.is_some() {
-            bail!("não é possível promover enquanto há transferência aberta");
+            bail!("cannot promote while a transfer is open");
         }
         if grant.issuer != document.primary
             || grant.issuer.pubkey != hex::encode(signing_key.verifying_key().as_bytes())
             || grant.level != AdminLevel::Secondary
             || grant.profile != NodeProfile::Admin
         {
-            bail!("concessão não emitida pelo principal vigente");
+            bail!("grant not issued by the current principal");
         }
         verify_grant_signature(&grant)?;
         if grant.authority_epoch != document.authority_epoch
             || grant.previous_grant_hash != document.grants.last().map(grant_hash).transpose()?
             || grant.promotion_seq != document.promotion_seq.saturating_add(1)
         {
-            bail!("concessão fora da cadeia vigente");
+            bail!("grant outside the current chain");
         }
         self.consume_admin_replay(&grant.nonce, &grant.command_id, None)?;
         document.promotion_seq = grant.promotion_seq;
         document.grants.push(grant);
-        validate_document(&document)?;
-        persist_document(&document, self.path.as_deref())?;
+        self.commit(&mut current, document)?;
         Ok(())
     }
 
@@ -862,33 +831,33 @@ impl AdminTrust {
         local_subject: &AuthorityPrincipal,
         target_profile: NodeProfile,
     ) -> Result<()> {
-        let mut document = self.state.lock().expect("admin trust lock poisoned");
-        validate_document(&document)?;
+        let mut current = self.state.lock().expect("admin trust lock poisoned");
+        validate_document(&current)?;
+        let mut document = current.clone();
         if document.pending_transfer.is_some() {
-            bail!("não é possível aplicar concessão enquanto há transferência aberta");
+            bail!("cannot apply a grant while a transfer is open");
         }
         if target_profile != NodeProfile::Node {
-            bail!("somente um nó pode receber uma concessão de admin");
+            bail!("only a node can receive an admin grant");
         }
         if grant.subject != *local_subject {
-            bail!("a concessão não é destinada a este peer");
+            bail!("the grant is not addressed to this peer");
         }
         if grant.issuer != document.primary {
-            bail!("somente o principal vigente pode promover um admin");
+            bail!("only the current principal can promote an admin");
         }
         if grant.level != AdminLevel::Secondary
             || grant.authority_epoch != document.authority_epoch
             || grant.previous_grant_hash != document.grants.last().map(grant_hash).transpose()?
             || grant.promotion_seq != document.promotion_seq.saturating_add(1)
         {
-            bail!("concessão fora da cadeia vigente");
+            bail!("grant outside the current chain");
         }
         verify_grant_signature(&grant)?;
         self.consume_admin_replay(&grant.nonce, &grant.command_id, None)?;
         document.promotion_seq = grant.promotion_seq;
         document.grants.push(grant);
-        validate_document(&document)?;
-        persist_document(&document, self.path.as_deref())?;
+        self.commit(&mut current, document)?;
         Ok(())
     }
 
@@ -897,13 +866,14 @@ impl AdminTrust {
         signing_key: &SigningKey,
         subject: AuthorityPrincipal,
     ) -> Result<AdminDemotion> {
-        let mut document = self.state.lock().expect("admin trust lock poisoned");
-        validate_document(&document)?;
+        let mut current = self.state.lock().expect("admin trust lock poisoned");
+        validate_document(&current)?;
+        let mut document = current.clone();
         if document.pending_transfer.is_some() {
-            bail!("não é possível despromover enquanto há transferência aberta");
+            bail!("cannot demote while a transfer is open");
         }
         if document.primary.pubkey != hex::encode(signing_key.verifying_key().as_bytes()) {
-            bail!("somente o principal vigente pode despromover um secundário");
+            bail!("only the current principal can demote a secondary");
         }
         let grant = document
             .grants
@@ -914,12 +884,12 @@ impl AdminTrust {
                     && grant.subject != document.primary
                     && grant.level == AdminLevel::Secondary
             })
-            .ok_or_else(|| anyhow::anyhow!("o alvo não é um admin secundário"))?;
+            .ok_or_else(|| anyhow::anyhow!("the target is not a secondary admin"))?;
         let target_grant_hash = grant_hash(grant)?;
         if document.demotions.iter().any(|demotion| {
             demotion.subject == subject && demotion.target_grant_hash == target_grant_hash
         }) {
-            bail!("o admin secundário já foi despromovido");
+            bail!("the secondary admin was already demoted");
         }
         let mut demotion = AdminDemotion {
             version: TRUST_VERSION,
@@ -937,132 +907,56 @@ impl AdminTrust {
         demotion.signature = sign_bytes(signing_key, &demotion_message(&demotion));
         self.consume_admin_replay(&demotion.nonce, &demotion.command_id, None)?;
         document.demotions.push(demotion.clone());
-        validate_document(&document)?;
-        persist_document(&document, self.path.as_deref())?;
+        self.commit(&mut current, document)?;
         Ok(demotion)
     }
 
-    pub(crate) fn node_promotion_request(
-        &self,
-        signing_key: &SigningKey,
-        subject: AuthorityPrincipal,
-    ) -> Result<NodePromotionRequest> {
-        let document = self.document();
-        validate_document(&document)?;
-        if subject.pubkey != hex::encode(signing_key.verifying_key().as_bytes()) {
-            bail!("o pedido precisa ser assinado pelo nó que o solicita");
-        }
-        let mut request = NodePromotionRequest {
-            version: TRUST_VERSION,
-            command_id: Uuid::new_v4().simple().to_string(),
-            cluster_id: document.anchor.cluster_id,
-            subject,
-            authority_epoch: document.authority_epoch,
-            nonce: random_nonce(),
-            signature: String::new(),
-        };
-        request.signature = sign_bytes(signing_key, &node_promotion_request_message(&request));
-        Ok(request)
+    /// The version of this copy of the chain:
+    /// `<epoch>.<grants>.<demotions>.<open transfer>-<content hash>`. The
+    /// counters order two copies (every change of authority moves one); the
+    /// hash tells apart two copies the counters call equal.
+    pub(crate) fn chain_version(&self) -> String {
+        chain_version_of(&self.document())
     }
 
-    pub(crate) fn authorize_node_promotion_request(
-        &self,
-        signing_key: &SigningKey,
-        request: NodePromotionRequest,
-    ) -> Result<NodePromotionCommand> {
-        let mut document = self.state.lock().expect("admin trust lock poisoned");
-        validate_document(&document)?;
-        if request.cluster_id != document.anchor.cluster_id
-            || request.authority_epoch != document.authority_epoch
-        {
-            bail!("pedido de entrada fora da época vigente");
-        }
-        verify_node_promotion_request_signature(&request)?;
-        let issuer = document
-            .primary_history
-            .iter()
-            .find(|principal| {
-                principal.pubkey == hex::encode(signing_key.verifying_key().as_bytes())
-                    && (document.primary == **principal
-                        || document.grants.iter().any(|grant| {
-                            grant.subject == **principal
-                                && grant.level == AdminLevel::Secondary
-                                && !document.demotions.iter().any(|demotion| {
-                                    demotion.target_grant_hash
-                                        == grant_hash(grant).unwrap_or_default()
-                                })
-                        }))
-            })
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("a chave emissora não é de um admin vigente"))?;
-        if document.pending_transfer.is_some() {
-            bail!("não é possível autorizar nó durante transferência aberta");
-        }
-        self.consume_admin_replay(&request.nonce, &request.command_id, None)?;
-        let mut command = NodePromotionCommand {
-            version: TRUST_VERSION,
-            command_id: Uuid::new_v4().simple().to_string(),
-            cluster_id: document.anchor.cluster_id.clone(),
-            issuer,
-            subject: request.subject,
-            authority_epoch: document.authority_epoch,
-            nonce: random_nonce(),
-            signature: String::new(),
-        };
-        command.signature = sign_bytes(signing_key, &node_promotion_message(&command));
-        self.consume_admin_replay(&command.nonce, &command.command_id, None)?;
-        persist_document(&document, self.path.as_deref())?;
-        Ok(command)
-    }
-
-    pub(crate) fn apply_node_promotion(
-        &self,
-        command: NodePromotionCommand,
-        local_subject: &AuthorityPrincipal,
-        target_profile: NodeProfile,
-    ) -> Result<()> {
-        let mut document = self.state.lock().expect("admin trust lock poisoned");
-        validate_document(&document)?;
-        if target_profile != NodeProfile::Infer {
-            bail!("somente um nó infer pode pedir entrada no processamento");
-        }
-        if command.subject != *local_subject
-            || command.cluster_id != document.anchor.cluster_id
-            || command.authority_epoch != document.authority_epoch
-        {
-            bail!("o pedido de entrada não corresponde a este nó e época");
-        }
-        let issuer_is_current = command.issuer == document.primary
-            || document.grants.iter().any(|grant| {
-                grant.subject == command.issuer
-                    && grant.level == AdminLevel::Secondary
-                    && !document.demotions.iter().any(|demotion| {
-                        demotion.target_grant_hash == grant_hash(grant).unwrap_or_default()
-                    })
-            });
-        if !issuer_is_current {
-            bail!("o pedido não foi autorizado por um admin vigente");
-        }
-        verify_node_promotion_signature(&command)?;
-        self.consume_admin_replay(&command.nonce, &command.command_id, None)?;
-        persist_document(&document, self.path.as_deref())?;
-        Ok(())
-    }
-
+    /// Adopts `incoming` as the principal's own copy would be adopted.
     pub(crate) fn reconcile(&self, incoming: AdminTrustDocument) -> Result<()> {
+        self.reconcile_from(incoming, true).map(|_| ())
+    }
+
+    /// Adopts a copy of the chain that is newer than the local one;
+    /// `Ok(false)` when it is the same copy. Every signature is checked from
+    /// the anchor, so the copy may come from any member, not only from the
+    /// principal - which is what lets a node that was away catch up while the
+    /// principal is offline. Order is decided by the counters. Two different
+    /// copies with equal counters cannot be ordered: only the principal's
+    /// (`authoritative`) replaces the local one then, since it is the only
+    /// writer of the chain.
+    pub(crate) fn reconcile_from(
+        &self,
+        incoming: AdminTrustDocument,
+        authoritative: bool,
+    ) -> Result<bool> {
         validate_document(&incoming)?;
         let mut document = self.state.lock().expect("admin trust lock poisoned");
         if document.anchor != incoming.anchor {
-            bail!("a cadeia recebida não corresponde à âncora manual deste nó");
+            bail!("the received chain does not match the manual anchor of this node");
         }
-        if incoming.authority_epoch < document.authority_epoch
-            || incoming.promotion_seq < document.promotion_seq
-        {
-            bail!("a cadeia recebida é anterior ao estado local");
+        match chain_counters(&incoming).cmp(&chain_counters(&document)) {
+            std::cmp::Ordering::Less => bail!("the received chain is older than the local state"),
+            std::cmp::Ordering::Equal => {
+                if chain_version_of(&incoming) == chain_version_of(&document) {
+                    return Ok(false);
+                }
+                if !authoritative {
+                    bail!("same chain version with different content: only the principal's copy decides");
+                }
+            }
+            std::cmp::Ordering::Greater => {}
         }
         persist_document(&incoming, self.path.as_deref())?;
         *document = incoming;
-        Ok(())
+        Ok(true)
     }
 
     pub(crate) fn begin_transfer(
@@ -1071,26 +965,27 @@ impl AdminTrust {
         successor: AuthorityPrincipal,
         successor_is_active: bool,
     ) -> Result<AdminTransferOffer> {
-        let mut document = self.state.lock().expect("admin trust lock poisoned");
-        validate_document(&document)?;
+        let mut current = self.state.lock().expect("admin trust lock poisoned");
+        validate_document(&current)?;
+        let mut document = current.clone();
         if document.primary.pubkey != hex::encode(signing_key.verifying_key().as_bytes()) {
-            bail!("a chave emissora não é a do principal vigente");
+            bail!("the issuing key is not that of the current principal");
         }
         if document.pending_transfer.is_some() {
-            bail!("já existe uma oferta de transferência aberta");
+            bail!("a transfer offer is already open");
         }
         if !successor_is_active {
-            bail!("o sucessor não está ativo");
+            bail!("the successor is not active");
         }
         if successor == document.primary {
-            bail!("o sucessor já é o principal");
+            bail!("the successor is already the principal");
         }
         let grant = document
             .grants
             .iter()
             .rev()
             .find(|grant| grant.subject == successor && grant.level == AdminLevel::Secondary)
-            .ok_or_else(|| anyhow::anyhow!("o sucessor não é o último secundário promovido"))?;
+            .ok_or_else(|| anyhow::anyhow!("the successor is not the last promoted secondary"))?;
         let mut offer = AdminTransferOffer {
             version: TRUST_VERSION,
             offer_id: Uuid::new_v4().simple().to_string(),
@@ -1107,7 +1002,7 @@ impl AdminTrust {
         offer.signature = sign_bytes(signing_key, &offer_message(&offer));
         self.consume_admin_replay(&offer.nonce, &offer.command_id, Some(&offer.offer_id))?;
         document.pending_transfer = Some(offer.clone());
-        persist_document(&document, self.path.as_deref())?;
+        self.commit(&mut current, document)?;
         Ok(offer)
     }
 
@@ -1117,21 +1012,22 @@ impl AdminTrust {
         signing_key: &SigningKey,
         successor: AuthorityPrincipal,
     ) -> Result<AdminTransferAcceptance> {
-        let mut document = self.state.lock().expect("admin trust lock poisoned");
-        validate_document(&document)?;
+        let mut current = self.state.lock().expect("admin trust lock poisoned");
+        validate_document(&current)?;
+        let mut document = current.clone();
         let pending = document
             .pending_transfer
             .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("não existe oferta de transferência correspondente"))?;
+            .ok_or_else(|| anyhow::anyhow!("there is no matching transfer offer"))?;
         if pending != &offer
             || offer.successor != successor
             || offer.authority_epoch != document.authority_epoch
         {
-            bail!("oferta de transferência não corresponde ao estado vigente");
+            bail!("transfer offer does not match the current state");
         }
         verify_offer_signature(&offer)?;
         if successor.pubkey != hex::encode(signing_key.verifying_key().as_bytes()) {
-            bail!("a aceitação não prova a chave do sucessor");
+            bail!("the acceptance does not prove the successor key");
         }
         let mut acceptance = AdminTransferAcceptance {
             version: TRUST_VERSION,
@@ -1156,12 +1052,11 @@ impl AdminTrust {
         document
             .completed_transfers
             .push(CompletedTransfer { offer, acceptance });
-        validate_document(&document)?;
-        persist_document(&document, self.path.as_deref())?;
+        self.commit(&mut current, document.clone())?;
         Ok(document
             .completed_transfers
             .last()
-            .expect("transferência recém concluída")
+            .expect("transfer just completed")
             .acceptance
             .clone())
     }
@@ -1171,13 +1066,14 @@ impl AdminTrust {
         offer: AdminTransferOffer,
         acceptance: AdminTransferAcceptance,
     ) -> Result<()> {
-        let mut document = self.state.lock().expect("admin trust lock poisoned");
-        validate_document(&document)?;
+        let mut current = self.state.lock().expect("admin trust lock poisoned");
+        validate_document(&current)?;
+        let mut document = current.clone();
         if document.pending_transfer.as_ref() != Some(&offer)
             || acceptance.offer_id != offer.offer_id
             || acceptance.successor != offer.successor
         {
-            bail!("aceitação de transferência não corresponde à oferta aberta");
+            bail!("transfer acceptance does not match the open offer");
         }
         verify_offer_signature(&offer)?;
         verify_acceptance_signature(&acceptance)?;
@@ -1193,8 +1089,23 @@ impl AdminTrust {
         document
             .completed_transfers
             .push(CompletedTransfer { offer, acceptance });
-        validate_document(&document)?;
-        persist_document(&document, self.path.as_deref())?;
+        self.commit(&mut current, document)?;
+        Ok(())
+    }
+
+    /// Replaces the chain with `next` only once it validates and is on disk.
+    ///
+    /// Every change goes through here on a copy. A change that fails must
+    /// leave the chain in memory as it was: a half applied one made the node
+    /// count as not anchored and announce a version no peer could adopt.
+    fn commit(
+        &self,
+        current: &mut std::sync::MutexGuard<'_, AdminTrustDocument>,
+        next: AdminTrustDocument,
+    ) -> Result<()> {
+        validate_document(&next)?;
+        persist_document(&next, self.path.as_deref())?;
+        **current = next;
         Ok(())
     }
 
@@ -1212,8 +1123,8 @@ pub(crate) fn fingerprint_of(pubkey: &str) -> String {
     hex::encode(Sha256::digest(pubkey.as_bytes()))
 }
 
-/// A impressão digital que o operador confere: a da chave ancorada, nunca a
-/// de quem trouxe o arquivo.
+/// The fingerprint that the operator checks: the anchored key's, never
+/// that of whoever brought the file.
 pub(crate) fn anchor_fingerprint(document: &AdminTrustDocument) -> String {
     fingerprint_of(&document.anchor.principal.pubkey)
 }
@@ -1289,28 +1200,28 @@ pub(crate) fn validate_local_primary_document(
     validate_document(document)?;
     let (_, principal) = local_authority_identity()?;
     if document.anchor.cluster_id != cluster_id {
-        bail!("a raiz pertence a outra rede");
+        bail!("the root belongs to another network");
     }
     if document.anchor.principal != principal {
-        bail!("a raiz não foi criada por este nó");
+        bail!("the root was not created by this node");
     }
     Ok(())
 }
 
-/// Lê uma cadeia transportada pelo operador. Decodifica e confere a coerência
-/// interna da cadeia; a conferência que ancora a confiança continua sendo a
-/// impressão digital, que não vem daqui.
+/// Reads a chain carried by the operator. Decodes and checks the chain's internal
+/// coherence; the check that anchors trust remains the
+/// fingerprint, which does not come from here.
 pub(crate) fn parse_transported(content: &str) -> Result<AdminTrustDocument> {
     let document: AdminTrustDocument =
-        serde_json::from_str(content).context("o conteúdo não é uma cadeia administrativa")?;
+        serde_json::from_str(content).context("the content is not an administrative chain")?;
     validate_document(&document)?;
     Ok(document)
 }
 
-/// A conferência manual da impressão digital, uma só para o comando e para a
-/// interface. Normaliza apenas o que a transcrição humana acrescenta -
-/// espaços, dois-pontos e caixa - e nunca o valor em si: continua sendo
-/// preciso trazer os 64 dígitos certos.
+/// The manual fingerprint check, a single one for the command and for the
+/// interface. It normalizes only what human transcription adds -
+/// spaces, colons and case - and never the value itself: it is still
+/// necessary to bring the right 64 digits.
 pub(crate) fn fingerprint_matches(typed: &str, expected: &str) -> bool {
     fn normalize(value: &str) -> String {
         value
@@ -1353,7 +1264,7 @@ fn sign_control_envelope_at(
 ) -> Result<ControlEnvelope> {
     validate_document(document)?;
     if issuer.pubkey != hex::encode(signing_key.verifying_key().as_bytes()) {
-        bail!("a chave do envelope não corresponde ao emissor");
+        bail!("the envelope key does not match the issuer");
     }
     let mut envelope = ControlEnvelope {
         version: CONTROL_VERSION,
@@ -1387,7 +1298,7 @@ pub(crate) fn verify_control_envelope(
         || envelope.path != path
         || envelope.body_hash != hex::encode(Sha256::digest(body))
     {
-        bail!("envelope de controle fora do contexto assinado");
+        bail!("control envelope outside the signed context");
     }
     check_control_window(envelope)?;
     verify_bytes(
@@ -1418,7 +1329,7 @@ pub(crate) fn verify_control_envelope_metadata(
             .chars()
             .all(|glyph| glyph.is_ascii_hexdigit())
     {
-        bail!("envelope de controle fora do contexto assinado");
+        bail!("control envelope outside the signed context");
     }
     check_control_window(envelope)?;
     verify_bytes(
@@ -1454,6 +1365,35 @@ pub(crate) fn control_issuer_is_admin(
                     && demotion.target_grant_hash == grant_hash(grant).unwrap_or_default()
             })
     })
+}
+
+/// The counters that order two copies of a chain: principal transfers,
+/// grants, demotions.
+fn chain_counters(document: &AdminTrustDocument) -> (u64, u64, u64) {
+    (
+        document.authority_epoch,
+        document.promotion_seq,
+        document.demotions.len() as u64,
+    )
+}
+
+pub(crate) fn chain_version_of(document: &AdminTrustDocument) -> String {
+    let (epoch, grants, demotions) = chain_counters(document);
+    let content = serde_json::to_vec(document).unwrap_or_default();
+    let digest = hex::encode(Sha256::digest(&content));
+    format!(
+        "{epoch}.{grants}.{demotions}.{}-{}",
+        u8::from(document.pending_transfer.is_some()),
+        &digest[..16]
+    )
+}
+
+/// The ordering part of a version string, for comparing with a version a
+/// peer announces. `None` for anything that is not a version.
+pub(crate) fn version_counters(version: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = version.split('-').next()?.split('.');
+    let mut next = || parts.next()?.parse::<u64>().ok();
+    Some((next()?, next()?, next()?))
 }
 
 fn sign_bytes(signing_key: &SigningKey, bytes: &[u8]) -> String {
@@ -1492,15 +1432,15 @@ fn control_message(envelope: &ControlEnvelope) -> Vec<u8> {
 
 fn verify_bytes(pubkey: &str, bytes: &[u8], signature: &str) -> Result<()> {
     let raw: [u8; 32] = hex::decode(pubkey)
-        .context("assinatura usa uma chave inválida")?
+        .context("signature uses an invalid key")?
         .as_slice()
         .try_into()
-        .map_err(|_| anyhow::anyhow!("chave de assinatura tem tamanho inválido"))?;
-    let key = VerifyingKey::from_bytes(&raw).context("chave de assinatura inválida")?;
-    let signature = Signature::from_slice(&hex::decode(signature).context("assinatura inválida")?)
-        .context("assinatura inválida")?;
+        .map_err(|_| anyhow::anyhow!("signing key has an invalid size"))?;
+    let key = VerifyingKey::from_bytes(&raw).context("invalid signing key")?;
+    let signature = Signature::from_slice(&hex::decode(signature).context("invalid signature")?)
+        .context("invalid signature")?;
     key.verify(bytes, &signature)
-        .context("assinatura administrativa não confere")
+        .context("administrative signature does not match")
 }
 
 #[derive(Serialize)]
@@ -1610,27 +1550,6 @@ struct DemotionMessage<'a> {
     nonce: &'a str,
 }
 
-#[derive(Serialize)]
-struct NodePromotionMessage<'a> {
-    version: u32,
-    command_id: &'a str,
-    cluster_id: &'a str,
-    issuer: &'a AuthorityPrincipal,
-    subject: &'a AuthorityPrincipal,
-    authority_epoch: u64,
-    nonce: &'a str,
-}
-
-#[derive(Serialize)]
-struct NodePromotionRequestMessage<'a> {
-    version: u32,
-    command_id: &'a str,
-    cluster_id: &'a str,
-    subject: &'a AuthorityPrincipal,
-    authority_epoch: u64,
-    nonce: &'a str,
-}
-
 fn acceptance_message(acceptance: &AdminTransferAcceptance) -> Vec<u8> {
     serde_json::to_vec(&AcceptanceMessage {
         version: acceptance.version,
@@ -1658,31 +1577,6 @@ fn demotion_message(demotion: &AdminDemotion) -> Vec<u8> {
         nonce: &demotion.nonce,
     })
     .expect("canonical demotion JSON")
-}
-
-fn node_promotion_message(command: &NodePromotionCommand) -> Vec<u8> {
-    serde_json::to_vec(&NodePromotionMessage {
-        version: command.version,
-        command_id: &command.command_id,
-        cluster_id: &command.cluster_id,
-        issuer: &command.issuer,
-        subject: &command.subject,
-        authority_epoch: command.authority_epoch,
-        nonce: &command.nonce,
-    })
-    .expect("canonical node promotion JSON")
-}
-
-fn node_promotion_request_message(request: &NodePromotionRequest) -> Vec<u8> {
-    serde_json::to_vec(&NodePromotionRequestMessage {
-        version: request.version,
-        command_id: &request.command_id,
-        cluster_id: &request.cluster_id,
-        subject: &request.subject,
-        authority_epoch: request.authority_epoch,
-        nonce: &request.nonce,
-    })
-    .expect("canonical node promotion request JSON")
 }
 
 fn verify_grant_signature(grant: &AdminGrant) -> Result<()> {
@@ -1717,55 +1611,39 @@ fn verify_demotion_signature(demotion: &AdminDemotion) -> Result<()> {
     )
 }
 
-fn verify_node_promotion_signature(command: &NodePromotionCommand) -> Result<()> {
-    verify_bytes(
-        &command.issuer.pubkey,
-        &node_promotion_message(command),
-        &command.signature,
-    )
-}
-
-fn verify_node_promotion_request_signature(request: &NodePromotionRequest) -> Result<()> {
-    verify_bytes(
-        &request.subject.pubkey,
-        &node_promotion_request_message(request),
-        &request.signature,
-    )
-}
-
 fn grant_hash(grant: &AdminGrant) -> Result<String> {
     Ok(hex::encode(Sha256::digest(serde_json::to_vec(grant)?)))
 }
 
 fn validate_document(document: &AdminTrustDocument) -> Result<()> {
     if document.version != TRUST_VERSION || !document.anchor.validates() {
-        bail!("arquivo de confiança administrativa não tem uma âncora válida");
+        bail!("administrative trust file has no valid anchor");
     }
     match (&document.setup, document.setup_signature.is_empty()) {
-        (Some(_), true) => bail!("metadados iniciais da rede sem assinatura"),
+        (Some(_), true) => bail!("initial network metadata without a signature"),
         (Some(_), false) => verify_bytes(
             &document.anchor.principal.pubkey,
             &setup_message(document),
             &document.setup_signature,
         )?,
-        (None, false) => bail!("assinatura de metadados sem conteúdo"),
+        (None, false) => bail!("metadata signature without content"),
         (None, true) => {}
     }
     if document.primary_history.is_empty()
         || document.primary_history.first() != Some(&document.anchor.principal)
         || document.primary_history.last() != Some(&document.primary)
     {
-        bail!("cadeia administrativa sem principal inicial");
+        bail!("administrative chain without an initial principal");
     }
     if document.authority_epoch + 1 != document.primary_history.len() as u64
         || document.completed_transfers.len() + 1 != document.primary_history.len()
     {
-        bail!("época administrativa não corresponde ao histórico");
+        bail!("administrative epoch does not match the history");
     }
     let root = document
         .grants
         .first()
-        .ok_or_else(|| anyhow::anyhow!("cadeia administrativa sem concessão raiz"))?;
+        .ok_or_else(|| anyhow::anyhow!("administrative chain without a root grant"))?;
     if root.version != TRUST_VERSION
         || root.cluster_id != document.anchor.cluster_id
         || root.issuer != document.anchor.principal
@@ -1776,13 +1654,12 @@ fn validate_document(document: &AdminTrustDocument) -> Result<()> {
         || root.previous_grant_hash.is_some()
         || root.profile != NodeProfile::Admin
     {
-        bail!("concessão raiz administrativa inválida");
+        bail!("invalid administrative root grant");
     }
     verify_grant_signature(root)?;
     let mut previous_hash = Some(grant_hash(root)?);
     let mut expected_promotion_seq: u64 = 0;
-    let mut seen_subjects = vec![root.subject.clone()];
-    for grant in document.grants.iter().skip(1) {
+    for (index, grant) in document.grants.iter().enumerate().skip(1) {
         expected_promotion_seq = expected_promotion_seq.saturating_add(1);
         let issuer_epoch = document
             .primary_history
@@ -1797,16 +1674,29 @@ fn validate_document(document: &AdminTrustDocument) -> Result<()> {
             || grant.authority_epoch != issuer_epoch.unwrap_or(u64::MAX)
             || grant.promotion_seq != expected_promotion_seq
             || grant.previous_grant_hash != previous_hash
-            || seen_subjects.contains(&grant.subject)
         {
-            bail!("concessão secundária não foi emitida por um principal válido");
+            bail!("secondary grant was not issued by a valid principal");
+        }
+        // A node is promoted again only after its earlier grant was revoked:
+        // it never holds two grants at once, and the principal's own root
+        // grant cannot be revoked at all.
+        for earlier in document.grants[..index]
+            .iter()
+            .filter(|earlier| earlier.subject == grant.subject)
+        {
+            let earlier_hash = grant_hash(earlier)?;
+            if !document.demotions.iter().any(|demotion| {
+                demotion.target_grant_hash == earlier_hash
+                    && demotion.promotion_seq < grant.promotion_seq
+            }) {
+                bail!("the node already has an administrative grant in force");
+            }
         }
         verify_grant_signature(grant)?;
-        seen_subjects.push(grant.subject.clone());
         previous_hash = Some(grant_hash(grant)?);
     }
     if document.promotion_seq != expected_promotion_seq {
-        bail!("contador de promoções inconsistente");
+        bail!("inconsistent promotion counter");
     }
     for (epoch, transfer) in document.completed_transfers.iter().enumerate() {
         let epoch = epoch as u64;
@@ -1832,7 +1722,7 @@ fn validate_document(document: &AdminTrustDocument) -> Result<()> {
                     && grant.promotion_seq == transfer.offer.promotion_seq
             })
         {
-            bail!("transferência administrativa inconsistente");
+            bail!("inconsistent administrative transfer");
         }
         verify_offer_signature(&transfer.offer)?;
         verify_acceptance_signature(&transfer.acceptance)?;
@@ -1853,10 +1743,12 @@ fn validate_document(document: &AdminTrustDocument) -> Result<()> {
             || !target_grant.is_some_and(|grant| {
                 grant.subject == demotion.subject
                     && grant.level == AdminLevel::Secondary
-                    && grant.promotion_seq == demotion.promotion_seq
+                    // The counter at the time of the demotion: other nodes
+                    // may have been promoted since the grant it revokes.
+                    && grant.promotion_seq <= demotion.promotion_seq
             })
         {
-            bail!("despromoção administrativa inconsistente");
+            bail!("inconsistent administrative demotion");
         }
         verify_demotion_signature(demotion)?;
     }
@@ -1875,7 +1767,7 @@ fn validate_document(document: &AdminTrustDocument) -> Result<()> {
                     && grant_hash(grant).ok().as_deref() == Some(&offer.successor_grant_hash)
             })
         {
-            bail!("oferta pendente não pertence ao principal vigente");
+            bail!("pending offer does not belong to the current principal");
         }
         verify_offer_signature(offer)?;
     }
@@ -1891,7 +1783,7 @@ fn persist_json<T: Serialize>(value: &T, path: Option<&Path>, pretty: bool) -> R
     let Some(path) = path else { return Ok(()) };
     let parent = path
         .parent()
-        .ok_or_else(|| anyhow::anyhow!("arquivo de confiança sem pasta pai"))?;
+        .ok_or_else(|| anyhow::anyhow!("trust file without a parent folder"))?;
     std::fs::create_dir_all(parent)?;
     let temp = parent.join(format!(
         ".{}.tmp-{}",
@@ -1910,7 +1802,7 @@ fn persist_json<T: Serialize>(value: &T, path: Option<&Path>, pretty: bool) -> R
         std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600))?;
     }
     std::fs::rename(&temp, path)
-        .with_context(|| format!("não foi possível instalar {}", path.display()))?;
+        .with_context(|| format!("could not install {}", path.display()))?;
     Ok(())
 }
 
@@ -2045,7 +1937,7 @@ mod tests {
         assert_eq!(
             trust.replay_len(),
             2,
-            "a vencida saiu, a administrativa ficou"
+            "the expired one left, the administrative one stayed"
         );
         assert!(trust
             .record_replay("n-old", "c-old", None, Some(past))
@@ -2062,10 +1954,6 @@ mod tests {
             organization: String::new(),
             visibility: crate::config::NetworkVisibility::Private,
             access_policy: crate::config::NetworkAccessPolicy::AnyoneWithAnchor,
-            country_code: String::new(),
-            country_name: String::new(),
-            city: String::new(),
-            geo_label: String::new(),
             relay_hints: Vec::new(),
             directory_replicas: Vec::new(),
         });
@@ -2243,90 +2131,163 @@ mod tests {
         );
     }
 
-    /// A conferência que ancora a confiança tolera a transcrição humana -
-    /// espaços, dois-pontos, caixa - e nada além disso.
+    /// Promote, demote, promote again: the second grant is a new one and the
+    /// node is a secondary admin again, on this copy and on a reloaded one.
     #[test]
-    fn a_conferencia_manual_normaliza_transcricao_e_nada_mais() {
-        let esperada = fingerprint_of(&principal(1, "root", "peer-root").pubkey);
-        let com_ruido = format!("  {}  ", esperada.to_uppercase());
-        assert!(fingerprint_matches(&com_ruido, &esperada));
+    fn a_demoted_node_can_be_promoted_again() {
+        let dir = TempDir::new();
+        let path = dir.path().join("trust.json");
+        let (trust, root_key, _root) = boot(&path);
+        let secondary = principal(2, "secondary", "peer-secondary");
+        let other = principal(3, "other", "peer-other");
+        let promote = |subject: &AuthorityPrincipal| {
+            let grant = trust.signed_secondary_grant(&root_key, subject.clone(), "root")?;
+            trust.record_secondary_grant(grant, &root_key)
+        };
 
-        let separada = esperada
+        promote(&secondary).unwrap();
+        // Another promotion in between moves the counter past the grant the
+        // demotion revokes.
+        promote(&other).unwrap();
+        trust
+            .demote_secondary(&root_key, secondary.clone())
+            .unwrap();
+        assert_eq!(
+            trust.effective_authority(&secondary, NodeProfile::Admin),
+            None
+        );
+
+        promote(&secondary).unwrap();
+        assert!(trust.is_anchored());
+        let reloaded = AdminTrust::load(&path).unwrap();
+        for copy in [&trust, &reloaded] {
+            assert_eq!(
+                copy.effective_authority(&secondary, NodeProfile::Admin),
+                Some(EffectiveAuthority::Secondary)
+            );
+        }
+
+        // And the new grant is revoked like any other.
+        trust
+            .demote_secondary(&root_key, secondary.clone())
+            .unwrap();
+        assert_eq!(
+            trust.effective_authority(&secondary, NodeProfile::Admin),
+            None
+        );
+        assert_eq!(
+            trust.effective_authority(&other, NodeProfile::Admin),
+            Some(EffectiveAuthority::Secondary)
+        );
+    }
+
+    /// A node never holds two grants at once, and a refused change leaves the
+    /// chain as it was: the principal stays anchored, at the same version.
+    #[test]
+    fn a_refused_grant_leaves_the_chain_untouched() {
+        let dir = TempDir::new();
+        let path = dir.path().join("trust.json");
+        let (trust, root_key, _root) = boot(&path);
+        let secondary = principal(2, "secondary", "peer-secondary");
+        let grant = trust
+            .signed_secondary_grant(&root_key, secondary.clone(), "root")
+            .unwrap();
+        trust.record_secondary_grant(grant, &root_key).unwrap();
+        let before = trust.document();
+        let version = trust.chain_version();
+
+        let again = trust
+            .signed_secondary_grant(&root_key, secondary.clone(), "root")
+            .unwrap();
+        assert!(trust.record_secondary_grant(again, &root_key).is_err());
+
+        assert!(trust.is_anchored());
+        assert_eq!(trust.document(), before);
+        assert_eq!(trust.chain_version(), version);
+        assert_eq!(AdminTrust::load(&path).unwrap().document(), before);
+    }
+
+    /// The check that anchors trust tolerates human transcription -
+    /// spaces, colons, case - and nothing beyond that.
+    #[test]
+    fn the_manual_check_normalizes_the_transcription_and_nothing_else() {
+        let expected = fingerprint_of(&principal(1, "root", "peer-root").pubkey);
+        let with_noise = format!("  {}  ", expected.to_uppercase());
+        assert!(fingerprint_matches(&with_noise, &expected));
+
+        let separate = expected
             .as_bytes()
             .chunks(8)
-            .map(|parte| String::from_utf8_lossy(parte).to_string())
+            .map(|part| String::from_utf8_lossy(part).to_string())
             .collect::<Vec<_>>()
             .join(":");
-        assert!(fingerprint_matches(&separada, &esperada));
+        assert!(fingerprint_matches(&separate, &expected));
 
-        assert!(!fingerprint_matches("", &esperada));
-        assert!(!fingerprint_matches("   ", &esperada));
-        assert!(!fingerprint_matches(&esperada[..63], &esperada));
+        assert!(!fingerprint_matches("", &expected));
+        assert!(!fingerprint_matches("   ", &expected));
+        assert!(!fingerprint_matches(&expected[..63], &expected));
         assert!(!fingerprint_matches(
-            &format!("{}0", &esperada[1..]),
-            &esperada
+            &format!("{}0", &expected[1..]),
+            &expected
         ));
     }
 
-    /// O nó que recebe: cadeia colada mais impressão digital conferida
-    /// instala a raiz e a deixa no disco, com a autoridade valendo em memória
-    /// sem reinício.
+    /// The receiving node: pasted chain plus checked fingerprint
+    /// installs the root and leaves it on disk, with the authority taking effect in memory
+    /// without a restart.
     #[test]
-    fn adotar_com_a_impressao_digital_certa_ancora_o_no() {
-        let origem = TempDir::new();
-        let (admin, ..) = boot(&origem.path().join("admin.json"));
+    fn adopting_with_the_right_fingerprint_anchors_the_node() {
+        let source = TempDir::new();
+        let (admin, ..) = boot(&source.path().join("admin.json"));
         let document = admin.document();
-        let esperada = anchor_fingerprint(&document);
+        let expected = anchor_fingerprint(&document);
 
-        let destino = TempDir::new();
-        let path = destino.path().join("recebido.json");
+        let destination = TempDir::new();
+        let path = destination.path().join("recebido.json");
         let no = AdminTrust::empty_at(Some(path.clone()));
         assert!(!no.is_anchored());
 
-        no.adopt_anchor(document.clone(), &esperada).unwrap();
+        no.adopt_anchor(document.clone(), &expected).unwrap();
 
         assert!(no.is_anchored());
         assert_eq!(no.document().anchor, document.anchor);
         assert_eq!(AdminTrust::load(&path).unwrap().document(), document);
     }
 
-    /// A recusa que não depende de HTTP: com a impressão digital errada nada
-    /// é escrito, nem em memória nem no disco.
+    /// The refusal that does not depend on HTTP: with the wrong fingerprint nothing
+    /// is written, neither in memory nor on disk.
     #[test]
-    fn adotar_com_a_impressao_digital_errada_nao_escreve_nada() {
-        let origem = TempDir::new();
-        let (admin, ..) = boot(&origem.path().join("admin.json"));
-        let destino = TempDir::new();
-        let path = destino.path().join("recebido.json");
+    fn adopting_with_the_wrong_fingerprint_writes_nothing() {
+        let source = TempDir::new();
+        let (admin, ..) = boot(&source.path().join("admin.json"));
+        let destination = TempDir::new();
+        let path = destination.path().join("recebido.json");
         let no = AdminTrust::empty_at(Some(path.clone()));
 
-        let erro = no
+        let error = no
             .adopt_anchor(admin.document(), &"0".repeat(64))
             .unwrap_err();
 
-        assert!(erro.to_string().contains("impressão digital"));
+        assert!(error.to_string().contains("fingerprint"));
         assert!(!no.is_anchored());
-        assert!(
-            !path.exists(),
-            "recusa não pode deixar arquivo de confiança"
-        );
+        assert!(!path.exists(), "a refusal cannot leave a trust file behind");
     }
 
-    /// Trocar a raiz é reancoragem manual. Nem a cadeia em memória nem um
-    /// arquivo já no disco podem ser substituídos por esta porta.
+    /// Replacing the root is manual re-anchoring. Neither the chain in memory nor a
+    /// file already on disk can be replaced through this door.
     #[test]
-    fn adotar_sobre_um_no_ja_ancorado_e_recusado() {
+    fn adopting_over_an_already_anchored_node_is_refused() {
         let local = TempDir::new();
         let path = local.path().join("meu.json");
-        let (meu, ..) = boot(&path);
-        let ancora_original = meu.document().anchor;
+        let (mine, ..) = boot(&path);
+        let original_anchor = mine.document().anchor;
 
-        let outro = TempDir::new();
-        let (outro_admin, ..) = {
+        let other = TempDir::new();
+        let (other_admin, ..) = {
             let signing_key = key(3);
             let root = principal(3, "outro", "peer-outro");
             let trust = AdminTrust::bootstrap_primary(
-                &outro.path().join("outro.json"),
+                &other.path().join("outro.json"),
                 "outro-cluster",
                 root.clone(),
                 &signing_key,
@@ -2334,46 +2295,46 @@ mod tests {
             .unwrap();
             (trust, signing_key, root)
         };
-        let document = outro_admin.document();
-        let esperada = anchor_fingerprint(&document);
+        let document = other_admin.document();
+        let expected = anchor_fingerprint(&document);
 
-        let erro = meu.adopt_anchor(document, &esperada).unwrap_err();
-        assert!(erro.to_string().contains("reancoragem manual"));
-        assert_eq!(meu.document().anchor, ancora_original);
+        let error = mine.adopt_anchor(document, &expected).unwrap_err();
+        assert!(error.to_string().contains("manual re-anchoring"));
+        assert_eq!(mine.document().anchor, original_anchor);
     }
 
-    /// Um arquivo ilegível não é âncora, mas também não é coisa que a
-    /// interface apague por cima.
+    /// An unreadable file is not an anchor, but it is also not something the
+    /// interface erases by writing over it.
     #[test]
-    fn adotar_por_cima_de_um_arquivo_existente_e_recusado() {
-        let origem = TempDir::new();
-        let (admin, ..) = boot(&origem.path().join("admin.json"));
-        let destino = TempDir::new();
-        let path = destino.path().join("corrompido.json");
+    fn adopting_over_an_existing_file_is_refused() {
+        let source = TempDir::new();
+        let (admin, ..) = boot(&source.path().join("admin.json"));
+        let destination = TempDir::new();
+        let path = destination.path().join("corrompido.json");
         std::fs::write(&path, b"{ nao e json }").unwrap();
 
         let no = AdminTrust::load_or_empty(&path);
         assert!(!no.is_anchored());
 
         let document = admin.document();
-        let esperada = anchor_fingerprint(&document);
-        let erro = no.adopt_anchor(document, &esperada).unwrap_err();
+        let expected = anchor_fingerprint(&document);
+        let error = no.adopt_anchor(document, &expected).unwrap_err();
 
-        assert!(erro.to_string().contains("reancoragem manual"));
+        assert!(error.to_string().contains("manual re-anchoring"));
         assert_eq!(std::fs::read(&path).unwrap(), b"{ nao e json }");
     }
 
-    /// Uma cadeia adulterada é recusada na leitura, antes de qualquer
-    /// conferência de impressão digital.
+    /// A tampered chain is refused on read, before any
+    /// fingerprint check.
     #[test]
-    fn uma_cadeia_adulterada_nao_e_lida() {
-        let origem = TempDir::new();
-        let (admin, ..) = boot(&origem.path().join("admin.json"));
+    fn a_tampered_chain_is_not_read() {
+        let source = TempDir::new();
+        let (admin, ..) = boot(&source.path().join("admin.json"));
         let mut document = admin.document();
         document.anchor.cluster_id = "cluster-do-atacante".into();
-        let adulterada = serde_json::to_string(&document).unwrap();
+        let tampered = serde_json::to_string(&document).unwrap();
 
-        assert!(parse_transported(&adulterada).is_err());
+        assert!(parse_transported(&tampered).is_err());
         assert!(parse_transported("nem json e").is_err());
     }
 }

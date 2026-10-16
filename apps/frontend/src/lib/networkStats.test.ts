@@ -3,7 +3,7 @@ import { fakeCluster, fakeNode, fakeSlicePeer, fakeSystem } from "../test/fixtur
 import { networkStats } from "./networkStats";
 
 describe("networkStats", () => {
-  it("agrega nós, RTT, VRAM e modelos publicados no cluster", () => {
+  it("aggregates nodes, RTT, VRAM and models published in the cluster", () => {
     const first = fakeSlicePeer("a", 0, 15, {
       route: { addr: "10.0.0.1:42777", rtt_ms: 8 },
       node: fakeNode({
@@ -32,7 +32,7 @@ describe("networkStats", () => {
     });
   });
 
-  it("preserva indisponibilidade quando não há leituras calculáveis", () => {
+  it("preserves unavailability when there are no computable readings", () => {
     const peer = fakeSlicePeer("a", 0, 15, { route: null, node: fakeNode({ system: fakeSystem({ gpus: [] }) }) });
     expect(networkStats(fakeCluster([peer], "qwen35"))).toMatchObject({
       nodeCount: 1,

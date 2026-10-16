@@ -1,24 +1,23 @@
-//! Detecção e instalação de uma nova release do binário `pom` em si.
+//! Detection and installation of a new release of the `pom` binary itself.
 //!
-//! Deliberadamente SEPARADO de `crate::plugins`: o `pom_core` não é um plugin
-//! e não faz parte do catálogo de N plugins independentes decidido em
-//! 2026-09-18 (ver `crate::plugins`, cabeçalho do arquivo). Ele vai virar
-//! GitHub Releases público, sem licença nenhuma - trabalho de outra tarefa
-//! (`rdma-pom-core-github-releases`). Até essa migração, o mecanismo aqui
-//! continua exatamente como antes: usa o manifest genérico
-//! `/v1/plugins/:plugin_code/manifest` com `crate::core_update::CORE_PLUGIN_CODE`,
-//! autenticado emprestando o lease do plugin [`crate::plugins::LOGS_PLUGIN_CODE`]
-//! (era a única licença que existia quando isto foi escrito). Essa dependência é
-//! transicional por natureza - a tarefa irmã substitui a autenticação inteira -
-//! e por isso este arquivo não tenta desenhar uma fonte de licença mais genérica
-//! para ela.
+//! Deliberately SEPARATE from `crate::plugins`: `pom_core` is not a plugin and is
+//! not part of the catalog of N independent plugins decided on 2026-09-18 (see
+//! `crate::plugins`, file header). It will become public GitHub Releases, with no
+//! license at all - the work of another task (`rdma-pom-core-github-releases`).
+//! Until that migration, the mechanism here stays exactly as before: it uses the
+//! generic manifest `/v1/plugins/:plugin_code/manifest` with
+//! `crate::core_update::CORE_PLUGIN_CODE`, authenticated by borrowing the lease
+//! of the plugin [`crate::plugins::LOGS_PLUGIN_CODE`] (the only license that
+//! existed when this was written). That dependency is transitional by nature -
+//! the sibling task replaces the whole authentication - and for that reason this
+//! file does not try to design a more generic license source for it.
 //!
-//! A tela de Plugins e a lógica de atualização de plugins (`crate::plugins`,
-//! por exemplo `PluginRuntime::detect_update`/`apply_update`) não devem
-//! importar nada daqui, e vice-versa: são dois relógios diferentes, dois
-//! `Mutex` diferentes, e a UI mostra os dois em lugares diferentes (ver
-//! `apps/frontend/src/routes/About.tsx` para o `pom_core` e
-//! `apps/frontend/src/routes/Plugins.tsx` para os plugins).
+//! The Plugins screen and the plugin update logic (`crate::plugins`, for example
+//! `PluginRuntime::detect_update`/`apply_update`) must not import anything from
+//! here, and vice versa: they are two different clocks, two different `Mutex`es,
+//! and the UI shows the two in different places (see
+//! `apps/frontend/src/routes/About.tsx` for `pom_core` and
+//! `apps/frontend/src/routes/Plugins.tsx` for the plugins).
 
 use crate::plugins::{LicenseClientError, LicenseService, PluginManager, LOGS_PLUGIN_CODE};
 use enterprise_protocol::{Fingerprint, LicenseErrorCode};
@@ -26,13 +25,12 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 
-/// Intervalo da checagem automática em segundo plano. Antes desta mudança a
-/// checagem piggybackava no heartbeat da licença Enterprise (a cada poucas
-/// horas, conforme o servidor); agora que este relógio é próprio e
-/// desacoplado do heartbeat de qualquer plugin, um intervalo fixo é a escolha
-/// mais simples - o valor exato não é contrato de produto, só a cadência de
-/// um aviso em segundo plano. A checagem sob demanda (`POST
-/// /api/ui/pom-update/check`) continua imediata.
+/// Interval of the automatic background check. Before this change the check
+/// piggybacked on the Enterprise license heartbeat (every few hours, as the
+/// server decided); now that this clock is its own and decoupled from any
+/// plugin's heartbeat, a fixed interval is the simplest choice - the exact
+/// value is not a product contract, only the cadence of a background notice.
+/// The on-demand check (`POST /api/ui/pom-update/check`) stays immediate.
 const AUTO_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,8 +61,8 @@ impl PomCoreUpdater {
         })
     }
 
-    /// Constrói o checador e liga o relógio de fundo. Ponto de entrada usado
-    /// pelo `main.rs`.
+    /// Builds the checker and starts the background clock. Entry point used by
+    /// `main.rs`.
     pub(crate) fn runtime(plugins: Arc<PluginManager>) -> Arc<Self> {
         let updater = Self::new(plugins);
         updater.spawn_supervisor();
@@ -77,7 +75,7 @@ impl PomCoreUpdater {
             loop {
                 tokio::time::sleep(AUTO_CHECK_INTERVAL).await;
                 if let Err(error) = updater.detect().await {
-                    tracing::warn!(error = %error, "detecção automática de atualização do pom falhou");
+                    tracing::warn!(error = %error, "automatic detection of the pom update failed");
                 }
             }
         });
@@ -90,14 +88,14 @@ impl PomCoreUpdater {
     fn logs_lease_error() -> LicenseClientError {
         LicenseClientError::new(
             LicenseErrorCode::LeaseUnknown,
-            "lease do plugin logs ausente para atualização do pom",
+            "logs plugin lease missing for the pom update",
         )
     }
 
-    /// Procura uma release do próprio binário somente quando o plugin
-    /// logs está ativo (é dele que este mecanismo transicional empresta
-    /// o lease). A detecção apenas publica o aviso no status; download, troca
-    /// e reinício ficam reservados à ação explícita em `apply`.
+    /// Looks for a release of the binary itself only when the logs plugin is
+    /// active (it is the one this transitional mechanism borrows the lease
+    /// from). Detection only publishes the notice in the status; download, swap
+    /// and restart are reserved for the explicit action in `apply`.
     pub(crate) async fn detect(&self) -> Result<(), LicenseClientError> {
         let _guard = self.update_lock.lock().await;
         let Some(logs) = self.plugins.runtime_for(LOGS_PLUGIN_CODE) else {
@@ -137,27 +135,25 @@ impl PomCoreUpdater {
             tracing::info!(
                 release_id = %update.release_id,
                 version = %update.version,
-                "release nova do pom encontrada"
+                "new pom release found"
             );
         }
         *self.status.write().await = available;
         Ok(())
     }
 
-    /// Baixa e instala somente a release que o operador confirmou na tela.
-    /// Reconsulta o manifest antes do download para não reutilizar uma
-    /// concessão ou metadados antigos de uma detecção anterior.
+    /// Downloads and installs only the release the operator confirmed on the
+    /// screen. Re-queries the manifest before the download so as not to reuse a
+    /// grant or stale metadata from an earlier detection.
     pub(crate) async fn apply(&self, requested_release_id: &str) -> Result<(), LicenseClientError> {
         let _guard = self.update_lock.lock().await;
         let requested_release_id = requested_release_id.trim();
         let Some(available) = self.status.read().await.clone() else {
-            return Err(update_unavailable(
-                "nenhuma atualização do pom está disponível",
-            ));
+            return Err(update_unavailable("no pom update is available"));
         };
         if available.release_id != requested_release_id {
             return Err(update_unavailable(
-                "a atualização confirmada já não é a atualização disponível",
+                "the confirmed update is no longer the available update",
             ));
         }
         let Some(logs) = self.plugins.runtime_for(LOGS_PLUGIN_CODE) else {
@@ -166,7 +162,7 @@ impl PomCoreUpdater {
         if !logs.status().await.active {
             return Err(LicenseClientError::new(
                 LicenseErrorCode::FeatureNotEntitled,
-                "uma licença do plugin logs ativa é necessária para atualizar o pom",
+                "an active logs plugin license is required to update pom",
             ));
         }
         let persisted = logs
@@ -193,7 +189,7 @@ impl PomCoreUpdater {
             )
         {
             return Err(update_unavailable(
-                "a atualização confirmada já não é uma release nova disponível",
+                "the confirmed update is no longer a new available release",
             ));
         }
 
@@ -205,7 +201,7 @@ impl PomCoreUpdater {
             crate::core_update::InstallResult::Replaced => {
                 tracing::info!(
                     release_id = %requested_release_id,
-                    "binário pom trocado; reinício autorizado pelo operador"
+                    "pom binary swapped; restart authorized by the operator"
                 );
                 schedule_core_restart(executable);
                 Ok(())
@@ -221,7 +217,7 @@ impl PomCoreUpdater {
                 tracing::info!(
                     staged = %staged.display(),
                     release_id = %requested_release_id,
-                    "binário pom preparado; reinício autorizado pelo operador"
+                    "pom binary prepared; restart authorized by the operator"
                 );
                 schedule_core_restart(executable);
                 Ok(())
@@ -247,7 +243,7 @@ fn schedule_core_restart(executable: std::path::PathBuf) {
     tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         let error = crate::respawn::respawn_at(&executable);
-        tracing::error!(error = %error, "reinício autorizado do pom falhou; o processo segue no ar");
+        tracing::error!(error = %error, "authorized pom restart failed; the process stays up");
     });
 }
 
@@ -260,7 +256,7 @@ fn schedule_core_restart(_executable: std::path::PathBuf) {
 }
 
 // ---------------------------------------------------------------------------
-// Rotas HTTP
+// HTTP routes
 // ---------------------------------------------------------------------------
 
 pub(crate) async fn pom_update_status(
@@ -420,17 +416,9 @@ mod tests {
             )
             .await;
         let manager = PluginManager::test_manager(&["logs"], service.clone());
-        let logs = manager
-            .runtime_for(LOGS_PLUGIN_CODE)
-            .expect("runtime");
-        logs
-            .activate("PM-test-key")
-            .await
-            .expect("activate logs");
-        logs
-            .mark_plugin_ready("0.1.0")
-            .await
-            .expect("mark ready");
+        let logs = manager.runtime_for(LOGS_PLUGIN_CODE).expect("runtime");
+        logs.activate("PM-test-key").await.expect("activate logs");
+        logs.mark_plugin_ready("0.1.0").await.expect("mark ready");
         let updater = PomCoreUpdater::new(manager);
 
         updater.detect().await.expect("detect core update");
@@ -461,17 +449,9 @@ mod tests {
             )
             .await;
         let manager = PluginManager::test_manager(&["logs"], service.clone());
-        let logs = manager
-            .runtime_for(LOGS_PLUGIN_CODE)
-            .expect("runtime");
-        logs
-            .activate("PM-test-key")
-            .await
-            .expect("activate logs");
-        logs
-            .mark_plugin_ready("0.1.0")
-            .await
-            .expect("mark ready");
+        let logs = manager.runtime_for(LOGS_PLUGIN_CODE).expect("runtime");
+        logs.activate("PM-test-key").await.expect("activate logs");
+        logs.mark_plugin_ready("0.1.0").await.expect("mark ready");
         let updater = PomCoreUpdater::new(manager);
         updater.detect().await.expect("detect core update");
 

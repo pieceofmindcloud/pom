@@ -8,7 +8,7 @@ pub(super) async fn stop_inference(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
 ) -> Response {
-    info!("stop-inference recebido — parando servidor neste nó");
+    info!("stop-inference received — stopping the server on this node");
     state.runtime.stop().await;
     Json(json!({ "stopped": true })).into_response()
 }
@@ -32,11 +32,10 @@ pub(super) async fn unload_model(
 ) -> Response {
     let unloaded = state.runtime.config().await;
     if unloaded.is_none() {
-        return Json(json!({ "unloaded": false, "reason": "nenhum modelo carregado" }))
-            .into_response();
+        return Json(json!({ "unloaded": false, "reason": "no model loaded" })).into_response();
     }
     state.runtime.stop().await;
-    info!("modelo descarregado pela interface");
+    info!("model unloaded from the interface");
     Json(json!({
         "unloaded": true,
         "model": unloaded.as_ref().map(|c| c.model_label.clone()),
@@ -46,29 +45,29 @@ pub(super) async fn unload_model(
     .into_response()
 }
 
-/// Outros parâmetros para a fatia que este nó já serve.
+/// Other parameters for the slice this node already serves.
 ///
-/// Só os parâmetros: o que identifica a fatia (arquivo, faixa de camadas,
-/// posição no pipeline) não está aqui e não pode ser mudado por esta porta.
-/// Ver `NodeConfig::with_params`.
+/// Only the parameters: what identifies the slice (file, layer range,
+/// position in the pipeline) is not here and cannot be changed through this door.
+/// See `NodeConfig::with_params`.
 #[derive(Debug, Deserialize)]
 pub struct ReconfigureRequest {
     pub params: RuntimeParams,
-    /// A identidade da fatia, quando quem chama já a conhece (um `redeploy`
-    /// que descarregou tudo antes de subir de novo). Ausente = o nó relê o
-    /// próprio `NodeConfig` vivo, que é o caminho de sempre e só serve para
-    /// uma máquina que já está servindo.
+    /// The slice identity, when the caller already knows it (a `redeploy`
+    /// that unloaded everything before coming up again). Absent = the node re-reads its
+    /// own live `NodeConfig`, which is the usual path and only works for
+    /// a machine that is already serving.
     #[serde(default)]
     pub slice: Option<ReconfigureSlice>,
 }
 
-/// O que identifica a fatia que um nó deve servir, para o caso em que ele
-/// **não** está servindo nada e não há `NodeConfig` vivo de onde partir.
+/// What identifies the slice a node should serve, for the case where it is
+/// **not** serving anything and there is no live `NodeConfig` to start from.
 ///
-/// Preenchido pelo coordenador de um `redeploy` a partir do registro da
-/// implantação mais a fotografia do que cada nó estava rodando antes do
-/// unload. `model_path` é o caminho vivo fotografado; sem ele, `part_sha256`
-/// resolve o arquivo local por conteúdo (`transfer::find_part`).
+/// Filled in by the coordinator of a `redeploy` from the deployment
+/// record plus the snapshot of what each node was running before the
+/// unload. `model_path` is the photographed live path; without it, `part_sha256`
+/// resolves the local file by content (`transfer::find_part`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReconfigureSlice {
     #[serde(default)]
@@ -106,16 +105,16 @@ pub(super) fn one_u32() -> u32 {
     1
 }
 
-/// Recarrega o modelo desta máquina com outros parâmetros.
+/// Reloads this machine's model with other parameters.
 ///
-/// É o caminho de "reimplantar mexendo num parâmetro": nada é planejado, nada
-/// é copiado e nenhuma faixa muda de dono - o nó relê o **mesmo** arquivo com,
-/// digamos, outro `n_ctx`. Passar pelo `deploy` inteiro para isso significaria
-/// re-varrer o cluster e cunhar uma implantação nova, quando o que mudou cabe
-/// num `apply`.
+/// It is the "redeploy by changing a parameter" path: nothing is planned, nothing
+/// is copied and no range changes owner - the node re-reads the **same** file with,
+/// say, another `n_ctx`. Going through the whole `deploy` for this would mean
+/// re-scanning the cluster and minting a new deployment, when what changed fits
+/// in an `apply`.
 ///
-/// Recusa quando não há nada carregado: reconfigurar o vazio não tem sentido, e
-/// inventar uma fatia a partir de parâmetros soltos seria adivinhar qual.
+/// It refuses when nothing is loaded: reconfiguring the empty makes no sense, and
+/// inventing a slice from loose parameters would be guessing which one.
 pub(super) async fn reconfigure(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
@@ -137,23 +136,23 @@ pub(super) async fn reconfigure(
     }
 }
 
-/// A reconfiguração em si, sem HTTP em volta.
+/// The reconfiguration itself, without HTTP around it.
 ///
-/// Existe separada porque o coordenador de um `redeploy` também é um nó da
-/// implantação: quando a máquina a reconfigurar é ele mesmo, chamar a própria
-/// rota por rede seria dar a volta no mundo para falar consigo.
+/// It exists separately because the coordinator of a `redeploy` is also a node of the
+/// deployment: when the machine to reconfigure is itself, calling its own
+/// route over the network would be going around the world to talk to itself.
 pub(crate) async fn reconfigure_local(
     state: GatewayState,
     params: RuntimeParams,
     slice: Option<ReconfigureSlice>,
 ) -> Result<NodeConfig, String> {
     let cfg = match slice {
-        // Identidade dada: monta o `NodeConfig` a partir dela, sirva o nó algo
-        // ou não. É o caminho do `redeploy` que descarrega tudo antes de subir.
+        // Identity given: builds the `NodeConfig` from it, whether or not the node serves anything.
+        // It is the path of the `redeploy` that unloads everything before coming up.
         Some(slice) => {
-            // Como achar o arquivo, em ordem: o caminho vivo fotografado; a
-            // parte por conteúdo (`part_sha256`); o catálogo local casando
-            // rótulo + faixa de camadas. Só quando as três falham é erro.
+            // How to find the file, in order: the photographed live path; the
+            // part by content (`part_sha256`); the local catalog matching
+            // label + layer range. Only when all three fail is it an error.
             let shard_dir = state.shard_dir().await;
             let model_path = if let Some(path) = slice.model_path.clone().filter(|p| !p.is_empty())
             {
@@ -177,8 +176,7 @@ pub(crate) async fn reconfigure_local(
                 path
             } else {
                 return Err(format!(
-                    "esta máquina não tem mais o arquivo da faixa L{}-{} de \"{}\" ({}); \
-                     use a tela de Implantar para copiá-lo de novo",
+                    "this machine no longer has the file of range L{}-{} of \"{}\" ({}); use the Deploy screen to copy it again",
                     slice.start_layer,
                     slice.end_layer,
                     slice.model_label,
@@ -186,23 +184,23 @@ pub(crate) async fn reconfigure_local(
                         .part_sha256
                         .as_deref()
                         .map(|s| format!("hash {}", &s[..12.min(s.len())]))
-                        .unwrap_or_else(|| "sem hash de parte no registro".to_string()),
+                        .unwrap_or_else(|| "no part hash in the record".to_string()),
                 ));
             };
             let tp_none = slice.tp.is_none();
-            // `from_params` deixa `inference_port` em 0; a identidade da fatia
-            // não o carrega. Sem este override o servidor de inferência subia
-            // em `[::]:0` (porta efêmera) num redeploy, e o túnel/HTTP direto
-            // não achava mais o peer.
+            // `from_params` leaves `inference_port` at 0; the slice identity
+            // does not carry it. Without this override the inference server came up
+            // on `[::]:0` (ephemeral port) on a redeploy, and the tunnel/direct HTTP
+            // could no longer find the peer.
             let inference_port = state.network.inference_port.ok_or_else(|| {
-                "este nó não anuncia porta de inferência; não dá para reconfigurar a fatia"
+                "this node does not announce an inference port; the slice cannot be reconfigured"
                     .to_string()
             })?;
-            // Primeiro o rascunho MTP que o nó tinha carregado, se o arquivo
-            // ainda existe: a implantação o resolve pelo vínculo de sidecar do
-            // modelo, fora da pasta da fatia, e só a busca por vizinho o perdia
-            // em todo redeploy. Sem ele, a busca ao lado do arquivo ainda vale
-            // para um rascunho adicionado depois. Ver `run_apply`.
+            // First the MTP draft the node had loaded, if the file
+            // still exists: the deployment resolves it by the model's sidecar link,
+            // outside the slice folder, and only the neighbour search lost it
+            // on every redeploy. Without it, the search next to the file still applies
+            // to a draft added later. See `run_apply`.
             let mtp_draft_path = slice
                 .mtp_draft_path
                 .clone()
@@ -230,18 +228,18 @@ pub(crate) async fn reconfigure_local(
                 ..NodeConfig::from_params(&params, tp_none)
             }
         }
-        // Sem identidade: só troca os parâmetros do que já está carregado.
+        // No identity: only swaps the parameters of what is already loaded.
         None => {
-            let Some(atual) = state.runtime.config().await else {
-                warn!("reconfigure recusado: este nó não está servindo nada");
-                return Err("este nó não está servindo nada para reconfigurar".into());
+            let Some(current) = state.runtime.config().await else {
+                warn!("reconfigure refused: this node is not serving anything");
+                return Err("this node is not serving anything to reconfigure".into());
             };
-            atual.with_params(&params)
+            current.with_params(&params)
         }
     };
 
     info!(
-        "reconfigurando {} (camadas {}-{}) com parâmetros novos",
+        "reconfiguring {} (layers {}-{}) with new parameters",
         cfg.model_label, cfg.start_layer, cfg.end_layer
     );
 
@@ -253,10 +251,10 @@ pub(crate) async fn reconfigure_local(
     Ok(cfg)
 }
 
-/// A qual máquina o "sair da rede" se refere.
+/// Which machine the "leave the network" refers to.
 #[derive(Debug, Default, Deserialize)]
 pub struct LeaveRequest {
-    /// Máquina que deve sair. Ausente, ou o próprio `node_id`, significa esta.
+    /// Machine that should leave. Absent, or the node's own `node_id`, means this one.
     #[serde(default)]
     pub node_id: Option<String>,
 }
@@ -265,20 +263,21 @@ pub struct LeaveRequest {
 ///
 /// The HTTP gateway keeps serving, because the way back in is this same screen.
 ///
-/// Corpo ausente ou sem `node_id` mantém o comportamento antigo — este nó sai —,
-/// que é o que o menu "Este nó" e a tela de Rede sempre pediram. Com `node_id`
-/// de outra máquina o pedido é **repassado** à mesma rota lá, como
-/// `dev/update` já faz: o painel só fala com o próprio nó (caminhos relativos
-/// em `lib/api.ts`), e um card de peer no Painel precisa alcançar aquela
-/// máquina. Quem se desliga é sempre o dono da rede daquele processo; este nó
-/// não tem como detachar outro por fora.
+/// An absent body or one without `node_id` keeps the old behaviour - this node leaves -,
+/// which is what the "This node" menu and the Network screen always asked for. With the `node_id`
+/// of another machine the request is **relayed** to the same route there, as
+/// `dev/update` already does: the panel only talks to its own node (relative paths
+/// in `lib/api.ts`), and a peer card on the Dashboard needs to reach that
+/// machine. The one that shuts down is always the network owner of that process; this node
+/// has no way to detach another from outside.
 ///
-/// As duas metades têm donos diferentes, e é por isso que a tabela de escopo
-/// não dá conta sozinha: sair é **abdicar do próprio posto**, e nenhum perfil
-/// precisa de licença para isso; mandar **outra** máquina sair é ato de
-/// administrador, e o repasse viaja com a credencial interna, que o alvo não
-/// julga pelo perfil de quem pediu. Sem esta trava, o escopo mais largo da
-/// rota transformaria "posso sair" em "posso expulsar qualquer um".
+/// The two halves have different owners, and that is why the scope table
+/// cannot handle it alone: leaving is **abdicating one's own post**, and no profile
+/// needs a license for it; telling **another** machine to leave is an
+/// administrator's act, and the relay travels with the internal credential, which
+/// the target does not judge by the profile of whoever asked. Without this lock,
+/// the route's wider scope
+/// would turn "I may leave" into "I may expel anyone".
 pub(super) async fn leave_network(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
@@ -286,11 +285,11 @@ pub(super) async fn leave_network(
 ) -> Response {
     let target = body.and_then(|Json(b)| b.node_id).unwrap_or_default();
     if !target.is_empty() && target != state.network.node_id {
-        if !has_admin_authority(&state).await {
+        if !super::local_is_primary(&state).await {
             return (
                 StatusCode::FORBIDDEN,
                 Json(json!({
-                    "error": "só um administrador tira outra máquina da rede",
+                    "error": "only an administrator removes another machine from the network",
                     "node_id": target,
                 })),
             )
@@ -301,7 +300,7 @@ pub(super) async fn leave_network(
 
     state.runtime.stop().await;
     state.network.detach().await;
-    info!("nó saiu da rede pela interface");
+    info!("node left the network from the interface");
     Json(json!({ "detached": true })).into_response()
 }
 
@@ -341,21 +340,22 @@ pub(super) async fn leave_network_and_reset(
         if error.kind() != std::io::ErrorKind::NotFound {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("não foi possível apagar a raiz de confiança: {error}") })),
+                Json(json!({ "error": format!("could not delete the trust root: {error}") })),
             )
                 .into_response();
         }
     }
 
-    let mut config =
-        match crate::config::Config::load() {
-            Ok(config) => config,
-            Err(error) => return (
+    let mut config = match crate::config::Config::load() {
+        Ok(config) => config,
+        Err(error) => {
+            return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("não foi possível ler a configuração: {error:#}") })),
+                Json(json!({ "error": format!("could not read the configuration: {error:#}") })),
             )
-                .into_response(),
-        };
+                .into_response()
+        }
+    };
     // The connection key of the network being left goes with it: after the
     // principal rotates it, it opens nothing. Then this machine's own
     // network comes back from standby as it was; only a node that never had
@@ -364,7 +364,7 @@ pub(super) async fn leave_network_and_reset(
     let restored = match super::standby::restore_primary(&mut config) {
         Ok(restored) => restored,
         Err(error) => {
-            warn!("não foi possível restaurar a rede própria; criando uma nova: {error:#}");
+            warn!("could not restore the own network; creating a new one: {error:#}");
             false
         }
     };
@@ -378,9 +378,7 @@ pub(super) async fn leave_network_and_reset(
     if let Err(error) = config.save() {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(
-                json!({ "error": format!("não foi possível preparar o próximo setup: {error:#}") }),
-            ),
+            Json(json!({ "error": format!("could not prepare the next setup: {error:#}") })),
         )
             .into_response();
     }
@@ -388,40 +386,30 @@ pub(super) async fn leave_network_and_reset(
         super::standby::discard();
     }
     if let Err(error) = state.database.save_network_settings(&config.network) {
-        warn!("não foi possível limpar os detalhes da rede no banco: {error:#}");
+        warn!("could not clear the network details in the database: {error:#}");
     }
     if let Err(error) = state.database.clear_api_keys() {
-        warn!("não foi possível limpar as chaves de API locais: {error:#}");
+        warn!("could not clear the local API keys: {error:#}");
     }
 
     info!(
         trust = %trust_path.display(),
-        "nó saiu da rede; confiança revogada e setup pendente"
+        "node left the network; trust revoked and setup pending"
     );
     tokio::spawn(async {
         tokio::time::sleep(std::time::Duration::from_millis(800)).await;
         let error = crate::respawn::respawn_self();
-        tracing::error!("respawn após saída da rede falhou, o nó segue no ar: {error}");
+        tracing::error!("respawn after leaving the network failed, the node stays up: {error}");
     });
     Json(json!({ "left": true, "restored_own_network": restored, "restart": true })).into_response()
 }
 
-/// Autoridade administrativa efetiva deste nó. `profile: admin` sozinho não
-/// concede capacidade: é a concessão assinada que decide (ver `admin_trust`).
-async fn has_admin_authority(state: &GatewayState) -> bool {
-    let profile = state.auth.read().await.profile;
-    state
-        .admin_trust
-        .effective_authority(&state.authority_principal, profile)
-        .is_some()
-}
-
-/// Prazo de um `/api/ui/apply` encaminhado: o do cliente de peer
-/// (`PeerClients::new(600 s)`), que era o que valia antes de a chamada ter
-/// prazo próprio. O peer responde ao aceitar o job, não ao terminar a carga.
+/// Deadline of a forwarded `/api/ui/apply`: the peer client's
+/// (`PeerClients::new(600 s)`), which was what held before the call had its
+/// own deadline. The peer answers when it accepts the job, not when the load ends.
 const APPLY_FORWARD_TIMEOUT: Duration = Duration::from_secs(600);
 
-/// Repassa o "sair da rede" ao peer escolhido, sem `node_id` — lá ele é local.
+/// Relays the "leave the network" to the chosen peer, without `node_id` - there it is local.
 pub(super) async fn forward_leave(state: &GatewayState, node_id: &str) -> Response {
     let Some(peer) = state
         .all_peers()
@@ -429,7 +417,7 @@ pub(super) async fn forward_leave(state: &GatewayState, node_id: &str) -> Respon
         .into_iter()
         .find(|p| p.node_id == node_id)
     else {
-        return bad_request("peer desconhecido");
+        return bad_request("unknown peer");
     };
     let body = json!({});
     match state
@@ -437,11 +425,11 @@ pub(super) async fn forward_leave(state: &GatewayState, node_id: &str) -> Respon
         .await
     {
         Ok(r) if r.status().is_success() => {
-            info!("{node_id} saiu da rede a pedido deste nó");
+            info!("{node_id} left the network at the request of this node");
             Json(json!({ "detached": true, "node_id": node_id })).into_response()
         }
-        Ok(r) => bad_request(format!("a máquina recusou: HTTP {}", r.status())),
-        Err(e) => bad_request(format!("máquina inacessível: {e}")),
+        Ok(r) => bad_request(format!("the machine refused: HTTP {}", r.status())),
+        Err(e) => bad_request(format!("machine unreachable: {e}")),
     }
 }
 
@@ -596,7 +584,7 @@ pub(super) async fn release_slice(
     body: Option<Json<ReleaseRequest>>,
 ) -> Response {
     let Some(cfg) = state.runtime.config().await else {
-        return bad_request("este nó não está servindo nenhuma fatia");
+        return bad_request("this node is not serving any slice");
     };
     let reassign = body.map(|Json(r)| r.reassign).unwrap_or(true);
 
@@ -605,7 +593,7 @@ pub(super) async fn release_slice(
     // they asked to happen immediately.
     state.runtime.stop().await;
     info!(
-        "fatia L{}-{} liberada pelo nó; memória devolvida",
+        "slice L{}-{} released by the node; memory returned",
         cfg.start_layer, cfg.end_layer
     );
 
@@ -620,20 +608,20 @@ pub(super) async fn release_slice(
         return Json(json!({
             "released": true, "slice": released,
             "reassigned_to": null, "uncovered": true,
-            "reason": "reatribuição desligada no pedido",
+            "reason": "reassignment turned off in the request",
         }))
         .into_response();
     }
 
     let Some(candidate) = find_release_candidate(&state, &cfg).await else {
         warn!(
-            "fatia L{}-{} ficou descoberta: nenhum nó ocioso tem esse arquivo",
+            "slice L{}-{} was left uncovered: no idle node has this file",
             cfg.start_layer, cfg.end_layer
         );
         return Json(json!({
             "released": true, "slice": released,
             "reassigned_to": null, "uncovered": true,
-            "reason": "nenhum outro nó está ocioso e com esta fatia no disco",
+            "reason": "no other node is idle and has this slice on disk",
         }))
         .into_response();
     };
@@ -641,12 +629,12 @@ pub(super) async fn release_slice(
     // Same shape a launch dispatches, so the successor comes up exactly as this
     // node was: same label, same position in the split, same runtime params.
     let apply_req = ApplyRequest {
-        // O sucessor entra na **mesma** implantação: é a mesma faixa do mesmo
-        // conjunto, só que noutra máquina.
+        // The successor enters the **same** deployment: it is the same range of the same
+        // set, only on another machine.
         deploy_id: cfg.deploy_id.clone(),
         source_model_path: candidate.path.clone(),
-        // O sucessor carrega exatamente o arquivo que este nó carregava, e o
-        // nome de uma parte já é o hash dela: é daí que a identidade sai.
+        // The successor loads exactly the file this node was loading, and the
+        // name of a part is already its hash: that is where the identity comes from.
         part_sha256: std::path::Path::new(&candidate.path)
             .file_stem()
             .and_then(|s| s.to_str())
@@ -683,7 +671,7 @@ pub(super) async fn release_slice(
     {
         Ok(r) if r.status().is_success() => {
             info!(
-                "fatia L{}-{} assumida por {}",
+                "slice L{}-{} taken over by {}",
                 cfg.start_layer, cfg.end_layer, candidate.node_id
             );
             Json(json!({
@@ -698,18 +686,21 @@ pub(super) async fn release_slice(
         Ok(r) => {
             let code = r.status();
             let text = r.text().await.unwrap_or_default();
-            warn!("{} recusou assumir a fatia: HTTP {code}", candidate.node_id);
+            warn!(
+                "{} refused to take over the slice: HTTP {code}",
+                candidate.node_id
+            );
             Json(json!({
                 "released": true, "slice": released,
                 "reassigned_to": null, "uncovered": true,
-                "reason": format!("{} recusou assumir: HTTP {code} {text}", candidate.hostname),
+                "reason": format!("{} refused to take over: HTTP {code} {text}", candidate.hostname),
             }))
             .into_response()
         }
         Err(e) => Json(json!({
             "released": true, "slice": released,
             "reassigned_to": null, "uncovered": true,
-            "reason": format!("{} inacessível: {e}", candidate.hostname),
+            "reason": format!("{} unreachable: {e}", candidate.hostname),
         }))
         .into_response(),
     }
@@ -723,7 +714,7 @@ pub(super) async fn rejoin_network(
     let assignment = state.local_assignment.read().await.clone();
     match state.network.rejoin(assignment.as_ref()).await {
         Ok(()) => Json(json!({ "detached": false })).into_response(),
-        Err(e) => bad_request(format!("não deu para voltar à rede: {e}")),
+        Err(e) => bad_request(format!("could not return to the network: {e}")),
     }
 }
 
@@ -747,8 +738,8 @@ pub struct LaunchTarget {
     pub end_layer: u32,
     #[serde(default)]
     pub skip_split: bool,
-    /// Hash da parte que este alvo carrega, quando o `.pom` já a conhece. É o
-    /// que dispensa o destino de adivinhar um nome de arquivo.
+    /// Hash of the part this target loads, when the `.pom` already knows it. It is what
+    /// spares the destination from guessing a file name.
     #[serde(default)]
     pub part_sha256: Option<String>,
     /// Local slices to join into one file before serving. When present, the
@@ -767,34 +758,34 @@ pub struct LaunchTarget {
     /// before this the whole launch had to settle on one.
     #[serde(default)]
     pub n_gpu_layers: Option<u32>,
-    /// Onde o cache KV deste peer mora, sobrepondo `params.offload_kqv` só para
-    /// ele.
+    /// Where this peer's KV cache lives, overriding `params.offload_kqv` for
+    /// it alone.
     ///
-    /// Pela mesma razão que o offload: o cache é dimensionado pela janela de
-    /// contexto, e uma máquina com 16 GB de VRAM e uma sem GPU no mesmo
-    /// pipeline não podem estar as duas certas sobre onde ele cabe.
+    /// For the same reason as the offload: the cache is sized by the context
+    /// window, and a machine with 16 GB of VRAM and one without a GPU in the same
+    /// pipeline cannot both be right about where it fits.
     #[serde(default)]
     pub offload_kqv: Option<bool>,
-    /// Override por alvo, calculado a partir da topologia do plano. `None`
-    /// preserva o comportamento automático do peer final.
+    /// Per-target override, computed from the plan's topology. `None`
+    /// preserves the final peer's automatic behaviour.
     #[serde(default)]
     pub no_embeddings: Option<bool>,
-    /// Posição deste peer no pipeline, quando ela não é a posição dele nesta
-    /// requisição.
+    /// Position of this peer in the pipeline, when it is not its position in this
+    /// request.
     ///
-    /// `launch` deduz `peer_index`/`peer_count` da lista de alvos, o que só
-    /// vale quando a requisição descreve o pipeline inteiro. Quem soma uma
-    /// máquina de cada vez (`deploy::add_node_endpoint`) manda um alvo e
-    /// precisa dizer a posição real - sem isto o nó somado se declara o último
-    /// da divisão, sobe sem captura de residual e a inferência morre no
-    /// primeiro token com "no embeddings".
+    /// `launch` deduces `peer_index`/`peer_count` from the list of targets, which only
+    /// holds when the request describes the whole pipeline. Whoever adds one
+    /// machine at a time (`deploy::add_node_endpoint`) sends one target and
+    /// needs to state the real position - without this the added node declares itself the last
+    /// of the split, comes up without residual capture and inference dies on the
+    /// first token with "no embeddings".
     #[serde(default)]
     pub peer_index: Option<u32>,
     #[serde(default)]
     pub peer_count: Option<u32>,
-    /// Identidade de tensor parallelism deste alvo (caminho C). Quando presente
-    /// (primary ou worker de um grupo), o apply extrai o shard/registra a
-    /// coletiva em vez de só fatiar por camadas.
+    /// Tensor parallelism identity of this target (path C). When present
+    /// (primary or worker of a group), the apply extracts the shard/registers the
+    /// collective instead of only slicing by layers.
     #[serde(default)]
     pub tp: Option<crate::network::TpIdentity>,
     /// The target should load the adjacent multimodal projector.
@@ -819,9 +810,9 @@ pub struct LaunchTarget {
 
 #[derive(Debug, Deserialize)]
 pub struct LaunchRequest {
-    /// A implantação que este launch está subindo. Cunhado por
-    /// `deploy::deploy_endpoint`; vazio num launch avulso, que não passou por
-    /// implantação nenhuma.
+    /// The deployment this launch is bringing up. Minted by
+    /// `deploy::deploy_endpoint`; empty in a standalone launch, which did not go through
+    /// any deployment.
     #[serde(default)]
     pub deploy_id: String,
     pub base_name: String,
@@ -829,7 +820,7 @@ pub struct LaunchRequest {
     /// to every apply request. Missing values keep older callers compatible.
     #[serde(default)]
     pub model_label: Option<String>,
-    /// Nome operacional exibido em jobs, status e telemetria.
+    /// Operational name shown in jobs, status and telemetry.
     #[serde(default)]
     pub deployment_name: String,
     pub total_layers: u32,
@@ -914,7 +905,7 @@ pub(crate) async fn launch(
     Json(req): Json<LaunchRequest>,
 ) -> Response {
     if req.targets.is_empty() {
-        return bad_request("nenhum peer selecionado");
+        return bad_request("no peer selected");
     }
     // Checked before phase 1, which stops inference on every target: a launch
     // that cannot possibly apply must not be allowed to take the cluster down
@@ -922,13 +913,11 @@ pub(crate) async fn launch(
     // offending files named; this is the guard for every other caller.
     if req.total_layers == 0 {
         return bad_request(
-            "não foi informado de quantas camadas é o modelo, e as fatias não podem ser \
-             atribuídas sem esse total. Fatias geradas pela tela de Fatiar gravam esse dado; \
-             as antigas não, e nesse caso o total é deduzido da cobertura das fatias.",
+            "the number of layers of the model was not provided, and the slices cannot be assigned without this total. Slices generated by the Slice screen write this; the old ones do not, and in that case the total is deduced from the coverage of the slices.",
         );
     }
     if req.use_mmproj && !req.targets.iter().any(|target| target.use_mmproj) {
-        return bad_request("este modelo não tem visão: nenhum alvo recebeu mmproj");
+        return bad_request("this model has no vision: no target received an mmproj");
     }
     let deployment = match normalize_deployment_name(Some(&req.deployment_name), &req.base_name) {
         Ok(name) => name,
@@ -936,7 +925,7 @@ pub(crate) async fn launch(
     };
     if let Some(t) = req.targets.iter().find(|t| t.end_layer >= req.total_layers) {
         return bad_request(format!(
-            "a fatia L{}-{} passa do fim de um modelo de {} camadas",
+            "slice L{}-{} goes past the end of a model with {} layers",
             t.start_layer, t.end_layer, req.total_layers
         ));
     }
@@ -953,6 +942,26 @@ pub(crate) async fn launch(
     let peers = state.all_peers().await;
     let self_id = state.network.node_id.clone();
     let peer_count = req.targets.len() as u32;
+    // Refused here too, before anything is stopped: a target list built by
+    // hand must not get as far as unloading the other machines.
+    if let Some(infer) = req.targets.iter().find_map(|target| {
+        peers
+            .iter()
+            .find(|peer| peer.node_id == target.node_id)
+            .filter(|peer| crate::gateway::peer_is_infer(&state, peer))
+    }) {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "reason": "infer_target",
+                "error": format!(
+                    "{} was admitted for inference only and cannot serve a model",
+                    infer.hostname
+                ),
+            })),
+        )
+            .into_response();
+    }
 
     // Phase 1: stop inference on every target peer so no stale endpoint
     // receives inference requests mid-transition, and to free ports before
@@ -963,7 +972,7 @@ pub(crate) async fn launch(
             continue;
         }
         let Some(peer) = peers.iter().find(|p| p.node_id == target.node_id) else {
-            warn!("peer {} nao encontrado para stop-inference", target.node_id);
+            warn!("peer {} not found for stop-inference", target.node_id);
             continue;
         };
         match state
@@ -971,18 +980,18 @@ pub(crate) async fn launch(
             .await
         {
             Ok(r) if r.status().is_success() => {
-                info!("peer {} parou inferencia", target.node_id);
+                info!("peer {} stopped inference", target.node_id);
             }
             Ok(r) => {
                 warn!(
-                    "peer {} recusou stop-inference: HTTP {}",
+                    "peer {} refused stop-inference: HTTP {}",
                     target.node_id,
                     r.status()
                 );
             }
             Err(e) => {
                 warn!(
-                    "peer {} inacessivel para stop-inference: {e}",
+                    "peer {} unreachable for stop-inference: {e}",
                     target.node_id
                 );
             }
@@ -1035,14 +1044,14 @@ pub(crate) async fn launch(
             results.push(json!({
                 "node_id": target.node_id,
                 "dispatched": false,
-                "error": "peer não encontrado",
+                "error": "peer not found",
             }));
             continue;
         };
 
-        // A /api/ui/apply do peer é autenticada: `control_post_json` leva a
-        // assinatura e a credencial do nó - sem elas a perna remota de um
-        // launch sempre voltava 401.
+        // The peer's /api/ui/apply is authenticated: `control_post_json` carries the
+        // node's signature and credential - without them the remote leg of a
+        // launch always came back 401.
         match state
             .control_post_json(peer, "/api/ui/apply", &apply_req, APPLY_FORWARD_TIMEOUT)
             .await

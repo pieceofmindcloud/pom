@@ -1,19 +1,19 @@
-//! Um `reqwest::Client` por peer, porque o verifier é por destino.
+//! One `reqwest::Client` per peer, because the verifier is per destination.
 //!
-//! Antes desta feature havia um cliente só para tudo. Com pinning por node_id,
-//! o `rustls::ClientConfig` carrega **qual** node_id esperar, e ele é fixado na
-//! construção do cliente - então o cliente passa a ser por destino. Sem TLS,
-//! volta a ser um só, porque aí não há nada a fixar.
+//! Before this feature there was a single client for everything. With pinning by
+//! node_id, the `rustls::ClientConfig` carries **which** node_id to expect, and it is
+//! pinned when the client is built - so the client becomes per destination. Without
+//! TLS it goes back to being a single one, because then there is nothing to pin.
 //!
-//! *Alternativa recusada:* pôr o node_id no SNI (`<node_id>.pom`) e resolver
-//! com `resolve_to_addrs`, o que permitiria um cliente único. As resoluções do
-//! reqwest são estáticas na construção, então o ganho evapora num cluster onde
-//! peers entram e saem.
+//! *Rejected alternative:* putting the node_id in the SNI (`<node_id>.pom`) and
+//! resolving with `resolve_to_addrs`, which would allow a single client. reqwest's
+//! resolutions are static at build time, so the gain evaporates in a cluster where
+//! peers come and go.
 //!
-//! Tudo aqui é síncrono de propósito: o cache é um `HashMap` sob um lock da
-//! `std`, e nenhuma seção crítica atravessa um `await`. Um lock assíncrono
-//! obrigaria todo ponto de chamada peer a peer a virar `async` por causa de uma
-//! busca em tabela hash.
+//! Everything here is synchronous on purpose: the cache is a `HashMap` under a `std`
+//! lock, and no critical section crosses an `await`. An async lock would
+//! force every peer to peer call site to become `async` because of a
+//! hash table lookup.
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -22,53 +22,53 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tracing::debug;
 
-/// Se este nó fala TLS com os peers, visível de qualquer lugar do processo.
+/// Whether this node speaks TLS with the peers, visible from anywhere in the process.
 ///
-/// É global porque a flag é propriedade **do nó**, não de uma conexão: os
-/// construtores de URL do `PeerInfo` (`inference_candidates`, `gateway_url`)
-/// precisam do esquema, e passá-lo por parâmetro em cada um deles espalharia um
-/// argumento por dezenas de assinaturas para carregar um único bit que nunca
-/// difere entre eles. Dois nós no mesmo processo só acontecem em teste.
-static TLS_ATIVO: AtomicBool = AtomicBool::new(false);
-static QUIC_ATIVO: AtomicBool = AtomicBool::new(false);
+/// It is global because the flag is a property **of the node**, not of a connection:
+/// the URL builders of `PeerInfo` (`inference_candidates`, `gateway_url`)
+/// need the scheme, and passing it as a parameter to each of them would spread an
+/// argument across dozens of signatures to carry a single bit that never
+/// differs between them. Two nodes in the same process only happen in tests.
+static TLS_ENABLED: AtomicBool = AtomicBool::new(false);
+static QUIC_ENABLED: AtomicBool = AtomicBool::new(false);
 
-pub fn tls_ativo() -> bool {
-    TLS_ATIVO.load(Ordering::Relaxed)
+pub fn tls_enabled() -> bool {
+    TLS_ENABLED.load(Ordering::Relaxed)
 }
 
-pub fn set_tls_ativo(on: bool) {
-    TLS_ATIVO.store(on, Ordering::Relaxed);
+pub fn set_tls_enabled(on: bool) {
+    TLS_ENABLED.store(on, Ordering::Relaxed);
 }
 
-pub fn quic_ativo() -> bool {
-    QUIC_ATIVO.load(Ordering::Relaxed)
+pub fn quic_enabled() -> bool {
+    QUIC_ENABLED.load(Ordering::Relaxed)
 }
 
-pub fn set_quic_ativo(on: bool) {
-    QUIC_ATIVO.store(on, Ordering::Relaxed);
+pub fn set_quic_enabled(on: bool) {
+    QUIC_ENABLED.store(on, Ordering::Relaxed);
 }
 
-/// Esquema em vigor para falar com um peer.
+/// Scheme in force for talking to a peer.
 pub fn peer_scheme() -> &'static str {
-    scheme(tls_ativo())
+    scheme(tls_enabled())
 }
 
-/// Trava que serializa os testes que leem ou escrevem `TLS_ATIVO`.
+/// Lock that serializes the tests that read or write `TLS_ENABLED`.
 ///
-/// O estado é global ao processo e os testes rodam em paralelo: sem isto, um
-/// teste que liga a política faz outro, que monta URL de peer, ver `https://`
-/// onde esperava `http://`. Já aconteceu. Todo teste que toque no esquema
-/// global pega esta trava primeiro.
+/// The state is global to the process and the tests run in parallel: without this, a
+/// test that turns the policy on makes another one, which builds a peer URL, see
+/// `https://` where it expected `http://`. It has happened. Every test that touches
+/// the global scheme takes this lock first.
 #[cfg(test)]
-pub static POLITICA_GLOBAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub static GLOBAL_POLICY: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Um peer alcançável pelo swarm, para o plano de controle cair no túnel
-/// quando a discagem HTTP direta não chega.
+/// A peer reachable through the swarm, so the control plane falls back to the tunnel
+/// when the direct HTTP dial does not get through.
 ///
-/// Atrás de NAT/CGNAT a discagem direta nunca chega, e a admissão depende de
-/// uma sonda HTTP (`/handshake`): sem este caminho, um par atrás de NAT não
-/// entra na tabela `peers` nem com o hole punch funcionando, e roteamento, UI
-/// e pipeline continuam cegos para ele.
+/// Behind NAT/CGNAT the direct dial never gets through, and admission depends on
+/// an HTTP probe (`/handshake`): without this path, a peer behind NAT does not
+/// enter the `peers` table even with hole punching working, and routing, UI
+/// and pipeline stay blind to it.
 #[derive(Debug, Clone)]
 pub(crate) struct TunnelPeer {
     pub peer_id: libp2p::PeerId,
@@ -76,8 +76,8 @@ pub(crate) struct TunnelPeer {
 }
 
 impl TunnelPeer {
-    /// A partir do que viaja num `reply_to`: o `PeerId` e os multiaddresses do
-    /// gateway, sem um `PeerInfo` por perto. `None` se o `PeerId` não parseia.
+    /// From what travels in a `reply_to`: the `PeerId` and the multiaddresses of the
+    /// gateway, with no `PeerInfo` around. `None` if the `PeerId` does not parse.
     pub(crate) fn from_parts(peer_id: &str, addrs: Vec<String>) -> Option<Self> {
         Some(Self {
             peer_id: peer_id.parse().ok()?,
@@ -85,7 +85,7 @@ impl TunnelPeer {
         })
     }
 
-    /// `None` quando o peer não anuncia o túnel ou não tem `PeerId` válido.
+    /// `None` when the peer does not announce the tunnel or has no valid `PeerId`.
     pub(crate) fn from_peer(peer: &crate::network::PeerInfo) -> Option<Self> {
         if !peer
             .inference_frame_capabilities
@@ -102,16 +102,16 @@ impl TunnelPeer {
     }
 }
 
-/// Prazo mínimo de uma chamada pelo túnel. O pedido pode ter de montar um
-/// circuito por um relé na internet antes de sair, e os prazos das chamadas
-/// diretas (`webui::PEER_TIMEOUT`, 4 s) não contam com isso.
+/// Minimum deadline of a call through the tunnel. The request may have to build a
+/// circuit through a relay on the internet before leaving, and the deadlines of the
+/// direct calls (`webui::PEER_TIMEOUT`, 4 s) do not account for that.
 const TUNNEL_MIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
-/// Cabeçalho com o `node_id` de quem respondeu, carimbado pelo gateway e pelo
-/// servidor de inferência em toda resposta (`stamp_node_id`).
+/// Header with the `node_id` of whoever answered, stamped by the gateway and by the
+/// inference server on every response (`stamp_node_id`).
 pub const NODE_ID_HEADER: &str = "x-pom-node-id";
 
-/// Carimba o `node_id` deste processo na resposta.
+/// Stamps this process's `node_id` on the response.
 pub(crate) async fn stamp_node_id(
     mut response: axum::response::Response,
 ) -> axum::response::Response {
@@ -123,13 +123,13 @@ pub(crate) async fn stamp_node_id(
     response
 }
 
-/// `Some(quem respondeu)` quando a resposta traz o carimbo de **outro** nó.
+/// `Some(who answered)` when the response carries the stamp of **another** node.
 ///
-/// O IP de um endereço não prova quem está atrás dele: dois nós em Docker
-/// bridge com o mesmo IP interno faziam o salem, discando o endereço interno
-/// da ksia, receber a própria resposta. QUIC e HTTPS já fixam o `node_id` no
-/// certificado; em texto claro é este carimbo que confere. Resposta sem
-/// carimbo passa, porque quem responde pode não ser um nó (um teste, um proxy).
+/// The IP of an address does not prove who is behind it: two nodes on a Docker
+/// bridge with the same internal IP made salem, dialing ksia's internal
+/// address, receive its own response. QUIC and HTTPS already pin the `node_id` in
+/// the certificate; in cleartext it is this stamp that checks it. A response without
+/// a stamp passes, because whoever answers may not be a node (a test, a proxy).
 pub(crate) fn answered_by_other_node(
     headers: &reqwest::header::HeaderMap,
     expected: &str,
@@ -152,9 +152,9 @@ fn consumes_a_control_nonce(request: &reqwest::Request) -> bool {
         )
 }
 
-/// Envia uma chamada de controle usando a lista de endereços definida pelo
-/// chamador, que pode ser vazia para tentar somente o túnel. Útil quando quem
-/// chama já ordenou os endpoints pela memória de falha do `RouteTable`.
+/// Sends a control call using the address list defined by the
+/// caller, which may be empty to try only the tunnel. Useful when the
+/// caller has already ordered the endpoints by the `RouteTable`'s failure memory.
 ///
 /// A signed command that may have reached the peer is not sent again by
 /// another address. The same envelope goes in every attempt, so after a
@@ -179,14 +179,14 @@ where
             Ok(response) => match answered_by_other_node(response.headers(), &peer.node_id) {
                 None => return Ok(response),
                 Some(actual) => failures.push(format!(
-                    "{base}: respondeu o nó {}, não {}",
+                    "{base}: answered as node {}, not {}",
                     crate::network::short(&actual),
                     crate::network::short(&peer.node_id)
                 )),
             },
             Err(error) if single_use && !error.is_connect() => {
                 anyhow::bail!(
-                    "o gateway de {} recebeu o comando por {base} e não respondeu a tempo ({error}); o comando pode estar em execução e não foi reenviado",
+                    "the gateway of {} received the command through {base} and did not answer in time ({error}); the command may be running and was not resent",
                     crate::network::short(&peer.node_id)
                 );
             }
@@ -196,23 +196,23 @@ where
     if let Some(tunnel) = TunnelPeer::from_peer(peer) {
         match send_request_via_tunnel(&tunnel, build("http://tunnel.invalid")).await {
             Ok(response) => return Ok(response),
-            Err(error) => failures.push(format!("túnel libp2p: {error:#}")),
+            Err(error) => failures.push(format!("libp2p tunnel: {error:#}")),
         }
     }
     anyhow::bail!(
-        "o gateway de {} não respondeu: {}",
+        "the gateway of {} did not answer: {}",
         crate::network::short(&peer.node_id),
         if failures.is_empty() {
-            "nenhum endereço anunciado".to_string()
+            "no announced address".to_string()
         } else {
             failures.join(", ")
         }
     )
 }
 
-/// O mesmo pedido de `build`, levado pelo túnel. A resposta volta como um
-/// `reqwest::Response` comum, para quem chama não precisar saber o caminho.
-async fn send_request_via_tunnel(
+/// The same request as `build`, carried through the tunnel. The response comes back
+/// as an ordinary `reqwest::Response`, so the caller does not need to know the path.
+pub(crate) async fn send_request_via_tunnel(
     tunnel: &TunnelPeer,
     build: reqwest::RequestBuilder,
 ) -> Result<reqwest::Response> {
@@ -252,7 +252,7 @@ async fn send_request_via_tunnel(
     Ok(reqwest::Response::from(response))
 }
 
-/// Resposta já lida, porque o túnel não produz um `reqwest::Response`.
+/// Response already read, because the tunnel does not produce a `reqwest::Response`.
 #[derive(Debug, Clone)]
 pub(crate) struct InternalResponse {
     pub status: u16,
@@ -269,10 +269,10 @@ impl InternalResponse {
     }
 }
 
-/// Despacha uma chamada do plano de controle pelo túnel libp2p.
+/// Dispatches a control plane call through the libp2p tunnel.
 ///
-/// O destino é `TunnelTarget::Gateway`; a rota ainda passa pela lista fechada
-/// conferida no receptor (`infer_tunnel::gateway_path_is_allowed`).
+/// The destination is `TunnelTarget::Gateway`; the route still goes through the
+/// closed list checked on the receiver (`infer_tunnel::gateway_path_is_allowed`).
 pub(crate) async fn tunnel_gateway_call(
     tunnel: &TunnelPeer,
     method: &str,
@@ -282,7 +282,7 @@ pub(crate) async fn tunnel_gateway_call(
     timeout: std::time::Duration,
 ) -> Result<InternalResponse> {
     let Some(sender) = crate::infer_tunnel::tunnel_sender() else {
-        anyhow::bail!("o túnel libp2p não está disponível neste processo");
+        anyhow::bail!("the libp2p tunnel is not available in this process");
     };
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     sender
@@ -293,18 +293,18 @@ pub(crate) async fn tunnel_gateway_call(
             reply: reply_tx,
         })
         .await
-        .map_err(|_| anyhow::anyhow!("a fila do túnel libp2p fechou"))?;
+        .map_err(|_| anyhow::anyhow!("the libp2p tunnel queue closed"))?;
     let response = tokio::time::timeout(timeout, reply_rx)
         .await
-        .map_err(|_| anyhow::anyhow!("o túnel libp2p não respondeu em {timeout:?}"))?
-        .map_err(|_| anyhow::anyhow!("o túnel libp2p descartou a resposta"))??;
+        .map_err(|_| anyhow::anyhow!("the libp2p tunnel did not answer in {timeout:?}"))?
+        .map_err(|_| anyhow::anyhow!("the libp2p tunnel dropped the response"))??;
     Ok(InternalResponse {
         status: response.status,
         body: response.body,
     })
 }
 
-/// `https` quando o cluster está cifrado, `http` quando não.
+/// `https` when the cluster is encrypted, `http` when it is not.
 pub fn scheme(tls: bool) -> &'static str {
     if tls {
         "https"
@@ -313,12 +313,12 @@ pub fn scheme(tls: bool) -> &'static str {
     }
 }
 
-/// Estado observável do pool HTTP do peer.
+/// Observable state of the peer's HTTP pool.
 ///
-/// O reqwest mantém o socket individual sob o pool interno, então esta
-/// distinção identifica construção/reutilização do cliente pinado. Quando o
-/// caminho usa o cliente claro compartilhado, a reutilização de um socket não
-/// pode ser provada nesta camada e fica desconhecida.
+/// reqwest keeps the individual socket under its internal pool, so this
+/// distinction identifies construction/reuse of the pinned client. When the
+/// path uses the shared cleartext client, the reuse of a socket cannot
+/// be proven at this layer and stays unknown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ConnectionState {
@@ -337,11 +337,11 @@ impl ConnectionState {
     }
 }
 
-/// Base de URL para falar com um peer, com o esquema que a flag manda.
+/// URL base for talking to a peer, with the scheme the flag dictates.
 ///
-/// O colchete do IPv6 é responsabilidade daqui: o cluster é IPv6 na prática, e
-/// `http://2804:d55::1:8181` não parseia como URL - o parser lê o último grupo
-/// como porta.
+/// The IPv6 bracket is this function's responsibility: the cluster is IPv6 in
+/// practice, and `http://2804:d55::1:8181` does not parse as a URL - the parser reads
+/// the last group as the port.
 pub fn peer_base_url(host: &str, port: u16, tls: bool) -> String {
     let host = if host.starts_with('[') || !host.contains(':') {
         host.to_string()
@@ -361,11 +361,11 @@ pub struct PeerClients {
     internal_plain: reqwest::Client,
     per_peer: Arc<RwLock<HashMap<String, reqwest::Client>>>,
     reply_routes: Arc<RwLock<HashMap<String, ReplyRouteState>>>,
-    /// Peers cujo caminho direto já se provou inalcançável e que passam a ser
-    /// tentados **primeiro** pelo túnel. Ver `prefer_tunnel`.
+    /// Peers whose direct path has already proven unreachable and that are now
+    /// tried **first** through the tunnel. See `prefer_tunnel`.
     tunnel_first: Arc<RwLock<std::collections::HashSet<String>>>,
-    /// Quando o caminho direto de um peer de `tunnel_first` foi sondado pela
-    /// última vez. Ver `claim_direct_reprobe`.
+    /// When the direct path of a `tunnel_first` peer was last
+    /// probed. See `claim_direct_reprobe`.
     direct_reprobe_at: Arc<RwLock<HashMap<String, Instant>>>,
     auth: Arc<RwLock<Option<crate::auth::AuthState>>>,
 }
@@ -373,57 +373,57 @@ pub struct PeerClients {
 #[derive(Default)]
 struct ReplyRouteState {
     preferred: Option<String>,
-    /// Falhas **seguidas** por endereço, zeradas por qualquer sucesso.
+    /// **Consecutive** failures per address, reset by any success.
     streak: HashMap<String, u32>,
-    /// Quando o endereço acumulou [`ROUTE_FAILURE_STREAK`] falhas seguidas.
+    /// When the address accumulated [`ROUTE_FAILURE_STREAK`] consecutive failures.
     failed: HashMap<String, Instant>,
 }
 
-/// Quanto tempo um endereço fica no **fim** da ordem depois de acumular
-/// falhas seguidas. Não é exclusão - ver [`PeerClients::route_order`].
+/// How long an address stays at the **end** of the order after accumulating
+/// consecutive failures. It is not exclusion - see [`PeerClients::route_order`].
 ///
-/// É a janela única de memória de falha, `FAILURE_MEMORY`.
+/// It is the single failure memory window, `FAILURE_MEMORY`.
 pub(crate) const ROUTE_FAILURE_COOLDOWN: Duration = FAILURE_MEMORY;
 
-/// Janela única de memória de falha do transporte de inferência: quanto tempo
-/// um endereço, um endpoint QUIC, a abertura do canal persistente ou um peer
-/// que falhou a sonda de admissão fica sem ser pago de novo.
+/// Single failure memory window of the inference transport: how long
+/// an address, a QUIC endpoint, the opening of the persistent channel or a peer
+/// that failed the admission probe goes without being paid for again.
 ///
-/// Todas governam a mesma decisão - se vale voltar a pagar um caminho que
-/// falhou -, e prazos diferentes para ela deixavam um caminho já recuperado
-/// fora de uso por tempos incoerentes: o QUIC voltava em 5 s, mas a rota e o
-/// canal persistente ficavam 300 s marcados. Nenhuma delas é uma espera; elas
-/// só evitam repetir uma tentativa que acabou de falhar.
+/// All of them govern the same decision - whether it is worth paying again for a
+/// path that failed -, and different deadlines for it left an already recovered path
+/// out of use for inconsistent times: QUIC came back in 5 s, but the route and the
+/// persistent channel stayed marked for 300 s. None of them is a wait; they
+/// only avoid repeating an attempt that has just failed.
 pub(crate) const FAILURE_MEMORY: Duration = Duration::from_secs(5);
 
-/// Quantas falhas **seguidas** um endereço precisa acumular antes de ir para o
-/// fim da ordem.
+/// How many **consecutive** failures an address has to accumulate before going to
+/// the end of the order.
 ///
-/// O teto de uma tentativa não é critério de quarentena. Uma entrega que
-/// estourou o teto pode estar só lenta - gateway ocupado, handshake TLS frio,
-/// lote grande, WAN - e uma amostra só não distingue "devagar" de "morto". Um
-/// endereço realmente morto acumula as três em poucos milissegundos, porque o
-/// `CONNECT_TIMEOUT` corta antes.
+/// The ceiling of one attempt is not a quarantine criterion. A delivery that
+/// exceeded the ceiling may just be slow - busy gateway, cold TLS handshake,
+/// large batch, WAN - and a single sample does not tell "slow" from "dead". A
+/// truly dead address accumulates all three in a few milliseconds, because
+/// `CONNECT_TIMEOUT` cuts in first.
 const ROUTE_FAILURE_STREAK: u32 = 3;
 
-/// Um endereço anunciado que engole SYN não pode entregar o controle do
-/// processo ao timeout do sistema operacional. O timeout total da requisição
-/// continua sendo escolhido pelo chamador, mas a conexão tem teto próprio -
-/// sub-segundo, para um endereço direto morto virar fallback (para o túnel
-/// Noise) quase de imediato, no mesmo espírito do orçamento de RTT do QUIC.
-/// Intervalo mínimo entre duas sondagens do caminho direto de um peer que
-/// está sendo servido pelo túnel (`claim_direct_reprobe`).
+/// An announced address that swallows SYN cannot hand control of the
+/// process to the operating system's timeout. The total request timeout
+/// is still chosen by the caller, but the connection has its own ceiling -
+/// sub-second, so a dead direct address becomes a fallback (to the Noise
+/// tunnel) almost immediately, in the same spirit as QUIC's RTT budget.
+/// Minimum interval between two probes of the direct path of a peer that
+/// is being served through the tunnel (`claim_direct_reprobe`).
 pub(crate) const DIRECT_REPROBE_INTERVAL: Duration = Duration::from_secs(5);
 
-/// Teto de uma sondagem direta: conexão mais `/health`. Roda em segundo
-/// plano, fora do caminho do frame.
+/// Ceiling of a direct probe: connection plus `/health`. It runs in the
+/// background, off the frame's path.
 pub(crate) const DIRECT_REPROBE_TIMEOUT: Duration = Duration::from_millis(500);
 
-/// Detecção de vida da conexão TCP: peer que caiu com a conexão aberta vira
-/// erro em ~4 s (1 s ocioso + 3 sondas de 1 s) em vez de esperar o prazo do
-/// frame. É o par TCP do `QUIC_MAX_IDLE`, e o que substitui o antigo teto fixo
-/// de 30 s por tentativa - aquele teto também matava prefill/decode legítimos
-/// mais longos. O kernel só aceita esses valores em segundos inteiros.
+/// TCP connection liveness detection: a peer that went down with the connection open
+/// becomes an error in ~4 s (1 s idle + 3 probes of 1 s) instead of waiting for the
+/// frame's deadline. It is the TCP counterpart of `QUIC_MAX_IDLE`, and what replaces
+/// the old fixed ceiling of 30 s per attempt - that ceiling also killed legitimate
+/// longer prefill/decode. The kernel only accepts these values in whole seconds.
 const TCP_KEEPALIVE_IDLE: Duration = Duration::from_secs(1);
 const TCP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(1);
 const TCP_KEEPALIVE_RETRIES: u32 = 3;
@@ -453,14 +453,14 @@ impl PeerClients {
                 .timeout(timeout)
                 .tcp_nodelay(true)
                 .build()
-                .expect("cliente HTTP sem TLS não pode falhar na construção"),
+                .expect("an HTTP client without TLS cannot fail to build"),
             internal_plain: with_liveness(reqwest::Client::builder())
                 .connect_timeout(CONNECT_TIMEOUT)
                 .timeout(timeout)
                 .tcp_nodelay(true)
                 .default_headers(internal_node_headers())
                 .build()
-                .expect("cliente HTTP interno sem TLS não pode falhar na construção"),
+                .expect("an internal HTTP client without TLS cannot fail to build"),
             per_peer: Arc::new(RwLock::new(HashMap::new())),
             reply_routes: Arc::new(RwLock::new(HashMap::new())),
             tunnel_first: Arc::new(RwLock::new(std::collections::HashSet::new())),
@@ -469,8 +469,8 @@ impl PeerClients {
         }
     }
 
-    /// Clientes das sondas do plano de rotas (`route_plan`): o QUIC usa o
-    /// orçamento fixo da sonda em vez do derivado do RTT medido.
+    /// Clients of the route plan probes (`route_plan`): QUIC uses the
+    /// probe's fixed budget instead of the one derived from the measured RTT.
     pub fn for_route_probes() -> Self {
         Self {
             quic_pool: crate::quic::ClientPool::for_probes(crate::route_plan::PROBE_TIMEOUT),
@@ -478,9 +478,9 @@ impl PeerClients {
         }
     }
 
-    /// Liga este cache de clientes à configuração viva do nó. A leitura é
-    /// feita por chamada, porque a chave pode ser regenerada pela API sem
-    /// reiniciar o processo.
+    /// Binds this client cache to the node's live configuration. The read is
+    /// done per call, because the key can be regenerated through the API without
+    /// restarting the process.
     pub fn set_auth_state(&self, auth: crate::auth::AuthState) {
         if let Ok(mut slot) = self.auth.write() {
             *slot = Some(auth);
@@ -507,16 +507,16 @@ impl PeerClients {
         self.authorize_inference_request(request).await
     }
 
-    /// Anexa a credencial POM de um salto interno de inferência, **idêntica** à
-    /// que o túnel libp2p e o cliente QUIC já mandam: o marcador
-    /// `x-pom-internal-node: 1` sempre, e `Authorization: Bearer <token>` quando
-    /// há uma `connection_key` configurada, inclusive no fallback HTTP de uma
-    /// rede pública. Sem o
-    /// marcador, `require_inference_auth` do peer recusa o canal HTTP
-    /// persistente e as chamadas de ciclo de vida de sessão com 401/403 mesmo
-    /// numa rede privada; numa rede pública, o marcador habilita o desvio por
-    /// transporte seguro e o bearer mantém o caminho HTTP em claro autenticado.
-    /// O túnel funcionava só porque montava esses dois cabeçalhos à mão
+    /// Attaches the POM credential of an internal inference hop, **identical** to
+    /// the one the libp2p tunnel and the QUIC client already send: the marker
+    /// `x-pom-internal-node: 1` always, and `Authorization: Bearer <token>` when
+    /// a `connection_key` is configured, including on the HTTP fallback of a
+    /// public network. Without the
+    /// marker, the peer's `require_inference_auth` refuses the persistent HTTP
+    /// channel and the session lifecycle calls with 401/403 even
+    /// on a private network; on a public network, the marker enables the bypass by
+    /// secure transport and the bearer keeps the cleartext HTTP path authenticated.
+    /// The tunnel worked only because it built these two headers by hand
     /// (`send_frame_via_tunnel_with_auth`).
     pub async fn authorize_inference_request(
         &self,
@@ -539,19 +539,19 @@ impl PeerClients {
         self.quic.load(Ordering::Relaxed)
     }
 
-    /// Preferência efetiva do nó para novas travessias de inferência.
+    /// The node's effective preference for new inference traversals.
     ///
-    /// A política do principal também é mantida no atômico global para
-    /// alcançar os clientes lazy do servidor de inferência. Consultar os dois
-    /// evita que um `PeerClients` criado antes da adoção da política continue
-    /// escolhendo o túnel enquanto o restante do processo já escolhe QUIC.
+    /// The principal's policy is also kept in the global atomic to
+    /// reach the inference server's lazy clients. Consulting both
+    /// prevents a `PeerClients` created before the policy was adopted from still
+    /// choosing the tunnel while the rest of the process already chooses QUIC.
     pub fn effective_quic_enabled(&self) -> bool {
-        self.quic_enabled() || quic_ativo()
+        self.quic_enabled() || quic_enabled()
     }
 
-    /// Atualiza a preferência sem tocar em clientes TCP já abertos. A política
-    /// só escolhe chamadas novas; uma travessia em andamento conserva o canal
-    /// que já adquiriu.
+    /// Updates the preference without touching TCP clients already open. The policy
+    /// only chooses new calls; a traversal in progress keeps the channel
+    /// it has already acquired.
     pub fn set_quic(&self, on: bool) {
         self.quic.store(on, Ordering::Relaxed);
     }
@@ -579,12 +579,12 @@ impl PeerClients {
         .await
     }
 
-    /// Como `quic_post`, mas com `content-type` explícito. As rotas de ciclo
-    /// de vida de sessão (`/v1/session/{release,rewind,rollback}`) usam
-    /// `application/json` e um `Json<T>` que recusa `octet-stream`; mandá-las
-    /// por QUIC é o que dá a elas o mesmo tratamento de transporte seguro que
-    /// o decode já tem, em vez de um POST em claro sem credencial que o peer
-    /// rejeita com 401 numa rede pública.
+    /// Like `quic_post`, but with an explicit `content-type`. The session lifecycle
+    /// routes (`/v1/session/{release,rewind,rollback}`) use
+    /// `application/json` and a `Json<T>` that refuses `octet-stream`; sending them
+    /// over QUIC is what gives them the same secure transport treatment that
+    /// decode already has, instead of a cleartext POST with no credential that the peer
+    /// rejects with 401 on a public network.
     #[allow(clippy::too_many_arguments)]
     pub async fn quic_post_typed(
         &self,
@@ -613,39 +613,39 @@ impl PeerClients {
             .await
     }
 
-    /// Vira a flag e joga fora os clientes: um cliente construído para falar
-    /// claro nunca vai falar TLS, e o pool de conexões dele também não serve.
+    /// Flips the flag and throws the clients away: a client built to speak
+    /// cleartext will never speak TLS, and its connection pool is of no use either.
     pub fn set_tls(&self, on: bool) {
-        let antes = self.tls.swap(on, Ordering::Relaxed);
-        if antes != on {
+        let before = self.tls.swap(on, Ordering::Relaxed);
+        if before != on {
             if let Ok(mut m) = self.per_peer.write() {
                 m.clear();
             }
         }
     }
 
-    /// Aplica a política do cluster: este cache **e** o esquema global das URLs.
+    /// Applies the cluster's policy: this cache **and** the global scheme of the URLs.
     ///
-    /// É o caminho da produção, e o único que mexe em `TLS_ATIVO`. `set_tls`
-    /// fica só com o cache, para um teste de unidade não empurrar o esquema
-    /// global para dentro dos testes que rodam em paralelo com ele.
+    /// It is the production path, and the only one that touches `TLS_ENABLED`. `set_tls`
+    /// keeps to the cache only, so a unit test does not push the global
+    /// scheme into the tests that run in parallel with it.
     pub fn apply_cluster_policy(&self, on: bool) {
-        set_tls_ativo(on);
+        set_tls_enabled(on);
         self.set_tls(on);
     }
 
-    /// Cliente sem pinning, para destino que não é peer (loopback, Ollama).
+    /// Client without pinning, for a destination that is not a peer (loopback, Ollama).
     pub fn plain(&self) -> reqwest::Client {
         self.plain.clone()
     }
 
-    /// Cliente exclusivo para sondas de latência.
+    /// Client dedicated to latency probes.
     ///
-    /// A sonda só precisa saber se o peer respondeu. Ela não autentica uma
-    /// sessão de inferência e, portanto, não deve depender do certificado
-    /// autoassinado nem do nome presente no certificado do peer. O cliente
-    /// pinado de `for_peer` continua sendo o único caminho para dados de
-    /// inferência.
+    /// The probe only needs to know whether the peer answered. It does not authenticate
+    /// an inference session and therefore must not depend on the self-signed
+    /// certificate or on the name present in the peer's certificate. The pinned
+    /// client of `for_peer` remains the only path for inference
+    /// data.
     pub fn probe(&self) -> Result<reqwest::Client> {
         if !self.tls_enabled() {
             return Ok(self.internal_plain.clone());
@@ -657,27 +657,27 @@ impl PeerClients {
             .danger_accept_invalid_certs(true)
             .danger_accept_invalid_hostnames(true)
             .build()
-            .context("não deu para construir o cliente TLS da sonda")
+            .context("could not build the TLS client of the probe")
     }
 
-    /// Cliente para falar com `node_id`, construído sob demanda.
+    /// Client for talking to `node_id`, built on demand.
     ///
-    /// Sem TLS devolve o cliente interno compartilhado, que marca as chamadas
-    /// de peer para a fronteira administrativa sem alterar a credencial delas.
+    /// Without TLS it returns the shared internal client, which marks the peer
+    /// calls for the administrative boundary without changing their credential.
     pub fn for_peer(&self, node_id: &str) -> Result<reqwest::Client> {
         self.for_peer_with_state(node_id).map(|(client, _)| client)
     }
 
-    /// Busca uma rota de controle autenticada em todos os endereços anunciados
-    /// para o mesmo peer.
+    /// Fetches an authenticated control route on all the addresses announced
+    /// for the same peer.
     ///
-    /// Um endereço antigo pode continuar aceitando TCP e responder 403 porque
-    /// caiu em outro nó (ou num processo fantasma), portanto uma resposta HTTP
-    /// de erro também precisa deixar a sonda tentar o próximo candidato. A
-    /// identidade TLS continua fixada no peer_id para todas as tentativas.
-    /// `tunnel` é a última tentativa, depois de todos os endereços diretos.
-    /// Para um peer atrás de NAT ele costuma ser a **única** que chega; a rota
-    /// continua sendo conferida contra a lista fechada no receptor.
+    /// An old address may keep accepting TCP and answer 403 because it
+    /// landed on another node (or on a ghost process), so an HTTP error
+    /// response also has to let the probe try the next candidate. The
+    /// TLS identity stays pinned to the peer_id for every attempt.
+    /// `tunnel` is the last attempt, after all the direct addresses.
+    /// For a peer behind NAT it is usually the **only** one that gets through; the route
+    /// is still checked against the closed list on the receiver.
     pub(crate) async fn get_internal_from_candidates(
         &self,
         peer_id: &str,
@@ -733,23 +733,23 @@ impl PeerClients {
             .await
             {
                 Ok(response) if response.is_success() => return Ok(response),
-                Ok(response) => failures.push(format!("túnel libp2p: {}", response.status)),
-                Err(error) => failures.push(format!("túnel libp2p: {error}")),
+                Ok(response) => failures.push(format!("libp2p tunnel: {}", response.status)),
+                Err(error) => failures.push(format!("libp2p tunnel: {error}")),
             }
         }
         anyhow::bail!(
-            "nenhum candidato respondeu à rota interna {path}: {}",
+            "no candidate answered the internal route {path}: {}",
             if failures.is_empty() {
-                "nenhum endereço anunciado".to_string()
+                "no announced address".to_string()
             } else {
                 failures.join(", ")
             }
         )
     }
 
-    /// Cliente e observação atômica da entrada no cache. A observação é feita
-    /// junto da inserção para que chamadas concorrentes não rotulem como
-    /// reutilizado um cliente que acabou de ser construído.
+    /// Client and atomic observation of the cache entry. The observation is made
+    /// together with the insertion so that concurrent calls do not label as
+    /// reused a client that has just been built.
     pub fn for_peer_with_state(&self, node_id: &str) -> Result<(reqwest::Client, ConnectionState)> {
         if !self.tls_enabled() {
             return Ok((self.internal_plain.clone(), ConnectionState::Unknown));
@@ -767,24 +767,24 @@ impl PeerClients {
             .default_headers(internal_node_headers())
             .use_preconfigured_tls(cfg)
             .build()
-            .context("não deu para construir o cliente TLS do peer")?;
+            .context("could not build the TLS client of the peer")?;
         if let Ok(mut m) = self.per_peer.write() {
             m.insert(node_id.to_string(), client.clone());
         }
         Ok((client, ConnectionState::New))
     }
 
-    /// Base de URL para este peer, já com o esquema em vigor.
+    /// URL base for this peer, already with the scheme in force.
     pub fn base_url(&self, host: &str, port: u16) -> String {
         peer_base_url(host, port, self.tls_enabled())
     }
 
-    /// Peers com cliente pinado em cache.
+    /// Peers with a pinned client in the cache.
     ///
-    /// Existe para o teste: o `Debug` do `reqwest::Client` é igual para dois
-    /// clientes diferentes, então comparar instâncias não prova nada. O que
-    /// importa observar é o cache - quem entrou, e o que a virada da flag
-    /// jogou fora.
+    /// It exists for the test: the `Debug` of `reqwest::Client` is the same for two
+    /// different clients, so comparing instances proves nothing. What
+    /// matters to observe is the cache - who got in, and what flipping the flag
+    /// threw away.
     pub fn cached_peers(&self) -> Vec<String> {
         let mut v: Vec<String> = self
             .per_peer
@@ -795,30 +795,30 @@ impl PeerClients {
         v
     }
 
-    /// Ordena endereços de retorno: primeiro a rota que já respondeu, depois
-    /// as demais, e por último as que vêm falhando - da que falhou há mais
-    /// tempo para a mais recente.
+    /// Orders return addresses: first the route that has already answered, then
+    /// the others, and last the ones that have been failing - from the one that failed
+    /// longest ago to the most recent.
     ///
-    /// A rota é usada uma vez por lote de decode. Sem esta memória,
-    /// um IPv4/IPv6 que aceita o SYN mas nunca responde é tentado de novo em
-    /// cada lote e o custo do timeout vira custo por ficha.
+    /// The route is used once per decode batch. Without this memory,
+    /// an IPv4/IPv6 that accepts the SYN but never answers is tried again on
+    /// every batch and the cost of the timeout becomes a cost per token.
     ///
-    /// **Nunca devolve lista vazia para uma lista de candidatos não vazia.**
-    /// A memória de falhas reordena, não exclui. Excluir era o defeito: com
-    /// todos os candidatos em quarentena o chamador não tentava endereço
-    /// nenhum, e sem tentativa não há erro para reportar - só o prazo do
-    /// gateway a vencer (600 s) e um aviso com o motivo vazio. O que decide se
-    /// um endereço serve é a tentativa real; esta função só escolhe a ordem em
-    /// que ela é paga.
-    /// O caminho direto para este peer já falhou inteiro e o túnel entregou.
+    /// **Never returns an empty list for a non-empty candidate list.**
+    /// The failure memory reorders, it does not exclude. Excluding was the defect: with
+    /// all the candidates in quarantine the caller tried no address at
+    /// all, and without an attempt there is no error to report - only the gateway's
+    /// deadline to expire (600 s) and a warning with an empty reason. What decides
+    /// whether an address works is the real attempt; this function only picks the order
+    /// in which it is paid for.
+    /// The direct path to this peer has already failed entirely and the tunnel delivered.
     ///
-    /// Atrás de NAT/CGNAT nenhum endereço anunciado responde, e sem esta marca
-    /// **cada frame** queima a escada direta completa - timeout de QUIC mais
-    /// timeout de HTTP, em todo prefill e todo decode - antes de chegar ao
-    /// único transporte que funciona. A marca não é permanente: um sucesso
-    /// direto a apaga, e uma falha do túnel devolve a escada direta na
-    /// tentativa seguinte, porque a rota pode voltar (hole punch novo, peer
-    /// que mudou de rede).
+    /// Behind NAT/CGNAT no announced address answers, and without this mark
+    /// **every frame** burns the full direct ladder - QUIC timeout plus
+    /// HTTP timeout, on every prefill and every decode - before reaching the
+    /// only transport that works. The mark is not permanent: a direct
+    /// success clears it, and a tunnel failure brings the direct ladder back on the
+    /// next attempt, because the route may come back (new hole punch, a peer
+    /// that changed networks).
     pub(crate) fn prefer_tunnel(&self, node_id: &str) -> bool {
         self.tunnel_first
             .read()
@@ -829,19 +829,19 @@ impl PeerClients {
     pub(crate) fn remember_tunnel_win(&self, node_id: &str) {
         if let Ok(mut set) = self.tunnel_first.write() {
             if set.insert(node_id.to_string()) {
-                debug!("{node_id}: o caminho direto não responde; o túnel passa a ser o primeiro");
+                debug!("{node_id}: the direct path does not answer; the tunnel becomes the first choice");
             }
         }
     }
 
-    /// Reserva uma sondagem do caminho direto de um peer que está em
-    /// `tunnel_first`, no máximo uma a cada `DIRECT_REPROBE_INTERVAL`.
+    /// Reserves a probe of the direct path of a peer that is in
+    /// `tunnel_first`, at most one every `DIRECT_REPROBE_INTERVAL`.
     ///
-    /// Sem isto a marca era permanente na prática: só um sucesso direto a
-    /// apagava, mas com a marca o direto nunca era tentado enquanto o túnel
-    /// entregasse. Um único tropeço deixava o peer no túnel (RTT maior) até o
-    /// processo reiniciar. A sondagem roda fora do frame - ver
-    /// `relay::spawn_direct_reprobe` -, então não soma espera a ninguém.
+    /// Without this the mark was permanent in practice: only a direct success
+    /// cleared it, but with the mark the direct path was never tried while the tunnel
+    /// delivered. A single stumble left the peer on the tunnel (higher RTT) until the
+    /// process restarted. The probe runs off the frame - see
+    /// `relay::spawn_direct_reprobe` -, so it adds no wait to anyone.
     pub(crate) fn claim_direct_reprobe(&self, node_id: &str) -> bool {
         let Ok(mut at) = self.direct_reprobe_at.write() else {
             return false;
@@ -859,7 +859,7 @@ impl PeerClients {
     pub(crate) fn remember_direct_win(&self, node_id: &str) {
         if let Ok(mut set) = self.tunnel_first.write() {
             if set.remove(node_id) {
-                debug!("{node_id}: o caminho direto voltou; deixa de preferir o túnel");
+                debug!("{node_id}: the direct path is back; no longer preferring the tunnel");
             }
         }
     }
@@ -909,18 +909,18 @@ impl PeerClients {
                 quarantined.push(candidate.clone());
             }
         }
-        // Quem falhou há mais tempo teve mais tempo para voltar, então é o
-        // primeiro da fila dos degradados.
+        // Whoever failed longest ago has had more time to come back, so it is the
+        // first in the queue of the degraded ones.
         quarantined.sort_by_key(|url| state.failed.get(url).copied());
         ordered.extend(quarantined);
         ordered
     }
 
-    /// Regista uma falha neste endereço.
+    /// Records a failure on this address.
     ///
-    /// A primeira falha só tira o endereço da preferência - ele continua na
-    /// ordem, à frente de quem já vinha falhando. Só [`ROUTE_FAILURE_STREAK`]
-    /// falhas seguidas o mandam para o fim.
+    /// The first failure only takes the address out of preference - it stays in the
+    /// order, ahead of those that were already failing. Only [`ROUTE_FAILURE_STREAK`]
+    /// consecutive failures send it to the end.
     pub(crate) fn remember_route_failure(&self, key: &str, url: &str) {
         if let Ok(mut routes) = self.reply_routes.write() {
             let state = routes.entry(key.to_string()).or_default();
@@ -947,8 +947,8 @@ impl PeerClients {
         }
     }
 
-    /// Quantas falhas seguidas este endereço acumulou. Existe para a bancada
-    /// provar a escada "demove, depois degrada" sem esperar 300 s.
+    /// How many consecutive failures this address has accumulated. It exists for the
+    /// bench to prove the "demote, then degrade" ladder without waiting 300 s.
     #[cfg(test)]
     pub(crate) fn route_failure_streak(&self, key: &str, url: &str) -> u32 {
         self.reply_routes
@@ -976,8 +976,8 @@ fn internal_node_headers() -> reqwest::header::HeaderMap {
 mod tests {
     use super::*;
 
-    /// Um endereço que responde como outro nó não é o peer: o plano de
-    /// controle segue para o próximo candidato.
+    /// An address that answers as another node is not the peer: the control
+    /// plane moves on to the next candidate.
     #[tokio::test]
     async fn a_base_answered_by_another_node_is_skipped() {
         async fn serve_as(node_id: &'static str) -> String {
@@ -999,16 +999,16 @@ mod tests {
             client.get(format!("{base}/api/ui/node"))
         })
         .await
-        .expect("o segundo endereço é o peer");
+        .expect("the second address is the peer");
         assert_eq!(response.text().await.unwrap(), "alvo");
 
         let only_impostor = send_to_gateway_over(&peer, &[impostor], |base| {
             client.get(format!("{base}/api/ui/node"))
         })
         .await
-        .expect_err("só o impostor respondeu");
+        .expect_err("only the impostor answered");
         assert!(
-            only_impostor.to_string().contains("respondeu o nó"),
+            only_impostor.to_string().contains("answered as node"),
             "{only_impostor}"
         );
     }
@@ -1052,10 +1052,14 @@ mod tests {
                 .header(CONTROL_SIGNATURE_HEADER, "{}")
         })
         .await
-        .expect_err("o comando chegou e não respondeu a tempo");
-        assert!(error.to_string().contains("não foi reenviado"), "{error}");
+        .expect_err("the command arrived and did not answer in time");
+        assert!(error.to_string().contains("was not resent"), "{error}");
         assert_eq!(slow_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(fast_calls.load(Ordering::SeqCst), 0, "a cópia seria um replay");
+        assert_eq!(
+            fast_calls.load(Ordering::SeqCst),
+            0,
+            "the copy would be a replay"
+        );
 
         // A read consumes no nonce and still falls through to the next address.
         let response = send_to_gateway_over(&peer, &bases, |base| {
@@ -1065,13 +1069,13 @@ mod tests {
                 .header(CONTROL_SIGNATURE_HEADER, "{}")
         })
         .await
-        .expect("a leitura segue para o próximo endereço");
+        .expect("the read moves on to the next address");
         assert_eq!(response.text().await.unwrap(), "ok");
         assert_eq!(fast_calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]
-    fn sondagem_direta_do_tunel_e_limitada_por_intervalo() {
+    fn direct_probing_of_the_tunnel_is_rate_limited_by_interval() {
         let clients = PeerClients::new(Duration::from_secs(1));
         assert!(clients.claim_direct_reprobe("peer-a"));
         assert!(!clients.claim_direct_reprobe("peer-a"));
@@ -1084,17 +1088,17 @@ mod tests {
     }
 
     #[test]
-    fn esquema_da_url_segue_a_flag() {
+    fn the_url_scheme_follows_the_flag() {
         assert_eq!(scheme(true), "https");
         assert_eq!(scheme(false), "http");
     }
 
-    /// O defeito que pendurava a requisição por 600 s: com todos os candidatos
-    /// em quarentena a ordem saía vazia, o `for` do chamador não executava e
-    /// ninguém tentava endereço nenhum. Sem tentativa não há erro para
-    /// reportar - só o prazo do gateway a vencer.
+    /// The defect that hung the request for 600 s: with all the candidates
+    /// in quarantine the order came out empty, the caller's `for` did not run and
+    /// nobody tried any address. Without an attempt there is no error to
+    /// report - only the gateway's deadline to expire.
     #[test]
-    fn candidatos_todos_em_quarentena_ainda_produzem_tentativas() {
+    fn candidates_all_in_quarantine_still_produce_attempts() {
         let c = PeerClients::new(Duration::from_secs(600));
         let candidates = vec!["http://a".to_string(), "http://b".to_string()];
         for url in &candidates {
@@ -1106,20 +1110,20 @@ mod tests {
         assert_eq!(
             ordered.len(),
             candidates.len(),
-            "a memória de falhas reordena, não exclui: {ordered:?}"
+            "the failure memory reorders, it does not exclude: {ordered:?}"
         );
         for candidate in &candidates {
             assert!(
                 ordered.contains(candidate),
-                "{candidate} sumiu de {ordered:?}"
+                "{candidate} disappeared from {ordered:?}"
             );
         }
     }
 
-    /// Quem falhou há mais tempo teve mais tempo para voltar, e por isso é o
-    /// primeiro dos degradados.
+    /// Whoever failed longest ago has had more time to come back, and so it is the
+    /// first of the degraded ones.
     #[test]
-    fn entre_degradados_o_mais_antigo_vem_primeiro() {
+    fn among_degraded_ones_the_oldest_comes_first() {
         let c = PeerClients::new(Duration::from_secs(600));
         let candidates = vec!["http://a".to_string(), "http://b".to_string()];
         for _ in 0..ROUTE_FAILURE_STREAK {
@@ -1135,10 +1139,10 @@ mod tests {
         );
     }
 
-    /// A marca é aprendizado, não configuração: liga com uma entrega do
-    /// túnel, desliga com um sucesso direto.
+    /// The mark is learning, not configuration: it turns on with a tunnel
+    /// delivery, and turns off with a direct success.
     #[test]
-    fn a_preferencia_pelo_tunel_liga_e_desliga() {
+    fn the_tunnel_preference_turns_on_and_off() {
         let c = PeerClients::new(Duration::from_secs(1));
         assert!(!c.prefer_tunnel("peer"));
 
@@ -1149,10 +1153,10 @@ mod tests {
         assert!(!c.prefer_tunnel("peer"));
     }
 
-    /// A marca é por peer: um peer atrás de NAT não pode empurrar o vizinho
-    /// alcançável para o túnel.
+    /// The mark is per peer: a peer behind NAT cannot push the reachable
+    /// neighbor onto the tunnel.
     #[test]
-    fn a_preferencia_pelo_tunel_nao_vaza_entre_peers() {
+    fn the_tunnel_preference_does_not_leak_between_peers() {
         let c = PeerClients::new(Duration::from_secs(1));
         c.remember_tunnel_win("atras-de-nat");
 
@@ -1161,18 +1165,18 @@ mod tests {
     }
 
     #[test]
-    fn uma_falha_isolada_nao_degrada_a_rota() {
+    fn an_isolated_failure_does_not_degrade_the_route() {
         let c = PeerClients::new(Duration::from_secs(600));
         let candidates = vec!["http://lento".to_string(), "http://outro".to_string()];
         c.remember_route_success("reply:peer", "http://lento");
         c.remember_route_failure("reply:peer", "http://lento");
         assert_eq!(c.route_failure_streak("reply:peer", "http://lento"), 1);
-        // Perdeu a preferência, mas continua à frente de quem nunca respondeu?
-        // Não: perder a preferência é ir para a ordem natural dos candidatos.
+        // Lost the preference, but still ahead of those that never answered?
+        // No: losing the preference means going to the natural order of the candidates.
         assert_eq!(
             c.route_order("reply:peer", &candidates),
             vec!["http://lento".to_string(), "http://outro".to_string()],
-            "uma falha só não manda o endereço para o fim"
+            "a single failure does not send the address to the end"
         );
 
         c.remember_route_failure("reply:peer", "http://lento");
@@ -1180,10 +1184,10 @@ mod tests {
         assert_eq!(
             c.route_order("reply:peer", &candidates),
             vec!["http://outro".to_string(), "http://lento".to_string()],
-            "três falhas seguidas mandam para o fim"
+            "three failures in a row send it to the end"
         );
 
-        // E um sucesso zera a conta: a rota volta a ser a preferida.
+        // And a success resets the count: the route becomes the preferred one again.
         c.remember_route_success("reply:peer", "http://lento");
         assert_eq!(c.route_failure_streak("reply:peer", "http://lento"), 0);
         assert_eq!(
@@ -1192,10 +1196,10 @@ mod tests {
         );
     }
 
-    /// A rota que respondeu vem primeiro, e é isso - não a quarentena - que
-    /// impede o caminho quente de voltar a pagar um endereço morto.
+    /// The route that answered comes first, and that - not the quarantine - is what
+    /// keeps the hot path from paying for a dead address again.
     #[test]
-    fn a_rota_que_respondeu_vem_primeiro() {
+    fn the_route_that_answered_comes_first() {
         let c = PeerClients::new(Duration::from_secs(600));
         let candidates = vec!["http://morto".to_string(), "http://vivo".to_string()];
         c.remember_route_failure("reply:peer", "http://morto");
@@ -1206,9 +1210,9 @@ mod tests {
         );
     }
 
-    /// Candidato repetido não vira tentativa repetida.
+    /// A repeated candidate does not become a repeated attempt.
     #[test]
-    fn candidato_repetido_aparece_uma_vez() {
+    fn a_repeated_candidate_appears_once() {
         let c = PeerClients::new(Duration::from_secs(600));
         let candidates = vec!["http://a".to_string(), "http://a".to_string()];
         assert_eq!(
@@ -1224,16 +1228,16 @@ mod tests {
         );
     }
 
-    /// Sem candidato nenhum não há o que ordenar - e o chamador precisa dizer
-    /// isso com todas as letras em vez de um motivo vazio.
+    /// With no candidate at all there is nothing to order - and the caller has to say
+    /// so in so many words instead of an empty reason.
     #[test]
-    fn sem_candidatos_a_ordem_e_vazia() {
+    fn without_candidates_the_order_is_empty() {
         let c = PeerClients::new(Duration::from_secs(600));
         assert!(c.route_order("reply:peer", &[]).is_empty());
     }
 
     #[test]
-    fn url_de_peer_segue_a_flag_e_colcheta_ipv6() {
+    fn a_peer_url_follows_the_flag_and_brackets_ipv6() {
         assert_eq!(
             peer_base_url("192.168.1.5", 8181, false),
             "http://192.168.1.5:8181"
@@ -1242,34 +1246,34 @@ mod tests {
             peer_base_url("192.168.1.5", 8181, true),
             "https://192.168.1.5:8181"
         );
-        // IPv6 sem colchete vira URL inválida, e o cluster é IPv6 na prática.
+        // IPv6 without brackets becomes an invalid URL, and the cluster is IPv6 in practice.
         assert_eq!(
             peer_base_url("2804:d55::1", 8181, true),
             "https://[2804:d55::1]:8181"
         );
-        // Já colchetado não ganha um segundo par.
+        // Already bracketed, it does not get a second pair.
         assert_eq!(
             peer_base_url("[2804:d55::1]", 8181, true),
             "https://[2804:d55::1]:8181"
         );
     }
 
-    /// Sem TLS, todo peer compartilha um cliente só - é o comportamento que
-    /// existia antes desta feature, e não custa uma conexão nova por peer.
+    /// Without TLS, every peer shares a single client - that is the behavior that
+    /// existed before this feature, and it does not cost a new connection per peer.
     #[test]
-    fn sem_tls_ninguem_entra_no_cache() {
+    fn without_tls_nobody_enters_the_cache() {
         let c = PeerClients::new(Duration::from_secs(600));
         assert!(!c.tls_enabled());
         c.for_peer("aaaa").unwrap();
         c.for_peer("bbbb").unwrap();
         assert!(
             c.cached_peers().is_empty(),
-            "sem TLS todo mundo usa o cliente compartilhado"
+            "without TLS everyone uses the shared client"
         );
     }
 
     #[tokio::test]
-    async fn cliente_de_peer_marca_controle_e_plain_nao() {
+    async fn a_peer_client_marks_control_and_plain_does_not() {
         async fn capture_headers(client: reqwest::Client) -> String {
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -1305,11 +1309,11 @@ mod tests {
         }
 
         let c = PeerClients::new(Duration::from_secs(600));
-        let interno = capture_headers(c.for_peer("peer-a").unwrap()).await;
-        assert!(interno.contains("x-pom-internal-node: 1"));
+        let internal = capture_headers(c.for_peer("peer-a").unwrap()).await;
+        assert!(internal.contains("x-pom-internal-node: 1"));
 
-        let externo = capture_headers(c.plain()).await;
-        assert!(!externo.contains("x-pom-internal-node:"));
+        let external = capture_headers(c.plain()).await;
+        assert!(!external.contains("x-pom-internal-node:"));
     }
 
     #[tokio::test]
@@ -1369,10 +1373,10 @@ mod tests {
         assert!(request.contains("x-pom-inference-session: session-public"));
     }
 
-    /// Com TLS, cada peer precisa do seu, porque o verifier é fixado na
-    /// construção do cliente e carrega o node_id esperado.
+    /// With TLS, each peer needs its own, because the verifier is pinned when the
+    /// client is built and carries the expected node_id.
     #[test]
-    fn com_tls_cada_peer_tem_o_seu_e_e_reaproveitado() {
+    fn with_tls_each_peer_has_its_own_and_it_is_reused() {
         let c = PeerClients::new(Duration::from_secs(600));
         c.set_tls(true);
         let (_, first) = c.for_peer_with_state("aaaa").unwrap();
@@ -1387,10 +1391,10 @@ mod tests {
         );
     }
 
-    /// Virar a flag joga fora os clientes: um cliente construído para falar
-    /// claro nunca vai falar TLS, e o pool de conexões dele também não serve.
+    /// Flipping the flag throws the clients away: a client built to speak
+    /// cleartext will never speak TLS, and its connection pool is of no use either.
     #[test]
-    fn virar_a_flag_esvazia_o_cache() {
+    fn flipping_the_flag_empties_the_cache() {
         let c = PeerClients::new(Duration::from_secs(600));
         c.set_tls(true);
         c.for_peer("aaaa").unwrap();

@@ -50,7 +50,7 @@
 //! range covering layer 0 to the last one: the coverage arithmetic finds it
 //! complete by construction, and the transfer and launch phases are the ones
 //! the slice path
-//! already uses. What changes is the wording of the refusals — "a fatia L0-31"
+//! already uses. What changes is the wording of the refusals - "a fatia L0-31"
 //! is not what an operator who picked a whole model is looking at.
 
 use axum::{
@@ -80,6 +80,7 @@ const MIB: u64 = 1024 * 1024;
 
 mod launch;
 mod lifecycle;
+mod overrides;
 mod node;
 mod planning;
 mod preview;
@@ -95,9 +96,9 @@ pub use node::*;
 pub use planning::*;
 use preview::*;
 pub use routes_impl::*;
+pub use sidecars::*;
 #[cfg(test)]
 pub(crate) use survey::survey_for_tests;
-pub use sidecars::*;
 use survey::*;
 pub use types::*;
 

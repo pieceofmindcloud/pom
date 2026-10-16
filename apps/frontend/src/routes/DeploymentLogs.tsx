@@ -1,7 +1,7 @@
 /**
- * Console do processo inteiro do cluster. A tela de `/logs` é a auditoria de
- * requisições e continua sendo uma tabela; esta tela só mostra as linhas que
- * a réplica local recebeu dos nós, na ordem persistida de chegada.
+ * Console of the whole cluster process. The `/logs` screen is the request
+ * audit and remains a table; this screen only shows the lines that
+ * the local replica received from the nodes, in the persisted order of arrival.
  */
 import { ArrowDownToLine, Check, Copy, Terminal } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -16,6 +16,7 @@ import {
   Skeleton,
 } from "../components/ui";
 import { isNearBottom } from "../lib/chatScroll";
+import { copyText } from "../lib/clipboard";
 import { clock } from "../lib/format";
 import { useClusterLogs, useDeployments, useEnterpriseStatus } from "../lib/queries";
 import { useI18n } from "../i18n/provider";
@@ -77,12 +78,8 @@ export function DeploymentLogs() {
   }
 
   async function copyLogs() {
-    try {
-      await navigator.clipboard.writeText(entries.slice(-500).map(logLineText).join("\n"));
-      setCopyState("copied");
-    } catch {
-      setCopyState("failed");
-    }
+    const copied = await copyText(entries.slice(-500).map(logLineText).join("\n"));
+    setCopyState(copied ? "copied" : "failed");
   }
 
   function selectDeployment(value: string) {

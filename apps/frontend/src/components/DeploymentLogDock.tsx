@@ -6,7 +6,7 @@ import { useClusterLogs } from "../lib/queries";
 import { useI18n } from "../i18n/provider";
 import { Badge, Skeleton } from "./ui";
 
-/** Console compacta do Painel: o mesmo endpoint vivo da tela de logs. */
+/** Compact console of the Dashboard: the same live endpoint as the logs screen. */
 export function DeploymentLogDock() {
   const { t } = useI18n();
   const logs = useClusterLogs();

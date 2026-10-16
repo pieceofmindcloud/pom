@@ -1,12 +1,12 @@
-//! Reiniciar este processo como ele subiu.
+//! Restart this process the way it started.
 //!
-//! O respawn ingênuo - `Command::new(current_exe())` e nada mais - perde os
-//! argumentos de linha de comando. Um nó subido com `--advertise-addr` volta
-//! sem ele, e os peers passam a guardar um endereço temporário que expira.
+//! The naive respawn - `Command::new(current_exe())` and nothing else - loses the
+//! command-line arguments. A node started with `--advertise-addr` comes back
+//! without it, and peers start keeping a temporary address that expires.
 //!
-//! O ambiente não precisa de cuidado: `Command` o herda por padrão, e é isso
-//! que preserva `POM_CONFIG` e `POM_NODE_KEY` de cada nó de uma
-//! máquina com vários.
+//! The environment needs no care: `Command` inherits it by default, and that is
+//! what preserves `POM_CONFIG` and `POM_NODE_KEY` of each node on a machine
+//! that runs several.
 
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -15,26 +15,26 @@ use std::sync::OnceLock;
 
 static ARGV: OnceLock<Vec<String>> = OnceLock::new();
 
-/// Guarda o `argv` do arranque. Chamada uma vez, no início de `main`.
+/// Stores the startup `argv`. Called once, at the start of `main`.
 pub fn remember_argv(args: Vec<String>) {
     let _ = ARGV.set(argv_rest(args));
 }
 
-/// Os argumentos sem o `argv[0]`. Separada de `remember_argv` porque o
-/// `OnceLock` só aceita um valor por processo e um teste não pode desfazê-lo.
+/// The arguments without `argv[0]`. Separate from `remember_argv` because the
+/// `OnceLock` only accepts one value per process and a test cannot undo it.
 fn argv_rest(args: Vec<String>) -> Vec<String> {
     args.into_iter().skip(1).collect()
 }
 
-/// Os argumentos do arranque, sem o `argv[0]`.
+/// The startup arguments, without `argv[0]`.
 pub fn original_argv() -> Vec<String> {
     ARGV.get().cloned().unwrap_or_default()
 }
 
-/// Sobe uma cópia deste processo e sai.
+/// Starts a copy of this process and exits.
 ///
-/// Só retorna quando o spawn falha - aí o chamador segue vivo e reporta, em vez
-/// de derrubar um nó que não conseguiu se substituir.
+/// Only returns when the spawn fails - then the caller stays alive and reports,
+/// instead of taking down a node that could not replace itself.
 pub fn respawn_self() -> std::io::Error {
     let exe = match std::env::current_exe() {
         Ok(p) => p,
@@ -43,11 +43,11 @@ pub fn respawn_self() -> std::io::Error {
     respawn_at(&exe)
 }
 
-/// Sobe uma cópia por um caminho capturado antes de uma troca atômica.
+/// Starts a copy through a path captured before an atomic swap.
 ///
-/// Em Unix, depois de `rename` sobre o executável atual, `current_exe()` pode
-/// apontar para o inode antigo com o sufixo `(deleted)`. Quem faz a troca deve
-/// capturar o caminho antes e passá-lo aqui.
+/// On Unix, after a `rename` over the current executable, `current_exe()` may
+/// point to the old inode with the `(deleted)` suffix. Whoever does the swap
+/// must capture the path beforehand and pass it here.
 pub(crate) fn respawn_at(exe: &std::path::Path) -> std::io::Error {
     let log_path = crate::config::project_root().join("pom.log");
     let mut log = match OpenOptions::new().create(true).append(true).open(&log_path) {
@@ -56,7 +56,7 @@ pub(crate) fn respawn_at(exe: &std::path::Path) -> std::io::Error {
     };
     if let Err(error) = writeln!(
         log,
-        "\n--- respawn solicitado pelo processo {} ---",
+        "\n--- respawn requested by process {} ---",
         std::process::id()
     ) {
         return error;
@@ -85,10 +85,10 @@ pub(crate) fn respawn_at(exe: &std::path::Path) -> std::io::Error {
     }
 }
 
-/// O wizard é salvo a partir de um processo que pode estar ligado a um
-/// terminal ou supervisor. O filho precisa sobreviver ao encerramento desse
-/// grupo, e os descritores precisam ir para um arquivo que permita diagnosticar
-/// falhas logo no arranque.
+/// The wizard is saved from a process that may be attached to a terminal or
+/// supervisor. The child must survive the termination of that group, and the
+/// descriptors must go to a file that allows diagnosing failures right at
+/// startup.
 #[cfg(unix)]
 fn detach_from_parent_session(command: &mut Command) {
     use std::os::unix::process::CommandExt;
@@ -110,11 +110,11 @@ fn detach_from_parent_session(_command: &mut Command) {}
 mod tests {
     use super::*;
 
-    /// O respawn precisa devolver o processo do jeito que ele subiu. O caminho
-    /// antigo repassava só --gateway-port, então um nó com --advertise-addr
-    /// voltava sem ele e os peers passavam a guardar um endereço temporário.
+    /// The respawn must bring the process back the way it started. The old path
+    /// passed along only --gateway-port, so a node with --advertise-addr came
+    /// back without it and peers started keeping a temporary address.
     #[test]
-    fn argv_lembrado_volta_igual_sem_o_programa() {
+    fn the_remembered_argv_comes_back_the_same_without_the_program() {
         remember_argv(vec![
             "./target/release/pom".into(),
             "--gateway-port".into(),
@@ -130,14 +130,15 @@ mod tests {
                 "--advertise-addr".to_string(),
                 "[2804:d55::1]:42777".to_string(),
             ],
-            "o argv0 é o executável e volta por current_exe, não pela lista"
+            "argv0 is the executable and comes back through current_exe, not through the list"
         );
     }
 
-    /// Um nó subido sem argumento nenhum volta sem argumento nenhum - e a
-    /// lista vazia não pode virar um argumento vazio na linha de comando.
+    /// A node started with no arguments at all comes back with no arguments at
+    /// all - and the empty list must not become an empty argument on the command
+    /// line.
     #[test]
-    fn argv_so_com_o_programa_nao_gera_argumento() {
+    fn an_argv_with_only_the_program_yields_no_argument() {
         assert!(argv_rest(vec!["./target/release/pom".to_string()]).is_empty());
         assert_eq!(
             argv_rest(vec!["pom".into(), "--no-discovery".into()]),

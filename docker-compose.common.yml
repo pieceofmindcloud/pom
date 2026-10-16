@@ -4,6 +4,11 @@ x-node: &node
   build:
     context: .
     target: ${POM_DOCKER_TARGET:-dev-runtime}
+    # The Rust build fetches pom-plugin-llama.cpp (private) over SSH with the host agent.
+    ssh:
+      - default
+    secrets:
+      - pom_gh_token
     additional_contexts:
       llama-fork: ${POM_LLAMA_CPP_SOURCE_CONTEXT:-./llama.cpp}
     args:
@@ -18,17 +23,20 @@ x-node: &node
       LLAMA_CPP_CACHE_KEY: ${LLAMA_CPP_CACHE_KEY:-unknown}
       POM_LLAMA_CPP_MODE: ${POM_LLAMA_CPP_MODE:-release}
       POM_LLAMA_CPP_RELEASE_TAG: ${POM_LLAMA_CPP_RELEASE_TAG:-}
-      POM_LLAMA_CPP_RELEASE_REPOSITORY: ${POM_LLAMA_CPP_RELEASE_REPOSITORY:-pereirajair/llama.cpp}
+      POM_LLAMA_CPP_RELEASE_REPOSITORY: ${POM_LLAMA_CPP_RELEASE_REPOSITORY:-pieceofmindcloud/llama.cpp}
       CUDA_RUNTIME_FLAVOR: ${CUDA_RUNTIME_FLAVOR:-runtime}
       POM_CUDA_ARCHITECTURES: ${POM_CUDA_ARCHITECTURES:-86;120}
       POM_CUDA_ARCH_CACHE_KEY: ${POM_CUDA_ARCH_CACHE_KEY:-86-120}
       RUST_TOOLCHAIN: ${RUST_TOOLCHAIN:-stable}
+      # Tag of a published pom-plugin-llama.cpp release (e.g. v0.1.0). Empty = fetch the
+      # locked commit over SSH. The release needs POM_GH_TOKEN (the pom_gh_token secret).
+      POM_PLUGIN_LLAMA_RELEASE: ${POM_PLUGIN_LLAMA_RELEASE:-}
   image: pom:latest
   network_mode: host
   restart: always
   environment:
     POM_HOME: /data
-    POM_DESENV: 1
+    POM_DEV_MODE: 1
     POM_UI_DIST: /app/apps/frontend/dist
     POM_PLUGIN_HOST: /usr/local/bin/pom-plugin-host
     POM_BIN: /usr/local/bin/pom
@@ -39,6 +47,10 @@ x-node: &node
     # NVIDIA Vulkan ICD and can make the Vulkan backend enumerate that GPU.
     NVIDIA_DRIVER_CAPABILITIES: compute,utility
     POM_SLOT_PERSIST_PREFIX_CACHE: 1
+
+secrets:
+  pom_gh_token:
+    environment: POM_GH_TOKEN
 
 services:
   node-gpu:

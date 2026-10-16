@@ -3,6 +3,8 @@ use super::*;
 
 #[derive(Debug, Serialize)]
 pub(super) struct PeerView {
+    /// The plugin whose engine runs this machine's model, `None` for llama.cpp. A pipeline is built on one engine.
+    pub(super) engine: Option<String>,
     pub(super) node_id: String,
     pub(super) short_id: String,
     pub(super) addr: String,
@@ -12,7 +14,7 @@ pub(super) struct PeerView {
     pub(super) total_layers: u32,
     pub(super) capabilities: Vec<routing_contract::ModelCapability>,
     pub(super) inference_url: Option<String>,
-    /// Endereco por onde este no fala com o peer, e a latencia que mediu.
+    /// Address through which this node talks to the peer, and the latency it measured.
     pub(super) route: Option<RouteView>,
     pub(super) gateway_url: Option<String>,
     /// In-flight requests reported by this peer. A remote read that failed is
@@ -23,10 +25,10 @@ pub(super) struct PeerView {
     pub(super) node: Option<serde_json::Value>,
     /// Why the peer could not be reached, when it could not.
     pub(super) unreachable: Option<String>,
-    /// Todo endereço conhecido deste peer está desacreditado e o nó já pediu o
-    /// endereço atual dele à rede. Não é o mesmo que `unreachable`: aqui há
-    /// trabalho em curso, e a tela diz "reencontrando" em vez de anunciar um
-    /// beco sem saída.
+    /// Every known address of this peer is discredited and the node has already
+    /// asked the network for its current address. It is not the same as
+    /// `unreachable`: here there is work in progress, and the screen says
+    /// "rediscovering" instead of announcing a dead end.
     pub(super) rediscovering: bool,
 }
 
@@ -36,18 +38,18 @@ pub struct RouteView {
     pub rtt_ms: f64,
 }
 
-/// Rota escolhida para este peer, ou `None` quando ainda nao foi medida.
+/// Route chosen for this peer, or `None` when it has not been measured yet.
 ///
-/// `None` e informacao: significa "ainda nao sei", e a tela diz isso em vez de
-/// mostrar um endereco que ninguem confirmou.
-pub fn route_view_for(node_id: &str, tabela: &crate::route::RouteTable) -> Option<RouteView> {
-    tabela
+/// `None` is information: it means "I do not know yet", and the screen says so
+/// instead of showing an address nobody confirmed.
+pub fn route_view_for(node_id: &str, table: &crate::route::RouteTable) -> Option<RouteView> {
+    table
         .snapshot()
         .into_iter()
         .find(|(id, _)| id == node_id)
-        .map(|(_, escolha)| RouteView {
-            addr: escolha.addr,
-            rtt_ms: escolha.rtt_ms,
+        .map(|(_, choice)| RouteView {
+            addr: choice.addr,
+            rtt_ms: choice.rtt_ms,
         })
 }
 
@@ -72,6 +74,10 @@ pub(super) fn candidate_edges(views: &[PeerView]) -> Vec<RoutingEdgeView> {
             }
             for to in views {
                 if to.node_id == from.node_id {
+                    continue;
+                }
+                // a handoff is between two machines of one engine (the pipeline wire is that engine's own)
+                if to.engine != from.engine {
                     continue;
                 }
                 for to_capability in &to.capabilities {
@@ -129,20 +135,20 @@ pub(super) struct ModelCoverageView {
     pub(super) covered_layers: usize,
     pub(super) coverage: Vec<bool>,
     pub(super) complete: bool,
-    /// Máquinas que contribuem camadas para esta cobertura e **não puderam ser
-    /// lidas** nesta passagem.
+    /// Machines that contribute layers to this coverage and **could not be
+    /// read** in this pass.
     ///
-    /// A cobertura sai das capacidades anunciadas no gossip, não da leitura.
-    /// Sem esta lista, um par ilegível é contribuinte de cobertura em força
-    /// total e a tela mostra "completo" para um modelo cuja metade ninguém
-    /// consegue consultar. Ela não retira as camadas da conta - retirar seria
-    /// mentir na outra direção, porque o peer pode estar servindo muito bem e
-    /// só o endereço de controle é que morreu - mas obriga a tela a dizer que a
-    /// cobertura não está confirmada.
+    /// Coverage comes from the capabilities announced in the gossip, not from
+    /// the read. Without this list, an unreadable peer is a full-strength
+    /// coverage contributor and the screen shows "complete" for a model half of
+    /// which nobody can query. It does not remove the layers from the count -
+    /// removing them would be lying in the other direction, because the peer
+    /// may be serving just fine and only the control address died - but it
+    /// forces the screen to say that the coverage is not confirmed.
     pub(super) unreadable_nodes: Vec<String>,
 }
 
-/// O que uma leitura de `/api/ui/node` produziu para um peer.
+/// What a read of `/api/ui/node` produced for a peer.
 #[derive(Default)]
 pub(super) struct PeerRead {
     pub(super) node: Option<serde_json::Value>,
@@ -150,23 +156,23 @@ pub(super) struct PeerRead {
     pub(super) rediscovering: bool,
 }
 
-/// Nenhum endereço conhecido do peer responde.
+/// No known address of the peer answers.
 ///
-/// Enquanto a busca pelo endereço atual for recente, isto é "reencontrando" -
-/// trabalho em curso que a volta seguinte do gossip costuma resolver. Passado
-/// `REDISCOVERY_GIVE_UP`, a rede já foi perguntada vezes bastantes: voltar a
-/// dizer "reencontrando" seria o mesmo aviso desonesto de antes com outra
-/// palavra, então a tela volta a dizer que não consegue ler o par.
-pub(super) fn sem_endereco_vivo(
+/// While the search for the current address is recent, this is "rediscovering" -
+/// work in progress that the next gossip round usually resolves. Once
+/// `REDISCOVERY_GIVE_UP` has passed, the network has been asked enough times:
+/// saying "rediscovering" again would be the same dishonest notice as before
+/// in another word, so the screen goes back to saying it cannot read the peer.
+pub(super) fn without_live_address(
     network: &crate::network::Network,
     node_id: &str,
-    conhecidos: usize,
+    known: usize,
 ) -> PeerRead {
     if network.is_rediscovering(node_id) {
         return PeerRead::rediscovering();
     }
     PeerRead::failed(format!(
-        "nenhum dos {conhecidos} endereços conhecidos respondeu, e a rede não devolveu um novo"
+        "none of the {known} known addresses answered, and the network did not return a new one"
     ))
 }
 
@@ -178,9 +184,9 @@ impl PeerRead {
         }
     }
 
-    pub(super) fn failed(erro: String) -> Self {
+    pub(super) fn failed(error: String) -> Self {
         Self {
-            unreachable: Some(erro),
+            unreachable: Some(error),
             ..Self::default()
         }
     }
@@ -206,7 +212,7 @@ fn reported_peer_load(node: &serde_json::Value) -> Option<u32> {
 }
 
 pub(super) async fn cluster_fingerprint(state: &GatewayState, peers: &[PeerInfo]) -> String {
-    let mut peer_state = serde_json::to_value(peers).expect("peers da UI devem serializar");
+    let mut peer_state = serde_json::to_value(peers).expect("UI peers must serialize");
     if let Some(peers) = peer_state.as_array_mut() {
         for peer in peers {
             // Liveness is represented by presence in this list. The timestamp
@@ -248,10 +254,10 @@ pub(super) async fn cluster_fingerprint(state: &GatewayState, peers: &[PeerInfo]
         "config": state.runtime.config().await,
         "active_model": state.displayed_model().await,
         "detached": state.network.is_detached(),
-        // Sem isto o retrato da travessia congelaria no cache: nem o estado do
-        // AutoNAT nem uma reserva nova mexem em `peers`.
+        // Without this the traversal snapshot would freeze in the cache: neither
+        // the AutoNAT state nor a new reservation touches `peers`.
         "traversal": state.network.traversal_status(),
-        // A rota fixada de cada aresta muda sem mexer em `peers`.
+        // The pinned route of each edge changes without touching `peers`.
         "route_plan": crate::route_plan::book().signature(),
     }))
 }
@@ -291,7 +297,7 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
     if !profile.allows(crate::profile::ProfileAction::ViewNetwork) {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({ "error": "este perfil não pode abrir a rede" })),
+            Json(json!({ "error": "this profile cannot open the network" })),
         )
             .into_response();
     }
@@ -326,23 +332,23 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
     }
     // Fan out to every peer at once; a slow peer must not serialise the others.
     //
-    // Cada peer é lido pelos **candidatos**, não por um endereço só, e o
-    // resultado alimenta a memória de falha do `RouteTable` - a mesma de
-    // `mark_failure`/`is_failed` do caminho de inferência. É isso que impede o
-    // Painel de rediscar para sempre um endereço que morreu: quem falha sai de
-    // uso e é reavaliado depois do `FAILURE_COOLDOWN`; quem responde limpa a
-    // marca na hora e vira o preferido da próxima leitura.
+    // Each peer is read through its **candidates**, not through a single
+    // address, and the result feeds the `RouteTable` failure memory - the same
+    // one as `mark_failure`/`is_failed` of the inference path. That is what
+    // keeps the Dashboard from redialing forever an address that died: one that
+    // fails goes out of use and is re-evaluated after `FAILURE_COOLDOWN`; one
+    // that answers clears the mark at once and becomes the next read's favorite.
     let peer_state = state.clone();
     let futures: Vec<_> = peers
         .iter()
         .map(|p| {
             let is_self = p.node_id == self_id;
             let node_id = p.node_id.clone();
-            let candidatos = p.gateway_candidates();
-            // Cliente pinado no node_id do destino: com o cluster em TLS, o
-            // compartilhado não tem como verificar o certificado do peer e toda
-            // chamada de controle falharia - foi assim que a tela de implantar
-            // parou de enxergar as fatias dos outros nós.
+            let candidates = p.gateway_candidates();
+            // Client pinned to the destination's node_id: with the cluster on TLS,
+            // the shared one has no way to verify the peer's certificate and every
+            // control call would fail - that is how the deploy screen stopped
+            // seeing the other nodes' slices.
             let http = state.peer_http.for_peer(&p.node_id);
             let state = peer_state.clone();
             let routes = state.network.routes.clone();
@@ -352,7 +358,7 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
                 if is_self {
                     return PeerRead::default();
                 }
-                if candidatos.is_empty() {
+                if candidates.is_empty() {
                     return match read_node_via_tunnel(&state, &peer).await {
                         Some(v) => PeerRead::ok(v),
                         None => PeerRead::default(),
@@ -360,23 +366,23 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
                 }
                 let http = match http {
                     Ok(c) => c,
-                    Err(e) => return PeerRead::failed(format!("sem cliente: {e}")),
+                    Err(e) => return PeerRead::failed(format!("no client: {e}")),
                 };
-                let utilizaveis = routes.usable(&node_id, &candidatos);
-                if utilizaveis.is_empty() {
-                    // Todo endereço conhecido está desacreditado. Insistir não
-                    // ressuscita nenhum deles: o que resolve é a rede voltar a
-                    // dizer onde o peer está - ou o túnel, para um peer que
-                    // nenhum endereço alcança.
+                let usable = routes.usable(&node_id, &candidates);
+                if usable.is_empty() {
+                    // Every known address is discredited. Insisting does not
+                    // revive any of them: what solves it is the network saying
+                    // again where the peer is - or the tunnel, for a peer that
+                    // no address reaches.
                     if let Some(v) = read_node_via_tunnel(&state, &peer).await {
                         network.note_peer_read(&node_id);
                         return PeerRead::ok(v);
                     }
                     network.request_peer_addresses(&node_id).await;
-                    return sem_endereco_vivo(&network, &node_id, candidatos.len());
+                    return without_live_address(&network, &node_id, candidates.len());
                 }
-                let mut ultimo_erro = None;
-                for base in &utilizaveis {
+                let mut last_error = None;
+                for base in &usable {
                     let url = format!("{base}/api/ui/node");
                     let request = match state
                         .control_get_request(http.get(&url), "/api/ui/node")
@@ -384,34 +390,33 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
                     {
                         Ok(request) => request,
                         Err(error) => {
-                            ultimo_erro =
-                                Some(format!("assinatura de controle indisponível: {error}"));
+                            last_error = Some(format!("control signature unavailable: {error}"));
                             continue;
                         }
                     };
-                    let resposta = tokio::time::timeout(PEER_TIMEOUT, request.send()).await;
-                    match resposta {
+                    let response = tokio::time::timeout(PEER_TIMEOUT, request.send()).await;
+                    match response {
                         Ok(Ok(r)) if r.status().is_success() => match r.json().await {
                             Ok(v) => {
                                 routes.mark_success(&node_id, base);
                                 network.note_peer_read(&node_id);
                                 return PeerRead::ok(v);
                             }
-                            // Resposta inválida não é endereço morto: o peer
-                            // atendeu. Desacreditar o endereço aqui esconderia
-                            // um defeito de payload atrás de uma busca de rota.
-                            Err(e) => ultimo_erro = Some(format!("resposta inválida: {e}")),
+                            // An invalid response is not a dead address: the peer
+                            // answered. Discrediting the address here would hide
+                            // a payload defect behind a route search.
+                            Err(e) => last_error = Some(format!("invalid response: {e}")),
                         },
-                        // O mesmo vale para um HTTP de erro: quem responde
-                        // 401 ou 500 está vivo naquele endereço.
-                        Ok(Ok(r)) => ultimo_erro = Some(format!("HTTP {}", r.status())),
+                        // The same holds for an HTTP error: whoever answers
+                        // 401 or 500 is alive at that address.
+                        Ok(Ok(r)) => last_error = Some(format!("HTTP {}", r.status())),
                         Ok(Err(e)) => {
                             routes.mark_failure(&node_id, base);
-                            ultimo_erro = Some(format!("{e}"));
+                            last_error = Some(format!("{e}"));
                         }
                         Err(_) => {
                             routes.mark_failure(&node_id, base);
-                            ultimo_erro = Some("timeout".to_string());
+                            last_error = Some("timeout".to_string());
                         }
                     }
                 }
@@ -419,13 +424,13 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
                     network.note_peer_read(&node_id);
                     return PeerRead::ok(v);
                 }
-                // Se a última tentativa derrubou o último endereço utilizável,
-                // já se pode pedir o endereço novo nesta mesma passagem.
-                if routes.usable(&node_id, &candidatos).is_empty() {
+                // If the last attempt took down the last usable address, the
+                // new address can already be requested in this same pass.
+                if routes.usable(&node_id, &candidates).is_empty() {
                     network.request_peer_addresses(&node_id).await;
-                    return sem_endereco_vivo(&network, &node_id, candidatos.len());
+                    return without_live_address(&network, &node_id, candidates.len());
                 }
-                PeerRead::failed(ultimo_erro.unwrap_or_else(|| "sem resposta".to_string()))
+                PeerRead::failed(last_error.unwrap_or_else(|| "no answer".to_string()))
             }
         })
         .collect();
@@ -433,12 +438,12 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
     let fetched = futures::future::join_all(futures).await;
 
     let mut views = Vec::new();
-    for (p, leitura) in peers.iter().zip(fetched) {
+    for (p, reading) in peers.iter().zip(fetched) {
         let PeerRead {
             node,
             unreachable,
             rediscovering,
-        } = leitura;
+        } = reading;
         let is_self = p.node_id == self_id;
         let node = if is_self {
             // Serialise our own view through the same shape as a remote one.
@@ -452,6 +457,7 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
             node.as_ref().and_then(reported_peer_load)
         };
         views.push(PeerView {
+            engine: crate::plugin_engine::engine_of_peer(p),
             short_id: p.node_id[..p.node_id.len().min(12)].to_string(),
             node_id: p.node_id.clone(),
             addr: p.addr.clone(),
@@ -627,8 +633,15 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
     let routing_edges = if active.is_empty() || total == 0 {
         Vec::new()
     } else {
-        crate::pipeline::plan_pipeline(&peers, &active, None, total, &state.loads)
-            .await
+        let mut planned = None;
+        for engine in crate::plugin_engine::pipeline_engines(&peers, None) {
+            let group = crate::plugin_engine::peers_of_engine(&peers, engine.as_deref());
+            if let Some(plan) = crate::pipeline::plan_pipeline(&group, &active, None, total, &state.loads).await {
+                planned = Some(plan);
+                break;
+            }
+        }
+        planned
             .map(|plan| {
                 plan.edges
                     .into_iter()
@@ -660,13 +673,13 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
         "routing_edges": routing_edges,
         "candidate_edges": candidate_edges,
         "node": self_node,
-        // Diagnóstico da travessia de NAT deste nó. Ver `TraversalStatus`:
-        // sem isto, "os dois nós não se falam" só se investiga com
-        // `RUST_LOG=debug` na máquina certa.
+        // Diagnostics of this node's NAT traversal. See `TraversalStatus`:
+        // without this, "the two nodes do not talk to each other" can only be
+        // investigated with `RUST_LOG=debug` on the right machine.
         "traversal": state.network.traversal_status(),
-        // Rota fixada por aresta de saída deste nó (`route_plan`): por qual
-        // transporte a inferência e a volta ao gateway vão agora, e as
-        // alternativas já medidas.
+        // Pinned route per outgoing edge of this node (`route_plan`): over which
+        // transport inference and the return to the gateway go right now, and
+        // the alternatives already measured.
         "route_plan": crate::route_plan::book().snapshot(),
     });
 
@@ -679,8 +692,30 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
 /// read `/api/ui/cluster`: infer is intentionally local-only there, and a
 /// denied or reduced topology must never become an empty model or incomplete
 /// coverage in the composer.
-pub(super) async fn chat_capabilities(State(state): State<GatewayState>) -> impl IntoResponse {
-    let active_model = state.active_model().await;
+#[derive(Debug, Default, Deserialize)]
+pub struct ChatCapabilitiesQuery {
+    /// The model chosen in the Chat; a `@<deploy_id>` suffix is ignored.
+    #[serde(default)]
+    pub model: String,
+}
+
+/// What the Chat can do with a model: vision, thinking and layer coverage.
+/// It answers for the model the Chat chose, or, without one, for the model
+/// the network serves. Reading the model this node loads was wrong on a node
+/// that only coordinates: it loads nothing, so a model served elsewhere came
+/// back with `coverage: unavailable`.
+pub(super) async fn chat_capabilities(
+    State(state): State<GatewayState>,
+    Query(query): Query<ChatCapabilitiesQuery>,
+) -> impl IntoResponse {
+    let requested = crate::deployment::split_selector(query.model.trim())
+        .0
+        .to_string();
+    let active_model = if requested.is_empty() {
+        state.displayed_model().await
+    } else {
+        requested
+    };
     let peers = state.all_peers().await;
     let local_id = state.network.node_id.clone();
     let local_config = state.runtime.config().await;
@@ -896,18 +931,18 @@ pub(super) async fn chat_capabilities(State(state): State<GatewayState>) -> impl
     }))
 }
 
-/// Como uma máquina carregou o modelo: o `/health` do servidor de inferência
-/// dela, cru.
+/// How a machine loaded the model: the `/health` of its inference server,
+/// raw.
 ///
-/// Fica fora do `/api/ui/cluster` de propósito. O Painel recarrega o cluster em
-/// ciclo curto, e isto é detalhe que só interessa com o card aberto: buscar por
-/// demanda evita pagar um `/health` por peer a cada atualização de tela, e um
-/// peer que não responde deixa de derrubar a listagem inteira.
+/// It stays out of `/api/ui/cluster` on purpose. The Dashboard reloads the
+/// cluster on a short cycle, and this is detail that only matters with the card
+/// open: fetching on demand avoids paying one `/health` per peer on every screen
+/// refresh, and a peer that does not answer no longer takes down the whole listing.
 ///
-/// **Vale para qualquer nó, inclusive este.** A entrada local do `all_peers`
-/// tem `inference_url` como as outras, e é o mesmo caminho que o
-/// `ready_for_pipeline` já percorre - um só código, então o card do nó local
-/// nunca mostra menos que o card de um remoto.
+/// **It holds for any node, this one included.** The local entry of `all_peers`
+/// has `inference_url` like the others, and it is the same path that
+/// `ready_for_pipeline` already walks - a single piece of code, so the local
+/// node's card never shows less than a remote one's card.
 pub(super) async fn peer_runtime(
     State(state): State<GatewayState>,
     Path(node_id): Path<String>,
@@ -922,7 +957,7 @@ pub(super) async fn peer_runtime(
     {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({ "error": "o perfil infer só pode ver a própria máquina" })),
+            Json(json!({ "error": "the infer profile can only see its own machine" })),
         )
             .into_response();
     }
@@ -933,14 +968,13 @@ pub(super) async fn peer_runtime(
         .into_iter()
         .find(|p| p.node_id == node_id)
     else {
-        return (StatusCode::NOT_FOUND, "máquina desconhecida").into_response();
+        return (StatusCode::NOT_FOUND, "unknown machine").into_response();
     };
 
     let Some(base) = peer.inference_url() else {
-        // O peer existe e não serve inferência: não é erro de rede, é o
-        // estado normal de uma máquina sem fatia implantada.
-        return Json(json!({ "loaded": false, "reason": "sem servidor de inferência" }))
-            .into_response();
+        // The peer exists and does not serve inference: it is not a network
+        // error, it is the normal state of a machine with no slice deployed.
+        return Json(json!({ "loaded": false, "reason": "no inference server" })).into_response();
     };
 
     let http = match state.peer_http.for_peer(&node_id) {
@@ -948,7 +982,7 @@ pub(super) async fn peer_runtime(
         Err(e) => {
             return (
                 StatusCode::BAD_GATEWAY,
-                format!("sem cliente para {node_id}: {e}"),
+                format!("no client for {node_id}: {e}"),
             )
                 .into_response()
         }
@@ -958,7 +992,7 @@ pub(super) async fn peer_runtime(
     match tokio::time::timeout(PEER_TIMEOUT, http.get(&url).send()).await {
         Ok(Ok(r)) if r.status().is_success() => match r.json::<serde_json::Value>().await {
             Ok(v) => Json(json!({ "loaded": true, "health": v })).into_response(),
-            Err(e) => (StatusCode::BAD_GATEWAY, format!("resposta inválida: {e}")).into_response(),
+            Err(e) => (StatusCode::BAD_GATEWAY, format!("invalid response: {e}")).into_response(),
         },
         Ok(Ok(r)) => Json(json!({ "loaded": false, "reason": format!("HTTP {}", r.status()) }))
             .into_response(),
@@ -967,10 +1001,10 @@ pub(super) async fn peer_runtime(
     }
 }
 
-/// `/api/ui/node` de um peer só pelo túnel libp2p: o último recurso das
-/// leituras que já percorreram os endereços do peer com a memória de falha do
-/// `RouteTable`. Um peer atrás de NAT simétrico não tem endereço que responda,
-/// e sem isto ficava listado mas ilegível.
+/// A peer's `/api/ui/node` through the libp2p tunnel only: the last resort of
+/// the reads that already walked the peer's addresses with the `RouteTable`
+/// failure memory. A peer behind symmetric NAT has no address that answers,
+/// and without this it stayed listed but unreadable.
 async fn read_node_via_tunnel(
     state: &GatewayState,
     peer: &crate::network::PeerInfo,
@@ -1000,8 +1034,8 @@ pub(super) async fn cluster_models(State(state): State<GatewayState>) -> impl In
         })
         .collect::<Vec<_>>();
     let local = local_catalog(&state).await;
-    // O nome que este nó anuncia, não o hostname cru do SO. Ver `models`.
-    let local_host = state.network.hostname.clone();
+    // The name this node announces, not the raw OS hostname. See `models`.
+    let local_host = state.network.hostname();
 
     let peer_state = state.clone();
     let futures: Vec<_> = peers
@@ -1018,7 +1052,7 @@ pub(super) async fn cluster_models(State(state): State<GatewayState>) -> impl In
                 {
                     Ok(r) if r.status().is_success() => match r.json::<serde_json::Value>().await {
                         Ok(v) => (node_id, Some(v), None),
-                        Err(e) => (node_id, None, Some(format!("resposta inválida: {e}"))),
+                        Err(e) => (node_id, None, Some(format!("invalid response: {e}"))),
                     },
                     Ok(r) => (node_id, None, Some(format!("HTTP {}", r.status()))),
                     Err(e) => (node_id, None, Some(format!("{e:#}"))),
@@ -1053,10 +1087,10 @@ pub(super) async fn cluster_models(State(state): State<GatewayState>) -> impl In
                     .and_then(|value| value.as_bool())
                     .map_or(serde_json::Value::Null, serde_json::Value::Bool),
             })),
-            // Um peer que não respondeu continua sendo uma máquina com nome:
-            // a tabela local de peers guarda o que ele anunciou. Sem isto o
-            // objeto saía **sem `hostname`** e a tela caía no `node_id`, ou
-            // seja, um prefixo hexadecimal no lugar do nome.
+            // A peer that did not answer is still a machine with a name: the
+            // local peer table keeps what it announced. Without this the
+            // object went out **without `hostname`** and the screen fell back to
+            // the `node_id`, that is, a hexadecimal prefix in place of the name.
             None => out.push(json!({
                 "node_id": node_id,
                 "hostname": peers

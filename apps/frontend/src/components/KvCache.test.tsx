@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /**
- * O cache de KV no card da máquina: quanto disco o `kv-slots` dela ocupa, e a
- * limpeza daquela máquina e de nenhuma outra.
+ * The KV cache on the machine card: how much disk its `kv-slots` takes, and
+ * clearing that machine and no other.
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -51,30 +51,30 @@ describe("KvCache", () => {
     vi.unstubAllGlobals();
   });
 
-  it("mostra o disco usado pelos snapshots e o cache em RAM", () => {
+  it("shows the disk used by the snapshots and the RAM cache", () => {
     mount();
     expect(screen.getByTestId("kv-cache-disk").textContent).toMatch(/2[.,]00? ?GB.*3 snapshots/);
     expect(screen.getByTestId("kv-cache-ram").textContent).toMatch(/1[.,]00? ?GB de 32/);
   });
 
-  it("não desenha nada para um nó que ainda não publica o campo", () => {
+  it("draws nothing for a node that does not publish the field yet", () => {
     mount({ disk: undefined });
     expect(screen.queryByTestId("kv-cache")).toBeNull();
   });
 
-  it("diz que o cache em RAM não existe numa máquina pequena", () => {
+  it("says the RAM cache does not exist on a small machine", () => {
     mount({ ram: { ...ram, limit_bytes: null, user_reserve_bytes: null, bytes: 0 } });
     expect(screen.queryByTestId("kv-cache-ram")).toBeNull();
     expect(screen.getByText("indisponível nesta máquina")).toBeTruthy();
   });
 
-  it("não oferece limpar o que está vazio", () => {
+  it("does not offer to clear what is empty", () => {
     mount({ disk: { ...disk, snapshots: 0, bytes: 0 }, ram: undefined });
     const button = screen.getByRole("button", { name: /limpar cache/i }) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
   });
 
-  it("pede confirmação e manda limpar só a máquina do card", async () => {
+  it("asks for confirmation and clears only the machine of the card", async () => {
     const fetchMock = vi.fn(async () =>
       new Response(
         JSON.stringify({

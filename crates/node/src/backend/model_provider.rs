@@ -1,8 +1,8 @@
-//! API e jobs de modelos remotos.
+//! API and jobs for remote models.
 //!
-//! Esta camada conhece somente `ModelProvider`. O provider padrão é criado no
-//! bootstrap do nó; o módulo não monta comandos, lê tokens ou fala com o
-//! Hugging Face diretamente.
+//! This layer knows only `ModelProvider`. The default provider is created at
+//! node bootstrap; the module does not build commands, read tokens or talk to
+//! Hugging Face directly.
 
 use crate::auth::ConnectionAuth;
 use crate::gateway::GatewayState;
@@ -92,7 +92,7 @@ impl DownloadRequest {
         if !filename.to_ascii_lowercase().ends_with(".gguf") {
             return Err(HfError::InvalidInput {
                 field: "filename".into(),
-                message: "somente arquivos GGUF podem ser adicionados ao catálogo".into(),
+                message: "only GGUF files can be added to the catalog".into(),
             });
         }
         if let Some(quantization) = self.quantization.as_deref() {
@@ -104,7 +104,7 @@ impl DownloadRequest {
             {
                 return Err(HfError::InvalidInput {
                     field: "quantization".into(),
-                    message: "quantização contém caracteres inválidos".into(),
+                    message: "quantization contains invalid characters".into(),
                 });
             }
         }
@@ -273,7 +273,7 @@ async fn search_models(
         _ => {
             return provider_error(HfError::InvalidInput {
                 field: "sort".into(),
-                message: "ordenação inválida".into(),
+                message: "invalid sort order".into(),
             })
         }
     }
@@ -417,9 +417,9 @@ async fn save_token_config(
         .map(|token| token.trim().to_string())
         .filter(|token| !token.is_empty());
     if let Err(error) = state.database.save_huggingface_token(token.as_deref()) {
-        tracing::error!("não foi possível guardar o token do Hugging Face: {error:#}");
+        tracing::error!("could not store the Hugging Face token: {error:#}");
         return provider_error(HfError::Io {
-            message: "não foi possível guardar o token do Hugging Face".into(),
+            message: "could not store the Hugging Face token".into(),
         });
     }
     {
@@ -492,14 +492,14 @@ async fn start_download(
     if let Some(job) = active_download(&identity).await {
         return conflict(
             "download_in_progress",
-            format!("download já em andamento: {}", job.id),
+            format!("download already in progress: {}", job.id),
         );
     }
     if let Some(job) = installed_download(&state, &identity).await {
         return conflict(
             "model_installed",
             format!(
-                "modelo já instalado: {}",
+                "model already installed: {}",
                 job.filename.as_deref().unwrap_or(&identity.filename)
             ),
         );
@@ -526,7 +526,7 @@ async fn start_download(
         if free < size {
             return conflict(
                 "insufficient_space",
-                "espaço insuficiente para baixar este modelo".into(),
+                "not enough space to download this model".into(),
             );
         }
     }
@@ -534,12 +534,12 @@ async fn start_download(
     let Some(destination) = configured_model_destination(&destinations) else {
         return conflict(
             "destination_unavailable",
-            "nenhuma pasta de modelos está configurada".into(),
+            "no models folder is configured".into(),
         );
     };
     if let Err(error) = tokio::fs::create_dir_all(&destination).await {
         return provider_error(HfError::Io {
-            message: format!("não foi possível preparar a pasta de modelos: {error}"),
+            message: format!("could not prepare the models folder: {error}"),
         });
     }
 
@@ -604,10 +604,7 @@ async fn cancel_download(
             )
     });
     if !active {
-        return conflict(
-            "download_not_active",
-            "download não está em andamento".into(),
-        );
+        return conflict("download_not_active", "download is not in progress".into());
     }
     let Some(token) = state
         .model_service
@@ -617,10 +614,7 @@ async fn cancel_download(
         .get(&id)
         .cloned()
     else {
-        return conflict(
-            "download_not_active",
-            "download não está em andamento".into(),
-        );
+        return conflict("download_not_active", "download is not in progress".into());
     };
     token.cancel();
     Json(json!({ "download_id": id, "status": "cancelling" })).into_response()
@@ -633,16 +627,16 @@ async fn retry_download(
 ) -> Response {
     let job = match webui::jobs().read().await.get(&id).cloned() {
         Some(job) if job.kind == MODEL_DOWNLOAD_KIND => job,
-        _ => return not_found("download não encontrado"),
+        _ => return not_found("download not found"),
     };
     if job.state == "running" {
         return conflict(
             "download_in_progress",
-            "download já está em andamento".into(),
+            "download is already in progress".into(),
         );
     }
     let Some(repo_id) = job.repo_id else {
-        return conflict("download_invalid", "download não pode ser repetido".into());
+        return conflict("download_invalid", "download cannot be retried".into());
     };
     let request = DownloadRequest {
         repo_id,
@@ -677,7 +671,7 @@ async fn run_download(
             None,
             None,
             None,
-            Some("download cancelado".into()),
+            Some("download cancelled".into()),
         )
         .await;
         remove_cancellation(&service, &job_id).await;
@@ -693,7 +687,7 @@ async fn run_download(
             None,
             None,
             None,
-            Some("download cancelado".into()),
+            Some("download cancelled".into()),
         )
         .await;
         remove_cancellation(&service, &job_id).await;
@@ -775,7 +769,7 @@ async fn run_download(
                 last_progress.2,
                 last_progress.3,
                 None,
-                Some("download cancelado".into()),
+                Some("download cancelled".into()),
             )
             .await;
         }
@@ -798,7 +792,7 @@ async fn run_download(
                 job_id = %job_id,
                 error_type = error_code(&error),
                 status = "error",
-                "download de modelo falhou"
+                "model download failed"
             );
         }
     }
@@ -852,7 +846,7 @@ async fn complete_download(
         download_duration_ms = result.duration_ms,
         download_bytes = result.total_bytes,
         status = "ok",
-        "download de modelo concluído"
+        "model download completed"
     );
 }
 
@@ -865,7 +859,7 @@ async fn write_installed_record(
     tokio::fs::create_dir_all(&directory)
         .await
         .map_err(|error| HfError::Io {
-            message: format!("não foi possível registrar o modelo: {error}"),
+            message: format!("could not register the model: {error}"),
         })?;
     let key = format!(
         "{}\n{:?}\n{}",
@@ -885,12 +879,12 @@ async fn write_installed_record(
         downloaded_at: Utc::now().to_rfc3339(),
     };
     let data = serde_json::to_vec_pretty(&record).map_err(|error| HfError::Io {
-        message: format!("não foi possível serializar o registro local: {error}"),
+        message: format!("could not serialize the local record: {error}"),
     })?;
     tokio::fs::write(path, data)
         .await
         .map_err(|error| HfError::Io {
-            message: format!("não foi possível gravar o registro local: {error}"),
+            message: format!("could not write the local record: {error}"),
         })
 }
 
@@ -1181,23 +1175,21 @@ fn public_error_message(error: &HfError) -> String {
 
 fn public_error_message_code(code: &str) -> &'static str {
     match code {
-        "authentication_required" => "autenticação do provedor necessária",
-        "repository_not_found" => "modelo não encontrado",
-        "file_not_found" => "arquivo do modelo não encontrado",
-        "access_denied" => "você não possui acesso a este modelo",
-        "rate_limited" => "o provedor recusou a requisição por limite de uso",
-        "insufficient_space" => "espaço insuficiente para baixar este modelo",
-        "cancelled" => "download cancelado",
-        "download_in_progress" => "este modelo já está sendo baixado",
-        "model_installed" => "este modelo já está instalado",
-        "destination_unavailable" => "nenhuma pasta de modelos está disponível",
-        "download_failed" => {
-            "não foi possível concluir o download; verifique a conexão e tente novamente"
-        }
+        "authentication_required" => "provider authentication required",
+        "repository_not_found" => "model not found",
+        "file_not_found" => "model file not found",
+        "access_denied" => "you do not have access to this model",
+        "rate_limited" => "the provider refused the request because of a usage limit",
+        "insufficient_space" => "not enough space to download this model",
+        "cancelled" => "download cancelled",
+        "download_in_progress" => "this model is already being downloaded",
+        "model_installed" => "this model is already installed",
+        "destination_unavailable" => "no models folder is available",
+        "download_failed" => "could not complete the download; check the connection and try again",
         "invalid_response" => {
-            "o Hugging Face não respondeu corretamente; verifique a conexão e tente novamente"
+            "Hugging Face did not answer correctly; check the connection and try again"
         }
-        _ => "não foi possível concluir a operação do modelo",
+        _ => "could not complete the model operation",
     }
 }
 
@@ -1222,7 +1214,7 @@ mod tests {
 
     fn unreachable_provider_call<T>(value: T) -> ! {
         std::mem::drop(value);
-        unreachable!("não faz parte deste teste")
+        unreachable!("not part of this test")
     }
 
     #[async_trait]
@@ -1543,7 +1535,7 @@ mod tests {
         assert!(!message.contains("hf_secret"));
         assert!(!message.contains("Authorization"));
         assert!(!message.contains("/private/model"));
-        assert!(message.contains("operação") || message.contains("concluir"));
+        assert!(message.contains("operation") || message.contains("complete"));
     }
 
     #[test]

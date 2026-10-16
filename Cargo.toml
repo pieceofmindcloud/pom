@@ -3,7 +3,6 @@ members = [
     "crates/brand",
     "crates/enterprise-protocol",
     "crates/enterprise-plugin-fixture",
-    "crates/llama-engine",
     "crates/node",
     "crates/plugin-host",
     "crates/routing-base",
@@ -22,9 +21,9 @@ anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# O fork do llama.cpp do pereirajair (branch pom-tensor-parallel) substitui o
-# llama.cpp vendado na crates.io: o bindgen e o cmake leem o diretorio `llama.cpp`
-# via symlink para /llama.cpp (o clone do fork). Ver o trabalho de tensor
-# parallelism (caminho C).
+# The llama.cpp engine (`llama-engine` and the `llama-cpp-sys-2` binding) lives in the
+# pom-plugin-llama.cpp repository, pinned to a commit (`rev`). The patch replaces the llama-cpp-sys-2
+# from crates.io with the one from that same repository. The source of the llama.cpp fork comes from LLAMA_SOURCE
+# (see .cargo/config.toml).
 [patch.crates-io]
-llama-cpp-sys-2 = { path = "vendor/llama-cpp-sys-2" }
+llama-cpp-sys-2 = { git = "ssh://git@github.com/pieceofmindcloud/pom-plugin-llama.cpp.git", rev = "b503e388b0dc65cf81a9df6c7909d33f0be7217b" }

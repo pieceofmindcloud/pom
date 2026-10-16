@@ -8,7 +8,7 @@ import { api } from "../lib/api";
 describe("AddNodeDialog", () => {
   afterEach(cleanup);
 
-  it("avisa que a faixa escolhida cria uma rota paralela", () => {
+  it("warns that the chosen range creates a parallel route", () => {
     render(
       <LocaleProvider initialLocale="pt-BR">
         <AddNodeDialog
@@ -23,7 +23,7 @@ describe("AddNodeDialog", () => {
     expect(screen.getByText(/rota paralela/i)).toBeTruthy();
   });
 
-  it("nao avisa nada quando a faixa preenche um buraco", () => {
+  it("warns about nothing when the range fills a hole", () => {
     render(
       <LocaleProvider initialLocale="pt-BR">
         <AddNodeDialog
@@ -38,7 +38,7 @@ describe("AddNodeDialog", () => {
     expect(screen.queryByText(/rota paralela/i)).toBeNull();
   });
 
-  it("re-semeia a selecao a cada abertura e nao guarda o node_id de uma sessao passada", () => {
+  it("re-seeds the selection on every open and does not keep the node_id of a past session", () => {
     const { rerender } = render(
       <LocaleProvider initialLocale="pt-BR">
         <AddNodeDialog
@@ -82,9 +82,9 @@ describe("AddNodeDialog", () => {
     expect(select2.value).toBe("n3");
   });
 
-  it("mantem a maquina escolhida quando o painel repolla o cluster", () => {
-    // O painel remonta `peers`/`slices` a cada resposta do cluster: arrays
-    // novos, mesmo conteudo. A escolha do operador tem que sobreviver a isso.
+  it("keeps the chosen machine when the panel re-polls the cluster", () => {
+    // The panel remounts `peers`/`slices` on every cluster response: new
+    // arrays, same content. The operator's choice has to survive that.
     const peers = () => [
       { node_id: "n1", short_id: "n1", hostname: "maq1" },
       { node_id: "n2", short_id: "n2", hostname: "maq2" },
@@ -123,7 +123,7 @@ describe("AddNodeDialog", () => {
     expect((screen.getByDisplayValue("20-39") as HTMLSelectElement).value).toBe("20-39");
   });
 
-  it("troca a escolha quando a maquina escolhida sai da rede", () => {
+  it("switches the choice when the chosen machine leaves the network", () => {
     const { rerender } = render(
       <LocaleProvider initialLocale="pt-BR">
         <AddNodeDialog
@@ -159,7 +159,27 @@ describe("AddNodeDialog", () => {
     expect((screen.getByDisplayValue("maq1") as HTMLSelectElement).value).toBe("n1");
   });
 
-  it("reoferece as fatias e o modelo inteiro da maquina escolhida", async () => {
+  it("offers again the slices and the whole model of the chosen machine", async () => {
+    const get = vi.spyOn(api, "get").mockImplementation(async (path) => {
+      if (path !== "/api/ui/deployments") {
+        throw new Error(`rota inesperada: ${path}`);
+      }
+      return {
+        node_id: "n1",
+        deployments: [
+          {
+            deployment: {
+              deploy_id: "d1",
+              active_version: 1,
+              versions: [{ version: 1, params: { n_ctx: 8192, offload_kqv: true } }],
+            },
+            serving: true,
+            is_default: true,
+            holders: [],
+          },
+        ],
+      } as never;
+    });
     const post = vi.spyOn(api, "post").mockImplementation(async (path, body) => {
       if (path === "/api/ui/deploy/node") {
         return { overlapping_layers: [] } as never;
@@ -190,6 +210,7 @@ describe("AddNodeDialog", () => {
           <AddNodeDialog
             open
             group="modelo"
+            deployId="d1"
             peers={[
               { node_id: "n1", short_id: "n1", hostname: "maq1" },
               { node_id: "n2", short_id: "n2", hostname: "maq2" },
@@ -209,12 +230,10 @@ describe("AddNodeDialog", () => {
         expect(screen.getByRole("option", { name: /modelo inteiro/i })).toBeTruthy();
         expect(screen.getByRole("option", { name: "20-39" })).toBeTruthy();
       });
-      expect(screen.getByText("Opções da máquina")).toBeTruthy();
-      const comboboxes = screen.getAllByRole("combobox");
-      fireEvent.change(comboboxes[1], { target: { value: "whole:0-39" } });
-      fireEvent.change(comboboxes[2], { target: { value: "cpu" } });
-      fireEvent.change(comboboxes[3], { target: { value: "q8_0" } });
-      fireEvent.change(comboboxes[4], { target: { value: "bf16" } });
+      // the machine's configuration is the deployment's active version, edited with the deployment inspector
+      await waitFor(() => expect(get).toHaveBeenCalledWith("/api/ui/deployments"));
+      await waitFor(() => expect(screen.getAllByRole("combobox").length).toBeGreaterThan(5));
+      fireEvent.change(screen.getAllByRole("combobox")[1], { target: { value: "whole:0-39" } });
       fireEvent.click(screen.getByRole("button", { name: "Adicionar" }));
       await waitFor(() => {
         expect(post).toHaveBeenLastCalledWith(
@@ -223,9 +242,9 @@ describe("AddNodeDialog", () => {
             kind: "whole",
             start_layer: 0,
             end_layer: 39,
-            offload_kqv: false,
             cache_type_k: "q8_0",
             cache_type_v: "bf16",
+            overrides: { params: expect.objectContaining({ n_ctx: 8192, offload_kqv: true }) },
           }),
         );
       });
@@ -235,10 +254,11 @@ describe("AddNodeDialog", () => {
       );
     } finally {
       post.mockRestore();
+      get.mockRestore();
     }
   });
 
-  it("não mostra o plano antigo enquanto lê o inventário real do alvo", async () => {
+  it("does not show the old plan while reading the real inventory of the target", async () => {
     const post = vi.spyOn(api, "post").mockResolvedValue({
       options: [],
       cache_types: { cache_type_k: "f16", cache_type_v: "f16", choices: ["f16"] },
@@ -263,6 +283,89 @@ describe("AddNodeDialog", () => {
       expect(screen.queryByRole("option", { name: "L16-40" })).toBeNull();
     } finally {
       post.mockRestore();
+    }
+  });
+
+  it("offers the engines of the chosen machine and sends the chosen one with its machine", async () => {
+    const get = vi.spyOn(api, "get").mockImplementation(async () => ({
+      node_id: "n1",
+      deployments: [
+        {
+          deployment: {
+            deploy_id: "d1",
+            active_version: 1,
+            versions: [{ version: 1, params: { n_ctx: 8192 } }],
+          },
+          serving: true,
+          is_default: true,
+          holders: [],
+        },
+      ],
+    }) as never);
+    const post = vi.spyOn(api, "post").mockImplementation(async (path, body) => {
+      if (path === "/api/ui/deploy/node") return { overlapping_layers: [] } as never;
+      return {
+        options: [
+          { kind: "whole", start_layer: 0, end_layer: 39, label: "whole" },
+          { kind: "shards", start_layer: 20, end_layer: 39, label: "20-39" },
+        ],
+        cache_types: { cache_type_k: "f16", cache_type_v: "f16", choices: ["f16"] },
+        defaults: { n_gpu_layers: 99, offload_kqv: true },
+      } as never;
+    });
+    const strata = {
+      code: "strata",
+      name: "Strata",
+      architectures: ["qwen35moe"],
+      settings: [],
+      pomSettings: [],
+      nodeIds: ["n2"],
+      stages: false,
+      vision: false,
+    };
+    try {
+      render(
+        <LocaleProvider initialLocale="pt-BR">
+          <AddNodeDialog
+            open
+            group="modelo"
+            deployId="d1"
+            services={[strata]}
+            peers={[
+              { node_id: "n1", short_id: "n1", hostname: "maq1" },
+              { node_id: "n2", short_id: "n2", hostname: "maq2" },
+            ]}
+            slices={[]}
+            existingRanges={[]}
+            onClose={() => {}}
+          />
+        </LocaleProvider>,
+      );
+      // the first machine does not run Strata: no engine choice there
+      await waitFor(() => expect(get).toHaveBeenCalledWith("/api/ui/deployments"));
+      expect(screen.queryByRole("option", { name: "Strata" })).toBeNull();
+
+      fireEvent.change(screen.getByDisplayValue("maq1"), { target: { value: "n2" } });
+      await waitFor(() => expect(screen.getByRole("option", { name: "Strata" })).toBeTruthy());
+      fireEvent.change(screen.getByRole("option", { name: "Strata" }).closest("select") as HTMLSelectElement, {
+        target: { value: "strata" },
+      });
+      // a service that runs no layer slices takes the whole model only
+      await waitFor(() => expect(screen.queryByRole("option", { name: "20-39" })).toBeNull());
+      fireEvent.click(screen.getByRole("button", { name: "Adicionar" }));
+      await waitFor(() => {
+        expect(post).toHaveBeenLastCalledWith(
+          "/api/ui/deploy/node",
+          expect.objectContaining({
+            target_node_id: "n2",
+            kind: "whole",
+            overrides: { params: expect.objectContaining({ inference_service: "strata", n_ctx: 8192 }) },
+          }),
+        );
+      });
+    } finally {
+      post.mockRestore();
+      get.mockRestore();
     }
   });
 });

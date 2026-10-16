@@ -127,9 +127,9 @@ function PeerCard({
   const kind = machineKind(system);
   const serving = isServing(peer.node?.status.state);
   const unreachable = Boolean(peer.unreachable);
-  // Um nó a ser reencontrado não é um nó perdido: o endereço dele rodou e a
-  // rede já foi perguntada. O card fica esmaecido como o ilegível, mas o ponto
-  // pulsa em âmbar em vez de ficar parado em rosa.
+  // A node to be re-found is not a lost node: its address rotated and the
+  // network has already been asked. The card is faded like the unreadable one, but the
+  // dot pulses amber instead of staying still pink.
   const rediscovering = Boolean(peer.rediscovering);
   const unread = unreachable || rediscovering;
 

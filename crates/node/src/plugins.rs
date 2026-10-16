@@ -1,37 +1,35 @@
-//! Gerenciador genérico de plugins independentes.
+//! Generic manager of independent plugins.
 //!
-//! Até a decisão do captain (2026-09-18), o POM tinha uma única "licença
-//! Enterprise" para um único produto opcional. Esse modelo virou N plugins
-//! independentes, cada um com seu próprio `plugin_code`, ciclo de ativação,
-//! heartbeat e host de processo. O servidor de licenças fornece códigos para
-//! instalações licenciadas; um `manifest.json` de repositório GitHub pode
-//! introduzir um código para instalação local sem licença. [`PluginManager`]
-//! cria um [`PluginRuntime`] por código quando necessário. Cada runtime tem seu próprio
-//! estado de ativação, lease, host e checagem de atualização de versão,
-//! independentes das demais.
+//! Until the captain's decision (2026-09-18), POM had a single "Enterprise
+//! license" for a single optional product. That model became N independent
+//! plugins, each with its own `plugin_code`, activation cycle, heartbeat and
+//! process host. The license server supplies codes for licensed installations;
+//! a GitHub repository's `manifest.json` can introduce a code for a local
+//! installation without a license. [`PluginManager`] creates a [`PluginRuntime`]
+//! per code when needed. Each runtime has its own activation state, lease, host
+//! and version update check, independent of the others.
 //!
-//! A atualização do binário `pom` em si (`crate::pom_core_update`) NÃO faz
-//! parte deste gerenciador de propósito: ela é outra fronteira de produto
-//! (vai virar GitHub Releases público, sem licença nenhuma) e só empresta,
-//! por baixo dos panos, o lease do plugin `"logs"` enquanto esse
-//! mecanismo de transição não muda. Ver `crate::pom_core_update`.
+//! Updating the `pom` binary itself (`crate::pom_core_update`) is deliberately
+//! NOT part of this manager: it is another product boundary (it will become
+//! public GitHub Releases, with no license at all) and only borrows, under the
+//! hood, the lease of the `"logs"` plugin until that transition mechanism
+//! changes. See `crate::pom_core_update`.
 //!
-//! **Contrato do servidor de licenças** (confirmado contra o servidor real, e
-//! fixado por `enterprise-protocol/tests/wire_contract.rs` com corpos de
-//! resposta capturados dele): uma chave concede vários `plugin_code` de uma
-//! vez, e todas as respostas listam esses códigos em `licensed_plugins` -
-//! códigos puros, sem features. **As features de um plugin vêm do manifesto
-//! do release instalado** (`PluginManifest::feature_set`, no formato
-//! `"<plugin_code>.<feature>"`), porque quem define o que uma versão entrega
-//! é aquela versão, não a licença. A ativação (`POST
-//! /v1/licenses/activations`) é uma chamada POR `plugin_code`, e os endpoints
-//! de manifest/download já eram genéricos por `plugin_code`
-//! (`/v1/plugins/:plugin_code/manifest`).
+//! **License server contract** (confirmed against the real server, and pinned by
+//! `enterprise-protocol/tests/wire_contract.rs` with response bodies captured
+//! from it): one key grants several `plugin_code`s at once, and every response
+//! lists those codes in `licensed_plugins` - plain codes, with no features.
+//! **A plugin's features come from the installed release's manifest**
+//! (`PluginManifest::feature_set`, in the format `"<plugin_code>.<feature>"`),
+//! because what a version delivers is defined by that version, not by the
+//! license. Activation (`POST /v1/licenses/activations`) is a call PER
+//! `plugin_code`, and the manifest/download endpoints were already generic per
+//! `plugin_code` (`/v1/plugins/:plugin_code/manifest`).
 //!
-//! Este cliente já assumiu o contrário - que a licença listava features em
-//! `entitlements` - e a ativação de plugin quebrou em produção com
-//! `missing field \`entitlements\`` quando o servidor virou catálogo de
-//! plugins. Não volte a derivar features da licença.
+//! This client once assumed the opposite - that the license listed features in
+//! `entitlements` - and plugin activation broke in production with
+//! `missing field \`entitlements\`` when the server became a plugin catalog.
+//! Do not go back to deriving features from the license.
 
 use async_trait::async_trait;
 use axum::response::IntoResponse;
@@ -50,21 +48,28 @@ use std::fmt;
 use std::sync::{Arc, RwLock as StdRwLock};
 use tokio::sync::{Mutex, RwLock};
 
-/// O plugin de Estatísticas/Logs de Requisições. Fica nomeado porque
-/// `crate::reqlog`, `crate::backend::gateway::generation`
-/// e `crate::pom_core_update` precisam de um `plugin_code` concreto, não do
-/// código dinâmico de outra instância.
+/// The Request Statistics/Logs plugin. It is named because `crate::reqlog`,
+/// `crate::backend::gateway::generation` and `crate::pom_core_update` need a
+/// concrete `plugin_code`, not the dynamic code of another instance.
 pub(crate) const LOGS_PLUGIN_CODE: &str = "logs";
+
+/// Pauses between the attempts to hand an audit event to its plugin (one more attempt follows the last).
+const AUDIT_RETRY_PAUSES: [std::time::Duration; 3] = [
+    std::time::Duration::from_secs(1),
+    std::time::Duration::from_secs(3),
+    std::time::Duration::from_secs(8),
+];
 
 const PERSISTED_SETTING_PREFIX: &str = "plugin_license:";
 const PUBLIC_INSTALL_SETTING_PREFIX: &str = "plugin_public_install:";
 const DEVELOPMENT_INSTALL_SETTING_PREFIX: &str = "plugin_dev_install:";
 const GITHUB_REPOSITORIES_SETTING: &str = "plugin_github_repositories";
 const PREFERENCES_SETTING_PREFIX: &str = "plugin_preferences:";
+const UI_MANIFEST_SETTING_PREFIX: &str = "plugin_ui_manifest:";
 
-/// Plugin codes vêm do serviço de licenças, de releases GitHub ou de
-/// manifestos de fontes locais. Também compõem segmentos de URL e diretórios;
-/// aceitamos slugs genéricos, mas nunca separadores ou segmentos de caminho.
+/// Plugin codes come from the license service, from GitHub releases or from
+/// manifests of local sources. They also make up URL segments and directories;
+/// we accept generic slugs, but never separators or path segments.
 pub(crate) fn is_valid_plugin_code(code: &str) -> bool {
     let bytes = code.as_bytes();
     !bytes.is_empty()
@@ -74,6 +79,15 @@ pub(crate) fn is_valid_plugin_code(code: &str) -> bool {
         && bytes
             .iter()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+/// Reads `lifecycle: "on_demand"` from an already validated and saved UI manifest.
+fn manifest_is_on_demand(raw: Option<&serde_json::Value>) -> bool {
+    raw.and_then(|manifest| manifest.get("lifecycle"))
+        .and_then(|lifecycle| {
+            serde_json::from_value::<crate::plugin_ui::Lifecycle>(lifecycle.clone()).ok()
+        })
+        .is_some_and(crate::plugin_ui::Lifecycle::is_on_demand)
 }
 
 #[derive(Debug, Clone)]
@@ -138,7 +152,7 @@ pub(crate) trait LicenseService: Send + Sync {
     ) -> Result<ResponseEnvelope<enterprise_protocol::ValidateResponse>, LicenseClientError> {
         Err(LicenseClientError::new(
             LicenseErrorCode::ServerError,
-            "validação de licença não disponível",
+            "license validation not available",
         ))
     }
 
@@ -161,7 +175,7 @@ pub(crate) trait LicenseService: Send + Sync {
     {
         Err(LicenseClientError::new(
             LicenseErrorCode::ServerError,
-            "status de licença não disponível",
+            "license status not available",
         ))
     }
 
@@ -175,7 +189,7 @@ pub(crate) trait LicenseService: Send + Sync {
     ) -> Result<ManifestResponse, LicenseClientError> {
         Err(LicenseClientError::new(
             LicenseErrorCode::ServerError,
-            "manifest do plugin não disponível",
+            "plugin manifest not available",
         ))
     }
 
@@ -193,7 +207,7 @@ pub(crate) trait LicenseService: Send + Sync {
     async fn download(&self, _grant: &DownloadGrant) -> Result<Vec<u8>, LicenseClientError> {
         Err(LicenseClientError::new(
             LicenseErrorCode::ServerError,
-            "download do plugin não disponível",
+            "plugin download not available",
         ))
     }
 
@@ -205,7 +219,7 @@ pub(crate) trait LicenseService: Send + Sync {
     ) -> Result<(), LicenseClientError> {
         Err(LicenseClientError::new(
             LicenseErrorCode::ServerError,
-            "desativação de licença não disponível",
+            "license deactivation not available",
         ))
     }
 }
@@ -241,7 +255,7 @@ impl HttpLicenseService {
             "{}/v1/plugins/{plugin_code}/manifest",
             self.base_url
         ))
-        .expect("base URL de licenças deve ser válida");
+        .expect("license base URL must be valid");
         url.query_pairs_mut()
             .append_pair("lease_id", lease_id)
             .append_pair("os", os)
@@ -318,7 +332,7 @@ impl LicenseService for HttpLicenseService {
         let body = verify_signed_bytes(&keys, &response.grant, "grant")?;
         let grant: enterprise_protocol::GrantBody =
             serde_json::from_slice(&body).map_err(|_| {
-                LicenseClientError::new(LicenseErrorCode::ServerError, "grant de licença inválido")
+                LicenseClientError::new(LicenseErrorCode::ServerError, "invalid license grant")
             })?;
         if grant.product != "pom"
             || grant.iss != "license.pieceofmind.cloud"
@@ -332,7 +346,7 @@ impl LicenseService for HttpLicenseService {
         {
             return Err(LicenseClientError::new(
                 LicenseErrorCode::ServerError,
-                "grant de licença não corresponde à ativação",
+                "license grant does not match the activation",
             ));
         }
         Ok(())
@@ -352,14 +366,14 @@ impl LicenseService for HttpLicenseService {
             .ok_or_else(|| {
                 LicenseClientError::new(
                     LicenseErrorCode::ServerError,
-                    "manifest do plugin sem assinatura",
+                    "plugin manifest without a signature",
                 )
             })?
             .to_owned();
         let mut unsigned = value;
         unsigned
             .as_object_mut()
-            .expect("manifest serializa como objeto")
+            .expect("manifest serializes as an object")
             .remove("signature");
         let bytes = canonical_json(&unsigned)
             .map_err(|error| LicenseClientError::new(LicenseErrorCode::ServerError, error))?;
@@ -402,7 +416,7 @@ impl LicenseService for HttpLicenseService {
     ) -> Result<ResponseEnvelope<enterprise_protocol::LicenseStatusResponse>, LicenseClientError>
     {
         let mut url = reqwest::Url::parse(&format!("{}/v1/licenses/status", self.base_url))
-            .expect("base URL de licenças deve ser válida");
+            .expect("license base URL must be valid");
         url.query_pairs_mut()
             .append_pair("activation_id", &persisted.activation_id)
             .append_pair("lease_id", &persisted.lease_id)
@@ -579,7 +593,7 @@ fn verify_signed_bytes(
     let body = URL_SAFE_NO_PAD.decode(&grant.body).map_err(|_| {
         LicenseClientError::new(
             LicenseErrorCode::ServerError,
-            format!("{kind} de licença malformado"),
+            format!("malformed license {kind}"),
         )
     })?;
     verify_public_signature(keys, &grant.key_id, &grant.signature, &body, kind)?;
@@ -599,49 +613,49 @@ fn verify_public_signature(
         .ok_or_else(|| {
             LicenseClientError::new(
                 LicenseErrorCode::ServerError,
-                format!("chave pública de {kind} desconhecida"),
+                format!("unknown {kind} public key"),
             )
         })?;
     if key.alg != "Ed25519" {
         return Err(LicenseClientError::new(
             LicenseErrorCode::ServerError,
-            format!("algoritmo de {kind} não suportado"),
+            format!("unsupported {kind} algorithm"),
         ));
     }
     let raw_key = URL_SAFE_NO_PAD.decode(&key.public_key).map_err(|_| {
         LicenseClientError::new(
             LicenseErrorCode::ServerError,
-            format!("chave pública de {kind} inválida"),
+            format!("invalid {kind} public key"),
         )
     })?;
     let raw_key: [u8; 32] = raw_key.try_into().map_err(|_| {
         LicenseClientError::new(
             LicenseErrorCode::ServerError,
-            format!("tamanho da chave pública de {kind} inválido"),
+            format!("invalid {kind} public key size"),
         )
     })?;
     let verifying_key = VerifyingKey::from_bytes(&raw_key).map_err(|_| {
         LicenseClientError::new(
             LicenseErrorCode::ServerError,
-            format!("chave pública de {kind} inválida"),
+            format!("invalid {kind} public key"),
         )
     })?;
     let signature = URL_SAFE_NO_PAD.decode(signature).map_err(|_| {
         LicenseClientError::new(
             LicenseErrorCode::ServerError,
-            format!("assinatura de {kind} inválida"),
+            format!("invalid {kind} signature"),
         )
     })?;
     let signature = Signature::from_slice(&signature).map_err(|_| {
         LicenseClientError::new(
             LicenseErrorCode::ServerError,
-            format!("tamanho da assinatura de {kind} inválido"),
+            format!("invalid {kind} signature size"),
         )
     })?;
     verifying_key.verify(bytes, &signature).map_err(|_| {
         LicenseClientError::new(
             LicenseErrorCode::ServerError,
-            format!("assinatura de {kind} não confere"),
+            format!("{kind} signature does not match"),
         )
     })
 }
@@ -700,7 +714,7 @@ fn parse_license_error(status: StatusCode, body: &[u8], _request_id: &str) -> Li
         .as_ref()
         .and_then(|body| body.get("message_for_user"))
         .and_then(serde_json::Value::as_str)
-        .unwrap_or("O servidor de licenças está indisponível.");
+        .unwrap_or("The license server is unavailable.");
     LicenseClientError::new(code, message)
 }
 
@@ -713,7 +727,8 @@ fn license_error_code_from_wire(code: &str) -> Option<LicenseErrorCode> {
         "SUSPENDED" => LicenseErrorCode::Suspended,
         "REVOKED" | "RELEASE_REVOKED" => LicenseErrorCode::Revoked,
         "FINGERPRINT_MISMATCH" => LicenseErrorCode::FingerprintMismatch,
-        // O servidor só responde ACTIVATION_UNKNOWN ao desativar: ele não conhece esta ativação.
+        // The server only answers ACTIVATION_UNKNOWN on deactivate: it does not know this
+        // activation.
         "LEASE_UNKNOWN" | "ACTIVATION_UNKNOWN" => LicenseErrorCode::LeaseUnknown,
         "RATE_LIMITED" => LicenseErrorCode::RateLimited,
         _ => return None,
@@ -745,30 +760,30 @@ pub(crate) struct PersistedPluginState {
     pub heartbeat_due_at: String,
     pub grace_seconds: u64,
     pub last_success_at: Option<String>,
-    /// Momento em que o host da release instalada ficou pronto. Heartbeats e
-    /// consultas de atualização não alteram este campo.
+    /// Moment the installed release's host became ready. Heartbeats and update
+    /// checks do not change this field.
     #[serde(default)]
     pub installed_at: Option<String>,
-    /// Última consulta de manifest concluída com sucesso, independente de
-    /// haver uma release nova. Uma consulta que falha preserva a última boa.
+    /// Last manifest query that completed successfully, whether or not there is a
+    /// new release. A query that fails preserves the last good one.
     #[serde(default)]
     pub update_checked_at: Option<String>,
-    /// A release efetivamente baixada, verificada e instalada nesta máquina.
-    /// Só a instalação de `activate_and_install`/o passo final de
-    /// `activate` (sem download real, usado só nos testes deste módulo) e
-    /// `apply_update` concluídos podem avançar este campo - um heartbeat
-    /// sozinho nunca confirma um download. `#[serde(rename)]` preserva a
-    /// chave `plugin_release_id` já persistida em instalações existentes.
+    /// The release actually downloaded, verified and installed on this machine.
+    /// Only a completed install by `activate_and_install`/the final step of
+    /// `activate` (with no real download, used only in this module's tests) and
+    /// `apply_update` can advance this field - a heartbeat alone never confirms
+    /// a download. `#[serde(rename)]` preserves the `plugin_release_id` key
+    /// already persisted in existing installations.
     ///
-    /// Defeito corrigido (2026-09-21): o heartbeat escrevia aqui o
-    /// `plugin_release_id` que ele mesmo recebe do servidor, mesmo sem
-    /// nenhum download ter ocorrido. Como `detect_update` compara o
-    /// `release_id` do manifest contra exatamente este campo, o clique em
-    /// "Atualizar" (que chama heartbeat e depois `detect_update` na mesma
-    /// ação) corrompia sua própria base de comparação e sempre concluía "sem
-    /// atualização" - sem relação com o formato semver do release (`+build.N`
-    /// funciona normalmente na comparação por string; o problema era a ordem
-    /// de escrita, não o formato). Ver `docs/subsystems/enterprise-licensing.md`.
+    /// Fixed defect (2026-09-21): the heartbeat wrote here the
+    /// `plugin_release_id` it itself receives from the server, even when no
+    /// download had happened. Since `detect_update` compares the manifest's
+    /// `release_id` against exactly this field, clicking "Update" (which calls
+    /// heartbeat and then `detect_update` in the same action) corrupted its own
+    /// comparison baseline and always concluded "no update" - unrelated to the
+    /// release's semver format (`+build.N` works normally in the string
+    /// comparison; the problem was the write order, not the format). See
+    /// `docs/subsystems/enterprise-licensing.md`.
     #[serde(rename = "plugin_release_id")]
     pub installed_release_id: String,
     pub plugin_version: String,
@@ -777,7 +792,7 @@ pub(crate) struct PersistedPluginState {
     pub plugin_path: Option<String>,
     #[serde(default)]
     pub preferences_schema: Option<enterprise_protocol::PluginPreferencesSchema>,
-    /// Última falha de instalação/handshake, sem alterar o estado da licença.
+    /// Last installation/handshake failure, without changing the license state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub installation_error: Option<String>,
 }
@@ -813,9 +828,9 @@ struct DevelopmentPluginInstallState {
     installed_at: String,
 }
 
-/// Uma atualização de versão disponível para instalação - do próprio plugin,
-/// nunca do `pom_core` (ver `crate::pom_core_update::CoreUpdate`, o tipo
-/// irmão deliberadamente separado).
+/// A version update available for installation - of the plugin itself, never of
+/// `pom_core` (see `crate::pom_core_update::CoreUpdate`, the deliberately
+/// separate sibling type).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct PluginUpdateInfo {
     pub release_id: String,
@@ -823,26 +838,26 @@ pub(crate) struct PluginUpdateInfo {
     pub changelog: Option<String>,
 }
 
-/// O contrato estável que a tela de Plugins lê. Uma entrada por `plugin_code`
-/// do catálogo, mesmo quando o operador nunca ativou aquele plugin - é assim
-/// que a tela mostra "disponível para compra" ao lado dos já ativos.
+/// The stable contract the Plugins screen reads. One entry per catalog
+/// `plugin_code`, even when the operator never activated that plugin - that is
+/// how the screen shows "available for purchase" next to the already active
+/// ones.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct PluginStatus {
     pub code: String,
-    /// `true` somente quando o host do plugin foi instalado e está pronto.
+    /// `true` only when the plugin's host was installed and is ready.
     pub active: bool,
     pub state: LicenseState,
     pub features: Vec<String>,
     pub manage_url: String,
     pub plugin_version: Option<String>,
     pub lease_expires_at: Option<String>,
-    /// Validade da LICENÇA, distinta do `lease_expires_at` técnico acima (o
-    /// lease renova a cada heartbeat e costuma vencer em dias; a licença
-    /// comprada costuma vencer em meses ou anos). Lida de
-    /// `LicenseStatusResponse::license_expires_at`
-    /// (`GET /v1/licenses/status`), nunca do lease - mostrar o lease como se
-    /// fosse a validade da licença é a confusão que este campo existe para
-    /// evitar.
+    /// Validity of the LICENSE, distinct from the technical `lease_expires_at`
+    /// above (the lease renews on every heartbeat and usually expires in days;
+    /// the purchased license usually expires in months or years). Read from
+    /// `LicenseStatusResponse::license_expires_at` (`GET /v1/licenses/status`),
+    /// never from the lease - showing the lease as if it were the license's
+    /// validity is the confusion this field exists to avoid.
     pub license_expires_at: Option<String>,
     pub activation_count: Option<u32>,
     pub max_activations: Option<u32>,
@@ -852,7 +867,7 @@ pub(crate) struct PluginStatus {
     pub installed_at: Option<String>,
     pub update_checked_at: Option<String>,
     pub available_update: Option<PluginUpdateInfo>,
-    /// Falha de instalação exibida separadamente do estado de validade da licença.
+    /// Installation failure shown separately from the license validity state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub installation_error: Option<String>,
     #[serde(default)]
@@ -860,13 +875,20 @@ pub(crate) struct PluginStatus {
     /// True when the running artifact was built from a local development source.
     #[serde(default)]
     pub development_install: bool,
-    /// URL da origem GitHub local usada pela instalação pública, se instalada.
+    /// URL of the local GitHub source used by the public installation, if installed.
     #[serde(default)]
     pub github_repository: Option<String>,
     #[serde(default)]
     pub preferences_schema: Option<enterprise_protocol::PluginPreferencesSchema>,
     #[serde(default)]
     pub preferences: Option<enterprise_protocol::PluginPreferences>,
+    /// On-demand plugin: the manifest declares `lifecycle: "on_demand"`.
+    #[serde(default)]
+    pub on_demand: bool,
+    /// `true` when the host process is running. An on-demand plugin can
+    /// be `active` (installed and licensed) with `running` false.
+    #[serde(default)]
+    pub running: bool,
 }
 
 impl PluginStatus {
@@ -894,6 +916,8 @@ impl PluginStatus {
             github_repository: None,
             preferences_schema: None,
             preferences: None,
+            on_demand: false,
+            running: false,
         }
     }
 
@@ -908,10 +932,10 @@ struct PendingActivation {
     fingerprint: Fingerprint,
 }
 
-/// Estado e ciclo de vida de UM plugin (`plugin_code`). Cada instância é
-/// autocontida: sua própria ativação, lease, heartbeat, host de processo e
-/// checagem de atualização de versão, independentes de qualquer outro
-/// plugin. `PluginManager` mantém uma por entrada do catálogo.
+/// State and lifecycle of ONE plugin (`plugin_code`). Each instance is
+/// self-contained: its own activation, lease, heartbeat, process host and
+/// version update check, independent of any other plugin. `PluginManager` keeps
+/// one per catalog entry.
 pub(crate) struct PluginRuntime {
     code: String,
     service: Arc<dyn LicenseService>,
@@ -927,12 +951,19 @@ pub(crate) struct PluginRuntime {
     update_lock: Arc<Mutex<()>>,
     public_install: Arc<Mutex<Option<PublicPluginInstallState>>>,
     development_install: Arc<Mutex<Option<DevelopmentPluginInstallState>>>,
-    /// Contexto que o nó entrega a todo host de plugin (`host.configure`),
-    /// compartilhado com o [`PluginManager`]. `None` até o gateway ficar pronto.
+    /// Context the node hands to every plugin host (`host.configure`), shared
+    /// with the [`PluginManager`]. `None` until the gateway is ready.
     host_context: HostContext,
+    /// Last `ui.manifest` the host returned, raw and already validated. Saved
+    /// in the database so the menu of an on-demand plugin keeps existing
+    /// while its process is stopped (the manifest can only be requested from a running host).
+    ui_manifest_raw: Arc<Mutex<Option<serde_json::Value>>>,
+    /// `lifecycle: "on_demand"` of the last known manifest. It comes from the cache, so
+    /// it applies at boot, before any process starts.
+    on_demand: std::sync::atomic::AtomicBool,
 }
 
-/// O que o nó entrega a cada host de plugin pela operação `host.configure`.
+/// What the node hands to each plugin host through the `host.configure` operation.
 type HostContext = Arc<StdRwLock<Option<serde_json::Value>>>;
 
 impl PluginRuntime {
@@ -961,6 +992,16 @@ impl PluginRuntime {
                     .flatten()
             })
             .and_then(|value| serde_json::from_str(&value).ok());
+        let ui_manifest_raw = database
+            .as_ref()
+            .and_then(|database| {
+                database
+                    .local_setting_json(&format!("{UI_MANIFEST_SETTING_PREFIX}{code}"))
+                    .ok()
+                    .flatten()
+            })
+            .and_then(|value| serde_json::from_str::<serde_json::Value>(&value).ok());
+        let on_demand = manifest_is_on_demand(ui_manifest_raw.as_ref());
         Self {
             code: code.to_owned(),
             service,
@@ -976,10 +1017,17 @@ impl PluginRuntime {
             public_install: Arc::new(Mutex::new(public_install)),
             development_install: Arc::new(Mutex::new(development_install)),
             host_context,
+            ui_manifest_raw: Arc::new(Mutex::new(ui_manifest_raw)),
+            on_demand: std::sync::atomic::AtomicBool::new(on_demand),
         }
     }
 
-    /// Sobe o host do plugin e já lhe entrega o contexto do nó, se houver.
+    /// `true` when the plugin manifest declares `lifecycle: "on_demand"`.
+    fn on_demand(&self) -> bool {
+        self.on_demand.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Starts the plugin host and already hands it the node context, if any.
     fn plugin_database_path(&self) -> std::path::PathBuf {
         let database_path = self.database.as_ref().map(|database| database.path());
         plugin_database_path_for(&self.code, database_path)
@@ -995,9 +1043,10 @@ impl PluginRuntime {
         Ok(host)
     }
 
-    /// `host.configure`: o endpoint OpenAI local e a API key que o plugin
-    /// usa para chamar os modelos do nó. Um plugin que não conhece a operação
-    /// responde erro, e isso não é falha - ele simplesmente não precisa dela.
+    /// `host.configure`: the local OpenAI endpoint and the API key the plugin
+    /// uses to call the node's models. A plugin that does not know the operation
+    /// answers with an error, and that is not a failure - it simply does not need
+    /// it.
     async fn configure_host(&self, host: &crate::plugin_host::PluginHost) {
         let context = self
             .host_context
@@ -1032,7 +1081,7 @@ impl PluginRuntime {
             }
         }
         if let Err(error) = host.query(payload).await {
-            tracing::debug!(plugin_code = %self.code, %error, "plugin não aceitou host.configure");
+            tracing::debug!(plugin_code = %self.code, %error, "plugin did not accept host.configure");
         }
     }
 
@@ -1043,7 +1092,7 @@ impl PluginRuntime {
         }
     }
 
-    /// Reentrega o contexto ao host em execução, depois de o nó mudá-lo.
+    /// Hands the context to the running host again, after the node changed it.
     async fn reconfigure_running_host(&self) {
         let host = self.host.lock().await.clone();
         if let Some(host) = host {
@@ -1088,6 +1137,8 @@ impl PluginRuntime {
 
     pub(crate) async fn status(&self) -> PluginStatus {
         let mut status = self.status.read().await.clone();
+        status.on_demand = self.on_demand();
+        status.running = self.host.lock().await.is_some();
         let public_install = self
             .public_install
             .lock()
@@ -1145,10 +1196,10 @@ impl PluginRuntime {
         &self,
     ) -> Result<(PersistedPluginState, semver::Version), LicenseClientError> {
         let persisted = self.persisted.lock().await.clone().ok_or_else(|| {
-            LicenseClientError::new(LicenseErrorCode::LeaseUnknown, "Ativação local ausente.")
+            LicenseClientError::new(LicenseErrorCode::LeaseUnknown, "Local activation missing.")
         })?;
         let version = semver::Version::parse(&persisted.plugin_version)
-            .map_err(|_| update_unavailable("versão instalada do plugin não é SemVer válida"))?;
+            .map_err(|_| update_unavailable("installed plugin version is not valid SemVer"))?;
         Ok((persisted, version))
     }
 
@@ -1159,7 +1210,7 @@ impl PluginRuntime {
         if !self.status.read().await.active {
             return Err(LicenseClientError::new(
                 LicenseErrorCode::FeatureNotEntitled,
-                "Ative o plugin antes de editar suas preferências.",
+                "Activate the plugin before editing its preferences.",
             ));
         }
         let licensed_schema = self
@@ -1176,7 +1227,7 @@ impl PluginRuntime {
                 .await
                 .as_ref()
                 .and_then(|installed| installed.preferences_schema.clone())
-                .ok_or_else(|| update_unavailable("este release não declara preferências"))?,
+                .ok_or_else(|| update_unavailable("this release declares no preferences"))?,
         };
         prepare_storage_directory(&schema, &values).map_err(|message| {
             LicenseClientError::new(LicenseErrorCode::UpdateUnavailable, message)
@@ -1202,9 +1253,9 @@ impl PluginRuntime {
         Ok(())
     }
 
-    /// Entrega um evento `pom-plugin-events/v1` ao backend nativo do plugin
-    /// (operação `host.event`). Plugin que não conhece a operação responde
-    /// erro, que é ignorado como no `host.configure`.
+    /// Delivers a `pom-plugin-events/v1` event to the plugin's native backend
+    /// (`host.event` operation). A plugin that does not know the operation
+    /// answers with an error, which is ignored as in `host.configure`.
     pub(crate) async fn send_host_event(&self, envelope: serde_json::Value) {
         let host = self.host.lock().await.clone();
         let Some(host) = host else {
@@ -1212,14 +1263,14 @@ impl PluginRuntime {
         };
         let request = serde_json::json!({ "operation": "host.event", "event": envelope });
         if let Err(error) = host.query(request).await {
-            tracing::debug!(plugin_code = %self.code, %error, "plugin não aceitou host.event");
+            tracing::debug!(plugin_code = %self.code, %error, "plugin did not accept host.event");
         }
     }
 
-    /// Restaura o estado persistido (se houver) e, se o plugin já tinha um
-    /// binário instalado e a licença continua válida (online ou dentro da
-    /// graça offline), religa o host de processo. Roda uma vez na construção
-    /// do runtime.
+    /// Restores the persisted state (if any) and, if the plugin already had an
+    /// installed binary and the license is still valid (online or within the
+    /// offline grace), brings the process host back up. Runs once when the
+    /// runtime is constructed.
     async fn restore(self: &Arc<Self>) {
         let Some(persisted) = self
             .database
@@ -1241,7 +1292,7 @@ impl PluginRuntime {
         };
         *self.persisted.lock().await = Some(persisted.clone());
         let restore_error = persisted.installation_error.clone().unwrap_or_else(|| {
-            "O plugin não tem um binário instalado. Reative-o para repetir a instalação.".into()
+            "The plugin has no installed binary. Reactivate it to repeat the installation.".into()
         });
         let Some(path) = persisted.plugin_path.clone().map(std::path::PathBuf::from) else {
             let mut status = self.status.write().await;
@@ -1257,10 +1308,9 @@ impl PluginRuntime {
             status.licensed_plugins = persisted.licensed_plugins.clone();
             status.license_expires_at = persisted.license_expires_at.clone();
             status.installation_error = Some(if path.is_file() {
-                "O banco local do POM não está disponível para iniciar o host do plugin.".into()
+                "The local POM database is not available to start the plugin host.".into()
             } else {
-                "O binário instalado do plugin está ausente. Reative-o para baixá-lo novamente."
-                    .into()
+                "The installed plugin binary is missing. Reactivate it to download it again.".into()
             });
             return;
         }
@@ -1324,7 +1374,7 @@ impl PluginRuntime {
         }
         let path = std::path::Path::new(&installed.plugin_path);
         let Ok(bytes) = std::fs::read(path) else {
-            tracing::warn!(plugin_code = %self.code, "binário do plugin público instalado está ausente");
+            tracing::warn!(plugin_code = %self.code, "installed public plugin binary is missing");
             if let Some(database) = &self.database {
                 let _ = database.delete_local_setting(&self.public_install_key());
             }
@@ -1338,7 +1388,7 @@ impl PluginRuntime {
         if bytes.len() as u64 != installed.size
             || !hex::encode(sha2::Sha256::digest(&bytes)).eq_ignore_ascii_case(expected)
         {
-            tracing::error!(plugin_code = %self.code, "integridade do plugin público instalado não confere");
+            tracing::error!(plugin_code = %self.code, "installed public plugin integrity does not match");
             if let Some(database) = &self.database {
                 let _ = database.delete_local_setting(&self.public_install_key());
             }
@@ -1346,9 +1396,15 @@ impl PluginRuntime {
             let _ = std::fs::remove_file(path);
             return;
         }
-        match self.start_host(path).await {
+        // An on-demand plugin stays installed and active without a process until opened.
+        let host = if self.on_demand() {
+            Ok(None)
+        } else {
+            self.start_host(path).await.map(Some)
+        };
+        match host {
             Ok(host) => {
-                *self.host.lock().await = Some(host);
+                *self.host.lock().await = host;
                 let mut status = self.status.write().await;
                 status.active = true;
                 status.state = LicenseState::Active;
@@ -1367,7 +1423,7 @@ impl PluginRuntime {
                 status.installation_error = None;
             }
             Err(error) => {
-                tracing::warn!(plugin_code = %self.code, %error, "plugin público instalado não pôde ser iniciado");
+                tracing::warn!(plugin_code = %self.code, %error, "installed public plugin could not be started");
                 let mut status = self.status.write().await;
                 status.active = false;
                 status.state = LicenseState::Unavailable;
@@ -1389,7 +1445,7 @@ impl PluginRuntime {
         }
         let path = std::path::Path::new(&installed.plugin_path);
         let Ok(bytes) = std::fs::read(path) else {
-            tracing::warn!(plugin_code = %self.code, "binário local de desenvolvimento está ausente");
+            tracing::warn!(plugin_code = %self.code, "local development binary is missing");
             if let Some(database) = &self.database {
                 let _ = database.delete_local_setting(&self.development_install_key());
             }
@@ -1400,7 +1456,7 @@ impl PluginRuntime {
             || !hex::encode(sha2::Sha256::digest(&bytes))
                 .eq_ignore_ascii_case(&installed.plugin_sha256)
         {
-            tracing::error!(plugin_code = %self.code, "integridade do plugin local de desenvolvimento não confere");
+            tracing::error!(plugin_code = %self.code, "local development plugin integrity does not match");
             if let Some(database) = &self.database {
                 let _ = database.delete_local_setting(&self.development_install_key());
             }
@@ -1408,9 +1464,14 @@ impl PluginRuntime {
             let _ = std::fs::remove_file(path);
             return;
         }
-        match self.start_host(path).await {
+        let host = if self.on_demand() {
+            Ok(None)
+        } else {
+            self.start_host(path).await.map(Some)
+        };
+        match host {
             Ok(host) => {
-                *self.host.lock().await = Some(host);
+                *self.host.lock().await = host;
                 let mut status = self.status.write().await;
                 status.active = true;
                 status.state = LicenseState::NeedsActivation;
@@ -1421,7 +1482,7 @@ impl PluginRuntime {
                 status.installation_error = None;
             }
             Err(error) => {
-                tracing::warn!(plugin_code = %self.code, %error, "plugin local de desenvolvimento não pôde ser iniciado");
+                tracing::warn!(plugin_code = %self.code, %error, "local development plugin could not be started");
                 let mut status = self.status.write().await;
                 status.state = LicenseState::NeedsActivation;
                 status.development_install = true;
@@ -1431,7 +1492,8 @@ impl PluginRuntime {
     }
 
     async fn restore_ready(&self, persisted: &PersistedPluginState) {
-        let host_ready = self.host.lock().await.is_some();
+        // On demand, "ready" means installed and licensed: the process starts when opened.
+        let host_ready = self.host.lock().await.is_some() || self.on_demand();
         let development_install = self.development_install.lock().await.is_some();
         let mut status = self.status.write().await;
         status.active = host_ready;
@@ -1453,14 +1515,14 @@ impl PluginRuntime {
             None
         } else {
             persisted.installation_error.clone().or_else(|| {
-                Some("O host do plugin não ficou pronto. Consulte o erro e tente novamente.".into())
+                Some("The plugin host did not become ready. Check the error and try again.".into())
             })
         };
     }
 
-    /// Fluxo completo: valida a chave para este plugin_code, instala o
-    /// binário e sobe o host. Ponto de entrada único usado tanto em produção
-    /// quanto nos testes deste módulo.
+    /// Full flow: validates the key for this plugin_code, installs the binary
+    /// and starts the host. Single entry point used both in production and in
+    /// this module's tests.
     async fn activate_and_install(&self, license_key: &str) -> Result<(), LicenseClientError> {
         let _guard = self.update_lock.lock().await;
         self.activate(license_key).await?;
@@ -1475,7 +1537,7 @@ impl PluginRuntime {
         let pending = self.pending.lock().await.clone().ok_or_else(|| {
             LicenseClientError::new(
                 LicenseErrorCode::LeaseUnknown,
-                "Nenhuma ativação aguardando o download.",
+                "No activation waiting for the download.",
             )
         })?;
         let manifest = self
@@ -1506,7 +1568,7 @@ impl PluginRuntime {
                 let _ = std::fs::remove_file(&path);
                 return Err(LicenseClientError::new(
                     LicenseErrorCode::ServerError,
-                    format!("host local anterior não pôde ser parado: {error}"),
+                    format!("previous local host could not be stopped: {error}"),
                 ));
             }
         }
@@ -1535,7 +1597,7 @@ impl PluginRuntime {
         };
         *self.host.lock().await = Some(host);
         let mut persisted = self.persisted.lock().await.clone().ok_or_else(|| {
-            LicenseClientError::new(LicenseErrorCode::LeaseUnknown, "Ativação local ausente.")
+            LicenseClientError::new(LicenseErrorCode::LeaseUnknown, "Local activation missing.")
         })?;
         persisted.installed_release_id = manifest.manifest.release_id;
         persisted.plugin_version = manifest.manifest.version.clone();
@@ -1580,7 +1642,7 @@ impl PluginRuntime {
             state.installation_error = Some(error.clone());
             if let Some(database) = &self.database {
                 if let Err(save_error) = database.save_local_setting(&self.setting_key(), state) {
-                    tracing::warn!(plugin_code = %self.code, error = %save_error, "falha de instalação do plugin não pôde ser persistida");
+                    tracing::warn!(plugin_code = %self.code, error = %save_error, "plugin installation failure could not be persisted");
                 }
             }
         }
@@ -1596,22 +1658,22 @@ impl PluginRuntime {
         status.installation_error = Some(error);
     }
 
-    /// Só a etapa de licença (validate + activate + persistência do lease),
-    /// sem manifest, download nem host - deliberadamente `pub(crate)` para
-    /// que os testes deste módulo montem um plugin "pronto" com
-    /// `mark_plugin_ready` sem depender do binário real `pom-plugin-host`,
-    /// exatamente como a integração com esse processo é testada à parte
+    /// Only the license step (validate + activate + lease persistence), with no
+    /// manifest, download or host - deliberately `pub(crate)` so that this
+    /// module's tests can set up a "ready" plugin with `mark_plugin_ready`
+    /// without depending on the real `pom-plugin-host` binary, exactly as the
+    /// integration with that process is tested separately
     /// (`cargo test -p pom-plugin-host`, `-p enterprise-plugin-fixture`).
     pub(crate) async fn activate(&self, license_key: &str) -> Result<(), LicenseClientError> {
         if self.public_install.lock().await.is_some() {
             return Err(update_unavailable(
-                "desinstale a instalação pública antes de ativar uma licença para este plugin",
+                "uninstall the public installation before activating a license for this plugin",
             ));
         }
         if license_key.trim().is_empty() {
             return Err(LicenseClientError::new(
                 LicenseErrorCode::InvalidKey,
-                "Informe uma chave de licença.",
+                "Enter a license key.",
             ));
         }
         let request_id = uuid::Uuid::new_v4().to_string();
@@ -1645,7 +1707,7 @@ impl PluginRuntime {
         {
             return Err(LicenseClientError::new(
                 LicenseErrorCode::ServerError,
-                "A resposta de ativação não contém um grant ou ABI válido.",
+                "The activation response does not contain a valid grant or ABI.",
             ));
         }
 
@@ -1657,7 +1719,7 @@ impl PluginRuntime {
         if features.is_empty() {
             return Err(LicenseClientError::new(
                 LicenseErrorCode::FeatureNotEntitled,
-                "O release instalado não declara nenhuma feature para este plugin.",
+                "The installed release declares no feature for this plugin.",
             ));
         }
         *self.pending.lock().await = Some(PendingActivation {
@@ -1739,7 +1801,7 @@ impl PluginRuntime {
                     *self.host.lock().await = Some(host);
                     return Err(LicenseClientError::new(
                         LicenseErrorCode::ServerError,
-                        format!("plugin local não pôde ser parado: {error}"),
+                        format!("local plugin could not be stopped: {error}"),
                     ));
                 }
             }
@@ -1767,7 +1829,7 @@ impl PluginRuntime {
                     *self.host.lock().await = Some(host);
                     return Err(LicenseClientError::new(
                         LicenseErrorCode::ServerError,
-                        format!("plugin público não pôde ser parado: {error}"),
+                        format!("public plugin could not be stopped: {error}"),
                     ));
                 }
             }
@@ -1804,7 +1866,7 @@ impl PluginRuntime {
             return Ok(());
         }
         let persisted = self.persisted.lock().await.clone().ok_or_else(|| {
-            LicenseClientError::new(LicenseErrorCode::LeaseUnknown, "Nenhuma licença ativa.")
+            LicenseClientError::new(LicenseErrorCode::LeaseUnknown, "No active license.")
         })?;
         if let Err(error) = self
             .service
@@ -1815,9 +1877,9 @@ impl PluginRuntime {
             )
             .await
         {
-            // Um servidor que não conhece a ativação (trocado, ou com o banco
-            // refeito) não tem vaga a liberar; recusar aqui deixaria o plugin
-            // preso a uma licença que nenhum servidor reconhece.
+            // A server that does not know the activation (replaced, or with its
+            // database rebuilt) has no slot to free; refusing here would leave the
+            // plugin stuck to a license no server recognizes.
             if error.code() != LicenseErrorCode::LeaseUnknown {
                 return Err(error);
             }
@@ -1844,20 +1906,20 @@ impl PluginRuntime {
         Ok(())
     }
 
-    /// Reinicia o host do plugin quando a licença está ativa mas o host não
-    /// está rodando (por exemplo, depois que uma revogação temporária o
-    /// parou e um heartbeat subsequente restaurou a licença). Só marca o
-    /// plugin pronto depois do handshake; falhas mantêm `active` falso e
-    /// publicam `installation_error`.
-    /// Usada tanto na restauração de boot (`restore`) quanto no self-heal do
-    /// heartbeat (`heartbeat`) - mesma lógica, um só lugar.
+    /// Restarts the plugin host when the license is active but the host is not
+    /// running (for example, after a temporary revocation stopped it and a
+    /// subsequent heartbeat restored the license). Only marks the plugin ready
+    /// after the handshake; failures keep `active` false and publish
+    /// `installation_error`.
+    /// Used both in the boot restore (`restore`) and in the heartbeat's
+    /// self-heal (`heartbeat`) - same logic, in a single place.
     async fn clear_installation_failure(&self) {
         let mut persisted = self.persisted.lock().await;
         if let Some(state) = persisted.as_mut() {
             state.installation_error = None;
             if let Some(database) = &self.database {
                 if let Err(error) = database.save_local_setting(&self.setting_key(), state) {
-                    tracing::warn!(plugin_code = %self.code, %error, "estado de instalação pronta do plugin não pôde ser persistido");
+                    tracing::warn!(plugin_code = %self.code, %error, "plugin installation-ready state could not be persisted");
                 }
             }
         }
@@ -1868,7 +1930,8 @@ impl PluginRuntime {
     }
 
     async fn ensure_host_running(&self, persisted: &PersistedPluginState) {
-        if self.host.lock().await.is_some() {
+        // On demand, neither boot nor heartbeat starts the process: only `open_on_demand` does.
+        if self.on_demand() || self.host.lock().await.is_some() {
             return;
         }
         let Some(path) = persisted.plugin_path.clone().map(std::path::PathBuf::from) else {
@@ -1876,7 +1939,7 @@ impl PluginRuntime {
         };
         if !path.is_file() {
             self.record_installation_failure(
-                "O binário instalado do plugin está ausente. Reative-o para baixá-lo novamente."
+                "The installed plugin binary is missing. Reactivate it to download it again."
                     .into(),
             )
             .await;
@@ -1884,7 +1947,7 @@ impl PluginRuntime {
         }
         if self.database.is_none() {
             self.record_installation_failure(
-                "O banco local do POM não está disponível para iniciar o host do plugin.".into(),
+                "The local POM database is not available to start the plugin host.".into(),
             )
             .await;
             return;
@@ -1893,10 +1956,10 @@ impl PluginRuntime {
             Ok(host) => {
                 *self.host.lock().await = Some(host);
                 self.clear_installation_failure().await;
-                tracing::info!(plugin_code = %self.code, "host do plugin reiniciado após licença voltar a ficar ativa");
+                tracing::info!(plugin_code = %self.code, "plugin host restarted after the license became active again");
             }
             Err(error) => {
-                tracing::warn!(plugin_code = %self.code, error = %error, "host do plugin não pôde ser reiniciado após licença voltar a ficar ativa");
+                tracing::warn!(plugin_code = %self.code, error = %error, "plugin host could not be restarted after the license became active again");
                 self.record_installation_failure(error.to_string()).await;
             }
         }
@@ -1906,7 +1969,7 @@ impl PluginRuntime {
         let Some(host) = self.host.lock().await.clone() else {
             tracing::warn!(
                 plugin_code = %self.code,
-                "evento de auditoria descartado: host do plugin não está rodando (licença inativa ou aguardando restauração)"
+                "audit event dropped: the plugin host is not running (license inactive or waiting for restore)"
             );
             return false;
         };
@@ -1918,11 +1981,30 @@ impl PluginRuntime {
                 serde_json::json!({"type": "complete", "id": id, "completion": completion})
             }
         };
-        if let Err(error) = host.ingest(event).await {
-            tracing::warn!(plugin_code = %self.code, error = %error, "evento de auditoria não entrou no plugin");
-            return false;
+        // The plugin answers late when it is busy, and an answer that comes after the host's timeout is lost. Both
+        // events are idempotent in the plugin (`begin` upserts the row, `complete` updates it), so sending again is
+        // safe; a completion lost for good leaves the request `incomplete` forever.
+        for (attempt, pause) in AUDIT_RETRY_PAUSES.iter().enumerate() {
+            match host.ingest(event.clone()).await {
+                Ok(()) => return true,
+                Err(error) => {
+                    tracing::warn!(
+                        plugin_code = %self.code,
+                        attempt = attempt + 1,
+                        error = %error,
+                        "audit event did not enter the plugin; trying again"
+                    );
+                    tokio::time::sleep(*pause).await;
+                }
+            }
         }
-        true
+        match host.ingest(event).await {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!(plugin_code = %self.code, error = %error, "audit event did not enter the plugin");
+                false
+            }
+        }
     }
 
     /// Hands the plugin one event of its own kind (`{"type": ...}`). The
@@ -1930,10 +2012,10 @@ impl PluginRuntime {
     /// would otherwise log one warning per event.
     pub(crate) async fn ingest_event(&self, event: serde_json::Value) -> Result<(), String> {
         if !self.status().await.active {
-            return Err("plugin inativo neste nó".into());
+            return Err("plugin inactive on this node".into());
         }
         let Some(host) = self.host.lock().await.clone() else {
-            return Err("host do plugin não está rodando".into());
+            return Err("plugin host is not running".into());
         };
         host.ingest(event).await.map_err(|error| error.to_string())
     }
@@ -1957,7 +2039,7 @@ impl PluginRuntime {
         match host.query(payload).await {
             Ok(result) => Some(result),
             Err(error) => {
-                tracing::warn!(plugin_code = %self.code, error = %error, "consulta do plugin falhou");
+                tracing::warn!(plugin_code = %self.code, error = %error, "plugin query failed");
                 None
             }
         }
@@ -1984,25 +2066,123 @@ impl PluginRuntime {
         match host.query(payload).await {
             Ok(result) => Some(result),
             Err(error) => {
-                tracing::debug!(plugin_code = %self.code, operation, %error, "plugin não respondeu à operação opcional");
+                tracing::debug!(plugin_code = %self.code, operation, %error, "plugin did not answer the optional operation");
                 None
             }
         }
     }
 
-    /// Manifesto de UI do plugin, pedido ao host (`ui.manifest`) e validado.
-    /// `None` quando inativo, sem host, sem UI ou com manifesto inválido.
+    /// The plugin's UI manifest, requested from the host (`ui.manifest`) and
+    /// validated. `None` when inactive, without a host, without UI or with an
+    /// invalid manifest.
     pub(crate) async fn ui_manifest(&self) -> Option<crate::plugin_ui::PluginUiManifest> {
-        let value = self
+        // On-demand plugin with its process stopped: the menu uses the saved manifest.
+        if self.on_demand() && self.host.lock().await.is_none() {
+            let raw = self.ui_manifest_raw.lock().await.clone()?;
+            return crate::plugin_ui::PluginUiManifest::parse(&self.code, raw).ok();
+        }
+        // A query that times out (the plugin is busy) must not hide an installed plugin's menu: the last valid
+        // manifest, kept in memory and in the database, stands in until the next answer.
+        let Some(value) = self
             .query_audit("ui.manifest", serde_json::json!({}))
-            .await?;
-        match crate::plugin_ui::PluginUiManifest::parse(&self.code, value) {
-            Ok(manifest) => Some(manifest),
+            .await
+        else {
+            let raw = self.ui_manifest_raw.lock().await.clone()?;
+            return crate::plugin_ui::PluginUiManifest::parse(&self.code, raw).ok();
+        };
+        match crate::plugin_ui::PluginUiManifest::parse(&self.code, value.clone()) {
+            Ok(manifest) => {
+                self.remember_ui_manifest(value, manifest.lifecycle.is_on_demand())
+                    .await;
+                Some(manifest)
+            }
             Err(error) => {
-                tracing::warn!(plugin_code = %self.code, %error, "manifesto de UI do plugin recusado");
+                tracing::warn!(plugin_code = %self.code, %error, "plugin UI manifest refused");
                 None
             }
         }
+    }
+
+    /// Stores the newly validated manifest (in memory and in the database) only when it
+    /// changed, because the menu requests it on every query.
+    async fn remember_ui_manifest(&self, raw: serde_json::Value, on_demand: bool) {
+        self.on_demand
+            .store(on_demand, std::sync::atomic::Ordering::Release);
+        let mut cached = self.ui_manifest_raw.lock().await;
+        if cached.as_ref() == Some(&raw) {
+            return;
+        }
+        if let Some(database) = &self.database {
+            let key = format!("{UI_MANIFEST_SETTING_PREFIX}{}", self.code);
+            if let Err(error) = database.save_local_setting(&key, &raw) {
+                tracing::warn!(plugin_code = %self.code, %error, "UI manifest could not be saved");
+            }
+        }
+        *cached = Some(raw);
+    }
+
+    /// Starts the process of an on-demand plugin that is already installed and active. Does not touch
+    /// the license: only the host.
+    pub(crate) async fn open_on_demand(&self) -> Result<(), String> {
+        if !self.on_demand() {
+            return Err("this plugin is not on demand".into());
+        }
+        if !self.status.read().await.active {
+            return Err("the plugin is not active on this node".into());
+        }
+        let _guard = self.update_lock.lock().await;
+        if self.host.lock().await.is_some() {
+            return Ok(());
+        }
+        let path = self
+            .installed_plugin_path()
+            .await
+            .ok_or("the plugin has no installed binary")?;
+        let host = self
+            .start_host(&path)
+            .await
+            .map_err(|error| format!("{error:#}"))?;
+        *self.host.lock().await = Some(host);
+        self.clear_installation_failure().await;
+        Ok(())
+    }
+
+    /// Stops the process of an on-demand plugin. The plugin stays installed and
+    /// active, and comes back with `open_on_demand`.
+    pub(crate) async fn close_on_demand(&self) -> Result<(), String> {
+        if !self.on_demand() {
+            return Err("this plugin is not on demand".into());
+        }
+        let _guard = self.update_lock.lock().await;
+        if let Some(host) = self.host.lock().await.take() {
+            if let Err(error) = host.stop().await {
+                *self.host.lock().await = Some(host);
+                return Err(format!("the process could not be stopped: {error:#}"));
+            }
+        }
+        Ok(())
+    }
+
+    /// Path of the binary of the current installation, in the order boot restore
+    /// picks it: license, then public installation, then local.
+    async fn installed_plugin_path(&self) -> Option<std::path::PathBuf> {
+        if let Some(path) = self
+            .persisted
+            .lock()
+            .await
+            .as_ref()
+            .and_then(|persisted| persisted.plugin_path.clone())
+        {
+            return Some(path.into());
+        }
+        if let Some(installed) = self.public_install.lock().await.as_ref() {
+            return Some(installed.plugin_path.clone().into());
+        }
+        self.development_install
+            .lock()
+            .await
+            .as_ref()
+            .map(|installed| installed.plugin_path.clone().into())
     }
 
     pub(crate) async fn mark_plugin_ready(
@@ -2012,26 +2192,26 @@ impl PluginRuntime {
         let pending = self.pending.lock().await.take().ok_or_else(|| {
             LicenseClientError::new(
                 LicenseErrorCode::LeaseUnknown,
-                "Nenhuma ativação aguardando o host.",
+                "No activation waiting for the host.",
             )
         })?;
         if pending.fingerprint != self.fingerprint {
             return Err(LicenseClientError::new(
                 LicenseErrorCode::FingerprintMismatch,
-                "A ativação não pertence a esta instalação.",
+                "The activation does not belong to this installation.",
             ));
         }
         let features = features_for_code(&self.code, &pending.response.plugin_manifest.feature_set);
         if features.is_empty() {
             return Err(LicenseClientError::new(
                 LicenseErrorCode::FeatureNotEntitled,
-                "O release instalado não declara nenhuma feature para este plugin.",
+                "The installed release declares no feature for this plugin.",
             ));
         }
         let installed_at = chrono::Utc::now().to_rfc3339();
         let mut persisted_guard = self.persisted.lock().await;
         let mut persisted = persisted_guard.clone().ok_or_else(|| {
-            LicenseClientError::new(LicenseErrorCode::LeaseUnknown, "Ativação local ausente.")
+            LicenseClientError::new(LicenseErrorCode::LeaseUnknown, "Local activation missing.")
         })?;
         persisted.installed_at = Some(installed_at.clone());
         if let Some(database) = &self.database {
@@ -2072,7 +2252,7 @@ impl PluginRuntime {
 
     pub(crate) async fn heartbeat(&self, nonce: &str) -> Result<(), LicenseClientError> {
         let persisted = self.persisted.lock().await.clone().ok_or_else(|| {
-            LicenseClientError::new(LicenseErrorCode::LeaseUnknown, "Nenhum lease local.")
+            LicenseClientError::new(LicenseErrorCode::LeaseUnknown, "No local lease.")
         })?;
         let request = RequestEnvelope::new(
             uuid::Uuid::new_v4().to_string(),
@@ -2112,10 +2292,10 @@ impl PluginRuntime {
                 let usage = plugin_usage_for_code(&self.code, &plugin_usage);
                 let activation_count = usage.map(|entry| entry.activation_count);
                 let max_activations = usage.map(|entry| entry.max_activations);
-                // O heartbeat não traz manifesto, então as features continuam
-                // sendo as do release instalado. O que ele traz é a lista de
-                // plugins que a licença ainda concede: se este saiu da lista,
-                // o plugin perde as features na hora.
+                // The heartbeat brings no manifest, so the features stay those of
+                // the installed release. What it brings is the list of plugins the
+                // license still grants: if this one left the list, the plugin
+                // loses its features right away.
                 let features = if licensed_plugins.iter().any(|code| *code == self.code) {
                     persisted.features.clone()
                 } else {
@@ -2134,13 +2314,14 @@ impl PluginRuntime {
                     state.activation_candidates = activation_candidates.clone();
                     state.heartbeat_due_at = heartbeat_due_at;
                     state.grace_seconds = grace_seconds;
-                    // `installed_release_id` NÃO é escrito aqui: o heartbeat não baixa
-                    // nem verifica nada, e `detect_update` compara o manifest contra
-                    // exatamente este campo - escrevê-lo aqui corrompia essa própria
-                    // comparação (ver o comentário no campo em `PersistedPluginState`).
-                    // `plugin_release_id`/`release_changed`/`available_release_id` do
-                    // heartbeat continuam consumidos, só que para alimentar
-                    // `status.available_update` (abaixo), nunca esta linha de base.
+                    // `installed_release_id` is NOT written here: the heartbeat neither
+                    // downloads nor verifies anything, and `detect_update` compares the
+                    // manifest against exactly this field - writing it here corrupted
+                    // that very comparison (see the comment on the field in
+                    // `PersistedPluginState`). The heartbeat's `plugin_release_id`/
+                    // `release_changed`/`available_release_id` are still consumed, but
+                    // only to feed `status.available_update` (below), never this
+                    // baseline.
                     state.signed_grant = grant;
                     state.features = features.clone();
                     state.last_success_at = Some(chrono::Utc::now().to_rfc3339());
@@ -2155,7 +2336,7 @@ impl PluginRuntime {
                         plugin_code = %self.code,
                         plugin_release_id = %plugin_release_id,
                         available_release_id = ?available_release_id,
-                        "heartbeat indicou alteração de release do plugin"
+                        "heartbeat indicated a plugin release change"
                     );
                 }
                 let host_running = self.host.lock().await.is_some();
@@ -2166,7 +2347,8 @@ impl PluginRuntime {
                         .load(std::sync::atomic::Ordering::Relaxed);
                 let mut status = self.status.write().await;
                 let license_was_active = status.state == LicenseState::Active;
-                status.active = host_running;
+                // On demand, installed and licensed is enough; the process starts when opened.
+                status.active = host_running || self.on_demand();
                 status.state = LicenseState::Active;
                 status.features = features;
                 status.lease_expires_at = Some(lease_expires_at);
@@ -2180,25 +2362,25 @@ impl PluginRuntime {
                 if !license_was_active {
                     tracing::info!(
                         plugin_code = %self.code,
-                        "licença do plugin voltou a ficar ativa após heartbeat bem-sucedido"
+                        "plugin license became active again after a successful heartbeat"
                     );
                 }
                 if let Some(persisted) = updated_persisted {
                     self.ensure_host_running(&persisted).await;
                 }
-                // O heartbeat sinalizou uma release nova; reconsulta o manifest
-                // (via `detect_update`, agora com a base de comparação intacta)
-                // para publicar `status.available_update` com versão e changelog
-                // reais, sem esperar o próximo clique manual em "Atualizar". Isso
-                // também cobre o supervisor de heartbeat periódico
-                // (`spawn_heartbeat_supervisor`), que nunca chamava `detect_update`
-                // por conta própria.
+                // The heartbeat signaled a new release; re-query the manifest (via
+                // `detect_update`, now with the comparison baseline intact) to
+                // publish `status.available_update` with the real version and
+                // changelog, without waiting for the next manual click on "Update".
+                // This also covers the periodic heartbeat supervisor
+                // (`spawn_heartbeat_supervisor`), which never called
+                // `detect_update` on its own.
                 if release_changed {
                     if let Err(error) = self.detect_update().await {
                         tracing::warn!(
                             plugin_code = %self.code,
                             error = %error,
-                            "detecção de atualização após heartbeat falhou"
+                            "update detection after the heartbeat failed"
                         );
                     }
                 }
@@ -2250,9 +2432,9 @@ impl PluginRuntime {
                     continue;
                 }
                 if let Err(error) = runtime.heartbeat(&uuid::Uuid::new_v4().to_string()).await {
-                    tracing::warn!(plugin_code = %runtime.code, error = %error, "heartbeat do plugin falhou");
+                    tracing::warn!(plugin_code = %runtime.code, error = %error, "plugin heartbeat failed");
                 } else if let Err(error) = runtime.detect_update().await {
-                    tracing::warn!(plugin_code = %runtime.code, error = %error, "detecção de atualização do plugin falhou");
+                    tracing::warn!(plugin_code = %runtime.code, error = %error, "plugin update detection failed");
                 }
             }
         });
@@ -2271,17 +2453,17 @@ impl PluginRuntime {
         std::time::Duration::from_secs(seconds.max(30) as u64)
     }
 
-    /// Reconsulta `/v1/licenses/status` para publicar `license_expires_at`
-    /// atualizado - a validade da LICENÇA, distinta do `lease_expires_at`
-    /// técnico que o heartbeat já renova. Chamado só pelo clique manual em
-    /// "Atualizar" (`PluginManager::refresh`), não pelo supervisor periódico:
-    /// o heartbeat já cobre a checagem de saúde recorrente, e esta é uma
-    /// chamada extra ao mesmo endpoint que `restore()` usa na inicialização.
-    /// Falha aqui nunca derruba o `refresh` chamador - é enriquecimento, não
-    /// prova de validade.
+    /// Re-queries `/v1/licenses/status` to publish an updated
+    /// `license_expires_at` - the validity of the LICENSE, distinct from the
+    /// technical `lease_expires_at` the heartbeat already renews. Called only by
+    /// the manual click on "Update" (`PluginManager::refresh`), not by the
+    /// periodic supervisor: the heartbeat already covers the recurring health
+    /// check, and this is an extra call to the same endpoint `restore()` uses at
+    /// startup. A failure here never brings down the calling `refresh` - it is
+    /// enrichment, not proof of validity.
     async fn refresh_license_status(&self) -> Result<(), LicenseClientError> {
         let persisted = self.persisted.lock().await.clone().ok_or_else(|| {
-            LicenseClientError::new(LicenseErrorCode::LeaseUnknown, "Nenhum lease local.")
+            LicenseClientError::new(LicenseErrorCode::LeaseUnknown, "No local lease.")
         })?;
         let response = self.service.status(&persisted, &self.fingerprint).await?;
         let mut status = self.status.write().await;
@@ -2289,10 +2471,10 @@ impl PluginRuntime {
         Ok(())
     }
 
-    /// Checagem de atualização de versão PRÓPRIA deste plugin - não
-    /// compartilhada com outros plugins nem com o `pom_core`. Só publica o
-    /// aviso no status; download, troca e reinício do host ficam reservados
-    /// à confirmação explícita do operador em `apply_update`.
+    /// This plugin's OWN version update check - not shared with other plugins or
+    /// with `pom_core`. It only publishes the notice in the status; download,
+    /// swap and host restart are reserved for the operator's explicit
+    /// confirmation in `apply_update`.
     pub(crate) async fn detect_update(&self) -> Result<(), LicenseClientError> {
         let _guard = self.update_lock.lock().await;
         if !self.status().await.active {
@@ -2301,7 +2483,7 @@ impl PluginRuntime {
         let persisted = self.persisted.lock().await.clone().ok_or_else(|| {
             LicenseClientError::new(
                 LicenseErrorCode::LeaseUnknown,
-                "lease local ausente para checar atualização do plugin",
+                "local lease missing to check the plugin update",
             )
         })?;
         let manifest = self
@@ -2342,7 +2524,7 @@ impl PluginRuntime {
         if !has_persisted {
             return Err(LicenseClientError::new(
                 LicenseErrorCode::LeaseUnknown,
-                "lease local ausente ao salvar a verificação de atualização",
+                "local lease missing while saving the update check",
             ));
         }
         let mut status = self.status.write().await;
@@ -2352,7 +2534,7 @@ impl PluginRuntime {
                     plugin_code = %self.code,
                     release_id = %update.release_id,
                     version = %update.version,
-                    "release nova do plugin encontrada"
+                    "new plugin release found"
                 );
             }
             status.update_checked_at = Some(update_checked_at);
@@ -2361,9 +2543,9 @@ impl PluginRuntime {
         Ok(())
     }
 
-    /// Baixa, instala e reinicia o host somente com a release que o operador
-    /// confirmou na tela de Plugins. Reconsulta o manifest para não reusar
-    /// metadados de uma detecção antiga.
+    /// Downloads, installs and restarts the host only with the release the
+    /// operator confirmed on the Plugins screen. Re-queries the manifest so as
+    /// not to reuse metadata from an old detection.
     pub(crate) async fn apply_update(
         &self,
         requested_release_id: &str,
@@ -2373,24 +2555,22 @@ impl PluginRuntime {
         if !status.active {
             return Err(LicenseClientError::new(
                 LicenseErrorCode::FeatureNotEntitled,
-                "este plugin precisa estar ativo para ser atualizado",
+                "this plugin must be active to be updated",
             ));
         }
         let requested_release_id = requested_release_id.trim();
         let Some(available) = status.available_update.as_ref() else {
-            return Err(update_unavailable(
-                "nenhuma atualização deste plugin está disponível",
-            ));
+            return Err(update_unavailable("no update of this plugin is available"));
         };
         if available.release_id != requested_release_id {
             return Err(update_unavailable(
-                "a atualização confirmada já não é a atualização disponível",
+                "the confirmed update is no longer the available update",
             ));
         }
         let persisted = self.persisted.lock().await.clone().ok_or_else(|| {
             LicenseClientError::new(
                 LicenseErrorCode::LeaseUnknown,
-                "lease local ausente para atualizar o plugin",
+                "local lease missing to update the plugin",
             )
         })?;
         let manifest = self
@@ -2405,7 +2585,7 @@ impl PluginRuntime {
             .await?;
         if manifest.manifest.release_id != requested_release_id {
             return Err(update_unavailable(
-                "a atualização confirmada já não é uma release nova disponível",
+                "the confirmed update is no longer a new available release",
             ));
         }
         validate_manifest_for_runtime(&self.code, &manifest.manifest)?;
@@ -2460,12 +2640,12 @@ impl PluginRuntime {
         let _guard = self.update_lock.lock().await;
         if self.persisted.lock().await.is_some() {
             return Err(update_unavailable(
-                "este código de plugin já está instalado pelo mecanismo de licença",
+                "this plugin code is already installed through the license mechanism",
             ));
         }
         let manifest = downloaded.manifest;
         if manifest.plugin_code != self.code {
-            return Err(update_unavailable("manifesto pertence a outro plugin"));
+            return Err(update_unavailable("manifest belongs to another plugin"));
         }
         if let Some(preferences) = &manifest.preferences {
             crate::plugin_github::validate_preferences_schema(preferences)
@@ -2523,7 +2703,7 @@ impl PluginRuntime {
                 *self.host.lock().await = Some(old_host);
                 return Err(LicenseClientError::new(
                     LicenseErrorCode::ServerError,
-                    format!("o host anterior do plugin não pôde ser parado: {error}"),
+                    format!("the previous plugin host could not be stopped: {error}"),
                 ));
             }
         }
@@ -2609,7 +2789,7 @@ impl PluginRuntime {
     ) -> Result<String, LicenseClientError> {
         let _guard = self.update_lock.lock().await;
         if bytes.is_empty() || bytes.len() as u64 > 512 * 1024 * 1024 {
-            return Err(update_unavailable("plugin de desenvolvimento inválido"));
+            return Err(update_unavailable("invalid development plugin"));
         }
 
         let mut licensed = self.persisted.lock().await.clone();
@@ -2650,7 +2830,7 @@ impl PluginRuntime {
                 let _ = std::fs::remove_file(&path);
                 return Err(LicenseClientError::new(
                     LicenseErrorCode::ServerError,
-                    format!("o host anterior do plugin não pôde ser parado: {error}"),
+                    format!("the previous plugin host could not be stopped: {error}"),
                 ));
             }
         }
@@ -2772,10 +2952,9 @@ impl PluginRuntime {
     }
 }
 
-/// Coleção dinâmica de [`PluginRuntime`], uma por `plugin_code` concedido ou
-/// restaurado. É o único
-/// ponto de entrada do resto do backend para o sistema de licenciamento de
-/// plugins - `crate::backend::gateway::GatewayState` mantém um
+/// Dynamic collection of [`PluginRuntime`], one per granted or restored
+/// `plugin_code`. It is the only entry point of the rest of the backend into the
+/// plugin licensing system - `crate::backend::gateway::GatewayState` keeps an
 /// `Arc<PluginManager>`.
 pub(crate) struct PluginManager {
     fingerprint: Fingerprint,
@@ -2789,13 +2968,13 @@ pub(crate) struct PluginManager {
     events: PluginEventHub,
 }
 
-/// Quantos eventos `pom-plugin-events/v1` o nó guarda para a interface ler
-/// por `GET /api/ui/plugins/events`.
+/// How many `pom-plugin-events/v1` events the node keeps for the interface to
+/// read through `GET /api/ui/plugins/events`.
 const PLUGIN_EVENT_BACKLOG: usize = 100;
 
-/// Fila curta de eventos do nó para os plugins. Cada evento publicado vai ao
-/// backend nativo de todo host em execução (`host.event`) e fica aqui, com um
-/// número de sequência, para a interface repassar às telas.
+/// Short queue of node events for the plugins. Each published event goes to the
+/// native backend of every running host (`host.event`) and stays here, with a
+/// sequence number, for the interface to relay to the screens.
 #[derive(Default)]
 struct PluginEventHub {
     next: std::sync::atomic::AtomicU64,
@@ -2835,9 +3014,9 @@ impl PluginEventHub {
 }
 
 impl PluginManager {
-    /// Publica um evento do nó para todos os plugins: guarda na fila lida pela
-    /// interface e entrega `host.event` a cada host em execução, sem esperar
-    /// por eles.
+    /// Publishes a node event to all plugins: stores it in the queue read by the
+    /// interface and delivers `host.event` to each running host, without waiting
+    /// for them.
     pub(crate) fn publish_event(&self, event_type: &str, payload: serde_json::Value) -> u64 {
         let envelope = plugin_event_envelope(event_type, "*", payload);
         let seq = self.events.push(envelope.clone());
@@ -2848,19 +3027,20 @@ impl PluginManager {
         seq
     }
 
-    /// Eventos com sequência maior que `after`. Sem `after`, só a sequência
-    /// atual: quem abre a interface não recebe o passado de novo.
+    /// Events with a sequence greater than `after`. Without `after`, only the
+    /// current sequence: whoever opens the interface does not receive the past
+    /// again.
     pub(crate) fn events_after(&self, after: Option<u64>) -> (u64, Vec<(u64, serde_json::Value)>) {
         self.events.after(after)
     }
 
-    /// `restore_on_boot` liga a releitura do estado persistido de cada plugin
-    /// (ver [`PluginRuntime::restore`]). Em produção é sempre `true`: é o que
-    /// religa um plugin já ativado depois de um restart do `pom`. Os testes
-    /// passam `false` porque a restauração é uma tarefa concorrente que
-    /// sobrescreve o estado em memória a partir do banco em um instante que
-    /// o teste não controla - deixá-la ligada tornaria qualquer cenário que
-    /// monta estado à mão não determinístico, sem cobrir nada a mais.
+    /// `restore_on_boot` turns on re-reading each plugin's persisted state (see
+    /// [`PluginRuntime::restore`]). In production it is always `true`: it is what
+    /// brings an already activated plugin back up after a `pom` restart. Tests
+    /// pass `false` because the restore is a concurrent task that overwrites the
+    /// in-memory state from the database at an instant the test does not control
+    /// - leaving it on would make any scenario that builds state by hand
+    /// non-deterministic, without covering anything more.
     fn from_codes(
         plugin_codes: impl IntoIterator<Item = String>,
         service: Arc<dyn LicenseService>,
@@ -2874,7 +3054,8 @@ impl PluginManager {
             fingerprint,
             database,
             restore_on_boot,
-            crate::plugin_github::GithubReleaseClient::new().with_license_fallback(&license_base_url()),
+            crate::plugin_github::GithubReleaseClient::new()
+                .with_license_fallback(&license_base_url()),
         )
     }
 
@@ -2964,7 +3145,7 @@ impl PluginManager {
                     .collect::<Vec<_>>()
             }
             Err(error) => {
-                tracing::warn!(error = %error, "licenças de plugins locais não puderam ser enumeradas na inicialização");
+                tracing::warn!(error = %error, "local plugin licenses could not be enumerated at startup");
                 Vec::new()
             }
         };
@@ -3003,8 +3184,8 @@ impl PluginManager {
         )
     }
 
-    /// Como `test_manager`, mas com um `PomDb` real para persistir o código e
-    /// estado de cada plugin.
+    /// Like `test_manager`, but with a real `PomDb` to persist each plugin's code
+    /// and state.
     #[cfg(test)]
     pub(crate) fn test_manager_with_database(
         plugin_codes: &[&str],
@@ -3066,8 +3247,8 @@ impl PluginManager {
         self.service.clone()
     }
 
-    /// Troca o contexto entregue aos hosts de plugin e o reentrega aos que já
-    /// estão rodando. Hosts iniciados depois recebem o novo ao subir.
+    /// Replaces the context handed to the plugin hosts and hands it again to those
+    /// already running. Hosts started later receive the new one on startup.
     pub(crate) async fn set_host_context(&self, context: serde_json::Value) {
         {
             let mut current = self
@@ -3096,7 +3277,7 @@ impl PluginManager {
         if !is_valid_plugin_code(code) {
             return Err(LicenseClientError::new(
                 LicenseErrorCode::ServerError,
-                "o servidor retornou um plugin_code inválido",
+                "the server returned an invalid plugin_code",
             ));
         }
         let mut runtimes = self
@@ -3135,8 +3316,9 @@ impl PluginManager {
         }
     }
 
-    /// Status local dos plugins já conhecidos por esta instância, ordenados
-    /// pelo código. O catálogo comercial e os repositórios GitHub são listas separadas.
+    /// Local status of the plugins already known to this instance, ordered by
+    /// code. The commercial catalog and the GitHub repositories are separate
+    /// lists.
     pub(crate) async fn all_statuses(&self) -> Vec<PluginStatus> {
         let runtimes = self.runtime_values();
         let mut statuses = Vec::with_capacity(runtimes.len());
@@ -3250,7 +3432,7 @@ impl PluginManager {
             .clone();
         if current.contains_key(&repository.id) {
             return Err(update_unavailable(
-                "este repositório GitHub já foi cadastrado",
+                "this GitHub repository was already registered",
             ));
         }
         let mut next = current;
@@ -3267,13 +3449,19 @@ impl PluginManager {
         fallback: bool,
     ) -> Result<crate::plugin_github::GithubRepository, String> {
         let (os, arch) = (&self.fingerprint.platform, &self.fingerprint.arch);
-        match self.github_client.inspect_repository(repository_url, os, arch).await {
+        match self
+            .github_client
+            .inspect_repository(repository_url, os, arch)
+            .await
+        {
             Ok(repository) => Ok(repository),
             Err(github_error) if fallback => self
                 .github_client
                 .inspect_from_license_server(repository_url, os, arch, &github_error)
                 .await
-                .map_err(|license_error| format!("{github_error}; license server fallback: {license_error}")),
+                .map_err(|license_error| {
+                    format!("{github_error}; license server fallback: {license_error}")
+                }),
             Err(error) => Err(error),
         }
     }
@@ -3290,7 +3478,7 @@ impl PluginManager {
         let previous = current
             .get(id)
             .cloned()
-            .ok_or_else(|| update_unavailable("repositório GitHub desconhecido"))?;
+            .ok_or_else(|| update_unavailable("unknown GitHub repository"))?;
         // A repository listed by the license server is refreshed from it when
         // GitHub still fails; one read from GitHub keeps its saved inspection.
         let refreshed = self
@@ -3306,7 +3494,7 @@ impl PluginManager {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         let Some(previous) = current.get(id).cloned() else {
-            return Err(update_unavailable("repositório GitHub foi removido"));
+            return Err(update_unavailable("GitHub repository was removed"));
         };
         match refreshed {
             Ok(repository) => {
@@ -3340,7 +3528,7 @@ impl PluginManager {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         if !current.contains_key(id) {
-            return Err(update_unavailable("repositório GitHub desconhecido"));
+            return Err(update_unavailable("unknown GitHub repository"));
         }
         let mut next = current;
         next.remove(id);
@@ -3365,7 +3553,7 @@ impl PluginManager {
         let repository = current
             .get(id)
             .cloned()
-            .ok_or_else(|| update_unavailable("repositório GitHub desconhecido"))?;
+            .ok_or_else(|| update_unavailable("unknown GitHub repository"))?;
         let downloaded = self
             .github_client
             .download_release(
@@ -3385,20 +3573,20 @@ impl PluginManager {
                 })?;
             if license_state.is_some() {
                 return Err(update_unavailable(
-                    "este código de plugin já tem uma instalação local pelo mecanismo de licença",
+                    "this plugin code already has a local installation through the license mechanism",
                 ));
             }
         }
         let runtime = self.get_or_create_runtime(plugin_code)?;
         if runtime.persisted.lock().await.is_some() {
             return Err(update_unavailable(
-                "este código de plugin já está instalado pelo mecanismo de licença; desative-o antes de instalar outra origem",
+                "this plugin code is already installed through the license mechanism; deactivate it before installing another source",
             ));
         }
         if let Some(installed) = runtime.public_install.lock().await.as_ref() {
             if installed.repository_id.as_deref() != Some(repository.id.as_str()) {
                 return Err(update_unavailable(
-                    "este código de plugin já está instalado de outro repositório GitHub",
+                    "this plugin code is already installed from another GitHub repository",
                 ));
             }
         }
@@ -3410,7 +3598,7 @@ impl PluginManager {
             .clone();
         if !current.contains_key(id) {
             return Err(update_unavailable(
-                "repositório GitHub foi removido durante a instalação",
+                "GitHub repository was removed during the installation",
             ));
         }
         let mut next = current;
@@ -3429,7 +3617,7 @@ impl PluginManager {
     ) -> Result<(), LicenseClientError> {
         let runtime = self
             .runtime_for(code)
-            .ok_or_else(|| update_unavailable("plugin desconhecido"))?;
+            .ok_or_else(|| update_unavailable("unknown plugin"))?;
         runtime.save_preferences(preferences).await
     }
 
@@ -3451,7 +3639,7 @@ impl PluginManager {
     ) -> Result<(), String> {
         match self.runtime_for(code) {
             Some(runtime) => runtime.ingest_event(event).await,
-            None => Err("plugin desconhecido neste nó".into()),
+            None => Err("unknown plugin on this node".into()),
         }
     }
 
@@ -3487,10 +3675,26 @@ impl PluginManager {
         self.runtime_for(code)?.ui_manifest().await
     }
 
-    /// Valida a chave uma vez para descobrir quais `plugin_code` ela concede,
-    /// cria os runtimes necessários e ativa/instala cada um deles. Concede
-    /// sucesso se ao menos um plugin ativou; falhas individuais também ficam
-    /// no `PluginStatus.installation_error` para a interface mostrar o motivo.
+    /// Starts the process of an on-demand plugin (menu click).
+    pub(crate) async fn open_on_demand(&self, code: &str) -> Result<(), String> {
+        match self.runtime_for(code) {
+            Some(runtime) => runtime.open_on_demand().await,
+            None => Err("unknown plugin on this node".into()),
+        }
+    }
+
+    /// Stops the process of an on-demand plugin (the X badge).
+    pub(crate) async fn close_on_demand(&self, code: &str) -> Result<(), String> {
+        match self.runtime_for(code) {
+            Some(runtime) => runtime.close_on_demand().await,
+            None => Err("unknown plugin on this node".into()),
+        }
+    }
+
+    /// Validates the key once to find out which `plugin_code`s it grants, creates
+    /// the necessary runtimes and activates/installs each of them. Succeeds if at
+    /// least one plugin activated; individual failures also stay in
+    /// `PluginStatus.installation_error` so the interface can show the reason.
     pub(crate) async fn activate(
         &self,
         license_key: &str,
@@ -3498,7 +3702,7 @@ impl PluginManager {
         if license_key.trim().is_empty() {
             return Err(LicenseClientError::new(
                 LicenseErrorCode::InvalidKey,
-                "Informe uma chave de licença.",
+                "Enter a license key.",
             ));
         }
         let validate_request = RequestEnvelope::new(
@@ -3519,7 +3723,7 @@ impl PluginManager {
             if !is_valid_plugin_code(&code) {
                 return Err(LicenseClientError::new(
                     LicenseErrorCode::ServerError,
-                    "o servidor retornou um plugin_code inválido",
+                    "the server returned an invalid plugin_code",
                 ));
             }
             if seen.insert(code.clone()) {
@@ -3529,7 +3733,7 @@ impl PluginManager {
         if granted_plugins.is_empty() {
             return Err(LicenseClientError::new(
                 LicenseErrorCode::FeatureNotEntitled,
-                "A chave não concede nenhum plugin.",
+                "The key grants no plugin.",
             ));
         }
         let mut activated = Vec::new();
@@ -3539,7 +3743,7 @@ impl PluginManager {
             match runtime.activate_and_install(license_key).await {
                 Ok(()) => activated.push(code),
                 Err(error) => {
-                    tracing::warn!(plugin_code = %code, error = %error, "ativação do plugin falhou");
+                    tracing::warn!(plugin_code = %code, error = %error, "plugin activation failed");
                     last_error = Some(error);
                 }
             }
@@ -3548,7 +3752,7 @@ impl PluginManager {
             return Err(last_error.unwrap_or_else(|| {
                 LicenseClientError::new(
                     LicenseErrorCode::ServerError,
-                    "nenhum plugin concedido pôde ser ativado",
+                    "no granted plugin could be activated",
                 )
             }));
         }
@@ -3557,35 +3761,35 @@ impl PluginManager {
 
     pub(crate) async fn deactivate(&self, code: &str) -> Result<(), LicenseClientError> {
         let runtime = self.runtime_for(code).ok_or_else(|| {
-            LicenseClientError::new(LicenseErrorCode::ServerError, "plugin desconhecido")
+            LicenseClientError::new(LicenseErrorCode::ServerError, "unknown plugin")
         })?;
         runtime.deactivate().await
     }
 
     pub(crate) async fn refresh(&self, code: &str) -> Result<(), LicenseClientError> {
         let runtime = self.runtime_for(code).ok_or_else(|| {
-            LicenseClientError::new(LicenseErrorCode::ServerError, "plugin desconhecido")
+            LicenseClientError::new(LicenseErrorCode::ServerError, "unknown plugin")
         })?;
         if runtime.public_install.lock().await.is_some() {
             return Ok(());
         }
         runtime.heartbeat(&uuid::Uuid::new_v4().to_string()).await?;
         if let Err(error) = runtime.detect_update().await {
-            tracing::warn!(plugin_code = %code, error = %error, "detecção de atualização do plugin falhou");
+            tracing::warn!(plugin_code = %code, error = %error, "plugin update detection failed");
         }
         if let Err(error) = runtime.refresh_license_status().await {
-            tracing::warn!(plugin_code = %code, error = %error, "checagem de validade da licença falhou");
+            tracing::warn!(plugin_code = %code, error = %error, "license validity check failed");
         }
         Ok(())
     }
 
     pub(crate) async fn check_update(&self, code: &str) -> Result<(), LicenseClientError> {
         let runtime = self.runtime_for(code).ok_or_else(|| {
-            LicenseClientError::new(LicenseErrorCode::ServerError, "plugin desconhecido")
+            LicenseClientError::new(LicenseErrorCode::ServerError, "unknown plugin")
         })?;
         if runtime.public_install.lock().await.is_some() {
             return Err(update_unavailable(
-                "consulte as releases no card do repositório GitHub cadastrado",
+                "see the releases on the card of the registered GitHub repository",
             ));
         }
         runtime.detect_update().await
@@ -3597,11 +3801,11 @@ impl PluginManager {
         release_id: &str,
     ) -> Result<(), LicenseClientError> {
         let runtime = self.runtime_for(code).ok_or_else(|| {
-            LicenseClientError::new(LicenseErrorCode::ServerError, "plugin desconhecido")
+            LicenseClientError::new(LicenseErrorCode::ServerError, "unknown plugin")
         })?;
         if runtime.public_install.lock().await.is_some() {
             return Err(update_unavailable(
-                "plugins instalados por GitHub são atualizados pelo card do repositório",
+                "plugins installed from GitHub are updated from the repository card",
             ));
         }
         runtime.apply_update(release_id).await
@@ -3632,10 +3836,10 @@ fn machine_fingerprint(node_id: &str) -> Fingerprint {
     )
 }
 
-/// Mantém o contexto de `host.configure` em dia: o endpoint OpenAI deste nó
-/// em loopback (texto claro de loopback é sempre aceito, mesmo com TLS) e a
-/// chave de chat do nó. Reavaliado periodicamente para acompanhar uma chave
-/// revogada e recriada; um nó que ainda não alcança o principal tenta de novo.
+/// Keeps the `host.configure` context up to date: this node's OpenAI endpoint on
+/// loopback (loopback plaintext is always accepted, even with TLS) and the node's
+/// chat key. Re-evaluated periodically to follow a key that was revoked and
+/// recreated; a node that does not yet reach the principal tries again.
 fn host_context_payload(
     gateway_port: u16,
     api_key: &str,
@@ -3667,8 +3871,8 @@ pub(crate) async fn refresh_host_context(
     Ok(())
 }
 
-/// Modelos que a rede está servindo agora: os mesmos que `/v1/models` lista,
-/// com as implantações e os nós de cada um.
+/// Models the network is serving now: the same ones `/v1/models` lists, with
+/// each one's deployments and nodes.
 pub(crate) fn serving_models(
     peers: &[crate::network::PeerInfo],
 ) -> std::collections::BTreeMap<String, serde_json::Value> {
@@ -3697,8 +3901,8 @@ pub(crate) fn serving_models(
         .collect()
 }
 
-/// Compara dois retratos de `serving_models` e devolve os eventos
-/// `model.serving`/`model.stopped` na ordem em que devem sair.
+/// Compares two snapshots of `serving_models` and returns the
+/// `model.serving`/`model.stopped` events in the order they must go out.
 pub(crate) fn serving_transitions(
     before: &std::collections::BTreeMap<String, serde_json::Value>,
     after: &std::collections::BTreeMap<String, serde_json::Value>,
@@ -3717,9 +3921,9 @@ pub(crate) fn serving_transitions(
     events
 }
 
-/// Observa a rede e avisa os plugins quando um modelo passa a ser servido ou
-/// deixa de ser. O primeiro retrato é só a base: um nó que acaba de subir não
-/// anuncia como novidade o que já estava no ar.
+/// Watches the network and notifies the plugins when a model starts or stops
+/// being served. The first snapshot is only the baseline: a node that has just
+/// started does not announce as news what was already up.
 pub(crate) fn spawn_serving_watcher(state: crate::gateway::GatewayState) {
     const INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
     tokio::spawn(async move {
@@ -3743,8 +3947,8 @@ pub(crate) struct PluginEventsQuery {
     pub after: Option<u64>,
 }
 
-/// `GET /api/ui/plugins/events?after=<seq>`: eventos do nó que a interface
-/// repassa às telas dos plugins pelo protocolo `pom-plugin-events/v1`.
+/// `GET /api/ui/plugins/events?after=<seq>`: node events that the interface
+/// relays to the plugin screens through the `pom-plugin-events/v1` protocol.
 pub(crate) async fn list_plugin_events(
     _auth: crate::auth::ConnectionAuth,
     axum::extract::State(state): axum::extract::State<crate::gateway::GatewayState>,
@@ -3770,7 +3974,7 @@ pub(crate) fn spawn_host_context(state: crate::gateway::GatewayState) {
             let wait = match refresh_host_context(&state).await {
                 Ok(()) => REFRESH,
                 Err(error) => {
-                    tracing::warn!(%error, "contexto dos plugins sem API key; nova tentativa em 30 s");
+                    tracing::warn!(%error, "plugin context without an API key; retrying in 30 s");
                     RETRY
                 }
             };
@@ -3779,11 +3983,11 @@ pub(crate) fn spawn_host_context(state: crate::gateway::GatewayState) {
     });
 }
 
-/// As features que UM `plugin_code` entrega, lidas do `feature_set` do
-/// manifesto do release no formato `"<plugin_code>.<feature>"`, sem o prefixo.
-/// Um release só declara as suas próprias features, mas o prefixo é filtrado
-/// mesmo assim: é ele que garante que um manifesto trocado não empreste
-/// feature de outro plugin.
+/// The features ONE `plugin_code` delivers, read from the release manifest's
+/// `feature_set` in the format `"<plugin_code>.<feature>"`, without the prefix.
+/// A release only declares its own features, but the prefix is filtered anyway:
+/// it is what guarantees that a swapped manifest does not lend a feature of
+/// another plugin.
 fn features_for_code(code: &str, feature_set: &[String]) -> Vec<String> {
     feature_set
         .iter()
@@ -3830,9 +4034,9 @@ fn merge_preferences(
     merged
 }
 
-/// Protocolo único de eventos que o POM envia aos plugins, pelo SDK do
-/// navegador e pela operação nativa `host.event`. Ver
-/// `docs/subsystems/plugins-ui.md`, seção "Events and notifications".
+/// Single event protocol POM sends to plugins, through the browser SDK and the
+/// native `host.event` operation. See `docs/subsystems/plugins-ui.md`, section
+/// "Events and notifications".
 pub(crate) const PLUGIN_EVENTS_PROTOCOL: &str = "pom-plugin-events/v1";
 
 pub(crate) fn plugin_event_envelope(
@@ -3851,8 +4055,8 @@ pub(crate) fn plugin_event_envelope(
     })
 }
 
-/// O editor aceita um diretório absoluto que ainda não existe: o nó o cria
-/// antes de validar, em vez de recusar com uma mensagem genérica.
+/// The editor accepts an absolute directory that does not exist yet: the node
+/// creates it before validating, instead of refusing with a generic message.
 fn prepare_storage_directory(
     schema: &enterprise_protocol::PluginPreferencesSchema,
     values: &enterprise_protocol::PluginPreferences,
@@ -3862,11 +4066,11 @@ fn prepare_storage_directory(
     };
     let path = std::path::Path::new(directory);
     if directory.trim().is_empty() || !path.is_absolute() || directory.contains('\0') {
-        return Err("o diretório de armazenamento precisa ser um caminho absoluto".into());
+        return Err("the storage directory must be an absolute path".into());
     }
     if !path.exists() {
         std::fs::create_dir_all(path).map_err(|error| {
-            format!("não foi possível criar o diretório de armazenamento {directory}: {error}")
+            format!("could not create the storage directory {directory}: {error}")
         })?;
     }
     Ok(())
@@ -3883,17 +4087,17 @@ fn validate_preferences(
             .iter()
             .any(|preference| preference.key == *key)
     }) {
-        return Err("preferência booleana desconhecida para este plugin".into());
+        return Err("unknown boolean preference for this plugin".into());
     }
     match (&schema.storage_directory, &values.storage_directory) {
-        (None, Some(_)) => return Err("este plugin não aceita diretório de armazenamento".into()),
+        (None, Some(_)) => return Err("this plugin does not accept a storage directory".into()),
         (Some(_), Some(directory)) => {
             if directory.trim().is_empty() || directory.len() > 4096 || directory.contains('\0') {
-                return Err("diretório de armazenamento inválido".into());
+                return Err("invalid storage directory".into());
             }
             let path = std::path::Path::new(directory);
             if !path.is_absolute() || !path.is_dir() {
-                return Err("o diretório de armazenamento precisa existir e ser absoluto".into());
+                return Err("the storage directory must exist and be absolute".into());
             }
         }
         _ => {}
@@ -3940,7 +4144,7 @@ pub(crate) async fn activate_plugin(
         }))
         .into_response(),
         Err(error) => {
-            tracing::warn!(error = %error, "ativação de plugin falhou");
+            tracing::warn!(error = %error, "plugin activation failed");
             license_error_response(error)
         }
     }
@@ -4012,7 +4216,7 @@ pub(crate) async fn list_development_plugin_sources(
     _auth: crate::auth::ConnectionAuth,
     axum::extract::State(state): axum::extract::State<crate::gateway::GatewayState>,
 ) -> axum::response::Response {
-    if !crate::pom_desenv_enabled() {
+    if !crate::pom_dev_mode_enabled() {
         return (
             axum::http::StatusCode::NOT_FOUND,
             axum::Json(serde_json::json!({ "code": "development_disabled" })),
@@ -4027,7 +4231,7 @@ pub(crate) async fn rebuild_install_development_plugin(
     axum::extract::State(state): axum::extract::State<crate::gateway::GatewayState>,
     axum::extract::Path(repository): axum::extract::Path<String>,
 ) -> axum::response::Response {
-    if !crate::pom_desenv_enabled() {
+    if !crate::pom_dev_mode_enabled() {
         return (
             axum::http::StatusCode::NOT_FOUND,
             axum::Json(serde_json::json!({ "code": "development_disabled" })),
@@ -4149,7 +4353,7 @@ pub(crate) async fn plugin_peer_fingerprint(
     {
         return (
             axum::http::StatusCode::BAD_REQUEST,
-            axum::Json(serde_json::json!({"error": "desafio de fingerprint inválido"})),
+            axum::Json(serde_json::json!({"error": "invalid fingerprint challenge"})),
         )
             .into_response();
     }
@@ -4157,7 +4361,7 @@ pub(crate) async fn plugin_peer_fingerprint(
     if identity.node_id.0 != state.plugins.fingerprint().node_id {
         return (
             axum::http::StatusCode::CONFLICT,
-            axum::Json(serde_json::json!({"error": "identidade do peer divergente"})),
+            axum::Json(serde_json::json!({"error": "peer identity mismatch"})),
         )
             .into_response();
     }
@@ -4239,7 +4443,7 @@ fn installation_component() -> String {
     std::env::var("POM_INSTALLATION_ID").unwrap_or_else(|_| "unknown-installation".into())
 }
 
-/// Pedido da tela de vitrine para comprar um plugin (`POST /api/ui/plugins/checkout`).
+/// Request from the storefront screen to buy a plugin (`POST /api/ui/plugins/checkout`).
 #[derive(Debug, Deserialize)]
 pub(crate) struct PluginCheckoutRequest {
     pub plugin_code: String,
@@ -4269,8 +4473,8 @@ struct CheckoutSession {
     url: String,
 }
 
-/// Só uma página de pagamento conhecida pode receber o navegador: o checkout
-/// do Stripe ou, no modo simulado do servidor, o próprio license-server.
+/// Only a known payment page may receive the browser: Stripe's checkout or, in
+/// the server's simulated mode, the license-server itself.
 pub(crate) fn checkout_url_allowed(url: &str, license_base: &str) -> bool {
     let Ok(parsed) = reqwest::Url::parse(url) else {
         return false;
@@ -4284,10 +4488,10 @@ pub(crate) fn checkout_url_allowed(url: &str, license_base: &str) -> bool {
         || (license_host.as_deref() == Some(host) && (https || cfg!(test)))
 }
 
-/// Cria a sessão de checkout no license-server em nome do navegador. O
-/// endpoint público só libera CORS para o site, e a interface do POM roda na
-/// origem de cada nó; o `price_id` continua sendo escolhido pelo servidor a
-/// partir do plugin e do intervalo, nunca informado pelo cliente.
+/// Creates the checkout session on the license-server on behalf of the browser.
+/// The public endpoint only allows CORS for the site, and the POM interface runs
+/// on each node's origin; the `price_id` is still chosen by the server from the
+/// plugin and the interval, never supplied by the client.
 pub(crate) async fn create_plugin_checkout(
     client: &reqwest::Client,
     license_base: &str,
@@ -4398,10 +4602,10 @@ fn plugin_path(
     os: &str,
     arch: &str,
 ) -> Result<std::path::PathBuf, LicenseClientError> {
-    // '+' aparece no metadado de build SemVer (ex: "ent-0.1.0+build.1-linux-x86_64"),
-    // gerado pelo auto-incremento de versao do pom-release.sh. E seguro em nomes de
-    // arquivo nas tres plataformas (Linux/macOS/Windows) e nao habilita path
-    // traversal, pois nao e '.'/'/'/'\\'.
+    // '+' appears in the SemVer build metadata (e.g. "ent-0.1.0+build.1-linux-x86_64"),
+    // generated by the version auto-increment of pom-release.sh. It is safe in file
+    // names on the three platforms (Linux/macOS/Windows) and does not enable path
+    // traversal, since it is not '.'/'/'/'\\'.
     if release_id.is_empty()
         || !release_id
             .chars()
@@ -4409,7 +4613,7 @@ fn plugin_path(
     {
         return Err(LicenseClientError::new(
             LicenseErrorCode::ServerError,
-            "release_id de plugin inválido",
+            "invalid plugin release_id",
         ));
     }
     let extension = match os {
@@ -4431,7 +4635,7 @@ fn validate_manifest(
     if manifest.release_id != activation.plugin_release_id || activation.plugin_code != code {
         return Err(LicenseClientError::new(
             LicenseErrorCode::ServerError,
-            "manifest do plugin incompatível com a ativação",
+            "plugin manifest incompatible with the activation",
         ));
     }
     validate_manifest_for_runtime(code, manifest)
@@ -4451,7 +4655,7 @@ fn validate_manifest_for_runtime(
     {
         return Err(LicenseClientError::new(
             LicenseErrorCode::ServerError,
-            "manifest do plugin incompatível com esta instalação",
+            "plugin manifest incompatible with this installation",
         ));
     }
     if let Some(preferences) = &manifest.preferences {
@@ -4468,7 +4672,7 @@ fn validate_download(
     if bytes.len() as u64 != manifest.size {
         return Err(LicenseClientError::new(
             LicenseErrorCode::ServerError,
-            "tamanho do plugin divergente",
+            "plugin size mismatch",
         ));
     }
     let actual = hex::encode(sha2::Sha256::digest(bytes));
@@ -4479,7 +4683,7 @@ fn validate_download(
     if actual != expected {
         return Err(LicenseClientError::new(
             LicenseErrorCode::ServerError,
-            "hash do plugin divergente",
+            "plugin hash mismatch",
         ));
     }
     Ok(())
@@ -4495,7 +4699,7 @@ fn install_plugin_atomically(
 ) -> Result<(), LicenseClientError> {
     let parent = destination
         .parent()
-        .ok_or_else(|| io_error(std::io::Error::other("diretório do plugin ausente")))?;
+        .ok_or_else(|| io_error(std::io::Error::other("plugin directory missing")))?;
     std::fs::create_dir_all(parent).map_err(io_error)?;
     let temporary = parent.join(format!(
         ".{}.part-{}",
@@ -4541,19 +4745,19 @@ fn test_fingerprint() -> Fingerprint {
 
 #[cfg(test)]
 pub(crate) mod tests_support {
-    //! Dublê de [`LicenseService`] compartilhado pelos testes deste crate. Ao
-    //! contrário do antigo `MockLicenseService` de plugin único, este guarda
-    //! uma resposta POR `plugin_code`, para que testes possam provar que dois
-    //! plugins ativam e falham de forma independente.
+    //! Test double of [`LicenseService`] shared by this crate's tests. Unlike the
+    //! old single-plugin `MockLicenseService`, this one keeps a response PER
+    //! `plugin_code`, so that tests can prove that two plugins activate and fail
+    //! independently.
     use super::*;
 
     #[derive(Clone)]
     pub(crate) struct MockLicenseService {
         responses: Arc<Mutex<HashMap<String, MockResponse>>>,
         heartbeat_error: Arc<Mutex<Option<LicenseErrorCode>>>,
-        /// `Some(release_id)` faz o próximo heartbeat responder
-        /// `release_changed: true` e `available_release_id: Some(release_id)`,
-        /// como o servidor de licenças faz ao detectar uma release nova.
+        /// `Some(release_id)` makes the next heartbeat answer
+        /// `release_changed: true` and `available_release_id: Some(release_id)`,
+        /// as the license server does when it detects a new release.
         heartbeat_release_signal: Arc<Mutex<Option<String>>>,
         artifacts: Arc<Mutex<HashMap<String, Vec<u8>>>>,
         manifest_calls: Arc<Mutex<Vec<String>>>,
@@ -4595,11 +4799,11 @@ pub(crate) mod tests_support {
         fn grant_sync(&self, code: &str, response: ActivationResponse, artifact: Vec<u8>) {
             self.responses
                 .try_lock()
-                .expect("uso síncrono em setup de teste")
+                .expect("synchronous use in test setup")
                 .insert(code.to_owned(), MockResponse::Valid(response));
             self.artifacts
                 .try_lock()
-                .expect("uso síncrono em setup de teste")
+                .expect("synchronous use in test setup")
                 .insert(code.to_owned(), artifact);
         }
 
@@ -4741,7 +4945,7 @@ pub(crate) mod tests_support {
                 }
                 None => Err(LicenseClientError::new(
                     LicenseErrorCode::FeatureNotEntitled,
-                    "mock: plugin_code sem resposta registrada",
+                    "mock: plugin_code without a registered response",
                 )),
             }
         }
@@ -4824,7 +5028,7 @@ pub(crate) mod tests_support {
                 }
                 None => Err(LicenseClientError::new(
                     LicenseErrorCode::ServerError,
-                    "mock: plugin_code sem manifest registrado",
+                    "mock: plugin_code without a registered manifest",
                 )),
             }
         }
@@ -4840,7 +5044,7 @@ pub(crate) mod tests_support {
                 .ok_or_else(|| {
                     LicenseClientError::new(
                         LicenseErrorCode::ServerError,
-                        "artefato mock não configurado",
+                        "mock artifact not configured",
                     )
                 })
         }
@@ -4853,7 +5057,7 @@ pub(crate) mod tests_support {
         ) -> Result<(), LicenseClientError> {
             *self.deactivate_calls.lock().await += 1;
             match *self.deactivate_error.lock().await {
-                Some(code) => Err(LicenseClientError::new(code, "desativação recusada")),
+                Some(code) => Err(LicenseClientError::new(code, "deactivation refused")),
                 None => Ok(()),
             }
         }
@@ -4982,13 +5186,8 @@ mod tests {
 
     #[test]
     fn plugin_path_accepts_semver_build_metadata_in_release_id() {
-        let path = plugin_path(
-            "logs",
-            "ent-0.1.0+build.1-linux-x86_64",
-            "linux",
-            "x86_64",
-        )
-        .expect("release_id com '+' de metadado de build deve ser aceito");
+        let path = plugin_path("logs", "ent-0.1.0+build.1-linux-x86_64", "linux", "x86_64")
+            .expect("a release_id with a build metadata '+' must be accepted");
 
         assert!(path
             .to_string_lossy()
@@ -5030,10 +5229,10 @@ mod tests {
         .is_err());
     }
 
-    /// As features de um plugin vêm do `feature_set` do manifesto do release,
-    /// e cada release só declara as suas. O prefixo `"<plugin_code>."` é
-    /// filtrado mesmo assim: é ele que impede que um manifesto de outro
-    /// plugin conceda feature a este.
+    /// A plugin's features come from the release manifest's `feature_set`, and
+    /// each release only declares its own. The `"<plugin_code>."` prefix is
+    /// filtered anyway: it is what prevents another plugin's manifest from
+    /// granting a feature to this one.
     #[test]
     fn features_for_code_takes_only_the_features_of_that_plugin() {
         let feature_set = vec![
@@ -5053,9 +5252,9 @@ mod tests {
         assert!(features_for_code("outro", &feature_set).is_empty());
     }
 
-    /// Monta um plugin "pronto" sem manifest/download/host real - a mesma
-    /// divisão em duas etapas que a suíte original usava, porque subir o
-    /// host de verdade é integração testada à parte.
+    /// Sets up a "ready" plugin without a real manifest/download/host - the same
+    /// two-step split the original suite used, because starting the real host is
+    /// integration tested separately.
     async fn activate_ready(runtime: &Arc<PluginRuntime>, license_key: &str, version: &str) {
         runtime.activate(license_key).await.expect("activate");
         runtime
@@ -5086,11 +5285,8 @@ mod tests {
         service
             .grant("logs", response, b"plugin-binary".to_vec())
             .await;
-        let manager = PluginManager::test_manager_with_database(
-            &["logs"],
-            service.clone(),
-            database.clone(),
-        );
+        let manager =
+            PluginManager::test_manager_with_database(&["logs"], service.clone(), database.clone());
         let runtime = manager.runtime_for("logs").expect("runtime");
         activate_ready(&runtime, "PM-logs", "0.1.0").await;
         let schema = runtime
@@ -5141,10 +5337,7 @@ mod tests {
             features: [("unknown_toggle".into(), true)].into(),
             storage_directory: None,
         };
-        assert!(manager
-            .save_preferences("logs", invalid_key)
-            .await
-            .is_err());
+        assert!(manager.save_preferences("logs", invalid_key).await.is_err());
         let invalid_directory = enterprise_protocol::PluginPreferences {
             features: [("include_headers".into(), true)].into(),
             storage_directory: Some("relative/path".into()),
@@ -5180,11 +5373,8 @@ mod tests {
             .expect("license record");
         assert!(!persisted.contains(&storage.to_string_lossy().to_string()));
 
-        let restored =
-            PluginManager::test_manager_with_database(&["logs"], service, database);
-        let restored_runtime = restored
-            .runtime_for("logs")
-            .expect("restored runtime");
+        let restored = PluginManager::test_manager_with_database(&["logs"], service, database);
+        let restored_runtime = restored.runtime_for("logs").expect("restored runtime");
         restored_runtime.restore().await;
         assert_eq!(
             restored_runtime.preferences_for(&schema),
@@ -5441,7 +5631,11 @@ mod tests {
     async fn deactivate_clears_an_activation_the_server_does_not_know() {
         let service = Arc::new(MockLicenseService::new());
         service
-            .grant("logs", activation("logs", "ent-1"), b"plugin-binary".to_vec())
+            .grant(
+                "logs",
+                activation("logs", "ent-1"),
+                b"plugin-binary".to_vec(),
+            )
             .await;
         let manager = PluginManager::test_manager(&["logs"], service.clone());
         let logs = manager.runtime_for("logs").expect("runtime");
@@ -5451,7 +5645,7 @@ mod tests {
         assert!(manager.deactivate("logs").await.is_err());
         assert!(
             manager.status("logs").await.expect("status").active,
-            "uma falha comum do servidor mantém a licença"
+            "a regular server failure keeps the license"
         );
 
         let unknown = parse_license_error(
@@ -5493,15 +5687,12 @@ mod tests {
         assert!(manager.status("logs").await.expect("status").active);
         assert!(manager.status("sample").await.expect("status").active);
 
-        manager
-            .deactivate("logs")
-            .await
-            .expect("deactivate logs");
+        manager.deactivate("logs").await.expect("deactivate logs");
 
         assert!(!manager.status("logs").await.expect("status").active);
         assert!(
             manager.status("sample").await.expect("status").active,
-            "revogar um plugin não pode desativar o outro"
+            "revoking one plugin cannot deactivate the other"
         );
     }
 
@@ -5529,11 +5720,12 @@ mod tests {
     async fn production_manager_restores_any_persisted_plugin_code() {
         let directory = tempfile::tempdir().expect("tempdir");
         let database = Arc::new(
-            crate::db::PomDb::open(directory.path().join("pom.db")).expect("abrir banco de teste"),
+            crate::db::PomDb::open(directory.path().join("pom.db"))
+                .expect("open the test database"),
         );
         database
             .save_local_setting("plugin_license:future.plugin-v2", &serde_json::json!({}))
-            .expect("salvar código de plugin persistido");
+            .expect("save persisted plugin code");
 
         let manager = PluginManager::runtime_with_database("node-dynamic", database);
 
@@ -5655,9 +5847,7 @@ mod tests {
     #[tokio::test]
     async fn invalid_license_keeps_the_plugin_inactive_and_returns_a_stable_error() {
         let service = Arc::new(MockLicenseService::new());
-        service
-            .deny("logs", LicenseErrorCode::InvalidKey)
-            .await;
+        service.deny("logs", LicenseErrorCode::InvalidKey).await;
         let manager = PluginManager::test_manager(&["logs"], service);
 
         let error = manager
@@ -5714,12 +5904,12 @@ mod tests {
         assert_eq!(status.max_activations, Some(5));
     }
 
-    /// O clique manual em "Atualizar" (`PluginManager::refresh`) publica
-    /// `license_expires_at` a partir de `/v1/licenses/status` - a validade da
-    /// LICENÇA, que o heartbeat sozinho não traz (só renova o
-    /// `lease_expires_at` técnico). As duas datas são deliberadamente
-    /// diferentes aqui para provar que a tela nunca mostra o lease no lugar
-    /// da licença.
+    /// The manual click on "Update" (`PluginManager::refresh`) publishes
+    /// `license_expires_at` from `/v1/licenses/status` - the validity of the
+    /// LICENSE, which the heartbeat alone does not bring (it only renews the
+    /// technical `lease_expires_at`). The two dates are deliberately different
+    /// here to prove that the screen never shows the lease in place of the
+    /// license.
     #[tokio::test]
     async fn refresh_publishes_the_license_expiry_from_the_status_endpoint() {
         let service = Arc::new(MockLicenseService::single(
@@ -5761,7 +5951,10 @@ mod tests {
 
         let status = runtime.status().await;
         assert_eq!(status.state, LicenseState::Degraded);
-        assert!(status.active, "uma falha transitória não desativa o plugin");
+        assert!(
+            status.active,
+            "a transient failure does not deactivate the plugin"
+        );
     }
 
     #[tokio::test]
@@ -5795,7 +5988,7 @@ mod tests {
         assert!(!manager.status("logs").await.expect("status").active);
         assert!(
             manager.status("sample").await.expect("status").active,
-            "o heartbeat de um plugin não deve afetar o outro"
+            "the heartbeat of one plugin must not affect the other"
         );
     }
 
@@ -5816,10 +6009,10 @@ mod tests {
         assert!(String::from_utf8_lossy(&persisted).contains("lease-logs"));
     }
 
-    /// `apply_update` baixando e reiniciando o host de verdade é integração
-    /// testada à parte (precisa do binário real `pom-plugin-host`); aqui só
-    /// `detect_update` roda de ponta a ponta, e a rejeição de `apply_update`
-    /// por release não confirmada é o outro ramo que não toca download nem
+    /// `apply_update` really downloading and restarting the host is integration
+    /// tested separately (it needs the real `pom-plugin-host` binary); here only
+    /// `detect_update` runs end to end, and `apply_update`'s rejection of an
+    /// unconfirmed release is the other branch that touches neither download nor
     /// host.
     #[tokio::test]
     async fn detects_a_plugins_own_update_without_touching_pom_core() {
@@ -5871,15 +6064,14 @@ mod tests {
         );
     }
 
-    /// Reproduz o bug relatado pelo captain: um heartbeat bem-sucedido não
-    /// pode apagar uma atualização real, mesmo quando o release_id do
-    /// servidor só muda no metadado de build SemVer (`+build.N`) - formato
-    /// que a comparação por igualdade de string já tratava corretamente,
-    /// mas que o heartbeat corrompia ao escrever seu próprio
-    /// `plugin_release_id` como se fosse a release instalada, antes do
-    /// `detect_update` seguinte (mesmo clique em "Atualizar",
-    /// `PluginManager::refresh`) comparar contra essa base já adulterada.
-    /// Sem revogar a release anterior em nenhum momento.
+    /// Reproduces the bug reported by the captain: a successful heartbeat must not
+    /// erase a real update, even when the server's release_id only changes in the
+    /// SemVer build metadata (`+build.N`) - a format the string equality
+    /// comparison already handled correctly, but which the heartbeat corrupted by
+    /// writing its own `plugin_release_id` as if it were the installed release,
+    /// before the following `detect_update` (same click on "Update",
+    /// `PluginManager::refresh`) compared against that already tampered baseline.
+    /// Without revoking the previous release at any moment.
     #[tokio::test]
     async fn refresh_button_does_not_lose_an_update_signalled_by_heartbeat() {
         let mut updated = activation("logs", "ent-0.1.0+build.1-linux-x86_64");
@@ -5892,16 +6084,16 @@ mod tests {
             .store(true, std::sync::atomic::Ordering::Relaxed);
         assert!(runtime.status().await.available_update.is_none());
 
-        // O servidor publica a release seguinte, só com o metadado de build
-        // avançado - nunca revogado, nunca desativado.
+        // The server publishes the next release, with only the build metadata
+        // advanced - never revoked, never deactivated.
         updated.plugin_manifest.release_id = "ent-0.1.0+build.2-linux-x86_64".into();
         updated.plugin_manifest.version = "0.1.0+build.2".into();
         service
             .grant("logs", updated, b"plugin-binary".to_vec())
             .await;
-        // O heartbeat do servidor já sinaliza a mudança, e (como o incidente
-        // relatado) seu próprio campo `plugin_release_id` também avança para
-        // a release nova - sem que nada tenha sido baixado ainda.
+        // The server's heartbeat already signals the change, and (as in the
+        // reported incident) its own `plugin_release_id` field also advances to
+        // the new release - without anything having been downloaded yet.
         service
             .signal_heartbeat_release_change("ent-0.1.0+build.2-linux-x86_64")
             .await;
@@ -5912,11 +6104,11 @@ mod tests {
             .status()
             .await
             .available_update
-            .expect("o heartbeat não pode apagar a atualização real");
+            .expect("the heartbeat cannot erase the real update");
         assert_eq!(available.release_id, "ent-0.1.0+build.2-linux-x86_64");
         assert_eq!(available.version, "0.1.0+build.2");
-        // `installed_release_id` só avança com um download confirmado - o
-        // heartbeat sozinho nunca pode reivindicar tê-lo feito.
+        // `installed_release_id` only advances with a confirmed download - the
+        // heartbeat alone can never claim to have done one.
         assert_eq!(
             runtime
                 .persisted_state()
@@ -5927,10 +6119,9 @@ mod tests {
         );
     }
 
-    /// O supervisor de heartbeat periódico (`spawn_heartbeat_supervisor`)
-    /// nunca chamava `detect_update` por conta própria; uma release
-    /// sinalizada em segundo plano, sem qualquer clique do operador, também
-    /// precisa aparecer.
+    /// The periodic heartbeat supervisor (`spawn_heartbeat_supervisor`) never
+    /// called `detect_update` on its own; a release signaled in the background,
+    /// without any click from the operator, must also show up.
     #[tokio::test]
     async fn a_background_heartbeat_alone_also_surfaces_the_update() {
         let mut updated = activation("logs", "ent-1");
@@ -5955,7 +6146,7 @@ mod tests {
             .status()
             .await
             .available_update
-            .expect("a release sinalizada em segundo plano deve aparecer");
+            .expect("the release flagged in the background must show up");
         assert_eq!(available.release_id, "ent-2");
         assert_eq!(
             runtime
@@ -5990,13 +6181,12 @@ mod tests {
         assert_eq!(error.code(), LicenseErrorCode::UpdateUnavailable);
         assert_eq!(service.download_calls().await, 0);
     }
-    /// Reproduz o bug relatado pelo captain: uma revogação para o host de UM
-    /// plugin; o próximo heartbeat bem-sucedido (self-heal, sem o processo
-    /// `pom` inteiro reiniciar) precisa colocá-lo de pé de novo, senão
-    /// Logs de Requisições/Estatísticas ficam mudos indefinidamente até o
-    /// próximo restart completo.
-    /// Os testes que sobem um host real mudam `POM_PLUGIN_HOST` e o log do
-    /// fake host, variáveis do processo inteiro: rodam um de cada vez.
+    /// Reproduces the bug reported by the captain: a revocation stops the host of
+    /// ONE plugin; the next successful heartbeat (self-heal, without the whole
+    /// `pom` process restarting) must bring it back up, otherwise Request
+    /// Logs/Statistics stay mute indefinitely until the next full restart.
+    /// Tests that start a real host change `POM_PLUGIN_HOST` and the fake host's
+    /// log, process-wide variables: they run one at a time.
     static REAL_HOST: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     struct RestoreEnvironment(Vec<(String, Option<std::ffi::OsString>)>);
@@ -6025,10 +6215,10 @@ mod tests {
 
     fn fake_host_binary() -> std::path::PathBuf {
         let fake_host = std::env::current_exe()
-            .expect("localizar binário de teste")
+            .expect("locate the test binary")
             .parent()
             .and_then(|deps| deps.parent())
-            .expect("localizar diretório target/<profile>")
+            .expect("locate the target/<profile> directory")
             .join(if cfg!(windows) {
                 "pom-fake-enterprise-plugin-host.exe"
             } else {
@@ -6036,7 +6226,7 @@ mod tests {
             });
         assert!(
             fake_host.is_file(),
-            "binário auxiliar {} não foi compilado; rode `cargo test -p node` (não `--lib`) para produzir todos os alvos [[bin]]",
+            "helper binary {} was not built; run `cargo test -p node` (not `--lib`) to produce all the [[bin]] targets",
             fake_host.display()
         );
         fake_host
@@ -6114,15 +6304,16 @@ mod tests {
         ]);
         let host_log = directory.path().join("host.log");
         let data_dir = directory.path().join("data");
-        std::fs::create_dir(&data_dir).expect("criar diretório persistente");
+        std::fs::create_dir(&data_dir).expect("create the persistent directory");
         std::env::set_var("POM_HOME", directory.path());
         std::env::set_var("POM_PLUGIN_HOST", fake_host_binary());
         std::env::set_var("POM_FAKE_HOST_LOG", &host_log);
         std::env::remove_var("POM_FAKE_HOST_UPSTREAM");
         std::env::remove_var("POM_FAKE_HOST_READY_ERROR");
 
-        let database =
-            Arc::new(crate::db::PomDb::open(data_dir.join("pom.db")).expect("abrir banco do POM"));
+        let database = Arc::new(
+            crate::db::PomDb::open(data_dir.join("pom.db")).expect("open the POM database"),
+        );
         let service = Arc::new(MockLicenseService::single(
             "logs",
             activation("logs", "ent-1"),
@@ -6133,7 +6324,7 @@ mod tests {
             manager
                 .activate("PM-test-key")
                 .await
-                .expect("ativar plugin"),
+                .expect("activate plugin"),
             vec!["logs"]
         );
         let expected_path = data_dir.join("logs.db");
@@ -6163,10 +6354,13 @@ mod tests {
         std::env::set_var("POM_PLUGIN_HOST", fake_host_binary());
         std::env::set_var("POM_FAKE_HOST_LOG", &host_log);
         std::env::remove_var("POM_FAKE_HOST_UPSTREAM");
-        std::env::set_var("POM_FAKE_HOST_READY_ERROR", "plugin recusou configuração");
+        std::env::set_var(
+            "POM_FAKE_HOST_READY_ERROR",
+            "plugin refused the configuration",
+        );
 
         let database = Arc::new(
-            crate::db::PomDb::open(directory.path().join("pom.db")).expect("abrir banco do POM"),
+            crate::db::PomDb::open(directory.path().join("pom.db")).expect("open the POM database"),
         );
         let service = Arc::new(MockLicenseService::single(
             "logs",
@@ -6178,21 +6372,17 @@ mod tests {
         let error = manager
             .activate("PM-test-key")
             .await
-            .expect_err("handshake recusado deve falhar a instalação");
+            .expect_err("a refused handshake must fail the installation");
         let status = manager.status("logs").await.expect("status");
         assert_eq!(
             error.code(),
             LicenseErrorCode::ServerError,
-            "falha de instalação deve voltar como erro: {error}"
+            "an installation failure must come back as an error: {error}"
         );
-        assert_eq!(
-            status.state,
-            LicenseState::Active,
-            "licença continua válida"
-        );
+        assert_eq!(status.state, LicenseState::Active, "license stays valid");
         assert!(
             !status.active,
-            "handshake recusado não deixa o plugin pronto"
+            "a refused handshake does not leave the plugin ready"
         );
         assert!(status.installed_at.is_none());
         assert!(!status.has_feature("request_logs"));
@@ -6201,25 +6391,25 @@ mod tests {
                 .installation_error
                 .as_deref()
                 .is_some_and(|message| message
-                    .contains("plugin host recusou ready: plugin recusou configuração")),
+                    .contains("plugin host refused ready: plugin refused the configuration")),
             "installation_error={:?}; host_log={}",
             status.installation_error,
             std::fs::read_to_string(&host_log).unwrap_or_default()
         );
         let persisted = database
             .local_setting_json("plugin_license:logs")
-            .expect("ler estado persistido")
-            .expect("estado de licença persistido");
-        assert!(persisted.contains("plugin recusou configuração"));
+            .expect("read persisted state")
+            .expect("persisted license state");
+        assert!(persisted.contains("plugin refused the configuration"));
     }
 
-    /// Contexto do nó (`host.configure`) chega ao host na subida, no
-    /// reinício e quando muda; e o proxy da UI encaminha pelo router real até
-    /// o servidor que o plugin anuncia em `ui.upstream`.
+    /// The node context (`host.configure`) reaches the host on startup, on
+    /// restart and when it changes; and the UI proxy forwards through the real
+    /// router to the server the plugin announces in `ui.upstream`.
     #[tokio::test]
     async fn host_context_and_ui_proxy_reach_a_real_plugin_host() {
         let _serial = REAL_HOST.lock().await;
-        // Servidor web "do plugin": devolve o que recebeu.
+        // "Plugin" web server: returns what it received.
         let upstream = axum::Router::new().fallback(|request: axum::extract::Request| async move {
             let token = request
                 .headers()
@@ -6239,10 +6429,10 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("tempdir");
         let plugin_path = dir.path().join("logs-plugin.bin");
-        std::fs::write(&plugin_path, b"fake-plugin").expect("escrever plugin fake");
+        std::fs::write(&plugin_path, b"fake-plugin").expect("write fake plugin");
         let host_log = dir.path().join("host.log");
         let token = "t".repeat(32);
-        // SAFETY: serializado por `REAL_HOST`.
+        // SAFETY: serialized by `REAL_HOST`.
         std::env::set_var("POM_PLUGIN_HOST", fake_host_binary());
         std::env::set_var("POM_FAKE_HOST_LOG", &host_log);
         std::env::set_var(
@@ -6252,14 +6442,13 @@ mod tests {
         );
 
         let db = Arc::new(
-            crate::db::PomDb::open(dir.path().join("pom.db")).expect("abrir banco de teste"),
+            crate::db::PomDb::open(dir.path().join("pom.db")).expect("open the test database"),
         );
         let service = Arc::new(MockLicenseService::single(
             "logs",
             activation("logs", "ent-1"),
         ));
-        let manager =
-            PluginManager::test_manager_with_database(&["logs"], service.clone(), db);
+        let manager = PluginManager::test_manager_with_database(&["logs"], service.clone(), db);
         let context = |key: &str| {
             serde_json::json!({
                 "gateway": {
@@ -6290,19 +6479,19 @@ mod tests {
         assert_eq!(
             configures("sk-first"),
             1,
-            "host recém-iniciado recebe o contexto"
+            "a freshly started host receives the context"
         );
         assert!(std::fs::read_to_string(&host_log)
             .unwrap_or_default()
             .contains("/data/workspace"));
 
         manager.set_host_context(context("sk-first")).await;
-        assert_eq!(configures("sk-first"), 1, "contexto igual não é reenviado");
+        assert_eq!(configures("sk-first"), 1, "an equal context is not resent");
         manager.set_host_context(context("sk-second")).await;
         assert_eq!(
             configures("sk-second"),
             1,
-            "host em execução recebe o contexto novo"
+            "a running host receives the new context"
         );
 
         let mut state = crate::gateway::testkit::state_with("eu", vec![]).await;
@@ -6330,7 +6519,10 @@ mod tests {
         let body = crate::gateway::testkit::body_of(response).await;
         assert_eq!(body["uri"], "/hello?x=1");
         assert_eq!(body["token"], token.as_str());
-        assert_eq!(body["cookie"], false, "a sessão do POM não chega ao plugin");
+        assert_eq!(
+            body["cookie"], false,
+            "the POM session does not reach the plugin"
+        );
 
         let root = app
             .clone()
@@ -6369,7 +6561,9 @@ mod tests {
             if let Some(origin) = origin {
                 builder = builder.header("origin", origin);
             }
-            builder.body(axum::body::Body::from(body.to_owned())).unwrap()
+            builder
+                .body(axum::body::Body::from(body.to_owned()))
+                .unwrap()
         };
         let reply = app
             .clone()
@@ -6386,10 +6580,30 @@ mod tests {
         assert_eq!(reply["params"]["person"], "Ana");
         assert!(reply["profile"].is_string());
         for (uri, body, origin, status) in [
-            ("/api/ui/plugins/logs/rpc/insights", "{}", Some("http://evil.example"), axum::http::StatusCode::FORBIDDEN),
-            ("/api/ui/plugins/logs/rpc/Bad.Op", "{}", None, axum::http::StatusCode::BAD_REQUEST),
-            ("/api/ui/plugins/logs/rpc/insights", "not json", None, axum::http::StatusCode::BAD_REQUEST),
-            ("/api/ui/plugins/nope/rpc/insights", "{}", None, axum::http::StatusCode::BAD_GATEWAY),
+            (
+                "/api/ui/plugins/logs/rpc/insights",
+                "{}",
+                Some("http://evil.example"),
+                axum::http::StatusCode::FORBIDDEN,
+            ),
+            (
+                "/api/ui/plugins/logs/rpc/Bad.Op",
+                "{}",
+                None,
+                axum::http::StatusCode::BAD_REQUEST,
+            ),
+            (
+                "/api/ui/plugins/logs/rpc/insights",
+                "not json",
+                None,
+                axum::http::StatusCode::BAD_REQUEST,
+            ),
+            (
+                "/api/ui/plugins/nope/rpc/insights",
+                "{}",
+                None,
+                axum::http::StatusCode::BAD_GATEWAY,
+            ),
         ] {
             let response = app.clone().oneshot(rpc(uri, body, origin)).await.unwrap();
             assert_eq!(response.status(), status, "{uri} {body}");
@@ -6400,7 +6614,7 @@ mod tests {
         assert_eq!(
             configures("sk-second"),
             2,
-            "host reiniciado recebe o contexto atual"
+            "a restarted host receives the current context"
         );
         std::env::remove_var("POM_FAKE_HOST_UPSTREAM");
         runtime.stop_host_for_test().await;
@@ -6418,17 +6632,16 @@ mod tests {
     #[tokio::test]
     async fn heartbeat_success_restarts_the_stopped_plugin_host() {
         let _serial = REAL_HOST.lock().await;
-        // `CARGO_BIN_EXE_*` só é injetado em testes de integração
-        // (`tests/*.rs`); este é um teste de unidade dentro do binário `pom`,
-        // então localizamos o binário auxiliar do mesmo jeito que
-        // `plugin_host::host_executable` localiza o `pom-plugin-host` real em
-        // produção: ao lado do diretório de saída do cargo
-        // (`target/<profile>/deps/pom-<hash>` -> `target/<profile>/`).
+        // `CARGO_BIN_EXE_*` is only injected in integration tests
+        // (`tests/*.rs`); this is a unit test inside the `pom` binary, so we
+        // locate the helper binary the same way `plugin_host::host_executable`
+        // locates the real `pom-plugin-host` in production: beside cargo's output
+        // directory (`target/<profile>/deps/pom-<hash>` -> `target/<profile>/`).
         let fake_host = std::env::current_exe()
-            .expect("localizar binário de teste")
+            .expect("locate the test binary")
             .parent()
             .and_then(|deps| deps.parent())
-            .expect("localizar diretório target/<profile>")
+            .expect("locate the target/<profile> directory")
             .join(if cfg!(windows) {
                 "pom-fake-enterprise-plugin-host.exe"
             } else {
@@ -6436,33 +6649,32 @@ mod tests {
             });
         assert!(
             fake_host.is_file(),
-            "binário auxiliar {} não foi compilado; rode `cargo test -p node` (não `--lib`) para produzir todos os alvos [[bin]]",
+            "helper binary {} was not built; run `cargo test -p node` (not `--lib`) to produce all the [[bin]] targets",
             fake_host.display()
         );
         let dir = tempfile::tempdir().expect("tempdir");
         let plugin_path = dir.path().join("logs-plugin.bin");
-        std::fs::write(&plugin_path, b"fake-plugin").expect("escrever plugin fake");
+        std::fs::write(&plugin_path, b"fake-plugin").expect("write fake plugin");
         let host_log = dir.path().join("ingest.log");
 
-        // SAFETY: nenhum outro teste desta suíte lê ou grava
-        // POM_PLUGIN_HOST/POM_FAKE_HOST_LOG; só este exercita um
-        // PluginHost::start() real.
+        // SAFETY: no other test in this suite reads or writes
+        // POM_PLUGIN_HOST/POM_FAKE_HOST_LOG; only this one exercises a real
+        // PluginHost::start().
         std::env::set_var("POM_PLUGIN_HOST", fake_host);
         std::env::set_var("POM_FAKE_HOST_LOG", &host_log);
 
         let db = Arc::new(
-            crate::db::PomDb::open(dir.path().join("pom.db")).expect("abrir banco de teste"),
+            crate::db::PomDb::open(dir.path().join("pom.db")).expect("open the test database"),
         );
         let service = Arc::new(MockLicenseService::single(
             "logs",
             activation("logs", "ent-1"),
         ));
-        // `test_manager_with_database` não dispara o `restore()` de boot (ver
-        // `from_codes`): aqui o estado é montado à mão logo abaixo, e uma
-        // restauração concorrente o sobrescreveria a partir do banco em um
-        // instante fora do controle do teste.
-        let manager =
-            PluginManager::test_manager_with_database(&["logs"], service.clone(), db);
+        // `test_manager_with_database` does not trigger the boot `restore()` (see
+        // `from_codes`): here the state is built by hand just below, and a
+        // concurrent restore would overwrite it from the database at an instant
+        // outside the test's control.
+        let manager = PluginManager::test_manager_with_database(&["logs"], service.clone(), db);
         let runtime = manager.runtime_for("logs").expect("runtime");
         activate_ready(&runtime, "PM-test-key", "0.1.0").await;
         {
@@ -6475,17 +6687,17 @@ mod tests {
         runtime.ensure_host_running(&persisted).await;
         assert!(
             runtime.host.lock().await.is_some(),
-            "host deveria subir na primeira ativação"
+            "the host should start on the first activation"
         );
 
         service.set_heartbeat_error(LicenseErrorCode::Revoked).await;
         runtime
             .heartbeat("nonce-revoke")
             .await
-            .expect_err("heartbeat deve refletir a revogação");
+            .expect_err("the heartbeat must reflect the revocation");
         assert!(
             runtime.host.lock().await.is_none(),
-            "host deveria parar quando a licença é revogada"
+            "the host should stop when the license is revoked"
         );
         assert!(!runtime.status().await.active);
 
@@ -6493,11 +6705,11 @@ mod tests {
         runtime
             .heartbeat("nonce-self-heal")
             .await
-            .expect("heartbeat de self-heal deve ter sucesso");
+            .expect("the self-heal heartbeat must succeed");
 
         assert!(
             runtime.host.lock().await.is_some(),
-            "heartbeat de sucesso deveria reiniciar o host sem restart do processo pom"
+            "a successful heartbeat should restart the host without restarting the pom process"
         );
         assert!(runtime.status().await.active);
 
@@ -6516,13 +6728,121 @@ mod tests {
                     }
                 ))
                 .await,
-            "ingest deveria funcionar com o host restaurado"
+            "ingest should work with the restored host"
         );
         let events = std::fs::read_to_string(&host_log).expect("ler log do fake host");
         assert!(
             events.contains("req-1"),
-            "evento de auditoria deveria ter chegado ao host reiniciado"
+            "audit event should have reached the restarted host"
         );
+    }
+
+    /// An on-demand plugin (manifest with `lifecycle: on_demand`) does not have its
+    /// process restarted by boot or heartbeat: only `open_on_demand` starts the
+    /// host, `close_on_demand` stops it, and the installation and license stay.
+    #[tokio::test]
+    async fn an_on_demand_plugin_runs_only_while_opened() {
+        let _serial = REAL_HOST.lock().await;
+        let fake_host = std::env::current_exe()
+            .expect("locate the test binary")
+            .parent()
+            .and_then(|deps| deps.parent())
+            .expect("locate the target/<profile> directory")
+            .join(if cfg!(windows) {
+                "pom-fake-enterprise-plugin-host.exe"
+            } else {
+                "pom-fake-enterprise-plugin-host"
+            });
+        assert!(
+            fake_host.is_file(),
+            "helper binary {} was not built; run `cargo test -p node` (not `--lib`)",
+            fake_host.display()
+        );
+        let dir = tempfile::tempdir().expect("tempdir");
+        let plugin_path = dir.path().join("logs-plugin.bin");
+        std::fs::write(&plugin_path, b"fake-plugin").expect("escrever plugin fake");
+        let host_log = dir.path().join("ingest.log");
+
+        // SAFETY: same criterion as the restart test above; `REAL_HOST` serializes.
+        std::env::set_var("POM_PLUGIN_HOST", fake_host);
+        std::env::set_var("POM_FAKE_HOST_LOG", &host_log);
+
+        let db = Arc::new(
+            crate::db::PomDb::open(dir.path().join("pom.db")).expect("abrir banco de teste"),
+        );
+        let service = Arc::new(MockLicenseService::single(
+            "logs",
+            activation("logs", "ent-1"),
+        ));
+        let manager = PluginManager::test_manager_with_database(&["logs"], service.clone(), db);
+        let runtime = manager.runtime_for("logs").expect("runtime");
+        activate_ready(&runtime, "PM-test-key", "0.1.0").await;
+        {
+            let mut persisted = runtime.persisted.lock().await;
+            persisted.as_mut().unwrap().plugin_path =
+                Some(plugin_path.to_string_lossy().into_owned());
+        }
+        // The manifest declares the lifecycle, and the process has not started yet.
+        assert!(runtime.host.lock().await.is_none());
+        runtime
+            .remember_ui_manifest(
+                serde_json::json!({
+                    "schema": "pom-plugin-ui/v1",
+                    "plugin_code": "logs",
+                    "lifecycle": "on_demand",
+                    "screens": {},
+                    "assets": []
+                }),
+                true,
+            )
+            .await;
+        // Boot and heartbeat do not start an on-demand process.
+        let persisted = runtime.persisted_state().await.expect("persisted");
+        runtime.ensure_host_running(&persisted).await;
+        assert!(
+            runtime.host.lock().await.is_none(),
+            "boot does not start the process"
+        );
+        runtime
+            .heartbeat("nonce-on-demand")
+            .await
+            .expect("heartbeat de sucesso");
+        assert!(
+            runtime.host.lock().await.is_none(),
+            "heartbeat does not start the process"
+        );
+
+        let status = runtime.status().await;
+        assert!(status.active, "active: {status:?}");
+        assert!(status.on_demand, "on_demand: {status:?}");
+        assert!(!status.running);
+        // The menu keeps listing the plugin, through the saved manifest.
+        assert!(runtime.ui_manifest().await.is_some());
+
+        runtime
+            .open_on_demand()
+            .await
+            .expect("opening starts the process");
+        assert!(runtime.status().await.running);
+        runtime
+            .close_on_demand()
+            .await
+            .expect("fechar encerra o processo");
+        let status = runtime.status().await;
+        assert!(
+            !status.running && status.active,
+            "closing does not remove the license or the installation"
+        );
+    }
+
+    #[test]
+    fn the_saved_manifest_decides_on_demand_before_any_process_starts() {
+        let on_demand = serde_json::json!({ "lifecycle": "on_demand" });
+        let resident = serde_json::json!({ "lifecycle": "resident" });
+        assert!(manifest_is_on_demand(Some(&on_demand)));
+        assert!(!manifest_is_on_demand(Some(&resident)));
+        assert!(!manifest_is_on_demand(Some(&serde_json::json!({}))));
+        assert!(!manifest_is_on_demand(None));
     }
 }
 

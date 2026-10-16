@@ -1,14 +1,14 @@
 /**
- * Caixa de entrada dos plugins no sino da barra superior
- * (`components/Notifications.tsx`). Guarda dois tipos de item:
+ * Plugin inbox in the top bar's bell
+ * (`components/Notifications.tsx`). Keeps two kinds of item:
  *
- * - perguntas (`notification.confirm`): esperam Aceitar ou Recusar, como uma
- *   oferta de transferência, e a resposta volta à janela do plugin. Vivem só
- *   nesta aba, porque é aqui que o plugin espera a resposta;
- * - avisos (`notification.notify`, locais ou recebidos da rede): só uma
- *   mensagem, sem botões. Entram como não lidos e ficam lidos quando a pessoa
- *   abre o sino. Os ids lidos ficam no `localStorage`, para um aviso de rede
- *   que continua no snapshot do nó não voltar como novo depois de recarregar.
+ * - questions (`notification.confirm`): wait for Accept or Refuse, like a
+ *   transfer offer, and the answer returns to the plugin's window. They live only
+ *   in this tab, because this is where the plugin waits for the answer;
+ * - notices (`notification.notify`, local or received from the network): just a
+ *   message, without buttons. They enter as unread and become read when the person
+ *   opens the bell. The read ids stay in `localStorage`, so a network notice
+ *   that remains in the node's snapshot does not come back as new after a reload.
  */
 import { useSyncExternalStore } from "react";
 import { storageKey } from "./brand";
@@ -28,7 +28,7 @@ export interface PluginNotice {
   body?: string;
   level: NotificationLevel;
   createdAt: string;
-  /** `network` quando veio de um nó pelo Chat da rede. */
+  /** `network` when it came from a node through the network Chat. */
   source: "local" | "network";
   senderNodeId?: string;
   read: boolean;
@@ -36,7 +36,7 @@ export interface PluginNotice {
 
 type Entry = PendingPluginConfirm & { resolve: (action: "accepted" | "cancelled") => void };
 
-/** Quantos avisos o sino mantém; os mais antigos saem primeiro. */
+/** How many notices the bell keeps; the oldest leave first. */
 const MAX_NOTICES = 30;
 const MAX_READ_IDS = 200;
 const READ_KEY = storageKey("plugin-notices-read");
@@ -64,7 +64,7 @@ function rememberRead(ids: string[]) {
     const next = [...new Set([...readIds(), ...ids])].slice(-MAX_READ_IDS);
     localStorage.setItem(READ_KEY, JSON.stringify(next));
   } catch {
-    // Sem storage (aba privada): o estado de lido vale só até recarregar.
+    // Without storage (private tab): the read state only lasts until a reload.
   }
 }
 
@@ -84,7 +84,7 @@ export function addPendingPluginConfirm(
   emit();
 }
 
-/** Responde e retira a pergunta. Um id desconhecido (já respondido) é ignorado. */
+/** Answers and removes the question. An unknown id (already answered) is ignored. */
 export function answerPendingPluginConfirm(id: string, action: "accepted" | "cancelled") {
   const entry = confirms.find((item) => item.id === id);
   if (!entry) return;
@@ -94,9 +94,9 @@ export function answerPendingPluginConfirm(id: string, action: "accepted" | "can
 }
 
 /**
- * Acrescenta um aviso ao sino. Um id já presente é ignorado; um id já lido
- * antes (outra visita à página) entra como lido. Devolve `true` quando o aviso
- * é novo e ainda não lido.
+ * Adds a notice to the bell. An id already present is ignored; an id already read
+ * before (another visit to the page) enters as read. Returns `true` when the notice
+ * is new and not yet read.
  */
 export function addPluginNotice(notice: Omit<PluginNotice, "read">): boolean {
   if (notices.some((item) => item.id === notice.id)) return false;
@@ -106,7 +106,7 @@ export function addPluginNotice(notice: Omit<PluginNotice, "read">): boolean {
   return !read;
 }
 
-/** Marca todos os avisos como lidos (o sino foi aberto e eles foram vistos). */
+/** Marks every notice as read (the bell was opened and they were seen). */
 export function markPluginNoticesRead() {
   const unread = notices.filter((notice) => !notice.read);
   if (unread.length === 0) return;
@@ -115,7 +115,7 @@ export function markPluginNoticesRead() {
   emit();
 }
 
-/** Tira um aviso do sino. */
+/** Removes a notice from the bell. */
 export function dismissPluginNotice(id: string) {
   const notice = notices.find((item) => item.id === id);
   if (!notice) return;
@@ -151,7 +151,7 @@ export function usePluginNotices(): readonly PluginNotice[] {
   return useSyncExternalStore(subscribe, current, current).notices;
 }
 
-/** Só para testes. */
+/** For tests only. */
 export function resetPluginInboxForTest() {
   confirms = [];
   notices = [];

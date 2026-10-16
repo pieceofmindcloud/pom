@@ -37,10 +37,22 @@ fn cache_files(dir: &std::path::Path) -> Vec<(std::path::PathBuf, u64)> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
-    entries
+    let mut files: Vec<std::path::PathBuf> = entries
         .flatten()
         .map(|entry| entry.path())
         .filter(|path| is_cache_file(path))
+        .collect();
+    // the plugin engines' sessions: one folder of their own, every file in it
+    if let Ok(sessions) = std::fs::read_dir(dir.join(crate::plugin_session::SESSIONS_SUBDIR)) {
+        files.extend(
+            sessions
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| path.is_file()),
+        );
+    }
+    files
+        .into_iter()
         .map(|path| {
             let bytes = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
             (path, bytes)
@@ -75,7 +87,7 @@ pub(super) fn clear_kv_cache_dir(dir: &std::path::Path) -> anyhow::Result<(usize
                 removed.1 += bytes;
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => anyhow::bail!("apagar {}: {error}", path.display()),
+            Err(error) => anyhow::bail!("delete {}: {error}", path.display()),
         }
     }
     Ok(removed)
@@ -108,7 +120,7 @@ pub(super) async fn clear_kv_cache(
             .into_iter()
             .find(|peer| peer.node_id == target)
         else {
-            return bad_request("peer desconhecido");
+            return bad_request("unknown peer");
         };
         return match state
             .control_post_json(&peer, "/api/ui/kv-cache/clear", &json!({}), PEER_TIMEOUT)
@@ -117,11 +129,13 @@ pub(super) async fn clear_kv_cache(
             Ok(response) if response.status().is_success() => {
                 match response.json::<serde_json::Value>().await {
                     Ok(body) => Json(body).into_response(),
-                    Err(error) => bad_request(format!("resposta ilegível da máquina: {error}")),
+                    Err(error) => {
+                        bad_request(format!("unreadable response from the machine: {error}"))
+                    }
                 }
             }
-            Ok(response) => bad_request(format!("a máquina recusou: HTTP {}", response.status())),
-            Err(error) => bad_request(format!("máquina inacessível: {error}")),
+            Ok(response) => bad_request(format!("the machine refused: HTTP {}", response.status())),
+            Err(error) => bad_request(format!("machine unreachable: {error}")),
         };
     }
 
@@ -156,7 +170,7 @@ pub(super) async fn clear_kv_cache(
         bytes,
         ram_entries = ram.0,
         ram_bytes = ram.1,
-        "cache de KV limpo pela interface"
+        "KV cache cleared from the interface"
     );
     Json(json!({
         "cleared": true,
@@ -192,7 +206,7 @@ async fn clear_inference_ram_cache(state: &GatewayState) -> (u64, u64) {
     };
     if !response.status().is_success() {
         warn!(
-            "o servidor de inferência recusou limpar o cache em RAM: HTTP {}",
+            "the inference server refused to clear the RAM cache: HTTP {}",
             response.status()
         );
         return (0, 0);
@@ -240,6 +254,23 @@ mod kv_cache_tests {
         let usage = kv_cache_disk(Some(&missing));
         assert!(usage.enabled);
         assert_eq!((usage.snapshots, usage.bytes), (0, 0));
+    }
+
+    #[test]
+    fn the_sessions_folder_is_counted_and_cleared_with_the_snapshots() {
+        let dir = temp_dir("sessions");
+        std::fs::write(dir.join("a.bin"), vec![0u8; 100]).unwrap();
+        let sessions = dir.join(crate::plugin_session::SESSIONS_SUBDIR);
+        std::fs::create_dir(&sessions).unwrap();
+        std::fs::write(sessions.join("conv.strsess"), vec![0u8; 50]).unwrap();
+        std::fs::write(sessions.join("conv.ids.json"), vec![0u8; 7]).unwrap();
+
+        let usage = kv_cache_disk(Some(&dir));
+        assert_eq!((usage.snapshots, usage.bytes), (1, 157));
+        let removed = clear_kv_cache_dir(&dir).unwrap();
+        assert_eq!(removed, (3, 157));
+        assert!(!sessions.join("conv.strsess").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

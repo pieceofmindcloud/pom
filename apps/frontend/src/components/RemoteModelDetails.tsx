@@ -161,6 +161,8 @@ function QuantizationRow({
         variant={status ? "ghost" : "primary"}
         icon={status ? <Check className="h-3.5 w-3.5" /> : <Download className="h-3.5 w-3.5" />}
         disabled={Boolean(status)}
+        data-guide={status ? undefined : "model-file"}
+        data-guide-quantization={(file.quantization ?? "").toLowerCase()}
         onClick={() => onChoose(file, details)}
       >
         {status || t("remoteModels.download")}

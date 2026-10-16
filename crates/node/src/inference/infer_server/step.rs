@@ -36,13 +36,13 @@ pub(crate) async fn handle_step(
 ) -> Response {
     app.request_activity.mark_now();
     let _load_guard = app.loads.acquire(&app.load_node_id).await;
-    // Só o cabeçalho é lido aqui: um quadro de um item - o caso normal de
-    // todo salto interno - não pode pagar uma cópia do estado oculto inteiro
-    // só para descobrir que não é um lote.
+    // Only the header is read here: a one-item frame - the normal case of every
+    // internal hop - must not pay for a copy of the whole hidden state just to
+    // find out it is not a batch.
     if wire::peek_batch_header(&body).is_ok_and(|header| header.item_count > 1) {
         match wire::decode_batch(&body) {
             Ok(batch) => return handle_step_batch(app, headers, batch).await,
-            Err(error) => return err400(format!("quadro inválido: {error}")),
+            Err(error) => return err400(format!("invalid frame: {error}")),
         }
     }
     // See the matching guard in `handle_prefill`: a one-item batch must not
@@ -62,15 +62,15 @@ pub(crate) async fn handle_step(
     let scheduler = app.scheduler.clone();
     open_tp_decode(&state, &headers, "/v1/step", &body);
     let processing_started = Instant::now();
-    // Lido no começo porque `state` é consumido mais abaixo, e o valor é o
-    // mesmo em qualquer ponto do handler.
+    // Read at the start because `state` is consumed further below, and the value
+    // is the same at any point of the handler.
     let tls_handshake_ms = last_handshake_ms(&state);
     let inbound_bytes = body.len();
     let frame_decode_started = Instant::now();
     let (mut meta, tensor, inbound_wire_timing) =
         match wire::decode_inference_request_profiled(&body) {
             Ok(v) => v,
-            Err(e) => return err400(format!("quadro inválido: {e}")),
+            Err(e) => return err400(format!("invalid frame: {e}")),
         };
     meta["telemetry_source_peer_id"] = json!(app.load_node_id.clone());
     let frame_decode_us = frame_decode_started.elapsed().as_micros() as u64;
@@ -79,7 +79,7 @@ pub(crate) async fn handle_step(
             Ok(dtype) => dtype,
             Err(error) => return err400(error),
         },
-        None => return err400("quadro sem dtype de estado oculto"),
+        None => return err400("frame without a hidden state dtype"),
     };
 
     let sid_key = match required_session_id(&meta) {
@@ -123,14 +123,14 @@ pub(crate) async fn handle_step(
     let incoming_draft: Option<Vec<i32>> = meta
         .get("draft")
         .and_then(|v| serde_json::from_value(v.clone()).ok());
-    // A composição do lote decodificado na cabeça, ecoada de hop em hop até a
-    // cauda — é o que alimenta o `observe` da cabeça `nextn` (ver o doc de
-    // `batch_tokens` em `step_blocking`). Ausente é peer antigo.
+    // The composition of the batch decoded at the head, echoed from hop to hop
+    // down to the tail - it is what feeds the `nextn` head's `observe` (see the
+    // doc of `batch_tokens` in `step_blocking`). Absent means an old peer.
     let batch_tokens: Option<Vec<i32>> = meta
         .get("tokens")
         .and_then(|v| serde_json::from_value(v.clone()).ok());
-    // A largura de lote que o gateway quer na rodada seguinte, gerada na
-    // cabeça (do `speculate`) e ecoada até a cauda (ver o doc de `mtp_k`).
+    // The batch width the gateway wants in the next round, generated at the
+    // head (from `speculate`) and echoed to the tail (see the doc of `mtp_k`).
     let mtp_k: Option<u32> = meta.get("mtp_k").and_then(|v| v.as_u64()).map(|v| v as u32);
     let profiling = crate::prefill::TelemetryContext::from_meta(
         &meta,
@@ -160,8 +160,8 @@ pub(crate) async fn handle_step(
         Err(error) => return err400(error),
     };
     let input_prepare_us = input_prepare_started.elapsed().as_micros() as u64;
-    // A sub-faixa só é válida se este peer consegue executá-la exatamente.
-    // Sem os campos, o contrato antigo continua rodando a fatia inteira.
+    // The sub-range is only valid if this peer can execute it exactly.
+    // Without the fields, the old contract keeps running the whole slice.
     let capture_block = {
         let (slice_start, slice_end) = match lock_inference_state(&state) {
             Ok(st) => (st.start_layer, st.end_layer),
@@ -169,7 +169,7 @@ pub(crate) async fn handle_step(
         };
         match resolve_exec_range(&meta, slice_start, slice_end) {
             Ok(block) => block,
-            Err(motivo) => return err400(motivo),
+            Err(reason) => return err400(reason),
         }
     };
     // Neither of `step_blocking`'s replies echoes `session_id` back — a
@@ -202,19 +202,19 @@ pub(crate) async fn handle_step(
             return (
                 StatusCode::TOO_MANY_REQUESTS,
                 [(axum::http::header::RETRY_AFTER, "1")],
-                format!("fila de inferência cheia (limite {limit})"),
+                format!("inference queue full (limit {limit})"),
             )
                 .into_response();
         }
         Err(SchedulerSubmitError::Closed) => {
-            return err500("scheduler de inferência encerrado");
+            return err500("inference scheduler shut down");
         }
     };
 
     let mut reply = match result {
         Ok(Ok(reply)) => reply,
         Ok(Err(e)) => {
-            let code = if e.to_string().contains("desconhecida") {
+            let code = if e.to_string().contains("unknown") {
                 StatusCode::BAD_REQUEST
             } else {
                 StatusCode::INTERNAL_SERVER_ERROR
@@ -269,8 +269,8 @@ pub(crate) async fn handle_step(
     local_meta["tls_handshake_ms"] = json!(tls_handshake_ms);
     preserve_batch_identity(&meta, &mut local_meta);
 
-    // Resposta direta: quem terminar entrega ao gateway, e o que sai daqui é
-    // só um aceite. Cada hop descreve a si mesmo numa lista que viaja na ida.
+    // Direct reply: whoever finishes delivers to the gateway, and what leaves
+    // here is only an ack. Each hop describes itself in a list that travels on the way out.
     if let Some(reply_to) = direct_reply_to(&meta) {
         let outbound_hidden_state_bytes = match wire::tensor_payload_len(
             local_tensor
@@ -295,7 +295,7 @@ pub(crate) async fn handle_step(
         let hops = next_hops.unwrap_or_default();
 
         if hops.is_empty() {
-            // Cauda: o resultado sai daqui direto para quem pediu.
+            // Tail: the result goes from here straight to whoever asked.
             let mut result = local_meta;
             result["hop_timings"] = json!(hop_timings);
             tokio::spawn(async move {
@@ -305,12 +305,12 @@ pub(crate) async fn handle_step(
         }
 
         let Some((residual, shape)) = local_tensor else {
-            // Não somos a cauda e não temos residual: a cadeia não anda. Dizer
-            // isso ao gateway agora vale mais que deixá-lo esperar o prazo.
+            // We are not the tail and we have no residual: the chain does not move.
+            // Telling the gateway now is worth more than letting it wait for the deadline.
             let failure = crate::relay::RelayFailure {
                 failed_node_id: hops[0].node_id.clone(),
                 kind: "protocol".into(),
-                message: "hop intermediário não produziu estado oculto".into(),
+                message: "intermediate hop produced no hidden state".into(),
             };
             tokio::spawn(async move {
                 crate::direct::deliver_failure(http_client(), &reply_to, failure).await;
@@ -385,7 +385,7 @@ pub(crate) async fn handle_step(
             match rollback_session(&state, &sid_for_forward, accept_count, batch_width) {
                 Ok(true) => {}
                 Ok(false) | Err(_) => {
-                    return err500("rollback especulativo remoto recusado no hop");
+                    return err500("remote speculative rollback refused at the hop");
                 }
             }
         }
@@ -401,19 +401,19 @@ pub(crate) async fn handle_step(
     }
 }
 
-/// Estado do canal persistente: o do servidor de inferência e a configuração
-/// usada para reconferir a `connection_key` a cada quadro.
+/// State of the persistent channel: the inference server's and the configuration
+/// used to re-check the `connection_key` on every frame.
 #[derive(Clone)]
 pub(super) struct LinkState {
     pub(super) app: InferenceAppState,
     pub(super) auth: Option<crate::auth::AuthState>,
 }
 
-/// Serve a ligação persistente da aresta da pipeline. Cada quadro que chega
-/// pelo fluxo é despachado pela mesma tabela de rotas em processo que o
-/// caminho por requisição usa (`InProcessInference::dispatch`), então canal e
-/// requisição executam exatamente o mesmo código de inferência - e passam pela
-/// mesma conferência de credencial.
+/// Serves the persistent connection of the pipeline edge. Each frame that
+/// arrives through the stream is dispatched by the same in-process route table
+/// that the per-request path uses (`InProcessInference::dispatch`), so channel
+/// and request run exactly the same inference code - and go through the same
+/// credential check.
 pub(super) async fn handle_link(
     State(state): State<LinkState>,
     headers: axum::http::HeaderMap,
@@ -426,7 +426,7 @@ pub(super) async fn handle_link(
             if let Some(config) = &state.auth {
                 crate::auth::validate_internal_node_headers(config, &headers)
                     .await
-                    .map_err(|_| anyhow::anyhow!("credencial de peer inválida"))?;
+                    .map_err(|_| anyhow::anyhow!("invalid peer credential"))?;
             }
             use crate::relay::InProcessInference;
             state.app.dispatch(&path, bytes).await
@@ -445,16 +445,16 @@ pub(crate) async fn handle_step_stream(
     app.request_activity.mark_now();
     let (meta, tensor) = match wire::decode_inference_request(&body) {
         Ok(v) => v,
-        Err(error) => return err400(format!("quadro inválido: {error}")),
+        Err(error) => return err400(format!("invalid frame: {error}")),
     };
     if tensor.is_some() {
-        return err400("transporte remoto por lotes não aceita estado oculto");
+        return err400("batched remote transport does not accept a hidden state");
     }
     let Some(mut reply_to) = meta.get("reply_to").cloned() else {
-        return err400("transporte remoto por lotes sem reply_to");
+        return err400("batched remote transport without reply_to");
     };
     if reply_to.get("ticket").and_then(Value::as_str).is_none() {
-        return err400("transporte remoto por lotes sem ticket");
+        return err400("batched remote transport without a ticket");
     }
     // The callback is the only response path for this stream. Carry the
     // request identity alongside its ticket so profiling spans from the
@@ -469,11 +469,11 @@ pub(crate) async fn handle_step_stream(
         .and_then(Value::as_str)
         .and_then(|value| WireDtype::parse(value).ok())
     else {
-        return err400("quadro sem dtype de estado oculto");
+        return err400("frame without a hidden state dtype");
     };
     if required_session_id(&meta).is_err() || meta.get("token_id").and_then(Value::as_i64).is_none()
     {
-        return err400("transporte remoto por lotes sem sessão ou token inicial");
+        return err400("batched remote transport without a session or initial token");
     }
 
     let loads = app.loads.clone();
@@ -556,12 +556,12 @@ pub(super) struct RemoteStreamToken {
     /// includes that hop's compute and its transport, so it is not reported
     /// as local queue time.
     pub(super) downstream_wait_ms: u64,
-    /// Momento monotônico em que o produtor terminou de montar este token.
-    /// Não é serializado: serve apenas para separar produção de espera local.
+    /// Monotonic moment at which the producer finished assembling this token.
+    /// Not serialized: it only serves to separate production from local waiting.
     pub(super) ready_at: Instant,
-    /// Momento monotônico em que o token entrou no canal depois de adquirir
-    /// o permit. Separar este ponto de `ready_at` torna a contrapressão do
-    /// `Sender` observável, sem chamar todo o intervalo de fila.
+    /// Monotonic moment at which the token entered the channel after acquiring
+    /// the permit. Separating this point from `ready_at` makes the `Sender`'s
+    /// backpressure observable, without calling the whole interval queueing.
     pub(super) enqueued_at: Instant,
 }
 
@@ -654,7 +654,7 @@ pub(super) async fn remote_stream_producer(
                 .unwrap_or_else(|error| error.to_string());
             let _ = sender
                 .send(RemoteStreamItem::Error(format!(
-                    "step remoto respondeu com erro: {body}"
+                    "remote step answered with an error: {body}"
                 )))
                 .await;
             return;
@@ -681,7 +681,7 @@ pub(super) async fn remote_stream_producer(
         if tensor.is_some() {
             let _ = sender
                 .send(RemoteStreamItem::Error(
-                    "step remoto devolveu estado oculto em vez de token".into(),
+                    "remote step returned a hidden state instead of a token".into(),
                 ))
                 .await;
             return;
@@ -776,7 +776,7 @@ pub(super) async fn remote_stream_producer(
                         .get("speculation_disabled_reason")
                         .and_then(Value::as_str)
                 })
-                .unwrap_or("nenhum detalhe foi devolvido pela cauda")
+                .unwrap_or("no detail was returned by the tail")
                 .to_owned()
         });
         if requested_mtp {
@@ -830,7 +830,7 @@ pub(super) async fn remote_stream_producer(
         let Some(token_id) = reply_meta.get("token_id").and_then(Value::as_u64) else {
             let _ = sender
                 .send(RemoteStreamItem::Error(
-                    "step remoto não devolveu token".into(),
+                    "remote step returned no token".into(),
                 ))
                 .await;
             return;
@@ -1061,8 +1061,8 @@ pub(super) async fn remote_stream_emitter(
     .await;
 }
 
-/// Um lote terminal que só carrega o erro. Não tem token: serve para o
-/// gateway parar de esperar e nomear a causa.
+/// A terminal batch that only carries the error. It has no token: it serves so
+/// the gateway stops waiting and names the cause.
 pub(super) fn remote_stream_error_batch(error: Value) -> Value {
     json!({
         "accepted": [],
@@ -1126,22 +1126,21 @@ pub(super) async fn emit_remote_stream_batches<F, Fut>(
         previous_delivery_ms = delivery_started.elapsed().as_millis() as u64;
         match delivery_result {
             crate::direct::Delivery::Accepted => {}
-            // O gateway já desistiu deste stream: não há a quem reportar.
+            // The gateway has already given up on this stream: there is no one to report to.
             crate::direct::Delivery::GatewayGone => return,
-            // Sem isto o emissor sumia em silêncio e o gateway só percebia
-            // quando o prazo do frame vencia - espera
-            // por uma falha que este lado já conhecia. O aviso é um lote
-            // terminal pequeno, e vai pela mesma escada de endereços, que
-            // agora sempre tem pelo menos uma tentativa a pagar.
+            // Without this the emitter vanished silently and the gateway only noticed
+            // when the frame's deadline expired - waiting
+            // for a failure that this side already knew about. The notice is a small
+            // terminal batch, and goes through the same address ladder, which
+            // now always has at least one attempt to pay for.
             crate::direct::Delivery::Failed => {
                 warn!(
-                    "lote do stream remoto não chegou ao gateway; encerrando o stream com erro \
-                     explícito em vez de deixar o prazo vencer"
+                    "remote stream batch did not reach the gateway; closing the stream with an explicit error instead of letting the deadline expire"
                 );
                 let _ = deliver(
                     reply_to.clone(),
                     remote_stream_error_batch(json!(
-                        "o lote de decode não chegou ao gateway por nenhum endereço de retorno"
+                        "the decode batch did not reach the gateway through any return address"
                     )),
                 )
                 .await;
@@ -1166,7 +1165,7 @@ mod remote_stream_tests {
     use super::*;
 
     #[tokio::test]
-    async fn emissor_para_quando_a_entrega_termina_antes_do_produtor() {
+    async fn the_emitter_stops_when_delivery_ends_before_the_producer() {
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
         use std::time::Duration;
@@ -1190,7 +1189,7 @@ mod remote_stream_tests {
             run_remote_stream_tasks(producer, async {}),
         )
         .await
-        .expect("a entrega encerrada deve cancelar o produtor");
+        .expect("the closed delivery must cancel the producer");
         assert!(producer_dropped.load(Ordering::Acquire));
     }
 
@@ -1199,7 +1198,7 @@ mod remote_stream_tests {
     }
 
     #[test]
-    fn espera_do_stream_separa_producao_de_fila_com_instantes_conhecidos() {
+    fn stream_wait_separates_production_from_queue_with_known_instants() {
         let origin = Instant::now();
         let wait_started = origin + std::time::Duration::from_millis(100);
         let ready_at = origin + std::time::Duration::from_millis(176);
@@ -1243,7 +1242,7 @@ mod remote_stream_tests {
     }
 
     #[test]
-    fn lote_remoto_preserva_conteudo_ordem_e_tempos() {
+    fn a_remote_batch_preserves_content_order_and_times() {
         let (batch, error, terminal) =
             remote_stream_batch(&[token(4, "A", false), token(9, "ção", true)]);
 
@@ -1263,12 +1262,12 @@ mod remote_stream_tests {
     }
 
     #[tokio::test]
-    async fn lote_remoto_preserva_session_id_do_canal_de_retorno() {
+    async fn a_remote_batch_preserves_the_return_channel_session_id() {
         let (items_tx, items_rx) = mpsc::channel(1);
         items_tx
             .send(token(7, "token", true))
             .await
-            .expect("token enfileirado");
+            .expect("token enqueued");
         drop(items_tx);
 
         emit_remote_stream_batches(
@@ -1283,7 +1282,7 @@ mod remote_stream_tests {
     }
 
     #[test]
-    fn lote_remoto_preserva_tempos_dos_hops_downstream() {
+    fn a_remote_batch_preserves_the_downstream_hop_times() {
         let mut first = token_state(4, "A", false, false, false, None);
         if let RemoteStreamItem::Token(token) = &mut first {
             token.hop_timings = Some(json!([
@@ -1311,7 +1310,7 @@ mod remote_stream_tests {
     }
 
     #[test]
-    fn lote_remoto_soma_contadores_mtp_de_rodadas_agrupadas() {
+    fn a_remote_batch_sums_the_mtp_counters_of_grouped_rounds() {
         let timings = |proposed, accepted, rejected| {
             json!({
                 "mtp_draft_tokens_proposed": proposed,
@@ -1352,7 +1351,7 @@ mod remote_stream_tests {
     }
 
     #[test]
-    fn lote_remoto_transporta_o_rascunho_no_mesmo_callback() {
+    fn a_remote_batch_carries_the_draft_in_the_same_callback() {
         let item = RemoteStreamItem::Token(RemoteStreamToken {
             token_id: 4,
             token_index: 4,
@@ -1389,7 +1388,7 @@ mod remote_stream_tests {
     }
 
     #[test]
-    fn rascunho_remoto_e_instalado_sem_criar_rodada_extra() {
+    fn a_remote_draft_is_installed_without_an_extra_round() {
         let mut step_meta = json!({
             "token_id": 4,
             "speculate": {"k": 4, "m": 0, "source": "mtp"}
@@ -1413,7 +1412,7 @@ mod remote_stream_tests {
     }
 
     #[test]
-    fn rascunho_remoto_desativado_remove_o_estado_com_razao() {
+    fn a_disabled_remote_draft_removes_the_state_with_a_reason() {
         let mut step_meta = json!({
             "speculate": {"k": 4, "m": 0, "source": "mtp", "draft": [5, 6]}
         });
@@ -1422,7 +1421,7 @@ mod remote_stream_tests {
             &mut step_meta,
             None,
             Some(SPECULATION_REASON_MODEL_WITHOUT_MTP),
-            Some("MTP desligado nesta sessão: teste"),
+            Some("MTP off for this session: test"),
         ));
         assert!(step_meta.get("speculate").is_none());
         assert_eq!(
@@ -1431,30 +1430,30 @@ mod remote_stream_tests {
         );
         assert_eq!(
             step_meta["speculation_disabled_detail"],
-            "MTP desligado nesta sessão: teste"
+            "MTP off for this session: test"
         );
     }
 
     #[test]
-    fn erro_depois_de_tokens_mantem_o_prefixo_e_e_terminal() {
+    fn an_error_after_tokens_keeps_the_prefix_and_is_terminal() {
         let (batch, error, terminal) = remote_stream_batch(&[
             token(4, "prefixo", false),
-            RemoteStreamItem::Error("falha no peer seguinte".into()),
+            RemoteStreamItem::Error("failure at the next peer".into()),
         ]);
 
         assert_eq!(batch["accepted"][0]["text"], "prefixo");
         assert_eq!(batch["done"], false);
-        assert_eq!(error.as_deref(), Some("falha no peer seguinte"));
+        assert_eq!(error.as_deref(), Some("failure at the next peer"));
         assert!(terminal);
     }
 
     #[tokio::test]
-    async fn oito_tokens_e_rascunho_cruzam_em_um_unico_callback() {
+    async fn eight_tokens_and_a_draft_cross_in_a_single_callback() {
         let (items_tx, items_rx) = mpsc::channel(16);
         items_tx
             .send(token_state(0, "t0", false, false, true, Some(vec![8, 9])))
             .await
-            .expect("token enfileirado");
+            .expect("token enqueued");
         for id in 1..8 {
             items_tx
                 .send(token_state(
@@ -1466,7 +1465,7 @@ mod remote_stream_tests {
                     None,
                 ))
                 .await
-                .expect("token enfileirado");
+                .expect("token enqueued");
         }
         drop(items_tx);
 
@@ -1494,12 +1493,12 @@ mod remote_stream_tests {
         assert_eq!(batch["next_draft"], json!([8, 9]));
         assert!(
             deliveries_rx.try_recv().is_err(),
-            "oito tokens e o rascunho, um callback"
+            "eight tokens and the draft, one callback"
         );
     }
 
     #[tokio::test]
-    async fn emitter_nao_conta_fila_anterior_ao_inicio_da_janela() {
+    async fn the_emitter_does_not_count_queue_time_before_the_window_start() {
         use std::time::{Duration, Instant};
 
         let (items_tx, items_rx) = mpsc::channel(1);
@@ -1509,7 +1508,7 @@ mod remote_stream_tests {
             token.ready_at = queued_at;
             token.enqueued_at = queued_at;
         }
-        items_tx.send(item).await.expect("token enfileirado");
+        items_tx.send(item).await.expect("token enqueued");
         drop(items_tx);
 
         let (deliveries_tx, mut deliveries_rx) = mpsc::channel(1);
@@ -1535,15 +1534,15 @@ mod remote_stream_tests {
     }
 
     #[tokio::test]
-    async fn falha_de_entrega_do_stream_chega_em_lote_de_erro() {
+    async fn a_stream_delivery_failure_arrives_as_an_error_batch() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::time::{Duration, Instant};
 
         let (items_tx, items_rx) = mpsc::channel(4);
         items_tx
-            .send(token(7, "token antes da falha", true))
+            .send(token(7, "token before the failure", true))
             .await
-            .expect("token enfileirado");
+            .expect("token enqueued");
         drop(items_tx);
 
         let attempts = Arc::new(AtomicUsize::new(0));
@@ -1572,27 +1571,27 @@ mod remote_stream_tests {
         let error_batch = deliveries_rx
             .recv()
             .await
-            .expect("a falha deve chegar como lote terminal");
+            .expect("the failure must arrive as a terminal batch");
         assert_eq!(
             error_batch["error"],
-            json!("o lote de decode não chegou ao gateway por nenhum endereço de retorno")
+            json!("the decode batch did not reach the gateway through any return address")
         );
         assert!(error_batch["accepted"].as_array().unwrap().is_empty());
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
         assert!(
             started.elapsed() < Duration::from_secs(1),
-            "a falha do stream não pode esperar o deadline: {:?}",
+            "the stream failure cannot wait for the deadline: {:?}",
             started.elapsed()
         );
     }
 }
 
-/// Monta o metadado que um hop de decode encaminha ao próximo peer.
+/// Builds the metadata that a decode hop forwards to the next peer.
 ///
-/// A faixa carregada do próximo peer não basta para definir o que ele deve
-/// executar: uma mesma fatia pode ser usada por ramos diferentes. Por isso a
-/// sub-faixa é escolhida pelo `PipelineStep` do próximo hop e viaja em cada
-/// quadro `/v1/step`.
+/// The next peer's loaded range is not enough to define what it must execute:
+/// the same slice may be used by different branches. That is why the
+/// sub-range is chosen by the next hop's `PipelineStep` and travels in every
+/// `/v1/step` frame.
 pub(super) fn step_forward_meta(
     session_id: &str,
     request_meta: &Value,
@@ -1688,7 +1687,7 @@ pub(super) async fn relay_and_bubble(
                 // chain didn't relay when it should have; surviving loud
                 // rather than silently dropping the tensor.
                 warn!(
-                    "resposta de {} veio com tensor num retransmissão já borbulhada — descartando",
+                    "response from {} came with a tensor in an already bubbled relay — discarding",
                     next.node_id
                 );
             }

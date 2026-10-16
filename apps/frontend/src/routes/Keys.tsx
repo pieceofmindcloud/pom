@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { Confirm } from "../components/Confirm";
+import { copyText } from "../lib/clipboard";
 import {
   Button,
   ErrorState,
@@ -53,9 +54,11 @@ function Secret({ value, label }: { value: string; label: string }) {
         variant="ghost"
         aria-label={t("keys.copy", { label })}
         onClick={() => {
-          void navigator.clipboard.writeText(value);
-          setCopied(true);
-          window.setTimeout(() => setCopied(false), 1600);
+          void copyText(value).then((ok) => {
+            if (!ok) return;
+            setCopied(true);
+            window.setTimeout(() => setCopied(false), 1600);
+          });
         }}
         icon={
           copied ? (
@@ -82,13 +85,14 @@ export function ConnectionKeys() {
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   /*
-   * Ver a chave é de quem opera esta máquina - ela já está no `pom.json` dela,
-   * e esta tela só é servida atrás da fronteira administrativa. **Trocá-la** é
-   * outra coisa: a chave é a mesma no cluster inteiro, e girá-la corta todos
-   * os outros nós. Continua sendo `/admin/regenerate-key`, e a autoridade
-   * efetiva é o que decide - `profile: admin` sem concessão não a tem.
+   * Seeing the key belongs to whoever operates this machine - it is already in
+   * its `pom.json`, and this screen is only served behind the administrative
+   * boundary. **Changing it** is another matter: the key is the same across the
+   * whole cluster, and rotating it cuts off every other node. It is still
+   * `/admin/regenerate-key`, and the effective authority is what decides -
+   * `profile: admin` without a grant does not have it.
    */
-  const canRotate = node.data?.authority_level != null;
+  const canRotate = node.data?.authority_level === "primary";
 
   async function regenerate() {
     setBusy(true);

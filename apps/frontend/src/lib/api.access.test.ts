@@ -96,12 +96,12 @@ describe("administrative access token", () => {
 });
 
 /**
- * A sessão administrativa vive na memória do nó e o token humano vive na
- * memória desta aba: um reinício do nó, ou o fim da validade, derruba as duas
- * com a aba aberta. Sem este aviso, cada tela imprimia o 401 cru do servidor e
- * o operador não tinha caminho de volta ao portão que não fosse recarregar.
+ * The administrative session lives in the node's memory and the human token
+ * lives in this tab's memory: a node restart, or the end of validity, drops
+ * both with the tab open. Without this notice, each screen printed the server's
+ * raw 401 and the operator had no way back to the gate other than reloading.
  */
-describe("perda da sessão administrativa", () => {
+describe("loss of the administrative session", () => {
   function refusal(status: number, kind: string | null) {
     return {
       ok: false,
@@ -111,7 +111,7 @@ describe("perda da sessão administrativa", () => {
     };
   }
 
-  it("avisa e descarta a credencial quando o nó nomeia a recusa", async () => {
+  it("warns and drops the credential when the node names the refusal", async () => {
     apiModule.setAdminAccessToken("admin-secret");
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(refusal(401, "missing-token")));
     const seen = vi.fn();
@@ -124,7 +124,7 @@ describe("perda da sessão administrativa", () => {
     stop();
   });
 
-  it("também avisa quando a credencial existe e não confere", async () => {
+  it("also warns when the credential exists and does not match", async () => {
     apiModule.setAdminAccessToken("admin-secret");
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(refusal(403, "invalid-token")));
     const seen = vi.fn();
@@ -137,10 +137,10 @@ describe("perda da sessão administrativa", () => {
   });
 
   /**
-   * Um 403 de perfil não é sessão perdida: quem manda de volta ao portão quem
-   * já está autenticado o obriga a reautenticar para ver a mesma recusa.
+   * A profile 403 is not a lost session: sending back to the gate someone who
+   * is already authenticated forces them to reauthenticate to see the same refusal.
    */
-  it("não confunde a recusa de perfil com sessão perdida", async () => {
+  it("does not mistake a profile refusal for a lost session", async () => {
     apiModule.setAdminAccessToken("admin-secret");
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
       ok: false,
@@ -158,7 +158,7 @@ describe("perda da sessão administrativa", () => {
     stop();
   });
 
-  it("ignora a recusa vinda de uma rota que não é da superfície administrativa", async () => {
+  it("ignores a refusal coming from a route outside the administrative surface", async () => {
     apiModule.setAdminAccessToken("admin-secret");
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(refusal(401, "missing-token")));
     const seen = vi.fn();

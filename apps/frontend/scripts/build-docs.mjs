@@ -9,7 +9,7 @@
  * dev`) runs it first; the Documentation screen loads the markdown through
  * `import.meta.glob` and the metadata through the manifest.
  *
- * The set is the curated "documentação viva": every AGENTS.md in the repo
+ * The set is the curated "living documentation": every AGENTS.md in the repo
  * (the root one, the per-folder ones from the documentation pass), the
  * subsystem READMEs under `docs/subsystems/`, plus `README.md` and
  * `apps/frontend/README.md`. `docs/superpowers/` (historical design specs) is
@@ -23,9 +23,9 @@ const here = dirname(fileURLToPath(import.meta.url)); // apps/frontend/scripts
 const repo = join(here, "..", "..", "..");
 const out = join(here, "..", "src", "docs");
 
-// `docs` é o diretório de saída (`src/docs`): a caminhada do frontend não pode
-// re-coletar os arquivos que ela própria embute, ou os AGENTS.md copiados
-// viram duplicatas dentro da lista.
+// `docs` is the output directory (`src/docs`): the frontend walk must not
+// re-collect the files it embeds itself, or the copied AGENTS.md files
+// become duplicates inside the list.
 const SKIP_DIRS = new Set(["node_modules", "dist", "target", ".git", "venv", "docs"]);
 
 /** Walks a subtree collecting every file whose name is `name`. */
@@ -187,10 +187,10 @@ entries.sort((a, b) => {
   const sa = SECTION_ORDER.indexOf(a.section);
   const sb = SECTION_ORDER.indexOf(b.section);
   if (sa !== sb) return sa - sb;
-  // subsistemas seguem a ordem de leitura do mapa em docs/AGENTS.md, não a
-  // alfabética: rede primeiro, build/execução por último.
+  // subsystems follow the reading order of the map in docs/AGENTS.md, not the
+  // alphabetical one: network first, build/run last.
   if (a.section === "subsystems") return subsystemsOrder(a.path) - subsystemsOrder(b.path);
-  // raiz: AGENTS.md primeiro; o resto por caminho.
+  // root: AGENTS.md first; the rest by path.
   if (a.section === "root" && a.path !== b.path) return a.path === "AGENTS.md" ? -1 : 1;
   return a.path.localeCompare(b.path);
 });

@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 /**
- * A rede vazia na visao estendida mostra uma unica mensagem.
+ * The empty network in the extended view shows a single message.
  *
- * Antes do fix, com `c.peers.length === 0` a visao estendida desenhava duas
- * mensagens empilhadas: o painel `dashboard.noMachines` dentro da area de
- * rolagem e o overlay `dashboard.emptyNetwork` ancorado ao fundo. O overlay
- * saiu, e este teste confirma que so uma aparece.
+ * Before the fix, with `c.peers.length === 0` the extended view drew two
+ * stacked messages: the `dashboard.noMachines` panel inside the scroll
+ * area and the `dashboard.emptyNetwork` overlay anchored to the bottom. The
+ * overlay is gone, and this test confirms that only one shows.
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -149,7 +149,7 @@ function mount(
 describe("Dashboard", () => {
   afterEach(cleanup);
 
-  it("renderiza uma unica mensagem com a rede vazia na visao estendida", async () => {
+  it("renders a single message with the empty network in the extended view", async () => {
     mount();
 
     await waitFor(() => {
@@ -175,7 +175,7 @@ describe("Dashboard", () => {
     expect(screen.queryByText("A rede esta vazia")).toBeNull();
   });
 
-  it("sem modelo ativo oculta Adicionar e abre Detalhes por padrão", async () => {
+  it("without an active model hides Add and opens Details by default", async () => {
     mount(fakeCluster([], ""));
 
     const details = await screen.findByRole("button", { name: /Detalhes/ });
@@ -186,7 +186,7 @@ describe("Dashboard", () => {
     expect(screen.getAllByText(/Nenhuma m.quina na rede/i).some((el) => el.closest(".hidden") == null)).toBe(true);
   });
 
-  it("mostra no fluxo do Painel o RTT das arestas da implantação", async () => {
+  it("shows the RTT of the deployment edges in the Dashboard flow", async () => {
     const cluster = fakeCluster([
       fakeSlicePeer("a", 0, 15),
       fakeSlicePeer("b", 16, 31),
@@ -209,11 +209,11 @@ describe("Dashboard", () => {
     await waitFor(() => expect(screen.getByText("RTT 7.4 ms")).toBeTruthy());
   });
 
-  it("mostra o custo da rota de um modelo inteiro com um unico head", async () => {
+  it("shows the route cost of a whole model with a single head", async () => {
     const cluster = fakeCluster([fakeSlicePeer("head", 0, 31)], "qwen35");
 
     mount(cluster, "admin", undefined, undefined, undefined, [
-      // Resposta direta: meio RTT da ida (5) e meio da volta (3).
+      // Direct response: half the outbound RTT (5) and half the return one (3).
       { nodeIds: ["head", "gateway"], legsMs: [5, 3], computeMs: null, networkMs: 4, returnMode: "direct" },
     ]);
 
@@ -227,13 +227,13 @@ describe("Dashboard", () => {
   });
 
   /**
-   * A cobertura sai do que os pares anunciam no gossip, não da leitura de cada
-   * um: uma máquina cujo endereço anunciado morreu continua contribuindo
-   * camadas. Mostrar "completo" em verde nesse estado é o pior que a tela pode
-   * fazer - o operador acredita numa pipeline fechada que ninguém consegue
-   * consultar.
+   * The coverage comes from what the peers announce in the gossip, not from
+   * reading each one: a machine whose announced address died keeps contributing
+   * layers. Showing "complete" in green in that state is the worst the screen can
+   * do - the operator believes in a closed pipeline that nobody can
+   * query.
    */
-  it("não dá cobertura por confirmada quando uma máquina dela não pôde ser lida", async () => {
+  it("does not treat coverage as confirmed when one of its machines could not be read", async () => {
     const cluster = fakeCluster([
       fakeSlicePeer("a", 0, 15),
       { ...fakeSlicePeer("b", 16, 31), rediscovering: true },
@@ -254,7 +254,7 @@ describe("Dashboard", () => {
     );
   });
 
-  it("esconde adicionar e desimplantar para um nó comum", async () => {
+  it("hides add and undeploy for a regular node", async () => {
     const cluster = fakeCluster([
       fakeSlicePeer("a", 0, 15),
       fakeSlicePeer("b", 16, 31),
@@ -262,19 +262,19 @@ describe("Dashboard", () => {
 
     mount(cluster, "node");
 
-    // O seletor de vista não existe neste perfil: o Fluxo é a única vista.
+    // The view selector does not exist on this profile: Flow is the only view.
     await waitFor(() => expect(screen.getByLabelText("Modelo")).toBeTruthy());
     expect(screen.queryByRole("button", { name: "Adicionar" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Desimplantar" })).toBeNull();
   });
 
   /**
-   * O Painel tem duas vistas do mesmo cluster, e os Detalhes são operação do
-   * cluster: os cards trazem o estado interno de cada máquina e os botões de
-   * liberar fatia, remover do pipeline e tirar da rede. Fora do `admin` resta
-   * o Fluxo, e onde há uma vista só não há o que escolher.
+   * The Dashboard has two views of the same cluster, and Details are cluster
+   * operation: the cards carry each machine's internal state and the buttons to
+   * release a slice, remove from the pipeline and take off the network. Outside
+   * `admin` Flow is left, and where there is a single view there is nothing to choose.
    */
-  it("nega os Detalhes ao perfil node e tira o seletor de vista da tela", async () => {
+  it("denies Details to the node profile and removes the view selector from the screen", async () => {
     const cluster = fakeCluster([
       fakeSlicePeer("a", 0, 15),
       fakeSlicePeer("b", 16, 31),
@@ -287,7 +287,7 @@ describe("Dashboard", () => {
     expect(screen.queryByRole("button", { name: /Fluxo/ })).toBeNull();
   });
 
-  it("mantém as duas vistas e o seletor para o administrador", async () => {
+  it("keeps both views and the selector for the administrator", async () => {
     const cluster = fakeCluster([
       fakeSlicePeer("a", 0, 15),
       fakeSlicePeer("b", 16, 31),
@@ -300,7 +300,7 @@ describe("Dashboard", () => {
     expect(screen.getByRole("button", { name: /Detalhes/ })).toBeTruthy();
   });
 
-  it("mostra adicionar e desimplantar para o administrador", async () => {
+  it("shows add and undeploy for the administrator", async () => {
     const cluster = fakeCluster([
       fakeSlicePeer("a", 0, 15),
       fakeSlicePeer("b", 16, 31),
@@ -314,7 +314,7 @@ describe("Dashboard", () => {
     });
   });
 
-  it("usa a implantação padrão para manter as propriedades no mapa", async () => {
+  it("uses the default deployment to keep the properties on the map", async () => {
     const stale = deploymentRow("d-stale", {
       isDefault: false,
       activeVersion: 2,
@@ -340,8 +340,24 @@ describe("Dashboard", () => {
     expect(screen.getByText(/d-curren/)).toBeTruthy();
   });
 
+  it("shows the plugin engine section in the properties when the version runs on it", async () => {
+    const strata = deploymentRow("d-strata", { isDefault: true, activeVersion: 1 });
+    Object.assign(strata.deployment.versions[0].params, { inference_service: "strata" });
+
+    mount(
+      fakeCluster([fakeSlicePeer("a", 0, 31)], "qwen35"),
+      "admin",
+      undefined,
+      undefined,
+      { node_id: "a", deployments: [strata] },
+    );
+
+    // Without the service announced in the cluster, the engine shows by the plugin's code.
+    expect(await screen.findByText("Configurações do strata")).toBeTruthy();
+  });
+
   it.each(["node", "infer"] as const)(
-    "mostra a fatia local e não transforma a cobertura do cluster em alarme no perfil %s",
+    "shows the local slice and does not turn the cluster coverage into an alarm in the %s profile",
     async (profile) => {
       const cluster = fakeCluster([
         fakeSlicePeer("self", 4, 11, {
@@ -377,7 +393,7 @@ describe("Dashboard", () => {
     },
   );
 
-  it("diz que os dados locais são desconhecidos quando o perfil não consegue lê-los", async () => {
+  it("says the local data is unknown when the profile cannot read it", async () => {
     const cluster = fakeCluster([
       fakePeer({ node_id: "self", is_self: true, load: null }),
     ], "");

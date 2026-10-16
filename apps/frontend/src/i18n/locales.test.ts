@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   formatMessage,
-  localizeServerText,
   messageKeys,
   resolveLocale,
   SUPPORTED_LOCALES,
@@ -22,13 +21,13 @@ describe("resolveLocale", () => {
 });
 
 /**
- * Um texto novo escrito só em inglês não quebra nada: `formatMessage` cai no
- * inglês quando a chave falta, e a tela em pt-BR passa a ter uma frase em
- * inglês no meio, sem erro nenhum no console. Este teste é o único lugar que
- * repara nisso.
+ * A new text written only in English breaks nothing: `formatMessage` falls back to
+ * English when the key is missing, and the pt-BR screen ends up with a sentence in
+ * English in the middle of it, with no error in the console at all. This test is the only place that
+ * notices that.
  */
-describe("cobertura das traduções", () => {
-  it("define exatamente as mesmas chaves nos dois idiomas", () => {
+describe("translation coverage", () => {
+  it("defines exactly the same keys in both languages", () => {
     const [first, ...rest] = SUPPORTED_LOCALES;
     const reference = new Set(messageKeys(first));
     for (const locale of rest) {
@@ -68,34 +67,7 @@ describe("formatMessage", () => {
 });
 
 /**
- * Texto que vem do nó carrega nome de máquina. Traduzir a frase e perder o
- * nome seria pior que não traduzir; deixar em português numa tela em inglês
- * era o que acontecia com o desfecho de uma transferência.
+ * Text that comes from the node carries a machine name. Translating the sentence and losing the
+ * name would be worse than not translating; leaving it in Portuguese on an English screen
+ * was what happened with the outcome of a transfer.
  */
-describe("localizeServerText", () => {
-  it("traduz o motivo mantendo o nome da máquina", () => {
-    expect(localizeServerText("en", "recusado por ksia")).toBe("refused by ksia");
-    expect(localizeServerText("en", "cancelado por atena")).toBe("cancelled by atena");
-  });
-
-  it("em pt-BR o texto do nó passa intacto", () => {
-    expect(localizeServerText("pt-BR", "recusado por ksia")).toBe("recusado por ksia");
-  });
-
-  it("traduz a etapa que o nó reporta enquanto pede o digest", () => {
-    expect(localizeServerText("en", "conferindo o arquivo na origem")).toBe(
-      "checking the file at the source",
-    );
-  });
-
-  it("traduz as recusas de autoridade da implantação", () => {
-    expect(localizeServerText(
-      "en",
-      "somente o administrador pode adicionar uma máquina à implantação",
-    )).toBe("Only the administrator can add a machine to a deployment.");
-    expect(localizeServerText(
-      "en",
-      "somente o administrador pode desimplantar a implantação",
-    )).toBe("Only the administrator can undeploy a deployment.");
-  });
-});

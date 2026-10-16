@@ -109,7 +109,7 @@ The permanent runtime guides. Beyond what their titles say:
   `build-and-run.md` it documents the daily `pom_core`
   release notice, applied only after explicit authorization in the UI; that
   notice is not a plugin and lives in `crates/node/src/pom_core_update.rs`
-  with its own routes and screen (`/api/ui/pom-update/*`, `/config/sobre`).
+  with its own routes and screen (`/api/ui/pom-update/*`, `/config/about`).
 
 ## superpowers/specs/ and superpowers/plans/
 

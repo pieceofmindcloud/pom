@@ -12,7 +12,6 @@ import { createPortal } from "react-dom";
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useI18n } from "../i18n/provider";
-import { localizeServerText } from "../i18n/locales";
 
 // ── Surfaces ─────────────────────────────────────────────────────────────────
 
@@ -189,15 +188,15 @@ export function Button({
 }
 
 /**
- * O tamanho é escolhido aqui, por `compact`, e não acrescentado pelo chamador.
+ * The size is chosen here, by `compact`, and not added by the caller.
  *
- * `clsx` concatena, não resolve conflito de Tailwind: quando duas utilitárias
- * da mesma propriedade caem na mesma classe, quem vence é a ordem da folha de
- * estilo, não a ordem do argumento. Os campos do inspetor pediam
- * `h-6 px-1.5 text-[0.62rem]` e renderizavam `h-9 px-3 text-sm` — o painel
- * inteiro saía em tamanho cheio e as classes passadas eram letra morta. Uma
- * variante troca as utilitárias em vez de empilhá-las, então o pedido do
- * chamador é o que aparece.
+ * `clsx` concatenates, it does not resolve Tailwind conflicts: when two utilities
+ * of the same property land in the same class, the winner is the order of the
+ * stylesheet, not the order of the argument. The inspector's fields asked for
+ * `h-6 px-1.5 text-[0.62rem]` and rendered `h-9 px-3 text-sm` - the whole panel
+ * came out at full size and the classes passed were dead letter. A
+ * variant swaps the utilities instead of stacking them, so the caller's request
+ * is what shows up.
  */
 export function Input({
   className,
@@ -220,8 +219,8 @@ export function Input({
   );
 }
 
-/** Mesma variante do `Input`, e pelo mesmo motivo: os dois vivem lado a lado no
- *  inspetor, e um encolher sem o outro deixa a coluna desalinhada. */
+/** Same variant as `Input`, and for the same reason: the two live side by side in the
+ *  inspector, and one shrinking without the other leaves the column misaligned. */
 export function Select({
   className,
   compact,
@@ -311,11 +310,11 @@ function clamp(value: number, min: number, max: number) {
 }
 
 /**
- * O estado e o posicionamento de um balão de portal, compartilhados por
- * `AlertTooltip` (aviso âmbar) e `InfoTip` (dica neutra). Portal fixo para não
- * ser cortado pelo scroll do inspetor; a largura máxima mais
- * `overflow-wrap:anywhere` seguram ids sem espaços dentro da viewport. Abre
- * por hover e por foco, fixa no clique, fecha no Escape ou num clique fora.
+ * The state and positioning of a portal bubble, shared by
+ * `AlertTooltip` (amber warning) and `InfoTip` (neutral tip). Fixed portal so as not to
+ * be clipped by the inspector's scroll; the maximum width plus
+ * `overflow-wrap:anywhere` keep space-less ids inside the viewport. Opens
+ * on hover and on focus, pins on click, closes on Escape or on a click outside.
  */
 function usePositionedPopover() {
   const [open, setOpen] = useState(false);
@@ -375,18 +374,19 @@ function usePositionedPopover() {
 }
 
 /**
- * Avisos compactos que continuam sendo uma superfície de leitura completa.
+ * Compact warnings that remain a full reading surface.
  */
 export function AlertTooltip({
   label,
   message,
-  /** Densidade do inspetor: mesmo tamanho do `[i]`, sem a moldura do aviso. */
+  /** Inspector density: same size as the `[i]`, without the warning's frame. */
   compact = false,
 }: {
   label: string;
   message: string;
   compact?: boolean;
 }) {
+  const { t } = useI18n();
   const { open, setOpen, pinned, setPinned, position, triggerRef, tooltipRef } =
     usePositionedPopover();
   const tooltipId = `alert-tooltip-${useId().replaceAll(":", "")}`;
@@ -399,11 +399,11 @@ export function AlertTooltip({
       <button
         ref={triggerRef}
         type="button"
-        aria-label={`Ver aviso para ${label}`}
+        aria-label={t("common.viewWarningFor", { label })}
         aria-expanded={open}
         aria-controls={open ? tooltipId : undefined}
         aria-describedby={open ? tooltipId : undefined}
-        title={`Aviso para ${label}`}
+        title={t("common.warningFor", { label })}
         onMouseEnter={() => setOpen(true)}
         onMouseLeave={closeIfUnpinned}
         onFocus={() => setOpen(true)}
@@ -440,13 +440,14 @@ export function AlertTooltip({
 }
 
 /**
- * Uma dica neutra ao lado de um controle: o `[i]` abre no hover, no foco ou
- * no toque, e o texto explica o que o parâmetro faz e como ele afeta a
- * inferência. Mesma mecânica de portal do `AlertTooltip`, sem o peso visual
- * de um aviso - a informação fica escondida até ser pedida para não poluir o
- * painel.
+ * A neutral tip beside a control: the `[i]` opens on hover, on focus or
+ * on touch, and the text explains what the parameter does and how it affects
+ * inference. Same portal mechanics as `AlertTooltip`, without the visual weight
+ * of a warning - the information stays hidden until asked for so as not to pollute the
+ * panel.
  */
 export function InfoTip({ label, message }: { label: string; message: string }) {
+  const { t } = useI18n();
   const { open, setOpen, pinned, setPinned, position, triggerRef, tooltipRef } =
     usePositionedPopover();
   const tooltipId = `info-tip-${useId().replaceAll(":", "")}`;
@@ -459,7 +460,7 @@ export function InfoTip({ label, message }: { label: string; message: string }) 
       <button
         ref={triggerRef}
         type="button"
-        aria-label={`O que é ${label}`}
+        aria-label={t("common.whatIs", { label })}
         aria-expanded={open}
         aria-controls={open ? tooltipId : undefined}
         aria-describedby={open ? tooltipId : undefined}
@@ -519,6 +520,65 @@ export function Badge({
     >
       {children}
     </span>
+  );
+}
+
+// ── Tabs ─────────────────────────────────────────────────────────────────────
+
+export type TabItem<T extends string> = {
+  value: T;
+  label: ReactNode;
+  icon?: ReactNode;
+  /** After the label, e.g. a count. */
+  badge?: ReactNode;
+  disabled?: boolean;
+};
+
+/**
+ * A row of tabs drawn as folder tabs over the content below (the POM-JEV look,
+ * `--tab-*` in the theme): the chosen tab joins the surface under it, marked by
+ * a teal line on top. `fill` spreads the tabs over the whole row.
+ */
+export function Tabs<T extends string>({
+  items,
+  value,
+  onChange,
+  label,
+  fill = false,
+  className,
+}: {
+  items: TabItem<T>[];
+  value: T;
+  onChange: (value: T) => void;
+  label?: string;
+  fill?: boolean;
+  className?: string;
+}) {
+  return (
+    <div role="tablist" aria-label={label} className={clsx("pom-tabs", fill && "pom-tabs-fill", className)}>
+      {items.map((item) => {
+        const on = item.value === value;
+        return (
+          <button
+            key={item.value}
+            type="button"
+            role="tab"
+            aria-selected={on}
+            disabled={item.disabled}
+            onClick={() => onChange(item.value)}
+            className={clsx("pom-tab", on && "pom-tab-on")}
+          >
+            {item.icon && (
+              <span className="pom-tab-icon" aria-hidden="true">
+                {item.icon}
+              </span>
+            )}
+            {item.label}
+            {item.badge}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
@@ -598,7 +658,7 @@ export function Meter({
   value,
   detail,
   tone = "iris",
-  /** Densidade do card de máquina, onde cabem oito medidores numa tela. */
+  /** Density of the machine card, where eight gauges fit on one screen. */
   compact = false,
 }: {
   label: string;
@@ -678,14 +738,14 @@ export function ErrorState({
   error: unknown;
   onRetry?: () => void;
 }) {
-  const { t, locale } = useI18n();
+  const { t } = useI18n();
   const message = error instanceof Error ? error.message : String(error);
   return (
     <div className="flex items-start gap-3 rounded-xl border border-rose/30 bg-rose/[0.07] px-4 py-3.5">
       <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-rose" />
       <div className="min-w-0 flex-1">
         <p className="text-sm font-medium text-fg">{title ?? t("common.loadFailed")}</p>
-        <p className="break-path mt-1 text-sm text-muted">{localizeServerText(locale, message)}</p>
+        <p className="break-path mt-1 text-sm text-muted">{message}</p>
       </div>
       {onRetry && (
         <Button size="sm" variant="ghost" onClick={onRetry}>
@@ -766,7 +826,7 @@ export function Footnote({
 export function KeyValue({
   label,
   children,
-  /** Densidade do card de máquina. */
+  /** Density of the machine card. */
   compact = false,
 }: {
   label: string;

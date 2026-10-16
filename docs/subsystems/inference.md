@@ -53,6 +53,55 @@ also do not serve as a reusable prefix nor as a snapshot
 (`Session::positions_match_cells`): `prompt_tokens` there is filler, not the
 cells' real ids.
 
+On the hub hand-off, `mrope_positions` travels in the metadata together with the residual so
+every downstream slice preserves the head's logical positions.
+
+### The projector's placement and its caps
+
+`LlmEngine` loads the `mtmd` context only when `NodeConfig.mmproj_path` is configured. The head's
+prefill carries the images in base64 only on the first chunk; the peers decode them and the `mtmd`
+does the prefill in order.
+
+Before applying a configuration, `NodeConfig::validate` reads both GGUF headers and refuses a path
+that is not a projector or whose output identity/dimension contradicts the model. That also keeps
+an incompatible `mmproj_path` persisted earlier from reaching the server.
+
+The projector is placed by `VisionContext::load` after the model and its contexts are loaded: on
+the GPU with the most free memory that fits its weights plus `VISION_COMPUTE_RESERVE_BYTES`, or on
+the CPU when none fits - loading it on a full GPU made llama.cpp abort in the warmup or dereference
+null in `ggml_gallocr_alloc_graph` on the first image. `image_max_tokens` is capped at
+`VISION_MAX_IMAGE_TOKENS`, which bounds the warmup and each encode.
+
+### An image on a hyper-connection model enters as `hc` copies
+
+`qwen4exp` reads any batch without token ids as its wide residual (`n_embd_out = hc * n_embd` per
+row), the form one pipeline hop forwards to the next. The projector emits `n_embd_inp` per row, so
+`mtmd_helper_eval_chunks` aborted the head in `ggml_reshape_3d` on the first image. When
+`n_embd_out` is a whole multiple of `n_embd_inp`, `decode_multimodal` evaluates the chunks itself
+(`eval_chunks_with_wide_images`): text chunks still go through the mtmd helper, and each image is
+encoded by mtmd and decoded with every row repeated `n_embd_out / n_embd_inp` times, which is how
+the token path starts the residual. Positions and the non-causal switch follow the helper.
+
+Such a model runs without `cparams.embeddings`, so its last layer keeps only the rows marked as
+outputs; when the hop forwards the residual, every text and image cell is marked (the mtmd helper
+marks only the last one, and `take_residual` then refused the short capture). Text chunks are
+decoded there too for that reason. Other models keep the stock helper.
+
+### M-RoPE hidden-state batches carry four positions per row
+
+With an embedding batch (`batch.token` null) llama.cpp reads `pos[j * n_tokens + i]` for every
+M-RoPE section. Text-only requests used to send one scalar position per row, so every peer after
+the head rotated sections 1-3 with heap garbage and a long prompt crashed in
+`llama_batch_allocr::ubatch_add` once the read crossed a page. `decode_hidden` and the batched
+hidden path build the four sections (`text_mrope_positions`) whenever the model's rope type is
+MROPE or IMROPE. MTP batches carry tokens, so llama.cpp reads one position there.
+
+### The cause of a failed prefill
+
+A failed prefill reaches the client as `Prefill falhou: <cause>` ("Prefill failed: <cause>"), built
+by `prefill::failure_cause`, which drops the telemetry and resume wrappers from the error chain;
+the gateway also logs the full chain at `warn`.
+
 ## Inference port and administrative exposure
 
 The inference server (`inference_port` in `pom.json`) keeps listening on IPv4
@@ -67,7 +116,7 @@ and `/v1/**` follow the same availability rule; only `/api/ui/**` and
 llama.cpp returns each token's piece as raw bytes: a BYTE token can be a single
 byte and a normal token can end in the middle of a codepoint.
 `llm::LlmEngine::token_to_piece_bytes` keeps those bytes up to the emission
-limit. Each `Session` of `infer_server.rs` has its own `Utf8Assembler`, which
+limit. Each `Session` of `infer_server/` has its own `Utf8Assembler`, which
 only delivers complete characters in the delta. On the speculative path, only
 the accepted positions advance the accumulator; rejected positions must not
 contaminate the next round.
@@ -78,12 +127,12 @@ returning the KV slot, discarding the result on those paths and guaranteeing
 that no leftover survives into another request. A truly invalid sequence keeps
 the `from_utf8_lossy` semantics: it produces a single U+FFFD.
 
-## 0. Tensor parallelism collective (`collective.rs`)
+## 0. Tensor parallelism collective (the engine's `collective` module)
 
 For path C (tensor parallelism without transferring weights), the exchange core
 is the all-reduce collective: each rank produces a partial sum of the
 row-parallel projection and the result is the sum of the partials.
-`inference/collective.rs` has `reduce_sum` (the math sum) and `ReduceBarrier`
+The engine's `collective` module has `reduce_sum` (the math sum) and `ReduceBarrier`
 (the barrier that accumulates each rank's partials and returns the sum to all
 of them through a `oneshot`, modeled on `direct.rs`'s `ReplyInbox`). The HTTP
 transport (`POST /v1/tp/reduce`) is a thin layer on top, wired together with the
@@ -241,6 +290,19 @@ of the cluster - constant across engines, prompt sizes and cold/warm. Measured
 with an announcer that swallows SYN: 2005 ms before, 301 ms on the first request
 and 0 ms on the following ones. Coming back is automatic: once the deadline
 passes, the next request pays one probe and the peer re-enters if it answers.
+
+The probe follows the pinned route (`bases_by_route_plan`): a tunnel route goes
+straight to the tunnel, an HTTP/QUIC route puts the measured address first. It
+tries every inference address in `Network::inference_bases` order (the host that
+already answered first) and, last, `/health` over the libp2p tunnel
+(`infer_tunnel::health_via_tunnel`, 3 s) - the only way to reach a peer behind
+symmetric NAT. Session lifecycle calls use `SESSION_LIFECYCLE_TIMEOUT` (60 s)
+instead, because the peer's handler needs the engine lock. Each successful body
+also feeds `AdmissionHealth::note_perf` (`fastest::PeerPerf`), which the
+delivery-time planner and the dashboard telemetry read. A successful `/health`
+also refreshes the model label, the deployment id and the layer range from the
+inference process, so a P2P announcement still in transit cannot make a newly
+loaded pipeline look incomplete.
 
 The trace also carries `server_ttft_ms`, `engine_ttft_ms`, the decode call
 count, tokens per call, cold/warm state and calls with a new, reused or unknown
@@ -655,7 +717,7 @@ check stays observational.
 
 ## 1. The execution modes
 
-Prefill happens in `inference/prefill.rs` (`run`); in decode, the gateway picks
+Prefill happens in `inference/prefill/` (`run`); in decode, the gateway picks
 the remote transport when the head is another node and announces
 `inference/remote-token-stream-v1`. Otherwise, `step` uses the three
 traditional modes:
@@ -716,7 +778,7 @@ remote transport requires the head to announce the capability and the gateway
 to have a callback address; without that the request keeps the previous path.
 A local head never uses the remote transport.
 
-## 2. Hidden-state protocol (`wire.rs`)
+## 2. Hidden-state protocol (the engine's `wire` module)
 
 The tensor that crosses the network is the **only** place that knows the dtype
 and the encoding in transit. Format:
@@ -1108,11 +1170,11 @@ the opening timeout happens before the fallback. The API has no special path:
 `generate_stream_with_stops`, so a run through the API goes through the same
 address selection and gets the same fix.
 
-### 2.3 Copies on `wire.rs`'s hot path
+### 2.3 Copies on the `wire` module's hot path
 
 Framing one crossing (encoding + decoding one `[1, 5120]` f16 item) cost
 21.97 µs in release; today it costs 20.94 µs - **-4.7%**
-(`custo_do_enquadramento_por_travessia`, same machine, 2,000 rounds). What
+(`framing_cost_per_traversal`, same machine, 2,000 rounds). What
 changed:
 
 - `encode_batch_items` writes the tensor **once**, straight into the buffer that
@@ -1428,7 +1490,7 @@ operator raises `max_sessions`, which multiplies the KV reservation (see
 
 Benches:
 `prefix_cache::tests::a_small_concurrent_request_does_not_take_over_a_hot_sessions_identity`,
-`scheduler::tests::prefill_novo_espera_em_vez_de_despejar_a_sessao_retida`.
+`scheduler::tests::a_new_prefill_waits_instead_of_evicting_the_retained_session`.
 
 Conclusion: losing the session is possible and, in part, intentional in the
 current lifecycle. The `prefix peer eligibility`, `prefix peer retention` and
@@ -2006,6 +2068,9 @@ one waiting, on the ticket.
   is unique per frame it can never be confused with the next frame's.
 - `DirectReply::new` returns `None` when the node knows no address of itself -
   then the ring takes over instead of dispatching a frame that never comes back.
+  The addresses it may use come from `self_reply_hosts()`: `self_dial_host`
+  first (advertised address > local IP > loopback), then `self_addr_candidates`,
+  turned into URLs by `self_reply_urls(hosts, gateway_port)`.
 - `await_result_with_ack`: a biased `select!` between the inbox's result (the
   normal case), the head's ack (only relevant when it fails, or when an old peer
   bubbled the whole answer - a present `token_id` counts as the result), and the
@@ -2127,7 +2192,7 @@ sample), `accept_count` and `batch_width`.
 - **The real proof is no longer static, it is each round's `seq_rm`.**
   `handle_rollback` (`/v1/session/rollback`) calls `kv_remove`
   (`llama_memory_seq_rm`) and returns `{rolled_back, reason}` in the body -
-  `rollback_sessions` (`gateway.rs`) reads that body (200 OK is not success by
+  `rollback_sessions` (`gateway/`) reads that body (200 OK is not success by
   itself, `handle_rollback` always answers 200); if any hop returns
   `rolled_back: false`, the gateway **ends the generation** with what was
   already confirmed (`partial: true`) instead of continuing on a cache that may
@@ -2141,7 +2206,7 @@ sample), `accept_count` and `batch_width`.
   and also reads `speculation_active` and `speculation_disabled_reason` from the
   new callbacks. Their absence keeps compatibility with old peers.
 - **Once speculation is refused, the gateway stops insisting** for the rest of
-  the request (`especulando` - "speculating" -, in
+  the request (`speculating`, in
   `generate_stream_with_stops`): it switches to calling `prefill::step`, which
   already uses the direct reply (N+1 crossings). It is not just saving the
   `speculate` field - insisting traps the chain in the bubbled ring (2N
@@ -2156,7 +2221,7 @@ sample), `accept_count` and `batch_width`.
   without the new capability degrades to the plain sampler with the reason
   `peer_without_sliced_mtp_wire`.
 
-### 5.2 Multi-token prediction (MTP) - `inference/mtp.rs`
+### 5.2 Multi-token prediction (MTP) - the engine's `mtp` module
 
 The `nextn` block takes the trunk's hidden state at position `p` with the
 embedding of the token at `p+1` and predicts the token at `p+2`. It is the draft
@@ -2273,7 +2338,7 @@ two values are equal.
   not supply on its own**: the target must export `h_nextn` from its own graph,
   which is per-architecture code in the fork
   (`build_arch_graph`/`res->t_h_nextn`); `qwen4exp.cpp` got that in
-  `pereirajair/llama.cpp` (`pom-tensor-parallel`), gated by
+  `pieceofmindcloud/llama.cpp` (`pom-tensor-parallel`), gated by
   `cparams.embeddings_nextn && !cparams.embeddings_nextn_masked` so the early
   cut of the last layer's rows (`inp_out_ids`) does not regress when MTP was not
   requested - without it the architecture would pay the FFN/hyper-connection
@@ -2352,6 +2417,19 @@ two values are equal.
   Both layers only fire when the operator allows the RAM fallback
   (`mtp_cpu_fallback_enabled`); neither reloads weights beyond what is needed -
   layer 2 never reloads any weights, it only recreates the context.
+
+**The two details that are the correction.** `seq_rm` runs before each decode of the draft (in
+`observe` and in `draft`): the previous round left in the draft's cache the positions it bet on,
+and the verification may have refused part of them; rewriting over them without erasing would leave
+two cells for the same position and the attention would read both. And the batch's token pointer is
+ours: `llama_batch_init` allocates `token` **or** `embd`, never both, and the MTP needs both, so
+the pointer goes back to the original before the `llama_batch_free`, which would free Rust's
+memory. `MtpDrafter::draft` decodes the head once per drafted token and returns the ids; `p_min`
+cuts at the first doubtful guess.
+
+**What is not measured yet.** The gain the block promises is real upstream (21 -> 35 tok/s on
+Qwen3.8-27B-Q3_K_S, measured outside this project). Here the implementation is complete and green
+in the unit tests, but there is no end-to-end measured tok/s number for POM's own pipeline.
 
 ### 5.3 Kimi-K3 recurrent state
 
@@ -2435,6 +2513,143 @@ uses the last cached value and schedules a probe of at most 500 ms at most every
 without a valid pipeline does **not** fall to the local Ollama nor to a peer's -
 the request fails. (Old documentation described a three-level fallback; that
 was an earlier state of the code, corrected on 2026-08-15.)
+
+## 7.1 Plugin inference services
+
+A deployment may name a plugin's inference service instead of POM's own
+engine (`RuntimeParams::inference_service`, for example `"strata"`). That is
+an explicit, separate deployment class, never a fallback: the plan for such a
+model is one step on one machine - or, for a service that publishes `stages`,
+one step per layer slice (see "Split across machines" below) - and the gateway
+runs it through that plugin or fails.
+`crates/node/src/inference/plugin_engine.rs` holds the three pieces.
+
+- **Target node.** The runtime supervisor calls `plugin_engine::run` instead
+  of `infer_server::run`. It binds the inference port first, asks the plugin
+  to load the model through the local plugin host (`engine.load` with
+  `model_path`, `model_label`, `n_ctx`, `max_sessions`, `kv`, `gpus` - the
+  NVIDIA GPU indices of the machine - and `gpu_devices`, every GPU with its
+  `vendor` and its `ordinal` among that vendor's cards, the number its own
+  runtime gives it: `HIP_VISIBLE_DEVICES` for an AMD card, which `sysmon`
+  counts after the NVIDIA ones), reads `engine.status` every 2 s and answers
+  `/health` with the fields the llama.cpp server publishes: `model_loaded`
+  only once the plugin is `ready`, the layer range, `n_ctx_per_session` (the
+  whole window: the engine gives it to every request) and
+  `capabilities: ["engine/plugin-v1:<code>"]`. The health watcher, the slice
+  journal, the restart budget, idle unloading and `/v1/models` therefore work
+  unchanged. When the generation ends (undeploy, redeploy, stop) it calls
+  `engine.unload`; an `error` state, or `idle` after the engine had served,
+  ends the generation with the plugin's reason and the supervisor restarts it
+  within its budget. While a plugin engine serves, the node announces
+  `engine/plugin-v1:<code>` (and the libp2p tunnel capability) instead of the
+  frame, relay and speculation capabilities, so no gateway can plan it as a
+  hidden-state hop. `Network::plugin_engine_capabilities` is that rule, and
+  every builder of the node's capabilities uses it: the announce, the
+  gateway's own peer entry and `/api/ui/node`.
+- **Gateway.** After planning, `generate_stream_inner` checks
+  `plugin_of_plan`: a plan whose steps all announce the same
+  `engine/plugin-v1:<code>` and run whole slices in layer order is run by
+  `plugin_engine::generate` on its last step (the machine with the head). It
+  sends the prompt the protocol adapter
+  already rendered, with the same `chat_template` and thinking flags a
+  llama.cpp head receives, plus the client's `max_tokens`, stop sequences and
+  numeric sampling fields (`temperature`, `top_p`, `top_k`, `min_p`,
+  `presence_penalty`, `frequency_penalty`). The generation route answers one
+  JSON object per line - `{"t"}` answer text, `{"r"}` reasoning, `{"p"}`
+  prompt progress, `{"done"}` with finish, prompt, completion, reasoning and
+  cached token counts, the engine's llama.cpp-style `timings` (with the MTP drafts,
+  `draft_n` and `draft_n_accepted`) and the `stop_sequence` that ended it, or
+  `{"error"}`. Answer and reasoning become `GenEvent::Token` and
+  `GenEvent::Reasoning`, respectively. The OpenAI chat adapter emits reasoning
+  as `delta.reasoning_content` (and `message.reasoning_content` when blocking),
+  so clients such as Pi create a thinking block instead of displaying literal
+  `<think>` markup as answer content. Tool calls remain in the answer text in
+  the model's own template form, so the gateway's tool-call parser reads them.
+  The summary is the one a
+  pipeline leaves: `source` is `pipeline:<chain>` and its `RequestTrace`
+  (`plugin_engine::engine_trace`) has a hop per stage, each executed by the
+  `plugin` engine on path `plugin/<code>`, with the request's prompt call and
+  decode rounds (generated tokens less the accepted drafts), the MTP draft
+  counts, and the engine's prompt and decode times on the last stage. The
+  engine reports the request as a whole, so the earlier stages carry no time
+  of their own. The request audit, the statistics and the process log the
+  admins receive are the same whatever the engine. The target node logs every change of the
+  engine's state, and the plugin's own output reaches the node's log through
+  the plugin host's stderr. Images and typed
+  decisions (`/v1/systemone` labels) are refused for this class; the retain
+  boundary of retrieval is only a cache hint and is ignored.
+- **Between nodes.** When the gateway is another machine it posts to
+  `POST /api/internal/plugins/:code/engine/generate` on the target (signed
+  control envelope, live peer, body up to 32 MiB). The target checks that its
+  runtime serves that inference service, takes the plugin's loopback
+  generation server from `engine.upstream` (`{status, port, token}`) and
+  streams the answer back unchanged. The plugin's server never listens beyond
+  loopback.
+- **Conversation sessions.** A chat request may name its conversation
+  (`session`, a file-name stem of up to 96 characters). The machine that ran the
+  turn saves the conversation in the engine's K/V sessions, and its `done` line
+  says so: `session: {key, saved: {ids, delta}}` when the save ran before the
+  line, or `session: {key, saved: null, deferred: true}` when the bridge defers
+  the save to an idle engine (the turn's answer does not wait for the disk). The
+  node then sends the turn to every other machine that serves the whole model
+  from a background task of its own, which first waits until the bridge reports
+  the conversation's save written (`GET /pom/session/pending?key=`; 501 when the
+  deployment's `session_save` setting is off, and then nothing is synced). The
+  sends are `POST .../engine/session/file` with the delta and its tokens, then
+  `POST .../engine/session/apply`; a peer without the delta's base gets the
+  whole session (`kind=full`, `full_ids`). Each machine restores the longest
+  saved start of a prompt into a free batch slot itself, so the gateway's choice
+  of machine does not change. The files live in `<slot_save_path>/strata-sessions/`,
+  next to the KV snapshots, and the KV cache clear empties them
+  (`crates/node/src/inference/plugin_session.rs`). Only turns that ran in a batch
+  slot are saved: the plugin keeps a named turn in a slot, not on the solo path.
+  The name is the request's `session` (the Chat sends its conversation id); a request
+  without one - an agent that sends no session id - is named `auto-<24 hex>`, a hash of
+  its first user message, so its turns share it. Two conversations that open with the same
+  message share a name, and the later save replaces the earlier one (`session_of`).
+
+**Split across machines.** A service that publishes `stages: true` also runs
+POM layer slices, one per machine (`crates/node/src/inference/plugin_stage_link.rs`).
+Every machine of such a deployment runs `plugin_engine::run` on its slice; the
+engines exchange their own hidden states, never POM's hop protocol of section
+2, and the node only carries them:
+
+- A later stage's runtime (`prepare`) waits for the live peer of the same
+  `deploy_id` whose slice ends at `start_layer - 1` and serves the same
+  plugin, asks it for the stage's link secret
+  (`GET /api/internal/plugins/:code/engine/link/:deploy`) and opens a relay on
+  loopback. Its `engine.load` gets `link: {token, prev_port, max_inflight}`; the first
+  stage's gets `link: {}` and its plugin makes the secret, which
+  `engine.link` (`{status, port?, token?}`) returns to the local node only.
+- The relay reads the engine's frames (a little-endian `u32` length, then the
+  bytes, both ways) and posts each one, signed and along the measured route,
+  to `POST /api/internal/plugins/:code/engine/link/:deploy/:conn/:seq` on the
+  earlier machine (up to 64 MiB a frame); the answer's body is the answer
+  frame, and a wait while the earlier stage loads is retried. That route keeps
+  one loopback connection per `conn` to the port of `engine.link` and passes
+  the frames through in `seq` order; an empty body to `.../:conn` closes it.
+- **Micro-pipelining.** The engine may send frames before it reads the
+  answers to the earlier ones (a prompt's pieces): the relay keeps up to the
+  deployment's `prefill_max_inflight_chunks` frames of a connection posted at
+  once and writes the answers back in order, and `link.max_inflight` tells the
+  engine that depth. The earlier machine passes frame `seq` to its engine only
+  after frame `seq - 1`, so that engine reads the next piece while the answer
+  to the last one crosses. A frame number already passed on, or one past the
+  first on a connection that was reset, is refused with `410` and not sent
+  again.
+- **Hidden-state precision.** Every frame between an engine and its node
+  starts with a kind byte: `1`, bytes the node passes as they are; `2`, a
+  tensor - `u32` meta length, the meta, then `f32` values. Between the
+  machines the node carries a tensor in the deployment's `hidden_state_dtype`
+  through the same `wire` encoding as the pipeline hops (f16, f8, groupwise
+  int4) and hands it back to the other engine as `f32`; a tensor that f8
+  cannot carry crosses that once as `f32`. Neither engine knows the precision.
+- Both routes take only a signed call from the live peer that serves the next
+  slice of the same deployment. The node reads nothing of a frame but its
+  envelope, and no engine listens beyond loopback.
+
+Only the last stage takes requests: the earlier one answers `engine.upstream`
+with an error.
 
 ## 8. direct_lab.rs - the "law"
 
@@ -2797,8 +3012,8 @@ stream.
   `origin/feat/implantar3` had 1022 green, eight red and took 609.55 s. After
   that fix, the same measurement took 27.72 s, with 1049 green and five red.
   `direct_lab::the_cost_per_token_does_not_depend_on_where_the_entry_point_is`,
-  `direct_lab::direct_prefill_preserva_posicao_absoluta_com_e_sem_reuso` and
-  `link_lab::canal_indisponivel_degrada_para_o_caminho_por_requisicao` turned
+  `direct_lab::direct_prefill_preserves_the_absolute_position_with_and_without_reuse` and
+  `link_lab::an_unavailable_channel_degrades_to_the_per_request_path` turned
   green. In both `direct_lab` tests, the cause was the route memory of
   `84e7141`: the candidate list stayed empty and delivery was never tried. The
   delivery count now separates results from transport receipts, and late
@@ -2811,7 +3026,7 @@ stream.
   expectations and stay noted without a drive-by fix.
 - The count above repeats the review's measurement with
   `--skip prefix_reuse_lab`. The tests
-  `spec_lab::um_orcamento_acima_de_n_batch_nao_e_truncado` and
+  `spec_lab::a_budget_above_n_batch_is_not_truncated` and
   `prefix_reuse_lab::unknown_session_recovery_is_bounded` now isolate,
   respectively, the generation budget and the cold attempt limit; the
   total of frames stays determined by the prefill window.
@@ -2838,7 +3053,7 @@ Fixed (2026-09-18), kept here for context: the external MTP draft of
 `qwen4exp` (Qwen3.8-Flash-Next) did not attach -
 `check_tensor_dims: tensor 'output_hc_norm.weight' not found` in
 `load_mtp_draft`. The cause had three parts in
-`llama.cpp/src/models/qwen4exp.cpp` (fork `pereirajair/llama.cpp`,
+`llama.cpp/src/models/qwen4exp.cpp` (fork `pieceofmindcloud/llama.cpp`,
 `pom-tensor-parallel`): `load_arch_tensors` never computed `mtp_only` (the
 pattern `qwen35.cpp`/`qwen3next.cpp`/`deepseek4.cpp` already use to free the
 trunk when the file is only the draft); the architecture never declared the
@@ -2854,10 +3069,15 @@ context reserving after) in
 ## Version note
 
 Documented from the sources on the `fm/rdma-gateway-remoto-por-token` branch
-(2026-09-01) and kept up to date since: `inference/infer_server.rs`,
-`inference/prefill.rs`, `inference/direct.rs`, `inference/direct_lab.rs`,
-`inference/spec_lab.rs`, `inference/relay.rs`, `inference/wire.rs`,
-`inference/runtime.rs`, `routing/pipeline.rs`, `backend/gateway.rs`,
+(2026-09-01) and kept up to date since: `inference/infer_server/`,
+`inference/prefill/`, `inference/direct.rs`, `inference/direct_lab.rs`,
+`inference/spec_lab.rs`, `inference/relay.rs`,
+`inference/runtime.rs`, `routing/pipeline.rs`, `backend/gateway/`,
 `backend/openai.rs`, `backend/messages.rs`, and the AGENTS.md files of
-`inference/`, `routing/`, `backend/` and the root. Where code and documentation
+`inference/`, `routing/`, `backend/` and the root. The engine modules named here
+(`llm`, `wire`, `mtp`, `collective`, `gguf`, `multipart`, `kv_budget`, `moe`,
+`sysmon`) are not in this repository: they are the `llama-engine` crate of the
+private `pom-plugin-llama.cpp` repository, re-exported by
+`crates/node/src/main.rs` (`pub use llama_engine::{...}`), which is why the node
+code reaches them as `crate::llm::`, `crate::wire::` and so on. Where code and documentation
 diverge, the code wins and the divergence is noted as a defect.

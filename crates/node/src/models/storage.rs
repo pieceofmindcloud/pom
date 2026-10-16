@@ -1,4 +1,4 @@
-//! Limite e retenção do armazenamento de modelos fatiados.
+//! Limit and retention of the sliced model storage.
 
 use anyhow::{bail, Context, Result};
 use std::fs;
@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use tracing::debug;
 
-/// Espaço padrão reservado para fatias novas quando a configuração ainda não
-/// tem o campo introduzido nesta versão.
+/// Default space reserved for new slices when the configuration does not yet
+/// have the field introduced in this version.
 pub const DEFAULT_SHARD_MAX_GB: f64 = 100.0;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,7 +31,7 @@ pub fn directory_bytes(root: &Path) -> std::io::Result<u64> {
     if !metadata.is_dir() {
         return Err(io::Error::new(
             io::ErrorKind::NotADirectory,
-            format!("{} não é um diretório", root.display()),
+            format!("{} is not a directory", root.display()),
         ));
     }
 
@@ -47,7 +47,7 @@ fn directory_bytes_inner(root: &Path) -> std::io::Result<u64> {
                 debug!(
                     path = %root.display(),
                     error = %error,
-                    "ignorando entrada ilegível durante o cálculo de uso"
+                    "ignoring an unreadable entry during the usage calculation"
                 );
                 continue;
             }
@@ -59,7 +59,7 @@ fn directory_bytes_inner(root: &Path) -> std::io::Result<u64> {
                 debug!(
                     path = %path.display(),
                     error = %error,
-                    "ignorando entrada cujo tipo não pôde ser lido durante o cálculo de uso"
+                    "ignoring an entry whose type could not be read during the usage calculation"
                 );
                 continue;
             }
@@ -71,7 +71,7 @@ fn directory_bytes_inner(root: &Path) -> std::io::Result<u64> {
                     debug!(
                         path = %path.display(),
                         error = %error,
-                        "ignorando diretório ilegível durante o cálculo de uso"
+                        "ignoring an unreadable directory during the usage calculation"
                     );
                 }
             }
@@ -82,7 +82,7 @@ fn directory_bytes_inner(root: &Path) -> std::io::Result<u64> {
                     debug!(
                         path = %path.display(),
                         error = %error,
-                        "ignorando arquivo cujo tamanho não pôde ser lido durante o cálculo de uso"
+                        "ignoring a file whose size could not be read during the usage calculation"
                     );
                 }
             }
@@ -96,7 +96,7 @@ pub fn enforce_limit(root: &Path, max_bytes: u64, protected: &[PathBuf]) -> Resu
     let mut used = directory_bytes(root)
         .with_context(|| {
             format!(
-                "não foi possível calcular o uso de {}. Verifique se a pasta existe, é um diretório e se o nó tem permissão de leitura",
+                "could not calculate the usage of {}. Check that the folder exists, is a directory and that the node has read permission",
                 root.display()
             )
         })?;
@@ -111,7 +111,7 @@ pub fn enforce_limit(root: &Path, max_bytes: u64, protected: &[PathBuf]) -> Resu
     let mut candidates = Vec::new();
     for entry in fs::read_dir(root).with_context(|| {
         format!(
-            "não foi possível calcular o uso de {}. Verifique se a pasta existe e se o nó tem permissão de leitura",
+            "could not calculate the usage of {}. Check that the folder exists and that the node has read permission",
             root.display()
         )
     })? {
@@ -121,7 +121,7 @@ pub fn enforce_limit(root: &Path, max_bytes: u64, protected: &[PathBuf]) -> Resu
                     debug!(
                         path = %root.display(),
                         error = %error,
-                        "ignorando entrada ilegível durante a busca de fatias antigas"
+                        "ignoring an unreadable entry while looking for old slices"
                     );
                     continue;
                 }
@@ -133,12 +133,12 @@ pub fn enforce_limit(root: &Path, max_bytes: u64, protected: &[PathBuf]) -> Resu
                     debug!(
                         path = %path.display(),
                         error = %error,
-                        "ignorando entrada cujo tipo não pôde ser lido durante a busca de fatias antigas"
+                        "ignoring an entry whose type could not be read while looking for old slices"
                     );
                     continue;
                 }
             };
-            if !file_type.is_dir() || entry.file_name() == "recebidos" {
+            if !file_type.is_dir() || entry.file_name() == "received" {
                 continue;
             }
             let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
@@ -155,7 +155,7 @@ pub fn enforce_limit(root: &Path, max_bytes: u64, protected: &[PathBuf]) -> Resu
                     debug!(
                         path = %path.display(),
                         error = %error,
-                        "ignorando fatia antiga ilegível durante a retenção"
+                        "ignoring an unreadable old slice during retention"
                     );
                     continue;
                 }
@@ -184,20 +184,20 @@ pub fn enforce_limit(root: &Path, max_bytes: u64, protected: &[PathBuf]) -> Resu
                 debug!(
                     path = %path.display(),
                     error = %error,
-                    "ignorando fatia antiga que deixou de ser legível durante a retenção"
+                    "ignoring an old slice that stopped being readable during retention"
                 );
                 continue;
             }
         };
         fs::remove_dir_all(&path)
-            .with_context(|| format!("não deu para remover fatia antiga {}", path.display()))?;
+            .with_context(|| format!("could not remove the old slice {}", path.display()))?;
         used = used.saturating_sub(bytes);
         removed.push(path);
     }
 
     if used > max_bytes {
         bail!(
-            "o limite de armazenamento das fatias foi excedido: {} bytes usados de {} e não há fatias antigas elegíveis para remover",
+            "the slice storage limit was exceeded: {} bytes used of {} and there are no old slices eligible for removal",
             used,
             max_bytes
         );
@@ -301,8 +301,8 @@ mod tests {
         let error = enforce_limit(&root, 1, &[]).unwrap_err().to_string();
 
         assert!(error.contains(root.to_string_lossy().as_ref()));
-        assert!(error.contains("existe"));
-        assert!(error.contains("permissão"));
+        assert!(error.contains("exists"));
+        assert!(error.contains("permission"));
     }
 
     #[test]
@@ -331,7 +331,7 @@ mod tests {
         fs::write(active.join("active.gguf"), vec![0u8; 8]).unwrap();
 
         let error = enforce_limit(&root, 1, &[active.clone()]).unwrap_err();
-        assert!(error.to_string().contains("limite"));
+        assert!(error.to_string().contains("limit"));
         assert!(active.join("active.gguf").exists());
         let _ = fs::remove_dir_all(root);
     }

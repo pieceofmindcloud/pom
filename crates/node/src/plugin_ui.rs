@@ -1,12 +1,12 @@
-//! Interface fornecida por plugins: manifesto JSON, telas e assets.
+//! Interface provided by plugins: JSON manifest, screens and assets.
 //!
-//! O manifesto e os assets viajam **dentro** do artefato do plugin (o mesmo
-//! binário verificado por SHA-256 na instalação): o host do plugin responde as
-//! operações `ui.manifest` e `ui.asset` do `query` genérico, então nada muda no
-//! servidor de licenças e o manifesto nunca diverge da versão do backend
-//! instalado. O `pom` valida tudo aqui antes de entregar ao navegador; o
-//! frontend só conhece o contrato `pom-plugin-ui/v1`, nunca um plugin
-//! específico. Ver `docs/subsystems/plugins-ui.md`.
+//! The manifest and the assets travel **inside** the plugin artifact (the same
+//! binary verified by SHA-256 at install time): the plugin host answers the
+//! `ui.manifest` and `ui.asset` operations of the generic `query`, so nothing
+//! changes on the license server and the manifest never diverges from the
+//! installed backend version. `pom` validates everything here before handing it
+//! to the browser; the frontend only knows the `pom-plugin-ui/v1` contract,
+//! never a specific plugin. See `docs/subsystems/plugins-ui.md`.
 use axum::extract::{Path, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -16,35 +16,35 @@ use serde_json::{json, Value};
 
 pub(crate) const MANIFEST_SCHEMA: &str = "pom-plugin-ui/v1";
 const PROFILES: [&str; 3] = ["admin", "node", "infer"];
-/// Teto de um asset: telas empacotadas cabem folgadas, e o host limita o frame.
+/// Ceiling of one asset: bundled screens fit comfortably, and the host limits the frame.
 const MAX_ASSET_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct MenuItem {
     pub id: String,
-    /// Rótulo por idioma (`{"en": "...", "pt-BR": "..."}`); o frontend cai em `en`.
+    /// Label per language (`{"en": "...", "pt-BR": "..."}`); the frontend falls back to `en`.
     pub label: std::collections::BTreeMap<String, String>,
-    /// Nome de ícone da lista conhecida do frontend; desconhecido vira genérico.
+    /// Icon name from the frontend's known list; an unknown one becomes generic.
     #[serde(default)]
     pub icon: Option<String>,
     pub to: String,
-    /// Campo antigo preservado no contrato; o frontend atual não agrupa menus.
+    /// Old field kept in the contract; the current frontend does not group menus.
     #[serde(default)]
     pub group: Option<String>,
-    /// Perfis do novo contrato; ausente admite todos os perfis.
+    /// Profiles of the new contract; absent admits every profile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roles: Option<Vec<String>>,
-    /// Campo legado. Mantido para manifestos já publicados.
+    /// Legacy field. Kept for manifests already published.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profiles: Option<Vec<String>>,
-    /// Submenus do item. Com filhos, o item vira uma seção expansível; o `to`
-    /// do pai continua obrigatório para que hosts sem suporte a submenus
-    /// mostrem ao menos o destino principal.
+    /// Submenus of the item. With children, the item becomes an expandable
+    /// section; the parent's `to` stays required so that hosts without submenu
+    /// support show at least the main destination.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<MenuChild>,
 }
 
-/// Um submenu. Mesmas regras de um item de primeiro nível, sem netos.
+/// A submenu. Same rules as a first-level item, with no grandchildren.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct MenuChild {
     pub id: String,
@@ -60,21 +60,21 @@ pub(crate) struct MenuChild {
 pub(crate) struct RouteSpec {
     pub path: String,
     pub screen: String,
-    /// Roles do contrato atual; na ausência, consulta `profiles` legado.
+    /// Roles of the current contract; when absent, falls back to the legacy `profiles`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roles: Option<Vec<String>>,
-    /// Campo legado. Mantido para manifestos já publicados.
+    /// Legacy field. Kept for manifests already published.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profiles: Option<Vec<String>>,
-    /// A tela ocupa a viewport inteira (como Painel/Logs), sem coluna central.
+    /// The screen takes the whole viewport (like Dashboard/Logs), with no central column.
     #[serde(default)]
     pub full_bleed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct ScreenSpec {
-    /// Módulo ES (asset) cujo export `export` (padrão `default`) é o componente
-    /// React da tela; um módulo pode servir várias telas.
+    /// ES module (asset) whose `export` export (default `default`) is the screen's
+    /// React component; one module can serve several screens.
     pub module: String,
     #[serde(default)]
     pub export: Option<String>,
@@ -89,13 +89,13 @@ pub(crate) struct PluginUiManifest {
     /// Optional PNG served by the plugin and used in the navigation menu.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon_image: Option<String>,
-    /// Descrição curta por idioma (`en` obrigatório quando presente), mostrada
-    /// na tela Plugins.
+    /// Short description per language (`en` required when present), shown on
+    /// the Plugins screen.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub description: std::collections::BTreeMap<String, String>,
-    /// Capturas de tela: caminhos relativos à raiz do repositório GitHub do
-    /// plugin ou URLs `https://`. O POM não as serve: o navegador as carrega
-    /// direto do GitHub.
+    /// Screenshots: paths relative to the root of the plugin's GitHub repository
+    /// or `https://` URLs. The POM does not serve them: the browser loads them
+    /// straight from GitHub.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub screenshots: Vec<String>,
     #[serde(default)]
@@ -109,16 +109,41 @@ pub(crate) struct PluginUiManifest {
     /// ignored by hosts that do not offer them.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub slots: std::collections::BTreeMap<String, String>,
-    /// Catálogos de texto do plugin: idioma -> asset JSON plano
-    /// (`{"<plugin_code>.chave": "texto ICU"}`). O plugin é dono dos próprios
-    /// textos; o POM só carrega e resolve. Se declarado, `en` é obrigatório.
+    /// Plugin text catalogs: language -> flat JSON asset
+    /// (`{"<plugin_code>.key": "ICU text"}`). The plugin owns its own texts; the
+    /// POM only loads and resolves them. If declared, `en` is required.
     #[serde(default)]
     pub i18n: std::collections::BTreeMap<String, String>,
     /// Markdown pages shipped by the plugin and presented with the POM docs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub documentation: Option<PluginDocumentation>,
-    /// Lista fechada do que `/assets/*` pode servir.
+    /// Closed list of what `/assets/*` may serve.
     pub assets: Vec<String>,
+    /// Lifecycle of the plugin process. `on_demand` starts the host only
+    /// when the operator opens the plugin from the menu, and stops it with the X badge.
+    #[serde(default, skip_serializing_if = "Lifecycle::is_resident")]
+    pub lifecycle: Lifecycle,
+}
+
+/// How the plugin process is kept running.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Lifecycle {
+    /// Starts with `pom` and is restarted by the heartbeat (default).
+    #[default]
+    Resident,
+    /// Starts only when opened and can be stopped at any time.
+    OnDemand,
+}
+
+impl Lifecycle {
+    fn is_resident(&self) -> bool {
+        *self == Lifecycle::Resident
+    }
+
+    pub(crate) fn is_on_demand(self) -> bool {
+        self == Lifecycle::OnDemand
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -157,22 +182,22 @@ fn valid_locale(tag: &str) -> bool {
         && parts.all(|p| (2..=8).contains(&p.len()) && p.chars().all(|c| c.is_ascii_alphanumeric()))
 }
 
-/// Valida o conteúdo de um catálogo: objeto plano de textos, todas as chaves no
-/// espaço `<plugin_code>.` (um plugin não sobrescreve texto do POM nem de outro
-/// plugin), com tetos de quantidade e tamanho.
+/// Validates the content of a catalog: a flat object of texts, every key in the
+/// `<plugin_code>.` namespace (a plugin does not overwrite text of the POM or of
+/// another plugin), with ceilings on count and size.
 pub(crate) fn validate_catalog(plugin_code: &str, value: &Value) -> Result<(), String> {
-    let object = value.as_object().ok_or("catálogo não é um objeto")?;
+    let object = value.as_object().ok_or("catalog is not an object")?;
     if object.len() > MAX_CATALOG_KEYS {
-        return Err("catálogo com chaves demais".into());
+        return Err("catalog with too many keys".into());
     }
     let prefix = format!("{plugin_code}.");
     for (key, text) in object {
         if !key.starts_with(&prefix) {
-            return Err(format!("chave {key:?} fora do espaço {prefix:?}"));
+            return Err(format!("key {key:?} outside the namespace {prefix:?}"));
         }
         match text.as_str() {
             Some(text) if text.len() <= MAX_CATALOG_TEXT => {}
-            _ => return Err(format!("texto de {key:?} inválido")),
+            _ => return Err(format!("invalid text for {key:?}")),
         }
     }
     Ok(())
@@ -224,7 +249,7 @@ fn normalize_ui_manifest_documentation(value: Value) -> Result<Value, String> {
             "id": format!("legacy-guide-{}", index + 1),
             "title": {
                 "en": format!("Guide {}: {title}", index + 1),
-                "pt-BR": format!("Guia {}: {title}", index + 1)
+                "pt-BR": format!("Guide {}: {title}", index + 1)
             },
             "asset": asset
         }));
@@ -237,8 +262,8 @@ fn normalize_ui_manifest_documentation(value: Value) -> Result<Value, String> {
 const MAX_SCREENSHOTS: usize = 8;
 const MAX_DESCRIPTION_TEXT: usize = 2000;
 
-/// Caminho relativo seguro dentro do repositório ou URL `https://` sem
-/// credenciais. Nada aqui é servido pelo nó.
+/// Safe relative path inside the repository or `https://` URL without
+/// credentials. Nothing here is served by the node.
 pub(crate) fn valid_screenshot(value: &str) -> bool {
     if value.len() > 1024 {
         return false;
@@ -264,21 +289,21 @@ fn valid_roles(roles: &[String]) -> bool {
 }
 
 impl PluginUiManifest {
-    /// Interpreta e valida o JSON devolvido pelo plugin. Recusa em vez de
-    /// corrigir: um manifesto torto não pode desenhar menu nem carregar código.
+    /// Parses and validates the JSON returned by the plugin. Refuses instead of
+    /// fixing: a crooked manifest cannot draw a menu or load code.
     pub(crate) fn parse(expected_code: &str, value: Value) -> Result<Self, String> {
         let value = normalize_ui_manifest_documentation(value)?;
         let manifest: Self =
-            serde_json::from_value(value).map_err(|e| format!("manifesto ilegível: {e}"))?;
+            serde_json::from_value(value).map_err(|e| format!("unreadable manifest: {e}"))?;
         if manifest.schema != MANIFEST_SCHEMA {
-            return Err(format!("schema {:?} não suportado", manifest.schema));
+            return Err(format!("schema {:?} not supported", manifest.schema));
         }
         if manifest.plugin_code != expected_code {
-            return Err("plugin_code do manifesto não é o do plugin instalado".into());
+            return Err("manifest plugin_code is not that of the installed plugin".into());
         }
         if let Some(icon) = &manifest.icon_image {
             if !icon.ends_with(".png") || !manifest.assets.iter().any(|asset| asset == icon) {
-                return Err("icon_image precisa ser um asset PNG declarado".into());
+                return Err("icon_image must be a declared PNG asset".into());
             }
         }
         if !manifest.description.is_empty()
@@ -289,7 +314,7 @@ impl PluginUiManifest {
                         || text.len() > MAX_DESCRIPTION_TEXT
                 }))
         {
-            return Err("description precisa de en e textos curtos por idioma".into());
+            return Err("description needs en and short texts per language".into());
         }
         if manifest.screenshots.len() > MAX_SCREENSHOTS
             || !manifest
@@ -297,7 +322,7 @@ impl PluginUiManifest {
                 .iter()
                 .all(|shot| valid_screenshot(shot))
         {
-            return Err("screenshots inválidos".into());
+            return Err("invalid screenshots".into());
         }
         let mut menu_ids = std::collections::HashSet::new();
         for item in &manifest.menu {
@@ -308,10 +333,10 @@ impl PluginUiManifest {
                 || !valid_role_fields
                 || !menu_ids.insert(item.id.as_str())
             {
-                return Err(format!("item de menu {:?} inválido", item.id));
+                return Err(format!("invalid menu item {:?}", item.id));
             }
             if !item.label.contains_key("en") {
-                return Err(format!("item de menu {:?} sem rótulo en", item.id));
+                return Err(format!("menu item {:?} without an en label", item.id));
             }
             for child in &item.children {
                 if child.id.is_empty()
@@ -320,7 +345,7 @@ impl PluginUiManifest {
                     || !child.label.contains_key("en")
                     || !menu_ids.insert(child.id.as_str())
                 {
-                    return Err(format!("submenu {:?} inválido", child.id));
+                    return Err(format!("invalid submenu {:?}", child.id));
                 }
             }
         }
@@ -331,37 +356,37 @@ impl PluginUiManifest {
                 || !valid_role_fields
                 || !manifest.screens.contains_key(&route.screen)
             {
-                return Err(format!("rota {:?} inválida", route.path));
+                return Err(format!("invalid route {:?}", route.path));
             }
         }
         if manifest.slots.len() > MAX_SLOTS {
-            return Err("slots demais".into());
+            return Err("too many slots".into());
         }
         for (slot, screen) in &manifest.slots {
             if !valid_slot_id(slot) || !manifest.screens.contains_key(screen) {
-                return Err(format!("slot {slot:?} inválido"));
+                return Err(format!("invalid slot {slot:?}"));
             }
         }
         for asset in &manifest.assets {
             if !valid_asset(asset) {
-                return Err(format!("asset {asset:?} inválido"));
+                return Err(format!("invalid asset {asset:?}"));
             }
         }
         if !manifest.i18n.is_empty() && !manifest.i18n.contains_key("en") {
-            return Err("i18n sem o idioma en".into());
+            return Err("i18n without the en language".into());
         }
         for (locale, asset) in &manifest.i18n {
             if !valid_locale(locale)
                 || !asset.ends_with(".json")
                 || !manifest.assets.contains(asset)
             {
-                return Err(format!("catálogo i18n {locale:?} inválido"));
+                return Err(format!("invalid i18n catalog {locale:?}"));
             }
         }
         if let Some(documentation) = &manifest.documentation {
             for (kind, entries) in [
-                ("guia", &documentation.guides),
-                ("referência", &documentation.reference),
+                ("guide", &documentation.guides),
+                ("reference", &documentation.reference),
             ] {
                 for entry in entries {
                     if entry.id.is_empty()
@@ -370,7 +395,7 @@ impl PluginUiManifest {
                         || !valid_documentation_asset(&entry.asset)
                         || !manifest.assets.iter().any(|asset| asset == &entry.asset)
                     {
-                        return Err(format!("{kind} de documentação inválido"));
+                        return Err(format!("invalid documentation {kind}"));
                     }
                 }
             }
@@ -379,7 +404,7 @@ impl PluginUiManifest {
             let files = std::iter::once(&screen.module).chain(screen.styles.iter());
             for file in files {
                 if !manifest.assets.contains(file) {
-                    return Err(format!("tela {name:?} usa {file:?} fora de assets"));
+                    return Err(format!("screen {name:?} uses {file:?} outside assets"));
                 }
             }
         }
@@ -405,7 +430,7 @@ impl PluginUiManifest {
     }
 }
 
-/// Decodifica a resposta `ui.asset` do plugin: `{content_type, base64}`.
+/// Decodes the plugin's `ui.asset` response: `{content_type, base64}`.
 pub(crate) fn decode_asset(value: &Value) -> Result<(String, Vec<u8>), String> {
     let content_type = value
         .get("content_type")
@@ -422,17 +447,17 @@ pub(crate) fn decode_asset(value: &Value) -> Result<(String, Vec<u8>), String> {
                     | "font/woff2"
             )
         })
-        .ok_or("content_type ausente ou não permitido")?;
+        .ok_or("content_type missing or not allowed")?;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(
             value
                 .get("base64")
                 .and_then(Value::as_str)
-                .ok_or("asset sem base64")?,
+                .ok_or("asset without base64")?,
         )
-        .map_err(|e| format!("base64 inválido: {e}"))?;
+        .map_err(|e| format!("invalid base64: {e}"))?;
     if bytes.len() > MAX_ASSET_BYTES {
-        return Err("asset acima do teto".into());
+        return Err("asset above the cap".into());
     }
     Ok((content_type.to_owned(), bytes))
 }
@@ -442,11 +467,15 @@ struct ActivePluginUi {
     code: String,
     version: Option<String>,
     manifest: PluginUiManifest,
+    /// On-demand plugin: the menu shows the X when `running` and opens the process on click.
+    on_demand: bool,
+    running: bool,
 }
 
-/// `GET /api/ui/plugins/ui`: manifestos dos plugins ativos com host rodando.
-/// Plugin inativo, ausente ou com manifesto inválido simplesmente não aparece -
-/// o frontend então mostra só os fallbacks de propaganda.
+/// `GET /api/ui/plugins/ui`: manifests of the active plugins. An on-demand plugin
+/// whose host is stopped stays listed with its saved manifest, so the menu can
+/// open it. An inactive or absent plugin, or one with an invalid manifest, does
+/// not appear - the frontend then shows only the promotional fallbacks.
 pub(crate) async fn list_plugin_ui(State(state): State<crate::gateway::GatewayState>) -> Response {
     let mut out = Vec::new();
     for status in state.plugins.all_statuses().await {
@@ -458,10 +487,68 @@ pub(crate) async fn list_plugin_ui(State(state): State<crate::gateway::GatewaySt
                 code: status.code.clone(),
                 version: status.plugin_version.clone(),
                 manifest,
+                on_demand: status.on_demand,
+                running: status.running,
             });
         }
     }
     axum::Json(json!({ "plugins": out })).into_response()
+}
+
+/// `POST /api/ui/plugins/:code/open`: starts the process of an on-demand plugin.
+/// Called by the menu click; the license is not touched.
+pub(crate) async fn plugin_open(
+    State(state): State<crate::gateway::GatewayState>,
+    Path(code): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    plugin_lifecycle(&state, &code, &headers, true).await
+}
+
+/// `POST /api/ui/plugins/:code/close`: stops the process of an on-demand plugin
+/// (the X badge). The plugin stays installed and comes back with `open`.
+pub(crate) async fn plugin_close(
+    State(state): State<crate::gateway::GatewayState>,
+    Path(code): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    plugin_lifecycle(&state, &code, &headers, false).await
+}
+
+async fn plugin_lifecycle(
+    state: &crate::gateway::GatewayState,
+    code: &str,
+    headers: &axum::http::HeaderMap,
+    open: bool,
+) -> Response {
+    if !crate::plugin_proxy::same_origin(headers) {
+        return (
+            StatusCode::FORBIDDEN,
+            axum::Json(json!({ "error": "cross-origin plugin call" })),
+        )
+            .into_response();
+    }
+    let status = state.plugins.status(code).await;
+    if !status.as_ref().is_some_and(|status| status.on_demand) {
+        return (
+            StatusCode::CONFLICT,
+            axum::Json(json!({ "error": "plugin is not on demand" })),
+        )
+            .into_response();
+    }
+    let result = if open {
+        state.plugins.open_on_demand(code).await
+    } else {
+        state.plugins.close_on_demand(code).await
+    };
+    match result {
+        Ok(()) => axum::Json(json!({ "code": code, "running": open })).into_response(),
+        Err(error) => (
+            StatusCode::BAD_GATEWAY,
+            axum::Json(json!({ "error": error })),
+        )
+            .into_response(),
+    }
 }
 
 /// Largest JSON body a plugin RPC accepts.
@@ -490,13 +577,25 @@ pub(crate) async fn plugin_rpc(
     body: axum::body::Bytes,
 ) -> Response {
     if !crate::plugin_proxy::same_origin(&headers) {
-        return (StatusCode::FORBIDDEN, axum::Json(json!({ "error": "cross-origin plugin call" }))).into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            axum::Json(json!({ "error": "cross-origin plugin call" })),
+        )
+            .into_response();
     }
     if !valid_rpc_op(&op) {
-        return (StatusCode::BAD_REQUEST, axum::Json(json!({ "error": "invalid operation" }))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({ "error": "invalid operation" })),
+        )
+            .into_response();
     }
     if body.len() > MAX_RPC_BODY {
-        return (StatusCode::PAYLOAD_TOO_LARGE, axum::Json(json!({ "error": "body too large" }))).into_response();
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            axum::Json(json!({ "error": "body too large" })),
+        )
+            .into_response();
     }
     let params: Value = if body.is_empty() {
         Value::Null
@@ -504,7 +603,11 @@ pub(crate) async fn plugin_rpc(
         match serde_json::from_slice(&body) {
             Ok(value) => value,
             Err(_) => {
-                return (StatusCode::BAD_REQUEST, axum::Json(json!({ "error": "body is not JSON" }))).into_response()
+                return (
+                    StatusCode::BAD_REQUEST,
+                    axum::Json(json!({ "error": "body is not JSON" })),
+                )
+                    .into_response()
             }
         }
     };
@@ -527,12 +630,12 @@ pub(crate) async fn plugin_rpc(
     }
 }
 
-/// `GET /api/ui/plugins/:code/assets/*path`: asset declarado no manifesto.
+/// `GET /api/ui/plugins/:code/assets/*path`: asset declared in the manifest.
 pub(crate) async fn plugin_asset(
     State(state): State<crate::gateway::GatewayState>,
     Path((code, path)): Path<(String, String)>,
 ) -> Response {
-    let not_found = || (StatusCode::NOT_FOUND, "asset não encontrado").into_response();
+    let not_found = || (StatusCode::NOT_FOUND, "asset not found").into_response();
     let Some(manifest) = state.plugins.ui_manifest(&code).await else {
         return not_found();
     };
@@ -548,15 +651,15 @@ pub(crate) async fn plugin_asset(
     };
     let decoded = decode_asset(&reply).and_then(|(content_type, bytes)| {
         if manifest.is_icon_image(&path) && content_type != "image/png" {
-            return Err("icon_image não foi servido como PNG".into());
+            return Err("icon_image was not served as PNG".into());
         }
         if manifest.is_documentation(&path) && content_type != "text/markdown" {
-            return Err("documentação não foi servida como Markdown".into());
+            return Err("documentation was not served as Markdown".into());
         }
-        // Catálogo de texto: só sai se o conteúdo obedece ao contrato.
+        // Text catalog: only served if the content obeys the contract.
         if manifest.i18n.values().any(|asset| *asset == path) {
             let parsed: Value =
-                serde_json::from_slice(&bytes).map_err(|e| format!("catálogo ilegível: {e}"))?;
+                serde_json::from_slice(&bytes).map_err(|e| format!("unreadable catalog: {e}"))?;
             validate_catalog(&code, &parsed)?;
         }
         Ok((content_type, bytes))
@@ -572,7 +675,7 @@ pub(crate) async fn plugin_asset(
         )
             .into_response(),
         Err(error) => {
-            tracing::warn!(plugin_code = %code, %path, %error, "asset de plugin recusado");
+            tracing::warn!(plugin_code = %code, %path, %error, "plugin asset refused");
             not_found()
         }
     }
@@ -739,6 +842,29 @@ mod tests {
         assert!(validate_catalog("logs", &json!({"logs.a": huge})).is_err());
     }
 
+    /// `lifecycle` is optional: absent means `resident`; `on_demand` comes from the plugin's own
+    /// manifest, and any other value is refused.
+    #[test]
+    fn lifecycle_comes_from_the_manifest_and_defaults_to_resident() {
+        let base = json!({
+            "schema": "pom-plugin-ui/v1",
+            "plugin_code": "harness",
+            "screens": {},
+            "assets": []
+        });
+        let resident = PluginUiManifest::parse("harness", base.clone()).expect("no lifecycle");
+        assert_eq!(resident.lifecycle, Lifecycle::Resident);
+
+        let mut on_demand = base.clone();
+        on_demand["lifecycle"] = json!("on_demand");
+        let parsed = PluginUiManifest::parse("harness", on_demand).expect("on_demand");
+        assert!(parsed.lifecycle.is_on_demand());
+
+        let mut unknown = base;
+        unknown["lifecycle"] = json!("always");
+        assert!(PluginUiManifest::parse("harness", unknown).is_err());
+    }
+
     /// The public pom-plugin-base release currently ships this UI manifest shape.
     #[test]
     fn accepts_the_ui_manifest_format_shipped_by_pom_plugin_base() {
@@ -815,7 +941,7 @@ mod tests {
         .expect("valid manifest with children");
         assert_eq!(parsed.menu[0].children.len(), 2);
         assert_eq!(parsed.screenshots.len(), 2);
-        // A serialização preserva os filhos para o navegador.
+        // Serialization preserves the children for the browser.
         let served = serde_json::to_value(&parsed).unwrap();
         assert_eq!(served["menu"][0]["children"][1]["id"], "projects");
 
@@ -825,7 +951,7 @@ mod tests {
         }]);
         assert!(PluginUiManifest::parse("base", manifest(duplicated, json!({}))).is_err());
         for extra in [
-            json!({ "description": { "pt-BR": "sem en" } }),
+            json!({ "description": { "pt-BR": "without en" } }),
             json!({ "screenshots": ["../fora.png"] }),
             json!({ "screenshots": ["docs/script.js"] }),
             json!({ "screenshots": ["http://example.com/a.png"] }),
@@ -834,15 +960,15 @@ mod tests {
         }
     }
 
-    /// O manifesto que o plugin `logs` (pom-plugin-logs) entrega hoje.
+    /// The manifest the `logs` plugin (pom-plugin-logs) ships today.
     #[test]
     fn accepts_the_manifest_shipped_by_the_logs_plugin() {
         let value: Value = serde_json::from_str(r#"{
           "schema":"pom-plugin-ui/v1","plugin_code":"logs",
           "menu":[{"id":"request-logs","label":{"en":"Request logs","pt-BR":"Logs de Requisições"},"icon":"list-tree","to":"/logs","group":"logs","profiles":["admin"]},
-                  {"id":"statistics","label":{"en":"Statistics","pt-BR":"Estatísticas"},"icon":"chart-no-axes-column","to":"/estatisticas","profiles":["admin"]}],
+                  {"id":"statistics","label":{"en":"Statistics","pt-BR":"Estatísticas"},"icon":"chart-no-axes-column","to":"/statistics","profiles":["admin"]}],
           "routes":[{"path":"/logs","screen":"logs","profiles":["admin"],"full_bleed":true},
-                    {"path":"/estatisticas","screen":"stats","profiles":["admin"],"full_bleed":true}],
+                    {"path":"/statistics","screen":"stats","profiles":["admin"],"full_bleed":true}],
           "screens":{"logs":{"module":"ui/screens.js","export":"logs","styles":["ui/plugin.css"]},
                      "stats":{"module":"ui/screens.js","export":"stats","styles":["ui/plugin.css"]}},
           "i18n":{"en":"i18n/en.json","pt-BR":"i18n/pt-BR.json"},

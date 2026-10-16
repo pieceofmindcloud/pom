@@ -94,6 +94,13 @@ export const THIRD_PARTY_LICENSES: readonly LicenseEntry[] = [
     "ecosystem": "frontend"
   },
   {
+    "name": "leaflet",
+    "version": "1.9.4",
+    "license": "BSD-2-Clause",
+    "repository": "https://github.com/Leaflet/Leaflet",
+    "ecosystem": "frontend"
+  },
+  {
     "name": "lucide-react",
     "version": "0.468.0",
     "license": "ISC",
@@ -213,6 +220,13 @@ export const THIRD_PARTY_LICENSES: readonly LicenseEntry[] = [
     "ecosystem": "rust"
   },
   {
+    "name": "chacha20poly1305",
+    "version": "0.10.1",
+    "license": "Apache-2.0 OR MIT",
+    "repository": "https://github.com/RustCrypto/AEADs/tree/master/chacha20poly1305",
+    "ecosystem": "rust"
+  },
+  {
     "name": "chrono",
     "version": "0.4.44",
     "license": "MIT OR Apache-2.0",
@@ -231,6 +245,13 @@ export const THIRD_PARTY_LICENSES: readonly LicenseEntry[] = [
     "version": "2.2.0",
     "license": "BSD-3-Clause",
     "repository": "https://github.com/dalek-cryptography/curve25519-dalek/tree/main/ed25519-dalek",
+    "ecosystem": "rust"
+  },
+  {
+    "name": "flate2",
+    "version": "1.1.9",
+    "license": "MIT OR Apache-2.0",
+    "repository": "https://github.com/rust-lang/flate2-rs",
     "ecosystem": "rust"
   },
   {
@@ -301,6 +322,13 @@ export const THIRD_PARTY_LICENSES: readonly LicenseEntry[] = [
     "version": "0.2.183",
     "license": "MIT OR Apache-2.0",
     "repository": "https://github.com/rust-lang/libc",
+    "ecosystem": "rust"
+  },
+  {
+    "name": "libloading",
+    "version": "0.8.9",
+    "license": "ISC",
+    "repository": "https://github.com/nagisa/rust_libloading",
     "ecosystem": "rust"
   },
   {
@@ -385,6 +413,13 @@ export const THIRD_PARTY_LICENSES: readonly LicenseEntry[] = [
     "version": "0.23.37",
     "license": "Apache-2.0 OR ISC OR MIT",
     "repository": "https://github.com/rustls/rustls",
+    "ecosystem": "rust"
+  },
+  {
+    "name": "semver",
+    "version": "1.0.27",
+    "license": "MIT OR Apache-2.0",
+    "repository": "https://github.com/dtolnay/semver",
     "ecosystem": "rust"
   },
   {
@@ -518,6 +553,13 @@ export const THIRD_PARTY_LICENSES: readonly LicenseEntry[] = [
     "version": "0.57.0",
     "license": "Apache-2.0 OR MIT",
     "repository": "https://github.com/tauri-apps/wry",
+    "ecosystem": "rust"
+  },
+  {
+    "name": "x25519-dalek",
+    "version": "2.0.1",
+    "license": "BSD-3-Clause",
+    "repository": "https://github.com/dalek-cryptography/curve25519-dalek/tree/main/x25519-dalek",
     "ecosystem": "rust"
   },
   {

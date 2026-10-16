@@ -7,8 +7,9 @@ field.
 ## How the pieces fit
 
 - **One process per machine.** The Rust binary starts the embedded inference
-  server (`inference/infer_server.rs`) when a slice is deployed; the model is
-  loaded in-process by `inference/llm.rs`. There is no Python process.
+  server (`inference/infer_server/`) when a slice is deployed; the model is
+  loaded in-process by the engine's `llm` module (`llama-engine`, re-exported
+  into the node crate by `main.rs`). There is no Python process.
 - **The model and the layers come from the deployment.** The binary does not
   accept a model, a layer range or inference parameters on the command line:
   the UI plans each peer's range and each one extracts its own slice (see
@@ -72,16 +73,15 @@ field.
 # network of its own (admin, named after the host, discovery off) and opens the
 # panel. Rename it and turn discovery on in Network settings; other machines
 # then ask to join from their Networks screen and an admin approves them.
-# The old wizard (profile, invitation, trust.json) only opens with --setup.
 
 # machine B (node):
 ./target/release/pom
-# open http://<machine-b>:8080/, pick "node" and join: the wizard finds the
-# administrator through local discovery, or takes the pasted trust.json and key.
-# On another network, start B with --bootstrap <machine-a>:42777.
+# open http://<machine-b>:8080/ - B also starts with a local network of its
+# own. On its Networks screen, ask to join A's network; an admin of A approves.
 ```
 
-The first access wizard is described in `web-ui.md` ("First access wizard").
+There is no first access wizard: it is deprecated and unreachable (see
+`web-ui.md`, "First access wizard").
 The model never comes from the command line: once both machines are in the
 network, the model is sliced and deployed from the UI (Deploy screen, see
 `deployment.md`).
@@ -114,7 +114,7 @@ planner did not close the `0..total_layers` coverage.
 ## Route battery and output shape
 
 To separate the effect of output shape from the effect of network origin, run
-`POM_BENCH_API_KEY=sk-... ./scripts/bench-rotas.sh <label>`. The variable is
+`POM_BENCH_API_KEY=sk-... ./scripts/bench-routes.sh <label>`. The variable is
 required, used only as the inference header and never appears in the CSV or
 the summary. The script runs one warm-up call per origin, then three
 repetitions of each combination of the four origins defined in the script
@@ -142,6 +142,12 @@ check the offload, watch VRAM during loading.
 
 ## Pitfalls found
 
+- **A model load refused with "this processor cannot run this build".** The
+  binary has the CPU backend linked in and compiled for AVX2 and the machine's
+  processor does not have it (old hardware, or a virtual machine with a generic
+  CPU model). Use a Docker image built in `release` mode, or expose the host
+  processor to the guest. See `build-and-run.md`, "Development Docker with a
+  release or a local fork".
 - **`git pull` on another user's machine.** If the files belong to `<user>`
   and you access as `root`, run
   `git config --global --add safe.directory <path>`. A private repository needs
@@ -343,7 +349,7 @@ scripts/bench-llamacpp.sh <reports-dir>/<date>-<model>.config.json \
 ```
 
 The result is a CSV with one line per warm-up, measurement or error, plus a
-`summary.md` with the medians of the five `bench-rotas.sh` prompts. The
+`summary.md` with the medians of the five `bench-routes.sh` prompts. The
 `generation_tok_s` field comes from `timings.predicted_per_second`;
 `prefill_ms` and `prefill_tok_s` come from `timings.prompt_ms` and
 `timings.prompt_per_second`; `ttft_ms` is the observed time to the first SSE

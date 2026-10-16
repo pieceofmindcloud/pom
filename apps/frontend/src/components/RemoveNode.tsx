@@ -1,15 +1,15 @@
 /**
- * Tirar uma máquina de um modelo que está no ar, sem tocar nas outras.
+ * Take a machine out of a model that is live, without touching the others.
  *
- * A confirmação distingue os dois casos, porque as consequências não se
- * parecem: se outra máquina serve a mesma faixa, a rede só perde uma rota
- * paralela e continua atendendo; se esta é a última, as camadas dela ficam
- * descobertas e o pipeline para de planejar até alguém assumir. Um aviso único
- * para os dois é um aviso que o operador aprende a clicar sem ler.
+ * The confirmation distinguishes the two cases, because the consequences are not
+ * alike: if another machine serves the same range, the network only loses a
+ * parallel route and keeps answering; if this is the last one, its layers are left
+ * uncovered and the pipeline stops planning until someone takes over. A single warning
+ * for both is a warning that the operator learns to click without reading.
  *
- * Qual dos dois é vem da mesma conta que o nó faz (`uncovered_after_removal`),
- * não de um palpite da tela: `existingRanges` são as faixas que os peers
- * anunciam agora.
+ * Which of the two it is comes from the same calculation the node makes
+ * (`uncovered_after_removal`), not from a guess by the screen: `existingRanges` are the ranges
+ * announce now.
  */
 import { useState } from "react";
 import { Unplug } from "lucide-react";
@@ -31,7 +31,7 @@ export function RemoveNode({
   group: string;
   deployId?: string;
   range: [number, number];
-  /** Faixas dos *outros* peers que servem este modelo. */
+  /** Ranges of the *other* peers that serve this model. */
   existingRanges: [number, number][];
 }) {
   const { t } = useI18n();
@@ -93,7 +93,7 @@ export function RemoveNode({
   );
 }
 
-/** As camadas que ninguém mais cobre depois de tirar esta faixa. */
+/** The layers that nobody else covers after taking out this range. */
 export function layersLeftUncovered(
   remaining: [number, number][],
   removed: [number, number],
@@ -107,7 +107,7 @@ export function layersLeftUncovered(
   return lost;
 }
 
-/** "0-19" em vez de "0, 1, 2, …": a faixa é o que o operador reconhece. */
+/** "0-19" instead of "0, 1, 2, ...": the range is what the operator recognizes. */
 export function rangeText(layers: number[]): string {
   if (layers.length === 0) return "";
   return `${layers[0]}-${layers[layers.length - 1]}`;

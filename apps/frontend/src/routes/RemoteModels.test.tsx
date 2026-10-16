@@ -72,7 +72,7 @@ vi.mock("../lib/queries", () => ({
 
 afterEach(cleanup);
 
-function renderScreen(initialEntry = "/modelos/remotos?q=qwen") {
+function renderScreen(initialEntry = "/models/remote?q=qwen") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
@@ -97,11 +97,11 @@ describe("RemoteModels", () => {
   });
 
   it("shows public trending models on first load and requires login in the search bar", () => {
-    renderScreen("/modelos/remotos");
+    renderScreen("/models/remote");
     expect(screen.getByText("public/trending-GGUF")).toBeTruthy();
     expect(screen.getByText("Trending GGUF models")).toBeTruthy();
     expect(screen.getByText("Log in to Hugging Face to search").closest("a")?.getAttribute("href"))
-      .toBe("/config/preferencias#hugging-face");
+      .toBe("/config/preferences#hugging-face");
     expect(screen.getByRole("button", { name: "Search" })).toBeTruthy();
     expect(screen.queryByText("Provider status")).toBeNull();
   });

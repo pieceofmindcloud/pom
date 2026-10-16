@@ -39,23 +39,23 @@ pub struct MachineView {
     pub(super) holds: Vec<[u32; 2]>,
     /// Range it takes in the plan being shown, if any.
     pub(super) taking: Option<[u32; 2]>,
-    /// Projeção de capacidade desta máquina para o plano em preparo - soma dos
-    /// passos que ela levaria, por GPU. `None` até a pré-visualização
-    /// terminar (ou quando nenhum passo desta máquina está materializado
-    /// localmente ainda). Ver `enrich_capacity_previews`.
+    /// Capacity projection of this machine for the plan being prepared - the sum of the
+    /// steps it would take, per GPU. `None` until the preview
+    /// finishes (or when no step of this machine is materialized
+    /// locally yet). See `enrich_capacity_previews`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) capacity: Option<MachineCapacity>,
 }
 
-/// Projeção de VRAM de uma máquina inteira: a soma, por GPU, de todo passo do
-/// plano que ela levaria. Uma máquina com dois passos não-adjacentes (dois
-/// arquivos, dois processos) soma os dois sobre o mesmo inventário de
-/// dispositivos - é a mesma placa física recebendo os dois.
+/// VRAM projection of a whole machine: the sum, per GPU, of every step of the
+/// plan it would take. A machine with two non-adjacent steps (two
+/// files, two processes) sums both over the same inventory of
+/// devices - it is the same physical card receiving both.
 #[derive(Debug, Clone, Serialize)]
 pub struct MachineCapacity {
     pub(super) fits: bool,
-    /// Algum passo desta máquina foi marcado pela heurística de que o
-    /// `fit_memory` pode aparar o pedido (contexto ou camadas de GPU).
+    /// Some step of this machine was flagged by the heuristic that
+    /// `fit_memory` may trim the request (context or GPU layers).
     pub(super) degraded: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) note: Option<String>,
@@ -91,9 +91,9 @@ pub struct StepPart {
     pub(super) source_node_id: Option<String>,
     pub(super) source_host: Option<String>,
     pub(super) source_path: Option<String>,
-    /// Hash da parte na origem. É por ele que a cópia é pedida: assim o
-    /// destino grava em `<shard_dir>/<modelo>/<sha>.gguf` em vez de largar o
-    /// arquivo solto, e sabe conferir o que chegou.
+    /// Hash of the part at the source. It is what the copy is requested by: this way the
+    /// target writes to `<shard_dir>/<model>/<sha>.gguf` instead of dropping the
+    /// file loose, and knows how to check what arrived.
     pub(super) source_sha256: Option<String>,
     /// True when the source is a virtual range that still has to be cut out
     /// of its whole GGUF before it can be transferred or launched.
@@ -120,9 +120,9 @@ pub struct Step {
     pub(super) source_node_id: Option<String>,
     pub(super) source_host: Option<String>,
     pub(super) source_path: Option<String>,
-    /// Hash da parte na origem. É por ele que a cópia é pedida: assim o
-    /// destino grava em `<shard_dir>/<modelo>/<sha>.gguf` em vez de largar o
-    /// arquivo solto, e sabe conferir o que chegou.
+    /// Hash of the part at the source. It is what the copy is requested by: this way the
+    /// target writes to `<shard_dir>/<model>/<sha>.gguf` instead of dropping the
+    /// file loose, and knows how to check what arrived.
     pub(super) source_sha256: Option<String>,
     /// True when the source is a virtual range backed by a whole GGUF.
     pub(super) source_needs_split: bool,
@@ -147,17 +147,17 @@ pub struct Step {
     /// The slices this step is assembled from, in layer order. Empty for a
     /// plain step.
     pub(super) parts: Vec<StepPart>,
-    /// Projeção de VRAM/RAM que este passo levaria neste alvo, com os
-    /// parâmetros do plano em preparo. `None` até um passo materializado
-    /// localmente (`target_path.is_some() && !merged`) ser consultado, ou
-    /// quando essa consulta falhou - ver `enrich_capacity_previews`.
+    /// VRAM/RAM projection this step would take on this target, with the
+    /// parameters of the plan being prepared. `None` until a locally materialized
+    /// step (`target_path.is_some() && !merged`) is queried, or
+    /// when that query failed - see `enrich_capacity_previews`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) capacity: Option<crate::webui::CapacityPreview>,
 }
 
-/// Um rank de uma rodada TP já fatiada. Diferente de um `Step`, cada rank
-/// cobre o modelo inteiro e deve ser iniciado no peer correspondente da
-/// coletiva, sem passar novamente pelo extrator de shards.
+/// One rank of an already sliced TP round. Unlike a `Step`, each rank
+/// covers the whole model and must be started on the corresponding peer of the
+/// collective, without going through the shard extractor again.
 #[derive(Debug, Clone, Serialize)]
 pub struct TpTarget {
     pub(super) rank: u32,
@@ -192,7 +192,7 @@ pub struct Plan {
     pub(super) mmproj_path: Option<String>,
     /// All compatible projectors reported by the selected pipeline head.
     pub(super) mmproj_candidates: Vec<String>,
-    /// Motivo do catálogo quando nenhum projetor pôde ser associado.
+    /// Catalog reason when no projector could be associated.
     pub(super) mmproj_reason: Option<String>,
     /// True only when the surveyed GGUF metadata reports more than one expert.
     /// The UI must never infer this from a filename or architecture label.
@@ -201,13 +201,13 @@ pub struct Plan {
     pub(super) inference_mode_supported: bool,
     /// Explicit reason when the selected execution mode cannot be honored.
     pub(super) inference_mode_reason: Option<String>,
-    /// Capacidades condicionais apuradas para os alvos deste plano.
+    /// Conditional capabilities determined for the targets of this plan.
     pub(super) capabilities: crate::capabilities::DeploymentCapabilities,
     /// Real cut points from the whole GGUF proposer, when this model can be
     /// split locally for a destination that lacks the selected slice.
     pub(super) layer_options: Option<WholeLayerOptions>,
-    /// Grupo de tensor parallelism, quando kind == tensor_parallel. O launch
-    /// usa isto para gerar os alvos dos workers.
+    /// Tensor parallelism group, when kind == tensor_parallel. The launch
+    /// uses this to generate the workers' targets.
     pub(super) tp: Option<TpLaunch>,
     /// How many layers the original model has. `None` means nobody could say —
     /// which is a refusal (`blocked`), never a zero passed down the line.
@@ -218,8 +218,8 @@ pub struct Plan {
     /// the model has 32 layers or 40 and the tail is missing from the cluster.
     pub(super) total_layers_inferred: bool,
     pub(super) steps: Vec<Step>,
-    /// Alvos por rank quando o grupo foi obtido de `tp_parts`. Fica vazio no
-    /// caminho de fallback que extrai os ranks de modelos inteiros.
+    /// Targets per rank when the group was obtained from `tp_parts`. Stays empty on the
+    /// fallback path that extracts the ranks from whole models.
     pub(super) tp_targets: Vec<TpTarget>,
     /// Every layer from 0 to `total_layers` is covered exactly once.
     pub(super) complete: bool,
@@ -253,8 +253,8 @@ pub struct Plan {
     pub(super) prompt_tokens: u32,
     /// Prompt tokens per round trip through the pipeline, under `params`.
     pub(super) chunk_tokens: u32,
-    /// Rotas candidatas entre os hops escolhidos. A latência pode ser nula
-    /// quando o gateway ainda não mediu o peer.
+    /// Candidate routes between the chosen hops. The latency may be null
+    /// when the gateway has not measured the peer yet.
     pub(super) route_options: Vec<RouteOption>,
     pub(super) load_distribution: Vec<LoadDistribution>,
     /// Vision projector for the head and MTP draft for the tail: the
@@ -283,8 +283,8 @@ pub struct LoadDistribution {
 #[derive(Debug, Clone)]
 pub(super) struct RequestedModelIdentity {
     pub(super) proof: Option<crate::deployment::DeploymentIdentity>,
-    /// Caminhos só valem como prova no peer que os anunciou. Eles existem
-    /// mesmo quando o hash não pôde ser calculado, para a reserva aprovada.
+    /// Paths only count as proof on the peer that announced them. They exist
+    /// even when the hash could not be computed, for the approved reservation.
     pub(super) paths_by_peer: HashMap<String, String>,
 }
 
@@ -332,29 +332,29 @@ pub(super) fn node_is_idle(snapshot: &serde_json::Value) -> bool {
 
 pub(super) fn node_state_detail(snapshot: &serde_json::Value) -> String {
     format!(
-        "estado={}, modelo={}, implantação={}",
+        "state={}, model={}, deployment={}",
         snapshot
             .pointer("/status/state")
             .and_then(|value| value.as_str())
-            .unwrap_or("desconhecido"),
+            .unwrap_or("unknown"),
         snapshot
             .get("active_model")
             .and_then(|value| value.as_str())
             .filter(|value| !value.is_empty())
-            .unwrap_or("nenhum"),
+            .unwrap_or("none"),
         snapshot
             .get("active_deployment")
             .and_then(|value| value.as_str())
             .filter(|value| !value.is_empty())
-            .unwrap_or("nenhuma"),
+            .unwrap_or("none"),
     )
 }
 
 pub(super) const DEPLOY_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 pub(super) const DEPLOY_IDLE_POLL: Duration = Duration::from_millis(250);
-/// Recarregar um modelo é minutos; um `redeploy` espera cada máquina voltar a
-/// servir antes de mexer na próxima. O mesmo teto da chamada HTTP de
-/// reconfiguração.
+/// Reloading a model takes minutes; a `redeploy` waits for each machine to come back to
+/// serving before touching the next. The same ceiling as the HTTP call for
+/// reconfiguration.
 pub(super) const REDEPLOY_READY_TIMEOUT: Duration = Duration::from_secs(1800);
 
 /// Every distinct range anyone holds, in layer order.
@@ -450,11 +450,11 @@ pub(super) fn nameless(candidates: &[Candidate]) -> String {
     let mut out = missing
         .iter()
         .take(SHOWN)
-        .map(|c| format!("L{}-{} em {}", c.start_layer, c.end_layer, c.name))
+        .map(|c| format!("L{}-{} in {}", c.start_layer, c.end_layer, c.name))
         .collect::<Vec<_>>()
         .join(", ");
     if missing.len() > SHOWN {
-        out.push_str(&format!(" e mais {}", missing.len() - SHOWN));
+        out.push_str(&format!(" and {} more", missing.len() - SHOWN));
     }
     out
 }
@@ -788,14 +788,14 @@ pub(super) fn runtime_capability_for_ui(
         Some(false) => {
             let mut capability = crate::capabilities::supported(source, unsupported_reason);
             capability.warning = Some(format!(
-                "Limitação do runtime: {unsupported_reason}; a opção permanece acionável e pode não ser executada."
+                "Limitation of the runtime: {unsupported_reason}; the option stays actionable and may not be executed."
             ));
             capability
         }
         None => {
             let mut capability = crate::capabilities::unknown(source, unknown_reason);
             capability.warning = Some(
-                "O runtime não confirmou esta capacidade; ligá-la é por conta e risco do usuário."
+                "The runtime did not confirm this capability; turning it on is at the user's own risk."
                     .to_string(),
             );
             capability
@@ -871,38 +871,38 @@ pub(super) fn capabilities_for_plan(
     let no_thinking = capability_from_bool(
         selected_model_capability(steps, machines, |evidence| evidence.thinking),
         "GGUF tokenizer.chat_template + tokenizer.ggml.tokens",
-        "o template e o vocabulário do modelo permitem o controle de thinking",
-        "o template e o vocabulário do modelo não oferecem o controle de thinking",
-        "o template ou o vocabulário do modelo não pôde ser confirmado",
+        "the model template and vocabulary allow thinking control",
+        "the model template and vocabulary do not offer thinking control",
+        "the model template or vocabulary could not be confirmed",
     );
     let lookup = selected_runtime_capability(steps, machines, "speculate/v1-lookup");
     let speculative_decoding = runtime_capability_for_ui(
         lookup,
-        "capacidades runtime dos peers selecionados",
-        "todos os peers selecionados anunciam lookup especulativo",
-        "pelo menos um peer selecionado não anuncia lookup especulativo",
-        "as capacidades runtime de pelo menos um peer não puderam ser lidas",
+        "runtime capabilities of the selected peers",
+        "all the selected peers announce speculative lookup",
+        "at least one selected peer does not announce speculative lookup",
+        "the runtime capabilities of at least one peer could not be read",
     );
     let hidden_state_f8 = capability_from_bool(
         selected_runtime_capability(steps, machines, crate::pipeline::CAP_FRAME_DTYPE_F8),
-        "capacidades runtime dos peers selecionados",
-        "todos os peers selecionados anunciam estado oculto f8",
-        "pelo menos um peer selecionado não anuncia estado oculto f8",
-        "as capacidades runtime de pelo menos um peer não puderam ser lidas",
+        "runtime capabilities of the selected peers",
+        "all the selected peers announce f8 hidden state",
+        "at least one selected peer does not announce f8 hidden state",
+        "the runtime capabilities of at least one peer could not be read",
     );
     let hidden_state_i4g64 = capability_from_bool(
         selected_runtime_capability(steps, machines, crate::pipeline::CAP_FRAME_DTYPE_I4G64),
-        "capacidades runtime dos peers selecionados",
-        "todos os peers selecionados anunciam estado oculto i4g64",
-        "pelo menos um peer selecionado não anuncia estado oculto i4g64",
-        "as capacidades runtime de pelo menos um peer não puderam ser lidas",
+        "runtime capabilities of the selected peers",
+        "all the selected peers announce i4g64 hidden state",
+        "at least one selected peer does not announce i4g64 hidden state",
+        "the runtime capabilities of at least one peer could not be read",
     );
     let hidden_state_i4g128 = capability_from_bool(
         selected_runtime_capability(steps, machines, crate::pipeline::CAP_FRAME_DTYPE_I4G128),
-        "capacidades runtime dos peers selecionados",
-        "todos os peers selecionados anunciam estado oculto i4g128",
-        "pelo menos um peer selecionado não anuncia estado oculto i4g128",
-        "as capacidades runtime de pelo menos um peer não puderam ser lidas",
+        "runtime capabilities of the selected peers",
+        "all the selected peers announce i4g128 hidden state",
+        "at least one selected peer does not announce i4g128 hidden state",
+        "the runtime capabilities of at least one peer could not be read",
     );
     let model_mtp = selected_final_model_capability(steps, machines, |evidence| evidence.mtp);
     let runtime_mtp = combine_known(
@@ -917,25 +917,25 @@ pub(super) fn capabilities_for_plan(
     );
     let mtp = match model_mtp {
         Some(false) => crate::capabilities::unsupported(
-            "arquivo GGUF selecionado",
-            "o GGUF selecionado não traz previsão nextn comprovada",
+            "selected GGUF file",
+            "the selected GGUF carries no proven nextn prediction",
         ),
         Some(true) => {
             let mut capability = crate::capabilities::supported(
-                "arquivo GGUF selecionado",
-                "o GGUF selecionado traz metadata e tensores nextn comprovados",
+                "selected GGUF file",
+                "the selected GGUF carries proven nextn metadata and tensors",
             );
             match runtime_mtp {
                 Some(true) => {}
                 Some(false) => {
                     capability.warning = Some(
-                        "Limitação do runtime: um ou mais peers não anunciam o protocolo MTP necessário; a opção permanece acionável e pode não ser executada."
+                        "Limitation of the runtime: one or more peers do not announce the required MTP protocol; the option stays actionable and may not be executed."
                             .to_string(),
                     );
                 }
                 None => {
                     capability.warning = Some(
-                        "O runtime dos peers não confirmou o protocolo MTP; ligá-lo é por conta e risco do usuário."
+                        "The peers' runtime did not confirm the MTP protocol; turning it on is at the user's own risk."
                             .to_string(),
                     );
                 }
@@ -944,12 +944,12 @@ pub(super) fn capabilities_for_plan(
         }
         None => {
             let mut capability = crate::capabilities::unknown(
-                "arquivo GGUF selecionado",
-                "metadata ou tensores nextn do GGUF selecionado não puderam ser confirmados",
+                "selected GGUF file",
+                "nextn metadata or tensors of the selected GGUF could not be confirmed",
             );
             if runtime_mtp.is_some() {
                 capability.warning = Some(
-                    "O runtime foi consultado, mas não substitui a prova do modelo; ligá-lo é por conta e risco do usuário."
+                    "The runtime was queried, but it does not replace the proof from the model; turning it on is at the user's own risk."
                         .to_string(),
                 );
             }
@@ -971,12 +971,12 @@ pub(super) fn capabilities_for_plan(
         .collect::<Vec<_>>();
     if !unsafe_peers.is_empty() {
         no_embeddings.reason = format!(
-            "controle visível, mas estes peers precisam manter embeddings: {}",
+            "control visible, but these peers must keep embeddings: {}",
             unsafe_peers.join("; ")
         );
     } else if !unknown_peers.is_empty() {
         no_embeddings.reason = format!(
-            "controle visível, mas a topologia não pôde ser confirmada em: {}",
+            "control visible, but the topology could not be confirmed on: {}",
             unknown_peers.join("; ")
         );
     }
@@ -984,13 +984,13 @@ pub(super) fn capabilities_for_plan(
         crate::capabilities::DeploymentCapabilities {
             fit_memory: if kind == DeployKind::TensorParallel {
                 crate::capabilities::unsupported(
-                    "estratégia Tensor Parallelism",
-                    "o ajuste automático de memória não é compatível com Tensor Parallelism",
+                    "Tensor Parallelism strategy",
+                    "the automatic memory fit is not compatible with Tensor Parallelism",
                 )
             } else {
                 crate::capabilities::supported(
-                    "estratégia do plano",
-                    "esta estratégia permite o ajuste automático de memória",
+                    "plan strategy",
+                    "this strategy allows the automatic memory fit",
                 )
             },
             no_thinking,
@@ -1027,11 +1027,11 @@ pub(super) fn requested_capability_block(
                 match capability.state {
                     crate::capabilities::CapabilityState::Supported => None,
                     crate::capabilities::CapabilityState::Unsupported => Some(format!(
-                        "A precisão {dtype} do estado oculto foi solicitada, mas {}",
+                        "Hidden state precision {dtype} was requested, but {}",
                         capability.reason
                     )),
                     crate::capabilities::CapabilityState::Unknown => Some(format!(
-                        "A precisão {dtype} do estado oculto foi solicitada, mas a capacidade dos peers não pôde ser confirmada: {}",
+                        "Hidden state precision {dtype} was requested, but the capability of the peers could not be confirmed: {}",
                         capability.reason
                     )),
                 }
@@ -1044,7 +1044,7 @@ pub(super) fn requested_capability_block(
                 && capabilities.fit_memory.state == crate::capabilities::CapabilityState::Unknown
             {
                 Some(format!(
-                    "Ajustar à memória não pode ser confirmado: {}",
+                    "Fit to memory cannot be confirmed: {}",
                     capabilities.fit_memory.reason
                 ))
             } else {
@@ -1104,9 +1104,9 @@ pub(super) fn plan_with_rtt_options(
         .flat_map(|machine| &machine.held)
         .any(|shard| shard.is_moe);
     let inference_mode_reason = if params.inference_mode == InferenceMode::Moe && !is_moe {
-        Some("MoE exige metadata real de experts no GGUF deste modelo.".to_string())
+        Some("MoE requires real expert metadata in the GGUF of this model.".to_string())
     } else if kind == DeployKind::TensorParallel && is_moe {
-        Some("Tensor Parallelism não suporta MoE nesta versão.".to_string())
+        Some("Tensor Parallelism does not support MoE in this version.".to_string())
     } else {
         None
     };
@@ -1143,7 +1143,7 @@ pub(super) fn plan_with_rtt_options(
                     .position(|c| c.start_layer == s.start_layer && c.end_layer == s.end_layer)
                 else {
                     blocked.get_or_insert(format!(
-                        "{} não existe em máquina nenhuma do cluster",
+                        "{} exists on no machine of the cluster",
                         kind.unit(group, s.start_layer, s.end_layer)
                     ));
                     continue;
@@ -1173,23 +1173,23 @@ pub(super) fn plan_with_rtt_options(
         }
     }
 
-    // ── Tensor parallelism: o primary é quem o operador escolheu ─────────────
+    // ── Tensor parallelism: the primary is who the operator chose ────────────
     //
-    // O modelo inteiro é um candidato só; o alvo dele é o primary (rank 0), não
-    // a máquina que o planejador automático sugeriria. As checagens do grupo
-    // (tamanho, workers no cluster, modelo inteiro presente) recusam o plano
-    // antes da checagem de shardabilidade, que lê o GGUF e roda no endpoint
+    // The whole model is a single candidate; its target is the primary (rank 0), not
+    // the machine the automatic planner would suggest. The group checks
+    // (size, workers in the cluster, whole model present) refuse the plan
+    // before the shardability check, which reads the GGUF and runs on the endpoint
     // `/api/ui/tp/check`.
     if kind == DeployKind::TensorParallel {
         if let Some(tp) = &tp {
             if let Some(reason) = tp_group_checks(tp, machines, group) {
                 blocked.get_or_insert(reason);
             }
-            // A seleção da tela pode conter o modelo inteiro uma vez para o
-            // primary e outra vez para um worker. Worker é rank da coletiva,
-            // não etapa adicional do pipeline. Mantemos somente a linha do
-            // primary, preservando seus overrides, e `launch_targets` cria os
-            // workers exatamente uma vez abaixo.
+            // The screen's selection may contain the whole model once for the
+            // primary and once more for a worker. A worker is a rank of the collective,
+            // not an additional pipeline stage. We keep only the primary's row,
+            // preserving its overrides, and `launch_targets` creates the
+            // workers exactly once below.
             if let Some(primary_index) = chosen
                 .iter()
                 .position(|(_, target, _)| target == &tp.primary_node_id)
@@ -1254,7 +1254,7 @@ pub(super) fn plan_with_rtt_options(
         .and_then(|shard| shard.mmproj_reason.clone())
         .or_else(|| {
             mmproj_path.is_none().then(|| {
-                "o catálogo não comprovou um projetor pertencente ao modelo selecionado".into()
+                "the catalog did not prove a projector belonging to the selected model".into()
             })
         });
     if let (Some(requested), Some(None)) = (requested_mmproj_path, &resolved_request) {
@@ -1275,11 +1275,10 @@ pub(super) fn plan_with_rtt_options(
             // same fact: the catalog skips a whole model whose header did not
             // yield a layer count, and a model nobody has never appears either.
             format!(
-                "nenhuma máquina do cluster tem o modelo inteiro {group} com o número de \
-                 camadas legível no GGUF"
+                "no machine of the cluster has the whole model {group} with a readable layer count in the GGUF"
             )
         } else {
-            format!("nenhuma máquina do cluster tem fatias de {group}")
+            format!("no machine of the cluster has slices of {group}")
         });
     }
 
@@ -1295,18 +1294,12 @@ pub(super) fn plan_with_rtt_options(
     match size {
         ModelSize::Unknown if !available.is_empty() => {
             blocked.get_or_insert(format!(
-                "nenhuma fatia de {group} diz de quantas camadas é o modelo ({}), \
-                 e nenhuma delas começa na camada 0 para que o total possa ser deduzido. \
-                 Refatie o modelo inteiro pela tela de Fatiar, que grava esse dado em cada \
-                 fatia, ou traga para o cluster a fatia que começa na camada 0.",
+                "no slice of {group} states how many layers the model has ({}), and none of them starts at layer 0 so that the total could be deduced. Reslice the whole model from the Slice screen, which writes this in every slice, or bring the slice that starts at layer 0 into the cluster.",
                 nameless(&available)
             ));
         }
         ModelSize::Inferred(n) => warnings.push(format!(
-            "o total de camadas não está gravado nas fatias ({}), então foi deduzido da \
-             cobertura delas: {n} camadas. Se o modelo original tiver mais, as camadas que \
-             faltam não estão em máquina nenhuma e a resposta sai errada. Refatie pela tela \
-             de Fatiar para gravar o total.",
+            "the total number of layers is not written in the slices ({}), so it was deduced from their coverage: {n} layers. If the original model has more, the missing layers are on no machine and the answer comes out wrong. Reslice from the Slice screen to write the total.",
             nameless(&available)
         )),
         _ => {}
@@ -1315,9 +1308,9 @@ pub(super) fn plan_with_rtt_options(
     if !available.is_empty() && chosen.is_empty() {
         blocked.get_or_insert(
             if kind.whole() {
-                "nenhum modelo selecionado"
+                "no model selected"
             } else {
-                "nenhuma fatia selecionada"
+                "no slice selected"
             }
             .to_string(),
         );
@@ -1350,18 +1343,15 @@ pub(super) fn plan_with_rtt_options(
         // Two peers running the same layers would run them twice and the answer
         // would be wrong without anything failing, so this is a stop.
         blocked.get_or_insert(format!(
-            "as camadas L{}-{} estão em duas fatias escolhidas ao mesmo tempo",
+            "layers L{}-{} are in two chosen slices at the same time",
             o[0], o[1]
         ));
     }
     for m in &missing {
         let message = if m[0] == m[1] {
-            format!("a camada L{} não está em nenhuma fatia escolhida", m[0])
+            format!("layer L{} is in no chosen slice", m[0])
         } else {
-            format!(
-                "as camadas L{}-{} não estão em nenhuma fatia escolhida",
-                m[0], m[1]
-            )
+            format!("layers L{}-{} are in no chosen slice", m[0], m[1])
         };
         blocked.get_or_insert(message.clone());
         warnings.push(message);
@@ -1390,7 +1380,7 @@ pub(super) fn plan_with_rtt_options(
         if can_merge_with_previous {
             groups
                 .last_mut()
-                .expect("grupo anterior")
+                .expect("previous group")
                 .push(entry.clone());
         } else {
             groups.push(vec![entry.clone()]);
@@ -1465,18 +1455,18 @@ pub(super) fn plan_with_rtt_options(
 
             if target_id.is_empty() {
                 problem = Some(format!(
-                    "a faixa L{}-{} está sem máquina",
+                    "range L{}-{} has no machine",
                     start_layer, end_layer
                 ));
             } else if target.is_none() {
-                problem = Some(format!("a máquina {target_id} não está no cluster"));
+                problem = Some(format!("machine {target_id} is not in the cluster"));
             } else if !ready {
                 if let Some(orphan) = parts
                     .iter()
                     .find(|p| !p.ready && p.source_node_id.is_none())
                 {
                     problem = Some(format!(
-                        "a fatia L{}-{} não existe em máquina nenhuma do cluster",
+                        "slice L{}-{} exists on no machine of the cluster",
                         orphan.start_layer, orphan.end_layer
                     ));
                 }
@@ -1496,20 +1486,23 @@ pub(super) fn plan_with_rtt_options(
                 let mem_need = needed_mb(size_bytes);
                 if t.disk_free_mb > 0 && disk_need > t.disk_free_mb {
                     problem = Some(format!(
-                        "{} tem {} GB livres em disco e juntar essas fatias precisa de {} GB",
+                        "{} has {} GB free on disk and merging these slices needs {} GB",
                         t.label(),
                         gb(t.disk_free_mb),
                         gb(disk_need)
                     ));
                 } else if target_capacity_mb(t) > 0 && mem_need > usable_mb(target_capacity_mb(t)) {
                     note = Some(format!(
-                        "{} tem {} GB de memória livre para o modelo junto de {} GB",
+                        "{} has {} GB of free memory for the merged model of {} GB",
                         t.label(),
                         gb(t.mem_free_mb),
                         gb(mem_need)
                     ));
                 } else if !ready {
-                    note = Some(format!("{} GB pela rede antes de subir", gb(mem_need)));
+                    note = Some(format!(
+                        "{} GB over the network before starting",
+                        gb(mem_need)
+                    ));
                 }
             }
 
@@ -1517,7 +1510,7 @@ pub(super) fn plan_with_rtt_options(
                 blocked.get_or_insert(p.clone());
             }
             if let Some(n) = &note {
-                if n.contains("memória") {
+                if n.contains("memory") {
                     warnings.push(n.clone());
                 }
             }
@@ -1530,9 +1523,9 @@ pub(super) fn plan_with_rtt_options(
                 start_layer,
                 end_layer,
                 total_layers,
-                // O que o operador lê. A identidade de verdade é o hash da
-                // parte, que viaja em `part_sha256`; um "qwen3-8b L0-15" aqui
-                // é rótulo de tela, não chave de nada.
+                // What the operator reads. The real identity is the hash of the
+                // part, which travels in `part_sha256`; a "qwen3-8b L0-15" here
+                // is a screen label, not the key of anything.
                 name: format!("{group} L{start_layer}-{end_layer}"),
                 size_bytes,
                 target_node_id: target_id.clone(),
@@ -1552,8 +1545,8 @@ pub(super) fn plan_with_rtt_options(
                 note,
                 merged: true,
                 parts,
-                // A junção ainda não aconteceu - não há arquivo local para
-                // consultar (ver `enrich_capacity_previews`).
+                // The join has not happened yet - there is no local file to
+                // query (see `enrich_capacity_previews`).
                 capacity: None,
             });
         } else {
@@ -1587,25 +1580,25 @@ pub(super) fn plan_with_rtt_options(
 
                 let unit = kind.unit(group, c.start_layer, c.end_layer);
                 if target_id.is_empty() {
-                    problem = Some(format!("{unit} está sem máquina"));
+                    problem = Some(format!("{unit} has no machine"));
                 } else if target.is_none() {
-                    problem = Some(format!("a máquina {target_id} não está no cluster"));
+                    problem = Some(format!("machine {target_id} is not in the cluster"));
                 } else if !ready && source.is_none() {
-                    problem = Some(format!("{unit} não existe em máquina nenhuma do cluster"));
+                    problem = Some(format!("{unit} exists on no machine of the cluster"));
                 }
 
                 if let (None, Some(t)) = (&problem, target) {
                     let need = needed_mb(c.size_bytes);
                     if !ready && t.disk_free_mb > 0 && need > t.disk_free_mb {
                         problem = Some(format!(
-                            "{} tem {} GB livres em disco e {unit} pesa {} GB",
+                            "{} has {} GB free on disk and {unit} weighs {} GB",
                             t.label(),
                             gb(t.disk_free_mb),
                             gb(need)
                         ));
                     } else if target_capacity_mb(t) > 0 && need > usable_mb(target_capacity_mb(t)) {
                         note = Some(format!(
-                            "{} tem {} GB de memória livre para {} de {} GB",
+                            "{} has {} GB of free memory for {} of {} GB",
                             t.label(),
                             gb(t.mem_free_mb),
                             kind.indefinite(),
@@ -1621,13 +1614,11 @@ pub(super) fn plan_with_rtt_options(
                         // after the job fails.
                         note = Some(if kind.whole() {
                             format!(
-                                "{} GB pela rede antes de subir - a máquina de origem só envia \
-                                 sozinha o que estiver na pasta de fatias dela; de fora dela, \
-                                 mande o arquivo pela tela de Transferências primeiro",
+                                "{} GB over the network before starting - the source machine only sends on its own what is in its slices folder; from outside it, send the file from the Transfers screen first",
                                 gb(need)
                             )
                         } else {
-                            format!("{} GB pela rede antes de subir", gb(need))
+                            format!("{} GB over the network before starting", gb(need))
                         });
                     }
                 }
@@ -1636,7 +1627,7 @@ pub(super) fn plan_with_rtt_options(
                     blocked.get_or_insert(p.clone());
                 }
                 if let Some(n) = &note {
-                    if n.contains("memória") {
+                    if n.contains("memory") {
                         warnings.push(n.clone());
                     }
                 }
@@ -1730,13 +1721,13 @@ pub(super) fn plan_with_rtt_options(
     // that reads better as a count than as one message per missing range.
     if auto && steps.iter().any(|s| s.target_node_id.is_empty()) {
         blocked = Some(format!(
-            "são {} fatias para {} {} - algumas fatias ficaram sem máquina",
+            "there are {} slices for {} {} - some slices were left without a machine",
             steps.len(),
             machines.len(),
             if machines.len() == 1 {
-                "máquina"
+                "machine"
             } else {
-                "máquinas"
+                "machines"
             }
         ));
     }
@@ -1763,9 +1754,9 @@ pub(super) fn plan_with_rtt_options(
                 .iter()
                 .find(|s| s.target_node_id == m.node_id)
                 .map(|s| [s.start_layer, s.end_layer]),
-            // Preenchida depois, de forma assíncrona, por
-            // `enrich_capacity_previews` - este planejador é síncrono e não
-            // fala com a rede.
+            // Filled in later, asynchronously, by
+            // `enrich_capacity_previews` - this planner is synchronous and does not
+            // talk to the network.
             capacity: None,
         })
         .collect();
@@ -1864,11 +1855,11 @@ pub(super) fn plan_with_rtt_options(
                     rtt_ms,
                     selected,
                     note: if selected {
-                        "rota escolhida".to_string()
+                        "chosen route".to_string()
                     } else if rtt_ms.is_some() {
-                        "rota alternativa medida no peer de origem".to_string()
+                        "alternative route measured on the source peer".to_string()
                     } else {
-                        "rota alternativa sem medição direcional de RTT".to_string()
+                        "alternative route without a directional RTT measurement".to_string()
                     },
                 });
             }
@@ -1944,20 +1935,20 @@ pub(super) fn alternatives(
                 has,
                 ok: !no_disk,
                 note: if no_disk {
-                    Some(format!("só {} GB livres em disco", gb(m.disk_free_mb)))
+                    Some(format!("only {} GB free on disk", gb(m.disk_free_mb)))
                 } else if tight {
-                    Some(format!("{} GB de memória livre", gb(m.mem_free_mb)))
+                    Some(format!("{} GB of free memory", gb(m.mem_free_mb)))
                 } else if has {
                     Some(
                         if kind.whole() {
-                            "já tem o modelo"
+                            "already has the model"
                         } else {
-                            "já tem a fatia"
+                            "already has the slice"
                         }
                         .to_string(),
                     )
                 } else {
-                    Some(format!("receberia {} GB", gb(need)))
+                    Some(format!("would receive {} GB", gb(need)))
                 },
             }
         })
@@ -1985,25 +1976,25 @@ pub(super) fn merged_alternatives(parts: &[StepPart], machines: &[Machine]) -> V
                 has,
                 ok: !no_disk,
                 note: if no_disk {
-                    Some(format!("só {} GB livres em disco", gb(m.disk_free_mb)))
+                    Some(format!("only {} GB free on disk", gb(m.disk_free_mb)))
                 } else if tight {
-                    Some(format!("{} GB de memória livre", gb(m.mem_free_mb)))
+                    Some(format!("{} GB of free memory", gb(m.mem_free_mb)))
                 } else if has {
-                    Some("já tem todas as fatias".to_string())
+                    Some("already has all the slices".to_string())
                 } else {
-                    Some(format!("receberia {} GB", gb(need)))
+                    Some(format!("would receive {} GB", gb(need)))
                 },
             }
         })
         .collect()
 }
 
-/// Checagem remota de shardabilidade: pergunta ao primary (o dono do modelo
-/// inteiro) se o GGUF dele dá para partir em `tp_size` ranks, sem escrever nada.
+/// Remote shardability check: asks the primary (the owner of the whole
+/// model) whether its GGUF can be split into `tp_size` ranks, without writing anything.
 ///
-/// `Some(motivo)` = o plano deve ser recusado. A checagem falha fechada: se o
-/// primary não responder (ou for um binário antigo sem a rota), o plano é
-/// recusado com um motivo honesto, em vez de deixar o job falhar na metade do
+/// `Some(reason)` = the plan must be refused. The check fails closed: if the
+/// primary does not answer (or is an old binary without the route), the plan is
+/// refused with an honest reason, instead of letting the job fail halfway through the
 /// apply.
 pub(super) async fn tp_shardability_check(
     state: &GatewayState,
@@ -2013,7 +2004,7 @@ pub(super) async fn tp_shardability_check(
     let primary = machines.iter().find(|m| m.node_id == tp.primary_node_id)?;
     let Some(path) = primary.held.first().map(|s| s.path.clone()) else {
         return Some(format!(
-            "o primary {} não tem o modelo inteiro",
+            "the primary {} does not have the whole model",
             primary.label()
         ));
     };
@@ -2023,17 +2014,14 @@ pub(super) async fn tp_shardability_check(
         .into_iter()
         .find(|peer| peer.node_id == primary.node_id)
     else {
-        return Some(format!(
-            "não foi possível falar com o primary {}",
-            primary.label()
-        ));
+        return Some(format!("could not reach the primary {}", primary.label()));
     };
 
-    // `/api/ui/tp/check` é autenticada como todo `/api/ui/*` de operador: sem a
-    // chave, o primary responde 401 e a checagem nunca passa - em nenhuma
-    // máquina, porque isto não depende de quem é o primary. `for_peer` resolve
-    // só o TLS (cliente pinado por node_id); credencial é por requisição, como
-    // no resto do arquivo.
+    // `/api/ui/tp/check` is authenticated like every operator `/api/ui/*`: without the
+    // key, the primary answers 401 and the check never passes - on no
+    // machine, because this does not depend on who the primary is. `for_peer` resolves
+    // only the TLS (client pinned by node_id); the credential is per request, as
+    // in the rest of the file.
     let body = json!({ "model_path": path, "tp_size": tp.size });
     let resp = match state
         .control_post_json(&primary_peer, "/api/ui/tp/check", &body, PEER_TIMEOUT * 4)
@@ -2042,7 +2030,7 @@ pub(super) async fn tp_shardability_check(
         Ok(r) => r,
         Err(e) => {
             return Some(format!(
-                "não foi possível validar o shard em {}: {e:#}",
+                "could not validate the shard on {}: {e:#}",
                 primary.label()
             ))
         }
@@ -2051,7 +2039,7 @@ pub(super) async fn tp_shardability_check(
         Ok(v) => v,
         Err(_) => {
             return Some(format!(
-                "{} respondeu mal à checagem de shard",
+                "{} answered the shard check badly",
                 primary.label()
             ))
         }
@@ -2059,29 +2047,29 @@ pub(super) async fn tp_shardability_check(
     tp_check_verdict(&body, &primary.label())
 }
 
-/// Como se lê a resposta de `/api/ui/tp/check`.
+/// How the response of `/api/ui/tp/check` is read.
 ///
-/// Separado da chamada para ser testável sem peer vivo - e porque o ramo sem
-/// `ok` já mentiu uma vez. `/api/ui/tp/check` é rota autenticada
-/// (`webui::tp_check` recebe `ConnectionAuth`), e um peer que recusa devolve
-/// `{"error":"missing Authorization header"}`: JSON válido, sem `ok`. Chamar
-/// isso de "binário antigo" mandou o operador conferir a versão do binário nas
-/// duas máquinas enquanto o defeito real era a credencial que
-/// `tp_shardability_check` nem enviava (17/08, com Mac e ksia no mesmo commit).
-/// Quem recusa costuma dizer por quê; repetir a razão dele é sempre melhor que
-/// adivinhar a nossa.
+/// Separated from the call to be testable without a live peer - and because the branch without
+/// `ok` has lied once already. `/api/ui/tp/check` is an authenticated route
+/// (`webui::tp_check` receives `ConnectionAuth`), and a peer that refuses returns
+/// `{"error":"missing Authorization header"}`: valid JSON, without `ok`. Calling
+/// that "old binary" sent the operator to check the binary version on
+/// both machines while the real defect was the credential that
+/// `tp_shardability_check` did not even send (17/08, with Mac and ksia on the same commit).
+/// Whoever refuses usually says why; repeating their reason is always better than
+/// guessing ours.
 pub(super) fn tp_check_verdict(body: &serde_json::Value, label: &str) -> Option<String> {
     match body.get("ok").and_then(|v| v.as_bool()) {
         Some(true) => None,
         Some(false) => Some(
             body.get("reason")
                 .and_then(|v| v.as_str())
-                .unwrap_or("o modelo não é shardável no caminho C")
+                .unwrap_or("the model is not shardable on path C")
                 .to_string(),
         ),
         None => Some(match body.get("error").and_then(|v| v.as_str()) {
-            Some(err) => format!("{label} recusou a checagem de shard: {err}"),
-            None => format!("{label} não tem a checagem de shard (binário antigo?)"),
+            Some(err) => format!("{label} refused the shard check: {err}"),
+            None => format!("{label} does not have the shard check (old binary?)"),
         }),
     }
 }

@@ -2,9 +2,12 @@
 
 This subsystem cuts a whole GGUF model into slices by layer range and joins
 adjacent slices back into a single file. It lives in `crates/node/src/models/`
-(`catalog.rs`, `gguf.rs`, `plan.rs`, `splitter.rs`, `model.rs`,
-`lastslice.rs`) and is consumed by `crates/node/src/backend/` (`webui.rs`,
-`deploy.rs`, `gateway.rs`). Slicing is local and on demand: each peer extracts
+(`catalog.rs`, `plan.rs`, `splitter.rs`, `model.rs`, `lastslice.rs`) and is
+consumed by `crates/node/src/backend/` (`webui/`, `deploy/`, `gateway/`). The
+GGUF reader is the engine's `gguf` module: it lives in `llama-engine` (the
+private `pom-plugin-llama.cpp` repository) and `crates/node/src/main.rs`
+re-exports it, which is why the node code writes `crate::gguf::`. Slicing is
+local and on demand: each peer extracts
 its own range from its own copy of the GGUF - no weight travels over the
 network.
 
@@ -77,7 +80,7 @@ compute SHA-256 to discover or pick the projector. The UI sorts and preselects
 the first path, but the operator can pick another compatible format during
 deployment.
 
-After enrichment, `webui.rs` records the catalog in `pom.db`. The record keeps
+After enrichment, `backend/webui/` records the catalog in `pom.db`. The record keeps
 the path as the local identity of the whole model, the slice set identity,
 size, part hash when available, total layers, quantization, range, TP rank,
 range ends and the first and last seen times. Recording the catalog does not
@@ -87,7 +90,7 @@ the identification survives after the GGUF or a slice leaves the disk.
 
 ## 2. Reading the GGUF: header and tensor table
 
-`gguf.rs` reads the GGUF without loading weights:
+The engine's `gguf` module reads the GGUF without loading weights:
 
 - `read_info` - only the KV header: architecture, `block_count`, `pom.*`
   (original/total), `shard_range`, `embedding_length` and the cache geometry
@@ -169,7 +172,7 @@ the identification survives after the GGUF or a slice leaves the disk.
 
 ## 2.1 Multipart GGUF
 
-`multipart.rs` treats a simple GGUF as a one-part set and a GGUF with
+The engine's `multipart` module treats a simple GGUF as a one-part set and a GGUF with
 `split.count > 1` as one logical source. The catalog validates `split.no`,
 `split.count` and `split.tensors.count`, rebuilds the `N-of-M.gguf` paths and
 only reads each part's header and size. The full `GgufSource` path is reserved
@@ -451,8 +454,8 @@ replicated.
 
 There are two row-parallel points per block - the attention output projection
 and `ffn_down` -, so a decode on a 32-layer model fires **64** reduces. The
-engine counts them and warns when the number does not match (`llm.rs`, after
-`llama_decode`).
+engine counts them and warns when the number does not match (its `llm` module,
+after `llama_decode`).
 
 That is a safety net against the 08/18 defect: the fork had `tp_reduce` in a
 **single** overload of `build_attn` (`attn_no_cache`), and llama.cpp has seven.
@@ -559,7 +562,9 @@ overwrite each other). The record carries a **state**, and the state is law:
   up at `MAX_RESTARTS`. An orphan file (no live node) resurrects nothing.
 
 At startup the file is **consumed and deleted** (`take`): `Serving` reapplies
-the slice; `NeverLoaded`/refusal calls `note_unloadable_slice` (the reason goes
+the slice; `Pending` with its attempts exhausted
+(`MAX_AUTOMATIC_ATTEMPTS`), or a `Pending` that `resume_attempt` refuses, calls
+`note_unloadable_slice` (the reason goes
 to `status.detail`, which is what the panel shows - an empty, silent node is
 indistinguishable from a machine that never got a slice). Without this
 mechanism a CUDA kernel segfault (2026-08-13) took the node down, the container
@@ -600,7 +605,7 @@ report how much is missing (`missing_range`) without blocking; asking for more
 slices than the model has leaves the extra ones empty; the
 `nextn_predict_layers` cut only applies on the last layer.
 `ggml_type_table_matches_ggml` breaks the build if the Rust type table diverges
-from `GGML_TRUTH` in the same file (`gguf.rs`) - numbers written by reading
+from `GGML_TRUTH` in the same file (the engine's `gguf` module) - numbers written by reading
 llama.cpp, not from memory.
 
 ## 10. Defects noted

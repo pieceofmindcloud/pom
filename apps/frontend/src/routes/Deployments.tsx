@@ -1,35 +1,37 @@
 /**
- * Tudo que está implantado no cluster, e o que dá para mexer sem refazer.
+ * Everything that is deployed in the cluster, and what can be changed without redoing it.
  *
- * Uma implantação liga um conjunto de máquinas a um modelo, de uma forma
- * (fatias, modelo inteiro ou tensor parallelism) e com uma configuração por
- * máquina. O mesmo modelo pode estar no ar mais de uma vez — em máquinas
- * diferentes, ou com parâmetros diferentes —, e antes desta tela isso era
- * invisível: o painel mostrava uma pipeline só, deduzida do nome do modelo.
+ * A deployment links a set of machines to a model, in one form (slices,
+ * whole model or tensor parallelism) and with one configuration per
+ * machine. The same model can be in service more than once - on different
+ * machines, or with different parameters -, and before this screen that was
+ * invisible: the dashboard showed a single pipeline, deduced from the model name.
  *
- * Duas palavras que a tela **não** pode confundir, porque não são a mesma:
+ * Two words the screen must **not** confuse, because they are not the same:
  *
- * * **no ar** — há máquina viva anunciando esta implantação.
- * * **padrão** — é esta que atende quem pede só `"qwen3:8b"`, sem o sufixo
- *   `@<deploy_id>`. Uma implantação pode estar no ar sem ser a padrão, e a
- *   padrão pode estar fora do ar (registrada, mas com as máquinas caídas).
+ * * **in service** - there is a live machine announcing this deployment.
+ * * **default** - the one that serves whoever asks for just `"qwen3:8b"`, without
+ *   the `@<deploy_id>` suffix. A deployment can be in service without being the
+ *   default, and the default can be out of service (registered, but with its machines down).
  *
- * Reimplantar aqui é só mexer em parâmetro: as máquinas recarregam o mesmo
- * arquivo com outra configuração, mantendo o `deploy_id`. Trocar de máquina ou
- * de faixa continua sendo assunto da tela de implantar, que é onde há o que
- * planejar e o que copiar.
+ * Redeploying here is only changing parameters: the machines reload the same
+ * file with another configuration, keeping the `deploy_id`. Changing machine or
+ * range remains a matter for the deploy screen, which is where there is
+ * something to plan and something to copy.
  */
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { ChevronDown, ChevronRight, Layers, RefreshCw, Star, Terminal, X } from "lucide-react";
 import {
   activateDeployment,
   redeployDeployment,
   type DeploymentRow,
 } from "../lib/api";
-import { useDeployments, useInvalidate, useJobs, useNode } from "../lib/queries";
+import { useCluster, useDeployments, useInvalidate, useJobs, useNode } from "../lib/queries";
+import { engineOfParams, inferenceServiceCatalog } from "../lib/inferenceServices";
 import { useToast } from "../lib/toast";
 import { layerRange } from "../lib/format";
 import { DeploymentInspector } from "../components/DeploymentInspector";
+import { NodeOverridesPanel } from "../components/NodeOverridesPanel";
 import { UndeployPipeline } from "../components/UndeployPipeline";
 import {
   Badge,
@@ -42,12 +44,25 @@ import {
   Skeleton,
 } from "../components/ui";
 import type { DeploymentKind, DeploymentVersion, RuntimeParams } from "../lib/types";
+import type { InferenceServiceEntry } from "../lib/inferenceServices";
+import { machineParamsOf } from "../lib/machineParams";
 import { useI18n } from "../i18n/provider";
 
-/** Que versão de que implantação está aberta no inspetor da direita. */
+/** Which version of which deployment is open in the inspector on the right. */
 type Inspected = { deployId: string; version: DeploymentVersion };
 
-/** A reimplantação em edição à direita: de que implantação, a partir de que valores. */
+/** A version as the list holds it now (the record of a version does not change, but its overrides do). */
+function findVersion(
+  deployments: { deployment: { deploy_id: string; versions: DeploymentVersion[] } }[],
+  deployId: string,
+  version: number,
+): DeploymentVersion | undefined {
+  return deployments
+    .find((row) => row.deployment.deploy_id === deployId)
+    ?.deployment.versions.find((v) => v.version === version);
+}
+
+/** The redeploy being edited on the right: of which deployment, starting from which values. */
 type Editing = { deployId: string; seed: RuntimeParams; fromVersion: number };
 
 const KIND_TONE: Record<DeploymentKind, "iris" | "aqua" | "sky"> = {
@@ -67,24 +82,24 @@ function dateTimeLabel(iso: string, locale: string) {
 }
 
 /**
- * Reimplantar: o mesmo inspetor da tela de implantar, editável, à direita da
- * lista, mais os dois ajustes que são de verdade por máquina.
+ * Redeploy: the same inspector as the deploy screen, editable, to the right of
+ * the list, plus the two adjustments that really are per machine.
  *
- * Os campos vêm preenchidos com a versão escolhida (a ativa, por padrão) - que
- * é o que o registro guarda -, então mexer num campo é mexer num valor real, e
- * não preencher um formulário do zero torcendo para acertar o resto. Um só
- * inspetor nas duas telas é o que impede uma propriedade nova de entrar numa e
- * faltar na outra.
+ * The fields come filled with the chosen version (the active one, by default) -
+ * which is what the registry keeps -, so changing a field is changing a real
+ * value, and not filling a form from scratch hoping to get the rest right. A
+ * single inspector on both screens is what keeps a new property from entering
+ * one and missing from the other.
  */
 function RedeployPanel({
   row,
   editing,
-  pomDesenv,
+  pomDevMode,
   onClose,
 }: {
   row: DeploymentRow;
   editing: Editing;
-  pomDesenv: boolean;
+  pomDevMode: boolean;
   onClose: () => void;
 }) {
   const { t } = useI18n();
@@ -92,6 +107,7 @@ function RedeployPanel({
   const invalidate = useInvalidate();
   const { data: jobsData } = useJobs();
   const [params, setParams] = useState<RuntimeParams>(() => ({ ...editing.seed }));
+  const engine = engineOfParams(params.inference_service, useEngineCatalog());
   const [perNode, setPerNode] = useState<
     Record<string, { n_gpu_layers?: number; offload_kqv?: boolean }>
   >(() =>
@@ -164,51 +180,55 @@ function RedeployPanel({
         value={params}
         onChange={setParams}
         showInferenceMode
-        pomDesenv={pomDesenv}
+        pomDevMode={pomDevMode}
         showHiddenStateDtype={params.hidden_state_dtype != null}
+        inferenceService={engine ?? undefined}
       />
 
-      <div className="space-y-1.5 border-t border-line px-2 py-2">
-        <p className="text-[0.65rem] font-semibold text-fg">{t("deployments.perMachine")}</p>
-        {row.deployment.nodes.map((n) => (
-          <div key={n.node_id} className="grid grid-cols-[minmax(0,1fr)_4.5rem_auto] items-center gap-2 text-[0.65rem]">
-            <div className="min-w-0">
-              <p className="truncate text-fg">{n.hostname || n.node_id.slice(0, 12)}</p>
-              <p className="text-faint">{t("deployments.layers")} {layerRange(n.start_layer, n.end_layer)}</p>
-            </div>
-            <Input
-              type="number"
-              min={0}
-              compact
-              disabled={busy}
-              aria-label={`${t("deploy.knob.n_gpu_layers")} ${n.hostname}`}
-              title={t("deploy.knob.n_gpu_layers")}
-              value={String(perNode[n.node_id]?.n_gpu_layers ?? "")}
-              onChange={(e) =>
-                setPerNode((s) => ({
-                  ...s,
-                  [n.node_id]: { ...s[n.node_id], n_gpu_layers: Number(e.target.value) },
-                }))
-              }
-            />
-            <label className="flex items-center gap-1 text-muted" title={t("deploy.offloadKqv")}>
-              <input
-                type="checkbox"
-                aria-label={`${t("deploy.offloadKqv")} ${n.hostname}`}
-                checked={perNode[n.node_id]?.offload_kqv ?? true}
+      {/* GPU layers and the KV offload are llama.cpp's; a plugin's engine places its model itself. */}
+      {!engine && (
+        <div className="space-y-1.5 border-t border-line px-2 py-2">
+          <p className="text-[0.65rem] font-semibold text-fg">{t("deployments.perMachine")}</p>
+          {row.deployment.nodes.map((n) => (
+            <div key={n.node_id} className="grid grid-cols-[minmax(0,1fr)_4.5rem_auto] items-center gap-2 text-[0.65rem]">
+              <div className="min-w-0">
+                <p className="truncate text-fg">{n.hostname || n.node_id.slice(0, 12)}</p>
+                <p className="text-faint">{t("deployments.layers")} {layerRange(n.start_layer, n.end_layer)}</p>
+              </div>
+              <Input
+                type="number"
+                min={0}
+                compact
                 disabled={busy}
+                aria-label={`${t("deploy.knob.n_gpu_layers")} ${n.hostname}`}
+                title={t("deploy.knob.n_gpu_layers")}
+                value={String(perNode[n.node_id]?.n_gpu_layers ?? "")}
                 onChange={(e) =>
                   setPerNode((s) => ({
                     ...s,
-                    [n.node_id]: { ...s[n.node_id], offload_kqv: e.target.checked },
+                    [n.node_id]: { ...s[n.node_id], n_gpu_layers: Number(e.target.value) },
                   }))
                 }
               />
-              KQV
-            </label>
-          </div>
-        ))}
-      </div>
+              <label className="flex items-center gap-1 text-muted" title={t("deploy.offloadKqv")}>
+                <input
+                  type="checkbox"
+                  aria-label={`${t("deploy.offloadKqv")} ${n.hostname}`}
+                  checked={perNode[n.node_id]?.offload_kqv ?? true}
+                  disabled={busy}
+                  onChange={(e) =>
+                    setPerNode((s) => ({
+                      ...s,
+                      [n.node_id]: { ...s[n.node_id], offload_kqv: e.target.checked },
+                    }))
+                  }
+                />
+                KQV
+              </label>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="sticky bottom-0 flex justify-end gap-2 border-t border-line bg-surface/95 px-2 py-2 backdrop-blur-sm">
         <Button variant="ghost" size="sm" onClick={onClose}>{t("common.cancel")}</Button>
@@ -220,8 +240,21 @@ function RedeployPanel({
   );
 }
 
-/** Um resumo curto dos parâmetros que quase sempre mudam entre versões. */
-function versionSummary(p: RuntimeParams): string {
+/** The inference services the cluster announces, to name a deployment's
+ *  plugin engine (Strata, ...) and show its settings; see `engineOfParams`. */
+function useEngineCatalog() {
+  const cluster = useCluster();
+  return useMemo(() => inferenceServiceCatalog(cluster.data?.peers), [cluster.data]);
+}
+
+/** A short summary of the parameters that almost always change between versions. With
+ *  a plugin's engine, the llama.cpp numbers do not apply: the summary states the
+ *  engine, the context, the sessions and its settings. */
+function versionSummary(p: RuntimeParams, engineName?: string): string {
+  if (p.inference_service) {
+    const settings = Object.entries(p.engine_settings ?? {}).map(([key, value]) => `${key}=${String(value)}`);
+    return [engineName ?? p.inference_service, `ctx ${p.n_ctx}`, `sess ${p.max_sessions}`, ...settings].join(" · ");
+  }
   const bits = [
     `ctx ${p.n_ctx}`,
     `leg ${p.max_new_tokens}`,
@@ -243,6 +276,7 @@ function VersionList({
 }) {
   const { locale, t } = useI18n();
   const toast = useToast();
+  const catalog = useEngineCatalog();
   const invalidate = useInvalidate();
   const [busy, setBusy] = useState<number | null>(null);
   const d = row.deployment;
@@ -279,8 +313,8 @@ function VersionList({
                 open ? "bg-iris/10" : ""
               }`}
             >
-              {/* A linha inteira é o gesto de "mostre-me com o que ela subiu";
-                  o botão de reimplantar fica fora dela, porque é outro ato. */}
+              {/* The whole row is the gesture of "show me what it came up with";
+                  the redeploy button stays outside it, because it is another act. */}
               <button
                 type="button"
                 aria-label={t("deployments.versionPick", { n: v.version })}
@@ -297,7 +331,9 @@ function VersionList({
                     {dateTimeLabel(v.created_at, locale)}
                   </time>
                 </span>
-                <span className="text-xs text-faint">{versionSummary(v.params)}</span>
+                <span className="text-xs text-faint">
+                  {versionSummary(v.params, engineOfParams(v.params.inference_service, catalog)?.name)}
+                </span>
               </button>
               <Button
                 variant="ghost"
@@ -332,6 +368,9 @@ function Row({
   const [expanded, setExpanded] = useState(false);
   const d = row.deployment;
   const versionCount = d.versions?.length ?? 1;
+  const catalog = useEngineCatalog();
+  const activeParams = d.versions?.find((v) => v.version === d.active_version)?.params ?? d.nodes[0]?.config;
+  const engine = engineOfParams(activeParams?.inference_service, catalog);
 
   async function activate() {
     try {
@@ -373,7 +412,10 @@ function Row({
         </td>
         <td className="px-5 py-3">{d.model.label}</td>
         <td className="px-5 py-3">
-          <Badge tone={KIND_TONE[d.kind]}>{t("deployments.kind." + d.kind)}</Badge>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Badge tone={KIND_TONE[d.kind]}>{t("deployments.kind." + d.kind)}</Badge>
+            {engine && <Badge tone="sky">{engine.name}</Badge>}
+          </div>
         </td>
         <td className="whitespace-nowrap px-5 py-3 text-muted">
           {t("deployments.nodeCount", { count: d.nodes.length })}
@@ -397,12 +439,12 @@ function Row({
             )}
           </div>
         </td>
-        {/* Coluna estreita e ações que não quebram: o rótulo partido ao meio
-            deixava o ícone solto à esquerda, e a linha inteira crescia. */}
+        {/* Narrow column and actions that do not wrap: the label broken in half
+            left the icon loose on the left, and the whole row grew. */}
         <td className="whitespace-nowrap px-5 py-3">
           <div className="flex flex-col items-start gap-1">
             <a
-              href={`/implantacoes/logs?deploy_id=${encodeURIComponent(d.deploy_id)}`}
+              href={`/deployments/logs?deploy_id=${encodeURIComponent(d.deploy_id)}`}
               className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-line px-2.5 text-[0.8rem] font-medium text-muted transition-colors hover:border-line-strong hover:text-fg"
             >
               <Terminal className="h-3.5 w-3.5" />
@@ -452,28 +494,110 @@ function Row({
   );
 }
 
+/**
+ * The machines of the version on the right: one button per machine, and the selected one's own values
+ * (`NodeOverridesPanel`). A machine with its own values is marked.
+ */
+function MachinesSection({
+  deployId,
+  version,
+  selected,
+  onSelect,
+  onSaved,
+  engineCatalog,
+}: {
+  deployId: string;
+  version: DeploymentVersion;
+  selected: string | null;
+  onSelect: (nodeId: string | null) => void;
+  onSaved: () => void;
+  engineCatalog: InferenceServiceEntry[];
+}) {
+  const { t } = useI18n();
+  const node = version.nodes.find((n) => n.node_id === selected);
+  return (
+    <div className="grid gap-2 border-t border-line px-2 py-2">
+      <p className="eyebrow">{t("deployments.nodesTitle")}</p>
+      <div className="grid gap-1">
+        {version.nodes.map((n) => {
+          const active = selected === n.node_id;
+          const own = Object.keys(version.overrides?.[n.node_id] ?? {}).length > 0;
+          return (
+            <button
+              key={n.node_id}
+              type="button"
+              aria-pressed={active}
+              onClick={() => onSelect(active ? null : n.node_id)}
+              className={`flex items-center justify-between gap-2 rounded-md border px-2 py-1 text-left text-xs ${
+                active ? "border-iris text-fg" : "border-line text-muted"
+              }`}
+            >
+              <span className="min-w-0 truncate">
+                {n.hostname || n.node_id.slice(0, 12)}{" "}
+                <span className="font-mono text-faint">
+                  {n.start_layer}-{n.end_layer}
+                </span>
+                <span className="block truncate text-[0.6rem] text-faint">
+                  {engineOfParams(machineParamsOf(n, version).inference_service, engineCatalog)?.name ??
+                    t("deploy.inferenceServiceLlama")}
+                </span>
+              </span>
+              {own && <span className="shrink-0 text-[0.6rem] text-amber">{t("deployments.nodeOwn")}</span>}
+            </button>
+          );
+        })}
+      </div>
+      {node && (
+        <NodeOverridesPanel
+          key={node.node_id}
+          deployId={deployId}
+          nodeId={node.node_id}
+          hostname={node.hostname}
+          versionParams={version.params}
+          overrides={version.overrides?.[node.node_id] ?? {}}
+          onSaved={onSaved}
+        />
+      )}
+    </div>
+  );
+}
+
 export function Deployments() {
   const { t } = useI18n();
   const { data, isLoading } = useDeployments();
   const node = useNode();
-  const pomDesenv = node.data?.pom_desenv === true;
+  const pomDevMode = node.data?.pom_dev_mode === true;
   /*
-   * A versão aberta no inspetor da direita. Guarda a versão inteira, e não só
-   * o número: o registro de uma versão não muda depois de gravado, então uma
-   * cópia aqui não envelhece, e o inspetor não precisa reencontrar a linha a
-   * cada refresh da lista.
+   * The version open in the inspector on the right. It keeps the whole version,
+   * and not just the number: a version's record does not change once written, so
+   * a copy here does not age, and the inspector does not need to find the row
+   * again on every refresh of the list.
    */
   const [inspected, setInspected] = useState<Inspected | null>(null);
-  // O lado direito mostra uma coisa de cada vez: a versão lida ou a reimplantação.
+  const invalidate = useInvalidate();
+  const engineCatalog = useEngineCatalog();
+  // The right side shows one thing at a time: the version being read or the redeploy.
   const [editing, setEditing] = useState<Editing | null>(null);
+  // The machine whose own values the properties panel shows (`NodeOverridesPanel`).
+  const [machine, setMachine] = useState<string | null>(null);
   const inspect = (next: Inspected | null) => {
     setEditing(null);
+    setMachine(null);
     setInspected(next);
   };
   const edit = (deployId: string, version: DeploymentVersion | undefined, fallback: RuntimeParams, fromVersion: number) => {
     setInspected(null);
     setEditing({ deployId, seed: version?.params ?? fallback, fromVersion: version?.version ?? fromVersion });
   };
+  // The copy taken when the panel opened goes stale once a machine's values change: read the version from the list.
+  const liveVersion = inspected
+    ? findVersion(data?.deployments ?? [], inspected.deployId, inspected.version.version) ?? inspected.version
+    : null;
+  // The panel shows the version's parameters, or, once a machine is picked, that machine's own configuration.
+  const shownMachine =
+    liveVersion && machine ? liveVersion.nodes.find((candidate) => candidate.node_id === machine) ?? null : null;
+  const shownParams = liveVersion ? (shownMachine ? machineParamsOf(shownMachine, liveVersion) : liveVersion.params) : null;
+  const shownEngine = engineOfParams(shownParams?.inference_service, engineCatalog);
   const rows = [...(data?.deployments ?? [])].sort((a, b) => {
     const aTime = Date.parse(a.deployment.activated_at);
     const bTime = Date.parse(b.deployment.activated_at);
@@ -565,6 +689,21 @@ export function Deployments() {
                 <p className="truncate font-mono text-[0.6rem] text-faint">
                   {inspected.deployId}
                 </p>
+                {shownMachine && (
+                  <p className="truncate text-[0.65rem] text-iris">
+                    {t("deployments.machineProperties", {
+                      host: shownMachine.hostname || shownMachine.node_id.slice(0, 12),
+                    })}
+                    {" · "}
+                    {t("deployments.machineEngine", {
+                      engine: shownEngine?.name ?? t("deploy.inferenceServiceLlama"),
+                    })}
+                    {" · "}
+                    <button type="button" onClick={() => setMachine(null)} className="underline">
+                      {t("deployments.backToVersion")}
+                    </button>
+                  </p>
+                )}
               </div>
               <button
                 type="button"
@@ -579,17 +718,26 @@ export function Deployments() {
               {t("deployments.versionPropertiesHint")}
             </p>
             {/*
-              O mesmo inspetor da tela de implantar, em somente leitura. O cache
-              KV não entra: ele é da instalação e do momento, não da versão -
-              mostrar o valor de hoje ao lado do que subiu ontem seria inventar
-              um registro que ninguém guardou.
+              The same inspector as the deploy screen, read-only. The KV cache
+              is left out: it belongs to the installation and the moment, not to the
+              version - showing today's value next to what came up yesterday would be
+              inventing a record nobody kept.
             */}
             <DeploymentInspector
-              value={inspected.version.params}
+              value={shownParams ?? inspected.version.params}
               readOnly
               showInferenceMode
-              pomDesenv={pomDesenv}
-              showHiddenStateDtype={inspected.version.params.hidden_state_dtype != null}
+              pomDevMode={pomDevMode}
+              showHiddenStateDtype={(shownParams ?? inspected.version.params).hidden_state_dtype != null}
+              inferenceService={shownEngine ?? undefined}
+            />
+            <MachinesSection
+              deployId={inspected.deployId}
+              version={liveVersion ?? inspected.version}
+              selected={machine}
+              onSelect={setMachine}
+              onSaved={() => invalidate()}
+              engineCatalog={engineCatalog}
             />
             <div className="sticky bottom-0 flex justify-end border-t border-line bg-surface/95 px-2 py-2 backdrop-blur-sm">
               <Button
@@ -612,7 +760,7 @@ export function Deployments() {
                 key={`${editing.deployId}:${editing.fromVersion}`}
                 row={row}
                 editing={editing}
-                pomDesenv={pomDesenv}
+                pomDevMode={pomDevMode}
                 onClose={() => setEditing(null)}
               />
             </aside>

@@ -13,7 +13,7 @@ Where the file lands depends on what it is. A **part** of a slicing goes to
 manifest `<model>-<short hash of the original>.pom` written in the same folder
 before the bytes, and is checked against the hash that was requested. A file
 that is not part of any manifest - a whole model - lands in
-`<shard_dir>/recebidos/` ("received") and only takes its final name when the
+`<shard_dir>/received/` ("received") and only takes its final name when the
 MD5 matches.
 
 When receiving a v1 manifest, the peer merges by `pom_id`: local parts are
@@ -23,7 +23,7 @@ kept and missing remote parts are added. This applies to both `parts` and
 **The `.pom` is mandatory for a part, in both directions.** The sender refuses
 to offer a slice without a manifest (`send_to_peer`), the server refuses to
 deliver it (`servable_path`), and the receiver refuses to accept it
-(`alvo_da_oferta`, `spawn_download`). There is no alternative path: an orphan
+(`offer_target`, `spawn_download`). There is no alternative path: an orphan
 slice is a file nobody knows how to name, and the hash of the original model -
 which decides the folder it lives in - only exists in the manifest.
 
@@ -69,7 +69,7 @@ the other side answers**. `spawn_download`:
 
 1. Registers the job right away (`bytes_total` 0, indeterminate bar, detail
    "checking the file at the source"). The destination directory - the model
-   folder for a part; `<shard_dir>/recebidos/` for a loose file - is the only
+   folder for a part; `<shard_dir>/received/` for a loose file - is the only
    thing that has to succeed immediately.
 2. In a background task, `fetch_manifest` asks for size + MD5 at
    `/api/transfer/manifest` (`MANIFEST_TIMEOUT` = 30 min - a digest is a read
@@ -161,8 +161,37 @@ the discredited ones. The offer is a signed control call
 last, the libp2p tunnel (`/api/transfer/offer` is on the tunnel's list). The
 return address (`from_gateway`, through `local_ip_for`) comes from the first
 of that list, so it points at the interface through which the peer is really
-reached. The download is still direct HTTP in both directions: weights do not
-go through the relay.
+reached.
+
+A deployment that has to copy a slice does the same with its two calls to the
+target: `POST /api/transfer/pull`, which tells the target to fetch the slice,
+and the `GET /api/transfer/jobs` polling that follows the copy
+(`deploy/lifecycle.rs`, `deploy/node.rs::wait_for_transfers`). Both are signed
+control calls that end in the tunnel, and both are on its list. They used to go
+to a single HTTP address, so a target behind NAT could receive a file but could
+never be told to: the deployment failed with "error sending request".
+
+The download itself is direct HTTP when the address connects. When it does
+not - two machines behind NAT - `run_download` falls back to the libp2p
+tunnel (`download_over_tunnel`): the manifest and the `.pom` go as small signed
+requests, and the file comes in closed pieces of 4 MiB
+(`Range: bytes=<first>-<last>`, `infer_tunnel::TRANSFER_CHUNK_BYTES`), each
+one signed, appended to the same `.part` and checked by the same MD5/sha256 at
+the end. The sender answers exactly the piece asked, keeps one job for the
+whole file and answers 410 to a piece of a job it already closed.
+
+**A file never crosses a public relay.** A piece travels over a direct libp2p
+connection (dialed or hole punched) or over a circuit through a relay that is
+a member of the same cluster and allows transfers; a relay configured in
+`relay_peers`, or one that is not a member, carries none. The serving node
+checks the connection each piece arrived on and answers 421 otherwise, and a
+request without a bounded range is refused with 416, because the tunnel holds
+an answer in memory. libp2p spreads requests over every connection it has
+with a peer, so the receiver retries a 421 while some connection may carry
+the file, waits up to 12 s for a hole punch to close before giving up, and
+then fails with "the only path goes through a public relay". The rule and
+who counts as a member relay are in `p2p-network.md`, "Who relays for whom"
+and "Files and relays".
 
 ## 5.1 The dialer's scheme is the local one, not the offer's
 
@@ -176,9 +205,9 @@ nothing (08/18).
 
 Two defenses, because both are needed:
 
-- the sender builds the URL with `peer_client::peer_base_url(.., tls_ativo())`,
+- the sender builds the URL with `peer_client::peer_base_url(.., tls_enabled())`,
   not a literal;
-- the acceptor passes the URL through `normaliza_esquema`, which enforces the
+- the acceptor passes the URL through `normalize_scheme`, which enforces the
   **local policy** - an older node still offers `http://`, and the download
   works anyway.
 
@@ -265,7 +294,7 @@ All behind `ConnectionAuth` (connection key, see `http-api.md`):
 | Route | Direction | Role |
 |---|---|---|
 | `GET /api/transfer/manifest` | serve | size + MD5 of the requested file (by `?path=` or `?grant=`) |
-| `GET /api/transfer/download` | serve | stream with `Range`, resume and progress |
+| `GET /api/transfer/download` | serve | stream with `Range` (open to resume, closed for one piece through the tunnel) and progress |
 | `POST /api/transfer/pull` | pull | this node asks a peer for a slice (path in `models/`) |
 | `POST /api/transfer/offer` | offer | the peer registers an offer of ours; nothing downloads until accepted |
 | `GET /api/transfer/offers` | receive | lists the offers + `disk_free_mb` |
@@ -287,7 +316,11 @@ table seeded by hand and an axum `fake_peer` on loopback that captures the
 offer body. The offer latency tests prove that the offer goes out **without** a
 digest (empty `md5`) and that `auto_accept` stays closed unless the variable is
 explicitly set. There is also a security test: a `?path=` outside `models/` and
-an invented `grant` are refused.
+an invented `grant` are refused. `a_closed_range_serves_one_piece_and_keeps_one_job`
+covers the sender's side of a download in pieces, and
+`network::a_file_crosses_a_member_relay_but_never_a_public_one` the rule of
+which connection may carry one. The receiver's loop through the tunnel has no
+test: it needs a swarm.
 
 ## 11. Defects noted
 

@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 /**
- * Máquina sem fatia não vira uma máquina com a fatia "0-0".
+ * A machine without a slice does not become a machine with the slice "0-0".
  *
- * O card foi escrito para quem serve uma faixa, e a aba Detalhes agora mostra
- * também quem está na rede sem servir nada. O que se afirma aqui é que nesse
- * caso ele não escreve faixa nenhuma, diz por quê, e não oferece o botão que
- * tira do modelo uma máquina que não está em modelo nenhum.
+ * The card was written for whoever serves a range, and the Details tab now shows
+ * also whoever is on the network without serving anything. What is asserted here is that in that
+ * case it writes no range at all, says why, and does not offer the button that
+ * takes out of the model a machine that is in no model.
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
@@ -28,56 +28,56 @@ function mount(peer: PeerView, runtime?: PeerRuntime) {
   );
 }
 
-const semFatia = fakePeer({
+const withoutSlice = fakePeer({
   node_id: "z",
   node: fakeNode({ node_id: "z", short_id: "z", hostname: "atena" }),
 });
 
-describe("PeerDetailCard sem fatia", () => {
+describe("PeerDetailCard without a slice", () => {
   afterEach(cleanup);
 
-  it("não escreve faixa de camadas nenhuma", () => {
-    mount(semFatia);
+  it("writes no layer range at all", () => {
+    mount(withoutSlice);
     expect(screen.queryByText(/^L?0\s*[-–]\s*0$/)).toBeNull();
     expect(screen.queryByText(/NaN/)).toBeNull();
     expect(screen.getByText("sem fatia")).toBeTruthy();
   });
 
   /**
-   * A frase saiu da faixa que ocupava uma linha inteira do card e entrou no
-   * `[i]` do próprio distintivo. O que se afirma continua sendo o mesmo: quem
-   * perguntar "por que sem fatia?" recebe resposta, sem que o card gaste uma
-   * linha com ela em toda máquina ociosa da rede.
+   * The sentence left the strip that took up a whole line of the card and went into the
+   * `[i]` of the badge itself. What is asserted remains the same: whoever
+   * asks "why no slice?" gets an answer, without the card spending a
+   * line on it for every idle machine on the network.
    */
-  it("diz que a máquina está na rede e não serve camada nenhuma", () => {
-    mount(semFatia);
+  it("says the machine is on the network and serves no layer", () => {
+    mount(withoutSlice);
     fireEvent.click(screen.getByRole("button", { name: "O que é sem fatia" }));
     expect(screen.getByText(/não serve nenhuma faixa de camadas/i)).toBeTruthy();
   });
 
-  it("não oferece tirar do modelo uma máquina que não está em modelo nenhum", () => {
-    mount(semFatia);
+  it("does not offer to remove from the model a machine that is in no model", () => {
+    mount(withoutSlice);
     expect(screen.queryByRole("button", { name: /remover/i })).toBeNull();
-    // Sair da rede continua valendo: é do cluster que ela sai.
+    // Leaving the network still applies: it is the cluster it leaves.
     expect(screen.getByRole("button", { name: /sair da rede/i })).toBeTruthy();
   });
 
-  it("continua mostrando o que a máquina de fato reporta", () => {
-    mount(semFatia);
+  it("keeps showing what the machine actually reports", () => {
+    mount(withoutSlice);
     expect(screen.getByText("atena")).toBeTruthy();
     expect(screen.getByText("RAM")).toBeTruthy();
   });
 });
 
-describe("PeerDetailCard com fatia", () => {
+describe("PeerDetailCard with a slice", () => {
   afterEach(cleanup);
 
-  it("mostra a faixa que o peer anuncia", () => {
+  it("shows the range the peer announces", () => {
     mount(fakeSlicePeer("a", 0, 15));
     expect(screen.getByText(/0\s*[-–]\s*15/)).toBeTruthy();
   });
 
-  it("avisa quando o MTP foi pedido mas não ficou disponível", () => {
+  it("warns when MTP was requested but did not become available", () => {
     const peer = fakeSlicePeer("mtp", 0, 31, {
       node: fakeNode({
         node_id: "mtp",
@@ -99,7 +99,7 @@ describe("PeerDetailCard com fatia", () => {
     expect(screen.getByText("falha ao criar o contexto MTP por falta de memória")).toBeTruthy();
   });
 
-  it("mostra quando o MTP ficou ativo na RAM", () => {
+  it("shows when MTP became active in RAM", () => {
     const peer = fakeSlicePeer("mtp-ram", 0, 31, {
       node: fakeNode({
         node_id: "mtp-ram",
@@ -121,10 +121,10 @@ describe("PeerDetailCard com fatia", () => {
   });
 });
 
-describe("PeerDetailCard · reserva de contexto", () => {
+describe("PeerDetailCard · context reserve", () => {
   afterEach(cleanup);
 
-  it("expõe quando várias sessões multiplicam o KV na GPU", () => {
+  it("exposes when several sessions multiply the KV on the GPU", () => {
     mount(fakeSlicePeer("context", 0, 31), {
       loaded: true,
       health: {
@@ -147,7 +147,7 @@ describe("PeerDetailCard · reserva de contexto", () => {
     );
   });
 
-  it("não cria alerta para a configuração de uma sessão", () => {
+  it("creates no alert for a single-session configuration", () => {
     mount(fakeSlicePeer("context-one", 0, 31), {
       loaded: true,
       health: {
@@ -168,7 +168,7 @@ describe("PeerDetailCard · reserva de contexto", () => {
   });
 });
 
-describe("PeerDetailCard · parâmetros de carga", () => {
+describe("PeerDetailCard · load parameters", () => {
   const params = {
     n_ctx: 8192,
     n_ctx_seq: 8192,
@@ -189,7 +189,7 @@ describe("PeerDetailCard · parâmetros de carga", () => {
     fit_memory_applied: true,
   };
 
-  function montaCom(load_params: unknown) {
+  function mountWith(load_params: unknown) {
     mount(fakeSlicePeer("lp", 0, 31), {
       loaded: true,
       health: { mtp_ready: false, placement: null, load_params } as never,
@@ -198,55 +198,55 @@ describe("PeerDetailCard · parâmetros de carga", () => {
 
   afterEach(cleanup);
 
-  it("mostra o lote e o microlote com que o contexto subiu", () => {
-    montaCom(params);
+  it("shows the batch and the microbatch the context started with", () => {
+    mountWith(params);
     expect(screen.getByText("Parâmetros de carga do llama.cpp")).toBeTruthy();
-    // O microlote é o que governa o prefill, e ele não é o n_batch: com o fit
-    // ligado o llama.cpp o corta. Mostrar os dois é o ponto da seção.
+    // The microbatch is what governs prefill, and it is not n_batch: with fit
+    // on, llama.cpp cuts it. Showing both is the point of the section.
     expect(screen.getByText("512 / 128")).toBeTruthy();
   });
 
-  it("diz que o Flash Attention veio da sonda, não do pedido do operador", () => {
-    montaCom(params);
+  it("says Flash Attention came from the probe, not from the operator request", () => {
+    mountWith(params);
     expect(screen.getByText("ligado (auto)")).toBeTruthy();
   });
 
-  it("distingue o Flash Attention pedido do resolvido automaticamente", () => {
-    montaCom({ ...params, flash_attn: false, flash_attn_auto: false });
+  it("distinguishes requested Flash Attention from the automatically resolved one", () => {
+    mountWith({ ...params, flash_attn: false, flash_attn_auto: false });
     expect(screen.getByText("desligado (pedido)")).toBeTruthy();
   });
 
-  it("diz que não sabe quando a ponte de diagnóstico não respondeu", () => {
-    // O caminho que não pode existir é o `null` virar "desligado": isso faria
-    // o operador caçar um problema de Flash Attention que ninguém reportou.
-    montaCom({ ...params, flash_attn: null, flash_attn_auto: null });
+  it("says it does not know when the diagnostic bridge did not answer", () => {
+    // The path that must not exist is `null` turning into "off": that would make
+    // the operator hunt for a Flash Attention problem that nobody reported.
+    mountWith({ ...params, flash_attn: null, flash_attn_auto: null });
     expect(screen.getByText("não sei")).toBeTruthy();
   });
 
-  /** O aviso do fit virou o `[i]` do próprio título da seção. */
-  it("avisa que o fit mexeu nos valores pedidos", () => {
-    montaCom(params);
+  /** The fit warning became the `[i]` of the section's own title. */
+  it("warns that the fit changed the requested values", () => {
+    mountWith(params);
     fireEvent.click(
       screen.getByRole("button", { name: "O que é Parâmetros de carga do llama.cpp" }),
     );
     expect(screen.getByText(/O fit do llama.cpp ajustou este contexto/)).toBeTruthy();
   });
 
-  it("omite a seção inteira num nó cujo /health não traz os parâmetros", () => {
-    montaCom(undefined);
+  it("omits the whole section on a node whose /health carries no parameters", () => {
+    mountWith(undefined);
     expect(screen.queryByText("Parâmetros de carga do llama.cpp")).toBeNull();
   });
 });
 
-describe("PeerDetailCard sem GPU (nó Linux, ex. num container Docker)", () => {
+describe("PeerDetailCard without GPU (Linux node, e.g. in a Docker container)", () => {
   afterEach(cleanup);
 
-  /// `wired_mb` só é populado no macOS (`sysmon.rs`); um nó Linux sem NVIDIA
-  /// caía no mesmo ramo que mostrava "Wired memory (Metal buffers)" com
-  /// `value={null}`, que trava o `Progress` no modo indeterminado para
-  /// sempre — a barra "fica saltando e nunca se resolve", já que nada nesse
-  /// nó jamais vai preencher `wired_mb`.
-  const semGpu = fakePeer({
+  /// `wired_mb` is only populated on macOS (`sysmon.rs`); a Linux node without NVIDIA
+  /// fell into the same branch that showed "Wired memory (Metal buffers)" with
+  /// `value={null}`, which locks the `Progress` in indeterminate mode
+  /// forever - the bar "keeps jumping and never resolves", since nothing on that
+  /// node will ever fill `wired_mb`.
+  const withoutGpu = fakePeer({
     node_id: "cpu-only",
     node: fakeNode({
       node_id: "cpu-only",
@@ -273,33 +273,33 @@ describe("PeerDetailCard sem GPU (nó Linux, ex. num container Docker)", () => {
     }),
   });
 
-  it("não mostra o medidor de memória wired do Metal", () => {
-    mount(semGpu);
+  it("does not show the Metal wired memory gauge", () => {
+    mount(withoutGpu);
     expect(screen.queryByText(/wired/i)).toBeNull();
     expect(screen.queryByText(/metal/i)).toBeNull();
   });
 
-  it("mostra uma barra num estado definido, não indeterminado para sempre", () => {
-    mount(semGpu);
+  it("shows a bar in a defined state, not indeterminate forever", () => {
+    mount(withoutGpu);
     const bars = screen.getAllByRole("progressbar");
-    // Toda barra desta máquina tem que ter um valor definido — nenhuma pode
-    // ficar sem `aria-valuenow`, que é como o indeterminado se denuncia.
+    // Every bar of this machine must have a defined value - none may
+    // be left without `aria-valuenow`, which is how the indeterminate gives itself away.
     for (const bar of bars) {
       expect(bar.getAttribute("aria-valuenow")).not.toBeNull();
     }
   });
 
-  it("omite a seção de temperatura quando a máquina não tem GPU", () => {
-    mount(semGpu);
+  it("omits the temperature section when the machine has no GPU", () => {
+    mount(withoutGpu);
     expect(screen.queryByText(/temperatura da gpu/i)).toBeNull();
     expect(screen.queryByLabelText(/temperatura da gpu/i)).toBeNull();
   });
 });
 
-describe("temperatura das GPUs", () => {
+describe("GPU temperature", () => {
   afterEach(cleanup);
 
-  it("mostra uma leitura e a faixa térmica para cada GPU", () => {
+  it("shows a reading and the thermal band for each GPU", () => {
     const peer = fakeSlicePeer("thermal", 0, 15, {
       node: fakeNode({
         node_id: "thermal",
@@ -320,7 +320,7 @@ describe("temperatura das GPUs", () => {
     expect(screen.getByText(/crítica/)).toBeTruthy();
   });
 
-  it("mantém o aviso quando uma GPU existe mas o sensor está indisponível", () => {
+  it("keeps the warning when a GPU exists but the sensor is unavailable", () => {
     const peer = fakeSlicePeer("thermal-unknown", 0, 15, {
       node: fakeNode({
         node_id: "thermal-unknown",
@@ -341,27 +341,27 @@ describe("temperatura das GPUs", () => {
 });
 
 /**
- * O card é lido numa tela, e a máquina reporta muito. O que se afirma aqui é a
- * arrumação: o que se **faz** com a máquina fica no topo, e o que ela **tem**
- * aparece inteiro - todas as partições, não só a do projeto.
+ * The card is read on a screen, and the machine reports a lot. What is asserted here is the
+ * arrangement: what you **do** with the machine stays at the top, and what it **has**
+ * appears in full - all the partitions, not only the project's.
  */
-describe("PeerDetailCard · arrumação do card", () => {
+describe("PeerDetailCard · card layout", () => {
   afterEach(cleanup);
 
-  it("põe as ações no topo, antes do que a máquina reporta", () => {
+  it("puts the actions at the top, before what the machine reports", () => {
     mount(fakeSlicePeer("a", 0, 15));
-    const sair = screen.getByRole("button", { name: /sair da rede/i });
+    const leaveButton = screen.getByRole("button", { name: /sair da rede/i });
     const ram = screen.getByText("RAM");
-    // `DOCUMENT_POSITION_FOLLOWING` = a RAM vem depois do botão no documento.
-    expect(sair.compareDocumentPosition(ram) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // `DOCUMENT_POSITION_FOLLOWING` = the RAM comes after the button in the document.
+    expect(leaveButton.compareDocumentPosition(ram) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   /**
-   * Uma máquina com NVMe e HDD, ou com `/` e `/dados` separados, aparecia como
-   * um volume só - e quem decide onde cabe um GGUF de 40 GB não via o disco
-   * onde ele caberia.
+   * A machine with NVMe and HDD, or with `/` and `/data` separate, showed up as
+   * a single volume - and whoever decides where a 40 GB GGUF fits did not see the disk
+   * where it would fit.
    */
-  it("mostra uma barra por partição montada", () => {
+  it("shows one bar per mounted partition", () => {
     const peer = fakeSlicePeer("discos", 0, 15, {
       node: fakeNode({
         node_id: "discos",
@@ -381,8 +381,8 @@ describe("PeerDetailCard · arrumação do card", () => {
     expect(screen.getByText("Disco · /dados")).toBeTruthy();
   });
 
-  /** Um nó que ainda não publica a lista não perde o disco que já publicava. */
-  it("recai no volume do projeto quando o nó não lista as partições", () => {
+  /** A node that does not publish the list yet does not lose the disk it already published. */
+  it("falls back to the project volume when the node does not list the partitions", () => {
     const peer = fakeSlicePeer("antigo", 0, 15, {
       node: fakeNode({
         node_id: "antigo",
@@ -395,7 +395,7 @@ describe("PeerDetailCard · arrumação do card", () => {
     expect(screen.getByText("Disco · /")).toBeTruthy();
   });
 
-  it("guarda os parâmetros de carga num bloco que se abre", () => {
+  it("keeps the load parameters in a block that opens", () => {
     mount(fakeSlicePeer("lp2", 0, 31), {
       loaded: true,
       health: {
@@ -422,12 +422,12 @@ describe("PeerDetailCard · arrumação do card", () => {
         },
       } as never,
     });
-    const titulo = screen.getByText("Parâmetros de carga do llama.cpp");
-    expect(titulo.closest("details")).toBeTruthy();
-    expect(titulo.closest("details")!.open).toBe(false);
+    const title = screen.getByText("Parâmetros de carga do llama.cpp");
+    expect(title.closest("details")).toBeTruthy();
+    expect(title.closest("details")!.open).toBe(false);
   });
 
-  it("mostra GPUs, RAM, carga e discos nessa sequência", () => {
+  it("shows GPUs, RAM, load and disks in that sequence", () => {
     const peer = fakeSlicePeer("telemetria", 0, 15, {
       node: fakeNode({
         node_id: "telemetria",
@@ -461,7 +461,7 @@ describe("PeerDetailCard · arrumação do card", () => {
     expect(screen.getByTestId("gpu-telemetry-row").textContent).toMatch(/30%.*72,0 °C.*250 W/);
   });
 
-  it("não oferece atualizar e reiniciar no card", () => {
+  it("does not offer update and restart on the card", () => {
     mount(fakeSlicePeer("sem-update", 0, 15, {
       node: fakeNode({ dev_update: true }),
     }));
@@ -470,46 +470,46 @@ describe("PeerDetailCard · arrumação do card", () => {
 });
 
 /**
- * Um endereço que morre não pode virar um aviso permanente.
+ * An address that dies must not become a permanent warning.
  *
- * Endereços IPv6 temporários rodam sozinhos (privacy extensions), então o
- * endereço que um par anunciou ontem pode não existir em máquina nenhuma hoje.
- * O nó esquece esse endereço, pergunta o atual e recupera o par sozinho - e é
- * isso que a tela tem de dizer enquanto acontece, em vez de "nada abaixo pode
- * ser lido", que manda o utilizador procurar um defeito que se conserta só.
+ * Temporary IPv6 addresses rotate on their own (privacy extensions), so the
+ * address that a peer announced yesterday may not exist on any machine today.
+ * The node forgets that address, asks for the current one and recovers the peer on its own - and
+ * that is what the screen must say while it happens, instead of "nothing below can
+ * be read", which sends the user hunting for a defect that fixes itself.
  */
-describe("PeerDetailCard com o endereço a ser reencontrado", () => {
+describe("PeerDetailCard with the address being rediscovered", () => {
   afterEach(cleanup);
 
-  it("diz que o nó está a ser reencontrado, não que nada pode ser lido", () => {
+  it("says the node is being rediscovered, not that nothing can be read", () => {
     mount(fakePeer({ node_id: "z", rediscovering: true }));
     expect(screen.getByText(/Reencontrando este nó/)).toBeTruthy();
     expect(screen.queryByText(/a leitura falhou/)).toBeNull();
   });
 
-  it("continua explicando a falha quando o par atendeu e a leitura é que quebrou", () => {
+  it("keeps explaining the failure when the peer answered and the reading is what broke", () => {
     mount(fakePeer({ node_id: "z", unreachable: "HTTP 500" }));
     expect(screen.getByText(/a leitura falhou: HTTP 500/)).toBeTruthy();
     expect(screen.queryByText(/Reencontrando este nó/)).toBeNull();
   });
 
   /**
-   * A cobertura sai do gossip, não da leitura: o par ilegível continua
-   * contribuindo camadas. A tela tem de dizer que a cobertura não está
-   * confirmada em vez de ficar calada.
+   * The coverage comes from gossip, not from reading: the unreadable peer keeps
+   * contributing layers. The screen must say that the coverage is not
+   * confirmed instead of staying silent.
    */
-  it("avisa que a cobertura não está confirmada", () => {
+  it("warns that the coverage is not confirmed", () => {
     mount(fakePeer({ node_id: "z", rediscovering: true }));
     expect(screen.getByText(/continuam contando para a cobertura/)).toBeTruthy();
   });
 });
 
 describe("cardRange", () => {
-  it("devolve null quando não há faixa em lugar nenhum, em vez de 0-0", () => {
-    expect(cardRange(semFatia)).toBeNull();
+  it("returns null when there is no range anywhere, instead of 0-0", () => {
+    expect(cardRange(withoutSlice)).toBeNull();
   });
 
-  it("prefere o anúncio do peer", () => {
+  it("prefers the peer announce", () => {
     expect(cardRange(fakeSlicePeer("a", 4, 9))).toEqual([4, 9]);
   });
 });

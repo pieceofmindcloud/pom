@@ -82,8 +82,8 @@ impl InferState {
             thinking_forced_open,
             thinking_open: HashMap::new(),
             no_thinking: cfg.no_thinking,
-            // Mantém o comportamento dos chamadores antigos que não enviam a
-            // flag. O gateway atual sempre a explicita por endpoint.
+            // Keeps the behavior of old callers that do not send the
+            // flag. The current gateway always states it explicitly per endpoint.
             chat_template: cfg.no_thinking,
             start_layer: cfg.start_layer,
             end_layer: cfg.end_layer,
@@ -138,7 +138,7 @@ impl InferState {
         }
         if self.engine.moe_external_executor_enabled() {
             bail!(
-                "executor externo de MoE está ativo, mas o hook não está instalado; recusa para evitar executar os experts duas vezes"
+                "external MoE executor is active, but the hook is not installed; refusing to avoid running the experts twice"
             );
         }
         let Some(moe) = self.moe.as_ref() else {
@@ -151,7 +151,7 @@ impl InferState {
         let forward_started = Instant::now();
         let output = moe
             .forward_batch(layer, &hidden, n_tokens)
-            .map_err(|error| anyhow::anyhow!("forward MoE falhou: {error}"))?;
+            .map_err(|error| anyhow::anyhow!("MoE forward failed: {error}"))?;
         timings.record_moe_telemetry(moe.executor_telemetry());
         timings.record_moe_forward(forward_started.elapsed().as_micros() as u64);
         timings.record_engine(crate::executor::ExecutionEngine::Moe);
@@ -162,13 +162,13 @@ impl InferState {
         if self.seq_pool.is_empty() {
             self.reap_idle();
         }
-        // Aqui não se despeja sessão retida. Uma sessão retida é KV quente de
-        // uma conversa viva - dezenas de milhares de tokens - e trocá-la na
-        // hora pelo prefill que chegou agora era o que fazia um pedido de 35
-        // caracteres reingerir 60 mil tokens do zero. Quem admite uma sessão
-        // nova é o escalonador, que só conta slot realmente livre
-        // (`new_session_slots`) e só reclama uma sessão retida depois de
-        // `RETAINED_RECLAIM_GRACE` esperando (`reclaim_retained_slot`).
+        // A retained session is not evicted here. A retained session is hot KV of
+        // a live conversation - tens of thousands of tokens - and swapping it out
+        // on the spot for the prefill that just arrived was what made a
+        // 35-character request re-ingest 60 thousand tokens from scratch. Whoever
+        // admits a new session is the scheduler, which only counts a really free
+        // slot (`new_session_slots`) and only reclaims a retained session after
+        // `RETAINED_RECLAIM_GRACE` of waiting (`reclaim_retained_slot`).
         if self.seq_pool.is_empty() {
             return None;
         }
@@ -181,16 +181,17 @@ impl InferState {
         }
     }
 
-    /// A sequência de geração que acompanha uma sequência de prompt.
+    /// The generation sequence that accompanies a prompt sequence.
     ///
-    /// Par fixo, não sorteado de um pool: quem tem slot de prompt tem slot de
-    /// geração por construção, então abrir a geração nunca falha por falta de
-    /// slot. Ver `llm::kv_seq_budget`, que reserva as duas metades no contexto.
+    /// A fixed pair, not drawn from a pool: whoever has a prompt slot has a
+    /// generation slot by construction, so opening the generation never fails for
+    /// lack of a slot. See `llm::kv_seq_budget`, which reserves both halves in
+    /// the context.
     pub(super) fn gen_seq_of(&self, prompt_seq: u32) -> u32 {
         prompt_seq + self.max_sessions.max(1)
     }
 
-    /// Despeja a sessão retida menos usada, devolvendo o slot dela.
+    /// Evicts the least recently used retained session, returning its slot.
     pub(super) fn evict_retained(&mut self) -> bool {
         let Some(sid) = self
             .sessions
@@ -203,9 +204,9 @@ impl InferState {
         };
         let parked = self.park_session(&sid);
         info!(
-            "despejando prefixo retido da sessão {}… para liberar slot (cache em RAM: {})",
+            "evicting the retained prefix of session {}… to free a slot (RAM cache: {})",
             &sid[..8.min(sid.len())],
-            if parked { "guardado" } else { "não" }
+            if parked { "stored" } else { "no" }
         );
         self.close_session(&sid);
         true
@@ -243,7 +244,7 @@ impl InferState {
             Ok(data) => data,
             Err(error) => {
                 warn!(
-                    "cache em RAM: não foi possível copiar o KV da sessão {}…: {error:#}",
+                    "RAM cache: could not copy the KV of session {}…: {error:#}",
                     &sid[..8.min(sid.len())]
                 );
                 return false;
@@ -261,7 +262,7 @@ impl InferState {
         let parked = self.ram_cache.insert(sid, entry);
         if parked {
             info!(
-                "cache em RAM: sessão {}… guardada ({tokens} tokens, {bytes} bytes, {} ms)",
+                "RAM cache: session {}… stored ({tokens} tokens, {bytes} bytes, {} ms)",
                 &sid[..8.min(sid.len())],
                 started.elapsed().as_millis()
             );
@@ -289,7 +290,7 @@ impl InferState {
         let _ = self.engine.kv_remove(seq, 0, -1);
         if let Err(error) = self.engine.state_seq_set_data(&entry.data, seq) {
             warn!(
-                "cache em RAM: sessão {}… não pôde ser restaurada: {error:#}",
+                "RAM cache: session {}… could not be restored: {error:#}",
                 &sid[..8.min(sid.len())]
             );
             let _ = self.engine.kv_remove(seq, 0, -1);
@@ -307,7 +308,7 @@ impl InferState {
         self.sessions.insert(sid.to_string(), session);
         self.ram_cache.note_restored();
         info!(
-            "cache em RAM: sessão {}… restaurada ({} tokens, {} bytes, {} ms)",
+            "RAM cache: session {}… restored ({} tokens, {} bytes, {} ms)",
             &sid[..8.min(sid.len())],
             entry.prompt_len,
             entry.data.len(),
@@ -316,23 +317,23 @@ impl InferState {
         true
     }
 
-    /// Abre a sequência de geração deste turno copiando o KV do prompt.
+    /// Opens this turn's generation sequence by copying the prompt's KV.
     ///
-    /// Idempotente: chamado antes de cada decodificação de token gerado, faz
-    /// trabalho só na primeira. Depois disto nada mais escreve em
-    /// `prompt_seq`, que é o que torna o prefixo reutilizável sem remoção
-    /// parcial de KV - ver o doc de `Session`.
+    /// Idempotent: called before every decode of a generated token, it does work
+    /// only the first time. After this nothing else writes to `prompt_seq`,
+    /// which is what makes the prefix reusable without partial KV removal - see
+    /// the doc of `Session`.
     pub(super) fn open_generation(&mut self, sid: &str) -> Result<()> {
         let Some(session) = self.sessions.get(sid) else {
-            bail!("sessão '{sid}' desconhecida — faça o prefill antes");
+            bail!("unknown session '{sid}' — run the prefill first");
         };
         if session.gen_seq.is_some() {
             return Ok(());
         }
         let prompt_seq = session.prompt_seq;
         let gen = self.gen_seq_of(prompt_seq);
-        // A cópia herda o que estiver na sequência de destino se ela não
-        // estiver limpa; limpar é remoção total, sempre aceita.
+        // The copy inherits whatever is in the destination sequence if it is not
+        // clean; clearing is a total removal, always accepted.
         let _ = self.engine.kv_remove(gen, 0, -1);
         self.engine.kv_copy_seq(prompt_seq, gen);
         let session = self.sessions.get_mut(sid).expect("session exists");
@@ -341,20 +342,21 @@ impl InferState {
         Ok(())
     }
 
-    /// Decide, no pedaço 0, se o prefixo retido serve para este prompt - e
-    /// deixa a sessão coerente com a decisão.
+    /// Decides, on chunk 0, whether the retained prefix serves this prompt - and
+    /// leaves the session consistent with the decision.
     ///
-    /// A regra é **só acrescentar**: o prefixo serve quando os tokens retidos
-    /// são exatamente um prefixo dos novos, e nem um token a mais. Assim o
-    /// prefill continua de onde parou e **nenhuma posição precisa sair do KV** -
-    /// que é a diferença entre funcionar em todo modelo e depender de o motor
-    /// aceitar `llama_memory_seq_rm` parcial. Qualquer outro caso (divergência
-    /// no meio, prompt idêntico ao retido, sessão sem prompt) recomeça a sessão
-    /// do zero, o que é uma perda de reuso naquele turno, nunca um erro.
+    /// The rule is **append only**: the prefix serves when the retained tokens
+    /// are exactly a prefix of the new ones, and not one token more. That way the
+    /// prefill continues from where it stopped and **no position needs to leave
+    /// the KV** - which is the difference between working on every model and
+    /// depending on the engine accepting a partial `llama_memory_seq_rm`. Any
+    /// other case (divergence in the middle, prompt identical to the retained
+    /// one, session without a prompt) restarts the session from scratch, which
+    /// is a loss of reuse on that turn, never an error.
     ///
-    /// O último token do prompt nunca entra no prefixo aproveitado: é dele que
-    /// saem os logits do primeiro token gerado, então sempre sobra pelo menos
-    /// um token para decodificar.
+    /// The last prompt token never enters the reused prefix: the logits of the
+    /// first generated token come from it, so at least one token is always left
+    /// to decode.
     pub(super) fn adopt_prompt_prefix(
         &mut self,
         sid: &str,
@@ -366,7 +368,7 @@ impl InferState {
         if requested_reuse {
             let (retained, n_past, cells, physical_cells_match) = {
                 let session = self.sessions.get(sid).ok_or_else(|| {
-                    anyhow::anyhow!("sessão '{sid}' desconhecida no reuso de prefixo")
+                    anyhow::anyhow!("unknown session '{sid}' in the prefix reuse")
                 })?;
                 (
                     session.prompt_tokens.clone(),
@@ -380,13 +382,13 @@ impl InferState {
                 decision = plan_prefix_reuse(&retained, n_past, &tokens);
             }
             if !physical_cells_match || !decision.reused {
-                let comum = retained
+                let common = retained
                     .iter()
                     .zip(&tokens)
                     .take_while(|(old, new)| old == new)
                     .count();
                 debug!(
-                    "prefixo da sessão {}… não serve: comum={comum} lógico={} células={} retidos={} novos={}",
+                    "prefix of session {}… is not usable: common={common} logical={} cells={} retained={} new={}",
                     &sid[..8.min(sid.len())],
                     n_past,
                     cells,
@@ -399,23 +401,23 @@ impl InferState {
         let session = self
             .sessions
             .get_mut(sid)
-            .ok_or_else(|| anyhow::anyhow!("sessão '{sid}' desapareceu no prefill"))?;
+            .ok_or_else(|| anyhow::anyhow!("session '{sid}' disappeared during the prefill"))?;
         session.prompt_tokens = tokens;
         session.stable_len = stable_len;
         session.retained = false;
         Ok(decision)
     }
 
-    /// Fecha o turno mantendo o prompt: apaga a sequência de geração inteira e
-    /// devolve a sessão à posição do fim do prompt.
+    /// Closes the turn keeping the prompt: erases the whole generation sequence
+    /// and returns the session to the position at the end of the prompt.
     ///
-    /// Só usa remoção **total** de sequência, que todo motor aceita - inclusive
-    /// os recorrentes/híbridos, onde `llama_memory_seq_rm` recusa qualquer
-    /// recuo parcial maior que a janela de snapshots (`n_rs_seq`). É a
-    /// substituição do rewind que era recusado em 75 das 176 requisições.
+    /// It only uses **total** sequence removal, which every engine accepts -
+    /// including the recurrent/hybrid ones, where `llama_memory_seq_rm` refuses
+    /// any partial rollback larger than the snapshot window (`n_rs_seq`). It is
+    /// the replacement for the rewind that was refused in 75 of 176 requests.
     ///
-    /// Devolve quantos tokens de prompt ficaram retidos, ou `None` quando não
-    /// havia prompt para reter (aí a sessão é encerrada de vez).
+    /// Returns how many prompt tokens were left retained, or `None` when there
+    /// was no prompt to retain (the session is then closed for good).
     pub(super) fn retain_prompt(&mut self, sid: &str) -> Option<u32> {
         let session = self.sessions.get(sid)?;
         if session.prompt_len == 0 {
@@ -444,12 +446,12 @@ impl InferState {
         if let Some(gen) = gen_seq {
             let _ = self.engine.kv_remove(gen, 0, -1);
         }
-        // O prefill depois da fronteira estável foi escrito em `gen_seq`; ao
-        // removê-la, `prompt_seq` já deve conter somente o prefixo retido.
-        // `prompt_cells` acompanha apenas essa sequência. Só tenta remover um
-        // sufixo quando ainda há células extras em `prompt_seq`; um motor que
-        // recusa uma poda necessária mantém o prompt inteiro retido e perde o
-        // reuso deste turno, sem corromper a sessão.
+        // The prefill after the stable boundary was written to `gen_seq`; once it
+        // is removed, `prompt_seq` must already contain only the retained prefix.
+        // `prompt_cells` tracks only that sequence. It only tries to remove a
+        // suffix when there are still extra cells in `prompt_seq`; an engine that
+        // refuses a needed pruning keeps the whole prompt retained and loses the
+        // reuse of this turn, without corrupting the session.
         let (trimmed_to_stable, trim_reason) = if prompt_len >= prompt_cells {
             (true, "already-at-stable-boundary")
         } else if !positions_ok {
@@ -478,7 +480,7 @@ impl InferState {
             );
         } else {
             warn!(
-                "prefix peer retention incompleta: session={} reusable={} reason={} retained_tokens={} stable_len={} n_past_before={} prompt_cells_before={} prompt_tokens_before={} positions_before={} positions_after={}",
+                "prefix peer retention incomplete: session={} reusable={} reason={} retained_tokens={} stable_len={} n_past_before={} prompt_cells_before={} prompt_tokens_before={} positions_before={} positions_after={}",
                 &sid[..8.min(sid.len())],
                 reusable,
                 trim_reason,
@@ -491,34 +493,34 @@ impl InferState {
                 session.positions_match_cells(),
             );
         }
-        // Uma sessão retida é slot reclamável só depois da carência: acorda o
-        // escalonador para ele reavaliar quem espera.
+        // A retained session is a reclaimable slot only after the grace period:
+        // wake the scheduler so it can re-evaluate who is waiting.
         self.signal_slot_freed();
         Some(prompt_len)
     }
 
-    /// Apaga o KV das duas sequências de uma sessão.
+    /// Erases the KV of both sequences of a session.
     pub(super) fn wipe_kv(&mut self, session: &Session) {
         if let Some(gen) = session.gen_seq {
             let _ = self.engine.kv_remove(gen, 0, -1);
         }
-        // A sequência de geração pode ter sobrado de um turno anterior que não
-        // passou por aqui; limpar as duas é barato e não deixa célula presa.
+        // The generation sequence may be left over from a previous turn that did
+        // not go through here; clearing both is cheap and leaves no cell stuck.
         let _ = self
             .engine
             .kv_remove(self.gen_seq_of(session.prompt_seq), 0, -1);
         let _ = self.engine.kv_remove(session.prompt_seq, 0, -1);
     }
 
-    /// Grava o prefixo retido de uma sessão como um snapshot de KV em disco,
-    /// como o `--slot-save-path` do llama-server.
+    /// Writes a session's retained prefix as a KV snapshot on disk,
+    /// like llama-server's `--slot-save-path`.
     ///
-    /// **Sempre salva `prompt_seq`, nunca `gen_seq`.** A cauda volátil da
-    /// geração some no fim do turno e não faz parte de um snapshot; o que fica
-    /// é o prompt estável que o próximo turno reaproveita. O `.bin` do
-    /// llama.cpp serializa as células da sequência com suas posições, e o
-    /// sidecar `.json` grava a identidade do modelo e da fatia para a
-    /// restauração recusar um estado incompatível.
+    /// **It always saves `prompt_seq`, never `gen_seq`.** The volatile tail of
+    /// the generation goes away at the end of the turn and is not part of a
+    /// snapshot; what remains is the stable prompt that the next turn reuses.
+    /// llama.cpp's `.bin` serializes the sequence's cells with their positions,
+    /// and the `.json` sidecar records the identity of the model and of the slice
+    /// so that the restore refuses an incompatible state.
     pub(super) fn save_slot(
         &self,
         sid: &str,
@@ -529,35 +531,35 @@ impl InferState {
         let session = self
             .sessions
             .get(sid)
-            .ok_or_else(|| anyhow::anyhow!("sessão '{sid}' desconhecida"))?;
+            .ok_or_else(|| anyhow::anyhow!("unknown session '{sid}'"))?;
         if session.prompt_len == 0 {
-            bail!("sessão '{sid}' não tem prompt retido para snapshot");
+            bail!("session '{sid}' has no retained prompt for a snapshot");
         }
         let seq = session.prompt_seq;
         let retained = session.prompt_len;
         if !session.positions_match_cells() || session.prompt_cells != retained {
             bail!(
-                "sessão '{sid}' usa {} células para a posição lógica {retained}; snapshots de M-RoPE não são reutilizáveis",
+                "session '{sid}' uses {} cells for the logical position {retained}; M-RoPE snapshots are not reusable",
                 session.prompt_cells
             );
         }
-        // Os tokens reais do prompt retido, quando este peer os conhece (a
-        // cabeça). Vazio nos hops que só receberam hidden state.
+        // The real tokens of the retained prompt, when this peer knows them (the
+        // head). Empty on hops that only received hidden state.
         let real_tokens: Vec<i32> = session
             .prompt_tokens
             .get(..retained as usize)
             .map(<[i32]>::to_vec)
             .unwrap_or_default();
-        // Cabeçalho de tokens do `.bin`: os reais quando existem, senão um vetor
-        // do tamanho certo - o llama.cpp nunca confere o cabeçalho contra as
-        // células, ele é consultivo.
+        // Token header of the `.bin`: the real ones when they exist, otherwise a
+        // vector of the right size - llama.cpp never checks the header against the
+        // cells, it is advisory.
         let header_tokens: Vec<i32> = if real_tokens.is_empty() {
             vec![0i32; retained as usize]
         } else {
             real_tokens.clone()
         };
         std::fs::create_dir_all(dir)
-            .with_context(|| format!("criar diretório de snapshots {}", dir.display()))?;
+            .with_context(|| format!("create the snapshots directory {}", dir.display()))?;
         let bin = slot_bin_path(dir, name);
         let bin_bytes = self.engine.state_seq_save_file(&bin, seq, &header_tokens)? as u64;
         let sidecar = SlotSidecar {
@@ -575,14 +577,14 @@ impl InferState {
         };
         let json = serde_json::to_vec_pretty(&sidecar)?;
         std::fs::write(slot_json_path(dir, name), json)
-            .with_context(|| format!("gravar sidecar de {name}"))?;
+            .with_context(|| format!("write the sidecar of {name}"))?;
         Ok(sidecar)
     }
 
-    /// Lê um snapshot de KV do disco para uma **nova** sessão. Recusa um
-    /// snapshot de outro modelo, faixa de camadas ou largura de hidden state
-    /// antes de tocar no motor; o `.bin` recusa por si só uma geometria de KV
-    /// incompatível (tipo/tamanho de linha, contagem de camadas).
+    /// Reads a KV snapshot from disk into a **new** session. Refuses a snapshot
+    /// from another model, layer range or hidden state width before touching the
+    /// engine; the `.bin` itself refuses an incompatible KV geometry (row
+    /// type/size, layer count).
     pub(super) fn restore_slot(
         &mut self,
         dir: &std::path::Path,
@@ -591,16 +593,16 @@ impl InferState {
     ) -> Result<SlotRestoreOutcome> {
         let name = sanitize_slot_name(name)?;
         if self.sessions.contains_key(new_sid) {
-            bail!("sessão '{new_sid}' já existe; escolha outro id");
+            bail!("session '{new_sid}' already exists; choose another id");
         }
         let raw = std::fs::read(slot_json_path(dir, name))
-            .with_context(|| format!("ler sidecar de {name}"))?;
-        let sidecar: SlotSidecar =
-            serde_json::from_slice(&raw).with_context(|| format!("sidecar de {name} ilegível"))?;
+            .with_context(|| format!("read the sidecar of {name}"))?;
+        let sidecar: SlotSidecar = serde_json::from_slice(&raw)
+            .with_context(|| format!("sidecar of {name} unreadable"))?;
         self.check_slot_compatible(&sidecar)?;
 
         let seq = self.alloc_seq().ok_or_else(|| {
-            anyhow::anyhow!("seq pool esgotado; libere uma sessão antes de restaurar")
+            anyhow::anyhow!("seq pool exhausted; release a session before restoring")
         })?;
         let cap = sidecar
             .retained_tokens
@@ -633,18 +635,18 @@ impl InferState {
         })
     }
 
-    /// Confere que um sidecar descreve o mesmo modelo e a mesma fatia que este
-    /// peer serve. Não entra `cache_type_*`: o `.bin` já recusa uma geometria
-    /// de KV divergente com o tipo e o tamanho de linha por camada.
+    /// Checks that a sidecar describes the same model and the same slice that this
+    /// peer serves. `cache_type_*` is not included: the `.bin` already refuses a
+    /// divergent KV geometry by the row type and size per layer.
     pub(super) fn check_slot_compatible(&self, sidecar: &SlotSidecar) -> Result<()> {
         if sidecar.format_version != SLOT_SIDECAR_VERSION {
             bail!(
-                "sidecar de versão {} incompatível (esperado {SLOT_SIDECAR_VERSION})",
+                "sidecar of version {} incompatible (expected {SLOT_SIDECAR_VERSION})",
                 sidecar.format_version
             );
         }
-        let mismatch = |campo: &str, esperado: String, achou: String| {
-            anyhow::anyhow!("snapshot de KV incompatível: {campo} {achou} != {esperado} deste peer")
+        let mismatch = |field: &str, expected: String, found: String| {
+            anyhow::anyhow!("incompatible KV snapshot: {field} {found} != {expected} of this peer")
         };
         if sidecar.model_label != self.model_label {
             return Err(mismatch(
@@ -657,7 +659,7 @@ impl InferState {
             != (self.start_layer, self.end_layer, self.total_layers)
         {
             return Err(mismatch(
-                "faixa de camadas",
+                "layer range",
                 format!(
                     "{}-{}/{}",
                     self.start_layer, self.end_layer, self.total_layers
@@ -702,7 +704,7 @@ impl InferState {
                     &sid[..8.min(sid.len())],
                     s.prompt_seq
                 );
-                // Limpeza total das sequências, que todo modelo aceita.
+                // Total clearing of the sequences, which every model accepts.
                 self.wipe_kv(&s);
                 self.free_seq(s.prompt_seq);
             }
@@ -725,21 +727,21 @@ impl InferState {
             }
             let seq = self.alloc_seq().ok_or_else(|| {
                 anyhow::anyhow!(
-                    "seq pool esgotado (max {} sessões simultâneas)",
+                    "seq pool exhausted (max {} simultaneous sessions)",
                     self.max_sessions
                 )
             })?;
             self.sessions.insert(sid.to_string(), Session::new(seq));
         }
-        self.sessions.get_mut(sid).ok_or_else(|| {
-            anyhow::anyhow!("sessão '{}' desconhecida — envie reset=true antes", sid)
-        })
+        self.sessions
+            .get_mut(sid)
+            .ok_or_else(|| anyhow::anyhow!("unknown session '{}' — send reset=true first", sid))
     }
 
-    /// Encerra a sessão de vez: as duas sequências são apagadas e o slot volta
-    /// ao pool. O fim normal de um turno **não** passa por aqui - passa por
-    /// `retain_prompt`, que guarda o prompt. Aqui chegam a liberação explícita
-    /// do gateway, o cancelamento e a limpeza de erro.
+    /// Ends the session for good: both sequences are erased and the slot returns
+    /// to the pool. The normal end of a turn does **not** come through here - it
+    /// goes through `retain_prompt`, which keeps the prompt. What arrives here is
+    /// the gateway's explicit release, cancellation and error cleanup.
     pub(super) fn finish(&mut self, sid: &str) {
         // Releasing for good also forgets the copy parked in host RAM.
         self.ram_cache.remove(sid);
@@ -760,8 +762,8 @@ impl InferState {
         }
     }
 
-    /// Acorda o `run_scheduler` para ele reavaliar um prefill de sessão nova
-    /// que ficou esperando slot.
+    /// Wakes `run_scheduler` so it re-evaluates a new-session prefill that is
+    /// waiting for a slot.
     pub(super) fn signal_slot_freed(&self) {
         self.slot_freed.notify_one();
     }
@@ -788,39 +790,39 @@ pub async fn run(
     load_node_id: String,
     request_activity: Arc<crate::reqlog::RequestActivity>,
 ) -> Result<()> {
-    // Derivado, não copiado do pedido: o caminho de linha de comando nunca
-    // preenche `no_embeddings`, então sem isto o nó da última fatia instalava o
-    // callback de captura e pagava ~8 ms por token para capturar um residual
-    // que ninguém lê. Ver `NodeConfig::needs_residual_export`.
-    // A porta primeiro, o modelo depois. Ligar o socket custa microssegundos e
-    // e a unica coisa aqui que falha por causa do mundo externo; carregar o
-    // modelo custa minutos e gigabytes de VRAM. Na ordem inversa, cada uma das
-    // 10 tentativas do supervisor carregava o modelo inteiro para descobrir no
-    // fim que a porta estava tomada - o log mostrava "llama context ready"
-    // seguido de "Address already in use", dez vezes, com a VRAM presa em
-    // cargas descartadas.
-    // A porta primeiro, o modelo depois. Ligar o socket custa microssegundos e
-    // e a unica coisa aqui que falha por causa do mundo externo; carregar o
-    // modelo custa minutos e gigabytes de VRAM. Na ordem inversa, cada uma das
-    // 10 tentativas do supervisor carregava o modelo inteiro para descobrir no
-    // fim que a porta estava tomada - o log mostrava "llama context ready"
-    // seguido de "Address already in use", dez vezes, com a VRAM presa em
-    // cargas descartadas.
+    // Derived, not copied from the request: the command-line path never fills
+    // in `no_embeddings`, so without this the last slice's node installed the
+    // capture callback and paid ~8 ms per token to capture a residual that
+    // nobody reads. See `NodeConfig::needs_residual_export`.
+    // The port first, the model afterwards. Binding the socket costs microseconds
+    // and is the only thing here that fails because of the outside world; loading
+    // the model costs minutes and gigabytes of VRAM. In the reverse order, each of
+    // the supervisor's 10 attempts loaded the whole model only to find out at the
+    // end that the port was taken - the log showed "llama context ready"
+    // followed by "Address already in use", ten times, with VRAM held by
+    // discarded loads.
+    // The port first, the model afterwards. Binding the socket costs microseconds
+    // and is the only thing here that fails because of the outside world; loading
+    // the model costs minutes and gigabytes of VRAM. In the reverse order, each of
+    // the supervisor's 10 attempts loaded the whole model only to find out at the
+    // end that the port was taken - the log showed "llama context ready"
+    // followed by "Address already in use", ten times, with VRAM held by
+    // discarded loads.
     let port = cfg.inference_port;
     let listener = bind_dual_stack(port).await?;
-    info!("porta {port} ligada; carregando o modelo");
+    info!("port {port} bound; loading the model");
 
     let model_info = match crate::gguf::read_info(std::path::Path::new(&cfg.model_path)) {
         Ok(info) => Some(info),
         Err(error) => {
-            warn!("não foi possível ler metadados GGUF antes da carga: {error}");
+            warn!("could not read the GGUF metadata before loading: {error}");
             None
         }
     };
     let inference_mode = configured_inference_mode(cfg.inference_mode)?;
     let inference_path = crate::executor::select(inference_mode, model_info.as_ref())?;
     info!(
-        "caminho de inferência selecionado: {} (modo {:?})",
+        "selected inference path: {} (mode {:?})",
         inference_path.as_str(),
         inference_mode
     );
@@ -829,14 +831,13 @@ pub async fn run(
     // own executor can run before the response is sampled. Dense single-peer
     // contexts keep the old fast path without installing the callback.
     let need_embeddings = cfg.needs_residual_export() || inference_path.is_moe();
-    // `rs_seq_window` (maior largura de lote especulativo, dos dois mecanismos
-    // lookup e MTP) é computado dentro de `engine_config_from_node` agora -
-    // ver o doc de `EngineConfig::rs_seq_window`.
+    // `rs_seq_window` (largest speculative batch width, across the two mechanisms
+    // lookup and MTP) is now computed inside `engine_config_from_node` -
+    // see the doc of `EngineConfig::rs_seq_window`.
     let moe_plan = if inference_path.is_moe() {
         Some(
-            crate::moe::runtime::MoeRuntime::external_executor_plan(&cfg.model_path).map_err(
-                |error| anyhow::anyhow!("planejamento de ownership MoE falhou: {error}"),
-            )?,
+            crate::moe::runtime::MoeRuntime::external_executor_plan(&cfg.model_path)
+                .map_err(|error| anyhow::anyhow!("MoE ownership planning failed: {error}"))?,
         )
     } else {
         None
@@ -846,9 +847,9 @@ pub async fn run(
         let reason = plan
             .reason
             .as_deref()
-            .unwrap_or("nenhuma camada tem executor externo disponível");
+            .unwrap_or("no layer has an external executor available");
         return Err(anyhow::anyhow!(
-            "combinação MoE não suportada antes da carga do modelo: dtypes GGML {:?}; {reason}; o caminho MoE exige um executor externo e não usará o llama.cpp nativo",
+            "MoE combination not supported before loading the model: GGML dtypes {:?}; {reason}; the MoE path requires an external executor and will not use native llama.cpp",
             plan.dtypes
         ));
     }
@@ -869,17 +870,17 @@ pub async fn run(
     .await
     .map_err(|e| anyhow::anyhow!("spawn_blocking: {e}"))??;
 
-    // Só agora se sabe se a cabeça `nextn` existe: depende do GGUF, não da
-    // configuração. Ver `Network::mtp_ready`.
+    // Only now do we know whether the `nextn` head exists: it depends on the
+    // GGUF, not on the configuration. See `Network::mtp_ready`.
     mtp_ready.store(engine.mtp_ready(), std::sync::atomic::Ordering::Relaxed);
 
     let moe = if inference_path.is_moe() && moe_external_executor {
         let info = model_info.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("caminho MoE exige metadados GGUF para preparar o router")
+            anyhow::anyhow!("the MoE path requires GGUF metadata to prepare the router")
         })?;
         let experts = info
             .expert_count
-            .ok_or_else(|| anyhow::anyhow!("caminho MoE exige expert_count no GGUF"))?;
+            .ok_or_else(|| anyhow::anyhow!("the MoE path requires expert_count in the GGUF"))?;
         let top_k = info.expert_used_count.unwrap_or(1).max(1) as usize;
         let weights_bytes = std::fs::metadata(&cfg.model_path)
             .map(|metadata| metadata.len())
@@ -894,7 +895,7 @@ pub async fn run(
                 weights_bytes,
                 cuda_compute_bytes,
             )
-            .map_err(|error| anyhow::anyhow!("runtime MoE indisponível: {error}"))?,
+            .map_err(|error| anyhow::anyhow!("MoE runtime unavailable: {error}"))?,
         ))
     } else {
         None
@@ -902,18 +903,17 @@ pub async fn run(
 
     if let Some(runtime) = moe.as_ref() {
         let telemetry = runtime.executor_telemetry();
-        // O `offloaded N/N layers to GPU` do llama.cpp conta só os tensores que
-        // ele próprio aloca. Com `moe_external_executor` os pesos de expert nem
-        // chegam a ser alocados lá (ver `EngineConfig::moe_external_executor`),
-        // por isso aquele total é verdadeiro e ao mesmo tempo enganador: num
-        // modelo de 35 B os buffers de modelo em GPU somam ~1,6 GB e o operador
-        // conclui, com razão, que "o modelo está todo na RAM". Dizer aqui de
-        // quem são os experts é o que impede essa leitura errada.
+        // llama.cpp's `offloaded N/N layers to GPU` counts only the tensors it
+        // allocates itself. With `moe_external_executor` the expert weights are
+        // not even allocated there (see `EngineConfig::moe_external_executor`),
+        // so that total is both true and misleading: on a 35 B model the model
+        // buffers on GPU add up to ~1.6 GB and the operator concludes, rightly,
+        // that "the model is all in RAM". Saying here whose the experts are is
+        // what prevents that wrong reading.
         tracing::info!(
             model = %cfg.model_label,
             moe_executor = telemetry.executor.as_str(),
-            "os pesos de expert estão fora da conta `offloaded N/N layers` do llama.cpp: \
-             quem os aloja é o executor MoE do POM, não o llama.cpp"
+            "the expert weights are outside the llama.cpp `offloaded N/N layers` count: the POM MoE executor hosts them, not llama.cpp"
         );
         if telemetry.executor == crate::moe::runtime::MoeExecutorKind::CpuReference {
             tracing::warn!(
@@ -922,9 +922,7 @@ pub async fn run(
                 moe_executor = telemetry.executor.as_str(),
                 dtypes = ?telemetry.dtypes,
                 reason = ?telemetry.reason,
-                "MoE está usando CPUReference: os pesos de expert ficam mapeados na RAM e \
-                 n_gpu_layers não os leva para a GPU. Basta UM dtype sem ponte CUDA para \
-                 derrubar a rota inteira; confira a lista `dtypes`, não o nome do ficheiro"
+                "MoE is using CPUReference: the expert weights stay mapped in RAM and n_gpu_layers does not take them to the GPU. A SINGLE dtype without a CUDA bridge is enough to bring down the whole route; check the `dtypes` list, not the file name"
             );
         } else {
             tracing::info!(
@@ -936,7 +934,7 @@ pub async fn run(
                     .diagnostics
                     .as_ref()
                     .map(|diagnostics| &diagnostics.device_cache_devices),
-                "executor MoE CUDA selecionado; experts serão admitidos no cache residente particionado por GPU"
+                "CUDA MoE executor selected; experts will be admitted to the resident cache partitioned per GPU"
             );
         }
         runtime.start_device_warmup();
@@ -952,17 +950,17 @@ pub async fn run(
         .as_ref()
         .and_then(|info| info.original_block_count);
 
-    // Fora do mutex do estado: o decode segura aquele lock e é de dentro dele
-    // que o reduce espera a soma. Ver `handle_tp_reduce`.
+    // Outside the state mutex: the decode holds that lock and it is from inside
+    // it that the reduce waits for the sum. See `handle_tp_reduce`.
     let tp_barrier = crate::collective::ReduceBarrier::new();
     let tp_size = cfg.tp.as_ref().map(|t| t.size).unwrap_or(1);
     let local_barrier_handle = crate::tp::set_local_barrier(tp_barrier.clone(), tp_size);
 
     let state: SharedState = Arc::new(Mutex::new(state_inner));
-    // Teste de velocidade da fatia, uma vez por carga: é o que dá ao
-    // planejador do gateway o custo por token deste peer antes da primeira
-    // requisição. Roda fora do caminho de subida; uma requisição que chegar
-    // no meio espera o lock por menos de um segundo.
+    // Slice speed test, once per load: it is what gives the gateway planner this
+    // peer's cost per token before the first request. It runs off the startup
+    // path; a request that arrives in the middle waits for the lock for less
+    // than a second.
     {
         let state = state.clone();
         tokio::task::spawn_blocking(move || {
@@ -971,15 +969,15 @@ pub async fn run(
             };
             match perf::run_bench(&mut s) {
                 Ok(Some(bench)) => info!(
-                    "velocidade da fatia L{}-{}: prefill {:.1} tok/s, decode {:.1} tok/s (teste de {} ms)",
+                    "speed of slice L{}-{}: prefill {:.1} tok/s, decode {:.1} tok/s (test of {} ms)",
                     s.start_layer,
                     s.end_layer,
                     1e6 / bench.prefill_us_per_token.max(1.0),
                     1e6 / bench.decode_us_per_step.max(1.0),
                     bench.duration_ms
                 ),
-                Ok(None) => debug!("teste de velocidade da fatia pulado (TP ou sem slot livre)"),
-                Err(error) => warn!("teste de velocidade da fatia falhou: {error}"),
+                Ok(None) => debug!("slice speed test skipped (TP or no free slot)"),
+                Err(error) => warn!("slice speed test failed: {error}"),
             }
         });
     }
@@ -1030,11 +1028,11 @@ pub async fn run(
     };
     let inference_routes = inference_routes.with_state(app_state.clone());
 
-    // O canal persistente tem router próprio porque o estado dele carrega a
-    // credencial: o middleware confere a abertura, e o handler reconfere cada
-    // quadro. O limite de corpo é desligado aqui porque o corpo é a geração
-    // inteira, não um quadro - cada quadro dentro do fluxo continua limitado
-    // pelo enquadramento do canal.
+    // The persistent channel has its own router because its state carries the
+    // credential: the middleware checks the opening, and the handler re-checks
+    // each frame. The body limit is turned off here because the body is the
+    // whole generation, not a frame - each frame inside the stream remains
+    // limited by the channel's framing.
     let link_state = LinkState {
         app: app_state.clone(),
         auth: auth.clone(),
@@ -1069,26 +1067,26 @@ pub async fn run(
                 .with_state(app_state.clone()),
         )
         .merge(tp_routes)
-        // Toda resposta diz de qual nó veio; ver `peer_client::answered_by_other_node`.
+        // Every reply says which node it came from; see `peer_client::answered_by_other_node`.
         .layer(axum::middleware::map_response(
             crate::peer_client::stamp_node_id,
         ));
 
-    info!("inference server pronto em [::]:{port}");
+    info!("inference server ready on [::]:{port}");
 
-    // Ver a nota gêmea em `gateway::start_gateway_with_ready`: sem
-    // `tcp_nodelay`, toda resposta de hop sai com Nagle ligado. Um ack de
-    // resposta direta é exatamente a escrita pequena que ele segura. Quem o
-    // aplica agora é o `serve`, que também decide entre TLS e texto claro por conexão.
+    // See the twin note in `gateway::start_gateway_with_ready`: without
+    // `tcp_nodelay`, every hop reply goes out with Nagle on. A direct-reply ack
+    // is exactly the small write that it holds back. Whoever applies it now is
+    // `serve`, which also decides between TLS and plaintext per connection.
     //
-    // O desligamento gracioso virou uma corrida entre o laço de accept e o
-    // watch de geração: quando a geração muda, paramos de aceitar. Conexão em
-    // voo termina sozinha, como antes.
-    // O desligamento gracioso é sequencial de propósito: primeiro o `serve`
-    // para de aceitar e encerra as conexões que restaram, só depois a VRAM é
-    // devolvida. Na ordem inversa uma requisição em voo tocaria um contexto já
-    // liberado.
-    let resultado =
+    // The graceful shutdown became a race between the accept loop and the
+    // generation watch: when the generation changes, we stop accepting. A
+    // connection in flight finishes on its own, as before.
+    // The graceful shutdown is sequential on purpose: first `serve` stops
+    // accepting and closes the connections that remained, only then is the VRAM
+    // returned. In the reverse order an in-flight request would touch an already
+    // freed context.
+    let result =
         crate::serve::serve_with_quic(listener, router, tls, quic, quic_port, async move {
             loop {
                 if stop_rx.changed().await.is_err() {
@@ -1102,9 +1100,9 @@ pub async fn run(
         .await;
     crate::relay::clear_local_inference(generation).await;
 
-    // O aquecimento é cooperativo e pode estar lendo o GGUF enquanto o
-    // servidor é reconfigurado. Sinalize a parada antes de liberar o motor,
-    // para que nenhuma geração antiga continue admitindo experts no device.
+    // The warm-up is cooperative and may be reading the GGUF while the server
+    // is reconfigured. Signal the stop before freeing the engine, so that no old
+    // generation keeps admitting experts onto the device.
     if let Some(runtime) = app_state
         .state
         .lock()
@@ -1119,13 +1117,13 @@ pub async fn run(
         crate::tp::clear_local_barrier(handle);
     }
 
-    // Explícito, e não pela contagem do `Arc`: uma cópia esquecida em qualquer
-    // canto — foi o que as conexões desgarradas faziam — adiava o `Drop` para
-    // sempre, e o `undeploy` respondia "pronto" com o modelo ainda na GPU.
-    // Depois do drenar acima ninguém mais decodifica, então isto é seguro.
-    // `into_inner` no envenenado: um handler que entrou em pânico deixa o
-    // mutex marcado, e recusar a liberação por causa disso seria justamente
-    // deixar a VRAM presa no caso em que ela mais precisa voltar.
+    // Explicit, and not by the `Arc` count: a forgotten copy anywhere - which is
+    // what the stray connections did - postponed the `Drop` forever, and the
+    // `undeploy` answered "done" with the model still on the GPU. After the
+    // drain above nobody decodes any more, so this is safe.
+    // `into_inner` on the poisoned one: a handler that panicked leaves the
+    // mutex marked, and refusing the release because of that would be exactly
+    // leaving the VRAM held in the case where it most needs to come back.
     run_native_cleanup({
         let state = app_state.state.clone();
         move || {
@@ -1137,9 +1135,9 @@ pub async fn run(
         }
     })
     .await?;
-    info!("memória do modelo devolvida na porta {port}");
+    info!("model memory returned on port {port}");
 
-    resultado?;
+    result?;
     batching_ready.store(false, std::sync::atomic::Ordering::Relaxed);
     Ok(())
 }
@@ -1151,40 +1149,41 @@ where
 {
     tokio::task::spawn_blocking(cleanup)
         .await
-        .map_err(|error| anyhow::anyhow!("limpeza nativa terminou em pânico: {error}"))?;
+        .map_err(|error| anyhow::anyhow!("native cleanup ended in a panic: {error}"))?;
     Ok(())
 }
 
 // ── Socket ────────────────────────────────────────────────────────────────────
 
-/// Um listener que atende IPv6 e IPv4 no mesmo socket, caindo para IPv4 puro
-/// quando não há IPv6 na máquina.
+/// A listener that serves IPv6 and IPv4 on the same socket, falling back to pure
+/// IPv4 when the machine has no IPv6.
 ///
-/// `IPV6_V6ONLY` só vale se for desligado **antes** do `bind`, e é por isso que
-/// o socket é montado à mão em vez de sair do `TcpListener::bind`. O caminho
-/// antigo chamava `setsockopt` depois do bind: no Linux passava despercebido
-/// porque `net.ipv6.bindv6only` já é 0 por padrão, mas no Windows o padrão é 1
-/// e o servidor de inferência simplesmente não aceitaria nenhum peer IPv4 -
-/// que é como todo o cluster da LAN fala.
+/// `IPV6_V6ONLY` only counts if it is turned off **before** the `bind`, which is
+/// why the socket is assembled by hand instead of coming out of
+/// `TcpListener::bind`. The old path called `setsockopt` after the bind: on Linux
+/// it went unnoticed because `net.ipv6.bindv6only` is already 0 by default, but
+/// on Windows the default is 1 and the inference server would simply not accept
+/// any IPv4 peer - which is how the whole LAN cluster talks.
 ///
-/// `SO_REUSEADDR` continua fora de propósito: no Windows ele deixa outro
-/// processo tomar uma porta já ligada, e é justamente o "address already in
-/// use" que denuncia um servidor velho ainda de pé.
+/// `SO_REUSEADDR` stays out on purpose: on Windows it lets another process take
+/// a port that is already bound, and it is precisely the "address already in
+/// use" that reveals an old server still standing.
 pub(crate) fn listener_dual_stack(port: u16) -> Result<std::net::TcpListener> {
     use socket2::{Domain, Protocol, Socket, Type};
     use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
-    // Backlog: o mesmo que o `TcpListener::bind` da std usa.
+    // Backlog: the same one std's `TcpListener::bind` uses.
     const BACKLOG: i32 = 128;
 
     let v6 = (|| -> std::io::Result<std::net::TcpListener> {
         let sock = Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))?;
         sock.set_only_v6(false)?;
-        // O `TcpListener::bind` da std pede isto sozinho no Unix; um socket cru
-        // nao. Sem a flag, cada conexao em TIME_WAIT nesta porta - e o gateway
-        // deixa varias, sondando `/health` e mandando inferencia - impede o
-        // proximo servidor de ligar por ate um minuto, que e mais que as dez
-        // tentativas do supervisor. Toda implantacao de versao nova morria ai.
+        // std's `TcpListener::bind` asks for this on its own on Unix; a raw
+        // socket does not. Without the flag, every connection in TIME_WAIT on this
+        // port - and the gateway leaves several, probing `/health` and sending
+        // inference - prevents the next server from binding for up to a minute,
+        // which is more than the supervisor's ten attempts. Every new-version
+        // deployment died there.
         sock.set_reuse_address(true)?;
         sock.bind(&SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), port).into())?;
         sock.listen(BACKLOG)?;
@@ -1194,8 +1193,8 @@ pub(crate) fn listener_dual_stack(port: u16) -> Result<std::net::TcpListener> {
     match v6 {
         Ok(l) => Ok(l),
         Err(e) => {
-            // Sem IPv6 na máquina: IPv4 puro ainda serve o cluster inteiro.
-            tracing::debug!("bind IPv6 em [::]:{port} falhou ({e}); tentando IPv4");
+            // Without IPv6 on the machine: pure IPv4 still serves the whole cluster.
+            tracing::debug!("IPv6 bind on [::]:{port} failed ({e}); trying IPv4");
             let sock = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?;
             sock.set_reuse_address(true)?;
             sock.bind(&SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), port).into())?;
@@ -1218,35 +1217,35 @@ pub(crate) async fn bind_dual_stack(port: u16) -> Result<TcpListener> {
 /// other reason to make outbound HTTP calls. Same lazy-static pattern as
 /// `webui::catalog_cache`.
 ///
-/// É um `PeerClients` e não um `reqwest::Client` porque o próximo salto é um
-/// peer: com o cluster em TLS ele precisa do certificado daquele node_id
-/// fixado. O esquema global (`peer_client::tls_ativo`) é quem diz se há TLS -
-/// este processo é o mesmo do nó, então a política já está aplicada aqui.
+/// It is a `PeerClients` and not a `reqwest::Client` because the next hop is a
+/// peer: with the cluster on TLS it needs that node_id's certificate pinned. The
+/// global scheme (`peer_client::tls_enabled`) is what says whether there is TLS -
+/// this process is the same as the node's, so the policy is already applied here.
 pub(crate) fn http_client() -> &'static crate::peer_client::PeerClients {
     static CLIENT: std::sync::OnceLock<crate::peer_client::PeerClients> =
         std::sync::OnceLock::new();
     let c = CLIENT
         .get_or_init(|| crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600)));
-    // A cada uso, não só na criação: o `OnceLock` nasce uma vez e o operador
-    // pode virar a flag depois. `set_tls` só faz trabalho quando o valor muda,
-    // então isto custa uma leitura atômica no caminho comum.
-    c.set_tls(crate::peer_client::tls_ativo());
-    // O cliente é lazy e vive separado do cliente do gateway. Sincronize a
-    // preferência QUIC a cada uso para que uma mudança propagada pela
-    // política também alcance os relays e as respostas diretas deste nó.
-    c.set_quic(crate::peer_client::quic_ativo());
+    // On every use, not only at creation: the `OnceLock` is born once and the
+    // operator may flip the flag later. `set_tls` only does work when the value
+    // changes, so this costs one atomic read on the common path.
+    c.set_tls(crate::peer_client::tls_enabled());
+    // The client is lazy and lives apart from the gateway's client. Sync the
+    // QUIC preference on every use so that a change propagated by the
+    // policy also reaches this node's relays and direct replies.
+    c.set_quic(crate::peer_client::quic_enabled());
     c
 }
 
-/// Duração do último handshake TLS que este servidor aceitou, em ms.
+/// Duration of the last TLS handshake this server accepted, in ms.
 ///
-/// Zero quando não há TLS, e zero também quando o salto reaproveitou uma
-/// conexão do pool - que é a maioria deles. Ver o doc de
-/// `SentFrame::tls_handshake_ms` sobre por que isso é a verdade e não uma
-/// falha de medição.
+/// Zero when there is no TLS, and zero also when the hop reused a connection
+/// from the pool - which is most of them. See the doc of
+/// `SentFrame::tls_handshake_ms` on why this is the truth and not a measurement
+/// failure.
 pub(super) fn last_handshake_ms(state: &SharedState) -> u64 {
     let Ok(state) = lock_inference_state(state) else {
-        warn!("não foi possível ler o último handshake: mutex do estado envenenado");
+        warn!("could not read the last handshake: state mutex poisoned");
         return 0;
     };
     state
@@ -1273,7 +1272,7 @@ pub(super) async fn handle_prefill_batch(
     };
     let batch_body = match wire::encode_batch(&batch) {
         Ok(body) => Bytes::from(body),
-        Err(error) => return err400(format!("batch inválido: {error}")),
+        Err(error) => return err400(format!("invalid batch: {error}")),
     };
     open_tp_decode(&app.state, &headers, "/v1/prefill", &batch_body);
     let calls = batch.items.iter().map(|item| {
@@ -1287,7 +1286,7 @@ pub(super) async fn handle_prefill_batch(
         async move {
             match body {
                 Ok(body) => handle_prefill(State(app), headers, Bytes::from(body)).await,
-                Err(error) => err400(format!("item batch inválido: {error}")),
+                Err(error) => err400(format!("invalid batch item: {error}")),
             }
         }
     });
@@ -1297,19 +1296,19 @@ pub(super) async fn handle_prefill_batch(
         if !response.status().is_success() {
             return (
                 StatusCode::BAD_GATEWAY,
-                format!("item {} falhou no processamento do batch", original.item_id),
+                format!("item {} failed in the batch processing", original.item_id),
             )
                 .into_response();
         }
         let bytes =
             match axum::body::to_bytes(response.into_body(), INFERENCE_FRAME_BODY_LIMIT).await {
                 Ok(bytes) => bytes,
-                Err(error) => return err500(format!("resposta batch inválida: {error}")),
+                Err(error) => return err500(format!("invalid batch response: {error}")),
             };
         let decoded = match wire::decode_batch_items(&bytes) {
             Ok((_, mut decoded)) if decoded.len() == 1 => decoded.remove(0),
-            Ok(_) => return err500("resposta de item não contém exatamente um item"),
-            Err(error) => return err500(format!("resposta de item inválida: {error}")),
+            Ok(_) => return err500("item response does not contain exactly one item"),
+            Err(error) => return err500(format!("invalid item response: {error}")),
         };
         items.push(wire::BatchPayloadItem {
             item_id: original.item_id.clone(),
@@ -1347,7 +1346,7 @@ pub(super) async fn handle_step_batch(
     };
     let batch_body = match wire::encode_batch(&batch) {
         Ok(body) => Bytes::from(body),
-        Err(error) => return err400(format!("batch inválido: {error}")),
+        Err(error) => return err400(format!("invalid batch: {error}")),
     };
     open_tp_decode(&app.state, &headers, "/v1/step", &batch_body);
     let calls = batch.items.iter().map(|item| {
@@ -1361,7 +1360,7 @@ pub(super) async fn handle_step_batch(
         async move {
             match body {
                 Ok(body) => handle_step(State(app), headers, Bytes::from(body)).await,
-                Err(error) => err400(format!("item batch inválido: {error}")),
+                Err(error) => err400(format!("invalid batch item: {error}")),
             }
         }
     });
@@ -1371,19 +1370,19 @@ pub(super) async fn handle_step_batch(
         if !response.status().is_success() {
             return (
                 StatusCode::BAD_GATEWAY,
-                format!("item {} falhou no processamento do batch", original.item_id),
+                format!("item {} failed in the batch processing", original.item_id),
             )
                 .into_response();
         }
         let bytes =
             match axum::body::to_bytes(response.into_body(), INFERENCE_FRAME_BODY_LIMIT).await {
                 Ok(bytes) => bytes,
-                Err(error) => return err500(format!("resposta batch inválida: {error}")),
+                Err(error) => return err500(format!("invalid batch response: {error}")),
             };
         let decoded = match wire::decode_batch_items(&bytes) {
             Ok((_, mut decoded)) if decoded.len() == 1 => decoded.remove(0),
-            Ok(_) => return err500("resposta de item não contém exatamente um item"),
-            Err(error) => return err500(format!("resposta de item inválida: {error}")),
+            Ok(_) => return err500("item response does not contain exactly one item"),
+            Err(error) => return err500(format!("invalid item response: {error}")),
         };
         items.push(wire::BatchPayloadItem {
             item_id: original.item_id.clone(),
@@ -1608,19 +1607,19 @@ fn health_body(s: &InferState, scheduler: &SchedulerHandle, slot_count: usize) -
         "hidden_dim": s.engine.n_embd,
         "vocab_size": s.engine.n_vocab,
         "max_sessions": s.max_sessions,
-        // Duas sequências de KV por sessão: a do prompt e a da geração. Ver
-        // `llm::kv_seq_budget`, que explica por que e o que custa.
+        // Two KV sequences per session: the prompt's and the generation's. See
+        // `llm::kv_seq_budget`, which explains why and what it costs.
         "kv_seq_max": crate::llm::kv_seq_budget(s.max_sessions),
         "sessions_in_use": s.sessions.len(),
         "free_slots": s.seq_pool.len(),
-        // Sessões paradas no fim do prompt, esperando o turno seguinte. É o
-        // cache de prefixo visto do lado que o executa.
+        // Sessions parked at the end of the prompt, waiting for the next turn. It
+        // is the prefix cache seen from the side that executes it.
         "sessions_retained": s.sessions.values().filter(|x| x.retained).count(),
-        // Gerações em curso neste peer, de qualquer gateway: sessão viva que
-        // não está só retida para o cache de prefixo. É a fila que o
-        // planejador multiplica pelo custo da fatia para espalhar a carga.
+        // Generations in progress on this peer, from any gateway: a live session
+        // that is not merely retained for the prefix cache. It is the queue that
+        // the planner multiplies by the slice's cost to spread the load.
         "active_generations": s.sessions.values().filter(|x| !x.retained).count(),
-        // Velocidade medida desta fatia (teste ao servir + tráfego real).
+        // Measured speed of this slice (test on serving + real traffic).
         "perf": s.perf.json(),
         "prefix_tokens_retained": s
             .sessions
@@ -1628,14 +1627,14 @@ fn health_body(s: &InferState, scheduler: &SchedulerHandle, slot_count: usize) -
             .filter(|x| x.retained)
             .map(|x| x.prompt_len as u64)
             .sum::<u64>(),
-        // Diagnóstico do motor: `kv_can_shift` é o K-shift do llama.cpp, e
-        // **não** governa remoção parcial de KV. O reuso de prefixo deste
-        // projeto não depende de nenhum dos dois - ver `Session`.
+        // Engine diagnostic: `kv_can_shift` is llama.cpp's K-shift, and it
+        // does **not** govern partial KV removal. This project's prefix reuse
+        // depends on neither - see `Session`.
         "kv_can_shift": s.engine.kv_can_shift(),
         "n_ctx_total": n_ctx_total,
-        // O engine reserva a janela pública para cada sessão. Se o fit reduzir
-        // o total, a capacidade por sessão é a divisão efetiva, não o total
-        // bruto que o llama.cpp devolve.
+        // The engine reserves the public window for each session. If the fit
+        // reduces the total, the per-session capacity is the effective division,
+        // not the raw total that llama.cpp returns.
         "n_ctx_per_session": n_ctx_per_session,
         "offload_kqv": s.engine.offload_kqv(),
         "cache_type_k": s.engine.cache_type_k().as_str(),
@@ -1643,34 +1642,34 @@ fn health_body(s: &InferState, scheduler: &SchedulerHandle, slot_count: usize) -
         "fit_memory_applied": s.engine.fit_memory_applied(),
         "n_gpu_layers_effective": s.engine.effective_n_gpu_layers(),
         "n_ubatch_effective": s.engine.effective_n_ubatch(),
-        // Com que parâmetros de llama.cpp este contexto subiu, para o
-        // operador comparar o nó com uma linha de comando do `llama-cli`.
-        // Lido do contexto vivo, não do `EngineConfig` - ver
+        // With which llama.cpp parameters this context came up, so the
+        // operator can compare the node with a `llama-cli` command line.
+        // Read from the live context, not from `EngineConfig` - see
         // `LlmEngine::load_params`.
         "load_params": load_params,
         "profile_sync_enabled": crate::llm::profile_backend_sync_enabled(),
-        // Onde as camadas e o cache KV ficaram de verdade, direto do
-        // llama.cpp. `null` quando a ponte não respondeu - a interface diz
-        // que não sabe, em vez de derivar um mapa de `n_gpu_layers`, que
-        // erraria sempre que um override de buffer type entrasse.
+        // Where the layers and the KV cache really ended up, straight from
+        // llama.cpp. `null` when the bridge did not answer - the interface says
+        // it does not know, instead of deriving a map from `n_gpu_layers`, which
+        // would be wrong whenever a buffer type override came into play.
         "placement": placement,
         "context_memory": context_memory,
         "inference_frame_capabilities": caps,
         "scheduler": scheduler.stats.json(&scheduler.config),
-        // Diagnóstico puro — `llama_memory_can_shift`, o K-shift do
-        // `--ctx-shift` de referência do llama.cpp. Não decide mais se a
-        // especulação roda (ver o doc de `should_draft`); mantido aqui
-        // porque é informação real do motor.
+        // Pure diagnostic - `llama_memory_can_shift`, the K-shift of llama.cpp's
+        // reference `--ctx-shift`. It no longer decides whether speculation runs
+        // (see the doc of `should_draft`); kept here because it is real
+        // engine information.
         "kv_can_shift": s.engine.kv_can_shift(),
-        // A cabeça de rascunho `nextn` foi mesmo anexada? Depende do GGUF
-        // carregado (fatia não-final não tem o bloco) e do interruptor do
-        // operador, então nem a configuração nem o nome do arquivo respondem.
+        // Was the `nextn` draft head really attached? It depends on the loaded
+        // GGUF (a non-final slice does not have the block) and on the operator's
+        // switch, so neither the configuration nor the file name answers it.
         "mtp_ready": s.engine.mtp_ready(),
         "mtp_allocation": s.engine.mtp_allocation(),
         "mtp_unavailable_reason": s.engine.mtp_unavailable_reason(),
-        // Snapshots de KV cache (`--slot-save-path`): ligado quando há um
-        // diretório configurado. `slot_count` conta sidecars sem abrir o
-        // JSON, para não segurar o lock do motor em leitura de disco.
+        // KV cache snapshots (`--slot-save-path`): on when a directory is
+        // configured. `slot_count` counts sidecars without opening the JSON, so
+        // as not to hold the engine lock during a disk read.
         "slot_persist_enabled": s.slot_dir.is_some(),
         "slot_count": slot_count,
     });
@@ -1689,10 +1688,11 @@ fn health_body(s: &InferState, scheduler: &SchedulerHandle, slot_count: usize) -
         "restored": ram_cache.restored,
         "evicted": ram_cache.evicted,
     });
-    // Rotas fixadas deste nó (`route_plan`): RTT e transporte até o servidor
-    // de inferência e até o gateway de cada peer. O gateway que planeja não
-    // mede as arestas entre dois outros peers nem a volta até ele; lê daqui.
-    // Fora do `json!` acima, que já está no limite de recursão da macro.
+    // Pinned routes of this node (`route_plan`): RTT and transport to the
+    // inference server and to the gateway of each peer. The planning gateway
+    // does not measure the edges between two other peers nor the way back to
+    // itself; it reads them from here. Outside the `json!` above, which is
+    // already at the macro's recursion limit.
     add_route_fields(&mut body);
     // Keep the identity fields separate from the large diagnostic object. A
     // direct addition to the json! tree would exceed the macro recursion limit
@@ -1708,30 +1708,33 @@ fn health_body(s: &InferState, scheduler: &SchedulerHandle, slot_count: usize) -
 
 // ── /v1/tp/reduce ────────────────────────────────────────────────────────────
 
-/// Uma parcial de um reduce de tensor parallelism (caminho C). Cada rank do
-/// grupo faz um POST desta com a própria parcial e o mesmo `barrier_id`; o
-/// endpoint (no primary/rank 0) acumula e devolve a soma quando todos chegam.
-/// **Nunca** toca no mutex do `InferState`, e isso é a correção, não estilo.
+/// One partial of a tensor parallelism reduce (path C). Each rank of the group
+/// POSTs one of these with its own partial and the same `barrier_id`; the
+/// endpoint (on the primary/rank 0) accumulates and returns the sum when all
+/// arrive. It **never** touches the `InferState` mutex, and that is the fix, not
+/// style.
 ///
-/// `handle_prefill` segura esse mutex durante o decode inteiro, e é de dentro
-/// desse decode que o callback do reduce bloqueia esperando a soma. Enquanto
-/// este handler pegava o mesmo mutex para ler a barreira, a parcial que chegava
-/// - do próprio rank 0 ou do worker - ficava presa esperando um lock que só
-/// seria liberado quando o decode terminasse; e o decode só terminaria com a
-/// soma que estava presa na porta. Deadlock exato de 18/08: os dois ranks
-/// logavam o primeiro reduce, com 0,2 ms de diferença, e o pipeline parava ali.
+/// `handle_prefill` holds that mutex during the whole decode, and it is from
+/// inside that decode that the reduce callback blocks waiting for the sum. While
+/// this handler took the same mutex to read the barrier, the partial that
+/// arrived - from rank 0 itself or from the worker - was stuck waiting for a lock
+/// that would only be released when the decode finished; and the decode would
+/// only finish with the sum that was stuck at the door. The exact deadlock of
+/// 18/08: both ranks logged the first reduce, 0.2 ms apart, and the pipeline
+/// stopped there.
 ///
-/// A barreira vive fora do mutex (`ReduceBarrier` já é `Clone` e sincronizada
-/// por dentro), então o caminho da coletiva nunca disputa com o decode.
+/// The barrier lives outside the mutex (`ReduceBarrier` is already `Clone` and
+/// synchronized internally), so the collective path never contends with the
+/// decode.
 ///
-/// A parcial viaja como **f32 cru em little-endian**, não como JSON. Um float
-/// de 4 bytes vira ~12 caracteres em JSON, e a parcial de um prefill de 100
-/// tokens tem 410 mil floats: ~5 MB de texto por reduce, 64 vezes por decode.
-/// Isso estourava o limite de corpo do axum (413) e, quando cabia, gastava mais
-/// tempo formatando número que somando. Cru é 4x menor e sem parse.
+/// The partial travels as **raw little-endian f32**, not as JSON. A 4-byte float
+/// becomes ~12 characters in JSON, and the partial of a 100-token prefill has
+/// 410 thousand floats: ~5 MB of text per reduce, 64 times per decode. That blew
+/// past axum's body limit (413) and, when it fit, spent more time formatting
+/// numbers than summing them. Raw is 4x smaller and needs no parsing.
 ///
-/// `barrier_id` e `rank` vão em cabeçalho, que é onde metadado de tamanho fixo
-/// pertence.
+/// `barrier_id` and `rank` go in a header, which is where fixed-size metadata
+/// belongs.
 pub(crate) async fn handle_tp_reduce(
     State((barrier, size)): State<(crate::collective::ReduceBarrier, u32)>,
     headers: axum::http::HeaderMap,
@@ -1744,7 +1747,7 @@ pub(crate) async fn handle_tp_reduce(
         Some(v) => v.to_string(),
         None => {
             return err400(format!(
-                "falta o cabeçalho {}",
+                "header {} is missing",
                 crate::tp::TP_BARRIER_HEADER
             ))
         }
@@ -1755,11 +1758,11 @@ pub(crate) async fn handle_tp_reduce(
         .and_then(|v| v.parse().ok())
     {
         Some(v) => v,
-        None => return err400(format!("falta o cabeçalho {}", crate::tp::TP_RANK_HEADER)),
+        None => return err400(format!("header {} is missing", crate::tp::TP_RANK_HEADER)),
     };
     if body.len() % 4 != 0 {
         return err400(format!(
-            "parcial de {} bytes não é múltiplo de 4",
+            "partial of {} bytes is not a multiple of 4",
             body.len()
         ));
     }
@@ -1781,28 +1784,29 @@ pub(crate) async fn handle_tp_reduce(
                 )
                     .into_response()
             }
-            Err(e) => err500(format!("barreira abandonada: {e}")),
+            Err(e) => err500(format!("barrier abandoned: {e}")),
         },
         Err(e) => err400(e),
     }
 }
 
-/// Repassa uma chamada de ciclo de vida de sessão aos demais ranks do grupo.
+/// Forwards a session lifecycle call to the group's other ranks.
 ///
-/// O corpo é remontado (não é um quadro binário como o decode), e o cabeçalho
-/// de réplica evita fan-out infinito: quem recebe marcado não repassa.
+/// The body is reassembled (it is not a binary frame like the decode), and the
+/// replica header avoids infinite fan-out: whoever receives it marked does not
+/// forward.
 pub(super) fn replicate_session_call(
     state: &SharedState,
     headers: &axum::http::HeaderMap,
-    rota: &str,
+    route: &str,
     session_id: &str,
 ) {
     if headers.get(crate::tp::TP_DECODE_HEADER).is_some() {
-        return; // já é a réplica
+        return; // already the replica
     }
     let tp = {
         let Ok(s) = lock_inference_state(state) else {
-            warn!("não foi possível replicar sessão: mutex do estado envenenado");
+            warn!("could not replicate the session: state mutex poisoned");
             return;
         };
         s.tp.clone()
@@ -1810,12 +1814,12 @@ pub(super) fn replicate_session_call(
     let Some(tp) = tp.filter(|t| t.size > 1 && t.rank == 0) else {
         return;
     };
-    let corpo = json!({ "session_id": session_id }).to_string().into_bytes();
+    let body = json!({ "session_id": session_id }).to_string().into_bytes();
     crate::tp::broadcast_to(
         &tp.members,
-        rota,
+        route,
         "session",
-        corpo,
+        body,
         Some("application/json"),
     );
 }
@@ -1831,7 +1835,7 @@ pub(super) fn replicate_session_rewind(
     }
     let tp = {
         let Ok(s) = lock_inference_state(state) else {
-            warn!("não foi possível replicar rewind: mutex do estado envenenado");
+            warn!("could not replicate the rewind: state mutex poisoned");
             return;
         };
         s.tp.clone()
@@ -1855,28 +1859,28 @@ pub(super) fn replicate_session_rewind(
 
 #[derive(Deserialize)]
 pub(super) struct SlotRequest {
-    /// `"save"`, `"restore"` ou `"erase"`.
+    /// `"save"`, `"restore"` or `"erase"`.
     pub(super) action: String,
-    /// Sessão viva a salvar (`save`). Ignorado em `restore`/`erase`.
+    /// Live session to save (`save`). Ignored in `restore`/`erase`.
     #[serde(default)]
     pub(super) session_id: String,
-    /// Nome do snapshot em disco (um componente de caminho seguro).
+    /// Name of the snapshot on disk (a safe path component).
     pub(super) slot_name: String,
-    /// Nova sessão a criar em `restore`. Obrigatório nessa ação.
+    /// New session to create in `restore`. Mandatory in that action.
     #[serde(default)]
     pub(super) dest_session_id: Option<String>,
 }
 
-/// `POST /v1/session/slot` - grava, lê ou apaga um snapshot de KV cache no
-/// diretório local (`--slot-save-path`). O gateway compõe a ação de
-/// implantação chamando esta rota em cada hop; ver `gateway::snapshot_deployment`.
+/// `POST /v1/session/slot` - writes, reads or erases a KV cache snapshot in the
+/// local directory (`--slot-save-path`). The gateway composes the deployment
+/// action by calling this route on each hop; see `gateway::snapshot_deployment`.
 pub(super) async fn handle_slot(
     State(app): State<InferenceAppState>,
     headers: axum::http::HeaderMap,
     Json(req): Json<SlotRequest>,
 ) -> Response {
-    // TP: rank 0 repassa a mesma ação aos workers, que servem a mesma faixa e
-    // gravam a própria cópia no disco deles. Ver `replicate_session_call`.
+    // TP: rank 0 forwards the same action to the workers, which serve the same
+    // range and write their own copy to their disk. See `replicate_session_call`.
     replicate_slot_call(&app.state, &headers, &req);
 
     let mut state = match lock_inference_state(&app.state) {
@@ -1886,7 +1890,7 @@ pub(super) async fn handle_slot(
     let Some(dir) = state.slot_dir.clone() else {
         return (
             StatusCode::BAD_REQUEST,
-            "snapshots de KV desligados neste peer (defina slot_save_path)",
+            "KV snapshots off on this peer (set slot_save_path)",
         )
             .into_response();
     };
@@ -1923,7 +1927,7 @@ pub(super) async fn handle_slot(
                 Err(error) => err400(error),
             }
         }
-        other => err400(format!("ação de snapshot desconhecida: {other}")),
+        other => err400(format!("unknown snapshot action: {other}")),
     }
 }
 
@@ -1937,7 +1941,7 @@ pub(super) async fn handle_cache_clear(State(app): State<InferenceAppState>) -> 
     };
     let (entries, bytes) = state.ram_cache.clear();
     drop(state);
-    info!("cache em RAM limpo: {entries} sessões, {bytes} bytes");
+    info!("RAM cache cleared: {entries} sessions, {bytes} bytes");
     Json(json!({ "cleared": true, "entries": entries, "bytes": bytes })).into_response()
 }
 
@@ -1947,11 +1951,11 @@ pub(super) fn replicate_slot_call(
     req: &SlotRequest,
 ) {
     if headers.get(crate::tp::TP_DECODE_HEADER).is_some() {
-        return; // já é a réplica
+        return; // already the replica
     }
     let tp = {
         let Ok(s) = lock_inference_state(state) else {
-            warn!("não foi possível replicar snapshot: mutex do estado envenenado");
+            warn!("could not replicate the snapshot: state mutex poisoned");
             return;
         };
         s.tp.clone()
@@ -1988,11 +1992,11 @@ pub(super) async fn handle_release(
     headers: axum::http::HeaderMap,
     Json(req): Json<ReleaseRequest>,
 ) -> Response {
-    // A réplica não encerra sessão por conta própria (ver `tp::is_replica`),
-    // então quem a libera é este release - que o gateway manda **só ao rank 0**,
-    // porque o worker não é hop do pipeline. Sem repassar, a sessão do worker
-    // fica segurando o slot para sempre e a requisição seguinte morre com
-    // "seq pool esgotado (max 1 sessões simultâneas)" (18/08).
+    // The replica does not end a session on its own (see `tp::is_replica`),
+    // so whoever releases it is this release - which the gateway sends **only to
+    // rank 0**, because the worker is not a pipeline hop. Without forwarding, the
+    // worker's session keeps holding the slot forever and the next request dies
+    // with "seq pool esgotado (max 1 sessões simultâneas)" (18/08).
     replicate_session_call(&app.state, &headers, "/v1/session/release", &req.session_id);
     let mut s = match lock_inference_state(&app.state) {
         Ok(s) => s,
@@ -2019,19 +2023,21 @@ pub(super) struct RewindRequest {
     pub(super) n_tokens: u32,
 }
 
-/// Confirma que a sessão ficou parada no fim do prompt, pronta para o turno
-/// seguinte.
+/// Confirms that the session stopped at the end of the prompt, ready for the
+/// next turn.
 ///
-/// **Não recua nada.** A geração deste turno correu numa sequência de KV
-/// separada (ver `Session`), então reter o prompt é apagar essa sequência
-/// inteira - remoção total, que todo motor aceita. Antes daqui saía o
-/// `"este modelo não aceita recuar a sessão para o prompt"` que descartava o
-/// prefixo em 75 das 176 requisições de um dia de produção, e o
-/// `"sessão desconhecida"` de quando o EOS destruía a sessão antes deste
-/// pedido chegar.
+/// **It rolls nothing back.** This turn's generation ran in a separate KV
+/// sequence (see `Session`), so retaining the prompt is erasing that whole
+/// sequence - total removal, which every engine accepts. Before this, what came
+/// out here was the
+/// `"este modelo não aceita recuar a sessão para o prompt"` that discarded the
+/// prefix in 75 of 176 requests of a production day, and the
+/// `"sessão desconhecida"` from when the EOS destroyed the session before this
+/// request arrived.
 ///
-/// Idempotente por construção: o fim normal do turno já reteve, e chamar de
-/// novo confere o mesmo estado. Só divergência real de contagem é recusa.
+/// Idempotent by construction: the normal end of the turn has already retained,
+/// and calling again checks the same state. Only a real count divergence is a
+/// refusal.
 pub(super) async fn handle_rewind(
     State(app): State<InferenceAppState>,
     headers: axum::http::HeaderMap,
@@ -2046,13 +2052,13 @@ pub(super) async fn handle_rewind(
         .get(&req.session_id)
         .map(|session| session.prompt_len)
     else {
-        return Json(json!({ "rewound": false, "reason": "sessão desconhecida" })).into_response();
+        return Json(json!({ "rewound": false, "reason": "unknown session" })).into_response();
     };
     if req.n_tokens != prompt_len {
         return Json(json!({
             "rewound": false,
             "reason": format!(
-                "prompt do gateway não bate com o desta sessão: {} != {prompt_len}",
+                "gateway prompt does not match the one of this session: {} != {prompt_len}",
                 req.n_tokens
             ),
         }))
@@ -2061,7 +2067,7 @@ pub(super) async fn handle_rewind(
     let Some(retained) = state.retain_prompt(&req.session_id) else {
         return Json(json!({
             "rewound": false,
-            "reason": "sessão sem prompt para reter",
+            "reason": "session without a prompt to retain",
         }))
         .into_response();
     };
@@ -2131,22 +2137,23 @@ pub(super) fn rollback_session(
 
 // ── /v1/prefill ───────────────────────────────────────────────────────────────
 
-/// Abre o decode nos **dois** papéis e, no rank 0, põe os workers para rodar o
-/// mesmo lote.
+/// Opens the decode in **both** roles and, on rank 0, puts the workers to run the
+/// same batch.
 ///
-/// TP só funciona em lockstep: todo rank percorre o mesmo grafo sobre os mesmos
-/// tokens, e as parciais se encontram na barreira. O gateway só fala com o rank
-/// 0 (o worker é excluído do pipeline de propósito), então é aqui que os outros
-/// ranks entram no decode. Sem isto o rank 0 postava a parcial e esperava para
-/// sempre - o travamento de 18/08.
+/// TP only works in lockstep: every rank walks the same graph over the same
+/// tokens, and the partials meet at the barrier. The gateway only talks to rank
+/// 0 (the worker is deliberately excluded from the pipeline), so this is where
+/// the other ranks enter the decode. Without this, rank 0 posted its partial and
+/// waited forever - the 18/08 hang.
 ///
-/// O quadro é repassado byte a byte, com o id do decode no cabeçalho. Quem
-/// recebe o cabeçalho é réplica: abre o decode com o id recebido e **não**
-/// retransmite, senão o grupo se multiplicaria a cada salto.
+/// The frame is forwarded byte for byte, with the decode id in the header.
+/// Whoever receives the header is a replica: it opens the decode with the
+/// received id and does **not** retransmit, or the group would multiply at every
+/// hop.
 pub(super) fn open_tp_decode(
     state: &SharedState,
     headers: &axum::http::HeaderMap,
-    rota: &str,
+    route: &str,
     body: &Bytes,
 ) {
     if headers.get(BATCH_CHILD_HEADER).is_some() {
@@ -2154,7 +2161,7 @@ pub(super) fn open_tp_decode(
     }
     let tp = {
         let Ok(s) = lock_inference_state(state) else {
-            warn!("não foi possível abrir decode TP: mutex do estado envenenado");
+            warn!("could not open TP decode: state mutex poisoned");
             return;
         };
         s.tp.clone()
@@ -2170,25 +2177,26 @@ pub(super) fn open_tp_decode(
         return;
     }
     if tp.rank != 0 {
-        // Worker recebendo quadro sem cabeçalho: veio de fora do grupo. Abrir
-        // um decode aqui produziria reduces com id que ninguém mais conhece.
+        // Worker receiving a frame without the header: it came from outside the
+        // group. Opening a decode here would produce reduces with an id nobody
+        // else knows.
         return;
     }
     let id = uuid::Uuid::new_v4().to_string();
     crate::tp::begin_decode(&id);
-    crate::tp::broadcast_decode(&tp.members, rota, &id, body.to_vec());
+    crate::tp::broadcast_decode(&tp.members, route, &id, body.to_vec());
 }
 
-/// A sub-faixa que o remetente mandou executar, conferida contra a fatia que
-/// este nó carregou.
+/// The sub-range that the sender ordered to execute, checked against the slice
+/// this node loaded.
 ///
-/// Quem manda decide qual pedaço roda; este nó só confere que consegue rodar
-/// exatamente aquilo. O que ele **não** faz é ajustar em silêncio: rodar a
-/// fatia inteira quando pediram um pedaço é exatamente o modo de falha que
-/// devolve resposta errada sem erro nenhum.
+/// Whoever sends decides which piece runs; this node only checks that it can run
+/// exactly that. What it does **not** do is adjust silently: running the whole
+/// slice when a piece was asked for is exactly the failure mode that returns a
+/// wrong answer with no error at all.
 ///
-/// Devolve o índice do bloco local onde a decodificação deve parar, ou `None`
-/// quando o pedido cobre a fatia até o fim (o caso comum, grafo inteiro).
+/// Returns the index of the local block where decoding must stop, or `None`
+/// when the request covers the slice to the end (the common case, whole graph).
 pub(super) fn resolve_exec_range(
     meta: &Value,
     slice_start: u32,
@@ -2197,29 +2205,29 @@ pub(super) fn resolve_exec_range(
     let exec_start = meta.get("exec_start").and_then(|v| v.as_u64());
     let exec_end = meta.get("exec_end").and_then(|v| v.as_u64());
     let (Some(exec_start), Some(exec_end)) = (exec_start, exec_end) else {
-        // Sem instrução não há o que conferir: roda a fatia inteira, que é o
-        // contrato de quem só carrega uma faixa e é dono dela inteira.
+        // Without an instruction there is nothing to check: it runs the whole
+        // slice, which is the contract of whoever only loads one range and owns
+        // all of it.
         return Ok(None);
     };
     let (exec_start, exec_end) = (exec_start as u32, exec_end as u32);
     if exec_end < exec_start {
-        return Err(format!("sub-faixa invertida: L{exec_start}-{exec_end}"));
+        return Err(format!("inverted sub-range: L{exec_start}-{exec_end}"));
     }
     if exec_start < slice_start || exec_end > slice_end {
         return Err(format!(
-            "sub-faixa L{exec_start}-{exec_end} sai da fatia carregada L{slice_start}-{slice_end}"
+            "sub-range L{exec_start}-{exec_end} leaves the loaded slice L{slice_start}-{slice_end}"
         ));
     }
     if exec_start > slice_start {
-        // O limite que o captain conhece: o estado oculto entra pelo embedding
-        // do llama.cpp, que sempre cai no bloco 0 da fatia. Começar acima da
-        // camada inicial exigiria pular blocos da cabeça, e o motor não sabe
-        // fazer isso hoje. Recusar alto é o contrato; refazer L{slice_start}-
-        // L{exec_start} em silêncio seria a resposta errada sem erro.
+        // The limit the captain knows: the hidden state enters through llama.cpp's
+        // embedding, which always lands on block 0 of the slice. Starting above
+        // the initial layer would require skipping head blocks, and the engine
+        // does not know how to do that today. Refusing high is the contract;
+        // silently redoing L{slice_start}-
+        // L{exec_start} would be a wrong answer with no error.
         return Err(format!(
-            "entrar no meio da faixa ainda não é possível: pediram começar em L{exec_start}, \
-             mas esta fatia começa em L{slice_start} e o motor sempre entra pelo primeiro bloco. \
-             Mande a sub-faixa a partir de L{slice_start}, ou dê esta parte a um peer que comece em L{exec_start}"
+            "entering in the middle of the range is not possible yet: the request starts at L{exec_start}, but this slice starts at L{slice_start} and the engine always enters through the first block. Send the sub-range starting at L{slice_start}, or give this part to a peer that starts at L{exec_start}"
         ));
     }
     if exec_end == slice_end {

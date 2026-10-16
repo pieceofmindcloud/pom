@@ -49,9 +49,9 @@ export function GpuTemperature({
     <div
       className={compact
         ? "flex items-center justify-between gap-2 text-[9px]"
-        // Duas placas cabem lado a lado num card de máquina, e o nome delas
-        // pode carregar o índice que as distingue: o aperto de antes cortava
-        // "GeForce RTX 5060 Ti #0" em "GeForce RT…".
+        // Two cards fit side by side in a machine card, and their name
+        // may carry the index that tells them apart: the tightness before cut
+        // "GeForce RTX 5060 Ti #0" down to "GeForce RT…".
         : "flex min-w-0 items-center justify-between gap-2 rounded-lg border border-line bg-raised/60 px-2 py-1.5 text-[0.7rem]"}
       aria-label={`${label ?? t("dashboard.gpuTemperature")}: ${value}`}
     >

@@ -1,8 +1,10 @@
 import {
+  Activity,
   Blocks,
   BookOpen,
   Boxes,
   ChartNoAxesColumn,
+  Cpu,
   FolderTree,
   Gauge,
   Globe2,
@@ -40,6 +42,8 @@ export interface NavLeaf {
   promoteProfiles?: readonly Profile[];
   /** Matches child routes too — used by the sidebar to mark a section open. */
   end?: boolean;
+  /** Plugin that provides this item; the menu uses it to open/close the on-demand process. */
+  pluginCode?: string;
 }
 
 export interface NavSection {
@@ -48,6 +52,8 @@ export interface NavSection {
   iconImage?: string;
   /** A section either navigates somewhere itself, or holds children. */
   to?: string;
+  /** Plugin that provides this item; see `NavLeaf.pluginCode`. */
+  pluginCode?: string;
   children?: NavLeaf[];
   /** Profiles for which this destination is rendered in the utility footer. */
   footerProfiles?: readonly Profile[];
@@ -68,7 +74,7 @@ export interface NavFooterItem {
  * to it, then feed it models, move files, read what happened, and configure.
  */
 export const NAV: NavSection[] = [
-  { labelKey: "nav.publicNetworks", icon: Globe2, to: "/redes-publicas" },
+  { labelKey: "nav.publicNetworks", icon: Globe2, to: "/public-networks" },
   { labelKey: "nav.dashboard", icon: Gauge, to: "/" },
   { labelKey: "nav.chat", icon: MessagesSquare, to: "/chat", chatPanelProfiles: ["infer"] },
   { labelKey: "nav.networkChat", icon: MessagesSquare, to: "/network-chat" },
@@ -76,28 +82,28 @@ export const NAV: NavSection[] = [
     labelKey: "nav.models",
     icon: Boxes,
     children: [
-      { labelKey: "nav.remoteModels", to: "/modelos/remotos", icon: Search },
-      { labelKey: "nav.fullModels", to: "/modelos", icon: Boxes, end: true },
-      { labelKey: "nav.sliceModels", to: "/modelos/fatiar", icon: Scissors },
-      { labelKey: "nav.shards", to: "/fatias", icon: Layers, end: true },
+      { labelKey: "nav.remoteModels", to: "/models/remote", icon: Search },
+      { labelKey: "nav.fullModels", to: "/models", icon: Boxes, end: true },
+      { labelKey: "nav.sliceModels", to: "/models/slice", icon: Scissors },
+      { labelKey: "nav.shards", to: "/shards", icon: Layers, end: true },
     ],
   },
   {
     labelKey: "nav.deployments",
     icon: Rocket,
     children: [
-      { labelKey: "nav.deploy", to: "/implantar", icon: Rocket },
-      // Separada de "implantar" de proposito: uma cria, a outra mostra e
-      // ajusta o que ja existe. Sao dois momentos diferentes do mesmo trabalho.
-      { labelKey: "nav.history", to: "/implantacoes", icon: History },
+      { labelKey: "nav.deploy", to: "/deploy", icon: Rocket },
+      // Separate from "deploy" on purpose: one creates, the other shows and
+      // adjusts what already exists. They are two different moments of the same work.
+      { labelKey: "nav.history", to: "/deployments", icon: History },
     ],
   },
   {
     labelKey: "nav.transfers",
     icon: Send,
     children: [
-      { labelKey: "nav.sendFile", to: "/transferencias/enviar", icon: Upload },
-      { labelKey: "nav.inProgress", to: "/transferencias", icon: Send, end: true },
+      { labelKey: "nav.sendFile", to: "/transfers/send", icon: Upload },
+      { labelKey: "nav.inProgress", to: "/transfers", icon: Send, end: true },
     ],
   },
   {
@@ -105,10 +111,10 @@ export const NAV: NavSection[] = [
     icon: ListTree,
     children: [
       { labelKey: "nav.requestLogs", to: "/logs", icon: ListTree },
-      { labelKey: "nav.deploymentLogs", to: "/implantacoes/logs", icon: Terminal },
+      { labelKey: "nav.deploymentLogs", to: "/deployments/logs", icon: Terminal },
     ],
   },
-  { labelKey: "nav.statistics", icon: ChartNoAxesColumn, to: "/estatisticas" },
+  { labelKey: "nav.statistics", icon: ChartNoAxesColumn, to: "/statistics" },
   // The plugin catalog is a storefront with a place of its own in the menu,
   // not a setting. The menus of the installed plugins are inserted right
   // after it, before Documentation (`withPluginMenus`).
@@ -118,18 +124,18 @@ export const NAV: NavSection[] = [
   {
     labelKey: "nav.documentation",
     icon: BookOpen,
-    to: "/documentacao",
+    to: "/documentation",
     footerProfiles: ["infer"],
   },
   {
     labelKey: "nav.network",
     icon: Network,
     children: [
-      { labelKey: "nav.networkInfo", to: "/config/rede", icon: Network },
-      { labelKey: "nav.networkParticipants", to: "/config/rede/participantes", icon: Network },
-      { labelKey: "nav.myMachine", to: "/config/minha-maquina", icon: Laptop },
-      { labelKey: "nav.administrators", to: "/config/administracao", icon: ShieldCheck },
-      { labelKey: "nav.sharing", to: "/config/compartilhamento", icon: ShieldCheck },
+      { labelKey: "nav.networkInfo", to: "/config/network", icon: Network },
+      { labelKey: "nav.networkParticipants", to: "/config/network/participants", icon: Network },
+      { labelKey: "nav.myMachine", to: "/config/my-machine", icon: Laptop },
+      { labelKey: "nav.administrators", to: "/config/administration", icon: ShieldCheck },
+      { labelKey: "nav.sharing", to: "/config/sharing", icon: ShieldCheck },
       { labelKey: "nav.apiKeys", to: "/config/keys/api", icon: KeyRound },
     ],
   },
@@ -137,17 +143,17 @@ export const NAV: NavSection[] = [
     labelKey: "nav.settings",
     icon: Settings,
     footerProfiles: ["infer"],
-    footerTo: "/config/preferencias",
+    footerTo: "/config/preferences",
     children: [
-      { labelKey: "nav.preferences", to: "/config/preferencias", icon: SlidersHorizontal },
-      { labelKey: "nav.storage", to: "/config/armazenamento", icon: FolderTree },
-      { labelKey: "nav.administrativePreferences", to: "/config/preferencias/admin", icon: SlidersHorizontal },
-      { labelKey: "nav.about", to: "/config/sobre", icon: Info },
+      { labelKey: "nav.preferences", to: "/config/preferences", icon: SlidersHorizontal },
+      { labelKey: "nav.storage", to: "/config/storage", icon: FolderTree },
+      { labelKey: "nav.administrativePreferences", to: "/config/preferences/admin", icon: SlidersHorizontal },
+      { labelKey: "nav.about", to: "/config/about", icon: Info },
     ],
   },
 ];
 
-/** Ícones que um manifesto de plugin pode pedir por nome; o resto vira `Blocks`. */
+/** Icons a plugin manifest may ask for by name; the rest becomes `Blocks`. */
 const PLUGIN_ICONS: Readonly<Record<string, LucideIcon>> = {
   "list-tree": ListTree,
   "chart-no-axes-column": ChartNoAxesColumn,
@@ -163,6 +169,8 @@ const PLUGIN_ICONS: Readonly<Record<string, LucideIcon>> = {
   "folder-tree": FolderTree,
   send: Send,
   "messages-square": MessagesSquare,
+  cpu: Cpu,
+  activity: Activity,
 };
 
 function pluginIcon(name?: string | null): LucideIcon {
@@ -170,9 +178,9 @@ function pluginIcon(name?: string | null): LucideIcon {
 }
 
 /**
- * Aplica os itens de menu dos plugins ativos: um item cujo `to` já existe
- * substitui esse destino nativo; cada novo item entra na raiz, antes da
- * documentação, na ordem do manifesto. Um item com `children` vira seção com
+ * Applies the menu items of active plugins: an item whose `to` already exists
+ * replaces that native destination; each new item goes in at the root, before the
+ * documentation, in manifest order. An item with `children` becomes a section with
  * submenus.
  */
 function withPluginMenu(sections: NavSection[], profile: Profile): NavSection[] {
@@ -182,12 +190,13 @@ function withPluginMenu(sections: NavSection[], profile: Profile): NavSection[] 
     return copy;
   });
   const replace = (
-    target: { labelKey: string; icon?: LucideIcon; iconImage?: string },
+    target: { labelKey: string; icon?: LucideIcon; iconImage?: string; pluginCode?: string },
     item: ReturnType<typeof pluginMenuItems>[number],
   ) => {
     target.labelKey = pluginLabelKey(item.code, item.id);
     target.icon = pluginIcon(item.icon);
     target.iconImage = item.iconImage ? pluginAssetUrl(item.code, item.iconImage) : undefined;
+    target.pluginCode = item.code;
   };
   for (const item of pluginMenuItems(profile)) {
     const key = pluginLabelKey(item.code, item.id);
@@ -197,6 +206,7 @@ function withPluginMenu(sections: NavSection[], profile: Profile): NavSection[] 
         section.labelKey = key;
         section.icon = pluginIcon(item.icon);
         section.iconImage = item.iconImage ? pluginAssetUrl(item.code, item.iconImage) : undefined;
+        section.pluginCode = item.code;
         placed = true;
       }
       for (const child of section.children ?? []) {
@@ -209,18 +219,20 @@ function withPluginMenu(sections: NavSection[], profile: Profile): NavSection[] 
     if (placed) continue;
     const docs = result.findIndex((s) => s.labelKey === "nav.documentation");
     const iconImage = item.iconImage ? pluginAssetUrl(item.code, item.iconImage) : undefined;
-    // Com submenus, o item vira uma seção expansível; os filhos usam o
-    // ícone nomeado de cada um, e a imagem do plugin fica só na seção.
+    // With submenus, the item becomes an expandable section; the children use the
+    // named icon of each one, and the plugin's image stays only on the section.
     const entry: NavSection = item.children
       ? {
           labelKey: key,
           icon: pluginIcon(item.icon),
           iconImage,
+          pluginCode: item.code,
           children: item.children.map((child) => ({
             labelKey: pluginLabelKey(child.code, child.id),
             to: child.to,
             icon: pluginIcon(child.icon),
             end: true,
+            pluginCode: child.code,
           })),
         }
       : {
@@ -228,6 +240,7 @@ function withPluginMenu(sections: NavSection[], profile: Profile): NavSection[] 
           icon: pluginIcon(item.icon),
           iconImage,
           to: item.to,
+          pluginCode: item.code,
         };
     result.splice(docs < 0 ? result.length : docs, 0, entry);
   }
@@ -235,16 +248,16 @@ function withPluginMenu(sections: NavSection[], profile: Profile): NavSection[] 
 }
 
 /**
- * O menu como este perfil o vê.
+ * The menu as this profile sees it.
  *
- * Uma seção que navega sozinha some quando a rota dela é fechada; uma seção com
- * filhas some quando **nenhuma** filha sobra, e não quando alguma sai. As telas
- * servidas por plugin (Logs de Requisições, Estatísticas) são deliberadamente
- * descobríveis e permanecem no menu mesmo sem licença; a própria tela mostra o
- * convite de ativação, e "Plugins" lista o catálogo inteiro.
+ * A section that navigates by itself disappears when its route is closed; a section with
+ * children disappears when **none** of the children remains, and not when one goes out. The screens
+ * served by plugins (Request Logs, Statistics) are deliberately
+ * discoverable and stay in the menu even without a license; the screen itself shows the
+ * activation invitation, and "Plugins" lists the whole catalog.
  *
- * A decisão de quem entra onde não está aqui: está em `lib/access.ts`, a mesma
- * tabela que o roteador consulta.
+ * The decision of who goes where is not here: it is in `lib/access.ts`, the same
+ * table the router consults.
  */
 export function navForProfile(profile: Profile, _enterpriseActive = true): NavSection[] {
   const filterLeaf = (leaf: NavLeaf): NavLeaf | null => {

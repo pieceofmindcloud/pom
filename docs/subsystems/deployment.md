@@ -3,7 +3,7 @@
 This subsystem puts into service a set of slices that already exists,
 distributing them across the cluster's machines. It lives in
 `crates/node/src/backend/deploy/` (planning and sequencing) and uses
-`crates/node/src/backend/webui.rs` (applying the slice on a node,
+`crates/node/src/backend/webui/` (applying the slice on a node,
 `apply`/`launch`/`release`), `crates/node/src/models/` (catalog,
 `plan_by_size`/`extract_shard`, `splitter::merge`) and
 `crates/node/src/backend/transfer.rs` (moving the bytes). The whole logic is
@@ -31,6 +31,14 @@ adjacent slices on one machine). `selection` travels in the request because
 `deploy` re-surveys: the choice is validated against the new scan and refused
 if it no longer holds - the screen's copy can be a minute old, and a machine
 that left the cluster cannot receive a slice.
+
+Before copying anything, the deploy releases the machines that already serve
+the same model, proven by identity (`prepare_existing_model`), and waits for
+them to become idle. `keep_existing: true` limits that release to the machines
+of the plan: the others keep their deployment, which stays in service beside
+the new one. A machine of the plan is always taken over, whatever it serves,
+because a node holds one model at a time. The deploy screen asks the operator
+about both cases before sending the request.
 
 The request also accepts `deployment_name` (an operational name separate from
 `group`), `strategy: "simple" | "complete"` and `preferred_node_ids`. An empty
@@ -306,6 +314,35 @@ generation and keeps the handle for a later attempt, avoiding overlapping
 native resources. The immediate range announcement is best-effort with a 1 s
 ceiling, without delaying the local start when DNS or UDP do not answer.
 
+## 1.6 A plugin's inference service
+
+`RuntimeParams.inference_service` names the plugin whose inference service
+runs the model instead of llama.cpp (the Strata plugin publishes `"strata"`).
+The deploy screen offers it as "Inference service" next to llama.cpp when any
+machine publishes a service of kind `inference`; choosing it fixes the kind to
+`whole` - or keeps "Slices" when the service publishes `stages` - lists only
+the whole models whose GGUF `architecture` the service declares, and keeps
+only the machines that run it in the peer strip. Its
+inspector shows the settings the engine reads (context, concurrent requests,
+idle unloading) and the engine's own settings, as the service publishes them
+(`components/EngineSettings.tsx`); those go in `RuntimeParams.engine_settings`.
+The POM settings the service declares in `pom_settings` (in-flight prefill
+chunks, hidden-state precision) are shown in a separate "POM settings" card
+when its slices cross machines. The per-machine GPU layers and KV cache on the
+GPU are llama.cpp's and are not offered.
+
+`POST /api/ui/deploy` (and the preview, when the screen sends the service in
+`params`) refuses such a deployment unless it is a whole model on exactly one
+machine, or layer slices on distinct machines for a service that publishes
+`stages`, where every machine's plugin publishes that `inference` service in a
+state other than `error` or `waiting` (`plugin_engine::deploy_block`, which
+asks each machine for its services). The slices of a split model link through
+the nodes (`inference.md`, section 7.1, "Split across machines"). Everything after that is the whole-model path of section 1.1:
+the same survey, copy, `launch`, `apply`, journal, versions and undeploy. The
+difference is on the target, where the runtime asks the plugin to load the
+model instead of starting llama.cpp (`inference.md`, section 7.1); undeploying
+or removing the machine stops the runtime, which asks the plugin to unload.
+
 ## 2. The survey (`survey`)
 
 `survey` gathers, for each machine in the cluster, `GET /api/ui/models`
@@ -490,7 +527,7 @@ folder, often the folder of another quantization. Three pieces handle that.
   gets the projector, the tail gets the MTP draft. A target that already has a
   file with that name and size uses it; otherwise a holder is chosen, the copy
   joins `transfer_bytes` and the `pulls` of `lifecycle::run` (by path, landing
-  in the target's `recebidos/` folder), and a file nobody has blocks the plan
+  in the target's `received/` folder), and a file nobody has blocks the plan
   naming it. `LaunchTarget`/`ApplyRequest` carry `mmproj_file` and
   `mtp_draft_file`; the target resolves them on its own disk at apply time
   (`catalog::find_local_sidecar`), so a file copied a moment ago is found
@@ -523,14 +560,15 @@ context, batch or sessions (260 ms debounce and one round trip, like the rest
 of the plan).
 
 - **One call per `Step`** (`POST /api/ui/deploy/capacity-preview`, handler in
-  `webui.rs`), only for `!merged` steps with a resolved `target_path` - a step
+  `webui/routes/admin.rs`), only for `!merged` steps with a resolved `target_path` - a step
   that still depends on a copy or a merge has no local file for the math to
   examine, and the preview never materializes anything. Waiting steps show up
   as "projection after the copy". Tensor Parallelism is left out in this
   version, since the real split is `split-mode tensor`.
 - **Analytical estimate.** The route reads `gguf::read_layout` and
   `gguf::read_info`, charges weights and KV with `plan::range_cost` and
-  distributes the result in proportion to each GPU's current free VRAM. Cache
+  distributes the result in proportion to each GPU's current free VRAM
+  (`split_projection`). Cache
   quantization counts: `cache_type_k`/`cache_type_v` come from the
   installation config and KV is only added to VRAM when `offload_kqv` is on.
   Otherwise the cache lives in host RAM and the projection notes the
@@ -599,7 +637,7 @@ add up. `Step.capacity` (`CapacityPreview`) is the step alone.
 | Route | Role |
 |---|---|
 | `POST /api/ui/deploy/plan` | preview (read, called on every edit); enriches the steps with the capacity projection |
-| `POST /api/ui/deploy/capacity-preview` | per-step preview, local to the peer: estimates from GGUF metadata and free VRAM, without calling the native fit, and returns the projected VRAM per GPU (`webui.rs`) |
+| `POST /api/ui/deploy/capacity-preview` | per-step preview, local to the peer: estimates from GGUF metadata and free VRAM, without calling the native fit, and returns the projected VRAM per GPU (`deploy/preview.rs`) |
 | `POST /api/ui/deploy` | executes (rescans, refuses `blocked`/empty, job) |
 | `POST /api/ui/deploy/node/options` | catalog and local options of the machine chosen for an incremental change |
 | `POST /api/ui/deploy/node` | adds a machine to a pipeline already live |
@@ -773,7 +811,7 @@ A coordinator that is not a participant of the existing deployment does not
 find it and mints a new id; the "Deployments" screen, which joins the
 cluster's records, does not have this limit.
 
-## 8. Applying and serving a slice (`webui.rs`)
+## 8. Applying and serving a slice (`webui/`)
 
 `POST /api/ui/apply` (applied by `deploy` to each target) carries an
 `ApplyRequest`: `{ start_layer, end_layer, total_layers, peer_index,
@@ -860,14 +898,14 @@ counting the hits on `/api/ui/unload`). The deploy tests live in
   `n_gpu_layers`/`offload_kqv` travel with the slice and do not become
   cluster-wide; `nvidia_memory_comes_from_vram_and_everything_else_from_ram`.
 - **Versions** (`models/deployment.rs`):
-  `ensure_versions_sintetiza_a_v1_de_um_registro_legado`,
-  `upsert_version_reusa_a_versao_de_params_iguais_e_anexa_quando_diferem`,
-  `set_active_version_troca_os_nos_e_recusa_versao_inexistente`,
-  `matching_shape_casa_por_identidade_e_faixas` +
-  `matching_shape_ignora_registro_sem_identidade`,
-  `versoes_sobrevivem_ao_serde`. In `deploy/tests/deployments.rs`:
-  `redeploy_request_resolve_escolhe_ou_cria_versao` and
-  `redeploy_de_versao_inexistente_e_recusado`.
+  `ensure_versions_synthesizes_the_v1_of_a_legacy_record`,
+  `upsert_version_reuses_the_version_with_equal_params_and_appends_when_they_differ`,
+  `set_active_version_swaps_the_nodes_and_refuses_a_missing_version`,
+  `matching_shape_matches_by_identity_and_ranges` +
+  `matching_shape_ignores_a_record_without_identity`,
+  `versions_survive_serde`. In `deploy/tests/deployments.rs`:
+  `redeploy_request_resolve_picks_or_creates_a_version` and
+  `redeploying_a_missing_version_is_refused`.
 
 ## 11. Defects noted
 
@@ -875,9 +913,9 @@ counting the hits on `/api/ui/unload`). The deploy tests live in
   `deploy::whole_route_tests::the_route_plans_a_whole_model_from_the_machines_own_catalog`
   fails in the full parallel run, but passes alone and with
   `--test-threads=1`. The cause is pairing this route with
-  `webui::a_lista_de_maquinas_para_implantar_tambem_e_pinada` or
-  `webui::cluster_models_fala_com_os_peers_pelo_cliente_pinado`: those tests
-  change the global `peer_client::TLS_ATIVO`; the route does not hold
-  `peer_client::POLITICA_GLOBAL`, so it can build `https://` for the fake HTTP
+  `webui::the_machine_list_for_deploying_is_pinned_too` or
+  `webui::cluster_models_talks_to_the_peers_through_the_pinned_client`: those tests
+  change the global `peer_client::TLS_ENABLED`; the route does not hold
+  `peer_client::GLOBAL_POLICY`, so it can build `https://` for the fake HTTP
   server and read the failure as a catalog without the model. The failure also
   happens on base `0adfa5b`, so it is not a regression of the slicer fixes.

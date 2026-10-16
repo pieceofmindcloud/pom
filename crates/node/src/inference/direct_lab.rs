@@ -1,25 +1,25 @@
-//! Bancada da lei: **o custo por token não pode depender de onde está a
-//! cabeça da pipeline**.
+//! Law bench: **the cost per token cannot depend on where the
+//! pipeline's head is**.
 //!
-//! Sobe hops falsos que falam o protocolo real ([`crate::wire`],
-//! [`crate::relay::send_frame`], o encadeamento `next_hops`) e são dirigidos
-//! pelo código de orquestração real ([`crate::prefill::run`] e
-//! [`crate::prefill::step`]). O repasse e a entrega da resposta direta são as
-//! funções de produção em pessoa
+//! It brings up fake hops that speak the real protocol ([`crate::wire`],
+//! [`crate::relay::send_frame`], the `next_hops` chaining) and are driven
+//! by the real orchestration code ([`crate::prefill::run`] and
+//! [`crate::prefill::step`]). The relay and the delivery of the direct response are the
+//! production functions in person
 //! ([`crate::infer_server::forward_direct`], [`crate::direct::deliver_result`]),
-//! e o gateway falso serve o handler de produção de `/v1/relay-result`. O
-//! único fingimento é o motor: cada hop dorme em vez de decodificar.
+//! and the fake gateway serves the production handler of `/v1/relay-result`. The
+//! only pretence is the engine: each hop sleeps instead of decoding.
 //!
-//! A rede é emulada por *sítio*: cada hop e o gateway moram num sítio, e toda
-//! mensagem entre sítios diferentes custa [`LINK_MS`] de latência **de mão
-//! única** — cobrada na chegada e de novo na volta, porque as duas direções
-//! atravessam o enlace. É isso que faz a bancada medir travessias em vez de
-//! medir a máquina onde ela roda: com o cálculo em zero, o tempo por token é o
-//! número de pernas de rede vezes `LINK_MS`.
+//! The network is emulated by *site*: each hop and the gateway live at a site, and every
+//! message between different sites costs [`LINK_MS`] of **one-way**
+//! latency - charged on arrival and again on return, because both directions
+//! cross the link. That is what makes the bench measure traversals instead of
+//! measuring the machine it runs on: with the computation at zero, the time per token is the
+//! number of network legs times `LINK_MS`.
 //!
-//! Herda da investigação de 2026-08-14 (`labsse.rs`), que provou a assimetria
-//! e refutou a hipótese do SSE por contrafactual. Aqui a bancada deixou de ser
-//! experimento solto e passou a guardar a correção.
+//! It inherits from the investigation of 2026-08-14 (`labsse.rs`), which proved the asymmetry
+//! and refuted the SSE hypothesis by counterfactual. Here the bench stopped being a
+//! loose experiment and came to guard the fix.
 
 #![cfg(test)]
 
@@ -38,39 +38,39 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// Igual ao Qwen3.8-27B do cluster do captain.
+/// Same as the Qwen3.8-27B of the captain's cluster.
 const HIDDEN_DIM: usize = 5120;
-/// Latência de mão única entre dois sítios.
+/// One-way latency between two sites.
 const LINK_MS: u64 = 50;
-/// Tokens de prompt no fake. Maior que `CHUNK` de propósito: um prompt de mais
-/// de um pedaço é o que denuncia o `prompt_progress` mal repassado.
+/// Prompt tokens in the fake. Larger than `CHUNK` on purpose: a prompt of more
+/// than one piece is what exposes a badly relayed `prompt_progress`.
 const PROMPT_TOKENS: u32 = 3;
 const CHUNK: u32 = 2;
-/// Tokens de decode medidos por cenário.
+/// Decode tokens measured per scenario.
 const DECODE_TOKENS: u32 = 6;
 
-// ── O hop falso ───────────────────────────────────────────────────────────────
+// ── The fake hop ──────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
 struct Hop {
-    /// Onde este hop mora.
+    /// Where this hop lives.
     site: usize,
-    /// Onde mora quem o chama. A cadeia é fixa, então isto é conhecido ao
-    /// montar o cenário: quem chama o hop `i` é o hop `i-1`, e o hop 0 é
-    /// chamado pelo gateway.
+    /// Where whoever calls it lives. The chain is fixed, so this is known when
+    /// assembling the scenario: whoever calls hop `i` is hop `i-1`, and hop 0 is
+    /// called by the gateway.
     caller_site: usize,
-    /// Este hop tokenizou o prompt (é a cabeça).
+    /// This hop tokenized the prompt (it is the head).
     is_head: bool,
-    /// Posições recebidas pela cabeça. A bancada recusa a ausência de posição
-    /// absoluta nos chunks seguintes, como `expected_prefill_pos` faz em
-    /// produção, e o teste compara os valores com a progressão publicada.
+    /// Positions received by the head. The bench refuses the absence of an absolute
+    /// position in the following chunks, as `expected_prefill_pos` does in
+    /// production, and the test compares the values with the published progression.
     received_starts: Arc<Mutex<Vec<(u32, Option<u32>, u32)>>>,
     auth: Option<AuthProbe>,
 }
 
-/// Observa a fronteira de autenticação sem tocar na rede real. Cada hop deve
-/// receber somente a `connection_key`; a regressão fazia o primeiro hop usar a
-/// chave da sessão e deixava o hop seguinte sem credencial.
+/// Observes the authentication boundary without touching the real network. Each hop must
+/// receive only the `connection_key`; the regression made the first hop use the
+/// session key and left the next hop without a credential.
 #[derive(Clone)]
 struct AuthProbe {
     accepted_tokens: Vec<String>,
@@ -115,16 +115,16 @@ fn auth_failure(headers: &HeaderMap, probe: Option<&AuthProbe>) -> Option<Respon
 }
 
 impl Hop {
-    /// Chegada de uma mensagem: paga o enlace se ela veio de outro sítio.
+    /// Arrival of a message: pays the link if it came from another site.
     async fn arrive(&self) {
         if self.site != self.caller_site {
             tokio::time::sleep(Duration::from_millis(LINK_MS)).await;
         }
     }
 
-    /// Volta da resposta pelo mesmo enlace. No anel isto está no caminho
-    /// crítico (a resposta é o resultado); no modo direto é só o aceite, e sai
-    /// do caminho sozinho — ninguém o espera.
+    /// Return of the response over the same link. On the ring this is on the critical
+    /// path (the response is the result); in direct mode it is only the accept, and it leaves
+    /// the path on its own - nobody waits for it.
     async fn depart(&self) {
         if self.site != self.caller_site {
             tokio::time::sleep(Duration::from_millis(LINK_MS)).await;
@@ -152,8 +152,8 @@ async fn fake_release() -> impl IntoResponse {
     Json(json!({"ok": true}))
 }
 
-/// O que todo handler precisa saber do quadro que chegou, lido com as mesmas
-/// regras do `infer_server` real.
+/// What every handler needs to know about the frame that arrived, read with the same
+/// rules as the real `infer_server`.
 struct Incoming {
     meta: Value,
     inbound_bytes: usize,
@@ -163,7 +163,7 @@ struct Incoming {
 }
 
 fn read(body: &Bytes) -> Incoming {
-    let (meta, _tensor) = wire::decode(body).expect("quadro válido");
+    let (meta, _tensor) = wire::decode(body).expect("valid frame");
     let declared: Option<Vec<PipelineStep>> = meta
         .get("next_hops")
         .and_then(|v| serde_json::from_value(v.clone()).ok());
@@ -182,8 +182,8 @@ fn read(body: &Bytes) -> Incoming {
     }
 }
 
-/// Espelha `infer_server::relay_and_bubble` — o caminho antigo, que serve de
-/// linha de base contra a qual a correção é medida.
+/// Mirrors `infer_server::relay_and_bubble` - the old path, which serves as the
+/// baseline against which the fix is measured.
 async fn bubble(
     hops: &[PipelineStep],
     path: &str,
@@ -227,10 +227,10 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
     let chunk_size = inc.meta["chunk_size"].as_u64().unwrap_or(CHUNK.into()) as u32;
     let is_final_chunk = inc.meta["is_final_chunk"].as_bool().unwrap_or(false);
 
-    // Só o chunk 0 pode omitir `start_pos`: a sessão é a referência nesse
-    // caso. Todo chunk posterior precisa carregar a posição absoluta que a
-    // cabeça acabou de publicar - derivar pelo índice esconderia exatamente o
-    // defeito que esta bancada deve capturar.
+    // Only chunk 0 may omit `start_pos`: the session is the reference in that
+    // case. Every later chunk needs to carry the absolute position the
+    // head just published - deriving it from the index would hide exactly the
+    // defect this bench is meant to catch.
     let supplied_start = inc
         .meta
         .get("start_pos")
@@ -248,7 +248,7 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
         (None, _) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("chunk {chunk_index} sem start_pos absoluto"),
+                format!("chunk {chunk_index} without an absolute start_pos"),
             )
                 .into_response();
         }
@@ -339,7 +339,7 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
         return crate::infer_server::direct_ack_with_progress(progress);
     }
 
-    // ── Caminho antigo (anel borbulhado ou hub), para comparação ────────────
+    // ── Old path (bubbled ring or hub), for comparison ──────────────────────
     let response = if inc.next_hops.is_empty() {
         if inc.is_last {
             frame(&local, None)
@@ -473,11 +473,11 @@ async fn spawn_auth_hop(hop: Hop) -> String {
     format!("http://{addr}")
 }
 
-// ── O gateway falso ───────────────────────────────────────────────────────────
+// ── The fake gateway ──────────────────────────────────────────────────────────
 
-/// Serve o handler de produção de `/v1/relay-result`, pagando o enlace entre a
-/// cauda e o sítio do gateway — a perna nova, a que substitui a subida pela
-/// pilha aninhada.
+/// Serves the production handler of `/v1/relay-result`, paying the link between the
+/// tail and the gateway's site - the new leg, the one that replaces the climb through the
+/// nested stack.
 #[derive(Clone)]
 struct GatewaySite {
     inbox: crate::direct::ReplyInbox,
@@ -496,7 +496,7 @@ async fn fake_relay_result(
     if let Some(response) = auth_failure(&headers, gw.auth.as_ref()) {
         return response;
     }
-    let (meta, _) = wire::decode(&body).expect("resultado direto válido");
+    let (meta, _) = wire::decode(&body).expect("valid direct result");
     let is_transport_update = meta
         .get("transport_update")
         .and_then(Value::as_bool)
@@ -525,7 +525,7 @@ async fn spawn_gateway(gw: GatewaySite) -> String {
     format!("http://{addr}")
 }
 
-// ── Cenário ───────────────────────────────────────────────────────────────────
+// ── Scenario ──────────────────────────────────────────────────────────────────
 
 fn step_for(node_id: &str, url: &str, start: u32, end: u32, direct: bool) -> PipelineStep {
     // The fake endpoint below implements the single-frame wire contract. Do
@@ -558,8 +558,8 @@ struct Outcome {
     head_starts: Vec<(u32, Option<u32>, u32)>,
 }
 
-/// Roda `n_hops` hops, cada um no seu sítio, com o gateway no sítio do hop
-/// `entry`. `direct` escolhe entre a correção e o anel borbulhado.
+/// Runs `n_hops` hops, each in its own site, with the gateway at the site of hop
+/// `entry`. `direct` chooses between the fix and the bubbled ring.
 async fn run_scenario(n_hops: usize, entry: usize, direct: bool, reuse_prefix: bool) -> Outcome {
     let gateway_site = entry;
     let deliveries = Arc::new(AtomicU64::new(0));
@@ -579,7 +579,7 @@ async fn run_scenario(n_hops: usize, entry: usize, direct: bool, reuse_prefix: b
     let mut steps = Vec::new();
     let mut head_starts = Arc::new(Mutex::new(Vec::new()));
     for i in 0..n_hops {
-        // Quem chama o hop `i` é o hop `i-1`; o hop 0 é chamado pelo gateway.
+        // Whoever calls hop `i` is hop `i-1`; hop 0 is called by the gateway.
         let caller_site = if i == 0 { gateway_site } else { i - 1 };
         let received_starts = Arc::new(Mutex::new(Vec::new()));
         if i == 0 {
@@ -636,7 +636,7 @@ async fn run_scenario(n_hops: usize, entry: usize, direct: bool, reuse_prefix: b
     .expect("prefill");
     assert_eq!(
         first.prompt_tokens, PROMPT_TOKENS,
-        "a contagem do prompt tem que chegar da cabeça ao gateway"
+        "the prompt count must arrive from the head to the gateway"
     );
     assert_eq!(
         first.chunks,
@@ -645,8 +645,7 @@ async fn run_scenario(n_hops: usize, entry: usize, direct: bool, reuse_prefix: b
         } else {
             PROMPT_TOKENS.div_ceil(CHUNK)
         },
-        "o prompt tem que atravessar em todos os pedaços — um `prompt_progress` \
-         perdido trunca no primeiro"
+        "the prompt must cross in all the chunks — a lost `prompt_progress` truncates at the first"
     );
 
     let mut next = first.token_id;
@@ -680,11 +679,11 @@ async fn run_scenario(n_hops: usize, entry: usize, direct: bool, reuse_prefix: b
     }
 }
 
-/// Reproduz a regressão de `f9d5632`: o gateway autentica o primeiro salto com
-/// a chave da sessão, mas o hop intermediário não recebe credencial para falar
-/// com o seguinte. Ao denunciar a falha, a cauda também chega ao callback sem
-/// API key e encontra o segundo 401. O cenário permanece ponta a ponta para
-/// garantir que o quadro chega à cauda e o resultado é entregue ao inbox.
+/// Reproduces the regression of `f9d5632`: the gateway authenticates the first hop with
+/// the session key, but the intermediate hop does not receive a credential to talk
+/// to the next one. When reporting the failure, the tail also reaches the callback without an
+/// API key and hits the second 401. The scenario stays end to end to
+/// guarantee that the frame reaches the tail and the result is delivered to the inbox.
 #[tokio::test(flavor = "multi_thread")]
 async fn direct_pipeline_reproduces_both_missing_credentials() {
     let session_key = format!("sk-session-{}", uuid::Uuid::new_v4().simple());
@@ -736,7 +735,7 @@ async fn direct_pipeline_reproduces_both_missing_credentials() {
     ];
     let session = uuid::Uuid::new_v4().to_string();
     let reply = crate::direct::DirectReply::new(inbox.clone(), vec![gateway_url], "gateway".into())
-        .expect("gateway de teste precisa ser alcançável");
+        .expect("test gateway must be reachable");
     let ticket = reply.ticket_for_hops(steps.len());
     let meta = json!({
         "session_id": session,
@@ -780,7 +779,7 @@ async fn direct_pipeline_reproduces_both_missing_credentials() {
         |_| {},
     )
     .await
-    .expect("o primeiro hop deve aceitar o quadro");
+    .expect("the first hop must accept the frame");
     assert_eq!(sent.meta["accepted"], true);
 
     let observed = tokio::time::timeout(Duration::from_secs(2), async {
@@ -792,20 +791,20 @@ async fn direct_pipeline_reproduces_both_missing_credentials() {
         }
     })
     .await;
-    assert!(observed.is_ok(), "o resultado não chegou ao gateway");
+    assert!(observed.is_ok(), "the result did not reach the gateway");
     assert_eq!(head_missing.load(Ordering::Relaxed), 0);
     assert_eq!(tail_missing.load(Ordering::Relaxed), 0);
 }
 
-/// Pernas de rede pagas por token, lidas do relógio. Com o cálculo em zero, o
-/// tempo por token é o número de travessias vezes `LINK_MS`.
+/// Network legs paid per token, read from the clock. With the computation at zero, the
+/// time per token is the number of traversals times `LINK_MS`.
 fn legs(o: &Outcome) -> f64 {
     o.ms_per_token / LINK_MS as f64
 }
 
-/// O mínimo possível: o gateway tem que alcançar a cabeça e ouvir a cauda, e
-/// entre os hops não há atalho. Uma perna a menos em cada ponta quando o
-/// gateway mora lá.
+/// The minimum possible: the gateway has to reach the head and hear the tail, and
+/// between the hops there is no shortcut. One leg fewer at each end when the
+/// gateway lives there.
 fn minimum_legs(n_hops: usize, entry: usize) -> f64 {
     let inner = (n_hops - 1) as f64;
     let to_head = if entry == 0 { 0.0 } else { 1.0 };
@@ -813,23 +812,23 @@ fn minimum_legs(n_hops: usize, entry: usize) -> f64 {
     inner + to_head + from_tail
 }
 
-// ── A lei ─────────────────────────────────────────────────────────────────────
+// ── The law ───────────────────────────────────────────────────────────────────
 
-/// **O custo por token não depende de onde está o ponto de entrada.**
+/// **The cost per token does not depend on where the entry point is.**
 ///
-/// Esta é a correção inteira, medida. Para cada tamanho de cadeia, com o
-/// gateway na cabeça, no meio e na cauda, o tempo por token tem que ser o
-/// mínimo teórico — uma travessia por enlace da cadeia, mais a ida até a
-/// cabeça e a volta da cauda quando o gateway não mora numa das pontas.
+/// This is the whole fix, measured. For each chain size, with the
+/// gateway at the head, in the middle and at the tail, the time per token has to be the
+/// theoretical minimum - one traversal per link of the chain, plus the trip to the
+/// head and the return from the tail when the gateway does not live at one of the ends.
 ///
-/// A prova de que isso é uma correção, e não o comportamento de sempre, está
-/// na última asserção: no anel borbulhado a mesma cadeia com o gateway na
-/// cauda paga o dobro das travessias, que foi a queda de 25 para 14 tok/s
-/// medida no cluster do captain em 2026-08-14.
+/// The proof that this is a fix, and not the behaviour as it always was, is in
+/// the last assertion: on the bubbled ring the same chain with the gateway at the
+/// tail pays double the traversals, which was the drop from 25 to 14 tok/s
+/// measured on the captain's cluster on 2026-08-14.
 ///
-/// Tolerância de uma perna (50 ms com `LINK_MS` 50) absorve overhead de
-/// chamadas HTTP em loopback com tensores de 5120 posições; ela continua
-/// menor que a perna inteira que separa um resultado certo de um errado.
+/// A one-leg tolerance (50 ms with `LINK_MS` 50) absorbs the overhead of
+/// HTTP calls on loopback with tensors of 5120 positions; it remains
+/// smaller than the whole leg that separates a right result from a wrong one.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_cost_per_token_does_not_depend_on_where_the_entry_point_is() {
     const TOLERANCE: f64 = 1.0;
@@ -841,66 +840,67 @@ async fn the_cost_per_token_does_not_depend_on_where_the_entry_point_is() {
             let expected = minimum_legs(n_hops, entry);
             let got = legs(&outcome);
             println!(
-                "direto  N={n_hops} entrada={entry}  {:6.1} ms/token  = {got:.2} pernas \
-                 (mínimo {expected:.0})",
+                "direct  N={n_hops} entry={entry}  {:6.1} ms/token  = {got:.2} legs (minimum {expected:.0})",
                 outcome.ms_per_token
             );
             assert!(
                 (got - expected).abs() < TOLERANCE,
-                "N={n_hops} entrada={entry}: {got:.2} pernas por token, esperado {expected:.0}"
+                "N={n_hops} entry={entry}: {got:.2} legs per token, expected {expected:.0}"
             );
             assert_eq!(
                 outcome.deliveries,
                 DECODE_TOKENS as u64 - 1 + outcome.prefill_chunks as u64,
-                "cada quadro tem que ser entregue direto exatamente uma vez, \
-                 no decode e no prefill"
+                "each frame must be delivered directly exactly once, in the decode and in the prefill"
             );
             measured.push(got);
         }
 
-        // As duas pontas são o caso do captain, e têm que empatar: com N=2 é
-        // exatamente a ordem A contra a ordem B.
+        // The two ends are the captain's case, and have to tie: with N=2 it is
+        // exactly order A against order B.
         let head = measured[0];
         let tail = measured[n_hops - 1];
         assert!(
             (head - tail).abs() < TOLERANCE,
-            "N={n_hops}: entrar pela cabeça custou {head:.2} pernas e pela cauda {tail:.2}"
+            "N={n_hops}: entering through the head cost {head:.2} legs and through the tail {tail:.2}"
         );
-        // Entrar pelo meio custa uma perna a mais e nunca mais que isso — é o
-        // preço irredutível de não estar em nenhuma das duas pontas.
+        // Entering through the middle costs one extra leg and never more than that - it is the
+        // irreducible price of not being at either of the two ends.
         let worst = measured.iter().cloned().fold(f64::MIN, f64::max);
         assert!(
             worst - head < 1.0 + TOLERANCE,
-            "N={n_hops}: a pior entrada custou {worst:.2} pernas contra {head:.2} na cabeça"
+            "N={n_hops}: the worst entry cost {worst:.2} legs against {head:.2} at the head"
         );
     }
 
-    // A linha de base: o anel borbulhado, com o gateway na cauda, paga o dobro.
+    // The baseline: the bubbled ring, with the gateway at the tail, pays double.
     let ring_tail = run_scenario(2, 1, false, false).await;
     let direct_tail = run_scenario(2, 1, true, false).await;
     println!(
-        "anel    N=2 entrada=1  {:6.1} ms/token  = {:.2} pernas",
+        "ring    N=2 entry=1  {:6.1} ms/token  = {:.2} legs",
         ring_tail.ms_per_token,
         legs(&ring_tail)
     );
     assert!(
         (legs(&ring_tail) - 4.0).abs() < TOLERANCE,
-        "o anel com a cabeça remota deveria pagar 4 travessias, pagou {:.2}",
+        "the ring with the remote head should pay 4 traversals, it paid {:.2}",
         legs(&ring_tail)
     );
     assert!(
         legs(&direct_tail) < legs(&ring_tail) - 1.0,
-        "a resposta direta tem que ser mais barata que o anel no caso que doía"
+        "the direct reply must be cheaper than the ring in the case that hurt"
     );
-    assert_eq!(ring_tail.deliveries, 0, "o anel não usa a entrega direta");
+    assert_eq!(
+        ring_tail.deliveries, 0,
+        "the ring does not use the direct delivery"
+    );
 }
 
-/// O prompt longo precisa carregar a posição absoluta que a cabeça publicou
-/// dentro do ACK direto, tanto numa sessão fria quanto após reaproveitar um
-/// prefixo. Este cenário exercita a mesma cadeia de produção e faz os hops
-/// falsos recusarem qualquer continuação sem `start_pos`.
+/// The long prompt needs to carry the absolute position the head published
+/// inside the direct ACK, both in a cold session and after reusing a
+/// prefix. This scenario exercises the same production chain and makes the fake hops
+/// refuse any continuation without `start_pos`.
 #[tokio::test(flavor = "multi_thread")]
-async fn direct_prefill_preserva_posicao_absoluta_com_e_sem_reuso() {
+async fn direct_prefill_preserves_the_absolute_position_with_and_without_reuse() {
     for reuse_prefix in [false, true] {
         let outcome = run_scenario(2, 1, true, reuse_prefix).await;
         assert_eq!(
@@ -909,7 +909,7 @@ async fn direct_prefill_preserva_posicao_absoluta_com_e_sem_reuso() {
         );
         assert_eq!(
             outcome.prefill_deliveries, outcome.prefill_chunks as u64,
-            "cada chunk de prefill deve chegar ao gateway exatamente uma vez"
+            "each prefill chunk must reach the gateway exactly once"
         );
         let mut starts = outcome.head_starts;
         starts.sort_by_key(|(chunk, _, _)| *chunk);

@@ -1,16 +1,16 @@
 /**
- * Tudo o que uma máquina reporta, no mesmo desenho para todas elas.
+ * Everything a machine reports, in the same layout for all of them.
  *
- * Vive aqui, e não dentro do Painel, porque é mostrado em dois lugares: a aba
- * Detalhes empilha um card por máquina da rede, e o duplo clique num card do
- * Fluxo abre este mesmo card numa janela. Um componente só é o que garante que
- * as duas telas não divirjam depois.
+ * It lives here, and not inside the Dashboard, because it is shown in two places: the
+ * Details tab stacks one card per machine of the network, and the double click on a card of the
+ * Flow opens this same card in a window. A single component is what guarantees
+ * that the two screens do not diverge later.
  *
- * Máquina sem fatia implantada não é um caso degenerado da máquina com fatia:
- * ela não tem faixa de camadas, não tem papel no pipeline e não tem arquivo. O
- * card mostra o que ela de fato reporta - host, estado, memória, disco, carga -
- * e diz que não há fatia, em vez de escrever "0-0" ou uma barra de camadas
- * vazia que se lê como cobertura.
+ * A machine without a deployed slice is not a degenerate case of a machine with a slice:
+ * it has no layer range, no role in the pipeline and no file. The
+ * card shows what it actually reports - host, state, memory, disk, load -
+ * and says there is no slice, instead of writing "0-0" or an empty layer
+ * bar that reads as coverage.
  */
 import clsx from "clsx";
 import { motion } from "framer-motion";
@@ -43,9 +43,9 @@ import { temperatureBand } from "../lib/thermal";
 import { useI18n } from "../i18n/provider";
 
 /**
- * Um bloco que se abre. `<details>` porque a semântica já existe no navegador:
- * abre por clique e por teclado, e o estado é do elemento, não de um `useState`
- * que se perde quando a lista de máquinas se renova sob o card.
+ * A block that opens. `<details>` because the semantics already exist in the browser:
+ * it opens by click and by keyboard, and the state belongs to the element, not to a `useState`
+ * that is lost when the machine list renews under the card.
  */
 function Accordion({
   title,
@@ -76,13 +76,13 @@ function Accordion({
 }
 
 /**
- * O que este nó reporta sobre o modelo carregado: MTP, parâmetros de carga e
- * colocação das camadas.
+ * What this node reports about the loaded model: MTP, load parameters and
+ * layer placement.
  *
- * A saúde chega pronta do card, e não de uma busca própria: o distintivo de
- * MTP subiu para a barra de ferramentas, e duas chamadas para o mesmo
- * `/health` - uma para a barra, outra para esta seção - seriam duas respostas
- * possivelmente diferentes na mesma tela.
+ * The health arrives ready from the card, and not from a fetch of its own: the MTP
+ * badge went up to the toolbar, and two calls to the same
+ * `/health` - one for the bar, another for this section - would be two possibly
+ * different answers on the same screen.
  */
 function PeerPlacement({
   health,
@@ -121,11 +121,11 @@ function PeerPlacement({
 }
 
 /**
- * O contexto total é multiplicado por `max_sessions` antes de chegar ao
- * llama.cpp. Quando o KV medido está na GPU, duas ou mais sessões podem levar
- * o fit ao limite e transformar uma configuração aparentemente inocente numa
- * degradação grande por chamada. O aviso usa somente o estado efetivo do
- * `/health`, não a configuração pedida pelo deploy.
+ * The total context is multiplied by `max_sessions` before reaching
+ * llama.cpp. When the measured KV is on the GPU, two or more sessions may take
+ * the fit to the limit and turn an apparently innocent configuration into a
+ * large per-call degradation. The warning uses only the effective state of
+ * `/health`, not the configuration requested by the deploy.
  */
 function ContextReservationNotice({ health }: { health: PeerRuntimeHealth }) {
   const { t } = useI18n();
@@ -153,17 +153,17 @@ function ContextReservationNotice({ health }: { health: PeerRuntimeHealth }) {
 }
 
 /**
- * Com que parâmetros de llama.cpp o contexto deste nó subiu.
+ * With which llama.cpp parameters this node's context came up.
  *
- * Existe para o operador que quer comparar a máquina com uma linha de comando
- * do `llama-cli` sem abrir o `/health` na mão. Todo valor vem do contexto
- * vivo do nó; nada aqui é derivado da configuração pedida, porque o fallback
- * de KV em RAM sobe um contexto diferente do que foi pedido.
+ * It exists for the operator who wants to compare the machine with a command line
+ * of `llama-cli` without opening `/health` by hand. Every value comes from the node's
+ * live context; nothing here is derived from the requested configuration, because the
+ * KV-in-RAM fallback brings up a different context from the one that was requested.
  */
 function LoadParamsSection({ params }: { params: PeerLoadParams }) {
   const { t } = useI18n();
-  // O Flash Attention é o único campo que pode faltar: é o único que depende
-  // da ponte de diagnóstico. `null` vira "não sei", nunca "desligado".
+  // Flash Attention is the only field that may be missing: it is the only one that depends
+  // on the diagnostic bridge. `null` becomes "unknown", never "off".
   const fa =
     params.flash_attn === null
       ? t("dashboard.paramsUnknown")
@@ -228,10 +228,10 @@ function LoadParamsSection({ params }: { params: PeerLoadParams }) {
 }
 
 /**
- * A faixa que este card pode mostrar, ou `null` quando não existe nenhuma.
+ * The range this card can show, or `null` when there is none.
  *
- * O anúncio do peer é a fonte; a config local entra só quando o peer ainda não
- * anunciou a fatia que a máquina já carregou. Nunca se inventa faixa.
+ * The peer's announcement is the source; the local config only comes in when the peer has not yet
+ * announced the slice that the machine already loaded. A range is never invented.
  */
 export function cardRange(peer: PeerView): [number, number] | null {
   if (hasSlice(peer)) return [peer.start_layer, peer.end_layer];
@@ -241,12 +241,12 @@ export function cardRange(peer: PeerView): [number, number] | null {
 }
 
 /**
- * Um disco, com o mesmo desenho de qualquer outro medidor do card.
+ * A disk, with the same layout as any other gauge on the card.
  *
- * `disks` traz uma entrada por partição montada, e o rótulo é o ponto de
- * montagem porque é ele que distingue duas partições do mesmo disco; o
- * dispositivo entra no `title` para quem precisa saber de que disco físico se
- * trata. Um nó antigo, que ainda não publica a lista, cai no volume único.
+ * `disks` brings one entry per mounted partition, and the label is the mount
+ * point because it is what distinguishes two partitions of the same disk; the
+ * device goes in the `title` for whoever needs to know which physical disk it
+ * is. An old node, which does not publish the list yet, falls back to the single volume.
  */
 function DiskMeter({ disk, label }: { disk: DiskStat; label: string }) {
   const { t } = useI18n();
@@ -265,11 +265,11 @@ function DiskMeter({ disk, label }: { disk: DiskStat; label: string }) {
 }
 
 /**
- * Uma placa, inteira num bloco: nome, VRAM, uso, temperatura e potência.
+ * A card, whole in one block: name, VRAM, usage, temperature and power.
  *
- * A VRAM morava numa grade separada, abaixo de todas as linhas de telemetria,
- * e numa caixa com duas placas era preciso casar "qual barra é de qual linha"
- * pelo nome. Aqui cada placa responde por si.
+ * The VRAM lived in a separate grid, below all the telemetry rows,
+ * and in a box with two cards you had to match "which bar belongs to which row"
+ * by name. Here each card answers for itself.
  */
 function GpuTile({
   gpu,
@@ -353,17 +353,17 @@ export function PeerDetailCard({
 }: {
   peer: PeerView;
   index: number;
-  /** Modelo que o cluster está servindo, que é como o nó agrupa as fatias. */
+  /** Model the cluster is serving, which is how the node groups the slices. */
   group: string;
-  /** Faixas dos outros peers deste modelo, para saber se este é o último. */
+  /** Ranges of the other peers of this model, to know whether this is the last. */
   otherRanges: [number, number][];
   /**
-   * `panel` é o card da aba Detalhes, um entre muitos numa grade. `dialog` é
-   * a mesma máquina sozinha na janela do Fluxo: sem moldura (a janela já é
-   * uma), com cabeçalho maior e seções nomeadas, porque ali há espaço.
+   * `panel` is the card of the Details tab, one among many in a grid. `dialog` is
+   * the same machine alone in the Flow window: no frame (the window already is
+   * one), with a larger header and named sections, because there is room there.
    */
   variant?: "panel" | "dialog";
-  /** Velocidade medida e a nota contra as outras fatias, quando o Fluxo a tem. */
+  /** Measured speed and the note against the other slices, when the Flow has it. */
   perf?: ChatTelemetryPeerPerf;
   speed?: PeerSpeed;
 }) {
@@ -377,23 +377,23 @@ export function PeerDetailCard({
   const cfg = n?.config;
   const serving = isServing(n?.status.state);
   const hasGpu = system != null && system.gpu_kind !== "none";
-  // Só as que reportam VRAM: memória unificada cai no ramo `unified` abaixo,
-  // que mede outra coisa (wired), e uma barra sem valor viraria animação de
-  // "carregando" para sempre.
+  // Only those that report VRAM: unified memory falls into the `unified` branch below,
+  // which measures something else (wired), and a bar without a value would become a
+  // "loading" animation forever.
   const range = cardRange(peer);
   /*
-   * O `/health` é pedido uma vez por card, aqui, e não dentro da seção de
-   * colocação: o distintivo de MTP subiu para a barra de ferramentas e a
-   * seção continua embaixo, e duas buscas para o mesmo lugar poderiam mostrar
-   * duas respostas na mesma tela. `enabled` continua sendo o que impede um
-   * `/health` por card a cada ciclo do Painel.
+   * `/health` is requested once per card, here, and not inside the placement
+   * section: the MTP badge went up to the toolbar and the
+   * section remains below, and two fetches to the same place could show
+   * two answers on the same screen. `enabled` remains what prevents one
+   * `/health` per card on every Dashboard cycle.
    */
   const runtime = usePeerRuntime(peer.node_id, serving);
   const health = serving ? runtime.data?.health : undefined;
   const mtpRequested = cfg?.mtp_enabled ?? false;
   /*
-   * A lista de volumes, com o volume do projeto como recuo. A lista vazia é
-   * um nó que ainda não publica o campo, não uma máquina sem disco.
+   * The list of volumes, with the project's volume as the fallback. The empty list is
+   * a node that does not publish the field yet, not a machine without a disk.
    */
   const disks = system ? (system.disks?.length ? system.disks : [system.disk]) : [];
 
@@ -440,8 +440,8 @@ export function PeerDetailCard({
               {layerRange(range[0], range[1])}
             </span>
           ) : (
-            // A explicação de "sem fatia" saiu da faixa larga que ocupava uma
-            // linha inteira do card e entrou no `[i]` do próprio distintivo.
+            // The explanation of "no slice" left the wide strip that took up a
+            // whole line of the card and went into the `[i]` of the badge itself.
             <span className="flex items-center gap-1">
               <Badge tone="neutral" className="px-1.5 py-0 text-[0.62rem]">
                 {t("dashboard.noSlice")}
@@ -470,10 +470,10 @@ export function PeerDetailCard({
       {peer.rediscovering || peer.unreachable ? (
         <div className="space-y-2 px-3 py-3 text-[0.75rem] text-muted">
           {/*
-            Reencontrando não é o mesmo que ilegível. O endereço morreu, o nó
-            já pediu o atual, e a próxima volta do gossip costuma resolver:
-            dizer só "nada abaixo pode ser lido" mandava o utilizador procurar
-            um defeito que se conserta sozinho.
+            Re-finding is not the same as unreadable. The address died, the node
+            has already asked for the current one, and the next gossip round usually resolves it:
+            saying only "nothing below can be read" sent the user hunting for
+            a defect that fixes itself.
           */}
           {peer.rediscovering
             ? t("dashboard.rediscovering")
@@ -487,12 +487,12 @@ export function PeerDetailCard({
       ) : (
         <>
           {/*
-            A barra de ferramentas da máquina, no topo.
-            Estavam espalhados pelo pé do card, um por seção, e para reiniciar
-            uma máquina era preciso rolar até o fim de tudo o que ela reporta.
-            Aqui são o que se faz *com* esta máquina, e ficam onde ela é
-            nomeada. O distintivo do MTP vem junto porque é estado de operação,
-            não medida: responde "o rascunho está de pé?" e onde ele coube.
+            The machine's toolbar, at the top.
+            They were scattered across the foot of the card, one per section, and to restart
+            a machine you had to scroll to the end of everything it reports.
+            Here they are what you do *with* this machine, and they stay where it is
+            named. The MTP badge comes along because it is operating state,
+            not a measurement: it answers "is the draft up?" and where it fit.
           */}
           <div className={clsx("flex flex-wrap items-center gap-1.5 border-b border-line", dialog ? "py-3" : "bg-raised/40 px-3 py-2")}>
             {mtpRequested && health && (
@@ -522,13 +522,13 @@ export function PeerDetailCard({
               </span>
             )}
             <div className="ml-auto flex flex-wrap items-center justify-end gap-1.5">
-              {/* Só no card da própria máquina: quem libera a memória é o nó
-                  dono dela, nunca um coordenador metendo a mão. */}
+              {/* Only on the machine's own card: whoever frees the memory is the node
+                  that owns it, never a coordinator meddling. */}
               {peer.is_self && cfg && (
                 <ReleaseSlice compact startLayer={cfg.start_layer} endLayer={cfg.end_layer} />
               )}
-              {/* Duas saídas diferentes: "Remover" tira do modelo e deixa a
-                  máquina no cluster; "Sair da rede" tira do cluster inteiro. */}
+              {/* Two different exits: "Remove" takes it out of the model and leaves the
+                  machine in the cluster; "Leave the network" takes it out of the whole cluster. */}
               {serving && group && range && (
                 <RemoveNode
                   nodeId={peer.node_id}
@@ -646,20 +646,20 @@ export function PeerDetailCard({
                       : cfg.end_layer + 1 >= cfg.total_layers
                         ? t("dashboard.tokens")
                         : t("dashboard.middle")
-                  : /* Sem fatia carregada não há papel na pipeline. O antigo
-                       `node.role` (principal/nó) saiu do `/api/ui/node` com o
-                       modelo de confiança e já vinha sempre indefinido aqui. */
+                  : /* Without a loaded slice there is no role in the pipeline. The old
+                       `node.role` (principal/node) left `/api/ui/node` with the
+                       trust model and was already always undefined here. */
                     "—"}
               </Badge>
             </KeyValue>
-            {/* Logo ao lado do papel, e não escondido no cabeçalho: a pergunta
-                que este campo responde é "os nós estão todos na mesma versão?",
-                e ela se responde comparando cards lado a lado. */}
+            {/* Right beside the role, and not hidden in the header: the question
+                this field answers is "are the nodes all on the same version?",
+                and it is answered by comparing cards side by side. */}
             <KeyValue compact label={t("dashboard.build")}>
               {n?.build_commit ? <span className="font-mono">{n.build_commit}</span> : "—"}
             </KeyValue>
-            {/* O arquivo é um caminho longo e raramente é a pergunta: fica no
-                `[i]`, e o card ganha a linha de volta. */}
+            {/* The file is a long path and is rarely the question: it stays in the
+                `[i]`, and the card gets the line back. */}
             <KeyValue compact label={t("dashboard.context")}>
               <span className="flex min-w-0 items-center gap-1">
                 <span className="truncate font-mono">
@@ -677,8 +677,8 @@ export function PeerDetailCard({
                 )}
               </span>
             </KeyValue>
-            {/* Por onde este nó fala com aquele: com vários endereços
-                anunciados, "qual deles ganhou" só se responde aqui. */}
+            {/* Through where this node talks to that one: with several announced
+                addresses, "which of them won" is only answered here. */}
             <KeyValue compact label={t("dashboard.route")}>
               {peer.route ? (
                 <span className="font-mono">
@@ -725,8 +725,8 @@ export function PeerDetailCard({
             </div>
           )}
 
-          {/* O disco do cache existe com ou sem modelo carregado; a RAM só
-              aparece quando o `/health` desta máquina a reporta. */}
+          {/* The cache disk exists with or without a loaded model; the RAM only
+              appears when this machine's `/health` reports it. */}
           <KvCache
             nodeId={peer.node_id}
             hostname={n?.hostname || peer.short_id}
@@ -736,10 +736,10 @@ export function PeerDetailCard({
             className={clsx("border-t border-line", pad, dialog ? "py-4" : "py-2.5")}
           />
 
-          {/* Só faz pergunta quem tem a quem perguntar: sem modelo carregado
-              não há colocação nenhuma a mostrar. */}
-          {/* As seções abaixo trazem o próprio recuo; na janela, sem moldura,
-              elas se alinham com o resto puxando a margem. */}
+          {/* Only whoever has someone to ask asks a question: without a loaded model
+              there is no placement to show. */}
+          {/* The sections below bring their own indent; in the window, without a frame,
+              they align with the rest by pulling the margin. */}
           <div className={clsx(dialog && "-mx-3")}>
           {serving && (
             <PeerPlacement
@@ -774,10 +774,10 @@ export function PeerDetailCard({
 }
 
 /**
- * O mesmo card, numa janela - o que o duplo clique no Fluxo abre.
+ * The same card, in a window - what the double click on the Flow opens.
  *
- * Reaproveita a moldura de `Modal`: fecha por Esc, por clique fora e pelo botão,
- * e rola dentro de si quando a máquina reporta mais do que cabe na tela.
+ * It reuses the frame of `Modal`: it closes by Esc, by click outside and by the button,
+ * and scrolls inside itself when the machine reports more than fits on the screen.
  */
 export function PeerDetailDialog({
   peer,

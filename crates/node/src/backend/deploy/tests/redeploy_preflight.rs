@@ -147,9 +147,48 @@ mod redeploy_preflight_tests {
         let state = state_with("coordinator", vec![serving_peer(port)]).await;
         install_job(&state, "preflight-same").await;
 
-        prepare_existing_model(&state, "qwen", &desired('a'), "preflight-same")
+        prepare_existing_model(&state, "qwen", &desired('a'), None, "preflight-same")
             .await
-            .expect("a implantação igual deve ser liberada");
+            .expect("the equal deployment must be released");
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_machine_outside_the_plan_is_kept_when_asked() {
+        let (port, hits) = peer_with_deployment(
+            Some(DeploymentIdentity::Sha256 {
+                sha256: "a".repeat(64),
+            }),
+            axum::http::StatusCode::OK,
+            "/models/active.gguf",
+        )
+        .await;
+        let state = state_with("coordinator", vec![serving_peer(port)]).await;
+        install_job(&state, "preflight-keep").await;
+
+        let plan_nodes = vec!["peer-b".to_string()];
+        prepare_existing_model(
+            &state,
+            "qwen",
+            &desired('a'),
+            Some(&plan_nodes),
+            "preflight-keep",
+        )
+        .await
+        .expect("a kept deployment does not block the new one");
+        assert_eq!(hits.load(Ordering::SeqCst), 0);
+
+        // The same machine inside the plan is still released.
+        let plan_nodes = vec!["peer-a".to_string()];
+        prepare_existing_model(
+            &state,
+            "qwen",
+            &desired('a'),
+            Some(&plan_nodes),
+            "preflight-keep",
+        )
+        .await
+        .expect("a machine of the plan is released");
         assert_eq!(hits.load(Ordering::SeqCst), 1);
     }
 
@@ -170,11 +209,12 @@ mod redeploy_preflight_tests {
                     .into_iter()
                     .collect(),
             },
+            None,
             "preflight-unknown",
         )
         .await
-        .expect_err("sem prova, não pode desimplantar");
-        assert!(error.contains("não foi possível provar"), "{error}");
+        .expect_err("without proof, it cannot undeploy");
+        assert!(error.contains("could not prove"), "{error}");
         assert_eq!(hits.load(Ordering::SeqCst), 0);
     }
 
@@ -190,10 +230,10 @@ mod redeploy_preflight_tests {
         .await;
         let state = state_with("coordinator", vec![serving_peer(port)]).await;
         install_job(&state, "preflight-failed").await;
-        let error = prepare_existing_model(&state, "qwen", &desired('a'), "preflight-failed")
+        let error = prepare_existing_model(&state, "qwen", &desired('a'), None, "preflight-failed")
             .await
-            .expect_err("falha de unload bloqueia o deploy");
-        assert!(error.contains("desimplantação falhou"), "{error}");
+            .expect_err("an unload failure blocks the deploy");
+        assert!(error.contains("undeploy failed"), "{error}");
         assert_eq!(hits.load(Ordering::SeqCst), 1);
     }
 
@@ -219,16 +259,13 @@ mod redeploy_preflight_tests {
         let error =
             wait_for_peer_idle_with_timeout(&state, &serving_peer(port), Duration::from_millis(10))
                 .await
-                .expect_err("peer ocupado deve estourar o limite");
-        assert!(
-            error.contains("ksia") && error.contains("ocupado"),
-            "{error}"
-        );
+                .expect_err("a busy peer must exceed the limit");
+        assert!(error.contains("ksia") && error.contains("busy"), "{error}");
     }
 
-    /// Um nó (`peer-a`) que não está servindo nada: `/api/ui/node` diz
-    /// `config: null` até `/api/ui/reconfigure` ser chamado, e aí passa a
-    /// dizer `ready`. É o caso que quebrava o `redeploy` antigo.
+    /// A node (`peer-a`) that is serving nothing: `/api/ui/node` says
+    /// `config: null` until `/api/ui/reconfigure` is called, and from then on
+    /// says `ready`. It is the case that broke the old `redeploy`.
     async fn peer_not_serving() -> (u16, Arc<AtomicU32>, Arc<AtomicU32>, Arc<AtomicU32>) {
         let seq = Arc::new(AtomicU32::new(0));
         let reconfigured_at = Arc::new(AtomicU32::new(0));
@@ -331,7 +368,7 @@ mod redeploy_preflight_tests {
         let state = state_with("coordinator", vec![serving_peer(port)]).await;
         install_job(&state, "redeploy-down").await;
 
-        let falhas = run_redeploy(
+        let failures = run_redeploy(
             state,
             whole_record(),
             RedeployRequest {
@@ -342,16 +379,21 @@ mod redeploy_preflight_tests {
             "redeploy-down",
         )
         .await
-        .expect("o redeploy não deve falhar de vez");
+        .expect("the redeploy must not fail outright");
 
-        assert_eq!(falhas, 0, "a máquina que não servia deve ser subida, não contada como falha");
-        assert!(reconfigured_at.load(Ordering::SeqCst) > 0, "/api/ui/reconfigure deve ser chamado");
+        assert_eq!(
+            failures, 0,
+            "the machine that was not serving must be started, not counted as a failure"
+        );
+        assert!(
+            reconfigured_at.load(Ordering::SeqCst) > 0,
+            "/api/ui/reconfigure must be called"
+        );
         assert!(
             unloaded_at.load(Ordering::SeqCst) < reconfigured_at.load(Ordering::SeqCst),
-            "o unload vem antes da subida (unload={}, reconfigure={})",
+            "the unload comes before the start (unload={}, reconfigure={})",
             unloaded_at.load(Ordering::SeqCst),
             reconfigured_at.load(Ordering::SeqCst),
         );
     }
 }
-

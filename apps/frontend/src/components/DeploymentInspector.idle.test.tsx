@@ -40,11 +40,11 @@ function mount(
   value = params,
   onChange = vi.fn(),
   vision?: VisionControl,
-  pomDesenv = true,
+  pomDevMode = true,
 ) {
     render(
       <LocaleProvider initialLocale="en">
-      <DeploymentInspector value={value} onChange={onChange} vision={vision} pomDesenv={pomDesenv} />
+      <DeploymentInspector value={value} onChange={onChange} vision={vision} pomDevMode={pomDevMode} />
     </LocaleProvider>,
   );
   return onChange;
@@ -143,7 +143,7 @@ describe("DeploymentInspector idle policy", () => {
 });
 
 describe("DeploymentInspector default settings", () => {
-  it("shows the full sampler, the seed and where MTP runs without POM_DESENV", () => {
+  it("shows the full sampler, the seed and where MTP runs without POM_DEV_MODE", () => {
     mount({ ...params, mtp_enabled: true, dry_multiplier: 0.8 }, vi.fn(), undefined, false);
 
     const labels = [
@@ -174,7 +174,7 @@ describe("DeploymentInspector DRY", () => {
 });
 
 describe("DeploymentInspector Beta group", () => {
-  it("offers the experts in RAM, the GPU expert cache and the automatic prefill chunk under POM settings, without POM_DESENV", () => {
+  it("offers the experts in RAM, the GPU expert cache and the automatic prefill chunk under POM settings, without POM_DEV_MODE", () => {
     const onChange = mount({ ...params }, vi.fn(), undefined, false);
     const beta = screen.getByText("Beta").closest("div")!.parentElement!;
     fireEvent.click(screen.getByRole("checkbox", { name: "MoE experts in RAM" }));

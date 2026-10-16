@@ -1,14 +1,14 @@
 /**
- * O que os plugins de uma máquina servem para a rede, desenhado junto dela.
+ * What a machine's plugins serve to the network, drawn alongside it.
  *
- * Um plugin é local ao nó, mas o que ele roda pode ser de todos: o Qdrant de
- * uma máquina é o banco de RAG da pipeline inteira. O nó publica esses
- * serviços em `node.plugin_services`, e aqui eles viram selos - um por
- * serviço, com a cor do estado.
+ * A plugin is local to the node, but what it runs may belong to everyone: one
+ * machine's Qdrant is the RAG database of the whole pipeline. The node publishes these
+ * services in `node.plugin_services`, and here they become badges - one per
+ * service, with the color of the state.
  *
- * Dois lugares usam o mesmo selo: o card de detalhes da máquina (`inline`) e o
- * Fluxo, onde `PluginServiceTether` os pendura sob o card da máquina com um
- * traço de ligação, para a tela dizer **onde** o serviço roda.
+ * Two places use the same badge: the machine's details card (`inline`) and the
+ * Flow, where `PluginServiceTether` hangs them under the machine's card with a
+ * connecting line, so the screen says **where** the service runs.
  */
 import clsx from "clsx";
 import { Database, Puzzle } from "lucide-react";
@@ -32,7 +32,7 @@ const LINE: Record<PluginService["status"], string> = {
   error: "bg-rose",
 };
 
-/** Distância entre a borda de baixo do card e os selos, no Fluxo. */
+/** Distance between the bottom edge of the card and the badges, in the Flow. */
 export const SERVICE_TETHER_GAP = 8;
 
 export function PluginServiceBadge({ service }: { service: PluginService }) {
@@ -44,7 +44,7 @@ export function PluginServiceBadge({ service }: { service: PluginService }) {
     waiting: t("dashboard.serviceStatusWaiting"),
     error: t("dashboard.serviceStatusError"),
   }[service.status];
-  // Um tipo que esta versão da tela não conhece aparece como o plugin o chamou.
+  // A type that this version of the screen does not know shows up as the plugin called it.
   const kind = service.kind === "rag" ? t("dashboard.serviceKindRag") : service.kind;
   const Icon = service.kind === "rag" ? Database : Puzzle;
   const title = [`${service.name} · ${kind}`, status, service.version, service.detail]
@@ -70,9 +70,9 @@ export function PluginServiceBadge({ service }: { service: PluginService }) {
 }
 
 /**
- * Os selos de uma máquina no Fluxo: pendurados sob o card dela, ligados por um
- * traço. Seguem o card - a posição vem dele, então arrastar a máquina leva os
- * serviços junto.
+ * A machine's badges in the Flow: hanging under its card, linked by a
+ * line. They follow the card - the position comes from it, so dragging the machine takes the
+ * services along.
  */
 export function PluginServiceTether({
   services,
@@ -81,9 +81,9 @@ export function PluginServiceTether({
 }: {
   services: PluginService[];
   /**
-   * Onde o card está e o tamanho dele. Sem eles, o selo é filho do próprio
-   * card e fica logo abaixo da borda dele: o card expandido cresce com o
-   * conteúdo, e só ele sabe a altura que tem.
+   * Where the card is and its size. Without them, the badge is a child of the card
+   * itself and sits right below its edge: the expanded card grows with the
+   * content, and only it knows the height it has.
    */
   position?: CanvasPosition;
   size?: CardSize;

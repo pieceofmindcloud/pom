@@ -1,17 +1,17 @@
-//! Quem decide se o cluster fala TLS, e por qual caminho essa decisão viaja.
+//! Who decides whether the cluster speaks TLS, and which path that decision travels.
 //!
-//! A decisão é do nó principal. O caminho **não** é o gossip: o UDP de
-//! descoberta é em claro e não autenticado, então um anúncio forjado por
-//! qualquer um na rede rebaixaria o cluster inteiro para texto claro - o exato
-//! ataque que o TLS existe para impedir.
+//! The decision belongs to the principal node. The path is **not** the gossip: the
+//! discovery UDP is cleartext and unauthenticated, so an announce forged by
+//! anyone on the network would downgrade the whole cluster to cleartext - the exact
+//! attack TLS exists to prevent.
 //!
-//! Então o campo `tls` do Announce é **gatilho, nunca valor**: discordar dele
-//! só dispara uma busca autenticada no principal, e só a resposta dessa busca é
-//! gravada no `pom.json`. Um intruso pode disparar a busca à vontade; não pode
-//! responder por ela, porque não tem a chave de conexão.
+//! So the `tls` field of the Announce is **a trigger, never a value**: disagreeing
+//! with it only fires an authenticated fetch on the principal, and only the answer to
+//! that fetch is written to `pom.json`. An intruder can fire the fetch at will; it
+//! cannot answer for it, because it does not hold the connection key.
 //!
-//! E a busca que falha **preserva o valor local**: um principal fora do ar ou
-//! uma rede partida nunca rebaixam o cluster. Fail-closed.
+//! And a fetch that fails **preserves the local value**: a principal that is down or
+//! a partitioned network never downgrades the cluster. Fail-closed.
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -19,23 +19,23 @@ use tracing::{info, warn};
 
 use crate::peer_client::PeerClients;
 
-/// Caminho que o principal serve e a catraca consulta.
+/// Path the principal serves and the ratchet queries.
 pub const TLS_POLICY_PATH: &str = "/api/cluster/tls";
 
 #[derive(Debug, PartialEq)]
 pub enum PolicyOutcome {
-    /// Nada a fazer.
+    /// Nothing to do.
     Unchanged,
-    /// Buscar a verdade no principal.
+    /// Fetch the truth from the principal.
     Fetch { principal: String },
-    /// Valor confirmado por busca autenticada, pronto para gravar.
+    /// Value confirmed by an authenticated fetch, ready to be written.
     Adopt(bool),
 }
 
-/// O que fazer ao ver um Announce.
+/// What to do on seeing an Announce.
 ///
-/// `local` é o que este nó tem gravado; `announced`, o que o anúncio diz;
-/// `from_principal`, se quem anunciou se apresenta como principal.
+/// `local` is what this node has stored; `announced`, what the announce says;
+/// `from_principal`, whether the announcer presents itself as the principal.
 pub fn on_announce(
     local: bool,
     announced: bool,
@@ -55,10 +55,10 @@ struct TlsReply {
     tls_required: bool,
 }
 
-/// Pergunta ao principal, por canal autenticado, se o cluster fala TLS.
+/// Asks the principal, over an authenticated channel, whether the cluster speaks TLS.
 ///
-/// Erro aqui é `Err`, e o chamador **mantém o valor local** - ver o parágrafo
-/// sobre fail-closed no topo do módulo.
+/// An error here is `Err`, and the caller **keeps the local value** - see the paragraph
+/// on fail-closed at the top of the module.
 pub(crate) async fn fetch_from_principal_candidates(
     clients: &PeerClients,
     principal_id: &str,
@@ -87,33 +87,33 @@ pub(crate) async fn fetch_from_principal_candidates(
             tunnel,
         )
         .await
-        .context("não deu para falar com o principal")?;
-    let body: TlsReply = resp.json().context("resposta do principal não parseou")?;
+        .context("could not reach the principal")?;
+    let body: TlsReply = resp.json().context("principal response did not parse")?;
     info!(
-        "política de TLS confirmada pelo principal: {}",
+        "TLS policy confirmed by the principal: {}",
         body.tls_required
     );
     Ok(body.tls_required)
 }
 
-/// Aplica o resultado da busca, preservando o local quando ela falha.
+/// Applies the result of the fetch, preserving the local value when it fails.
 pub fn adopt_or_keep(local: bool, fetched: Result<bool>) -> PolicyOutcome {
     match fetched {
         Ok(v) if v != local => PolicyOutcome::Adopt(v),
         Ok(_) => PolicyOutcome::Unchanged,
         Err(e) => {
-            warn!("busca da política de TLS falhou, mantendo o valor local ({local}): {e}");
+            warn!("TLS policy fetch failed, keeping the local value ({local}): {e}");
             PolicyOutcome::Unchanged
         }
     }
 }
 
-/// Sobe a task que atende a catraca.
+/// Spawns the task that serves the ratchet.
 ///
-/// Recebe `(node_id do principal, tls que ele anunciou)`, busca a política nele
-/// por canal autenticado, e só então grava. O booleano anunciado é usado
-/// **apenas** para saber por qual esquema discar a sonda - ver a nota no
-/// `handle_message` do `network.rs`.
+/// Receives `(principal's node_id, the tls it announced)`, fetches the policy from it
+/// over an authenticated channel, and only then writes it. The announced boolean is
+/// used **only** to know which scheme to dial the probe with - see the note in
+/// `handle_message` of `network.rs`.
 pub(crate) fn spawn_ratchet(
     net: std::sync::Arc<crate::network::Network>,
     clients: std::sync::Arc<PeerClients>,
@@ -126,7 +126,7 @@ pub(crate) fn spawn_ratchet(
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, bool)>();
     net.set_tls_probe(tx);
     tokio::spawn(async move {
-        while let Some((principal, anunciado)) = rx.recv().await {
+        while let Some((principal, announced)) = rx.recv().await {
             let Some(peer) = net
                 .alive_peers()
                 .await
@@ -136,29 +136,29 @@ pub(crate) fn spawn_ratchet(
                 continue;
             };
             let candidates =
-                net.order_gateway_bases(&peer.node_id, peer.gateway_candidates_with_tls(anunciado));
+                net.order_gateway_bases(&peer.node_id, peer.gateway_candidates_with_tls(announced));
             if candidates.is_empty() {
-                warn!("principal {principal} não anuncia porta de gateway; política de TLS não pôde ser confirmada");
+                warn!("principal {principal} does not announce a gateway port; TLS policy could not be confirmed");
                 continue;
             }
 
-            let (local, chave) = {
+            let (local, key) = {
                 let cfg = auth.read().await;
                 (
                     cfg.tls_required,
                     crate::auth::internal_node_token(&cfg).unwrap_or_default(),
                 )
             };
-            // A sonda precisa falar o esquema que a URL diz, e o cache local
-            // ainda está na política antiga. Um cliente próprio evita empurrar
-            // a política nova para o cache antes de ela ser confirmada.
-            let sonda = PeerClients::new(std::time::Duration::from_secs(10));
-            sonda.set_tls(anunciado);
-            let buscado = fetch_from_principal_candidates(
-                &sonda,
+            // The probe has to speak the scheme the URL says, and the local cache
+            // is still on the old policy. A client of its own avoids pushing
+            // the new policy into the cache before it is confirmed.
+            let probe = PeerClients::new(std::time::Duration::from_secs(10));
+            probe.set_tls(announced);
+            let searched = fetch_from_principal_candidates(
+                &probe,
                 &principal,
                 &candidates,
-                &chave,
+                &key,
                 &signing_key,
                 &authority_principal,
                 &trust,
@@ -166,22 +166,22 @@ pub(crate) fn spawn_ratchet(
             )
             .await;
 
-            if let PolicyOutcome::Adopt(valor) = adopt_or_keep(local, buscado) {
+            if let PolicyOutcome::Adopt(value) = adopt_or_keep(local, searched) {
                 {
                     let mut cfg = auth.write().await;
-                    cfg.tls_required = valor;
+                    cfg.tls_required = value;
                     if let Err(e) = cfg.save() {
-                        warn!("política de TLS confirmada mas não gravada: {e}");
+                        warn!("TLS policy confirmed but not written: {e}");
                     }
                 }
-                clients.apply_cluster_policy(valor);
-                net.set_tls(valor);
+                clients.apply_cluster_policy(value);
+                net.set_tls(value);
                 if let Some(t) = &tls_server {
-                    t.set_strict(valor);
+                    t.set_strict(value);
                 }
                 info!(
-                    "política de TLS do cluster adotada do principal: {}",
-                    if valor { "ligada" } else { "desligada" }
+                    "cluster TLS policy adopted from the principal: {}",
+                    if value { "on" } else { "off" }
                 );
             }
         }
@@ -194,10 +194,10 @@ mod tests {
 
     const PRINCIPAL: &str = "aaaa0000";
 
-    /// Anúncio que concorda com o que já sabemos não faz nada. É o caso comum:
-    /// um Announce a cada 5 segundos, por peer.
+    /// An announce that agrees with what we already know does nothing. It is the common
+    /// case: one Announce every 5 seconds, per peer.
     #[test]
-    fn anuncio_que_concorda_nao_faz_nada() {
+    fn an_agreeing_announce_does_nothing() {
         assert_eq!(
             on_announce(true, true, true, PRINCIPAL),
             PolicyOutcome::Unchanged
@@ -208,10 +208,10 @@ mod tests {
         );
     }
 
-    /// Discordar **não** muda nada sozinho: só dispara a busca. O gossip é
-    /// gatilho, nunca valor.
+    /// Disagreeing does **not** change anything by itself: it only fires the fetch. The
+    /// gossip is a trigger, never a value.
     #[test]
-    fn discordancia_do_principal_dispara_busca() {
+    fn a_principal_disagreement_triggers_a_fetch() {
         assert_eq!(
             on_announce(false, true, true, PRINCIPAL),
             PolicyOutcome::Fetch {
@@ -220,12 +220,12 @@ mod tests {
         );
     }
 
-    /// Este é o teste que sustenta a feature inteira: um nó qualquer da rede
-    /// anunciando "sem TLS" é ignorado. O UDP é em claro e não autenticado, e
-    /// obedecer a ele seria oferecer o rebaixamento que o TLS existe para
-    /// impedir.
+    /// This is the test that holds up the whole feature: any node on the network
+    /// announcing "no TLS" is ignored. The UDP is cleartext and unauthenticated, and
+    /// obeying it would be offering the downgrade that TLS exists to
+    /// prevent.
     #[test]
-    fn anuncio_de_nao_principal_e_ignorado_mesmo_discordando() {
+    fn a_non_principal_announce_is_ignored_even_when_disagreeing() {
         assert_eq!(
             on_announce(true, false, false, PRINCIPAL),
             PolicyOutcome::Unchanged
@@ -236,21 +236,21 @@ mod tests {
         );
     }
 
-    /// Principal fora do ar não rebaixa ninguém.
+    /// A principal that is down downgrades nobody.
     #[test]
-    fn busca_que_falha_preserva_o_valor_local() {
+    fn a_failing_fetch_preserves_the_local_value() {
         assert_eq!(
-            adopt_or_keep(true, Err(anyhow::anyhow!("conexão recusada"))),
+            adopt_or_keep(true, Err(anyhow::anyhow!("connection refused"))),
             PolicyOutcome::Unchanged
         );
         assert_eq!(
-            adopt_or_keep(false, Err(anyhow::anyhow!("conexão recusada"))),
+            adopt_or_keep(false, Err(anyhow::anyhow!("connection refused"))),
             PolicyOutcome::Unchanged
         );
     }
 
     #[test]
-    fn busca_bem_sucedida_adota_o_valor_do_principal() {
+    fn a_successful_fetch_adopts_the_principal_value() {
         assert_eq!(adopt_or_keep(false, Ok(true)), PolicyOutcome::Adopt(true));
         assert_eq!(adopt_or_keep(true, Ok(false)), PolicyOutcome::Adopt(false));
         assert_eq!(adopt_or_keep(true, Ok(true)), PolicyOutcome::Unchanged);

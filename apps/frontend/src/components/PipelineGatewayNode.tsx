@@ -10,46 +10,46 @@ import {
   type CanvasPosition,
 } from "../lib/networkLayout";
 
-/** Custo de um ciclo lógico: entrada no primeiro peer, avanço entre peers e retorno. */
+/** Cost of a logical cycle: entry at the first peer, advance between peers and return. */
 export type PipelineCycleCost = {
-  /** Todas as pernas Gateway -> cabeça, avanço e cauda -> Gateway. */
+  /** All the legs Gateway -> head, advance and tail -> Gateway. */
   legsMs: Array<number | null>;
-  /** Compute dos peers que participaram do ciclo. */
+  /** Compute of the peers that took part in the cycle. */
   computeMs: number | null;
 };
 
 export type PipelineRouteCost = {
-  /** Nós do head à cauda, com o gateway virtual no fim da rota. */
+  /** Nodes from head to tail, with the virtual gateway at the end of the route. */
   nodeIds: string[];
-  /** Gateway -> head, handoffs e retorno da cauda, nessa ordem. */
+  /** Gateway -> head, handoffs and return from the tail, in that order. */
   legsMs: Array<number | null>;
-  /** Compute só existe quando a rota foi observada numa execução. */
+  /** Compute only exists when the route was observed in an execution. */
   computeMs: number | null;
-  /** Soma do RTT calculada pelo backend, quando todas as pernas existem. */
+  /** Sum of the RTT computed by the backend, when all the legs exist. */
   rttMs?: number | null;
   /**
-   * Rede paga por token no modo de volta escolhido pelo planejador. Não é a
-   * soma das pernas: na resposta direta cada perna custa meio RTT, e no anel a
-   * volta da cauda não é paga.
+   * Network paid per token in the return mode chosen by the planner. It is not the
+   * sum of the legs: in the direct reply each leg costs half an RTT, and in the ring the
+   * return from the tail is not paid.
    */
   networkMs?: number | null;
-  /** Um token pela rota, calculado pelo backend: rede no modo escolhido mais compute. */
+  /** One token through the route, from the backend: network in the chosen mode plus compute. */
   totalMs?: number | null;
   returnMode?: "direct" | "ring" | null;
-  /** Alguma perna da rota passa por um circuito num relé libp2p. */
+  /** Some leg of the route goes through a circuit on a libp2p relay. */
   relayed?: boolean;
-  /** Quais pernas, como `[de, para]`. */
+  /** Which legs, as `[from, to]`. */
   relayedLegs?: Array<[string, string]>;
-  /** A volta direta passaria por relé e o anel a contorna. */
+  /** The direct return would go through a relay and the ring avoids it. */
   relayBypassedByRing?: boolean;
 };
 
-/** Os primeiros caracteres do `node_id`, como no resto do mapa. */
+/** The first characters of the `node_id`, as in the rest of the map. */
 function shortId(nodeId: string) {
   return nodeId.slice(0, 8);
 }
 
-/** Soma somente uma decomposição completa, sem transformar ausência em zero. */
+/** Sums only a complete decomposition, without turning absence into zero. */
 export function pipelineCycleTotalMs(cost: PipelineCycleCost | undefined): number | null {
   const computeMs = cost?.computeMs;
   if (!cost || typeof computeMs !== "number" || !Number.isFinite(computeMs) || computeMs < 0) {
@@ -67,9 +67,9 @@ function validMs(value: number | null | undefined): value is number {
 }
 
 /**
- * Tempo de um token pela rota. Vem do backend, que usa a conta do planejador;
- * somar as pernas aqui contaria ida e volta inteiras de cada aresta. Sem
- * compute medido, a rede sozinha ainda ordena as rotas.
+ * Time of one token through the route. It comes from the backend, which uses the planner's
+ * calculation; summing the legs here would count whole round trips of each edge.
+ * Without measured compute, the network alone still orders the routes.
  */
 export function pipelineRouteTotalMs(route: PipelineRouteCost): number | null {
   if (validMs(route.totalMs)) return route.totalMs;
@@ -78,9 +78,9 @@ export function pipelineRouteTotalMs(route: PipelineRouteCost): number | null {
 }
 
 /**
- * Uma linha compacta dizendo que a rota passa por relé (ou que o anel o
- * contorna); o ícone abre o card com quais pernas, se o POM contorna e como
- * melhorar.
+ * A compact line saying that the route goes through a relay (or that the ring avoids
+ * it); the icon opens the card with which legs, whether the POM avoids it and how to
+ * improve it.
  */
 function RelayNotice({ route }: { route: PipelineRouteCost }) {
   const { t } = useI18n();
@@ -158,7 +158,7 @@ function RelayNotice({ route }: { route: PipelineRouteCost }) {
   );
 }
 
-/** Rotas da mais barata para a mais cara; sem medida, vão para o fim em ordem estável. */
+/** Routes cheapest to most expensive; unmeasured ones go last, in a stable order. */
 export function orderPipelineRoutes(routes: PipelineRouteCost[]) {
   return routes
     .map((route) => ({ route, totalMs: pipelineRouteTotalMs(route) }))
@@ -175,13 +175,13 @@ export function orderPipelineRoutes(routes: PipelineRouteCost[]) {
     });
 }
 
-/** O nome que o resto do mapa usa; o gateway virtual é chamado pelo que é. */
+/** The name the rest of the map uses; the virtual gateway is called what it is. */
 type NameOf = (nodeId: string) => string;
 
 /**
- * Uma rota inteira, perna por perna: de onde o token sai, por onde passa e
- * quanto cada trecho custou. A primeira perna é a entrada (gateway -> cabeça),
- * a última é a volta da cauda.
+ * A whole route, leg by leg: where the token leaves from, where it passes and
+ * how much each stretch cost. The first leg is the entry (gateway -> head),
+ * the last is the return from the tail.
  */
 function RouteDetail({ route, totalMs, best, nameOf }: { route: PipelineRouteCost; totalMs: number | null; best: boolean; nameOf: NameOf }) {
   const { t } = useI18n();
@@ -255,15 +255,15 @@ function Stat({ label, value, tone = "text-fg" }: { label: string; value: string
 }
 
 /**
- * O gateway no mapa: o fim de cada ciclo de token e o resumo do que ele custa.
+ * The gateway on the map: the end of each token cycle and the summary of what it costs.
  *
- * O card fica pequeno de propósito - o número que importa (tempo por token) e
- * o aviso de relé. A lista de rotas, que numa rede com réplicas cresce com o
- * produto das colunas, foi para a janela que o botão do card (ou o duplo
- * clique) abre: dentro do card ela empurrava a altura e soltava as arestas.
+ * The card stays small on purpose - the number that matters (time per token) and
+ * the relay warning. The route list, which in a network with replicas grows with the
+ * product of the columns, went to the window that the card's button (or the double
+ * click) opens: inside the card it pushed the height and loosened the edges.
  *
- * Arrastar é opcional: quem passa os handlers (o Fluxo do Painel) move o
- * gateway como uma máquina; o mapa da implantação continua com ele fixo.
+ * Dragging is optional: whoever passes the handlers (the Dashboard's Flow) moves the
+ * gateway like a machine; the deployment map keeps it fixed.
  */
 export function PipelineGatewayNode({
   position,
@@ -299,7 +299,7 @@ export function PipelineGatewayNode({
   const computeMs = cost?.computeMs != null && Number.isFinite(cost.computeMs) && cost.computeMs >= 0
     ? cost.computeMs
     : null;
-  // Com o compute medido, o total é o tempo de um token pela rota.
+  // With measured compute, the total is the time of one token through the route.
   const throughput = displayedTotalMs != null && displayedTotalMs > 0 && (orderedRoutes.length === 0 ? computeMs != null : validMs(bestRoute?.totalMs))
     ? 1000 / displayedTotalMs
     : null;
@@ -417,7 +417,7 @@ export function PipelineGatewayNode({
               </ol>
             )}
           </section>
-          {/* O texto fala da rota mais rápida; uma réplica por relé fora de uso não o justifica. */}
+          {/* The text is about the fastest route; an unused relay replica does not justify it. */}
           {bestRoute && (bestRoute.relayed || bestRoute.relayBypassedByRing) && (
             <p className="rounded-lg border border-relay/40 bg-relay/5 p-3 text-xs text-muted">{t("canvas.relayRouteHint")}</p>
           )}

@@ -171,6 +171,20 @@ export function About() {
         </Panel>
 
         <Panel>
+          <PanelHeader title={t("about.dataTitle")} subtitle={t("about.dataSubtitle")} />
+          <ul className="space-y-2 px-5 py-4 text-sm text-muted" data-testid="about-data">
+            <li>
+              <a className="text-iris hover:underline" href="https://github.com/dr5hn/countries-states-cities-database" target="_blank" rel="noreferrer">Countries States Cities Database</a>
+              {" - "}{t("about.dataCities")}
+            </li>
+            <li>
+              <a className="text-iris hover:underline" href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a>
+              {" - "}{t("about.dataMap")}
+            </li>
+          </ul>
+        </Panel>
+
+        <Panel>
           <PanelHeader
             title={t("about.dependenciesTitle")}
             subtitle={t("about.dependenciesSubtitle")}

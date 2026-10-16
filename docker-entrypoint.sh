@@ -13,9 +13,9 @@ if [ ! -x "$plugin_host" ]; then
     exit 127
 fi
 
-# O host precisa do artefato Enterprise baixado depois da ativação. Por isso o
-# pom o inicia como filho, passando o caminho do plugin e conectando stdin/stdout
-# aos frames IPC. Um host vazio iniciado no boot não teria plugin para carregar
-# e não seria o processo usado pelo pom.
+# The host needs the Enterprise artifact downloaded after activation. That is why
+# pom starts it as a child, passing the plugin path and connecting stdin/stdout
+# to the IPC frames. A host started empty at boot would have no plugin to load
+# and would not be the process pom uses.
 export POM_PLUGIN_HOST="$plugin_host"
 exec "$pom_bin" "$@"

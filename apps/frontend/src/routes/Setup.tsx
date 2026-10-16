@@ -1,13 +1,13 @@
 /**
- * Primeiro acesso real.
+ * Real first access.
  *
- * Pergunta só o que não dá para decidir depois (ver `setupWizardFlow.ts`):
- * o papel da máquina e o nome dela; para quem cria a rede, o nome da rede e se
- * ela é privada ou pública (a cidade só quando é pública, para o pkarr); para
- * quem entra, a raiz e a chave - de preferência trazidas pela descoberta local.
- * Recursos, pastas, disco, senha e exposição têm padrões e são ajustados depois,
- * dentro do POM. A casca usa a identidade da página inicial do site, a mesma do
- * portão de acesso (`.pom-login*` em `index.css`).
+ * It asks only what cannot be decided later (see `setupWizardFlow.ts`):
+ * the machine's role and its name; for whoever creates the network, the network
+ * name and whether it is private or public (the city only when it is public, for
+ * pkarr); for whoever joins, the root and the key - preferably brought by local
+ * discovery. Resources, folders, disk, password and exposure have defaults and
+ * are adjusted later, inside POM. The shell uses the identity of the site's home
+ * page, the same as the access gate (`.pom-login*` in `index.css`).
  */
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from "react";
 import { AnimatePresence, motion } from "framer-motion";
@@ -20,14 +20,17 @@ import { usePublicStats } from "../lib/publicStats";
 import type { EnrollmentRole } from "../lib/types";
 import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
-import { Field, Input, Select } from "../components/ui";
+import { Field, Input } from "../components/ui";
 import { BrandLanguageSwitch } from "../components/BrandLanguageSwitch";
 import { LobbyChat } from "../components/LobbyChat";
+import { LocationEditor } from "../components/LocationEditor";
+import { copyText } from "../lib/clipboard";
+import { SETUP_GEO, type LocationPrecision } from "../lib/geo";
 import { fingerprintFromTrustDocument, groupFingerprint } from "../lib/trustFingerprint";
 import pomMark from "../assets/pom-mark-dark.png";
 
 type NetworkVisibility = "local" | "private" | "public";
-type AccessPolicy = "authorized" | "anyone_with_anchor" | "local_only";
+type AccessPolicy = "authorized" | "auto_approve" | "anyone_with_anchor" | "local_only";
 type Translate = (key: string, values?: Record<string, string | number>) => string;
 
 interface GpuStat {
@@ -63,21 +66,6 @@ interface HardwareResponse {
   public_directory: string[];
 }
 
-interface GeoCityReference {
-  id: string;
-  name: string;
-}
-
-interface GeoCountryReference {
-  code: string;
-  name: string;
-  cities: GeoCityReference[];
-}
-
-interface GeoReferenceResponse {
-  countries: GeoCountryReference[];
-}
-
 interface PublicJoinPayload {
   name?: string;
   cluster_id?: string;
@@ -100,16 +88,12 @@ interface TrustNetworkMetadata {
   organization?: string;
   visibility?: NetworkVisibility;
   access_policy?: AccessPolicy;
-  country_code?: string;
-  country_name?: string;
-  city?: string;
-  geo_label?: string;
-  /** Chaves `pk:` dos relés dedicados. O documento não carrega IP de ninguém. */
+  /** `pk:` keys of the dedicated relays. The document carries nobody's IP. */
   relay_hints?: string[];
   directory_replicas?: string[];
 }
 
-/** O que um computador informa de si ao procurar a rede local. */
+/** What a computer reports about itself when looking for the local network. */
 export interface DiscoveredMachine {
   hostname: string;
   os?: string;
@@ -165,11 +149,14 @@ export interface SetupState {
     channels: string;
     visibility: NetworkVisibility;
     access_policy: AccessPolicy;
+    city_id: number | null;
     country_code: string;
     country_name: string;
+    state: string;
     city: string;
     geo_label: string;
-    location: { latitude: number; longitude: number; accuracy_m?: number } | null;
+    location_precision: LocationPrecision;
+    location: { latitude: number; longitude: number; accuracy_m?: number | null } | null;
   };
   ramReservePct: number;
   cpuReservePct: number;
@@ -211,7 +198,7 @@ function trustNetworkMetadata(document: string): TrustNetworkMetadata | null {
   }
 }
 
-/** O IP de um endereço `host:porta`, sem colchetes nem porta. */
+/** The IP of a `host:porta` address, without brackets or port. */
 export function addressHost(address: string): string {
   const bracketed = address.match(/^\[([^\]]+)\](?::\d+)?$/);
   if (bracketed) return bracketed[1];
@@ -241,10 +228,13 @@ const INITIAL: SetupState = {
     channels: "",
     visibility: "private",
     access_policy: "anyone_with_anchor",
+    city_id: null,
     country_code: "",
     country_name: "",
+    state: "",
     city: "",
     geo_label: "",
+    location_precision: "approximate",
     location: null,
   },
   ramReservePct: 20,
@@ -261,7 +251,6 @@ export function Setup() {
   const [setup, setSetup] = useState<SetupState>(INITIAL);
   const [stage, setStage] = useState<WizardStage>("setup-profile");
   const [hardware, setHardware] = useState<HardwareResponse | null>(null);
-  const [geoReference, setGeoReference] = useState<GeoReferenceResponse | null>(null);
   const [anchor, setAnchor] = useState<AnchorPreview | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -269,18 +258,14 @@ export function Setup() {
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([
-      api.get<HardwareResponse>("/api/setup/hardware", { auth: false }),
-      api.get<GeoReferenceResponse>("/api/setup/geo-reference", { auth: false }),
-    ])
-      .then(([detected, geo]) => {
+    api.get<HardwareResponse>("/api/setup/hardware", { auth: false })
+      .then((detected) => {
         if (cancelled) return;
         setHardware(detected);
-        setGeoReference(geo);
         setSetup((current) => ({
           ...current,
-          // Pastas, disco, reservas e limite térmico ficam nos padrões da
-          // máquina; todos são ajustáveis depois, dentro do POM.
+          // Folders, disk, reservations and thermal limit stay at the machine's
+          // defaults; all are adjustable later, inside POM.
           modelDirs: [detected.default_model_dir],
           shardDir: detected.default_shard_dir,
           shardMaxGb: Math.min(detected.shard_max_gb || 20, Math.max(0, detected.system.disk.free_mb / 1024)),
@@ -431,7 +416,7 @@ export function Setup() {
       t={t}
     >
       {loading ? <LoadingScreen /> : (
-        <Screen stage={stage} setup={setup} hardware={hardware} geoReference={geoReference} anchor={anchor} update={update} updateNetwork={updateNetwork} t={t} />
+        <Screen stage={stage} setup={setup} hardware={hardware} anchor={anchor} update={update} updateNetwork={updateNetwork} t={t} />
       )}
     </FirstRunShell>
   );
@@ -450,7 +435,7 @@ export function directoryReplicas(value: string): string[] {
   return splitList(value).filter((item) => !item.startsWith("pk:"));
 }
 
-/** Casca do wizard com a identidade do site: painel escuro flutuante, marca e trilha de passos. */
+/** Wizard shell with the site's identity: floating dark panel, brand and step trail. */
 function FirstRunShell({ steps, stage, canGoBack, onBack, action, children, t }: { steps: WizardStep[]; stage: WizardStage; canGoBack: boolean; onBack: () => void; action: ReactNode; children: ReactNode; t: Translate }) {
   return (
     <main className="pom-login pom-setup">
@@ -487,7 +472,7 @@ function FirstRunShell({ steps, stage, canGoBack, onBack, action, children, t }:
   );
 }
 
-/** Os passos como os nós ligados do site: o pulso viaja entre eles e o atual acende. */
+/** The steps as the site's linked nodes: the pulse runs between them, the current one lights up. */
 function StepTrail({ steps, stage, t }: { steps: WizardStep[]; stage: WizardStage; t: Translate }) {
   const active = Math.max(0, steps.findIndex((step) => step.id === stage));
   return (
@@ -504,11 +489,10 @@ function StepTrail({ steps, stage, t }: { steps: WizardStep[]; stage: WizardStag
   );
 }
 
-function Screen({ stage, setup, hardware, geoReference, anchor, update, updateNetwork, t }: {
+function Screen({ stage, setup, hardware, anchor, update, updateNetwork, t }: {
   stage: WizardStage;
   setup: SetupState;
   hardware: HardwareResponse | null;
-  geoReference: GeoReferenceResponse | null;
   anchor: AnchorPreview | null;
   update: (patch: Partial<SetupState>) => void;
   updateNetwork: (patch: Partial<SetupState["network"]>) => void;
@@ -516,7 +500,7 @@ function Screen({ stage, setup, hardware, geoReference, anchor, update, updateNe
 }) {
   switch (stage) {
     case "setup-profile": return <StartScreen setup={setup} hardware={hardware} update={update} t={t} />;
-    case "setup-network": return <NetworkScreen setup={setup} hardware={hardware} countries={geoReference?.countries ?? []} update={update} updateNetwork={updateNetwork} t={t} />;
+    case "setup-network": return <NetworkScreen setup={setup} hardware={hardware} update={update} updateNetwork={updateNetwork} t={t} />;
     case "setup-invite": return <InviteScreen setup={setup} anchor={anchor} t={t} />;
     case "setup-join": return <JoinScreen setup={setup} update={update} updateNetwork={updateNetwork} t={t} />;
     case "setup-saved": return <SavedScreen t={t} />;
@@ -592,11 +576,9 @@ function Chip({ icon, children }: { icon: ReactNode; children: ReactNode }) {
   return <span className="pom-setup-chip">{icon}<span className="truncate">{children}</span></span>;
 }
 
-export function NetworkScreen({ setup, hardware, countries, update, updateNetwork, t }: { setup: SetupState; hardware: HardwareResponse | null; countries: GeoCountryReference[]; update: (patch: Partial<SetupState>) => void; updateNetwork: (patch: Partial<SetupState["network"]>) => void; t: Translate }) {
+export function NetworkScreen({ setup, hardware, update, updateNetwork, t }: { setup: SetupState; hardware: HardwareResponse | null; update: (patch: Partial<SetupState>) => void; updateNetwork: (patch: Partial<SetupState["network"]>) => void; t: Translate }) {
   const publicNetwork = setup.network.visibility === "public";
   const p2pPort = hardware?.p2p_port ?? 0;
-  const selectedCountry = countries.find((country) => country.code === setup.network.country_code);
-  const cityIsReference = selectedCountry?.cities.some((city) => city.name === setup.network.city) ?? false;
   const options: { id: "private" | "public"; title: string; detail: string }[] = [
     { id: "private", title: t("firstRun.private"), detail: t("firstRun.privateDetail") },
     { id: "public", title: t("firstRun.public"), detail: t("firstRun.publicDetail") },
@@ -619,25 +601,8 @@ export function NetworkScreen({ setup, hardware, countries, update, updateNetwor
         {publicNetwork && (
           <motion.div key="geo" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden">
             <p className="mt-5 text-xs leading-relaxed text-muted">{t("firstRun.publicLocationDetail")}</p>
-            <div className="mt-3 grid gap-4 sm:grid-cols-2">
-              <Field label={t("setupWizard.country")}>
-                <Select value={setup.network.country_code} onChange={(event) => { const country = countries.find((candidate) => candidate.code === event.target.value); updateNetwork({ country_code: country?.code ?? "", country_name: country?.name ?? "", city: "" }); }}>
-                  <option value="">{t("setupWizard.chooseCountry")}</option>
-                  {countries.map((country) => <option key={country.code} value={country.code}>{country.name}</option>)}
-                </Select>
-              </Field>
-              <Field label={t("setupWizard.city")}>
-                <Select value={cityIsReference ? setup.network.city : setup.network.city ? "__manual__" : ""} disabled={!selectedCountry} onChange={(event) => updateNetwork({ city: event.target.value === "__manual__" ? "" : event.target.value })}>
-                  <option value="">{t("setupWizard.chooseCity")}</option>
-                  {selectedCountry?.cities.map((city) => <option key={city.id} value={city.name}>{city.name}</option>)}
-                  <option value="__manual__">{t("setupWizard.otherCity")}</option>
-                </Select>
-              </Field>
-              {selectedCountry && !cityIsReference && (
-                <Field label={t("setupWizard.manualCity")}>
-                  <Input value={setup.network.city} onChange={(event) => updateNetwork({ city: event.target.value })} />
-                </Field>
-              )}
+            <div className="mt-3">
+              <LocationEditor value={setup.network} source={SETUP_GEO} required t={t} onChange={(place) => updateNetwork({ city_id: place.city_id ?? null, country_code: place.country_code, country_name: place.country_name, state: place.state ?? "", city: place.city, location_precision: place.location_precision ?? "approximate", location: place.location })} />
             </div>
           </motion.div>
         )}
@@ -678,13 +643,10 @@ export function InviteScreen({ setup, anchor, t }: { setup: SetupState; anchor: 
 function SecretCard({ label, value, t }: { label: string; value: string; t: Translate }) {
   const [copied, setCopied] = useState(false);
   async function copy() {
-    try {
-      await navigator.clipboard.writeText(value);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1800);
-    } catch {
-      // O conteúdo continua selecionável.
-    }
+    // Without `copyText` the button did not copy over HTTP; the content stays selectable if it fails.
+    if (!(await copyText(value))) return;
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1800);
   }
   return (
     <div className="pom-setup-secret" data-testid="connection-secret">
@@ -711,13 +673,10 @@ function TrustActions({ anchor, t }: { anchor: AnchorPreview; t: Translate }) {
     URL.revokeObjectURL(url);
   }
   async function copy() {
-    try {
-      await navigator.clipboard.writeText(anchor.document);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1800);
-    } catch {
-      // O download continua disponível.
-    }
+    // If the copy fails, the download stays available next to it.
+    if (!(await copyText(anchor.document))) return;
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1800);
   }
   return (
     <div className="mt-3 flex flex-wrap items-center gap-2" data-testid="trust-actions">
@@ -729,10 +688,10 @@ function TrustActions({ anchor, t }: { anchor: AnchorPreview; t: Translate }) {
 }
 
 /**
- * A descoberta na rede local, dos dois lados. O administrador espera e vê cada
- * computador que procura a rede (nome, sistema, IP, RAM, GPU) entrar com uma
- * animação; é opcional - concluir sem ninguém é normal. Quem entra procura o
- * administrador e recebe a raiz e a chave sem digitar nada.
+ * Discovery on the local network, from both sides. The administrator waits and sees
+ * each computer looking for the network (name, system, IP, RAM, GPU) come in with
+ * an animation; it is optional - finishing with nobody is normal. Whoever joins looks
+ * for the administrator and receives the root and the key without typing anything.
  */
 export function LocalDiscoveryPanel({ mode, setup, onResult, t }: { mode: "admin" | "join"; setup: SetupState; onResult?: (result: AutoDiscoveryResult) => void; t: Translate }) {
   const toast = useToast();
@@ -776,8 +735,8 @@ export function LocalDiscoveryPanel({ mode, setup, onResult, t }: { mode: "admin
       cancelled = true;
       if (timer) window.clearTimeout(timer);
     };
-    // A procura recomeça só por pedido explícito (`attempt`); editar o nome
-    // no meio não abre outra sessão.
+    // The search restarts only on explicit request (`attempt`); editing the name
+    // midway does not open another session.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAdmin, attempt]);
 
@@ -865,7 +824,6 @@ interface DirectoryNetwork {
   city: string;
   access_policy?: AccessPolicy;
   accepted_enrollments?: EnrollmentRole[];
-  lobby_chat?: boolean;
   public_stats?: boolean;
   directory_replicas?: string[];
 }
@@ -939,11 +897,9 @@ export function PublicDirectoryPanel({ setup, onUse, onAddress, t }: { setup: Se
                 <DirectoryNetworkStats network={network} t={t} />
               </div>
               <div className="flex shrink-0 items-center gap-2">
-                {network.lobby_chat && (
-                  <button type="button" className="pom-setup-ghost pom-setup-ghost-sm" onClick={() => setChatTarget(network)}>
-                    <MessageCircle className="h-3.5 w-3.5" />{t("publicNetworks.chat")}
-                  </button>
-                )}
+                <button type="button" className="pom-setup-ghost pom-setup-ghost-sm" onClick={() => setChatTarget(network)}>
+                  <MessageCircle className="h-3.5 w-3.5" />{t("publicNetworks.chat")}
+                </button>
                 <button type="button" className="pom-setup-ghost pom-setup-ghost-sm" disabled={closed} title={closed ? t("firstRun.roleNotAccepted") : undefined} onClick={() => onUse(network)}>
                   {t(closed ? "publicNetworks.closed" : selected ? "firstRun.publicDirectorySelected" : "firstRun.publicDirectoryUse")}
                 </button>
@@ -973,10 +929,6 @@ export function JoinScreen({ setup, update, updateNetwork, t }: { setup: SetupSt
       organization: metadata.organization ?? "",
       visibility: metadata.visibility ?? "private",
       access_policy: metadata.access_policy ?? "anyone_with_anchor",
-      country_code: metadata.country_code ?? "",
-      country_name: metadata.country_name ?? "",
-      city: metadata.city ?? "",
-      geo_label: metadata.geo_label ?? "",
     });
     update({
       publicDirectory: metadata.directory_replicas?.join(", ") ?? "",
@@ -1026,8 +978,8 @@ export function JoinScreen({ setup, update, updateNetwork, t }: { setup: SetupSt
           <span>{t("firstRun.manualJoin")}</span>
           <ChevronDown className="h-4 w-4" />
         </summary>
-        {/* Só monta aberto: os campos recalculam a impressão digital, e fechados
-            eles apagariam a que a descoberta local acabou de trazer. */}
+        {/* It only mounts open: the fields recompute the fingerprint, and closed
+            they would erase the one local discovery has just brought. */}
         {manualOpen && (
           <div className="pt-3">
             <TrustFields setup={setup} update={update} applyTrust={applyTrust} t={t} />
@@ -1114,7 +1066,7 @@ function SavedScreen({ t }: { t: Translate }) {
   );
 }
 
-/** O carregamento é a mesma pipeline do portão: três nós e o pulso viajando. */
+/** Loading is the same pipeline as the gate: three nodes and the pulse travelling. */
 function LoadingScreen() {
   return (
     <div className="flex min-h-[260px] items-center justify-center" data-testid="setup-loading">
@@ -1137,7 +1089,7 @@ export function isReadyToSave(setup: SetupState): boolean {
   const publicNetwork = setup.network.visibility === "public";
   if (setup.profile !== "admin") return publicNetwork || Boolean(setup.connectionKey.trim());
   if (!setup.network.public_name.trim()) return false;
-  if (publicNetwork && (!setup.network.country_code.trim() || !setup.network.city.trim())) return false;
+  if (publicNetwork && setup.network.city_id == null) return false;
   return true;
 }
 
@@ -1147,7 +1099,7 @@ export function canContinue(stage: WizardStage, setup: SetupState): boolean {
     const publicNetwork = setup.network.visibility === "public";
     return Boolean(
       setup.network.public_name.trim()
-      && (!publicNetwork || (setup.network.country_code.trim() && setup.network.city.trim())),
+      && (!publicNetwork || setup.network.city_id != null),
     );
   }
   if (stage === "setup-invite" || stage === "setup-join") return isReadyToSave(setup);

@@ -97,6 +97,8 @@ export function AdminAuthorityPanel({
     (candidate) =>
       candidate.connected &&
       !candidate.blocked &&
+      // An inference node's role is set at admission; the node refuses too.
+      candidate.profile !== "infer" &&
       candidate.node_id !== authority.principal.node_id &&
       !authority.secondary.some((admin) => admin.node_id === candidate.node_id),
   );

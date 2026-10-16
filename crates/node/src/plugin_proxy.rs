@@ -1,25 +1,26 @@
-//! Proxy reverso das interfaces web que um plugin serve:
+//! Reverse proxy of the web interfaces a plugin serves:
 //! `/api/ui/plugins/:code/proxy/*`.
 //!
-//! Um plugin pode rodar um servidor HTTP próprio em loopback (por exemplo uma
-//! aplicação web completa) e expô-lo na interface do POM sem abrir outra porta
-//! na rede. O plugin informa onde ele está pela operação `ui.upstream` do
-//! `query` genérico: `{"status":"ready","port":N,"token":"..."}`. O nó encaminha
-//! para `127.0.0.1:N` - HTTP com corpo em streaming e upgrades (WebSocket) -,
-//! anexando o `token` em [`PROXY_TOKEN_HEADER`] para que só ele alcance o
-//! servidor do plugin, e [`FORWARDED_PREFIX_HEADER`] para que o plugin saiba
-//! sob qual caminho foi montado.
+//! A plugin can run its own HTTP server on loopback (for example a full web
+//! application) and expose it in the POM interface without opening another port
+//! on the network. The plugin says where it is through the `ui.upstream`
+//! operation of the generic `query`: `{"status":"ready","port":N,"token":"..."}`.
+//! The node forwards to `127.0.0.1:N` - HTTP with a streaming body and upgrades
+//! (WebSocket) -, attaching the `token` in [`PROXY_TOKEN_HEADER`] so that only
+//! the proxy reaches the plugin's server, and [`FORWARDED_PREFIX_HEADER`] so the
+//! plugin knows under which path it was mounted.
 //!
-//! Quem entra: a rota está sob `/api/ui`, então passa pela superfície
-//! administrativa (loopback em `localhost`, sessão por senha em `network`) e é
-//! aberta a todo perfil na tabela de perfis, porque plugins são locais do nó.
-//! Como scripts, WebSockets e `EventSource` não carregam o `Authorization` da
-//! interface, a credencial aqui é a da superfície, e a falsificação entre
-//! sites é barrada por [`same_origin`].
-//! Chamadas entre nós nunca passam: o proxy é só para o navegador.
+//! Who gets in: the route is under `/api/ui`, so it goes through the
+//! administrative surface (loopback in `localhost`, password session in
+//! `network`) and is open to every profile in the profile table, because
+//! plugins are local to the node. Since scripts, WebSockets and `EventSource`
+//! do not carry the interface's `Authorization`, the credential here is the
+//! surface's, and cross-site forgery is blocked by [`same_origin`].
+//! Node-to-node calls never pass: the proxy is only for the browser.
 //!
-//! O que sai: o cookie de sessão administrativa, o `Authorization` e o token de
-//! acesso nunca chegam ao plugin, e o plugin não grava cookies na origem do POM.
+//! What goes out: the administrative session cookie, the `Authorization` and the
+//! access token never reach the plugin, and the plugin does not write cookies on
+//! the POM origin.
 use axum::body::Body;
 use axum::extract::{Path, Request, State};
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
@@ -28,15 +29,15 @@ use serde_json::{json, Value};
 use std::sync::OnceLock;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-/// Cabeçalho com o segredo que o plugin publicou em `ui.upstream`.
+/// Header with the secret the plugin published in `ui.upstream`.
 pub(crate) const PROXY_TOKEN_HEADER: &str = "x-pom-plugin-token";
-/// Caminho público sob o qual o nó montou o servidor do plugin.
+/// Public path under which the node mounted the plugin's server.
 pub(crate) const FORWARDED_PREFIX_HEADER: &str = "x-forwarded-prefix";
-/// Teto do cabeçalho de resposta de um upgrade lido à mão.
+/// Ceiling of the response header of an upgrade read by hand.
 const MAX_UPGRADE_HEAD: usize = 64 * 1024;
 
-/// Cabeçalhos que não atravessam um proxy (RFC 9110 §7.6.1), mais os que só
-/// valem para a sessão do POM.
+/// Headers that do not cross a proxy (RFC 9110 §7.6.1), plus those that only
+/// apply to the POM session.
 const DROPPED_REQUEST_HEADERS: [&str; 13] = [
     "connection",
     "keep-alive",
@@ -63,26 +64,26 @@ const DROPPED_RESPONSE_HEADERS: [&str; 9] = [
     "upgrade",
     "set-cookie",
 ];
-/// Marcadores de chamada entre nós; o proxy existe só para o navegador.
+/// Markers of a node-to-node call; the proxy exists only for the browser.
 const INTERNAL_HEADERS: [&str; 2] = ["x-pom-internal-node", "x-pom-control-signature"];
 
-/// Onde o servidor do plugin está, segundo `ui.upstream`.
+/// Where the plugin's server is, according to `ui.upstream`.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Upstream {
     pub port: u16,
     pub token: String,
 }
 
-/// Lê a resposta de `ui.upstream`. `Err` traz o motivo mostrado ao navegador.
+/// Reads the `ui.upstream` response. `Err` carries the reason shown to the browser.
 pub(crate) fn parse_upstream(value: &Value) -> Result<Upstream, String> {
     match value.get("status").and_then(Value::as_str) {
         Some("ready") => {}
-        Some("starting") => return Err("o plugin ainda está iniciando".into()),
+        Some("starting") => return Err("the plugin is still starting".into()),
         _ => {
             return Err(value
                 .get("error")
                 .and_then(Value::as_str)
-                .unwrap_or("o plugin não informou um servidor")
+                .unwrap_or("the plugin did not report a server")
                 .to_owned())
         }
     }
@@ -91,14 +92,14 @@ pub(crate) fn parse_upstream(value: &Value) -> Result<Upstream, String> {
         .and_then(Value::as_u64)
         .and_then(|port| u16::try_from(port).ok())
         .filter(|port| *port != 0)
-        .ok_or("porta do plugin inválida")?;
+        .ok_or("invalid plugin port")?;
     let token = value
         .get("token")
         .and_then(Value::as_str)
         .filter(|token| {
             (16..=512).contains(&token.len()) && token.bytes().all(|byte| byte.is_ascii_graphic())
         })
-        .ok_or("token do plugin inválido")?;
+        .ok_or("invalid plugin token")?;
     Ok(Upstream {
         port,
         token: token.to_owned(),
@@ -109,9 +110,9 @@ pub(crate) fn proxy_prefix(code: &str) -> String {
     format!("/api/ui/plugins/{code}/proxy")
 }
 
-/// Barreira contra falsificação entre sites. O navegador marca a origem de
-/// toda requisição que um script ou página pode forjar (`Sec-Fetch-Site`, e
-/// `Origin` em POST e WebSocket); só a própria origem do POM passa.
+/// Barrier against cross-site forgery. The browser marks the origin of every
+/// request a script or page can forge (`Sec-Fetch-Site`, and `Origin` on POST
+/// and WebSocket); only the POM's own origin passes.
 pub(crate) fn same_origin(headers: &HeaderMap) -> bool {
     if let Some(site) = headers.get("sec-fetch-site") {
         if !matches!(site.to_str(), Ok("same-origin" | "none")) {
@@ -145,7 +146,8 @@ fn is_upgrade(headers: &HeaderMap) -> bool {
             })
 }
 
-/// O alvo no servidor do plugin: o caminho depois do prefixo, byte a byte, e a query.
+/// The target on the plugin's server: the path after the prefix, byte for byte,
+/// and the query.
 pub(crate) fn upstream_target(prefix: &str, uri: &axum::http::Uri) -> String {
     let rest = uri.path().strip_prefix(prefix).unwrap_or_default();
     let path = if rest.starts_with('/') { rest } else { "/" };
@@ -155,8 +157,8 @@ pub(crate) fn upstream_target(prefix: &str, uri: &axum::http::Uri) -> String {
     }
 }
 
-/// Cabeçalhos que seguem para o plugin: os do navegador menos os da sessão do
-/// POM, mais o token e o contexto de montagem.
+/// Headers that go on to the plugin: the browser's minus those of the POM
+/// session, plus the token and the mount context.
 pub(crate) fn upstream_headers(
     incoming: &HeaderMap,
     upstream: &Upstream,
@@ -193,7 +195,7 @@ fn client() -> &'static reqwest::Client {
             .no_proxy()
             .connect_timeout(std::time::Duration::from_secs(5))
             .build()
-            .expect("cliente HTTP do proxy de plugins")
+            .expect("plugin proxy HTTP client")
     })
 }
 
@@ -201,7 +203,7 @@ fn refusal(status: StatusCode, error: &str) -> Response {
     (status, axum::Json(json!({ "error": error }))).into_response()
 }
 
-/// Encaminha uma requisição do navegador para o servidor do plugin.
+/// Forwards a browser request to the plugin's server.
 pub(crate) async fn forward(upstream: &Upstream, prefix: &str, request: Request) -> Response {
     let secure = request
         .extensions()
@@ -224,11 +226,8 @@ pub(crate) async fn forward(upstream: &Upstream, prefix: &str, request: Request)
     {
         Ok(reply) => reply,
         Err(error) => {
-            tracing::warn!(%error, "servidor do plugin não respondeu ao proxy");
-            return refusal(
-                StatusCode::BAD_GATEWAY,
-                "o servidor do plugin não respondeu",
-            );
+            tracing::warn!(%error, "plugin server did not answer the proxy");
+            return refusal(StatusCode::BAD_GATEWAY, "the plugin server did not answer");
         }
     };
     let mut response = Response::builder().status(reply.status());
@@ -241,11 +240,11 @@ pub(crate) async fn forward(upstream: &Upstream, prefix: &str, request: Request)
     }
     response
         .body(Body::from_stream(reply.bytes_stream()))
-        .unwrap_or_else(|_| refusal(StatusCode::BAD_GATEWAY, "resposta inválida do plugin"))
+        .unwrap_or_else(|_| refusal(StatusCode::BAD_GATEWAY, "invalid plugin response"))
 }
 
-/// Um upgrade (WebSocket) não cabe no cliente HTTP: o cabeçalho vai à mão pela
-/// conexão TCP, e depois do `101` os dois lados só copiam bytes.
+/// An upgrade (WebSocket) does not fit the HTTP client: the header goes by hand
+/// over the TCP connection, and after the `101` both sides just copy bytes.
 async fn forward_upgrade(
     upstream: &Upstream,
     target: &str,
@@ -253,7 +252,7 @@ async fn forward_upgrade(
     mut request: Request,
 ) -> Response {
     let Some(protocol) = request.headers().get(header::UPGRADE).cloned() else {
-        return refusal(StatusCode::BAD_REQUEST, "upgrade sem protocolo");
+        return refusal(StatusCode::BAD_REQUEST, "upgrade without a protocol");
     };
     headers.insert(header::CONNECTION, HeaderValue::from_static("Upgrade"));
     headers.insert(header::UPGRADE, protocol);
@@ -269,28 +268,23 @@ async fn forward_upgrade(
 
     let mut stream = match tokio::net::TcpStream::connect(&host).await {
         Ok(stream) => stream,
-        Err(_) => {
-            return refusal(
-                StatusCode::BAD_GATEWAY,
-                "o servidor do plugin não respondeu",
-            )
-        }
+        Err(_) => return refusal(StatusCode::BAD_GATEWAY, "the plugin server did not answer"),
     };
     if stream.write_all(head.as_bytes()).await.is_err() {
         return refusal(
             StatusCode::BAD_GATEWAY,
-            "o servidor do plugin fechou a conexão",
+            "the plugin server closed the connection",
         );
     }
     let (status, reply_headers, leftover) = match read_response_head(&mut stream).await {
         Ok(reply) => reply,
         Err(error) => {
-            tracing::warn!(%error, "upgrade recusado pelo servidor do plugin");
-            return refusal(StatusCode::BAD_GATEWAY, "resposta inválida do plugin");
+            tracing::warn!(%error, "upgrade refused by the plugin server");
+            return refusal(StatusCode::BAD_GATEWAY, "invalid plugin response");
         }
     };
     if status != StatusCode::SWITCHING_PROTOCOLS {
-        return refusal(status, "o servidor do plugin recusou o upgrade");
+        return refusal(status, "the plugin server refused the upgrade");
     }
 
     let on_upgrade = hyper::upgrade::on(&mut request);
@@ -298,7 +292,7 @@ async fn forward_upgrade(
         let upgraded = match on_upgrade.await {
             Ok(upgraded) => upgraded,
             Err(error) => {
-                tracing::debug!(%error, "navegador desistiu do upgrade");
+                tracing::debug!(%error, "browser gave up on the upgrade");
                 return;
             }
         };
@@ -319,10 +313,10 @@ async fn forward_upgrade(
     }
     response
         .body(Body::empty())
-        .unwrap_or_else(|_| refusal(StatusCode::BAD_GATEWAY, "resposta inválida do plugin"))
+        .unwrap_or_else(|_| refusal(StatusCode::BAD_GATEWAY, "invalid plugin response"))
 }
 
-/// Lê o cabeçalho de resposta HTTP/1.1 e devolve os bytes que vieram depois dele.
+/// Reads the HTTP/1.1 response header and returns the bytes that came after it.
 async fn read_response_head(
     stream: &mut tokio::net::TcpStream,
 ) -> Result<(StatusCode, HeaderMap, Vec<u8>), String> {
@@ -332,7 +326,7 @@ async fn read_response_head(
             break end;
         }
         if buffer.len() > MAX_UPGRADE_HEAD {
-            return Err("cabeçalho grande demais".into());
+            return Err("header too large".into());
         }
         let mut chunk = [0u8; 4096];
         let read = stream
@@ -340,18 +334,18 @@ async fn read_response_head(
             .await
             .map_err(|error| error.to_string())?;
         if read == 0 {
-            return Err("conexão fechada antes do cabeçalho".into());
+            return Err("connection closed before the header".into());
         }
         buffer.extend_from_slice(&chunk[..read]);
     };
-    let head = std::str::from_utf8(&buffer[..end]).map_err(|_| "cabeçalho não é UTF-8")?;
+    let head = std::str::from_utf8(&buffer[..end]).map_err(|_| "header is not UTF-8")?;
     let mut lines = head.split("\r\n");
     let status = lines
         .next()
         .and_then(|line| line.split_whitespace().nth(1))
         .and_then(|code| code.parse::<u16>().ok())
         .and_then(|code| StatusCode::from_u16(code).ok())
-        .ok_or("linha de status inválida")?;
+        .ok_or("invalid status line")?;
     let mut headers = HeaderMap::new();
     for line in lines {
         let Some((name, value)) = line.split_once(':') else {
@@ -377,7 +371,7 @@ pub(crate) async fn plugin_proxy(
         .iter()
         .find_map(|(name, value)| (name == "code").then(|| value.clone()))
     else {
-        return refusal(StatusCode::NOT_FOUND, "plugin não encontrado");
+        return refusal(StatusCode::NOT_FOUND, "plugin not found");
     };
     if INTERNAL_HEADERS
         .iter()
@@ -385,21 +379,18 @@ pub(crate) async fn plugin_proxy(
     {
         return refusal(
             StatusCode::FORBIDDEN,
-            "o proxy de plugins atende só o navegador",
+            "the plugin proxy serves only the browser",
         );
     }
     if !same_origin(request.headers()) {
-        return refusal(
-            StatusCode::FORBIDDEN,
-            "origem recusada pelo proxy de plugins",
-        );
+        return refusal(StatusCode::FORBIDDEN, "origin refused by the plugin proxy");
     }
     let Some(reply) = state
         .plugins
         .query_audit(&code, "ui.upstream", json!({}))
         .await
     else {
-        return refusal(StatusCode::NOT_FOUND, "plugin inativo ou sem servidor");
+        return refusal(StatusCode::NOT_FOUND, "plugin inactive or without a server");
     };
     let upstream = match parse_upstream(&reply) {
         Ok(upstream) => upstream,
@@ -407,7 +398,7 @@ pub(crate) async fn plugin_proxy(
     };
     let prefix = proxy_prefix(&code);
     if request.method() == Method::CONNECT {
-        return refusal(StatusCode::METHOD_NOT_ALLOWED, "método não suportado");
+        return refusal(StatusCode::METHOD_NOT_ALLOWED, "method not supported");
     }
     forward(&upstream, &prefix, request).await
 }
@@ -539,7 +530,7 @@ mod tests {
         assert_eq!(out["x-forwarded-proto"], "https");
     }
 
-    /// Servidor HTTP mínimo que devolve o que recebeu, e faz eco depois de um upgrade.
+    /// Minimal HTTP server that returns what it received, and echoes after an upgrade.
     async fn echo_upstream() -> u16 {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();

@@ -18,7 +18,7 @@ class AdvertiseAddressTests(unittest.TestCase):
             "model_dir": "/models",
         }
 
-        config = MODULE.config_do_no(
+        config = MODULE.node_config_for(
             base,
             n=2,
             total=5,
@@ -35,7 +35,7 @@ class AdvertiseAddressTests(unittest.TestCase):
             "custom_setting": "keep-me",
         }
 
-        updated = MODULE.config_com_advertise_addr(existing, "new-ipv6")
+        updated = MODULE.config_with_advertise_addr(existing, "new-ipv6")
 
         self.assertEqual(updated["advertise_addr"], "new-ipv6")
         self.assertEqual(updated["custom_setting"], "keep-me")
@@ -47,7 +47,7 @@ class AdvertiseAddressTests(unittest.TestCase):
             "advertise_addr": "old-ipv6",
         }
 
-        node_two = MODULE.config_do_no(
+        node_two = MODULE.node_config_for(
             base,
             n=2,
             total=4,
@@ -64,7 +64,7 @@ class AdvertiseAddressTests(unittest.TestCase):
             "p2p_port": 42780,
         }
 
-        updated = MODULE.config_com_advertise_addr(
+        updated = MODULE.config_with_advertise_addr(
             existing,
             "100.122.132.97:42777",
         )

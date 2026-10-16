@@ -63,13 +63,13 @@ function mount(profile: "admin" | "infer" = "infer") {
   );
 }
 
-describe("TokenKeys no perfil infer", () => {
+describe("TokenKeys in the infer profile", () => {
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
   });
 
-  it("mostra apenas a chave do próprio nó e esconde a seleção de outros nós", () => {
+  it("shows only the key of the node itself and hides the selection of other nodes", () => {
     mount();
 
     expect(screen.getByText("Inferência")).toBeTruthy();
@@ -78,7 +78,7 @@ describe("TokenKeys no perfil infer", () => {
     expect(screen.queryByLabelText("Nó da rede")).toBeNull();
   });
 
-  it("revoga a chave anterior depois de gerar a nova", async () => {
+  it("revokes the previous key after generating the new one", async () => {
     mocks.post.mockResolvedValueOnce({
       ...mocks.oldKey,
       id: "new-id",
@@ -99,7 +99,7 @@ describe("TokenKeys no perfil infer", () => {
     expect(mocks.refetch).toHaveBeenCalled();
   });
 
-  it("mostra o token novo uma vez só, e na lista apenas o trecho visível", async () => {
+  it("shows the new token only once, and in the list only the visible excerpt", async () => {
     mocks.post.mockResolvedValueOnce({
       ...mocks.oldKey,
       id: "new-id",
@@ -120,7 +120,7 @@ describe("TokenKeys no perfil infer", () => {
     await waitFor(() => expect(screen.queryByTestId("issued-secret")).toBeNull());
   });
 
-  it("abre a confirmação de revogação sem exigir o label duas vezes", () => {
+  it("opens the revocation confirmation without requiring the label twice", () => {
     mount("admin");
 
     fireEvent.click(screen.getByRole("button", { name: "Revogar Inferência" }));

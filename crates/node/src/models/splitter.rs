@@ -19,12 +19,12 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 use tracing::info;
 
-/// O que um fatiamento deixou em disco.
+/// What a slicing left on disk.
 ///
-/// O `sha256` sai do mesmo passe que grava os bytes (ver
-/// `pom::HashingWriter`), e não de uma segunda leitura: uma fatia tem dezenas
-/// de GB, e reler tudo só para hashear dobrava o tempo do corte. É este hash
-/// que vira o **nome** do arquivo e a identidade da parte no `.pom`.
+/// The `sha256` comes out of the same pass that writes the bytes (see
+/// `pom::HashingWriter`), not from a second read: a slice is tens of GB, and
+/// re-reading everything just to hash it doubled the cut time. This hash is
+/// what becomes the file's **name** and the part's identity in the `.pom`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WrittenSlice {
     pub bytes: u64,
@@ -70,7 +70,7 @@ struct R<'a> {
 impl<'a> R<'a> {
     fn take(&mut self, n: usize) -> Result<&'a [u8]> {
         if self.pos + n > self.data.len() {
-            bail!("GGUF truncado em byte {}", self.pos);
+            bail!("GGUF truncated at byte {}", self.pos);
         }
         let s = &self.data[self.pos..self.pos + n];
         self.pos += n;
@@ -85,7 +85,7 @@ impl<'a> R<'a> {
     fn string(&mut self) -> Result<String> {
         let len = self.u64()? as usize;
         if len > 64 << 20 {
-            bail!("string GGUF implausível: {len} bytes");
+            bail!("implausible GGUF string: {len} bytes");
         }
         let b = self.take(len)?;
         Ok(std::str::from_utf8(b).unwrap_or("").to_owned())
@@ -119,7 +119,7 @@ impl<'a> R<'a> {
                     }
                 }
             }
-            other => bail!("tipo GGUF desconhecido {other}"),
+            other => bail!("unknown GGUF type {other}"),
         }
         Ok(())
     }
@@ -131,7 +131,7 @@ impl<'a> R<'a> {
                 .checked_mul(size as u64)
                 .ok_or_else(|| anyhow::anyhow!("overflow no array GGUF"))?;
             self.take(
-                usize::try_from(bytes).map_err(|_| anyhow::anyhow!("array GGUF grande demais"))?,
+                usize::try_from(bytes).map_err(|_| anyhow::anyhow!("GGUF array too large"))?,
             )?;
         } else {
             for _ in 0..count {
@@ -250,14 +250,14 @@ fn encode_kv_u32_array_with_type(key: &str, element_type: u32, values: &[u32]) -
             .map(|&value| {
                 i32::try_from(value)
                     .map(i32::to_le_bytes)
-                    .map_err(|_| anyhow::anyhow!("array '{}' excede i32", key))
+                    .map_err(|_| anyhow::anyhow!("array '{}' exceeds i32", key))
             })
             .collect::<Result<Vec<[u8; 4]>>>()?
             .into_iter()
             .flatten()
             .collect(),
         other => bail!(
-            "array '{}' tem tipo {}; esperado inteiro u32 ou i32",
+            "array '{}' has type {}; expected a u32 or i32 integer",
             key,
             other
         ),
@@ -266,8 +266,8 @@ fn encode_kv_u32_array_with_type(key: &str, element_type: u32, values: &[u32]) -
 }
 
 fn encode_kv_array(key: &str, element_type: u32, payload: &[u8]) -> Vec<u8> {
-    let element_size = scalar_size(element_type)
-        .expect("arrays de metadata reconstruídos precisam de elementos escalares");
+    let element_size =
+        scalar_size(element_type).expect("rebuilt metadata arrays need scalar elements");
     assert_eq!(payload.len() % element_size, 0);
     let mut buf = Vec::with_capacity(8 + key.len() + 4 + 4 + 8 + payload.len());
     let kb = key.as_bytes();
@@ -324,16 +324,16 @@ fn source_scalar_u32(mm: &[u8], entry: &KvSource) -> Option<u32> {
 fn source_u32_array(mm: &[u8], entry: &KvSource) -> Result<Vec<u32>> {
     let array = entry
         .array
-        .ok_or_else(|| anyhow::anyhow!("metadata '{}' não é um array", entry.key))?;
+        .ok_or_else(|| anyhow::anyhow!("metadata '{}' is not an array", entry.key))?;
     let element_size = scalar_size(array.element_type).ok_or_else(|| {
         anyhow::anyhow!(
-            "metadata '{}' tem elementos aninhados, esperado um array inteiro",
+            "metadata '{}' has nested elements, expected an integer array",
             entry.key
         )
     })?;
     let mut values = Vec::with_capacity(
         usize::try_from(array.count)
-            .map_err(|_| anyhow::anyhow!("array '{}' grande demais", entry.key))?,
+            .map_err(|_| anyhow::anyhow!("array '{}' too large", entry.key))?,
     );
     for index in 0..array.count {
         let byte_offset = usize::try_from(index)
@@ -347,19 +347,19 @@ fn source_u32_array(mm: &[u8], entry: &KvSource) -> Result<Vec<u32>> {
         let value = match array.element_type {
             T_U32 => u32::from_le_bytes(
                 mm.get(start..start + 4)
-                    .ok_or_else(|| anyhow::anyhow!("array '{}' truncado", entry.key))?
+                    .ok_or_else(|| anyhow::anyhow!("array '{}' truncated", entry.key))?
                     .try_into()
                     .unwrap(),
             ),
             T_I32 => u32::try_from(i32::from_le_bytes(
                 mm.get(start..start + 4)
-                    .ok_or_else(|| anyhow::anyhow!("array '{}' truncado", entry.key))?
+                    .ok_or_else(|| anyhow::anyhow!("array '{}' truncated", entry.key))?
                     .try_into()
                     .unwrap(),
             ))
-            .map_err(|_| anyhow::anyhow!("array '{}' contém valor negativo", entry.key))?,
+            .map_err(|_| anyhow::anyhow!("array '{}' contains a negative value", entry.key))?,
             _ => bail!(
-                "array '{}' tem tipo {}; esperado inteiro u32 ou i32",
+                "array '{}' has type {}; expected a u32 or i32 integer",
                 entry.key,
                 array.element_type
             ),
@@ -386,16 +386,16 @@ fn source_string(mm: &[u8], entry: &KvSource) -> Option<String> {
 fn encode_array_slice(mm: &[u8], entry: &KvSource, start: u32, count: u32) -> Result<Vec<u8>> {
     let array = entry
         .array
-        .ok_or_else(|| anyhow::anyhow!("array GGUF ausente para '{}'", entry.key))?;
+        .ok_or_else(|| anyhow::anyhow!("GGUF array missing for '{}'", entry.key))?;
     let element_size = scalar_size(array.element_type).ok_or_else(|| {
         anyhow::anyhow!(
-            "array GGUF '{}' tem elementos aninhados; comprimento {} não pode ser fatiado",
+            "GGUF array '{}' has nested elements; length {} cannot be sliced",
             entry.key,
             array.count
         )
     })?;
-    let start = usize::try_from(start).map_err(|_| anyhow::anyhow!("índice de array inválido"))?;
-    let count = usize::try_from(count).map_err(|_| anyhow::anyhow!("array GGUF grande demais"))?;
+    let start = usize::try_from(start).map_err(|_| anyhow::anyhow!("invalid array index"))?;
+    let count = usize::try_from(count).map_err(|_| anyhow::anyhow!("GGUF array too large"))?;
     let byte_start = start
         .checked_mul(element_size)
         .and_then(|offset| array.payload_start.checked_add(offset))
@@ -407,11 +407,11 @@ fn encode_array_slice(mm: &[u8], entry: &KvSource, start: u32, count: u32) -> Re
         .checked_add(byte_len)
         .ok_or_else(|| anyhow::anyhow!("overflow no array '{}'", entry.key))?;
     if byte_end > array.payload_end {
-        bail!("array '{}' truncado", entry.key);
+        bail!("array '{}' truncated", entry.key);
     }
     let source = mm
         .get(byte_start..byte_end)
-        .ok_or_else(|| anyhow::anyhow!("array '{}' truncado", entry.key))?;
+        .ok_or_else(|| anyhow::anyhow!("array '{}' truncated", entry.key))?;
 
     let key = entry.key.as_bytes();
     let mut encoded = Vec::with_capacity(8 + key.len() + 4 + 4 + 8 + source.len());
@@ -432,25 +432,23 @@ fn layer_slice_bounds(
 ) -> Result<(usize, usize)> {
     let end_layer = start_layer
         .checked_add(layer_count)
-        .ok_or_else(|| anyhow::anyhow!("overflow no intervalo de camadas"))?;
+        .ok_or_else(|| anyhow::anyhow!("overflow in the layer range"))?;
     if start_layer >= original_block_count || end_layer > original_block_count {
         bail!(
-            "intervalo de camadas {}..{} fora da contagem original {}",
+            "layer range {}..{} outside the original count {}",
             start_layer,
             end_layer.saturating_sub(1),
             original_block_count
         );
     }
     if array_count < original_block_count as u64 {
-        bail!(
-            "array por camada tem comprimento {array_count}; esperado pelo menos {original_block_count}"
-        );
+        bail!("per-layer array has length {array_count}; expected at least {original_block_count}");
     }
     Ok((start_layer as usize, end_layer as usize))
 }
 
-// Helper de teste que preserva a prova da seleção de valores por camada; o
-// caminho de produção usa `layer_slice_bounds` diretamente ao serializar.
+// Test helper that preserves the proof of per-layer value selection; the
+// production path uses `layer_slice_bounds` directly when serializing.
 #[cfg(test)]
 fn slice_layer_values<T: Clone>(
     values: &[T],
@@ -615,7 +613,7 @@ pub fn validate_slice_source(
         .collect();
     crate::gguf::validate_slice_tensors(&architecture, &tensor_names, is_last)?;
     if start_layer > end_layer {
-        bail!("intervalo de camadas inválido L{start_layer}-{end_layer}");
+        bail!("invalid layer range L{start_layer}-{end_layer}");
     }
     Ok(())
 }
@@ -640,7 +638,7 @@ pub fn split(
     let n_split = end_layer - start_layer + 1;
 
     info!(
-        "✂️  fatiando camadas {start_layer}–{end_layer} de {}",
+        "✂️  slicing layers {start_layer}–{end_layer} of {}",
         src.display()
     );
 
@@ -648,23 +646,23 @@ pub fn split(
     let mm = source
         .parts()
         .first()
-        .ok_or_else(|| anyhow::anyhow!("GGUF sem partes"))?
+        .ok_or_else(|| anyhow::anyhow!("GGUF without parts"))?
         .map();
 
     let mut r = R { data: mm, pos: 0 };
 
     let magic = r.u32()?;
     if magic != GGUF_MAGIC {
-        bail!("não é um arquivo GGUF (magic={magic:#x})");
+        bail!("not a GGUF file (magic={magic:#x})");
     }
     let version = r.u32()?;
     if version != 2 && version != 3 {
-        bail!("versão GGUF {version} não suportada (esperado 2 ou 3)");
+        bail!("GGUF version {version} not supported (expected 2 or 3)");
     }
     let n_tensors = r.u64()? as usize;
     let n_kv = r.u64()? as usize;
     if n_tensors > 1_000_000 || n_kv > 100_000 {
-        bail!("cabeçalho GGUF implausível ({n_tensors} tensors, {n_kv} kv)");
+        bail!("implausible GGUF header ({n_tensors} tensors, {n_kv} kv)");
     }
 
     // ── Parse KV section ─────────────────────────────────────────────────────
@@ -728,7 +726,7 @@ pub fn split(
     if let Some(original) = original_block_count {
         if let Some(&layer) = qwen4exp_ple_layers.iter().find(|&&layer| layer >= original) {
             bail!(
-                "qwen4exp.ple.layers contém a camada {layer}, mas a origem declara apenas {original} blocos"
+                "qwen4exp.ple.layers contains layer {layer}, but the source declares only {original} blocks"
             );
         }
     }
@@ -743,7 +741,7 @@ pub fn split(
         && !qwen4exp_ple_layers.is_empty()
         && !tensor_names.contains("per_layer_token_embd.weight")
     {
-        bail!("a origem qwen4exp declara PLE, mas não contém per_layer_token_embd.weight");
+        bail!("the qwen4exp source declares PLE, but does not contain per_layer_token_embd.weight");
     }
 
     let mut kv_out: Vec<KvOut> = Vec::with_capacity(n_kv + 4);
@@ -761,7 +759,7 @@ pub fn split(
             Some(crate::gguf::LayerCountSemantics::FromStart) => {
                 let original = source_scalar_u32(mm, entry).ok_or_else(|| {
                     anyhow::anyhow!(
-                        "metadata '{key}' conta camadas desde o início, mas não é um inteiro escalar não negativo que caiba em u32"
+                        "metadata '{key}' counts layers from the start, but is not a non-negative scalar integer that fits in u32"
                     )
                 })?;
                 let local = original.saturating_sub(start_layer).min(n_split);
@@ -814,7 +812,7 @@ pub fn split(
             if !is_global_array(key, &arch) && !crate::gguf::is_structural_array(key, &arch) {
                 let original = original_block_count.ok_or_else(|| {
                     anyhow::anyhow!(
-                        "array metadata '{}' tem comprimento {}, mas o GGUF não declara a contagem original de blocos",
+                        "metadata array '{}' has length {}, but the GGUF does not declare the original block count",
                         key,
                         array.count
                     )
@@ -833,7 +831,7 @@ pub fn split(
                 }
                 if array.count != 1 {
                     bail!(
-                        "array metadata '{}' tem comprimento {}; esperado 1 ou pelo menos {} (contagem original de blocos)",
+                        "metadata array '{}' has length {}; expected 1 or at least {} (original block count)",
                         key,
                         array.count,
                         original
@@ -915,13 +913,12 @@ pub fn split(
         .collect();
 
     if selected.is_empty() {
-        bail!("nenhum tensor selecionado para camadas {start_layer}–{end_layer}");
+        bail!("no tensor selected for layers {start_layer}–{end_layer}");
     }
     for t in &selected {
         if t.byte_size == 0 {
             bail!(
-                "tamanho desconhecido para o tensor '{}' (tipo ggml {}): \
-                fatiar produziria uma fatia corrompida",
+                "unknown size for tensor '{}' (ggml type {}): slicing would produce a corrupted slice",
                 t.name,
                 t.dtype
             );
@@ -993,12 +990,12 @@ pub fn split(
 
     if let Some(parent) = dst.parent() {
         std::fs::create_dir_all(parent)
-            .with_context(|| format!("criar diretório {}", parent.display()))?;
+            .with_context(|| format!("create directory {}", parent.display()))?;
     }
 
-    let dst_file = File::create(dst).with_context(|| format!("criar {}", dst.display()))?;
-    // O hash por fora do buffer: assim ele vê exatamente a sequência de bytes
-    // que o `BufWriter` entrega ao arquivo, uma vez cada.
+    let dst_file = File::create(dst).with_context(|| format!("create {}", dst.display()))?;
+    // The hash sits outside the buffer: that way it sees exactly the sequence of
+    // bytes the `BufWriter` hands to the file, once each.
     let mut w = crate::pom::HashingWriter::new(BufWriter::with_capacity(CHUNK, dst_file));
 
     // Fixed header
@@ -1051,16 +1048,16 @@ pub fn split(
             }
             TensorOut::Real(rec) => {
                 let part = source.parts().get(rec.part_index).ok_or_else(|| {
-                    anyhow::anyhow!("parte {} ausente para '{}'", rec.part_index, rec.name)
+                    anyhow::anyhow!("part {} missing for '{}'", rec.part_index, rec.name)
                 })?;
                 let start = part
                     .data_start()
                     .checked_add(rec.src_offset as usize)
-                    .ok_or_else(|| anyhow::anyhow!("offset de tensor fora do arquivo"))?;
+                    .ok_or_else(|| anyhow::anyhow!("tensor offset outside the file"))?;
                 let tensor_bytes = part
                     .map()
                     .get(start..start + size as usize)
-                    .ok_or_else(|| anyhow::anyhow!("tensor '{}' truncado", rec.name))?;
+                    .ok_or_else(|| anyhow::anyhow!("tensor '{}' truncated", rec.name))?;
                 let mut pos = 0usize;
                 while pos < tensor_bytes.len() {
                     let n = CHUNK.min(tensor_bytes.len() - pos);
@@ -1086,7 +1083,7 @@ pub fn split(
     let (sha256, final_size) = w.finish();
 
     info!(
-        "fatia pronta: {} ({:.0} MB, sha256 {})",
+        "slice ready: {} ({:.0} MB, sha256 {})",
         dst.display(),
         final_size as f64 / (1024.0 * 1024.0),
         &sha256[..12]
@@ -1098,59 +1095,59 @@ pub fn split(
     })
 }
 
-// ── Tensor parallelism: shard por tensor ─────────────────────────────────────
+// ── Tensor parallelism: per-tensor shard ─────────────────────────────────────
 
-/// Versão da regra de fatiamento por tensor, gravada em `pom.tp_format`.
+/// Version of the per-tensor slicing rule, written to `pom.tp_format`.
 ///
-/// **Suba este número sempre que mudar o que o shard contém** - eixo de corte,
-/// hiperparâmetro reescrito, tensor que passa a ser replicado. É o que faz um
-/// shard antigo ser regenerado em vez de reaproveitado em silêncio.
+/// **Bump this number whenever what the shard contains changes** - cut axis,
+/// rewritten hyperparameter, a tensor that becomes replicated. It is what makes
+/// an old shard get regenerated instead of silently reused.
 ///
-/// 1 = cabeça de saída replicada, `head_count`/`head_count_kv`/
-/// `feed_forward_length` divididos por `tp_size`. Arquivos escritos antes deste
-/// carimbo não têm a chave, e a ausência já significa "regra desconhecida".
+/// 1 = replicated output head, `head_count`/`head_count_kv`/
+/// `feed_forward_length` divided by `tp_size`. Files written before this
+/// stamp do not have the key, and its absence already means "unknown rule".
 pub const TP_SHARD_FORMAT: u32 = 1;
 
-/// Papel de um tensor num shard de tensor parallelism (estilo Megatron).
+/// Role of a tensor in a tensor parallelism shard (Megatron style).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TpRole {
-    /// Split pela dimensão de saída (ne[1]): Q/K/V e MLP gate/up. Fatia
-    /// contígua; a saída já nasce particionada, sem redução.
+    /// Split along the output dimension (ne[1]): Q/K/V and MLP gate/up.
+    /// Contiguous slice; the output is born partitioned, with no reduction.
     Column,
-    /// Split pela dimensão de entrada (ne[0], a contígua): projeção de saída
-    /// da atenção e MLP down. Soma parcial a ser reduzida.
+    /// Split along the input dimension (ne[0], the contiguous one): attention
+    /// output projection and MLP down. Partial sum to be reduced.
     ///
-    /// Só vale para tensor cuja **entrada já chega particionada**: estes dois
-    /// consomem a saída dos `Column` (`attn_q/k/v`, `ffn_gate/up`) do mesmo
-    /// bloco. Um tensor que recebe o oculto inteiro não pode ser `Row` - ver a
-    /// nota da cabeça de saída em `Shared`.
+    /// Only valid for a tensor whose **input already arrives partitioned**:
+    /// these two consume the output of the `Column` tensors (`attn_q/k/v`,
+    /// `ffn_gate/up`) of the same block. A tensor that receives the whole
+    /// hidden state cannot be `Row` - see the note on the output head in `Shared`.
     Row,
-    /// Replicado igual em todos os ranks: norms, token_embd, rope e a cabeça
-    /// de saída (`output.weight`).
+    /// Replicated identically on every rank: norms, token_embd, rope and the
+    /// output head (`output.weight`).
     ///
-    /// A cabeça esteve em `Row` e era um defeito: a entrada dela é a saída de
-    /// `output_norm.weight`, que é `Shared`, então o oculto que chega nela é
-    /// **inteiro** (`n_embd`), nunca particionado. Cortá-la por `ne[0]` gerava
-    /// uma cabeça esperando `n_embd/size` de entrada, largura que não existe em
-    /// ponto nenhum do grafo, e o llama.cpp recusava o load:
+    /// The head used to be `Row` and that was a defect: its input is the output of
+    /// `output_norm.weight`, which is `Shared`, so the hidden state that reaches it
+    /// is **whole** (`n_embd`), never partitioned. Cutting it by `ne[0]` produced
+    /// a head expecting `n_embd/size` of input, a width that exists nowhere in
+    /// the graph, and llama.cpp refused the load:
     /// `check_tensor_dims: tensor 'output.weight' has wrong shape; expected
     /// 4096, 128256, got 2048, 128256` (Llama-3.1-8B-Q4_K_M, 17/08).
-    /// `validate_tensor_parallel` não podia pegar isso: ela só confere se a
-    /// dimensão divide, e 4096/2 divide.
+    /// `validate_tensor_parallel` could not catch this: it only checks whether the
+    /// dimension divides, and 4096/2 divides.
     ///
-    /// A alternativa clássica é cortar a cabeça por **vocabulário** (`ne[1]`) e
-    /// juntar os logits com um all-gather. Não cabe na v1: a coletiva do fork é
-    /// um reduce (soma), não um gather, e o llama.cpp confere `output.weight`
-    /// contra `n_vocab` - cortar ali exigiria reescrever o vocabulário por rank
-    /// e quebraria o tokenizer. Replicar custa memória e é correto;
-    /// `token_embd.weight` tem o mesmo formato e já é replicada pelo mesmo
-    /// motivo.
+    /// The classic alternative is to cut the head by **vocabulary** (`ne[1]`) and
+    /// join the logits with an all-gather. It does not fit in v1: the fork's
+    /// collective is a reduce (sum), not a gather, and llama.cpp checks `output.weight`
+    /// against `n_vocab` - cutting there would require rewriting the vocabulary per rank
+    /// and would break the tokenizer. Replicating costs memory and is correct;
+    /// `token_embd.weight` has the same shape and is already replicated for the same
+    /// reason.
     Shared,
-    /// Não shardável com segurança (MoE 3D, nome não reconhecido).
+    /// Not safely shardable (3D MoE, unrecognized name).
     Unsupported,
 }
 
-/// Classifica o papel de um tensor pelo nome (o que vem depois de `blk.N.`).
+/// Classifies a tensor's role by its name (what comes after `blk.N.`).
 fn tp_role(name: &str) -> TpRole {
     let tail = match name.strip_prefix("blk.") {
         Some(rest) => rest.splitn(2, '.').nth(1).unwrap_or(name),
@@ -1169,65 +1166,65 @@ fn tp_role(name: &str) -> TpRole {
     }
 }
 
-/// Dry-run da classificação de shard do caminho C.
+/// Dry-run of path C's shard classification.
 ///
-/// Lê a tabela de tensores de `src` e responde se `shard_tensor_parallel`
-/// conseguiria partir o modelo em `tp_size` ranks, **sem escrever nada**. É o
-/// que a tela de implantar consulta antes de aceitar o deploy, para recusar
-/// MoE/SSM/weight-tied com um erro que nomeia o tensor — em vez de deixar o
-/// job falhar na metade do apply.
+/// Reads the tensor table of `src` and answers whether `shard_tensor_parallel`
+/// could split the model into `tp_size` ranks, **without writing anything**. It
+/// is what the deploy screen consults before accepting the deploy, to refuse
+/// MoE/SSM/weight-tied with an error that names the tensor - instead of letting
+/// the job fail halfway through the apply.
 ///
-/// Espelha exatamente as recusas de `shard_tensor_parallel`; o shard chama esta
-/// função como porta de entrada, então manter as duas em sincronia é esta
-/// função ser a fonte da decisão.
+/// It mirrors exactly the refusals of `shard_tensor_parallel`; the shard calls this
+/// function as its entry gate, so keeping the two in sync means this
+/// function being the source of the decision.
 pub fn validate_tensor_parallel(src: &Path, tp_size: u32) -> Result<()> {
     if tp_size < 2 {
-        bail!("tp_size precisa ser >= 2");
+        bail!("tp_size must be >= 2");
     }
 
     let source = crate::multipart::GgufSource::open(src)?;
     let mm = source
         .parts()
         .first()
-        .ok_or_else(|| anyhow::anyhow!("GGUF sem partes"))?
+        .ok_or_else(|| anyhow::anyhow!("GGUF without parts"))?
         .map();
 
     let mut r = R { data: mm, pos: 0 };
     let magic = r.u32()?;
     if magic != GGUF_MAGIC {
-        bail!("não é um arquivo GGUF (magic={magic:#x})");
+        bail!("not a GGUF file (magic={magic:#x})");
     }
     let version = r.u32()?;
     if version != 2 && version != 3 {
-        bail!("versão GGUF {version} não suportada (esperado 2 ou 3)");
+        bail!("GGUF version {version} not supported (expected 2 or 3)");
     }
     let n_tensors = r.u64()? as usize;
     let n_kv = r.u64()? as usize;
     if n_tensors > 1_000_000 || n_kv > 100_000 {
-        bail!("cabeçalho GGUF implausível ({n_tensors} tensors, {n_kv} kv)");
+        bail!("implausible GGUF header ({n_tensors} tensors, {n_kv} kv)");
     }
 
-    // Os hiperparâmetros que o shard reescreve têm que dividir por `tp_size`,
-    // senão o arquivo sai com cabeçalho impossível. Conferir aqui é o que faz a
-    // tela recusar antes do deploy, em vez de o job morrer no meio do apply -
-    // mesma razão de existir desta função. Espelha `shard_tensor_parallel`.
+    // The hyperparameters the shard rewrites must divide by `tp_size`,
+    // otherwise the file comes out with an impossible header. Checking here is what makes
+    // the screen refuse before the deploy, instead of the job dying halfway through
+    // the apply - the same reason this function exists. Mirrors `shard_tensor_parallel`.
     for _ in 0..n_kv {
         let key = r.string()?;
         let vtype = r.u32()?;
-        let escalada = key.ends_with(".attention.head_count")
+        let scaled = key.ends_with(".attention.head_count")
             || key.ends_with(".attention.head_count_kv")
             || key.ends_with(".feed_forward_length");
-        if !escalada {
+        if !scaled {
             r.skip_value(vtype)?;
             continue;
         }
         let full = match vtype {
             T_U32 => u32::from_le_bytes(r.take(4)?.try_into().unwrap()),
             T_U64 => r.u64()? as u32,
-            _ => bail!("'{key}' não é inteiro no GGUF; não dá para dividir por {tp_size}"),
+            _ => bail!("'{key}' is not an integer in the GGUF; it cannot be divided by {tp_size}"),
         };
         if full % tp_size != 0 {
-            bail!("'{key}' = {full} não divide por {tp_size} ranks");
+            bail!("'{key}' = {full} is not divisible by {tp_size} ranks");
         }
     }
 
@@ -1244,22 +1241,22 @@ pub fn validate_tensor_parallel(src: &Path, tp_size: u32) -> Result<()> {
         })
         .collect();
 
-    // Weight-tied output (output.weight compartilha offset com token_embd)
-    // quebraria o shard: um fica inteiro e o outro partido. Recusa.
+    // Weight-tied output (output.weight shares an offset with token_embd)
+    // would break the shard: one stays whole and the other is split. Refuse.
     let embd_offset = tensors
         .iter()
         .find(|t| t.name == "token_embd.weight")
         .map(|t| t.src_offset);
     if let Some(out) = tensors.iter().find(|t| t.name == "output.weight") {
         if embd_offset == Some(out.src_offset) {
-            bail!("output.weight empatado com token_embd.weight não é suportado no shard (v1)");
+            bail!("output.weight tied to token_embd.weight is not supported in the shard (v1)");
         }
     }
 
     for t in &tensors {
         if t.byte_size == 0 {
             bail!(
-                "tamanho desconhecido para o tensor '{}' (tipo ggml {})",
+                "unknown size for tensor '{}' (ggml type {})",
                 t.name,
                 t.dtype
             );
@@ -1267,29 +1264,29 @@ pub fn validate_tensor_parallel(src: &Path, tp_size: u32) -> Result<()> {
         let role = tp_role(&t.name);
         match role {
             TpRole::Unsupported => {
-                bail!("tensor '{}' não é shardável no caminho C (v1)", t.name);
+                bail!("tensor '{}' is not shardable on path C (v1)", t.name);
             }
             TpRole::Shared => {}
             TpRole::Column | TpRole::Row => {
                 if t.dims.len() < 2 {
-                    bail!("tensor '{}' 1D não pode ser {role:?}", t.name);
+                    bail!("1D tensor '{}' cannot be {role:?}", t.name);
                 }
                 let ne0 = t.dims[0];
                 let ne1 = t.dims[1];
                 if t.byte_size % ne1 != 0 {
-                    bail!("tensor '{}' tem tamanho não alinhado a ne[1]={ne1}", t.name);
+                    bail!("tensor '{}' has a size not aligned to ne[1]={ne1}", t.name);
                 }
                 let row_stride = t.byte_size / ne1;
                 match role {
                     TpRole::Column => {
                         if ne1 % tp_size as u64 != 0 {
-                            bail!("ne[1]={ne1} de '{}' não divide por {tp_size}", t.name);
+                            bail!("ne[1]={ne1} of '{}' is not divisible by {tp_size}", t.name);
                         }
                     }
                     TpRole::Row => {
                         if row_stride % tp_size as u64 != 0 {
                             bail!(
-                                "ne[0]={ne0} de '{}' (tipo ggml {}) não divide por {tp_size} em limite de bloco",
+                                "ne[0]={ne0} of '{}' (ggml type {}) is not divisible by {tp_size} on a block boundary",
                                 t.name,
                                 t.dtype
                             );
@@ -1318,7 +1315,7 @@ pub fn estimate_tensor_parallel_output_bytes(src: &Path, tp_size: u32) -> Result
         .parts()
         .first()
         .map(|part| part.data_start() as u64)
-        .ok_or_else(|| anyhow::anyhow!("GGUF sem partes"))?
+        .ok_or_else(|| anyhow::anyhow!("GGUF without parts"))?
         .saturating_add(1 << 20);
     let payload_per_rank = source.tensors().iter().try_fold(0u64, |sum, tensor| {
         let bytes = match tp_role(&tensor.name) {
@@ -1326,31 +1323,31 @@ pub fn estimate_tensor_parallel_output_bytes(src: &Path, tp_size: u32) -> Result
             TpRole::Column | TpRole::Row => tensor.byte_size / u64::from(tp_size),
             TpRole::Unsupported => {
                 return Err(anyhow::anyhow!(
-                    "tensor '{}' não é shardável no caminho C (v1)",
+                    "tensor '{}' is not shardable on path C (v1)",
                     tensor.name
                 ));
             }
         };
         sum.checked_add(align_up(bytes))
-            .ok_or_else(|| anyhow::anyhow!("overflow ao estimar saída TP"))
+            .ok_or_else(|| anyhow::anyhow!("overflow while estimating the TP output"))
     })?;
     payload_per_rank
         .checked_add(header_budget)
         .and_then(|per_rank| per_rank.checked_mul(u64::from(tp_size)))
-        .ok_or_else(|| anyhow::anyhow!("overflow ao estimar saída TP"))
+        .ok_or_else(|| anyhow::anyhow!("overflow while estimating the TP output"))
 }
 
-/// Shard de um modelo GGUF por tensor parallelism.
+/// Shard of a GGUF model by tensor parallelism.
 ///
-/// Produz em `dst` um GGUF estruturalmente válido com os tensores do rank
-/// `tp_rank` de um grupo de `tp_size`: projeções de saída partidas em fatias
-/// contíguas (coluna), projeções de entrada partidas em fatias alinhadas ao
-/// bloco do tipo ggml (linha) e o resto replicado. Todas as camadas continuam
-/// presentes; não há remapeamento de nome nem mudança de `block_count`.
+/// Produces in `dst` a structurally valid GGUF with the tensors of rank
+/// `tp_rank` of a group of `tp_size`: output projections split into
+/// contiguous slices (column), input projections split into slices aligned to
+/// the ggml type's block (row), and the rest replicated. All layers remain
+/// present; there is no name remapping nor change to `block_count`.
 ///
-/// Um shard não é um modelo autossuficiente: o llama.cpp de hoje não o carrega
-/// sozinho. Ele é a metade que o fork do llama.cpp (caminho C) carrega junto
-/// com a coletiva all-reduce.
+/// A shard is not a self-sufficient model: today's llama.cpp does not load it
+/// on its own. It is the half that the llama.cpp fork (path C) loads together
+/// with the all-reduce collective.
 pub fn shard_tensor_parallel(
     src: &Path,
     dst: &Path,
@@ -1359,56 +1356,56 @@ pub fn shard_tensor_parallel(
     on_progress: impl Fn(f64),
 ) -> Result<WrittenSlice> {
     if tp_size < 2 {
-        bail!("tp_size precisa ser >= 2");
+        bail!("tp_size must be >= 2");
     }
     if tp_rank >= tp_size {
-        bail!("tp_rank {tp_rank} fora de um grupo de {tp_size}");
+        bail!("tp_rank {tp_rank} outside a group of {tp_size}");
     }
-    // A decisão "este modelo dá para partir" é uma só: o dry-run acima é a
-    // porta de entrada, e as checagens abaixo (redundantes depois dele) ficam
-    // como rede de segurança do layout.
+    // The "this model can be split" decision is a single one: the dry-run above is
+    // the entry gate, and the checks below (redundant after it) stay
+    // as a safety net for the layout.
     validate_tensor_parallel(src, tp_size)?;
 
     let source = crate::multipart::GgufSource::open(src)?;
     let mm = source
         .parts()
         .first()
-        .ok_or_else(|| anyhow::anyhow!("GGUF sem partes"))?
+        .ok_or_else(|| anyhow::anyhow!("GGUF without parts"))?
         .map();
 
     let mut r = R { data: mm, pos: 0 };
     let magic = r.u32()?;
     if magic != GGUF_MAGIC {
-        bail!("não é um arquivo GGUF (magic={magic:#x})");
+        bail!("not a GGUF file (magic={magic:#x})");
     }
     let version = r.u32()?;
     if version != 2 && version != 3 {
-        bail!("versão GGUF {version} não suportada (esperado 2 ou 3)");
+        bail!("GGUF version {version} not supported (expected 2 or 3)");
     }
     let n_tensors = r.u64()? as usize;
     let n_kv = r.u64()? as usize;
     if n_tensors > 1_000_000 || n_kv > 100_000 {
-        bail!("cabeçalho GGUF implausível ({n_tensors} tensors, {n_kv} kv)");
+        bail!("implausible GGUF header ({n_tensors} tensors, {n_kv} kv)");
     }
 
-    // KV: passa tudo como está, menos as chaves pom.* (re-adicionadas abaixo) e
-    // os hiperparâmetros que descrevem uma **largura** particionada.
+    // KV: pass everything through as is, except the pom.* keys (re-added below) and
+    // the hyperparameters that describe a partitioned **width**.
     //
-    // `block_count` e `embedding_length` de fato não mudam: todas as camadas
-    // seguem presentes, e o eixo do resíduo (`n_embd`) é o único que atravessa
-    // o all-reduce inteiro. Mas três chaves descrevem exatamente as dimensões
-    // que o shard corta, e deixá-las passar intactas foi o defeito de 17/08: o
-    // tensor saía com metade da largura e o cabeçalho continuava prometendo a
-    // largura cheia, então o llama.cpp recusava o load com
+    // `block_count` and `embedding_length` really do not change: all layers
+    // remain present, and the residual axis (`n_embd`) is the only one that crosses
+    // the whole all-reduce. But three keys describe exactly the dimensions
+    // the shard cuts, and letting them through untouched was the 17/08 defect: the
+    // tensor came out with half the width while the header kept promising the
+    // full width, so llama.cpp refused the load with
     // `'blk.0.attn_q.weight' has wrong shape; expected 4096, 4096, got 4096, 2048`.
     //
-    // - `attention.head_count`    -> colunas de `attn_q`   (n_head * head_dim)
-    // - `attention.head_count_kv` -> colunas de `attn_k/v`  (n_head_kv * head_dim)
-    // - `feed_forward_length`     -> colunas de `ffn_gate/up` e linhas de `ffn_down`
+    // - `attention.head_count`    -> columns of `attn_q`   (n_head * head_dim)
+    // - `attention.head_count_kv` -> columns of `attn_k/v`  (n_head_kv * head_dim)
+    // - `feed_forward_length`     -> columns of `ffn_gate/up` and rows of `ffn_down`
     //
-    // Dividir a contagem de cabeças (e não `head_dim`) é o que mantém cada
-    // cabeça inteira num rank só: cabeça partida ao meio daria atenção errada
-    // sem nenhum erro de forma para acusar.
+    // Dividing the head count (and not `head_dim`) is what keeps each head
+    // whole on a single rank: a head split in half would give wrong attention
+    // with no shape error to flag it.
     let tp_scaled_key = |key: &str| -> bool {
         key.ends_with(".attention.head_count")
             || key.ends_with(".attention.head_count_kv")
@@ -1425,14 +1422,16 @@ pub fn shard_tensor_parallel(
                 T_U32 => u32::from_le_bytes(r.take(4)?.try_into().unwrap()),
                 T_U64 => r.u64()? as u32,
                 _ => {
-                    // Tipo inesperado para um hiperparâmetro numérico: recusar é
-                    // a única saída honesta. Passar adiante produziria um shard
-                    // que carrega e responde errado.
-                    bail!("'{key}' não é inteiro no GGUF; não dá para dividir por {tp_size}");
+                    // Unexpected type for a numeric hyperparameter: refusing is
+                    // the only honest way out. Passing it on would produce a shard
+                    // that loads and answers wrong.
+                    bail!(
+                        "'{key}' is not an integer in the GGUF; it cannot be divided by {tp_size}"
+                    );
                 }
             };
             if full % tp_size != 0 {
-                bail!("'{key}' = {full} não divide por {tp_size} ranks");
+                bail!("'{key}' = {full} is not divisible by {tp_size} ranks");
             }
             kv_out.push(KvOut::Encoded(encode_kv_u32(&key, full / tp_size)));
             continue;
@@ -1446,11 +1445,11 @@ pub fn shard_tensor_parallel(
         &crate::brand::gguf_key("tp_shard"),
         1,
     )));
-    // Qual **regra** escreveu este arquivo. Sem isto o reaproveitamento em
-    // `plan::extract_tp_shard` era "existe e tem mais de 1 KB", que não sabe
-    // distinguir um shard atual de um escrito por uma versão com defeito: em
-    // 17/08 a ksia continuou carregando um shard de cabeçalho não dividido
-    // durante três correções seguidas, e o log dizia "reaproveitando".
+    // Which **rule** wrote this file. Without this, the reuse in
+    // `plan::extract_tp_shard` was "exists and is larger than 1 KB", which cannot
+    // tell a current shard from one written by a defective version: on
+    // 17/08 ksia kept loading a shard with an undivided header
+    // through three fixes in a row, and the log said "reusing".
     kv_out.push(KvOut::Encoded(encode_kv_u32(
         &crate::brand::gguf_key("tp_format"),
         TP_SHARD_FORMAT,
@@ -1482,23 +1481,23 @@ pub fn shard_tensor_parallel(
         .map(|index| &all_tensors[index])
         .collect::<Vec<_>>();
 
-    // Weight-tied output (output.weight compartilha offset com token_embd)
-    // quebraria o shard: um fica inteiro e o outro partido. Recusa.
+    // Weight-tied output (output.weight shares an offset with token_embd)
+    // would break the shard: one stays whole and the other is split. Refuse.
     let embd_offset = all_tensors
         .iter()
         .find(|t| t.name == "token_embd.weight")
         .map(|t| t.src_offset);
     if let Some(out) = all_tensors.iter().find(|t| t.name == "output.weight") {
         if embd_offset == Some(out.src_offset) {
-            bail!("output.weight empatado com token_embd.weight não é suportado no shard (v1)");
+            bail!("output.weight tied to token_embd.weight is not supported in the shard (v1)");
         }
     }
 
-    // Segmento de bytes a copiar do fonte para o destino.
+    // Segment of bytes to copy from the source to the destination.
     #[derive(Debug, Clone, Copy)]
     struct Seg {
         part_index: usize,
-        src: usize, // offset relativo à seção de dados da parte
+        src: usize, // offset relative to the part's data section
         len: usize,
     }
     #[derive(Debug)]
@@ -1513,7 +1512,7 @@ pub fn shard_tensor_parallel(
     for t in ordered_tensors {
         if t.byte_size == 0 {
             bail!(
-                "tamanho desconhecido para o tensor '{}' (tipo ggml {})",
+                "unknown size for tensor '{}' (ggml type {})",
                 t.name,
                 t.dtype
             );
@@ -1521,7 +1520,7 @@ pub fn shard_tensor_parallel(
         let role = tp_role(&t.name);
         match role {
             TpRole::Unsupported => {
-                bail!("tensor '{}' não é shardável no caminho C (v1)", t.name);
+                bail!("tensor '{}' is not shardable on path C (v1)", t.name);
             }
             TpRole::Shared => out_tensors.push(OutT {
                 name: t.name.clone(),
@@ -1535,19 +1534,19 @@ pub fn shard_tensor_parallel(
             }),
             TpRole::Column | TpRole::Row => {
                 if t.dims.len() < 2 {
-                    bail!("tensor '{}' 1D não pode ser {role:?}", t.name);
+                    bail!("1D tensor '{}' cannot be {role:?}", t.name);
                 }
                 let ne0 = t.dims[0];
                 let ne1 = t.dims[1];
                 if t.byte_size % ne1 != 0 {
-                    bail!("tensor '{}' tem tamanho não alinhado a ne[1]={ne1}", t.name);
+                    bail!("tensor '{}' has a size not aligned to ne[1]={ne1}", t.name);
                 }
-                let row_stride = t.byte_size / ne1; // bytes por linha completa
+                let row_stride = t.byte_size / ne1; // bytes per full row
                 let mut dims = t.dims.clone();
                 let segs: Vec<Seg> = match role {
                     TpRole::Column => {
                         if ne1 % tp_size as u64 != 0 {
-                            bail!("ne[1]={ne1} de '{}' não divide por {tp_size}", t.name);
+                            bail!("ne[1]={ne1} of '{}' is not divisible by {tp_size}", t.name);
                         }
                         let new_ne1 = ne1 / tp_size as u64;
                         dims[1] = new_ne1;
@@ -1561,7 +1560,7 @@ pub fn shard_tensor_parallel(
                     TpRole::Row => {
                         if row_stride % tp_size as u64 != 0 {
                             bail!(
-                                "ne[0]={ne0} de '{}' (tipo ggml {}) não divide por {tp_size} em limite de bloco",
+                                "ne[0]={ne0} of '{}' (ggml type {}) is not divisible by {tp_size} on a block boundary",
                                 t.name,
                                 t.dtype
                             );
@@ -1620,9 +1619,9 @@ pub fn shard_tensor_parallel(
 
     if let Some(parent) = dst.parent() {
         std::fs::create_dir_all(parent)
-            .with_context(|| format!("criar diretório {}", parent.display()))?;
+            .with_context(|| format!("create directory {}", parent.display()))?;
     }
-    let dst_file = File::create(dst).with_context(|| format!("criar {}", dst.display()))?;
+    let dst_file = File::create(dst).with_context(|| format!("create {}", dst.display()))?;
     let mut w = crate::pom::HashingWriter::new(BufWriter::with_capacity(CHUNK, dst_file));
 
     w.write_all(&GGUF_MAGIC.to_le_bytes())?;
@@ -1654,16 +1653,16 @@ pub fn shard_tensor_parallel(
         let size = t.segs.iter().map(|s| s.len as u64).sum::<u64>();
         for seg in &t.segs {
             let part = source.parts().get(seg.part_index).ok_or_else(|| {
-                anyhow::anyhow!("parte {} ausente ao escrever '{}'", seg.part_index, t.name)
+                anyhow::anyhow!("part {} missing while writing '{}'", seg.part_index, t.name)
             })?;
             let start = part
                 .data_start()
                 .checked_add(seg.src)
-                .ok_or_else(|| anyhow::anyhow!("offset de tensor fora do arquivo"))?;
+                .ok_or_else(|| anyhow::anyhow!("tensor offset outside the file"))?;
             let bytes = part
                 .map()
                 .get(start..start + seg.len)
-                .ok_or_else(|| anyhow::anyhow!("tensor '{}' truncado", t.name))?;
+                .ok_or_else(|| anyhow::anyhow!("tensor '{}' truncated", t.name))?;
             let mut pos = 0usize;
             while pos < bytes.len() {
                 let n = CHUNK.min(bytes.len() - pos);
@@ -1685,7 +1684,7 @@ pub fn shard_tensor_parallel(
     let (sha256, final_size) = w.finish();
 
     info!(
-        "shard de tensor pronto: {} ({:.0} MB, sha256 {})",
+        "tensor shard ready: {} ({:.0} MB, sha256 {})",
         dst.display(),
         final_size as f64 / (1024.0 * 1024.0),
         &sha256[..12]
@@ -1791,16 +1790,16 @@ fn parse_merged_src(mm: &[u8]) -> Result<MergedSrc> {
 
     let magic = r.u32()?;
     if magic != GGUF_MAGIC {
-        bail!("não é um arquivo GGUF (magic={magic:#x})");
+        bail!("not a GGUF file (magic={magic:#x})");
     }
     let version = r.u32()?;
     if version != 2 && version != 3 {
-        bail!("versão GGUF {version} não suportada (esperado 2 ou 3)");
+        bail!("GGUF version {version} not supported (expected 2 or 3)");
     }
     let n_tensors = r.u64()? as usize;
     let n_kv = r.u64()? as usize;
     if n_tensors > 1_000_000 || n_kv > 100_000 {
-        bail!("cabeçalho GGUF implausível ({n_tensors} tensors, {n_kv} kv)");
+        bail!("implausible GGUF header ({n_tensors} tensors, {n_kv} kv)");
     }
 
     let mut arch = "llama".to_string();
@@ -1851,7 +1850,7 @@ fn parse_merged_src(mm: &[u8]) -> Result<MergedSrc> {
         let name = r.string()?;
         let n_dims = r.u32()? as usize;
         if n_dims > 8 {
-            bail!("rank {n_dims} implausível para tensor '{name}'");
+            bail!("implausible rank {n_dims} for tensor '{name}'");
         }
         let dims: Vec<u64> = (0..n_dims).map(|_| r.u64()).collect::<Result<_>>()?;
         let dtype = r.u32()?;
@@ -1923,11 +1922,13 @@ fn merge_layer_array(
             .end_layer
             .checked_sub(part.start_layer)
             .and_then(|count| count.checked_add(1))
-            .ok_or_else(|| anyhow::anyhow!("overflow ao contar camadas da fatia {index}"))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("overflow while counting the layers of slice {index}")
+            })?;
         if let Some(block_count) = parsed[index].block_count {
             if block_count != local_count {
                 bail!(
-                    "a fatia L{}-{} declara {} blocos, esperado {}",
+                    "slice L{}-{} declares {} blocks, expected {}",
                     part.start_layer,
                     part.end_layer,
                     block_count,
@@ -1940,14 +1941,14 @@ fn merge_layer_array(
             .kv
             .iter()
             .find(|entry| entry.key == key)
-            .ok_or_else(|| anyhow::anyhow!("metadata '{}' ausente na fatia {}", key, index + 1))?;
+            .ok_or_else(|| anyhow::anyhow!("metadata '{}' missing in slice {}", key, index + 1))?;
         let array = entry.array.ok_or_else(|| {
-            anyhow::anyhow!("metadata '{}' não é array na fatia {}", key, index + 1)
+            anyhow::anyhow!("metadata '{}' is not an array in slice {}", key, index + 1)
         })?;
         if let Some(previous) = element_type {
             if previous != array.element_type {
                 bail!(
-                    "metadata '{}' muda o tipo de elemento entre fatias ({} e {})",
+                    "metadata '{}' changes the element type between slices ({} and {})",
                     key,
                     previous,
                     array.element_type
@@ -1959,17 +1960,17 @@ fn merge_layer_array(
 
         if array.count == 1 {
             if !layer_payload.is_empty() || suffix.is_some() {
-                bail!("metadata '{}' mistura array broadcast e por camada", key);
+                bail!("metadata '{}' mixes broadcast and per-layer arrays", key);
             }
             broadcast = true;
             continue;
         }
         if broadcast {
-            bail!("metadata '{}' mistura array broadcast e por camada", key);
+            bail!("metadata '{}' mixes broadcast and per-layer arrays", key);
         }
         let element_size = scalar_size(array.element_type).ok_or_else(|| {
             anyhow::anyhow!(
-                "array metadata '{}' tem elementos aninhados e não pode ser reconstruído",
+                "metadata array '{}' has nested elements and cannot be rebuilt",
                 key
             )
         })?;
@@ -1979,7 +1980,7 @@ fn merge_layer_array(
             .ok_or_else(|| anyhow::anyhow!("overflow no array metadata '{}'", key))?;
         if array.count < u64::from(local_count) {
             bail!(
-                "array metadata '{}' tem comprimento {}; esperado pelo menos {} na fatia",
+                "metadata array '{}' has length {}; expected at least {} in the slice",
                 key,
                 array.count,
                 local_count
@@ -1987,19 +1988,19 @@ fn merge_layer_array(
         }
         let payload = mmaps[index]
             .get(array.payload_start..array.payload_end)
-            .ok_or_else(|| anyhow::anyhow!("array metadata '{}' truncado", key))?;
+            .ok_or_else(|| anyhow::anyhow!("metadata array '{}' truncated", key))?;
         let layer = payload
             .get(..layer_bytes)
-            .ok_or_else(|| anyhow::anyhow!("array metadata '{}' truncado", key))?;
+            .ok_or_else(|| anyhow::anyhow!("metadata array '{}' truncated", key))?;
         layer_payload.extend_from_slice(layer);
 
         let tail = payload
             .get(layer_bytes..)
-            .ok_or_else(|| anyhow::anyhow!("array metadata '{}' truncado", key))?;
+            .ok_or_else(|| anyhow::anyhow!("metadata array '{}' truncated", key))?;
         if !tail.is_empty() {
             match &suffix {
                 Some(previous) if previous != tail => {
-                    bail!("o sufixo de metadata '{}' diverge entre fatias", key)
+                    bail!("the metadata suffix '{}' differs between slices", key)
                 }
                 Some(_) => {}
                 None => suffix = Some(tail.to_vec()),
@@ -2011,7 +2012,7 @@ fn merge_layer_array(
         return Ok(None);
     }
     let element_type =
-        element_type.ok_or_else(|| anyhow::anyhow!("metadata '{}' sem entradas", key))?;
+        element_type.ok_or_else(|| anyhow::anyhow!("metadata '{}' without entries", key))?;
     if let Some(suffix) = suffix {
         layer_payload.extend_from_slice(&suffix);
     }
@@ -2029,12 +2030,12 @@ fn merge_layer_array(
 /// Returns the byte size of the output file.
 pub fn merge(parts: &[MergePart], dst: &Path, on_progress: impl Fn(f64)) -> Result<WrittenSlice> {
     if parts.len() < 2 {
-        bail!("juntar menos de duas fatias não faz sentido");
+        bail!("merging fewer than two slices makes no sense");
     }
     for w in parts.windows(2) {
         if w[1].start_layer != w[0].end_layer + 1 {
             bail!(
-                "as fatias L{}-{} e L{}-{} não são vizinhas",
+                "slices L{}-{} and L{}-{} are not neighbors",
                 w[0].start_layer,
                 w[0].end_layer,
                 w[1].start_layer,
@@ -2046,8 +2047,7 @@ pub fn merge(parts: &[MergePart], dst: &Path, on_progress: impl Fn(f64)) -> Resu
     let mut mmaps: Vec<Mmap> = Vec::with_capacity(parts.len());
     let mut parsed: Vec<MergedSrc> = Vec::with_capacity(parts.len());
     for p in parts {
-        let src_file =
-            File::open(&p.path).with_context(|| format!("abrir {}", p.path.display()))?;
+        let src_file = File::open(&p.path).with_context(|| format!("open {}", p.path.display()))?;
         let mm = unsafe { Mmap::map(&src_file) }
             .with_context(|| format!("mmap {}", p.path.display()))?;
         parsed.push(parse_merged_src(&mm)?);
@@ -2058,7 +2058,7 @@ pub fn merge(parts: &[MergePart], dst: &Path, on_progress: impl Fn(f64)) -> Resu
     for (i, p) in parsed.iter().enumerate().skip(1) {
         if p.arch != arch {
             bail!(
-                "as fatias não são do mesmo modelo: a arquitetura da primeira é {arch} e a da {}ª é {}",
+                "the slices are not from the same model: the architecture of the first is {arch} and that of number {} is {}",
                 i + 1,
                 p.arch
             );
@@ -2093,7 +2093,7 @@ pub fn merge(parts: &[MergePart], dst: &Path, on_progress: impl Fn(f64)) -> Resu
                     .iter()
                     .find(|candidate| candidate.key == *key)
                     .ok_or_else(|| {
-                        anyhow::anyhow!("metadata '{}' ausente na fatia {}", key, index + 1)
+                        anyhow::anyhow!("metadata '{}' missing in slice {}", key, index + 1)
                     })?;
                 let source_value = merged_scalar_u32(
                     mmaps[index].as_ref(),
@@ -2102,7 +2102,7 @@ pub fn merge(parts: &[MergePart], dst: &Path, on_progress: impl Fn(f64)) -> Resu
                 )
                 .ok_or_else(|| {
                     anyhow::anyhow!(
-                        "metadata '{}' não é um inteiro escalar válido na fatia {}",
+                        "metadata '{}' is not a valid scalar integer in slice {}",
                         key,
                         index + 1
                     )
@@ -2172,8 +2172,7 @@ pub fn merge(parts: &[MergePart], dst: &Path, on_progress: impl Fn(f64)) -> Resu
             }
             if t.byte_size == 0 {
                 bail!(
-                    "tamanho desconhecido para o tensor '{}' (tipo ggml {}): juntar \
-                     produziria um arquivo corrompido",
+                    "unknown size for tensor '{}' (ggml type {}): merging would produce a corrupted file",
                     t.name,
                     t.dtype
                 );
@@ -2195,7 +2194,7 @@ pub fn merge(parts: &[MergePart], dst: &Path, on_progress: impl Fn(f64)) -> Resu
     }
 
     if out.is_empty() {
-        bail!("nenhum tensor para juntar");
+        bail!("no tensor to merge");
     }
 
     // Same ground-truth recomputation as `split`, over the merged file's own
@@ -2238,9 +2237,9 @@ pub fn merge(parts: &[MergePart], dst: &Path, on_progress: impl Fn(f64)) -> Resu
 
     if let Some(parent) = dst.parent() {
         std::fs::create_dir_all(parent)
-            .with_context(|| format!("criar diretório {}", parent.display()))?;
+            .with_context(|| format!("create directory {}", parent.display()))?;
     }
-    let dst_file = File::create(dst).with_context(|| format!("criar {}", dst.display()))?;
+    let dst_file = File::create(dst).with_context(|| format!("create {}", dst.display()))?;
     let mut w = crate::pom::HashingWriter::new(BufWriter::with_capacity(CHUNK, dst_file));
 
     w.write_all(&GGUF_MAGIC.to_le_bytes())?;
@@ -2297,7 +2296,7 @@ pub fn merge(parts: &[MergePart], dst: &Path, on_progress: impl Fn(f64)) -> Resu
     let (sha256, final_size) = w.finish();
 
     info!(
-        "fatias juntadas: {} ({:.0} MB, sha256 {})",
+        "slices merged: {} ({:.0} MB, sha256 {})",
         dst.display(),
         final_size as f64 / (1024.0 * 1024.0),
         &sha256[..12]
@@ -2334,9 +2333,9 @@ pub(crate) fn test_gguf_bytes(n_blocks: u32) -> Vec<u8> {
             T_F32,
             f32v(&data),
         ));
-        // Um tensor `Row` de verdade (entrada já particionada pelos Column do
-        // mesmo bloco). Sem ele o fixture não cobre o corte por ne[0]: a cabeça
-        // de saída era o único Row aqui, e ela passou a ser replicada.
+        // A genuine `Row` tensor (input already partitioned by the Column tensors of the
+        // same block). Without it the fixture does not cover the ne[0] cut: the output
+        // head was the only Row here, and it became replicated.
         tensors.push((
             format!("blk.{i}.ffn_down.weight"),
             vec![n, n],
@@ -2388,9 +2387,9 @@ pub(crate) fn test_gguf_bytes(n_blocks: u32) -> Vec<u8> {
         u32_kv("llama.embedding_length", n as u32),
         u32_kv("llama.block_count", n_blocks),
         u32_kv("llama.vocab_size", n as u32),
-        // As três larguras que um shard de tensor parallelism reescreve. Sem
-        // elas o fixture não cobre a divisão do cabeçalho, que é metade da
-        // correção: tensor cortado com cabeçalho intacto não carrega.
+        // The three widths that a tensor parallelism shard rewrites. Without
+        // them the fixture does not cover the header division, which is half of the
+        // fix: a tensor cut with an intact header does not load.
         u32_kv("llama.attention.head_count", 4),
         u32_kv("llama.attention.head_count_kv", 2),
         u32_kv("llama.feed_forward_length", 4),
@@ -3211,7 +3210,7 @@ mod tests {
             .tensors()
             .iter()
             .find(|tensor| tensor.name == name)
-            .unwrap_or_else(|| panic!("tensor {name} não encontrado"));
+            .unwrap_or_else(|| panic!("tensor {name} not found"));
         let part = &source.parts()[tensor.part_index];
         let start = part.data_start() + tensor.offset as usize;
         part.map()[start..start + tensor.byte_size as usize].to_vec()
@@ -3222,7 +3221,7 @@ mod tests {
             .tensors
             .iter()
             .find(|t| t.name == name)
-            .unwrap_or_else(|| panic!("tensor {name} não encontrado"));
+            .unwrap_or_else(|| panic!("tensor {name} not found"));
         &mm[p.data_start + t.src_offset as usize
             ..p.data_start + t.src_offset as usize + t.byte_size as usize]
     }
@@ -3432,7 +3431,7 @@ mod tests {
         assert_eq!(
             kv_u32(&mm, "llama.block_count"),
             Some(4),
-            "o total é a união das duas faixas"
+            "the total is the union of the two ranges"
         );
         assert_eq!(p.original_block_count, Some(4));
 
@@ -3452,7 +3451,7 @@ mod tests {
                 "output_norm.weight",
                 "output.weight",
             ],
-            "cada bloco volta ao seu lugar e a duplicata some"
+            "each block returns to its place and the duplicate disappears"
         );
 
         // The second slice's blocks carry their own data, not the first's:
@@ -3502,7 +3501,7 @@ mod tests {
             |_| {},
         )
         .unwrap_err();
-        assert!(err.to_string().contains("não são vizinhas"), "{err}");
+        assert!(err.to_string().contains("are not neighbors"), "{err}");
     }
 
     #[test]
@@ -3520,8 +3519,7 @@ mod tests {
         assert_eq!(
             kv_u32(&std::fs::read(&mid).unwrap(), "qwen35.nextn_predict_layers"),
             Some(0),
-            "fatia intermediária não tem o bloco nextn (MTP): mantê-lo em 1 faria \
-             o llama.cpp exigir 'blk.2.nextn.eh_proj.weight' e abortar o load"
+            "an intermediate slice does not have the nextn block (MTP): keeping it at 1 would make llama.cpp require 'blk.2.nextn.eh_proj.weight' and abort the load"
         );
         assert_eq!(
             kv_u32(
@@ -3529,7 +3527,7 @@ mod tests {
                 "qwen35.nextn_predict_layers"
             ),
             Some(1),
-            "a fatia final carrega o bloco nextn e preserva o valor original"
+            "the final slice carries the nextn block and preserves the original value"
         );
     }
 
@@ -3570,7 +3568,7 @@ mod tests {
                 "qwen35.nextn_predict_layers"
             ),
             Some(1),
-            "a metadata relativa ao fim deve vir da fatia final"
+            "the end-relative metadata must come from the final slice"
         );
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -3618,18 +3616,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// A fatia 0-23 do Qwen3.8-27B-Q3_K_S, com a forma exata do modelo que
-    /// falhou: 65 blocos, `qwen35.nextn_predict_layers = 1` e o bloco `nextn`
-    /// só em `blk.64`. Copiar essa marca para a fatia 0-23 faz o llama.cpp
-    /// derivar `blk.23.nextn.eh_proj.weight` do hiperparâmetro e abortar o
-    /// load com "missing tensor" — foi o que aconteceu na salem-gpu em
-    /// 2026-08-14, enquanto a 24-64 (`block_count = 41`, último bloco = o 64
-    /// original) carregava na ksia.
+    /// Slice 0-23 of Qwen3.8-27B-Q3_K_S, with the exact shape of the model that
+    /// failed: 65 blocks, `qwen35.nextn_predict_layers = 1` and the `nextn` block
+    /// only in `blk.64`. Copying that marker into slice 0-23 makes llama.cpp
+    /// derive `blk.23.nextn.eh_proj.weight` from the hyperparameter and abort the
+    /// load with "missing tensor" - that is what happened on salem-gpu on
+    /// 2026-08-14, while 24-64 (`block_count = 41`, last block = the original
+    /// 64) loaded on ksia.
     ///
-    /// O teste menor acima prova a mesma regra; este prova que ela vale nos
-    /// números reais, que é o que o defeito relatado citava: fatia não-final
-    /// declara zero e não leva tensor `nextn` nenhum; a final declara 1 e leva
-    /// o bloco, renumerado para `blk.40.*`.
+    /// The smaller test above proves the same rule; this one proves it holds on the
+    /// real numbers, which is what the reported defect cited: a non-final slice
+    /// declares zero and carries no `nextn` tensor at all; the final one declares 1 and
+    /// carries the block, renumbered to `blk.40.*`.
     #[test]
     fn the_qwen38_27b_slice_0_23_carries_no_nextn_block_nor_its_hyperparameter() {
         let dir = std::env::temp_dir().join(format!("pom-nextn-27b-{}", std::process::id()));
@@ -3648,8 +3646,7 @@ mod tests {
         assert_eq!(
             kv_u32(&head_bytes, "qwen35.nextn_predict_layers"),
             Some(0),
-            "a fatia 0-23 não tem o bloco nextn: declarar 1 faz o llama.cpp \
-             exigir 'blk.23.nextn.eh_proj.weight' e abortar o load"
+            "slice 0-23 does not have the nextn block: declaring 1 makes llama.cpp require 'blk.23.nextn.eh_proj.weight' and abort the load"
         );
         assert_eq!(kv_u32(&head_bytes, "qwen35.block_count"), Some(24));
         let head_src = parse_merged_src(&head_bytes).unwrap();
@@ -3661,13 +3658,13 @@ mod tests {
             .collect();
         assert!(
             head_nextn.is_empty(),
-            "a fatia 0-23 não deveria levar tensor nextn nenhum, levou {head_nextn:?}"
+            "slice 0-23 should carry no nextn tensor at all, it carried {head_nextn:?}"
         );
 
         assert_eq!(
             kv_u32(&tail_bytes, "qwen35.nextn_predict_layers"),
             Some(1),
-            "a fatia final carrega o bloco nextn de verdade e preserva a marca"
+            "the final slice really carries the nextn block and preserves the mark"
         );
         assert_eq!(kv_u32(&tail_bytes, "qwen35.block_count"), Some(41));
         let tail_src = parse_merged_src(&tail_bytes).unwrap();
@@ -3679,19 +3676,19 @@ mod tests {
             .collect();
         assert!(
             tail_nextn.contains(&"blk.40.nextn.eh_proj.weight"),
-            "o bloco nextn do blk.64 original tem que virar blk.40 na fatia 24-64, veio {tail_nextn:?}"
+            "the nextn block of the original blk.64 must become blk.40 in slice 24-64, got {tail_nextn:?}"
         );
     }
 
-    /// A fatia 35-64 do Qwen3.8-27B-Q3_K_S — a forma exata do arquivo que
-    /// falhou com "missing tensor 'blk.0.ssm_conv1d.weight'" em 2026-08-16.
+    /// Slice 35-64 of Qwen3.8-27B-Q3_K_S - the exact shape of the file that
+    /// failed with "missing tensor 'blk.0.ssm_conv1d.weight'" on 2026-08-16.
     ///
-    /// O modelo é híbrido: camadas recorrentes (SSM/linear attention) levam
-    /// `ssm_conv1d.weight`, e llama.cpp decide qual é qual, na ausência de um
-    /// array explícito, pela fórmula `(i+1) % full_attention_interval != 0`
-    /// sobre o índice ABSOLUTO da camada. `split` renumeia `blk.35` para
-    /// `blk.0`; sem o array explícito, o llama.cpp da fatia recalcula com
-    /// i=0 (em vez de 35) e erra qual bloco local precisa do tensor.
+    /// The model is hybrid: recurrent layers (SSM/linear attention) carry
+    /// `ssm_conv1d.weight`, and llama.cpp decides which is which, in the absence of an
+    /// explicit array, by the formula `(i+1) % full_attention_interval != 0`
+    /// over the layer's ABSOLUTE index. `split` renumbers `blk.35` to
+    /// `blk.0`; without the explicit array, the slice's llama.cpp recomputes with
+    /// i=0 (instead of 35) and gets wrong which local block needs the tensor.
     #[test]
     fn hybrid_slice_carries_an_explicit_ground_truth_recurrent_layers_array() {
         let dir = std::env::temp_dir().join(format!("pom-hybrid-27b-{}", std::process::id()));
@@ -3707,7 +3704,7 @@ mod tests {
         // that failed in production); 36,37,38 are recurrent. Local j =
         // global - 35.
         let flags = kv_u32_array(&tail_bytes, "qwen35.attention.recurrent_layers")
-            .expect("fatia híbrida precisa do array explícito de camadas recorrentes");
+            .expect("a hybrid slice needs the explicit array of recurrent layers");
         assert_eq!(&flags[..4], &[0, 1, 1, 1], "{flags:?}");
 
         let tail_src = parse_merged_src(&tail_bytes).unwrap();
@@ -3715,20 +3712,18 @@ mod tests {
             tail_src.tensors.iter().map(|t| t.name.as_str()).collect();
         assert!(
             !names.contains("blk.0.ssm_conv1d.weight"),
-            "o bloco local 0 (original 35) é full-attention e não deveria ter ssm_conv1d — \
-             é exatamente o tensor que o llama.cpp exigia erroneamente antes deste fix \
-             (deduzido pela fórmula sobre o índice LOCAL em vez do original 35)"
+            "local block 0 (original 35) is full-attention and should not have ssm_conv1d — it is exactly the tensor llama.cpp wrongly required before this fix (deduced by the formula over the LOCAL index instead of the original 35)"
         );
         assert!(
             names.contains("blk.1.ssm_conv1d.weight")
                 && names.contains("blk.2.ssm_conv1d.weight")
                 && names.contains("blk.3.ssm_conv1d.weight"),
-            "os blocos locais 1-3 (originais 36-38) são recorrentes e têm o tensor: {names:?}"
+            "local blocks 1-3 (originals 36-38) are recurrent and have the tensor: {names:?}"
         );
     }
 
-    /// Sem tensor `ssm_conv1d` no arquivo inteiro (modelo comum, não híbrido),
-    /// `split` não deve inventar a chave — o llama.cpp nem olha para ela.
+    /// With no `ssm_conv1d` tensor in the whole file (an ordinary, non-hybrid model),
+    /// `split` must not invent the key - llama.cpp does not even look at it.
     #[test]
     fn plain_transformer_slice_gets_no_recurrent_layers_array() {
         let dir = std::env::temp_dir().join(format!("pom-nonhybrid-{}", std::process::id()));
@@ -3742,7 +3737,7 @@ mod tests {
         assert_eq!(
             kv_u32_array(&bytes, "llama.attention.recurrent_layers"),
             None,
-            "modelo sem ssm_conv1d não deve ganhar essa chave"
+            "a model without ssm_conv1d must not gain this key"
         );
     }
 
@@ -3766,7 +3761,7 @@ mod tests {
             .map(|tensor| tensor.name.as_str())
             .collect();
         for required in crate::gguf::required_output_tensors("deepseek4") {
-            assert!(names.contains(required), "faltou {required}: {names:?}");
+            assert!(names.contains(required), "missing {required}: {names:?}");
         }
         for copied in [
             "token_embd.weight",
@@ -3778,7 +3773,7 @@ mod tests {
             assert_eq!(
                 tensor_data(&source_bytes, &source, copied),
                 tensor_data(&output_bytes, &parsed, copied),
-                "a fatia intermediária deve copiar os bytes reais de {copied}"
+                "the intermediate slice must copy the real bytes of {copied}"
             );
         }
         let _ = std::fs::remove_dir_all(dir);
@@ -3806,7 +3801,7 @@ mod tests {
             "output_hc_base.weight",
             "output_hc_scale.weight",
         ] {
-            assert!(names.contains(required), "faltou {required}: {names:?}");
+            assert!(names.contains(required), "missing {required}: {names:?}");
         }
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -3831,7 +3826,7 @@ mod tests {
             assert_eq!(
                 kv_u32(&prefix_bytes, key),
                 Some(2),
-                "a contagem desde o início deve ser limitada ao tamanho da fatia: {key}"
+                "the count from the start must be limited to the slice size: {key}"
             );
         }
 
@@ -3841,7 +3836,7 @@ mod tests {
         assert_eq!(
             layout.slice_bytes(2, 3, true),
             std::fs::metadata(&output).unwrap().len(),
-            "a estimativa precisa acompanhar a reserialização da metadata rebased"
+            "the estimate must follow the reserialization of the rebased metadata"
         );
         for key in [
             "deepseek4.hash_layer_count",
@@ -3851,7 +3846,7 @@ mod tests {
             assert_eq!(
                 kv_u32(&bytes, key),
                 Some(1),
-                "a contagem relativa ao início precisa ser local para a fatia: {key}"
+                "the count relative to the start must be local to the slice: {key}"
             );
         }
 
@@ -3918,9 +3913,12 @@ mod tests {
             "output_hc_base.weight",
             "output_hc_scale.weight",
         ] {
-            assert!(message.contains(required), "faltou {required}: {message}");
+            assert!(message.contains(required), "missing {required}: {message}");
         }
-        assert!(!output.exists(), "uma recusa de preflight não cria a saída");
+        assert!(
+            !output.exists(),
+            "a preflight refusal does not create the output"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -3942,14 +3940,17 @@ mod tests {
             "output_hc_base.weight",
             "output_hc_scale.weight",
         ] {
-            assert!(message.contains(required), "faltou {required}: {message}");
+            assert!(message.contains(required), "missing {required}: {message}");
         }
-        assert!(!output.exists(), "uma recusa de preflight não cria a saída");
+        assert!(
+            !output.exists(),
+            "a preflight refusal does not create the output"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// `merge` reconstrói o array híbrido para a numeração 0-based do arquivo
-    /// unido — não pode só copiar o array (errado) da primeira fatia.
+    /// `merge` rebuilds the hybrid array for the 0-based numbering of the merged
+    /// file - it cannot just copy the (wrong) array from the first slice.
     #[test]
     fn merging_hybrid_slices_recomputes_recurrent_layers_for_the_union() {
         let dir = std::env::temp_dir().join(format!("pom-hybrid-merge-{}", std::process::id()));
@@ -3986,10 +3987,10 @@ mod tests {
         assert_eq!(flags, vec![1, 1, 1, 0, 1, 1, 1, 0], "{flags:?}");
     }
 
-    // ── Tensor parallelism: shard por tensor ──────────────────────────────
+    // ── Tensor parallelism: per-tensor shard ──────────────────────────────
 
-    /// Lê dims e dados f32 de um tensor de um GGUF no disco. O modelo de teste
-    /// é todo f32, então os dados são interpretados como floats.
+    /// Reads dims and f32 data of a tensor from a GGUF on disk. The test model
+    /// is all f32, so the data is interpreted as floats.
     fn read_shard_tensor(path: &std::path::Path, name: &str) -> (Vec<u64>, Vec<f32>) {
         let bytes = std::fs::read(path).unwrap();
         let mut r = R {
@@ -4020,10 +4021,10 @@ mod tests {
                 found = true;
             }
         }
-        assert!(found, "tensor {name} não encontrado no shard");
+        assert!(found, "tensor {name} not found in the shard");
         let data_start = align_up(r.pos as u64) as usize;
-        // Tamanho real vem das dims (o modelo de teste é f32), não do delta de
-        // offset: o delta inclui o padding de alinhamento entre tensores.
+        // The real size comes from the dims (the test model is f32), not from the offset
+        // delta: the delta includes the alignment padding between tensors.
         let size = dims.iter().product::<u64>() * 4;
         let start = data_start + offset as usize;
         let floats: Vec<f32> = bytes[start..start + size as usize]
@@ -4039,9 +4040,9 @@ mod tests {
         assert_eq!(tp_role("blk.3.ffn_gate.weight"), TpRole::Column);
         assert_eq!(tp_role("blk.0.attn_output.weight"), TpRole::Row);
         assert_eq!(tp_role("blk.0.ffn_down.weight"), TpRole::Row);
-        // A cabeça de saída recebe o oculto **inteiro** (a entrada dela é
-        // `output_norm`, que é Shared), então ela não pode ser Row: cortá-la
-        // por ne[0] fazia o llama.cpp recusar o load com
+        // The output head receives the **whole** hidden state (its input is
+        // `output_norm`, which is Shared), so it cannot be Row: cutting it
+        // by ne[0] made llama.cpp refuse the load with
         // `'output.weight' has wrong shape; expected 4096, got 2048`.
         assert_eq!(tp_role("output.weight"), TpRole::Shared);
         assert_eq!(tp_role("token_embd.weight"), TpRole::Shared);
@@ -4066,7 +4067,7 @@ mod tests {
         assert_eq!(kv_u32(&bytes, &crate::brand::gguf_key("tp_rank")), Some(0));
         assert_eq!(kv_u32(&bytes, &crate::brand::gguf_key("tp_shard")), Some(1));
 
-        // Replicado: inteiro, igual ao fonte.
+        // Replicated: whole, identical to the source.
         let (dims, data) = read_shard_tensor(&out, "token_embd.weight");
         assert_eq!(dims, vec![4, 4]);
         assert_eq!(data.len(), 16);
@@ -4076,14 +4077,14 @@ mod tests {
         assert_eq!(dims, vec![4]);
         assert_eq!(data, vec![2.0; 4]);
 
-        // Coluna: ne[1] 4 -> 2; rank 0 fica com as duas primeiras linhas.
+        // Column: ne[1] 4 -> 2; rank 0 keeps the first two rows.
         let (dims, data) = read_shard_tensor(&out, "blk.0.attn_q.weight");
         assert_eq!(dims, vec![4, 2]);
         assert_eq!(data, (0..8).map(|j| j as f32).collect::<Vec<_>>());
 
-        // A cabeça é replicada inteira: o oculto que chega nela vem de
-        // `output_norm` (Shared) e tem largura cheia. Cortar ne[0] aqui fazia o
-        // llama.cpp recusar o load do shard.
+        // The head is replicated whole: the hidden state that reaches it comes from
+        // `output_norm` (Shared) and has full width. Cutting ne[0] here made
+        // llama.cpp refuse the shard's load.
         let (dims, data) = read_shard_tensor(&out, "output.weight");
         assert_eq!(dims, vec![4, 4]);
         assert_eq!(data, vec![3.0; 16]);
@@ -4099,29 +4100,29 @@ mod tests {
         let out = dir.join("rank1.gguf");
         shard_tensor_parallel(&whole, &out, 2, 1, |_| {}).unwrap();
 
-        // Coluna: rank 1 fica com as duas últimas linhas (floats 8..16).
+        // Column: rank 1 keeps the last two rows (floats 8..16).
         let (dims, data) = read_shard_tensor(&out, "blk.0.attn_q.weight");
         assert_eq!(dims, vec![4, 2]);
         assert_eq!(data, (8..16).map(|j| j as f32).collect::<Vec<_>>());
 
-        // A cabeça é replicada: todo rank calcula os logits a partir do oculto
-        // já reduzido, então ela é idêntica à do rank 0 e à do fonte.
+        // The head is replicated: every rank computes the logits from the already
+        // reduced hidden state, so it is identical to rank 0's and to the source's.
         let (dims, data) = read_shard_tensor(&out, "output.weight");
         assert_eq!(dims, vec![4, 4]);
         assert_eq!(data, vec![3.0; 16]);
 
-        // Linha de verdade: entrada já particionada pelos Column do bloco.
+        // A genuine Row: input already partitioned by the block's Column tensors.
         let (dims, _) = read_shard_tensor(&out, "blk.0.ffn_down.weight");
-        assert_eq!(dims[0], 2, "ffn_down continua cortada por ne[0]");
+        assert_eq!(dims[0], 2, "ffn_down is still cut by ne[0]");
     }
 
-    /// O cabeçalho do shard tem que descrever o tensor que o shard contém.
+    /// The shard's header must describe the tensor the shard contains.
     ///
-    /// Cortar `attn_q` por coluna sem dividir `head_count` deixa o arquivo
-    /// prometendo largura cheia, e o llama.cpp recusa o load:
+    /// Cutting `attn_q` by column without dividing `head_count` leaves the file
+    /// promising full width, and llama.cpp refuses the load:
     /// `'blk.0.attn_q.weight' has wrong shape; expected 4096, 4096, got
-    /// 4096, 2048`. `embedding_length` e `block_count` continuam intactos - o
-    /// eixo do resíduo e a contagem de camadas não são particionados.
+    /// 4096, 2048`. `embedding_length` and `block_count` stay intact - the
+    /// residual axis and the layer count are not partitioned.
     #[test]
     fn the_shard_header_is_divided_with_the_tensors() {
         let dir = std::env::temp_dir().join(format!("pom-tp-hdr-{}", std::process::id()));
@@ -4141,15 +4142,15 @@ mod tests {
         );
         assert_eq!(kv_u32(&bytes, "llama.feed_forward_length"), Some(2), "4/2");
 
-        // Não particionados: o resíduo atravessa o all-reduce inteiro e toda
-        // camada segue presente em todo rank.
+        // Not partitioned: the residual crosses the whole all-reduce and every
+        // layer remains present on every rank.
         assert_eq!(kv_u32(&bytes, "llama.embedding_length"), Some(4));
         assert_eq!(kv_u32(&bytes, "llama.block_count"), Some(2));
     }
 
-    /// Largura que não divide pelo grupo é recusa nos dois lados, e a recusa
-    /// nomeia a chave - o operador precisa saber qual hiperparâmetro trava o
-    /// modelo, não só que "não deu".
+    /// A width that does not divide by the group is a refusal on both sides, and the refusal
+    /// names the key - the operator needs to know which hyperparameter blocks the
+    /// model, not just that "it did not work".
     #[test]
     fn a_width_that_does_not_divide_is_refused_by_both_paths() {
         let dir = std::env::temp_dir().join(format!("pom-tp-odd-{}", std::process::id()));
@@ -4157,16 +4158,19 @@ mod tests {
         let whole = dir.join("whole.gguf");
         std::fs::write(&whole, test_gguf_bytes(2)).unwrap();
 
-        // head_count_kv = 2 no fixture: um grupo de 4 não divide.
-        let erro = validate_tensor_parallel(&whole, 4).unwrap_err().to_string();
+        // head_count_kv = 2 in the fixture: a group of 4 does not divide.
+        let error = validate_tensor_parallel(&whole, 4).unwrap_err().to_string();
         assert!(
-            erro.contains("head_count_kv") && erro.contains("4"),
-            "a recusa tem que nomear a chave e o tamanho: {erro}"
+            error.contains("head_count_kv") && error.contains("4"),
+            "the refusal must name the key and the size: {error}"
         );
 
         let out = dir.join("rank0.gguf");
         assert!(shard_tensor_parallel(&whole, &out, 4, 0, |_| {}).is_err());
-        assert!(!out.exists(), "recusa não deve deixar arquivo pela metade");
+        assert!(
+            !out.exists(),
+            "a refusal must not leave a half-written file"
+        );
     }
 
     #[test]
@@ -4179,7 +4183,10 @@ mod tests {
 
         assert!(shard_tensor_parallel(&whole, &out, 1, 0, |_| {}).is_err());
         assert!(shard_tensor_parallel(&whole, &out, 2, 2, |_| {}).is_err());
-        assert!(!out.exists(), "recusa não deve deixar arquivo pela metade");
+        assert!(
+            !out.exists(),
+            "a refusal must not leave a half-written file"
+        );
     }
 
     #[test]
@@ -4189,14 +4196,14 @@ mod tests {
         let whole = dir.join("whole.gguf");
         std::fs::write(&whole, test_gguf_bytes(2)).unwrap();
 
-        // O modelo denso do fixture dá para partir; o dry-run concorda com o
-        // shard de verdade (que chama esta mesma função como porta de entrada).
+        // The fixture's dense model can be split; the dry-run agrees with the real
+        // shard (which calls this same function as its entry gate).
         assert!(validate_tensor_parallel(&whole, 2).is_ok());
 
-        // tp_size < 2 é recusado aqui também.
+        // tp_size < 2 is refused here too.
         assert!(validate_tensor_parallel(&whole, 1).is_err());
 
-        // Não-GGUF recusa pelo magic.
+        // A non-GGUF is refused by the magic.
         let junk = dir.join("junk.bin");
         std::fs::write(&junk, b"not a gguf").unwrap();
         assert!(validate_tensor_parallel(&junk, 2).is_err());
@@ -4424,10 +4431,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requer o GGUF real Gemma4 e vários GB livres em disco/RAM"]
+    #[ignore = "requires the real Gemma4 GGUF and several GB free on disk/RAM"]
     fn real_gemma4_slice_truncates_layer_metadata_and_loads() {
         let source = std::env::var_os("POM_REAL_GEMMA_GGUF")
-            .expect("POM_REAL_GEMMA_GGUF deve apontar para o GGUF real");
+            .expect("POM_REAL_GEMMA_GGUF must point to the real GGUF");
         let source = Path::new(&source);
         let dir = std::env::temp_dir().join(format!("pom-gemma4-slice-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -4448,29 +4455,26 @@ mod tests {
         let model = unsafe {
             llama_engine::llama_cpp_sys_2::llama_model_load_from_file(path.as_ptr(), params)
         };
-        assert!(!model.is_null(), "a fatia Gemma4 real deveria carregar");
+        assert!(!model.is_null(), "the real Gemma4 slice should load");
         unsafe { llama_engine::llama_cpp_sys_2::llama_model_free(model) };
         std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
-    #[ignore = "requer o GGUF real DeepSeek4 e vários GB livres em disco/RAM"]
+    #[ignore = "requires the real DeepSeek4 GGUF and several GB free on disk/RAM"]
     fn real_deepseek4_intermediate_slice_copies_heads_and_loads() {
         let source = std::env::var_os("POM_REAL_DEEPSEEK4_GGUF")
-            .expect("POM_REAL_DEEPSEEK4_GGUF deve apontar para o GGUF real");
+            .expect("POM_REAL_DEEPSEEK4_GGUF must point to the real GGUF");
         let source = Path::new(&source);
         let dir = std::env::temp_dir().join(format!("pom-deepseek4-slice-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let out = dir.join("deepseek4-15-28.gguf");
 
         let layout = crate::gguf::read_layout(source).unwrap();
-        assert!(
-            layout.layer_count() > 28,
-            "o GGUF real precisa da camada 28"
-        );
+        assert!(layout.layer_count() > 28, "the real GGUF needs layer 28");
         assert!(
             layout.required_head_bytes() > 0,
-            "a cabeça DeepSeek4 deve estar na fonte"
+            "the DeepSeek4 head must be in the source"
         );
         split(source, &out, 15, 28, false, false, |_| {}).unwrap();
 
@@ -4483,7 +4487,7 @@ mod tests {
         };
         assert!(
             !model.is_null(),
-            "uma fatia intermediária DeepSeek4 deveria carregar"
+            "an intermediate DeepSeek4 slice should load"
         );
         unsafe { llama_engine::llama_cpp_sys_2::llama_model_free(model) };
         std::fs::remove_dir_all(dir).unwrap();
@@ -4527,7 +4531,7 @@ mod tests {
         let path = dir.join("unknown.gguf");
         std::fs::write(&path, bytes).unwrap();
         let error = crate::gguf::read_layout(&path).unwrap_err().to_string();
-        assert!(error.contains("dtype GGML 99") && error.contains("token_embd.weight"));
+        assert!(error.contains("GGML dtype 99") && error.contains("token_embd.weight"));
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -4543,14 +4547,13 @@ mod tests {
         let layout_error = crate::gguf::read_layout(&whole).unwrap_err().to_string();
         assert!(
             layout_error.contains("llama.future_layer_metadata")
-                && layout_error.contains("comprimento 3")
+                && layout_error.contains("length 3")
         );
         let split_error = split(&whole, &out, 0, 0, true, true, |_| {})
             .unwrap_err()
             .to_string();
         assert!(
-            split_error.contains("llama.future_layer_metadata")
-                && split_error.contains("comprimento 3")
+            split_error.contains("llama.future_layer_metadata") && split_error.contains("length 3")
         );
         let _ = std::fs::remove_dir_all(dir);
     }

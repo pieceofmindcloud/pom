@@ -1,30 +1,30 @@
-//! Planejador por tempo de entrega: a pipeline escolhida é a que termina a
-//! requisição mais cedo, não a de menor latência de rede.
+//! Planner by delivery time: the chosen pipeline is the one that finishes the
+//! request earliest, not the one with the lowest network latency.
 //!
-//! O custo de um caminho soma, para esta requisição:
+//! The cost of a path adds up, for this request:
 //!
 //! ```text
-//! prefill: tokens_novos × ms/token de cada estágio × (1 + fila do estágio)
-//! decode:  tokens_esperados × (ms/passo de cada estágio × (1 + fila))
-//! rede:    (1 + tokens_esperados) × (RTT de cada aresta, inclusive
-//!          quem pede → cabeça e cauda → quem pede)
+//! prefill: new_tokens × ms/token of each stage × (1 + stage queue)
+//! decode:  expected_tokens × (ms/step of each stage × (1 + queue))
+//! network: (1 + expected_tokens) × (RTT of each edge, including
+//!          requester → head and tail → requester)
 //! ```
 //!
-//! - **Rede** vem das rotas fixadas (`route_plan`): quem pede mede as próprias
-//!   arestas; as arestas entre dois outros peers vêm do `/health` do peer de
-//!   origem (`route_rtt_ms`, `gateway_rtt_ms`).
-//! - **Velocidade** vem do `/health` de cada peer (`perf`): teste ao servir e
-//!   média do tráfego real.
-//! - **Balanceamento**: a fila (`active_generations` do peer, ou a carga em voo
-//!   deste gateway, o que for maior) multiplica o custo do estágio. Um peer
-//!   rápido com fila vira mais lento que um médio ocioso, e a carga se espalha
-//!   sem rodízio artificial.
-//! - **Prefixo**: um caminho que já tem o prefixo deste prompt paga só os
-//!   tokens novos (`estimate_chain` com `cached_tokens`), então a reutilização
-//!   vence quando compensa e perde quando o peer do cache está saturado.
+//! - **Network** comes from the pinned routes (`route_plan`): the requester measures
+//!   its own edges; the edges between two other peers come from the `/health` of the
+//!   origin peer (`route_rtt_ms`, `gateway_rtt_ms`).
+//! - **Speed** comes from each peer's `/health` (`perf`): a test when serving and
+//!   the average of the real traffic.
+//! - **Balancing**: the queue (the peer's `active_generations`, or this gateway's
+//!   in-flight load, whichever is larger) multiplies the stage's cost. A fast
+//!   peer with a queue becomes slower than an idle average one, and the load spreads
+//!   without artificial round-robin.
+//! - **Prefix**: a path that already has this prompt's prefix pays only for the
+//!   new tokens (`estimate_chain` with `cached_tokens`), so reuse
+//!   wins when it pays off and loses when the cache's peer is saturated.
 //!
-//! Como os termos são somas por estágio e por aresta, o melhor caminho sai de
-//! uma programação dinâmica sobre as faixas de camadas.
+//! Since the terms are sums per stage and per edge, the best path comes out of
+//! a dynamic program over the layer ranges.
 
 use std::collections::HashMap;
 
@@ -33,30 +33,30 @@ use serde::Serialize;
 use crate::network::PeerInfo;
 use crate::pipeline::{model_pipeline_candidates, plan_from_steps, step_for, PipelinePlan};
 
-/// RTT assumido para uma aresta que ninguém mediu ainda.
+/// RTT assumed for an edge nobody has measured yet.
 const UNKNOWN_RTT_MS: f64 = 100.0;
 
-/// Custo por camada quando nenhum peer do modelo tem velocidade medida. O
-/// valor absoluto não importa - é igual para todos -, só precisa ser maior que
-/// zero para a fila ainda pesar na escolha.
+/// Cost per layer when no peer of the model has a measured speed. The
+/// absolute value does not matter - it is the same for everyone -, it only needs to
+/// be greater than zero for the queue to still weigh in the choice.
 const FALLBACK_PREFILL_MS_PER_LAYER: f64 = 0.1;
 const FALLBACK_DECODE_MS_PER_LAYER: f64 = 1.0;
 
-/// O que o `/health` de um peer diz sobre custo e carga.
+/// What a peer's `/health` says about cost and load.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct PeerPerf {
     pub prefill_ms_per_token: Option<f64>,
     pub decode_ms_per_step: Option<f64>,
     pub active_generations: u32,
-    /// RTT da rota fixada deste peer até o servidor de inferência de outro.
+    /// RTT of this peer's pinned route to another's inference server.
     pub route_rtt_ms: HashMap<String, f64>,
-    /// RTT da rota fixada deste peer até o gateway de outro.
+    /// RTT of this peer's pinned route to another's gateway.
     pub gateway_rtt_ms: HashMap<String, f64>,
-    /// Transporte (`quic`, `http`, `tunnel`) das rotas fixadas deste peer.
+    /// Transport (`quic`, `http`, `tunnel`) of this peer's pinned routes.
     pub route_kinds: HashMap<String, String>,
     pub gateway_route_kinds: HashMap<String, String>,
-    /// Peers que este só alcança por circuito num relé (`relayed_peers`): uma
-    /// rota `tunnel` até eles passa por um servidor intermediário.
+    /// Peers this one only reaches through a relay circuit (`relayed_peers`): a
+    /// `tunnel` route to them goes through an intermediate server.
     pub relayed_peers: std::collections::HashSet<String>,
 }
 
@@ -117,19 +117,19 @@ impl PeerPerf {
     }
 }
 
-/// Tudo que a estimativa precisa, já colhido pelo gateway.
+/// Everything the estimate needs, already gathered by the gateway.
 pub struct CostInputs<'a> {
-    /// `node_id` de quem origina a requisição.
+    /// `node_id` of whoever originates the request.
     pub requester: &'a str,
-    /// RTT de quem pede até o servidor de inferência de cada peer.
+    /// RTT from the requester to each peer's inference server.
     pub requester_rtt_ms: &'a HashMap<String, f64>,
     pub perf: &'a HashMap<String, PeerPerf>,
-    /// Requisições em voo que este gateway já mandou para cada peer.
+    /// In-flight requests this gateway has already sent to each peer.
     pub local_load: &'a HashMap<String, u32>,
     pub prompt_tokens: f64,
     pub decode_tokens: f64,
-    /// Modo de volta imposto (`POM_RETURN_MODE`, para teste); `None` deixa o
-    /// planejador escolher.
+    /// Imposed return mode (`POM_RETURN_MODE`, for testing); `None` lets the
+    /// planner choose.
     pub forced_return: Option<ReturnMode>,
 }
 
@@ -140,23 +140,23 @@ pub struct StageEstimate {
     pub end_layer: u32,
     pub prefill_ms_per_token: f64,
     pub decode_ms_per_step: f64,
-    /// `false` quando o custo é estimado pela média por camada dos outros.
+    /// `false` when the cost is estimated from the others' per-layer average.
     pub measured: bool,
     pub queue: u32,
-    /// RTT da aresta que chega a este estágio.
+    /// RTT of the edge that arrives at this stage.
     pub rtt_in_ms: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PlanEstimate {
     pub stages: Vec<StageEstimate>,
-    /// RTT da cauda de volta a quem pediu; infinito quando não há volta.
+    /// RTT from the tail back to the requester; infinite when there is no return.
     pub return_rtt_ms: f64,
-    /// Por onde a resposta volta, escolhido junto com o caminho.
+    /// Which way the response returns, chosen together with the path.
     pub return_mode: ReturnMode,
     pub cached_tokens: u32,
     pub prefill_ms: f64,
-    /// Tempo de um token de decode com as filas atuais: estágios mais rede.
+    /// Time of one decode token with the current queues: stages plus network.
     pub decode_ms_per_token: f64,
     pub total_ms: f64,
 }
@@ -170,7 +170,7 @@ fn layers(peer: &PeerInfo) -> f64 {
     (peer.end_layer - peer.start_layer + 1) as f64
 }
 
-/// Custo médio por camada dos peers medidos, para estimar quem ainda não foi.
+/// Average cost per layer of the measured peers, to estimate those not yet measured.
 fn fallback_speeds(candidates: &[&PeerInfo], perf: &HashMap<String, PeerPerf>) -> Speeds {
     let mut prefill = (0.0, 0.0);
     let mut decode = (0.0, 0.0);
@@ -221,12 +221,12 @@ fn stage(peer: &PeerInfo, inputs: &CostInputs, speeds: &Speeds, rtt_in_ms: f64) 
     }
 }
 
-/// RTT de `from` até o servidor de inferência de `to`.
+/// RTT from `from` to the inference server of `to`.
 fn edge_rtt(from: &str, to: &str, inputs: &CostInputs) -> f64 {
     measured_edge_rtt(from, to, inputs).unwrap_or(UNKNOWN_RTT_MS)
 }
 
-/// `edge_rtt` sem palpite: `None` quando ninguém mediu a aresta.
+/// `edge_rtt` without a guess: `None` when nobody measured the edge.
 fn measured_edge_rtt(from: &str, to: &str, inputs: &CostInputs) -> Option<f64> {
     if from == to {
         return Some(0.0);
@@ -238,31 +238,31 @@ fn measured_edge_rtt(from: &str, to: &str, inputs: &CostInputs) -> Option<f64> {
         .perf
         .get(from)
         .and_then(|p| p.route_rtt_ms.get(to).copied())
-        // Sem medição do peer de origem, a do gateway até o destino é o
-        // melhor palpite disponível.
+        // Without a measurement from the origin peer, the gateway's one to the
+        // destination is the best guess available.
         .or_else(|| inputs.requester_rtt_ms.get(to).copied())
 }
 
-/// Por onde a resposta de cada token volta a quem pediu.
+/// Which way each token's response returns to the requester.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ReturnMode {
-    /// A cauda entrega direto ao gateway (`reply_to`).
+    /// The tail delivers directly to the gateway (`reply_to`).
     Direct,
-    /// A resposta volta pelas mesmas conexões da ida.
+    /// The response returns through the same connections as the way out.
     Ring,
 }
 
 impl ReturnMode {
     pub fn as_str(self) -> &'static str {
         match self {
-            ReturnMode::Direct => "direta",
-            ReturnMode::Ring => "anel",
+            ReturnMode::Direct => "direct",
+            ReturnMode::Ring => "ring",
         }
     }
 
-    /// Fração do RTT de cada aresta da ida que o modo paga por token: a ida
-    /// é só o caminho de chegada na resposta direta, e ida e volta no anel.
+    /// Fraction of the RTT of each outbound edge that the mode pays per token: the
+    /// way out is only the arrival path in the direct response, and round trip in the ring.
     fn forward_weight(self) -> f64 {
         match self {
             ReturnMode::Direct => 0.5,
@@ -271,11 +271,11 @@ impl ReturnMode {
     }
 }
 
-/// `POM_RETURN_MODE=direct|ring` impõe o modo de volta, para testar um caminho
-/// que o planejador não escolheria - por exemplo, a entrega direta a um
-/// gateway atrás de NAT, que o anel esconderia. Ausente ou `auto`, o
-/// planejador decide. Com `direct`, uma volta que não existe vira falha de
-/// inferência em vez de ser contornada.
+/// `POM_RETURN_MODE=direct|ring` imposes the return mode, to test a path
+/// the planner would not choose - for example, direct delivery to a
+/// gateway behind NAT, which the ring would hide. Absent or `auto`, the
+/// planner decides. With `direct`, a return that does not exist becomes an inference
+/// failure instead of being worked around.
 pub fn forced_return_mode() -> Option<ReturnMode> {
     match crate::brand::env("RETURN_MODE")
         .unwrap_or_default()
@@ -283,16 +283,16 @@ pub fn forced_return_mode() -> Option<ReturnMode> {
         .to_ascii_lowercase()
         .as_str()
     {
-        "direct" | "direta" => Some(ReturnMode::Direct),
-        "ring" | "anel" => Some(ReturnMode::Ring),
+        "direct" | "direct" => Some(ReturnMode::Direct),
+        "ring" | "ring" => Some(ReturnMode::Ring),
         _ => None,
     }
 }
 
-/// RTT medido da cauda de volta a quem pediu. `None` quando a cauda já mediu
-/// rotas até outros gateways e não tem nenhuma até este: sem volta, a resposta
-/// direta é inviável. Sem medição nenhuma da cauda, o palpite é o RTT deste
-/// gateway até ela.
+/// Measured RTT from the tail back to the requester. `None` when the tail has already
+/// measured routes to other gateways and has none to this one: with no return, the
+/// direct response is not viable. With no measurement at all from the tail, the guess
+/// is this gateway's RTT to it.
 fn return_rtt(tail: &str, inputs: &CostInputs) -> Option<f64> {
     match measured_return_rtt(tail, inputs) {
         ReturnLeg::Measured(rtt) => Some(rtt),
@@ -303,9 +303,9 @@ fn return_rtt(tail: &str, inputs: &CostInputs) -> Option<f64> {
 
 enum ReturnLeg {
     Measured(f64),
-    /// A cauda mediu rotas, mas nenhuma até este gateway.
+    /// The tail measured routes, but none to this gateway.
     Missing,
-    /// Ninguém mediu nada ainda.
+    /// Nobody has measured anything yet.
     Unmeasured,
 }
 
@@ -327,7 +327,7 @@ fn measured_return_rtt(tail: &str, inputs: &CostInputs) -> ReturnLeg {
     }
 }
 
-/// Custo de um estágio nesta requisição, com a fila aplicada.
+/// Cost of a stage in this request, with the queue applied.
 fn stage_cost(stage: &StageEstimate, prompt_tokens: f64, decode_tokens: f64) -> f64 {
     let load = 1.0 + stage.queue as f64;
     (prompt_tokens * stage.prefill_ms_per_token + decode_tokens * stage.decode_ms_per_step) * load
@@ -337,9 +337,9 @@ fn edge_cost(rtt_ms: f64, decode_tokens: f64) -> f64 {
     (1.0 + decode_tokens) * rtt_ms
 }
 
-/// Rede de um token no caminho, pelo modo de volta: meio RTT por aresta da ida
-/// mais meio RTT da cauda até o gateway na resposta direta; o RTT inteiro de
-/// cada aresta no anel. `None` quando o modo não tem volta.
+/// Network of one token on the path, by return mode: half an RTT per outbound edge
+/// plus half an RTT from the tail to the gateway in the direct response; the whole
+/// RTT of each edge in the ring. `None` when the mode has no return.
 fn network_ms(
     stages: &[StageEstimate],
     return_rtt_ms: Option<f64>,
@@ -352,8 +352,8 @@ fn network_ms(
     }
 }
 
-/// Estima um caminho já escolhido, pelo melhor modo de volta. `cached_tokens`
-/// do prompt não passam pelo prefill (prefixo já retido nesse caminho).
+/// Estimates an already chosen path, by the best return mode. `cached_tokens`
+/// of the prompt do not go through prefill (prefix already retained on that path).
 pub fn estimate_chain(
     chain: &[&PeerInfo],
     inputs: &CostInputs,
@@ -407,23 +407,23 @@ pub fn estimate_chain(
     }
 }
 
-/// Um caminho como o painel o mostra: as mesmas fontes e a mesma conta do
-/// planejador, mas sem palpite - perna não medida fica `None` e não fecha
-/// total.
+/// A path as the dashboard shows it: the same sources and the same computation as
+/// the planner, but without guessing - an unmeasured leg stays `None` and no total
+/// is closed.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ChainView {
-    /// RTT de ida e volta de cada perna: quem pede -> cabeça, cada passagem
-    /// entre estágios e, se a cauda não for quem pede, cauda -> quem pede.
+    /// Round trip RTT of each leg: requester -> head, each handoff
+    /// between stages and, if the tail is not the requester, tail -> requester.
     pub legs_ms: Vec<Option<f64>>,
-    /// Modo de volta que o planejador escolheria para este caminho.
+    /// Return mode the planner would choose for this path.
     pub return_mode: Option<ReturnMode>,
-    /// Rede paga por token no modo escolhido (não a soma das pernas: na
-    /// resposta direta cada perna custa meio RTT; no anel a volta da cauda
-    /// não existe).
+    /// Network paid per token in the chosen mode (not the sum of the legs: in the
+    /// direct response each leg costs half an RTT; in the ring the tail's return
+    /// does not exist).
     pub network_ms: Option<f64>,
-    /// Compute de um passo de decode somado sobre os estágios, com a fila.
+    /// Compute of one decode step summed over the stages, with the queue.
     pub compute_ms: Option<f64>,
-    /// Um token pela rota: rede no modo escolhido mais compute.
+    /// One token along the route: network in the chosen mode plus compute.
     pub decode_ms_per_token: Option<f64>,
 }
 
@@ -454,8 +454,8 @@ pub fn describe_chain(chain: &[&PeerInfo], inputs: &CostInputs) -> ChainView {
         Some(mode) => vec![mode],
         None => vec![ReturnMode::Direct, ReturnMode::Ring],
     };
-    // Sem a volta medida, o planejador compararia com um palpite; o painel
-    // não escolhe o modo por ele.
+    // Without the return measured, the planner would compare against a guess; the
+    // dashboard does not choose the mode for it.
     let undecided = matches!(back, ReturnLeg::Unmeasured) && modes.contains(&ReturnMode::Direct);
     let chosen = forward.filter(|_| !undecided).and_then(|forward| {
         modes
@@ -494,16 +494,16 @@ pub fn describe_chain(chain: &[&PeerInfo], inputs: &CostInputs) -> ChainView {
     }
 }
 
-/// O caminho e o modo de volta de menor tempo de entrega, e a estimativa.
+/// The path and the return mode with the lowest delivery time, and the estimate.
 ///
-/// O modo de volta entra no planejamento, não depois dele: o mesmo caminho
-/// custa diferente com resposta direta e com anel, e o melhor caminho de um
-/// modo pode não ser o do outro. Por isso a programação dinâmica roda uma vez
-/// por modo e vence o menor total.
+/// The return mode is part of the planning, not after it: the same path
+/// costs differently with direct response and with ring, and the best path for one
+/// mode may not be the other's. So the dynamic program runs once
+/// per mode and the lowest total wins.
 ///
-/// Só entra peer cuja faixa começa exatamente onde a anterior termina (a mesma
-/// regra do planejador guloso). `preferred_head`, quando escolhido na
-/// interface, é a única cabeça aceita: escolha inválida falha fechada.
+/// Only a peer whose range starts exactly where the previous one ends gets in (the
+/// same rule as the greedy planner). `preferred_head`, when chosen in the
+/// interface, is the only head accepted: an invalid choice fails closed.
 pub fn plan_fastest(
     peers: &[PeerInfo],
     model_name: &str,
@@ -527,7 +527,7 @@ pub fn plan_fastest(
     let mut winner: Option<(f64, Vec<&PeerInfo>)> = None;
     for mode in modes {
         let weight = mode.forward_weight();
-        // Melhor custo acumulado até o fim de cada candidato, e de onde veio.
+        // Best accumulated cost up to the end of each candidate, and where it came from.
         let mut best: HashMap<&str, (f64, Option<usize>)> = HashMap::new();
         for (index, peer) in candidates.iter().enumerate() {
             let own = |rtt: f64| {
@@ -600,26 +600,26 @@ pub fn plan_fastest(
 
     let (_, chain) = winner?;
     let plan = plan_for_chain(&chain)?;
-    // A estimativa refaz a escolha do modo para o caminho vencedor, com a
-    // mesma conta; é dela que o gateway lê o modo.
+    // The estimate redoes the mode choice for the winning path, with the
+    // same computation; it is from it that the gateway reads the mode.
     let estimate = estimate_chain(&chain, inputs, &candidates, 0);
     Some((plan, estimate))
 }
 
-/// Por que a resposta deve voltar pelo anel em vez de ser entregue direto ao
-/// gateway, ou `None` quando a entrega direta serve.
+/// Why the response must return through the ring instead of being delivered directly
+/// to the gateway, or `None` when direct delivery works.
 ///
-/// Quem entrega direto é a cauda (resposta direta) ou a cabeça (remote-stream).
-/// Cada um publica no `/health` a rota fixada que tem até cada gateway
-/// (`gateway_route_kinds`). O anel devolve a resposta pela mesma conexão da ida,
-/// então é preferível quando esse nó:
+/// Whoever delivers directly is the tail (direct response) or the head (remote-stream).
+/// Each one publishes in `/health` the pinned route it has to each gateway
+/// (`gateway_route_kinds`). The ring returns the response through the same connection
+/// as the way out, so it is preferable when that node:
 ///
-/// - não tem rota medida até este gateway, embora já tenha medido rotas até
-///   outros (sem volta: um gateway atrás de NAT que só a ida alcança); ou
-/// - só volta pelo túnel libp2p enquanto a ida até ele é toda direta (QUIC ou
-///   HTTP) - o túnel costuma ser o caminho mais lento e frágil.
+/// - has no measured route to this gateway, although it has already measured routes
+///   to others (no return: a gateway behind NAT that only the way out reaches); or
+/// - only returns through the libp2p tunnel while the way out to it is all direct
+///   (QUIC or HTTP) - the tunnel is usually the slowest and most fragile path.
 ///
-/// Sem dados do nó (ainda não sondado, plano ainda não medido) nada muda.
+/// Without data from the node (not probed yet, plan not measured yet) nothing changes.
 pub fn return_path_prefers_ring(
     chain: &[String],
     requester: &str,
@@ -655,7 +655,7 @@ pub fn return_path_prefers_ring(
         let short = deliverer.get(..12).unwrap_or(deliverer);
         match back {
             None if !deliverer_perf.gateway_route_kinds.is_empty() => {
-                return Some(format!("{short} não tem rota de volta até este gateway"));
+                return Some(format!("{short} has no route back to this gateway"));
             }
             Some("tunnel") => {
                 let upto = if position == 0 { 0 } else { chain.len() - 1 };
@@ -663,7 +663,7 @@ pub fn return_path_prefers_ring(
                     .all(|index| matches!(forward_kind(index), Some("quic" | "http" | "local")));
                 if forward_direct {
                     return Some(format!(
-                        "{short} só volta pelo túnel libp2p e a ida é direta"
+                        "{short} only comes back through the libp2p tunnel and the outbound path is direct"
                     ));
                 }
             }
@@ -673,7 +673,7 @@ pub fn return_path_prefers_ring(
     None
 }
 
-/// Os candidatos do modelo, na ordem em que o planejador os considera.
+/// The model's candidates, in the order the planner considers them.
 pub fn candidates<'a>(
     peers: &'a [PeerInfo],
     model_name: &str,
@@ -682,9 +682,24 @@ pub fn candidates<'a>(
     model_pipeline_candidates(peers, model_name, deploy_id)
 }
 
-/// Resolve uma cadeia de `node_id`s (por exemplo, a de um prefixo em cache)
-/// contra os candidatos vivos. `None` se algum sumiu ou se a cadeia não cobre
-/// `0..total_layers` em faixas contíguas.
+/// The first stage of an unpinned request: round robin over the layer-0 `heads` (in the order given), starting at `turn`,
+/// so requests that arrive together land on different heads. A head with generations in flight (`queue`) is passed
+/// over for the next one; when every head is busy, the least loaded wins, the earliest in the rotation on a tie.
+pub fn rotate_head(heads: &[String], turn: usize, queue: impl Fn(&str) -> u32) -> Option<String> {
+    if heads.is_empty() {
+        return None;
+    }
+    let n = heads.len();
+    let order: Vec<&String> = (0..n).map(|i| &heads[(turn + i) % n]).collect();
+    if let Some(free) = order.iter().find(|head| queue(head) == 0) {
+        return Some((*free).clone());
+    }
+    order.into_iter().min_by_key(|head| queue(head)).cloned()
+}
+
+/// Resolves a chain of `node_id`s (for example, that of a cached prefix)
+/// against the live candidates. `None` if any is gone or if the chain does not cover
+/// `0..total_layers` in contiguous ranges.
 pub fn resolve_chain<'a>(
     candidates: &[&'a PeerInfo],
     node_ids: &[String],
@@ -724,6 +739,26 @@ pub fn plan_for_chain(chain: &[&PeerInfo]) -> Option<PipelinePlan> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn rotation_spreads_requests_that_arrive_together() {
+        let heads: Vec<String> = ["a", "b", "c"].iter().map(|h| h.to_string()).collect();
+        let idle = |_: &str| 0;
+        assert_eq!(rotate_head(&heads, 0, idle).as_deref(), Some("a"));
+        assert_eq!(rotate_head(&heads, 1, idle).as_deref(), Some("b"));
+        assert_eq!(rotate_head(&heads, 2, idle).as_deref(), Some("c"));
+        assert_eq!(rotate_head(&heads, 3, idle).as_deref(), Some("a"));
+        assert_eq!(rotate_head(&[], 0, idle), None);
+    }
+
+    #[test]
+    fn a_busy_head_is_passed_over_for_the_next_free_one() {
+        let heads: Vec<String> = ["a", "b", "c"].iter().map(|h| h.to_string()).collect();
+        let load = |h: &str| if h == "b" { 2 } else { 0 };
+        assert_eq!(rotate_head(&heads, 1, load).as_deref(), Some("c"), "b is busy: the next one in the rotation");
+        let all_busy = |h: &str| match h { "a" => 3, "b" => 1, _ => 2 };
+        assert_eq!(rotate_head(&heads, 0, all_busy).as_deref(), Some("b"), "all busy: the least loaded");
+    }
+
     fn peer(node_id: &str, start: u32, end: u32) -> PeerInfo {
         PeerInfo {
             deploy_id: String::new(),
@@ -731,6 +766,8 @@ mod tests {
             node_id: node_id.to_string(),
             pubkey: "p".into(),
             cluster_id: None,
+            trust_version: None,
+            relay: None,
             addr: "10.0.0.1:42777".into(),
             addr_candidates: Vec::new(),
             model: "m".into(),
@@ -773,7 +810,7 @@ mod tests {
         plan.steps.iter().map(|step| step.node_id.clone()).collect()
     }
 
-    /// Cabeça distante mas rápida vence a próxima e lenta quando termina antes.
+    /// A distant but fast head beats the near and slow one when it finishes earlier.
     #[test]
     fn a_distant_fast_head_beats_a_near_slow_one() {
         let peers = vec![
@@ -804,7 +841,7 @@ mod tests {
         let (plan, estimate) = plan_fastest(&peers, "m", None, 48, &inputs, None).unwrap();
         assert_eq!(chain_of(&plan), vec!["far", "tail"]);
         assert!(estimate.total_ms > 0.0);
-        // Pouca saída: a vantagem de rede da cabeça próxima volta a pesar.
+        // Little output: the network advantage of the near head weighs in again.
         let short = CostInputs {
             decode_tokens: 0.0,
             prompt_tokens: 1.0,
@@ -814,8 +851,8 @@ mod tests {
         assert_eq!(chain_of(&plan), vec!["near", "tail"]);
     }
 
-    /// A fila multiplica o custo: o peer mais rápido ocupado cede a vez ao
-    /// médio ocioso, e a carga se espalha.
+    /// The queue multiplies the cost: the busy fastest peer gives way to the
+    /// idle average one, and the load spreads.
     #[test]
     fn a_busy_fast_peer_yields_to_an_idle_one() {
         let peers = vec![peer("fast", 0, 47), peer("slow", 0, 47)];
@@ -849,8 +886,8 @@ mod tests {
         assert_eq!(chain_of(&plan), vec!["slow"]);
     }
 
-    /// As arestas entre peers entram na conta: o estágio do meio que fala
-    /// rápido com a cabeça escolhida vence o que só é rápido para o gateway.
+    /// The edges between peers enter the computation: the middle stage that talks
+    /// fast to the chosen head beats the one that is only fast for the gateway.
     #[test]
     fn inter_hop_latency_decides_between_equal_replicas() {
         let peers = vec![
@@ -908,8 +945,8 @@ mod tests {
         assert_eq!(chain_of(&plan), vec!["b"]);
         assert!(plan_fastest(&peers, "m", None, 48, &inputs, Some("ghost")).is_none());
 
-        // O prefixo em cache desconta o prefill: o peer lento com 990 tokens
-        // já retidos passa a entregar antes.
+        // The cached prefix discounts the prefill: the slow peer with 990 tokens
+        // already retained now delivers earlier.
         let all = candidates(&peers, "m", None);
         let chain = resolve_chain(&all, &["b".to_string()], 48, None).unwrap();
         let cached = estimate_chain(&chain, &inputs, &all, 990);
@@ -939,28 +976,28 @@ mod tests {
         let mut head = perf_with_back(Some("quic"), false);
         head.route_kinds.insert("tail".into(), "quic".into());
 
-        // Sem rota de volta, tendo medido outras: anel.
+        // No return route, having measured others: ring.
         let perf = HashMap::from([
             ("head".to_string(), head.clone()),
             ("tail".to_string(), perf_with_back(None, true)),
         ]);
         assert!(return_path_prefers_ring(&chain, "gateway", &perf, &own).is_some());
 
-        // Volta só pelo túnel com a ida toda em QUIC: anel.
+        // Return only through the tunnel with the way out all on QUIC: ring.
         let perf = HashMap::from([
             ("head".to_string(), head.clone()),
             ("tail".to_string(), perf_with_back(Some("tunnel"), false)),
         ]);
         assert!(return_path_prefers_ring(&chain, "gateway", &perf, &own).is_some());
 
-        // Volta direta: entrega direta.
+        // Direct return: direct delivery.
         let perf = HashMap::from([
             ("head".to_string(), head.clone()),
             ("tail".to_string(), perf_with_back(Some("http"), false)),
         ]);
         assert!(return_path_prefers_ring(&chain, "gateway", &perf, &own).is_none());
 
-        // A ida também é pelo túnel: o anel não ganha nada.
+        // The way out is also through the tunnel: the ring gains nothing.
         let mut tunneled = head.clone();
         tunneled.route_kinds.insert("tail".into(), "tunnel".into());
         let perf = HashMap::from([
@@ -969,7 +1006,7 @@ mod tests {
         ]);
         assert!(return_path_prefers_ring(&chain, "gateway", &perf, &own).is_none());
 
-        // Nó ainda sem medição nenhuma: nada muda.
+        // Node still with no measurement at all: nothing changes.
         let perf = HashMap::from([
             ("head".to_string(), head),
             ("tail".to_string(), PeerPerf::default()),
@@ -977,8 +1014,8 @@ mod tests {
         assert!(return_path_prefers_ring(&chain, "gateway", &perf, &own).is_none());
     }
 
-    /// O modo de volta sai do planejamento: o gateway é a cabeça (L0-15) e a
-    /// cauda está noutra máquina. Ida em QUIC com 26 ms.
+    /// The return mode comes out of the planning: the gateway is the head (L0-15) and the
+    /// tail is on another machine. Way out on QUIC with 26 ms.
     #[test]
     fn the_return_mode_is_chosen_with_the_path() {
         let peers = vec![peer("gw", 0, 15), peer("tail", 16, 47)];
@@ -1005,18 +1042,18 @@ mod tests {
                 .1
                 .return_mode
         };
-        // Volta só pelo túnel, 48 ms: direta custaria 13 + 24 = 37 ms por
-        // token, o anel 26 ms.
+        // Return only through the tunnel, 48 ms: direct would cost 13 + 24 = 37 ms per
+        // token, the ring 26 ms.
         assert_eq!(
             plan_with(HashMap::from([("gw".to_string(), 48.0)])),
             ReturnMode::Ring
         );
-        // Cauda sem volta até este gateway (mediu só outro): anel.
+        // Tail with no return to this gateway (it measured only another one): ring.
         assert_eq!(
             plan_with(HashMap::from([("other".to_string(), 5.0)])),
             ReturnMode::Ring
         );
-        // Volta rápida, 20 ms: direta custa 13 + 10 = 23 ms, abaixo do anel.
+        // Fast return, 20 ms: direct costs 13 + 10 = 23 ms, below the ring.
         assert_eq!(
             plan_with(HashMap::from([("gw".to_string(), 20.0)])),
             ReturnMode::Direct
@@ -1043,7 +1080,7 @@ mod tests {
             decode_tokens: 50.0,
             forced_return: Some(ReturnMode::Direct),
         };
-        // Sozinho o planejador escolheria o anel; forçado, é a direta.
+        // On its own the planner would choose the ring; forced, it is direct.
         let (_, estimate) = plan_fastest(&peers, "m", None, 48, &inputs, None).unwrap();
         assert_eq!(estimate.return_mode, ReturnMode::Direct);
     }

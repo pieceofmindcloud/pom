@@ -1,9 +1,8 @@
 name: Release · macOS
 
-# It only runs when you ask for it, and it runs on the **self-hosted runner `macbook`** - it
-# consumes no quota at all. If the MacBook is switched off the job waits in the queue instead
-# of failing. See `docs/subsystems/build-and-run.md`, "Release through GitHub
-# Actions".
+# It only runs when you ask for it, on a GitHub-hosted macOS (Apple Silicon) runner. The
+# private engine repository is reached with the PLUGIN_REPO_SSH_KEY secret. See
+# `docs/subsystems/build-and-run.md`, "Release through GitHub Actions".
 on:
   workflow_dispatch:
     inputs:
@@ -27,7 +26,7 @@ jobs:
   # would run on the same machine anyway - the runner serves one job at a time.
   build:
     name: macOS arm64 (Metal)
-    runs-on: [self-hosted, macOS, ARM64, macbook]
+    runs-on: macos-14
     env:
       LLAMA_SOURCE: ${{ github.workspace }}/.ci-cache/llama.cpp
       SCCACHE_GHA_ENABLED: "true"
@@ -52,23 +51,14 @@ jobs:
       # runner that starts empty. Here the workspace is the same between runs, the
       # `target/` is already there, and restoring over it would only spend time and disk.
 
-      - name: Check the machine's dependencies
+      - name: Check the build tools
         run: |
-          # On a self-hosted runner the dependencies are provisioned once on the
-          # machine, not installed on every run. Failing here, naming what
-          # is missing, is better than dying deep inside the llama.cpp build.
-          faltou=""
-          for p in cmake git; do command -v "$p" >/dev/null || faltou="$faltou $p"; done
-          if [ -n "$faltou" ]; then
-            echo "missing on the machine:$faltou (install with: brew install$faltou)" >&2
-            exit 1
-          fi
+          # The hosted image brings git and cmake; install whatever is missing with Homebrew.
+          for p in cmake git; do command -v "$p" >/dev/null || brew install "$p"; done
           cmake --version | head -1
 
-      # Pins Node instead of trusting what the machine has on PATH: the self-hosted
-      # runner stores a snapshot of the PATH of whoever configured it, and that snapshot
-      # brings Node 18. Here the version is the same one the project uses in development,
-      # downloaded into the runner's tool cache.
+      # Pins the Node version the project uses in development, instead of whatever the
+      # runner image has on PATH.
       - uses: actions/setup-node@v4
         with:
           node-version: '22'

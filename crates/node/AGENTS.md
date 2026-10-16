@@ -157,7 +157,8 @@ new configuration.
      `examples/relay-node/`) and republishes when the swarm addresses change;
      every 30 s `spawn_pkarr_bootstrap` resolves and dials by key
      `--pkarr-peers`, the `relay_peers` relays and the trust chain principals
-     that are not alive yet. `--no-pkarr` skips all of it; without it, a failed
+     that are not alive yet, each key that stays out backing off up to
+     10 min (`pkarr_bootstrap_wait`). `--no-pkarr` skips all of it; without it, a failed
      publication backs off from 15 s to 30 min and only warns at the 1st, 2nd,
      4th... consecutive failure. The Mainline DHT used by pkarr keeps an actor on
      its own thread; on Windows the socket's idle read timeout shows up as

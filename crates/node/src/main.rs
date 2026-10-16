@@ -1196,13 +1196,27 @@ fn pkarr_bootstrap_keys(
 
 /// Interval of the cold dial by key while the target is not in the table.
 const PKARR_BOOTSTRAP_INTERVAL: Duration = Duration::from_secs(30);
+/// Longest wait between cold dials of a key that keeps failing.
+const PKARR_BOOTSTRAP_CEILING: Duration = Duration::from_secs(10 * 60);
+
+/// Wait before the next cold dial of a key after `misses` dials in a row that
+/// left it out of the table: the interval, doubled per miss up to the ceiling.
+/// Each dial through a relay costs a circuit from the relay's per-source
+/// budget, which every node behind the same NAT shares; redialing a dead
+/// target every 30 s from each of them drained it and the relay refused the
+/// whole site.
+fn pkarr_bootstrap_wait(misses: u32) -> Duration {
+    PKARR_BOOTSTRAP_INTERVAL
+        .saturating_mul(1u32 << misses.saturating_sub(1).min(8))
+        .min(PKARR_BOOTSTRAP_CEILING)
+}
 
 /// Resolves through pkarr, and dials through libp2p, every key in
 /// `pkarr_bootstrap_keys` that is not yet a live peer. The ladder is the one in
 /// `pkarr_node::dial_addrs`: direct addresses first, then the circuit through
 /// each published relay, and DCuTR upgrades the relayed connection to a direct
 /// one when the NAT allows. A target already in `alive_peers` is not dialed
-/// again.
+/// again, and one that stays out backs off (`pkarr_bootstrap_wait`).
 fn spawn_pkarr_bootstrap(
     node: Arc<pkarr_node::PkarrNode>,
     dial_tx: mpsc::Sender<libp2p::Multiaddr>,
@@ -1214,8 +1228,13 @@ fn spawn_pkarr_bootstrap(
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(PKARR_BOOTSTRAP_INTERVAL);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // Per key: dials in a row that did not bring it into the table, and
+        // when the next one may go out.
+        let mut backoff: std::collections::HashMap<String, (u32, tokio::time::Instant)> =
+            std::collections::HashMap::new();
         loop {
             ticker.tick().await;
+            let now = tokio::time::Instant::now();
             let alive: std::collections::HashSet<String> = net
                 .alive_peers()
                 .await
@@ -1230,8 +1249,15 @@ fn spawn_pkarr_bootstrap(
                     continue;
                 };
                 if alive.contains(&peer_id.to_string()) {
+                    backoff.remove(&key);
                     continue;
                 }
+                let entry = backoff.entry(key.clone()).or_insert((0, now));
+                if entry.1 > now {
+                    continue;
+                }
+                entry.0 = entry.0.saturating_add(1);
+                entry.1 = now + pkarr_bootstrap_wait(entry.0);
                 let addrs =
                     tokio::time::timeout(Duration::from_secs(10), node.resolve_dial_addrs(&key))
                         .await
@@ -2231,5 +2257,15 @@ mod llama_engine_contract {
             llama_engine::gguf_key("tp_size"),
             brand::gguf_key("tp_size")
         );
+    }
+
+    #[test]
+    fn a_key_that_stays_unreachable_is_dialed_less_and_less_often() {
+        use std::time::Duration;
+        assert_eq!(super::pkarr_bootstrap_wait(1), Duration::from_secs(30));
+        assert_eq!(super::pkarr_bootstrap_wait(2), Duration::from_secs(60));
+        assert_eq!(super::pkarr_bootstrap_wait(5), Duration::from_secs(480));
+        assert_eq!(super::pkarr_bootstrap_wait(6), super::PKARR_BOOTSTRAP_CEILING);
+        assert_eq!(super::pkarr_bootstrap_wait(u32::MAX), super::PKARR_BOOTSTRAP_CEILING);
     }
 }

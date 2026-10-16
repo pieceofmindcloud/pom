@@ -707,7 +707,12 @@ fits in 900 B (`MAX_RECORD_ADDRS` 4, `MAX_RECORD_RELAYS` 3).
   `alive_peers`. It replaces the IP the trust document used to carry: a node
   that only has the document finds the principal by its key. The swarm loop
   does not redial a target that is already connected or backing off
-  (`DialBackoff`).
+  (`DialBackoff`). A key that stays out of the table backs off on its own
+  (`main::pkarr_bootstrap_wait`): 30 s after the first miss, doubling up to
+  10 min, and back to every tick once it is alive. Each dial through a relay
+  takes a circuit from the relay's per-source budget, which every node behind
+  the same NAT shares, so a dead target redialed every 30 s by each of them
+  used to drain it.
 - **No internet** (`--no-pkarr` / `POM_NO_PKARR=1`): no pkarr client is
   created - no publication, no key resolution and no cold dial by key;
   `/api/public/networks/locate` answers `unresolved`. Paths stay on UDP/mDNS on

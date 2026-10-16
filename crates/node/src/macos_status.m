@@ -4,6 +4,7 @@
 #include <stdatomic.h>
 
 static NSString *POMChatURL;
+static NSString *POMWindowURL;
 static NSString *POMIconPath;
 static NSString *POMApplicationName;
 static NSStatusItem *POMStatusItem;
@@ -115,6 +116,9 @@ static void POMOpenWindow(void) {
                           defer:NO];
         POMWindow.title = POMApplicationName;
         POMWindow.minSize = NSMakeSize(640, 480);
+        // The green button, and View > Enter Full Screen, make the window full screen
+        // like any native macOS app.
+        POMWindow.collectionBehavior |= NSWindowCollectionBehaviorFullScreenPrimary;
         // Closing hides the window; the app keeps running in the menu bar.
         POMWindow.releasedWhenClosed = NO;
         POMWindow.delegate = POMStatusControllerInstance;
@@ -123,10 +127,6 @@ static void POMOpenWindow(void) {
         [POMWindow center];
     }
 
-    // While the larger window is open the app is a regular one: it shows in
-    // the Dock and gets its menu bar, with "Quit POM" and Cmd+Q. An accessory
-    // app has no visible menu, so the window used to offer no way to quit.
-    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
     [POMWindow makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
 }
@@ -159,7 +159,8 @@ static void POMShowStatusMenu(void) {
 }
 
 static void POMRetryGateway(WKWebView *webView) {
-    NSURL *url = [NSURL URLWithString:POMChatURL];
+    NSString *address = webView == POMWindowWebView ? POMWindowURL : POMChatURL;
+    NSURL *url = [NSURL URLWithString:address];
     if (!url) {
         POMShowUnavailable(webView);
         return;
@@ -309,8 +310,6 @@ static WKWebView *POMMakeWebView(NSRect frame) {
 
 - (void)windowWillClose:(NSNotification *)notification {
     if (notification.object == POMWindow) {
-        // Back to a menu-bar app: no Dock icon once the window is gone.
-        [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
     }
 }
 
@@ -330,7 +329,9 @@ static WKWebView *POMMakeWebView(NSRect frame) {
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     (void)notification;
-    [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+    // A regular app: Dock icon, menu bar and full screen, as any native macOS app. The
+    // status item stays in the menu bar while the process runs.
+    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
 
     POMNavigationDelegateInstance = [[POMNavigationDelegate alloc] init];
     POMScriptHandlerInstance = [[POMScriptHandler alloc] init];
@@ -353,6 +354,29 @@ static WKWebView *POMMakeWebView(NSRect frame) {
     POMStatusItem.button.target = POMStatusControllerInstance;
     POMStatusItem.button.action = @selector(togglePopover:);
     [POMStatusItem.button sendActionOn:(NSEventMaskLeftMouseUp | NSEventMaskRightMouseUp)];
+
+    POMOpenWindow();
+}
+
+// Clicking the Dock icon brings the window back after it was closed.
+- (BOOL)applicationShouldHandleReopen:(NSApplication *)sender hasVisibleWindows:(BOOL)flag {
+    (void)sender;
+    if (!flag) {
+        POMOpenWindow();
+    }
+    return YES;
+}
+
+// Right-clicking the Dock icon offers Quit, so the app can be closed from the Dock
+// as well as from the status bar item.
+- (NSMenu *)applicationDockMenu:(NSApplication *)sender {
+    (void)sender;
+    NSMenu *menu = [[NSMenu alloc] initWithTitle:POMApplicationName];
+    [menu addItem:[[NSMenuItem alloc]
+        initWithTitle:POMLocalized(@"status.quit", @"Quit POM")
+               action:@selector(terminate:)
+        keyEquivalent:@""]];
+    return menu;
 }
 
 @end
@@ -382,6 +406,7 @@ static void POMInstallApplicationMenu(void) {
 }
 
 int pom_macos_status_run(const char *url,
+                         const char *window_url,
                          const char *icon_path,
                          const char *app_name,
                          double popover_width,
@@ -398,6 +423,7 @@ int pom_macos_status_run(const char *url,
         }
         atomic_store(&POMUserQuitRequested, false);
         POMChatURL = [NSString stringWithUTF8String:url ?: ""];
+        POMWindowURL = [NSString stringWithUTF8String:window_url ?: ""];
         POMIconPath = [NSString stringWithUTF8String:icon_path ?: ""];
         POMApplicationName = [NSString stringWithUTF8String:app_name ?: ""];
         if (popover_width > 0 && popover_height > 0) {

@@ -12,8 +12,8 @@
 #
 # The bundle is a thin wrapper: the binary is still the same command-line
 # program, and `POM.app/Contents/MacOS/pom` can be called directly with the same
-# arguments. `LSUIElement` keeps the node out of the Dock; the main interface is
-# still web, with quick access through the native status bar item.
+# arguments. The app is a regular macOS app (Dock, menu bar, full screen); the
+# interface is the web UI in a native window, with the status bar item beside it.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -74,7 +74,6 @@ cat > "$destination/Contents/Info.plist" <<PLIST
     <key>CFBundleIconFile</key><string>$slug</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>LSMinimumSystemVersion</key><string>11.0</string>
-    <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSLocalNetworkUsageDescription</key><string>O POM usa a rede local para encontrar outros nós e a internet para se conectar a nós remotos e relays.</string>
 </dict>

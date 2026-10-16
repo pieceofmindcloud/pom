@@ -32,6 +32,7 @@ pub const WINDOW_SIZE: (f64, f64) = (1120.0, 880.0);
 unsafe extern "C" {
     fn pom_macos_status_run(
         url: *const c_char,
+        window_url: *const c_char,
         icon_path: *const c_char,
         app_name: *const c_char,
         popover_width: f64,
@@ -44,6 +45,12 @@ unsafe extern "C" {
 
 fn chat_url(port: u16) -> String {
     crate::gateway_url(port)
+}
+
+/// The web interface the main window shows: the same address the browser opens
+/// when it is pointed at the node (`/` redirects here).
+fn admin_url(port: u16) -> String {
+    format!("http://127.0.0.1:{port}/admin-ui/")
 }
 
 /// Path of the bar item's 1x artwork; the native side looks for `@2x` and
@@ -84,11 +91,13 @@ where
         result
     });
     let url = CString::new(chat_url(port))?;
+    let window_url = CString::new(admin_url(port))?;
     let icon = CString::new(icon_path().to_string_lossy().as_bytes())?;
     let app_name = CString::new(crate::brand::name())?;
     let user_quit = unsafe {
         pom_macos_status_run(
             url.as_ptr(),
+            window_url.as_ptr(),
             icon.as_ptr(),
             app_name.as_ptr(),
             POPOVER_SIZE.0,
@@ -138,6 +147,7 @@ mod tests {
     fn the_address_uses_the_port_chosen_by_rust() {
         assert_eq!(chat_url(9123), "http://127.0.0.1:9123/admin-ui/chat");
         assert_eq!(chat_url(8080), "http://127.0.0.1:8080/admin-ui/chat");
+        assert_eq!(admin_url(8080), "http://127.0.0.1:8080/admin-ui/");
     }
 
     #[test]

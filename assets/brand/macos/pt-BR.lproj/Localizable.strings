@@ -4,4 +4,4 @@
 "status.gatewayUnavailable.retry" = "Tentar novamente";
 "status.itemTooltip" = "Abrir %@";
 "status.quit" = "Sair do POM";
-"status.openWindow" = "Abrir numa janela maior";
+"status.openWindow" = "Abrir o POM";

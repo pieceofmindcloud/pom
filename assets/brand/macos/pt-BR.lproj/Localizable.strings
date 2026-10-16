@@ -5,3 +5,4 @@
 "status.itemTooltip" = "Abrir %@";
 "status.quit" = "Sair do POM";
 "status.openWindow" = "Abrir o POM";
+"status.gatewayStarting" = "Iniciando o POM…";

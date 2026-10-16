@@ -562,13 +562,39 @@ impl Offer {
     }
 }
 
-/// The peer whose session gains this machine the most tokens: the same layer split, the save written, more tokens than
-/// this machine has. Ties keep the first peer.
+/// Whether a session saved with the layers `saved` can be restored on a machine running the layers `local`: the same
+/// split, or a machine that runs the whole model (`whole`) and a session saved on a split that covers every layer, from
+/// 0 to the end, as one contiguous chain of ranges (the engine joins the stages into one image on that machine).
+pub(crate) fn layers_compatible(local: &str, saved: &str) -> bool {
+    if local == saved {
+        return true;
+    }
+    if local != "whole" {
+        return false;
+    }
+    let mut next = 0u64;
+    for range in saved.split('|') {
+        let Some((start, end)) = range.split_once('-') else {
+            return false;
+        };
+        let (Ok(start), Ok(end)) = (start.parse::<u64>(), end.parse::<u64>()) else {
+            return false;
+        };
+        if start != next || end < start {
+            return false;
+        }
+        next = end + 1;
+    }
+    next > 0
+}
+
+/// The peer whose session gains this machine the most tokens: a session it can restore (`layers_compatible`), the save
+/// written, more tokens than this machine has. Ties keep the first peer.
 pub(crate) fn best_source<'a>(local: &Offer, peers: &'a [(String, Offer)]) -> Option<&'a (String, Offer)> {
     peers
         .iter()
         .filter(|(_, offer)| {
-            offer.layers == local.layers
+            layers_compatible(&local.layers, &offer.layers)
                 && !offer.pending
                 && offer.bytes > 0
                 && offer.tokens > local.have()
@@ -987,5 +1013,21 @@ mod pull_tests {
         };
         assert_eq!(Offer::from_json(&value), Some(expected));
         assert!(Offer::from_json(&json!({"tokens": 5})).is_none());
+    }
+
+    #[test]
+    fn a_split_session_restores_on_a_machine_with_the_whole_model() {
+        assert!(layers_compatible("whole", "0-35|36-47"));
+        assert!(layers_compatible("whole", "0-47"));
+        assert!(layers_compatible("0-35|36-47", "0-35|36-47"));
+    }
+
+    #[test]
+    fn a_whole_session_or_a_partial_chain_is_not_restored_on_a_split_machine() {
+        assert!(!layers_compatible("0-35|36-47", "whole"));
+        assert!(!layers_compatible("0-35|36-47", "0-47"));
+        assert!(!layers_compatible("whole", "0-30|36-47"));
+        assert!(!layers_compatible("whole", "1-35|36-47"));
+        assert!(layers_compatible("whole", "whole"));
     }
 }

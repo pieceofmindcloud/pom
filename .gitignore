@@ -26,6 +26,7 @@ pom*.json
 /pom.db-wal
 /pom.db-shm
 .pom-node*.key
+.pom-instance.lock
 /.pom-dev-plugin-builds/
 # local trust chain and the replay ledger next to it (single-node state)
 .pom-admin-trust*.json

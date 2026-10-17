@@ -2,7 +2,8 @@ use super::*;
 
 // ── Server startup ────────────────────────────────────────────────────────────
 
-pub(crate) type GatewayReadySender = std::sync::mpsc::SyncSender<()>;
+/// Carries the port the gateway bound, which the native window loads.
+pub(crate) type GatewayReadySender = std::sync::mpsc::SyncSender<u16>;
 
 pub(crate) async fn start_gateway_with_ready(
     state: GatewayState,
@@ -99,7 +100,7 @@ pub(crate) async fn start_gateway_with_ready(
 
     let listener = crate::infer_server::bind_dual_stack(port).await?;
     if let Some(ready) = ready {
-        let _ = ready.send(());
+        let _ = ready.send(port);
     }
     info!(
         "🌐 Interface e API em http://localhost:{port}  \

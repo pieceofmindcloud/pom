@@ -14,8 +14,9 @@ use tao::dpi::LogicalSize;
 use tao::event::{Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tao::platform::run_return::EventLoopExtRunReturn;
+use tao::platform::unix::WindowExtUnix;
 use tao::window::WindowBuilder;
-use wry::WebViewBuilder;
+use wry::{WebViewBuilder, WebViewBuilderExtUnix};
 
 /// The same size as the macOS and Windows windows.
 pub const WINDOW_SIZE: (f64, f64) = (1120.0, 880.0);
@@ -26,7 +27,10 @@ enum UserEvent {
 
 /// Runs the service on a background thread, opens the window once the gateway answers, and
 /// returns when the window is closed or the service stops.
-pub fn run<F>(url: String, service: F, gateway_ready: Receiver<()>) -> Result<()>
+///
+/// The window loads the port the gateway reports having bound, not one computed before
+/// startup, so a port moved at startup still opens the interface.
+pub fn run<F>(service: F, gateway_ready: Receiver<u16>) -> Result<()>
 where
     F: FnOnce() -> Result<()> + Send + 'static,
 {
@@ -40,20 +44,25 @@ where
 
     // The service signals this only after it binds the gateway. A view opened earlier shows
     // "connection refused" while the node is still starting.
-    if gateway_ready.recv().is_err() {
+    let Ok(port) = gateway_ready.recv() else {
         return service
             .join()
             .map_err(|_| anyhow!("the service thread ended in a panic"))?;
-    }
+    };
 
     let window = WindowBuilder::new()
         .with_title("POM")
         .with_inner_size(LogicalSize::new(WINDOW_SIZE.0, WINDOW_SIZE.1))
         .build(&event_loop)
         .map_err(|error| anyhow!("could not open the window: {error}"))?;
+    // The view goes into the window's GTK box. `build(&window)` makes an X11 child window,
+    // which stays blank under Wayland - the default session on current Ubuntu.
+    let container = window
+        .default_vbox()
+        .ok_or_else(|| anyhow!("the window has no GTK container for the view"))?;
     let webview = WebViewBuilder::new()
-        .with_url(&url)
-        .build(&window)
+        .with_url(crate::gateway_url(port))
+        .build_gtk(container)
         .context("could not start the WebKitGTK view; install the webkit2gtk-4.1 runtime")?;
 
     let mut closed_by_user = false;
@@ -85,4 +94,17 @@ where
     service
         .join()
         .map_err(|_| anyhow!("the service thread ended in a panic"))?
+}
+
+/// Opens a window on a POM that is already running from the same project root, instead of
+/// starting a second node with the same identity. Closing the window leaves that POM running.
+pub fn show_running(port: u16) -> Result<()> {
+    let (ready, gateway_ready) = std::sync::mpsc::sync_channel(1);
+    let _ = ready.send(port);
+    run(
+        || loop {
+            thread::park();
+        },
+        gateway_ready,
+    )
 }

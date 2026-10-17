@@ -202,6 +202,8 @@ mod rag;
 mod relay;
 #[path = "backend/reqlog.rs"]
 mod reqlog;
+#[path = "utils/instance_lock.rs"]
+mod instance_lock;
 #[path = "utils/respawn.rs"]
 mod respawn;
 #[path = "network/route.rs"]
@@ -544,6 +546,21 @@ fn main() -> Result<()> {
         return run_command(command);
     }
 
+    // Before any port is probed: a leftover POM on this root holds the ports
+    // too, and moving away from it would start a second node with its identity.
+    let mut instance = if is_windows_supervisor() {
+        None
+    } else {
+        match instance_lock::acquire(instance_lock::RESPAWN_GRACE)
+            .context("could not lock the POM home")?
+        {
+            instance_lock::Acquired::Lock(lock) => Some(lock),
+            instance_lock::Acquired::HeldBy { gateway_port } => {
+                return already_running(gateway_port)
+            }
+        }
+    };
+
     if !config::Config::exists() {
         let gateway_was_default = args.gateway_port == initial_ports::DEFAULT_GATEWAY_PORT
             && !args.gateway_port_from_env
@@ -564,9 +581,15 @@ fn main() -> Result<()> {
             args.gateway_port = selected.gateway;
             args.port = selected.p2p;
         }
+    } else if DESKTOP {
+        move_busy_saved_ports(&args)?;
     }
-    #[cfg(any(target_os = "macos", target_os = "windows", all(target_os = "linux", feature = "desktop")))]
     let gateway_port = configured_gateway_port(&args);
+    if let Some(lock) = instance.as_mut() {
+        if let Err(error) = lock.record_gateway_port(gateway_port) {
+            warn!("could not record the interface port in the instance lock: {error}");
+        }
+    }
 
     let service = move |gateway_ready: Option<gateway::GatewayReadySender>| {
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -584,7 +607,6 @@ fn main() -> Result<()> {
     {
         let (gateway_ready, gateway_ready_rx) = std::sync::mpsc::sync_channel(1);
         return windows_status::run(
-            gateway_port,
             move || service(Some(gateway_ready)),
             gateway_ready_rx,
         );
@@ -594,7 +616,6 @@ fn main() -> Result<()> {
     {
         let (gateway_ready, gateway_ready_rx) = std::sync::mpsc::sync_channel(1);
         return linux_window::run(
-            gateway_url(gateway_port),
             move || service(Some(gateway_ready)),
             gateway_ready_rx,
         );
@@ -733,12 +754,10 @@ fn gateway_url(port: u16) -> String {
     format!("http://127.0.0.1:{port}/admin-ui/chat")
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows", all(target_os = "linux", feature = "desktop")))]
 fn select_gateway_port(config_port: Option<u16>, cli_port: u16) -> u16 {
     config_port.unwrap_or(cli_port)
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows", all(target_os = "linux", feature = "desktop")))]
 fn configured_gateway_port(args: &Args) -> u16 {
     if args.gateway_port_from_env {
         return args.gateway_port;
@@ -747,6 +766,96 @@ fn configured_gateway_port(args: &Args) -> u16 {
         .ok()
         .map(|config| config.gateway_port);
     select_gateway_port(persisted, args.gateway_port)
+}
+
+/// A build with a native window, used by people rather than by a cluster.
+const DESKTOP: bool = cfg!(any(
+    target_os = "macos",
+    target_os = "windows",
+    all(target_os = "linux", feature = "desktop")
+));
+
+/// The Windows supervisor only relaunches the child, which claims the root.
+fn is_windows_supervisor() -> bool {
+    #[cfg(windows)]
+    {
+        std::env::var_os(windows_status::SUPERVISED_CHILD_ENV).is_none()
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+/// Another process already serves this root.
+///
+/// The Linux window opens on it; elsewhere, and on a server, the second launch
+/// stops with the port to open.
+fn already_running(gateway_port: Option<u16>) -> Result<()> {
+    let root = config::project_root();
+    #[cfg(all(target_os = "linux", feature = "desktop"))]
+    if let Some(port) = gateway_port {
+        info!(
+            "POM is already running from {}; opening its interface on port {port}",
+            root.display()
+        );
+        return linux_window::show_running(port);
+    }
+    let location = gateway_port
+        .map(|port| format!(", interface at http://127.0.0.1:{port}/"))
+        .unwrap_or_default();
+    anyhow::bail!(
+        "POM is already running from {}{location}. Close it first, or give this node its own {}",
+        root.display(),
+        brand::env_var("HOME")
+    )
+}
+
+/// On a desktop, a saved port another program holds moves to the next free one.
+///
+/// A desktop user does not choose ports, so failing on a busy one only leaves
+/// POM unable to start. A server keeps failing instead: its ports are part of
+/// the cluster's configuration. A port set through the environment is never
+/// moved. The new ports are saved in `pom.json`, so the rest of the startup,
+/// the window and the next start all use them.
+fn move_busy_saved_ports(args: &Args) -> Result<()> {
+    let Ok(mut saved) = config::Config::load() else {
+        // The full startup reports the unreadable config.
+        return Ok(());
+    };
+    let mut effective = saved.clone();
+    apply_env_overrides(&mut effective, args);
+    let selected = initial_ports::select(
+        effective.gateway_port,
+        effective.p2p_port,
+        !args.gateway_port_from_env,
+        !args.port_from_env,
+    )?;
+    if !moved_ports(&mut saved, args, selected) {
+        return Ok(());
+    }
+    warn!(
+        "the saved ports are in use (gateway {}, P2P {}); moved to gateway {} and P2P {}",
+        effective.gateway_port, effective.p2p_port, selected.gateway, selected.p2p
+    );
+    saved.save().context("could not save the new ports")
+}
+
+/// Writes into `saved` the selected ports that did not come from the
+/// environment, and tells whether any changed.
+fn moved_ports(saved: &mut config::Config, args: &Args, selected: initial_ports::InitialPorts) -> bool {
+    let mut changed = false;
+    if !args.gateway_port_from_env && saved.gateway_port != selected.gateway {
+        saved.gateway_port = selected.gateway;
+        // The probe checked the inference port that follows the gateway.
+        saved.inference_port = None;
+        changed = true;
+    }
+    if !args.port_from_env && saved.p2p_port != selected.p2p {
+        saved.p2p_port = selected.p2p;
+        changed = true;
+    }
+    changed
 }
 
 async fn async_main(
@@ -1162,7 +1271,7 @@ async fn start_setup_mode(
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     if let Some(ready) = gateway_ready {
-        let _ = ready.send(());
+        let _ = ready.send(gateway_port);
     }
     axum::serve(listener, app).await?;
     Ok(())
@@ -2145,6 +2254,32 @@ mod main_tests {
         env.gateway_port_from_env = true;
         apply_env_overrides(&mut from_env, &env);
         assert_eq!((from_env.p2p_port, from_env.gateway_port), (43000, 9000));
+    }
+
+    /// A moved port is saved; one set through the environment stays out of
+    /// `pom.json`, and moving the gateway lets the inference port follow it.
+    #[test]
+    fn moved_ports_save_only_what_the_environment_did_not_set() {
+        let mut saved: config::Config = serde_json::from_str(
+            r#"{"profile":"node","p2p_port":42777,"gateway_port":8080,"inference_port":8181}"#,
+        )
+        .unwrap();
+        let mut args = Args::parse_from(["pom"]);
+        args.port_from_env = true;
+        let selected = initial_ports::InitialPorts {
+            gateway: 8081,
+            p2p: 43000,
+        };
+
+        assert!(moved_ports(&mut saved, &args, selected));
+        assert_eq!((saved.gateway_port, saved.p2p_port), (8081, 42777));
+        assert_eq!(saved.inference_port, None);
+
+        let unchanged = initial_ports::InitialPorts {
+            gateway: 8081,
+            p2p: 42777,
+        };
+        assert!(!moved_ports(&mut saved, &args, unchanged));
     }
 
     #[test]

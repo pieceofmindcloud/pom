@@ -1,21 +1,24 @@
 //! Pkarr: identity-to-address resolver.
 //!
 //! Each node publishes under its own key (the same as the `node_id`, the
-//! `PeerId` and the authority - see `identity.rs`) a signed `_pom` TXT in the
-//! Mainline DHT with the **public** multiaddresses the swarm listens on now and
-//! the keys of the relays where it holds a circuit reservation. Whoever only
-//! knows the key (a trust document, a public directory record,
-//! `--relay-peers`) resolves here where to dial. The record is never an
-//! identity: it is a pointer the publisher renews when its addresses change.
+//! endpoint id and the authority - see `identity.rs`) a signed `_pom` TXT in
+//! the Mainline DHT with the **public** direct addresses of its endpoint and
+//! the URLs of the relays it is reachable through. Whoever only knows the key
+//! (a trust document, a public directory record, `--pkarr-peers`) resolves
+//! here where to dial. The record is never an identity: it is a pointer the
+//! publisher renews when its addresses change.
+//!
+//! iroh's own pkarr publisher is deliberately not used: it would sign a
+//! record under the same key, and one key holds one record in the DHT - the
+//! two would overwrite each other.
 
 use anyhow::Result;
-use libp2p::multiaddr::Protocol;
-use libp2p::{Multiaddr, PeerId};
+use crate::p2p::{EndpointAddr, EndpointId};
 use pkarr::{Client, Keypair, SignedPacket};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
-/// Cap on direct multiaddresses in the record. The whole DNS packet has to fit
+/// Cap on direct addresses in the record. The whole DNS packet has to fit
 /// in ~1000 bytes.
 pub const MAX_RECORD_ADDRS: usize = 4;
 /// Cap on relays in the record.
@@ -34,9 +37,9 @@ pub struct PkarrNode {
 /// What a node publishes about itself.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PkarrRecord {
-    /// Direct public multiaddresses, without the `/p2p/<self>` suffix.
-    pub multiaddrs: Vec<String>,
-    /// `pk:` keys of the relays where this node holds a circuit reservation.
+    /// Direct public endpoint addresses (`ip:port`).
+    pub addrs: Vec<String>,
+    /// URLs of the relays this endpoint is reachable through.
     pub relays: Vec<String>,
     pub gateway_port: Option<u16>,
     pub inference_port: Option<u16>,
@@ -48,7 +51,7 @@ pub struct PkarrRecord {
 /// A record resolved from the DHT.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedPeer {
-    pub peer_id: PeerId,
+    pub endpoint_id: EndpointId,
     pub record: PkarrRecord,
 }
 
@@ -58,10 +61,10 @@ pub struct ResolvedPeer {
 /// Field names are kept short to stay within the 1000-byte DNS packet limit.
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 struct TxtPayload {
-    /// Direct multiaddresses, without `/p2p/<self>`.
+    /// Direct endpoint addresses, `ip:port`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     a: Vec<String>,
-    /// Relays holding a reservation, in z-base-32 (without the `pk:` prefix).
+    /// Relay URLs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     x: Vec<String>,
     /// HTTP gateway port for the public metadata endpoint.
@@ -70,7 +73,7 @@ struct TxtPayload {
     /// Optional inference server port
     #[serde(skip_serializing_if = "Option::is_none")]
     i: Option<u16>,
-    /// Relay capability (true if this node accepts relay reservations)
+    /// Relay capability (true when this node is a public relay)
     #[serde(skip_serializing_if = "Option::is_none")]
     r: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -80,18 +83,13 @@ struct TxtPayload {
 impl TxtPayload {
     fn from_record(record: &PkarrRecord) -> Self {
         Self {
-            a: record
-                .multiaddrs
-                .iter()
-                .map(|addr| strip_peer_suffix(addr))
-                .take(MAX_RECORD_ADDRS)
-                .collect(),
+            a: record.addrs.iter().take(MAX_RECORD_ADDRS).cloned().collect(),
             x: record
                 .relays
                 .iter()
-                .filter_map(|key| pkarr::PublicKey::try_from(key.as_str()).ok())
-                .map(|key| key.to_z32())
+                .filter(|url| crate::p2p::relay_url(url).is_some())
                 .take(MAX_RECORD_RELAYS)
+                .cloned()
                 .collect(),
             h: record.gateway_port,
             i: record.inference_port,
@@ -106,12 +104,11 @@ impl TxtPayload {
 
     fn into_record(self) -> PkarrRecord {
         PkarrRecord {
-            multiaddrs: self.a,
+            addrs: self.a,
             relays: self
                 .x
-                .iter()
-                .filter_map(|key| pkarr::PublicKey::try_from(key.as_str()).ok())
-                .map(|key| key.to_uri_string())
+                .into_iter()
+                .filter(|url| crate::p2p::relay_url(url).is_some())
                 .collect(),
             gateway_port: self.h,
             inference_port: self.i,
@@ -139,74 +136,32 @@ impl TxtPayload {
     }
 }
 
-/// Strips the trailing `/p2p/<id>`: the resolver knows the `PeerId` from the
-/// key.
-fn strip_peer_suffix(addr: &str) -> String {
-    let Ok(mut multiaddr) = addr.parse::<Multiaddr>() else {
-        return addr.to_string();
-    };
-    if matches!(multiaddr.iter().last(), Some(Protocol::P2p(_))) {
-        multiaddr.pop();
-    }
-    multiaddr.to_string()
+// ── Identity: endpoint id <-> pkarr key ──────────────────────────────────────
+
+/// The pkarr key (`pk:...`) of an endpoint id. Every node uses the same key
+/// for both.
+#[cfg(test)]
+pub fn uri_from_endpoint_id(id: &EndpointId) -> String {
+    format!("pk:{}", id.to_z32())
 }
 
-// ── Identity: PeerId <-> pkarr key ───────────────────────────────────────────
-
-/// The pkarr key (`pk:...`) of an Ed25519 `PeerId`. Every node uses the same
-/// key for both, so a relay's `PeerId` already says where to resolve it.
-pub fn uri_from_peer_id(peer_id: &PeerId) -> Option<String> {
-    let multihash = peer_id.as_ref();
-    // Code 0x00 = identity: the digest is the protobuf-encoded public key.
-    if multihash.code() != 0x00 {
-        return None;
-    }
-    let public = libp2p::identity::PublicKey::try_decode_protobuf(multihash.digest()).ok()?;
-    let ed25519 = public.try_into_ed25519().ok()?;
-    let key = pkarr::PublicKey::try_from(&ed25519.to_bytes()).ok()?;
-    Some(key.to_uri_string())
-}
-
-/// The libp2p `PeerId` of a pkarr key.
-pub fn peer_id_from_uri(uri: &str) -> Option<PeerId> {
+/// The endpoint id of a pkarr key (`pk:...` or bare z-base-32).
+pub fn endpoint_id_from_uri(uri: &str) -> Option<EndpointId> {
     let key = pkarr::PublicKey::try_from(uri).ok()?;
-    let public = libp2p::identity::ed25519::PublicKey::try_from_bytes(key.as_bytes()).ok()?;
-    Some(libp2p::identity::PublicKey::from(public).to_peer_id())
+    EndpointId::from_bytes(key.as_bytes()).ok()
 }
 
-/// Dialable addresses of a resolved peer: the direct ones, each with
-/// `/p2p/<peer>`, followed by the circuits through each resolved relay
-/// (`<relay>/p2p/<relay>/p2p-circuit/p2p/<peer>`). The order is the ladder's:
-/// direct first, relay after; DCuTR tries to punch the NAT over the circuit on
-/// its own.
-pub fn dial_addrs(peer: &ResolvedPeer, relays: &[ResolvedPeer]) -> Vec<Multiaddr> {
-    let mut out = Vec::new();
-    for addr in &peer.record.multiaddrs {
-        let Ok(mut multiaddr) = addr.parse::<Multiaddr>() else {
-            continue;
-        };
-        if !matches!(multiaddr.iter().last(), Some(Protocol::P2p(_))) {
-            multiaddr.push(Protocol::P2p(peer.peer_id));
-        }
-        out.push(multiaddr);
-    }
-    for relay in relays {
-        if relay.peer_id == peer.peer_id {
-            continue;
-        }
-        for addr in &relay.record.multiaddrs {
-            let Ok(mut multiaddr) = addr.parse::<Multiaddr>() else {
-                continue;
-            };
-            if !matches!(multiaddr.iter().last(), Some(Protocol::P2p(_))) {
-                multiaddr.push(Protocol::P2p(relay.peer_id));
-            }
-            multiaddr.push(Protocol::P2pCircuit);
-            multiaddr.push(Protocol::P2p(peer.peer_id));
-            out.push(multiaddr);
-        }
-    }
-    out
+/// Where to dial a resolved peer: its direct addresses and its relays, in one
+/// endpoint address. iroh tries them together and keeps what answers.
+pub fn dial_addr(peer: &ResolvedPeer) -> EndpointAddr {
+    let texts: Vec<String> = peer
+        .record
+        .addrs
+        .iter()
+        .chain(peer.record.relays.iter())
+        .cloned()
+        .collect();
+    crate::p2p::endpoint_addr(peer.endpoint_id, &texts)
 }
 
 // ── PkarrNode impl ────────────────────────────────────────────────────────────
@@ -248,7 +203,7 @@ impl PkarrNode {
                 300,
             )
             .sign(&self.keypair)?;
-        self.client.publish(&sp, None).await?;
+        self.client.publish(&sp).await?;
         info!("pkarr: record published: {json}");
         Ok(())
     }
@@ -262,20 +217,18 @@ impl PkarrNode {
                 return None;
             }
         };
-        let peer_id = peer_id_from_uri(key)?;
-        let packet = self.client.resolve(&pk).await?;
+        let endpoint_id = endpoint_id_from_uri(key)?;
+        let packet = self
+            .client
+            .resolve(&pk, pkarr::ResolvePolicy::CacheFirst)
+            .await
+            .ok()?;
         let record = parse_signed_packet(&packet)?;
         debug!("pkarr: {key} resolved: {record:?}");
-        Some(ResolvedPeer { peer_id, record })
-    }
-
-    /// Resolve several keys concurrently and return the ones that answered.
-    pub async fn resolve_peers(&self, keys: &[String]) -> Vec<ResolvedPeer> {
-        futures::future::join_all(keys.iter().map(|key| self.resolve(key)))
-            .await
-            .into_iter()
-            .flatten()
-            .collect()
+        Some(ResolvedPeer {
+            endpoint_id,
+            record,
+        })
     }
 
     /// Resolve a public candidate from its announced hex public key.
@@ -284,14 +237,12 @@ impl PkarrNode {
         self.resolve(&uri).await
     }
 
-    /// Resolves the peer and the relays it published, and returns where to
-    /// dial.
-    pub async fn resolve_dial_addrs(&self, key: &str) -> Vec<Multiaddr> {
-        let Some(peer) = self.resolve(key).await else {
-            return Vec::new();
-        };
-        let relays = self.resolve_peers(&peer.record.relays).await;
-        dial_addrs(&peer, &relays)
+    /// Resolves the peer and returns where to dial it, when its record has
+    /// anywhere to dial.
+    pub async fn resolve_dial_addr(&self, key: &str) -> Option<EndpointAddr> {
+        let peer = self.resolve(key).await?;
+        let addr = dial_addr(&peer);
+        (!addr.is_empty()).then_some(addr)
     }
 }
 
@@ -318,40 +269,32 @@ fn parse_signed_packet(sp: &SignedPacket) -> Option<PkarrRecord> {
 mod tests {
     use super::*;
 
-    fn keypair_peer_id(keypair: &Keypair) -> PeerId {
-        peer_id_from_uri(&keypair.to_uri_string()).unwrap()
-    }
-
     #[test]
-    fn the_payload_carries_addresses_and_relays_without_the_own_peer_suffix() {
-        let relay = Keypair::random();
-        let me = Keypair::random();
+    fn the_payload_carries_addresses_and_relay_urls() {
         let record = PkarrRecord {
-            multiaddrs: vec![format!(
-                "/ip4/203.0.113.7/udp/52777/quic-v1/p2p/{}",
-                keypair_peer_id(&me)
-            )],
-            relays: vec![relay.to_uri_string()],
+            addrs: vec!["203.0.113.7:52777".into()],
+            relays: vec!["https://relay.example.org/".into(), "pk:not-a-url".into()],
             gateway_port: Some(8080),
             inference_port: None,
             is_relay: false,
             geo_label: None,
         };
         let json = TxtPayload::from_record(&record).to_bounded_json().unwrap();
-        assert!(!json.contains("/p2p/"), "{json}");
         let decoded: TxtPayload = serde_json::from_str(&json).unwrap();
         let back = decoded.into_record();
-        assert_eq!(back.multiaddrs, vec!["/ip4/203.0.113.7/udp/52777/quic-v1"]);
-        assert_eq!(back.relays, vec![relay.to_uri_string()]);
+        assert_eq!(back.addrs, vec!["203.0.113.7:52777"]);
+        assert_eq!(back.relays, vec!["https://relay.example.org/"]);
         assert_eq!(back.gateway_port, Some(8080));
     }
 
     #[test]
     fn an_oversized_record_is_trimmed_to_fit_the_packet() {
-        let long = "/ip6/2001:db8:ffff:ffff:ffff:ffff:ffff:ffff/udp/52777/quic-v1".to_string();
+        let long = "[2001:db8:ffff:ffff:ffff:ffff:ffff:ffff]:52777".to_string();
         let record = PkarrRecord {
-            multiaddrs: vec![long; 20],
-            relays: (0..10).map(|_| Keypair::random().to_uri_string()).collect(),
+            addrs: vec![long; 20],
+            relays: (0..10)
+                .map(|i| format!("https://relay-{i}-{}.example.org/", "x".repeat(60)))
+                .collect(),
             geo_label: Some("x".repeat(200)),
             ..Default::default()
         };
@@ -362,44 +305,28 @@ mod tests {
     }
 
     #[test]
-    fn peer_id_and_pkarr_uri_name_the_same_key() {
+    fn endpoint_id_and_pkarr_uri_name_the_same_key() {
         let keypair = Keypair::random();
-        let peer_id = peer_id_from_uri(&keypair.to_uri_string()).unwrap();
-        assert_eq!(uri_from_peer_id(&peer_id).unwrap(), keypair.to_uri_string());
+        let id = endpoint_id_from_uri(&keypair.to_uri_string()).unwrap();
+        assert_eq!(uri_from_endpoint_id(&id), keypair.to_uri_string());
+        assert_eq!(id.as_bytes(), keypair.public_key().as_bytes());
     }
 
     #[test]
-    fn dial_addrs_put_direct_routes_before_relay_circuits() {
-        let peer_key = Keypair::random();
-        let relay_key = Keypair::random();
+    fn the_dial_address_holds_direct_routes_and_relays() {
+        let key = Keypair::random();
         let peer = ResolvedPeer {
-            peer_id: keypair_peer_id(&peer_key),
+            endpoint_id: endpoint_id_from_uri(&key.to_uri_string()).unwrap(),
             record: PkarrRecord {
-                multiaddrs: vec!["/ip4/203.0.113.7/tcp/52777".into()],
-                relays: vec![relay_key.to_uri_string()],
+                addrs: vec!["203.0.113.7:52777".into()],
+                relays: vec!["https://relay.example.org/".into()],
                 ..Default::default()
             },
         };
-        let relay = ResolvedPeer {
-            peer_id: keypair_peer_id(&relay_key),
-            record: PkarrRecord {
-                multiaddrs: vec!["/ip4/198.51.100.1/tcp/52777".into()],
-                is_relay: true,
-                ..Default::default()
-            },
-        };
-        let addrs = dial_addrs(&peer, &[relay.clone()]);
-        assert_eq!(
-            addrs[0].to_string(),
-            format!("/ip4/203.0.113.7/tcp/52777/p2p/{}", peer.peer_id)
-        );
-        assert_eq!(
-            addrs[1].to_string(),
-            format!(
-                "/ip4/198.51.100.1/tcp/52777/p2p/{}/p2p-circuit/p2p/{}",
-                relay.peer_id, peer.peer_id
-            )
-        );
+        let addr = dial_addr(&peer);
+        assert_eq!(addr.id, peer.endpoint_id);
+        assert_eq!(addr.ip_addrs().count(), 1);
+        assert_eq!(addr.relay_urls().count(), 1);
     }
 
     #[test]
@@ -413,34 +340,27 @@ mod tests {
 
     #[tokio::test]
     async fn a_public_record_published_by_one_client_is_resolved_by_another() {
-        let testnet = pkarr::mainline::Testnet::builder(5).build().unwrap();
+        let testnet = mainline::Testnet::builder(5).build().unwrap();
         let client = || {
             let mut builder = Client::builder();
             builder
                 .no_default_network()
                 .bootstrap(&testnet.bootstrap)
-                .dht(|dht| dht.bind_address(std::net::Ipv4Addr::LOCALHOST))
-                .request_timeout(std::time::Duration::from_millis(500));
+                .dht(|dht| {
+                    dht.bind_address = Some(std::net::Ipv4Addr::LOCALHOST);
+                    dht
+                })
+                .dht_request_timeout(std::time::Duration::from_millis(500));
             builder.build().unwrap()
         };
         let keypair = Keypair::random();
-        let relay_keypair = Keypair::random();
         let publisher = PkarrNode::with_client(client(), keypair.clone());
-        let relay = PkarrNode::with_client(client(), relay_keypair.clone());
         let resolver = PkarrNode::with_client(client(), Keypair::random());
 
-        relay
-            .publish(&PkarrRecord {
-                multiaddrs: vec!["/ip4/198.51.100.1/udp/52777/quic-v1".into()],
-                is_relay: true,
-                ..Default::default()
-            })
-            .await
-            .unwrap();
         publisher
             .publish(&PkarrRecord {
-                multiaddrs: vec!["/ip6/2001:db8::1/tcp/52777".into()],
-                relays: vec![relay_keypair.to_uri_string()],
+                addrs: vec!["[2001:db8::1]:52777".into()],
+                relays: vec!["https://relay.example.org/".into()],
                 gateway_port: Some(8080),
                 geo_label: Some("com.br.curitiba.public-network".into()),
                 ..Default::default()
@@ -450,18 +370,18 @@ mod tests {
 
         let authority = hex::encode(keypair.public_key().as_bytes());
         let resolved = resolver.resolve_public_peer(&authority).await.unwrap();
-        assert_eq!(
-            resolved.record.multiaddrs,
-            vec!["/ip6/2001:db8::1/tcp/52777"]
-        );
+        assert_eq!(resolved.record.addrs, vec!["[2001:db8::1]:52777"]);
         assert_eq!(resolved.record.gateway_port, Some(8080));
         assert_eq!(
             resolved.record.geo_label.as_deref(),
             Some("com.br.curitiba.public-network")
         );
 
-        let dial = resolver.resolve_dial_addrs(&keypair.to_uri_string()).await;
-        assert_eq!(dial.len(), 2, "{dial:?}");
-        assert!(dial[1].to_string().contains("/p2p-circuit/"));
+        let dial = resolver
+            .resolve_dial_addr(&keypair.to_uri_string())
+            .await
+            .unwrap();
+        assert_eq!(dial.ip_addrs().count(), 1);
+        assert_eq!(dial.relay_urls().count(), 1);
     }
 }

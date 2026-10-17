@@ -15,7 +15,7 @@ place is there, not here.
 |---|---|
 | `build-and-run.md` | crate workspace, `cargo build`/features, Docker, release, environment variables, scripts |
 | `operations.md` | bringing up a cluster, verifying the inference is joint, field gotchas, two peers on the same machine, harness, load monitor |
-| `p2p-network.md` | UDP + libp2p discovery, announced addresses, dynamic routes, pkarr/DCuTR, identity |
+| `p2p-network.md` | UDP + iroh discovery, announced addresses, dynamic routes, pkarr, relays and hole punching, identity |
 | `inference.md` | prefill, decode, hidden-state wire, ring vs direct reply, speculative/MTP, prompt limit |
 | `parallelism.md` | pipeline parallelism, tensor parallelism, choice by topology and telemetry |
 | `slicing.md` | GGUF split/merge, ggml type table, size-based planning |
@@ -153,7 +153,7 @@ and `build-and-run.md` for the scripts and variables.
 ## Architecture in one paragraph
 
 A single Rust binary (`crates/node`, package `node`) that coordinates LLM layers
-across machines. Each node discovers peers over UDP/libp2p, announces the layer
+across machines. Each node discovers peers over UDP and an iroh endpoint, announces the layer
 range it serves, and any node can be the gateway: `POST /api/generate` and the
 `/v1` routes run **only** the distributed pipeline - with no plan covering
 `0..total_layers` the request fails with a message, there is no fallback to
@@ -182,10 +182,11 @@ breaks the whole product.
 - **`node_id` is the machine's name in the cluster** and the key of
   `blocked_nodes`; deleting `.pom-node.key` creates a new machine. It is the
   node's **only** key:
-  the `PeerId`, the pkarr `pk:` key and the authority key all derive from it.
-  **An IP is never an identity**: signed documents and screens carry keys, and
-  an address is only resolved at dial time (direct, a dedicated relay with DCuTR,
-  and beside it a member relay). → `p2p-network.md`, section 0
+  the iroh endpoint id (the public key itself), the pkarr `pk:` key and the
+  authority key all derive from it. **An IP is never an identity**: signed
+  documents and screens carry keys (and relay URLs with host names), and an
+  address is only resolved at dial time (direct, or through a relay - n0's, a
+  dedicated one or a member - with iroh punching the NAT underneath). → `p2p-network.md`, section 0
 - **The connection key is the same across the whole cluster** and is the operator
   credential: it authenticates `/admin/*`, `/api/ui/{plan,apply,launch}` and the
   node-to-node synchronization. `POST /api/generate` and every `/v1/` route accept
@@ -291,8 +292,8 @@ breaks the whole product.
   up. → `deployment.md`, `p2p-network.md`
 - **No weight travels the network because of slicing**: each peer extracts
   its own range from its own copy. A file transfer is an explicit act of the
-  operator, and **a file never crosses a public relay** (one in `relay_peers`,
-  or one that is not a member of the cluster): it goes direct, over a hole
+  operator, and **a file never crosses a public relay** (n0's, one in
+  `relay_peers`, or one that is not a member of the cluster): it goes direct, over a hole
   punched connection, or through a relay of the cluster itself. A node the
   internet reaches relays for its own cluster by default; relaying for everyone
   is an option. → `slicing.md`, `file-transfer.md`, `p2p-network.md`

@@ -57,7 +57,7 @@ boundary.
   the per-frame `Ticket`.
 - `/handshake` is the admission proof of the private discovery. The comparison demands
   that the configured key and the received one both be non-empty; an empty key never turns a
-  setup process into a member of the swarm.
+  setup process into a member of the network.
 - `gateway/` - the module split into state/selection, budgets and generation types,
   generation, snapshots/planning, HTTP and tests: `GatewayState`,
   `start_gateway_with_ready`, `generate_stream_with_stops` /
@@ -379,7 +379,7 @@ boundary.
   already has one, because replacing a root is manual re-anchoring on the
   machine (`--replace`), not an interface gesture. A chain created by first
   access also carries a signed `setup` block with the network name, visibility,
-  access policy, `relay_hints` (dedicated relay `pk:` keys, never addresses)
+  access policy, `relay_hints` (dedicated relay URLs with host names, never IPs)
   and federated-directory replicas, so a joining node does not retype network
   identity data. The network's location is not in it: country, city,
   coordinates and the discovery label are settings the principal changes at
@@ -439,7 +439,7 @@ boundary.
   `mmproj_file` / `mtp_draft_file` so the target resolves the path on its own
   disk (`jobs_apply`). The pull request to each target and the polling of its
   copy (`node.rs::wait_for_transfers`) are `control_post_json`/`control_get`
-  calls to the peer, so they end in the libp2p tunnel for a target behind NAT;
+  calls to the peer, so they end in the p2p tunnel for a target behind NAT;
   `node.rs::peer_of` finds the peer. `transfer::servable_path` serves a path outside the
   shard folder only when it is in the node's sidecar inventory, and a finished
   download invalidates the receiver's catalog.
@@ -458,7 +458,7 @@ boundary.
   `TransferState::finish`, which stamps `finished_at`. A job carries the slice's label
   (`SliceLabel`: model + range), read from the `.pom` - a hash is not a name.
   When no direct address connects, `run_download` falls back to
-  `download_over_tunnel`: closed 4 MiB pieces through the libp2p tunnel, only
+  `download_over_tunnel`: closed 4 MiB pieces through the p2p tunnel, only
   over a connection that may carry a file - **never across a public relay**
   (`Network::transfer_links`, and the 421 the serving node answers). `download`
   serves a closed range as one piece of the same job.
@@ -548,7 +548,7 @@ boundary.
   `NodeInfo.cluster_version` and `POST /api/ui/network/trust-sync`.
 - `reqlog.rs` - the audit adapter and the migration fallback. With the plugin
   active, the host writes in `enterprise.db`; independently of that destination, the
-  POM's `AuditLog` replicates `begin` and `complete` to the effective admins over libp2p.
+  POM's `AuditLog` replicates `begin` and `complete` to the effective admins over the p2p endpoint.
   The receiver orders the events in a bounded queue and hands them to its own active
   host; if it does not accept them, it persists them in the legacy `pom.db`. Received events are
   never retransmitted. `AuditDb` creates the schema and the FTS5 index only in the test
@@ -572,7 +572,7 @@ boundary.
   `peer_http.plain()`. A control call to another node uses
   `GatewayState::control_get`/`control_post_json`/`control_post_empty`: it signs
   once, tries each announced address - in `gateway_bases` order, the host that already answered
-  first - and falls back to the libp2p tunnel
+  first - and falls back to the p2p tunnel
   (`peer_client::send_to_gateway_over`), which is the path to a peer behind symmetric
   NAT. A signed command that changes state is sent to **one** delivered address: after a timeout on an established connection it is not repeated elsewhere, because the same envelope would be refused as a replay (409) while the peer still runs the first copy. Calls that stop a server (`/api/ui/unload`, `/api/ui/stop-inference`, `/api/ui/leave`) use `webui::PEER_STOP_TIMEOUT` (60 s), not `PEER_TIMEOUT`. `control_get_via_tunnel` is the last resort of whoever already
   traversed the addresses with the `RouteTable`'s failure memory (the read of
@@ -582,7 +582,7 @@ boundary.
   signs a new envelope on every attempt. Only weight transfer stays outside
   the tunnel.
 - `serve.rs` - the accept loop: it spies on the first byte, keeps the `PeerAddr` in the
-  request (`request_origin`: a request from the loopback carrying the libp2p tunnel's mark becomes
+  request (`request_origin`: a request from the loopback carrying the p2p tunnel's mark becomes
   `TUNNELED_ORIGIN`, non-loopback, and that mark header leaves every request - see
   `p2p-network.md`) and serves TLS or cleartext on the same TCP port, with connection upgrades
   enabled (the plugin proxy's WebSocket,
@@ -608,7 +608,7 @@ boundary.
 
 ### The network Chat
 
-`GatewayState.network_chat` exposes the network Chat's libp2p service. `webui`
+`GatewayState.network_chat` exposes the network Chat's p2p service. `webui`
 serves `GET/POST /api/ui/network-chat` for the interface, the persistence and the actions
 with an API key. `POST /api/ui/network/chat` writes on the real principal; when the
 interface is on a secondary admin, the route forwards the authenticated mutation
@@ -619,7 +619,7 @@ The policy GETs (`/api/cluster/tls`, `/api/cluster/logs` and
 `/api/cluster/network-chat`) demand `InternalNodeAuth`: a `connection_key` plus
 `x-pom-internal-node: 1`; they are not a human-token surface.
 The backend does not retransmit through the HTTP UI: the action enters the `NetworkChat`'s bounded
-queue and the swarm validates and forwards it through `discovery.rs`. The snapshot does not
+queue and `discovery.rs` validates and forwards it over the endpoint. The snapshot does not
 repeat file bytes on every polling; `GET /api/ui/network-chat/file/:message_id`
 does the authenticated download of the persisted blob.
 
@@ -714,8 +714,8 @@ change lands in the right place.
   primary answers 401 and no TP deployment passes, on any machine. `tp_check_verdict` reads the
   answer in a separate function so it is testable and so it repeats the peer's `error` instead of
   calling every answer without `ok` an old binary's. `tp_members` transfers each machine's
-  `PeerId`, UDP address candidates and tunnel capability to every rank so `broadcast_to` and the
-  reduce can rehydrate the swarm on the destination and try each reachable HTTPS address when the
+  endpoint id, UDP address candidates and tunnel capability to every rank so `broadcast_to` and the
+  reduce can hand the destination's dial hints to the endpoint and try each reachable HTTPS address when the
   tunnel is not available; `register_tp_reduce` receives the group's size, and the node publishes
   it and the collectives snapshot in `node_timings.tp` without mixing TP bytes or waits with the
   pipeline telemetry. `RuntimeParams.fit_memory` stays on by default in shards and whole models so
@@ -746,7 +746,7 @@ change lands in the right place.
   `gateway::{snapshot,restore,erase}` - `docs/subsystems/inference.md` 3.1.1). `list_nodes`
   appends blocked-but-disconnected nodes so the panel is not empty, and gives each remote peer a
   `route` (`Network::peer_route`): the path this node actually uses to reach it - direct HTTP,
-  direct libp2p (maybe hole punched) or relayed - as opposed to `addr`, which is only what it
+  a direct endpoint path (maybe hole punched) or relayed - as opposed to `addr`, which is only what it
   advertises. **The wizard is deprecated and unreachable**: nothing starts its router, so none of
   the `/api/setup/*` handlers below is served; they are kept until the wizard is removed for good.
   Setup mode exposed `/api/setup/hardware`, `/api/setup/models`,

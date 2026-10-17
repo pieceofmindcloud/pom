@@ -110,7 +110,7 @@ fn sibling_urls(
         .filter(|(h, _, _, _)| *h == my_hostname)
         .filter(|(_, addr, _, _)| {
             // `0.0.0.0`/`::` is the sentinel "address not yet rewritten"
-            // (`Network::announce_addr`) of a peer that arrived through libp2p; without
+            // (`Network::announce_addr`) of a peer that arrived through p2p; without
             // this explicit discard the POST would go to this very node, which
             // would restart before the job was marked as `done`.
             let host = crate::network::ip_host(addr);
@@ -673,7 +673,7 @@ mod tests {
         );
     }
 
-    /// `0.0.0.0`/`::` is the sentinel of a peer that arrived through libp2p whose
+    /// `0.0.0.0`/`::` is the sentinel of a peer that arrived through p2p whose
     /// address has not yet been rewritten with the real origin. Matching as a
     /// sibling, the POST would go to this very node - which would restart before the
     /// job was marked as `done`. That is why the discard is explicit and does not

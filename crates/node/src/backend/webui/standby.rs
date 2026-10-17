@@ -165,12 +165,7 @@ mod tests {
 
         // This node's own network: it is the principal.
         let signing_key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-        let mut seed = signing_key.to_bytes();
-        let peer_id = libp2p::identity::Keypair::ed25519_from_bytes(&mut seed[..])
-            .unwrap()
-            .public()
-            .to_peer_id()
-            .to_string();
+        let peer_id = crate::p2p::secret_key(&signing_key).public().to_string();
         let node_id = crate::identity::NodeId::from_pubkey(&signing_key.verifying_key()).0;
         let principal = crate::admin_trust::AuthorityPrincipal::from_signing_key(
             node_id,

@@ -1071,7 +1071,7 @@ mod tests {
         state.network.relay_gate().set_reachable(true);
         assert_eq!(
             state.network.relay_gate().offer(),
-            Some(crate::network::RelayOffer { transfers: true })
+            Some(crate::network::RelayOffer { transfers: true, url: None })
         );
 
         let mut request = Request::post("/api/ui/network/relay")
@@ -1103,7 +1103,7 @@ mod tests {
         let wire = state.network.gossip_announce_bytes(None).unwrap();
         match serde_json::from_slice(&wire).unwrap() {
             crate::network::P2PMessage::Announce { relay, .. } => {
-                assert_eq!(relay, Some(crate::network::RelayOffer { transfers: false }));
+                assert_eq!(relay, Some(crate::network::RelayOffer { transfers: false, url: None }));
             }
             other => panic!("expected Announce, got {other:?}"),
         }
@@ -2339,8 +2339,8 @@ mod remote_stream_selection_tests {
                 exec_start: 0,
                 exec_end: 31,
                 inference_frame_capabilities: capabilities,
-                libp2p_peer_id: None,
-                libp2p_addr_candidates: Vec::new(),
+                endpoint_id: None,
+                endpoint_addr_candidates: Vec::new(),
             }],
             edges: Vec::new(),
         }
@@ -2383,8 +2383,8 @@ mod remote_stream_selection_tests {
             exec_start: 32,
             exec_end: 63,
             inference_frame_capabilities: Vec::new(),
-            libp2p_peer_id: None,
-            libp2p_addr_candidates: Vec::new(),
+            endpoint_id: None,
+            endpoint_addr_candidates: Vec::new(),
         });
         assert!(remote_stream_capable(&multi, "local", true));
     }
@@ -2412,8 +2412,8 @@ mod remote_stream_selection_tests {
             exec_start: 32,
             exec_end: 63,
             inference_frame_capabilities: mtp_capabilities(),
-            libp2p_peer_id: None,
-            libp2p_addr_candidates: Vec::new(),
+            endpoint_id: None,
+            endpoint_addr_candidates: Vec::new(),
         });
 
         let speculate = remote_stream_speculation(
@@ -2466,8 +2466,8 @@ mod remote_stream_selection_tests {
             exec_start: 32,
             exec_end: 63,
             inference_frame_capabilities: mtp_capabilities(),
-            libp2p_peer_id: None,
-            libp2p_addr_candidates: Vec::new(),
+            endpoint_id: None,
+            endpoint_addr_candidates: Vec::new(),
         });
         multi
     }
@@ -2536,8 +2536,8 @@ mod remote_stream_selection_tests {
             exec_start: 32,
             exec_end: 63,
             inference_frame_capabilities: Vec::new(),
-            libp2p_peer_id: None,
-            libp2p_addr_candidates: Vec::new(),
+            endpoint_id: None,
+            endpoint_addr_candidates: Vec::new(),
         });
 
         assert_eq!(
@@ -2591,8 +2591,8 @@ mod peer_visibility_tests {
             disk_total_mb: 0,
             disk_free_mb: 0,
             api_keys_active: 0,
-            libp2p_peer_id: None,
-            libp2p_addrs: Vec::new(),
+            endpoint_id: None,
+            endpoint_addrs: Vec::new(),
             tp: None,
             runtime_capacity: None,
             idle: false,
@@ -3278,8 +3278,8 @@ pub(crate) mod testkit {
             disk_total_mb: 0,
             disk_free_mb: 0,
             api_keys_active: 0,
-            libp2p_peer_id: Some("peer-eu".into()),
-            libp2p_addrs: Vec::new(),
+            endpoint_id: Some("peer-eu".into()),
+            endpoint_addrs: Vec::new(),
             tp: None,
             runtime_capacity: Some(RuntimeCapacity {
                 n_ctx: 8_192,

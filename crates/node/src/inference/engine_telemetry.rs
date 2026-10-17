@@ -280,7 +280,7 @@ fn channel_entry(channel: &super::plugin_stage_link::ChannelStats) -> crate::pre
     use crate::relay::InferenceTransport;
     let transport = match channel.channel.as_str() {
         "quic" => InferenceTransport::Quic,
-        "tunnel" => InferenceTransport::Libp2pTunnel,
+        "tunnel" => InferenceTransport::P2pTunnel,
         "local" => InferenceTransport::Local,
         _ => InferenceTransport::Http,
     };

@@ -1,5 +1,5 @@
-//! libp2p request-response protocol carrying inference HTTP calls, as a
-//! Preferred inference transport for peers reached through the swarm.
+//! Request/response protocol over the iroh endpoint carrying inference HTTP
+//! calls: the preferred inference transport for peers reached through it.
 //! When the tunnel is unavailable or fails at the transport level, the caller uses
 //! the pinned direct client as a fallback.
 //!
@@ -11,12 +11,10 @@
 //! `body` is the same wire-encoded byte blob `send_frame` already builds;
 //! this is purely an alternate transport for it, not a new format.
 
+use crate::p2p::Codec;
 use async_trait::async_trait;
 use futures::prelude::*;
-use libp2p::{
-    request_response::{self, Codec},
-    PeerId, StreamProtocol,
-};
+use crate::p2p::EndpointId;
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::time::Duration;
@@ -46,7 +44,7 @@ pub enum TunnelTarget {
 /// `127.0.0.1`, and the gateway uses the socket address (`serve::PeerAddr`) to
 /// decide what is local: `install_trust_anchor` releases the network's administration
 /// based **only** on that. A tunnel that accepted any path would give
-/// any peer of the swarm a way to become an administrator. That is why
+/// any peer of the endpoint a way to become an administrator. That is why
 /// there is no prefix or wildcard here: only the routes that admission and the
 /// policy gates need, each one already authenticated on its own.
 /// Header with which the tunnel forwarder marks the request it delivers to
@@ -179,7 +177,7 @@ pub fn transfer_chunk_is_bounded(headers: &[(String, String)]) -> bool {
 }
 
 /// "Misdirected request": this connection does not carry file transfers. The
-/// sender may try again, because libp2p spreads requests over every
+/// sender may try again, because p2p spreads requests over every
 /// connection it has with the peer.
 pub const TRANSFER_ROUTE_REFUSED_STATUS: u16 = 421;
 
@@ -277,17 +275,24 @@ impl std::fmt::Display for TunnelDeliveryError {
 
 impl std::error::Error for TunnelDeliveryError {}
 
-/// One outbound call dispatched to the swarm's own task (`Discovery::run`)
-/// from outside its loop — the gateway in hub mode, or a relaying hop inside
-/// `infer_server.rs` in ring mode. `Discovery::run` resolves `reply` by
-/// matching the `OutboundRequestId` the swarm assigns when `send_request` is
-/// called against the `Message::Response` / `Event::OutboundFailure` that
-/// eventually arrives for it — see `relay::send_frame_via_tunnel`, the only
-/// intended caller.
+impl From<crate::p2p::CallError> for TunnelDeliveryError {
+    fn from(error: crate::p2p::CallError) -> Self {
+        match error {
+            crate::p2p::CallError::BeforeRequest(message) => Self::before_request(message),
+            crate::p2p::CallError::AfterDispatch(message) => Self::after_dispatch(message),
+        }
+    }
+}
+
+/// One outbound call handed to the transport task (`Discovery::run`) from
+/// outside it - the gateway in hub mode, or a relaying hop inside
+/// `infer_server.rs` in ring mode. `Discovery::run` runs the call on its own
+/// task and resolves `reply` with the answer or the failure - see
+/// `relay::send_frame_via_tunnel`.
 pub struct TunnelOutbound {
-    pub peer_id: PeerId,
-    /// UDP addresses announced by the destination, used to rebuild the
-    /// TCP multiaddresses when the local swarm has not yet received the announce.
+    pub peer_id: EndpointId,
+    /// Endpoint addresses announced by the destination (`endpoint_addrs`),
+    /// used as dial hints when the address book does not know it yet.
     pub addr_candidates: Vec<String>,
     pub request: TunnelRequest,
     pub reply: oneshot::Sender<Result<TunnelResponse, TunnelDeliveryError>>,
@@ -357,11 +362,11 @@ where
 /// is `[u16 status][u32][raw body]`. Lengths are big-endian.
 #[async_trait]
 impl Codec for InferTunnelCodec {
-    type Protocol = StreamProtocol;
+    const PROTOCOL: &'static str = INFER_TUNNEL_PROTOCOL;
     type Request = TunnelRequest;
     type Response = TunnelResponse;
 
-    async fn read_request<T>(&mut self, _: &Self::Protocol, io: &mut T) -> io::Result<Self::Request>
+    async fn read_request<T>(&mut self, io: &mut T) -> io::Result<Self::Request>
     where
         T: AsyncRead + Unpin + Send,
     {
@@ -380,7 +385,6 @@ impl Codec for InferTunnelCodec {
 
     async fn read_response<T>(
         &mut self,
-        _: &Self::Protocol,
         io: &mut T,
     ) -> io::Result<Self::Response>
     where
@@ -398,7 +402,6 @@ impl Codec for InferTunnelCodec {
 
     async fn write_request<T>(
         &mut self,
-        _: &Self::Protocol,
         io: &mut T,
         req: Self::Request,
     ) -> io::Result<()>
@@ -418,7 +421,6 @@ impl Codec for InferTunnelCodec {
 
     async fn write_response<T>(
         &mut self,
-        _: &Self::Protocol,
         io: &mut T,
         res: Self::Response,
     ) -> io::Result<()>
@@ -431,23 +433,6 @@ impl Codec for InferTunnelCodec {
     }
 }
 
-/// Create a `request_response::Behaviour` for the infer-tunnel protocol.
-/// Same request-timeout policy as bitswap's — this rides the same swarm and
-/// its connections are just as long-lived.
-pub fn infer_tunnel_behaviour() -> request_response::Behaviour<InferTunnelCodec> {
-    request_response::Behaviour::new(
-        [(
-            StreamProtocol::new(INFER_TUNNEL_PROTOCOL),
-            request_response::ProtocolSupport::Full,
-        )],
-        // Safety ceiling, nobody's deadline: each caller imposes its own
-        // (`tunnel_gateway_call`, `send_frame_via_tunnel`). Control calls
-        // such as `/api/ui/slice-ranges` wait up to an hour for the
-        // slicing; with 60 s here, they died in the tunnel with the work
-        // still running on the other side.
-        request_response::Config::default().with_request_timeout(Duration::from_secs(3600)),
-    )
-}
 
 static TUNNEL_SENDER: std::sync::OnceLock<TunnelOutboundSender> = std::sync::OnceLock::new();
 static LOCAL_NODE_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
@@ -482,25 +467,25 @@ pub fn set_tunnel_sender(tx: TunnelOutboundSender) {
 
 /// `None` only if `set_tunnel_sender` was never called at all — in practice
 /// that never happens on the path that constructs `infer_server.rs`'s state,
-/// since `main.rs` sets it unconditionally before libp2p discovery is even
+/// since `main.rs` sets it unconditionally before p2p discovery is even
 /// attempted. A tunnel call made through this sender still degrades
-/// correctly (fast, documented "channel closed" error) when libp2p itself
+/// correctly (fast, documented "channel closed" error) when p2p itself
 /// never came up — see the doc comment on the channel's construction site.
 pub fn tunnel_sender() -> Option<&'static TunnelOutboundSender> {
     TUNNEL_SENDER.get()
 }
 
 /// Measures the round-trip latency between this node and a peer over the same
-/// libp2p/Noise path used to carry the inference frames.
+/// endpoint path used to carry the inference frames.
 ///
-/// The remote endpoint is `/health` on the peer's loopback. The measurement includes the swarm
+/// The remote endpoint is `/health` on the peer's loopback. The measurement includes the endpoint
 /// queue, any connection establishment, the transport, the local
 /// forwarding and the processing of the `/health` handler, without carrying the
 /// cost of prefill, decode or hidden-state transfer. The measurement is
 /// directional: each process records only the time from its own origin.
 pub async fn measure_rtt(
     sender: &TunnelOutboundSender,
-    peer_id: PeerId,
+    peer_id: EndpointId,
     timeout: Duration,
 ) -> Option<f64> {
     let (reply, response) = oneshot::channel();
@@ -551,86 +536,52 @@ pub(crate) async fn health_via_tunnel(
     serde_json::from_slice(&response.body).ok()
 }
 
-/// A real swarm speaking this protocol, wired to a real `TunnelOutboundSender`:
+/// A real endpoint speaking this protocol, wired to a real `TunnelOutboundSender`:
 /// the same pairing `Discovery::run` provides in production, reduced to the one
-/// behaviour under test.
+/// protocol under test.
 ///
 /// Exists so the live probes (`tunnel_reaches_a_live_peer` here, and
 /// `relay::tests::the_tunnel_carries_a_real_frame_to_a_live_peer`) drive
 /// production code against a machine that is actually on the network, instead
 /// of a fake channel. Test-only: production always goes through `Discovery`,
-/// which owns the full behaviour set.
+/// which owns the full protocol set. It dials through n0's relays as well as
+/// the given addresses, like a node does.
 #[cfg(test)]
-pub fn live_probe_swarm(peer: PeerId, addr: libp2p::Multiaddr) -> TunnelOutboundSender {
-    use libp2p::{noise, request_response::Event, swarm::SwarmEvent, tcp, yamux};
-    use std::collections::HashMap;
-
-    let mut swarm = libp2p::SwarmBuilder::with_new_identity()
-        .with_tokio()
-        .with_tcp(
-            tcp::Config::default().nodelay(true),
-            noise::Config::new,
-            yamux::Config::default,
-        )
-        .expect("tcp")
-        .with_dns()
-        .expect("dns")
-        .with_behaviour(|_| infer_tunnel_behaviour())
-        .expect("behaviour")
-        // Same idle time as the production swarm (`Discovery::new`). The
-        // `SwarmBuilder` default is zero: the connection closes as soon as it goes
-        // idle, and a detour that only arrives after the direct HTTP expires
-        // would find the path already torn down.
-        .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
-        .build();
-    swarm.add_peer_address(peer, addr.clone());
-    swarm.dial(addr).expect("dial");
+pub async fn live_probe_sender(peer: EndpointId, addrs: Vec<String>) -> TunnelOutboundSender {
+    let book = iroh::address_lookup::MemoryLookup::new();
+    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
+        .address_lookup(book.clone())
+        .bind()
+        .await
+        .expect("bind a probe endpoint");
+    let p2p = crate::p2p::P2p::new(endpoint, book);
+    p2p.learn(peer, &addrs);
 
     let (tx, mut rx) = mpsc::channel::<TunnelOutbound>(8);
     tokio::spawn(async move {
-        let mut pending: HashMap<_, oneshot::Sender<Result<TunnelResponse, TunnelDeliveryError>>> =
-            HashMap::new();
-        loop {
-            tokio::select! {
-                out = rx.recv() => {
-                    let Some(TunnelOutbound { peer_id, request, reply, .. }) = out else { break };
-                    eprintln!("[probe-swarm] send_request -> {peer_id}");
-                    let id = swarm.behaviour_mut().send_request(&peer_id, request);
-                    pending.insert(id, reply);
-                }
-                event = swarm.select_next_some() => match event {
-                    SwarmEvent::Behaviour(Event::Message {
-                        message: request_response::Message::Response { request_id, response },
-                        ..
-                    }) => {
-                        if let Some(reply) = pending.remove(&request_id) {
-                            let _ = reply.send(Ok(response));
-                        }
-                    }
-                    SwarmEvent::Behaviour(Event::OutboundFailure { request_id, error, .. }) => {
-                        if let Some(reply) = pending.remove(&request_id) {
-                            let before_request = matches!(
-                                &error,
-                                request_response::OutboundFailure::DialFailure
-                            );
-                            let failure = if before_request {
-                                TunnelDeliveryError::before_request(error.to_string())
-                            } else {
-                                TunnelDeliveryError::after_dispatch(error.to_string())
-                            };
-                            let _ = reply.send(Err(failure));
-                        }
-                    }
-                    other => eprintln!("[probe-swarm] {other:?}"),
-                },
-            }
+        while let Some(TunnelOutbound {
+            peer_id,
+            addr_candidates,
+            request,
+            reply,
+        }) = rx.recv().await
+        {
+            eprintln!("[probe-endpoint] call -> {}", peer_id.fmt_short());
+            let p2p = p2p.clone();
+            tokio::spawn(async move {
+                let result = p2p
+                    .call(InferTunnelCodec, peer_id, &addr_candidates, request)
+                    .await
+                    .map_err(TunnelDeliveryError::from);
+                let _ = reply.send(result);
+            });
         }
     });
     tx
 }
 
 /// The entire inbound side of the NAT-tunnel: forward a request that arrived
-/// over the swarm to this node's own inference server on loopback, and carry
+/// over the endpoint to this node's own inference server on loopback, and carry
 /// back whatever it answers.
 ///
 /// Deliberately not a live `SharedState` handle — `InferState` has no stable
@@ -829,23 +780,22 @@ mod tests {
 
     /// A request/response has to survive the exact framing a real
     /// `AsyncRead`/`AsyncWrite` stream would carry it over — this drives the
-    /// codec through an in-memory buffer instead of a real libp2p stream,
+    /// codec through an in-memory buffer instead of a real p2p stream,
     /// the same spirit as `wire.rs`'s own round-trip tests.
     #[tokio::test]
     async fn a_tunnel_request_round_trips_through_the_codec() {
         let mut codec = InferTunnelCodec;
-        let protocol = StreamProtocol::new(INFER_TUNNEL_PROTOCOL);
         let req = TunnelRequest::post("/v1/prefill", vec![1, 2, 3, 4, 5], Vec::new());
 
         let mut buf = Vec::new();
         codec
-            .write_request(&protocol, &mut buf, req.clone())
+            .write_request(&mut buf, req.clone())
             .await
             .expect("write_request");
 
         let mut cursor = Cursor::new(buf);
         let decoded = codec
-            .read_request(&protocol, &mut cursor)
+            .read_request(&mut cursor)
             .await
             .expect("read_request");
 
@@ -858,7 +808,6 @@ mod tests {
     #[tokio::test]
     async fn the_body_is_not_inflated_on_the_wire() {
         let mut codec = InferTunnelCodec;
-        let protocol = StreamProtocol::new(INFER_TUNNEL_PROTOCOL);
         let body = vec![0xffu8; 100_000];
         let req = TunnelRequest::gateway(
             "GET",
@@ -868,11 +817,11 @@ mod tests {
         );
 
         let mut buf = Vec::new();
-        codec.write_request(&protocol, &mut buf, req).await.unwrap();
+        codec.write_request(&mut buf, req).await.unwrap();
         assert!(buf.len() < body.len() + 512, "frame of {} bytes", buf.len());
 
         let decoded = codec
-            .read_request(&protocol, &mut Cursor::new(buf))
+            .read_request(&mut Cursor::new(buf))
             .await
             .unwrap();
         assert_eq!(decoded.target, TunnelTarget::Gateway);
@@ -886,7 +835,6 @@ mod tests {
     #[tokio::test]
     async fn a_tunnel_response_round_trips_through_the_codec() {
         let mut codec = InferTunnelCodec;
-        let protocol = StreamProtocol::new(INFER_TUNNEL_PROTOCOL);
         let res = TunnelResponse {
             status: 200,
             body: b"hello from the other side".to_vec(),
@@ -894,13 +842,13 @@ mod tests {
 
         let mut buf = Vec::new();
         codec
-            .write_response(&protocol, &mut buf, res.clone())
+            .write_response(&mut buf, res.clone())
             .await
             .expect("write_response");
 
         let mut cursor = Cursor::new(buf);
         let decoded = codec
-            .read_response(&protocol, &mut cursor)
+            .read_response(&mut cursor)
             .await
             .expect("read_response");
 
@@ -914,18 +862,17 @@ mod tests {
     #[tokio::test]
     async fn an_empty_body_round_trips_cleanly() {
         let mut codec = InferTunnelCodec;
-        let protocol = StreamProtocol::new(INFER_TUNNEL_PROTOCOL);
         let req = TunnelRequest::get("/health");
 
         let mut buf = Vec::new();
         codec
-            .write_request(&protocol, &mut buf, req.clone())
+            .write_request(&mut buf, req.clone())
             .await
             .expect("write_request");
 
         let mut cursor = Cursor::new(buf);
         let decoded = codec
-            .read_request(&protocol, &mut cursor)
+            .read_request(&mut cursor)
             .await
             .expect("read_request");
 
@@ -940,7 +887,6 @@ mod tests {
     #[tokio::test]
     async fn a_frame_declaring_more_than_the_bound_is_refused() {
         let mut codec = InferTunnelCodec;
-        let protocol = StreamProtocol::new(INFER_TUNNEL_PROTOCOL);
 
         let head = br#"{"method":"POST","target":"inference","path":"/v1/step","headers":[]}"#;
         let mut buf = (head.len() as u32).to_be_bytes().to_vec();
@@ -949,7 +895,7 @@ mod tests {
         buf.extend_from_slice(b"doesn't matter, never read");
 
         let mut cursor = Cursor::new(buf);
-        let result = codec.read_request(&protocol, &mut cursor).await;
+        let result = codec.read_request(&mut cursor).await;
 
         assert!(result.is_err(), "oversized frame must be refused");
     }
@@ -1112,87 +1058,56 @@ mod tests {
     /// Speaks the tunnel protocol against a **real** peer, over the internet.
     ///
     /// The commit that created the tunnel recorded as a known gap that it had only
-    /// been exercised on loopback and with fake swarms. This is what
+    /// been exercised on loopback and with fake endpoints. This is what
     /// closes that gap, and it cannot become a CI test: it depends on a
     /// remote machine being up. It stays `#[ignore]` and is driven by an environment
     /// variable, as a reproducible procedure.
     /// ```sh
-    /// POM_TUNNEL_PROBE=/ip6/2804:f30:3:1a6f:96e1:21bd:f074:967/tcp/52777/p2p/12D3KooWRuq6eW5rXSTa87FgrrXrAHdYCGYv3vKuLxtiFn4vfTRM \
+    /// POM_TUNNEL_PROBE=<endpoint-id>@203.0.113.7:52777,https://relay.example.org \
     ///   cargo test -p node --bin pom tunnel_reaches_a_live_peer -- --ignored --nocapture
     /// ```
     ///
-    /// The multiaddr comes from the `libp2p_peer_id` the peer announces plus its
-    /// address with the libp2p port (UDP + 10000). Any answer already proves the
-    /// path: the synthetic 502 of `serve_loopback` is generated **on the other
-    /// machine**, so even it proves the frame got across.
+    /// The endpoint id is the `endpoint_id` the peer announces (its public key);
+    /// after the `@`, optional addresses from its `endpoint_addrs`. Any answer
+    /// already proves the path: the synthetic 502 of `serve_loopback` is
+    /// generated **on the other machine**, so even it proves the frame got
+    /// across.
     #[tokio::test]
     #[ignore = "needs a live peer; see the test doc"]
     async fn tunnel_reaches_a_live_peer() {
-        use libp2p::{noise, request_response::Event, swarm::SwarmEvent, tcp, yamux, Multiaddr};
-
         let Ok(target) = std::env::var("POM_TUNNEL_PROBE") else {
-            panic!("set POM_TUNNEL_PROBE to the multiaddr of the peer");
+            panic!("set POM_TUNNEL_PROBE to <endpoint-id>[@addr,addr]");
         };
-        let addr: Multiaddr = target.parse().expect("invalid multiaddr");
-        let peer_id = addr
-            .iter()
-            .find_map(|p| match p {
-                libp2p::multiaddr::Protocol::P2p(id) => Some(id),
-                _ => None,
-            })
-            .expect("the multiaddr must end in /p2p/<peer-id>");
+        let (id, addrs) = target.split_once('@').unwrap_or((target.as_str(), ""));
+        let peer_id = crate::p2p::parse_endpoint_id(id).expect("invalid endpoint id");
+        let addrs: Vec<String> = addrs
+            .split(',')
+            .filter(|a| !a.is_empty())
+            .map(str::to_string)
+            .collect();
         let path =
             std::env::var("POM_TUNNEL_PROBE_PATH").unwrap_or_else(|_| "/v1/step".to_string());
 
-        let mut swarm = libp2p::SwarmBuilder::with_new_identity()
-            .with_tokio()
-            .with_tcp(
-                tcp::Config::default().nodelay(true),
-                noise::Config::new,
-                yamux::Config::default,
-            )
-            .expect("tcp")
-            .with_dns()
-            .expect("dns")
-            .with_behaviour(|_| infer_tunnel_behaviour())
-            .expect("behaviour")
-            .build();
-
-        swarm.add_peer_address(peer_id, addr.clone());
-        swarm.dial(addr).expect("dial");
-        let id = swarm
-            .behaviour_mut()
-            .send_request(&peer_id, TunnelRequest::get(path.clone()));
-
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
-        loop {
-            let event = tokio::time::timeout_at(deadline, swarm.select_next_some())
-                .await
-                .expect("the peer did not answer within the deadline");
-            match event {
-                SwarmEvent::Behaviour(Event::Message {
-                    message:
-                        request_response::Message::Response {
-                            request_id,
-                            response,
-                        },
-                    ..
-                }) if request_id == id => {
-                    println!(
-                        "tunnel answered: status={} body={:?}",
-                        response.status,
-                        String::from_utf8_lossy(&response.body[..response.body.len().min(200)])
-                    );
-                    return;
-                }
-                SwarmEvent::Behaviour(Event::OutboundFailure { error, .. }) => {
-                    panic!("the tunnel failed: {error}");
-                }
-                SwarmEvent::OutgoingConnectionError { error, .. } => {
-                    panic!("could not connect: {error}");
-                }
-                other => println!("… {other:?}"),
-            }
-        }
+        let sender = live_probe_sender(peer_id, addrs.clone()).await;
+        let (reply, response) = oneshot::channel();
+        sender
+            .send(TunnelOutbound {
+                peer_id,
+                addr_candidates: addrs,
+                request: TunnelRequest::get(path),
+                reply,
+            })
+            .await
+            .expect("probe queue");
+        let response = tokio::time::timeout(Duration::from_secs(45), response)
+            .await
+            .expect("the peer did not answer within the deadline")
+            .expect("the probe dropped the call")
+            .expect("the tunnel failed");
+        println!(
+            "tunnel answered: status={} body={:?}",
+            response.status,
+            String::from_utf8_lossy(&response.body[..response.body.len().min(200)])
+        );
     }
 }

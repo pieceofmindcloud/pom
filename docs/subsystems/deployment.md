@@ -175,7 +175,7 @@ otherwise the planner finds the same part on another peer and transfers it by
 `sha256`. When the explicit selection also lists a worker as if it were a
 pipeline stage, the planner removes that row before building `steps`: a worker
 is only a rank of the collective and each machine enters `launch_targets` once.
-If the libp2p tunnel cannot dial, the rank tries each known HTTPS address of
+If the p2p tunnel cannot dial, the rank tries each known HTTPS address of
 the target, which covers peers behind NAT and containers on the same host.
 
 Before accepting, the plan validates in two layers: `tp_group_checks` (size,
@@ -209,11 +209,11 @@ role through `Network::set_tp` and registers the collective
 (`register_tp_reduce`). See `docs/subsystems/slicing.md` (tensor shard
 section) and `docs/subsystems/p2p-network.md`.
 
-Each member also carries the libp2p `PeerId`, the announced UDP candidates and
+Each member also carries the endpoint id, the announced UDP candidates and
 the server's tunnel capability. So rank 0's `broadcast_to` and the collective's
-reduce can rehydrate the swarm even when the process running the rank did not
-get the same announcement, and retry the call through the swarm when the
-machines are on networks without a direct HTTPS route.
+reduce can dial the member's endpoint even when the process running the rank
+did not get the same announcement, and retry the call through the p2p tunnel
+when the machines are on networks without a direct HTTPS route.
 
 `AddNodeRequest` also carries `kind`: adding a second machine to a whole model
 already live is a parallel route, the same as adding a machine to a slice.

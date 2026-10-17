@@ -331,8 +331,9 @@ function NetworkMetricsPanel({ metrics, t }: { metrics: ReturnType<typeof networ
  */
 function TraversalPanel({ traversal, t }: { traversal: TraversalView; t: (key: string, values?: Record<string, string | number>) => string }) {
   const natTone = traversal.nat === "public" ? "aqua" : traversal.nat === "private" ? "amber" : "neutral";
-  const circuits = traversal.addrs.filter((addr) => addr.includes("/p2p-circuit"));
-  const direct = traversal.addrs.filter((addr) => !addr.includes("/p2p-circuit"));
+  const isRelay = (addr: string) => addr.startsWith("https://") || addr.startsWith("http://");
+  const circuits = traversal.addrs.filter(isRelay);
+  const direct = traversal.addrs.filter((addr) => !isRelay(addr));
   return (
     <Panel>
       <PanelHeader eyebrow={t("network.traversalEyebrow")} title={t("network.traversalTitle")} subtitle={t("network.traversalSubtitle")} />

@@ -36,7 +36,7 @@ export type PipelineRouteCost = {
   /** One token through the route, from the backend: network in the chosen mode plus compute. */
   totalMs?: number | null;
   returnMode?: "direct" | "ring" | null;
-  /** Some leg of the route goes through a circuit on a libp2p relay. */
+  /** Some leg of the route goes through a relay. */
   relayed?: boolean;
   /** Which legs, as `[from, to]`. */
   relayedLegs?: Array<[string, string]>;

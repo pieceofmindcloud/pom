@@ -156,7 +156,7 @@ pub const INFERENCE_SESSION_HEADER: &str = "x-pom-inference-session";
 /// Chooses the credential a node uses in internal inference calls.
 /// API keys belong to the client surface and never cross an internal
 /// hop. The shared `connection_key` is also attached to the HTTP fallback
-/// without TLS: the transport may be protected by Noise or Tailscale underneath,
+/// without TLS: the transport may be protected by QUIC or Tailscale underneath,
 /// but the inference port still needs to receive the same credential across the whole
 /// HTTP/HTTPS/QUIC ladder. QUIC and HTTPS can still validate through the
 /// secure transport on the public network, without depending on this header.
@@ -349,7 +349,7 @@ async fn known_control_principal(
     state.network.alive_peers().await.into_iter().any(|peer| {
         peer.node_id == issuer.node_id
             && peer.pubkey == issuer.pubkey
-            && peer.libp2p_peer_id.as_deref() == Some(issuer.peer_id.as_str())
+            && peer.endpoint_id.as_deref() == Some(issuer.peer_id.as_str())
     })
 }
 

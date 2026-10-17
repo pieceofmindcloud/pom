@@ -28,7 +28,7 @@ pub struct Identity {
 /// The node's identity file, derived from the brand: `.pom-node.key`.
 ///
 /// It is the node's **only** key: from it come the `node_id`
-/// (`SHA256(pubkey)`), the libp2p `PeerId`, the pkarr record key (`pk:`), the
+/// (`SHA256(pubkey)`), the iroh endpoint id, the pkarr record key (`pk:`), the
 /// trust chain's authority signature and the TLS certificate. An IP address
 /// never identifies a node; it is only resolved at dial time.
 pub fn key_filename() -> String {
@@ -105,17 +105,16 @@ impl Identity {
         hex::encode(self.signing_key.verifying_key().as_bytes())
     }
 
-    /// The same key as a libp2p identity. `ed25519_dalek` and libp2p use the
-    /// same 32-byte seed, so the conversion is direct.
-    pub fn libp2p_keypair(&self) -> libp2p::identity::Keypair {
-        let mut seed = self.signing_key.to_bytes();
-        libp2p::identity::Keypair::ed25519_from_bytes(&mut seed[..])
-            .expect("a 32-byte Ed25519 seed is always a valid libp2p key")
+    /// The same key as the iroh endpoint's secret key.
+    pub fn secret_key(&self) -> crate::p2p::SecretKey {
+        crate::p2p::secret_key(&self.signing_key)
     }
 
-    /// libp2p `PeerId` derived from this identity.
+    /// The endpoint id: the public key itself, in hex - the same string as
+    /// [`Self::public_key_hex`]. It is what the trust chain records as the
+    /// transport identity (`AuthorityPrincipal::peer_id`).
     pub fn peer_id(&self) -> String {
-        self.libp2p_keypair().public().to_peer_id().to_string()
+        self.secret_key().public().to_string()
     }
 }
 
@@ -140,21 +139,14 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// A single key: the `node_id`, the `PeerId` and the pkarr key name the
-    /// same public key.
+    /// A single key: the `node_id`, the endpoint id and the pkarr key name
+    /// the same public key.
     #[test]
     fn node_id_peer_id_and_pkarr_key_come_from_one_key() {
         let identity = Identity::generate();
         let pubkey = identity.signing_key.verifying_key();
         assert_eq!(identity.node_id.0, NodeId::from_pubkey(&pubkey).0);
-        let libp2p_public =
-            libp2p::identity::ed25519::PublicKey::try_from_bytes(pubkey.as_bytes()).unwrap();
-        assert_eq!(
-            identity.peer_id(),
-            libp2p::identity::PublicKey::from(libp2p_public)
-                .to_peer_id()
-                .to_string()
-        );
+        assert_eq!(identity.peer_id(), identity.public_key_hex());
         let pkarr = crate::pkarr_node::PkarrNode::from_signing_key(&identity.signing_key).unwrap();
         assert_eq!(
             pkarr.public_key_uri(),

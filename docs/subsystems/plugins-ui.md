@@ -506,7 +506,7 @@ service of kind `rag`; the gateway knows no plugin by name.
   plugin's `peer.search` - directly when the plugin is on this node, through
   the peer route otherwise. The call goes along the route already measured to
   that machine (`GatewayState::control_post_json_routed`): the pinned address,
-  or the libp2p tunnel alone when that is what reaches a peer behind NAT,
+  or the p2p tunnel alone when that is what reaches a peer behind NAT,
   instead of walking every announced address. The whole search has 300 ms
   (`POM_RAG_TIMEOUT_MS`, 20 to 5000); past it, or on any failure, the request
   goes on unchanged. Retrieval never fails a request.

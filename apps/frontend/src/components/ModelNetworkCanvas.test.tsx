@@ -80,7 +80,7 @@ describe("ModelNetworkCanvas: edge RTT", () => {
       from_node_id: "a",
       to_node_id: "b",
       rtt_ms: 7.4,
-      transport: "libp2p",
+      transport: "p2p",
     }]);
 
     expect(screen.getByText("RTT 7.4 ms")).toBeTruthy();
@@ -200,7 +200,7 @@ describe("ModelNetworkCanvas: relayed route", () => {
       { from_node_id: "head", to_node_id: "tail", model_id: "qwen35", from_end_layer: 15, to_start_layer: 16 },
     ];
     const { container } = mount(view, [
-      { from_node_id: "head", to_node_id: "tail", rtt_ms: 67, transport: "libp2p-tunnel", relayed: true },
+      { from_node_id: "head", to_node_id: "tail", rtt_ms: 67, transport: "p2p-tunnel", relayed: true },
       { from_node_id: "tail", to_node_id: "gateway", rtt_ms: 3, transport: "quic" },
     ], undefined, undefined, [
       { nodeIds: ["head", "tail", "gateway"], legsMs: [4, 67, 3], computeMs: 30, networkMs: 37, totalMs: 67, returnMode: "direct", relayed: true, relayedLegs: [["head", "tail"]] },

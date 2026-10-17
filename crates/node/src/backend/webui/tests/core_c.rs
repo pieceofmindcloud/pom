@@ -463,7 +463,7 @@ mod profile_network_tests {
         state.auth.write().await.profile = crate::profile::NodeProfile::Infer;
         state.network.rtts.remember("loading", 1.0, "direct-health");
         state.network.rtts.remember("slow", 80.0, "direct-health");
-        state.network.rtts.remember("fast", 12.0, "libp2p");
+        state.network.rtts.remember("fast", 12.0, "p2p");
 
         let body = body_of(
             inference_heads(
@@ -542,7 +542,7 @@ mod profile_network_tests {
         state.network.rtts.remember_for_test_with_age(
             "stale",
             1.0,
-            "libp2p",
+            "p2p",
             crate::route::RTT_MEASURE_INTERVAL + std::time::Duration::from_secs(1),
         );
 

@@ -48,7 +48,7 @@ export type EdgeState = "principal" | "paralela" | "inativa";
 
 /** Three states, because with replicas "chosen or not" no longer sufficed:
  *  an edge may not be in use and still be a ready path. */
-/** Edge that goes through a circuit on a libp2p relay. */
+/** Edge that goes through a relay. */
 const RELAY_EDGE_STYLE = { className: "fill-none stroke-relay", strokeWidth: "4", strokeDasharray: "10 4", markerEnd: "url(#route-arrow-relay)" };
 
 export function edgeStyle(state: EdgeState) {

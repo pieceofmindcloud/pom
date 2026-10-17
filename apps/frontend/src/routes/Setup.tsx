@@ -88,7 +88,7 @@ interface TrustNetworkMetadata {
   organization?: string;
   visibility?: NetworkVisibility;
   access_policy?: AccessPolicy;
-  /** `pk:` keys of the dedicated relays. The document carries nobody's IP. */
+  /** URLs (host names) of the dedicated relays. The document carries nobody's IP. */
   relay_hints?: string[];
   directory_replicas?: string[];
 }

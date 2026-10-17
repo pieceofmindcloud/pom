@@ -1,7 +1,7 @@
 //! The signed, durable authority chain for administrator capabilities.
 //!
 //! `Config.profile` is deliberately not consulted as a root of trust.  This
-//! module is the only place that turns a libp2p Ed25519 identity into an
+//! module is the only place that turns a p2p Ed25519 identity into an
 //! administrator capability.  The file is intentionally separate from
 //! `pom.json`: editing the product profile cannot manufacture a grant.
 
@@ -365,7 +365,7 @@ impl AdminTrust {
         validate_document(&self.document()).is_ok()
     }
 
-    /// Identifier of the swarm that this machine accepted out of band.
+    /// Identifier of the endpoint that this machine accepted out of band.
     ///
     /// The value only serves to select the local chain. Admission still
     /// requires the principal's full tuple in `admits_participant`.
@@ -384,7 +384,7 @@ impl AdminTrust {
     /// operator declared that holding the matching anchor is already the proof
     /// of belonging, so an ordinary worker node that never received a grant
     /// remains a legitimate participant. The peer's identity (node <-> key <->
-    /// PeerId, and the Announce signed by that PeerId) is checked separately by
+    /// endpoint id, and the Announce signed by that endpoint id) is checked separately by
     /// the caller.
     pub(crate) fn anchors_cluster(&self, cluster_id: &str) -> bool {
         let document = self.document();

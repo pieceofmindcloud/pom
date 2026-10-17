@@ -264,8 +264,8 @@ fn step_for(node_id: &str, url: &str, layer: u32, link: bool) -> PipelineStep {
         exec_start: layer,
         exec_end: layer,
         inference_frame_capabilities: caps,
-        libp2p_peer_id: None,
-        libp2p_addr_candidates: Vec::new(),
+        endpoint_id: None,
+        endpoint_addr_candidates: Vec::new(),
     }
 }
 
@@ -465,7 +465,7 @@ async fn mtp_handoff_uses_the_persistent_link() {
 
 /// The direct prefill carries `reply_to`, so it cannot enter the
 /// `BatchCoordinator`. It still needs to use the same persistent link as the
-/// decode, or the first handoff would keep paying libp2p per chunk.
+/// decode, or the first handoff would keep paying p2p per chunk.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn direct_prefill_handoff_uses_the_persistent_link() {
     let clients = crate::peer_client::PeerClients::new(Duration::from_secs(10));

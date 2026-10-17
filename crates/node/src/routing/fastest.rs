@@ -616,7 +616,7 @@ pub fn plan_fastest(
 ///
 /// - has no measured route to this gateway, although it has already measured routes
 ///   to others (no return: a gateway behind NAT that only the way out reaches); or
-/// - only returns through the libp2p tunnel while the way out to it is all direct
+/// - only returns through the p2p tunnel while the way out to it is all direct
 ///   (QUIC or HTTP) - the tunnel is usually the slowest and most fragile path.
 ///
 /// Without data from the node (not probed yet, plan not measured yet) nothing changes.
@@ -663,7 +663,7 @@ pub fn return_path_prefers_ring(
                     .all(|index| matches!(forward_kind(index), Some("quic" | "http" | "local")));
                 if forward_direct {
                     return Some(format!(
-                        "{short} only comes back through the libp2p tunnel and the outbound path is direct"
+                        "{short} only comes back through the p2p tunnel and the outbound path is direct"
                     ));
                 }
             }
@@ -789,8 +789,8 @@ mod tests {
             disk_free_mb: 0,
             api_keys_active: 0,
             inference_frame_capabilities: Vec::new(),
-            libp2p_peer_id: None,
-            libp2p_addrs: Vec::new(),
+            endpoint_id: None,
+            endpoint_addrs: Vec::new(),
             tp: None,
             runtime_capacity: None,
             idle: false,

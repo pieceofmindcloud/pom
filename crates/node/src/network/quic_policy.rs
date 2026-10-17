@@ -37,7 +37,7 @@ struct QuicReply {
 }
 
 /// Asks the principal for the QUIC policy through all of its addresses, the one
-/// that answered first before the others, and last through the libp2p tunnel
+/// that answered first before the others, and last through the p2p tunnel
 /// (`/api/cluster/quic` is on the tunnel's list). Only the first announced address
 /// failed forever with a principal behind NAT or on an unreachable IPv6.
 pub(crate) async fn fetch_from_principal(

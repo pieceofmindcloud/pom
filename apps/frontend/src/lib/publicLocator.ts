@@ -4,7 +4,7 @@ import { api } from "./api";
 /**
  * How a public network can be reached, according to the pkarr record of the
  * publisher's key. The node does the resolving
- * (`GET /api/public/networks/locate`): the browser does not speak libp2p and
+ * (`GET /api/public/networks/locate`): the browser does not speak the p2p transport and
  * never receives anyone's IP. `unknown` is a check that could not be made (the
  * node refused the key or did not answer): it says nothing about the network,
  * so it is never shown as a network missing from the DHT.

@@ -11,8 +11,8 @@ stream is not compressed). The gateway listener stays dual-stack because it
 also carries the pipeline's HTTP fallback; administration protection is a route
 boundary enforced on the server.
 
-Ports, for orientation: UDP P2P `--port` (42777), libp2p TCP = UDP + 10000
-(52777), HTTP gateway `--gateway-port` (8080), and the inference server on
+Ports, for orientation: UDP P2P `--port` (42777), the iroh endpoint on UDP and
+the relay server on TCP = UDP + 10000 (52777), HTTP gateway `--gateway-port` (8080), and the inference server on
 `inference_port` in `pom.json` (8181, `inference/infer_server/`, a separate
 router that serves `/v1/prefill`, `/v1/step`, `/v1/step-stream`, `/v1/link`,
 `/health` - it does not go through this gateway). The gateway also registers
@@ -57,7 +57,7 @@ last):
   proof of work, chain of trust and principal. The local cache is bounded and
   expiring; none of these routes carries bootstrap data, addresses or private
   network credentials: the record names the network by the publisher's key and
-  the relays by `relay_hints` (`pk:` keys).
+  the relays by `relay_hints` (relay URLs with host names, never IPs).
 - **Public networks** (`gateway/http.rs`, no authentication): `GET
   /api/public/network` (the local network, when public) and `GET
   /api/public/networks` (local, directory and pkarr candidates) return
@@ -91,7 +91,7 @@ last):
   `cluster_id`, and its publisher key is derived from that document
   (`gateway::validated_listed_network`). Entries of `replicas` that start with
   `pk:` are relay keys instead: together with `POM_DIRECTORY_RELAYS`, the
-  built-in list and the config's `relay_peers`, each is asked for its
+  built-in list and the `pk:` entries of the config's `relay_peers`, each is asked for its
   directory over the lobby protocol (`p2p-network.md`, 6.1) under the same
   validation. With no relay and no address the list is empty.
   `GET /api/public/networks` on a node that serves as a relay now lists the
@@ -394,7 +394,7 @@ not resent automatically after a timeout, so replay protection does not reject
 it as if it were a new request.
 
 Inference frames get no per-frame administrative signature; the peer is
-authenticated by the libp2p transport and control stays separate.
+authenticated by the p2p transport (QUIC under its key) and control stays separate.
 
 ### Anchoring the root from the UI
 
@@ -476,7 +476,7 @@ with no way back other than reloading by hand.
 The pipeline routes are not part of that boundary: `/api/generate`,
 `/generate`, `/v1/**`, `/health`, `/peers` and `/handshake`, plus the inference
 server routes on `inference_port`, stay reachable over IPv4 and IPv6 so the
-libp2p tunnel's HTTP fallback is not interrupted. `GET /api/access` is the only
+p2p tunnel's HTTP fallback is not interrupted. `GET /api/access` is the only
 public exception of administration, since it only reports the mode, whether a
 password is needed, the port, `boot_id` (random per run of the process, which
 is how the interface repeats a notice once per start) and `default_password` - the password in effect
@@ -563,7 +563,7 @@ describe that dormant code.
   is malformed), `blocked`, `missing_nonce`, `missing_signature`,
   `invalid_signature`, `nonce_reused` and `nonce_expired` stay 403 refusals. An
   old node, which sends the earlier body and cannot repeat with the signature,
-  sees 403 and is never admitted. This route also arrives through the libp2p
+  sees 403 and is never admitted. This route also arrives through the p2p
   tunnel, together with `/health`, the
   `/api/cluster/{tls,quic,logs,network-chat,network-settings}` routes and the
   direct reply's return (`/v1/relay-result`, `/v1/remote-stream-result`, each
@@ -979,7 +979,7 @@ directional snapshot), `chat/telemetry` (authenticated POST, receives
 `{ node_ids, execution_id? }` and returns transport and observed wire RTT on
 the edges of the identified run; without `execution_id`, it also returns every
 complete route of the active model with aggregated RTT. When the last run
-contains the leg, the wire RTT (`net_rtt_median_ms`) beats the libp2p
+contains the leg, the wire RTT (`net_rtt_median_ms`) beats the tunnel
 directional probe; the gateway's and peers' probes stay as a fallback and cover
 a single head with no edge in the graph. The run RTT with remote processing
 stays in the trace), `chat/history` (authenticated GET/POST/DELETE for the
@@ -996,7 +996,7 @@ characters and no control characters; empty goes back to the system hostname;
 it writes `node_name` to the config and renames the node live, answering
 `{node_name, hostname}`), `network/relay` (GET answers the relay options in
 effect, which of them the command line fixed, whether the internet reaches the
-node and whether it accepts reservations now; POST takes
+node and whether it relays now; POST takes
 `{everyone, cluster, transfers}`, writes the `relay` section of the config
 file and applies it live), `network/tls`, `thermal`. `leave` accepts an optional
 `LeaveRequest { node_id }` and **forwards** to the peer when the id is someone
@@ -1208,7 +1208,7 @@ TTFT, input/output tokens, terminal states and prefix cache (`input_tokens`,
 `cached_tokens`, eligible requests and hits). That split avoids a heavy scan on
 the client and keeps the row list small on the initial load. Both routes run on
 any admin with effective authority and query the local SQLite. The generation
-flow replicates audit events to the other admins over libp2p; the secondary
+flow replicates audit events to the other admins over the p2p endpoint; the secondary
 query does not fall back to the principal.
 
 The record only keeps the API key's non-secret identity: `id`, `label` and
@@ -1274,7 +1274,7 @@ be flipped as often as the operator wants - the effect is immediate on this
 node (client cache, announcement, refusing remote clear text) and reaches the
 others through the ratchet, in one gossip cycle. `GET /api/ui/node` returns the
 pair `tls_required` (state) and `tls_authority` (whether **this** node can
-change it), plus `addr_candidates`, `libp2p_peer_id` and
+change it), plus `addr_candidates`, `endpoint_id` and
 `inference_frame_capabilities` so a deployment plan can rebuild the tunnel on
 the rank that will run the call. See `p2p-network.md`, section 5.
 
@@ -1345,11 +1345,11 @@ topology still invalidate the version. `x-state-version` is monotonic for
 changed snapshots.
 
 The `/api/ui/cluster` payload carries `traversal`, the NAT traversal
-diagnostic of **this** node: AutoNAT state (`unknown`/`public`/`private`), the
-published multiaddresses (`addrs`, circuit included), the relays that accepted
-a reservation (`reservations`), and the hole punch count with the last failure.
-It enters the cache fingerprint, otherwise the snapshot would freeze - neither
-the AutoNAT state nor a new reservation touches `peers`. See
+diagnostic of **this** node: the NAT report state (`unknown`/`public`/`private`),
+the published endpoint addresses (`addrs`: direct `ip:port` and relay URLs),
+the relays the endpoint is connected to (`reservations`, by URL), and the hole
+punch count. It enters the cache fingerprint, otherwise the snapshot would
+freeze - neither the NAT report nor a change of relay touches `peers`. See
 `docs/subsystems/p2p-network.md`, "NAT traversal".
 
 In the `/api/ui/cluster` payload, `PeerView.load` is the in-flight request
@@ -1412,7 +1412,7 @@ probe; since it only runs when the node serves a request, the Dashboard probes
 again the peer whose last probe is older than 15 s (`PANEL_PERF_MAX_AGE`) -
 without that, a node nobody uses as a gateway showed the route the peer had
 right after starting. The same measurements go into `measurements` for the
-edge labels (`tunnel` comes out as `libp2p-tunnel`, the tail's return with
+edge labels (`tunnel` comes out as `p2p-tunnel`, the tail's return with
 target `gateway`); the last run's trace only fills an edge the planned route
 has not measured yet. Before, the panel depended on the trace, and a node that
 was never the gateway of a run showed no RTT at all. If the tail is already the
@@ -1563,7 +1563,7 @@ avoids one HTTPS POST per token on the normal path.
 
 Between peers, an inference batch goes down this transport ladder, and only
 goes down a step after the previous one failed on **transport**: persistent
-channel (`/v1/link`, when the hop announces it), libp2p/Noise tunnel, pinned
+channel (`/v1/link`, when the hop announces it), p2p tunnel (QUIC under the peer key), pinned
 direct client. An HTTP refusal from the peer is final at any step and is not
 retried another way.
 

@@ -1178,7 +1178,7 @@ mod tests {
             assert!(!valid_code(bad), "{bad}");
         }
         let caps = vec![
-            "transport/libp2p-tunnel-v1".to_owned(),
+            "transport/iroh-tunnel-v1".to_owned(),
             capability("strata"),
         ];
         assert_eq!(plugin_of_capabilities(&caps), Some("strata"));
@@ -1200,8 +1200,8 @@ mod tests {
             exec_start: start,
             exec_end: end,
             inference_frame_capabilities: caps.to_vec(),
-            libp2p_peer_id: None,
-            libp2p_addr_candidates: Vec::new(),
+            endpoint_id: None,
+            endpoint_addr_candidates: Vec::new(),
         }
     }
 

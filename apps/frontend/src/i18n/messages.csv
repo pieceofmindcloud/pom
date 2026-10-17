@@ -1461,10 +1461,10 @@ network.accessAutoApproveWarning,"Every machine that asks to join is admitted at
 network.accessLocalOnly,This machine only,Apenas esta máquina
 network.accessPolicy,Who can join,Quem pode entrar
 network.addrEffective,Currently advertising,Anunciando agora
-network.addrHint,"Leave empty to auto-detect (a peer-observed public address, else this machine''s local network address).","Deixe vazio para detectar automaticamente (um endereço público observado via libp2p, senão o endereço de rede local desta máquina)."
+network.addrHint,"Leave empty to auto-detect (the public address the relays observed, else this machine''s local network address).","Deixe vazio para detectar automaticamente (um endereço público observado pelos relés, senão o endereço de rede local desta máquina)."
 network.addrLabel,Pinned address,Endereço fixado
 network.addrPlaceholder,e.g. 203.0.113.5:42777,ex.: 203.0.113.5:42777
-network.addrPrecedence,Pinned address wins if set; otherwise a public address observed via libp2p; otherwise this machine''s local network address.,"O endereço fixado vence quando definido; senão, um endereço público observado via libp2p; senão, o endereço de rede local desta máquina."
+network.addrPrecedence,Pinned address wins if set; otherwise a public address observed by the relays; otherwise this machine''s local network address.,"O endereço fixado vence quando definido; senão, um endereço público observado pelos relés; senão, o endereço de rede local desta máquina."
 network.addrSave,Save,Salvar
 network.addrSaveFailed,Could not save the address,Não foi possível salvar o endereço
 network.addrSaved,Address updated,Endereço atualizado
@@ -1546,7 +1546,7 @@ network.firewallRetryFailed,Could not request the Windows Firewall permission.,N
 network.firewallRetrying,Firewall permission request finished.,O pedido de permissão do firewall terminou.
 network.firewallSubtitle,The first attempt asks Windows for administrator permission. Refusing it does not stop this node.,A primeira tentativa pede permissão de administrador ao Windows. Recusar não interrompe este nó.
 network.firewallTitle,Allow POM network traffic,Libere o tráfego de rede do POM
-network.firewallUacDetail,"Approve the Windows prompt once to allow discovery, QUIC and libp2p traffic.","Aprove o pedido do Windows uma vez para liberar descoberta, QUIC e tráfego libp2p."
+network.firewallUacDetail,"Approve the Windows prompt once to allow discovery, QUIC, p2p endpoint and relay traffic.","Aprove o pedido do Windows uma vez para liberar descoberta, QUIC, endpoint p2p e relé."
 network.forgetNetwork,Return to my own network,Voltar para a minha rede
 network.forgetNetworkDescription,"This machine leaves this network and goes back to its own, as it was. The admin of the network gives the other members a new connection key, so coming back takes a new admission request. It does not remove another machine from the cluster.","Esta máquina sai desta rede e volta para a rede própria, como estava. O administrador da rede dá uma nova chave de conexão aos outros membros, então voltar exige um novo pedido de admissão. Ela não tira outra máquina do cluster."
 network.forgetNetworkFailed,Could not leave the network,Não foi possível sair da rede
@@ -1573,7 +1573,7 @@ network.logsDisabled,Process logs turned off,Logs de processo desligados
 network.logsEnable,Turn logs on,Ligar logs
 network.logsEnabled,Process logs turned on,Logs de processo ligados
 network.logsFailed,Could not change the process log policy,Não deu para mudar a política de logs de processo
-network.logsHowItWorks,"The admin only tells the network to collect: every node sends a copy to each admin over a separate libp2p protocol, and the Logs plugin on each admin keeps arrival order and deployment id in its own database. Only the admins need the plugin.","O admin só avisa a rede para coletar: cada nó envia uma cópia para cada admin por um protocolo libp2p separado, e o plugin de Logs de cada admin grava a ordem de chegada e o deploy_id no próprio banco. Só os admins precisam do plugin."
+network.logsHowItWorks,"The admin only tells the network to collect: every node sends a copy to each admin over a separate p2p protocol, and the Logs plugin on each admin keeps arrival order and deployment id in its own database. Only the admins need the plugin.","O admin só avisa a rede para coletar: cada nó envia uma cópia para cada admin por um protocolo p2p separado, e o plugin de Logs de cada admin grava a ordem de chegada e o deploy_id no próprio banco. Só os admins precisam do plugin."
 network.logsNotAuthority,"Only the main node decides this, and the decision applies to the whole cluster.","Só o nó principal decide isso, e a decisão vale para o cluster inteiro."
 network.logsOff,paused,pausada
 network.logsOn,collecting,coletando
@@ -1594,7 +1594,7 @@ network.networkChatDisabled,Network chat turned off,Chat da rede desligado
 network.networkChatEnable,Turn network chat on,Ligar Chat da rede
 network.networkChatEnabled,Network chat turned on,Chat da rede ligado
 network.networkChatFailed,Could not change the network chat policy,Não foi possível mudar a política do Chat da rede
-network.networkChatHowItWorks,"Messages and files travel through the libp2p swarm and are validated by the main node.","Mensagens e arquivos viajam pelo enxame libp2p e são validados pelo nó principal."
+network.networkChatHowItWorks,Messages and files travel through the p2p network and are validated by the main node.,Mensagens e arquivos viajam pela rede p2p e são validados pelo nó principal.
 network.networkChatNotAuthority,"Only the main node decides this, and the decision is confirmed by the network.","Somente o nó principal decide isso, e a decisão é confirmada pela rede."
 network.networkChatOff,disabled,desligado
 network.networkChatOn,enabled,ligado
@@ -1718,7 +1718,7 @@ network.tlsDisabled,TLS turned off,TLS desligado
 network.tlsEnable,Turn TLS on,Ligar TLS
 network.tlsEnabled,TLS turned on,TLS ligado
 network.tlsFailed,Could not change the TLS policy,Não deu para mudar a política de TLS
-network.tlsHowItWorks,"TLS between nodes matters most when inference crosses the internet. If everything runs locally over 127.0.0.1, communication between nodes mainly uses libp2p, which is secure by nature - TLS is optional in that case and may even reduce inference speed.","O TLS entre nós vale sobretudo quando a inferência atravessa a internet. Se tudo corre localmente por 127.0.0.1, a comunicação entre nós passa principalmente por libp2p, que já é segura por natureza - o TLS torna-se opcional nesse caso e pode inclusive reduzir a velocidade da inferência."
+network.tlsHowItWorks,"TLS between nodes matters most when inference crosses the internet. If everything runs locally over 127.0.0.1, communication between nodes mainly uses the p2p endpoints (QUIC), which are encrypted by nature - TLS is optional in that case and may even reduce inference speed.","O TLS entre nós vale sobretudo quando a inferência atravessa a internet. Se tudo corre localmente por 127.0.0.1, a comunicação entre nós passa principalmente por p2p, que já é segura por natureza - o TLS torna-se opcional nesse caso e pode inclusive reduzir a velocidade da inferência."
 network.tlsNotAuthority,"Only the main node decides this, and the decision applies to the whole cluster.","Só o nó principal decide isso, e a decisão vale para o cluster inteiro."
 network.tlsOff,in the clear,em texto claro
 network.tlsOn,encrypted,cifrado
@@ -1726,7 +1726,7 @@ network.tlsPropagates,No restart needed. The other nodes confirm the change with
 network.tlsState,Cluster,Cluster
 network.tlsSubtitle,"When on, every HTTP call between peers goes over TLS, and each node''s certificate is verified against the node_id the cluster already knows.","Ligado, todo HTTP entre peers vai por TLS, e o certificado de cada nó é conferido contra o node_id que o cluster já conhece."
 network.tlsTitle,Encryption between nodes,Criptografia entre nós
-network.traversalCircuits,Relay circuits,Circuitos de relé
+network.traversalCircuits,Relay addresses,Endereços de relé
 network.traversalDirect,Direct addresses,Endereços diretos
 network.traversalEyebrow,Diagnostics,Diagnóstico
 network.traversalHolePunch,Hole punches,Hole punches
@@ -1736,7 +1736,7 @@ network.traversalNat,NAT status,Estado do NAT
 network.traversalNat.private,Behind NAT,Atrás de NAT
 network.traversalNat.public,Publicly reachable,Alcançável publicamente
 network.traversalNat.unknown,Not determined yet,Ainda não determinado
-network.traversalReservations,Relay reservations,Reservas de relé
+network.traversalReservations,Relays connected,Relés conectados
 network.traversalSubtitle,"Where NAT traversal stands for this node: what it can publish, which relays accepted it, and whether hole punching works.","Em que pé está a travessia de NAT deste nó: o que ele consegue publicar, que relés o aceitaram e se o hole punch funciona."
 network.traversalTitle,NAT traversal,Travessia de NAT
 network.trustDocument,Trust document,Documento de confiança
@@ -1758,7 +1758,7 @@ networkChat.emptyTitle,No messages yet,Nenhuma mensagem ainda
 networkChat.fileLimit,"Files are limited to 8 MiB.","Arquivos são limitados a 8 MiB."
 networkChat.fileTooLarge,File is too large,Arquivo grande demais
 networkChat.hideOnline,Hide online,Ocultar online
-networkChat.hint,"Enter sends. Files are sent through the libp2p network.","Enter envia. Arquivos são enviados pela rede libp2p."
+networkChat.hint,Enter sends. Files are sent through the p2p network.,Enter envia. Arquivos são enviados pela rede p2p.
 networkChat.loadFailed,Could not load the network chat,Não foi possível carregar o Chat da rede
 networkChat.loading,Loading network chat,Carregando o Chat da rede
 networkChat.lobbyUnread,"{count, plural, one {# new message in the lobby} other {# new messages in the lobby}}","{count, plural, one {# mensagem nova no lobby} other {# mensagens novas no lobby}}"
@@ -2067,7 +2067,7 @@ preferences.accessSave,Save exposure,Salvar exposição
 preferences.accessSaveFailed,Could not save the interface preference,Não foi possível salvar a preferência da interface
 preferences.accessSaved,Interface preference saved,Preferência da interface salva
 preferences.accessSavedDetail,The new administrative boundary is active now.,A nova fronteira administrativa já está ativa.
-preferences.accessSubtitle,Choose where the administration interface listens. Inference pipeline routes remain available over IPv4 and IPv6 as a fallback for the libp2p tunnel.,Escolha de onde a interface de administração aceita conexões. As rotas da pipeline de inferência continuam disponíveis por IPv4 e IPv6 como reserva para o túnel libp2p.
+preferences.accessSubtitle,Choose where the administration interface listens. Inference pipeline routes remain available over IPv4 and IPv6 as a fallback for the p2p tunnel.,Escolha de onde a interface de administração aceita conexões. As rotas da pipeline de inferência continuam disponíveis por IPv4 e IPv6 como reserva para o túnel p2p.
 preferences.accessTitle,Interface exposure,Exposição da interface
 preferences.accessTokenCopied,Copied,Copiado
 preferences.accessTokenCopy,Copy token,Copiar token
@@ -2578,7 +2578,7 @@ setupWizard.storagePathsDetail,You can change these later in Settings.,Você pod
 setupWizard.storageTitle,Where should models and shared slices live?,Onde devem ficar os modelos e as fatias compartilhadas?
 setupWizard.thermalDetail,A limit around 85°C is a comfortable target. POM stops using the GPU before it stays too hot.,Um limite perto de 85°C é um alvo confortável. O POM para de usar a GPU antes que ela fique quente demais.
 setupWizard.thermalLimit,GPU temperature limit,Limite de temperatura da GPU
-setupWizard.tlsDetail,Optional extra encryption for control links. Libp2p already protects peer connections.,Criptografia extra opcional para os links de controle. O libp2p já protege as conexões entre nós.
+setupWizard.tlsDetail,Optional extra encryption for control links. The p2p endpoints already encrypt peer connections (QUIC).,Criptografia extra opcional para os links de controle. Os endpoints p2p já criptografam as conexões entre nós (QUIC).
 setupWizard.tlsPublicRequired,Extra encryption is optional on public networks.,A criptografia extra é opcional em redes públicas.
 setupWizard.tlsRequired,Encrypt connections between nodes (optional),Criptografar conexões entre nós (opcional)
 setupWizard.trustDocument,Trust document,Documento de confiança

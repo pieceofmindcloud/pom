@@ -36,10 +36,51 @@ const copyUpdates: Record<string, string> = {
   "pt-BR:deploymentLogs.consoleTitle": "Console do cluster",
   "pt-BR:deploymentLogs.subtitle":
     "O console do processo do cluster. As linhas aparecem na ordem em que chegaram a esta réplica local.",
+  // The p2p transport moved from libp2p to iroh: the copy names neither.
+  "en:network.addrHint":
+    "Leave empty to auto-detect (the public address the relays observed, else this machine's local network address).",
+  "pt-BR:network.addrHint":
+    "Deixe vazio para detectar automaticamente (um endereço público observado pelos relés, senão o endereço de rede local desta máquina).",
+  "en:network.addrPrecedence":
+    "Pinned address wins if set; otherwise a public address observed by the relays; otherwise this machine's local network address.",
+  "pt-BR:network.addrPrecedence":
+    "O endereço fixado vence quando definido; senão, um endereço público observado pelos relés; senão, o endereço de rede local desta máquina.",
+  "en:network.firewallUacDetail":
+    "Approve the Windows prompt once to allow discovery, QUIC, p2p endpoint and relay traffic.",
+  "pt-BR:network.firewallUacDetail":
+    "Aprove o pedido do Windows uma vez para liberar descoberta, QUIC, endpoint p2p e relé.",
   "en:network.logsHowItWorks":
-    "The admin only tells the network to collect: every node sends a copy to each admin over a separate libp2p protocol, and the Logs plugin on each admin keeps arrival order and deployment id in its own database. Only the admins need the plugin.",
+    "The admin only tells the network to collect: every node sends a copy to each admin over a separate p2p protocol, and the Logs plugin on each admin keeps arrival order and deployment id in its own database. Only the admins need the plugin.",
   "pt-BR:network.logsHowItWorks":
-    "O admin só avisa a rede para coletar: cada nó envia uma cópia para cada admin por um protocolo libp2p separado, e o plugin de Logs de cada admin grava a ordem de chegada e o deploy_id no próprio banco. Só os admins precisam do plugin.",
+    "O admin só avisa a rede para coletar: cada nó envia uma cópia para cada admin por um protocolo p2p separado, e o plugin de Logs de cada admin grava a ordem de chegada e o deploy_id no próprio banco. Só os admins precisam do plugin.",
+  "en:network.networkChatHowItWorks":
+    "Messages and files travel through the p2p network and are validated by the main node.",
+  "pt-BR:network.networkChatHowItWorks":
+    "Mensagens e arquivos viajam pela rede p2p e são validados pelo nó principal.",
+  "en:network.tlsHowItWorks":
+    "TLS between nodes matters most when inference crosses the internet. If everything runs locally over 127.0.0.1, communication between nodes mainly uses the p2p endpoints (QUIC), which are encrypted by nature - TLS is optional in that case and may even reduce inference speed.",
+  "pt-BR:network.tlsHowItWorks":
+    "O TLS entre nós vale sobretudo quando a inferência atravessa a internet. Se tudo corre localmente por 127.0.0.1, a comunicação entre nós passa principalmente por p2p, que já é segura por natureza - o TLS torna-se opcional nesse caso e pode inclusive reduzir a velocidade da inferência.",
+  "en:network.traversalCircuits":
+    "Relay addresses",
+  "pt-BR:network.traversalCircuits":
+    "Endereços de relé",
+  "en:network.traversalReservations":
+    "Relays connected",
+  "pt-BR:network.traversalReservations":
+    "Relés conectados",
+  "en:networkChat.hint":
+    "Enter sends. Files are sent through the p2p network.",
+  "pt-BR:networkChat.hint":
+    "Enter envia. Arquivos são enviados pela rede p2p.",
+  "en:preferences.accessSubtitle":
+    "Choose where the administration interface listens. Inference pipeline routes remain available over IPv4 and IPv6 as a fallback for the p2p tunnel.",
+  "pt-BR:preferences.accessSubtitle":
+    "Escolha de onde a interface de administração aceita conexões. As rotas da pipeline de inferência continuam disponíveis por IPv4 e IPv6 como reserva para o túnel p2p.",
+  "en:setupWizard.tlsDetail":
+    "Optional extra encryption for control links. The p2p endpoints already encrypt peer connections (QUIC).",
+  "pt-BR:setupWizard.tlsDetail":
+    "Criptografia extra opcional para os links de controle. Os endpoints p2p já criptografam as conexões entre nós (QUIC).",
 };
 
 // Keys whose screens left the POM. The detailed execution telemetry now lives

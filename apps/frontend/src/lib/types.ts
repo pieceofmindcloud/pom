@@ -855,7 +855,7 @@ export interface ChatTelemetryRtt {
   to_node_id: string;
   rtt_ms: number;
   transport: string;
-  /** The edge goes through a circuit on a libp2p relay: a route to review. */
+  /** The edge goes through a relay: a route to review. */
   relayed?: boolean;
 }
 
@@ -981,9 +981,9 @@ export interface ClusterView {
  */
 export interface TraversalView {
   nat: "unknown" | "public" | "private";
-  /** Published multiaddresses, including the relay circuit. */
+  /** Published endpoint addresses: direct `ip:port` and relay URLs. */
   addrs: string[];
-  /** PeerId of the relays that accepted a reservation. */
+  /** URLs of the relays the endpoint holds a live connection to. */
   reservations: string[];
   hole_punch_ok: number;
   hole_punch_failed: number;
@@ -1559,25 +1559,26 @@ export interface OfferManifest {
   };
 }
 
-/** A live libp2p connection with the peer. */
+/** A live endpoint connection with the peer, as its selected path stands now. */
 export interface PeerRouteLink {
   address: string;
   relayed: boolean;
-  relay_peer_id?: string | null;
+  /** URL of the relay, when the path goes through one. */
+  relay_url?: string | null;
   hole_punched: boolean;
 }
 
 /**
  * Through where this node actually talks to the peer, observed - not the
  * address the peer announces. `http`: a direct address answered; `p2p_direct`:
- * direct libp2p connection (dialed or by hole punch); `relayed`: only through
- * the relay. `relay_kind` says, in `relayed`, whether the relay is dedicated
- * (configured) or a cluster member serving as relay - the last rung of the ladder.
+ * direct endpoint path (dialed or by hole punch); `relayed`: only through a
+ * relay. `relay_kind` says, in `relayed`, whether the relay is dedicated
+ * (configured), public (one of n0's) or a cluster member serving as relay.
  */
 export interface PeerRoute {
   kind: "http" | "p2p_direct" | "relayed" | "none";
   address?: string | null;
-  relay_kind?: "dedicated" | "member" | null;
+  relay_kind?: "dedicated" | "public" | "member" | null;
   hole_punched: boolean;
   links: PeerRouteLink[];
 }

@@ -592,7 +592,7 @@ the network of a publisher `pk:` key can be reached: `direct` (pkarr record
 with a public address), `relayed` (relays only), `unresolved` (no record),
 `unknown` (the request failed or the node refused the key, which says nothing
 about the network) or `checking`. The browser never probes or receives an IP: the node, which speaks
-pkarr/libp2p, does the resolving. 30 s cache per key; the refresh button on the
+pkarr and the endpoint, does the resolving. 30 s cache per key; the refresh button on the
 Public networks screen forces a new query.
 
 ### networkPeers.ts

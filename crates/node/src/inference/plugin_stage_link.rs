@@ -426,7 +426,7 @@ impl LinkStats {
     }
 }
 
-/// The traffic of one channel (QUIC, HTTP, the libp2p tunnel or the local loopback) towards one earlier node, as
+/// The traffic of one channel (QUIC, HTTP, the p2p tunnel or the local loopback) towards one earlier node, as
 /// aggregates: the frames, their round trips and network times (sum, minimum, maximum) and the bytes. The trace
 /// reports the mean of each.
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]

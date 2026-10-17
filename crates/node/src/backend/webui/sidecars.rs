@@ -10,7 +10,7 @@ async fn primary_peer(state: &GatewayState) -> Option<crate::network::PeerInfo> 
     let primary = state.admin_trust.current_primary();
     state.all_peers().await.into_iter().find(|peer| {
         peer.node_id == primary.node_id
-            && peer.libp2p_peer_id.as_deref() == Some(primary.peer_id.as_str())
+            && peer.endpoint_id.as_deref() == Some(primary.peer_id.as_str())
             && peer.pubkey == primary.pubkey
             && peer.gateway_port.is_some()
     })

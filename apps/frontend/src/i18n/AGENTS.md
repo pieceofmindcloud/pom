@@ -179,7 +179,9 @@ The keys `network.forgetNetwork*` name the confirmation and the outcome of the
 local network cleanup; they must not be confused with `network.leave`, which
 takes the machine out of the cluster without erasing its configuration.
 The keys `network.traversal*` label the NAT traversal panel, including the three
-AutoNAT states in `network.traversalNat.{unknown,public,private}`.
+NAT report states in `network.traversalNat.{unknown,public,private}`. The
+`network.*` copy that named libp2p now names the p2p transport (revisions in
+`locales.equivalence.test.ts`).
 The keys `publicNetworks.*`, `network.metrics*`, `network.participants*`,
 `keys.*`, `preferences.admin*` and `nav.*` cover the reorganization of the
 screens, including unavailable metric states, the reachable/unreachable states

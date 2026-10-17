@@ -1,14 +1,14 @@
-//! Global chat channel over the libp2p swarm.
+//! Global chat channel over the p2p endpoint.
 //!
 //! The types and limits live in this module so that the protocol, the gateway and
-//! the interface share the same boundary. The swarm worker is added after these
+//! the interface share the same boundary. The endpoint worker is added after these
 //! contracts are validated; nothing here depends on the inference tunnel.
 
 use anyhow::{Context, Result};
+use crate::p2p::Codec;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures::prelude::*;
-use libp2p::{request_response, StreamProtocol};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -475,7 +475,7 @@ enum PersistCommand {
     Action(ChatAction),
 }
 
-/// Channel state. Sending to the swarm is always `try_send`; the service neither
+/// Channel state. Sending to the endpoint is always `try_send`; the service neither
 /// knows nor shares the inference frame queue.
 pub struct NetworkChat {
     database: Arc<crate::db::PomDb>,
@@ -503,7 +503,7 @@ pub struct NetworkChat {
     /// Nodes that left recently, kept off the member list for a while.
     departed: Mutex<HashMap<String, Instant>>,
     /// Departures heard on the lobby connection, waiting for the gateway to
-    /// rotate the connection key (the swarm loop cannot push it itself).
+    /// rotate the connection key (the transport task cannot push it itself).
     rotations: Mutex<Vec<String>>,
     rotation_wanted: tokio::sync::Notify,
 }
@@ -823,7 +823,7 @@ impl NetworkChat {
     }
 
     /// Validates the original action on the principal. The `transport_node_id` was
-    /// already bound to the PeerId in discovery, so the API key cannot be used by
+    /// already bound to the endpoint id in discovery, so the API key cannot be used by
     /// another node just by changing the JSON field.
     pub async fn validate_original(
         &self,
@@ -1003,14 +1003,13 @@ where
 }
 
 #[async_trait]
-impl request_response::Codec for NetworkChatCodec {
-    type Protocol = StreamProtocol;
+impl Codec for NetworkChatCodec {
+    const PROTOCOL: &'static str = NETWORK_CHAT_PROTOCOL;
     type Request = ChatRequest;
     type Response = ChatResponse;
 
     async fn read_request<T>(
         &mut self,
-        _: &Self::Protocol,
         io: &mut T,
     ) -> std::io::Result<Self::Request>
     where
@@ -1021,7 +1020,6 @@ impl request_response::Codec for NetworkChatCodec {
 
     async fn read_response<T>(
         &mut self,
-        _: &Self::Protocol,
         io: &mut T,
     ) -> std::io::Result<Self::Response>
     where
@@ -1032,7 +1030,6 @@ impl request_response::Codec for NetworkChatCodec {
 
     async fn write_request<T>(
         &mut self,
-        _: &Self::Protocol,
         io: &mut T,
         request: Self::Request,
     ) -> std::io::Result<()>
@@ -1044,7 +1041,6 @@ impl request_response::Codec for NetworkChatCodec {
 
     async fn write_response<T>(
         &mut self,
-        _: &Self::Protocol,
         io: &mut T,
         response: Self::Response,
     ) -> std::io::Result<()>
@@ -1055,15 +1051,6 @@ impl request_response::Codec for NetworkChatCodec {
     }
 }
 
-pub fn network_chat_behaviour() -> request_response::Behaviour<NetworkChatCodec> {
-    request_response::Behaviour::new(
-        [(
-            StreamProtocol::new(NETWORK_CHAT_PROTOCOL),
-            request_response::ProtocolSupport::Full,
-        )],
-        request_response::Config::default().with_request_timeout(Duration::from_secs(5)),
-    )
-}
 
 #[cfg(test)]
 #[derive(Debug, Clone)]

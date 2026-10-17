@@ -171,9 +171,8 @@ pub(crate) struct ClusterSnapshotCache {
 
 /// Live publisher of this node's pkarr record.
 ///
-/// The record is the "key -> where to dial now" pointer: public multiaddresses
-/// the swarm confirmed or listens on and the keys of the relays where this node
-/// holds a reservation. It is rebuilt from the live `Network` state on every
+/// The record is the "key -> where to dial now" pointer: the endpoint's public
+/// direct addresses and the URLs of the relays it is reachable through. It is rebuilt from the live `Network` state on every
 /// round and only republished when it changes, or every `PKARR_REFRESH` so it
 /// does not vanish from the DHT. It is always published, with or without a
 /// deployment: an idle admin is exactly who a new node needs to find by the
@@ -216,10 +215,10 @@ impl PkarrPublishHandle {
 
     /// The record this node should have published right now.
     pub(crate) fn desired_record(&self) -> crate::pkarr_node::PkarrRecord {
-        let (multiaddrs, relays) = record_addrs(&self.network.libp2p_addrs());
+        let (addrs, relays) = record_addrs(&self.network.endpoint_addrs());
         let geo_label = self.geo_label.lock().expect("geo label lock").clone();
         crate::pkarr_node::PkarrRecord {
-            multiaddrs,
+            addrs,
             relays,
             gateway_port: self.gateway_port,
             inference_port: self.inference_port,
@@ -344,52 +343,26 @@ impl PublishBackoff {
     }
 }
 
-/// Splits the announced multiaddresses into direct ones and relays: a circuit
-/// (`<relay>/p2p/<relay>/p2p-circuit`) becomes the relay's `pk:` key, because
-/// the relay's address changes and its key does not; the resolver rebuilds the
-/// circuit.
+/// Splits the announced endpoint addresses into direct ones and relay URLs;
+/// anything else stays out of the record.
 ///
 /// The DHT is public: a private address (LAN, CGNAT, Tailscale, loopback) never
 /// goes to it, even when it is the operator's pin. That path stays in the
 /// `Announce`, which only admitted members read.
 pub(crate) fn record_addrs(addrs: &[String]) -> (Vec<String>, Vec<String>) {
-    use libp2p::multiaddr::Protocol;
     let mut direct = Vec::new();
     let mut relays = Vec::new();
     for addr in addrs {
-        let Ok(multiaddr) = addr.parse::<libp2p::Multiaddr>() else {
-            continue;
-        };
-        let protocols: Vec<_> = multiaddr.iter().collect();
-        if let Some(circuit) = protocols
-            .iter()
-            .position(|protocol| matches!(protocol, Protocol::P2pCircuit))
-        {
-            let relay = protocols[..circuit]
-                .iter()
-                .rev()
-                .find_map(|protocol| match protocol {
-                    Protocol::P2p(peer_id) => crate::pkarr_node::uri_from_peer_id(peer_id),
-                    _ => None,
-                });
-            if let Some(relay) = relay {
-                if !relays.contains(&relay) {
-                    relays.push(relay);
-                }
-            }
-        } else {
-            let private = protocols.iter().any(|protocol| match protocol {
-                Protocol::Ip4(ip) => {
-                    ip.is_unspecified() || crate::addrs::is_private_or_local(&ip.to_string())
-                }
-                Protocol::Ip6(ip) => {
-                    ip.is_unspecified() || crate::addrs::is_private_or_local(&ip.to_string())
-                }
-                _ => false,
-            });
-            if !private && !direct.contains(addr) {
+        if let Ok(socket) = addr.parse::<std::net::SocketAddr>() {
+            let ip = socket.ip();
+            if !ip.is_unspecified()
+                && !crate::addrs::is_private_or_local(&ip.to_string())
+                && !direct.contains(addr)
+            {
                 direct.push(addr.clone());
             }
+        } else if crate::p2p::relay_url(addr).is_some() && !relays.contains(addr) {
+            relays.push(addr.clone());
         }
     }
     (direct, relays)
@@ -487,7 +460,7 @@ pub struct GatewayState {
     /// Durable anchor and grant chain for administrator capabilities. It is
     /// deliberately separate from `Config.profile`.
     pub(crate) admin_trust: Arc<crate::admin_trust::AdminTrust>,
-    /// The libp2p identity is the only signing authority for this node.
+    /// The p2p identity is the only signing authority for this node.
     pub(crate) authority_signing_key: Arc<ed25519_dalek::SigningKey>,
     pub(crate) authority_principal: crate::admin_trust::AuthorityPrincipal,
     /// In-memory browser sessions. It is intentionally not persisted beside
@@ -501,9 +474,9 @@ pub struct GatewayState {
     /// answers this process instead of the answer bubbling back through every
     /// hop — see [`crate::direct`].
     pub reply_inbox: crate::direct::ReplyInbox,
-    /// Dispatches a hop-to-hop call over the libp2p swarm instead of plain
+    /// Dispatches a hop-to-hop call over the p2p endpoint instead of plain
     /// HTTP, as a NAT-tunnel fallback — see `relay::send_frame_or_tunnel`.
-    /// `None` whenever this node's own libp2p discovery never came up
+    /// `None` whenever this node's own p2p discovery never came up
     /// (disabled or failed to start); every prefill/decode call site treats
     /// that exactly like "the fallback wasn't available this time."
     pub tunnel_tx: Option<crate::infer_tunnel::TunnelOutboundSender>,
@@ -628,7 +601,7 @@ impl GatewayState {
     }
 
     /// Signed control GET to `peer`'s gateway, over all the paths
-    /// it announces (addresses and, last, the libp2p tunnel - see
+    /// it announces (addresses and, last, the p2p tunnel - see
     /// `peer_client::send_to_gateway_over`). `path` may carry a query string; the
     /// signature covers only the path, as in `control_get_request`.
     pub(crate) async fn control_get(
@@ -657,7 +630,7 @@ impl GatewayState {
 
     /// Signed control POST to `peer`'s gateway along the route this node
     /// already measured to it (`route_plan`, gateway plane): only the pinned
-    /// address, or only the libp2p tunnel when that is what reaches the peer -
+    /// address, or only the p2p tunnel when that is what reaches the peer -
     /// a machine behind NAT, for example. Without a measured route, the
     /// address that last answered. For a call with a deadline of
     /// milliseconds, where walking every announced address would spend it on
@@ -1436,7 +1409,7 @@ async fn admit_peer(
     if body.is_none() && all_refused {
         return (None, "refused-direct");
     }
-    // No address answered: the libp2p tunnel. Only a peer that announces a model can serve,
+    // No address answered: the p2p tunnel. Only a peer that announces a model can serve,
     // so only it is worth the tunnel's round trip.
     if body.is_none() && !peer.model.is_empty() {
         if let Some(tunnel) = crate::peer_client::TunnelPeer::from_peer(&peer) {
@@ -1601,8 +1574,8 @@ impl GatewayState {
                     if self.network.slot_persist_ready() {
                         caps.push(crate::pipeline::CAP_SLOT_PERSIST.into());
                     }
-                    if self.network.libp2p_tunnel_ready() {
-                        caps.push("transport/libp2p-tunnel-v1".into());
+                    if self.network.p2p_tunnel_ready() {
+                        caps.push("transport/iroh-tunnel-v1".into());
                     }
                     caps
                 },
@@ -1626,8 +1599,8 @@ impl GatewayState {
                 disk_total_mb: 0,
                 disk_free_mb: 0,
                 api_keys_active: 0,
-                libp2p_peer_id: self.network.libp2p_peer_id.clone(),
-                libp2p_addrs: self.network.libp2p_addrs(),
+                endpoint_id: self.network.endpoint_id.clone(),
+                endpoint_addrs: self.network.endpoint_addrs(),
                 tp: self.network.tp_identity(),
                 runtime_capacity: local.and_then(|_| self.network.runtime_capacity()),
                 idle: self.network.is_idle(),
@@ -1815,27 +1788,26 @@ mod pkarr_record_tests {
         assert_eq!(backoff.succeeded(), None);
     }
 
-    /// A circuit becomes the relay's key, a private address does not go to the
+    /// A relay URL passes as a relay, a private address does not go to the
     /// DHT, and a direct public address passes as is.
     #[test]
-    fn the_record_keeps_public_addrs_and_turns_circuits_into_relay_keys() {
-        let relay = pkarr::Keypair::random();
-        let relay_peer = crate::pkarr_node::peer_id_from_uri(&relay.to_uri_string()).unwrap();
+    fn the_record_keeps_public_addrs_and_relay_urls() {
         let (direct, relays) = record_addrs(&[
-            "/ip4/203.0.113.7/udp/52777/quic-v1".into(),
-            "/ip4/192.168.0.10/tcp/52777".into(),
-            "/ip4/100.122.132.97/tcp/52777".into(),
-            "/dns/node.example/tcp/52777".into(),
-            format!("/ip4/198.51.100.1/tcp/52777/p2p/{relay_peer}/p2p-circuit"),
+            "203.0.113.7:52777".into(),
+            "192.168.0.10:52777".into(),
+            "100.122.132.97:52777".into(),
+            "[2001:db8::1]:52777".into(),
+            "https://relay.example.org/".into(),
+            "not an address".into(),
         ]);
         assert_eq!(
             direct,
             vec![
-                "/ip4/203.0.113.7/udp/52777/quic-v1".to_string(),
-                "/dns/node.example/tcp/52777".to_string(),
+                "203.0.113.7:52777".to_string(),
+                "[2001:db8::1]:52777".to_string(),
             ]
         );
-        assert_eq!(relays, vec![relay.to_uri_string()]);
+        assert_eq!(relays, vec!["https://relay.example.org/".to_string()]);
     }
 }
 

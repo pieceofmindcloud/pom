@@ -130,15 +130,14 @@ fn is_loopback(peer: Option<&crate::serve::PeerAddr>) -> bool {
     peer.is_some_and(|peer| crate::auth::is_loopback_addr(peer.0))
 }
 
-/// Only valid `pk:` keys go into the document: `relay_peers` also accepts
-/// multiaddresses, and a multiaddress carries an IP.
+/// Only relay URLs with a DNS name go into the document: `relay_peers` also
+/// accepts a relay on a bare IP, and a document never carries an IP.
 pub(crate) fn relay_hint_keys(relay_peers: &[String]) -> Vec<String> {
     let mut keys = Vec::new();
     for entry in relay_peers {
-        let entry = entry.trim();
-        if entry.starts_with("pk:") && crate::pkarr_node::peer_id_from_uri(entry).is_some() {
-            if !keys.iter().any(|known| known == entry) {
-                keys.push(entry.to_string());
+        if let Some(hint) = crate::p2p::relay_hint(entry) {
+            if !keys.contains(&hint) {
+                keys.push(hint);
             }
         }
     }
@@ -427,12 +426,13 @@ mod tests {
                 ..Default::default()
             };
             // A local pin and bootstrap do not go into the document: it only
-            // carries keys. A multiaddress in `relay_peers` stays out too.
+            // carries keys and host names. A relay on a bare IP in
+            // `relay_peers` stays out too.
             config.advertise_addr = Some("[2001:db8::10]:43123".into());
             config.bootstrap_nodes = vec!["[2001:db8::10]:43123".into()];
             config.relay_peers = vec![
-                "pk:yg4gxe7z1r7mr6orids9fh95y7gxhdsxjqi6nngsxxtakqaxr5no".into(),
-                "/ip4/198.51.100.1/tcp/52777/p2p/12D3KooWRBy97UB99e3J6hiPesre1MZeuNQvfan4gBziswrRJsNK".into(),
+                "https://relay.example.org".into(),
+                "http://[2001:db8::20]:52777".into(),
             ];
         }
         state
@@ -462,7 +462,7 @@ mod tests {
         assert_eq!(setup.organization, "POM");
         assert_eq!(
             setup.relay_hints,
-            vec!["pk:yg4gxe7z1r7mr6orids9fh95y7gxhdsxjqi6nngsxxtakqaxr5no".to_string()]
+            vec!["https://relay.example.org/".to_string()]
         );
         assert!(
             !body["document"].as_str().unwrap().contains("2001:db8"),

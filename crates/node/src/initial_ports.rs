@@ -11,9 +11,9 @@ use std::net::{Ipv6Addr, SocketAddr, UdpSocket};
 
 pub(crate) const DEFAULT_GATEWAY_PORT: u16 = 8080;
 const INFERENCE_HTTP_OFFSET: u16 = crate::config::DEFAULT_INFERENCE_PORT - DEFAULT_GATEWAY_PORT;
-const LIBP2P_PORT_OFFSET: u16 = 10_000;
+const P2P_PORT_OFFSET: u16 = crate::p2p::P2P_PORT_OFFSET;
 const MAX_GATEWAY_PORT: u16 = u16::MAX - INFERENCE_HTTP_OFFSET;
-const MAX_P2P_PORT: u16 = u16::MAX - LIBP2P_PORT_OFFSET;
+const MAX_P2P_PORT: u16 = u16::MAX - P2P_PORT_OFFSET;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct InitialPorts {
@@ -23,7 +23,7 @@ pub(crate) struct InitialPorts {
 
 /// Keep operator-provided values fixed and search only the defaults they left
 /// implicit. The HTTP inference port follows the gateway by its normal offset;
-/// the QUIC and libp2p listeners follow the P2P port.
+/// the QUIC listeners, the p2p endpoint and its relay follow the P2P port.
 pub(crate) fn select(
     gateway: u16,
     p2p: u16,
@@ -82,7 +82,7 @@ where
         }
 
         // A TCP collision between the gateway/inference listeners and
-        // libp2p's TCP listener is the only overlap between otherwise-free
+        // the relay server's TCP listener is the only overlap between otherwise-free
         // individual port groups. Prefer moving the gateway; if that search
         // runs out, move P2P and retry from the first free gateway candidate.
         if gateway_is_default {
@@ -133,7 +133,7 @@ fn p2p_derived_ports(p2p: u16) -> Option<(u16, u16, u16)> {
     Some((
         crate::quic::inference_quic_port(p2p)?,
         crate::quic::gateway_quic_port(p2p)?,
-        p2p.checked_add(LIBP2P_PORT_OFFSET)?,
+        p2p.checked_add(P2P_PORT_OFFSET)?,
     ))
 }
 
@@ -152,20 +152,20 @@ fn gateway_ports_available(gateway: u16) -> bool {
 }
 
 fn p2p_ports_available(p2p: u16) -> bool {
-    let Some((inference_quic, gateway_quic, libp2p)) = p2p_derived_ports(p2p) else {
+    let Some((inference_quic, gateway_quic, endpoint)) = p2p_derived_ports(p2p) else {
         return false;
     };
     let mut udp_reservations = Vec::with_capacity(4);
-    for port in [p2p, inference_quic, gateway_quic, libp2p] {
+    for port in [p2p, inference_quic, gateway_quic, endpoint] {
         let Ok(socket) = bind_udp_dual_stack(port) else {
             return false;
         };
         udp_reservations.push(socket);
     }
-    let Ok(libp2p_tcp) = crate::infer_server::listener_dual_stack(libp2p) else {
+    let Ok(relay_tcp) = crate::infer_server::listener_dual_stack(endpoint) else {
         return false;
     };
-    let _reservations = (udp_reservations, libp2p_tcp);
+    let _reservations = (udp_reservations, relay_tcp);
     true
 }
 
@@ -175,11 +175,11 @@ fn complete_port_plan_available(gateway: u16, p2p: u16) -> bool {
     let Some(inference_http) = inference_http_port(gateway) else {
         return false;
     };
-    let Some((inference_quic, gateway_quic, libp2p)) = p2p_derived_ports(p2p) else {
+    let Some((inference_quic, gateway_quic, endpoint)) = p2p_derived_ports(p2p) else {
         return false;
     };
-    let tcp_ports = [gateway, inference_http, libp2p];
-    let udp_ports = [p2p, inference_quic, gateway_quic, libp2p];
+    let tcp_ports = [gateway, inference_http, endpoint];
+    let udp_ports = [p2p, inference_quic, gateway_quic, endpoint];
     if has_duplicate_ports(&tcp_ports) || has_duplicate_ports(&udp_ports) {
         return false;
     }

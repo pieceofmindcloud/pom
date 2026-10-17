@@ -13,16 +13,18 @@ in `../routing-contract`, empty for the runtime).
   Used by `scripts/build-docker.sh`/`POM_BUILD_FEATURES` in the devupdate. The CUDA
   build keeps CUDA Graphs off by default; enabling it with `POM_CUDA_GRAPHS=1`
   requires rebuilding the binary and additional free VRAM.
-- Heavy dependencies: `libp2p` 0.56 (tokio, tcp, dns, noise, yamux, identify,
-  kad, mdns, gossipsub, relay, dcutr, autonat, request-response), `pkarr` 6,
+- Heavy dependencies: `iroh` 1.3 (`unstable-net-report` for the NAT report),
+  `iroh-gossip` 0.101, `iroh-mdns-address-lookup` 0.6, `iroh-relay` 1.3 (`server`,
+  the embedded relay), `pkarr` 8.1 (8.x is what shares `ed25519-dalek` 3 with iroh),
   `axum` 0.7, `reqwest` (json+stream), `url`, `tokio` full, `clap` 4 (derive),
   `socket2`, `tower-http` (compression-full), `rusqlite` bundled for the
   persistent audit, `arc-swap` for lock-free snapshots of the log capture
   context, `h3`/`h3-quinn`/`quinn` for the optional HTTP/3 of the inference hops,
   `routing-contract` (path).
 - On Windows, `windows_firewall.rs` uses COM `INetFwPolicy2` in a UAC-elevated
-  helper to keep four idempotent inbound rules: UDP P2P, inference UDP QUIC,
-  gateway UDP QUIC and libp2p TCP. The automatic request happens once per
+  helper to keep five idempotent inbound rules: UDP P2P, inference UDP QUIC,
+  gateway UDP QUIC, the p2p endpoint (UDP) and the relay server (TCP), both on
+  `p2p_port + 10000`. The automatic request happens once per
   effective port and stays in `pom.db`'s `local_settings`; the UI offers a retry
   without blocking the node or `Leave network`.
 - The Hugging Face provider uses native HTTP via `reqwest`; there is no `hf`
@@ -85,8 +87,8 @@ public relay), `--no-cluster-relay`, `--no-relay-transfers` (the three are the
 `--no-default-relays`,
 `--no-discovery`, `--no-pkarr` (no pkarr client: a network without internet
 access).
-`--relay-peers` adds to the `pom.json`'s `relay_peers` (`merged_relay_peers`,
-config first), as `--bootstrap` does to `bootstrap_nodes`. There is no flag for
+`--relay-peers` (relay URLs) adds to the `pom.json`'s `relay_peers` (`merged_relay_peers`,
+config first); `--no-default-relays` drops n0's public relays, as `--bootstrap` does to `bootstrap_nodes`. There is no flag for
 model, memory, layer range, sampling or inference port: that comes from the
 deployment (`runtime::NodeConfig`) and from the `pom.json` (`inference_port`,
 default 8181; `slot_save_path`, default `~/.pom/kv-slots`).
@@ -111,8 +113,8 @@ after every peer confirms its runtime. The full operational step is in
 
 Before the UI or service starts, if no `pom.json` exists, `initial_ports::select`
 probes the implicit default gateway/P2P port set. It checks the HTTP gateway and
-its derived inference port, P2P UDP, both QUIC UDP ports, and the libp2p TCP/QUIC
-port. Occupied implicit defaults move to available ports; CLI/environment
+its derived inference port, P2P UDP, both QUIC UDP ports, and the endpoint's UDP
+port with the relay server's TCP port (`p2p_port + 10000`). Occupied implicit defaults move to available ports; CLI/environment
 choices stay fixed, and existing configuration is never rewritten. The new
 values flow into local-network creation or setup and are persisted with the
 new configuration.
@@ -134,10 +136,10 @@ new configuration.
 4. `start_node`, the only path of a configured node:
    - Identity `Identity::load_or_create` (`.pom-node.key`, resolved against
      `config::project_root()`): the node's only key, from which come
-     `node_id`, `PeerId`, the pkarr key and the authority key.
+     `node_id`, the endpoint id, the pkarr key and the authority key.
    - Bootstrap = config + `--bootstrap`, both going through
      `config::normalize_peer_addr` in `merged_bootstrap_nodes`; relays =
-     `relay_peers` + `--relay-peers`. `--advertise-addr` beats `--public-addr`,
+     `relay_peers` + `--relay-peers` (relay URLs). `--advertise-addr` beats `--public-addr`,
      which beats the config.
    - `start_p2p_stack`: `Network::new` receives the initial TLS policy and the
      admission ratchet before `start` (receive, gossip 5 s, route measurement
@@ -149,14 +151,14 @@ new configuration.
      `peers`; the public network still keeps a local `connection_key` for the
      administrator's UI, but it is not shared nor used in admission;
      `--no-discovery` → `detach`.
-     `Discovery::new` (libp2p, TCP = UDP+10000) + a publish task on the gossipsub
-     every 5 s (`Network::gossip_announce_bytes`, the same `self_announce` as the
+     `Discovery::new` (the iroh endpoint on UDP+10000, under the node key) + a
+     publish task on gossip every 5 s (`Network::gossip_announce_bytes`, the same `self_announce` as the
      UDP, with or without assignment).
    - pkarr: `PkarrPublishHandle::spawn_republisher` always publishes (with
      `r` equal to `--serve-relay`, the path of a dedicated relay,
-     `examples/relay-node/`) and republishes when the swarm addresses change;
-     every 30 s `spawn_pkarr_bootstrap` resolves and dials by key
-     `--pkarr-peers`, the `relay_peers` relays and the trust chain principals
+     `examples/relay-node/`) and republishes when the endpoint addresses change;
+     every 30 s `spawn_pkarr_bootstrap` resolves by key and hands to
+     `Discovery` `--pkarr-peers` and the trust chain principals
      that are not alive yet, each key that stays out backing off up to
      10 min (`pkarr_bootstrap_wait`). `--no-pkarr` skips all of it; without it, a failed
      publication backs off from 15 s to 30 min and only warns at the 1st, 2nd,
@@ -234,8 +236,8 @@ troubled deployment.
 ## src/ subfolders
 
 - `initial_ports.rs` - first-boot selection of available gateway, inference,
-  P2P, QUIC and libp2p ports when `pom.json` is absent.
-- `network/` - P2P UDP + libp2p/pkarr. See `crates/node/src/network/AGENTS.md`.
+  P2P, QUIC and endpoint/relay ports when `pom.json` is absent.
+- `network/` - P2P UDP + iroh/pkarr. See `crates/node/src/network/AGENTS.md`.
 - `routing/` - the pipeline planner. See `crates/node/src/routing/AGENTS.md`.
 - `utils/` - config, respawn, sysmon. See `crates/node/src/utils/AGENTS.md`.
 - `models/` - model profiles and the GGUF catalog: `model.rs`
@@ -281,8 +283,8 @@ The inference protocol has not shipped yet. `frame/v1-batch` is the first and on
 official contract: do not keep a fallback, adapter or compatibility code for
 earlier v1/v2 formats. Future changes must evolve this contract explicitly.
 
-The startup creates the `NetworkChat` next to the `Discovery`, using a libp2p
-behaviour separate from the inference tunnel. The `GatewayState` shares the service
+The startup creates the `NetworkChat` next to the `Discovery`, using its own
+endpoint protocol (ALPN) separate from the inference tunnel. The `GatewayState` shares the service
 with the `/api/ui/network-chat` routes; the cluster policy is applied by the
 `network_chat_policy` ratchet.
 

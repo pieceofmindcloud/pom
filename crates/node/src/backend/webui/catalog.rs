@@ -40,10 +40,10 @@ pub struct NodeInfo {
     pub authority_fingerprint: Option<String>,
     pub p2p_port: u16,
     /// UDP addresses announced by the node, needed for the plan to rebuild
-    /// the tunnel's TCP multiaddresses in the process that runs the hop.
+    /// the tunnel's TCP endpoint addresses in the process that runs the hop.
     pub addr_candidates: Vec<String>,
-    /// Identity and capabilities of the libp2p tunnel announced by this node.
-    pub libp2p_peer_id: Option<String>,
+    /// Identity and capabilities of the p2p tunnel announced by this node.
+    pub endpoint_id: Option<String>,
     pub inference_frame_capabilities: Vec<String>,
     pub gateway_port: u16,
     pub admin_exposure: AdminExposure,
@@ -193,7 +193,7 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         authority_fingerprint,
         p2p_port: state.network.bind_addr.port(),
         addr_candidates: state.network.self_addr_candidates(),
-        libp2p_peer_id: state.network.libp2p_peer_id.clone(),
+        endpoint_id: state.network.endpoint_id.clone(),
         inference_frame_capabilities: if let Some(caps) = state.network.plugin_engine_capabilities()
         {
             caps
@@ -215,8 +215,8 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
             if state.network.batching_ready() {
                 capabilities.push(crate::pipeline::CAP_FRAME_BATCH.to_string());
             }
-            if state.network.libp2p_tunnel_ready() {
-                capabilities.push(crate::pipeline::CAP_LIBP2P_TUNNEL.to_string());
+            if state.network.p2p_tunnel_ready() {
+                capabilities.push(crate::pipeline::CAP_P2P_TUNNEL.to_string());
             }
             capabilities
         },
@@ -1458,7 +1458,7 @@ pub(super) async fn get_relay(
 }
 
 /// Saves the relay options and applies them live, with no restart: new
-/// reservations follow them at once and the next announce carries the offer.
+/// relay connections follow them at once and the next announce carries the offer.
 /// An option the command line fixed for this run is saved but stays fixed.
 pub(super) async fn save_relay(
     _auth: ConnectionAuth,
@@ -1642,7 +1642,7 @@ async fn forward_network_chat_to_primary(
     let primary = state.admin_trust.current_primary();
     let Some(peer) = state.all_peers().await.into_iter().find(|peer| {
         peer.node_id == primary.node_id
-            && peer.libp2p_peer_id.as_deref() == Some(primary.peer_id.as_str())
+            && peer.endpoint_id.as_deref() == Some(primary.peer_id.as_str())
             && peer.pubkey == primary.pubkey
             && peer.gateway_port.is_some()
     }) else {
@@ -2014,7 +2014,7 @@ pub(super) struct ChatTelemetryMeasurement {
     pub(super) to_node_id: String,
     pub(super) rtt_ms: f64,
     pub(super) transport: String,
-    /// The edge goes through a circuit on a relay (libp2p tunnel with no direct
+    /// The edge goes through a circuit on a relay (p2p tunnel with no direct
     /// connection): every frame crosses an intermediate server.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(super) relayed: bool,
@@ -2089,7 +2089,7 @@ pub(super) struct ChatTelemetryPipelineRoute {
     pub(super) relay_bypassed_by_ring: bool,
 }
 
-/// The `from -> to` leg is pinned to the libp2p tunnel and `from` only reaches
+/// The `from -> to` leg is pinned to the p2p tunnel and `from` only reaches
 /// `to` through a circuit on a relay. `returns` picks the gateway plane (the
 /// tail's return) instead of the inference one.
 fn leg_is_relayed(
@@ -2256,7 +2256,7 @@ pub(super) fn planned_route_measurements(
     inputs: &crate::fastest::CostInputs,
 ) -> Vec<ChatTelemetryMeasurement> {
     let transport = |kind: Option<&String>| match kind.map(String::as_str) {
-        Some("tunnel") => "libp2p-tunnel".to_owned(),
+        Some("tunnel") => "p2p-tunnel".to_owned(),
         Some(kind) => kind.to_owned(),
         None => String::new(),
     };
@@ -2488,7 +2488,7 @@ pub(super) fn execution_pipeline_cost(
 /// Returns only the transport observed in the distributed execution.
 ///
 /// `RttTable` remains the source of probes for route selection, but it is not
-/// a measurement of the execution: in particular, a libp2p probe must not show
+/// a measurement of the execution: in particular, a p2p probe must not show
 /// up in the Chat or on the map when the real frame crossed over `https-link`.
 pub(super) async fn chat_telemetry(
     _auth: ConnectionAuth,

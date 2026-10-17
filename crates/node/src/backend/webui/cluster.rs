@@ -255,7 +255,7 @@ pub(super) async fn cluster_fingerprint(state: &GatewayState, peers: &[PeerInfo]
         "active_model": state.displayed_model().await,
         "detached": state.network.is_detached(),
         // Without this the traversal snapshot would freeze in the cache: neither
-        // the AutoNAT state nor a new reservation touches `peers`.
+        // the NAT report nor a change of relay touches `peers`.
         "traversal": state.network.traversal_status(),
         // The pinned route of each edge changes without touching `peers`.
         "route_plan": crate::route_plan::book().signature(),
@@ -1001,7 +1001,7 @@ pub(super) async fn peer_runtime(
     }
 }
 
-/// A peer's `/api/ui/node` through the libp2p tunnel only: the last resort of
+/// A peer's `/api/ui/node` through the p2p tunnel only: the last resort of
 /// the reads that already walked the peer's addresses with the `RouteTable`
 /// failure memory. A peer behind symmetric NAT has no address that answers,
 /// and without this it stayed listed but unreadable.

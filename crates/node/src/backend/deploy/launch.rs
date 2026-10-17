@@ -500,7 +500,7 @@ pub(super) fn tp_members(
             } else {
                 m.addr_candidates.clone()
             },
-            libp2p_peer_id: m.libp2p_peer_id.clone(),
+            endpoint_id: m.endpoint_id.clone(),
             supports_tunnel: m.supports_tunnel,
         })
     };

@@ -100,7 +100,7 @@ async fn principal_peer_for(
     network.alive_peers().await.into_iter().find(|peer| {
         peer.node_id != network.node_id
             && peer.node_id == primary.node_id
-            && peer.libp2p_peer_id.as_deref() == Some(primary.peer_id.as_str())
+            && peer.endpoint_id.as_deref() == Some(primary.peer_id.as_str())
             && peer.pubkey == primary.pubkey
             && peer.gateway_port.is_some()
     })
@@ -113,7 +113,7 @@ fn gateway_urls(network: &crate::network::Network, peer: &crate::network::PeerIn
 }
 
 /// Sends a control call to each address the peer announced until one of them
-/// answers and, last, through the libp2p tunnel
+/// answers and, last, through the p2p tunnel
 /// (`peer_client::send_to_gateway_over`). An address that ceased to exist must
 /// not block the promotion while the same announcement still carries a live
 /// candidate, and a peer only the relay reaches (Docker bridge, NAT) has no
@@ -326,7 +326,7 @@ pub(crate) async fn validate_api_key_remote_parts(
     };
     let bases = gateway_urls(network, &peer);
     for attempt in 0..SYNC_ATTEMPTS {
-        // Direct addresses and, last, the libp2p tunnel.
+        // Direct addresses and, last, the p2p tunnel.
         let result = crate::peer_client::send_to_gateway_over(&peer, &bases, |base| {
             let mut request = client
                 .post(format!("{base}/api/internal/api-keys/validate"))
@@ -534,7 +534,7 @@ fn peer_for_principal<'a>(
 ) -> Option<&'a crate::network::PeerInfo> {
     peers.iter().find(|peer| {
         peer.node_id == principal.node_id
-            && peer.libp2p_peer_id.as_deref() == Some(principal.peer_id.as_str())
+            && peer.endpoint_id.as_deref() == Some(principal.peer_id.as_str())
             && peer.pubkey == principal.pubkey
     })
 }
@@ -1051,17 +1051,17 @@ async fn promote_node_to_admin(
         )
             .into_response();
     };
-    let Some(peer_id) = peer.libp2p_peer_id.clone() else {
+    let Some(peer_id) = peer.endpoint_id.clone() else {
         return (
             StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": "the peer does not announce its libp2p identity" })),
+            Json(json!({ "error": "the peer does not announce its p2p identity" })),
         )
             .into_response();
     };
     if peer.pubkey.is_empty() {
         return (
             StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": "the peer does not announce the libp2p authority key" })),
+            Json(json!({ "error": "the peer does not announce the p2p authority key" })),
         )
             .into_response();
     }
@@ -1515,7 +1515,7 @@ async fn resign_authority(
     };
     let Some(peer) = state.network.alive_peers().await.into_iter().find(|peer| {
         peer.node_id == successor.node_id
-            && peer.libp2p_peer_id.as_deref() == Some(successor.peer_id.as_str())
+            && peer.endpoint_id.as_deref() == Some(successor.peer_id.as_str())
             && peer.pubkey == successor.pubkey
             && peer.profile == NodeProfile::Admin
     }) else {
@@ -1613,7 +1613,7 @@ pub(crate) async fn accept_authority_transfer(
     let peers = state.network.alive_peers().await;
     let Some(peer) = peers.into_iter().find(|peer| {
         peer.node_id == offer.issuer.node_id
-            && peer.libp2p_peer_id.as_deref() == Some(offer.issuer.peer_id.as_str())
+            && peer.endpoint_id.as_deref() == Some(offer.issuer.peer_id.as_str())
             && peer.pubkey == offer.issuer.pubkey
     }) else {
         return Json(json!({
@@ -2663,7 +2663,7 @@ mod tests {
         let mut peer = crate::gateway::testkit::peer("member", "member", 1);
         peer.profile = NodeProfile::Infer;
         peer.pubkey = lab.member.1.pubkey.clone();
-        peer.libp2p_peer_id = Some(lab.member.1.peer_id.clone());
+        peer.endpoint_id = Some(lab.member.1.peer_id.clone());
         let mut state = crate::gateway::testkit::state_with("principal", vec![peer]).await;
         state.auth.write().await.profile = NodeProfile::Admin;
         state.admin_trust = std::sync::Arc::new(

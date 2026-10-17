@@ -66,11 +66,11 @@ pub(super) struct Machine {
     /// Every address announced for the inference server, in the order in
     /// which this coordinator knows them.
     pub(super) inference_candidates: Vec<String>,
-    /// UDP addresses announced by the peer, to rehydrate the libp2p tunnel.
+    /// UDP addresses announced by the peer, to rehydrate the p2p tunnel.
     pub(super) addr_candidates: Vec<String>,
     /// Identity and capability of the inference server's alternative
     /// transport, preserved for the TP group.
-    pub(super) libp2p_peer_id: Option<String>,
+    pub(super) endpoint_id: Option<String>,
     pub(super) supports_tunnel: bool,
     /// Runtime capabilities announced by the selected peer.
     pub(super) inference_capabilities: Option<Vec<String>>,
@@ -503,9 +503,9 @@ pub(super) async fn survey(
         .into_iter()
         .map(|(node_id, route)| (node_id, route.rtt_ms))
         .collect();
-    // This gateway's libp2p measurement is the correct source for the machine
+    // This gateway's p2p measurement is the correct source for the machine
     // cards. The HTTP RouteTable stays only as a fallback for old peers or
-    // while the first libp2p probe has not answered yet.
+    // while the first p2p probe has not answered yet.
     for measurement in state.network.rtts.snapshot() {
         route_rtt.insert(measurement.target_node_id, measurement.rtt_ms);
     }
@@ -590,23 +590,23 @@ pub(super) async fn survey(
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_else(|| peer.inference_candidates());
-            let libp2p_peer_id = node
-                .get("libp2p_peer_id")
+            let endpoint_id = node
+                .get("endpoint_id")
                 .and_then(|value| value.as_str())
                 .map(str::to_string)
-                .or_else(|| peer.libp2p_peer_id.clone());
+                .or_else(|| peer.endpoint_id.clone());
             let supports_tunnel = node
                 .get("inference_frame_capabilities")
                 .and_then(|value| value.as_array())
                 .map(|values| {
                     values
                         .iter()
-                        .any(|value| value.as_str() == Some(crate::pipeline::CAP_LIBP2P_TUNNEL))
+                        .any(|value| value.as_str() == Some(crate::pipeline::CAP_P2P_TUNNEL))
                 })
                 .unwrap_or_else(|| {
                     peer.inference_frame_capabilities
                         .iter()
-                        .any(|value| value == crate::pipeline::CAP_LIBP2P_TUNNEL)
+                        .any(|value| value == crate::pipeline::CAP_P2P_TUNNEL)
                 });
             let inference_capabilities = node
                 .get("inference_frame_capabilities")
@@ -799,7 +799,7 @@ pub(super) async fn survey(
                     inference_url: inference_candidates.first().cloned(),
                     inference_candidates,
                     addr_candidates,
-                    libp2p_peer_id,
+                    endpoint_id,
                     supports_tunnel,
                     inference_capabilities,
                     hostname: if peer.hostname.is_empty() && is_self {

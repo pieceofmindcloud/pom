@@ -6,6 +6,7 @@
 
 use crate::auth::ConnectionAuth;
 use anyhow::{Context, Result};
+use crate::p2p::Codec;
 use async_trait::async_trait;
 use axum::{
     extract::{Query, State},
@@ -14,7 +15,7 @@ use axum::{
     Json,
 };
 use futures::prelude::*;
-use libp2p::{request_response, PeerId, StreamProtocol};
+use crate::p2p::EndpointId;
 use rusqlite::{params, params_from_iter, types::Value, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
@@ -262,7 +263,7 @@ pub struct AuditResponse {
 
 #[derive(Debug, Clone)]
 pub struct AuditOutbound {
-    pub peer_id: PeerId,
+    pub peer_id: EndpointId,
     pub addr_candidates: Vec<String>,
     pub event: AuditEvent,
 }
@@ -308,14 +309,13 @@ where
 }
 
 #[async_trait]
-impl request_response::Codec for AuditCodec {
-    type Protocol = StreamProtocol;
+impl Codec for AuditCodec {
+    const PROTOCOL: &'static str = AUDIT_LOG_PROTOCOL;
     type Request = AuditEvent;
     type Response = AuditResponse;
 
     async fn read_request<T>(
         &mut self,
-        _: &Self::Protocol,
         io: &mut T,
     ) -> std::io::Result<Self::Request>
     where
@@ -326,7 +326,6 @@ impl request_response::Codec for AuditCodec {
 
     async fn read_response<T>(
         &mut self,
-        _: &Self::Protocol,
         io: &mut T,
     ) -> std::io::Result<Self::Response>
     where
@@ -337,7 +336,6 @@ impl request_response::Codec for AuditCodec {
 
     async fn write_request<T>(
         &mut self,
-        _: &Self::Protocol,
         io: &mut T,
         request: Self::Request,
     ) -> std::io::Result<()>
@@ -349,7 +347,6 @@ impl request_response::Codec for AuditCodec {
 
     async fn write_response<T>(
         &mut self,
-        _: &Self::Protocol,
         io: &mut T,
         response: Self::Response,
     ) -> std::io::Result<()>
@@ -360,15 +357,6 @@ impl request_response::Codec for AuditCodec {
     }
 }
 
-pub fn audit_behaviour() -> request_response::Behaviour<AuditCodec> {
-    request_response::Behaviour::new(
-        [(
-            StreamProtocol::new(AUDIT_LOG_PROTOCOL),
-            request_response::ProtocolSupport::Full,
-        )],
-        request_response::Config::default().with_request_timeout(std::time::Duration::from_secs(3)),
-    )
-}
 
 enum Command {
     Begin(AuditRequest),
@@ -577,7 +565,7 @@ impl AuditLog {
     }
 
     /// Persist a remote event locally without re-replicating it. A completion
-    /// can arrive before its begin because each peer has an independent swarm
+    /// can arrive before its begin because each peer has an independent endpoint
     /// queue, so it is held briefly until the matching begin is observed.
     pub fn try_ingest_remote(&self, event: AuditEvent) -> bool {
         let Some(ordered) = self.order_remote_events(event) else {
@@ -1777,7 +1765,7 @@ mod tests {
         .expect("rede de teste");
         let mut admin = crate::gateway::testkit::peer("secondary", "secondary", 8081);
         admin.profile = crate::profile::NodeProfile::Admin;
-        admin.libp2p_peer_id = Some(PeerId::random().to_string());
+        admin.endpoint_id = Some(crate::p2p::random_endpoint_id().to_string());
         network
             .peers
             .write()

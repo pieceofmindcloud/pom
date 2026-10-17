@@ -29,10 +29,10 @@ use tracing::{debug, warn};
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PeerAddr(pub SocketAddr);
 
-/// The origin that counts for authentication: a request the libp2p tunnel
+/// The origin that counts for authentication: a request the p2p tunnel
 /// delivers over loopback, with this process's mark, counts as remote.
 ///
-/// Without this, any peer of the swarm that reached a route through the tunnel
+/// Without this, any peer of the endpoint that reached a route through the tunnel
 /// would be "localhost" to `AdminAuth` in localhost mode - administration
 /// without a password. The header always leaves the request, marked or not, so
 /// that no route sees it.
@@ -890,7 +890,7 @@ mod tests {
     }
 
     /// What the tunnel delivers over loopback, with this process's mark, is
-    /// not local: that is what prevents a peer of the swarm from becoming an
+    /// not local: that is what prevents a peer of the endpoint from becoming an
     /// administrator in localhost mode.
     #[test]
     fn a_tunneled_request_is_never_loopback() {

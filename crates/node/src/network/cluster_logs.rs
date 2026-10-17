@@ -2,14 +2,15 @@
 //!
 //! This module is deliberately independent of the inference tunnel. The
 //! `tracing` layer only uses `try_send` on a bounded queue; the writer and the
-//! libp2p send live in their own tasks and may lose lines when they are busy.
+//! p2p send live in their own tasks and may lose lines when they are busy.
 
 use crate::network::Network;
 use anyhow::Result;
 use arc_swap::ArcSwap;
+use crate::p2p::Codec;
 use async_trait::async_trait;
 use futures::prelude::*;
-use libp2p::{request_response, PeerId, StreamProtocol};
+use crate::p2p::EndpointId;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
@@ -300,7 +301,7 @@ where
 
 #[derive(Debug, Clone)]
 pub struct LogOutbound {
-    pub peer_id: PeerId,
+    pub peer_id: EndpointId,
     pub addr_candidates: Vec<String>,
     pub request: LogBatch,
 }
@@ -346,14 +347,13 @@ where
 }
 
 #[async_trait]
-impl request_response::Codec for ClusterLogsCodec {
-    type Protocol = StreamProtocol;
+impl Codec for ClusterLogsCodec {
+    const PROTOCOL: &'static str = CLUSTER_LOGS_PROTOCOL;
     type Request = LogBatch;
     type Response = LogResponse;
 
     async fn read_request<T>(
         &mut self,
-        _: &Self::Protocol,
         io: &mut T,
     ) -> std::io::Result<Self::Request>
     where
@@ -364,7 +364,6 @@ impl request_response::Codec for ClusterLogsCodec {
 
     async fn read_response<T>(
         &mut self,
-        _: &Self::Protocol,
         io: &mut T,
     ) -> std::io::Result<Self::Response>
     where
@@ -375,7 +374,6 @@ impl request_response::Codec for ClusterLogsCodec {
 
     async fn write_request<T>(
         &mut self,
-        _: &Self::Protocol,
         io: &mut T,
         request: Self::Request,
     ) -> std::io::Result<()>
@@ -387,7 +385,6 @@ impl request_response::Codec for ClusterLogsCodec {
 
     async fn write_response<T>(
         &mut self,
-        _: &Self::Protocol,
         io: &mut T,
         response: Self::Response,
     ) -> std::io::Result<()>
@@ -398,15 +395,6 @@ impl request_response::Codec for ClusterLogsCodec {
     }
 }
 
-pub fn cluster_logs_behaviour() -> request_response::Behaviour<ClusterLogsCodec> {
-    request_response::Behaviour::new(
-        [(
-            StreamProtocol::new(CLUSTER_LOGS_PROTOCOL),
-            request_response::ProtocolSupport::Full,
-        )],
-        request_response::Config::default().with_request_timeout(Duration::from_secs(3)),
-    )
-}
 
 /// Cluster log state.
 ///
@@ -916,7 +904,7 @@ mod tests {
         .expect("rede de teste");
         let mut admin = crate::gateway::testkit::peer("secondary", "secondary", 8081);
         admin.profile = crate::profile::NodeProfile::Admin;
-        admin.libp2p_peer_id = Some(PeerId::random().to_string());
+        admin.endpoint_id = Some(crate::p2p::random_endpoint_id().to_string());
         network
             .peers
             .write()

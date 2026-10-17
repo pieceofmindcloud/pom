@@ -62,7 +62,7 @@ pub fn peer_scheme() -> &'static str {
 #[cfg(test)]
 pub static GLOBAL_POLICY: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// A peer reachable through the swarm, so the control plane falls back to the tunnel
+/// A peer reachable through the endpoint, so the control plane falls back to the tunnel
 /// when the direct HTTP dial does not get through.
 ///
 /// Behind NAT/CGNAT the direct dial never gets through, and admission depends on
@@ -71,13 +71,13 @@ pub static GLOBAL_POLICY: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// and pipeline stay blind to it.
 #[derive(Debug, Clone)]
 pub(crate) struct TunnelPeer {
-    pub peer_id: libp2p::PeerId,
+    pub peer_id: crate::p2p::EndpointId,
     pub addrs: Vec<String>,
 }
 
 impl TunnelPeer {
-    /// From what travels in a `reply_to`: the `PeerId` and the multiaddresses of the
-    /// gateway, with no `PeerInfo` around. `None` if the `PeerId` does not parse.
+    /// From what travels in a `reply_to`: the endpoint id and the endpoint addresses of the
+    /// gateway, with no `PeerInfo` around. `None` if the endpoint id does not parse.
     pub(crate) fn from_parts(peer_id: &str, addrs: Vec<String>) -> Option<Self> {
         Some(Self {
             peer_id: peer_id.parse().ok()?,
@@ -85,19 +85,19 @@ impl TunnelPeer {
         })
     }
 
-    /// `None` when the peer does not announce the tunnel or has no valid `PeerId`.
+    /// `None` when the peer does not announce the tunnel or has no valid endpoint id.
     pub(crate) fn from_peer(peer: &crate::network::PeerInfo) -> Option<Self> {
         if !peer
             .inference_frame_capabilities
             .iter()
-            .any(|capability| capability == "transport/libp2p-tunnel-v1")
+            .any(|capability| capability == "transport/iroh-tunnel-v1")
         {
             return None;
         }
-        let peer_id = peer.libp2p_peer_id.as_deref()?.parse().ok()?;
+        let peer_id = peer.endpoint_id.as_deref()?.parse().ok()?;
         Some(Self {
             peer_id,
-            addrs: peer.libp2p_dialable_addrs(),
+            addrs: peer.endpoint_dialable_addrs(),
         })
     }
 }
@@ -196,7 +196,7 @@ where
     if let Some(tunnel) = TunnelPeer::from_peer(peer) {
         match send_request_via_tunnel(&tunnel, build("http://tunnel.invalid")).await {
             Ok(response) => return Ok(response),
-            Err(error) => failures.push(format!("libp2p tunnel: {error:#}")),
+            Err(error) => failures.push(format!("p2p tunnel: {error:#}")),
         }
     }
     anyhow::bail!(
@@ -269,7 +269,7 @@ impl InternalResponse {
     }
 }
 
-/// Dispatches a control plane call through the libp2p tunnel.
+/// Dispatches a control plane call through the p2p tunnel.
 ///
 /// The destination is `TunnelTarget::Gateway`; the route still goes through the
 /// closed list checked on the receiver (`infer_tunnel::gateway_path_is_allowed`).
@@ -282,7 +282,7 @@ pub(crate) async fn tunnel_gateway_call(
     timeout: std::time::Duration,
 ) -> Result<InternalResponse> {
     let Some(sender) = crate::infer_tunnel::tunnel_sender() else {
-        anyhow::bail!("the libp2p tunnel is not available in this process");
+        anyhow::bail!("the p2p tunnel is not available in this process");
     };
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     sender
@@ -293,11 +293,11 @@ pub(crate) async fn tunnel_gateway_call(
             reply: reply_tx,
         })
         .await
-        .map_err(|_| anyhow::anyhow!("the libp2p tunnel queue closed"))?;
+        .map_err(|_| anyhow::anyhow!("the p2p tunnel queue closed"))?;
     let response = tokio::time::timeout(timeout, reply_rx)
         .await
-        .map_err(|_| anyhow::anyhow!("the libp2p tunnel did not answer in {timeout:?}"))?
-        .map_err(|_| anyhow::anyhow!("the libp2p tunnel dropped the response"))??;
+        .map_err(|_| anyhow::anyhow!("the p2p tunnel did not answer in {timeout:?}"))?
+        .map_err(|_| anyhow::anyhow!("the p2p tunnel dropped the response"))??;
     Ok(InternalResponse {
         status: response.status,
         body: response.body,
@@ -409,7 +409,7 @@ const ROUTE_FAILURE_STREAK: u32 = 3;
 /// An announced address that swallows SYN cannot hand control of the
 /// process to the operating system's timeout. The total request timeout
 /// is still chosen by the caller, but the connection has its own ceiling -
-/// sub-second, so a dead direct address becomes a fallback (to the Noise
+/// sub-second, so a dead direct address becomes a fallback (to the QUIC
 /// tunnel) almost immediately, in the same spirit as QUIC's RTT budget.
 /// Minimum interval between two probes of the direct path of a peer that
 /// is being served through the tunnel (`claim_direct_reprobe`).
@@ -508,7 +508,7 @@ impl PeerClients {
     }
 
     /// Attaches the POM credential of an internal inference hop, **identical** to
-    /// the one the libp2p tunnel and the QUIC client already send: the marker
+    /// the one the p2p tunnel and the QUIC client already send: the marker
     /// `x-pom-internal-node: 1` always, and `Authorization: Bearer <token>` when
     /// a `connection_key` is configured, including on the HTTP fallback of a
     /// public network. Without the
@@ -733,8 +733,8 @@ impl PeerClients {
             .await
             {
                 Ok(response) if response.is_success() => return Ok(response),
-                Ok(response) => failures.push(format!("libp2p tunnel: {}", response.status)),
-                Err(error) => failures.push(format!("libp2p tunnel: {error}")),
+                Ok(response) => failures.push(format!("p2p tunnel: {}", response.status)),
+                Err(error) => failures.push(format!("p2p tunnel: {error}")),
             }
         }
         anyhow::bail!(

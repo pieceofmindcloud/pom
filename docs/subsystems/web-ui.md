@@ -783,7 +783,7 @@ the reliable source in that mode. For a native reproduction, use
 `advertise_addr`: the interface enumeration (`preferred_local_advertise_ip`)
 only reports whether there is a public IPv6 (`public_ipv6_available`), and the
 announcement keeps redetecting the addresses on every cycle. A configured node's answer publishes
-`addr_candidates`, `libp2p_peer_id` and the tunnel capabilities, used by the TP
+`addr_candidates`, `endpoint_id` and the tunnel capabilities, used by the TP
 deploy to carry the right address to each rank.
 
 `GET /api/public/networks` combines the federated directory's cache and
@@ -817,7 +817,7 @@ publisher key and the dedicated relays (`relay_hints`). The local cluster's metr
 because the current public catalog does not provide them. The trust document
 travels inside the signed federated record for a join without a secret. A
 private node queries the directory over outgoing HTTP(S), but does not use the
-private swarm to look for candidates. Joining a public network ends the current private network; two
+private network to look for candidates. Joining a public network ends the current private network; two
 simultaneous P2P networks are not supported in v1.
 
 The UI **profile** (*Menu and routes*) is not part of this math as a
@@ -1569,7 +1569,7 @@ machine restarted. Today the fingerprint is only model + set of ranges.
   Dashboard map shows the last effective RTT and transport observed in the
   inference run for each edge and, at the Gateway, every complete route of the
   model with the aggregated RTT of each leg, including the return; when there is
-  a recent trace, the run's wire RTT beats the libp2p fallback probe. Routes are
+  a recent trace, the run's wire RTT beats the tunnel fallback probe. Routes are
   listed from lowest to highest cost, with the node ids as a tie-break; a whole
   model deployment with a single head is also queried, even with no edge in the
   graph. The planner's directional survey stays reserved for route choice and
@@ -1657,10 +1657,10 @@ propagates the signed mutation to the peers and republishes the public geo
 label.
 
 Below the metrics, the "NAT traversal" panel (`TraversalPanel`) shows the
-`traversal` field of `GET /api/ui/cluster`: AutoNAT state, published direct
-addresses and circuits, accepted relay reservations and the hole punch count
-with the last failure. It exists because two nodes behind NAT that do not see
-each other fail at one of three steps, and before it finding out which one
+`traversal` field of `GET /api/ui/cluster`: the NAT report state, the published
+direct addresses and relay URLs (split by `isRelay`), the relays connected and
+the hole punch count. It exists because two nodes behind NAT that do not see
+each other fail at one of a few steps, and before it finding out which one
 required `RUST_LOG=debug` on the right machine. An old binary's node does not
 send `traversal` and the panel simply does not show up.
 

@@ -148,6 +148,8 @@ mod openai;
 pub mod peer_client;
 #[path = "routing/pipeline.rs"]
 mod pipeline;
+#[path = "network/p2p.rs"]
+mod p2p;
 #[path = "network/pkarr_node.rs"]
 mod pkarr_node;
 #[path = "models/plan.rs"]
@@ -344,15 +346,16 @@ struct Args {
     /// External address to publish to the pkarr DHT and to advertise to
     /// peers as this node's own address (HOST:PORT) — same effect as
     /// `--advertise-addr`, which wins if both are set. PORT here is the UDP
-    /// port; libp2p TCP port will be UDP+10000. Without either, peers reached
-    /// over the internet fall back to a public address observed via libp2p
-    /// `identify`, if any peer has reported one; failing that, this node's
-    /// own local network interfaces (usually wrong for a NAT'd node).
+    /// port; the endpoint's UDP port is UDP+10000. Without either, peers
+    /// reached over the internet fall back to the public address the relays
+    /// observed (the NAT report), if any; failing that, this node's own local
+    /// network interfaces (usually wrong for a NAT'd node).
     #[arg(long, default_value = "")]
     public_addr: String,
 
-    /// Pkarr keys of relay nodes to use for NAT traversal (comma-separated, format: pk:zbase32...).
-    /// Added to `relay_peers` in pom.json.
+    /// URLs of dedicated relays to use for NAT traversal (comma-separated,
+    /// `https://relay.example.org` or `http://203.0.113.7:52777` for a node
+    /// running `--serve-relay`). Added to `relay_peers` in pom.json.
     #[arg(long, default_value = "")]
     relay_peers: String,
 
@@ -372,7 +375,8 @@ struct Args {
     #[arg(long)]
     no_relay_transfers: bool,
 
-    /// Disable the built-in public IPFS relay nodes.
+    /// Do not use n0's public relays: only the dedicated relays
+    /// (`relay_peers`) and the member relays of the cluster.
     #[arg(long)]
     no_default_relays: bool,
 
@@ -387,11 +391,9 @@ struct Args {
     no_discovery: bool,
 
     /// Turns pkarr off: publishes no record to the Mainline DHT and resolves no
-    /// `pk:` keys (`--pkarr-peers`, `relay_peers`, trust chain principals).
-    /// For a network without internet access, where the DHT is unreachable:
-    /// paths stay on UDP/mDNS on the LAN and on `bootstrap_nodes` between
-    /// segments. A relay listed in `relay_peers` is still recognised as
-    /// dedicated by its key, but it must also be in `bootstrap_nodes`.
+    /// `pk:` keys (`--pkarr-peers`, trust chain principals). For a network
+    /// without internet access, where the DHT is unreachable: paths stay on
+    /// UDP/mDNS on the LAN and on `bootstrap_nodes` between segments.
     #[arg(long)]
     no_pkarr: bool,
 
@@ -1223,15 +1225,15 @@ fn pkarr_bootstrap_wait(misses: u32) -> Duration {
         .min(PKARR_BOOTSTRAP_CEILING)
 }
 
-/// Resolves through pkarr, and dials through libp2p, every key in
-/// `pkarr_bootstrap_keys` that is not yet a live peer. The ladder is the one in
-/// `pkarr_node::dial_addrs`: direct addresses first, then the circuit through
-/// each published relay, and DCuTR upgrades the relayed connection to a direct
-/// one when the NAT allows. A target already in `alive_peers` is not dialed
-/// again, and one that stays out backs off (`pkarr_bootstrap_wait`).
+/// Resolves through pkarr, and hands to the endpoint, every key in
+/// `pkarr_bootstrap_keys` that is not yet a live peer. The record carries the
+/// direct addresses and the relays together (`pkarr_node::dial_addr`); iroh
+/// tries them all and upgrades a relayed path to a direct one when the NAT
+/// allows. A target already in `alive_peers` is not dialed again, and one
+/// that stays out backs off (`pkarr_bootstrap_wait`).
 fn spawn_pkarr_bootstrap(
     node: Arc<pkarr_node::PkarrNode>,
-    dial_tx: mpsc::Sender<libp2p::Multiaddr>,
+    dial_tx: mpsc::Sender<p2p::EndpointAddr>,
     net: Arc<Network>,
     admin_trust: Arc<crate::admin_trust::AdminTrust>,
     extra_keys: Vec<String>,
@@ -1251,13 +1253,13 @@ fn spawn_pkarr_bootstrap(
                 .alive_peers()
                 .await
                 .into_iter()
-                .filter_map(|peer| peer.libp2p_peer_id)
+                .filter_map(|peer| peer.endpoint_id)
                 .collect();
             for key in pkarr_bootstrap_keys(&admin_trust, &extra_keys) {
                 if key == own {
                     continue;
                 }
-                let Some(peer_id) = pkarr_node::peer_id_from_uri(&key) else {
+                let Some(peer_id) = pkarr_node::endpoint_id_from_uri(&key) else {
                     continue;
                 };
                 if alive.contains(&peer_id.to_string()) {
@@ -1270,28 +1272,28 @@ fn spawn_pkarr_bootstrap(
                 }
                 entry.0 = entry.0.saturating_add(1);
                 entry.1 = now + pkarr_bootstrap_wait(entry.0);
-                let addrs =
-                    tokio::time::timeout(Duration::from_secs(10), node.resolve_dial_addrs(&key))
+                let addr =
+                    tokio::time::timeout(Duration::from_secs(10), node.resolve_dial_addr(&key))
                         .await
-                        .unwrap_or_default();
-                if addrs.is_empty() {
+                        .ok()
+                        .flatten();
+                let Some(addr) = addr else {
                     debug!("pkarr: {key} has no dialable record yet");
-                }
-                for address in addrs {
-                    if dial_tx.send(address).await.is_err() {
-                        return;
-                    }
+                    continue;
+                };
+                if dial_tx.send(addr).await.is_err() {
+                    return;
                 }
             }
         }
     });
 }
 
-/// Everything `P2pStack` needs to bring up pkarr, a stable libp2p identity,
+/// Everything `P2pStack` needs to bring up pkarr, the endpoint identity,
 /// `Network`, and (best-effort) `Discovery`, kept in one function so the
-/// ordering constraint below can't be violated from outside it: the libp2p keypair must be derived
-/// *before* `Network::new()`'s builder chain (`.with_libp2p_peer_id(...)`
-/// needs the derived `PeerId` string), and `Network` becomes immutable the
+/// ordering constraint below can't be violated from outside it: the endpoint key must be derived
+/// *before* `Network::new()`'s builder chain (`.with_endpoint_id(...)`
+/// needs the endpoint id string), and `Network` becomes immutable the
 /// moment it's wrapped in `Arc`, right after that chain.
 struct P2pStackArgs {
     node_id: String,
@@ -1322,17 +1324,12 @@ struct P2pStackArgs {
     auth: Arc<RwLock<config::Config>>,
     admin_trust: Arc<crate::admin_trust::AdminTrust>,
     database: Arc<db::PomDb>,
-    /// Raw pkarr public keys (`--relay-peers`), resolved to multiaddrs
-    /// *inside* this function, after it loads its own `pkarr_node` — not
-    /// pre-resolved by the caller. Resolution needs an already-loaded pkarr
-    /// identity, and that identity is loaded here, not by the caller; asking
-    /// the caller to resolve first would mean loading pkarr twice (once to
-    /// resolve, once inside this function) or restructuring who loads it.
-    relay_peer_keys: Vec<String>,
+    /// Dedicated relay URLs (`relay_peers` plus `--relay-peers`).
+    relay_urls: Vec<String>,
     relay: config::RelayConfig,
     relay_overrides: crate::network::RelayOverrides,
     /// The operator declared a public address (`--public-addr`): the node
-    /// counts as reachable before AutoNAT says anything.
+    /// counts as reachable before the NAT report says anything.
     public_addr_configured: bool,
     use_default_relays: bool,
     no_discovery: bool,
@@ -1346,26 +1343,25 @@ struct P2pStackArgs {
 struct P2pStack {
     net: Arc<Network>,
     authority_signing_key: ed25519_dalek::SigningKey,
-    libp2p_peer_id: String,
+    endpoint_id: String,
     cluster_logs: Arc<cluster_logs::ClusterLogs>,
     network_chat: Arc<network_chat::NetworkChat>,
     tunnel_tx: mpsc::Sender<infer_tunnel::TunnelOutbound>,
     pkarr_node: Option<pkarr_node::PkarrNode>,
     assignment_shared: Arc<RwLock<Option<model::LayerAssignment>>>,
-    /// `Some` only if `Discovery::new` succeeded — lets a caller dial
-    /// pkarr-resolved peers by `PeerId` on startup. `None` means libp2p
+    /// `Some` only if `Discovery::new` succeeded - lets a caller dial
+    /// pkarr-resolved peers by key on startup. `None` means the endpoint
     /// never came up this run; callers must treat that as "skip it," not
     /// an error (this function itself already logged why).
-    disc_dial_tx: Option<mpsc::Sender<libp2p::Multiaddr>>,
+    disc_dial_tx: Option<mpsc::Sender<p2p::EndpointAddr>>,
 }
 
-/// pkarr load → libp2p keypair derivation → tunnel channel → `Network`
-/// (with a stable libp2p `PeerId`) → `net.start()` (UDP) → best-effort
-/// `Discovery::new` (libp2p swarm) → the 5s periodic gossipsub re-announce.
-/// Never fails on anything libp2p-related — only `Network::new()`'s own `?`
-/// (UDP bind failure) propagates, exactly like today's CLI path. This is
-/// deliberate: every caller of this function needs to always come up and
-/// serve its gateway, with or without libp2p.
+/// pkarr load → endpoint key → tunnel channel → `Network` (with the endpoint
+/// id) → `net.start()` (UDP) → best-effort `Discovery::new` (iroh endpoint)
+/// → the 5s periodic gossip re-announce. Never fails on anything
+/// endpoint-related - only `Network::new()`'s own `?` (UDP bind failure)
+/// propagates. This is deliberate: every caller of this function needs to
+/// always come up and serve its gateway, with or without the endpoint.
 async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
     let bootstrap_nodes: Vec<String> = args
         .bootstrap_nodes
@@ -1387,7 +1383,7 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
     let audit = args.audit.clone();
     audit.set_admin_receiver(args.profile == crate::profile::NodeProfile::Admin);
 
-    // A single key (`.pom-node.key`): `node_id`, `PeerId`, pkarr record and
+    // A single key (`.pom-node.key`): `node_id`, endpoint id, pkarr record and
     // authority signature all come from it. See `identity.rs`.
     let pkarr_node = if args.no_pkarr {
         info!("pkarr off (--no-pkarr): no DHT publication or key resolution");
@@ -1406,33 +1402,8 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
     };
 
     let authority_signing_key = args.signing_key.clone();
-    let mut authority_seed = authority_signing_key.to_bytes();
-    let libp2p_keypair = libp2p::identity::Keypair::ed25519_from_bytes(&mut authority_seed[..])
-        .expect("the node Ed25519 key must be a valid libp2p identity");
-    let libp2p_peer_id = libp2p_keypair.public().to_peer_id().to_string();
-
-    // Resolved *here*, not by the caller — needs the `pkarr_node` this
-    // function just loaded (see `P2pStackArgs::relay_peer_keys`'s doc comment).
-    let resolved_relay_addrs: Vec<String> = if let Some(ref pn) = pkarr_node {
-        if !args.relay_peer_keys.is_empty() {
-            let peers = tokio::time::timeout(
-                std::time::Duration::from_secs(10),
-                pn.resolve_peers(&args.relay_peer_keys),
-            )
-            .await
-            .unwrap_or_default();
-            peers
-                .iter()
-                .filter(|p| p.record.is_relay)
-                .flat_map(|p| pkarr_node::dial_addrs(p, &[]))
-                .map(|address| address.to_string())
-                .collect()
-        } else {
-            vec![]
-        }
-    } else {
-        vec![]
-    };
+    let endpoint_key = p2p::secret_key(&authority_signing_key);
+    let endpoint_id = endpoint_key.public().to_string();
 
     // The gateway's HTTP server needs a cloneable sender before `Discovery::new`
     // — which owns the matching receiver — is ever called. Registered
@@ -1459,7 +1430,7 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
         .with_identity(args.profile, args.node_display_name)
         .with_advertise_addr(args.advertise_addr)
         .with_quic_ports(args.inference_quic_port, args.gateway_quic_port)
-        .with_libp2p_peer_id(Some(libp2p_peer_id.clone()))
+        .with_endpoint_id(Some(endpoint_id.clone()))
         .with_relay_gate(
             crate::network::RelayGate::new(
                 args.relay.everyone,
@@ -1506,20 +1477,18 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
     let (audit_tx, audit_rx) = mpsc::channel(reqlog::AUDIT_TRANSPORT_QUEUE_CAPACITY);
     audit.start_replication(net.clone(), audit_tx);
 
-    // libp2p TCP port = UDP port + 10 000 (e.g. 42777 → 52777). Announce
-    // messages are published to gossipsub every 5 s so internet peers learn
-    // our layer assignment without needing a shared signalling server.
-    // `Network::new` may have received port 0 and selected an ephemeral UDP
-    // port. Discovery must derive its TCP port from the assigned value, not
-    // from the unresolved configuration value.
+    // Endpoint UDP port (and relay server TCP port) = UDP port + 10 000
+    // (e.g. 42777 → 52777). Announce messages go out on gossip every 5 s so
+    // internet peers learn our layer assignment without needing a shared
+    // signalling server. `Network::new` may have received port 0 and
+    // selected an ephemeral UDP port. Discovery must derive its port from the
+    // assigned value, not from the unresolved configuration value.
     let (disc_announce_tx, disc_dial_tx) = match Discovery::new(
         net.bind_addr.port(),
-        &bootstrap_nodes,
-        &resolved_relay_addrs,
-        &args.relay_peer_keys,
+        &args.relay_urls,
         args.use_default_relays,
         net.clone(),
-        libp2p_keypair,
+        endpoint_key,
         tunnel_rx,
         log_rx,
         cluster_logs.clone(),
@@ -1528,16 +1497,18 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
         audit_rx,
         audit,
         plugins,
-    ) {
+    )
+    .await
+    {
         Ok(disc) => {
             let ann_tx = disc.announce_tx.clone();
             let dial_tx = disc.dial_tx.clone();
-            net.set_libp2p_tunnel_ready(true);
+            net.set_p2p_tunnel_ready(true);
             tokio::spawn(async move { disc.run().await });
             (Some(ann_tx), Some(dial_tx))
         }
         Err(e) => {
-            warn!("libp2p discovery disabled ({}). UDP-only mode.", e);
+            warn!("p2p endpoint disabled ({e:#}). UDP-only mode.");
             (None, None)
         }
     };
@@ -1568,7 +1539,7 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
     Ok(P2pStack {
         net,
         authority_signing_key,
-        libp2p_peer_id,
+        endpoint_id,
         cluster_logs,
         network_chat,
         tunnel_tx,
@@ -1587,7 +1558,7 @@ fn comma_list(raw: &str) -> Vec<String> {
         .collect()
 }
 
-/// Relay pkarr keys from `pom.json` (`relay_peers`) plus `--relay-peers`,
+/// Relay URLs from `pom.json` (`relay_peers`) plus `--relay-peers`,
 /// config first, without duplicates, same as `merged_bootstrap_nodes`.
 fn merged_relay_peers(from_config: &[String], cli: &str) -> Vec<String> {
     let mut keys: Vec<String> = from_config
@@ -1654,7 +1625,7 @@ async fn start_node(
     no_pkarr: bool,
     no_default_relays: bool,
     bootstrap_nodes: Vec<String>,
-    relay_peer_keys: Vec<String>,
+    relay_urls: Vec<String>,
     pkarr_peer_keys: Vec<String>,
     relay_overrides: crate::network::RelayOverrides,
     advertise_addr_cli: String,
@@ -1723,7 +1694,7 @@ async fn start_node(
         auth: auth_state.clone(),
         admin_trust: admin_trust.clone(),
         database: database.clone(),
-        relay_peer_keys: relay_peer_keys.clone(),
+        relay_urls: relay_urls.clone(),
         relay: app_config.relay,
         relay_overrides,
         public_addr_configured: !public_addr_cli.trim().is_empty(),
@@ -1735,7 +1706,7 @@ async fn start_node(
     let authority_signing_key = Arc::new(stack.authority_signing_key.clone());
     let authority_principal = crate::admin_trust::AuthorityPrincipal::from_signing_key(
         node_id.clone(),
-        stack.libp2p_peer_id.clone(),
+        stack.endpoint_id.clone(),
         &stack.authority_signing_key,
     );
     if app_config.profile == crate::profile::NodeProfile::Admin
@@ -1757,7 +1728,7 @@ async fn start_node(
     let disc_dial_tx = stack.disc_dial_tx;
 
     // The pkarr record is always published, with or without a deployment, and
-    // republished when the swarm addresses change: it is how a node that only
+    // republished when the endpoint addresses change: it is how a node that only
     // knows the key (trust document, public directory, `--relay-peers`) finds
     // out where to dial.
     let pkarr_node = stack.pkarr_node.map(Arc::new);
@@ -1773,16 +1744,16 @@ async fn start_node(
     if let Some(publisher) = pkarr_publisher.clone() {
         publisher.spawn_republisher();
     }
-    // Cold dial by key: `--pkarr-peers`, the dedicated relays and the trust
-    // chain principals. No IP comes from configuration or a document.
+    // Cold dial by key: `--pkarr-peers` and the trust chain principals. No
+    // IP comes from configuration or a document.
     if let (Some(node), Some(dial_tx)) = (pkarr_node.clone(), disc_dial_tx) {
-        let mut keys = pkarr_peer_keys;
-        for key in relay_peer_keys {
-            if !keys.contains(&key) {
-                keys.push(key);
-            }
-        }
-        spawn_pkarr_bootstrap(node, dial_tx, net.clone(), admin_trust.clone(), keys);
+        spawn_pkarr_bootstrap(
+            node,
+            dial_tx,
+            net.clone(),
+            admin_trust.clone(),
+            pkarr_peer_keys,
+        );
     }
     let local_is_admin = admin_trust
         .effective_authority(&authority_principal, app_config.profile)
@@ -2115,13 +2086,19 @@ mod main_tests {
     #[test]
     fn relay_peers_merge_config_first_without_duplicates() {
         assert_eq!(
-            merged_relay_peers(&["pk:relay-a".into(), " ".into()], "pk:relay-b, pk:relay-a"),
-            vec!["pk:relay-a", "pk:relay-b"]
+            merged_relay_peers(
+                &["https://a.example".into(), " ".into()],
+                "https://b.example, https://a.example"
+            ),
+            vec!["https://a.example", "https://b.example"]
         );
-        assert_eq!(merged_relay_peers(&[], "pk:relay-b"), vec!["pk:relay-b"]);
         assert_eq!(
-            merged_relay_peers(&["pk:relay-a".into()], ""),
-            vec!["pk:relay-a"]
+            merged_relay_peers(&[], "https://b.example"),
+            vec!["https://b.example"]
+        );
+        assert_eq!(
+            merged_relay_peers(&["https://a.example".into()], ""),
+            vec!["https://a.example"]
         );
     }
 

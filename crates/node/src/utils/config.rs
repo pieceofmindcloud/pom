@@ -32,7 +32,7 @@ pub fn admin_trust_path() -> PathBuf {
 }
 
 /// Administrative surface of the gateway. The pipeline routes do not use this
-/// policy: they keep listening on IPv4 and IPv6 so that the libp2p tunnel has a
+/// policy: they keep listening on IPv4 and IPv6 so that the p2p tunnel has a
 /// fallback HTTP path.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -331,10 +331,10 @@ pub struct Config {
     pub inference_port: Option<u16>,
     #[serde(default)]
     pub bootstrap_nodes: Vec<String>,
-    /// pkarr keys (`pk:...`) of relays for NAT traversal, added to those of
-    /// `--relay-peers`. Resolved once at startup; only a record that declares
-    /// itself a relay gets in. A relay this node already reaches as a bootstrap
-    /// does not need to be here (see `relay_reservation_addrs` in `discovery.rs`).
+    /// URLs of dedicated relays for NAT traversal (`https://relay.example.org`,
+    /// or `http://<ip>:<port>` for a node running `--serve-relay`), added to
+    /// those of `--relay-peers`. The endpoint adds them to its relay map beside
+    /// n0's and the member relays (see `discovery.rs`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub relay_peers: Vec<String>,
     /// Whom this node relays for, and whether file transfers may cross it.
@@ -562,7 +562,7 @@ pub fn validate_gateway_port(port: u16) -> anyhow::Result<()> {
     anyhow::ensure!(port != 0, "the interface port must be between 1 and 65535");
     Ok(())
 }
-/// The node as a circuit relay (`"relay"` in the config file).
+/// The node as a relay (`"relay"` in the config file).
 ///
 /// A relay only moves encrypted bytes between two nodes that cannot reach
 /// each other. `everyone` makes a public relay; without it, a node the
@@ -1660,8 +1660,9 @@ mod tests {
     #[test]
     fn relay_peers_are_read_from_the_config_and_empty_stays_out_of_it() {
         let cfg: Config =
-            serde_json::from_str(r#"{"profile":"node","relay_peers":["pk:relay"]}"#).unwrap();
-        assert_eq!(cfg.relay_peers, vec!["pk:relay"]);
+            serde_json::from_str(r#"{"profile":"node","relay_peers":["https://relay.example.org"]}"#)
+                .unwrap();
+        assert_eq!(cfg.relay_peers, vec!["https://relay.example.org"]);
 
         let cfg: Config = serde_json::from_str(r#"{"profile":"node"}"#).unwrap();
         assert!(cfg.relay_peers.is_empty());

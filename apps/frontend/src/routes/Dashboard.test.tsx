@@ -203,7 +203,7 @@ describe("Dashboard", () => {
       from_node_id: "a",
       to_node_id: "b",
       rtt_ms: 7.4,
-      transport: "libp2p",
+      transport: "p2p",
     }]);
 
     await waitFor(() => expect(screen.getByText("RTT 7.4 ms")).toBeTruthy());

@@ -1,4 +1,6 @@
-//! Windows Firewall integration for the four sockets used by a node.
+//! Windows Firewall integration for the five sockets used by a node: UDP
+//! discovery, the two QUIC ports, and the p2p endpoint (UDP) and its relay
+//! server (TCP), both on `p2p_port + 10000`.
 //!
 //! The node normally runs unelevated. The parent records the request before
 //! starting a short-lived copy of itself with the `runas` verb, so declining
@@ -41,7 +43,10 @@ pub enum FirewallRuleKind {
     Discovery,
     InferenceQuic,
     GatewayQuic,
-    Libp2p,
+    /// The iroh endpoint (UDP) on `p2p_port + 10000`.
+    P2pEndpoint,
+    /// The embedded relay server (TCP) on the same port.
+    Relay,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
@@ -84,9 +89,9 @@ pub fn desired_rules(p2p_port: u16) -> Result<Vec<FirewallRuleSpec>, String> {
     let gateway = p2p_port
         .checked_add(2000)
         .ok_or_else(|| "the gateway QUIC port exceeds 65535".to_string())?;
-    let libp2p = p2p_port
-        .checked_add(10000)
-        .ok_or_else(|| "the libp2p TCP port exceeds 65535".to_string())?;
+    let endpoint = p2p_port
+        .checked_add(crate::p2p::P2P_PORT_OFFSET)
+        .ok_or_else(|| "the endpoint port exceeds 65535".to_string())?;
     Ok(vec![
         FirewallRuleSpec {
             kind: FirewallRuleKind::Discovery,
@@ -104,9 +109,14 @@ pub fn desired_rules(p2p_port: u16) -> Result<Vec<FirewallRuleSpec>, String> {
             port: gateway,
         },
         FirewallRuleSpec {
-            kind: FirewallRuleKind::Libp2p,
+            kind: FirewallRuleKind::P2pEndpoint,
+            protocol: FirewallProtocol::Udp,
+            port: endpoint,
+        },
+        FirewallRuleSpec {
+            kind: FirewallRuleKind::Relay,
             protocol: FirewallProtocol::Tcp,
-            port: libp2p,
+            port: endpoint,
         },
     ])
 }
@@ -362,7 +372,7 @@ mod platform {
 
     fn configure_rule(rule: &INetFwRule, spec: &FirewallRuleSpec, executable: &str) -> Result<()> {
         let name = BSTR::from(rule_name(spec));
-        let description = BSTR::from("POM ports for discovery, QUIC and libp2p");
+        let description = BSTR::from("POM ports for discovery, QUIC, the p2p endpoint and the relay");
         let application = BSTR::from(executable);
         let port = BSTR::from(spec.port.to_string());
         unsafe {
@@ -462,7 +472,8 @@ mod platform {
                 FirewallRuleKind::Discovery => "discovery",
                 FirewallRuleKind::InferenceQuic => "inference-quic",
                 FirewallRuleKind::GatewayQuic => "gateway-quic",
-                FirewallRuleKind::Libp2p => "libp2p",
+                FirewallRuleKind::P2pEndpoint => "p2p-endpoint",
+                FirewallRuleKind::Relay => "relay",
             }
         }
     }

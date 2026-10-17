@@ -296,7 +296,7 @@ Per-file list:
   which the node applies live, inside a panel or, with `section`, inside the
   caller's own section (Network settings); the quick setup uses
   `RelayChoices` as a draft and saves it at the end. Nothing is drawn while
-  the report says `reachable: false` (`canRelay`): AutoNAT has not confirmed
+  the report says `reachable: false` (`canRelay`): the NAT report has not confirmed
   a public address and none is configured, so behind a NAT the machine
   cannot relay for anyone and there is nothing to choose. An option the command line fixed for this run is
   shown locked, with the reason; file transfers are locked while the machine
@@ -413,7 +413,7 @@ Per-file list:
   network/mode/compute split of the best route (`pipeline-route-breakdown`). The
   interface never sums the legs: that would count whole round trips of each
   edge. The edges' RTT labels come from the planned routes, identical on
-  any node. An edge with `relayed` (a tunneled circuit through a relay) turns strong
+  any node. An edge with `relayed` (a tunneled path through a relay) turns strong
   orange (token `--relay`, `stroke-relay` dashed), and the
   `RouteRttLabel` swaps the transport for "RELAY" with an information icon and the
   explanation in the `title`; if the best route has `relayed` or
@@ -457,7 +457,7 @@ Per-file list:
 - `RouteRttLabel.tsx` - the shared directional RTT visual badge used by the
   Dashboard map and by the deployment map. On the Dashboard it also identifies the
   effective transport (`HTTP`, `HTTPS` or `QUIC`) observed in the execution; when
-  the measurement does not exist yet, it keeps `RTT -` instead of using the libp2p probe.
+  the measurement does not exist yet, it keeps `RTT -` instead of using the tunnel probe.
 - `PeerDetailCard.tsx` - The card of one machine, in the same drawing for every
   machine. Each GPU is one tile (`gpu-telemetry-row`: name, VRAM, usage,
   temperature, power). `variant="dialog"` is the Flow window: no frame, larger

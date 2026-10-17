@@ -786,7 +786,7 @@ pub(crate) fn network_info_from_cluster(cluster: &serde_json::Value) -> network_
     }
 }
 
-/// Fills `PublicStats` on demand. The swarm loop cannot compute the stats
+/// Fills `PublicStats` on demand. The transport task cannot compute the stats
 /// (they need the cluster view, which reads every peer over HTTP), so it wakes
 /// this task when a request finds them stale; at most one cluster read per
 /// [`network_lobby::INFO_REFRESH`], and none while nobody asks.
@@ -842,7 +842,18 @@ pub async fn setup_public_networks(
     // The same field takes relay keys (`pk:...`) and addresses. Keys are the
     // normal case: a relay is found by its key, like every other node.
     let mut relay_keys = network_lobby::default_directory_relays();
-    relay_keys.extend(state.config.read().await.relay_peers.iter().cloned());
+    // `relay_peers` holds relay URLs for the endpoint; only an entry that is
+    // a node key names a directory to ask.
+    relay_keys.extend(
+        state
+            .config
+            .read()
+            .await
+            .relay_peers
+            .iter()
+            .filter(|entry| entry.starts_with("pk:"))
+            .cloned(),
+    );
     for entry in query
         .replicas
         .split(',')

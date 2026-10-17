@@ -404,12 +404,12 @@ pub struct DirectReply {
     inbox: ReplyInbox,
     urls: Vec<String>,
     quic_addresses: Vec<String>,
-    /// The gateway's `PeerId` and multiaddresses, so the delivery lands on the libp2p
+    /// The gateway's endpoint id and endpoint addresses, so the delivery lands on the p2p
     /// tunnel when no URL in `urls` is reachable from where the tail is.
     /// Behind NAT/CGNAT that is the normal case, not the exception: the URLs come
     /// from the gateway's local interfaces and are worth nothing at the other end.
-    libp2p_peer_id: Option<String>,
-    libp2p_addrs: Vec<String>,
+    endpoint_id: Option<String>,
+    endpoint_addrs: Vec<String>,
     /// node_id of whoever will receive the response.
     ///
     /// It travels in the `reply_to` because whoever delivers needs it to pin the
@@ -431,17 +431,17 @@ impl DirectReply {
             inbox,
             urls,
             quic_addresses: Vec::new(),
-            libp2p_peer_id: None,
-            libp2p_addrs: Vec::new(),
+            endpoint_id: None,
+            endpoint_addrs: Vec::new(),
             node_id,
         })
     }
 
-    /// This gateway's libp2p identity, so the return has a path when
+    /// This gateway's p2p identity, so the return has a path when
     /// no direct URL is reachable.
-    pub fn with_libp2p(mut self, peer_id: Option<String>, addrs: Vec<String>) -> Self {
-        self.libp2p_peer_id = peer_id;
-        self.libp2p_addrs = addrs;
+    pub fn with_endpoint(mut self, peer_id: Option<String>, addrs: Vec<String>) -> Self {
+        self.endpoint_id = peer_id;
+        self.endpoint_addrs = addrs;
         self
     }
 
@@ -461,8 +461,8 @@ impl DirectReply {
         json!({
             "urls": self.urls,
             "quic_addresses": self.quic_addresses,
-            "libp2p_peer_id": self.libp2p_peer_id,
-            "libp2p_addrs": self.libp2p_addrs,
+            "endpoint_id": self.endpoint_id,
+            "endpoint_addrs": self.endpoint_addrs,
             "ticket": ticket,
             "node_id": self.node_id,
         })
@@ -1132,7 +1132,7 @@ async fn deliver_meta_at(
     }
     // No direct URL got through. Behind NAT/CGNAT this is the normal case: the
     // `reply_to` URLs come from the gateway's local interfaces and are worth
-    // nothing from outside its network. The libp2p tunnel is the same path the outbound
+    // nothing from outside its network. The p2p tunnel is the same path the outbound
     // already uses, only on the return - without it the frame dies silently, and the gateway only
     // notices when the frame deadline expires.
     if let Some(delivery) = deliver_via_tunnel(reply_to, path, &base_meta, &last).await {
@@ -1251,9 +1251,9 @@ async fn deliver_pinned(
     None
 }
 
-/// Last way of the delivery: the libp2p tunnel to the gateway.
+/// Last way of the delivery: the p2p tunnel to the gateway.
 ///
-/// `None` when the `reply_to` carries no libp2p identity (gateway on a prior
+/// `None` when the `reply_to` carries no p2p identity (gateway on a prior
 /// binary) or when the tunnel itself does not deliver - in both cases the caller
 /// moves on to the failure log and the gateway closes at the deadline. The route enters through the
 /// closed list of `infer_tunnel::gateway_path_is_allowed`.
@@ -1263,9 +1263,9 @@ async fn deliver_via_tunnel(
     base_meta: &Value,
     direct_error: &str,
 ) -> Option<Delivery> {
-    let peer_id = reply_to.get("libp2p_peer_id").and_then(Value::as_str)?;
+    let peer_id = reply_to.get("endpoint_id").and_then(Value::as_str)?;
     let addrs: Vec<String> = reply_to
-        .get("libp2p_addrs")
+        .get("endpoint_addrs")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
@@ -1279,7 +1279,7 @@ async fn deliver_via_tunnel(
     let attempt_meta = delivery_meta(
         base_meta,
         path,
-        "libp2p-tunnel",
+        "p2p-tunnel",
         !direct_error.is_empty(),
         (!direct_error.is_empty()).then_some(direct_error),
         None,
@@ -1306,7 +1306,7 @@ async fn deliver_via_tunnel(
     .await
     {
         Ok(response) if response.is_success() => {
-            debug!("direct result delivered through the libp2p tunnel ({direct_error})");
+            debug!("direct result delivered through the p2p tunnel ({direct_error})");
             Some(Delivery::Accepted)
         }
         Ok(response) if response.status == StatusCode::GONE.as_u16() => {
@@ -1315,13 +1315,13 @@ async fn deliver_via_tunnel(
         }
         Ok(response) => {
             warn!(
-                "libp2p tunnel answered {} to the direct result",
+                "p2p tunnel answered {} to the direct result",
                 response.status
             );
             None
         }
         Err(error) => {
-            warn!("direct result did not arrive through the libp2p tunnel: {error}");
+            warn!("direct result did not arrive through the p2p tunnel: {error}");
             None
         }
     }
@@ -1787,7 +1787,7 @@ mod tests {
         assert!(inbox.record_transport(
             &id,
             0,
-            json!({"hop_index": 0, "transport": "libp2p-tunnel", "round_trip_ms": 11})
+            json!({"hop_index": 0, "transport": "p2p-tunnel", "round_trip_ms": 11})
         ));
         let snapshot = inbox.trace_snapshot(&id).expect("snapshot updated");
         assert_eq!(snapshot["transport_trace_complete"], true);
@@ -1826,7 +1826,7 @@ mod tests {
                 tls: false,
                 tls_handshake_ms: 0,
                 transport_rtt_us: None,
-                transport: crate::relay::InferenceTransport::Libp2pTunnel,
+                transport: crate::relay::InferenceTransport::P2pTunnel,
                 transport_fallback: false,
                 transport_fallback_reason: None,
                 profiling_spans: Vec::new(),
@@ -1891,7 +1891,7 @@ mod tests {
         assert!(inbox.record_transport(
             &id,
             0,
-            json!({"hop_index": 0, "transport": "libp2p-tunnel", "round_trip_ms": 11})
+            json!({"hop_index": 0, "transport": "p2p-tunnel", "round_trip_ms": 11})
         ));
         assert!(inbox.deliver(&id, json!({"token_id": 7})));
 
@@ -2084,38 +2084,38 @@ mod tests {
         );
     }
 
-    /// The `reply_to` has to carry the gateway's libp2p identity: without it the
+    /// The `reply_to` has to carry the gateway's p2p identity: without it the
     /// tail behind NAT has no way to return the frame, and the gateway closes
     /// at the deadline without saying why.
     #[test]
-    fn the_reply_to_carries_the_gateway_libp2p_identity() {
+    fn the_reply_to_carries_the_gateway_endpoint_identity() {
         let reply = DirectReply::new(
             ReplyInbox::new(),
             vec!["http://192.168.100.210:8080".to_string()],
             "n1".into(),
         )
         .expect("address present")
-        .with_libp2p(
-            Some("12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN".to_string()),
-            vec!["/ip4/203.0.113.7/udp/52777/quic-v1".to_string()],
+        .with_endpoint(
+            Some("6dcba7046e820b1f8d4daa082715dc54bfc1282520599d3e1470c983cea64ccb".to_string()),
+            vec!["203.0.113.7:52777".to_string()],
         );
 
         let value = reply.reply_to("t1");
 
         assert_eq!(
-            value["libp2p_peer_id"].as_str(),
-            Some("12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN")
+            value["endpoint_id"].as_str(),
+            Some("6dcba7046e820b1f8d4daa082715dc54bfc1282520599d3e1470c983cea64ccb")
         );
         assert_eq!(
-            value["libp2p_addrs"][0].as_str(),
-            Some("/ip4/203.0.113.7/udp/52777/quic-v1")
+            value["endpoint_addrs"][0].as_str(),
+            Some("203.0.113.7:52777")
         );
     }
 
     /// A gateway on a prior binary does not send the fields, and the delivery has to
     /// proceed without them instead of breaking.
     #[tokio::test]
-    async fn without_a_libp2p_identity_the_tunnel_delivery_is_not_attempted() {
+    async fn without_an_endpoint_identity_the_tunnel_delivery_is_not_attempted() {
         let reply_to = json!({ "ticket": "t1", "urls": [] });
 
         assert!(
@@ -2151,7 +2151,7 @@ mod tests {
             tls: false,
             tls_handshake_ms: 0,
             transport_rtt_us: None,
-            transport: crate::relay::InferenceTransport::Libp2pTunnel,
+            transport: crate::relay::InferenceTransport::P2pTunnel,
             transport_fallback: false,
             transport_fallback_reason: None,
             profiling_spans: Vec::new(),
@@ -2163,6 +2163,6 @@ mod tests {
         assert_eq!(hops[1]["round_trip_ms"], 47);
         assert_eq!(hops[1]["bytes_sent"], 2_000);
         assert_eq!(hops[1]["bytes_received"], 123);
-        assert_eq!(hops[1]["transport"], "libp2p-tunnel");
+        assert_eq!(hops[1]["transport"], "p2p-tunnel");
     }
 }

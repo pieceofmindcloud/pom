@@ -429,7 +429,7 @@ fn host_and_port_of(addr: &str) -> Option<(&str, u16)> {
 pub struct RttMeasurement {
     pub target_node_id: String,
     pub rtt_ms: f64,
-    /// `libp2p` is the normal transport. `direct-health` identifies the fallback
+    /// `p2p` is the normal transport. `direct-health` identifies the fallback
     /// used when the peer does not offer the new tunnel yet.
     pub transport: String,
 }
@@ -564,7 +564,7 @@ impl RttTable {
 pub const RTT_MEASURE_INTERVAL: Duration = Duration::from_secs(120);
 
 /// Prefers the tunnel when it answered, but lets a peer that announced
-/// the capability and is momentarily without the swarm remain measurable through
+/// the capability and is momentarily without the endpoint remain measurable through
 /// the direct `/health`. Before, this fallback only existed for peers that never
 /// announced a tunnel, so the RTT entry was erased on every renewal.
 pub(crate) fn choose_rtt(
@@ -573,7 +573,7 @@ pub(crate) fn choose_rtt(
 ) -> Option<(f64, &'static str)> {
     tunnel_rtt_ms
         .filter(|rtt| rtt.is_finite() && *rtt >= 0.0)
-        .map(|rtt| (rtt, "libp2p"))
+        .map(|rtt| (rtt, "p2p"))
         .or_else(|| {
             direct_health_rtt_ms
                 .filter(|rtt| rtt.is_finite() && *rtt >= 0.0)
@@ -684,7 +684,7 @@ mod tests {
     #[test]
     fn rtt_table_keeps_directional_measurements_and_transport() {
         let table = RttTable::new();
-        table.remember_for_test("peer-b", 12.5, "libp2p");
+        table.remember_for_test("peer-b", 12.5, "p2p");
         table.remember_for_test("peer-c", 30.0, "direct-health");
 
         assert_eq!(
@@ -693,7 +693,7 @@ mod tests {
                 RttMeasurement {
                     target_node_id: "peer-b".into(),
                     rtt_ms: 12.5,
-                    transport: "libp2p".into(),
+                    transport: "p2p".into(),
                 },
                 RttMeasurement {
                     target_node_id: "peer-c".into(),
@@ -708,13 +708,13 @@ mod tests {
     #[test]
     fn direct_health_is_a_fallback_when_the_tunnel_measurement_is_unavailable() {
         assert_eq!(choose_rtt(None, Some(3.5)), Some((3.5, "direct-health")));
-        assert_eq!(choose_rtt(Some(1.5), Some(3.5)), Some((1.5, "libp2p")));
+        assert_eq!(choose_rtt(Some(1.5), Some(3.5)), Some((1.5, "p2p")));
     }
 
     #[test]
     fn a_stale_rtt_is_visible_but_not_fresh_for_selection() {
         let table = RttTable::new();
-        table.remember_for_test("fresh", 12.5, "libp2p");
+        table.remember_for_test("fresh", 12.5, "p2p");
         table.remember_for_test_with_age(
             "stale",
             1.0,

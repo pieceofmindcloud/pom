@@ -195,8 +195,8 @@ Per-file list:
   `../components/LocationEditor` (map, browser location on request, city from
   the node's offline database, and what the network publishes); the discovery
   label is shown read-only below it. `TraversalPanel` shows the
-  `traversal` field of `/api/ui/cluster` - the AutoNAT state, the direct addresses and
-  the published circuits, the relay reservations and the hole punches - because two nodes behind
+  `traversal` field of `/api/ui/cluster` - the NAT report state, the direct addresses and
+  the relay URLs, the relays connected and the hole punches - because two nodes behind
   a NAT that cannot see each other fail at one of three steps, and before this knowing which one
   required debug logs on the right machine; an older node does not send the field and
   the panel does not appear. The screen also aggregates nodes,
@@ -368,7 +368,7 @@ Per-file list:
 - `NetworkChat.tsx` - its own page `/network-chat`, with the same visual pattern
   as the AI Chat. It reads the
   authenticated snapshot and sends text, file and typing actions through the
-  node's libp2p-backed gateway. It resolves `node_id` to the node hostname/name
+  node's endpoint-backed gateway. It resolves `node_id` to the node hostname/name
   map used by the dashboard, downloads persisted file blobs on demand, and
   polls typing state without touching the AI session store. Message and typing
   ids come from `lib/id.ts`, so sending over plain HTTP does not call the

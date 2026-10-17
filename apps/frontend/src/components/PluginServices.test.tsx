@@ -7,7 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { PeerDetailCard } from "./PeerDetailCard";
-import { PluginServiceBadge, PluginServiceTether } from "./PluginServices";
+import { PluginServiceBadge, PluginServiceTether, servicesInUse } from "./PluginServices";
 import { LocaleProvider } from "../i18n/provider";
 import { ToastProvider } from "../lib/toast";
 import { fakeNode, fakePeer } from "../test/fixtures";
@@ -93,5 +93,31 @@ describe("plugin services", () => {
     const withoutService = fakePeer({ node_id: "z", node: fakeNode({ node_id: "z", short_id: "z" }) });
     wrap(<PeerDetailCard peer={withoutService} index={0} group="qwen35" otherRanges={[]} />);
     expect(screen.queryByTestId("plugin-services")).toBeNull();
+  });
+});
+
+describe("services in use", () => {
+  const strata: PluginService = { plugin_code: "strata", id: "engine", kind: "inference", name: "Strata", status: "ready" };
+
+  it("shows llama.cpp and hides an installed Strata when llama.cpp serves the model", () => {
+    const shown = servicesInUse([qdrant, strata], null, true);
+    expect(shown.map((service) => service.name)).toEqual(["llama.cpp", "Qdrant"]);
+  });
+
+  it("shows Strata when it is the engine that serves the model", () => {
+    const shown = servicesInUse([qdrant, strata], "strata", true);
+    expect(shown.map((service) => service.name)).toEqual(["Qdrant", "Strata"]);
+  });
+
+  it("keeps what is published when the machine serves no model", () => {
+    expect(servicesInUse([strata], null, false)).toEqual([strata]);
+  });
+
+  it("draws only the icon in the Flow, with the name for hover and screen readers", () => {
+    wrap(<PluginServiceBadge service={qdrant} compact />);
+    const badge = screen.getByTestId("plugin-service");
+    expect(badge.getAttribute("data-compact")).toBe("true");
+    expect(badge.getAttribute("aria-label")).toContain("Qdrant");
+    expect(badge.getAttribute("tabindex")).toBe("0");
   });
 });

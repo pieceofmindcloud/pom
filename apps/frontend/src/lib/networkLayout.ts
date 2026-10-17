@@ -234,6 +234,46 @@ export function autoLayout(
 }
 
 /**
+ * The Deploy Studio's arrangement. It differs from the Flow's on one point: the
+ * deploy map is where machines are being *chosen*, and a column of cards stacked one
+ * under the other read as a pipeline that does not exist.
+ *
+ * - A pipeline of several stages keeps `autoLayout`: one column per stage, replicas
+ *   stacked, so the edges between stages read left to right.
+ * - A single stage (a whole model, or replicas of one range) has no edge between its
+ *   machines, so they sit side by side on the axis.
+ * - Machines on the map without a range yet are not part of any stage: they sit side
+ *   by side in a row under the plan (on the axis when nothing is assigned), never in
+ *   the column of whatever range they happen to hold.
+ */
+export function deployLayout(
+  assigned: LayoutNode[],
+  unassignedIds: string[],
+  size: CardSize = CARD_SIZE,
+): Record<string, CanvasPosition> {
+  const rowGap = GAP_Y + 8;
+  let positions = autoLayout(assigned, () => size);
+  const lefts = new Set(Object.values(positions).map((position) => position.left));
+  if (assigned.length > 1 && lefts.size === 1) {
+    const ordered = [...assigned].sort(
+      (a, b) => a.start_layer - b.start_layer || a.end_layer - b.end_layer || a.id.localeCompare(b.id),
+    );
+    positions = Object.fromEntries(ordered.map((node, index) => [
+      node.id,
+      { left: ORIGIN_X + index * (size.width + rowGap), top: AXIS_Y - size.height / 2 },
+    ]));
+  }
+  const bottom = assigned.length > 0
+    ? Math.max(...Object.values(positions).map((position) => position.top + size.height))
+    : null;
+  const rowTop = bottom == null ? AXIS_Y - size.height / 2 : bottom + rowGap * 2;
+  [...unassignedIds].sort().forEach((id, index) => {
+    positions[id] = { left: ORIGIN_X + index * (size.width + rowGap), top: rowTop };
+  });
+  return positions;
+}
+
+/**
  * Rehydrates a canvas without moving whoever was already drawn.
  *
  * A peer joining is a topology change, but it is not a request to reorganize

@@ -462,6 +462,7 @@ dashboard.sampled,"Sampled {time} · unified memory does not report dedicated VR
 dashboard.sectionDeployment,Deployment,Implantação
 dashboard.sectionResources,Resources,Recursos
 dashboard.server,Server,Servidor
+dashboard.serviceKindInference,inference engine,motor de inferência
 dashboard.serviceKindRag,RAG server,Servidor de RAG
 dashboard.serviceStatusError,error,erro
 dashboard.serviceStatusInstalling,installing,instalando
@@ -2083,13 +2084,13 @@ preferences.title,Preferences,Preferências
 profile.admin,Administrator,Administrador
 profile.infer,infer,infer
 profile.node,node,node
+publicNetworks.accepting,Accepting,Aceitando
 publicNetworks.action,Action,Ação
 publicNetworks.add,Add network,Adicionar rede
 publicNetworks.addDetail,"Add a private network from its trust document, a JSON file its administrator exports.","Adicione uma rede privada a partir do documento de confiança, um arquivo JSON que o administrador dela exporta."
 publicNetworks.allCities,All cities,Todas as cidades
 publicNetworks.allCountries,All countries,Todos os países
 publicNetworks.askToJoin,Ask to join,Pedir para entrar
-publicNetworks.backToNetworks,Back to networks,Voltar para redes
 publicNetworks.browserLocationDenied,The browser did not share its location.,O navegador não compartilhou a localização.
 publicNetworks.browserLocationUnavailable,The browser only shares its location on HTTPS or on localhost.,O navegador só compartilha a localização em HTTPS ou em localhost.
 publicNetworks.cached,Not seen now · last seen {when},Não vista agora · vista {when}
@@ -2105,28 +2106,27 @@ publicNetworks.closePanel,Close panel,Fechar painel
 publicNetworks.country,Country,País
 publicNetworks.detailsTitle,Details for {name},Detalhes de {name}
 publicNetworks.directoryReplicas,Directory replicas,Réplicas do diretório
-publicNetworks.discoveredDetail,Only public metadata is shown here. Trust is confirmed when you join.,Aqui aparecem apenas dados públicos. A confiança é conferida quando você entra.
-publicNetworks.discoveredTitle,Networks found,Redes encontradas
 publicNetworks.discoveredVia,Discovered via,Descoberta via
 publicNetworks.distance,{value} km away,{value} km de distância
 publicNetworks.distanceApproximate,about {value} km,cerca de {value} km
 publicNetworks.distanceFromBrowser,"Distances are measured from your browser's location, which stays in the browser.","As distâncias são medidas a partir da localização do seu navegador, que não sai dele."
 publicNetworks.distanceFromNetwork,Distances are measured from your network's location.,As distâncias são medidas a partir da localização da sua rede.
+publicNetworks.distanceFromNetworkOnly,"To see distances, set your network's location.","Para ver distâncias, defina a localização da sua rede."
 publicNetworks.distanceFromNone,"To see distances, set your network's location or use the browser's.","Para ver distâncias, defina a localização da sua rede ou use a do navegador."
 publicNetworks.emptyDetail,No relay listed a network yet. Networks appear here once their admin turns discovery on.,Nenhum relé listou uma rede ainda. As redes aparecem aqui quando o administrador liga a descoberta.
 publicNetworks.emptyTitle,No networks found,Nenhuma rede encontrada
 publicNetworks.enrollmentClosed,Closed to new members,Fechada para novos membros
 publicNetworks.enrollmentOpen,Accepting new members,Aceitando novos membros
 publicNetworks.expandDetails,Open all details,Abrir todos os detalhes
-publicNetworks.exportShort,Trust document,Documento de confiança
 publicNetworks.exportTrust,Export the trust document of {name},Exportar o documento de confiança de {name}
-publicNetworks.exportTrustDetail,Export the trust document so another machine can add this network,Exportar o documento de confiança para que outra máquina adicione esta rede
+publicNetworks.exportTrustDetail,Share this network: downloads its trust document so another machine can add it,Compartilhar esta rede: baixa o documento de confiança para que outra máquina a adicione
 publicNetworks.failed,Could not load the networks,Não foi possível carregar as redes
+publicNetworks.filters,Filters,Filtros
 publicNetworks.fingerprint,Fingerprint,Impressão digital
 publicNetworks.geoLabel,Geo discovery label,Rótulo geo de descoberta
 publicNetworks.importDone,Network added,Rede adicionada
 publicNetworks.importFailed,Could not add the network,Não foi possível adicionar a rede
-publicNetworks.join,Talk and ask to join,Conversar e pedir para entrar
+publicNetworks.join,Talk,Conversar
 publicNetworks.joinConfirm,Leave this network and continue,Sair desta rede e continuar
 publicNetworks.joinDetail,"POM will leave the current network, keep your local hardware preferences, and open the setup with this public network ready. No shared secret is needed.","O POM vai sair da rede atual, manter suas preferências locais de hardware e abrir o setup com esta rede pública pronta. Nenhum segredo compartilhado é necessário."
 publicNetworks.joinFailed,Could not start joining this network,Não foi possível iniciar a entrada nesta rede
@@ -2134,20 +2134,26 @@ publicNetworks.joinTitle,Join {name}?,Entrar em {name}?
 publicNetworks.kindCustom,Private · added here,Privada · adicionada aqui
 publicNetworks.kindOwn,Your network,Sua rede
 publicNetworks.latency,Average latency,Latência média
+publicNetworks.latencyBand.down,No answer: the network may be down or out of reach.,Sem resposta: a rede pode estar fora do ar ou inacessível.
+publicNetworks.latencyBand.fair,Moderate latency: inference may be a little slower.,Latência moderada: a inferência pode ficar um pouco mais lenta.
+publicNetworks.latencyBand.fast,Low latency: inference over this network stays fast.,Latência baixa: a inferência por esta rede continua rápida.
+publicNetworks.latencyBand.poor,Very high latency: inference will be much slower.,Latência muito alta: a inferência ficará bem mais lenta.
+publicNetworks.latencyBand.slow,High latency: inference will be noticeably slower.,Latência alta: a inferência ficará visivelmente mais lenta.
 publicNetworks.latencyChecking,measuring...,medindo...
 publicNetworks.latencyFailed,no answer,sem resposta
 publicNetworks.latencyValue,{value} ms,{value} ms
 publicNetworks.liveFailed,Could not update the list from the network,Não foi possível atualizar a lista pela rede
 publicNetworks.lobby,Lobby,Lobby
 publicNetworks.location,Country / city,País / cidade
-publicNetworks.locationNote,"Each network's city and country come from the coordinates it publishes, looked up in this node's own city list.","A cidade e o país de cada rede vêm das coordenadas que ela publica, consultadas na lista de cidades deste nó."
 publicNetworks.measureLatency,Measure latency,Medir latência
 publicNetworks.models,Served models,Modelos servidos
+publicNetworks.modelsMore,and {count} more,e mais {count}
 publicNetworks.moreDetails,More details,Mais detalhes
 publicNetworks.name,Public name,Nome público
 publicNetworks.nextPage,Next page,Próxima página
 publicNetworks.noMatches,No public networks match these filters,Nenhuma rede pública corresponde a estes filtros
 publicNetworks.noMatchesDetail,Try another search or filter.,Tente outra busca ou outro filtro.
+publicNetworks.nodeCount,"{count, plural, one {# node} other {# nodes}}","{count, plural, one {# nó} other {# nós}}"
 publicNetworks.nodes,Nodes,Nós
 publicNetworks.openDetails,Open details for {name},Abrir detalhes de {name}
 publicNetworks.openLobbies,Open lobbies,Lobbies abertos
@@ -2174,14 +2180,16 @@ publicNetworks.removeTitle,Remove this network from the list?,Remover esta rede 
 publicNetworks.roleAccepted,Accepting,Aceitando
 publicNetworks.roleAcceptedNamed,Accepting {role},Aceitando {role}
 publicNetworks.roleNotAccepted,Not accepting,Não aceita
+publicNetworks.roleTip.infer,"This network admits machines that only use its models for chat and API calls, without serving any.","Esta rede admite máquinas que só usam os modelos dela para conversa e chamadas de API, sem servir nenhum."
+publicNetworks.roleTip.node,This network admits machines that serve model layers and take part in its deployments.,Esta rede admite máquinas que servem camadas dos modelos e participam das implantações dela.
 publicNetworks.search,Search,Buscar
+publicNetworks.searchAction,Search,Buscar
 publicNetworks.searchPlaceholder,"Name, organization, city...","Nome, organização, cidade..."
-publicNetworks.securityNote,The signed trust document is public metadata; the setup calculates its fingerprint before saving.,O documento de confiança assinado é um dado público; o setup calcula sua impressão digital antes de salvar.
+publicNetworks.share,Share,Compartilhar
 publicNetworks.sort,Sort by,Ordenar por
 publicNetworks.sortDistance,Closest first,Mais próximas primeiro
 publicNetworks.sortLatency,Lowest latency first,Menor latência primeiro
 publicNetworks.sortName,Name,Nome
-publicNetworks.subtitle,"Networks you can talk to and ask to join. Public ones come from the relays this node knows; a private one is added from its trust document.","Redes com as quais você pode conversar e pedir para entrar. As públicas vêm dos relés que este nó conhece; uma privada é adicionada pelo documento de confiança."
 publicNetworks.title,Networks,Redes
 publicNetworks.unavailable,Not available,Indisponível
 publicNetworks.unknownCity,Unknown city,Cidade desconhecida
@@ -2812,6 +2820,23 @@ trustAnchor.typedFingerprintPlaceholder,64 hexadecimal digits,64 dígitos hexade
 trustAnchor.unanchored,This node has no trust root yet,Este nó ainda não tem raiz de confiança
 trustAnchor.unanchoredDetail,"Without an anchored chain no node here has administrative capability, whatever its profile says.","Sem cadeia ancorada, nenhum nó aqui tem capacidade administrativa, diga o perfil o que disser."
 trustAnchor.unanchoredFootnote,"The authority lives in {file}, next to the configuration and never inside it: editing the profile cannot manufacture a grant.","A autoridade vive no {file}, ao lado da configuração e nunca dentro dela: editar o perfil não fabrica concessão."
+trustGuide.add1,"On a machine of the network you want, open Networks, click Share on that network and download its trust file.","Numa máquina da rede que você quer, abra Redes, clique em Compartilhar nessa rede e baixe o arquivo de confiança."
+trustGuide.add2,"Bring it to this machine through a channel you trust: a USB drive, scp, an encrypted message. The file holds no secret, but it must arrive unaltered.","Traga o arquivo para esta máquina por um canal em que você confia: pendrive, scp, uma mensagem cifrada. O arquivo não tem segredo, mas precisa chegar sem alteração."
+trustGuide.add3,"Click Choose file below. POM checks the network's signature and lists it here, ready to talk and ask to join.","Clique em Escolher arquivo abaixo. O POM confere a assinatura da rede e a mostra aqui, pronta para conversar e pedir para entrar."
+trustGuide.addIntro,"A network that is not listed is added from its trust file, which comes from a machine of that network. It is the same trip as Share, seen from this end.","Uma rede que não aparece na lista é adicionada pelo arquivo de confiança dela, que vem de uma máquina daquela rede. É o mesmo caminho do Compartilhar, visto deste lado."
+trustGuide.addTitle,Add a network,Adicionar uma rede
+trustGuide.choose,Choose file,Escolher arquivo
+trustGuide.download,Download file,Baixar arquivo
+trustGuide.file,trust file,arquivo de confiança
+trustGuide.networkMachine,A machine of that network,Uma máquina daquela rede
+trustGuide.otherMachine,Another machine,Outra máquina
+trustGuide.share1,Download this network's trust file here.,Baixe aqui o arquivo de confiança desta rede.
+trustGuide.share2,"Take it to the other machine through a channel you trust: a USB drive, scp, an encrypted message. The file holds no secret, but it must arrive unaltered.","Leve o arquivo até a outra máquina por um canal em que você confia: pendrive, scp, uma mensagem cifrada. O arquivo não tem segredo, mas precisa chegar sem alteração."
+trustGuide.share3,"On the other machine, open Networks, click Add network and choose the file. The network shows up there, ready to talk and ask to join.","Na outra máquina, abra Redes, clique em Adicionar rede e escolha o arquivo. A rede aparece lá, pronta para conversar e pedir para entrar."
+trustGuide.shareIntro,Another machine adds this network from its trust file. Download it here and take it there; the steps are the same ones that machine sees under Add network.,Outra máquina adiciona esta rede pelo arquivo de confiança dela. Baixe o arquivo aqui e leve até lá; os passos são os mesmos que aquela máquina vê em Adicionar rede.
+trustGuide.shareTitle,Share this network,Compartilhar esta rede
+trustGuide.thisMachine,This machine,Esta máquina
+trustGuide.youAreHere,You are here,Você está aqui
 undeploy.adminOnly,Only the administrator can undeploy a deployment.,Somente o administrador pode desimplantar uma implantação.
 undeploy.allReleased,"{count, plural, =1 {1 machine released its memory.} other {{count} machines released their memory.}}","{count, plural, =1 {1 máquina liberou a memória.} other {{count} máquinas liberaram a memória.}}"
 undeploy.button,Undeploy,Desimplantar

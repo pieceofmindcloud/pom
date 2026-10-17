@@ -81,7 +81,10 @@ describe("LobbyChat", () => {
     mocks.get.mockResolvedValue({ ...exchange, accepted: false, error: "lobby_disabled", messages: [] });
     mount();
     expect(await screen.findByText("Esta rede não pode ser alcançada para admissão no momento.")).toBeTruthy();
-    expect((screen.getByLabelText("Escreva para o lobby desta rede…") as HTMLInputElement).disabled).toBe(true);
+    // Nothing goes through a lobby that is off: only the notice, no message field and no request.
+    expect(screen.getByTestId("lobby-disabled")).toBeTruthy();
+    expect(screen.queryByLabelText("Escreva para o lobby desta rede…")).toBeNull();
+    expect(screen.queryByTestId("lobby-request")).toBeNull();
   });
 
   it("shows only the request side when the network has its conversation off", async () => {

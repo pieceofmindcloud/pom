@@ -8,10 +8,16 @@
  *
  * Two places use the same badge: the machine's details card (`inline`) and the
  * Flow, where `PluginServiceTether` hangs them under the machine's card with a
- * connecting line, so the screen says **where** the service runs.
+ * connecting line, so the screen says **where** the service runs. In the Flow
+ * the badge is only its icon and opens to the full text on hover or focus: a
+ * row of named badges under each card was wider than the card itself.
+ *
+ * The engine shown is the one the machine's model runs on (`servicesInUse`): a
+ * machine on llama.cpp gets a llama.cpp badge and loses the Strata one, even
+ * when the Strata plugin is installed there, because it is not what serves now.
  */
 import clsx from "clsx";
-import { Database, Puzzle } from "lucide-react";
+import { Cpu, Database, Puzzle } from "lucide-react";
 import type { CanvasPosition, CardSize } from "../lib/networkLayout";
 import type { PluginService } from "../lib/types";
 import { useI18n } from "../i18n/provider";
@@ -34,8 +40,39 @@ const LINE: Record<PluginService["status"], string> = {
 
 /** Distance between the bottom edge of the card and the badges, in the Flow. */
 export const SERVICE_TETHER_GAP = 8;
+/** Height of a badge, so the Flow's arrangement can leave room for the tether. */
+export const SERVICE_BADGE_HEIGHT = 26;
+/** What the tether adds under a card: the line plus the badge row. */
+export const SERVICE_TETHER_HEIGHT = SERVICE_TETHER_GAP + SERVICE_BADGE_HEIGHT;
 
-export function PluginServiceBadge({ service }: { service: PluginService }) {
+/** The plugin code of the built-in engine's pseudo service. */
+export const LLAMA_CPP_SERVICE = "llama.cpp";
+
+/**
+ * The services worth drawing for a machine.
+ *
+ * With a model loaded, the only inference service shown is the engine that runs
+ * it (`PeerView.engine`, null for llama.cpp, which is not a plugin and gets a
+ * badge of its own); other inference plugins installed on the machine are not
+ * in use by that deployment. Without a model, nothing runs, so the services are
+ * shown as published.
+ */
+export function servicesInUse(
+  services: PluginService[] | undefined,
+  engine: string | null | undefined,
+  servesModel: boolean,
+): PluginService[] {
+  const list = services ?? [];
+  if (!servesModel) return list;
+  const kept = list.filter((service) => service.kind !== "inference" || service.plugin_code === engine);
+  if (engine) return kept;
+  return [
+    { plugin_code: LLAMA_CPP_SERVICE, id: LLAMA_CPP_SERVICE, kind: "inference", name: "llama.cpp", status: "ready" },
+    ...kept,
+  ];
+}
+
+export function PluginServiceBadge({ service, compact = false }: { service: PluginService; compact?: boolean }) {
   const { t } = useI18n();
   const status = {
     ready: t("dashboard.serviceStatusReady"),
@@ -45,11 +82,41 @@ export function PluginServiceBadge({ service }: { service: PluginService }) {
     error: t("dashboard.serviceStatusError"),
   }[service.status];
   // A type that this version of the screen does not know shows up as the plugin called it.
-  const kind = service.kind === "rag" ? t("dashboard.serviceKindRag") : service.kind;
-  const Icon = service.kind === "rag" ? Database : Puzzle;
+  const kind = service.kind === "rag"
+    ? t("dashboard.serviceKindRag")
+    : service.kind === "inference"
+      ? t("dashboard.serviceKindInference")
+      : service.kind;
+  const Icon = service.kind === "rag" ? Database : service.kind === "inference" ? Cpu : Puzzle;
   const title = [`${service.name} · ${kind}`, status, service.version, service.detail]
     .filter(Boolean)
     .join(" · ");
+  if (compact) {
+    // Icon only; hover or keyboard focus slides the name and kind out.
+    return (
+      <span
+        data-testid="plugin-service"
+        data-status={service.status}
+        data-compact="true"
+        tabIndex={0}
+        title={title}
+        aria-label={title}
+        className={clsx(
+          "group/service inline-flex h-[26px] items-center whitespace-nowrap rounded-md border px-1.5 text-[0.68rem] font-medium outline-none focus-visible:ring-1 focus-visible:ring-iris",
+          TONE[service.status],
+        )}
+      >
+        <Icon aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
+        <span
+          aria-hidden="true"
+          className="max-w-0 overflow-hidden opacity-0 transition-[max-width,opacity,margin] duration-200 group-hover/service:ml-1.5 group-hover/service:max-w-[16rem] group-hover/service:opacity-100 group-focus/service:ml-1.5 group-focus/service:max-w-[16rem] group-focus/service:opacity-100"
+        >
+          {service.name} <span className="font-normal opacity-80">{kind}</span>
+          {service.status !== "ready" && <span className="font-normal opacity-80"> · {status}</span>}
+        </span>
+      </span>
+    );
+  }
   return (
     <span
       data-testid="plugin-service"
@@ -98,12 +165,12 @@ export function PluginServiceTether({
     >
       <span
         aria-hidden="true"
-        className={clsx("ml-3 block w-0.5", LINE[worst.status])}
+        className={clsx("ml-2.5 block w-0.5", LINE[worst.status])}
         style={{ height: SERVICE_TETHER_GAP }}
       />
       <div className="pointer-events-auto flex gap-1.5">
         {services.map((service) => (
-          <PluginServiceBadge key={`${service.plugin_code}:${service.id}`} service={service} />
+          <PluginServiceBadge key={`${service.plugin_code}:${service.id}`} service={service} compact />
         ))}
       </div>
     </div>

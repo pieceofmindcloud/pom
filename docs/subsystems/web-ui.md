@@ -308,7 +308,9 @@ local-only notice. Routes:
   (`GET /api/ui/networks/known`, `http-api.md`): the screen paints from that
   table at once and, when the live listing (`GET /api/public/networks`, which
   records what it finds) answers, reads the page again; a row the live
-  listing did not return says when it was last seen. The search box, the
+  listing did not return says when it was last seen. The screen has one
+  header, a search box with its own Search button and the filters folded
+  behind a "+"; on a phone the table becomes a list of cards. The search box, the
   country, city and distance filters and the order (distance, name) go to the
   node; latency is measured in the browser and reorders the page. Each name
   is preceded by its discovery icon (public globe, hidden eye-off, off
@@ -321,14 +323,17 @@ local-only notice. Routes:
   the network's actions at the bottom (quick setup, ask to join, lobby,
   leave, more details, trust document, remove). "More details" opens a near full-screen window with every field,
   technical ones included. A network whose record says `lobby_chat` (its
-  Chat is on) offers "Talk and ask to join" and a "Lobby" button. Every lobby
+  Chat is on) offers "Talk" and a "Lobby" button. Every lobby
   (`LobbyChat` with `layout="page"`) replaces the list and the page header on
-  the same screen, with "Back to networks" at its top left; open lobbies stay
-  in a tab strip over the list (and in the lobby header when more than one is
-  open) and keep polling, so several conversations run at once. Without
+  the same screen; open lobbies stay in the same folder tabs as Network Chat,
+  shown over the list and over every lobby ("Networks" is the way back, each
+  lobby tab has its own close button), and keep polling, so several
+  conversations run at once. Without
   `lobby_chat` there is nothing to talk in: the button is "Ask to join" and
-  the full-screen lobby shows only the hardware card and the request. Only a
-  network whose lobby answers `lobby_disabled` falls back to a window. Two
+  the full-screen lobby shows only the hardware card and the request. "Ask to join"
+  opens that request alone in a dialog, without a tab. A network whose lobby
+  answers `lobby_disabled` refuses admission as well, so the dialog or tab
+  shows only the notice that it cannot be reached for admission now. Two
   kinds of rows stay at the top of every page whatever the order, filtered
   client-side by the same search, country, city and distance as the list
   (`GET /api/ui/networks/pinned`): the
@@ -832,6 +837,12 @@ The Dashboard keeps the indicators and actions in the compact top bar. When
 there is an active deployment, the properties button is only an icon inside the
 map, in the top right corner, lined up with the zoom and Fit controls.
 
+With several models live, the model picked in the map's bar is the one the top
+bar's Add and Undeploy act on, and the one the properties panel shows: the
+Dashboard owns that choice (`ModelNetworkCanvas` `model`/`onModelChange`,
+resolved by `selectedCanvasModel` in `lib/networkGraph.ts`). Before, both
+buttons always acted on the node's active model, whatever the map showed.
+
 ## Modal windows: portal and Esc stack
 
 `Modal`/`Confirm` (`src/components/Confirm.tsx`) go through `createPortal` to
@@ -897,8 +908,9 @@ at all in that case.
 
 The machine's actions live in a **toolbar at the top of the card**, next to the
 MTP badge: free memory (`ReleaseSlice`, only on the machine itself),
-`RemoveNode` (leaves the model, only when it serves), `LeaveNode` (leaves the
-network, always) and update/restart when the peer announces `dev_update`. They
+`RemoveNode` (leaves the model, only when it serves) and update/restart when the
+peer announces `dev_update`. Leaving the whole network is not offered on the
+card: the machine does that from its own My Machine screen. They
 used to be scattered across the bottom of the card, one per section, and
 restarting a machine meant scrolling to the end of everything it reports.
 
@@ -1364,6 +1376,20 @@ Two buttons, and the difference between them matters:
   that erased decisions would be the button nobody presses.
 - **Reset** (`RotateCcw`) - discards everything, including the drags.
 
+The stack uses each expanded card's **measured** height (a `ResizeObserver`
+on the card; `offsetHeight` ignores the zoom transform) and adds the height of
+the plugin service badges hanging under a card (`SERVICE_TETHER_HEIGHT`), so
+Arrange/Reset never put a card on top of the one above or of its badges. The
+badges are icon-only in the Flow and open to name and kind on hover or focus.
+The engine badge follows what serves the machine's model (`servicesInUse`):
+llama.cpp gets its own badge, and an installed inference plugin that is not the
+engine in use (Strata on a llama.cpp deployment) is not drawn.
+
+The Deploy Studio's map uses `deployLayout` instead: a multi-stage plan keeps
+the columns, a single stage (a whole model or replicas of one range) is laid
+side by side, and machines on the map without a range yet sit side by side in
+a row under the plan instead of stacking in the column of a range they hold.
+
 `autoLayout` is stable with respect to input order (tie-break by
 `start_layer`, `end_layer`, `id`): the peer list reorders on every cluster
 poll, and an arrangement that depended on it would shake on screen.
@@ -1770,7 +1796,8 @@ the slice is identified by its range (`keyOf`), not by index. Tests in
 
 - DEFECT NOTED: `LeaveNode` reuses the trigger's label on the confirm button -
   the window shows two buttons with the same text ("Leave network"). Cosmetic,
-  but a user can confuse the trigger with the confirmation.
+  but a user can confuse the trigger with the confirmation. The component is no
+  longer rendered by the machine card; the note stands for any future caller.
 - DEFECT NOTED: in a narrow window (~420 px) the content column overflows
   horizontally and the panels come out cut on the right - `node_id`, help text
   and buttons fall outside the viewport. It is not a single screen: it

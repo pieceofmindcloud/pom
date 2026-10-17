@@ -68,7 +68,11 @@ Per-file list:
   screen nobody asked to change is its own risk.
   `Tabs` is the one tab row (POM-JEV's folder tabs, theme tokens `--tab-*` in
   `index.css`, classes `pom-tab*`); every `role="tablist"` in the panel uses it
-  (`fill` spreads the tabs over the row), and plugins get it as `ui.Tabs`.
+  (`fill` spreads the tabs over the row), and plugins get it as `ui.Tabs`. An
+  `actions` puts controls at the right end of the row (the tabs scroll, the
+  controls stay). An
+  item with `onClose` gets a close button beside the tab (`pom-tab-closable`,
+  siblings, never a button inside a button).
 - `AlertTooltip` (ui.tsx) - `compact` makes the icon the size of the `[i]`, without
   a frame, so it fits in the `DeploymentInspector`'s icon column; `Meter` and
   `KeyValue` gained `compact` for the same reason in the machine card. It is the compact
@@ -77,7 +81,9 @@ Per-file list:
   portal, with an explicit word break for long messages and for ids without
   spaces. `InfoTip` is the neutral version (an `[i]` icon, without the weight of a warning) for
   explaining a parameter on hover/focus/touch; the two share
-  `usePositionedPopover` (state + positioning of the portal bubble). `Field`
+  `usePositionedPopover` (state + positioning of the portal bubble), and so
+  does `IconTip`, whose trigger is the icon it explains (a click on it does
+  not reach a clickable row). `Field`
   gained `tip?: string` - it renders an `InfoTip` glued to the label's line,
   **outside** the `<label>` (a `<button>` inside a `<label>` breaks the control's accessible
   name), so the `<label>` keeps wrapping only text and control. `hint` (visible text) keeps
@@ -480,11 +486,11 @@ Per-file list:
   as a dead end sent the user looking for a defect that did not exist. See
   `docs/subsystems/p2p-network.md`, "The address that stopped answering".
   `PipelineRail` and `ModelNetworkCanvas` make the same distinction.
-  `RemoveNode`, `LeaveNode` and `ReleaseSlice` render from here - all of them in one
+  `RemoveNode` and `ReleaseSlice` render from here - both in one
   **toolbar at the top of the card**, beside the MTP badge,
   instead of scattered through the footer. `RemoveNode` releases this machine's slice of the model
-  and keeps it in the cluster; `LeaveNode` removes it from the whole network, so
-  both actions stay visible. The update-and-restart action, development-only, is not
+  and keeps it in the cluster. `LeaveNode` is no longer rendered on the card: leaving
+  the whole network is done from the machine's own My Machine screen. The update-and-restart action, development-only, is not
   rendered. The card is dense on
   purpose (`compact` in `Meter`/`KeyValue`, `px-3 py-2.5` sections) so it fits
   on one screen; what is useful without needing to be always visible lives in an `InfoTip`
@@ -504,9 +510,14 @@ Per-file list:
   unknown when the platform does not publish watts.
 - `PluginServices.tsx` - what a machine's plugins serve to the network
   (`node.plugin_services`, e.g. Qdrant as the RAG server). `PluginServiceBadge`
-  is the badge, toned by status; `PluginServiceTether` hangs the badges under
-  the machine's card in `ModelNetworkCanvas` with a connecting line, and
-  `PeerDetailCard` lists them in a Services section. Tests in
+  is the badge, toned by status (`compact`: icon only, name and kind slide out on
+  hover or focus); `PluginServiceTether` hangs compact badges under
+  the machine's card in `ModelNetworkCanvas` with a connecting line
+  (`SERVICE_TETHER_HEIGHT` is the room the canvas arrangement leaves for it), and
+  `PeerDetailCard` lists them in a Services section. `servicesInUse` picks what
+  the Flow draws: with a model loaded, only the inference service that is the
+  engine in use, plus a `llama.cpp` pseudo badge when the engine is llama.cpp
+  (`PeerView.engine` null). Tests in
   `PluginServices.test.tsx`.
 - `KvCache.tsx` - the KV cache block of `PeerDetailCard`: disk used by the
   machine's snapshot directory (`node.kv_cache`), the host-memory cache from
@@ -569,13 +580,15 @@ Per-file list:
   button switches at once, and the bell does not list it. A declined request
   shows how many minutes are left before asking again (`retryWaitMinutes`
   over `retry_at`), and the request form comes back when the wait is over.
-  `layout="page"` fills the hosting screen instead of a window, with a back
-  button (`backLabel`) in place of Close; the Networks screen uses it to keep
-  several lobbies open in tabs; `headerActions` adds controls at the right of
-  that header. `focusAdmission` puts the focus on the role picker once the
-  request form shows, and `onUnavailable` tells a page lobby that the
-  network's lobby is off (`lobby_disabled`), so the screen reopens it as a
-  window. When the network answers `messages_closed` (its Chat is off) the
+  `layout="page"` fills the hosting screen instead of a window; a back
+  button is drawn only when `backLabel` is given (the Networks screen gives
+  none: its tabs stay on top and are the way back); `headerActions` adds
+  controls at the right of that header. `focusAdmission` puts the focus on the role picker once the
+  request form shows. A lobby whose network answers `lobby_disabled`, page or
+  window, shows only that notice (`lobby-disabled`): the network refuses the
+  admission request as well; the optional
+  `onUnavailable` still reports it, though the Networks screen no longer uses
+  it. When the network answers `messages_closed` (its Chat is off) the
   conversation column is not rendered: the window, or the full-screen page
   centered, is only the hardware card and the request panel (`lobby-request`).
   Test: `LobbyChat.test.tsx`.
@@ -594,7 +607,7 @@ Per-file list:
   there is reported apart (`onSaved(saved, relayFailed)`). Its steps are exported (`SetupSection`,
   `DiscoveryChoices`, `InfoFields`, `AccessFields`) and Network settings
   draws its edit form with them, so both ask the same questions the same way.
-  Also exports `ENROLLMENT_ICONS` (icon of each enrollment role) and
+  Also exports `ENROLLMENT_ICONS` (icon of each enrollment role: `Server` for a network node, `MessagesSquare` for an inference node) and
   `VISIBILITY_ICONS`/`VISIBILITY_LABELS` (globe, eye-off, wifi-off), which the
   Networks screen draws before each network's name. Tested through
   `../routes/PublicNetworks.test.tsx`.
@@ -621,8 +634,14 @@ Per-file list:
   (nearly the whole window, the Networks screen's full details); the panel is a
   flex column capped at `max-h-[calc(100vh-2rem)]` whose body scrolls
   (`min-h-0 flex-1 overflow-y-auto`) instead of the old `max-h-[70vh]`.
-- `LeaveNode.tsx` - Take **one** machine off the network, from its card on the
-  Dashboard. Same act as the top bar's "Este nó › Sair da rede" ("This node - Leave the network"), but that one
+- `TrustTransferGuide.tsx` - the dialog behind the Networks screen's "Share"
+  and "Add network": the same two-machine diagram (`TrustTransferDiagram`,
+  the trust file travelling, `.trust-travel` in `index.css`, still under
+  reduced motion) with "You are here" on the side the operator stands, three
+  steps and the action (download the file, or choose it). The file is public
+  but must arrive unaltered; the text asks for a trusted channel.
+- `LeaveNode.tsx` - Take **one** machine off the network. Not rendered by any
+  screen today (the machine card dropped it); kept with its test for a future caller. Same act as the top bar's "Este nó › Sair da rede" ("This node - Leave the network"), but that one
   only ever detached the machine the panel is open on; reaching each machine's
   own interface to switch it off was a detour, so the request goes to the local
   node with the target's `node_id` and it forwards (`POST /api/ui/leave`,

@@ -71,7 +71,9 @@ describe("Sidebar", () => {
         future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <LocaleProvider initialLocale="pt-BR">
-          <Sidebar />
+          <ProfileProvider initialProfile="admin">
+            <Sidebar />
+          </ProfileProvider>
         </LocaleProvider>
       </MemoryRouter>,
     );
@@ -92,7 +94,9 @@ describe("Sidebar", () => {
     render(
       <MemoryRouter initialEntries={["/"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <LocaleProvider initialLocale="pt-BR">
-          <Sidebar />
+          <ProfileProvider initialProfile="admin">
+            <Sidebar />
+          </ProfileProvider>
           <RouteProbe />
         </LocaleProvider>
       </MemoryRouter>,
@@ -103,6 +107,20 @@ describe("Sidebar", () => {
     expect(models.getAttribute("aria-expanded")).toBe("true");
     fireEvent.click(screen.getByRole("link", { name: "Encontrar Modelos HF" }));
     expect(screen.getByTestId("route").textContent).toBe("/models/remote");
+  });
+
+  it("offers no destination before the node says which profile this is", () => {
+    // No `ProfileProvider` pin: the profile is still the `admin` fallback, which
+    // must not open the administrator's menu to an inference node.
+    render(
+      <MemoryRouter initialEntries={["/chat"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <LocaleProvider initialLocale="pt-BR">
+          <Sidebar />
+        </LocaleProvider>
+      </MemoryRouter>,
+    );
+    expect(screen.queryByRole("link", { name: /Preferências administrativas/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Modelos" })).toBeNull();
   });
 
   it("keeps the logo header at 64px, same as the toolbar", () => {
@@ -121,7 +139,9 @@ describe("Sidebar", () => {
         future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <LocaleProvider initialLocale="pt-BR">
-          <Sidebar />
+          <ProfileProvider initialProfile="admin">
+            <Sidebar />
+          </ProfileProvider>
         </LocaleProvider>
       </MemoryRouter>,
     );
@@ -144,7 +164,9 @@ describe("Sidebar", () => {
         future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <LocaleProvider initialLocale="pt-BR">
-          <Sidebar />
+          <ProfileProvider initialProfile="admin">
+            <Sidebar />
+          </ProfileProvider>
         </LocaleProvider>
       </MemoryRouter>,
     );
@@ -243,7 +265,9 @@ describe("Sidebar", () => {
         future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <LocaleProvider initialLocale="pt-BR">
-          <Sidebar />
+          <ProfileProvider initialProfile="admin">
+            <Sidebar />
+          </ProfileProvider>
         </LocaleProvider>
       </MemoryRouter>,
     );

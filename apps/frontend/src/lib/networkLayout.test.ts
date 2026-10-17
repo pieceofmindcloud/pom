@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   autoLayout,
   clearPositions,
+  deployLayout,
   deploymentLayoutKey,
   fallbackPosition,
   GATEWAY_HEIGHT,
@@ -177,5 +178,37 @@ describe("autoLayout", () => {
       ksia: { left: 520, top: 140 },
       salem: { left: 340, top: 100 },
     });
+  });
+});
+
+describe("deployLayout", () => {
+  it("puts machines of a single stage side by side", () => {
+    const positions = deployLayout([
+      { id: "a", start_layer: 0, end_layer: 31 },
+      { id: "b", start_layer: 0, end_layer: 31 },
+    ], []);
+    expect(positions.a.top).toBe(positions.b.top);
+    expect(positions.b.left).toBeGreaterThanOrEqual(positions.a.left + CARD_WIDTH);
+  });
+
+  it("keeps a multi-stage pipeline in columns", () => {
+    const positions = deployLayout([
+      { id: "a", start_layer: 0, end_layer: 15 },
+      { id: "b", start_layer: 16, end_layer: 31 },
+    ], []);
+    expect(positions.b.left).toBeGreaterThan(positions.a.left);
+  });
+
+  it("lays machines without a range side by side under the plan", () => {
+    const positions = deployLayout([{ id: "a", start_layer: 0, end_layer: 31 }], ["c", "b"]);
+    expect(positions.b.top).toBe(positions.c.top);
+    expect(positions.b.top).toBeGreaterThanOrEqual(positions.a.top + CARD_HEIGHT);
+    expect(positions.c.left).toBeGreaterThanOrEqual(positions.b.left + CARD_WIDTH);
+  });
+
+  it("puts machines without a range on the axis when nothing is assigned", () => {
+    const positions = deployLayout([], ["a", "b"]);
+    expect(positions.a.top).toBe(positions.b.top);
+    expect(positions.b.left).toBeGreaterThan(positions.a.left);
   });
 });

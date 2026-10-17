@@ -289,21 +289,30 @@ export function LobbyChat({ network, endpoint, onClose, layout = "modal", backLa
       <Confirm open={joinConfirm} title={t("lobby.joinTitle", { name: network.name })} description={t("lobby.joinDetail")} confirmLabel={t("lobby.joinNow")} tone="danger" busy={joining} onConfirm={() => void join()} onCancel={() => !joining && setJoinConfirm(false)} />
     </>
   );
+  // The network turned its lobby off: no conversation and no request go
+  // through it, so the screen says so instead of a column stuck on "connecting".
+  const disabled = !exchange && failure === "lobby.errorDisabled";
+  const disabledNotice = <p role="status" data-testid="lobby-disabled" className="mx-auto max-w-md rounded-xl border border-amber/40 bg-amber/10 px-4 py-3 text-center text-sm text-amber">{t("lobby.errorDisabled")}</p>;
   if (page) {
     return (
       <section aria-label={title} className="flex h-full min-h-0 min-w-0 flex-col" data-testid="lobby-page">
         <div className="flex shrink-0 items-center gap-3 border-b border-line bg-raised/60 px-3 py-2 sm:px-4">
-          <Button size="sm" variant="ghost" onClick={onClose} icon={<ArrowLeft className="h-3.5 w-3.5" />}>{backLabel ?? t("common.close")}</Button>
+          {/* Without a label the host draws its own way back (the Networks screen's tabs). */}
+          {backLabel && <Button size="sm" variant="ghost" onClick={onClose} icon={<ArrowLeft className="h-3.5 w-3.5" />}>{backLabel}</Button>}
           <h2 className="min-w-0 flex-1 truncate font-display text-sm font-semibold text-fg">{title}</h2>
           {headerActions}
         </div>
-        <div className="min-h-0 flex-1 overflow-hidden p-3 text-sm leading-relaxed text-muted sm:p-4">{content}</div>
+        <div className="min-h-0 flex-1 overflow-hidden p-3 text-sm leading-relaxed text-muted sm:p-4">
+          {disabled
+            ? <div className="mt-8">{disabledNotice}</div>
+            : content}
+        </div>
       </section>
     );
   }
   return (
-    <Modal open size={closed ? "md" : "lg"} title={title} onClose={onClose} footer={<Button variant="ghost" onClick={onClose}>{t("common.close")}</Button>}>
-      {content}
+    <Modal open size={closed || disabled ? "md" : "lg"} title={title} onClose={onClose} footer={<Button variant="ghost" onClick={onClose}>{t("common.close")}</Button>}>
+      {disabled ? disabledNotice : content}
     </Modal>
   );
 }

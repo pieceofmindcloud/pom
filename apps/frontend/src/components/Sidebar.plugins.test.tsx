@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { LocaleProvider } from "../i18n/provider";
+import { ProfileProvider } from "../lib/profile";
 import { Sidebar } from "./Sidebar";
 
 const plugins = vi.hoisted(() => ({
@@ -59,7 +60,9 @@ function renderSidebar() {
     <QueryClientProvider client={new QueryClient()}>
       <MemoryRouter initialEntries={["/"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <LocaleProvider initialLocale="en">
-          <Sidebar />
+          <ProfileProvider initialProfile="admin">
+            <Sidebar />
+          </ProfileProvider>
           <RouteProbe />
         </LocaleProvider>
       </MemoryRouter>

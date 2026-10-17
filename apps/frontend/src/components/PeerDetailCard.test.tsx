@@ -58,8 +58,8 @@ describe("PeerDetailCard without a slice", () => {
   it("does not offer to remove from the model a machine that is in no model", () => {
     mount(withoutSlice);
     expect(screen.queryByRole("button", { name: /remover/i })).toBeNull();
-    // Leaving the network still applies: it is the cluster it leaves.
-    expect(screen.getByRole("button", { name: /sair da rede/i })).toBeTruthy();
+    // Leaving the network is not offered from the card either.
+    expect(screen.queryByRole("button", { name: /sair da rede/i })).toBeNull();
   });
 
   it("keeps showing what the machine actually reports", () => {
@@ -350,10 +350,11 @@ describe("PeerDetailCard · card layout", () => {
 
   it("puts the actions at the top, before what the machine reports", () => {
     mount(fakeSlicePeer("a", 0, 15));
-    const leaveButton = screen.getByRole("button", { name: /sair da rede/i });
+    const removeButton = screen.getByRole("button", { name: /remover/i });
+    expect(screen.queryByRole("button", { name: /sair da rede/i })).toBeNull();
     const ram = screen.getByText("RAM");
     // `DOCUMENT_POSITION_FOLLOWING` = the RAM comes after the button in the document.
-    expect(leaveButton.compareDocumentPosition(ram) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(removeButton.compareDocumentPosition(ram) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   /**

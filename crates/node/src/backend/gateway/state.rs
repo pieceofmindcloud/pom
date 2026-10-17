@@ -1250,6 +1250,10 @@ fn bases_by_route_plan(node_id: &str, bases: Vec<String>) -> Vec<String> {
     }
 }
 
+/// Admission of the peers that can take part in a pipeline. Every alive peer is probed
+/// and the planner waits for all of them, so a probe must cost nothing when it cannot
+/// change the plan. Each probe logs the path it took and its time, and the request logs a
+/// summary, so a slow admission can be attributed to a peer.
 pub(crate) async fn ready_for_pipeline(
     http: &crate::peer_client::PeerClients,
     health: &AdmissionHealth,
@@ -1257,7 +1261,8 @@ pub(crate) async fn ready_for_pipeline(
     peers: Vec<PeerInfo>,
     timeout: Duration,
 ) -> Vec<PeerInfo> {
-    futures::future::join_all(peers.into_iter().map(|peer| {
+    let started = Instant::now();
+    let results: Vec<Option<PeerInfo>> = futures::future::join_all(peers.into_iter().map(|peer| {
         // One client per peer: the probe has to speak the same language that the
         // inference will speak with that node, otherwise it measures - or refuses - a
         // path that the real request does not take.
@@ -1268,83 +1273,116 @@ pub(crate) async fn ready_for_pipeline(
         // reachable through another address or through the tunnel.
         let bases = bases_by_route_plan(&peer.node_id, network.inference_bases(&peer));
         async move {
-            if bases.is_empty() && crate::peer_client::TunnelPeer::from_peer(&peer).is_none() {
-                return None;
-            }
-            // Idle peers keep their assignment announced while `/health` has
-            // no loaded model. They are valid plan members and are woken by
-            // the reload event before inference starts.
-            if peer.idle {
-                return Some(peer);
-            }
-            let Ok(client) = client else {
-                return None;
-            };
-            // Whoever failed recently is not probed again at full price: it
-            // stays out of the plan, and the request does not pay for it.
-            if health.quarantined(&peer.node_id).await {
-                return None;
-            }
-            // Every address at once, the first good answer wins. One after
-            // the other, each dead address (an unreachable IPv6, a stale LAN
-            // IP) cost the whole timeout, and the request paid ~700 ms of
-            // `orchestration` before its prefill started.
-            let probes = bases.iter().map(|base| {
-                let client = &client;
-                let peer_id = peer.node_id.as_str();
-                Box::pin(async move {
-                    let url = format!("{base}/health");
-                    let Ok(Ok(response)) =
-                        tokio::time::timeout(timeout, client.get(url).send()).await
-                    else {
-                        return Err(());
-                    };
-                    if !response.status().is_success()
-                        || crate::peer_client::answered_by_other_node(response.headers(), peer_id)
-                            .is_some()
-                    {
-                        return Err(());
-                    }
-                    match tokio::time::timeout(timeout, response.json::<serde_json::Value>()).await
-                    {
-                        Ok(Ok(value)) => Ok((base, value)),
-                        _ => Err(()),
-                    }
-                })
-            });
-            let mut body = None;
-            if !bases.is_empty() {
-                if let Ok(((base, value), _)) = futures::future::select_ok(probes).await {
-                    network.routes.mark_success(&peer.node_id, base);
-                    body = Some(value);
-                }
-            }
-            // No address answered: the libp2p tunnel, which inference
-            // also uses when direct HTTP does not get through.
-            if body.is_none() {
-                if let Some(tunnel) = crate::peer_client::TunnelPeer::from_peer(&peer) {
-                    body = crate::infer_tunnel::health_via_tunnel(&tunnel, TUNNEL_HEALTH_TIMEOUT)
-                        .await;
-                }
-            }
-            let Some(body) = body else {
-                health.note_failure(&peer.node_id).await;
-                return None;
-            };
+            let probe_started = Instant::now();
             let node_id = peer.node_id.clone();
-            health.note_perf(&node_id, crate::fastest::PeerPerf::from_health(&body));
-            let Some(peer) = refresh_peer_from_health(peer, &body) else {
-                health.note_failure(&node_id).await;
-                return None;
-            };
-            health.note_success(&peer.node_id).await;
-            Some(peer)
+            let (admitted, path) = admit_peer(health, network, peer, client, bases, timeout).await;
+            let short = &node_id[..node_id.len().min(12)];
+            tracing::info!(
+                "admission: peer {short} {path} in {:.1} ms",
+                probe_started.elapsed().as_secs_f64() * 1000.0
+            );
+            admitted
         }
     }))
-    .await
-    .into_iter()
-    .flatten()
-    .collect()
+    .await;
+    let total = results.len();
+    let admitted: Vec<PeerInfo> = results.into_iter().flatten().collect();
+    tracing::info!(
+        "admission: {} of {} peers in {:.1} ms",
+        admitted.len(),
+        total,
+        started.elapsed().as_secs_f64() * 1000.0
+    );
+    admitted
+}
+
+/// One peer's admission. Returns the peer when it may take part, and the path that decided it,
+/// for the log. A peer that announces no model has nothing to serve the pipeline with, so it is
+/// not probed at all: probing it through the tunnel is what cost a request about two seconds.
+async fn admit_peer(
+    health: &AdmissionHealth,
+    network: &crate::network::Network,
+    peer: PeerInfo,
+    client: anyhow::Result<reqwest::Client>,
+    bases: Vec<String>,
+    timeout: Duration,
+) -> (Option<PeerInfo>, &'static str) {
+    if bases.is_empty() && crate::peer_client::TunnelPeer::from_peer(&peer).is_none() {
+        return (None, "no-address");
+    }
+    // Idle peers keep their assignment announced while `/health` has no loaded model.
+    // They are valid plan members and are woken by the reload event before inference starts.
+    if peer.idle {
+        return (Some(peer), "idle");
+    }
+    if peer.model.is_empty() {
+        return (None, "no-model");
+    }
+    let Ok(client) = client else {
+        return (None, "no-client");
+    };
+    // Whoever failed recently is not probed again at full price: it
+    // stays out of the plan, and the request does not pay for it.
+    if health.quarantined(&peer.node_id).await {
+        return (None, "quarantined");
+    }
+    // Every address at once, the first good answer wins. One after
+    // the other, each dead address (an unreachable IPv6, a stale LAN
+    // IP) cost the whole timeout, and the request paid ~700 ms of
+    // `orchestration` before its prefill started.
+    let probes = bases.iter().map(|base| {
+        let client = &client;
+        let peer_id = peer.node_id.as_str();
+        Box::pin(async move {
+            let url = format!("{base}/health");
+            let Ok(Ok(response)) = tokio::time::timeout(timeout, client.get(url).send()).await
+            else {
+                return Err(());
+            };
+            if !response.status().is_success()
+                || crate::peer_client::answered_by_other_node(response.headers(), peer_id).is_some()
+            {
+                return Err(());
+            }
+            match tokio::time::timeout(timeout, response.json::<serde_json::Value>()).await {
+                Ok(Ok(value)) => Ok((base, value)),
+                _ => Err(()),
+            }
+        })
+    });
+    let mut body = None;
+    let mut via = "direct-miss";
+    if !bases.is_empty() {
+        if let Ok(((base, value), _)) = futures::future::select_ok(probes).await {
+            network.routes.mark_success(&peer.node_id, base);
+            body = Some(value);
+            via = "direct";
+        }
+    }
+    // No address answered: the libp2p tunnel, which inference also uses when direct HTTP
+    // does not get through.
+    if body.is_none() {
+        if let Some(tunnel) = crate::peer_client::TunnelPeer::from_peer(&peer) {
+            body = crate::infer_tunnel::health_via_tunnel(&tunnel, TUNNEL_HEALTH_TIMEOUT).await;
+            via = if body.is_some() {
+                "tunnel"
+            } else {
+                "tunnel-miss"
+            };
+        }
+    }
+    let Some(body) = body else {
+        health.note_failure(&peer.node_id).await;
+        return (None, via);
+    };
+    let node_id = peer.node_id.clone();
+    health.note_perf(&node_id, crate::fastest::PeerPerf::from_health(&body));
+    let Some(peer) = refresh_peer_from_health(peer, &body) else {
+        health.note_failure(&node_id).await;
+        return (None, "not-loaded");
+    };
+    health.note_success(&peer.node_id).await;
+    (Some(peer), via)
 }
 
 impl GatewayState {

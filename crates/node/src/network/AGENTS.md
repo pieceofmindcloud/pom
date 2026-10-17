@@ -128,7 +128,9 @@ dedicated or member, with iroh's hole punching), are in
   addresses and the reachability from the NAT report.
 - `identity.rs` - the node's **only** Ed25519 key and the `node_id` (SHA256 of
   the pubkey). It lives in `<project_root>/.pom-node.key` (or `$POM_NODE_KEY`).
-  The endpoint id (`secret_key`; `peer_id` is its hex, the same as the pubkey), the
+  The endpoint id (`secret_key`, the hex of the pubkey), the trust chain's
+  `peer_id` (`trust_peer_id`: the libp2p `PeerId` text form signed chains carry,
+  derived from the key; never the endpoint id), the
   pkarr key and the authority key also come from it; `Announce`/`PeerInfo` have a
   single `pubkey`.
 - `network.rs` - the heart of the UDP P2P: `P2PMessage`, `PeerInfo`, dual-stack
@@ -516,7 +518,7 @@ dedicated or member, with iroh's hole punching), are in
   binary from another directory would create a second identity. There is no
   separate pkarr key.
 - `Identity::secret_key` / `peer_id` - the same seed as the iroh endpoint's secret
-  key; `peer_id` is the endpoint id's hex, the same string as `public_key_hex`.
+  key; `peer_id` is `trust_peer_id`, the form the trust chain's tuples carry.
 
 `route.rs`:
 - `choose_route` - the best live candidate; it only swaps the current route if the

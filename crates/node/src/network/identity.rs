@@ -110,12 +110,57 @@ impl Identity {
         crate::p2p::secret_key(&self.signing_key)
     }
 
-    /// The endpoint id: the public key itself, in hex - the same string as
-    /// [`Self::public_key_hex`]. It is what the trust chain records as the
-    /// transport identity (`AuthorityPrincipal::peer_id`).
+    /// The transport identity the trust chain records
+    /// (`AuthorityPrincipal::peer_id`): see [`trust_peer_id`].
     pub fn peer_id(&self) -> String {
-        self.secret_key().public().to_string()
+        trust_peer_id(self.signing_key.verifying_key().as_bytes())
     }
+}
+
+/// The `peer_id` of an Ed25519 public key as signed trust chains carry it:
+/// the libp2p `PeerId` text form (`12D3KooW...`), the base58 of an identity
+/// multihash over the protobuf-encoded key.
+///
+/// The transport is iroh now and dials the key itself, but every chain
+/// already signed records the principal and its grants as
+/// `{node_id, peer_id, pubkey}` in this form, and authority is matched on
+/// the whole tuple. Computing it any other way stripped the principal of its
+/// authority over its own network. It is derived from the key alone, so it
+/// adds nothing to trust: it is a label of the same key.
+pub fn trust_peer_id(pubkey: &[u8; 32]) -> String {
+    // Protobuf `PublicKey { Type = Ed25519 (1), Data = 32 bytes }`, wrapped
+    // in an identity multihash (code 0x00, length 36).
+    let mut bytes = vec![0x00, 36, 0x08, 0x01, 0x12, 0x20];
+    bytes.extend_from_slice(pubkey);
+    base58(&bytes)
+}
+
+/// The trust `peer_id` of a hex public key; `None` when it is not one.
+pub fn trust_peer_id_from_hex(pubkey_hex: &str) -> Option<String> {
+    let bytes: [u8; 32] = hex::decode(pubkey_hex).ok()?.try_into().ok()?;
+    Some(trust_peer_id(&bytes))
+}
+
+fn base58(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 58] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    let zeros = bytes.iter().take_while(|byte| **byte == 0).count();
+    // Little-endian base-58 digits, by repeated division.
+    let mut digits: Vec<u8> = Vec::new();
+    for &byte in bytes {
+        let mut carry = byte as u32;
+        for digit in digits.iter_mut() {
+            carry += (*digit as u32) << 8;
+            *digit = (carry % 58) as u8;
+            carry /= 58;
+        }
+        while carry > 0 {
+            digits.push((carry % 58) as u8);
+            carry /= 58;
+        }
+    }
+    let mut text = "1".repeat(zeros);
+    text.extend(digits.iter().rev().map(|digit| ALPHABET[*digit as usize] as char));
+    text
 }
 
 #[cfg(test)]
@@ -146,13 +191,30 @@ mod tests {
         let identity = Identity::generate();
         let pubkey = identity.signing_key.verifying_key();
         assert_eq!(identity.node_id.0, NodeId::from_pubkey(&pubkey).0);
-        assert_eq!(identity.peer_id(), identity.public_key_hex());
+        assert_eq!(
+            Some(identity.peer_id()),
+            trust_peer_id_from_hex(&identity.public_key_hex())
+        );
         let pkarr = crate::pkarr_node::PkarrNode::from_signing_key(&identity.signing_key).unwrap();
         assert_eq!(
             pkarr.public_key_uri(),
             crate::pkarr_node::PkarrNode::public_key_uri_from_hex(&identity.public_key_hex())
                 .unwrap()
         );
+    }
+
+    /// A chain signed before the move to iroh: this principal's tuple, as it
+    /// is on disk, must keep naming the same key.
+    #[test]
+    fn the_trust_peer_id_is_the_one_signed_chains_carry() {
+        assert_eq!(
+            trust_peer_id_from_hex(
+                "d939c9dd4f34329fbb93b73f03145590ed125acd5cafe105a3bdf7aeffa66c6a"
+            )
+            .as_deref(),
+            Some("12D3KooWQSKkKWANWtaSesT2R5H7VTbXP45oB1uzkPYjJzs3CzRX")
+        );
+        assert_eq!(trust_peer_id_from_hex("not hex"), None);
     }
 
     #[test]

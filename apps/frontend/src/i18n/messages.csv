@@ -1284,6 +1284,7 @@ keys.unnamed,unnamed,sem nome
 lobby.admission,Admission,Admissão
 lobby.admissionApproved,An admin approved this machine as {role}. Joining is up to you.,Um administrador aprovou esta máquina como {role}. Entrar é decisão sua.
 lobby.admissionAsk,Request admission,Pedir admissão
+lobby.admissionAskAgain,Send the request again,Enviar o pedido de novo
 lobby.admissionAskDetail,An admin of the network decides. You can close this window: the answer arrives in the notifications.,Um administrador da rede decide. Você pode fechar esta janela: a resposta chega nas notificações.
 lobby.admissionPending,Admission as {role} requested. Waiting for an admin.,Admissão como {role} pedida. Aguardando um administrador.
 lobby.admissionRejected,An admin declined this request. You can ask again later.,Um administrador recusou este pedido. Você pode pedir de novo mais tarde.

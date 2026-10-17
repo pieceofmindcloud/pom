@@ -1028,7 +1028,12 @@ returns its hex, the same string as `public_key_hex`);
 `admin_trust::local_authority_identity` uses it as the authority key. That is
 why `Announce` and `PeerInfo` have a single `pubkey` field, and public
 admission checks `node_id == SHA256(pubkey)` and `endpoint_id == pubkey`. The
-trust chain's `AuthorityPrincipal::peer_id` holds the endpoint id. There is no
+trust chain's `AuthorityPrincipal::peer_id` keeps the libp2p `PeerId` text form
+(`12D3KooW...`), derived from the key alone by `identity::trust_peer_id`: every
+chain signed before the move to iroh records it that way and authority is
+matched on the whole `{node_id, peer_id, pubkey}` tuple. Taking the endpoint
+id there instead stripped a principal of authority over its own network
+(every principal-only route answered 403). There is no
 `.pom.key` or `$POM_PKARR_KEY` any more; a `.pom.key` left over from an
 earlier version is ignored. Changing the key changes `node_id`, the endpoint
 id, `pk:` and the trust chain identity at once: a principal that changes its

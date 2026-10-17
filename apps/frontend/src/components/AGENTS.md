@@ -592,6 +592,9 @@ Per-file list:
   it. When the network answers `messages_closed` (its Chat is off) the
   conversation column is not rendered: the window, or the full-screen page
   centered, is only the hardware card and the request panel (`lobby-request`).
+  A pending request keeps a "Send the request again" button (same role): the
+  principal only refreshes a pending record, so the candidate is never stuck
+  waiting on an admin who missed it.
   Test: `LobbyChat.test.tsx`.
 - `NetworkQuickSetup.tsx` - step-by-step window that publishes this
   machine's own network from the Networks screen: discovery (public, hidden,

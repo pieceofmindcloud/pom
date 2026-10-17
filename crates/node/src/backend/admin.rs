@@ -1051,7 +1051,9 @@ async fn promote_node_to_admin(
         )
             .into_response();
     };
-    let Some(peer_id) = peer.endpoint_id.clone() else {
+    // The chain's transport identity is derived from the key, not taken
+    // from the announce: see `identity::trust_peer_id`.
+    let Some(peer_id) = crate::identity::trust_peer_id_from_hex(&peer.pubkey) else {
         return (
             StatusCode::BAD_GATEWAY,
             Json(json!({ "error": "the peer does not announce its p2p identity" })),

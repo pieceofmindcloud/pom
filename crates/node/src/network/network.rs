@@ -3522,7 +3522,7 @@ impl Network {
         let Some(cluster_id) = peer.cluster_id.as_deref() else {
             return false;
         };
-        let Some(peer_id) = peer.endpoint_id.as_deref() else {
+        let Some(peer_id) = crate::identity::trust_peer_id_from_hex(&peer.pubkey) else {
             return false;
         };
         // `anyone_with_anchor`: the operator declared that any node that holds the
@@ -3540,7 +3540,7 @@ impl Network {
         }
         let principal = crate::admin_trust::AuthorityPrincipal {
             node_id: peer.node_id.clone(),
-            peer_id: peer_id.to_string(),
+            peer_id,
             pubkey: peer.pubkey.clone(),
         };
         admission.trust.admits_participant(cluster_id, &principal)
@@ -5460,7 +5460,7 @@ mod tests {
         };
         peer.node_id = identity.node_id.0.clone();
         peer.pubkey = identity.public_key_hex();
-        peer.endpoint_id = Some(identity.peer_id());
+        peer.endpoint_id = Some(identity.secret_key().public().to_string());
         peer
     }
 

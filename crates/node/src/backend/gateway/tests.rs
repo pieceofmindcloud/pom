@@ -2637,7 +2637,7 @@ mod peer_visibility_tests {
         let mut stalled = peer("stalled");
         stalled.inference_port = Some(stalled_port);
 
-        let health = super::AdmissionHealth::default();
+        let health = std::sync::Arc::new(super::AdmissionHealth::default());
         let clients = crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600));
         let state = crate::gateway::testkit::state_with("eu", vec![]).await;
         let reachable = ready_for_pipeline(
@@ -2695,7 +2695,7 @@ mod peer_visibility_tests {
         head.addr_candidates = vec!["127.0.0.2:42777".into(), "127.0.0.1:42777".into()];
         head.inference_port = Some(port);
 
-        let health = super::AdmissionHealth::default();
+        let health = std::sync::Arc::new(super::AdmissionHealth::default());
         let clients = crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600));
         let state = crate::gateway::testkit::state_with("eu", vec![]).await;
         let reachable = ready_for_pipeline(
@@ -2748,7 +2748,7 @@ mod peer_visibility_tests {
         stale.total_layers = 32;
         stale.inference_port = Some(port);
 
-        let health = super::AdmissionHealth::default();
+        let health = std::sync::Arc::new(super::AdmissionHealth::default());
         let clients = crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600));
         let state = crate::gateway::testkit::state_with("eu", vec![]).await;
         let reachable = ready_for_pipeline(

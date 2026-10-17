@@ -46,6 +46,39 @@ pub struct AdmissionHealth {
     /// admission probe. It is the input of the delivery-time planner
     /// (`fastest::plan_fastest`) and of the Dashboard.
     perf: std::sync::RwLock<std::collections::HashMap<String, (Instant, crate::fastest::PeerPerf)>>,
+    /// The last peer admitted by a probe that finished, so a request whose probe missed the
+    /// budget can still plan with it for `ADMISSION_MEMORY`.
+    admitted: std::sync::RwLock<std::collections::HashMap<String, (Instant, PeerInfo)>>,
+}
+
+/// How old a remembered admission may be to stand in for a probe that missed the budget.
+pub(crate) const ADMISSION_MEMORY: Duration = Duration::from_secs(15);
+
+/// The whole admission of a request. The planner waits no longer than this for the probes;
+/// a probe that has not finished by then keeps running and refreshes the memory.
+pub(crate) const ADMISSION_BUDGET: Duration = Duration::from_millis(250);
+
+impl AdmissionHealth {
+    fn remember(&self, peer: PeerInfo) {
+        if let Ok(mut map) = self.admitted.write() {
+            map.insert(peer.node_id.clone(), (Instant::now(), peer));
+        }
+    }
+
+    fn forget(&self, node_id: &str) {
+        if let Ok(mut map) = self.admitted.write() {
+            map.remove(node_id);
+        }
+    }
+
+    fn remembered(&self, node_id: &str, max_age: Duration) -> Option<PeerInfo> {
+        self.admitted
+            .read()
+            .ok()?
+            .get(node_id)
+            .filter(|(at, _)| at.elapsed() <= max_age)
+            .map(|(_, peer)| peer.clone())
+    }
 }
 
 impl AdmissionHealth {
@@ -1250,19 +1283,26 @@ fn bases_by_route_plan(node_id: &str, bases: Vec<String>) -> Vec<String> {
     }
 }
 
-/// Admission of the peers that can take part in a pipeline. Every alive peer is probed
-/// and the planner waits for all of them, so a probe must cost nothing when it cannot
-/// change the plan. Each probe logs the path it took and its time, and the request logs a
-/// summary, so a slow admission can be attributed to a peer.
+/// Admission of the peers that can take part in a pipeline. Only the peers that announce a
+/// model, or are idle, are probed and waited for: a peer with nothing loaded cannot serve, and
+/// it costs nothing here. Each probe runs on its own task, and the request waits at most
+/// `ADMISSION_BUDGET` for them. A probe that misses the budget keeps running and refreshes the
+/// memory, so the next request has its verdict; in the meantime a verdict younger than
+/// `ADMISSION_MEMORY` stands in for it.
 pub(crate) async fn ready_for_pipeline(
     http: &crate::peer_client::PeerClients,
-    health: &AdmissionHealth,
-    network: &crate::network::Network,
+    health: &Arc<AdmissionHealth>,
+    network: &Arc<crate::network::Network>,
     peers: Vec<PeerInfo>,
     timeout: Duration,
 ) -> Vec<PeerInfo> {
     let started = Instant::now();
-    let results: Vec<Option<PeerInfo>> = futures::future::join_all(peers.into_iter().map(|peer| {
+    let deadline = started + ADMISSION_BUDGET;
+    let mut probes = Vec::new();
+    for peer in peers {
+        if !peer.idle && peer.model.is_empty() {
+            continue;
+        }
         // One client per peer: the probe has to speak the same language that the
         // inference will speak with that node, otherwise it measures - or refuses - a
         // path that the real request does not take.
@@ -1272,33 +1312,64 @@ pub(crate) async fn ready_for_pipeline(
         // peer in quarantine and out of the plan ("Gap at layer 0") even though
         // reachable through another address or through the tunnel.
         let bases = bases_by_route_plan(&peer.node_id, network.inference_bases(&peer));
-        async move {
+        let node_id = peer.node_id.clone();
+        let (health_task, network_task) = (health.clone(), network.clone());
+        let task_node_id = node_id.clone();
+        let handle = tokio::spawn(async move {
             let probe_started = Instant::now();
-            let node_id = peer.node_id.clone();
-            let (admitted, path) = admit_peer(health, network, peer, client, bases, timeout).await;
-            let short = &node_id[..node_id.len().min(12)];
-            tracing::info!(
-                "admission: peer {short} {path} in {:.1} ms",
-                probe_started.elapsed().as_secs_f64() * 1000.0
-            );
-            admitted
+            let (admitted, via) =
+                admit_peer(&health_task, &network_task, peer, client, bases, timeout).await;
+            match &admitted {
+                Some(peer) => health_task.remember(peer.clone()),
+                None => health_task.forget(&task_node_id),
+            }
+            (admitted, via, probe_started.elapsed())
+        });
+        probes.push((node_id, handle));
+    }
+    let probed = probes.len();
+    let mut admitted = Vec::with_capacity(probed);
+    for (node_id, handle) in probes {
+        let short = &node_id[..node_id.len().min(12)];
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match tokio::time::timeout(remaining, handle).await {
+            Ok(Ok((Some(peer), via, took))) => {
+                tracing::info!(
+                    "admission: peer {short} {via} in {:.1} ms",
+                    took.as_secs_f64() * 1000.0
+                );
+                admitted.push(peer);
+            }
+            Ok(Ok((None, via, took))) => {
+                tracing::info!(
+                    "admission: peer {short} refused ({via}) in {:.1} ms",
+                    took.as_secs_f64() * 1000.0
+                );
+            }
+            Ok(Err(_)) => {
+                tracing::warn!("admission: peer {short} probe ended in a panic");
+            }
+            Err(_) => match health.remembered(&node_id, ADMISSION_MEMORY) {
+                Some(peer) => {
+                    tracing::info!("admission: peer {short} still probing; using its last admission");
+                    admitted.push(peer);
+                }
+                None => tracing::info!("admission: peer {short} still probing; left out"),
+            },
         }
-    }))
-    .await;
-    let total = results.len();
-    let admitted: Vec<PeerInfo> = results.into_iter().flatten().collect();
+    }
     tracing::info!(
-        "admission: {} of {} peers in {:.1} ms",
+        "admission: {} of {} probed peers in {:.1} ms",
         admitted.len(),
-        total,
+        probed,
         started.elapsed().as_secs_f64() * 1000.0
     );
     admitted
 }
 
 /// One peer's admission. Returns the peer when it may take part, and the path that decided it,
-/// for the log. A peer that announces no model has nothing to serve the pipeline with, so it is
-/// not probed at all: probing it through the tunnel is what cost a request about two seconds.
+/// for the log. The tunnel is tried only for a peer that announces a model, and not when every
+/// direct address refused the connection: a refused address is a server that is not there.
 async fn admit_peer(
     health: &AdmissionHealth,
     network: &crate::network::Network,
@@ -1315,9 +1386,6 @@ async fn admit_peer(
     if peer.idle {
         return (Some(peer), "idle");
     }
-    if peer.model.is_empty() {
-        return (None, "no-model");
-    }
     let Ok(client) = client else {
         return (None, "no-client");
     };
@@ -1326,42 +1394,51 @@ async fn admit_peer(
     if health.quarantined(&peer.node_id).await {
         return (None, "quarantined");
     }
-    // Every address at once, the first good answer wins. One after
-    // the other, each dead address (an unreachable IPv6, a stale LAN
-    // IP) cost the whole timeout, and the request paid ~700 ms of
-    // `orchestration` before its prefill started.
-    let probes = bases.iter().map(|base| {
+    // Every address at once, the first good answer wins. Each probe reports whether its
+    // address refused the connection, which is what decides about the tunnel below.
+    let mut in_flight = futures::stream::FuturesUnordered::new();
+    for base in &bases {
         let client = &client;
         let peer_id = peer.node_id.as_str();
-        Box::pin(async move {
+        in_flight.push(Box::pin(async move {
             let url = format!("{base}/health");
-            let Ok(Ok(response)) = tokio::time::timeout(timeout, client.get(url).send()).await
-            else {
-                return Err(());
+            let response = match tokio::time::timeout(timeout, client.get(url).send()).await {
+                Ok(Ok(response)) => response,
+                Ok(Err(error)) => return Err(error.is_connect()),
+                Err(_) => return Err(false),
             };
             if !response.status().is_success()
                 || crate::peer_client::answered_by_other_node(response.headers(), peer_id).is_some()
             {
-                return Err(());
+                return Err(false);
             }
             match tokio::time::timeout(timeout, response.json::<serde_json::Value>()).await {
                 Ok(Ok(value)) => Ok((base, value)),
-                _ => Err(()),
+                _ => Err(false),
             }
-        })
-    });
+        }));
+    }
     let mut body = None;
     let mut via = "direct-miss";
-    if !bases.is_empty() {
-        if let Ok(((base, value), _)) = futures::future::select_ok(probes).await {
-            network.routes.mark_success(&peer.node_id, base);
-            body = Some(value);
-            via = "direct";
+    let mut all_refused = !bases.is_empty();
+    while let Some(outcome) = futures::StreamExt::next(&mut in_flight).await {
+        match outcome {
+            Ok((base, value)) => {
+                network.routes.mark_success(&peer.node_id, base);
+                body = Some(value);
+                via = "direct";
+                break;
+            }
+            Err(refused) => all_refused &= refused,
         }
     }
-    // No address answered: the libp2p tunnel, which inference also uses when direct HTTP
-    // does not get through.
-    if body.is_none() {
+    drop(in_flight);
+    if body.is_none() && all_refused {
+        return (None, "refused-direct");
+    }
+    // No address answered: the libp2p tunnel. Only a peer that announces a model can serve,
+    // so only it is worth the tunnel's round trip.
+    if body.is_none() && !peer.model.is_empty() {
         if let Some(tunnel) = crate::peer_client::TunnelPeer::from_peer(&peer) {
             body = crate::infer_tunnel::health_via_tunnel(&tunnel, TUNNEL_HEALTH_TIMEOUT).await;
             via = if body.is_some() {

@@ -112,9 +112,9 @@ mod link;
 #[cfg(test)]
 #[path = "inference/link_lab.rs"]
 mod link_lab;
-#[path = "network/local_discovery.rs"]
 #[cfg(all(target_os = "linux", feature = "desktop"))]
 mod linux_window;
+#[path = "network/local_discovery.rs"]
 mod local_discovery;
 #[cfg(test)]
 #[path = "network/local_discovery_tests.rs"]

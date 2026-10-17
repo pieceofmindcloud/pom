@@ -132,6 +132,14 @@ Per-file list:
   Networks tab) and stay
   mounted and polling while hidden, so the operator can talk in several at
   once. "Ask to join" opens the lobby with the focus on the admission request.
+  When the operator's own network is the only row (no search) and it can
+  still take the quick setup, a card under it (`network-discovery-off`) says
+  the machine is not connected to other networks, names the two ways to use
+  POM (several of your own computers, or hardware shared over the internet)
+  and opens the quick setup. It is centered, carries the compact puzzle of
+  `MissingPiece` (the fourth piece hovering) and has an X that hides it for
+  good in this browser (`pom.networks.discovery-off-card.dismissed` in
+  `localStorage`); the quick setup stays in the tab row.
   The principal of a network whose discovery is off or hidden gets "Quick
   setup" (`../components/NetworkQuickSetup.tsx`) in the header, on its row
   and in the panel.

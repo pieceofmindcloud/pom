@@ -329,7 +329,8 @@ Per-file list:
   token: pulsing dots and a message that rotates (`lib/chatWaiting.ts`), with
   the "starting our engines" set while the deployment wakes from idle. It is
   not drawn while the model is thinking, which has its own line.
-- `MissingPiece.tsx` - the puzzle screen, `variant="paused"` for a stopped
+- `MissingPiece.tsx` - the puzzle screen (`compact` shrinks mark, puzzle and
+  title for a card inside a screen, as on the Networks discovery-off card), `variant="paused"` for a stopped
   on-demand plugin (fourth piece grey, dashed, with a pause sign), `variant="loading"`
   for a plugin screen still opening (fourth piece hovering over its slot, and the
   whole assembly faster because the host opens the screen within a couple of

@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { ChevronLeft, ChevronRight, CircleCheck, CircleHelp, CircleX, Gauge, Globe2, House, LoaderCircle, LocateFixed, Lock, LogIn, LogOut, Maximize2, MessageCircle, Plus, RefreshCw, Search, Share2, SlidersHorizontal, Trash2, WandSparkles, Waypoints, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, CircleCheck, CircleHelp, CircleX, Gauge, Globe2, House, LoaderCircle, LocateFixed, Lock, LogIn, LogOut, Maximize2, MessageCircle, Plus, RefreshCw, Search, Share2, SlidersHorizontal, Trash2, WandSparkles, Laptop, Waypoints, X } from "lucide-react";
 import { Confirm, Modal } from "../components/Confirm";
 import { LobbyChat } from "../components/LobbyChat";
 import { Markdown } from "../components/Markdown";
+import { MissingPiece } from "../components/MissingPiece";
 import { ENROLLMENT_ICONS, NetworkQuickSetup, VISIBILITY_ICONS, VISIBILITY_LABELS } from "../components/NetworkQuickSetup";
 import { Badge, Button, ErrorState, IconTip, Input, Select, Skeleton, Tabs } from "../components/ui";
 import { TrustTransferGuide, type TrustTransferDirection } from "../components/TrustTransferGuide";
 import { api } from "../lib/api";
+import { storageKey } from "../lib/brand";
 import { since } from "../lib/format";
 import { networkStats, type NetworkStats } from "../lib/networkStats";
 import { usePublicLatencies, type PublicLatency } from "../lib/publicLatency";
@@ -144,6 +146,8 @@ export function PublicNetworks() {
   const [sortOrder, setSortOrder] = useState<SortOrder>("distance");
   // The filters stay behind a "+": on a phone the full set took most of the screen.
   const [filtersOpen, setFiltersOpen] = useState(false);
+  // "Do not show again" on the discovery-off card; the quick setup stays in the tab row.
+  const [offCardDismissed, setOffCardDismissed] = useState(readOffCardDismissed);
   // "Share" and "Add network" explain the trust file's trip before acting.
   const [guide, setGuide] = useState<{ direction: TrustTransferDirection; network?: PublicNetwork } | null>(null);
   // The browser hands out its location only on HTTPS or localhost; POM runs on plain HTTP by default.
@@ -429,6 +433,34 @@ export function PublicNetworks() {
   // How many filters narrow the list, shown on the "+" while the panel is closed.
   const activeFilters = [countryFilter !== "", cityFilter !== "", radiusKm > 0, sortOrder !== "distance"].filter(Boolean).length;
 
+  /*
+   * A first run: the operator's own network is off (or not public) and nothing
+   * else is listed. The empty space under that one row explains why, what POM
+   * is for, and the way out - the quick setup.
+   */
+  const discoveryOffCard = !offCardDismissed && canQuickSetup && !filtering && rows.length > 0 && rows.every((row) => row.kind === "own")
+    ? <div className="flex justify-center px-3 py-4 sm:px-5">
+      <section data-testid="network-discovery-off" aria-label={t("publicNetworks.offTitle")} className="relative w-full max-w-lg rounded-2xl border border-iris/30 bg-iris/[0.05] px-4 py-4 text-sm leading-relaxed text-muted shadow-panel sm:px-6">
+        <button type="button" data-testid="network-discovery-off-dismiss" aria-label={t("publicNetworks.offDismiss")} title={t("publicNetworks.offDismiss")} onClick={() => { writeOffCardDismissed(); setOffCardDismissed(true); }} className="absolute right-2 top-2 rounded-md p-1.5 text-faint hover:bg-raised hover:text-fg"><X className="h-4 w-4" /></button>
+        {/* The puzzle the Chat draws: three pieces in place and a fourth, this network, still on its way. */}
+        <MissingPiece variant="loading" compact title={t("publicNetworks.offTitle")} detail={t("publicNetworks.offIntro")}>
+          <div className="mt-3 grid gap-2 text-left sm:grid-cols-2">
+            <div className="rounded-lg border border-line bg-surface/70 p-2.5">
+              <p className="flex items-center gap-2 font-medium text-fg"><Laptop className="h-4 w-4 shrink-0 text-aqua" aria-hidden="true" />{t("publicNetworks.offOwnTitle")}</p>
+              <p className="mt-1 text-[0.75rem]">{t("publicNetworks.offOwnDetail")}</p>
+            </div>
+            <div className="rounded-lg border border-line bg-surface/70 p-2.5">
+              <p className="flex items-center gap-2 font-medium text-fg"><Globe2 className="h-4 w-4 shrink-0 text-lime" aria-hidden="true" />{t("publicNetworks.offSharedTitle")}</p>
+              <p className="mt-1 text-[0.75rem]">{t("publicNetworks.offSharedDetail")}</p>
+            </div>
+          </div>
+          <p className="mt-3 text-[0.8rem]">{t("publicNetworks.offAction")}</p>
+          <Button className="mt-3" size="sm" variant="primary" data-testid="network-discovery-off-setup" onClick={() => setQuickSetupOpen(true)} icon={<WandSparkles className="h-4 w-4" />}>{t("quickSetup.action")}</Button>
+        </MissingPiece>
+      </section>
+    </div>
+    : null;
+
   const body = knownError && !known
     ? <div className="px-5 py-5"><ErrorState title={t("publicNetworks.failed")} error={knownError} onRetry={() => setKnownVersion((value) => value + 1)} /></div>
     : known === null || (rows.length === 0 && refreshing && !filtering)
@@ -436,8 +468,8 @@ export function PublicNetworks() {
       : rows.length === 0
         ? <div className="px-5 py-12 text-center"><Globe2 className="mx-auto h-7 w-7 text-faint" /><p className="mt-3 text-sm font-medium text-fg">{t(filtering ? "publicNetworks.noMatches" : "publicNetworks.emptyTitle")}</p><p className="mx-auto mt-1 max-w-md text-sm leading-relaxed text-muted">{t(filtering ? "publicNetworks.noMatchesDetail" : "publicNetworks.emptyDetail")}</p></div>
         : narrow
-          ? <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden"><ul className="divide-y divide-line">{rows.map((row) => { const { network, kind } = row; const isLocal = kind === "own"; return <NetworkRow layout="card" key={`${network.cluster_id}:${network.fingerprint}`} network={network} kind={kind} visibility={row.visibility} selected={selectedRow?.network.fingerprint === network.fingerprint} cachedSince={kind === "public" && liveFingerprints && !liveFingerprints.has(network.fingerprint) ? row.lastSeenAt : undefined} onExport={() => setGuide({ direction: "share", network })} onRemove={() => setRemoveTarget(network)} distance={distanceKm(network.location, viewerLocation)} latency={isLocal ? undefined : latencies[network.publisher_key]} stats={isLocal ? metrics : null} membership={membershipOf(kind)} leaving={leaving} onLeave={() => setLeaveConfirm(true)} onChat={() => openLobby(network, network.accepted_enrollments?.length !== 0)} onQuickSetup={isLocal && canQuickSetup ? () => setQuickSetupOpen(true) : undefined} onSelect={() => setSelected(row)} t={t} refreshKey={reachabilityRefreshKey} />; })}</ul></div>
-          : <div className="min-h-0 flex-1 overflow-auto"><table className="min-w-[960px] w-full border-collapse text-left text-xs"><thead className="sticky top-0 z-10 bg-raised text-[0.66rem] uppercase tracking-[0.12em] text-faint"><tr>{[t("publicNetworks.name"), t("publicNetworks.location"), `${t("publicNetworks.reach")} · ${t("publicNetworks.latency")}`, `${t("publicNetworks.nodes")} · ${t("publicNetworks.vram")}`, t("publicNetworks.models"), "", t("publicNetworks.action")].map((column, index, all) => <th key={column || "accepting"} className={`border-b border-line px-4 py-3 font-medium ${index === all.length - 1 ? "text-right" : ""}`}>{column || <span className="sr-only">{t("publicNetworks.accepting")}</span>}</th>)}</tr></thead><tbody className="divide-y divide-line">{rows.map((row) => { const { network, kind } = row; const isLocal = kind === "own"; return <NetworkRow key={`${network.cluster_id}:${network.fingerprint}`} network={network} kind={kind} visibility={row.visibility} selected={selectedRow?.network.fingerprint === network.fingerprint} cachedSince={kind === "public" && liveFingerprints && !liveFingerprints.has(network.fingerprint) ? row.lastSeenAt : undefined} onExport={() => setGuide({ direction: "share", network })} onRemove={() => setRemoveTarget(network)} distance={distanceKm(network.location, viewerLocation)} latency={isLocal ? undefined : latencies[network.publisher_key]} stats={isLocal ? metrics : null} membership={membershipOf(kind)} leaving={leaving} onLeave={() => setLeaveConfirm(true)} onChat={() => openLobby(network, network.accepted_enrollments?.length !== 0)} onQuickSetup={isLocal && canQuickSetup ? () => setQuickSetupOpen(true) : undefined} onSelect={() => setSelected(row)} t={t} refreshKey={reachabilityRefreshKey} />; })}</tbody></table></div>;
+          ? <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden"><ul className="divide-y divide-line">{rows.map((row) => { const { network, kind } = row; const isLocal = kind === "own"; return <NetworkRow layout="card" key={`${network.cluster_id}:${network.fingerprint}`} network={network} kind={kind} visibility={row.visibility} selected={selectedRow?.network.fingerprint === network.fingerprint} cachedSince={kind === "public" && liveFingerprints && !liveFingerprints.has(network.fingerprint) ? row.lastSeenAt : undefined} onExport={() => setGuide({ direction: "share", network })} onRemove={() => setRemoveTarget(network)} distance={distanceKm(network.location, viewerLocation)} latency={isLocal ? undefined : latencies[network.publisher_key]} stats={isLocal ? metrics : null} membership={membershipOf(kind)} leaving={leaving} onLeave={() => setLeaveConfirm(true)} onChat={() => openLobby(network, network.accepted_enrollments?.length !== 0)} onQuickSetup={isLocal && canQuickSetup ? () => setQuickSetupOpen(true) : undefined} onSelect={() => setSelected(row)} t={t} refreshKey={reachabilityRefreshKey} />; })}</ul>{discoveryOffCard}</div>
+          : <div className="min-h-0 flex-1 overflow-auto"><table className="min-w-[960px] w-full border-collapse text-left text-xs"><thead className="sticky top-0 z-10 bg-raised text-[0.66rem] uppercase tracking-[0.12em] text-faint"><tr>{[t("publicNetworks.name"), t("publicNetworks.location"), `${t("publicNetworks.reach")} · ${t("publicNetworks.latency")}`, `${t("publicNetworks.nodes")} · ${t("publicNetworks.vram")}`, t("publicNetworks.models"), "", t("publicNetworks.action")].map((column, index, all) => <th key={column || "accepting"} className={`border-b border-line px-4 py-3 font-medium ${index === all.length - 1 ? "text-right" : ""}`}>{column || <span className="sr-only">{t("publicNetworks.accepting")}</span>}</th>)}</tr></thead><tbody className="divide-y divide-line">{rows.map((row) => { const { network, kind } = row; const isLocal = kind === "own"; return <NetworkRow key={`${network.cluster_id}:${network.fingerprint}`} network={network} kind={kind} visibility={row.visibility} selected={selectedRow?.network.fingerprint === network.fingerprint} cachedSince={kind === "public" && liveFingerprints && !liveFingerprints.has(network.fingerprint) ? row.lastSeenAt : undefined} onExport={() => setGuide({ direction: "share", network })} onRemove={() => setRemoveTarget(network)} distance={distanceKm(network.location, viewerLocation)} latency={isLocal ? undefined : latencies[network.publisher_key]} stats={isLocal ? metrics : null} membership={membershipOf(kind)} leaving={leaving} onLeave={() => setLeaveConfirm(true)} onChat={() => openLobby(network, network.accepted_enrollments?.length !== 0)} onQuickSetup={isLocal && canQuickSetup ? () => setQuickSetupOpen(true) : undefined} onSelect={() => setSelected(row)} t={t} refreshKey={reachabilityRefreshKey} />; })}</tbody></table>{discoveryOffCard}</div>;
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col bg-ink">
@@ -589,6 +621,25 @@ export function PublicNetworks() {
       <PublicNetworkDetails network={detailsOpen ? selectedRow?.network ?? null : null} visibility={selectedRow?.visibility ?? "public"} onClose={() => setDetailsOpen(false)} t={t} />
     </div>
   );
+}
+
+const OFF_CARD_DISMISSED = storageKey("networks.discovery-off-card.dismissed");
+
+/** Whether this browser asked not to see the discovery-off card again. */
+function readOffCardDismissed(): boolean {
+  try {
+    return localStorage.getItem(OFF_CARD_DISMISSED) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeOffCardDismissed() {
+  try {
+    localStorage.setItem(OFF_CARD_DISMISSED, "1");
+  } catch {
+    /* storage blocked: the card stays closed for this visit */
+  }
 }
 
 /** The list's own tab value; lobby tabs use the network's fingerprint. */

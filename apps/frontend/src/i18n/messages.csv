@@ -2155,6 +2155,14 @@ publicNetworks.noMatches,No public networks match these filters,Nenhuma rede pú
 publicNetworks.noMatchesDetail,Try another search or filter.,Tente outra busca ou outro filtro.
 publicNetworks.nodeCount,"{count, plural, one {# node} other {# nodes}}","{count, plural, one {# nó} other {# nós}}"
 publicNetworks.nodes,Nodes,Nós
+publicNetworks.offAction,"Run the Quick setup to see other networks, look them up and ask to join inference networks.","Faça a Configuração rápida para poder ver outras redes, consultá-las e pedir para participar de redes de inferência."
+publicNetworks.offDismiss,Don't show this again (Quick setup stays in the tab bar),Não mostrar mais (a Configuração rápida continua na barra de abas)
+publicNetworks.offIntro,"While your network is not set up, this machine stays disconnected from the public networks. POM is how you find other people who want to run inference locally and share their hardware.","Enquanto sua rede não for configurada, esta máquina fica desconectada das redes públicas. O POM é a forma de você encontrar outras pessoas que querem fazer inferência local e compartilhar o hardware delas."
+publicNetworks.offOwnDetail,Join several of your own computers into one network and run models across them.,Junte vários computadores seus numa mesma rede e rode modelos usando todos eles.
+publicNetworks.offOwnTitle,With your own hardware,Com o seu próprio hardware
+publicNetworks.offSharedDetail,"Find inference networks published by other people, talk to them and ask to join, to use their hardware or lend yours.","Encontre redes de inferência publicadas por outras pessoas, converse com elas e peça para participar, para usar o hardware delas ou emprestar o seu."
+publicNetworks.offSharedTitle,With hardware shared over the internet,Com hardware compartilhado pela internet
+publicNetworks.offTitle,You are not connected to other networks yet,Você ainda não está conectado a outras redes
 publicNetworks.openDetails,Open details for {name},Abrir detalhes de {name}
 publicNetworks.openLobbies,Open lobbies,Lobbies abertos
 publicNetworks.organization,Organization,Organização

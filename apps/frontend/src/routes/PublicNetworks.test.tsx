@@ -432,6 +432,23 @@ describe("PublicNetworks", () => {
     mocks.post.mockImplementation((_path: string, body: unknown) => Promise.resolve({ can_edit: true, network: body }));
     render(<LocaleProvider initialLocale="pt-BR"><PublicNetworks /></LocaleProvider>);
 
+    // Alone on the list with discovery off: a card explains the two ways to use POM and leads to the setup.
+    const card = await screen.findByTestId("network-discovery-off");
+    expect(within(card).getByText("Você ainda não está conectado a outras redes")).toBeTruthy();
+    expect(within(card).getByText("Com o seu próprio hardware")).toBeTruthy();
+    expect(within(card).getByText("Com hardware compartilhado pela internet")).toBeTruthy();
+    fireEvent.click(within(card).getByTestId("network-discovery-off-setup"));
+    expect(await screen.findByTestId("network-quick-setup")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Cancelar" }));
+    await waitFor(() => expect(screen.queryByTestId("network-quick-setup")).toBeNull());
+
+    // Dismissed, it stays away (also after a remount); the quick setup is still in the tab row.
+    fireEvent.click(screen.getByTestId("network-discovery-off-dismiss"));
+    expect(screen.queryByTestId("network-discovery-off")).toBeNull();
+    expect(localStorage.getItem("pom.networks.discovery-off-card.dismissed")).toBe("1");
+    expect(screen.getAllByRole("button", { name: "Configuração rápida" }).length).toBeGreaterThan(0);
+    localStorage.removeItem("pom.networks.discovery-off-card.dismissed");
+
     fireEvent.click(await screen.findByTestId("network-quick-setup-row"));
     const wizard = await screen.findByTestId("network-quick-setup");
     // Publishing is the suggestion.

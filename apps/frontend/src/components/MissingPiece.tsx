@@ -77,10 +77,12 @@ const TIMING = {
   arriving: { piece: 0.1, gap: 0.18, duration: 0.7, slot: 0.45, text: 0.55, breathe: 1.6 },
 };
 
-export function MissingPiece({ title, detail, variant = "missing", children }: {
+export function MissingPiece({ title, detail, variant = "missing", compact = false, children }: {
   title: string;
   detail: string;
   variant?: "missing" | "paused" | "loading";
+  /** A smaller mark, puzzle and title, for a card inside a screen rather than a whole screen. */
+  compact?: boolean;
   children?: React.ReactNode;
 }) {
   const still = useReducedMotion() ?? false;
@@ -99,7 +101,7 @@ export function MissingPiece({ title, detail, variant = "missing", children }: {
       transition={{ duration: 0.4 }}
     >
       <motion.img
-        className="pom-chat-hero-mark !mb-2 !w-[min(150px,40vw)]"
+        className={compact ? "pom-chat-hero-mark !mb-1 !w-[min(84px,30vw)]" : "pom-chat-hero-mark !mb-2 !w-[min(150px,40vw)]"}
         src={theme === "dark" ? markOnDark : markOnLight}
         alt="POM"
         width={815}
@@ -108,7 +110,7 @@ export function MissingPiece({ title, detail, variant = "missing", children }: {
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.9, ease: [0.16, 1, 0.3, 1] }}
       />
-      <svg viewBox={`0 0 ${SIZE} ${SIZE}`} width={SIZE} height={SIZE} className="max-w-[60vw] overflow-visible" role="img" aria-label={title}>
+      <svg viewBox={`0 0 ${SIZE} ${SIZE}`} width={compact ? SIZE * 0.55 : SIZE} height={compact ? SIZE * 0.55 : SIZE} className="max-w-[60vw] overflow-visible" role="img" aria-label={title}>
         <defs>
           <filter id={`glow-${glow}`} x="-30%" y="-30%" width="160%" height="160%">
             <feGaussianBlur stdDeviation="4" result="blur" />
@@ -193,10 +195,10 @@ export function MissingPiece({ title, detail, variant = "missing", children }: {
         initial={still ? false : { opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: timing.text, duration: 0.5 }}
-        className="mt-4 max-w-md"
+        className={compact ? "mt-2 max-w-md" : "mt-4 max-w-md"}
       >
-        <p className="font-display text-lg font-semibold text-fg">{title}</p>
-        <p className="mt-1.5 text-sm leading-relaxed text-muted">{detail}</p>
+        <p className={compact ? "font-display text-base font-semibold text-fg" : "font-display text-lg font-semibold text-fg"}>{title}</p>
+        <p className={compact ? "mt-1 text-[0.8rem] leading-relaxed text-muted" : "mt-1.5 text-sm leading-relaxed text-muted"}>{detail}</p>
         {children}
       </motion.div>
     </motion.div>

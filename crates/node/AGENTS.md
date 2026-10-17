@@ -109,13 +109,23 @@ after every peer confirms its runtime. The full operational step is in
 
 **Startup flow (`main`):**
 
-Before the UI or service starts, if no `pom.json` exists, `initial_ports::select`
-probes the implicit default gateway/P2P port set. It checks the HTTP gateway and
-its derived inference port, P2P UDP, both QUIC UDP ports, and the libp2p TCP/QUIC
-port. Occupied implicit defaults move to available ports; CLI/environment
-choices stay fixed, and existing configuration is never rewritten. The new
-values flow into local-network creation or setup and are persisted with the
-new configuration.
+Before the UI or service starts, `instance_lock::acquire` takes the project
+root's instance lock (waiting `RESPAWN_GRACE` for a respawning predecessor to
+exit). A root another process holds is never a second node: the Linux desktop
+window opens on the running one's recorded port, every other build stops with
+an error naming that port. The Windows supervisor skips the lock; its child takes it.
+
+Then, if no `pom.json` exists, `initial_ports::select` probes the implicit
+default gateway/P2P port set. It checks the HTTP gateway and its derived
+inference port, P2P UDP, both QUIC UDP ports, and the libp2p TCP/QUIC port.
+Occupied implicit defaults move to available ports; CLI/environment choices stay
+fixed. The new values flow into local-network creation and are persisted with
+the new configuration. With a `pom.json`, the desktop builds (`DESKTOP`) run the
+same probe from the saved ports (`move_busy_saved_ports`) and save the moved
+ones; environment ports stay fixed. A server never rewrites its saved ports:
+they are part of the cluster's configuration, so a busy one is a startup error
+that names the port. The native windows load the port the gateway reports
+through `GatewayReadySender` after binding, never one computed beforehand.
 
 1. `respawn::remember_argv` + tracing.
 2. Without `pom.json`, or with `Config.setup_pending` (the preference shell
@@ -233,8 +243,9 @@ troubled deployment.
 
 ## src/ subfolders
 
-- `initial_ports.rs` - first-boot selection of available gateway, inference,
-  P2P, QUIC and libp2p ports when `pom.json` is absent.
+- `initial_ports.rs` - selection of available gateway, inference, P2P, QUIC
+  and libp2p ports: on the first boot, and on every desktop boot whose saved
+  ports are busy.
 - `network/` - P2P UDP + libp2p/pkarr. See `crates/node/src/network/AGENTS.md`.
 - `routing/` - the pipeline planner. See `crates/node/src/routing/AGENTS.md`.
 - `utils/` - config, respawn, sysmon. See `crates/node/src/utils/AGENTS.md`.
@@ -269,6 +280,11 @@ troubled deployment.
   do not implement a parallel API.
 - `windows_status.rs` - the WebView2 window and Windows tray, with the testable
   policy of hiding to the notification area on close and really quitting.
+- `linux_window.rs` - the WebKitGTK window of the `desktop` feature (the
+  AppImage). The view is built into the window's GTK box (`build_gtk`), not as
+  an X11 child window, which painted nothing - and does not exist under
+  Wayland. Closing the window ends the process; `show_running` opens a window
+  on a POM already running from the same root.
 
 `profile.rs` is the single source of the node's persisted profile (`admin`,
 `node` or `infer`) and of the visibility/promotion capabilities and deployment

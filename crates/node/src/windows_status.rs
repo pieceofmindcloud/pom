@@ -15,7 +15,7 @@ pub const SUPERVISED_CHILD_ENV: &str = "POM_WINDOWS_SUPERVISED_CHILD";
 #[cfg(windows)]
 pub const CRASH_RELAUNCH_DELAY_SECS: u64 = 1;
 
-fn wait_for_gateway_ready(receiver: &std::sync::mpsc::Receiver<()>) -> Result<(), String> {
+fn wait_for_gateway_ready(receiver: &std::sync::mpsc::Receiver<u16>) -> Result<u16, String> {
     receiver
         .recv()
         .map_err(|_| "the Windows service ended before the gateway became ready".to_string())
@@ -85,7 +85,7 @@ mod native {
         window.set_focus();
     }
 
-    pub fn run<F>(port: u16, service: F, gateway_ready: std::sync::mpsc::Receiver<()>) -> Result<()>
+    pub fn run<F>(service: F, gateway_ready: std::sync::mpsc::Receiver<u16>) -> Result<()>
     where
         F: FnOnce() -> Result<()> + Send + 'static,
     {
@@ -93,7 +93,7 @@ mod native {
             drop(service);
             return run_supervisor();
         }
-        run_child(port, service, gateway_ready)
+        run_child(service, gateway_ready)
     }
 
     fn run_supervisor() -> Result<()> {
@@ -116,11 +116,7 @@ mod native {
         }
     }
 
-    fn run_child<F>(
-        port: u16,
-        service: F,
-        gateway_ready: std::sync::mpsc::Receiver<()>,
-    ) -> Result<()>
+    fn run_child<F>(service: F, gateway_ready: std::sync::mpsc::Receiver<u16>) -> Result<()>
     where
         F: FnOnce() -> Result<()> + Send + 'static,
     {
@@ -136,11 +132,13 @@ mod native {
         // WebView2 before that point turns a slow debug startup into a local
         // ERR_CONNECTION_REFUSED page, which is especially confusing because
         // the server is still healthy and about to listen.
-        if wait_for_gateway_ready(&gateway_ready).is_err() {
+        // The window loads the port the gateway bound, so a port moved at
+        // startup still opens the interface.
+        let Ok(port) = wait_for_gateway_ready(&gateway_ready) else {
             return service
                 .join()
                 .map_err(|_| anyhow!("Windows service thread ended in a panic"))?;
-        }
+        };
 
         let window = WindowBuilder::new()
             .with_title("POM")
@@ -264,8 +262,8 @@ mod tests {
         let (finished_sender, finished_receiver) = std::sync::mpsc::sync_channel(0);
         let waiter = std::thread::spawn(move || {
             started_sender.send(()).unwrap();
-            wait_for_gateway_ready(&ready_receiver).unwrap();
-            finished_sender.send(()).unwrap();
+            let port = wait_for_gateway_ready(&ready_receiver).unwrap();
+            finished_sender.send(port).unwrap();
         });
 
         started_receiver.recv().unwrap();
@@ -273,8 +271,8 @@ mod tests {
             finished_receiver.try_recv(),
             Err(std::sync::mpsc::TryRecvError::Empty)
         ));
-        ready_sender.send(()).unwrap();
-        finished_receiver.recv().unwrap();
+        ready_sender.send(8081).unwrap();
+        assert_eq!(finished_receiver.recv().unwrap(), 8081);
         waiter.join().unwrap();
     }
 }

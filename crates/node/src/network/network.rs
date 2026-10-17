@@ -1604,7 +1604,13 @@ impl Network {
                 Err(e) => {
                     info!("{}", e);
                     let v4: SocketAddr = format!("0.0.0.0:{}", port).parse()?;
-                    let s = UdpSocket::bind(v4).await?;
+                    let s = UdpSocket::bind(v4).await.map_err(|error| {
+                        anyhow::anyhow!(
+                            "could not open the P2P UDP port {port}: {error}. Another program, \
+                             or another POM, is using it; close it or start with {}=<free port>",
+                            crate::brand::env_var("PORT")
+                        )
+                    })?;
                     s.set_broadcast(true)?;
                     let bind_addr = s.local_addr()?;
                     SELF_P2P_PORT.store(bind_addr.port(), std::sync::atomic::Ordering::Relaxed);

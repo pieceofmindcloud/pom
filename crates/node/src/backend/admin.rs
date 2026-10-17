@@ -100,7 +100,7 @@ async fn principal_peer_for(
     network.alive_peers().await.into_iter().find(|peer| {
         peer.node_id != network.node_id
             && peer.node_id == primary.node_id
-            && peer.endpoint_id.as_deref() == Some(primary.peer_id.as_str())
+            && crate::identity::trust_peer_id_from_hex(&peer.pubkey).as_deref() == Some(primary.peer_id.as_str())
             && peer.pubkey == primary.pubkey
             && peer.gateway_port.is_some()
     })
@@ -534,7 +534,7 @@ fn peer_for_principal<'a>(
 ) -> Option<&'a crate::network::PeerInfo> {
     peers.iter().find(|peer| {
         peer.node_id == principal.node_id
-            && peer.endpoint_id.as_deref() == Some(principal.peer_id.as_str())
+            && crate::identity::trust_peer_id_from_hex(&peer.pubkey).as_deref() == Some(principal.peer_id.as_str())
             && peer.pubkey == principal.pubkey
     })
 }
@@ -1517,7 +1517,7 @@ async fn resign_authority(
     };
     let Some(peer) = state.network.alive_peers().await.into_iter().find(|peer| {
         peer.node_id == successor.node_id
-            && peer.endpoint_id.as_deref() == Some(successor.peer_id.as_str())
+            && crate::identity::trust_peer_id_from_hex(&peer.pubkey).as_deref() == Some(successor.peer_id.as_str())
             && peer.pubkey == successor.pubkey
             && peer.profile == NodeProfile::Admin
     }) else {
@@ -1615,7 +1615,7 @@ pub(crate) async fn accept_authority_transfer(
     let peers = state.network.alive_peers().await;
     let Some(peer) = peers.into_iter().find(|peer| {
         peer.node_id == offer.issuer.node_id
-            && peer.endpoint_id.as_deref() == Some(offer.issuer.peer_id.as_str())
+            && crate::identity::trust_peer_id_from_hex(&peer.pubkey).as_deref() == Some(offer.issuer.peer_id.as_str())
             && peer.pubkey == offer.issuer.pubkey
     }) else {
         return Json(json!({

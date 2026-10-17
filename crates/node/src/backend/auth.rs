@@ -349,7 +349,7 @@ async fn known_control_principal(
     state.network.alive_peers().await.into_iter().any(|peer| {
         peer.node_id == issuer.node_id
             && peer.pubkey == issuer.pubkey
-            && peer.endpoint_id.as_deref() == Some(issuer.peer_id.as_str())
+            && crate::identity::trust_peer_id_from_hex(&peer.pubkey).as_deref() == Some(issuer.peer_id.as_str())
     })
 }
 

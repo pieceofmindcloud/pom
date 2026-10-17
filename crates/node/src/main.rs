@@ -1704,9 +1704,11 @@ async fn start_node(
     })
     .await?;
     let authority_signing_key = Arc::new(stack.authority_signing_key.clone());
+    // The chain's `peer_id` form, never the endpoint id: see
+    // `identity::trust_peer_id`.
     let authority_principal = crate::admin_trust::AuthorityPrincipal::from_signing_key(
         node_id.clone(),
-        stack.endpoint_id.clone(),
+        identity.peer_id(),
         &stack.authority_signing_key,
     );
     if app_config.profile == crate::profile::NodeProfile::Admin

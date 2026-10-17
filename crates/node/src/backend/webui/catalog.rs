@@ -1642,7 +1642,7 @@ async fn forward_network_chat_to_primary(
     let primary = state.admin_trust.current_primary();
     let Some(peer) = state.all_peers().await.into_iter().find(|peer| {
         peer.node_id == primary.node_id
-            && peer.endpoint_id.as_deref() == Some(primary.peer_id.as_str())
+            && crate::identity::trust_peer_id_from_hex(&peer.pubkey).as_deref() == Some(primary.peer_id.as_str())
             && peer.pubkey == primary.pubkey
             && peer.gateway_port.is_some()
     }) else {

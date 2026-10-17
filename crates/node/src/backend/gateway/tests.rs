@@ -3306,7 +3306,7 @@ pub(crate) mod testkit {
         let primary_signing_key = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
         let primary = crate::admin_trust::AuthorityPrincipal::from_signing_key(
             "primary",
-            "peer-primary",
+            crate::identity::trust_peer_id(primary_signing_key.verifying_key().as_bytes()),
             &primary_signing_key,
         );
         let secondary = state.authority_principal.clone();
@@ -3385,7 +3385,7 @@ pub(crate) mod testkit {
         let authority_signing_key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
         let authority_principal = crate::admin_trust::AuthorityPrincipal::from_signing_key(
             node_id,
-            "peer-eu",
+            crate::identity::trust_peer_id(authority_signing_key.verifying_key().as_bytes()),
             &authority_signing_key,
         );
         let admin_trust = crate::admin_trust::AdminTrust::bootstrap_primary_in_memory(

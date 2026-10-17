@@ -3,8 +3,10 @@
 Work list consolidated on 2026-09-07 from an audit of the `AGENTS.md` annotations,
 at revision `985cfb51183c4fa1b509524e54d39aeda78b1cc8`.
 The full evidence for each item is in the audit report that comes with this task.
-The current list keeps the audit's numbering: 17 defects still present and 1 item
-not verifiable on this machine. Items added after the audit continue the numbering
+The current list keeps the audit's numbering. Rechecked against the code on
+2026-10-17: items 6, 12, 15, 20 and 22 were closed (fixed, or the wizard
+deprecated), and the engine items moved to their own section. Items added
+after the audit continue the numbering
 from 27.
 
 ## Maintenance rule
@@ -46,34 +48,16 @@ as a record of what was done and has no open item.
 
 ## High
 
-- [ ] **12 - Any role can undeploy the pipeline**
-  **Source:** `crates/node/src/backend/deploy.rs:6714-6716`.
-  **In practice:** `undeploy_authority` returns success for any authenticated role,
-  which lets it take down every slice of the deployment; the route is still
-  protected by `ConnectionAuth`.
-  **Who it affects:** availability and operational control in clusters with separated
-  roles.
-  **Effort:** low for the gate, medium to review authorization, tests and the UI.
-  **Operator decision:** decide whether undeploy stays open to any authenticated
-  role; do not fix it without that decision.
-
 - [ ] **13 - Rollback is not passed on to TP**
-  **Source:** `crates/node/src/inference/infer_server.rs:3092-3108,3951-3984`;
-  fan-out in `crates/node/src/backend/gateway.rs:2733-2797`.
+  **Source:** `crates/node/src/inference/infer_server/server.rs` (`handle_rollback`,
+  `rollback_session`; compare `open_tp_decode`); call site in
+  `crates/node/src/backend/gateway/generation.rs` (`/v1/session/rollback`).
   **In practice:** `/v1/session/rollback` handles the local rank but does not replicate
   the discard of the rejected suffix to the workers; with TP speculation on, the KV
   caches can drift apart.
   **Who it affects:** tensor-parallel deployments that enable speculative decoding.
   **Effort:** medium, including headers, the rank 0 fan-out and tests with two
   ranks.
-
-- [ ] **20 - UDP tests transmit on the real LAN**
-  **Source:** `crates/node/src/network/network.rs:1075-1082,1368-1393`.
-  **In practice:** `broadcast_local` sends to `255.255.255.255:42777`, and tests
-  that announce a node which is not isolated can disturb a live cluster on the same LAN.
-  **Who it affects:** developers and CI that run the suite alongside a cluster.
-  **Effort:** low/medium, with isolated sockets, an injectable port and a testkit without
-  global broadcast.
 
 ## Medium
 
@@ -88,40 +72,15 @@ as a record of what was done and has no open item.
   **Effort:** medium for equivalence; high to swap the production path over
   with compatibility and telemetry.
 
-- [ ] **10 - The build depends on a full extraction of the fork**
-  **Source:** `crates/llama-engine/build/mtp_arch.rs:25-47,104-114,178-186`.
-  **In practice:** the build fails when the fork is missing or the extraction of
-  MTP architectures comes out empty, ambiguous, or below the safety floor.
-  **Who it affects:** onboarding, CI and releases without the right checkout.
-  **Effort:** medium to make the preparation reproducible; high to remove
-  the local dependency.
-
-- [ ] **15 - The restart limit does not survive across processes**
-  **Source:** `crates/node/src/inference/runtime.rs:20-25,1116-1120,1207-1227`.
-  **In practice:** `MAX_RESTARTS=10` lives in the process supervisor; if OOM or another
-  failure kills the whole process, the counter is gone.
-  **Who it affects:** operators of machines at the memory limit and environments with
-  an automatic restart policy.
-  **Effort:** medium, persisting the failure without recreating the infinite loop that
-  the `Pending`/`NeverLoaded` annotation already avoids.
-
 - [ ] **16 - The relay's failure modes have no E2E test**
   **Source:** `crates/node/src/inference/direct.rs`;
-  `crates/node/src/inference/AGENTS.md:1011-1013`.
+  `crates/node/src/inference/direct_lab.rs` (covers credentials, entry cost and
+  positions, but no dead hop, dead tail or timeout scenario).
   **In practice:** a dead middle hop, a dead tail, a lost direct response and a timeout all
   have code and unit tests, but no four-peer scenario that reproduces the full topology.
   **Who it affects:** the reliability of the distributed pipeline.
   **Effort:** high, with a deterministic multi-peer harness, injectable failures and
   isolation from the real network.
-
-- [ ] **22 - The first-access wizard is still a prototype**
-  **Source:** `apps/frontend/src/components/setup-wizard/WizardScreens.tsx:24-45`;
-  `apps/frontend/src/routes/setupWizardMocks.ts:11-80`.
-  **In practice:** `/setup` walks through simulated hardware, nodes, models and networks;
-  it does not configure the node, create permissions, discover peers or download models.
-  **Who it affects:** users who expect a real first-configuration flow.
-  **Effort:** high, involving the backend, permissions, discovery, downloads and
-  error states.
 
 - [ ] **24 - The contract still uses an inclusive end**
   **Source:** `crates/routing-contract/src/lib.rs:16-24,65-73,81-91,131-167`.
@@ -133,8 +92,9 @@ as a record of what was done and has no open item.
 
 - [ ] **26 - A manual build can lose the binary's commit**
   **Source:** `scripts/build-docker.sh`; `Dockerfile` (runtime `ARG POM_BUILD_COMMIT`).
-  **In practice:** a manual `docker compose build` without `POM_BUILD_COMMIT` can
-  produce the `desconhecido` stamp.
+  **In practice:** a manual `docker compose build` without `POM_BUILD_COMMIT`
+  stamps an empty commit (the `Dockerfile` default is `""`); `build-docker.sh`
+  itself falls back to `desconhecido` outside a git checkout.
   **Who it affects:** manual builds and pipelines that do not export the variable;
   the binary's diagnostics get degraded.
   **Effort:** low, with validation in the Dockerfile or an explicit requirement for the
@@ -142,15 +102,45 @@ as a record of what was done and has no open item.
 
 ## Low
 
-- [ ] **6 - The workspace graph diverges from the documentation**
-  **Source:** `Cargo.toml` of the workspace; `crates/node/Cargo.toml:49`;
-  `crates/AGENTS.md`.
-  **In practice:** `node` depends on `routing-contract`, `llama-engine` and `brand`,
-  not on `config`, `types` or `routing-base`; extraction plans and rebuild analyses
-  based on the old graph come out wrong.
-  **Who it affects:** maintainers and future consumers of the open-core architecture.
-  **Effort:** low to fix the documentation; medium/high to finish the
-  real extraction.
+- [ ] **27 - The toolchain scenario of the Docker cache test is wrong**
+  **Source:** `scripts/test-docker-build-cache.sh`; `scripts/AGENTS.md`.
+  **In practice:** the "Rust toolchain changed" scenario fails with no change in
+  the Dockerfile: the fork release download comes after rustup, falls in the
+  `base` group, and the pinned test toolchain is cached from the second run on.
+  **Who it affects:** whoever relies on the script to validate the Docker cache.
+  **Effort:** low.
+
+- [ ] **23 - Partial fixtures can break tests**
+  **Source:** `apps/frontend/src/test/fixtures.ts:1-8`;
+  `apps/frontend/src/components/PeerDetailCard.tsx` (`n?.status.state`).
+  **In practice:** the shared fixtures already build the complete shape by
+  default; what remains is the read `n?.status.state`, which guards `n` but
+  not `status`, so a hand-written partial fixture still breaks it.
+  **Who it affects:** the maintenance of new tests and false diagnostics during the
+  development.
+  **Effort:** low, with mandatory typed constructors or fixture validation.
+
+- [ ] **25 - The public types crate is still a placeholder**
+  **Source:** `crates/types/src/lib.rs:1-12`.
+  **In practice:** `types` only exposes `WorkspaceMarker`; `PeerInfo` and `NodeConfig`
+  stay inside `node`.
+  **Who it affects:** the open-core boundary and consumers that expect public types.
+  **Effort:** medium, extracting types without creating cycles and updating
+  consumers.
+
+## Belongs to the engine repository
+
+`crates/llama-engine` left this repository for the private
+`pom-plugin-llama.cpp`; the sources below point there and cannot be verified
+from this checkout. Move them to that repository's backlog.
+
+- [ ] **10 - The build depends on a full extraction of the fork**
+  **Source:** `crates/llama-engine/build/mtp_arch.rs:25-47,104-114,178-186`.
+  **In practice:** the build fails when the fork is missing or the extraction of
+  MTP architectures comes out empty, ambiguous, or below the safety floor.
+  **Who it affects:** onboarding, CI and releases without the right checkout.
+  **Effort:** medium to make the preparation reproducible; high to remove
+  the local dependency.
 
 - [ ] **14 - The context pool is not integrated**
   **Source:** `crates/llama-engine/src/llm.rs:3200-3214`.
@@ -168,26 +158,6 @@ as a record of what was done and has no open item.
   **Effort:** low/medium, separating the deterministic assertion from the logging
   part and documenting the cost.
 
-- [ ] **23 - Partial fixtures can break tests**
-  **Source:** `apps/frontend/src/test/fixtures.ts:1-8`;
-  `apps/frontend/src/components/PeerDetailCard.tsx:339,686-695`.
-  **In practice:** one read uses `n?.status` while another assumes the full
-  object; a partial fixture can pass in one component and break the
-  next. The official fixture already provides the complete shape.
-  **Who it affects:** the maintenance of new tests and false diagnostics during the
-  development.
-  **Effort:** low, with mandatory typed constructors or fixture validation.
-
-- [ ] **25 - The public types crate is still a placeholder**
-  **Source:** `crates/types/src/lib.rs:1-12`.
-  **In practice:** `types` only exposes `WorkspaceMarker`; `PeerInfo` and `NodeConfig`
-  stay inside `node`.
-  **Who it affects:** the open-core boundary and consumers that expect public types.
-  **Effort:** medium, extracting types without creating cycles and updating
-  consumers.
-
-## Not verifiable on this machine
-
 - [ ] **17 - The CUDA differential proof for MoE has no execution environment**
   **Source:** `crates/node/src/inference/AGENTS.md:359-375`;
   `crates/llama-engine/src/llm.rs:6268-6273`.
@@ -195,6 +165,7 @@ as a record of what was done and has no open item.
   external executor; none of those were available during the audit.
   **Who it affects:** the numerical validation of the CUDA MoE path.
   **Effort:** high, on a machine with a compatible GPU and the real GGUF.
+
 
 ## Preserved history
 
@@ -215,14 +186,14 @@ this list.
 
 ## Open documentation debt
 
-- The workspace graph diverges from the declared architecture. The pending work is
-  consolidated in item 6; the larger decision about extracting the crates stays
+- The workspace graph is documented correctly in `crates/AGENTS.md` (old item 6,
+  closed on 2026-10-17); the larger decision about extracting the crates stays
   recorded here so it is not lost.
 - The contract uses an inclusive `end_layer`. The future move to an exclusive end
   is consolidated in item 24 and requires a new wire version.
 
 ## Items from the earlier triage, incorporated
 
-The deferred `routing-base::plan`, `undeploy_authority` and `crates/types` are now
-items 5, 12 and 25 respectively, with the evidence updated. None
+The deferred `routing-base::plan`, `undeploy_authority` and `crates/types` became
+items 5, 12 (closed) and 25 respectively, with the evidence updated. None
 of that context was discarded.

@@ -151,7 +151,10 @@ dedicated or member, with iroh's hole punching), are in
   read with `hostname()` and changed live with `set_hostname` (the My machine
   screen), never through the field; `trust_version` is the trust chain version
   each node announces (`set_trust_version`), a hint of who has a newer chain
-  and never proof; `is_principal` / `peer_is_principal` tell the
+  and never proof; `membership` is this node's membership token
+  (`set_membership`, renewed by `webui::spawn_token_keeper`), announced and
+  carried in `PeerInfo`, and only believed once `membership::peer_role`
+  checks it against the chain; `is_principal` / `peer_is_principal` tell the
   principal from any admin (a secondary has the profile, not the principal's
   duties: chat relay, lobby, member list), by the key the local trust chain
   names; the admin capability does not come from the announcement but

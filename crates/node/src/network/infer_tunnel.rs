@@ -128,6 +128,11 @@ pub fn gateway_path_is_allowed(path: &str) -> bool {
             | "/api/internal/admin-trust/reconcile"
             | "/api/internal/admin-trust/complete-transfer"
             | "/api/internal/admin-trust/chain"
+            // Membership tokens and the admission list a secondary admin
+            // reads from the principal (`webui/membership.rs`).
+            | "/api/internal/membership/token"
+            | "/api/internal/membership/roster"
+            | "/api/internal/membership/decide"
             // A file offer: small and signed like the others.
             | "/api/transfer/offer"
             // A deployment asking the target to fetch its slice, and then

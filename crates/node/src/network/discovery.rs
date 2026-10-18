@@ -869,6 +869,7 @@ async fn handle_announce(ctx: &Ctx, sealed: &[u8]) {
         network_chat_enabled,
         cluster_id,
         trust_version,
+        membership,
         relay,
         ..
     } = message
@@ -896,6 +897,7 @@ async fn handle_announce(ctx: &Ctx, sealed: &[u8]) {
         pubkey: pubkey.clone(),
         cluster_id,
         trust_version,
+        membership,
         relay,
         // The gossip path has no source address to rewrite, and the announced
         // one is usually the literal `0.0.0.0`. With candidates there is

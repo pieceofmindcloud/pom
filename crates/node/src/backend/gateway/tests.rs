@@ -432,20 +432,13 @@ mod tests {
             caller_may_ask(&state, ServingMember, Some(&admin)).await,
             Ok(())
         );
-        // Its announce alone does not make it one: the principal has to have
-        // admitted it as a regular node.
+        // Its announce alone does not make it one: an admin has to have
+        // signed it a worker's membership token.
         assert_eq!(
             caller_may_ask(&state, ServingMember, Some(&principal_of("worker"))).await,
             Err("role_unattested")
         );
-        state
-            .admin_trust
-            .record_member_role(
-                &state.authority_signing_key,
-                "worker",
-                crate::config::EnrollmentRole::Worker,
-            )
-            .unwrap();
+        announce_token(&state, "worker", crate::config::EnrollmentRole::Worker).await;
         assert_eq!(
             caller_may_ask(&state, ServingMember, Some(&principal_of("worker"))).await,
             Ok(())
@@ -459,8 +452,8 @@ mod tests {
             Err("unknown_caller")
         );
 
-        // A machine admitted as an inference node stays one for the principal
-        // whatever it announces: the role is granted at admission.
+        // A machine admitted as a visitor stays one for the admins whatever
+        // it announces or carries: the role is granted at admission.
         state
             .network_chat
             .request_admission(
@@ -490,6 +483,29 @@ mod tests {
                 Err("local_operator_only")
             );
         }
+    }
+
+    /// Has this node's admin key sign `node_id` a token with `role`, and
+    /// puts it in that peer's announce.
+    async fn announce_token(
+        state: &GatewayState,
+        node_id: &str,
+        role: crate::config::EnrollmentRole,
+    ) {
+        let mut peers = state.network.peers.write().await;
+        let peer = peers.get_mut(node_id).expect("the peer is in the table");
+        peer.membership = Some(
+            crate::membership::issue(
+                &state.authority_signing_key,
+                &state.authority_principal,
+                &state.admin_trust.document(),
+                &peer.node_id,
+                &peer.pubkey,
+                role,
+                chrono::Utc::now().timestamp(),
+            )
+            .unwrap(),
+        );
     }
 
     fn router_with_surface_gate(state: &GatewayState, paths: &[&'static str]) -> Router {
@@ -563,6 +579,52 @@ mod tests {
         assert_eq!(allowed.status(), StatusCode::OK);
     }
 
+    /// A secondary admin removes a worker or a visitor; an admin is removed
+    /// by the principal alone.
+    #[tokio::test]
+    async fn a_secondary_admin_removes_members_but_not_admins() {
+        let secondary_node = testkit::state_with_secondary_admin("secondary", vec![]).await;
+        let chain = secondary_node.admin_trust.document();
+        let secondary = secondary_node.authority_principal.clone();
+        let mut seen = testkit::peer("secondary", "secondary", 8092);
+        seen.pubkey = secondary.pubkey.clone();
+        seen.libp2p_peer_id = Some(secondary.peer_id.clone());
+        let ask = |target: GatewayState| {
+            let signed = secondary_node
+                .signed_control_headers("POST", "/api/ui/leave", b"")
+                .unwrap();
+            async move {
+                let app = router_with_surface_gate(&target, &["/api/ui/leave"]);
+                let response = app
+                    .oneshot(from_another_node(
+                        axum::http::Method::POST,
+                        "/api/ui/leave",
+                        Some(signed),
+                    ))
+                    .await
+                    .unwrap();
+                let status = response.status();
+                if status.is_success() {
+                    return (status, serde_json::Value::Null);
+                }
+                (status, testkit::body_of(response).await["reason"].clone())
+            }
+        };
+
+        let mut worker = testkit::state_with("worker", vec![seen.clone()]).await;
+        worker.admin_trust =
+            Arc::new(crate::admin_trust::AdminTrust::in_memory(chain.clone()).unwrap());
+        assert_eq!(ask(worker).await.0, StatusCode::OK);
+
+        // The target is the principal: an admin, removed by nobody else.
+        let mut admin = testkit::state_with("primary", vec![seen]).await;
+        admin.authority_principal = chain.primary.clone();
+        admin.admin_trust = Arc::new(crate::admin_trust::AdminTrust::in_memory(chain).unwrap());
+        let (status, reason) = ask(admin).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(reason, "principal_required");
+    }
+
     /// API keys, plugins, the machine's name, relay and networks belong to
     /// the operator at that machine. Neither the connection key nor a signed
     /// request from another node reaches them.
@@ -612,64 +674,67 @@ mod tests {
         }
     }
 
-    /// The role recorded at admission travels in the signed chain, so a
-    /// member other than the principal treats an inference node as one even
-    /// when it announces `node`, and the chain refuses to make it an admin.
+    /// A visitor's role travels in its membership token, so a member other
+    /// than the admins treats it as one even when it announces `worker`, and
+    /// needs to know nothing about it: the token is checked against the
+    /// chain alone, which admitting it did not change.
     #[tokio::test]
-    async fn an_inference_role_signed_into_the_chain_holds_on_every_member() {
+    async fn a_visitor_token_holds_on_every_member_without_touching_the_chain() {
         use crate::webui::RouteScope::ServingMember;
         let principal = testkit::state_with("principal", vec![]).await;
-        let mut disguised = testkit::peer("infer", "infer", 8091);
+        let mut disguised = testkit::peer("visitor", "visitor", 8091);
         disguised.profile = crate::profile::NodeProfile::Worker;
-        let infer = crate::admin_trust::AuthorityPrincipal {
-            node_id: "infer".into(),
+        let visitor = crate::admin_trust::AuthorityPrincipal {
+            node_id: "visitor".into(),
             peer_id: String::new(),
-            pubkey: "pubkey-of-infer".into(),
+            pubkey: disguised.pubkey.clone(),
         };
-        let mut member = testkit::state_with("member", vec![disguised]).await;
-        member.admin_trust =
-            Arc::new(crate::admin_trust::AdminTrust::in_memory(principal.admin_trust.document()).unwrap());
+        let member = testkit::state_with("member", vec![disguised]).await;
+        let mut member = member;
+        member.admin_trust = Arc::new(
+            crate::admin_trust::AdminTrust::in_memory(principal.admin_trust.document()).unwrap(),
+        );
         assert_eq!(
-            caller_may_ask(&member, ServingMember, Some(&infer)).await,
+            caller_may_ask(&member, ServingMember, Some(&visitor)).await,
             Err("role_unattested"),
             "the announce alone attests nothing"
         );
 
+        let before = principal.admin_trust.chain_version();
         principal
             .network_chat
-            .request_admission("infer", Default::default(), crate::config::EnrollmentRole::Visitor)
+            .request_admission("visitor", Default::default(), crate::config::EnrollmentRole::Visitor)
             .unwrap();
         principal.network_chat.decide_admission(
-            "infer",
+            "visitor",
             Some(crate::network_lobby::AdmissionStatus::Approved),
         );
-        let before = principal.admin_trust.chain_version();
-        crate::webui::sign_member_roles(&principal);
-        assert_ne!(principal.admin_trust.chain_version(), before);
-        let before = principal.admin_trust.chain_version();
-        crate::webui::sign_member_roles(&principal);
-        assert_eq!(
-            principal.admin_trust.chain_version(),
-            before,
-            "an unchanged role is not signed again"
-        );
+        assert_eq!(principal.admin_trust.chain_version(), before);
 
-        assert!(member
-            .admin_trust
-            .reconcile_from(principal.admin_trust.document(), false)
-            .unwrap());
+        let mut member_as_issuer = member.clone();
+        member_as_issuer.authority_signing_key = principal.authority_signing_key.clone();
+        member_as_issuer.authority_principal = principal.authority_principal.clone();
+        announce_token(&member_as_issuer, "visitor", crate::config::EnrollmentRole::Visitor).await;
         assert_eq!(
-            caller_may_ask(&member, ServingMember, Some(&infer)).await,
+            caller_may_ask(&member, ServingMember, Some(&visitor)).await,
             Err("visitor_caller")
         );
-        assert!(principal
-            .admin_trust
-            .signed_secondary_grant(
-                &principal.authority_signing_key,
-                infer,
-                &principal.network.node_id
+
+        // A worker's token copied into another node's announce is nothing.
+        announce_token(&member_as_issuer, "visitor", crate::config::EnrollmentRole::Worker).await;
+        member.network.peers.write().await.get_mut("visitor").unwrap().pubkey = "another-key".into();
+        assert_eq!(
+            caller_may_ask(
+                &member,
+                ServingMember,
+                Some(&crate::admin_trust::AuthorityPrincipal {
+                    pubkey: "another-key".into(),
+                    ..visitor
+                })
             )
-            .is_err());
+            .await,
+            Err("role_unattested")
+        );
     }
 
     /// `/api/transfer/*` serves model files. Every member holds the
@@ -704,39 +769,6 @@ mod tests {
             .unwrap();
         assert_eq!(marked.status(), StatusCode::FORBIDDEN);
         assert_eq!(testkit::body_of(marked).await["reason"], "signature_required");
-    }
-
-    /// A grant already in the chain stops counting once the chain records
-    /// its holder as an inference node.
-    #[tokio::test]
-    async fn an_inference_role_voids_an_earlier_admin_grant() {
-        let state = testkit::state_with_secondary_admin("secondary", vec![]).await;
-        let profile = crate::profile::NodeProfile::Admin;
-        assert_eq!(
-            state
-                .admin_trust
-                .effective_authority(&state.authority_principal, profile),
-            Some(crate::admin_trust::EffectiveAuthority::Admin)
-        );
-        let primary_signing_key = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
-        state
-            .admin_trust
-            .record_member_role(
-                &primary_signing_key,
-                &state.authority_principal.node_id,
-                crate::config::EnrollmentRole::Visitor,
-            )
-            .unwrap();
-        assert_eq!(
-            state
-                .admin_trust
-                .effective_authority(&state.authority_principal, profile),
-            None
-        );
-        assert!(!crate::admin_trust::control_issuer_is_admin(
-            &state.admin_trust.document(),
-            &state.authority_principal
-        ));
     }
 
     #[tokio::test]
@@ -828,8 +860,13 @@ mod tests {
         };
         assert_eq!(ask(Method::POST, "/api/ui/deploy").await, StatusCode::OK);
         assert_eq!(ask(Method::POST, "/api/ui/undeploy").await, StatusCode::OK);
+        // Admissions are any admin's: a secondary's decision goes to the
+        // principal, which keeps the list.
+        assert_eq!(
+            ask(Method::GET, "/api/ui/network/admissions").await,
+            StatusCode::OK
+        );
         for (method, path) in [
-            (Method::GET, "/api/ui/network/admissions"),
             (Method::POST, "/api/ui/network/settings"),
             (Method::POST, "/admin/nodes/x/promote-admin"),
             (Method::POST, "/admin/nodes/x/block"),
@@ -2838,6 +2875,7 @@ mod peer_visibility_tests {
             pubkey: String::new(),
             cluster_id: None,
             trust_version: None,
+            membership: None,
             relay: None,
             addr: "127.0.0.1:42777".into(),
             addr_candidates: Vec::new(),
@@ -3525,6 +3563,7 @@ pub(crate) mod testkit {
             pubkey: authority_pubkey,
             cluster_id: None,
             trust_version: None,
+            membership: None,
             relay: None,
             addr: format!("127.0.0.1:{gateway_port}"),
             addr_candidates: Vec::new(),

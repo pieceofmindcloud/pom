@@ -500,6 +500,10 @@ pub struct NetworkChat {
     /// Admission requests this node holds as principal. Loaded from the
     /// database and written back on every change.
     admissions: Mutex<Vec<crate::network_lobby::AdmissionRecord>>,
+    /// On a secondary admin: the principal's admission list, as last read
+    /// from it (`membership::spawn_roster_keeper`). It is what lets a
+    /// secondary issue membership tokens; it is never persisted here.
+    roster_mirror: Mutex<Vec<crate::network_lobby::AdmissionRecord>>,
     /// Nodes that left recently, kept off the member list for a while.
     departed: Mutex<HashMap<String, Instant>>,
     /// Departures heard on the lobby connection, waiting for the gateway to
@@ -544,6 +548,7 @@ impl NetworkChat {
                 public_stats: Default::default(),
                 directory_board: Default::default(),
                 admissions: Mutex::new(Vec::new()),
+                roster_mirror: Mutex::new(Vec::new()),
                 departed: Mutex::new(HashMap::new()),
                 rotations: Mutex::new(Vec::new()),
                 rotation_wanted: tokio::sync::Notify::new(),
@@ -629,6 +634,31 @@ impl NetworkChat {
             .iter()
             .find(|record| record.node_id == node_id)
             .cloned()
+    }
+
+    /// Replaces the mirror of the principal's admission list.
+    pub fn set_roster_mirror(&self, records: Vec<crate::network_lobby::AdmissionRecord>) {
+        *self.roster_mirror.lock().expect("roster lock") = records;
+    }
+
+    pub fn roster_mirror(&self) -> Vec<crate::network_lobby::AdmissionRecord> {
+        self.roster_mirror.lock().expect("roster lock").clone()
+    }
+
+    /// The role `node_id` was admitted with, when its admission is approved:
+    /// on this node's own list (the principal's) or on the mirror of it.
+    pub fn admitted_role(&self, node_id: &str) -> Option<crate::config::EnrollmentRole> {
+        let approved = |record: &crate::network_lobby::AdmissionRecord| {
+            record.node_id == node_id
+                && record.status == crate::network_lobby::AdmissionStatus::Approved
+        };
+        if let Some(record) = self.admissions().into_iter().find(approved) {
+            return Some(record.role);
+        }
+        self.roster_mirror()
+            .into_iter()
+            .find(approved)
+            .map(|record| record.role)
     }
 
     /// Records a candidate's request (`network_lobby::apply_admission_request`).

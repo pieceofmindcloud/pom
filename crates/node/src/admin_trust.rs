@@ -5,7 +5,6 @@
 //! administrator capability.  The file is intentionally separate from
 //! `pom.json`: editing the product profile cannot manufacture a grant.
 
-use crate::config::EnrollmentRole;
 use crate::profile::NodeProfile;
 use anyhow::{bail, Context, Result};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
@@ -258,12 +257,6 @@ pub(crate) struct AdminTrustDocument {
     pub(crate) grants: Vec<AdminGrant>,
     #[serde(default)]
     pub(crate) demotions: Vec<AdminDemotion>,
-    /// The role each machine was admitted with, signed by the principal of
-    /// the time. The latest record of a node is its role. It is what lets
-    /// every member, not only the principal and its admission list, treat
-    /// an inference node as one whatever it announces.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) member_roles: Vec<MemberRoleRecord>,
     pub(crate) pending_transfer: Option<AdminTransferOffer>,
     pub(crate) completed_transfers: Vec<CompletedTransfer>,
     /// Network and discovery values captured when the administrator creates
@@ -284,21 +277,6 @@ pub(crate) struct AdminDemotion {
     pub(crate) target_grant_hash: String,
     pub(crate) authority_epoch: u64,
     pub(crate) promotion_seq: u64,
-    pub(crate) command_id: String,
-    pub(crate) nonce: String,
-    pub(crate) signature: String,
-}
-
-/// A machine's admitted role, signed by the principal into the chain.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) struct MemberRoleRecord {
-    pub(crate) version: u32,
-    pub(crate) record_id: String,
-    pub(crate) cluster_id: String,
-    pub(crate) issuer: AuthorityPrincipal,
-    pub(crate) node_id: String,
-    pub(crate) role: EnrollmentRole,
-    pub(crate) authority_epoch: u64,
     pub(crate) command_id: String,
     pub(crate) nonce: String,
     pub(crate) signature: String,
@@ -346,7 +324,6 @@ impl AdminTrust {
                 primary_history: vec![principal],
                 grants: Vec::new(),
                 demotions: Vec::new(),
-                member_roles: Vec::new(),
                 pending_transfer: None,
                 completed_transfers: Vec::new(),
                 setup: None,
@@ -655,7 +632,6 @@ impl AdminTrust {
             primary_history: vec![principal],
             grants: vec![grant],
             demotions: Vec::new(),
-            member_roles: Vec::new(),
             pending_transfer: None,
             completed_transfers: Vec::new(),
             setup: None,
@@ -717,7 +693,6 @@ impl AdminTrust {
             primary_history: vec![principal],
             grants: vec![grant],
             demotions: Vec::new(),
-            member_roles: Vec::new(),
             pending_transfer: None,
             completed_transfers: Vec::new(),
             setup: None,
@@ -753,7 +728,6 @@ impl AdminTrust {
                     })
             })
             .then_some(EffectiveAuthority::Admin)
-            .filter(|_| !recorded_visitor(&document, &subject.node_id))
     }
 
     pub(crate) fn current_primary(&self) -> AuthorityPrincipal {
@@ -794,9 +768,6 @@ impl AdminTrust {
         }
         if document.primary.pubkey != hex::encode(signing_key.verifying_key().as_bytes()) {
             bail!("the issuing key is not that of the current principal");
-        }
-        if recorded_visitor(&document, &subject.node_id) {
-            bail!("an inference node cannot be made an administrator");
         }
         let previous_grant_hash = document.grants.last().map(grant_hash).transpose()?;
         let mut grant = AdminGrant {
@@ -940,54 +911,10 @@ impl AdminTrust {
         Ok(demotion)
     }
 
-    /// The role the chain records for `node_id`: its latest signed record.
-    pub(crate) fn recorded_role(&self, node_id: &str) -> Option<EnrollmentRole> {
-        recorded_role_in(&self.document(), node_id)
-    }
-
-    /// Signs `role` for `node_id` into the chain, on the principal. A node
-    /// whose latest record already says `role` is left alone: `Ok(false)`.
-    pub(crate) fn record_member_role(
-        &self,
-        signing_key: &SigningKey,
-        node_id: &str,
-        role: EnrollmentRole,
-    ) -> Result<bool> {
-        let mut current = self.state.lock().expect("admin trust lock poisoned");
-        validate_document(&current)?;
-        if recorded_role_in(&current, node_id) == Some(role) {
-            return Ok(false);
-        }
-        let mut document = current.clone();
-        if document.primary.pubkey != hex::encode(signing_key.verifying_key().as_bytes()) {
-            bail!("only the current principal records a member's role");
-        }
-        if node_id.is_empty() || node_id == document.primary.node_id {
-            bail!("the principal has no admitted role");
-        }
-        let mut record = MemberRoleRecord {
-            version: TRUST_VERSION,
-            record_id: Uuid::new_v4().simple().to_string(),
-            cluster_id: document.anchor.cluster_id.clone(),
-            issuer: document.primary.clone(),
-            node_id: node_id.to_string(),
-            role,
-            authority_epoch: document.authority_epoch,
-            command_id: Uuid::new_v4().simple().to_string(),
-            nonce: random_nonce(),
-            signature: String::new(),
-        };
-        record.signature = sign_bytes(signing_key, &member_role_message(&record));
-        self.consume_admin_replay(&record.nonce, &record.command_id, None)?;
-        document.member_roles.push(record);
-        self.commit(&mut current, document)?;
-        Ok(true)
-    }
-
     /// The version of this copy of the chain:
-    /// `<epoch>.<grants>.<demotions and role records>.<open transfer>-<content hash>`.
-    /// The counters order two copies (every change of authority or of a
-    /// member's role moves one); the hash tells apart two copies the counters
+    /// `<epoch>.<grants>.<demotions>.<open transfer>-<content hash>`.
+    /// The counters order two copies (every change of authority moves one);
+    /// the hash tells apart two copies the counters
     /// call equal.
     pub(crate) fn chain_version(&self) -> String {
         chain_version_of(&self.document())
@@ -1252,7 +1179,6 @@ pub(crate) fn local_primary_document(
         primary_history: vec![principal.clone()],
         grants: vec![grant],
         demotions: Vec::new(),
-        member_roles: Vec::new(),
         pending_transfer: None,
         completed_transfers: Vec::new(),
         setup,
@@ -1432,11 +1358,6 @@ pub(crate) fn control_issuer_is_admin(
     if issuer == &document.primary {
         return true;
     }
-    // An inference node is never an admin, even with a grant in the chain:
-    // its role was set at admission.
-    if recorded_visitor(document, &issuer.node_id) {
-        return false;
-    }
     document.grants.iter().any(|grant| {
         grant.subject == *issuer
             && grant.level == AdminLevel::Secondary
@@ -1447,29 +1368,27 @@ pub(crate) fn control_issuer_is_admin(
     })
 }
 
+/// Whether `node_id` with `pubkey` is an admin of `document` today: its
+/// principal, or a secondary whose grant was not revoked. A membership
+/// token is checked against this, and against nothing else.
+pub(crate) fn is_admin_key(document: &AdminTrustDocument, node_id: &str, pubkey: &str) -> bool {
+    std::iter::once(&document.primary)
+        .chain(document.grants.iter().map(|grant| &grant.subject))
+        .any(|principal| {
+            principal.node_id == node_id
+                && principal.pubkey == pubkey
+                && control_issuer_is_admin(document, principal)
+        })
+}
+
 /// The counters that order two copies of a chain: principal transfers,
-/// grants, and demotions plus role records. The last two only grow and only
-/// the principal writes them, so their sum orders two copies as well.
+/// grants and demotions.
 fn chain_counters(document: &AdminTrustDocument) -> (u64, u64, u64) {
     (
         document.authority_epoch,
         document.promotion_seq,
-        (document.demotions.len() + document.member_roles.len()) as u64,
+        document.demotions.len() as u64,
     )
-}
-
-fn recorded_role_in(document: &AdminTrustDocument, node_id: &str) -> Option<EnrollmentRole> {
-    document
-        .member_roles
-        .iter()
-        .rev()
-        .find(|record| record.node_id == node_id)
-        .map(|record| record.role)
-}
-
-/// Whether the chain records `node_id` as an inference node.
-pub(crate) fn recorded_visitor(document: &AdminTrustDocument, node_id: &str) -> bool {
-    recorded_role_in(document, node_id) == Some(EnrollmentRole::Visitor)
 }
 
 pub(crate) fn chain_version_of(document: &AdminTrustDocument) -> String {
@@ -1629,34 +1548,6 @@ struct AcceptanceMessage<'a> {
     authority_epoch: u64,
     command_id: &'a str,
     nonce: &'a str,
-}
-
-#[derive(Serialize)]
-struct MemberRoleMessage<'a> {
-    version: u32,
-    record_id: &'a str,
-    cluster_id: &'a str,
-    issuer: &'a AuthorityPrincipal,
-    node_id: &'a str,
-    role: EnrollmentRole,
-    authority_epoch: u64,
-    command_id: &'a str,
-    nonce: &'a str,
-}
-
-fn member_role_message(record: &MemberRoleRecord) -> Vec<u8> {
-    serde_json::to_vec(&MemberRoleMessage {
-        version: record.version,
-        record_id: &record.record_id,
-        cluster_id: &record.cluster_id,
-        issuer: &record.issuer,
-        node_id: &record.node_id,
-        role: record.role,
-        authority_epoch: record.authority_epoch,
-        command_id: &record.command_id,
-        nonce: &record.nonce,
-    })
-    .expect("canonical member role JSON")
 }
 
 #[derive(Serialize)]
@@ -1874,24 +1765,6 @@ fn validate_document(document: &AdminTrustDocument) -> Result<()> {
             bail!("inconsistent administrative demotion");
         }
         verify_demotion_signature(demotion)?;
-    }
-    for record in &document.member_roles {
-        if record.version != TRUST_VERSION
-            || record.cluster_id != document.anchor.cluster_id
-            || record.authority_epoch > document.authority_epoch
-            || record.node_id.is_empty()
-            || !document
-                .primary_history
-                .get(record.authority_epoch as usize)
-                .is_some_and(|principal| principal == &record.issuer)
-        {
-            bail!("inconsistent member role record");
-        }
-        verify_bytes(
-            &record.issuer.pubkey,
-            &member_role_message(record),
-            &record.signature,
-        )?;
     }
     if let Some(offer) = &document.pending_transfer {
         let successor_grant = document.grants.last();

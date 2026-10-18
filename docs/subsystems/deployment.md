@@ -644,7 +644,7 @@ add up. `Step.capacity` (`CapacityPreview`) is the step alone.
 | `POST /api/ui/deploy/node/remove` | takes a machine out of the model (frees the memory) |
 | `POST /api/ui/undeploy` | takes the whole pipeline offline |
 
-All of `/api/ui/deploy*` and `/api/ui/undeploy` are AdminOnly in the route
+All of `/api/ui/deploy*` and `/api/ui/undeploy` are PrincipalOnly in the route
 table; reading `GET /api/ui/deployments` is also open to `node`.
 
 ## 6. Adding and removing a machine

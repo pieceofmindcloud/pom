@@ -432,7 +432,7 @@ async fn require_principal(state: &crate::gateway::GatewayState) -> Result<(), S
     (state
         .admin_trust
         .effective_authority(&state.authority_principal, profile)
-        == Some(crate::admin_trust::EffectiveAuthority::Primary))
+        == Some(crate::admin_trust::EffectiveAuthority::Principal))
     .then_some(())
     .ok_or(StatusCode::FORBIDDEN)
 }
@@ -580,9 +580,9 @@ async fn admin_authority_view(
         .admin_trust
         .effective_authority(&state.authority_principal, profile);
     let viewer = match local_authority {
-        Some(EffectiveAuthority::Primary) => "principal",
-        Some(EffectiveAuthority::Secondary) => "secondary",
-        None => "node",
+        Some(EffectiveAuthority::Principal) => "principal",
+        Some(EffectiveAuthority::Admin) => "admin",
+        None => "member",
     };
     let primary = member_view(
         &document.primary,
@@ -601,7 +601,7 @@ async fn admin_authority_view(
             && state
                 .admin_trust
                 .effective_authority(&grant.subject, NodeProfile::Admin)
-                == Some(EffectiveAuthority::Secondary)
+                == Some(EffectiveAuthority::Admin)
         {
             secondary_principals.push(grant.subject.clone());
         }
@@ -678,7 +678,7 @@ async fn admin_authority_view(
             issued_at: offer.command_id.clone(),
         }
     });
-    let is_primary = local_authority == Some(EffectiveAuthority::Primary);
+    let is_primary = local_authority == Some(EffectiveAuthority::Principal);
     Json(AdminAuthorityView {
         viewer,
         principal: primary,
@@ -1069,12 +1069,12 @@ async fn promote_node_to_admin(
     }
     // Refused before anything is signed: an inference node's role is set at
     // admission, and a grant recorded for one would stay in the chain.
-    if crate::gateway::peer_is_infer(&state, &peer) {
+    if crate::gateway::peer_is_visitor(&state, &peer) {
         return (
             StatusCode::CONFLICT,
             Json(json!({
                 "error": "an inference node cannot be made an administrator",
-                "reason": "infer_target"
+                "reason": "visitor_target"
             })),
         )
             .into_response();
@@ -1214,9 +1214,9 @@ pub(crate) async fn adopt_trust_chain(
         .effective_authority(&state.authority_principal, NodeProfile::Admin)
         .is_some();
     let profile = match cfg.profile {
-        NodeProfile::Infer => NodeProfile::Infer,
+        NodeProfile::Visitor => NodeProfile::Visitor,
         _ if granted => NodeProfile::Admin,
-        _ => NodeProfile::Node,
+        _ => NodeProfile::Worker,
     };
     if profile != cfg.profile {
         cfg.profile = profile;
@@ -1479,7 +1479,7 @@ async fn internal_complete_transfer(
         .network
         .set_policy_principal_pubkey(state.admin_trust.current_primary().pubkey);
     let mut cfg = state.auth.write().await;
-    cfg.profile = NodeProfile::Node;
+    cfg.profile = NodeProfile::Worker;
     if let Err(error) = cfg.save() {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1488,7 +1488,7 @@ async fn internal_complete_transfer(
             .into_response();
     }
     drop(cfg);
-    state.network.set_profile(NodeProfile::Node);
+    state.network.set_profile(NodeProfile::Worker);
     state.cluster_logs.set_admin_receiver(false);
     state.audit.set_admin_receiver(false);
     Json(json!({ "completed": true })).into_response()
@@ -2258,7 +2258,7 @@ mod tests {
             state
                 .admin_trust
                 .effective_authority(&state.authority_principal, NodeProfile::Admin,),
-            Some(crate::admin_trust::EffectiveAuthority::Secondary)
+            Some(crate::admin_trust::EffectiveAuthority::Admin)
         );
         let response =
             promote_node_to_admin(ConnectionAuth, State(state), Path("outro".to_string())).await;
@@ -2568,9 +2568,9 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let lab = chain_lab();
-        let promoted = lab.node(&lab.member, NodeProfile::Node).await;
-        let bystander = lab.node(&lab.other, NodeProfile::Node).await;
-        let infer_bystander = lab.node(&lab.other, NodeProfile::Infer).await;
+        let promoted = lab.node(&lab.member, NodeProfile::Worker).await;
+        let bystander = lab.node(&lab.other, NodeProfile::Worker).await;
+        let infer_bystander = lab.node(&lab.other, NodeProfile::Visitor).await;
         // Before the chain arrives, the bystander does not know the admin.
         lab.promote(&lab.member.1);
         assert!(!crate::admin_trust::control_issuer_is_admin(
@@ -2591,7 +2591,7 @@ mod tests {
             adopt_trust_chain(&bystander, chain.clone(), false)
                 .await
                 .unwrap(),
-            NodeProfile::Node
+            NodeProfile::Worker
         );
         assert!(crate::admin_trust::control_issuer_is_admin(
             &bystander.admin_trust.document(),
@@ -2601,7 +2601,7 @@ mod tests {
             adopt_trust_chain(&infer_bystander, chain.clone(), false)
                 .await
                 .unwrap(),
-            NodeProfile::Infer
+            NodeProfile::Visitor
         );
 
         // A demotion travels the same way and takes the role back.
@@ -2613,7 +2613,7 @@ mod tests {
             adopt_trust_chain(&promoted, demoted.clone(), true)
                 .await
                 .unwrap(),
-            NodeProfile::Node
+            NodeProfile::Worker
         );
         adopt_trust_chain(&bystander, demoted, false).await.unwrap();
         assert!(!crate::admin_trust::control_issuer_is_admin(
@@ -2648,22 +2648,22 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let lab = chain_lab();
-        let infer = lab.node(&lab.member, NodeProfile::Infer).await;
+        let infer = lab.node(&lab.member, NodeProfile::Visitor).await;
         lab.promote(&lab.member.1);
         assert_eq!(
             adopt_trust_chain(&infer, lab.trust.document(), false)
                 .await
                 .unwrap(),
-            NodeProfile::Infer
+            NodeProfile::Visitor
         );
-        assert_eq!(infer.auth.read().await.profile, NodeProfile::Infer);
+        assert_eq!(infer.auth.read().await.profile, NodeProfile::Visitor);
     }
 
     #[tokio::test]
     async fn the_principal_refuses_to_promote_an_inference_node_before_signing() {
         let lab = chain_lab();
         let mut peer = crate::gateway::testkit::peer("member", "member", 1);
-        peer.profile = NodeProfile::Infer;
+        peer.profile = NodeProfile::Visitor;
         peer.pubkey = lab.member.1.pubkey.clone();
         peer.endpoint_id = Some(lab.member.1.peer_id.clone());
         let mut state = crate::gateway::testkit::state_with("principal", vec![peer]).await;
@@ -2681,7 +2681,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::CONFLICT);
         assert_eq!(
             crate::gateway::testkit::body_of(response).await["reason"],
-            "infer_target"
+            "visitor_target"
         );
         // Nothing was signed: the chain is exactly as it was.
         assert_eq!(state.admin_trust.chain_version(), before);
@@ -2738,7 +2738,7 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let lab = chain_lab();
         // A node that was away holds the chain from before the promotion.
-        let mut away = lab.node(&lab.other, NodeProfile::Node).await;
+        let mut away = lab.node(&lab.other, NodeProfile::Worker).await;
         let old = away.admin_trust.chain_version();
         lab.promote(&lab.member.1);
         let new = lab.trust.chain_version();
@@ -2773,7 +2773,7 @@ mod tests {
 
         // Its copy is adopted although it does not come from the principal,
         // because every signature in it is the principal's.
-        away.auth.write().await.profile = NodeProfile::Node;
+        away.auth.write().await.profile = NodeProfile::Worker;
         adopt_trust_chain(&away, lab.trust.document(), false)
             .await
             .unwrap();

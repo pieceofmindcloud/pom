@@ -6,7 +6,7 @@ export type WizardIntent =
   | "inference"
   | "advanced";
 
-export type RoleName = "admin" | "node" | "infer";
+export type RoleName = "admin" | "worker" | "visitor";
 export type NetworkMode = "local" | "private" | "public";
 export type DiscoveryMode = "automatic" | "mdns" | "manual";
 export type WizardStage =
@@ -93,8 +93,8 @@ export interface WizardHealthItem {
 
 export interface WizardRoles {
   admin: boolean;
-  node: boolean;
-  infer: boolean;
+  worker: boolean;
+  visitor: boolean;
 }
 
 export interface PomSetup {

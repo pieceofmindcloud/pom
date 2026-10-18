@@ -290,7 +290,7 @@ troubled deployment.
   on a POM already running from the same root.
 
 `profile.rs` is the single source of the node's persisted profile (`admin`,
-`node` or `infer`) and of the visibility/promotion capabilities and deployment
+`worker` or `visitor`) and of the visibility/promotion capabilities and deployment
 management. `ProfileAction::ManageDeployment` limits adding a machine and
 undeploying to the `admin` profile; removing one's own machine stays a local
 action of the other profiles. The profile does not replace `Role`, which keeps
@@ -366,7 +366,7 @@ arguments. Cargo artifacts go to
 so read-only source binds work. The cluster development image exposes Cargo to
 its non-root node user and points `CARGO_HOME` to a writable cache in the
 project data volume.
-AdminOnly routes work only with `POM_DEV_MODE=1`; a build may install a local
+PrincipalOnly routes work only with `POM_DEV_MODE=1`; a build may install a local
 plugin without a license or prior installation,
 persisting its binary and state in `plugin_dev_install:<code>` without granting
 licensed features. If a licensed or GitHub installation already exists, the

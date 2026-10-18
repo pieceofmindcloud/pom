@@ -306,8 +306,8 @@ pub(crate) struct MemberRoleRecord {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EffectiveAuthority {
-    Primary,
-    Secondary,
+    Principal,
+    Admin,
 }
 
 #[derive(Clone)]
@@ -739,7 +739,7 @@ impl AdminTrust {
             return None;
         }
         if subject == &document.primary {
-            return Some(EffectiveAuthority::Primary);
+            return Some(EffectiveAuthority::Principal);
         }
         document
             .grants
@@ -752,8 +752,8 @@ impl AdminTrust {
                             && demotion.target_grant_hash == grant_hash(grant).unwrap_or_default()
                     })
             })
-            .then_some(EffectiveAuthority::Secondary)
-            .filter(|_| !recorded_infer(&document, &subject.node_id))
+            .then_some(EffectiveAuthority::Admin)
+            .filter(|_| !recorded_visitor(&document, &subject.node_id))
     }
 
     pub(crate) fn current_primary(&self) -> AuthorityPrincipal {
@@ -795,7 +795,7 @@ impl AdminTrust {
         if document.primary.pubkey != hex::encode(signing_key.verifying_key().as_bytes()) {
             bail!("the issuing key is not that of the current principal");
         }
-        if recorded_infer(&document, &subject.node_id) {
+        if recorded_visitor(&document, &subject.node_id) {
             bail!("an inference node cannot be made an administrator");
         }
         let previous_grant_hash = document.grants.last().map(grant_hash).transpose()?;
@@ -866,7 +866,7 @@ impl AdminTrust {
         if document.pending_transfer.is_some() {
             bail!("cannot apply a grant while a transfer is open");
         }
-        if target_profile != NodeProfile::Node {
+        if target_profile != NodeProfile::Worker {
             bail!("only a node can receive an admin grant");
         }
         if grant.subject != *local_subject {
@@ -1434,7 +1434,7 @@ pub(crate) fn control_issuer_is_admin(
     }
     // An inference node is never an admin, even with a grant in the chain:
     // its role was set at admission.
-    if recorded_infer(document, &issuer.node_id) {
+    if recorded_visitor(document, &issuer.node_id) {
         return false;
     }
     document.grants.iter().any(|grant| {
@@ -1468,8 +1468,8 @@ fn recorded_role_in(document: &AdminTrustDocument, node_id: &str) -> Option<Enro
 }
 
 /// Whether the chain records `node_id` as an inference node.
-pub(crate) fn recorded_infer(document: &AdminTrustDocument, node_id: &str) -> bool {
-    recorded_role_in(document, node_id) == Some(EnrollmentRole::Infer)
+pub(crate) fn recorded_visitor(document: &AdminTrustDocument, node_id: &str) -> bool {
+    recorded_role_in(document, node_id) == Some(EnrollmentRole::Visitor)
 }
 
 pub(crate) fn chain_version_of(document: &AdminTrustDocument) -> String {
@@ -2132,7 +2132,7 @@ mod tests {
             .signed_secondary_grant(&root_key, secondary.clone(), "root")
             .unwrap();
         trust
-            .apply_secondary_grant(grant, &secondary, NodeProfile::Node)
+            .apply_secondary_grant(grant, &secondary, NodeProfile::Worker)
             .unwrap();
         let target = principal(3, "target", "peer-target");
         let mut forged = trust
@@ -2140,7 +2140,7 @@ mod tests {
             .unwrap();
         forged.issuer = secondary;
         assert!(trust
-            .apply_secondary_grant(forged, &target, NodeProfile::Node)
+            .apply_secondary_grant(forged, &target, NodeProfile::Worker)
             .is_err());
         assert_eq!(trust.current_primary(), root);
     }
@@ -2155,11 +2155,11 @@ mod tests {
             .signed_secondary_grant(&root_key, secondary.clone(), "root")
             .unwrap();
         trust
-            .apply_secondary_grant(grant.clone(), &secondary, NodeProfile::Node)
+            .apply_secondary_grant(grant.clone(), &secondary, NodeProfile::Worker)
             .unwrap();
         let reloaded = AdminTrust::load(&path).unwrap();
         assert!(reloaded
-            .apply_secondary_grant(grant, &secondary, NodeProfile::Node)
+            .apply_secondary_grant(grant, &secondary, NodeProfile::Worker)
             .is_err());
     }
 
@@ -2174,7 +2174,7 @@ mod tests {
             .signed_secondary_grant(&root_key, secondary.clone(), "root")
             .unwrap();
         trust
-            .apply_secondary_grant(grant, &secondary, NodeProfile::Node)
+            .apply_secondary_grant(grant, &secondary, NodeProfile::Worker)
             .unwrap();
         let offer = trust
             .begin_transfer(&root_key, secondary.clone(), true)
@@ -2199,7 +2199,7 @@ mod tests {
             .signed_secondary_grant(&root_key, secondary.clone(), "root")
             .unwrap();
         trust
-            .apply_secondary_grant(grant, &secondary, NodeProfile::Node)
+            .apply_secondary_grant(grant, &secondary, NodeProfile::Worker)
             .unwrap();
         let offer = AdminTransferOffer {
             version: TRUST_VERSION,
@@ -2256,11 +2256,11 @@ mod tests {
             .signed_secondary_grant(&root_key, secondary.clone(), "root")
             .unwrap();
         trust
-            .apply_secondary_grant(grant, &secondary, NodeProfile::Node)
+            .apply_secondary_grant(grant, &secondary, NodeProfile::Worker)
             .unwrap();
         assert_eq!(
             trust.effective_authority(&secondary, NodeProfile::Admin),
-            Some(EffectiveAuthority::Secondary)
+            Some(EffectiveAuthority::Admin)
         );
         trust
             .demote_secondary(&root_key, secondary.clone())
@@ -2304,7 +2304,7 @@ mod tests {
         for copy in [&trust, &reloaded] {
             assert_eq!(
                 copy.effective_authority(&secondary, NodeProfile::Admin),
-                Some(EffectiveAuthority::Secondary)
+                Some(EffectiveAuthority::Admin)
             );
         }
 
@@ -2318,7 +2318,7 @@ mod tests {
         );
         assert_eq!(
             trust.effective_authority(&other, NodeProfile::Admin),
-            Some(EffectiveAuthority::Secondary)
+            Some(EffectiveAuthority::Admin)
         );
     }
 

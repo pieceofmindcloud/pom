@@ -732,9 +732,9 @@ async fn peer_call(
             .admin_trust
             .effective_authority(&state.authority_principal, profile)
         {
-            Some(crate::admin_trust::EffectiveAuthority::Primary) => "primary",
-            Some(_) => "secondary",
-            None if profile == crate::profile::NodeProfile::Infer => "infer",
+            Some(crate::admin_trust::EffectiveAuthority::Principal) => "principal",
+            Some(_) => "admin",
+            None if profile == crate::profile::NodeProfile::Visitor => "visitor",
             None => "member",
         };
         let caller = json!({

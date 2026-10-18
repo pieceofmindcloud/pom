@@ -26,7 +26,7 @@ namespace. The real code of Request Logs and Statistics lives in
      includes the menu PNG and documentation Markdown. i18n catalogs go through
      `validate_catalog` before leaving.
    Both sit under `/api/ui/plugins`, open to every profile
-   (`RouteScope::LocalOperator`, since plugins are local to each node: no other
+   (`RouteScope::LocalOnly`, since plugins are local to each node: no other
    node reaches them, signed or not); the authorization of the data the screen
    reads stays in the plugin's routes (for example `/api/ui/requests`, where
    only an admin of the chain reads other nodes' requests).
@@ -47,9 +47,9 @@ namespace. The real code of Request Logs and Statistics lives in
 | `lifecycle` | optional; `resident` (default, the process starts with POM and the heartbeat restarts it) or `on_demand` (see "On-demand processes"). Any other value refuses the manifest |
 | `description` | optional; short text per language (`en` required, up to 2000 bytes each), shown on the Plugins screen card |
 | `screenshots` | optional; up to 8 images (`.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`) as paths relative to the root of the plugin's GitHub repository or `https://` URLs without credentials. They are not assets and the node never serves them: relative paths become `https://raw.githubusercontent.com/<owner>/<repo>/HEAD/<path>` and the browser loads them straight from GitHub |
-| `menu[]` | `id` (unique in the manifest, including children), `label` per language (`en` required), `icon` (a known name, otherwise generic), `to`, optional `roles` (`admin`/`node`/`infer`) or legacy `profiles`; both fields are validated and retained for compatibility, but do not restrict plugin UI visibility in the current POM. `group` is accepted but does not organize items |
+| `menu[]` | `id` (unique in the manifest, including children), `label` per language (`en` required), `icon` (a known name, otherwise generic), `to`, optional `roles` (`admin`/`worker`/`visitor`) or legacy `profiles`; both fields are validated and retained for compatibility, but do not restrict plugin UI visibility in the current POM. `group` is accepted but does not organize items |
 | `menu[].children[]` | optional; submenus with `id`, `label`, `icon`, `to` and optional role metadata. With children, the item becomes an expandable section of the sidebar; the parent's `to` is still required for hosts without submenu support |
-| `routes[]` | `path`, `screen`, optional `roles` (`admin`/`node`/`infer`) or legacy `profiles` (`admin`/`node`/`infer`, non-empty), `full_bleed`; role metadata is validated and retained, but does not restrict plugin routes in the current POM |
+| `routes[]` | `path`, `screen`, optional `roles` (`admin`/`worker`/`visitor`) or legacy `profiles` (`admin`/`worker`/`visitor`, non-empty), `full_bleed`; role metadata is validated and retained, but does not restrict plugin routes in the current POM |
 | `screens{}` | `module` (ES asset), `export` (default `default`), `styles[]` |
 | `i18n{}` | language -> JSON asset; if present, `en` is required |
 | `documentation` | optional; current format with `guides[]` and `reference[]`, each entry with `id`, a localized `title` (with `en`) and a relative Markdown asset under `docs/`; a published list of `docs/*.md` paths is also normalized into guides |
@@ -116,11 +116,11 @@ registry normalizes each target once and both navigation and the router
 consume that same path. The `/admin-ui` basename is still applied by
 `BrowserRouter`, including on direct reloads and browser history navigation.
 
-Every active plugin menu and route is available to `admin`, `node` and `infer`
+Every active plugin menu and route is available to `admin`, `worker` and `visitor`
 profiles. Each node owns its installed plugins, so manifest `roles` and legacy
 `profiles` are validated and preserved for compatibility with older hosts but
 do not gate this POM's plugin UI. The POM's native route restrictions still
-apply: for example, `infer` cannot open `/logs`, `/statistics` or
+apply: for example, `visitor` cannot open `/logs`, `/statistics` or
 `/deployments`, even when a plugin claims an extension point. Plugin APIs and
 sensitive operations must enforce their own authorization on the backend.
 
@@ -231,7 +231,7 @@ forwards `{params, profile}` to the plugin's `query` as operation
 `rpc.<op>` and returns the plugin's JSON reply as is. The node knows no
 operation and checks only the name, the size (256 KiB), the same origin and
 that the plugin is active. `profile` is the node's persisted profile
-(`admin`, `node` or `infer`), so the plugin decides who may call each
+(`admin`, `worker` or `visitor`), so the plugin decides who may call each
 operation; the enterprise plugin, for example, answers its directory and
 insights only for `admin`. On the browser side the helper is
 `scopedPluginApi(code).rpc(op, params)` (`lib/pluginEvents.ts`), which posts to
@@ -250,7 +250,7 @@ error card. Hosts ignore slot ids they do not offer.
 
 | Slot | Where | Props |
 |---|---|---|
-| `chat.telemetry` | end of the compact telemetry line under each Chat answer (not for `infer`, not while streaming) | `ChatTelemetrySlotProps` in `lib/chatTelemetry.ts`: `messageId`, `trace`, `timings`, `source`, `environment` (cluster snapshot, network RTT, runtimes - fetched only while a plugin claims the slot), `model`, `onAsk({visibleText, requestContent})`, `askDisabled` |
+| `chat.telemetry` | end of the compact telemetry line under each Chat answer (not for `visitor`, not while streaming) | `ChatTelemetrySlotProps` in `lib/chatTelemetry.ts`: `messageId`, `trace`, `timings`, `source`, `environment` (cluster snapshot, network RTT, runtimes - fetched only while a plugin claims the slot), `model`, `onAsk({visibleText, requestContent})`, `askDisabled` |
 
 ~~~json
 {
@@ -291,7 +291,7 @@ digest from the GitHub API, downloads and verifies the asset and installs the
 chosen version without checking whether it needs a license. The repository
 list stays local to the node; installing creates no lease, grant or
 entitlement. Plugin activation/licensing stays separate. Any profile (`admin`,
-`node`, `infer`) can register repositories, install and activate plugins on its
+`worker`, `visitor`) can register repositories, install and activate plugins on its
 own node. See `enterprise-licensing.md` for contract, integrity and
 persistence.
 
@@ -320,7 +320,7 @@ source mount; a mounted directory is listed only when its Cargo manifest and
 root `manifest.json` or `ui/manifest.json` are valid and all plugin manifests
 agree on a safe `plugin_code`. The code-server source uses
 `plugin_code: "code_server"`. `GET /api/ui/plugins/dev-sources` lists only
-valid mounted sources. The AdminOnly route
+valid mounted sources. The PrincipalOnly route
 `POST /api/ui/plugins/dev-sources/:repository/rebuild-install` uses fixed
 arguments for `cargo metadata --no-deps --locked` and `cargo build --release
 --locked`, requires a single `cdylib` target and checks canonical source and
@@ -418,14 +418,14 @@ plugin receives who is asking and decides what to hand over:
 ```json
 {"operation": "peer.connection", "params": null,
  "caller": {"node_id": "<node>", "head": true, "model": "<model>",
-            "role": "secondary"}}
+            "role": "admin"}}
 ```
 
 `role` is the caller's role as the trust chain proves it
-(`plugin_services::caller_role`): `primary`, `secondary`, `infer` or `member`.
+(`plugin_services::caller_role`): `principal`, `admin`, `visitor` or `member`.
 The announced profile never makes a caller an admin, so a plugin that shares
-something only with the admins answers when `role` is `primary` or
-`secondary`. `head` is true when the caller announces layer 0 of a model, the
+something only with the admins answers when `role` is `principal` or
+`admin`. `head` is true when the caller announces layer 0 of a model, the
 machine every prompt enters through, and is always false for an inference
 node. This is how a plugin shares a secret with the heads of
 the network and nobody else: the Qdrant plugin answers `peer.connection` with

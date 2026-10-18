@@ -120,7 +120,7 @@ interface RegisteredPlugin {
 }
 
 const PLUGIN_CODE_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?$/;
-const ALL_PROFILES: readonly Profile[] = ["admin", "node", "infer"];
+const ALL_PROFILES: readonly Profile[] = ["admin", "worker", "visitor"];
 /** POM native routes that a manifest can provide as a replacement. */
 const POM_PLUGIN_EXTENSION_ROUTES = new Set(["/logs", "/statistics"]);
 
@@ -144,14 +144,14 @@ function isProfileArray(value: unknown): value is Profile[] {
   return (
     Array.isArray(value) &&
     value.length > 0 &&
-    value.every((profile) => profile === "admin" || profile === "node" || profile === "infer")
+    value.every((profile) => profile === "admin" || profile === "worker" || profile === "visitor")
   );
 }
 
 function isMenuRoleArray(value: unknown): value is Profile[] {
   return (
     Array.isArray(value) &&
-    value.every((role) => role === "admin" || role === "node" || role === "infer")
+    value.every((role) => role === "admin" || role === "worker" || role === "visitor")
   );
 }
 

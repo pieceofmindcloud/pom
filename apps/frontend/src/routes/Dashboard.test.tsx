@@ -90,7 +90,7 @@ function deploymentRow(
 
 function mount(
   cluster = fakeCluster([], "qwen35"),
-  profile: "admin" | "node" | "infer" = "admin",
+  profile: "admin" | "worker" | "visitor" = "admin",
   rttMeasurements?: { from_node_id: string; to_node_id: string; rtt_ms: number; transport: string }[],
   nodeOverride?: Partial<NodeInfo> | null,
   deployments?: { node_id: string; deployments: DeploymentRow[] },
@@ -260,7 +260,7 @@ describe("Dashboard", () => {
       fakeSlicePeer("b", 16, 31),
     ], "qwen35");
 
-    mount(cluster, "node");
+    mount(cluster, "worker");
 
     // The view selector does not exist on this profile: Flow is the only view.
     await waitFor(() => expect(screen.getByLabelText("Modelo")).toBeTruthy());
@@ -280,7 +280,7 @@ describe("Dashboard", () => {
       fakeSlicePeer("b", 16, 31),
     ], "qwen35");
 
-    mount(cluster, "node");
+    mount(cluster, "worker");
 
     await waitFor(() => expect(screen.getByLabelText("Modelo")).toBeTruthy());
     expect(screen.queryByRole("button", { name: /Detalhes/ })).toBeNull();
@@ -373,7 +373,7 @@ describe("Dashboard", () => {
     expect(await screen.findByText("Configurações do strata")).toBeTruthy();
   });
 
-  it.each(["node", "infer"] as const)(
+  it.each(["worker", "visitor"] as const)(
     "shows the local slice and does not turn the cluster coverage into an alarm in the %s profile",
     async (profile) => {
       const cluster = fakeCluster([
@@ -418,7 +418,7 @@ describe("Dashboard", () => {
     cluster.covered_layers = 0;
     cluster.complete = false;
 
-    mount(cluster, "infer", undefined, null);
+    mount(cluster, "visitor", undefined, null);
 
     await waitFor(() => expect(screen.getAllByText("Os dados ao vivo deste nó estão indisponíveis").length).toBeGreaterThan(0));
     expect(screen.queryByText("pipeline incompleto")).toBeNull();

@@ -98,7 +98,7 @@ export function AdminAuthorityPanel({
       candidate.connected &&
       !candidate.blocked &&
       // An inference node's role is set at admission; the node refuses too.
-      candidate.profile !== "infer" &&
+      candidate.profile !== "visitor" &&
       candidate.node_id !== authority.principal.node_id &&
       !authority.secondary.some((admin) => admin.node_id === candidate.node_id),
   );
@@ -161,7 +161,7 @@ export function AdminAuthorityPanel({
         <Footnote className="border-t border-line px-5 py-3" icon={<ShieldCheck className="h-3.5 w-3.5" />}>
           {isPrincipal
             ? t("adminAuthority.principalCanChange")
-            : authority.viewer === "secondary"
+            : authority.viewer === "admin"
               ? t("adminAuthority.secondaryReadOnly")
               : t("adminAuthority.nodeReadOnly")}
         </Footnote>

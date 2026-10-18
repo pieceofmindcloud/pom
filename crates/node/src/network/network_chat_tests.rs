@@ -288,21 +288,21 @@ async fn the_member_list_takes_admitted_peers_and_keeps_out_one_that_just_left()
     .unwrap();
     let auth = std::sync::Arc::new(tokio::sync::RwLock::new(config));
     let (chat, _receiver) = super::network_chat::NetworkChat::new(database.clone(), auth, true);
-    use crate::config::EnrollmentRole::{Infer, Node};
+    use crate::config::EnrollmentRole::{Visitor, Worker};
     use crate::network_lobby::AdmissionStatus;
 
     // A member that joined before admission requests existed has no record.
     assert!(chat.admission_of("old-member").is_none());
-    assert!(chat.record_member("old-member", "antigo", Node));
+    assert!(chat.record_member("old-member", "antigo", Worker));
     let record = chat.admission_of("old-member").unwrap();
     assert_eq!(record.status, AdmissionStatus::Approved);
     assert_eq!(record.card.hostname, "antigo");
     // Recording again changes nothing, and never overrides a decision.
-    assert!(!chat.record_member("old-member", "outro-nome", Infer));
-    assert_eq!(chat.admission_of("old-member").unwrap().role, Node);
-    chat.request_admission("candidate", Default::default(), Infer)
+    assert!(!chat.record_member("old-member", "outro-nome", Visitor));
+    assert_eq!(chat.admission_of("old-member").unwrap().role, Worker);
+    chat.request_admission("candidate", Default::default(), Visitor)
         .unwrap();
-    assert!(!chat.record_member("candidate", "x", Node));
+    assert!(!chat.record_member("candidate", "x", Worker));
     assert_eq!(
         chat.admission_of("candidate").unwrap().status,
         AdmissionStatus::Pending
@@ -312,7 +312,7 @@ async fn the_member_list_takes_admitted_peers_and_keeps_out_one_that_just_left()
     // it for a few seconds does not put it back.
     chat.member_departed("old-member");
     assert!(chat.admission_of("old-member").is_none());
-    assert!(!chat.record_member("old-member", "antigo", Node));
+    assert!(!chat.record_member("old-member", "antigo", Worker));
     assert!(chat.admission_of("old-member").is_none());
 
     // The list survives a restart.

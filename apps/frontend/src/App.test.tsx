@@ -173,7 +173,7 @@ describe("profile guard per route", () => {
     });
 
     it(`blocks ${path} for the node profile`, async () => {
-      open(path, "node");
+      open(path, "worker");
       expect(screen.queryByText(marker)).toBeNull();
       expect(await screen.findByText("Tela restrita a outro perfil")).toBeTruthy();
     });
@@ -206,11 +206,11 @@ describe("profile guard per route", () => {
       plugin_code: "base",
       menu: [
         { id: "plugin", label: { en: "Plugin" }, to: "/plugin-de-base", profiles: ["admin"] },
-        { id: "example", label: { en: "Example" }, to: "/example", profiles: ["admin", "node"] },
+        { id: "example", label: { en: "Example" }, to: "/example", profiles: ["admin", "worker"] },
       ],
       routes: [
         { path: "/plugin-de-base", screen: "plugin", profiles: ["admin"] },
-        { path: "/example", screen: "example", profiles: ["admin", "node"] },
+        { path: "/example", screen: "example", profiles: ["admin", "worker"] },
       ],
       screens: {
         plugin: { module: "ui/plugin.js" },
@@ -226,8 +226,8 @@ describe("profile guard per route", () => {
     manifest: {
       schema: "pom-plugin-ui/v1",
       plugin_code: "analytics",
-      menu: [{ id: "example", label: { en: "Analytics Example" }, to: "/example", profiles: ["infer"] }],
-      routes: [{ path: "/example", screen: "example", profiles: ["infer"] }],
+      menu: [{ id: "example", label: { en: "Analytics Example" }, to: "/example", profiles: ["visitor"] }],
+      routes: [{ path: "/example", screen: "example", profiles: ["visitor"] }],
       screens: { example: { module: "ui/example.js" } },
       assets: ["ui/example.js"],
     },
@@ -243,26 +243,26 @@ describe("profile guard per route", () => {
   });
 
   it("renders plugin screens across profiles while retaining native infer restrictions", async () => {
-    pluginUi.plugins = [enterpriseManifest(["admin", "node"])];
+    pluginUi.plugins = [enterpriseManifest(["admin", "worker"])];
     open("/logs", "admin");
     expect(await screen.findByText("tela-plugin:logs:logs")).toBeTruthy();
     cleanup();
-    open("/statistics", "node");
+    open("/statistics", "worker");
     expect(await screen.findByText("tela-plugin:logs:stats")).toBeTruthy();
     cleanup();
     // POM keeps Logs closed to infer, even when a plugin provides it.
-    open("/logs", "infer");
+    open("/logs", "visitor");
     expect(await screen.findByText("Tela restrita a outro perfil")).toBeTruthy();
     expect(screen.queryByText(/^tela-plugin:/)).toBeNull();
   });
 
   it("opens an admin-only manifest route for node and infer profiles", async () => {
     pluginUi.plugins = [baseManifest];
-    open("/base/plugin-de-base", "node");
+    open("/base/plugin-de-base", "worker");
     expect(await screen.findByText("tela-plugin:base:plugin")).toBeTruthy();
     cleanup();
 
-    open("/base/plugin-de-base", "infer");
+    open("/base/plugin-de-base", "visitor");
     expect(await screen.findByText("tela-plugin:base:plugin")).toBeTruthy();
   });
 
@@ -295,7 +295,7 @@ describe("profile guard per route", () => {
     expect(await screen.findByText("tela-plugin:base:example")).toBeTruthy();
     cleanup();
 
-    open("/analytics/example", "infer");
+    open("/analytics/example", "visitor");
     expect(await screen.findByText("tela-plugin:analytics:example")).toBeTruthy();
   });
 
@@ -335,14 +335,14 @@ describe("profile guard per route", () => {
         routes: [{ ...baseManifest.manifest.routes[0], path: "/../../chat" }],
       },
     }];
-    open("/chat", "node");
+    open("/chat", "worker");
 
     expect(await screen.findByText("tela-chat")).toBeTruthy();
   });
 
   it("leaves the routes nobody restricted alone", async () => {
     pluginUi.plugins = [baseManifest];
-    open("/models", "node");
+    open("/models", "worker");
     expect(await screen.findByText("tela-modelos")).toBeTruthy();
   });
 
@@ -354,7 +354,7 @@ describe("profile guard per route", () => {
   });
 
   it("opens Preferences for the node profile", async () => {
-    open("/config/preferences", "node");
+    open("/config/preferences", "worker");
     expect(await screen.findByText("tela-preferencias")).toBeTruthy();
   });
 
@@ -370,7 +370,7 @@ describe("profile guard per route", () => {
    * escapes the guard again when someone restricts it.
    */
   it("passes the chat through the same guard", async () => {
-    open("/chat", "node");
+    open("/chat", "worker");
     expect(await screen.findByText("tela-chat")).toBeTruthy();
   });
 
@@ -405,7 +405,7 @@ describe("profile guard per route", () => {
   });
 
   it("opens the compact chat through the path used by the menu bar app", async () => {
-    open("/admin-ui/chat", "node");
+    open("/admin-ui/chat", "worker");
     const chat = await screen.findByText("tela-chat");
     expect(chat).toBeTruthy();
     expect(chat.parentElement?.className).toContain("h-full");

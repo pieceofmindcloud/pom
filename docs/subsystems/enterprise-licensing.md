@@ -204,7 +204,7 @@ only the generic boundary, reusable by any future `plugin_code`:
   "Checkout through the node" below). An earlier version (97bb0e91) showed only
   the showcase even with the plugin active ("This plugin is already active in
   this cluster") - defect fixed. The `/api/ui/requests` and
-  `/api/ui/requests/stats` routes stay in the node, `LocalOperator`, and refuse
+  `/api/ui/requests/stats` routes stay in the node, `LocalOnly`, and refuse
   the data without entitlement. An admin of the chain reads every node's
   requests; any other node, an inference node included, only its own
   (`http-api.md`).
@@ -249,9 +249,9 @@ error keeps the license.
 
 Plugins are local to each node, so activating a license, registering a GitHub
 repository, installing, updating and using a plugin's UI is allowed to the
-`admin`, `node` and `infer` profiles on their own machine, including the
+`admin`, `worker` and `visitor` profiles on their own machine, including the
 development rebuild (`/api/ui/plugins/dev-sources*`), which also requires
-`POM_DEV_MODE=1`. The `infer` UI lists Plugins and the installed plugins' menus
+`POM_DEV_MODE=1`. The `visitor` UI lists Plugins and the installed plugins' menus
 below its conversations. The rule
 lives in `ROUTE_RULES` (`backend/webui/routes/mod.rs`).
 
@@ -542,7 +542,7 @@ The About screen calls `POST /api/ui/pom-update/check` to repeat detection on
 demand and reads `GET /api/ui/pom-update/status` for the current state
 (`usePomCoreUpdateStatus()`, its own `PomCoreUpdateStatus` contract - never
 `PluginStatus`). The status route downloads no artifacts and restarts nothing;
-`check` and `apply` are AdminOnly. The About screen itself holds the
+`check` and `apply` are PrincipalOnly. The About screen itself holds the
 confirmation and the install, without redirecting to any other screen - see
 `## Phase 7` above.
 

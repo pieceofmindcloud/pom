@@ -321,31 +321,31 @@ fn valid_peer_op(op: &str) -> bool {
 
 /// What the plugin is told about the peer that is calling it.
 pub(crate) fn caller_of(peer: &crate::network::PeerInfo, role: &str) -> Value {
-    let infer = role == "infer";
+    let visitor = role == "visitor";
     json!({
         "node_id": peer.node_id,
         // Layer 0 is where every prompt enters a model: its head. An
         // inference node serves no layer, whatever it announces.
-        "head": !infer && peer.total_layers > 0 && peer.start_layer == 0,
+        "head": !visitor && peer.total_layers > 0 && peer.start_layer == 0,
         "model": peer.model,
         "role": role,
     })
 }
 
 /// The caller's role as the trust chain proves it, for a plugin that shares
-/// something only with the admins: `primary`, `secondary`, `infer` or
+/// something only with the admins: `principal`, `admin`, `visitor` or
 /// `member`. The announced profile alone never makes a caller an admin.
 pub(crate) fn caller_role(
     state: &crate::gateway::GatewayState,
     issuer: &crate::admin_trust::AuthorityPrincipal,
     peer: &crate::network::PeerInfo,
 ) -> &'static str {
-    if crate::gateway::peer_is_infer(state, peer) {
-        "infer"
+    if crate::gateway::peer_is_visitor(state, peer) {
+        "visitor"
     } else if crate::gateway::issuer_is_principal(state, issuer) {
-        "primary"
+        "principal"
     } else if crate::admin_trust::control_issuer_is_admin(&state.admin_trust.document(), issuer) {
-        "secondary"
+        "admin"
     } else {
         "member"
     }
@@ -424,10 +424,10 @@ mod tests {
         peer.start_layer = 0;
         peer.total_layers = 32;
         assert_eq!(caller_of(&peer, "member")["head"], true);
-        assert_eq!(caller_of(&peer, "secondary")["role"], "secondary");
-        let infer = caller_of(&peer, "infer");
-        assert_eq!(infer["head"], false);
-        assert_eq!(infer["role"], "infer");
+        assert_eq!(caller_of(&peer, "admin")["role"], "admin");
+        let visitor = caller_of(&peer, "visitor");
+        assert_eq!(visitor["head"], false);
+        assert_eq!(visitor["role"], "visitor");
     }
 
     #[test]

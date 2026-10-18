@@ -394,7 +394,7 @@ export function Dashboard() {
         deployId={activeDeployId}
         // An inference node holds and serves no model, so it is not a machine
         // to add; the node refuses the request as well.
-        peers={c.peers.filter((p) => p.node?.profile !== "infer").map((p) => ({ node_id: p.node_id, short_id: p.short_id, hostname: p.node?.hostname ?? p.short_id }))}
+        peers={c.peers.filter((p) => p.node?.profile !== "visitor").map((p) => ({ node_id: p.node_id, short_id: p.short_id, hostname: p.node?.hostname ?? p.short_id }))}
         slices={[]}
         services={inferenceServicesOf(c.peers)}
         existingRanges={groupPeers.map((p) => [p.start_layer, p.end_layer] as [number, number])}

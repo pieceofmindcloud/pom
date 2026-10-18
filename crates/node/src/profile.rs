@@ -4,20 +4,25 @@ use std::fmt;
 /// The durable capability profile of one node.
 ///
 /// The profile is persisted in `pom.json`, so the browser cannot choose it.
+/// A `Worker` is hardware the admins load models on and run layers with; a
+/// `Visitor` is a proxy that only routes inference requests to the workers
+/// and never holds a model nor makes an administrative call. `Admin` is a
+/// worker whose authority the trust chain confirms - the profile alone
+/// grants none (`AdminTrust::effective_authority`).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum NodeProfile {
     Admin,
-    Node,
-    Infer,
+    Worker,
+    Visitor,
 }
 
 impl fmt::Display for NodeProfile {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let value = match self {
             Self::Admin => "admin",
-            Self::Node => "node",
-            Self::Infer => "infer",
+            Self::Worker => "worker",
+            Self::Visitor => "visitor",
         };
         f.write_str(value)
     }
@@ -25,7 +30,7 @@ impl fmt::Display for NodeProfile {
 
 impl Default for NodeProfile {
     fn default() -> Self {
-        Self::Node
+        Self::Worker
     }
 }
 
@@ -46,8 +51,8 @@ pub(crate) enum ProfileAction {
 impl NodeProfile {
     pub(crate) const fn network_visibility(self) -> NetworkVisibility {
         match self {
-            Self::Infer => NetworkVisibility::Local,
-            Self::Admin | Self::Node => NetworkVisibility::Cluster,
+            Self::Visitor => NetworkVisibility::Local,
+            Self::Admin | Self::Worker => NetworkVisibility::Cluster,
         }
     }
 
@@ -68,5 +73,5 @@ impl NodeProfile {
 /// reusable by every backend route that exposes profile capabilities.
 #[cfg(test)]
 pub(crate) const fn can_promote_node_to_admin(actor: NodeProfile, target: NodeProfile) -> bool {
-    matches!(actor, NodeProfile::Admin) && matches!(target, NodeProfile::Node)
+    matches!(actor, NodeProfile::Admin) && matches!(target, NodeProfile::Worker)
 }

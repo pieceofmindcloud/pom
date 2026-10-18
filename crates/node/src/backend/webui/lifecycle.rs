@@ -948,12 +948,12 @@ pub(crate) async fn launch(
         peers
             .iter()
             .find(|peer| peer.node_id == target.node_id)
-            .filter(|peer| crate::gateway::peer_is_infer(&state, peer))
+            .filter(|peer| crate::gateway::peer_is_visitor(&state, peer))
     }) {
         return (
             StatusCode::CONFLICT,
             Json(json!({
-                "reason": "infer_target",
+                "reason": "visitor_target",
                 "error": format!(
                     "{} was admitted for inference only and cannot serve a model",
                     infer.hostname

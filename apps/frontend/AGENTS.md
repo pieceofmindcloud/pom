@@ -85,17 +85,17 @@ fallback. New menus enter at the root, in manifest order, immediately before
 Documentation; an item with `children` becomes an expandable section with
 submenus. `components/PluginBridge.tsx` connects the shell to the plugins through
 the `pom-plugin-events/v1` protocol (`lib/pluginEvents.ts`). POM shows and opens
-the interfaces of all plugins in the `admin`, `node` and `infer` profiles; the
+the interfaces of all plugins in the `admin`, `worker` and `visitor` profiles; the
 manifest's `roles` and `profiles` are validated but do not restrict this UI. The
-native restrictions of the `infer` profile still apply to the POM routes. The
+native restrictions of the `visitor` profile still apply to the POM routes. The
 Logs/Statistics code does not live here: it lives in `pom-plugin-logs`. The API
 (`/api/ui/requests`, `/api/ui/requests/stats`) remains the authority and refuses
 the data without an entitlement.
 
-The `infer` profile is a reduced view of the interface: conversations, Network
+The `visitor` profile is a reduced view of the interface: conversations, Network
 Chat, documentation, API key, Plugins (catalog, installation and local
 development builds on this machine) and the local network screen (read-only: the
-role is decided at admission, and the interface does not offer becoming `node`
+role is decided at admission, and the interface does not offer becoming `worker`
 in its place). Plugins and the menus of installed plugins sit below the
 conversations list.
 It never sees request logs, deployment logs or statistics (denied in

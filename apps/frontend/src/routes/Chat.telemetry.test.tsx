@@ -100,7 +100,7 @@ describe("chat telemetry per profile", () => {
     trace,
   };
 
-  function mountBubble(profile: "admin" | "node" | "infer", extra: Partial<Parameters<typeof Bubble>[0]> = {}) {
+  function mountBubble(profile: "admin" | "worker" | "visitor", extra: Partial<Parameters<typeof Bubble>[0]> = {}) {
     return mount(
       <ProfileProvider initialProfile={profile}>
         <Bubble message={tracedMessage} streaming={false} {...extra} />
@@ -109,7 +109,7 @@ describe("chat telemetry per profile", () => {
   }
 
   it("does not show telemetry in the chat for infer", () => {
-    mountBubble("infer", { telemetryPlugin: plugin });
+    mountBubble("visitor", { telemetryPlugin: plugin });
 
     expect(screen.getByText("resposta")).toBeTruthy();
     expect(screen.queryByTestId("telemetry-line")).toBeNull();
@@ -117,7 +117,7 @@ describe("chat telemetry per profile", () => {
     expect(screen.queryByText("telemetria avançada")).toBeNull();
   });
 
-  it.each(["admin", "node"] as const)("shows the basic line for the %s profile without a plugin", (profile) => {
+  it.each(["admin", "worker"] as const)("shows the basic line for the %s profile without a plugin", (profile) => {
     mountBubble(profile);
 
     expect(screen.getByTestId("telemetry-line")).toBeTruthy();

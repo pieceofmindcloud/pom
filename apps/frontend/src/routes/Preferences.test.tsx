@@ -91,7 +91,7 @@ describe("Preferences", () => {
   it("in the infer profile, hides the GPU thermal protection and Hugging Face", () => {
     render(
       <LocaleProvider initialLocale="pt-BR">
-        <ProfileProvider initialProfile="infer">
+        <ProfileProvider initialProfile="visitor">
           <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><Preferences /></MemoryRouter>
         </ProfileProvider>
       </LocaleProvider>,

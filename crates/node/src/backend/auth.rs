@@ -1455,7 +1455,7 @@ mod tests {
     #[test]
     fn a_rotated_connection_key_overlaps_the_old_one_instead_of_cutting_it() {
         let config = |key: &str| -> Config {
-            serde_json::from_value(serde_json::json!({ "profile": "node", "connection_key": key }))
+            serde_json::from_value(serde_json::json!({ "profile": "worker", "connection_key": key }))
                 .unwrap()
         };
         let rotated = config("transition-new-key");

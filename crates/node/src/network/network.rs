@@ -1732,7 +1732,7 @@ impl Network {
             gateway_port: init.gateway_port,
             gateway_quic_port: init.gateway_quic_port,
             public_discovery: Arc::new(RwLock::new(HashMap::new())),
-            profile: Arc::new(std::sync::RwLock::new(crate::profile::NodeProfile::Node)),
+            profile: Arc::new(std::sync::RwLock::new(crate::profile::NodeProfile::Worker)),
             hostname: std::sync::RwLock::new(String::new()),
             advertise_addr: std::sync::RwLock::new(None),
             tp: std::sync::RwLock::new(None),
@@ -4375,7 +4375,7 @@ mod tests {
             .record_member_role(
                 &primary_key,
                 &promoted_infer.node_id,
-                crate::config::EnrollmentRole::Infer,
+                crate::config::EnrollmentRole::Visitor,
             )
             .unwrap();
         let net = Network::testkit("local".into(), "pk".into(), vec![], None, None, None)
@@ -4904,7 +4904,7 @@ mod tests {
             gateway_port: Some(8090),
             gateway_quic_port: None,
             inference_frame_capabilities: Vec::new(),
-            profile: crate::profile::NodeProfile::Node,
+            profile: crate::profile::NodeProfile::Worker,
             hostname: String::new(),
             capabilities: Vec::new(),
             connection_verified: false,
@@ -5050,7 +5050,7 @@ mod tests {
             inference_frame_capabilities: Vec::new(),
             gateway_port: Some(8080),
             gateway_quic_port: None,
-            profile: crate::profile::NodeProfile::Node,
+            profile: crate::profile::NodeProfile::Worker,
             hostname: "h".into(),
             capabilities: Vec::new(),
             connection_verified: false,
@@ -5194,7 +5194,7 @@ mod tests {
                 inference_frame_capabilities: Vec::new(),
                 gateway_port: Some(8080),
                 gateway_quic_port: None,
-                profile: crate::profile::NodeProfile::Node,
+                profile: crate::profile::NodeProfile::Worker,
                 tls: false,
                 quic: false,
                 hostname: "salem".into(),
@@ -5514,7 +5514,7 @@ mod tests {
             inference_frame_capabilities: Vec::new(),
             gateway_port: None,
             gateway_quic_port: None,
-            profile: crate::profile::NodeProfile::Node,
+            profile: crate::profile::NodeProfile::Worker,
             hostname: String::new(),
             capabilities: Vec::new(),
             connection_verified: false,
@@ -5535,7 +5535,7 @@ mod tests {
     ) -> crate::auth::AuthState {
         use crate::config::Config;
         Arc::new(RwLock::new(Config {
-            profile: crate::profile::NodeProfile::Node,
+            profile: crate::profile::NodeProfile::Worker,
             setup_pending: false,
             local_auto_discovery: false,
             connection_key: key.into(),
@@ -5620,7 +5620,7 @@ mod tests {
             inference_frame_capabilities: Vec::new(),
             gateway_port: Some(gateway_port),
             gateway_quic_port: None,
-            profile: crate::profile::NodeProfile::Node,
+            profile: crate::profile::NodeProfile::Worker,
             tls: false,
             hostname: String::new(),
             capabilities: Vec::new(),

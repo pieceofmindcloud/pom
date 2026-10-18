@@ -695,8 +695,8 @@ pub async fn save_setup(
     let config = state.config;
     let profile = match req.profile.as_str() {
         "admin" => crate::profile::NodeProfile::Admin,
-        "infer" => crate::profile::NodeProfile::Infer,
-        "node" => crate::profile::NodeProfile::Node,
+        "visitor" => crate::profile::NodeProfile::Visitor,
+        "worker" => crate::profile::NodeProfile::Worker,
         _ => {
             return (
                 StatusCode::BAD_REQUEST,

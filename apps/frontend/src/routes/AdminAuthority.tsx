@@ -83,7 +83,7 @@ export function AdminAuthority() {
         actions={
           <div className="hidden items-center gap-2 text-xs text-faint sm:flex">
             <ShieldCheck className="h-3.5 w-3.5 text-iris" aria-hidden="true" />
-            {t(`profile.${authorityState.viewer === "node" ? "node" : "admin"}`)}
+            {t(`profile.${authorityState.viewer === "member" ? "worker" : "admin"}`)}
           </div>
         }
       />

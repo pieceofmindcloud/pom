@@ -41,7 +41,7 @@ Per-file list:
   the principal's key, and neither the trust root nor joining from Public
   networks brings an IP bootstrap. When the wizard was opened from Public
   networks, `SetupState.joinAccepts` holds that network's
-  `accepted_enrollments` and `StartScreen` disables the `node`/`infer` roles
+  `accepted_enrollments` and `StartScreen` disables the `worker`/`visitor` roles
   it does not accept (`admin` founds its own network and stays available).
   `PublicDirectoryPanel`, in the join step, lists public networks from
   `GET /api/setup/public-networks`. A machine in setup mode has nobody to ask,
@@ -277,14 +277,14 @@ Per-file list:
   building and installing even inactive plugins. A local build is separate
   from license state, grants no licensed features and does not activate a
   license; an existing licensed/GitHub installation keeps its entitlement.
-  The action calls the AdminOnly route and shows success or the build
+  The action calls the PrincipalOnly route and shows success or the build
   stage/exit code without compiler output, and does not use the GitHub release
   route. The page has its own Settings > Plugins menu entry. Commercial release
   data is selected for the local node's `system.os`/`system.arch`; if the
   catalog does not publish that target, the screen shows no release rather than
   suggesting one for another platform.
 - `MyMachine.tsx` - "My Machine" (route `/config/my-machine`, its own
-  entry in the Network menu, also accessible to `infer`). It contains exactly what
+  entry in the Network menu, also accessible to `visitor`). It contains exactly what
   left `NetworkSettings.tsx`: the "This machine" panel (hostname, `node_id`,
   ports, profile, effective authority, and `Sair da rede`/`Voltar para a rede` ("Leave the network"/"Return to the network") via
   `POST /api/ui/leave`/`/api/ui/rejoin` - abdication, not privilege, available
@@ -335,7 +335,7 @@ Per-file list:
   assistant message keeps its summary and full telemetry without a reload.
   Each hop's backend telemetry separates the llama.cpp evaluation call from
   explicit backend synchronization.
-  The `infer` profile hides the source, the timing and throughput summaries and the
+  The `visitor` profile hides the source, the timing and throughput summaries and the
   detailed telemetry panel on this screen; that is presentation, not
   authorization.
   In the same composer, `InferenceHeadChoice` shows through which layer-0 head
@@ -711,7 +711,7 @@ Per-file list:
   harnesses - `GET/POST /admin/api-keys`, `DELETE /admin/api-keys/:id`. The
   list carries only `key_hint` and the tracking id; the secret appears once,
   in the `IssuedSecret` window right after creation.
-  On the `infer` profile, it shows only this node's active key, hides the node selector
+  On the `visitor` profile, it shows only this node's active key, hides the node selector
   and, when generating a new key, revokes the previous one. The API key routes are
   `infer+node+admin`: they are the credential of whoever serves `/v1`, and every profile
   serves. `ConnectionKeys`: the cluster operator key, read from
@@ -734,7 +734,7 @@ Per-file list:
 - `NetworkSettings.tsx` - This node's membership and network information
   screen. Its `NetworkParticipants` export reuses the known-node area at
   `/config/network/participants`; the route is allowed only to `admin` and
-  `node`, and block/unblock mutations remain admin-only. Each peer row shows
+  `worker`, and block/unblock mutations remain admin-only. Each peer row shows
   the route actually in use (`AdminNode.route`: `RouteBadge` + `routeAddress`),
   never the advertised `addr`, which only goes into the row's `title`. A
   relayed route names the relay kind (`relay_kind`: dedicated relay or member
@@ -747,11 +747,11 @@ Per-file list:
   present - `profile: admin` alone grants nothing. The "Papel" ("Role") row was replaced
   by the effective authority: the old `NodeInfo.role` left `/api/ui/node` with
   the trust model and was rendering an empty cell.
-  The `infer` profile also opens `/config/network`, but the backend returns only its
-  own machine. The screen no longer offers turning an `infer` into a
-  `node`: the role is what the network admitted the machine as, and changing
+  The `visitor` profile also opens `/config/network`, but the backend returns only its
+  own machine. The screen no longer offers turning a `visitor` into a
+  `worker`: the role is what the network admitted the machine as, and changing
   it means leaving and asking for admission again. The card says so and has
-  no action. A `node` has no step down to `infer` either. Both node routes
+  no action. A `worker` has no step down to `visitor` either. Both node routes
   are gone: roles are set at admission and changing one means rejoining. O
   administrador principal pode promover um nó via
   `POST /admin/nodes/:id/promote-admin`.

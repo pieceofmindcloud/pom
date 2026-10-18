@@ -2242,7 +2242,7 @@ mod main_tests {
     #[test]
     fn env_ports_override_the_config_and_cli_ports_do_not() {
         let config: config::Config =
-            serde_json::from_str(r#"{"profile":"node","p2p_port":42777,"gateway_port":8080}"#)
+            serde_json::from_str(r#"{"profile":"worker","p2p_port":42777,"gateway_port":8080}"#)
                 .unwrap();
 
         let mut from_cli = config.clone();
@@ -2263,7 +2263,7 @@ mod main_tests {
     #[test]
     fn moved_ports_save_only_what_the_environment_did_not_set() {
         let mut saved: config::Config = serde_json::from_str(
-            r#"{"profile":"node","p2p_port":42777,"gateway_port":8080,"inference_port":8181}"#,
+            r#"{"profile":"worker","p2p_port":42777,"gateway_port":8080,"inference_port":8181}"#,
         )
         .unwrap();
         let mut args = Args::parse_from(["pom"]);

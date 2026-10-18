@@ -30,8 +30,8 @@ import { pluginRouteProfiles } from "./pluginUi";
 const RESTRICTED: Readonly<Record<string, readonly Profile[]>> = {
   "/deploy": ["admin"],
   "/deployments": ["admin"],
-  "/config/administration": ["admin", "node"],
-  "/config/network/participants": ["admin", "node"],
+  "/config/administration": ["admin", "worker"],
+  "/config/network/participants": ["admin", "worker"],
   // The cluster's connection key is the operator's credential: only the
   // admin sees it.
   "/config/keys/connection": ["admin"],
@@ -98,11 +98,11 @@ export function routeProfiles(path: string): readonly Profile[] | null {
 export function canAccessRoute(path: string, profile: Profile): boolean {
   // Plugin UIs are local to this node and open to every profile.
   // The explicit blocks on native `infer` surfaces still apply.
-  if (profile === "infer" && INFER_DENIED_ROUTES.some((prefix) => isUnder(path, prefix))) return false;
+  if (profile === "visitor" && INFER_DENIED_ROUTES.some((prefix) => isUnder(path, prefix))) return false;
   const pluginProfiles = pluginRouteProfiles(path);
   if (pluginProfiles) return pluginProfiles.includes(profile);
   if (isEnterprisePath(path)) return true;
-  if (profile === "infer") return INFER_ROUTES.some((prefix) => isUnder(path, prefix));
+  if (profile === "visitor") return INFER_ROUTES.some((prefix) => isUnder(path, prefix));
   const allowed = routeProfiles(path);
   return allowed === null || allowed.includes(profile);
 }

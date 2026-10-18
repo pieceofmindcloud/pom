@@ -530,8 +530,8 @@ pub(super) async fn join_network(
     config.admin_access_token = access_token;
     config.setup_pending = false;
     config.profile = match request.role {
-        crate::config::EnrollmentRole::Node => crate::profile::NodeProfile::Node,
-        crate::config::EnrollmentRole::Infer => crate::profile::NodeProfile::Infer,
+        crate::config::EnrollmentRole::Worker => crate::profile::NodeProfile::Worker,
+        crate::config::EnrollmentRole::Visitor => crate::profile::NodeProfile::Visitor,
     };
     config.connection_key = grant.connection_key.trim().to_string();
     config.network = network;
@@ -927,7 +927,7 @@ mod tests {
         let request = |status, asked| CandidateRequest {
             key: "pk:x".into(),
             name: "Rede".into(),
-            role: crate::config::EnrollmentRole::Node,
+            role: crate::config::EnrollmentRole::Worker,
             status,
             grant: None,
             asked,

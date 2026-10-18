@@ -1022,13 +1022,13 @@ describe("Plugins", () => {
   });
 
   it("offers local rebuilds to every profile when development mode is on", () => {
-    for (const profile of ["node", "infer"]) {
+    for (const profile of ["worker", "visitor"]) {
       mocks.node.data = { profile, pom_dev_mode: true, system: { os: "linux", arch: "x86_64" } };
       const { unmount } = renderPage();
       expect(screen.getByText("Builds locais de desenvolvimento")).toBeTruthy();
       unmount();
     }
-    mocks.node.data = { profile: "infer", pom_dev_mode: false, system: { os: "linux", arch: "x86_64" } };
+    mocks.node.data = { profile: "visitor", pom_dev_mode: false, system: { os: "linux", arch: "x86_64" } };
     renderPage();
     expect(screen.queryByText("Builds locais de desenvolvimento")).toBeNull();
   });

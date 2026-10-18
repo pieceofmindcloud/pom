@@ -206,7 +206,7 @@ reapplication, which is what lets every member apply the settings the
 principal sends. See `assets/geo/README.md` for the update procedure.
 
 `NetworkSettings.accepted_enrollments` (`AcceptedEnrollments`, a list of
-`EnrollmentRole`: `node`, `infer`) is what the network advertises as open to
+`EnrollmentRole`: `worker`, `visitor`) is what the network advertises as open to
 new members. A missing field deserializes to every role, an empty list means
 closed. It is an advertisement for the public directory only: admission
 (`Network::public_peer_is_admitted`) does not read it and current members are

@@ -49,7 +49,7 @@ export function ApiKeysTable() {
   const toast = useToast();
   // Other machines' keys are the principal's to see and issue.
   const isAdmin = profile === "admin" && !secondary;
-  const inference = profile === "infer";
+  const inference = profile === "visitor";
   const ownId = node.data?.node_id;
   const [createOpen, setCreateOpen] = useState(false);
   const [label, setLabel] = useState("");

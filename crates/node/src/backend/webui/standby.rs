@@ -195,7 +195,7 @@ mod tests {
         assert!(save_primary_at(&standby, &own, &document, &own_pubkey).unwrap());
         // Moving on to a second foreign network must not overwrite it.
         let foreign = config(serde_json::json!({
-            "profile": "node",
+            "profile": "worker",
             "connection_key": "chave-alheia",
             "network": { "public_name": "Rede Alheia" },
         }));
@@ -221,7 +221,7 @@ mod tests {
         assert_eq!(restored.document().primary.pubkey, own_pubkey);
 
         // With nothing in standby there is nothing to restore.
-        let mut never = config(serde_json::json!({ "profile": "node" }));
+        let mut never = config(serde_json::json!({ "profile": "worker" }));
         assert!(!restore_primary_at(&dir.join("absent.json"), &trust_path, &mut never).unwrap());
         let _ = std::fs::remove_dir_all(dir);
     }

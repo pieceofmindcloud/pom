@@ -520,8 +520,8 @@ function Heading({ title, detail }: { title: string; detail?: string }) {
 export function StartScreen({ setup, hardware, update, t }: { setup: SetupState; hardware: HardwareResponse | null; update: (patch: Partial<SetupState>) => void; t: Translate }) {
   const roles: { id: SetupProfile; icon: ReactNode; title: string; detail: string }[] = [
     { id: "admin", icon: <Landmark className="h-5 w-5" />, title: t("setupWizard.admin"), detail: t("firstRun.adminDetail") },
-    { id: "node", icon: <Server className="h-5 w-5" />, title: t("setupWizard.node"), detail: t("firstRun.nodeDetail") },
-    { id: "infer", icon: <Sparkles className="h-5 w-5" />, title: t("setupWizard.infer"), detail: t("firstRun.inferDetail") },
+    { id: "worker", icon: <Server className="h-5 w-5" />, title: t("setupWizard.node"), detail: t("firstRun.nodeDetail") },
+    { id: "visitor", icon: <Sparkles className="h-5 w-5" />, title: t("setupWizard.infer"), detail: t("firstRun.inferDetail") },
   ];
   const gpu = hardware?.system.gpus[0];
   const hasNvidia = hardware?.system.gpus.some((candidate) => candidate.vendor.toLowerCase() === "nvidia") ?? false;
@@ -864,7 +864,7 @@ export function PublicDirectoryPanel({ setup, onUse, onAddress, t }: { setup: Se
     // `replicas` is read when the list is asked for, not on every keystroke.
   }, [attempt]);
 
-  const role = setup.profile === "node" || setup.profile === "infer" ? setup.profile : null;
+  const role = setup.profile === "worker" || setup.profile === "visitor" ? setup.profile : null;
   return (
     <details className="pom-setup-details mt-5" data-testid="setup-public-directory">
       <summary>

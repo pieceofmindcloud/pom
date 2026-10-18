@@ -1533,8 +1533,8 @@ network.countryRequired,Required for a public network,Obrigatório para uma rede
 network.description,Description,Descrição
 network.detached,Disconnected from network,Fora da rede
 network.download,Download,Baixar
-network.enrollment.infer,Inference nodes,Nós de inferência
-network.enrollment.node,Network nodes,Nós da rede
+network.enrollment.visitor,Inference nodes,Nós de inferência
+network.enrollment.worker,Network nodes,Nós da rede
 network.enrollmentClosed,Not accepting new members,Não aceita novos membros
 network.enrollmentOpen,Any role,Qualquer papel
 network.firewallEyebrow,Windows Firewall,Firewall do Windows
@@ -2083,8 +2083,8 @@ preferences.portInvalid,Enter a port between 1 and 65535.,Informe uma porta entr
 preferences.subtitle,Local protection and model-provider credentials for this node.,Proteção local e credenciais de provedor deste nó.
 preferences.title,Preferences,Preferências
 profile.admin,Administrator,Administrador
-profile.infer,infer,infer
-profile.node,node,node
+profile.visitor,visitor,visitor
+profile.worker,worker,worker
 publicNetworks.accepting,Accepting,Aceitando
 publicNetworks.action,Action,Ação
 publicNetworks.add,Add network,Adicionar rede
@@ -2189,8 +2189,8 @@ publicNetworks.removeTitle,Remove this network from the list?,Remover esta rede 
 publicNetworks.roleAccepted,Accepting,Aceitando
 publicNetworks.roleAcceptedNamed,Accepting {role},Aceitando {role}
 publicNetworks.roleNotAccepted,Not accepting,Não aceita
-publicNetworks.roleTip.infer,"This network admits machines that only use its models for chat and API calls, without serving any.","Esta rede admite máquinas que só usam os modelos dela para conversa e chamadas de API, sem servir nenhum."
-publicNetworks.roleTip.node,This network admits machines that serve model layers and take part in its deployments.,Esta rede admite máquinas que servem camadas dos modelos e participam das implantações dela.
+publicNetworks.roleTip.visitor,"This network admits machines that only use its models for chat and API calls, without serving any.","Esta rede admite máquinas que só usam os modelos dela para conversa e chamadas de API, sem servir nenhum."
+publicNetworks.roleTip.worker,This network admits machines that serve model layers and take part in its deployments.,Esta rede admite máquinas que servem camadas dos modelos e participam das implantações dela.
 publicNetworks.search,Search,Buscar
 publicNetworks.searchAction,Search,Buscar
 publicNetworks.searchPlaceholder,"Name, organization, city...","Nome, organização, cidade..."
@@ -2242,8 +2242,8 @@ quickSetup.publishedDetail,Other machines can now find it in the public director
 quickSetup.recommended,Recommended,Recomendado
 quickSetup.relayFailedDetail,The network was saved; set the relay again in Network settings.,A rede foi salva; ajuste o relé de novo nas configurações da rede.
 quickSetup.relayLive,"Applied to this machine as soon as it changes, without the Save button.","Aplicado a esta máquina assim que muda, sem o botão Salvar."
-quickSetup.role.infer,Use the network's models,Usam os modelos da rede
-quickSetup.role.node,Hold and serve model slices,Guardam e servem fatias de modelos
+quickSetup.role.visitor,Use the network's models,Usam os modelos da rede
+quickSetup.role.worker,Hold and serve model slices,Guardam e servem fatias de modelos
 quickSetup.rulesHint,What members agree to when they join.,O que os membros aceitam ao entrar.
 quickSetup.save,Save,Salvar
 quickSetup.saveNote,The network will not be listed in the public directory.,A rede não será listada no diretório público.

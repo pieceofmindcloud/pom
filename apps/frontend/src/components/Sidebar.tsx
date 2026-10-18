@@ -206,7 +206,7 @@ function SidebarUtilityControls({ collapsed }: { collapsed: boolean }) {
         <LanguageFlags className={collapsed ? "flex-col" : "flex-row"}>
           <TlsChip />
         </LanguageFlags>
-        {!collapsed && profile !== "infer" && node?.build_commit && (
+        {!collapsed && profile !== "visitor" && node?.build_commit && (
           <span
             title={t("sidebar.buildTitle")}
             className="min-w-0 flex-1 truncate px-1 text-center font-mono text-[0.68rem] text-muted"
@@ -771,7 +771,7 @@ export function SidebarContent({
   return (
     <>
       <SidebarBrand collapsed={collapsed} onToggle={onToggle} />
-      {profile === "infer" ? (
+      {profile === "visitor" ? (
         <InferenceMainMenu onNavigate={onNavigate} collapsed={collapsed} unreadCount={unreadCount} />
       ) : (
         <nav className="flex min-h-0 flex-1 flex-col">

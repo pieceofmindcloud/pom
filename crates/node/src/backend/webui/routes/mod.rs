@@ -93,11 +93,6 @@ const ROUTE_RULES: &[RouteRule] = &[
         scope: RouteScope::HandlerAuth,
     },
     RouteRule {
-        prefix: "/api/cluster/tls",
-        method: None,
-        scope: RouteScope::HandlerAuth,
-    },
-    RouteRule {
         prefix: "/api/cluster/quic",
         method: None,
         scope: RouteScope::HandlerAuth,

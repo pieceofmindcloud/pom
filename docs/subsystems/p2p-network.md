@@ -212,6 +212,29 @@ tunnel's reason. On a public network the
 answer does not carry the `connection_key`; the public record stays limited to
 the invitation and discovery.
 
+### Signed announces
+
+UDP authenticates nothing, so every `Announce` carries `signature`: Ed25519 by
+the node key over the announce serialized without it, under the label
+`pom-announce/v1` (`network::sign_announce`, signed by the only builder,
+`self_announce`, with the key `main.rs` hands over through
+`Network::set_announce_key`). The receive loop drops an announce that arrived
+over UDP when it is unsigned, when the signature does not match the announced
+`pubkey`, when that key does not yield the announced `node_id`, or when its
+`timestamp` is more than `ANNOUNCE_FRESHNESS_SECS` (300 s) from the local
+clock (`verify_udp_announce`). Without it, a machine on the LAN could announce
+a member's identity at its own address, relay the admission probe to the real
+member, and take its place in the peers table. Gossipsub needs no such check:
+libp2p signs each message with the sender's `PeerId`, checked against the
+declared one.
+
+A `PeerList` is another node's snapshot and carries no signature. It never
+moves the addresses, ports, `pubkey` or libp2p fields of a peer whose own
+announce arrived in the last `FIRSTHAND_WINDOW` (30 s, `Network::firsthand`);
+the rest of the snapshot still applies. A peer known only through `PeerList`s
+still takes them whole, which keeps transitive discovery behind NAT working;
+a forged address there reaches only a node the TLS pinning then refuses.
+
 ### Lifecycle
 
 1. **Bind:** `Network::new` builds a dual-stack `[::]:<port>` socket by hand
@@ -264,7 +287,8 @@ handshake sessions and the sensitive material.
   ~530 B per peer).
 - A `PeerList` is also a state update: if the snapshot's `last_seen` is newer,
   the existing record is replaced to propagate model and range changes between
-  transitive peers. Older snapshots do not revert a recent announcement; local
+  transitive peers, keeping the addresses of a peer heard first hand (see
+  "Signed announces"). Older snapshots do not revert a recent announcement; local
   verification is kept on refresh, and the local address candidates are
   inherited **minus the ones this node already proved dead**
   (`RouteTable::endpoint_is_discredited`). Inheriting the whole list made a dead
@@ -1134,10 +1158,24 @@ Current code behavior:
 
 ## 5. TLS between peers
 
-Turned on by a switch in Settings / Preferences that **only the principal
-node** operates, and it applies to the whole cluster. Off by default, and a
-`pom.json` older than this stays valid (`Config.tls_required`,
-`#[serde(default)]`).
+Always on between nodes. There is no switch: `main.rs` sets the URL scheme
+to `https`, the announce's `tls` to true and the server to strict at startup.
+A `pom.json` that still carries the old `tls_required` key parses, and the
+key is dropped (`Config::retired_tls_required`).
+
+**Every peer connection is mutual TLS.** The node presents the same
+certificate as its client certificate (`tls::set_client_identity`,
+`tls::client_config`), so the server learns which node is calling
+(`serve::TransportPeer`, from the certificate's key). A call authorized only
+by the connection key also needs that identity to be a member today
+(`auth::caller_is_member`, `Network::is_member_key`): an admin of the trust
+chain, or a peer whose announced membership token holds and is not revoked.
+Every member holds the connection key and a banned one keeps it, so the key
+alone, from a network address, opens nothing. The libp2p tunnel carries the
+same identity: the forwarder names the PeerId Noise authenticated
+(`infer_tunnel::TUNNEL_PEER_HEADER`, believed only beside the process mark),
+and the PeerId embeds the node key. Plain HTTP from loopback is the one case
+without an identity, and is accepted: it is this machine.
 
 **The certificate is derived from the identity, not issued by anyone**
 (`network/tls.rs`). `node_id` is already `hex(SHA256(pubkey))` of the
@@ -1164,18 +1202,18 @@ test is what warns.
 **One port, two languages** (`backend/serve.rs`). The server peeks at the first
 byte without consuming it (`TcpStream::peek`): `0x16` is a TLS handshake,
 anything else is clear-text HTTP; both land on the same router. That is what
-lets the switch **not** be simultaneous - while some peers already speak TLS
-and others do not yet, the server serves both. With the policy on, clear text
-from outside loopback is refused right after the peek.
+keeps `http://localhost` working for the operator's browser, which would not
+accept the self-signed certificate. Clear text from outside loopback is
+refused right after the peek (or redirected, below).
 
 **Loopback always speaks clear text**, and that is a requirement:
-`infer_tunnel::serve_loopback`, the `runtime.rs` probe and `gateway::testkit`
-hit `127.0.0.1` and have no key pair to present. Traffic that does not leave
-the machine has nothing to protect.
+`infer_tunnel::serve_loopback`, the `runtime.rs` probe, `gateway::testkit` and
+the operator's browser hit `127.0.0.1`. Traffic that does not leave the
+machine has nothing to protect.
 
 **The client becomes per target** (`network/peer_client.rs`), because the
 verifier carries which node_id to expect and is fixed at construction. Without
-TLS it goes back to a single one, which is the previous behavior. The URL
+TLS (only on test benches) it goes back to a single one. The URL
 scheme (`http`/`https`) comes from a global process state,
 `peer_client::tls_enabled`, because it is a property of the node and not of the
 connection.
@@ -1202,6 +1240,8 @@ pins the two routes the operator uses to deploy.
 
 - **UDP gossip.** TLS does not apply to datagrams, and the content is address,
   layer range and capabilities - no user data, no weights, no credentials.
+  Each announce is signed by the node key instead (section 2, "Signed
+  announces").
 - **libp2p.** It is already encrypted end to end by Noise; layering TLS on top
   would add no security. A hop through the tunnel reports `tls: false` in
   telemetry on purpose: it is encrypted, but not by TLS, and saying `true` there
@@ -1220,11 +1260,16 @@ curl/LibreSSL: `sslv3 alert handshake failure`. Together with strict mode,
 turning TLS on left the UI unreachable from any other machine: in clear text
 the connection was dropped, in TLS the handshake did not close.
 
-So the node presents **two** self-signed certificates on the same port, chosen
-per connection (`tls::NodeCertResolver`):
+So the node has **two** server configurations on the same port, chosen per
+connection from the ClientHello (`tls::server_configs`, picked by
+`tls::wants_peer` through rustls' `LazyConfigAcceptor` in `serve.rs`):
 
-- **Peer** - the Ed25519 derived from `.pom-node.key`, which holds up pinning.
-- **Browser** - an ECDSA P-256, which it can verify, with the node's addresses
+- **Peer** - the Ed25519 derived from `.pom-node.key`, which holds up
+  pinning, and a request for the peer's own certificate (optional, so a client
+  without one connects and carries no identity).
+- **Browser** - an ECDSA P-256, which it can verify, and no certificate
+  request, since asking would make the browser offer the operator's own
+  certificates. The node's addresses go
   in the SAN (`serve::browser_sans`: local ones, the operator's pinned one, the
   hostname and loopback). The SANs exist so the warning is "unknown issuer" and
   not "wrong host" - the second makes the operator distrust the machine instead
@@ -1259,43 +1304,13 @@ Two exceptions, both for a concrete reason:
 - **The inference port (`serve::PlainPolicy::Refuse`)** closes the connection,
   as before. There is no browser there to accommodate.
 
-### The ratchet: gossip is never the source of truth
-
-The Announce got a `tls` field, and it is **a trigger, never a value**. UDP is
-clear text and unauthenticated: if the policy came from it, anyone on the
-network could announce `tls: false` and downgrade the whole cluster to clear
-text - exactly the attack TLS exists to prevent.
-
-The path is `network/tls_policy.rs`:
-
-1. An Announce **from the principal** disagrees with the local policy.
-2. That triggers `GET /api/cluster/tls` on the principal, authenticated with
-   the connection key and `x-pom-internal-node: 1`.
-3. Only the answer of that fetch is written to `pom.json`.
-
-An intruder can trigger the fetch at will; it cannot answer for it. The
-announced boolean is used for **one thing only**: knowing which scheme to dial
-the probe with. Without it, a node that still believes the cluster is in clear
-text would dial `http://` on a strict principal, be refused, and the ratchet
-would never manage to *turn on*. Forging the hint does not change what is
-written - it only makes the probe knock on the wrong door and fail.
-
-**Fail-closed:** a fetch that fails keeps the local value. A principal that is
-down or a split network never downgrades the cluster.
-
-**No restart, and in both directions.** Turning it on or off empties the client
-cache, changes what the announcement says and turns the clear-text refusal on
-or off. The other nodes adopt it within one gossip cycle (5 s), and the
-operator can flip it as often as they want.
-
 ### 5.1 Optional QUIC for inference
 
 `Config.quic_enabled` is a network-wide preference, on by default (a new
 network starts with it, and a config without the field reads as on) and only
 editable by the principal at `POST /api/ui/network/quic`. The announcement
 carries `quic` only as a trigger: the peer confirms the value at
-`GET /api/cluster/quic`, authenticated by the `connection_key`, exactly like
-the TLS ratchet. The trigger is only accepted when the announced
+`GET /api/cluster/quic`, authenticated by the `connection_key`. The trigger is only accepted when the announced
 `pubkey` matches the locally anchored principal; a secondary admin
 can neither force the query nor revert the preference. A failed query keeps
 the local value. The switch is atomic and only applies to new calls;
@@ -1320,11 +1335,10 @@ before handing it to Quinn. That keeps IPv4 and IPv6 on the same endpoint on
 Windows, Linux and macOS; there is no alternative IPv4-only bind. Quinn's client
 already sets the same option on the wildcard IPv6 socket.
 
-The QUIC endpoint is created from the node's identity, regardless of
-`tls_required` or of the `announced_tls` only used to query the policy on the
-principal. Quinn negotiates its own TLS 1.3 and the client pins the `node_id`'s
-Ed25519 certificate; so QUIC stays encrypted even when `tls_required` is off.
-The TLS policy still only picks `http://` or `https://` for the TCP fallback.
+The QUIC endpoint is created from the node's identity. Quinn negotiates its
+own TLS 1.3, the client pins the `node_id`'s Ed25519 certificate and presents
+its own, and the server passes the caller's identity to the request
+(`serve::TransportPeer`) as the TCP listener does.
 If the peer has no QUIC endpoint, the port is not listening, the route fails or
 answers 404/405, the relay falls to HTTP/HTTPS and marks
 `transport_fallback`; discovery shares a budget (3x the RTT measured by the
@@ -1748,6 +1762,13 @@ the principal's handler (`discovery.rs::answer_lobby_request`) has no test
 with a live cluster swarm.
 
 ## 7. Defects noted
+
+- **DEFECT NOTED: `Heartbeat` is unsigned.** A `Heartbeat` names a `node_id`
+  and a `timestamp` and nothing proves either, so anyone on the LAN can keep
+  a peer that went away looking alive for as long as it keeps sending them.
+  It moves no address and grants nothing, and no code path emits it today
+  (the signed `Announce` plays that role), so it is only a nuisance. Dropping
+  the variant or signing it like the `Announce` fixes it.
 
 - **DEFECT NOTED: bitswap is an orphan protocol** - `bitswap_behaviour` is in
   the swarm and its events are only logged at `debug!`

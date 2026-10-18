@@ -30,7 +30,9 @@ the ladder direct -> dedicated relay (with DCuTR) -> member relay, are in
 - `infer_tunnel.rs` - the request/response protocol that carries a call through the libp2p
   swarm as the preferred transport, with the pinned direct client as fallback when it fails on
   transport. `TunnelRequest` carries method, path, body and headers, including the
-  `connection_key` and the inference port's internal marker; the frame is binary
+  `connection_key` and the inference port's internal marker; the receiver adds the
+  PeerId Noise authenticated (`TUNNEL_PEER_HEADER`), which `serve::request_origin`
+  believes only beside the process mark; the frame is binary
   (`[u32][JSON head][u32][raw body]` for a request, `[u16 status][u32][raw body]` for a
   response). `TunnelTarget` (`Inference` | `Gateway`) names which local server answers and the
   receiver resolves the port. `is_transfer_data_path`, `closed_range` and
@@ -120,7 +122,14 @@ the ladder direct -> dedicated relay (with DCuTR) -> member relay, are in
 - `network.rs` - the heart of the UDP P2P: `P2PMessage`, `PeerInfo`, dual-stack
   socket, gossip, peer lifecycle, discovery sweep and admission. The
   `connection_key` does not go in the `Announce`: on a private network the handler
-  runs a probe on `/handshake` before registering the peer. On a public network the
+  runs a probe on `/handshake` before registering the peer. Every announce is
+  signed by the node key (`sign_announce`, key from `set_announce_key`), and the
+  UDP receive loop drops one that is unsigned, signed by another key or stale
+  (`verify_udp_announce`); a `PeerList` never moves the addresses of a peer whose
+  own announce arrived in the last 30 s (`firsthand`, `insert_announced_peer`).
+  `is_member_key` answers whether a node key is an admin of the chain or holds a
+  valid, unrevoked membership token: what every node-to-node call authorized by the
+  connection key is checked against (`auth::caller_is_member`). On a public network the
   rigor follows the `network.access_policy`: with `authorized` (the default) the
   `cluster_id` only selects the chain and the tuple `{node_id, peer_id, pubkey}`
   must be an active concession in `admin_trust.rs`; with `anyone_with_anchor` a
@@ -187,8 +196,9 @@ the ladder direct -> dedicated relay (with DCuTR) -> member relay, are in
   one QUIC connection per peer and announced address, uses the same Ed25519 pinning as the TCP
   connection, and leaves the UDP endpoint ready on the dedicated announced port
   (`inference_quic_port`/`gateway_quic_port`) even when the preference is off. The dial requires
-  `host:port` and never derives the destination from an HTTP URL; the listener's configuration is
-  independent of the TCP's `tls_required` because QUIC carries its own TLS 1.3. Each answer exposes
+  `host:port` and never derives the destination from an HTTP URL. The listener asks for the
+  caller's node certificate and hands its identity to the request (`serve::TransportPeer`), like
+  the TCP listener. Each answer exposes
   the Quinn connection's smoothed RTT in microseconds, separate from the remote handler's
   processing; `request_body_send_us` measures the wait for the body's `send_data` and `finish`,
   which is neither the response time nor a delivery confirmation. Every complete attempt, handshake
@@ -216,12 +226,13 @@ the ladder direct -> dedicated relay (with DCuTR) -> member relay, are in
   the publisher advertises as open (empty = not accepting new members); the
   field is signed with the rest of the record. A private node queries those tickets by egress, but does not use its
   private swarm as public discovery.
-- `tls.rs` - the self-signed certificate derived from the `.pom-node.key` and the
-  `ServerCertVerifier` that checks `SHA256(pubkey) == node_id`. Nothing goes to
-  disk; there is no CA. See `docs/subsystems/p2p-network.md`, section 5.
-- `tls_policy.rs` - the ratchet: the Announce's `tls` field is a trigger, and only
-  the authenticated read of `GET /api/cluster/tls` on the principal writes the
-  policy. A failed read preserves the local value.
+- `tls.rs` - the self-signed certificate derived from the `.pom-node.key`, the
+  `ServerCertVerifier` that checks `SHA256(pubkey) == node_id`, and mutual TLS:
+  `server_configs` builds the peer configuration (node certificate, asks for the
+  caller's, `AnyNodeClient`) and the browser one (ECDSA, asks for nothing), picked
+  per connection by `wants_peer` on the ALPN; `client_config` presents this node's
+  certificate (`set_client_identity`). Nothing goes to disk; there is no CA. TLS
+  between nodes is always on. See `docs/subsystems/p2p-network.md`, section 5.
 - `quic_policy.rs` - the authenticated ratchet of the QUIC preference: the
   Announce's `quic` field only triggers `GET /api/cluster/quic`; the trigger is only
   accepted when the `pubkey` identifies the anchored principal, never by

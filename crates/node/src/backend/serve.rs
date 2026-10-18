@@ -37,6 +37,9 @@ pub(crate) struct PeerAddr(pub SocketAddr);
 /// without a password. The header always leaves the request, marked or not, so
 /// that no route sees it.
 pub(crate) fn request_origin<B>(peer: SocketAddr, req: &mut hyper::Request<B>) -> SocketAddr {
+    let tunnel_peer = req
+        .headers_mut()
+        .remove(crate::infer_tunnel::TUNNEL_PEER_HEADER);
     let Some(mark) = req
         .headers_mut()
         .remove(crate::infer_tunnel::TUNNEL_ORIGIN_HEADER)
@@ -44,9 +47,58 @@ pub(crate) fn request_origin<B>(peer: SocketAddr, req: &mut hyper::Request<B>) -
         return peer;
     };
     if crate::auth::is_loopback_addr(peer) && crate::infer_tunnel::is_tunnel_mark(mark.as_bytes()) {
+        // The forwarder names the PeerId the swarm authenticated (Noise);
+        // only a marked request is believed, since the mark is this
+        // process's secret.
+        if let Some(caller) = tunnel_peer
+            .as_ref()
+            .and_then(|value| value.to_str().ok())
+            .and_then(TransportPeer::from_peer_id)
+        {
+            req.extensions_mut().insert(caller);
+        }
         TUNNELED_ORIGIN
     } else {
         peer
+    }
+}
+
+/// The node at the other end of the transport, proven by it: the client
+/// certificate of a TLS or QUIC connection, or the PeerId of a libp2p
+/// tunnel. It is what a node-to-node call is authorized by
+/// (`auth::validate_internal_node_headers`); the connection key alone is
+/// held by every member, and a removed one keeps it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TransportPeer {
+    pub node_id: String,
+    pub pubkey: String,
+}
+
+impl TransportPeer {
+    /// From a peer's certificate: the Ed25519 key it carries.
+    pub(crate) fn from_cert(der: &[u8]) -> Option<Self> {
+        let (_, parsed) = x509_parser::parse_x509_certificate(der).ok()?;
+        let bits = parsed.public_key().subject_public_key.data.as_ref();
+        let key: [u8; 32] = bits.try_into().ok()?;
+        Self::from_key(key)
+    }
+
+    /// From a libp2p PeerId, which embeds the node's Ed25519 key.
+    pub(crate) fn from_peer_id(peer_id: &str) -> Option<Self> {
+        let peer_id: libp2p::PeerId = peer_id.parse().ok()?;
+        let key = libp2p::identity::PublicKey::try_decode_protobuf(peer_id.as_ref().digest())
+            .ok()?
+            .try_into_ed25519()
+            .ok()?;
+        Self::from_key(key.to_bytes())
+    }
+
+    fn from_key(key: [u8; 32]) -> Option<Self> {
+        let key = ed25519_dalek::VerifyingKey::from_bytes(&key).ok()?;
+        Some(Self {
+            node_id: crate::identity::NodeId::from_pubkey(&key).0,
+            pubkey: hex::encode(key.as_bytes()),
+        })
     }
 }
 
@@ -116,7 +168,7 @@ pub fn quic_server_config(id: &crate::identity::Identity) -> Result<QuicServerCo
 /// What the server needs to speak TLS, and the state it publishes back.
 #[derive(Clone)]
 pub struct TlsServer {
-    pub config: Arc<rustls::ServerConfig>,
+    pub configs: crate::tls::ServerConfigs,
     /// What to do with remote plain text when the policy is on.
     pub plain: PlainPolicy,
     /// With `true`, plain text from outside loopback is refused.
@@ -140,7 +192,7 @@ impl TlsServer {
         sans: &[String],
     ) -> Result<Self> {
         Ok(Self {
-            config: crate::tls::server_config(id, sans)?,
+            configs: crate::tls::server_configs(id, sans)?,
             plain: PlainPolicy::Redirect,
             strict: Arc::new(AtomicBool::new(strict)),
             last_handshake_ms: Arc::new(AtomicU64::new(0)),
@@ -299,9 +351,7 @@ pub async fn serve_with_quic(
             result
         }))
     });
-    let acceptor = tls
-        .as_ref()
-        .map(|t| tokio_rustls::TlsAcceptor::from(t.config.clone()));
+    let acceptor = tls.as_ref().map(|t| t.configs.clone());
 
     let mut conns = tokio::task::JoinSet::new();
     let mut shutdown = std::pin::pin!(shutdown);
@@ -367,7 +417,7 @@ async fn handle_conn(
     stream: TcpStream,
     peer: SocketAddr,
     app: Router,
-    acceptor: Option<tokio_rustls::TlsAcceptor>,
+    acceptor: Option<crate::tls::ServerConfigs>,
     tls: Option<TlsServer>,
 ) -> Result<()> {
     let mut first = [0u8; 1];
@@ -399,25 +449,49 @@ async fn handle_conn(
             .map_err(|e| anyhow::anyhow!("{e}"));
     }
 
-    let svc = hyper::service::service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
-        let mut app = app.clone();
-        async move {
-            let mut req = req;
-            let origin = request_origin(peer, &mut req);
-            req.extensions_mut().insert(PeerAddr(origin));
-            req.extensions_mut().insert(TransportSecurity(is_tls));
-            Service::call(&mut app, req).await
-        }
-    });
+    let service = move |caller: Option<TransportPeer>| {
+        hyper::service::service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+            let mut app = app.clone();
+            let caller = caller.clone();
+            async move {
+                let mut req = req;
+                let origin = request_origin(peer, &mut req);
+                req.extensions_mut().insert(PeerAddr(origin));
+                req.extensions_mut().insert(TransportSecurity(is_tls));
+                if let Some(caller) = caller {
+                    req.extensions_mut().insert(caller);
+                }
+                Service::call(&mut app, req).await
+            }
+        })
+    };
 
     match (is_tls, acceptor) {
-        (true, Some(acceptor)) => {
+        (true, Some(configs)) => {
             let started = Instant::now();
-            let tls_stream = acceptor.accept(stream).await?;
+            // The configuration is chosen from the ClientHello: a peer is
+            // asked for its node certificate, a browser for nothing - asking
+            // a browser would make it offer the operator's certificates.
+            let start =
+                tokio_rustls::LazyConfigAcceptor::new(rustls::server::Acceptor::default(), stream)
+                    .await?;
+            let config = if crate::tls::wants_peer(start.client_hello().alpn()) {
+                configs.peer
+            } else {
+                configs.browser
+            };
+            let tls_stream = start.into_stream(config).await?;
             if let Some(t) = &tls {
                 t.last_handshake_ms
                     .store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
             }
+            let caller = tls_stream
+                .get_ref()
+                .1
+                .peer_certificates()
+                .and_then(|chain| chain.first())
+                .and_then(|cert| TransportPeer::from_cert(cert.as_ref()));
+            let svc = service(caller);
             Builder::new(TokioExecutor::new())
                 .serve_connection_with_upgrades(TokioIo::new(tls_stream), svc)
                 .await
@@ -430,7 +504,7 @@ async fn handle_conn(
         }
         (false, _) => {
             Builder::new(TokioExecutor::new())
-                .serve_connection_with_upgrades(TokioIo::new(stream), svc)
+                .serve_connection_with_upgrades(TokioIo::new(stream), service(None))
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
         }
@@ -515,6 +589,108 @@ mod integration {
         let c = crate::peer_client::PeerClients::new(Duration::from_secs(5));
         c.set_tls(true);
         c
+    }
+
+    /// A server whose `/whoami` answers the node the transport proved, or
+    /// `none`.
+    async fn start_whoami_server(id: &Identity) -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = Router::new().route(
+            "/whoami",
+            get(|caller: Option<axum::Extension<TransportPeer>>| async move {
+                caller.map_or_else(|| "none".to_string(), |caller| caller.0.node_id)
+            }),
+        );
+        let tls = TlsServer::from_identity(id, true, &["127.0.0.1".to_string()]).unwrap();
+        tokio::spawn(async move {
+            let _ = serve(listener, app, Some(tls)).await;
+        });
+        addr
+    }
+
+    async fn whoami(server: &Identity, addr: std::net::SocketAddr, own: Option<&Identity>) -> String {
+        let own = own.map(|id| crate::tls::node_certificate(id).unwrap());
+        let cfg = crate::tls::client_config_as(&server.node_id.0, own.as_ref()).unwrap();
+        let http = reqwest::Client::builder()
+            .use_preconfigured_tls(cfg)
+            .build()
+            .unwrap();
+        http.get(format!("https://127.0.0.1:{}/whoami", addr.port()))
+            .send()
+            .await
+            .expect("the handshake had to complete")
+            .text()
+            .await
+            .unwrap()
+    }
+
+    /// Mutual TLS: the server learns which node is calling from the client
+    /// certificate, and that is what node-to-node calls are authorized by.
+    #[tokio::test]
+    async fn the_server_learns_the_calling_node_from_its_certificate() {
+        let server = Identity::generate();
+        let caller = Identity::generate();
+        let addr = start_whoami_server(&server).await;
+        assert_eq!(whoami(&server, addr, Some(&caller)).await, caller.node_id.0);
+    }
+
+    /// A peer connection without a client certificate still completes, and
+    /// carries no identity: the routes that need one refuse it.
+    #[tokio::test]
+    async fn a_peer_without_a_certificate_carries_no_identity() {
+        let server = Identity::generate();
+        let addr = start_whoami_server(&server).await;
+        assert_eq!(whoami(&server, addr, None).await, "none");
+    }
+
+    /// A browser offers no `pom/1`: it gets the browser certificate and is
+    /// not asked for one of its own.
+    #[tokio::test]
+    async fn a_browser_is_not_asked_for_a_certificate() {
+        let server = Identity::generate();
+        let addr = start_whoami_server(&server).await;
+        let http = reqwest::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .build()
+            .unwrap();
+        let body = http
+            .get(format!("https://127.0.0.1:{}/whoami", addr.port()))
+            .send()
+            .await
+            .expect("the browser handshake had to complete")
+            .text()
+            .await
+            .unwrap();
+        assert_eq!(body, "none");
+    }
+
+    /// Plain HTTP from loopback is still served with TLS on: the operator
+    /// opens the interface at `http://localhost` with no certificate warning.
+    #[tokio::test]
+    async fn loopback_plain_http_is_served_with_tls_on() {
+        let server = Identity::generate();
+        let addr = start_whoami_server(&server).await;
+        let body = reqwest::get(format!("http://127.0.0.1:{}/whoami", addr.port()))
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert_eq!(body, "none");
+    }
+
+    /// The tunnel names the caller by the PeerId Noise authenticated, which
+    /// embeds the node key: it yields the same node_id.
+    #[test]
+    fn a_peer_id_yields_the_node_of_its_key() {
+        let id = Identity::generate();
+        let keypair =
+            libp2p::identity::Keypair::ed25519_from_bytes(id.signing_key.to_bytes()).unwrap();
+        let peer_id = keypair.public().to_peer_id().to_string();
+        let caller = TransportPeer::from_peer_id(&peer_id).unwrap();
+        assert_eq!(caller.node_id, id.node_id.0);
+        assert_eq!(caller.pubkey, id.public_key_hex());
     }
 
     /// The whole happy path: certificate derived from the identity, a client

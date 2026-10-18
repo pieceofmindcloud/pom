@@ -478,6 +478,81 @@ fn admission_verdict(
     }
 }
 
+/// Domain label of an announce signature, so it can never be taken for a
+/// signature over anything else the node key signs.
+const ANNOUNCE_SIGNATURE_LABEL: &[u8] = b"pom-announce/v1\n";
+/// How far an announce's `timestamp` may be from the receiver's clock. It
+/// bounds how long a recorded announce can be replayed, and tolerates
+/// clocks that disagree by a few minutes.
+const ANNOUNCE_FRESHNESS_SECS: i64 = 300;
+/// How long a peer's own announce keeps a `PeerList` from moving its
+/// addresses: a few gossip rounds.
+const FIRSTHAND_WINDOW: StdDuration = StdDuration::from_secs(GOSSIP_INTERVAL_SECS * 6);
+
+/// What an announce signature covers: the announce as serialized without
+/// its signature.
+fn announce_signing_bytes(announce: &P2PMessage) -> Option<Vec<u8>> {
+    let mut unsigned = announce.clone();
+    let P2PMessage::Announce { signature, .. } = &mut unsigned else {
+        return None;
+    };
+    *signature = None;
+    let mut bytes = ANNOUNCE_SIGNATURE_LABEL.to_vec();
+    bytes.extend(serde_json::to_vec(&unsigned).ok()?);
+    Some(bytes)
+}
+
+/// Signs `announce` with the node key. Anything else is left as it is.
+pub(crate) fn sign_announce(announce: &mut P2PMessage, key: &ed25519_dalek::SigningKey) {
+    use ed25519_dalek::Signer;
+    let Some(bytes) = announce_signing_bytes(announce) else {
+        return;
+    };
+    if let P2PMessage::Announce { signature, .. } = announce {
+        *signature = Some(hex::encode(key.sign(&bytes).to_bytes()));
+    }
+}
+
+/// The rule for an announce that arrived over UDP: signed by the key it
+/// announces, that key yields the announced `node_id`, and it is recent.
+/// Messages other than an announce pass.
+///
+/// The gossipsub path does not need this: libp2p already signs the message
+/// with the sender's `PeerId`, checked against the declared one.
+pub(crate) fn verify_udp_announce(msg: &P2PMessage, now: DateTime<Utc>) -> Result<(), &'static str> {
+    use ed25519_dalek::Verifier;
+    let P2PMessage::Announce {
+        node_id,
+        pubkey,
+        timestamp,
+        signature,
+        ..
+    } = msg
+    else {
+        return Ok(());
+    };
+    let signature = signature.as_deref().ok_or("unsigned")?;
+    let raw: [u8; 32] = hex::decode(pubkey)
+        .ok()
+        .and_then(|raw| raw.try_into().ok())
+        .ok_or("invalid pubkey")?;
+    let key = ed25519_dalek::VerifyingKey::from_bytes(&raw).map_err(|_| "invalid pubkey")?;
+    if crate::identity::NodeId::from_pubkey(&key).0 != *node_id {
+        return Err("node_id does not match the pubkey");
+    }
+    let signature = hex::decode(signature)
+        .ok()
+        .and_then(|raw| ed25519_dalek::Signature::from_slice(&raw).ok())
+        .ok_or("invalid signature")?;
+    let bytes = announce_signing_bytes(msg).ok_or("not an announce")?;
+    key.verify(&bytes, &signature)
+        .map_err(|_| "signature does not match")?;
+    if (now - *timestamp).num_seconds().abs() > ANNOUNCE_FRESHNESS_SECS {
+        return Err("stale timestamp");
+    }
+    Ok(())
+}
+
 /// Message types exchanged between nodes
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -525,11 +600,8 @@ pub enum P2PMessage {
         gateway_quic_port: Option<u16>,
         #[serde(default)]
         profile: crate::profile::NodeProfile,
-        /// Whether this node speaks TLS with the peers.
-        ///
-        /// **Trigger, not value**: the receiver does not store this. See
-        /// `tls_policy` - gossip is cleartext and unauthenticated, so obeying
-        /// it would be offering the downgrade that TLS exists to prevent.
+        /// Whether this node speaks TLS with the peers: the scheme to dial
+        /// it with. Always true from a binary; a test bench may say false.
         #[serde(default)]
         tls: bool,
         /// Trigger for the QUIC policy's authenticated gate.
@@ -595,6 +667,12 @@ pub enum P2PMessage {
         /// Present while this node accepts circuit reservations.
         #[serde(default)]
         relay: Option<RelayOffer>,
+        /// Ed25519 signature by `pubkey` over the rest of the announce
+        /// (`announce_signing_bytes`). UDP carries no authentication of its
+        /// own, so without it anyone could announce a member's identity at
+        /// their own address. See `verify_udp_announce`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
     },
     /// Request peer list from a known node
     PeerRequest { from: String },
@@ -1288,18 +1366,10 @@ pub struct Network {
     /// `engine/plugin-v1:<code>` instead of the hidden-state capabilities, so
     /// no gateway plans this peer as a pipeline hop. See `plugin_engine`.
     external_engine: std::sync::RwLock<Option<String>>,
-    /// Whether this node speaks TLS with the peers, in the form the announce reads.
-    ///
-    /// The source of truth is `Config.tls_required`; this is the copy that gossip
-    /// and the accept loop consult without touching the configuration lock.
+    /// Whether this node speaks TLS with the peers, in the form the announce
+    /// reads. Always on in the binary (`main.rs`); off only on test benches
+    /// that talk plain HTTP on loopback.
     tls: Arc<AtomicBool>,
-    /// How the gate is triggered: it receives the principal's node_id when an
-    /// announce from it disagrees with the local policy.
-    ///
-    /// It is a channel, and not a direct call, because `Network` does not know the
-    /// configuration nor the connection key - whoever knows how to fetch and store is the task
-    /// set up in `main.rs`. See `tls_policy`.
-    tls_probe: std::sync::RwLock<Option<tokio::sync::mpsc::UnboundedSender<(String, bool)>>>,
     /// Channel of the QUIC policy's authenticated gate.
     quic_probe: std::sync::RwLock<Option<tokio::sync::mpsc::UnboundedSender<(String, bool)>>>,
     /// Channel of the logs policy's authenticated gate.
@@ -1327,6 +1397,13 @@ pub struct Network {
     /// The version of the local trust chain, announced to the peers.
     trust_version: std::sync::RwLock<Option<String>>,
     membership: std::sync::RwLock<Option<String>>,
+    /// The node key, which signs every announce this node sends. Absent
+    /// only in tests that build a `Network` without an identity.
+    announce_key: std::sync::RwLock<Option<Arc<ed25519_dalek::SigningKey>>>,
+    /// When each peer's own signed announce last arrived (UDP or
+    /// gossipsub). A `PeerList` is another node's unsigned snapshot, and it
+    /// never moves the addresses of a peer heard first hand recently.
+    firsthand: std::sync::Mutex<HashMap<String, Instant>>,
     /// Avoids repeating in gossip a permanent warning, such as the global broadcast
     /// being unavailable inside a container.
     broadcast_warning_logged: AtomicBool,
@@ -1753,7 +1830,6 @@ impl Network {
             slot_persist_ready: Arc::new(AtomicBool::new(false)),
             external_engine: std::sync::RwLock::new(None),
             tls: Arc::new(AtomicBool::new(false)),
-            tls_probe: std::sync::RwLock::new(None),
             quic_probe: std::sync::RwLock::new(None),
             cluster_logs_probe: std::sync::RwLock::new(None),
             cluster_logs_enabled: Arc::new(AtomicBool::new(false)),
@@ -1764,6 +1840,8 @@ impl Network {
             policy_principal_pubkey: std::sync::RwLock::new(None),
             trust_version: std::sync::RwLock::new(None),
             membership: std::sync::RwLock::new(None),
+            announce_key: std::sync::RwLock::new(None),
+            firsthand: std::sync::Mutex::new(HashMap::new()),
             broadcast_warning_logged: AtomicBool::new(false),
             observed_addr: std::sync::RwLock::new(None),
             libp2p_addrs: std::sync::RwLock::new(Vec::new()),
@@ -1888,6 +1966,13 @@ impl Network {
 
     pub fn membership(&self) -> Option<String> {
         self.membership.read().ok().and_then(|current| current.clone())
+    }
+
+    /// The key that signs this node's announces: the node key.
+    pub fn set_announce_key(&self, key: Arc<ed25519_dalek::SigningKey>) {
+        if let Ok(mut current) = self.announce_key.write() {
+            *current = Some(key);
+        }
     }
 
     pub fn trust_version(&self) -> Option<String> {
@@ -2264,6 +2349,15 @@ impl Network {
     /// there was an assignment, so a peer that arrived over the internet through a
     /// different node saw something different from what the LAN saw.
     fn self_announce(&self, assignment: Option<&LayerAssignment>) -> P2PMessage {
+        let mut announce = self.unsigned_announce(assignment);
+        let key = self.announce_key.read().ok().and_then(|key| key.clone());
+        if let Some(key) = key {
+            sign_announce(&mut announce, &key);
+        }
+        announce
+    }
+
+    fn unsigned_announce(&self, assignment: Option<&LayerAssignment>) -> P2PMessage {
         // The enumeration is deliberately done here, on each announce. Gossip
         // announces every 5 s; the operation is only a local read of
         // interfaces, not a network probe. The same snapshot feeds `addr`
@@ -2368,6 +2462,7 @@ impl Network {
             cluster_logs_enabled: self.cluster_logs_enabled(),
             idle: self.is_idle(),
             network_chat_enabled: self.network_chat_enabled(),
+            signature: None,
         }
     }
 
@@ -2515,18 +2610,9 @@ impl Network {
         self.tls.load(Ordering::Relaxed)
     }
 
-    /// Turned on or off by the principal's route, or by the gate after
-    /// confirming with it. Never from an Announce.
+    /// Set once at startup. Never from an Announce.
     pub fn set_tls(&self, on: bool) {
         self.tls.store(on, Ordering::Relaxed);
-    }
-
-    /// Wires up the gate's channel. Without it, an announce disagreement is ignored -
-    /// which is the right behavior for a test node, with no config to write.
-    pub fn set_tls_probe(&self, tx: tokio::sync::mpsc::UnboundedSender<(String, bool)>) {
-        if let Ok(mut slot) = self.tls_probe.write() {
-            *slot = Some(tx);
-        }
     }
 
     pub fn set_quic_probe(&self, tx: tokio::sync::mpsc::UnboundedSender<(String, bool)>) {
@@ -2713,6 +2799,42 @@ impl Network {
     /// trust chain wired in, a peer is an admin only when the chain proves it
     /// (principal or a secondary grant in force, never an inference node).
     /// Only the `testkit`'s open mode, which has no chain, takes the announce.
+    /// Whether `peer` was banned and holds no token issued after the ban: it
+    /// still knows the connection key, so the admission probe alone would
+    /// let it back in.
+    fn is_revoked(&self, peer: &PeerInfo) -> bool {
+        let Some(admission) = self.admission.as_ref() else {
+            return false;
+        };
+        admission.trust.revoked_node_at(&peer.node_id).is_some()
+            && crate::membership::peer_role(peer, &admission.trust).is_none()
+    }
+
+    /// Takes a banned node out of the peers table at once, so no plan routes
+    /// to it while its announces are being refused.
+    pub(crate) async fn drop_revoked(&self, node_id: &str) {
+        if self.peers.write().await.remove(node_id).is_some() {
+            self.routes.invalidate(node_id);
+            info!("peer {} removed: revoked", short(node_id));
+        }
+    }
+
+    /// Whether the node with `pubkey` is a member of this network now: an
+    /// admin of the chain, or a peer whose announced membership token holds
+    /// against the chain and its revocations. A node without admission (a
+    /// test bench) does not judge, and answers yes.
+    pub(crate) async fn is_member_key(&self, node_id: &str, pubkey: &str) -> bool {
+        let Some(admission) = self.admission.as_ref() else {
+            return true;
+        };
+        if crate::admin_trust::is_admin_key(&admission.trust.document(), node_id, pubkey) {
+            return true;
+        }
+        self.peers.read().await.get(node_id).is_some_and(|peer| {
+            peer.pubkey == pubkey && crate::membership::peer_role(peer, &admission.trust).is_some()
+        })
+    }
+
     pub async fn admin_peers(&self) -> Vec<(libp2p::PeerId, Vec<String>)> {
         let document = self
             .admission
@@ -3144,6 +3266,10 @@ impl Network {
                 Ok((len, src)) => {
                     let data = &buf[..len];
                     if let Ok(msg) = serde_json::from_slice::<P2PMessage>(data) {
+                        if let Err(reason) = verify_udp_announce(&msg, Utc::now()) {
+                            debug!("UDP announce from {src} dropped: {reason}");
+                            continue;
+                        }
                         let context = message_context(&msg);
                         if let Err(payload) =
                             AssertUnwindSafe(self.handle_message(msg, src, &assignment))
@@ -3224,6 +3350,7 @@ impl Network {
                 trust_version,
                 membership,
                 relay,
+                signature: _,
             } => {
                 if node_id == self.node_id {
                     return; // ignore ourselves
@@ -3314,32 +3441,6 @@ impl Network {
                     );
                 }
 
-                // The TLS gate. The announce is a **trigger, never a value**: nothing
-                // here stores the policy. Disagreeing with the principal only asks for an
-                // authenticated fetch from it, and it is that answer that counts. See
-                // `tls_policy`.
-                if let crate::tls_policy::PolicyOutcome::Fetch { principal } =
-                    crate::tls_policy::on_announce(
-                        self.tls_enabled(),
-                        tls,
-                        peer.profile == crate::profile::NodeProfile::Admin,
-                        &peer.node_id,
-                    )
-                {
-                    if let Ok(slot) = self.tls_probe.read() {
-                        if let Some(tx) = slot.as_ref() {
-                            // The announced `tls` goes along, and serves **one
-                            // thing only**: knowing which scheme to dial the
-                            // probe with. Without it a node that still thinks the cluster is in
-                            // cleartext would dial `http://` on a strict principal,
-                            // be refused, and the gate could never
-                            // turn on. Forging the hint does not change what is stored -
-                            // it only makes the probe knock on the wrong door and fail.
-                            let _ = tx.send((principal, tls));
-                        }
-                    }
-                }
-
                 self.trigger_quic_probe(&peer.node_id, &peer.pubkey, quic, tls);
 
                 self.trigger_cluster_logs_probe(
@@ -3375,7 +3476,7 @@ impl Network {
                     self.routes.invalidate(&node_id);
                 }
 
-                self.insert_admitted_peer(peer).await;
+                self.insert_announced_peer(peer).await;
             }
 
             P2PMessage::PeerRequest { from } => {
@@ -3443,6 +3544,19 @@ impl Network {
                         continue;
                     }
 
+                    // A snapshot is nobody's signature: the addresses of a
+                    // peer whose own announce reaches this node stay the ones
+                    // it announced, or anyone could point it elsewhere with
+                    // a forged list.
+                    if self.heard_firsthand(&peer.node_id) {
+                        peer.addr = previous.addr.clone();
+                        peer.addr_candidates = previous.addr_candidates.clone();
+                        peer.pubkey = previous.pubkey.clone();
+                        peer.libp2p_peer_id = previous.libp2p_peer_id.clone();
+                        peer.libp2p_addrs = previous.libp2p_addrs.clone();
+                        peer.gateway_port = previous.gateway_port;
+                        peer.inference_port = previous.inference_port;
+                    }
                     let address_changed = peer_address_changed(previous, &peer);
                     let connection_verified = previous.connection_verified;
                     let api_keys_active = previous.api_keys_active;
@@ -3738,6 +3852,10 @@ impl Network {
     }
 
     pub(crate) async fn admit_peer(&self, peer: &PeerInfo) -> bool {
+        if self.is_revoked(peer) {
+            debug!("admission of {}: revoked", short(&peer.node_id));
+            return false;
+        }
         if let Some(allowed) = self.admission_without_probe(peer).await {
             return allowed;
         }
@@ -4140,6 +4258,24 @@ impl Network {
             .filter(|peer| peer.is_alive())
             .cloned()
             .collect()
+    }
+
+    /// Stores a peer from its own signed announce, and notes that it was
+    /// heard first hand (`firsthand`).
+    pub(crate) async fn insert_announced_peer(&self, peer: PeerInfo) {
+        if let Ok(mut heard) = self.firsthand.lock() {
+            heard.insert(peer.node_id.clone(), Instant::now());
+        }
+        self.insert_admitted_peer(peer).await;
+    }
+
+    /// Whether `node_id`'s own announce arrived within `FIRSTHAND_WINDOW`.
+    fn heard_firsthand(&self, node_id: &str) -> bool {
+        self.firsthand
+            .lock()
+            .ok()
+            .and_then(|heard| heard.get(node_id).copied())
+            .is_some_and(|at| at.elapsed() < FIRSTHAND_WINDOW)
     }
 
     pub(crate) async fn insert_admitted_peer(&self, mut peer: PeerInfo) {
@@ -5261,6 +5397,7 @@ mod tests {
                 trust_version: None,
                 membership: None,
                 relay: None,
+                signature: None,
                 addr: stale.into(),
                 addr_candidates: vec![stale.into()],
                 model: "qwen".into(),
@@ -5618,6 +5755,7 @@ mod tests {
     ) -> crate::auth::AuthState {
         use crate::config::Config;
         Arc::new(RwLock::new(Config {
+            retired_tls_required: (),
             profile: crate::profile::NodeProfile::Worker,
             setup_pending: false,
             local_auto_discovery: false,
@@ -5638,7 +5776,6 @@ mod tests {
             },
             api_keys: vec![],
             blocked_nodes: vec![],
-            tls_required: false,
             quic_enabled: false,
             cluster_logs_enabled: false,
             network_chat_enabled: false,
@@ -6789,5 +6926,216 @@ mod tests {
                 .unwrap();
 
         assert_eq!(&buf[..received.0], b"oi");
+    }
+
+    fn signed_announce_of(key: &ed25519_dalek::SigningKey) -> P2PMessage {
+        let pubkey = key.verifying_key();
+        let mut announce = P2PMessage::Announce {
+            node_id: crate::identity::NodeId::from_pubkey(&pubkey).0,
+            pubkey: hex::encode(pubkey.as_bytes()),
+            cluster_id: None,
+            trust_version: None,
+            membership: None,
+            relay: None,
+            signature: None,
+            addr: "192.0.2.10:42777".into(),
+            addr_candidates: vec!["192.0.2.10:42777".into()],
+            model: String::new(),
+            deploy_id: String::new(),
+            start_layer: 0,
+            end_layer: 0,
+            total_layers: 0,
+            memory_mb: 1.5,
+            timestamp: Utc::now(),
+            ollama_port: None,
+            inference_port: Some(9000),
+            inference_quic_port: None,
+            inference_frame_capabilities: Vec::new(),
+            gateway_port: Some(8080),
+            gateway_quic_port: None,
+            profile: crate::profile::NodeProfile::Worker,
+            tls: true,
+            quic: false,
+            hostname: "machine-a".into(),
+            capabilities: Vec::new(),
+            disk_total_mb: 0,
+            disk_free_mb: 0,
+            libp2p_peer_id: None,
+            libp2p_addrs: Vec::new(),
+            tp: None,
+            runtime_capacity: None,
+            cluster_logs_enabled: false,
+            idle: false,
+            network_chat_enabled: false,
+        };
+        sign_announce(&mut announce, key);
+        announce
+    }
+
+    /// The wire form of a signed announce verifies after the round trip
+    /// through JSON, which is what a receiver sees.
+    #[test]
+    fn a_signed_announce_verifies_after_the_wire() {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        let wire = serde_json::to_vec(&signed_announce_of(&key)).unwrap();
+        let parsed: P2PMessage = serde_json::from_slice(&wire).unwrap();
+        assert_eq!(verify_udp_announce(&parsed, Utc::now()), Ok(()));
+    }
+
+    /// The hijack this closes: a member's identity announced at another
+    /// machine's address. Changing any field breaks the signature, and a
+    /// signature by another key does not match the announced one.
+    #[test]
+    fn an_announce_with_a_forged_address_or_key_is_dropped() {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        let mut moved = signed_announce_of(&key);
+        if let P2PMessage::Announce { addr, .. } = &mut moved {
+            *addr = "192.0.2.66:42777".into();
+        }
+        assert_eq!(
+            verify_udp_announce(&moved, Utc::now()),
+            Err("signature does not match")
+        );
+
+        let outsider = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
+        let mut resigned = signed_announce_of(&key);
+        sign_announce(&mut resigned, &outsider);
+        assert_eq!(
+            verify_udp_announce(&resigned, Utc::now()),
+            Err("signature does not match")
+        );
+
+        let mut unsigned = signed_announce_of(&key);
+        if let P2PMessage::Announce { signature, .. } = &mut unsigned {
+            *signature = None;
+        }
+        assert_eq!(verify_udp_announce(&unsigned, Utc::now()), Err("unsigned"));
+    }
+
+    /// A recorded announce stops being accepted once it is older than the
+    /// freshness window.
+    #[test]
+    fn a_replayed_old_announce_is_dropped() {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        let announce = signed_announce_of(&key);
+        let later = Utc::now() + chrono::Duration::seconds(ANNOUNCE_FRESHNESS_SECS + 5);
+        assert_eq!(verify_udp_announce(&announce, later), Err("stale timestamp"));
+    }
+
+    /// A node with a key signs what it announces.
+    #[tokio::test]
+    async fn the_node_signs_its_own_announce() {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+        let pubkey = key.verifying_key();
+        let net = Network::new(
+            crate::identity::NodeId::from_pubkey(&pubkey).0,
+            hex::encode(pubkey.as_bytes()),
+            0,
+            vec![],
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        net.set_announce_key(Arc::new(key));
+        let announce = net.self_announce(None);
+        assert_eq!(verify_udp_announce(&announce, Utc::now()), Ok(()));
+    }
+
+    /// Another node's unsigned snapshot does not move the addresses of a
+    /// peer whose own announce arrived recently.
+    #[tokio::test]
+    async fn a_peer_list_does_not_move_a_peer_heard_first_hand() {
+        let net = Network::new("local".into(), "pubkey".into(), 0, vec![], None, None, None)
+            .await
+            .unwrap();
+        let assignment = Arc::new(RwLock::new(None));
+        let real = "192.0.2.10:42777";
+        let forged = "192.0.2.66:42777";
+
+        let mut genuine = peer_with_candidates(vec![real]);
+        genuine.node_id = "peer".into();
+        genuine.addr = real.into();
+        let seen_at = genuine.last_seen;
+        net.insert_announced_peer(genuine).await;
+
+        let mut snapshot = peer_with_candidates(vec![forged]);
+        snapshot.node_id = "peer".into();
+        snapshot.addr = forged.into();
+        snapshot.end_layer = 9;
+        snapshot.last_seen = seen_at + chrono::Duration::seconds(1);
+        net.handle_message(
+            P2PMessage::PeerList {
+                peers: vec![snapshot],
+            },
+            "127.0.0.1:42777".parse().unwrap(),
+            &assignment,
+        )
+        .await;
+
+        let stored = net.peers.read().await["peer"].clone();
+        assert_eq!(stored.addr, real);
+        assert_eq!(stored.addr_candidates, vec![real.to_string()]);
+        assert_eq!(stored.end_layer, 9, "the rest of the snapshot still applies");
+    }
+
+    /// Who passes the transport check of a node-to-node call: an admin of
+    /// the chain, and a peer whose announced token holds - until it is
+    /// revoked. Anyone else, the connection key notwithstanding, does not.
+    #[tokio::test]
+    async fn only_admins_and_members_with_a_valid_token_are_members() {
+        let primary_key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+        let primary = crate::admin_trust::AuthorityPrincipal::from_signing_key(
+            "primary",
+            &libp2p::PeerId::random().to_string(),
+            &primary_key,
+        );
+        let trust = Arc::new(
+            crate::admin_trust::AdminTrust::bootstrap_primary_in_memory(
+                "test-cluster",
+                primary.clone(),
+                &primary_key,
+            )
+            .unwrap(),
+        );
+        let net = Network::testkit("local".into(), "pk".into(), vec![], None, None, None)
+            .await
+            .unwrap()
+            .with_admission(
+                admission_config("key", crate::config::NetworkVisibility::Private),
+                trust.clone(),
+            );
+        assert!(net.is_member_key(&primary.node_id, &primary.pubkey).await);
+
+        let now = chrono::Utc::now().timestamp();
+        let token = crate::membership::issue(
+            &primary_key,
+            &primary,
+            &trust.document(),
+            "worker",
+            "worker-key",
+            crate::config::EnrollmentRole::Worker,
+            now - 5,
+        )
+        .unwrap();
+        let mut worker = dummy_peer("worker", "127.0.0.1:9");
+        worker.pubkey = "worker-key".into();
+        worker.membership = Some(token);
+        let mut stranger = dummy_peer("stranger", "127.0.0.1:10");
+        stranger.pubkey = "stranger-key".into();
+        {
+            let mut peers = net.peers.write().await;
+            peers.insert("worker".into(), worker);
+            peers.insert("stranger".into(), stranger);
+        }
+        assert!(net.is_member_key("worker", "worker-key").await);
+        assert!(!net.is_member_key("worker", "another-key").await);
+        assert!(!net.is_member_key("stranger", "stranger-key").await);
+
+        let ban = crate::membership::revoke(&primary_key, &primary, &trust.document(), "worker", now)
+            .unwrap();
+        trust.merge_revocations(vec![ban]);
+        assert!(!net.is_member_key("worker", "worker-key").await);
     }
 }

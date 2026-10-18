@@ -295,6 +295,34 @@ pub(crate) struct AdminTrust {
     /// Local replay ledger; see `ReplayLedger`. Always locked after `state`
     /// when both are taken.
     replay: Arc<Mutex<ReplayLedger>>,
+    /// The revocations this node holds (`membership::Revocation`), one per
+    /// member. Local like the replay ledger: it is merged from what the
+    /// admins sign, never part of the shared document.
+    revocations: Arc<Mutex<RevocationLedger>>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct RevocationLedger {
+    entries: Vec<crate::membership::Revocation>,
+}
+
+/// Where a chain's revocations live: next to it.
+pub(crate) fn revocations_path_for(trust_path: &Path) -> PathBuf {
+    trust_path.with_extension("revocations.json")
+}
+
+fn load_revocations(trust_path: Option<&Path>) -> Arc<Mutex<RevocationLedger>> {
+    let ledger = trust_path
+        .map(revocations_path_for)
+        .and_then(|path| std::fs::read_to_string(&path).ok().map(|content| (path, content)))
+        .map(|(path, content)| {
+            serde_json::from_str(&content).unwrap_or_else(|error| {
+                tracing::warn!("unreadable revocation list at {}: {error}", path.display());
+                RevocationLedger::default()
+            })
+        })
+        .unwrap_or_default();
+    Arc::new(Mutex::new(ledger))
 }
 
 impl AdminTrust {
@@ -330,6 +358,7 @@ impl AdminTrust {
                 setup_signature: String::new(),
             })),
             replay: Arc::new(Mutex::new(load_replay_ledger(path.as_deref()))),
+            revocations: load_revocations(path.as_deref()),
             path,
         }
     }
@@ -343,6 +372,7 @@ impl AdminTrust {
         Ok(Self {
             state: Arc::new(Mutex::new(document)),
             replay: Arc::new(Mutex::new(load_replay_ledger(Some(&path)))),
+            revocations: load_revocations(Some(&path)),
             path: Some(path),
         })
     }
@@ -469,6 +499,7 @@ impl AdminTrust {
             state: Arc::new(Mutex::new(document)),
             path: Some(path.as_ref().to_path_buf()),
             replay: Arc::new(Mutex::new(load_replay_ledger(Some(path.as_ref())))),
+            revocations: load_revocations(Some(path.as_ref())),
         };
         trust.save()?;
         Ok(trust)
@@ -481,6 +512,7 @@ impl AdminTrust {
             state: Arc::new(Mutex::new(document)),
             path: None,
             replay: Arc::new(Mutex::new(ReplayLedger::default())),
+            revocations: load_revocations(None),
         })
     }
 
@@ -583,6 +615,63 @@ impl AdminTrust {
         Ok(true)
     }
 
+    /// When the member `node_id` was last revoked, whatever its key.
+    pub(crate) fn revoked_node_at(&self, node_id: &str) -> Option<i64> {
+        self.revocations
+            .lock()
+            .expect("revocation lock poisoned")
+            .entries
+            .iter()
+            .filter(|entry| entry.sub == node_id)
+            .map(|entry| entry.revoked_at)
+            .max()
+    }
+
+    /// Every revocation this node holds.
+    pub(crate) fn revocations(&self) -> Vec<crate::membership::Revocation> {
+        self.revocations
+            .lock()
+            .expect("revocation lock poisoned")
+            .entries
+            .clone()
+    }
+
+    /// Adds the entries that hold against the chain and are new, keeping
+    /// the latest per member, and saves the list. Returns the ones
+    /// that were added.
+    pub(crate) fn merge_revocations(
+        &self,
+        incoming: Vec<crate::membership::Revocation>,
+    ) -> Vec<crate::membership::Revocation> {
+        let document = self.document();
+        let mut ledger = self.revocations.lock().expect("revocation lock poisoned");
+        let mut added = Vec::new();
+        for entry in incoming {
+            if crate::membership::verify_revocation(&entry, &document).is_err() {
+                continue;
+            }
+            let newest = ledger
+                .entries
+                .iter()
+                .filter(|known| known.sub == entry.sub)
+                .map(|known| known.revoked_at)
+                .max();
+            if newest.is_some_and(|newest| newest >= entry.revoked_at) {
+                continue;
+            }
+            ledger.entries.retain(|known| known.sub != entry.sub);
+            ledger.entries.push(entry.clone());
+            added.push(entry);
+        }
+        if !added.is_empty() {
+            let path = self.path.as_deref().map(revocations_path_for);
+            if let Err(error) = persist_json(&*ledger, path.as_deref(), false) {
+                tracing::warn!("could not save the revocation list: {error:#}");
+            }
+        }
+        added
+    }
+
     /// How many entries the local replay ledger holds.
     #[cfg(test)]
     pub(crate) fn replay_len(&self) -> usize {
@@ -642,6 +731,7 @@ impl AdminTrust {
             state: Arc::new(Mutex::new(document)),
             path: Some(path.as_ref().to_path_buf()),
             replay: Arc::new(Mutex::new(load_replay_ledger(Some(path.as_ref())))),
+            revocations: load_revocations(Some(path.as_ref())),
         };
         trust.save()?;
         Ok(trust)

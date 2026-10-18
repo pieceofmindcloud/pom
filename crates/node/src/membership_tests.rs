@@ -46,7 +46,7 @@ fn any_admin_signs_a_token_every_member_checks_against_the_chain_alone() {
         let token = issue(key, issuer, &document, "visitor", "visitor-key", EnrollmentRole::Visitor, NOW)
             .unwrap();
         assert_eq!(
-            role_of(Some(&token), "visitor", "visitor-key", &document, NOW + 60),
+            role_of(Some(&token), "visitor", "visitor-key", &document, None, NOW + 60),
             Some(EnrollmentRole::Visitor)
         );
     }
@@ -58,8 +58,8 @@ fn a_token_holds_only_for_its_own_key() {
     let document = chain.trust.document();
     let token = issue(&chain.primary_key, &chain.primary, &document, "worker", "worker-key", EnrollmentRole::Worker, NOW)
         .unwrap();
-    assert_eq!(role_of(Some(&token), "worker", "another-key", &document, NOW), None);
-    assert_eq!(role_of(Some(&token), "another-node", "worker-key", &document, NOW), None);
+    assert_eq!(role_of(Some(&token), "worker", "another-key", &document, None, NOW), None);
+    assert_eq!(role_of(Some(&token), "another-node", "worker-key", &document, None, NOW), None);
 }
 
 #[test]
@@ -130,4 +130,78 @@ fn a_token_of_another_network_is_nothing() {
     )
     .unwrap();
     assert!(verify(&token, &other.document(), NOW).is_err());
+}
+
+/// A secondary admin bans on its own, and every node then refuses the
+/// member's token from before the ban, while a token issued after a new
+/// approval holds again.
+#[test]
+fn a_secondary_bans_and_old_tokens_stop_holding() {
+    let chain = chain();
+    let document = chain.trust.document();
+    let token = issue(
+        &chain.primary_key,
+        &chain.primary,
+        &document,
+        "worker",
+        "worker-key",
+        EnrollmentRole::Worker,
+        NOW,
+    )
+    .unwrap();
+    let ban = revoke(&chain.secondary_key, &chain.secondary, &document, "worker", NOW + 10).unwrap();
+    assert_eq!(
+        role_of(Some(&token), "worker", "worker-key", &document, Some(ban.revoked_at), NOW + 20),
+        None
+    );
+    let readmitted = issue(
+        &chain.primary_key,
+        &chain.primary,
+        &document,
+        "worker",
+        "worker-key",
+        EnrollmentRole::Worker,
+        NOW + 30,
+    )
+    .unwrap();
+    assert_eq!(
+        role_of(Some(&readmitted), "worker", "worker-key", &document, Some(ban.revoked_at), NOW + 40),
+        Some(EnrollmentRole::Worker)
+    );
+}
+
+/// Only an admin revokes, an admin is not revoked this way, and a tampered
+/// entry is refused.
+#[test]
+fn a_revocation_holds_only_from_an_admin_against_a_member() {
+    let chain = chain();
+    let document = chain.trust.document();
+    let outsider_key = SigningKey::from_bytes(&[9; 32]);
+    let outsider = principal_of("outsider", &outsider_key);
+    assert!(revoke(&outsider_key, &outsider, &document, "worker", NOW).is_err());
+    assert!(revoke(&chain.secondary_key, &chain.secondary, &document, "primary", NOW).is_err());
+    assert!(revoke(&chain.primary_key, &chain.primary, &document, "secondary", NOW).is_err());
+
+    let mut forged = revoke(&chain.secondary_key, &chain.secondary, &document, "worker", NOW).unwrap();
+    forged.sub = "another-worker".into();
+    assert!(verify_revocation(&forged, &document).is_err());
+}
+
+/// The lists of several admins merge: a forged entry is dropped, a repeat
+/// adds nothing, and the latest ban of a member is the one kept.
+#[test]
+fn revocation_lists_merge_keeping_the_latest_ban() {
+    let chain = chain();
+    let document = chain.trust.document();
+    let first = revoke(&chain.primary_key, &chain.primary, &document, "worker", NOW).unwrap();
+    let later = revoke(&chain.secondary_key, &chain.secondary, &document, "worker", NOW + 5).unwrap();
+    let mut forged = first.clone();
+    forged.sub = "another-worker".into();
+
+    assert_eq!(chain.trust.merge_revocations(vec![first.clone(), forged]).len(), 1);
+    assert!(chain.trust.merge_revocations(vec![first]).is_empty());
+    assert_eq!(chain.trust.merge_revocations(vec![later.clone()]), vec![later]);
+    assert_eq!(chain.trust.revoked_node_at("worker"), Some(NOW + 5));
+    assert_eq!(chain.trust.revoked_node_at("another-worker"), None);
+    assert_eq!(chain.trust.revocations().len(), 1);
 }

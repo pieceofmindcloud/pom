@@ -839,7 +839,6 @@ pub(super) fn is_pipeline_or_public_path(path: &str) -> bool {
         || path == "/health"
         || path.starts_with("/api/public/")
         || path == "/handshake"
-        || path == crate::tls_policy::TLS_POLICY_PATH
         || path == crate::cluster_logs_policy::CLUSTER_LOGS_POLICY_PATH
         || path == crate::network_chat_policy::NETWORK_CHAT_POLICY_PATH
         || path == crate::webui::NETWORK_SETTINGS_POLICY_PATH
@@ -880,13 +879,15 @@ pub(super) fn is_public_ui_static_path(path: &str) -> bool {
 pub(crate) fn peer_is_visitor(state: &GatewayState, peer: &PeerInfo) -> bool {
     use crate::config::EnrollmentRole;
     peer.profile == crate::profile::NodeProfile::Visitor
-        || crate::membership::peer_role(peer, &state.admin_trust.document())
-            == Some(EnrollmentRole::Visitor)
+        || crate::membership::peer_role(peer, &state.admin_trust) == Some(EnrollmentRole::Visitor)
         || state
             .network_chat
             .admission_of(&peer.node_id)
             .is_some_and(|record| record.role == EnrollmentRole::Visitor)
-        || state.network_chat.admitted_role(&peer.node_id) == Some(EnrollmentRole::Visitor)
+        || state
+            .network_chat
+            .admitted_role(&peer.node_id, None)
+            == Some(EnrollmentRole::Visitor)
 }
 
 /// What a node-to-node request may reach, by the caller's identity.
@@ -951,9 +952,11 @@ pub(crate) async fn caller_may_ask(
 /// admissions, and keeps the announce.
 async fn peer_role_is_attested(state: &GatewayState, peer: &PeerInfo) -> bool {
     use crate::config::EnrollmentRole;
-    crate::membership::peer_role(peer, &state.admin_trust.document())
-        == Some(EnrollmentRole::Worker)
-        || state.network_chat.admitted_role(&peer.node_id) == Some(EnrollmentRole::Worker)
+    crate::membership::peer_role(peer, &state.admin_trust) == Some(EnrollmentRole::Worker)
+        || state
+            .network_chat
+            .admitted_role(&peer.node_id, state.admin_trust.revoked_node_at(&peer.node_id))
+            == Some(EnrollmentRole::Worker)
         || state.auth.read().await.network.open_admission()
 }
 

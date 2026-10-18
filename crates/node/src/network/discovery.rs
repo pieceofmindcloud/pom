@@ -1239,7 +1239,7 @@ async fn handle_event(
                         return;
                     }
                 }
-                network.insert_admitted_peer(peer).await;
+                network.insert_announced_peer(peer).await;
 
                 network.trigger_cluster_logs_probe(&node_id, &pubkey, cluster_logs_enabled, tls);
                 network.trigger_quic_probe(&node_id, &pubkey, quic, tls);
@@ -1576,6 +1576,15 @@ async fn handle_event(
                                 peer, port, request.path
                             );
                             let response_tx = inbound_response_tx.clone();
+                            // Who is calling, as Noise proved it; the gateway
+                            // and the inference server authorize by it.
+                            let mut request = request;
+                            request.headers.retain(|(name, _)| {
+                                !name.eq_ignore_ascii_case(infer_tunnel::TUNNEL_PEER_HEADER)
+                            });
+                            request
+                                .headers
+                                .push((infer_tunnel::TUNNEL_PEER_HEADER.to_string(), peer.to_string()));
                             spawn_loopback_request(
                                 http,
                                 port,

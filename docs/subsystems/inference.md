@@ -1014,11 +1014,10 @@ restarts the model nor interrupts a call in flight. Each request opens an
 independent stream of the QUIC connection per peer and announced address, and
 the session stays in the pool to allow future multiplexing.
 
-QUIC always negotiates its own TLS 1.3 and validates the Ed25519 certificate
-against the `node_id`; that is why `quic` is encrypted even with
-`tls_required=false`. If the negotiation fails, the peer does not offer HTTP/3
-yet or the route answers 404/405, the same frame is tried over the TCP chosen
-by the TLS policy: `http://` when it is off and `https://` when it is on. The
+QUIC always negotiates its own TLS 1.3, validates the Ed25519 certificate
+against the `node_id` and presents the caller's own. If the negotiation fails,
+the peer does not offer HTTP/3 yet or the route answers 404/405, the same frame
+is tried over HTTPS on TCP. The
 fallback path keeps the run going and publishes `transport_fallback=true`; an
 inference HTTP refusal outside those codes stays final.
 

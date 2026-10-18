@@ -412,10 +412,6 @@ export interface NodeInfo {
   advertise_addr: string | null;
   /** What this node actually announces now (pinned, observed, or the sentinel). */
   effective_address: string;
-  /** Whether the cluster speaks TLS between peers now. `webui.rs` - `NodeInfo`. */
-  tls_required: boolean;
-  /** Whether **this** node can change that: only the principal can. */
-  tls_authority: boolean;
   /** Whether the cluster prefers HTTP/3 over QUIC on new hops. */
   quic_enabled: boolean;
   /** Only the principal can change the QUIC preference. */

@@ -253,6 +253,14 @@ pub use llama_engine::KvCacheType;
 /// Older `pom.json` files carried API keys with their secrets in plain text.
 /// The database owns the keys now, so whatever the file holds is read past and
 /// dropped instead of loaded (or refused for the missing `key_hash`).
+fn discard_retired_setting<'de, D>(deserializer: D) -> Result<(), D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde::de::IgnoredAny::deserialize(deserializer)?;
+    Ok(())
+}
+
 fn discard_legacy_api_keys<'de, D>(deserializer: D) -> Result<Vec<ApiKey>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -362,16 +370,16 @@ pub struct Config {
     pub api_keys: Vec<ApiKey>,
     #[serde(default)]
     pub blocked_nodes: Vec<String>,
-    /// All HTTP between peers goes over TLS when this is `true`.
-    ///
-    /// The decision belongs to the principal node and applies to the whole
-    /// cluster; the other nodes save here what they fetched from it over an
-    /// authenticated channel. **Never write this from gossip**: the discovery UDP
-    /// is in the clear and unauthenticated, and a forged announcement would
-    /// downgrade the network to plaintext, which is exactly the attack TLS exists
-    /// to prevent. See `tls_policy`.
-    #[serde(default)]
-    pub tls_required: bool,
+    /// Older `pom.json` files carry the switch TLS between peers used to
+    /// have. TLS between nodes is always on now, so the value is read past
+    /// and dropped, like the legacy API keys.
+    #[serde(
+        default,
+        skip_serializing,
+        rename = "tls_required",
+        deserialize_with = "discard_retired_setting"
+    )]
+    pub retired_tls_required: (),
     /// HTTP/3 over QUIC for inference hops, decided by the principal. On
     /// unless the config says otherwise.
     #[serde(default = "default_true")]
@@ -525,7 +533,6 @@ impl fmt::Debug for Config {
             .field("network", &self.network)
             .field("api_key_count", &self.api_keys.len())
             .field("blocked_nodes", &self.blocked_nodes)
-            .field("tls_required", &self.tls_required)
             .field("cluster_logs_enabled", &self.cluster_logs_enabled)
             .field("network_chat_enabled", &self.network_chat_enabled)
             .field("cluster_logs_min_level", &self.cluster_logs_min_level)
@@ -889,7 +896,6 @@ impl Config {
         self.blocked_nodes.clear();
         self.admin_exposure = AdminExposure::Localhost;
         self.admin_access_token = None;
-        self.tls_required = false;
         self.cluster_logs_enabled = false;
         self.setup_model = None;
     }
@@ -1442,6 +1448,7 @@ mod tests {
     #[test]
     fn test_roundtrip_principal_config() {
         let cfg = Config {
+            retired_tls_required: (),
             gpus: None,
             thermal: Default::default(),
             cache_type_k: KvCacheType::F16,
@@ -1449,7 +1456,6 @@ mod tests {
             profile: crate::profile::NodeProfile::Admin,
             setup_pending: false,
             local_auto_discovery: false,
-            tls_required: false,
             quic_enabled: false,
             cluster_logs_enabled: false,
             network_chat_enabled: false,
@@ -1550,6 +1556,7 @@ mod tests {
     #[test]
     fn test_roundtrip_node_config() {
         let cfg = Config {
+            retired_tls_required: (),
             gpus: None,
             thermal: Default::default(),
             cache_type_k: KvCacheType::F16,
@@ -1557,7 +1564,6 @@ mod tests {
             profile: crate::profile::NodeProfile::Worker,
             setup_pending: false,
             local_auto_discovery: false,
-            tls_required: false,
             quic_enabled: false,
             cluster_logs_enabled: false,
             network_chat_enabled: false,
@@ -1761,6 +1767,7 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         let mut cfg = Config {
+            retired_tls_required: (),
             profile: crate::profile::NodeProfile::Worker,
             setup_pending: false,
             local_auto_discovery: false,
@@ -1778,7 +1785,6 @@ mod tests {
             network: Default::default(),
             api_keys: vec![],
             blocked_nodes: vec![],
-            tls_required: false,
             quic_enabled: false,
             cluster_logs_enabled: false,
             network_chat_enabled: false,
@@ -1841,13 +1847,14 @@ mod tests {
         );
     }
 
-    /// A `pom.json` saved before TLS must still parse - and the default has to
-    /// be "no TLS", otherwise updating the binary takes the cluster down.
+    /// A `pom.json` saved while TLS was a switch still parses, and the switch
+    /// is not written back.
     #[test]
-    fn an_old_config_parses_without_tls_required() {
+    fn an_old_config_with_the_tls_switch_still_parses() {
         let cfg: Config =
-            serde_json::from_str(r#"{"profile":"worker","connection_key":"k"}"#).unwrap();
-        assert!(!cfg.tls_required);
+            serde_json::from_str(r#"{"profile":"worker","connection_key":"k","tls_required":false}"#)
+                .unwrap();
+        assert!(!serde_json::to_string(&cfg).unwrap().contains("tls_required"));
     }
 
     #[test]
@@ -1855,16 +1862,6 @@ mod tests {
         assert!(validate_gateway_port(0).is_err());
         assert!(validate_gateway_port(1).is_ok());
         assert!(validate_gateway_port(u16::MAX).is_ok());
-    }
-
-    #[test]
-    fn tls_required_survives_the_roundtrip() {
-        let cfg: Config =
-            serde_json::from_str(r#"{"profile":"admin","tls_required":true}"#).unwrap();
-        assert!(cfg.tls_required);
-        let text = serde_json::to_string(&cfg).unwrap();
-        let restored: Config = serde_json::from_str(&text).unwrap();
-        assert!(restored.tls_required);
     }
 
     #[test]
@@ -1972,6 +1969,7 @@ mod tests {
     #[test]
     fn test_active_api_key() {
         let cfg = Config {
+            retired_tls_required: (),
             gpus: None,
             thermal: Default::default(),
             cache_type_k: KvCacheType::F16,
@@ -1979,7 +1977,6 @@ mod tests {
             profile: crate::profile::NodeProfile::Admin,
             setup_pending: false,
             local_auto_discovery: false,
-            tls_required: false,
             quic_enabled: false,
             cluster_logs_enabled: false,
             network_chat_enabled: false,
@@ -2080,7 +2077,6 @@ mod tests {
         assert!(cfg.api_keys.is_empty());
         assert!(cfg.admin_access_token.is_none());
         assert_eq!(cfg.admin_exposure, AdminExposure::Localhost);
-        assert!(!cfg.tls_required);
         assert_eq!(cfg.model_dirs, Some(vec!["/Volumes/models".into()]));
         assert_eq!(cfg.shard_dir.as_deref(), Some("/Volumes/slices"));
         assert_eq!(cfg.shard_max_gb, 120.0);

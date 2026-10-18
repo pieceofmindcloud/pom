@@ -521,7 +521,7 @@ pub fn server_config(id: &crate::identity::Identity) -> Result<Arc<quinn::Server
         rustls::crypto::ring::default_provider(),
     ))
     .with_protocol_versions(&[&rustls::version::TLS13])?
-    .with_no_client_auth()
+    .with_client_cert_verifier(crate::tls::any_node_client())
     .with_single_cert(vec![certificate.cert], certificate.key)?;
     tls.alpn_protocols = vec![b"h3".to_vec()];
     let mut config = quinn::ServerConfig::with_crypto(Arc::new(
@@ -603,11 +603,25 @@ pub async fn serve(
 
 async fn serve_connection(connection: quinn::Connection, router: axum::Router) -> Result<()> {
     let remote = connection.remote_address();
+    // The node on the other end, from the client certificate it proved.
+    let caller = connection
+        .peer_identity()
+        .and_then(|identity| {
+            identity
+                .downcast::<Vec<rustls::pki_types::CertificateDer<'static>>>()
+                .ok()
+        })
+        .and_then(|chain| {
+            chain
+                .first()
+                .and_then(|cert| crate::serve::TransportPeer::from_cert(cert.as_ref()))
+        });
     let mut incoming = h3::server::builder()
         .build(H3Connection::new(connection))
         .await?;
     while let Some(resolver) = incoming.accept().await? {
         let router = router.clone();
+        let caller = caller.clone();
         tokio::spawn(async move {
             let Ok((request, stream)) = resolver.resolve_request().await else {
                 return;
@@ -630,6 +644,9 @@ async fn serve_connection(connection: quinn::Connection, router: axum::Router) -
             request
                 .extensions_mut()
                 .insert(crate::serve::TransportSecurity(true));
+            if let Some(caller) = caller {
+                request.extensions_mut().insert(caller);
+            }
             let mut router = router;
             let response = match tower::Service::call(&mut router, request).await {
                 Ok(response) => response,

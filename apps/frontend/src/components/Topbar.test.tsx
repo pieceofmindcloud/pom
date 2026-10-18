@@ -78,7 +78,7 @@ describe("TlsChip", () => {
   afterEach(cleanup);
 
   it("does not render the TLS indicator", () => {
-    nodeData = fakeNode({ tls_required: true });
+    nodeData = fakeNode();
     const { container } = mount();
     expect(container.querySelector('[data-testid="tls-indicator"]')).toBeNull();
   });

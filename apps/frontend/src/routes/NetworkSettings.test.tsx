@@ -11,7 +11,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocaleProvider } from "../i18n/provider";
-import { TlsPanel } from "./Preferences";
 import { NetworkParticipants, NetworkSettings } from "./NetworkSettings";
 import { api } from "../lib/api";
 
@@ -29,8 +28,6 @@ const queryMocks = vi.hoisted(() => ({
       detached: false,
       advertise_addr: null,
       effective_address: "127.0.0.1:42777",
-      tls_required: false,
-      tls_authority: true,
       thermal: { limit_c: 85, hysteresis_c: 8, cooldown_secs: 30 },
     },
   },
@@ -102,46 +99,6 @@ vi.mock("../lib/queries", () => ({
   useAdminNodes: (enabled = true) => (enabled ? queryMocks.nodes : { data: undefined }),
   useInvalidate: () => vi.fn(),
 }));
-
-function mount(props: Parameters<typeof TlsPanel>[0]) {
-  return render(
-    <LocaleProvider initialLocale="pt-BR">
-      <TlsPanel {...props} />
-    </LocaleProvider>,
-  );
-}
-
-describe("TlsPanel", () => {
-  afterEach(cleanup);
-
-  it("on the principal, the switch is usable and propagates the flip", () => {
-    const onToggle = vi.fn();
-    mount({ tlsRequired: false, authority: true, onToggle });
-    const button = screen.getByRole("switch");
-    expect((button as HTMLButtonElement).disabled).toBe(false);
-    fireEvent.click(button);
-    expect(onToggle).toHaveBeenCalledWith(true);
-  });
-
-  it("when on, the principal can turn it off - the flip works both ways", () => {
-    const onToggle = vi.fn();
-    mount({ tlsRequired: true, authority: true, onToggle });
-    fireEvent.click(screen.getByRole("switch"));
-    expect(onToggle).toHaveBeenCalledWith(false);
-  });
-
-  it("outside the principal, shows the state but does not allow changes, and says who decides", () => {
-    mount({ tlsRequired: true, authority: false });
-    expect((screen.getByRole("switch") as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByText("cifrado")).toBeTruthy();
-    expect(screen.getByText(/só o nó principal decide/i)).toBeTruthy();
-  });
-
-  it("when off, the state is spelled out", () => {
-    mount({ tlsRequired: false, authority: false });
-    expect(screen.getByText("em texto claro")).toBeTruthy();
-  });
-});
 
 describe("NetworkSettings", () => {
   afterEach(cleanup);

@@ -229,8 +229,6 @@ pub(crate) mod telemetry;
 mod thermal;
 #[path = "network/tls.rs"]
 pub mod tls;
-#[path = "network/tls_policy.rs"]
-pub mod tls_policy;
 #[path = "backend/tool_call.rs"]
 mod tool_call;
 #[path = "inference/tp.rs"]
@@ -1112,10 +1110,10 @@ fn force_setup_mode() -> anyhow::Result<()> {
 fn blank_config(gateway_port: u16, p2p_port: u16) -> config::Config {
     use crate::config::Config;
     Config {
+        retired_tls_required: (),
         profile: crate::profile::NodeProfile::Admin,
         setup_pending: true,
         local_auto_discovery: false,
-        tls_required: false,
         // On from the start: a new network uses QUIC between its nodes and has
         // its Chat, and the principal can turn either off in the preferences.
         quic_enabled: true,
@@ -1418,10 +1416,6 @@ struct P2pStackArgs {
     profile: crate::profile::NodeProfile,
     node_display_name: String,
     advertise_addr: Option<String>,
-    /// Initial policy, applied before the `Network` probing task.
-    /// Without it the URL was already born as HTTPS by the global client, but the
-    /// probe started on HTTP and all the remote RTTs were missing.
-    tls_required: bool,
     cluster_logs: Arc<cluster_logs::ClusterLogs>,
     audit: Arc<reqlog::AuditLog>,
     plugins: Arc<plugins::PluginManager>,
@@ -1582,7 +1576,9 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
     );
     net.relay_gate().set_reachable(args.public_addr_configured);
     net.set_policy_principal_pubkey(primary_authority_pubkey);
-    net.set_tls(args.tls_required);
+    // TLS between nodes is always on: set before the probing task, so no
+    // URL is ever built as plain HTTP.
+    net.set_tls(true);
     net.set_cluster_logs_enabled(args.cluster_logs_enabled);
     net.set_network_chat_enabled(args.network_chat_enabled);
     // Discovery off: the node announces nothing and listens to nobody. It is
@@ -1749,6 +1745,7 @@ fn spawn_gateway_companions(gw_state: &GatewayState, database: &Arc<db::PomDb>, 
     crate::webui::spawn_member_list_keeper(gw_state.clone());
     crate::webui::spawn_token_keeper(gw_state.clone());
     crate::webui::spawn_roster_keeper(gw_state.clone());
+    crate::webui::spawn_revocation_keeper(gw_state.clone());
     crate::webui::spawn_key_reclaimer(gw_state.clone());
     crate::admin::spawn_trust_chain_keeper(gw_state.clone());
     crate::webui::spawn_departure_worker(gw_state.clone());
@@ -1824,7 +1821,6 @@ async fn start_node(
         profile: app_config.profile,
         node_display_name,
         advertise_addr: advertise_addr.clone(),
-        tls_required: app_config.tls_required,
         cluster_logs: cluster_logs.clone(),
         audit: audit.clone(),
         plugins: plugins.clone(),
@@ -1901,6 +1897,8 @@ async fn start_node(
         .is_some();
     net.set_policy_principal_pubkey(admin_trust.current_primary().pubkey);
     net.set_trust_version(admin_trust.chain_version());
+    net.set_announce_key(authority_signing_key.clone());
+    crate::auth::set_member_oracle(net.clone());
     cluster_logs.set_admin_receiver(local_is_admin);
     audit.set_admin_receiver(local_is_admin);
 
@@ -1913,6 +1911,11 @@ async fn start_node(
     // Addresses that go into the browser certificate: this machine's local
     // ones, the one the operator pinned, and the hostname. Without them the
     // browser would complain about the host, and not about the issuer.
+    // The same certificate is this node's client certificate on every peer
+    // connection, so the other end knows which node is calling.
+    if let Err(error) = tls::set_client_identity(&identity) {
+        warn!("could not derive the client certificate of this node: {error}");
+    }
     let tls_sans = serve::browser_sans(app_config.advertise_addr.as_deref());
     let quic_config = match serve::quic_server_config(&identity) {
         Ok(config) => Some(config),
@@ -1922,7 +1925,7 @@ async fn start_node(
         }
     };
     let tls_server =
-        match serve::TlsServer::from_identity(&identity, app_config.tls_required, &tls_sans) {
+        match serve::TlsServer::from_identity(&identity, true, &tls_sans) {
             Ok(t) => Some(t),
             Err(e) => {
                 warn!("could not derive the certificate of this node, TLS unavailable: {e}");
@@ -1944,19 +1947,10 @@ async fn start_node(
     // Bind the gateway before restoring a persisted slice. Applying it may
     // schedule a model load, but that load must never hide the control plane.
     let peer_clients = Arc::new(peer_client::PeerClients::new(Duration::from_secs(600)));
-    peer_clients.apply_cluster_policy(app_config.tls_required);
+    peer_clients.apply_cluster_policy(true);
     peer_clients.set_quic(app_config.quic_enabled);
     peer_clients.set_auth_state(auth_state.clone());
 
-    tls_policy::spawn_ratchet(
-        net.clone(),
-        peer_clients.clone(),
-        auth_state.clone(),
-        tls_server.clone(),
-        authority_signing_key.clone(),
-        authority_principal.clone(),
-        admin_trust.clone(),
-    );
     quic_policy::spawn_ratchet(net.clone(), peer_clients.clone(), auth_state.clone());
     cluster_logs_policy::spawn_ratchet(
         net.clone(),

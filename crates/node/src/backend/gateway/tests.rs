@@ -949,7 +949,6 @@ mod tests {
         state.network.set_cluster_logs_enabled(true);
         state.network.set_network_chat_enabled(true);
         let app = Router::new()
-            .route(crate::tls_policy::TLS_POLICY_PATH, get(cluster_tls))
             .route(
                 crate::cluster_logs_policy::CLUSTER_LOGS_POLICY_PATH,
                 get(cluster_logs_policy),
@@ -971,18 +970,6 @@ mod tests {
 
         let clients = crate::peer_client::PeerClients::new(Duration::from_secs(2));
         let base = format!("http://{address}");
-        assert!(!crate::tls_policy::fetch_from_principal_candidates(
-            &clients,
-            "principal",
-            std::slice::from_ref(&base),
-            "chave",
-            state.authority_signing_key.as_ref(),
-            &state.authority_principal,
-            state.admin_trust.as_ref(),
-            None,
-        )
-        .await
-        .unwrap());
         assert!(crate::cluster_logs_policy::fetch_from_principal_candidates(
             &clients,
             "principal",
@@ -3703,6 +3690,7 @@ pub(crate) mod testkit {
         )
         .expect("test root grant");
         let auth = Arc::new(RwLock::new(Config {
+            retired_tls_required: (),
             gpus: None,
             thermal: Default::default(),
             cache_type_k: crate::config::KvCacheType::F16,
@@ -3710,7 +3698,6 @@ pub(crate) mod testkit {
             profile: crate::profile::NodeProfile::Worker,
             setup_pending: false,
             local_auto_discovery: false,
-            tls_required: false,
             quic_enabled: false,
             cluster_logs_enabled: false,
             network_chat_enabled: false,

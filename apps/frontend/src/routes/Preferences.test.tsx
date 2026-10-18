@@ -18,8 +18,6 @@ const mocks = vi.hoisted(() => ({
   logsPluginActive: true,
   node: {
     thermal: { limit_c: 85, hysteresis_c: 8, cooldown_secs: 30 },
-    tls_required: false,
-    tls_authority: true,
     quic_enabled: false,
     quic_authority: true,
     cluster_logs_enabled: false,
@@ -64,7 +62,6 @@ afterEach(() => {
   mocks.setAdminAccessToken.mockReset();
   mocks.clearAdminAccessToken.mockReset();
   mocks.get.mockResolvedValue({ enabled: false, active: false, searching: false, found: false, port: 0 });
-  mocks.node.tls_required = false;
   mocks.node.quic_enabled = false;
 });
 
@@ -156,20 +153,12 @@ describe("Preferences", () => {
     mocks.logsPluginActive = true;
   });
 
-  it("hides the policy incompatible with the active transport", () => {
-    mocks.node.quic_enabled = true;
+  it("shows the QUIC policy and no TLS switch: TLS between nodes is always on", () => {
+    mocks.node.quic_enabled = false;
     mount(<Preferences administrative />);
 
     expect(screen.getByText("Transporte QUIC")).toBeTruthy();
     expect(screen.queryByText("Criptografia entre nós")).toBeNull();
-
-    cleanup();
-    mocks.node.quic_enabled = false;
-    mocks.node.tls_required = true;
-    mount(<Preferences administrative />);
-
-    expect(screen.getByText("Criptografia entre nós")).toBeTruthy();
-    expect(screen.queryByText("Transporte QUIC")).toBeNull();
   });
 
   it("sets and stores the password when the interface moves to the network", async () => {

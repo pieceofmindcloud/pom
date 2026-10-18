@@ -1103,7 +1103,9 @@ pub(super) async fn require_inference_auth(
     if public_transport {
         return next.run(Request::from_parts(parts, body)).await;
     }
-    match crate::auth::validate_internal_node_headers(&config, &parts.headers).await {
+    match crate::auth::validate_internal_node_headers(&config, &parts.headers, &parts.extensions)
+        .await
+    {
         Ok(()) => next.run(Request::from_parts(parts, body)).await,
         Err(rejection) => rejection.into_response(),
     }

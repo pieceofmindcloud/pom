@@ -531,8 +531,6 @@ pub struct SaveSetupRequest {
     #[serde(default)]
     pub admin_password: String,
     #[serde(default)]
-    pub tls_required: bool,
-    #[serde(default)]
     pub model_dirs: Vec<String>,
     #[serde(default)]
     pub shard_dir: String,
@@ -899,11 +897,6 @@ pub async fn save_setup(
         && !advertise_addr.trim().is_empty())
     .then(|| advertise_addr.trim().to_string());
     cfg.network = network;
-    // TLS is an optional network policy chosen by the administrator. Joining
-    // a public or private network must not silently turn it on for a node or
-    // infer profile, especially because libp2p already authenticates the
-    // transport.
-    cfg.tls_required = profile == crate::profile::NodeProfile::Admin && req.tls_required;
     cfg.resources.ram_reserve_pct = clamp_setup_percent(req.resources.ram_reserve_pct);
     cfg.resources.cpu_reserve_pct = clamp_setup_percent(req.resources.cpu_reserve_pct);
     if let Some(limit_c) = req.thermal_limit_c {

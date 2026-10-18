@@ -416,15 +416,18 @@ pub(super) struct LinkState {
 /// credential check.
 pub(super) async fn handle_link(
     State(state): State<LinkState>,
-    headers: axum::http::HeaderMap,
-    body: axum::body::Body,
+    request: axum::extract::Request,
 ) -> Response {
+    let (parts, body) = request.into_parts();
+    let headers = parts.headers;
+    let extensions = parts.extensions;
     crate::link::serve(body, move |path, bytes| {
         let state = state.clone();
         let headers = headers.clone();
+        let extensions = extensions.clone();
         async move {
             if let Some(config) = &state.auth {
-                crate::auth::validate_internal_node_headers(config, &headers)
+                crate::auth::validate_internal_node_headers(config, &headers, &extensions)
                     .await
                     .map_err(|_| anyhow::anyhow!("invalid peer credential"))?;
             }

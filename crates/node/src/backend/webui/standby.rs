@@ -29,8 +29,6 @@ struct PrimarySnapshot {
     #[serde(default)]
     blocked_nodes: Vec<String>,
     #[serde(default)]
-    tls_required: bool,
-    #[serde(default)]
     quic_enabled: bool,
     #[serde(default)]
     cluster_logs_enabled: bool,
@@ -88,7 +86,6 @@ fn save_primary_at(
         relay_peers: config.relay_peers.clone(),
         advertise_addr: config.advertise_addr.clone(),
         blocked_nodes: config.blocked_nodes.clone(),
-        tls_required: config.tls_required,
         quic_enabled: config.quic_enabled,
         cluster_logs_enabled: config.cluster_logs_enabled,
         network_chat_enabled: config.network_chat_enabled,
@@ -132,7 +129,6 @@ fn restore_primary_at(
     config.relay_peers = snapshot.relay_peers;
     config.advertise_addr = snapshot.advertise_addr;
     config.blocked_nodes = snapshot.blocked_nodes;
-    config.tls_required = snapshot.tls_required;
     config.quic_enabled = snapshot.quic_enabled;
     config.cluster_logs_enabled = snapshot.cluster_logs_enabled;
     config.network_chat_enabled = snapshot.network_chat_enabled;

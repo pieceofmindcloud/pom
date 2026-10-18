@@ -31,7 +31,6 @@ pub(crate) async fn start_gateway_with_ready(
         )
         .route("/peers", get(handle_peers))
         .route("/health", get(handle_health))
-        .route(crate::tls_policy::TLS_POLICY_PATH, get(cluster_tls))
         .route(crate::quic_policy::QUIC_POLICY_PATH, get(cluster_quic))
         .route(
             crate::cluster_logs_policy::CLUSTER_LOGS_POLICY_PATH,
@@ -1340,21 +1339,6 @@ pub(crate) async fn ensure_gateway_port_available(port: u16, current: Option<u16
 
 // ── Route handlers ────────────────────────────────────────────────────────────
 
-/// What the principal answers to the other nodes' ratchet.
-///
-/// Authenticated by the signed envelope of the trust chain. On a private network
-/// the shared key may accompany the signature as a transport guard; this keeps
-/// an intruder from answering for the principal and downgrading the cluster to
-/// clear text. See `tls_policy`.
-pub(super) async fn cluster_tls(
-    _auth: crate::auth::InternalNodeAuth,
-    State(state): State<GatewayState>,
-) -> impl IntoResponse {
-    Json(serde_json::json!({
-        "tls_required": state.auth.read().await.tls_required,
-    }))
-}
-
 pub(super) async fn cluster_quic(
     _auth: crate::auth::ConnectionAuth,
     State(state): State<GatewayState>,
@@ -1383,17 +1367,20 @@ pub(super) async fn handle_remote_stream_result(
 /// frame, because the connection can outlive a change of the cluster key.
 pub(super) async fn handle_remote_stream_link(
     State(state): State<GatewayState>,
-    headers: axum::http::HeaderMap,
-    body: axum::body::Body,
+    request: axum::extract::Request,
 ) -> axum::response::Response {
+    let (parts, body) = request.into_parts();
+    let headers = parts.headers;
+    let extensions = parts.extensions;
     let inbox = state.reply_inbox.clone();
     let auth = state.auth.clone();
     crate::link::serve(body, move |path, bytes| {
         let inbox = inbox.clone();
         let auth = auth.clone();
         let headers = headers.clone();
+        let extensions = extensions.clone();
         async move {
-            crate::auth::validate_internal_node_headers(&auth, &headers)
+            crate::auth::validate_internal_node_headers(&auth, &headers, &extensions)
                 .await
                 .map_err(|_| anyhow::anyhow!("invalid peer credential"))?;
             if path != crate::direct::REMOTE_STREAM_RESULT_PATH {

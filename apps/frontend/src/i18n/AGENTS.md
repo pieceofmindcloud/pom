@@ -54,7 +54,8 @@ as raw text at build time and interprets the messages synchronously with
   `notifications.*` group also names succession offers. The keys of the
   removed in-place role changes (`notifications.nodePromotion*`,
   `notifications.nodeRelinquish*`, `network.requestNode*`,
-  `network.relinquishNode*`) are still in the table and unused.
+  `network.relinquishNode*`) are still in the table and unused, and so are the
+  `network.tls*` keys of the removed TLS switch.
 - The `plugins.*` group covers loading, errors and empty-catalog states,
   missing metadata, available releases, prices, active or unnecessary licenses,
   per-plugin activation usage and limits, public-store purchase links, the

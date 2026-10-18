@@ -258,7 +258,7 @@ describe("Sidebar", () => {
   });
 
   it("hides the TLS indicator from the flags", () => {
-    sidebarNodeData = fakeNode({ tls_required: true });
+    sidebarNodeData = fakeNode();
     render(
       <MemoryRouter
         initialEntries={["/"]}

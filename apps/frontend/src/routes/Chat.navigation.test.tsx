@@ -28,7 +28,6 @@ const nodeData = {
   short_id: "a1b2",
   status: { state: "idle" },
   config: null,
-  tls_required: false,
   build_commit: "abc1234",
 };
 

@@ -53,6 +53,10 @@ pub enum TunnelTarget {
 /// request as remote: everything that leaves the tunnel arrives through `127.0.0.1`, and without the
 /// mark localhost mode would give the peer on the other side the node's administration.
 pub(crate) const TUNNEL_ORIGIN_HEADER: &str = "x-pom-tunnel-origin";
+/// The PeerId the swarm authenticated for a tunneled request, set by the
+/// forwarder beside the mark and believed only with it
+/// (`serve::request_origin`).
+pub(crate) const TUNNEL_PEER_HEADER: &str = "x-pom-tunnel-peer";
 
 /// Random secret of this process for `TUNNEL_ORIGIN_HEADER`. It never leaves the
 /// process: a local client does not know it and neither does a remote peer, and the
@@ -74,7 +78,6 @@ pub fn gateway_path_is_allowed(path: &str) -> bool {
         path,
         "/handshake"
             | "/health"
-            | "/api/cluster/tls"
             | "/api/cluster/quic"
             | "/api/cluster/logs"
             | "/api/cluster/network-chat"
@@ -128,11 +131,13 @@ pub fn gateway_path_is_allowed(path: &str) -> bool {
             | "/api/internal/admin-trust/reconcile"
             | "/api/internal/admin-trust/complete-transfer"
             | "/api/internal/admin-trust/chain"
-            // Membership tokens and the admission list a secondary admin
-            // reads from the principal (`webui/membership.rs`).
+            // Membership tokens, the admission list a secondary admin
+            // reads from the principal and the revocation exchange
+            // (`webui/membership.rs`).
             | "/api/internal/membership/token"
             | "/api/internal/membership/roster"
             | "/api/internal/membership/decide"
+            | "/api/internal/membership/revocations"
             // A file offer: small and signed like the others.
             | "/api/transfer/offer"
             // A deployment asking the target to fetch its slice, and then
@@ -757,7 +762,6 @@ mod tests {
         for path in [
             "/handshake",
             "/health",
-            "/api/cluster/tls",
             "/api/cluster/quic",
             "/api/cluster/logs",
             "/api/cluster/network-chat",
@@ -777,8 +781,8 @@ mod tests {
             "/handshake/../api/ui/trust/anchor"
         ));
         assert!(!gateway_path_is_allowed("/health/../admin"));
-        assert!(!gateway_path_is_allowed("/api/cluster/tlsx"));
-        assert!(gateway_path_is_allowed("/api/cluster/tls?verbose=1"));
+        assert!(!gateway_path_is_allowed("/api/cluster/quicx"));
+        assert!(gateway_path_is_allowed("/api/cluster/quic?verbose=1"));
     }
 
     use futures::io::Cursor;

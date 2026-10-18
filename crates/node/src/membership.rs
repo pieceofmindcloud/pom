@@ -21,7 +21,8 @@ use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
 /// How long a token lasts. It is also the longest a removed member keeps
-/// its role: admins stop renewing it, and nothing else revokes it.
+/// its role on a node that missed the revocation (`Revocation`): admins
+/// stop renewing it, and the token runs out.
 pub(crate) const TOKEN_TTL_SECS: i64 = 10 * 60;
 /// When a member asks for a new token: two thirds into the old one.
 pub(crate) const RENEW_AFTER_SECS: i64 = TOKEN_TTL_SECS * 2 / 3;
@@ -139,30 +140,149 @@ pub(crate) fn verify(
 }
 
 /// The role `token` gives the node `node_id` with key `pubkey`, when it is
-/// valid and was issued to that very node.
+/// valid, was issued to that very node, and was issued after the last time
+/// that key was revoked (`revoked_at`).
 pub(crate) fn role_of(
     token: Option<&str>,
     node_id: &str,
     pubkey: &str,
     document: &AdminTrustDocument,
+    revoked_at: Option<i64>,
     now: i64,
 ) -> Option<EnrollmentRole> {
     let claims = verify(token?, document, now).ok()?;
+    if revoked_at.is_some_and(|revoked| claims.iat <= revoked) {
+        return None;
+    }
     (claims.sub == node_id && claims.sub_key == pubkey).then_some(claims.role)
 }
 
-/// The role a peer's announced token gives it, checked now.
+/// The role a peer's announced token gives it, checked now against the
+/// chain and its revocations.
 pub(crate) fn peer_role(
     peer: &crate::network::PeerInfo,
-    document: &AdminTrustDocument,
+    trust: &crate::admin_trust::AdminTrust,
 ) -> Option<EnrollmentRole> {
-    role_of(
+    member_role(
+        trust,
         peer.membership.as_deref(),
         &peer.node_id,
         &peer.pubkey,
-        document,
+    )
+}
+
+/// `role_of` against `trust` as it stands now.
+pub(crate) fn member_role(
+    trust: &crate::admin_trust::AdminTrust,
+    token: Option<&str>,
+    node_id: &str,
+    pubkey: &str,
+) -> Option<EnrollmentRole> {
+    role_of(
+        token,
+        node_id,
+        pubkey,
+        &trust.document(),
+        trust.revoked_node_at(node_id),
         chrono::Utc::now().timestamp(),
     )
+}
+
+/// Domain label of a revocation signature.
+const REVOCATION_LABEL: &[u8] = b"pom-revocation/v1\n";
+
+/// A ban: an admin's signed statement that the member `sub` loses its
+/// role. The node_id is the hash of the member's key, so it names the key
+/// as well. Every token issued to that member up to `revoked_at` stops
+/// holding, on every node that has the entry. Each entry is signed on its
+/// own, so the lists of several admins merge as a plain union, and any
+/// admin can ban while the principal is away.
+///
+/// It lifts only through a new approval: an admin issues again only for a
+/// member approved after `revoked_at`, and that token is newer than it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct Revocation {
+    pub(crate) net: String,
+    pub(crate) sub: String,
+    pub(crate) revoked_at: i64,
+    pub(crate) iss: String,
+    pub(crate) iss_key: String,
+    pub(crate) signature: String,
+}
+
+fn revocation_bytes(revocation: &Revocation) -> Vec<u8> {
+    let mut bytes = REVOCATION_LABEL.to_vec();
+    bytes.extend(
+        serde_json::to_vec(&(
+            &revocation.net,
+            &revocation.sub,
+            revocation.revoked_at,
+            &revocation.iss,
+            &revocation.iss_key,
+        ))
+        .unwrap_or_default(),
+    );
+    bytes
+}
+
+/// Signs a revocation of `subject`. Only an admin revokes, and an admin is
+/// not revoked this way: only the principal removes one, through the chain.
+pub(crate) fn revoke(
+    signing_key: &SigningKey,
+    issuer: &AuthorityPrincipal,
+    document: &AdminTrustDocument,
+    subject_node_id: &str,
+    now: i64,
+) -> Result<Revocation> {
+    if issuer.pubkey != hex::encode(signing_key.verifying_key().as_bytes()) {
+        bail!("the signing key is not the issuer's");
+    }
+    let mut revocation = Revocation {
+        net: document.anchor.cluster_id.clone(),
+        sub: subject_node_id.to_string(),
+        revoked_at: now,
+        iss: issuer.node_id.clone(),
+        iss_key: issuer.pubkey.clone(),
+        signature: String::new(),
+    };
+    revocation.signature = hex::encode(signing_key.sign(&revocation_bytes(&revocation)).to_bytes());
+    verify_revocation(&revocation, document)?;
+    Ok(revocation)
+}
+
+/// Whether `revocation` holds against `document`: this network, signed by
+/// an admin the chain names today, and not aimed at an admin.
+pub(crate) fn verify_revocation(revocation: &Revocation, document: &AdminTrustDocument) -> Result<()> {
+    if revocation.net != document.anchor.cluster_id {
+        bail!("the revocation belongs to another network");
+    }
+    if revocation.sub.is_empty() {
+        bail!("a revocation names its member");
+    }
+    if !crate::admin_trust::is_admin_key(document, &revocation.iss, &revocation.iss_key) {
+        bail!("the revocation was not signed by an admin of the trust chain");
+    }
+    if std::iter::once(&document.primary)
+        .chain(document.grants.iter().map(|grant| &grant.subject))
+        .any(|admin| {
+            admin.node_id == revocation.sub
+                && crate::admin_trust::control_issuer_is_admin(document, admin)
+        })
+    {
+        bail!("an admin is not revoked this way");
+    }
+    let raw: [u8; 32] = hex::decode(&revocation.iss_key)
+        .context("invalid issuer key")?
+        .as_slice()
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("invalid issuer key size"))?;
+    let key = VerifyingKey::from_bytes(&raw).context("invalid issuer key")?;
+    let signature = Signature::from_slice(
+        &hex::decode(&revocation.signature).context("invalid revocation signature")?,
+    )
+    .context("invalid revocation signature")?;
+    key.verify(&revocation_bytes(revocation), &signature)
+        .context("the revocation signature does not match")
 }
 
 /// Seconds `token` has left, read without checking it: only for deciding

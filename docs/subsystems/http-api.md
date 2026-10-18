@@ -170,9 +170,12 @@ last):
   from the principal (`POST /api/internal/membership/roster`, kept as a
   mirror every 30 s by `webui::spawn_roster_keeper`) and sends its decision
   there (`POST /api/internal/membership/decide`), so with the principal
-  offline a secondary sees its last copy and cannot decide. `forget` on an
-  approved machine removes it (departure plus key rotation); an admin is not
-  removed this way (`409 admin_target`).
+  offline a secondary sees its last copy and cannot approve or reject. `forget`
+  on an approved machine is a ban, and needs no principal: the admin who
+  decides it signs a revocation (`webui::ban`, below) before anything else, so
+  it holds even when forwarding to the principal fails (the answer is then the
+  mirror). The principal also takes the member off its list and rotates the
+  key. An admin is not removed this way (`409 admin_target`).
 - **Roles between nodes** (`gateway/state.rs::require_admin_for_surface`).
   The profile table in `webui/routes/mod.rs` gates what a **browser** may
   reach on a node. A node-to-node request passes that table, and is checked
@@ -220,7 +223,7 @@ last):
     browser (`require_admin_for_surface` asks for `EffectiveAuthority::Principal`)
     and between nodes: `/admin/*` (block, remove, promote, demote, resign,
     regenerate the key, slots), network settings and their
-    fan-out, TLS/QUIC/logs policy, the trust share, slice release, the KV
+    fan-out, QUIC/logs policy, the trust share, slice release, the KV
     cache, sidecar links, the cluster log. A secondary cannot demote itself:
     demotion is a principal route. API keys of other nodes are synced only
     under the principal's signature (`require_signed_principal`); a node's
@@ -247,9 +250,24 @@ last):
   (`membership::verify`: the only header accepted is EdDSA, the signer must
   be an admin of the chain today, the network must be this one, 30 s of
   clock leeway) and accepts it only for the node and key it names
-  (`role_of`), so a copied token is worthless. Removing a member is not
-  written anywhere: the admins stop renewing, and its role ends with its
-  token. Demoting an admin voids every token it signed at the next chain
+  (`role_of`), so a copied token is worthless. A token issued at or before the
+  member's last revocation no longer holds.
+- **Revocations** (`membership::Revocation`, `webui/membership.rs`). A ban is
+  an entry `{net, sub, revoked_at, iss, iss_key, signature}`, signed by any
+  admin of the chain (label `pom-revocation/v1`) and never aimed at an admin.
+  Each entry is checked on its own, so the lists of several admins merge as a
+  union, keeping the latest per member (`AdminTrust::merge_revocations`,
+  persisted next to the chain as `<chain>.revocations.json`). The banning
+  admin pushes the entry to every live peer; every node also trades its whole
+  list with one admin per 30 s tick (`webui::spawn_revocation_keeper`), so a
+  missed push arrives anyway. `POST /api/internal/membership/revocations`
+  takes the caller's list (`InternalNodeAuth`; the signatures are what
+  count) and answers with the receiver's. A revoked member loses its role on
+  the next request: its token stops holding, its admission stops counting
+  (`NetworkChat::admitted_role` ignores an approval not newer than the ban),
+  and no admin issues it a token until it is approved again, after the ban.
+  Since every node-to-node call proves the caller's key (`p2p-network.md`,
+  section 5), the connection key it still holds opens nothing. Demoting an admin voids every token it signed at the next chain
   sync. A visitor is never made an admin: the principal's promotion refuses
   it (`visitor_target`). The deploy survey leaves such peers out, and `launch` and add-node
   refuse them as targets (`reason: "visitor_target"`).
@@ -646,11 +664,6 @@ describe that dormant code.
   dispatching each frame, delivers it to `ReplyInbox` and returns the ACK on the
   channel itself. A failure of that transport is marked as HTTPS fallback in the
   next batch.
-- **`GET /api/cluster/tls`** - `{ tls_required }`. It is what the other nodes'
-  ratchet queries on the principal. It requires `InternalNodeAuth`, that is,
-  the connection key and `x-pom-internal-node: 1`; that stops an intruder from
-  answering for the principal and downgrading the cluster to clear text. See
-  `p2p-network.md`, section 5.
 - **`GET /api/cluster/quic`** - `{ quic_enabled }`. The authenticated source of
   the HTTP/3 preference queried by peers when the Announce's `quic` field
   triggers the ratchet. It does not accept the announcement as policy and
@@ -1046,7 +1059,7 @@ it writes `node_name` to the config and renames the node live, answering
 effect, which of them the command line fixed, whether the internet reaches the
 node and whether it relays now; POST takes
 `{everyone, cluster, transfers}`, writes the `relay` section of the config
-file and applies it live), `network/tls`, `thermal`. `leave` accepts an optional
+file and applies it live), `thermal`. `leave` accepts an optional
 `LeaveRequest { node_id }` and **forwards** to the peer when the id is someone
 else's (the panel only talks to its own node).
 
@@ -1321,17 +1334,10 @@ restart. The effective precedence is `HF_TOKEN`, `HUGGING_FACE_HUB_TOKEN`, the
 `~/.cache/huggingface/token`). So existing variables keep winning, and the UI's
 explicit configuration beats the cache.
 
-**`POST /api/ui/network/tls`** - body `{ tls_required: bool }`, turns TLS
-between the peers of the whole cluster on or off. It answers **403 outside the
-principal node**, and that check is on the server: hiding the switch on a
-regular node's screen is convenience, not control. It needs no restart and can
-be flipped as often as the operator wants - the effect is immediate on this
-node (client cache, announcement, refusing remote clear text) and reaches the
-others through the ratchet, in one gossip cycle. `GET /api/ui/node` returns the
-pair `tls_required` (state) and `tls_authority` (whether **this** node can
-change it), plus `addr_candidates`, `endpoint_id` and
+TLS between nodes has no switch: it is always on (`p2p-network.md`, section
+5). `GET /api/ui/node` returns `addr_candidates`, `endpoint_id` and
 `inference_frame_capabilities` so a deployment plan can rebuild the tunnel on
-the rank that will run the call. See `p2p-network.md`, section 5.
+the rank that will run the call.
 
 **`POST /api/ui/network/quic`** - body `{ quic_enabled: bool }`, turns the
 HTTP/3-over-QUIC preference for new inference hops on or off. Only the
@@ -1566,9 +1572,14 @@ extractor for synchronization between nodes:
   and feeds the audit with that identity; the secret is never stored or
   returned by the audit route.
 - **`InternalNodeAuth`** - requires the signed envelope and the marker on
-  public control calls; on private networks it also accepts the shared key. The
-  signed sender must be known and control mutations must be covered by a
-  current authority. It is never accepted on the client inference routes.
+  public control calls; on private networks it also accepts the shared key,
+  and then the transport must prove the caller is a member today
+  (`auth::caller_is_member`): the TLS or QUIC client certificate, or the
+  PeerId of the libp2p tunnel, names a key that is an admin of the chain or
+  holds a valid, unrevoked membership token. Plain HTTP from loopback is the
+  one exception. The signed sender must be known and control mutations must
+  be covered by a current authority. It is never accepted on the client
+  inference routes.
 
 `POST /admin/regenerate-key` replaces the `connection_key` (SHA256 of a UUID);
 minting keys **accumulates** instead of replacing - one token per node/harness,
@@ -1594,8 +1605,10 @@ and stays available for the next requests until revoked.
 The internal inference port (`inference_port`, normally 8181) has another
 router. `/v1/prefill`, `/v1/step`, `/v1/step-stream`, `/v1/link`,
 `/v1/session/release`, `/v1/session/rollback`, `/v1/session/slot` and
-`/v1/tp/reduce` require the private credential on private networks, or TLS plus
-the marker on public networks; client API keys are refused. `/health` stays
+`/v1/tp/reduce` require the private credential on private networks, with the
+same member check of the transport as `InternalNodeAuth` (also on each frame
+of `/v1/link`), or TLS plus the marker on public networks; client API keys are
+refused. `/health` stays
 public for readiness probes.
 
 The `x-pom-inference-session` identifier is still only opaque session context.

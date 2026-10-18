@@ -774,14 +774,14 @@ Per-file list:
 - `Preferences.tsx` - Local settings screen under Settings (`Configurações`): owns the
   administrative exposure mode and gateway port, accepts a password only in
   network mode, and saves its Argon2id hash to `pom.json` through
-  `POST /api/ui/access`. It also mounts `TlsPanel`, which moves the cluster TLS
-  choice out of Network and explains when it is useful, plus `ThermalPanel` and
-  `HuggingFaceSettingsPanel`. It also mounts the cluster logs switch,
+  `POST /api/ui/access`. It also mounts `ThermalPanel` and
+  `HuggingFaceSettingsPanel`; there is no TLS panel, since TLS between nodes is
+  always on. It also mounts the cluster logs switch,
   available only to the principal and applied in real time, and `QuicPanel`, which
   toggles the HTTP/3 preference in `POST /api/ui/network/quic` with the same
   authority control. The access password is a human credential and is not the
   cluster `connection_key`. The route `/config/preferences/admin` renders
-  only TLS, QUIC, process logs between nodes and the network chat, besides the
+  only QUIC, process logs between nodes and the network chat, besides the
   local discovery switch, off by default; the normal route keeps
   exposure, Hugging Face and thermal protection; Storage only has a menu entry.
 - `NotFound.tsx` - 404 fallback with a link back to `/`.

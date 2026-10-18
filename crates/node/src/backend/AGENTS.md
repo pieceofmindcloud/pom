@@ -45,7 +45,11 @@ boundary.
   random identifier, bind to the current password hash, expire after the single
   `ADMIN_SESSION_TTL` value and never
   persist in the browser or on disk. `ConnectionAuth` (connection-key bearer
-  only), `InternalNodeAuth` (that key plus an internal marker), `ApiKeyAuth`
+  only), `InternalNodeAuth` (the signed envelope, or that key plus an internal
+  marker from a caller the transport proves is a member, `caller_is_member`
+  against `Network::is_member_key`, set once by `set_member_oracle`; plain HTTP
+  from loopback needs no proof, and a test bench without the oracle keeps the key
+  alone), `ApiKeyAuth`
   (active inference API key only, from `authorization: Bearer` or `x-api-key`),
   `AuthState = Arc<RwLock<Config>>`.
   When both headers are present they are checked independently, so an invalid
@@ -454,7 +458,12 @@ boundary.
   (`internal_roster`), and `forward_decision` sends its admission decisions
   to the principal (`internal_decide`, applied by `apply_decision`, which
   refuses to remove an admin). `NetworkChat::admitted_role` reads the own
-  list and the mirror.
+  list and the mirror, ignoring an approval not newer than the member's last
+  ban. `ban` signs a revocation on any admin and pushes it to every peer
+  (`push_revocations`); `internal_revocations` merges a caller's list and
+  answers with its own, and `spawn_revocation_keeper` trades lists with one
+  admin per tick. `on_revoked` makes the principal forget the member and
+  rotate the key.
 - `webui/kv_cache.rs` - this machine's KV cache for the dashboard:
   `kv_cache_disk` measures the snapshot directory (`NodeInfo.kv_cache`) and
   `POST /api/ui/kv-cache/clear` (PrincipalOnly, also empties the `strata-sessions/` subfolder, forwarded by `node_id` like
@@ -603,8 +612,12 @@ boundary.
   enabled (the plugin proxy's WebSocket,
   `crate::plugin_proxy`). The HTTP/3 endpoint
   receives a separate QUIC configuration and comes up on the dedicated announced UDP port,
-  even when the TCP is in plain HTTP; `TlsServer` covers only the TCP certificate, the strict
-  mode and the duration of the last handshake. See
+  even when the TCP is in plain HTTP; `TlsServer` covers only the TCP configurations, the strict
+  mode and the duration of the last handshake. The TLS configuration is picked per connection
+  from the ClientHello (`LazyConfigAcceptor`, `tls::wants_peer`): a peer is asked for its node
+  certificate, a browser for nothing. `TransportPeer` is the caller's node as the transport
+  proved it - the client certificate, or the tunnel's PeerId beside the mark - and goes into the
+  request's extensions. See
   `docs/subsystems/p2p-network.md`, section 5.
 - `models::OllamaClient::is_available` is only an optional probe of the
   `/health`: it returns the last value and schedules a background check of at most 500 ms
@@ -631,9 +644,9 @@ interface is on a secondary admin, the route forwards the authenticated mutation
 to that principal. The policy route between nodes is
 `GET /api/cluster/network-chat`, and the probe only treats the `authority_pubkey`
 confirmed by the `AdminTrust` as the principal, not the announced profile.
-The policy GETs (`/api/cluster/tls`, `/api/cluster/logs` and
-`/api/cluster/network-chat`) demand `InternalNodeAuth`: a `connection_key` plus
-`x-pom-internal-node: 1`; they are not a human-token surface.
+The policy GETs (`/api/cluster/logs` and `/api/cluster/network-chat`) demand
+`InternalNodeAuth`: a `connection_key` plus `x-pom-internal-node: 1`, from a
+caller the transport proves is a member; they are not a human-token surface.
 The backend does not retransmit through the HTTP UI: the action enters the `NetworkChat`'s bounded
 queue and `discovery.rs` validates and forwards it over the endpoint. The snapshot does not
 repeat file bytes on every polling; `GET /api/ui/network-chat/file/:message_id`

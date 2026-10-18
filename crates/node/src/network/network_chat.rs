@@ -646,11 +646,24 @@ impl NetworkChat {
     }
 
     /// The role `node_id` was admitted with, when its admission is approved:
-    /// on this node's own list (the principal's) or on the mirror of it.
-    pub fn admitted_role(&self, node_id: &str) -> Option<crate::config::EnrollmentRole> {
+    /// on this node's own list (the principal's) or on the mirror of it. An
+    /// approval decided at or before `revoked_at` (the node's last ban,
+    /// `AdminTrust::revoked_node_at`) no longer counts.
+    pub fn admitted_role(
+        &self,
+        node_id: &str,
+        revoked_at: Option<i64>,
+    ) -> Option<crate::config::EnrollmentRole> {
         let approved = |record: &crate::network_lobby::AdmissionRecord| {
             record.node_id == node_id
                 && record.status == crate::network_lobby::AdmissionStatus::Approved
+                && revoked_at.is_none_or(|revoked| {
+                    record
+                        .decided_at
+                        .as_deref()
+                        .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+                        .is_some_and(|at| at.timestamp() > revoked)
+                })
         };
         if let Some(record) = self.admissions().into_iter().find(approved) {
             return Some(record.role);

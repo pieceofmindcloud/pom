@@ -307,12 +307,15 @@ breaks the whole product.
   (`brand::config_filename()`, `brand::env_var()`, `brand::gguf_key()`,
   `brand::dns_record()`). The only exception cargo forces is the `[[bin]]` in
   `crates/node/Cargo.toml`. → `build-and-run.md`
-- **Gossip is never the source of truth of the TLS flag.** The `tls` field of the
-  Announce is a trigger; the policy is only written after an authenticated read
-  from the principal, and a failed read preserves the local value. UDP is in the
-  clear and unauthenticated: obeying it would offer the downgrade TLS exists to
-  prevent. Each node's certificate is derived from its `.pom-node.key` and
-  verified by `SHA256(pubkey) == node_id`. → `p2p-network.md`
+- **Between nodes it is always mutual TLS, and the key alone opens nothing.**
+  There is no TLS switch; plain HTTP is served only to loopback, which keeps
+  `http://localhost` working for the operator. Each node's certificate is
+  derived from its `.pom-node.key`, verified by `SHA256(pubkey) == node_id`, and
+  presented on both ends, so a call authorized by the connection key also needs
+  the caller to be a member today: an admin of the chain, or a node with a valid
+  membership token no admin revoked. Every UDP announce is signed by the node
+  key. A ban is a revocation any admin signs, so it holds while the principal is
+  away. → `p2p-network.md` (2, 5), `http-api.md`
 - **Route tests use `gateway::testkit`**, never real UDP - the suite transmits on
   the LAN and could inject messages into a live cluster. → `http-api.md`
 

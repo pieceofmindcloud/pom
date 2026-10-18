@@ -7,17 +7,24 @@
 //! and so is rotating the connection key when a member leaves. A secondary
 //! reads it (`/api/internal/membership/roster`) and sends its decisions to
 //! the principal (`/api/internal/membership/decide`).
+//!
+//! A ban does not wait for the principal: the admin who removes a member
+//! signs a revocation (`membership::Revocation`) and pushes it to every
+//! peer, and every node trades its list with an admin each tick
+//! (`/api/internal/membership/revocations`), so a node that missed the push
+//! catches up.
 
 use super::*;
 use crate::auth::InternalNodeAuth;
 use crate::network_lobby::{AdmissionRecord, AdmissionStatus};
 use axum::extract::State;
 use serde_json::Value;
-use tracing::debug;
+use tracing::{debug, warn};
 
 pub(crate) const TOKEN_PATH: &str = "/api/internal/membership/token";
 pub(crate) const ROSTER_PATH: &str = "/api/internal/membership/roster";
 pub(crate) const DECIDE_PATH: &str = "/api/internal/membership/decide";
+pub(crate) const REVOCATIONS_PATH: &str = "/api/internal/membership/revocations";
 /// How often a member checks its token and a secondary rereads the list.
 const KEEPER_TICK: Duration = Duration::from_secs(30);
 const MEMBERSHIP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -53,10 +60,14 @@ async fn role_to_issue(
     state: &GatewayState,
     caller: &crate::admin_trust::AuthorityPrincipal,
 ) -> Option<crate::config::EnrollmentRole> {
-    if let Some(role) = state.network_chat.admitted_role(&caller.node_id) {
+    if let Some(role) = state
+        .network_chat
+        .admitted_role(&caller.node_id, state.admin_trust.revoked_node_at(&caller.node_id)) {
         return Some(role);
     }
-    if !state.auth.read().await.network.open_admission() {
+    if !state.auth.read().await.network.open_admission()
+        || state.admin_trust.revoked_node_at(&caller.node_id).is_some()
+    {
         return None;
     }
     let peer = state
@@ -183,12 +194,160 @@ pub(crate) async fn apply_decision(state: &GatewayState, decision: AdmissionDeci
             .admission_of(node_id)
             .is_some_and(|record| record.status == AdmissionStatus::Approved);
     if revoked {
+        if let Err(error) = ban(state, node_id).await {
+            warn!("could not sign the revocation of {node_id}: {error:#}");
+        }
         state.network_chat.member_departed(node_id);
         state.network_chat.request_rotation(node_id);
     } else if !state.network_chat.decide_admission(node_id, status) {
         return StatusCode::NOT_FOUND.into_response();
     }
     Json(state.network_chat.admissions()).into_response()
+}
+
+/// Whether `node_id` is an approved member on this node's list or on its
+/// mirror of the principal's.
+pub(crate) fn is_approved_member(state: &GatewayState, node_id: &str) -> bool {
+    state
+        .network_chat
+        .admissions()
+        .into_iter()
+        .chain(state.network_chat.roster_mirror())
+        .any(|record| record.node_id == node_id && record.status == AdmissionStatus::Approved)
+}
+
+/// Bans `node_id`: signs its revocation with this admin's key, keeps it and
+/// pushes it to every peer. Needs no other node, the principal included.
+pub(crate) async fn ban(
+    state: &GatewayState,
+    node_id: &str,
+) -> anyhow::Result<crate::membership::Revocation> {
+    let revocation = crate::membership::revoke(
+        &state.authority_signing_key,
+        &state.authority_principal,
+        &state.admin_trust.document(),
+        node_id,
+        chrono::Utc::now().timestamp(),
+    )?;
+    let added = state.admin_trust.merge_revocations(vec![revocation.clone()]);
+    on_revoked(state, &added).await;
+    let state = state.clone();
+    tokio::spawn(async move { push_revocations(&state, added).await });
+    Ok(revocation)
+}
+
+/// What a node does with revocations it just learned. Every node stops
+/// counting the member at once, since roles are checked against the list.
+/// The principal also takes the member off its admission list and rotates
+/// the connection key, as when a member leaves.
+async fn on_revoked(state: &GatewayState, added: &[crate::membership::Revocation]) {
+    for revocation in added {
+        warn!("member {} revoked by admin {}", revocation.sub, revocation.iss);
+        state.network.drop_revoked(&revocation.sub).await;
+        if is_principal(state)
+            && state
+                .network_chat
+                .admission_of(&revocation.sub)
+                .is_some_and(|record| record.status == AdmissionStatus::Approved)
+        {
+            state.network_chat.member_departed(&revocation.sub);
+            state.network_chat.request_rotation(&revocation.sub);
+        }
+    }
+}
+
+/// Sends `entries` to every live peer that has a gateway.
+async fn push_revocations(state: &GatewayState, entries: Vec<crate::membership::Revocation>) {
+    if entries.is_empty() {
+        return;
+    }
+    for peer in state.network.alive_peers().await {
+        if peer.node_id == state.network.node_id || peer.gateway_port.is_none() {
+            continue;
+        }
+        let sent = crate::admin::post_internal_json(
+            state,
+            &peer,
+            REVOCATIONS_PATH,
+            &entries,
+            MEMBERSHIP_TIMEOUT,
+        )
+        .await;
+        if let Err(error) = sent {
+            debug!("could not push revocations to {}: {error:#}", peer.node_id);
+        }
+    }
+}
+
+/// `POST /api/internal/membership/revocations` - takes the caller's
+/// revocations and answers with this node's. Each entry carries an admin's
+/// signature and is checked on its own, so whoever sends them does not
+/// matter.
+pub(crate) async fn internal_revocations(
+    _auth: InternalNodeAuth,
+    State(state): State<GatewayState>,
+    Json(entries): Json<Vec<crate::membership::Revocation>>,
+) -> Response {
+    let added = state.admin_trust.merge_revocations(entries);
+    on_revoked(&state, &added).await;
+    Json(state.admin_trust.revocations()).into_response()
+}
+
+/// Trades revocation lists with one admin per tick, a different one each
+/// time, so a node that missed a push learns the ban within a tick or two.
+pub(crate) fn spawn_revocation_keeper(state: GatewayState) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(KEEPER_TICK);
+        let mut turn = 0usize;
+        loop {
+            ticker.tick().await;
+            if state.network.is_detached() {
+                continue;
+            }
+            let document = state.admin_trust.document();
+            let admins: Vec<_> = state
+                .network
+                .alive_peers()
+                .await
+                .into_iter()
+                .filter(|peer| {
+                    peer.node_id != state.network.node_id
+                        && peer.gateway_port.is_some()
+                        && crate::admin_trust::is_admin_key(&document, &peer.node_id, &peer.pubkey)
+                })
+                .collect();
+            if admins.is_empty() {
+                continue;
+            }
+            turn = turn.wrapping_add(1);
+            let peer = &admins[turn % admins.len()];
+            let sent = crate::admin::post_internal_json(
+                &state,
+                peer,
+                REVOCATIONS_PATH,
+                &state.admin_trust.revocations(),
+                MEMBERSHIP_TIMEOUT,
+            )
+            .await;
+            match sent {
+                Ok(response) if response.status().is_success() => {
+                    match response.json::<Vec<crate::membership::Revocation>>().await {
+                        Ok(entries) => {
+                            let added = state.admin_trust.merge_revocations(entries);
+                            on_revoked(&state, &added).await;
+                        }
+                        Err(error) => debug!("unreadable revocation list: {error:#}"),
+                    }
+                }
+                Ok(response) => debug!(
+                    "{} answered {} to the revocation exchange",
+                    peer.node_id,
+                    response.status()
+                ),
+                Err(error) => debug!("revocation exchange failed: {error:#}"),
+            }
+        }
+    });
 }
 
 /// Reads the principal's admission list into the mirror. Returns it.
@@ -306,12 +465,11 @@ async fn request_token(state: &GatewayState) -> anyhow::Result<String> {
                     .ok_or_else(|| anyhow::anyhow!("the admin answered without a token"))?;
                 // A token this node cannot verify itself would be refused
                 // everywhere else as well.
-                crate::membership::role_of(
+                crate::membership::member_role(
+                    &state.admin_trust,
                     Some(&token),
                     &state.network.node_id,
                     &state.network.pubkey,
-                    &document,
-                    chrono::Utc::now().timestamp(),
                 )
                 .ok_or_else(|| anyhow::anyhow!("the admin's token does not hold"))?;
                 return Ok(token);
@@ -338,12 +496,11 @@ pub(crate) fn spawn_token_keeper(state: GatewayState) {
             }
             let now = chrono::Utc::now().timestamp();
             let current = state.network.membership();
-            let holds = crate::membership::role_of(
+            let holds = crate::membership::member_role(
+                &state.admin_trust,
                 current.as_deref(),
                 &state.network.node_id,
                 &state.network.pubkey,
-                &state.admin_trust.document(),
-                now,
             )
             .is_some();
             let due = current

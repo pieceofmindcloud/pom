@@ -600,16 +600,39 @@ pub struct AdmissionDecision {
 /// Approving does not send anything: the candidate collects the grant on its
 /// next poll. A secondary admin's decision goes to the principal, which
 /// keeps the list (`membership::forward_decision`).
+///
+/// Removing an approved member is a ban, and a secondary signs that itself
+/// before forwarding (`membership::ban`): it holds on every node even when
+/// the principal is unreachable, and the principal applies it to its list
+/// when it hears of it.
 pub(super) async fn decide_admission(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
     Json(decision): Json<AdmissionDecision>,
 ) -> Response {
     if super::is_principal(&state) {
-        super::apply_decision(&state, decision).await
-    } else {
-        super::forward_decision(&state, &decision).await
+        return super::apply_decision(&state, decision).await;
     }
+    let node_id = decision.node_id.trim().to_string();
+    let banned = decision.decision == "forget"
+        && super::is_approved_member(&state, &node_id)
+        && match super::ban(&state, &node_id).await {
+            Ok(_) => true,
+            Err(error) => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(json!({ "error": format!("{error:#}"), "reason": "revocation_refused" })),
+                )
+                    .into_response()
+            }
+        };
+    let response = super::forward_decision(&state, &decision).await;
+    if banned && !response.status().is_success() {
+        // The ban already holds; the principal catches up from the
+        // revocation exchange when it is back.
+        return Json(state.network_chat.roster_mirror()).into_response();
+    }
+    response
 }
 
 /// `GET /api/setup/lobby?key=pk:...` - the same, from the setup wizard.

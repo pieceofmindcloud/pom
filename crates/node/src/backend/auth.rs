@@ -427,16 +427,57 @@ where
                 principal: Some(principal),
             });
         }
-        validate_internal_node_headers(&gateway.auth, &parts.headers).await?;
+        validate_internal_node_headers(&gateway.auth, &parts.headers, &parts.extensions).await?;
         Ok(InternalNodeAuth { principal: None })
     }
 }
 
+/// The node whose view of the network decides who is a member
+/// (`Network::is_member_key`). Set once by the binary; one node per process.
+/// A test bench that never sets it keeps the connection key alone.
+static MEMBER_ORACLE: std::sync::OnceLock<std::sync::Arc<crate::network::Network>> =
+    std::sync::OnceLock::new();
+
+pub(crate) fn set_member_oracle(network: std::sync::Arc<crate::network::Network>) {
+    let _ = MEMBER_ORACLE.set(network);
+}
+
+/// Whether the request arrived in plain text on loopback: from this very
+/// machine, with no transport identity to prove. A tunneled request shows
+/// up as remote (`serve::TUNNELED_ORIGIN`), never as this.
+fn from_local_plain(extensions: &axum::http::Extensions) -> bool {
+    extensions
+        .get::<crate::serve::PeerAddr>()
+        .is_some_and(|addr| is_loopback_addr(addr.0))
+        && !extensions
+            .get::<crate::serve::TransportSecurity>()
+            .is_some_and(|transport| transport.0)
+}
+
+/// The second half of a node-to-node call authorized by the connection
+/// key: the transport must prove the caller is a member today. Every member
+/// holds the key, and one that was banned keeps it; its node key and
+/// membership are what it cannot keep.
+pub(crate) async fn caller_is_member(extensions: &axum::http::Extensions) -> bool {
+    let Some(network) = MEMBER_ORACLE.get() else {
+        return true;
+    };
+    if from_local_plain(extensions) {
+        return true;
+    }
+    match extensions.get::<crate::serve::TransportPeer>() {
+        Some(caller) => network.is_member_key(&caller.node_id, &caller.pubkey).await,
+        None => false,
+    }
+}
+
 /// Validates a peer request, including the marker that prevents the same
-/// `Authorization` from being reused as a browser call.
+/// `Authorization` from being reused as a browser call, and the caller's
+/// membership as its transport proves it (`caller_is_member`).
 pub(crate) async fn validate_internal_node_headers(
     config: &AuthState,
     headers: &HeaderMap,
+    extensions: &axum::http::Extensions,
 ) -> Result<(), AuthRejection> {
     let supplied = headers
         .get("authorization")
@@ -447,8 +488,11 @@ pub(crate) async fn validate_internal_node_headers(
         .get(INTERNAL_NODE_REQUEST_HEADER)
         .and_then(|value| value.to_str().ok())
         == Some("1");
-    let config = config.read().await;
-    if is_internal && is_valid_internal_node_token(&config, supplied) {
+    let key_holds = {
+        let config = config.read().await;
+        is_internal && is_valid_internal_node_token(&config, supplied)
+    };
+    if key_holds && caller_is_member(extensions).await {
         Ok(())
     } else {
         Err(AuthRejection::InvalidKey)
@@ -1289,6 +1333,7 @@ mod tests {
     #[test]
     fn inference_accepts_only_an_active_api_key() {
         let cfg = crate::config::Config {
+            retired_tls_required: (),
             gpus: None,
             thermal: Default::default(),
             cache_type_k: crate::config::KvCacheType::F16,
@@ -1331,7 +1376,6 @@ mod tests {
                 },
             ],
             blocked_nodes: vec![],
-            tls_required: false,
             quic_enabled: false,
             cluster_logs_enabled: false,
             network_chat_enabled: false,
@@ -1361,6 +1405,7 @@ mod tests {
     #[test]
     fn internal_inference_token_uses_shared_connection_key() {
         let mut cfg = crate::config::Config {
+            retired_tls_required: (),
             gpus: None,
             thermal: Default::default(),
             cache_type_k: crate::config::KvCacheType::F16,
@@ -1391,7 +1436,6 @@ mod tests {
                 created_at: String::new(),
             }],
             blocked_nodes: vec![],
-            tls_required: false,
             quic_enabled: false,
             cluster_logs_enabled: false,
             network_chat_enabled: false,

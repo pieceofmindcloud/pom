@@ -1047,21 +1047,15 @@ port. The `ThermalPanel` reads and writes the policy at
 `GET/POST /api/ui/thermal`; the Hugging Face panel uses
 `/api/ui/model-provider/config`.
 
-## Settings / Preferences: when to use TLS between nodes
+## Settings / Preferences: no TLS switch
 
-The "Encryption between nodes" panel (`TlsPanel`, in `routes/Preferences.tsx`)
-shows the cluster state and, **only on the principal node**, the switch that
-flips it. It belongs to the administrative preferences route; node and infer
-get neither the panel nor the TLS icon in the Sidebar. The state is still
-decided by the principal and applies to the whole network.
-
-The authority that counts is the server's - `POST /api/ui/network/tls` answers
-403 outside the principal (see `http-api.md`). The screen uses
-`NodeInfo.tls_authority` only to avoid lying before the click.
-
-Flipping needs no restart and works in both directions; the toast says the
-other nodes adopt it in a few seconds, which is the gossip cycle plus the
-ratchet's authenticated fetch (see `p2p-network.md`, section 5).
+TLS between nodes is always on, so the preferences have no panel for it and
+the Sidebar no TLS icon (`p2p-network.md`, section 5). The QUIC panel
+(`QuicPanel`) is always shown on the administrative preferences route, and the
+local discovery switch takes its authority from `NodeInfo.quic_authority`,
+which is the same principal check. The interface on `http://localhost` stays
+plain HTTP; from another machine the browser is sent to `https://` and warns
+once about the self-signed certificate.
 
 ## Settings / Administrative preferences: QUIC transport
 

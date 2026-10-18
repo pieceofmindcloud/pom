@@ -75,12 +75,6 @@ pub struct NodeInfo {
     /// receiver" sentinel. Always present — lets the UI show the fix taking
     /// effect without a second round trip.
     pub effective_address: String,
-    /// Whether the cluster speaks TLS between peers right now.
-    pub tls_required: bool,
-    /// Whether **this** node may change that - only the principal may. The screen
-    /// uses it to decide between a switch and a read-only value; the check that
-    /// counts is the one in `save_tls`, on the server.
-    pub tls_authority: bool,
     /// Whether the cluster prefers HTTP/3 over QUIC on new hops.
     pub quic_enabled: bool,
     /// Only the principal may change the QUIC preference.
@@ -111,9 +105,7 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         authority_fingerprint,
         node_name,
         advertise_addr,
-        tls_required,
         quic_enabled,
-        tls_authority,
         quic_authority,
         cluster_logs_authority,
         network_chat_authority,
@@ -141,12 +133,7 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
                 .then(|| crate::admin_trust::fingerprint_of(&state.authority_principal.pubkey)),
             cfg.node_name.clone(),
             cfg.advertise_addr.clone(),
-            cfg.tls_required,
             cfg.quic_enabled,
-            state
-                .admin_trust
-                .effective_authority(&state.authority_principal, cfg.profile)
-                == Some(crate::admin_trust::EffectiveAuthority::Principal),
             state
                 .admin_trust
                 .effective_authority(&state.authority_principal, cfg.profile)
@@ -238,9 +225,7 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         node_name,
         advertise_addr,
         effective_address: state.network.announce_addr(),
-        tls_required,
         quic_enabled,
-        tls_authority,
         quic_authority,
         cluster_logs_enabled: state.network.cluster_logs_enabled(),
         cluster_logs_authority,
@@ -1479,11 +1464,6 @@ pub(super) async fn save_relay(
 }
 
 #[derive(Deserialize)]
-pub struct SaveTlsRequest {
-    pub tls_required: bool,
-}
-
-#[derive(Deserialize)]
 pub struct SaveQuicRequest {
     pub quic_enabled: bool,
 }
@@ -1517,55 +1497,6 @@ pub(super) async fn save_quic(
         if req.quic_enabled { "on" } else { "off" }
     );
     Json(json!({ "quic_enabled": req.quic_enabled })).into_response()
-}
-
-/// Turns TLS between peers on or off, for the whole cluster.
-///
-/// It needs no restart, and can be flipped as many times as the operator wants:
-/// the server accepts both protocols from startup (`serve.rs`), and what changes
-/// here is which of them the clients use and whether remote plaintext starts
-/// being refused. The other nodes find out through the `tls_policy` ratchet,
-/// within one gossip cycle (5 s), in both directions.
-pub(super) async fn save_tls(
-    _auth: ConnectionAuth,
-    State(state): State<GatewayState>,
-    Json(req): Json<SaveTlsRequest>,
-) -> Response {
-    // Authority is checked **here**, on the server. Hiding the switch on the
-    // screen of an ordinary node is convenience; this is the control.
-    if !local_is_primary(&state).await {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "only the principal node decides the TLS of the cluster." })),
-        )
-            .into_response();
-    }
-
-    {
-        let mut cfg = state.auth.write().await;
-        cfg.tls_required = req.tls_required;
-        if let Err(e) = cfg.save() {
-            return bad_request(format!(
-                "could not write {}: {e}",
-                crate::brand::config_filename()
-            ));
-        }
-    }
-
-    // The order matters little, but all three have to happen together: the URL
-    // scheme and the client cache, what the announcement says, and whether the
-    // server starts refusing plaintext from outside.
-    state.peer_http.apply_cluster_policy(req.tls_required);
-    state.network.set_tls(req.tls_required);
-    if let Some(t) = &state.tls_server {
-        t.set_strict(req.tls_required);
-    }
-    info!(
-        "TLS between peers {} from the interface",
-        if req.tls_required { "on" } else { "off" }
-    );
-
-    Json(json!({ "tls_required": req.tls_required })).into_response()
 }
 
 #[derive(Deserialize)]

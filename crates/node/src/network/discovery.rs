@@ -959,7 +959,7 @@ async fn handle_announce(ctx: &Ctx, sealed: &[u8]) {
         .iter()
         .any(|c| c == p2p::TUNNEL_CAPABILITY);
     let dial_addrs = peer.endpoint_dialable_addrs();
-    network.insert_admitted_peer(peer).await;
+    network.insert_announced_peer(peer).await;
 
     network.trigger_cluster_logs_probe(&node_id, &pubkey, cluster_logs_enabled, tls);
     network.trigger_quic_probe(&node_id, &pubkey, quic, tls);
@@ -1047,6 +1047,15 @@ async fn answer_tunnel_request(
                 port,
                 request.path
             );
+            // Who is calling, as the endpoint's handshake proved it; the
+            // gateway and the inference server authorize by it.
+            let mut request = request;
+            request.headers.retain(|(name, _)| {
+                !name.eq_ignore_ascii_case(infer_tunnel::TUNNEL_PEER_HEADER)
+            });
+            request
+                .headers
+                .push((infer_tunnel::TUNNEL_PEER_HEADER.to_string(), peer.to_string()));
             infer_tunnel::serve_loopback(&ctx.http, port, request).await
         }
         // Nothing to forward to: this node has no such server running (no

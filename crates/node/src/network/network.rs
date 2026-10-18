@@ -2684,11 +2684,34 @@ impl Network {
     /// Returns all live admin peers and their libp2p addresses. The list is
     /// used to replicate local data to every authority, not only to the
     /// principal.
+    /// The live admins this node sends the network's logs and audit to. The
+    /// announced `profile` is only what a node says about itself: with the
+    /// trust chain wired in, a peer is an admin only when the chain proves it
+    /// (principal or a secondary grant in force, never an inference node).
+    /// Only the `testkit`'s open mode, which has no chain, takes the announce.
     pub async fn admin_peers(&self) -> Vec<(libp2p::PeerId, Vec<String>)> {
+        let document = self
+            .admission
+            .as_ref()
+            .map(|admission| admission.trust.document());
         let peers = self.peers.read().await;
         peers
             .values()
             .filter(|peer| peer.is_alive() && peer.profile == crate::profile::NodeProfile::Admin)
+            .filter(|peer| {
+                document.as_ref().is_none_or(|document| {
+                    peer.libp2p_peer_id.as_ref().is_some_and(|peer_id| {
+                        crate::admin_trust::control_issuer_is_admin(
+                            document,
+                            &crate::admin_trust::AuthorityPrincipal {
+                                node_id: peer.node_id.clone(),
+                                peer_id: peer_id.clone(),
+                                pubkey: peer.pubkey.clone(),
+                            },
+                        )
+                    })
+                })
+            })
             .filter_map(|peer| {
                 let peer_id = peer.libp2p_peer_id.as_deref()?.parse().ok()?;
                 Some((peer_id, peer.libp2p_dialable_addrs()))
@@ -2699,10 +2722,17 @@ impl Network {
     /// Returns the known principal and its libp2p address for flows that
     /// still need a single next hop, such as the network Chat.
     pub async fn principal_peer(&self) -> Option<(libp2p::PeerId, Vec<String>)> {
+        // The chain names the principal; an announce of `admin` does not.
+        let primary = self
+            .admission
+            .as_ref()
+            .filter(|admission| admission.trust.is_anchored())
+            .map(|admission| admission.trust.current_primary().pubkey);
         let peers = self.peers.read().await;
         peers
             .values()
             .filter(|peer| peer.is_alive() && peer.profile == crate::profile::NodeProfile::Admin)
+            .filter(|peer| primary.as_ref().is_none_or(|pubkey| &peer.pubkey == pubkey))
             .find_map(|peer| {
                 let peer_id = peer.libp2p_peer_id.as_deref()?.parse().ok()?;
                 Some((peer_id, peer.libp2p_dialable_addrs()))
@@ -4348,6 +4378,85 @@ mod tests {
 
         let peers = net.admin_peers().await;
         assert_eq!(peers.len(), 2);
+    }
+
+    /// With the chain wired in, announcing `admin` is not enough to receive
+    /// the network's logs and audit: only the principal and a secondary in
+    /// force do, and an inference node never, even holding a grant.
+    #[tokio::test]
+    async fn admin_peers_are_the_admins_the_chain_proves_not_the_announced_ones() {
+        let primary_key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+        let secondary_key = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
+        let infer_key = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
+        let principal_of = |node_id: &str, key: &ed25519_dalek::SigningKey| {
+            crate::admin_trust::AuthorityPrincipal::from_signing_key(
+                node_id,
+                &libp2p::PeerId::random().to_string(),
+                key,
+            )
+        };
+        let primary = principal_of("primary", &primary_key);
+        let secondary = principal_of("secondary", &secondary_key);
+        let promoted_infer = principal_of("promoted-infer", &infer_key);
+        let trust = crate::admin_trust::AdminTrust::bootstrap_primary_in_memory(
+            "test-cluster",
+            primary.clone(),
+            &primary_key,
+        )
+        .unwrap();
+        for subject in [&secondary, &promoted_infer] {
+            let grant = trust
+                .signed_secondary_grant(&primary_key, subject.clone(), &primary.node_id)
+                .unwrap();
+            trust.record_secondary_grant(grant, &primary_key).unwrap();
+        }
+        trust
+            .record_member_role(
+                &primary_key,
+                &promoted_infer.node_id,
+                crate::config::EnrollmentRole::Infer,
+            )
+            .unwrap();
+        let net = Network::testkit("local".into(), "pk".into(), vec![], None, None, None)
+            .await
+            .expect("UDP socket on an ephemeral port")
+            .with_admission(
+                admission_config("key", crate::config::NetworkVisibility::Private),
+                Arc::new(trust),
+            );
+        let announced_admin = |principal: &crate::admin_trust::AuthorityPrincipal, port: u16| {
+            let mut peer = dummy_peer(&principal.node_id, &format!("127.0.0.1:{port}"));
+            peer.pubkey = principal.pubkey.clone();
+            peer.libp2p_peer_id = Some(principal.peer_id.clone());
+            peer.profile = crate::profile::NodeProfile::Admin;
+            peer
+        };
+        let impostor_key = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
+        let impostor = principal_of("impostor", &impostor_key);
+        {
+            let mut peers = net.peers.write().await;
+            for (principal, port) in [
+                (&primary, 8081),
+                (&secondary, 8082),
+                (&promoted_infer, 8083),
+                (&impostor, 8084),
+            ] {
+                peers.insert(principal.node_id.clone(), announced_admin(principal, port));
+            }
+        }
+
+        let mut admins = net
+            .admin_peers()
+            .await
+            .into_iter()
+            .map(|(peer_id, _)| peer_id.to_string())
+            .collect::<Vec<_>>();
+        admins.sort();
+        let mut expected = vec![primary.peer_id.clone(), secondary.peer_id.clone()];
+        expected.sort();
+        assert_eq!(admins, expected);
+        let (principal_peer, _) = net.principal_peer().await.expect("the chain's principal");
+        assert_eq!(principal_peer.to_string(), primary.peer_id);
     }
 
     #[tokio::test]

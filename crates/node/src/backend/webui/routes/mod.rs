@@ -23,6 +23,12 @@ pub(crate) enum RouteScope {
     DeployAdmin,
     NodeAdmin,
     InferNodeAdmin,
+    /// Every profile, but only from this machine's own interface: the
+    /// operator acting on their own node (API keys, plugins, the machine's
+    /// name, relay and address, its networks, its logs). Another node never
+    /// reaches these, whoever signed the request - every member holds the
+    /// connection key, inference nodes included.
+    LocalOperator,
     CommonOrInternal,
     OutOfScope,
 }
@@ -156,7 +162,7 @@ const ROUTE_RULES: &[RouteRule] = &[
     RouteRule {
         prefix: "/api/ui/plugins",
         method: None,
-        scope: RouteScope::InferNodeAdmin,
+        scope: RouteScope::LocalOperator,
     },
     // Update of the `pom` binary itself - a boundary separate from plugins on
     // purpose, see `crate::pom_core_update`.
@@ -188,22 +194,30 @@ const ROUTE_RULES: &[RouteRule] = &[
     RouteRule {
         prefix: "/api/ui/network/info",
         method: None,
-        scope: RouteScope::InferNodeAdmin,
+        scope: RouteScope::LocalOperator,
     },
     RouteRule {
         prefix: "/api/ui/network/firewall",
         method: None,
-        scope: RouteScope::InferNodeAdmin,
+        scope: RouteScope::LocalOperator,
     },
     RouteRule {
         prefix: "/api/ui/network/geo/",
         method: Some(Method::GET),
-        scope: RouteScope::InferNodeAdmin,
+        scope: RouteScope::LocalOperator,
     },
     RouteRule {
         prefix: "/api/ui/network-chat",
         method: None,
         scope: RouteScope::CommonOrInternal,
+    },
+    // The lobby is this machine knocking on another network's door: asking
+    // to be admitted, chatting there, forgetting a request. Its operator's
+    // act, never another member's.
+    RouteRule {
+        prefix: "/api/ui/network-chat/lobby",
+        method: None,
+        scope: RouteScope::LocalOperator,
     },
     RouteRule {
         prefix: "/api/ui/chat/",
@@ -213,18 +227,18 @@ const ROUTE_RULES: &[RouteRule] = &[
     RouteRule {
         prefix: "/api/ui/chat/history",
         method: None,
-        scope: RouteScope::InferNodeAdmin,
+        scope: RouteScope::LocalOperator,
     },
     RouteRule {
         prefix: "/api/ui/chat-key",
         method: None,
-        scope: RouteScope::InferNodeAdmin,
+        scope: RouteScope::LocalOperator,
     },
     // Catching up with the trust chain is a node acting on itself.
     RouteRule {
         prefix: "/api/ui/network/trust-sync",
         method: None,
-        scope: RouteScope::InferNodeAdmin,
+        scope: RouteScope::LocalOperator,
     },
     RouteRule {
         prefix: "/api/ui/network/admin-authority",
@@ -243,7 +257,7 @@ const ROUTE_RULES: &[RouteRule] = &[
     RouteRule {
         prefix: "/api/ui/infer/heads",
         method: None,
-        scope: RouteScope::InferNodeAdmin,
+        scope: RouteScope::LocalOperator,
     },
     // Local operations of the node and the model. The announced address is the description
     // of this very machine, so it is also allowed to the `infer` profile.
@@ -282,32 +296,32 @@ const ROUTE_RULES: &[RouteRule] = &[
     RouteRule {
         prefix: "/api/ui/network/advertise-addr",
         method: None,
-        scope: RouteScope::InferNodeAdmin,
+        scope: RouteScope::LocalOperator,
     },
     // The operator's own list of networks: this one and the imported ones.
     RouteRule {
         prefix: "/api/ui/networks",
         method: None,
-        scope: RouteScope::InferNodeAdmin,
+        scope: RouteScope::LocalOperator,
     },
     // The first run guide belongs to whoever sits at this machine.
     RouteRule {
         prefix: "/api/ui/guide",
         method: None,
-        scope: RouteScope::InferNodeAdmin,
+        scope: RouteScope::LocalOperator,
     },
     // The machine's own name: its operator's to choose, whatever its role.
     RouteRule {
         prefix: "/api/ui/network/node-name",
         method: None,
-        scope: RouteScope::InferNodeAdmin,
+        scope: RouteScope::LocalOperator,
     },
     // A relay option is a decision about this machine's own bandwidth: it
     // belongs to whoever runs the machine, whatever its role in the network.
     RouteRule {
         prefix: "/api/ui/network/relay",
         method: None,
-        scope: RouteScope::InferNodeAdmin,
+        scope: RouteScope::LocalOperator,
     },
     RouteRule {
         prefix: "/api/ui/network/settings",
@@ -322,14 +336,14 @@ const ROUTE_RULES: &[RouteRule] = &[
     RouteRule {
         prefix: "/api/ui/network/leave",
         method: Some(Method::POST),
-        scope: RouteScope::InferNodeAdmin,
+        scope: RouteScope::LocalOperator,
     },
     // Joining replaces the network this machine is in; like leaving, it is
     // the operator's own machine and no profile needs a licence for it.
     RouteRule {
         prefix: "/api/ui/network/join",
         method: Some(Method::POST),
-        scope: RouteScope::InferNodeAdmin,
+        scope: RouteScope::LocalOperator,
     },
     // Who gets into the network is an administrator's decision.
     RouteRule {
@@ -400,7 +414,7 @@ const ROUTE_RULES: &[RouteRule] = &[
     RouteRule {
         prefix: "/admin/api-keys",
         method: None,
-        scope: RouteScope::InferNodeAdmin,
+        scope: RouteScope::LocalOperator,
     },
     // Reading who is on the network is what the Network screen shows; blocking, unblocking,
     // removing and promoting a machine are POST/DELETE and remain under
@@ -438,7 +452,7 @@ const ROUTE_RULES: &[RouteRule] = &[
     RouteRule {
         prefix: "/api/ui/cluster-logs",
         method: None,
-        scope: RouteScope::AdminOnly,
+        scope: RouteScope::DeployAdmin,
     },
     RouteRule {
         prefix: "/api/ui/deploy",
@@ -509,12 +523,12 @@ const ROUTE_RULES: &[RouteRule] = &[
     RouteRule {
         prefix: "/api/ui/rejoin",
         method: None,
-        scope: RouteScope::InferNodeAdmin,
+        scope: RouteScope::LocalOperator,
     },
     RouteRule {
         prefix: "/api/ui/requests",
         method: None,
-        scope: RouteScope::AdminOnly,
+        scope: RouteScope::LocalOperator,
     },
     RouteRule {
         prefix: "/api/ui/dev/",
@@ -594,7 +608,9 @@ pub(crate) const fn profile_can_access(
             profile,
             crate::profile::NodeProfile::Node | crate::profile::NodeProfile::Admin
         ),
-        RouteScope::InferNodeAdmin | RouteScope::CommonOrInternal => true,
+        RouteScope::InferNodeAdmin
+        | RouteScope::LocalOperator
+        | RouteScope::CommonOrInternal => true,
         RouteScope::OutOfScope => false,
     }
 }
@@ -625,15 +641,15 @@ mod policy_tests {
             route_scope(&Method::DELETE, "/admin/nodes/abc"),
             RouteScope::AdminOnly
         );
-        assert_eq!(scope_of("/api/ui/requests/stats"), RouteScope::AdminOnly);
-        assert_eq!(scope_of("/api/ui/plugins"), RouteScope::InferNodeAdmin);
+        assert_eq!(scope_of("/api/ui/requests/stats"), RouteScope::LocalOperator);
+        assert_eq!(scope_of("/api/ui/plugins"), RouteScope::LocalOperator);
         assert_eq!(
             scope_of("/api/ui/plugins/github-repositories"),
-            RouteScope::InferNodeAdmin
+            RouteScope::LocalOperator
         );
         assert_eq!(
             scope_of("/api/ui/plugins/dev-sources"),
-            RouteScope::InferNodeAdmin
+            RouteScope::LocalOperator
         );
         assert_eq!(
             scope_of("/api/ui/pom-update/status"),
@@ -654,7 +670,7 @@ mod policy_tests {
             "/api/ui/plugins/logs/preferences",
         ] {
             let scope = route_scope(&Method::POST, path);
-            assert_eq!(scope, RouteScope::InferNodeAdmin, "rota={path}");
+            assert_eq!(scope, RouteScope::LocalOperator, "rota={path}");
             assert!(profile_can_access(crate::profile::NodeProfile::Node, scope));
             assert!(profile_can_access(
                 crate::profile::NodeProfile::Infer,
@@ -673,7 +689,7 @@ mod policy_tests {
                 &Method::DELETE,
                 "/api/ui/plugins/github-repositories/repository-id"
             ),
-            RouteScope::InferNodeAdmin
+            RouteScope::LocalOperator
         );
         // The plugin interface proxy serves any method and inherits the
         // prefix rule: open to every profile on every method.
@@ -690,7 +706,7 @@ mod policy_tests {
                     &method,
                     "/api/ui/plugins/deepseek_harness/proxy/api/remote.mux"
                 ),
-                RouteScope::InferNodeAdmin,
+                RouteScope::LocalOperator,
                 "method={method}"
             );
         }
@@ -701,11 +717,11 @@ mod policy_tests {
         );
         assert_eq!(
             scope_of("/api/ui/network/advertise-addr"),
-            RouteScope::InferNodeAdmin
+            RouteScope::LocalOperator
         );
         assert_eq!(
             scope_of("/api/ui/network/relay"),
-            RouteScope::InferNodeAdmin
+            RouteScope::LocalOperator
         );
         assert_eq!(
             scope_of("/api/ui/network/admin-authority"),
@@ -717,11 +733,11 @@ mod policy_tests {
         );
         assert_eq!(
             scope_of("/api/ui/network/geo/nearest"),
-            RouteScope::InferNodeAdmin
+            RouteScope::LocalOperator
         );
         assert_eq!(
             scope_of("/api/ui/network/firewall"),
-            RouteScope::InferNodeAdmin
+            RouteScope::LocalOperator
         );
         assert_eq!(
             scope_of("/api/ui/network/auto-discovery"),
@@ -767,7 +783,7 @@ mod policy_tests {
             scope_of("/api/ui/network/relinquish-node"),
             RouteScope::AdminOnly
         );
-        assert_eq!(scope_of("/api/ui/infer/heads"), RouteScope::InferNodeAdmin);
+        assert_eq!(scope_of("/api/ui/infer/heads"), RouteScope::LocalOperator);
         assert!(profile_can_access(
             crate::profile::NodeProfile::Admin,
             scope_of("/api/ui/infer/heads")
@@ -780,9 +796,9 @@ mod policy_tests {
         );
         assert_eq!(
             scope_of("/api/ui/chat/history/abc"),
-            RouteScope::InferNodeAdmin
+            RouteScope::LocalOperator
         );
-        assert_eq!(scope_of("/api/ui/chat-key"), RouteScope::InferNodeAdmin);
+        assert_eq!(scope_of("/api/ui/chat-key"), RouteScope::LocalOperator);
         assert_eq!(
             scope_of("/api/internal/api-keys/validate"),
             RouteScope::CommonOrInternal
@@ -804,7 +820,7 @@ mod policy_tests {
             ),
         ] {
             let scope = route_scope(&method, path);
-            assert_eq!(scope, RouteScope::InferNodeAdmin, "{method} {path}");
+            assert_eq!(scope, RouteScope::LocalOperator, "{method} {path}");
             assert!(profile_can_access(Admin, scope));
             assert!(profile_can_access(Node, scope));
             assert!(profile_can_access(Infer, scope));
@@ -818,7 +834,7 @@ mod policy_tests {
         assert_eq!(scope_of("/api/ui"), RouteScope::AdminOnly);
         assert_eq!(
             scope_of("/api/ui/requests/stats/today"),
-            RouteScope::AdminOnly
+            RouteScope::LocalOperator
         );
         assert_eq!(scope_of("/api/new-control"), RouteScope::AdminOnly);
         assert_eq!(
@@ -864,13 +880,13 @@ mod policy_tests {
         for method in [Method::GET, Method::POST, Method::DELETE] {
             assert_eq!(
                 route_scope(&method, "/admin/api-keys"),
-                RouteScope::InferNodeAdmin,
+                RouteScope::LocalOperator,
                 "method={method}"
             );
         }
         assert_eq!(
             route_scope(&Method::DELETE, "/admin/api-keys/abc"),
-            RouteScope::InferNodeAdmin
+            RouteScope::LocalOperator
         );
     }
 
@@ -879,9 +895,14 @@ mod policy_tests {
     fn leaving_and_rejoining_belong_to_every_profile() {
         use crate::profile::NodeProfile::{Admin, Infer, Node};
 
-        for path in ["/api/ui/leave", "/api/ui/rejoin"] {
+        // Leaving stays reachable by the principal's forwarded, signed leave;
+        // rejoining is only ever this machine's own act.
+        for (path, expected) in [
+            ("/api/ui/leave", RouteScope::InferNodeAdmin),
+            ("/api/ui/rejoin", RouteScope::LocalOperator),
+        ] {
             let scope = route_scope(&Method::POST, path);
-            assert_eq!(scope, RouteScope::InferNodeAdmin, "rota={path}");
+            assert_eq!(scope, expected, "rota={path}");
             for profile in [Infer, Node, Admin] {
                 assert!(profile_can_access(profile, scope), "{profile} on {path}");
             }

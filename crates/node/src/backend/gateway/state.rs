@@ -867,13 +867,15 @@ pub(super) fn is_public_ui_static_path(path: &str) -> bool {
             && path != "/handshake")
 }
 
-/// Whether `peer` is an inference node. On the principal the member list
-/// decides for a machine admitted as one: it stays an inference node whatever
-/// it announces, because the role is granted at admission and an announce is
-/// only what a node says about itself. Everywhere, a node that announces
-/// itself as an inference node is one.
+/// Whether `peer` is an inference node. The role is granted at admission
+/// and an announce is only what a node says about itself, so a machine
+/// admitted as one stays one whatever it announces: on every node the chain's
+/// signed role record decides (`AdminTrust::record_member_role`), and on the
+/// principal its member list as well, before the record is signed.
+/// Everywhere, a node that announces itself as an inference node is one.
 pub(crate) fn peer_is_infer(state: &GatewayState, peer: &PeerInfo) -> bool {
     peer.profile == crate::profile::NodeProfile::Infer
+        || crate::admin_trust::recorded_infer(&state.admin_trust.document(), &peer.node_id)
         || state
             .network_chat
             .admission_of(&peer.node_id)
@@ -888,10 +890,12 @@ pub(crate) fn peer_is_infer(state: &GatewayState, peer: &PeerInfo) -> bool {
 ///   any admin of the trust chain, principal or secondary.
 /// - A route of a serving node (catalog, planning, transfers) takes a signed
 ///   request from an admin or from a peer that is not an inference node.
+/// - A route of this machine's own operator (`LocalOperator`) is refused to
+///   every other node, signed or not.
 /// - Everything else - inference, the node's own description, the internal
 ///   sync routes - stays as it was.
 ///
-/// The connection key alone opens none of the first three: every member
+/// The connection key alone opens none of the first four: every member
 /// holds it.
 pub(crate) async fn caller_may_ask(
     state: &GatewayState,
@@ -899,6 +903,9 @@ pub(crate) async fn caller_may_ask(
     issuer: Option<&crate::admin_trust::AuthorityPrincipal>,
 ) -> Result<(), &'static str> {
     use crate::webui::RouteScope;
+    if scope == RouteScope::LocalOperator {
+        return Err("local_operator_only");
+    }
     if !matches!(
         scope,
         RouteScope::AdminOnly | RouteScope::DeployAdmin | RouteScope::NodeAdmin
@@ -974,7 +981,11 @@ pub(crate) async fn require_admin_for_surface(
         // route is open to every profile because leaving is abdication, so
         // the scope cannot say it: a leave forwarded by another node has to
         // carry the principal's signature.
+        // An unsigned leave is refused too: the connection key alone would
+        // let any member, an inference node included, detach this machine
+        // or have the principal forward the removal of another.
         let verdict = match auth.principal() {
+            None if path == "/api/ui/leave" => Err("principal_required"),
             Some(issuer)
                 if path == "/api/ui/leave"
                     && issuer != &state.authority_principal

@@ -623,6 +623,7 @@ pub(super) async fn decide_admission(
     } else if !state.network_chat.decide_admission(node_id, status) {
         return StatusCode::NOT_FOUND.into_response();
     }
+    super::sign_member_roles(&state);
     Json(state.network_chat.admissions()).into_response()
 }
 

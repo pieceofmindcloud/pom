@@ -45,7 +45,9 @@ the ladder direct -> dedicated relay (with DCuTR) -> member relay, are in
   tunnel is never local" and "The tunnel frame is binary".
 - `cluster_logs.rs` - bounded `tracing` capture and a separate request/response
   transport (`/pom/cluster-logs/1.0.0`); the queue discards under pressure, and
-  each batch goes by fanout to every peer announced as admin. `CaptureLayer` uses
+  each batch goes by fanout to every admin `Network::admin_peers` returns: a
+  live peer announced as admin that the trust chain also proves one
+  (principal or a secondary in force, never a recorded inference node). `CaptureLayer` uses
   `INFO` as the minimum level by default, configurable by
   `Config.cluster_logs_min_level`, without changing the console's filter. Storing
   the lines is the logs plugin's (`pom-plugin-logs`): an effective admin hands

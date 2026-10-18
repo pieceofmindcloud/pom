@@ -1356,7 +1356,11 @@ confirmation of remote delivery.
 
 The process log uses its own swarm request/response protocol,
 `/pom/cluster-logs/1.0.0`, separate from `infer_tunnel.rs`. Each node sends a
-copy of the batch to every live peer announced as admin. Each effective admin
+copy of the batch to every live peer announced as admin **that the sender's
+trust chain also proves an admin** (`Network::admin_peers`): an announce alone,
+which any member can forge, would hand it the network's logs and prompts. The
+network Chat's `principal_peer` likewise takes only the chain's principal.
+Each effective admin
 persists the entry in its own replica's arrival order, without sorting by the
 remote clock, and keeps `origin_at` only as informative data. The receiver
 checks its own effective authority in `AdminTrust`; an `admin` profile without

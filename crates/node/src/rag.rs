@@ -727,7 +727,22 @@ async fn peer_call(
 ) -> Option<Value> {
     if provider.node_id == state.network.node_id {
         // The plugin is on this machine: the same operation, without the hop.
-        let caller = json!({ "node_id": state.network.node_id, "head": true, "local": true });
+        let profile = state.auth.read().await.profile;
+        let role = match state
+            .admin_trust
+            .effective_authority(&state.authority_principal, profile)
+        {
+            Some(crate::admin_trust::EffectiveAuthority::Primary) => "primary",
+            Some(_) => "secondary",
+            None if profile == crate::profile::NodeProfile::Infer => "infer",
+            None => "member",
+        };
+        let caller = json!({
+            "node_id": state.network.node_id,
+            "head": true,
+            "local": true,
+            "role": role,
+        });
         return state
             .plugins
             .query_audit(

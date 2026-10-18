@@ -204,8 +204,10 @@ only the generic boundary, reusable by any future `plugin_code`:
   "Checkout through the node" below). An earlier version (97bb0e91) showed only
   the showcase even with the plugin active ("This plugin is already active in
   this cluster") - defect fixed. The `/api/ui/requests` and
-  `/api/ui/requests/stats` routes stay in the node, AdminOnly, and refuse the
-  data without entitlement.
+  `/api/ui/requests/stats` routes stay in the node, `LocalOperator`, and refuse
+  the data without entitlement. An admin of the chain reads every node's
+  requests; any other node, an inference node included, only its own
+  (`http-api.md`).
 
 ## Checkout through the node
 

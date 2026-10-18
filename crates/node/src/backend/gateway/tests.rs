@@ -378,7 +378,7 @@ mod tests {
     #[tokio::test]
     async fn what_a_node_may_ask_of_another_depends_on_who_it_is() {
         use crate::webui::RouteScope::{
-            AdminOnly, CommonOrInternal, DeployAdmin, InferNodeAdmin, NodeAdmin,
+            AdminOnly, CommonOrInternal, DeployAdmin, InferNodeAdmin, LocalOperator, NodeAdmin,
         };
         let mut worker = testkit::peer("worker", "worker", 8090);
         worker.profile = crate::profile::NodeProfile::Node;
@@ -468,6 +468,227 @@ mod tests {
                 Ok(())
             );
         }
+        // A machine's own operator routes are reached by no other node, not
+        // even by the principal's signature.
+        for issuer in [None, Some(&admin), Some(&principal_of("infer"))] {
+            assert_eq!(
+                caller_may_ask(&state, LocalOperator, issuer).await,
+                Err("local_operator_only")
+            );
+        }
+    }
+
+    fn router_with_surface_gate(state: &GatewayState, paths: &[&'static str]) -> Router {
+        let mut app = Router::new();
+        for path in paths {
+            app = app.route(path, axum::routing::any(|| async { StatusCode::OK }));
+        }
+        app.with_state(state.clone())
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                require_admin_for_surface,
+            ))
+    }
+
+    fn from_another_node(
+        method: axum::http::Method,
+        path: &str,
+        headers: Option<reqwest::header::HeaderMap>,
+    ) -> Request<axum::body::Body> {
+        let mut request = Request::builder().method(method).uri(path);
+        match headers {
+            Some(headers) => {
+                for (name, value) in headers.iter() {
+                    request = request.header(name, value);
+                }
+            }
+            None => {
+                request = request
+                    .header("authorization", "Bearer connection-secret")
+                    .header(crate::auth::INTERNAL_NODE_REQUEST_HEADER, "1");
+            }
+        }
+        let mut request = request.body(axum::body::Body::empty()).unwrap();
+        request
+            .extensions_mut()
+            .insert(crate::serve::PeerAddr("192.0.2.9:1234".parse().unwrap()));
+        request
+    }
+
+    /// The connection key with the node-to-node marker is what every member
+    /// holds. Sent to the principal, an unsigned leave used to detach the
+    /// principal itself or have it forward the removal of any machine.
+    #[tokio::test]
+    async fn an_unsigned_leave_from_another_node_is_refused() {
+        let state = testkit::state_with("principal", vec![]).await;
+        {
+            let mut auth = state.auth.write().await;
+            auth.connection_key = "connection-secret".into();
+            auth.admin_exposure = crate::config::AdminExposure::Network;
+        }
+        let app = router_with_surface_gate(&state, &["/api/ui/leave"]);
+        let refused = app
+            .clone()
+            .oneshot(from_another_node(axum::http::Method::POST, "/api/ui/leave", None))
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+        assert_eq!(testkit::body_of(refused).await["reason"], "principal_required");
+
+        let signed = state
+            .signed_control_headers("POST", "/api/ui/leave", b"")
+            .unwrap();
+        let allowed = app
+            .oneshot(from_another_node(
+                axum::http::Method::POST,
+                "/api/ui/leave",
+                Some(signed),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(allowed.status(), StatusCode::OK);
+    }
+
+    /// API keys, plugins, the machine's name, relay and networks belong to
+    /// the operator at that machine. Neither the connection key nor a signed
+    /// request from another node reaches them.
+    #[tokio::test]
+    async fn another_node_never_reaches_the_operator_routes() {
+        let state = testkit::state_with("principal", vec![]).await;
+        {
+            let mut auth = state.auth.write().await;
+            auth.connection_key = "connection-secret".into();
+            auth.admin_exposure = crate::config::AdminExposure::Network;
+        }
+        let paths = [
+            "/admin/api-keys",
+            "/api/ui/plugins/activate",
+            "/api/ui/network/node-name",
+            "/api/ui/network/relay",
+            "/api/ui/network/leave",
+            "/api/ui/networks/custom",
+            "/api/ui/network-chat/lobby/admission",
+            "/api/ui/rejoin",
+            "/api/ui/requests",
+        ];
+        let app = router_with_surface_gate(&state, &paths);
+        for path in paths {
+            let unsigned = app
+                .clone()
+                .oneshot(from_another_node(axum::http::Method::POST, path, None))
+                .await
+                .unwrap();
+            assert_eq!(unsigned.status(), StatusCode::FORBIDDEN, "{path}");
+            assert_eq!(
+                testkit::body_of(unsigned).await["reason"],
+                "local_operator_only",
+                "{path}"
+            );
+            let headers = state.signed_control_headers("POST", path, b"").unwrap();
+            let signed = app
+                .clone()
+                .oneshot(from_another_node(
+                    axum::http::Method::POST,
+                    path,
+                    Some(headers),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(signed.status(), StatusCode::FORBIDDEN, "{path}");
+        }
+    }
+
+    /// The role recorded at admission travels in the signed chain, so a
+    /// member other than the principal treats an inference node as one even
+    /// when it announces `node`, and the chain refuses to make it an admin.
+    #[tokio::test]
+    async fn an_inference_role_signed_into_the_chain_holds_on_every_member() {
+        use crate::webui::RouteScope::NodeAdmin;
+        let principal = testkit::state_with("principal", vec![]).await;
+        let mut disguised = testkit::peer("infer", "infer", 8091);
+        disguised.profile = crate::profile::NodeProfile::Node;
+        let infer = crate::admin_trust::AuthorityPrincipal {
+            node_id: "infer".into(),
+            peer_id: String::new(),
+            pubkey: "pubkey-of-infer".into(),
+        };
+        let mut member = testkit::state_with("member", vec![disguised]).await;
+        member.admin_trust =
+            Arc::new(crate::admin_trust::AdminTrust::in_memory(principal.admin_trust.document()).unwrap());
+        assert_eq!(
+            caller_may_ask(&member, NodeAdmin, Some(&infer)).await,
+            Ok(()),
+            "before the record, the member only has the announce"
+        );
+
+        principal
+            .network_chat
+            .request_admission("infer", Default::default(), crate::config::EnrollmentRole::Infer)
+            .unwrap();
+        principal.network_chat.decide_admission(
+            "infer",
+            Some(crate::network_lobby::AdmissionStatus::Approved),
+        );
+        let before = principal.admin_trust.chain_version();
+        crate::webui::sign_member_roles(&principal);
+        assert_ne!(principal.admin_trust.chain_version(), before);
+        let before = principal.admin_trust.chain_version();
+        crate::webui::sign_member_roles(&principal);
+        assert_eq!(
+            principal.admin_trust.chain_version(),
+            before,
+            "an unchanged role is not signed again"
+        );
+
+        assert!(member
+            .admin_trust
+            .reconcile_from(principal.admin_trust.document(), false)
+            .unwrap());
+        assert_eq!(
+            caller_may_ask(&member, NodeAdmin, Some(&infer)).await,
+            Err("infer_caller")
+        );
+        assert!(principal
+            .admin_trust
+            .signed_secondary_grant(
+                &principal.authority_signing_key,
+                infer,
+                &principal.network.node_id
+            )
+            .is_err());
+    }
+
+    /// A grant already in the chain stops counting once the chain records
+    /// its holder as an inference node.
+    #[tokio::test]
+    async fn an_inference_role_voids_an_earlier_admin_grant() {
+        let state = testkit::state_with_secondary_admin("secondary", vec![]).await;
+        let profile = crate::profile::NodeProfile::Admin;
+        assert_eq!(
+            state
+                .admin_trust
+                .effective_authority(&state.authority_principal, profile),
+            Some(crate::admin_trust::EffectiveAuthority::Secondary)
+        );
+        let primary_signing_key = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
+        state
+            .admin_trust
+            .record_member_role(
+                &primary_signing_key,
+                &state.authority_principal.node_id,
+                crate::config::EnrollmentRole::Infer,
+            )
+            .unwrap();
+        assert_eq!(
+            state
+                .admin_trust
+                .effective_authority(&state.authority_principal, profile),
+            None
+        );
+        assert!(!crate::admin_trust::control_issuer_is_admin(
+            &state.admin_trust.document(),
+            &state.authority_principal
+        ));
     }
 
     #[tokio::test]

@@ -320,13 +320,35 @@ fn valid_peer_op(op: &str) -> bool {
 }
 
 /// What the plugin is told about the peer that is calling it.
-pub(crate) fn caller_of(peer: &crate::network::PeerInfo) -> Value {
+pub(crate) fn caller_of(peer: &crate::network::PeerInfo, role: &str) -> Value {
+    let infer = role == "infer";
     json!({
         "node_id": peer.node_id,
-        // Layer 0 is where every prompt enters a model: its head.
-        "head": peer.total_layers > 0 && peer.start_layer == 0,
+        // Layer 0 is where every prompt enters a model: its head. An
+        // inference node serves no layer, whatever it announces.
+        "head": !infer && peer.total_layers > 0 && peer.start_layer == 0,
         "model": peer.model,
+        "role": role,
     })
+}
+
+/// The caller's role as the trust chain proves it, for a plugin that shares
+/// something only with the admins: `primary`, `secondary`, `infer` or
+/// `member`. The announced profile alone never makes a caller an admin.
+pub(crate) fn caller_role(
+    state: &crate::gateway::GatewayState,
+    issuer: &crate::admin_trust::AuthorityPrincipal,
+    peer: &crate::network::PeerInfo,
+) -> &'static str {
+    if crate::gateway::peer_is_infer(state, peer) {
+        "infer"
+    } else if crate::gateway::issuer_is_principal(state, issuer) {
+        "primary"
+    } else if crate::admin_trust::control_issuer_is_admin(&state.admin_trust.document(), issuer) {
+        "secondary"
+    } else {
+        "member"
+    }
 }
 
 fn refuse(status: StatusCode, error: &str) -> Response {
@@ -375,7 +397,10 @@ pub(crate) async fn plugin_peer_call(
         .query_audit(
             &code,
             &format!("peer.{op}"),
-            json!({ "params": params, "caller": caller_of(&peer) }),
+            json!({
+                "params": params,
+                "caller": caller_of(&peer, caller_role(&state, principal, &peer)),
+            }),
         )
         .await
     {
@@ -390,6 +415,20 @@ pub(crate) async fn plugin_peer_call(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A plugin learns the caller's proven role, and an inference node is
+    /// never a head even when it announces layer 0.
+    #[test]
+    fn the_caller_carries_its_role_and_an_inference_node_is_no_head() {
+        let mut peer = crate::gateway::testkit::peer("n", "n", 8080);
+        peer.start_layer = 0;
+        peer.total_layers = 32;
+        assert_eq!(caller_of(&peer, "member")["head"], true);
+        assert_eq!(caller_of(&peer, "secondary")["role"], "secondary");
+        let infer = caller_of(&peer, "infer");
+        assert_eq!(infer["head"], false);
+        assert_eq!(infer["role"], "infer");
+    }
 
     #[test]
     fn a_setting_placed_in_the_pom_card_keeps_its_placement() {

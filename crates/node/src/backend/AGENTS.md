@@ -21,7 +21,7 @@ static UI), and the two never share an authorization rule. The rules that decide
 may call what - the profile table, the in-memory browser session and its single
 `ADMIN_SESSION_TTL`, the signed control envelope between nodes, the per-route
 `RouteScope` (`AdminOnly`, `DeployAdmin`, `NodeAdmin`, `InferNodeAdmin`,
-`CommonOrInternal`) and the `x-pom-admin-error` header the browser reads to know its
+`LocalOperator`, `CommonOrInternal`) and the `x-pom-admin-error` header the browser reads to know its
 session died instead of printing a raw 401 inside whatever screen was open - are
 `docs/subsystems/http-api.md`. The deployment lifecycle, the idle wake
 (`reload_model`) and the role gate (`deployment_authority` /
@@ -163,7 +163,7 @@ boundary.
   when the system does not report board power. The
   `/api/ui/network/geo/{countries,cities,nearest}` routes read the offline
   city database embedded in the binary (`utils/geo.rs`) for the location
-  editor and use `InferNodeAdmin`; they do not create or change network data
+  editor and use `LocalOperator`; they do not create or change network data
   and look nothing up on the internet. `GET /api/ui/deployments` is `NodeAdmin` so a
   `node` profile can see the read-only inspector, while mutations and deployment actions stay
   under the existing administrative policy.
@@ -201,7 +201,7 @@ boundary.
   heads: it delivers the candidates and the planner's choice, without general peers or control
   actions. A head still loading its model (`is_warming`) is never a candidate. The capacity gate
   (`request_output_limit_for_head`) plans the route from the head the request chose
-  (`inference_head`), as generation does. The route is `InferNodeAdmin`, so admin and infer can read it. Each candidate's load
+  (`inference_head`), as generation does. The route is `LocalOperator`, so admin and infer can read it from their own screen. Each candidate's load
   comes from its own `/api/ui/node` and stays `null` when the report does not arrive, so the UI
   shows it unavailable instead of zero. The RTT's validity is five minutes; expired values
   appear as a diagnostic, but they do not enter the generation's selection.
@@ -363,7 +363,9 @@ boundary.
   the member list stay with the principal.
 - `admin_trust.rs` - the protected, durable Ed25519 authority chain. It stores
   the manually anchored root, one-level secondary grants, signed demotions,
-  transfer offer and acceptance state, and full-chain reconciliation. Consumed
+  signed member role records (`record_member_role`, `recorded_infer`: a
+  machine recorded as an inference node is never an admin, whatever grant it
+  held), transfer offer and acceptance state, and full-chain reconciliation. Consumed
   nonces live in a local replay ledger beside the chain
   (`replay_path_for`: `<chain>.replay.json`), never in the shared document:
   control-envelope entries expire with the envelope's `CONTROL_WINDOW_SECS`
@@ -544,7 +546,11 @@ boundary.
   content hash); `spawn_trust_chain_keeper` compares it every 30 s with what
   the peers announce and fetches the chain from whoever is ahead
   (`chain_sources`, `POST /api/internal/admin-trust/chain`) - any member, so
-  it works with the principal offline. `chain_status` feeds
+  it works with the principal offline. On the principal,
+  `webui::sign_member_roles` (at each admission decision and every 15 s from
+  `spawn_member_role_keeper`) signs the role of each machine approved as an
+  inference node into the chain, which this same sync carries to every
+  member. `chain_status` feeds
   `NodeInfo.cluster_version` and `POST /api/ui/network/trust-sync`.
 - `reqlog.rs` - the audit adapter and the migration fallback. With the plugin
   active, the host writes in `enterprise.db`; independently of that destination, the

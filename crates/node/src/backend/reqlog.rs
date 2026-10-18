@@ -1362,6 +1362,25 @@ pub struct LogQuery {
     pub offset: Option<usize>,
 }
 
+/// The node filter a reader may use. An admin of the chain, principal or
+/// secondary, reads the whole network's audit; any other node, an inference
+/// node included, only the requests it took part in, whatever it asks for.
+async fn readable_node(
+    state: &crate::gateway::GatewayState,
+    requested: Option<String>,
+) -> Option<String> {
+    let profile = state.auth.read().await.profile;
+    if state
+        .admin_trust
+        .effective_authority(&state.authority_principal, profile)
+        .is_some()
+    {
+        requested
+    } else {
+        Some(state.network.node_id.clone())
+    }
+}
+
 /// Authenticated because every response contains user prompts and request
 /// bodies, not merely operational counters.
 pub async fn list_requests(
@@ -1382,7 +1401,7 @@ pub async fn list_requests(
             .into_response();
     }
     let query = AuditQuery {
-        node_id: query.node_id,
+        node_id: readable_node(&state, query.node_id).await,
         user: query.user,
         api_key: query.api_key,
         model: query.model,
@@ -1436,7 +1455,7 @@ pub async fn stats_requests(
             .into_response();
     }
     let query = AuditQuery {
-        node_id: query.node_id,
+        node_id: readable_node(&state, query.node_id).await,
         user: query.user,
         api_key: query.api_key,
         model: query.model,
@@ -1473,6 +1492,28 @@ pub async fn stats_requests(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An admin of the chain, principal or secondary, reads the network's
+    /// audit; any other node, an inference node included, only its own.
+    #[tokio::test]
+    async fn only_an_admin_reads_other_nodes_requests() {
+        let principal = crate::gateway::testkit::state_with("principal", vec![]).await;
+        principal.auth.write().await.profile = crate::profile::NodeProfile::Admin;
+        assert_eq!(
+            readable_node(&principal, Some("other".into())).await,
+            Some("other".into())
+        );
+        assert_eq!(readable_node(&principal, None).await, None);
+
+        let secondary = crate::gateway::testkit::state_with_secondary_admin("secondary", vec![]).await;
+        assert_eq!(readable_node(&secondary, None).await, None);
+
+        let infer = crate::gateway::testkit::state_with("infer", vec![]).await;
+        infer.auth.write().await.profile = crate::profile::NodeProfile::Infer;
+        let own = Some(infer.network.node_id.clone());
+        assert_eq!(readable_node(&infer, Some("other".into())).await, own);
+        assert_eq!(readable_node(&infer, None).await, own);
+    }
 
     #[test]
     fn request_activity_marks_and_compares_idle_without_a_timer() {

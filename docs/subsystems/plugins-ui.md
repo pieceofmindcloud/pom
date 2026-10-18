@@ -26,9 +26,10 @@ namespace. The real code of Request Logs and Statistics lives in
      includes the menu PNG and documentation Markdown. i18n catalogs go through
      `validate_catalog` before leaving.
    Both sit under `/api/ui/plugins`, open to every profile
-   (`RouteScope::InferNodeAdmin`, since plugins are local to each node); the
-   authorization of the data the screen reads stays in the plugin's routes (for
-   example `/api/ui/requests`, AdminOnly).
+   (`RouteScope::LocalOperator`, since plugins are local to each node: no other
+   node reaches them, signed or not); the authorization of the data the screen
+   reads stays in the plugin's routes (for example `/api/ui/requests`, where
+   only an admin of the chain reads other nodes' requests).
 3. The frontend (`usePluginUi`) stores the result in `lib/pluginUi.ts`. The menu
    (`components/nav.ts`), the profile guard (`lib/access.ts`), text loading
    (`lib/pluginI18n.ts`) and the router (`App.tsx`) all read the same validated
@@ -416,11 +417,17 @@ plugin receives who is asking and decides what to hand over:
 
 ```json
 {"operation": "peer.connection", "params": null,
- "caller": {"node_id": "<node>", "head": true, "model": "<model>"}}
+ "caller": {"node_id": "<node>", "head": true, "model": "<model>",
+            "role": "secondary"}}
 ```
 
-`head` is true when the caller announces layer 0 of a model, the machine every
-prompt enters through. This is how a plugin shares a secret with the heads of
+`role` is the caller's role as the trust chain proves it
+(`plugin_services::caller_role`): `primary`, `secondary`, `infer` or `member`.
+The announced profile never makes a caller an admin, so a plugin that shares
+something only with the admins answers when `role` is `primary` or
+`secondary`. `head` is true when the caller announces layer 0 of a model, the
+machine every prompt enters through, and is always false for an inference
+node. This is how a plugin shares a secret with the heads of
 the network and nobody else: the Qdrant plugin answers `peer.connection` with
 its port and API key only when `caller.head` is true. The body is capped at
 256 KiB and the plugin's reply is returned as is.

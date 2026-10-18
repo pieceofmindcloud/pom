@@ -182,9 +182,19 @@ last):
     trust chain, principal or secondary (`"admin_required"`). A
     `NodeAdmin` route needs it signed by an admin or by an admitted peer that
     is not an inference node (`"infer_caller"`, `"unknown_caller"`). A
+    `LocalOperator` route belongs to the operator at that machine and is
+    refused to every other node, signed or not (`"local_operator_only"`):
+    `/admin/api-keys`, `/api/ui/plugins/*`, `/api/ui/requests/*`, the
+    machine's name, relay and advertised address, `/api/ui/networks/*`,
+    `/api/ui/network/{join,leave}`, `/api/ui/network-chat/lobby/*`, the guide,
+    the chat key and history, `/api/ui/rejoin`, the trust sync, the network
+    info, firewall and geo reads, `/api/ui/infer/heads`. The connection key
+    plus the node-to-node marker is what every member holds, inference nodes
+    included, so these routes were reachable on any machine with it. A
     forwarded `POST /api/ui/leave` - one node taking another out of the
-    network - also needs the principal's signature, although the route is
-    open to every profile for a node leaving by itself.
+    network - needs the principal's signature, and an unsigned one is refused
+    (`"principal_required"`), although the route is open to every profile for
+    a node leaving by itself from its own screen.
   - **What a secondary admin may do.** `DeployAdmin` is the only scope it
     has beyond a node's: `/api/ui/deploy/*`, `/api/ui/deployments` (writes),
     `/api/ui/apply`, `/api/ui/launch`, `/api/ui/undeploy`,
@@ -202,8 +212,18 @@ last):
     the other scopes - `/v1`, `/api/generate`, the node's own description, the
     `/api/internal` and `/api/cluster` sync routes - are unchanged.
   `gateway::peer_is_infer` is the one definition of "inference node": a peer
-  that announces the profile, or, on the principal, one whose admission record
-  says so. The deploy survey leaves such peers out, and `launch` and add-node
+  that announces the profile, one the trust chain records as one (below), or,
+  on the principal, one whose admission record says so. **The role travels in
+  the chain**: the principal signs a `MemberRoleRecord` (`member_roles` in the
+  trust document, `AdminTrust::record_member_role`) for each machine approved
+  as an inference node, at the decision and every 15 s by
+  `webui::spawn_member_role_keeper`, which also covers lobby auto-approval. A
+  node approved as `node` is only recorded when it replaces an earlier role;
+  a node's latest record is its role. The chain sync carries it to every
+  member, so a secondary admin or a worker refuses a disguised inference node
+  too. A machine the chain records as an inference node is never an admin:
+  `signed_secondary_grant` refuses it, and `effective_authority` and
+  `control_issuer_is_admin` ignore any grant it held before. The deploy survey leaves such peers out, and `launch` and add-node
   refuse them as targets (`reason: "infer_target"`).
 - **Leaving and the own network** (`p2p-network.md` 6.1). `POST
   /api/ui/network/leave` leaves a network this node joined and restores its
@@ -905,9 +925,10 @@ adopts: `admin` while the chain grants it authority, `node` when it no longer
 does, and an inference node stays one.
 
 **The chain has a version**, `AdminTrust::chain_version`:
-`<transfers>.<grants>.<demotions>.<open transfer>-<hash>`, the hash being the
-first 16 hex digits of the SHA-256 of the document. The three counters order
-two copies; the hash tells apart two copies the counters call equal. A node
+`<transfers>.<grants>.<demotions and role records>.<open transfer>-<hash>`,
+the hash being the first 16 hex digits of the SHA-256 of the document. The
+third counter sums demotions and member role records: both lists only grow
+and only the principal writes them. The three counters order two copies; the hash tells apart two copies the counters call equal. A node
 adopts a copy with higher counters **from any member**, because every
 signature in it is checked from the anchor (`admin_trust::reconcile_from`) -
 which is what lets a node that was away catch up while the principal is
@@ -1180,8 +1201,15 @@ structured state, while login required and an authenticated session stay
 distinguishable for the UI. The model detail queries the license on the
 provider before the screen offers the download.
 
-`GET /api/ui/requests` requires `ConnectionAuth` (and is AdminOnly), since it
-returns prompts and request bodies. The filters are `node_id`, `user` (the API
+`GET /api/ui/requests` requires `ConnectionAuth` and is `LocalOperator` (every
+profile, from its own screen only), since it returns prompts and request
+bodies. **Who reads what** (`reqlog::readable_node`): an admin of the chain,
+principal or secondary, reads the whole network's audit with any `node_id`
+filter; any other node, an inference node included, is pinned to its own
+`node_id` whatever it asks. The audit and the process logs of the other nodes
+reach only the admins the chain proves (`Network::admin_peers`): announcing
+`profile: admin` is not enough, and an inference node never receives them.
+The filters are `node_id`, `user` (the API
 key's human label), `api_key` (id, label or associated node), `model`, `prompt`
 (FTS5 search), `from`, `to`, `limit` and `offset`; sorting is by most recent
 `received_at`. The UI uses `limit` and `offset` for infinite scroll, without
@@ -1311,8 +1339,8 @@ capture and sending of the cluster's real-time process log on or off. Only the
 principal accepts the operation; the effect applies without a restart and is
 announced as a trigger for the other nodes' authenticated fetch.
 
-**`GET /api/ui/cluster-logs`** - requires `ConnectionAuth` on any admin with
-effective authority and returns the lines persisted in the local replica, in
+**`GET /api/ui/cluster-logs`** - `DeployAdmin`: requires `ConnectionAuth` on
+any admin with effective authority, principal or secondary, and returns the lines persisted in the local replica, in
 arrival order, with `deploy_id`, origin timestamp, node name and a drop
 counter. It accepts `deploy_id` and `limit`; it does not reorder by
 `origin_at`. With no local data, the empty answer is legitimate and does not

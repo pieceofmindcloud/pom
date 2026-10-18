@@ -1,5 +1,5 @@
 // The version of the trust chain a node holds, as the node reports it:
-// `<transfers>.<grants>.<demotions>.<open transfer>-<content hash>`
+// `<transfers>.<grants>.<demotions and role records>.<open transfer>-<content hash>`
 // (`AdminTrust::chain_version`). The counters order two versions; the hash
 // tells apart two the counters call equal.
 

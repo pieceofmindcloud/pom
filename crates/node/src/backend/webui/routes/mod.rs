@@ -352,11 +352,12 @@ const ROUTE_RULES: &[RouteRule] = &[
         method: Some(Method::POST),
         scope: RouteScope::LocalOnly,
     },
-    // Who gets into the network is an administrator's decision.
+    // Who gets into the network is any admin's decision: a secondary's goes
+    // to the principal, which keeps the list.
     RouteRule {
         prefix: "/api/ui/network/admissions",
         method: None,
-        scope: RouteScope::PrincipalOnly,
+        scope: RouteScope::AnyAdmin,
     },
     RouteRule {
         prefix: "/api/ui/plan",
@@ -762,11 +763,11 @@ mod policy_tests {
             "/api/ui/undeploy",
             "/api/ui/apply",
             "/api/ui/unload",
+            "/api/ui/network/admissions",
         ] {
             assert_eq!(scope_of(path), RouteScope::AnyAdmin, "{path}");
         }
         for path in [
-            "/api/ui/network/admissions",
             "/admin/authority/resign",
             "/api/ui/release",
         ] {

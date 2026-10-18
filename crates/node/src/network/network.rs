@@ -587,6 +587,11 @@ pub enum P2PMessage {
         /// newer chain: the chain itself is fetched and verified.
         #[serde(default)]
         trust_version: Option<String>,
+        /// This node's membership token (`membership::MembershipToken`): its
+        /// role, signed by an admin of the chain. Bound to `pubkey`, so it
+        /// proves nothing when copied into another node's announce.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        membership: Option<String>,
         /// Present while this node accepts circuit reservations.
         #[serde(default)]
         relay: Option<RelayOffer>,
@@ -623,6 +628,10 @@ pub struct PeerInfo {
     /// The trust chain version the peer announces; a hint, never proof.
     #[serde(default)]
     pub trust_version: Option<String>,
+    /// The membership token the peer announces; verified where it is read
+    /// (`membership::verified_role`), never trusted as it came.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub membership: Option<String>,
     /// What the peer offers as a circuit relay, when it does.
     #[serde(default)]
     pub relay: Option<RelayOffer>,
@@ -1317,6 +1326,7 @@ pub struct Network {
     policy_principal_pubkey: std::sync::RwLock<Option<String>>,
     /// The version of the local trust chain, announced to the peers.
     trust_version: std::sync::RwLock<Option<String>>,
+    membership: std::sync::RwLock<Option<String>>,
     /// Avoids repeating in gossip a permanent warning, such as the global broadcast
     /// being unavailable inside a container.
     broadcast_warning_logged: AtomicBool,
@@ -1753,6 +1763,7 @@ impl Network {
             network_settings_sync_needed: AtomicBool::new(true),
             policy_principal_pubkey: std::sync::RwLock::new(None),
             trust_version: std::sync::RwLock::new(None),
+            membership: std::sync::RwLock::new(None),
             broadcast_warning_logged: AtomicBool::new(false),
             observed_addr: std::sync::RwLock::new(None),
             libp2p_addrs: std::sync::RwLock::new(Vec::new()),
@@ -1865,6 +1876,18 @@ impl Network {
         if let Ok(mut current) = self.trust_version.write() {
             *current = Some(version.into());
         }
+    }
+
+    /// The membership token this node announces, renewed from an admin
+    /// (`membership::spawn_token_keeper`). `None` clears it.
+    pub fn set_membership(&self, token: Option<String>) {
+        if let Ok(mut current) = self.membership.write() {
+            *current = token;
+        }
+    }
+
+    pub fn membership(&self) -> Option<String> {
+        self.membership.read().ok().and_then(|current| current.clone())
     }
 
     pub fn trust_version(&self) -> Option<String> {
@@ -2260,6 +2283,7 @@ impl Network {
             pubkey: self.pubkey.clone(),
             cluster_id: self.cluster_id(),
             trust_version: self.trust_version(),
+            membership: self.membership(),
             relay: self.relay_gate.offer(),
             addr,
             addr_candidates,
@@ -3198,6 +3222,7 @@ impl Network {
                 network_chat_enabled,
                 cluster_id,
                 trust_version,
+                membership,
                 relay,
             } => {
                 if node_id == self.node_id {
@@ -3220,6 +3245,7 @@ impl Network {
                     pubkey,
                     cluster_id,
                     trust_version,
+                    membership,
                     relay,
                     addr: peer_addr.clone(),
                     addr_candidates,
@@ -4395,12 +4421,11 @@ mod tests {
 
     /// With the chain wired in, announcing `admin` is not enough to receive
     /// the network's logs and audit: only the principal and a secondary in
-    /// force do, and an inference node never, even holding a grant.
+    /// force do.
     #[tokio::test]
     async fn admin_peers_are_the_admins_the_chain_proves_not_the_announced_ones() {
         let primary_key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
         let secondary_key = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
-        let infer_key = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
         let principal_of = |node_id: &str, key: &ed25519_dalek::SigningKey| {
             crate::admin_trust::AuthorityPrincipal::from_signing_key(
                 node_id,
@@ -4410,26 +4435,16 @@ mod tests {
         };
         let primary = principal_of("primary", &primary_key);
         let secondary = principal_of("secondary", &secondary_key);
-        let promoted_infer = principal_of("promoted-infer", &infer_key);
         let trust = crate::admin_trust::AdminTrust::bootstrap_primary_in_memory(
             "test-cluster",
             primary.clone(),
             &primary_key,
         )
         .unwrap();
-        for subject in [&secondary, &promoted_infer] {
-            let grant = trust
-                .signed_secondary_grant(&primary_key, subject.clone(), &primary.node_id)
-                .unwrap();
-            trust.record_secondary_grant(grant, &primary_key).unwrap();
-        }
-        trust
-            .record_member_role(
-                &primary_key,
-                &promoted_infer.node_id,
-                crate::config::EnrollmentRole::Visitor,
-            )
+        let grant = trust
+            .signed_secondary_grant(&primary_key, secondary.clone(), &primary.node_id)
             .unwrap();
+        trust.record_secondary_grant(grant, &primary_key).unwrap();
         let net = Network::testkit("local".into(), "pk".into(), vec![], None, None, None)
             .await
             .expect("UDP socket on an ephemeral port")
@@ -4451,7 +4466,6 @@ mod tests {
             for (principal, port) in [
                 (&primary, 8081),
                 (&secondary, 8082),
-                (&promoted_infer, 8083),
                 (&impostor, 8084),
             ] {
                 peers.insert(principal.node_id.clone(), announced_admin(principal, port));
@@ -4944,6 +4958,7 @@ mod tests {
             pubkey: "p".into(),
             cluster_id: None,
             trust_version: None,
+            membership: None,
             relay: None,
             addr: "[2804:d55:5579:1000:89f3:3f94:7c07:e183]:42777".into(),
             addr_candidates: Vec::new(),
@@ -4997,6 +5012,7 @@ mod tests {
             pubkey: "a".repeat(64),
             cluster_id: None,
             trust_version: None,
+            membership: None,
             relay: None,
             addr: "[2804:d55:5579:1000:89f3:3f94:7c07:e183]:42777".into(),
             addr_candidates: Vec::new(),
@@ -5090,6 +5106,7 @@ mod tests {
             pubkey: "p".into(),
             cluster_id: None,
             trust_version: None,
+            membership: None,
             relay: None,
             addr: "192.168.1.9:42777".into(),
             addr_candidates: candidates.into_iter().map(String::from).collect(),
@@ -5233,6 +5250,7 @@ mod tests {
                 pubkey: "peer-key".into(),
                 cluster_id: None,
                 trust_version: None,
+                membership: None,
                 relay: None,
                 addr: stale.into(),
                 addr_candidates: vec![stale.into()],
@@ -5554,6 +5572,7 @@ mod tests {
             pubkey: "p".into(),
             cluster_id: None,
             trust_version: None,
+            membership: None,
             relay: None,
             addr: addr.into(),
             addr_candidates: Vec::new(),
@@ -5659,6 +5678,7 @@ mod tests {
             pubkey,
             cluster_id: None,
             trust_version: None,
+            membership: None,
             relay: None,
             addr: "127.0.0.1:42777".into(),
             addr_candidates: vec!["127.0.0.1:42777".into()],

@@ -93,7 +93,7 @@ async fn refresh_api_key_snapshot(state: &crate::gateway::GatewayState) -> anyho
     Ok(())
 }
 
-async fn principal_peer_for(
+pub(crate) async fn principal_peer_for(
     network: &crate::network::Network,
     primary: &AuthorityPrincipal,
 ) -> Option<crate::network::PeerInfo> {
@@ -118,7 +118,7 @@ fn gateway_urls(network: &crate::network::Network, peer: &crate::network::PeerIn
 /// not block the promotion while the same announcement still carries a live
 /// candidate, and a peer only the relay reaches (Docker bridge, NAT) has no
 /// direct address at all.
-async fn post_internal_json<T: Serialize>(
+pub(crate) async fn post_internal_json<T: Serialize>(
     state: &crate::gateway::GatewayState,
     peer: &crate::network::PeerInfo,
     path: &str,
@@ -383,6 +383,18 @@ fn internal_routes() -> Router<crate::gateway::GatewayState> {
             post(internal_complete_transfer),
         )
         .route("/api/internal/reload_model", post(internal_reload_model))
+        .route(
+            crate::webui::TOKEN_PATH,
+            post(crate::webui::internal_token),
+        )
+        .route(
+            crate::webui::ROSTER_PATH,
+            post(crate::webui::internal_roster),
+        )
+        .route(
+            crate::webui::DECIDE_PATH,
+            post(crate::webui::internal_decide),
+        )
         .route(
             "/api/internal/enterprise/fingerprint",
             get(crate::plugins::plugin_peer_fingerprint),

@@ -161,11 +161,18 @@ last):
   returns the grant. `POST /api/ui/network/join` (`{key}`) joins a network that
   approved this machine, replacing the one it is in, and restarts the node
   (`409 not_approved` without a grant, `502 grant_invalid` when the granted
-  trust document is not that key's). On the network's principal, PrincipalOnly:
+  trust document is not that key's). On any admin, AnyAdmin:
   `GET /api/ui/network/admissions` lists the requests with each candidate's
   declared hardware, measured latency and whether it connects through a relay,
   and `POST /api/ui/network/admissions` (`{node_id, decision}` with `approve`,
-  `reject` or `forget`) decides one.
+  `reject` or `forget`) decides one. The list is the principal's, because the
+  lobby and the key rotation on a departure are: a secondary admin reads it
+  from the principal (`POST /api/internal/membership/roster`, kept as a
+  mirror every 30 s by `webui::spawn_roster_keeper`) and sends its decision
+  there (`POST /api/internal/membership/decide`), so with the principal
+  offline a secondary sees its last copy and cannot decide. `forget` on an
+  approved machine removes it (departure plus key rotation); an admin is not
+  removed this way (`409 admin_target`).
 - **Roles between nodes** (`gateway/state.rs::require_admin_for_surface`).
   The profile table in `webui/routes/mod.rs` gates what a **browser** may
   reach on a node. A node-to-node request passes that table, and is checked
@@ -180,11 +187,10 @@ last):
     "signature_required"` for the key alone, `"principal_required"`
     otherwise). A `AnyAdmin` route needs it signed by any admin of the
     trust chain, principal or secondary (`"admin_required"`). A
-    `ServingMember` route needs it signed by an admin or by a live peer the
-    principal admitted as a regular node (`"visitor_caller"`,
-    `"unknown_caller"`, `"role_unattested"`): the chain's signed role record,
-    or on the principal its approved admission, says so - the announce never
-    does. Only a legacy network open to anyone with the anchor
+    `ServingMember` route needs it signed by an admin or by a live peer
+    admitted as a worker (`"visitor_caller"`, `"unknown_caller"`,
+    `"role_unattested"`): the membership token it announces, or on an admin
+    its admission list, says so - the announce's profile never does. Only a legacy network open to anyone with the anchor
     (`open_admission`), which has no admissions, keeps the announce. These
     routes include `/api/transfer/*`, which is on the administrative surface:
     a peer reaches it signed, and the local screen with its session, never
@@ -199,17 +205,21 @@ last):
     plus the node-to-node marker is what every member holds, inference nodes
     included, so these routes were reachable on any machine with it. A
     forwarded `POST /api/ui/leave` - one node taking another out of the
-    network - needs the principal's signature, and an unsigned one is refused
+    network - needs an admin's signature, and the principal's when the
+    machine leaving is itself an admin (`"admin_required"`,
+    `"principal_required"`); an unsigned one is refused
     (`"principal_required"`), although the route is open to every profile for
     a node leaving by itself from its own screen.
   - **What a secondary admin may do.** `AnyAdmin` is the only scope it
     has beyond a node's: `/api/ui/deploy/*`, `/api/ui/deployments` (writes),
     `/api/ui/apply`, `/api/ui/launch`, `/api/ui/undeploy`,
-    `/api/ui/stop-inference`, `/api/ui/unload` and `/api/ui/reconfigure`.
+    `/api/ui/stop-inference`, `/api/ui/unload`, `/api/ui/reconfigure` and
+    the admissions; it also signs membership tokens and forwards the removal
+    of a worker or a visitor (`/api/ui/leave`).
     Everything else that was `PrincipalOnly` now needs the principal, in the
     browser (`require_admin_for_surface` asks for `EffectiveAuthority::Principal`)
     and between nodes: `/admin/*` (block, remove, promote, demote, resign,
-    regenerate the key, slots), admissions, network settings and their
+    regenerate the key, slots), network settings and their
     fan-out, TLS/QUIC/logs policy, the trust share, slice release, the KV
     cache, sidecar links, the cluster log. A secondary cannot demote itself:
     demotion is a principal route. API keys of other nodes are synced only
@@ -218,18 +228,30 @@ last):
     its acceptance of a principal transfer the principal offered to it. Routes of
     the other scopes - `/v1`, `/api/generate`, the node's own description, the
     `/api/internal` and `/api/cluster` sync routes - are unchanged.
-  `gateway::peer_is_visitor` is the one definition of "inference node": a peer
-  that announces the profile, one the trust chain records as one (below), or,
-  on the principal, one whose admission record says so. **The role travels in
-  the chain**: the principal signs a `MemberRoleRecord` (`member_roles` in the
-  trust document, `AdminTrust::record_member_role`) for each approved machine
-  - `worker` or `visitor` - at the decision and every 15 s by
-  `webui::spawn_member_role_keeper`, which also covers lobby auto-approval. A
-  node's latest record is its role. The chain sync carries it to every
-  member, so a secondary admin or a worker refuses a disguised inference node
-  too. A machine the chain records as an inference node is never an admin:
-  `signed_secondary_grant` refuses it, and `effective_authority` and
-  `control_issuer_is_admin` ignore any grant it held before. The deploy survey leaves such peers out, and `launch` and add-node
+  `gateway::peer_is_visitor` is the one definition of "visitor": a peer
+  that announces the profile, one whose membership token says so (below), or,
+  on an admin, one whose admission record says so. **The role travels in a
+  membership token, not in the chain** (`crate::membership`,
+  `webui/membership.rs`). The trust chain names the admins only, so admitting
+  a worker or a visitor changes no trust document. Every machine that is not
+  an admin asks an admin (the principal first, then the secondaries) for a
+  token over `POST /api/internal/membership/token`, signed with its own key;
+  the admin issues it only for an approved admission, with the role admitted
+  (on a legacy `open_admission` network, the announced one). The token is a
+  compact JWT signed with EdDSA by the issuing admin's node key - `iss`,
+  `iss_key`, `sub`, `sub_key`, `net` (the chain's cluster id), `role`, `iat`,
+  `exp`, `jti` - and lasts 10 minutes (`TOKEN_TTL_SECS`).
+  `webui::spawn_token_keeper` renews it two thirds in, and at once when it
+  stops holding, and the node announces it (`membership` in the Announce and
+  in `PeerInfo`). Any node checks it against its chain alone
+  (`membership::verify`: the only header accepted is EdDSA, the signer must
+  be an admin of the chain today, the network must be this one, 30 s of
+  clock leeway) and accepts it only for the node and key it names
+  (`role_of`), so a copied token is worthless. Removing a member is not
+  written anywhere: the admins stop renewing, and its role ends with its
+  token. Demoting an admin voids every token it signed at the next chain
+  sync. A visitor is never made an admin: the principal's promotion refuses
+  it (`visitor_target`). The deploy survey leaves such peers out, and `launch` and add-node
   refuse them as targets (`reason: "visitor_target"`).
 - **Leaving and the own network** (`p2p-network.md` 6.1). `POST
   /api/ui/network/leave` leaves a network this node joined and restores its
@@ -405,8 +427,8 @@ opens a signed offer to the last active secondary, and
 `POST /api/transfer/offers/{id}/accept` only completes when the successor
 presents the signed acceptance. `POST /admin/authority/secondaries/:id/demote`
 is exclusive to the principal. A machine's role (`worker` or `visitor`) is not
-changed by a request between nodes: it is set when the principal admits the
-machine and signed into the chain as a member role record (2 above).
+changed by a request between nodes: it is set when an admin admits the
+machine and carried in its membership token (2 above).
 
 The promotion is one signed delivery. `POST /admin/nodes/:id/promote-admin`
 signs the secondary grant on the principal, records it in the chain and posts
@@ -931,10 +953,9 @@ adopts: `admin` while the chain grants it authority, `worker` when it no longer
 does, and an inference node stays one.
 
 **The chain has a version**, `AdminTrust::chain_version`:
-`<transfers>.<grants>.<demotions and role records>.<open transfer>-<hash>`,
+`<transfers>.<grants>.<demotions>.<open transfer>-<hash>`,
 the hash being the first 16 hex digits of the SHA-256 of the document. The
-third counter sums demotions and member role records: both lists only grow
-and only the principal writes them. The three counters order two copies; the hash tells apart two copies the counters call equal. A node
+three counters order two copies; the hash tells apart two copies the counters call equal. A node
 adopts a copy with higher counters **from any member**, because every
 signature in it is checked from the anchor (`admin_trust::reconcile_from`) -
 which is what lets a node that was away catch up while the principal is

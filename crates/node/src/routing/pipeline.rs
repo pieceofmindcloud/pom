@@ -741,6 +741,7 @@ mod ipv6_tests {
             pubkey: "p".into(),
             cluster_id: None,
             trust_version: None,
+            membership: None,
             relay: None,
             addr: addr.into(),
             addr_candidates: Vec::new(),

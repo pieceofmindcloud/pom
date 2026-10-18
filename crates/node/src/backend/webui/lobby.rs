@@ -572,17 +572,24 @@ pub(super) async fn join_network(
 }
 
 /// `GET /api/ui/network/admissions` - the admission requests this network
-/// received, for its admin to decide. Each carries the candidate's declared
+/// received, for an admin to decide. Each carries the candidate's declared
 /// hardware, the latency it measured and whether it reaches the principal
-/// directly or through a relay.
+/// directly or through a relay. On a secondary admin it is its copy of the
+/// principal's list, read again first when the principal answers.
 pub(super) async fn admissions(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
 ) -> Response {
-    Json(state.network_chat.admissions()).into_response()
+    if super::is_principal(&state) {
+        return Json(state.network_chat.admissions()).into_response();
+    }
+    match super::refresh_roster(&state).await {
+        Ok(records) => Json(records).into_response(),
+        Err(_) => Json(state.network_chat.roster_mirror()).into_response(),
+    }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct AdmissionDecision {
     pub node_id: String,
     /// `approve`, `reject` or `forget`.
@@ -591,40 +598,18 @@ pub struct AdmissionDecision {
 
 /// `POST /api/ui/network/admissions` - an admin's decision on one request.
 /// Approving does not send anything: the candidate collects the grant on its
-/// next poll.
+/// next poll. A secondary admin's decision goes to the principal, which
+/// keeps the list (`membership::forward_decision`).
 pub(super) async fn decide_admission(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
     Json(decision): Json<AdmissionDecision>,
 ) -> Response {
-    let status = match decision.decision.as_str() {
-        "approve" => Some(network_lobby::AdmissionStatus::Approved),
-        "reject" => Some(network_lobby::AdmissionStatus::Rejected),
-        "forget" => None,
-        _ => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "decision must be approve, reject or forget" })),
-            )
-                .into_response()
-        }
-    };
-    let node_id = decision.node_id.trim();
-    // Forgetting a machine that was approved takes its membership away, and
-    // it still holds the connection key: same treatment as a departure.
-    let revoked = status.is_none()
-        && state
-            .network_chat
-            .admission_of(node_id)
-            .is_some_and(|record| record.status == network_lobby::AdmissionStatus::Approved);
-    if revoked {
-        state.network_chat.member_departed(node_id);
-        state.network_chat.request_rotation(node_id);
-    } else if !state.network_chat.decide_admission(node_id, status) {
-        return StatusCode::NOT_FOUND.into_response();
+    if super::is_principal(&state) {
+        super::apply_decision(&state, decision).await
+    } else {
+        super::forward_decision(&state, &decision).await
     }
-    super::sign_member_roles(&state);
-    Json(state.network_chat.admissions()).into_response()
 }
 
 /// `GET /api/setup/lobby?key=pk:...` - the same, from the setup wizard.

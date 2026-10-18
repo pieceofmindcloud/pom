@@ -522,50 +522,6 @@ pub(crate) fn spawn_member_list_keeper(state: GatewayState) {
     });
 }
 
-/// Signs into the chain the role of every machine the principal admitted,
-/// so every member - not only the principal, which keeps the admission list -
-/// knows it whatever the machine announces: an inference node is refused as
-/// one, and a regular node's role is what lets it reach another node's
-/// serving routes (`gateway::caller_may_ask`). Does nothing off the principal.
-pub(crate) fn sign_member_roles(state: &GatewayState) {
-    if state.admin_trust.current_primary().pubkey != state.authority_principal.pubkey {
-        return;
-    }
-    let mut changed = false;
-    for record in state.network_chat.admissions() {
-        if record.status != crate::network_lobby::AdmissionStatus::Approved {
-            continue;
-        }
-        match state.admin_trust.record_member_role(
-            &state.authority_signing_key,
-            &record.node_id,
-            record.role,
-        ) {
-            Ok(true) => {
-                changed = true;
-                info!(node = %record.node_id, role = ?record.role, "member role signed into the chain");
-            }
-            Ok(false) => {}
-            Err(error) => warn!(node = %record.node_id, "could not sign the member role: {error:#}"),
-        }
-    }
-    if changed {
-        crate::admin::publish_chain_version(state);
-    }
-}
-
-/// Keeps the chain's role records in step with the principal's admissions,
-/// including the ones decided by the lobby without a screen (auto-approval).
-pub(crate) fn spawn_member_role_keeper(state: GatewayState) {
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(Duration::from_secs(15));
-        loop {
-            ticker.tick().await;
-            sign_member_roles(&state);
-        }
-    });
-}
-
 /// On a member: when the principal is not among the admitted peers - the
 /// usual sign that this node's connection key is no longer the network's -
 /// asks the principal for the current key and adopts it. A member that was

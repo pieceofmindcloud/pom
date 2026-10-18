@@ -872,19 +872,21 @@ pub(super) fn is_public_ui_static_path(path: &str) -> bool {
             && path != "/handshake")
 }
 
-/// Whether `peer` is an inference node. The role is granted at admission
-/// and an announce is only what a node says about itself, so a machine
-/// admitted as one stays one whatever it announces: on every node the chain's
-/// signed role record decides (`AdminTrust::record_member_role`), and on the
-/// principal its member list as well, before the record is signed.
-/// Everywhere, a node that announces itself as an inference node is one.
+/// Whether `peer` is a visitor. The role is granted at admission and an
+/// announce is only what a node says about itself, so a machine admitted as
+/// one stays one whatever it announces: on every node its membership token
+/// says so (`crate::membership`), and on the admins their admission list
+/// as well. Everywhere, a node that announces itself as a visitor is one.
 pub(crate) fn peer_is_visitor(state: &GatewayState, peer: &PeerInfo) -> bool {
+    use crate::config::EnrollmentRole;
     peer.profile == crate::profile::NodeProfile::Visitor
-        || crate::admin_trust::recorded_visitor(&state.admin_trust.document(), &peer.node_id)
+        || crate::membership::peer_role(peer, &state.admin_trust.document())
+            == Some(EnrollmentRole::Visitor)
         || state
             .network_chat
             .admission_of(&peer.node_id)
-            .is_some_and(|record| record.role == crate::config::EnrollmentRole::Visitor)
+            .is_some_and(|record| record.role == EnrollmentRole::Visitor)
+        || state.network_chat.admitted_role(&peer.node_id) == Some(EnrollmentRole::Visitor)
 }
 
 /// What a node-to-node request may reach, by the caller's identity.
@@ -894,8 +896,8 @@ pub(crate) fn peer_is_visitor(state: &GatewayState, peer: &PeerInfo) -> bool {
 /// - A deploy route (deploy, load, unload, stop) takes a request signed by
 ///   any admin of the trust chain, principal or secondary.
 /// - A route of a serving node (catalog, planning, transfers) takes a signed
-///   request from an admin or from a peer the principal admitted as a regular
-///   node (`peer_role_is_attested`) - never on the strength of its announce.
+///   request from an admin or from a worker whose membership token says so
+///   (`peer_role_is_attested`) - never on the strength of its announce.
 /// - A route of this machine's own operator (`LocalOnly`) is refused to
 ///   every other node, signed or not.
 /// - Everything else - inference, the node's own description, the internal
@@ -942,18 +944,16 @@ pub(crate) async fn caller_may_ask(
     }
 }
 
-/// Whether the principal vouched that `peer` was admitted as a regular
-/// node, rather than taking the peer's word for it. The chain's signed role
-/// record says so on every node; on the principal its own approved admission
-/// does too, before the record is signed. A legacy network open to anyone
-/// with the anchor has no admissions to record, and keeps the announce.
+/// Whether an admin vouched that `peer` was admitted as a worker, rather
+/// than taking the peer's word for it: the membership token it announces
+/// says so, checked against the chain alone. On an admin its own admission
+/// list does too. A legacy network open to anyone with the anchor has no
+/// admissions, and keeps the announce.
 async fn peer_role_is_attested(state: &GatewayState, peer: &PeerInfo) -> bool {
     use crate::config::EnrollmentRole;
-    state.admin_trust.recorded_role(&peer.node_id) == Some(EnrollmentRole::Worker)
-        || state.network_chat.admission_of(&peer.node_id).is_some_and(|record| {
-            record.role == EnrollmentRole::Worker
-                && record.status == crate::network_lobby::AdmissionStatus::Approved
-        })
+    crate::membership::peer_role(peer, &state.admin_trust.document())
+        == Some(EnrollmentRole::Worker)
+        || state.network_chat.admitted_role(&peer.node_id) == Some(EnrollmentRole::Worker)
         || state.auth.read().await.network.open_admission()
 }
 
@@ -999,13 +999,14 @@ pub(crate) async fn require_admin_for_surface(
     // connection key says "a member"; it does not say which, and every member
     // holds it, inference nodes included.
     if let Some(auth) = &internal_node {
-        // Taking a machine out of the network is the principal's act. The
-        // route is open to every profile because leaving is abdication, so
-        // the scope cannot say it: a leave forwarded by another node has to
-        // carry the principal's signature.
+        // Taking a machine out of the network is an admin's act: any admin
+        // removes a worker or a visitor, and only the principal removes an
+        // admin. The route is open to every profile because leaving is
+        // abdication, so the scope cannot say it: a leave forwarded by
+        // another node has to carry that signature.
         // An unsigned leave is refused too: the connection key alone would
-        // let any member, an inference node included, detach this machine
-        // or have the principal forward the removal of another.
+        // let any member, a visitor included, detach this machine or have
+        // an admin forward the removal of another.
         let verdict = match auth.principal() {
             None if path == "/api/ui/leave" => Err("principal_required"),
             Some(issuer)
@@ -1013,7 +1014,17 @@ pub(crate) async fn require_admin_for_surface(
                     && issuer != &state.authority_principal
                     && !issuer_is_principal(&state, issuer) =>
             {
-                Err("principal_required")
+                let document = state.admin_trust.document();
+                if !crate::admin_trust::control_issuer_is_admin(&document, issuer) {
+                    Err("admin_required")
+                } else if crate::admin_trust::control_issuer_is_admin(
+                    &document,
+                    &state.authority_principal,
+                ) {
+                    Err("principal_required")
+                } else {
+                    Ok(())
+                }
             }
             issuer => caller_may_ask(&state, scope, issuer).await,
         };
@@ -1593,6 +1604,7 @@ impl GatewayState {
                 pubkey: self.network.pubkey.clone(),
                 cluster_id: self.network.cluster_id(),
                 trust_version: self.network.trust_version(),
+                membership: self.network.membership(),
                 relay: self.network.relay_gate().offer(),
                 addr: format!("{}:{}", self_host, self.network.bind_addr.port()),
                 addr_candidates: self.network.self_addr_candidates(),

@@ -1136,6 +1136,7 @@ async fn handle_event(
                 network_chat_enabled,
                 cluster_id,
                 trust_version,
+                membership,
                 relay,
                 ..
             }) = serde_json::from_slice(&message.data)
@@ -1180,6 +1181,7 @@ async fn handle_event(
                     pubkey: pubkey.clone(),
                     cluster_id,
                     trust_version,
+                    membership,
                     relay,
                     // The gossipsub path has no source address to
                     // rewrite, and the announced one is usually the literal

@@ -211,15 +211,18 @@ breaks the whole product.
   (transfers, slicing, `apply`, being a deploy target), whoever asks, an admin
   included. What one node may ask of another depends on who signed the request:
   routes that govern the network take the principal, deploy routes take any admin
-  of the trust chain, routes of a serving node take a peer that is not an
-  inference node, and the connection key alone opens none of them - every member
-  holds it. A machine's own operator routes (API keys, plugins, its name,
-  networks, logs) are reached by no other node at all. The inference role is
-  signed into the trust chain, so every node, not only the principal, knows it. **A secondary admin deploys and undeploys models and nothing else**:
-  members, admissions, settings, keys and every change to the trust chain come
-  from the principal, on the screen and between nodes. The role is granted at
-  admission; on the principal a machine admitted as an inference node stays one
-  whatever it announces. → `http-api.md`
+  of the trust chain, routes of a serving node take a worker, and the
+  connection key alone opens none of them - every member holds it. A machine's
+  own operator routes (API keys, plugins, its name, networks, logs) are reached
+  by no other node at all. **The trust chain names the admins only**: a worker
+  or a visitor carries a short lived membership token an admin signed
+  (`src/membership.rs`), which every node checks against the chain alone, so
+  admitting a member changes no trust document. **A secondary admin deploys
+  models, decides admissions and removes workers and visitors, and nothing
+  else**: settings, keys, admins and every change to the trust chain come from
+  the principal, on the screen and between nodes. The role is granted at
+  admission and a machine admitted as a visitor stays one whatever it
+  announces. → `http-api.md`
 - **Plugins are independent of each other and are a process boundary.** POM no
   longer has a single product-wide "Enterprise license": `PluginManager`
   (`crates/node/src/plugins.rs`) keeps an activation, lease, heartbeat, process

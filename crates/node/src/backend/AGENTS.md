@@ -359,13 +359,12 @@ boundary.
   for network visibility and profile transitions. The web UI serializes it
   through `GET /api/ui/node`. Infer nodes can read a local-only network view;
   a role never changes in place. A secondary admin keeps management access
-  but cannot promote another admin, and is not the principal: admission and
-  the member list stay with the principal.
+  but cannot promote another admin, and is not the principal: it decides
+  admissions and removes workers and visitors, but the admission list stays
+  on the principal, which it reads and sends its decisions to.
 - `admin_trust.rs` - the protected, durable Ed25519 authority chain. It stores
   the manually anchored root, one-level secondary grants, signed demotions,
-  signed member role records (`record_member_role`, `recorded_visitor`: a
-  machine recorded as an inference node is never an admin, whatever grant it
-  held), transfer offer and acceptance state, and full-chain reconciliation. Consumed
+  transfer offer and acceptance state, and full-chain reconciliation. Consumed
   nonces live in a local replay ledger beside the chain
   (`replay_path_for`: `<chain>.replay.json`), never in the shared document:
   control-envelope entries expire with the envelope's `CONTROL_WINDOW_SECS`
@@ -445,6 +444,17 @@ boundary.
   `node.rs::peer_of` finds the peer. `transfer::servable_path` serves a path outside the
   shard folder only when it is in the node's sidecar inventory, and a finished
   download invalidates the receiver's catalog.
+- `webui/membership.rs` - membership tokens at run time (the format is
+  `crate::membership`, `src/membership.rs`: a compact EdDSA JWT naming the
+  member's node and key, its role, the network and a 10 min expiry, checked
+  against the chain alone). `internal_token` issues one on any admin for an
+  approved admission; `spawn_token_keeper` renews this node's (none on an
+  admin) and sets it in the Announce. On a secondary admin,
+  `spawn_roster_keeper` mirrors the principal's admission list
+  (`internal_roster`), and `forward_decision` sends its admission decisions
+  to the principal (`internal_decide`, applied by `apply_decision`, which
+  refuses to remove an admin). `NetworkChat::admitted_role` reads the own
+  list and the mirror.
 - `webui/kv_cache.rs` - this machine's KV cache for the dashboard:
   `kv_cache_disk` measures the snapshot directory (`NodeInfo.kv_cache`) and
   `POST /api/ui/kv-cache/clear` (PrincipalOnly, also empties the `strata-sessions/` subfolder, forwarded by `node_id` like
@@ -546,11 +556,10 @@ boundary.
   content hash); `spawn_trust_chain_keeper` compares it every 30 s with what
   the peers announce and fetches the chain from whoever is ahead
   (`chain_sources`, `POST /api/internal/admin-trust/chain`) - any member, so
-  it works with the principal offline. On the principal,
-  `webui::sign_member_roles` (at each admission decision and every 15 s from
-  `spawn_member_role_keeper`) signs the role of each approved machine into the
-  chain, which this same sync carries to every member. A non-admin caller of
-  a `ServingMember` route needs that signed `worker` role (`caller_may_ask`). `chain_status` feeds
+  it works with the principal offline. The chain names admins only: a
+  worker's or visitor's role is its membership token (`webui/membership.rs`
+  below), and a non-admin caller of a `ServingMember` route needs a `worker`
+  token (`caller_may_ask`). `chain_status` feeds
   `NodeInfo.cluster_version` and `POST /api/ui/network/trust-sync`.
 - `reqlog.rs` - the audit adapter and the migration fallback. With the plugin
   active, the host writes in `enterprise.db`; independently of that destination, the

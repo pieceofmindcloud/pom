@@ -186,9 +186,9 @@ export function Notifications() {
   const offers = useOffers();
   // Machines asking to join this network (for its admin), and the answers to
   // what this machine asked of other networks.
-  // Approving a machine is the principal's; a secondary admin is not asked.
-  const { profile, secondary } = useProfile();
-  const admissions = useAdmissions(profile === "admin" && !secondary);
+  // Any admin approves a machine; a secondary's decision goes to the principal.
+  const { profile } = useProfile();
+  const admissions = useAdmissions(profile === "admin");
   const admissionRequests = useAdmissionRequests();
   const pendingAdmissions = (admissions.data ?? []).filter((record) => record.status === "pending");
   // An answer to something this machine asked. A standing approval (it was

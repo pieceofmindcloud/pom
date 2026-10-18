@@ -3736,6 +3736,7 @@ dependencies = [
  "h3",
  "h3-quinn",
  "hex",
+ "hmac",
  "http",
  "hyper",
  "hyper-util",

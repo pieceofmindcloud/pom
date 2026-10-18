@@ -36,8 +36,8 @@ that listener require the `connection_key` and `x-pom-internal-node: 1` on
 private networks; on public networks, HTTPS and QUIC can use the secure
 transport and the marker, while the HTTP fallback carries the same shared
 `connection_key` with the marker. They do not accept client API keys. That
-recheck does not sign the inference frames. The Ed25519 public key and
-signature are used separately in the handshake to prove the peer's identity.
+recheck does not sign the inference frames. The admission handshake proves
+the key with a signed HMAC and never sends it (`POST /handshake` below).
 
 ## 1. The router and the route groups
 
@@ -600,18 +600,18 @@ describe that dormant code.
   `n_gpu_layers` and `fit_memory_applied` -, read from the live context and not
   from `EngineConfig`. With `flash_attn: null` the diagnostic bridge did not
   answer, and the UI says it does not know instead of showing "off".
-- **`POST /handshake`** - a two-message challenge protocol. The first request
-  carries `{ node_id, pubkey, connection_key }` without `nonce` or `signature`;
-  it is refused with 403 `challenge_required` and returns a random 32-byte hex
-  nonce. The second repeats the fields and adds `{ nonce, signature }`, where
-  `signature` is the hex Ed25519 signature of the raw nonce by the private key
-  matching `pubkey`. The nonce is valid for 30 s and consumed only once. Only
-  then does the gateway answer 200 with `approved` + `peer_id`. `invalid_key`,
-  `identity_mismatch` (the `node_id` is not the `SHA256` of `pubkey`, or the key
-  is malformed), `blocked`, `missing_nonce`, `missing_signature`,
-  `invalid_signature`, `nonce_reused` and `nonce_expired` stay 403 refusals. An
-  old node, which sends the earlier body and cannot repeat with the signature,
-  sees 403 and is never admitted. This route also arrives through the p2p
+- **`POST /handshake`** - proves the connection key without sending it.
+  The request is `{ node_id, pubkey, challenge }` (the prober's identity and
+  32 random bytes, hex). The answer, 200, is `{ node_id, proofs, signature }`:
+  `proofs` holds one hex HMAC-SHA256 per connection key the node accepts (the
+  current one and, during a rotation's grace, the old one) over the label
+  `pom-handshake/v2`, the challenge, the node's id and the prober's id;
+  `signature` is the node's Ed25519 signature over the same fields and the
+  proofs. The prober accepts the node only when the signature matches the
+  announced key and one proof matches its own key
+  (`session::answer_proves_key`). 403 `reason`: `blocked` (the prober is
+  blocked), `no_key`, `identity_mismatch` (the `node_id` is not the `SHA256`
+  of `pubkey`), `invalid_challenge`. Nothing is kept between probes. This route also arrives through the p2p
   tunnel, together with `/health`, the
   `/api/cluster/{tls,quic,logs,network-chat,network-settings}` routes and the
   direct reply's return (`/v1/relay-result`, `/v1/remote-stream-result`, each
@@ -1574,8 +1574,8 @@ extractor for synchronization between nodes:
 minting keys **accumulates** instead of replacing - one token per node/harness,
 and the log attributes each generation to whoever paid for it.
 
-**Routes without `ConnectionAuth`**: `/peers`, `/health`, `/handshake` (the key
-goes in the body), and the read GETs of `/api/ui` (`node`, `models`, `cluster`,
+**Routes without `ConnectionAuth`**: `/peers`, `/health`, `/handshake` (it proves
+the key with an HMAC, never sends it), and the read GETs of `/api/ui` (`node`, `models`, `cluster`,
 `cluster/models`, `peer/:node_id/runtime`, `paths` GET, `jobs`, `jobs/:id`).
 Those `/api/ui` reads are still behind the administrative surface boundary
 (loopback in `localhost` mode, session in `network` mode) and the profile

@@ -79,9 +79,12 @@ through `insert_peer`; policies, tunnels, routes, UI and pipeline only consume
 the table after that point.
 
 - On a private network, a non-empty `connection_key` selects the proof through
-  `/handshake`. The node sends its identity and the key to the announced
-  gateway and treats an `approved` or `challenge_required` answer as proof that
-  the target knows the shared key. A wrong key, a missing key, a peer without a
+  `/handshake`. The key never leaves the node: it sends its identity and a
+  fresh 32-byte challenge, and the target answers with an HMAC-SHA256 of the
+  challenge and both node ids, keyed by the connection key and signed with the
+  target's node key. Only an answer the prober can check - the signature
+  against the announced key, the HMAC against its own key - admits the target;
+  what the target says about itself counts for nothing. A wrong key, a missing key, a peer without a
   gateway or a timeout are refused. The key does not appear in the `Announce`.
   Once the direct addresses are exhausted, the same probe goes through the
   p2p tunnel; for a peer behind NAT/CGNAT that is the only path that gets

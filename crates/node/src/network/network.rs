@@ -3651,28 +3651,40 @@ impl Network {
         let Ok(client) = builder.build() else {
             return AdmissionProbe::Unreachable;
         };
+        // The key never leaves this node: the peer proves it holds the same
+        // one by answering a fresh challenge (`session::handle_handshake`),
+        // and only an answer this node can check counts. A peer's own word
+        // that it approves is worth nothing - it is the peer under test.
+        let mut challenge = [0u8; crate::session::HANDSHAKE_CHALLENGE_BYTES];
+        rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut challenge);
         let body = serde_json::json!({
             "node_id": self.node_id,
             "pubkey": self.pubkey,
-            "connection_key": connection_key,
-            "nonce": null,
-            "signature": null,
+            "challenge": hex::encode(challenge),
         });
-        let approves = |status: u16, body: &serde_json::Value| {
-            body.get("approved").and_then(serde_json::Value::as_bool) == Some(true)
-                || (status == reqwest::StatusCode::FORBIDDEN.as_u16()
-                    && body.get("reason").and_then(serde_json::Value::as_str)
-                        == Some("challenge_required"))
+        let proves = |status: u16, body: &[u8]| {
+            status == reqwest::StatusCode::OK.as_u16()
+                && serde_json::from_slice::<crate::session::HandshakeResponse>(body)
+                    .is_ok_and(|answer| {
+                        crate::session::answer_proves_key(
+                            &answer,
+                            &challenge,
+                            &peer.node_id,
+                            &peer.pubkey,
+                            &self.node_id,
+                            connection_key,
+                        )
+                    })
         };
         for url in self.admission_urls(peer) {
             let Ok(response) = client.post(&url).json(&body).send().await else {
                 continue;
             };
             let status = response.status().as_u16();
-            let Ok(parsed) = response.json::<serde_json::Value>().await else {
+            let Ok(bytes) = response.bytes().await else {
                 continue;
             };
-            if approves(status, &parsed) {
+            if proves(status, &bytes) {
                 return AdmissionProbe::Approved;
             }
             if tls {
@@ -3702,11 +3714,8 @@ impl Network {
         )
         .await;
         match response {
-            Ok(response) => match response.json::<serde_json::Value>() {
-                Ok(parsed) if approves(response.status, &parsed) => AdmissionProbe::Approved,
-                Ok(_) => AdmissionProbe::Refused,
-                Err(_) => AdmissionProbe::Unreachable,
-            },
+            Ok(response) if proves(response.status, &response.body) => AdmissionProbe::Approved,
+            Ok(_) => AdmissionProbe::Refused,
             Err(error) => {
                 debug!(
                     "admission of {} through the tunnel did not complete: {error}",
@@ -5659,6 +5668,7 @@ mod tests {
     #[tokio::test]
     async fn private_admission_rejects_wrong_key_and_accepts_the_shared_key() {
         let remote = admission_config("correct", crate::config::NetworkVisibility::Private);
+        let responder = crate::identity::Identity::generate();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let gateway_port = listener.local_addr().unwrap().port();
         let app = axum::Router::new()
@@ -5666,7 +5676,10 @@ mod tests {
                 "/handshake",
                 axum::routing::post(crate::session::handle_handshake),
             )
-            .with_state(remote);
+            .with_state(crate::session::HandshakeIdentity {
+                auth: remote,
+                signing_key: Arc::new(responder.signing_key.clone()),
+            });
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
         let identity = crate::identity::Identity::generate();
@@ -5684,7 +5697,7 @@ mod tests {
             admission_config("wrong", crate::config::NetworkVisibility::Private),
             Arc::new(crate::admin_trust::AdminTrust::empty()),
         );
-        wrong.insert_peer(admission_peer(gateway_port)).await;
+        wrong.insert_peer(admission_peer_for(gateway_port, &responder.signing_key)).await;
         assert_eq!(wrong.peer_count().await, 0);
 
         let valid = Network::testkit(
@@ -5701,7 +5714,7 @@ mod tests {
             admission_config("correct", crate::config::NetworkVisibility::Private),
             Arc::new(crate::admin_trust::AdminTrust::empty()),
         );
-        valid.insert_peer(admission_peer(gateway_port)).await;
+        valid.insert_peer(admission_peer_for(gateway_port, &responder.signing_key)).await;
         assert_eq!(valid.peer_count().await, 1);
 
         server.abort();
@@ -6049,6 +6062,54 @@ mod tests {
         assert_eq!(network.admission_without_probe(&peer).await, Some(false));
     }
 
+    /// An outsider that announces itself must neither learn this network's
+    /// connection key from the probe nor get in by answering "approved".
+    #[tokio::test]
+    async fn an_outsider_learns_no_key_and_is_not_admitted_by_saying_yes() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let record = seen.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let gateway_port = listener.local_addr().unwrap().port();
+        let app = axum::Router::new().route(
+            "/handshake",
+            axum::routing::post(move |body: String| {
+                let record = record.clone();
+                async move {
+                    record.lock().unwrap().push(body);
+                    axum::Json(serde_json::json!({ "approved": true }))
+                }
+            }),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let identity = crate::identity::Identity::generate();
+        let network = Network::testkit(
+            identity.node_id.0.clone(),
+            identity.public_key_hex(),
+            vec![],
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .with_admission(
+            admission_config("network-secret", crate::config::NetworkVisibility::Private),
+            Arc::new(crate::admin_trust::AdminTrust::empty()),
+        );
+        let outsider = admission_peer(gateway_port);
+        let admitted = network.admit_peer(&outsider).await;
+        server.abort();
+
+        let leaked = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|body| body.contains("network-secret"));
+        assert!(!leaked, "the probe handed the connection key to an outsider");
+        assert!(!admitted, "an outsider got in by answering approved");
+    }
+
     /// With no answer, only recent proof holds the peer; a refusal never does.
     #[test]
     fn an_unreachable_recheck_keeps_only_a_recently_proven_peer() {
@@ -6079,6 +6140,7 @@ mod tests {
     #[tokio::test]
     async fn a_proven_peer_survives_a_recheck_that_reaches_nobody() {
         let remote = admission_config("correct", crate::config::NetworkVisibility::Private);
+        let responder = crate::identity::Identity::generate();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let gateway_port = listener.local_addr().unwrap().port();
         let app = axum::Router::new()
@@ -6086,7 +6148,10 @@ mod tests {
                 "/handshake",
                 axum::routing::post(crate::session::handle_handshake),
             )
-            .with_state(remote);
+            .with_state(crate::session::HandshakeIdentity {
+                auth: remote,
+                signing_key: Arc::new(responder.signing_key.clone()),
+            });
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
         let identity = crate::identity::Identity::generate();
@@ -6104,7 +6169,7 @@ mod tests {
             admission_config("correct", crate::config::NetworkVisibility::Private),
             Arc::new(crate::admin_trust::AdminTrust::empty()),
         );
-        let peer = admission_peer(gateway_port);
+        let peer = admission_peer_for(gateway_port, &responder.signing_key);
         assert!(network.admit_peer(&peer).await);
 
         server.abort();
@@ -6123,6 +6188,7 @@ mod tests {
     #[tokio::test]
     async fn background_admission_warms_the_cache_once() {
         let remote = admission_config("correct", crate::config::NetworkVisibility::Private);
+        let responder = crate::identity::Identity::generate();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let gateway_port = listener.local_addr().unwrap().port();
         let app = axum::Router::new()
@@ -6130,7 +6196,10 @@ mod tests {
                 "/handshake",
                 axum::routing::post(crate::session::handle_handshake),
             )
-            .with_state(remote);
+            .with_state(crate::session::HandshakeIdentity {
+                auth: remote,
+                signing_key: Arc::new(responder.signing_key.clone()),
+            });
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
         let identity = crate::identity::Identity::generate();
@@ -6150,7 +6219,7 @@ mod tests {
                 Arc::new(crate::admin_trust::AdminTrust::empty()),
             ),
         );
-        let peer = admission_peer(gateway_port);
+        let peer = admission_peer_for(gateway_port, &responder.signing_key);
 
         network.admit_in_background(peer.clone());
         network.admit_in_background(peer.clone());

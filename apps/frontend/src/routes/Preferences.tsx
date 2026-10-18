@@ -537,7 +537,7 @@ export function Preferences({ administrative = false }: { administrative?: boole
   // An inference node only talks to the models: GPU thermal protection and
   // the Hugging Face token are for machines that serve or download them.
   const { profile } = useProfile();
-  const inferOnly = profile === "infer";
+  const inferOnly = profile === "visitor";
   const toast = useToast();
   const invalidate = useInvalidate();
   const [thermalSaving, setThermalSaving] = useState(false);

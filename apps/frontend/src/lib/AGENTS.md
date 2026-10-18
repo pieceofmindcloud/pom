@@ -156,7 +156,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   from writing state on every render; the Chat regression test covers this
   navigation freeze.
 - `profile.tsx` - the persisted profile the node delivers at `/api/ui/node`
-  (`admin`/`node`/`infer`), the provider and `useProfile()`. There is no setter
+  (`admin`/`worker`/`visitor`), the provider and `useProfile()`. There is no setter
   nor `localStorage`: the browser only presents the value and derives the
   menu/route guard from it. **It is not authorization** - the backend remains
   the boundary.
@@ -164,7 +164,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   (`authority_level === "secondary"`): it deploys models and otherwise sees
   what a node sees, so principal-only controls check `!secondary`.
 - `access.ts` - which route each profile opens. `RESTRICTED` maps a route
-  prefix to the list of profiles; for `infer`, `/chat`, `/network-chat`,
+  prefix to the list of profiles; for `visitor`, `/chat`, `/network-chat`,
   `/documentation`, `/config/keys/api` and `/config/network` are visible. The
   network participant list and the administrative preferences stay closed to
   infer. In Chat, that profile also hides the summaries and the telemetry panel.
@@ -172,7 +172,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   read by the guard in `../App.tsx` **and** by `navForProfile` in
   `../components/nav.ts`, on purpose: two lists would give a menu that offers
   what the route refuses. Plugin routes stay open to every profile; the native
-  restrictions of `infer` still apply to `/logs`, `/statistics` and the other
+  restrictions of `visitor` still apply to `/logs`, `/statistics` and the other
   POM surfaces. Tests in `access.test.ts`.
 - `theme.tsx` - dark/light theme provider backed by `data-theme` + `localStorage`.
 - `toast.tsx` - toast context (success/error/warning/info) with auto-dismiss.
@@ -539,13 +539,13 @@ fits.
   `<html data-profile>` and persists no state in the browser.
 - `homeRoute(profile)` - the profile's starting screen: `/` for one that opens
   the panel, `/chat` for one that does not. `App.tsx` redirects with it instead
-  of showing the refusal, otherwise `infer` would open the interface in a dead
+  of showing the refusal, otherwise `visitor` would open the interface in a dead
   end - and the refusal used to tell the person to switch profile, a control
   that no longer exists.
 - `routeProfiles(path)` - the profiles that get in, or `null` when the route is
   free. It matches by segment (`/logs` covers future children, and **not**
   `/logs-antigos`) and the most specific key wins.
-- `canAccessRoute(path, profile)` - for `infer`, it allows only the conversation
+- `canAccessRoute(path, profile)` - for `visitor`, it allows only the conversation
   view, documentation, API keys and the local network. It is presentation, not
   credential scope; the real boundary stayed with `rdma-perfis-escopo-backend`.
   `components/nav.ts` uses the same result to keep the network in the infer
@@ -663,7 +663,7 @@ would go.
 - `i18n/locales.ts` is imported by `api.ts` and `chatStore.ts` (`getActiveLocale`) for non-React localized strings.
 - Backend endpoints hit from this folder: `/api/ui/node`, `/api/ui/cluster`, `/api/ui/models`, `/api/ui/cluster/models`, `/api/ui/peer/:node_id/runtime`, `/api/ui/paths`, `/api/ui/jobs`, `/api/ui/requests`, `/api/ui/requests/stats`, `/api/ui/network/info`, `/api/ui/network/geo/*`, `/api/ui/models/delete`, `/api/ui/deployments`, `/api/ui/deploy/node`, `/api/ui/deploy/node/remove`, `/api/ui/undeploy`, `/api/ui/leave`, `/api/ui/dev/update`, `/api/transfer/jobs`, `/api/transfer/offers`, `/admin/nodes`, `/admin/api-keys`, `/v1/models`. The queries accept `user` and `model` besides the period and identity filters.
 - The Chat of any profile with a model selected reads
-  `/api/ui/infer/heads?model=...`, which `InferNodeAdmin` authorizes and which
+  `/api/ui/infer/heads?model=...`, which `AnyMember` authorizes and which
   returns only the layer-zero candidates, the chosen node, load and RTT with
   age. The load is `null` when the candidate's live report does not arrive, and
   the UI shows "in-flight count unavailable" in that case. An RTT outside its

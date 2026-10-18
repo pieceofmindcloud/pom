@@ -36,7 +36,7 @@ vi.mock("../lib/api", async (original) => ({
 vi.mock("../lib/queries", () => ({
   useApiKeys: () => ({ data: [mocks.oldKey, mocks.foreignKey], isLoading: false, isError: false, isFetching: false, refetch: mocks.refetch }),
   useCluster: () => ({ data: { peers: [] } }),
-  useNode: () => ({ data: fakeNode({ node_id: "inference-node", role: "node" }) }),
+  useNode: () => ({ data: fakeNode({ node_id: "inference-node", role: "worker" }) }),
 }));
 
 vi.mock("../lib/toast", () => ({
@@ -48,7 +48,7 @@ vi.mock("../lib/toast", () => ({
 
 import { TokenKeys } from "./Keys";
 
-function mount(profile: "admin" | "infer" = "infer") {
+function mount(profile: "admin" | "infer" = "visitor") {
   return render(
     <MemoryRouter
       initialEntries={["/config/keys/api"]}

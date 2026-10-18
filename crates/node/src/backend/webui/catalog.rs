@@ -130,10 +130,10 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
                 .admin_trust
                 .effective_authority(&state.authority_principal, cfg.profile)
                 .map(|authority| match authority {
-                    crate::admin_trust::EffectiveAuthority::Primary => {
+                    crate::admin_trust::EffectiveAuthority::Principal => {
                         crate::admin_trust::AdminLevel::Primary
                     }
-                    crate::admin_trust::EffectiveAuthority::Secondary => {
+                    crate::admin_trust::EffectiveAuthority::Admin => {
                         crate::admin_trust::AdminLevel::Secondary
                     }
                 }),
@@ -146,19 +146,19 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
             state
                 .admin_trust
                 .effective_authority(&state.authority_principal, cfg.profile)
-                == Some(crate::admin_trust::EffectiveAuthority::Primary),
+                == Some(crate::admin_trust::EffectiveAuthority::Principal),
             state
                 .admin_trust
                 .effective_authority(&state.authority_principal, cfg.profile)
-                == Some(crate::admin_trust::EffectiveAuthority::Primary),
+                == Some(crate::admin_trust::EffectiveAuthority::Principal),
             state
                 .admin_trust
                 .effective_authority(&state.authority_principal, cfg.profile)
-                == Some(crate::admin_trust::EffectiveAuthority::Primary),
+                == Some(crate::admin_trust::EffectiveAuthority::Principal),
             state
                 .admin_trust
                 .effective_authority(&state.authority_principal, cfg.profile)
-                == Some(crate::admin_trust::EffectiveAuthority::Primary),
+                == Some(crate::admin_trust::EffectiveAuthority::Principal),
             cfg.thermal,
             cfg.admin_exposure,
             cfg.admin_access_token
@@ -291,7 +291,7 @@ pub(super) async fn local_is_primary(state: &GatewayState) -> bool {
     state
         .admin_trust
         .effective_authority(&state.authority_principal, profile)
-        == Some(crate::admin_trust::EffectiveAuthority::Primary)
+        == Some(crate::admin_trust::EffectiveAuthority::Principal)
 }
 
 #[derive(Debug, Serialize)]

@@ -374,9 +374,9 @@ describe("PublicNetworks", () => {
     expect(within(panel).getByText("Aceitando novos membros")).toBeTruthy();
     // Each role keeps its name beside an icon and its own state.
     const roles = within(panel).getByTestId("network-enrollment-roles");
-    expect(roles.querySelector('[data-role="node"]')?.textContent).toContain("Nós da rede");
-    expect(roles.querySelector('[data-role="node"] svg')).toBeTruthy();
-    expect(roles.querySelector('[data-role="infer"]')?.textContent).toContain("Nós de inferência");
+    expect(roles.querySelector('[data-role="worker"]')?.textContent).toContain("Nós da rede");
+    expect(roles.querySelector('[data-role="worker"] svg')).toBeTruthy();
+    expect(roles.querySelector('[data-role="visitor"]')?.textContent).toContain("Nós de inferência");
     expect(within(panel).getByRole("link", { name: "Discord" })).toBeTruthy();
     expect(within(panel).getByText("Respeite os peers")).toBeTruthy();
     // The organization left the table and lives here; the place stays in the row.
@@ -467,7 +467,7 @@ describe("PublicNetworks", () => {
     await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/api/ui/network/settings", expect.objectContaining({
       visibility: "private",
       access_policy: "authorized",
-      accepted_enrollments: ["node", "infer"],
+      accepted_enrollments: ["worker", "visitor"],
       description: "Rede da casa",
     })));
     await waitFor(() => expect(screen.queryByTestId("network-quick-setup")).toBeNull());
@@ -543,7 +543,7 @@ describe("PublicNetworks", () => {
     mocks.node.data = { authority_level: "primary" };
     mocks.networkInfo.data = {
       can_edit: true,
-      network: { public_name: "", organization: "", description: "", rules: "", channels: "", country_code: "", country_name: "", city: "", geo_label: "", visibility: "private", access_policy: "authorized", accepted_enrollments: ["node"], public_stats: false, location: null },
+      network: { public_name: "", organization: "", description: "", rules: "", channels: "", country_code: "", country_name: "", city: "", geo_label: "", visibility: "private", access_policy: "authorized", accepted_enrollments: ["worker"], public_stats: false, location: null },
     } as never;
     mocks.get.mockImplementation((path: string) => {
       if (path === "/api/public/networks") return Promise.resolve([]);
@@ -779,7 +779,7 @@ describe("PublicNetworks", () => {
     mocks.get.mockImplementation((path: string) => {
       if (path === "/api/public/networks") {
         return Promise.resolve([
-          { ...networks[0], accepted_enrollments: ["infer"] },
+          { ...networks[0], accepted_enrollments: ["visitor"] },
           { ...networks[1], accepted_enrollments: [] },
           networks[2],
         ]);
@@ -793,7 +793,7 @@ describe("PublicNetworks", () => {
     mocks.post.mockResolvedValue({
       accepted: true, error: null, node_id: "me", messages: [],
       card: { hostname: "eu", os: "linux", arch: "x86_64", cpu_count: 4, ram_total_mb: 8192, gpus: [] },
-      admission: { key: "pk:curitiba", name: "Rede Curitiba", role: "infer", status: "pending" },
+      admission: { key: "pk:curitiba", name: "Rede Curitiba", role: "visitor", status: "pending" },
     });
     render(
       <LocaleProvider initialLocale="pt-BR">
@@ -820,7 +820,7 @@ describe("PublicNetworks", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Pedir admissão" }));
     await waitFor(() => expect(mocks.post).toHaveBeenCalledWith(
       "/api/ui/network-chat/lobby/admission",
-      { key: "pk:curitiba", role: "infer", name: "Rede Curitiba" },
+      { key: "pk:curitiba", role: "visitor", name: "Rede Curitiba" },
     ));
     expect(await within(dialog).findByText(/Aguardando um administrador/)).toBeTruthy();
   });

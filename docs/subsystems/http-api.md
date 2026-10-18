@@ -62,8 +62,8 @@ last):
   /api/public/network` (the local network, when public) and `GET
   /api/public/networks` (local, directory and pkarr candidates) return
   `PublicNetworkView` with `publisher_key` and `relay_hints`, never an IP. The
-  view includes `accepted_enrollments`, the list of enrollment roles (`node`,
-  `infer`) the network advertises as open; an empty list means it is not
+  view includes `accepted_enrollments`, the list of enrollment roles (`worker`,
+  `visitor`) the network advertises as open; an empty list means it is not
   accepting new members. It is edited by the principal through `POST
   /api/ui/network/settings` and is advisory - no route enforces it. Every
   listed network answers its lobby to non-members (the network Chat only adds
@@ -161,7 +161,7 @@ last):
   returns the grant. `POST /api/ui/network/join` (`{key}`) joins a network that
   approved this machine, replacing the one it is in, and restarts the node
   (`409 not_approved` without a grant, `502 grant_invalid` when the granted
-  trust document is not that key's). On the network's principal, AdminOnly:
+  trust document is not that key's). On the network's principal, PrincipalOnly:
   `GET /api/ui/network/admissions` lists the requests with each candidate's
   declared hardware, measured latency and whether it connects through a relay,
   and `POST /api/ui/network/admissions` (`{node_id, decision}` with `approve`,
@@ -171,17 +171,17 @@ last):
   reach on a node. A node-to-node request passes that table, and is checked
   for two other things instead:
   - **The receiver is an inference node.** It answers `403` with `reason:
-    "infer_profile"` to every route in `INFER_NODE_REFUSES` - `/api/ui/apply`,
+    "visitor_profile"` to every route in `VISITOR_REFUSES` - `/api/ui/apply`,
     `/api/ui/launch`, `/api/ui/deploy`, `/api/ui/reconfigure`,
     `/api/ui/slice`, `/api/transfer` - before anything else, so an admin's
     signed request is refused too.
-  - **Who the caller is** (`caller_may_ask`). An `AdminOnly` route needs the
+  - **Who the caller is** (`caller_may_ask`). An `PrincipalOnly` route needs the
     control envelope signed by the **principal** (`reason:
     "signature_required"` for the key alone, `"principal_required"`
-    otherwise). A `DeployAdmin` route needs it signed by any admin of the
+    otherwise). A `AnyAdmin` route needs it signed by any admin of the
     trust chain, principal or secondary (`"admin_required"`). A
-    `NodeAdmin` route needs it signed by an admin or by a live peer the
-    principal admitted as a regular node (`"infer_caller"`,
+    `ServingMember` route needs it signed by an admin or by a live peer the
+    principal admitted as a regular node (`"visitor_caller"`,
     `"unknown_caller"`, `"role_unattested"`): the chain's signed role record,
     or on the principal its approved admission, says so - the announce never
     does. Only a legacy network open to anyone with the anchor
@@ -189,7 +189,7 @@ last):
     routes include `/api/transfer/*`, which is on the administrative surface:
     a peer reaches it signed, and the local screen with its session, never
     with the connection key alone. A
-    `LocalOperator` route belongs to the operator at that machine and is
+    `LocalOnly` route belongs to the operator at that machine and is
     refused to every other node, signed or not (`"local_operator_only"`):
     `/admin/api-keys`, `/api/ui/plugins/*`, `/api/ui/requests/*`, the
     machine's name, relay and advertised address, `/api/ui/networks/*`,
@@ -202,12 +202,12 @@ last):
     network - needs the principal's signature, and an unsigned one is refused
     (`"principal_required"`), although the route is open to every profile for
     a node leaving by itself from its own screen.
-  - **What a secondary admin may do.** `DeployAdmin` is the only scope it
+  - **What a secondary admin may do.** `AnyAdmin` is the only scope it
     has beyond a node's: `/api/ui/deploy/*`, `/api/ui/deployments` (writes),
     `/api/ui/apply`, `/api/ui/launch`, `/api/ui/undeploy`,
     `/api/ui/stop-inference`, `/api/ui/unload` and `/api/ui/reconfigure`.
-    Everything else that was `AdminOnly` now needs the principal, in the
-    browser (`require_admin_for_surface` asks for `EffectiveAuthority::Primary`)
+    Everything else that was `PrincipalOnly` now needs the principal, in the
+    browser (`require_admin_for_surface` asks for `EffectiveAuthority::Principal`)
     and between nodes: `/admin/*` (block, remove, promote, demote, resign,
     regenerate the key, slots), admissions, network settings and their
     fan-out, TLS/QUIC/logs policy, the trust share, slice release, the KV
@@ -218,20 +218,19 @@ last):
     its acceptance of a principal transfer the principal offered to it. Routes of
     the other scopes - `/v1`, `/api/generate`, the node's own description, the
     `/api/internal` and `/api/cluster` sync routes - are unchanged.
-  `gateway::peer_is_infer` is the one definition of "inference node": a peer
+  `gateway::peer_is_visitor` is the one definition of "inference node": a peer
   that announces the profile, one the trust chain records as one (below), or,
   on the principal, one whose admission record says so. **The role travels in
   the chain**: the principal signs a `MemberRoleRecord` (`member_roles` in the
-  trust document, `AdminTrust::record_member_role`) for each machine approved
-  as an inference node, at the decision and every 15 s by
+  trust document, `AdminTrust::record_member_role`) for each approved machine
+  - `worker` or `visitor` - at the decision and every 15 s by
   `webui::spawn_member_role_keeper`, which also covers lobby auto-approval. A
-  node approved as `node` is only recorded when it replaces an earlier role;
-  a node's latest record is its role. The chain sync carries it to every
+  node's latest record is its role. The chain sync carries it to every
   member, so a secondary admin or a worker refuses a disguised inference node
   too. A machine the chain records as an inference node is never an admin:
   `signed_secondary_grant` refuses it, and `effective_authority` and
   `control_issuer_is_admin` ignore any grant it held before. The deploy survey leaves such peers out, and `launch` and add-node
-  refuse them as targets (`reason: "infer_target"`).
+  refuse them as targets (`reason: "visitor_target"`).
 - **Leaving and the own network** (`p2p-network.md` 6.1). `POST
   /api/ui/network/leave` leaves a network this node joined and restores its
   own from standby (`restored_own_network` in the answer); on the node's own
@@ -314,12 +313,12 @@ source of the scope the gateway enforces:
 
 A rule can name the **method**, and the most specific one wins: first the
 longest prefix, and on a tie the one that names the method. That is what keeps
-`GET /admin/nodes` open to `node` while blocking, unblocking, removing and
+`GET /admin/nodes` open to `worker` while blocking, unblocking, removing and
 promoting a machine - POST and DELETE under the same prefix - stay
 `admin-only`. Without a declared method, the rule applies to all.
 
 The advertised address is a description of the process itself: the route takes
-no `node_id` and does not forward calls to another peer. That is why `infer` can
+no `node_id` and does not forward calls to another peer. That is why `visitor` can
 correct it without getting administrative authority. The administration
 endpoints that take a target node stay reserved by the target rule and use
 Axum 0.7's `:id` syntax.
@@ -405,7 +404,7 @@ carries the full signed chain to the target, and then to every other member. `PO
 opens a signed offer to the last active secondary, and
 `POST /api/transfer/offers/{id}/accept` only completes when the successor
 presents the signed acceptance. `POST /admin/authority/secondaries/:id/demote`
-is exclusive to the principal. A machine's role (`node` or `infer`) is not
+is exclusive to the principal. A machine's role (`worker` or `visitor`) is not
 changed by a request between nodes: it is set when the principal admits the
 machine and signed into the chain as a member role record (2 above).
 
@@ -455,10 +454,10 @@ validate itself: the signature only proves the chain's internal consistency;
 what validates it is the value the operator brought through their own channel,
 which is why it is never prefilled from the pasted content.
 
-The route is `CommonOrInternal` in the scope table, on purpose: a `profile:
-admin` **not yet anchored** does not pass `AdminOnly`, which is exactly the
+The route is `HandlerAuth` in the scope table, on purpose: a `profile:
+admin` **not yet anchored** does not pass `PrincipalOnly`, which is exactly the
 state in which it needs to see the fingerprint, and whoever receives the anchor
-is usually a `node` or an `infer`. It also does not require the
+is usually a `worker` or a `visitor`. It also does not require the
 `connection_key`: the boundary is still `AdminAuth` (loopback in local mode,
 human password in network mode), and adding that credential does not protect
 against the threat the loopback lock contains - whoever reaches the browser
@@ -917,8 +916,8 @@ offers as `GET /api/transfer/offers`). `list_nodes` adds entries for blocked nod
 effective authority in the separate file is `Primary`. The principal signs a
 `secondary` grant with its Ed25519 identity; the target only accepts the change
 after validating the manual anchor and the full chain, while it is still a
-`node`. An inference node is refused before anything is signed (409, reason
-`infer_target`): its role is set at admission. If the target answers and does
+`worker`. An inference node is refused before anything is signed (409, reason
+`visitor_target`): its role is set at admission. If the target answers and does
 not become an admin, the principal takes the grant back with a signed
 demotion; if the target does not answer, the answer is 202 with
 `pending: true` and the grant stands until the target fetches the chain.
@@ -928,7 +927,7 @@ node: a member that does not know a secondary admin refuses its commands.
 After a promotion or a demotion the principal posts the chain to each member
 (`POST /api/internal/admin-trust/reconcile`, signed by an admin of the
 receiver's current chain). The receiver sets its profile from the chain it
-adopts: `admin` while the chain grants it authority, `node` when it no longer
+adopts: `admin` while the chain grants it authority, `worker` when it no longer
 does, and an inference node stays one.
 
 **The chain has a version**, `AdminTrust::chain_version`:
@@ -969,7 +968,7 @@ key never authenticates again.
 `prefix_auto_cache: {enabled, index_entries, index_bytes}` when the persistent
 prefix cache (`slot_persist_prefix_cache`) is on in this gateway.
 
-`POST /api/ui/kv-cache/clear` (AdminOnly) empties the KV cache of **one**
+`POST /api/ui/kv-cache/clear` (PrincipalOnly) empties the KV cache of **one**
 machine. The body is `{node_id?}`: absent or the node's own id acts locally,
 another id is forwarded to that machine, since only the owner of a disk deletes
 from it. Locally it removes every `.bin` and `.json` of the snapshot directory
@@ -1073,7 +1072,7 @@ node) and use `ConnectionAuth`:
   repositories and valid mounted sources;
   `POST /api/ui/plugins/dev-sources/:repository/rebuild-install` builds and
   installs or rebuilds the local plugin without requiring an existing
-  activation. These two routes stay AdminOnly. The server validates the paths,
+  activation. These two routes stay PrincipalOnly. The server validates the paths,
   only uses fixed Cargo commands plus the rebuild steps the plugin's manifest
   declares (`development.rebuild`, scripts inside the source; see
   `plugins-ui.md`) and does not return the build's stdout/stderr.
@@ -1118,7 +1117,7 @@ upgrades because of it.
 `pom_core` release detection (`PomCoreUpdateStatus`). The node only fills that
 notice after an accepted `enterprise` plugin heartbeat and while that license
 is active; installations without it do not query the core manifest. The
-AdminOnly action `POST /api/ui/pom-update/check` forces that detection on
+PrincipalOnly action `POST /api/ui/pom-update/check` forces that detection on
 demand and returns the updated status, without downloading or restarting
 anything. `POST /api/ui/pom-update/apply` receives `{ "release_id": "..." }`,
 checks that it is the release_id still announced, queries and verifies the
@@ -1136,7 +1135,7 @@ controls. When `inference_mode` does not exist, `RuntimeParams` uses `dense`
 (`llama.cpp`) by default; `auto` is an explicit choice.
 
 `GET /api/ui/infer/heads?model=<id>` is the dedicated read of the inference
-heads, allowed for the `infer` and `admin` profiles: it returns only the live
+heads, allowed for the `visitor` and `admin` profiles: it returns only the live
 machines announcing a range starting at L0 for the requested model and already
 serving it (a machine still loading its model is left out), plus the
 chosen head, in-flight load and the RTT/age of each candidate. The planner
@@ -1185,9 +1184,9 @@ avoiding reusing another peer's plan.
 `POST /api/ui/deploy/node` (adding a machine to a deployment),
 `POST /api/ui/deploy/node/remove` (releasing one machine) and
 `POST /api/ui/undeploy` (taking the whole deployment offline) sit under the
-AdminOnly `/api/ui/deploy*` and `/api/ui/undeploy` rules: besides
+PrincipalOnly `/api/ui/deploy*` and `/api/ui/undeploy` rules: besides
 `ConnectionAuth`, the persisted `profile` of this node must be `admin` with
-effective authority. The UI hides these controls for the `node` and `infer`
+effective authority. The UI hides these controls for the `worker` and `visitor`
 profiles, but the server keeps the authority. A single machine can still free
 its own memory with `POST /api/ui/unload` or leave the network with
 `POST /api/ui/leave`. Adding or removing with a `deploy_id` appends a new
@@ -1208,7 +1207,7 @@ structured state, while login required and an authenticated session stay
 distinguishable for the UI. The model detail queries the license on the
 provider before the screen offers the download.
 
-`GET /api/ui/requests` requires `ConnectionAuth` and is `LocalOperator` (every
+`GET /api/ui/requests` requires `ConnectionAuth` and is `LocalOnly` (every
 profile, from its own screen only), since it returns prompts and request
 bodies. **Who reads what** (`reqlog::readable_node`): an admin of the chain,
 principal or secondary, reads the whole network's audit with any `node_id`
@@ -1276,11 +1275,11 @@ backend redoes the survey, checks the chosen path against the GGUF headers in
 the peer's apply and does not compute the SHA-256 of the `mmproj` payload to
 discover or select candidates.
 
-`GET /api/ui/model-sidecar-links` (`NodeAdmin`) returns `{ links, stale }`:
+`GET /api/ui/model-sidecar-links` (`ServingMember`) returns `{ links, stale }`:
 the principal's list of model -> projector / MTP draft links, read from the
 principal by a secondary (which keeps the last copy and sets `stale: true`
 when the principal does not answer). `POST /api/ui/model-sidecar-links`
-(`AdminOnly`) saves one `SidecarLink`; a secondary forwards it to the
+(`PrincipalOnly`) saves one `SidecarLink`; a secondary forwards it to the
 principal, which stamps `updated_at`/`updated_by`. A file link needs a name and
 a size; vision cannot be `embedded`. `DeployRequest` accepts `vision_choice`
 and `mtp_choice` (`{ mode, file: { file_name, size_bytes } }`) and
@@ -1346,7 +1345,7 @@ capture and sending of the cluster's real-time process log on or off. Only the
 principal accepts the operation; the effect applies without a restart and is
 announced as a trigger for the other nodes' authenticated fetch.
 
-**`GET /api/ui/cluster-logs`** - `DeployAdmin`: requires `ConnectionAuth` on
+**`GET /api/ui/cluster-logs`** - `AnyAdmin`: requires `ConnectionAuth` on
 any admin with effective authority, principal or secondary, and returns the lines persisted in the local replica, in
 arrival order, with `deploy_id`, origin timestamp, node name and a drop
 counter. It accepts `deploy_id` and `limit`; it does not reorder by
@@ -1487,7 +1486,7 @@ signed control envelope; a private network adds the `connection_key` only as a
 transport guard. The receiver checks the sender's authority before persisting.
 
 The location editor reads the offline city database embedded in the node
-through three `GET` routes, open to every profile (`InferNodeAdmin`) and
+through three `GET` routes, open to every profile (`AnyMember`) and
 mirrored under `/api/setup/geo/` in the dormant wizard router:
 
 | Route | Answer |
@@ -1524,7 +1523,7 @@ challenge to the same request's ephemeral keys; it then sends a `Secret`
 encrypted with X25519 and ChaCha20-Poly1305 containing the document and the
 `connection_key`. The persisted preference `local_auto_discovery` starts
 `false` and the administrative version uses
-`GET/POST /api/ui/network/auto-discovery`; that route requires `AdminOnly`,
+`GET/POST /api/ui/network/auto-discovery`; that route requires `PrincipalOnly`,
 never returns the key and drops the in-memory material when it receives
 `enabled: false`.
 

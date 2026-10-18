@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 pub(crate) const MANIFEST_SCHEMA: &str = "pom-plugin-ui/v1";
-const PROFILES: [&str; 3] = ["admin", "node", "infer"];
+const PROFILES: [&str; 3] = ["admin", "worker", "visitor"];
 /// Ceiling of one asset: bundled screens fit comfortably, and the host limits the frame.
 const MAX_ASSET_BYTES: usize = 8 * 1024 * 1024;
 
@@ -690,7 +690,7 @@ mod tests {
             "schema": "pom-plugin-ui/v1",
             "plugin_code": "logs",
             "menu": [{"id":"logs","label":{"en":"Request logs","pt-BR":"Logs"},"icon":"list-tree","to":"/logs","group":"logs","profiles":["admin"]}],
-            "routes": [{"path":"/logs","screen":"logs","profiles":["admin","node"],"full_bleed":true}],
+            "routes": [{"path":"/logs","screen":"logs","profiles":["admin","worker"],"full_bleed":true}],
             "screens": {"logs": {"module":"ui/logs.js","styles":["ui/logs.css"]}},
             "i18n": {"en":"i18n/en.json","pt-BR":"i18n/pt-BR.json"},
             "assets": ["ui/logs.js","ui/logs.css","i18n/en.json","i18n/pt-BR.json"]
@@ -755,11 +755,11 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("profiles");
-        with_roles["menu"][0]["roles"] = json!(["admin", "infer"]);
+        with_roles["menu"][0]["roles"] = json!(["admin", "visitor"]);
         let parsed = PluginUiManifest::parse("logs", with_roles).expect("roles valid");
         assert_eq!(
             parsed.menu[0].roles.as_deref().unwrap(),
-            ["admin".to_owned(), "infer".to_owned()]
+            ["admin".to_owned(), "visitor".to_owned()]
         );
         assert_eq!(parsed.menu[0].profiles, None);
 
@@ -784,12 +784,12 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("profiles");
-        with_roles["routes"][0]["roles"] = json!(["admin", "infer"]);
+        with_roles["routes"][0]["roles"] = json!(["admin", "visitor"]);
 
         let parsed = PluginUiManifest::parse("logs", with_roles).expect("roles valid");
         assert_eq!(
             parsed.routes[0].roles.as_deref().unwrap(),
-            ["admin".to_owned(), "infer".to_owned()]
+            ["admin".to_owned(), "visitor".to_owned()]
         );
         assert_eq!(parsed.routes[0].profiles, None);
 

@@ -493,7 +493,7 @@ pub(super) async fn survey(
         .all_peers()
         .await
         .into_iter()
-        .filter(|peer| !crate::gateway::peer_is_infer(state, peer))
+        .filter(|peer| !crate::gateway::peer_is_visitor(state, peer))
         .collect();
     let self_id = state.network.node_id.clone();
     let mut route_rtt: std::collections::HashMap<String, f64> = state

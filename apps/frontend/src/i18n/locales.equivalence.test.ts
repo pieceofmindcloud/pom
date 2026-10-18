@@ -55,9 +55,11 @@ const MOVED_TO_PLUGINS = new Set([
   "chat.ttftClient",
   "chat.ttftPipeline",
 ]);
-// Keys of the repetition-cycle detector, removed from the POM with it, and
-// of the one-machine limit a whole model no longer has.
+// Keys of the repetition-cycle detector, removed from the POM with it, of
+// the one-machine limit a whole model no longer has, and of the profiles
+// renamed to `worker` and `visitor`.
 const removed = (key: string) =>
+  /^(profile|network\.enrollment|publicNetworks\.roleTip|quickSetup\.role)\.(node|infer)$/.test(key) ||
   key.startsWith("deploy.cycleDetection") ||
   key.includes(".knob.cycle_detection_") ||
   key.startsWith("deploy.wholeSingleMachine");

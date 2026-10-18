@@ -53,7 +53,7 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
   const cluster = useCluster();
   const networkInfo = useNetworkInfo(Boolean(node.data));
   const firewall = useWindowsFirewall(Boolean(node.data));
-  const isInfer = node.data?.profile === "infer";
+  const isInfer = node.data?.profile === "visitor";
   /*
    * Reading the network's picture belongs to `node` and `admin`; blocking and
    * unblocking a machine remains an administrator's act, and only with the grant -
@@ -211,7 +211,7 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
           <Panel>
             <PanelHeader
               eyebrow={t("network.profile")}
-              title={t("profile.infer")}
+              title={t("profile.visitor")}
               subtitle={t("network.inferRequestDetail")}
             />
           </Panel>

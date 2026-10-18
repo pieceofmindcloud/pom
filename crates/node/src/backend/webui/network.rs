@@ -506,10 +506,10 @@ pub(crate) fn spawn_member_list_keeper(state: GatewayState) {
                 continue;
             }
             for peer in state.network.alive_peers().await {
-                let role = if peer.profile == crate::profile::NodeProfile::Infer {
-                    crate::config::EnrollmentRole::Infer
+                let role = if peer.profile == crate::profile::NodeProfile::Visitor {
+                    crate::config::EnrollmentRole::Visitor
                 } else {
-                    crate::config::EnrollmentRole::Node
+                    crate::config::EnrollmentRole::Worker
                 };
                 if state
                     .network_chat
@@ -789,7 +789,7 @@ async fn network_info_view(state: &GatewayState) -> NetworkInfoView {
     let can_edit = state
         .admin_trust
         .effective_authority(&state.authority_principal, config.profile)
-        == Some(crate::admin_trust::EffectiveAuthority::Primary);
+        == Some(crate::admin_trust::EffectiveAuthority::Principal);
     NetworkInfoView { network, can_edit }
 }
 

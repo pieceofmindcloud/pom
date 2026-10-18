@@ -94,8 +94,8 @@ impl Default for NetworkAccessPolicy {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum EnrollmentRole {
-    Node,
-    Infer,
+    Worker,
+    Visitor,
 }
 
 /// The enrollment roles a network currently advertises as open. Empty means
@@ -111,7 +111,7 @@ pub struct AcceptedEnrollments(pub Vec<EnrollmentRole>);
 
 impl Default for AcceptedEnrollments {
     fn default() -> Self {
-        Self(vec![EnrollmentRole::Node, EnrollmentRole::Infer])
+        Self(vec![EnrollmentRole::Worker, EnrollmentRole::Visitor])
     }
 }
 
@@ -880,7 +880,7 @@ impl Config {
     pub fn prepare_for_setup(&mut self) {
         self.setup_pending = true;
         self.first_run_guide = None;
-        self.profile = crate::profile::NodeProfile::Node;
+        self.profile = crate::profile::NodeProfile::Worker;
         self.connection_key.clear();
         self.bootstrap_nodes.clear();
         self.advertise_addr = None;
@@ -1520,14 +1520,14 @@ mod tests {
 
     #[test]
     fn the_minimum_log_level_defaults_to_info_and_survives_json() {
-        let defaulted: Config = serde_json::from_str(r#"{"profile":"node"}"#).unwrap();
+        let defaulted: Config = serde_json::from_str(r#"{"profile":"worker"}"#).unwrap();
         assert_eq!(
             defaulted.cluster_logs_min_level,
             crate::cluster_logs::ClusterLogLevel::Info
         );
 
         let configured: Config =
-            serde_json::from_str(r#"{"profile":"node","cluster_logs_min_level":"debug"}"#).unwrap();
+            serde_json::from_str(r#"{"profile":"worker","cluster_logs_min_level":"debug"}"#).unwrap();
         assert_eq!(
             configured.cluster_logs_min_level,
             crate::cluster_logs::ClusterLogLevel::Debug
@@ -1554,7 +1554,7 @@ mod tests {
             thermal: Default::default(),
             cache_type_k: KvCacheType::F16,
             cache_type_v: KvCacheType::F16,
-            profile: crate::profile::NodeProfile::Node,
+            profile: crate::profile::NodeProfile::Worker,
             setup_pending: false,
             local_auto_discovery: false,
             tls_required: false,
@@ -1593,7 +1593,7 @@ mod tests {
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let parsed: Config = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.profile, crate::profile::NodeProfile::Node);
+        assert_eq!(parsed.profile, crate::profile::NodeProfile::Worker);
     }
 
     /// A config without the official profile is not a supported schema. The
@@ -1637,7 +1637,7 @@ mod tests {
 
     #[test]
     fn a_node_relays_for_its_cluster_and_carries_transfers_unless_told_otherwise() {
-        let cfg: Config = serde_json::from_str(r#"{"profile":"node"}"#).unwrap();
+        let cfg: Config = serde_json::from_str(r#"{"profile":"worker"}"#).unwrap();
         assert_eq!(
             cfg.relay,
             RelayConfig {
@@ -1649,7 +1649,7 @@ mod tests {
         assert!(serde_json::to_value(&cfg).unwrap().get("relay").is_none());
 
         let cfg: Config =
-            serde_json::from_str(r#"{"profile":"node","relay":{"transfers":false}}"#).unwrap();
+            serde_json::from_str(r#"{"profile":"worker","relay":{"transfers":false}}"#).unwrap();
         assert!(cfg.relay.cluster && !cfg.relay.transfers && !cfg.relay.everyone);
         assert_eq!(
             serde_json::to_value(&cfg).unwrap()["relay"]["transfers"],
@@ -1660,10 +1660,10 @@ mod tests {
     #[test]
     fn relay_peers_are_read_from_the_config_and_empty_stays_out_of_it() {
         let cfg: Config =
-            serde_json::from_str(r#"{"profile":"node","relay_peers":["pk:relay"]}"#).unwrap();
+            serde_json::from_str(r#"{"profile":"worker","relay_peers":["pk:relay"]}"#).unwrap();
         assert_eq!(cfg.relay_peers, vec!["pk:relay"]);
 
-        let cfg: Config = serde_json::from_str(r#"{"profile":"node"}"#).unwrap();
+        let cfg: Config = serde_json::from_str(r#"{"profile":"worker"}"#).unwrap();
         assert!(cfg.relay_peers.is_empty());
         let saved = serde_json::to_value(&cfg).unwrap();
         assert!(saved.get("relay_peers").is_none());
@@ -1671,7 +1671,7 @@ mod tests {
 
     #[test]
     fn thermal_policy_is_configurable_and_survives_roundtrip() {
-        let mut cfg: Config = serde_json::from_str(r#"{"profile":"node"}"#).unwrap();
+        let mut cfg: Config = serde_json::from_str(r#"{"profile":"worker"}"#).unwrap();
         cfg.thermal = crate::thermal::ThermalPolicy {
             limit_c: 82.0,
             hysteresis_c: 7.0,
@@ -1703,25 +1703,25 @@ mod tests {
         let untouched: NetworkSettings = serde_json::from_str("{}").unwrap();
         assert_eq!(
             untouched.accepted_enrollments.0,
-            vec![EnrollmentRole::Node, EnrollmentRole::Infer]
+            vec![EnrollmentRole::Worker, EnrollmentRole::Visitor]
         );
 
         let closed: NetworkSettings =
             serde_json::from_str(r#"{"accepted_enrollments":[]}"#).unwrap();
         assert!(closed.accepted_enrollments.0.is_empty());
 
-        let only_infer =
-            AcceptedEnrollments(vec![EnrollmentRole::Infer, EnrollmentRole::Infer]).normalized();
+        let only_visitor =
+            AcceptedEnrollments(vec![EnrollmentRole::Visitor, EnrollmentRole::Visitor]).normalized();
         assert_eq!(
-            serde_json::to_value(&only_infer).unwrap(),
-            serde_json::json!(["infer"])
+            serde_json::to_value(&only_visitor).unwrap(),
+            serde_json::json!(["visitor"])
         );
     }
 
     #[test]
     fn cache_types_are_persisted_as_installation_settings() {
         let cfg: Config = serde_json::from_str(
-            r#"{"profile":"node","cache_type_k":"q8_0","cache_type_v":"bf16"}"#,
+            r#"{"profile":"worker","cache_type_k":"q8_0","cache_type_v":"bf16"}"#,
         )
         .unwrap();
         let json = serde_json::to_value(cfg).unwrap();
@@ -1733,19 +1733,19 @@ mod tests {
     #[test]
     fn invalid_cache_type_is_rejected() {
         let result: Result<Config, _> =
-            serde_json::from_str(r#"{"profile":"node","cache_type_k":"not-a-type"}"#);
+            serde_json::from_str(r#"{"profile":"worker","cache_type_k":"not-a-type"}"#);
 
         assert!(result.is_err());
     }
 
     #[test]
     fn cache_type_defaults_to_f16_and_preserves_iq4_nl_spelling() {
-        let defaulted: Config = serde_json::from_str(r#"{"profile":"node"}"#).unwrap();
+        let defaulted: Config = serde_json::from_str(r#"{"profile":"worker"}"#).unwrap();
         assert_eq!(defaulted.cache_type_k, KvCacheType::F16);
         assert_eq!(defaulted.cache_type_v, KvCacheType::F16);
 
         let typed: Config =
-            serde_json::from_str(r#"{"profile":"node","cache_type_k":"iq4_nl"}"#).unwrap();
+            serde_json::from_str(r#"{"profile":"worker","cache_type_k":"iq4_nl"}"#).unwrap();
         assert_eq!(typed.cache_type_k, KvCacheType::Iq4Nl);
         assert_eq!(typed.cache_type_k.as_str(), "iq4_nl");
     }
@@ -1761,7 +1761,7 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         let mut cfg = Config {
-            profile: crate::profile::NodeProfile::Node,
+            profile: crate::profile::NodeProfile::Worker,
             setup_pending: false,
             local_auto_discovery: false,
             connection_key: String::new(),
@@ -1830,7 +1830,7 @@ mod tests {
     #[test]
     fn an_explicit_empty_list_is_not_the_default_list() {
         let cfg: Config = serde_json::from_str(
-            r#"{"profile":"node","model_dirs":[],"shard_dir":"/Volumes/sdcard/shards"}"#,
+            r#"{"profile":"worker","model_dirs":[],"shard_dir":"/Volumes/sdcard/shards"}"#,
         )
         .unwrap();
         assert!(!cfg.model_dirs_are_default());
@@ -1846,7 +1846,7 @@ mod tests {
     #[test]
     fn an_old_config_parses_without_tls_required() {
         let cfg: Config =
-            serde_json::from_str(r#"{"profile":"node","connection_key":"k"}"#).unwrap();
+            serde_json::from_str(r#"{"profile":"worker","connection_key":"k"}"#).unwrap();
         assert!(!cfg.tls_required);
     }
 
@@ -1869,7 +1869,7 @@ mod tests {
 
     #[test]
     fn a_blank_shard_dir_falls_back_instead_of_writing_to_the_root() {
-        let cfg: Config = serde_json::from_str(r#"{"profile":"node","shard_dir":"   "}"#).unwrap();
+        let cfg: Config = serde_json::from_str(r#"{"profile":"worker","shard_dir":"   "}"#).unwrap();
         assert_eq!(cfg.shard_dir_path(), default_shard_dir());
     }
 
@@ -1882,7 +1882,7 @@ mod tests {
         let workspace = root.join("pom_workspace");
         let typed = root.join("unmounted-drive").join("models");
         let cfg: Config = serde_json::from_value(serde_json::json!({
-            "profile": "node",
+            "profile": "worker",
             "model_dirs": [models, typed],
             "shard_dir": shards,
             "workspace_root": workspace,
@@ -1898,7 +1898,7 @@ mod tests {
         // A folder the operator chose instead of the default is left alone.
         let other = root.join("chosen-slices");
         let cfg: Config = serde_json::from_value(serde_json::json!({
-            "profile": "node",
+            "profile": "worker",
             "shard_dir": other,
         }))
         .unwrap();
@@ -1909,7 +1909,7 @@ mod tests {
 
     #[test]
     fn workspace_root_defaults_to_the_user_home() {
-        let cfg: Config = serde_json::from_str(r#"{"profile":"node"}"#).unwrap();
+        let cfg: Config = serde_json::from_str(r#"{"profile":"worker"}"#).unwrap();
         assert_eq!(cfg.workspace_root_path(), default_workspace_root());
         assert!(cfg.workspace_root_path().ends_with("pom_workspace"));
         assert_ne!(cfg.workspace_root_path(), cfg.shard_dir_path());
@@ -1923,7 +1923,7 @@ mod tests {
     fn workspace_root_roundtrips_as_a_persisted_absolute_path() {
         let path = "/data/workspace";
         let cfg: Config = serde_json::from_value(serde_json::json!({
-            "profile": "node",
+            "profile": "worker",
             "workspace_root": path,
         }))
         .unwrap();
@@ -1954,7 +1954,7 @@ mod tests {
         {
             return;
         }
-        let defaulted: Config = serde_json::from_str(r#"{"profile":"node"}"#).unwrap();
+        let defaulted: Config = serde_json::from_str(r#"{"profile":"worker"}"#).unwrap();
         assert!(defaulted.slot_persist_prefix_cache_enabled());
         assert!(defaulted
             .slot_save_dir()
@@ -1962,7 +1962,7 @@ mod tests {
             .ends_with(Path::new(".pom").join("kv-slots")));
 
         let off: Config = serde_json::from_str(
-            r#"{"profile":"node","slot_save_path":"","slot_persist_prefix_cache":false}"#,
+            r#"{"profile":"worker","slot_save_path":"","slot_persist_prefix_cache":false}"#,
         )
         .unwrap();
         assert_eq!(off.slot_save_dir(), None);

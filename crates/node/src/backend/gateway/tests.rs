@@ -257,8 +257,8 @@ mod tests {
     #[tokio::test]
     async fn non_admin_profiles_cannot_reach_admin_routes_without_internal_authority() {
         for profile in [
-            crate::profile::NodeProfile::Infer,
-            crate::profile::NodeProfile::Node,
+            crate::profile::NodeProfile::Visitor,
+            crate::profile::NodeProfile::Worker,
         ] {
             let state = testkit::state_with("connection-secret", vec![]).await;
             {
@@ -316,7 +316,7 @@ mod tests {
         {
             let mut auth = state.auth.write().await;
             auth.connection_key = "connection-secret".into();
-            auth.profile = crate::profile::NodeProfile::Node;
+            auth.profile = crate::profile::NodeProfile::Worker;
             auth.admin_exposure = crate::config::AdminExposure::Network;
         }
         let app = Router::new()
@@ -378,12 +378,12 @@ mod tests {
     #[tokio::test]
     async fn what_a_node_may_ask_of_another_depends_on_who_it_is() {
         use crate::webui::RouteScope::{
-            AdminOnly, CommonOrInternal, DeployAdmin, InferNodeAdmin, LocalOperator, NodeAdmin,
+            PrincipalOnly, HandlerAuth, AnyAdmin, AnyMember, LocalOnly, ServingMember,
         };
         let mut worker = testkit::peer("worker", "worker", 8090);
-        worker.profile = crate::profile::NodeProfile::Node;
+        worker.profile = crate::profile::NodeProfile::Worker;
         let mut infer = testkit::peer("infer", "infer", 8091);
-        infer.profile = crate::profile::NodeProfile::Infer;
+        infer.profile = crate::profile::NodeProfile::Visitor;
         let state = testkit::state_with("principal", vec![worker, infer]).await;
         let principal_of = |node_id: &str| crate::admin_trust::AuthorityPrincipal {
             node_id: node_id.into(),
@@ -394,48 +394,48 @@ mod tests {
 
         // Routes that govern the network: the principal's signature, nothing less.
         assert_eq!(
-            caller_may_ask(&state, AdminOnly, None).await,
+            caller_may_ask(&state, PrincipalOnly, None).await,
             Err("signature_required")
         );
         assert_eq!(
-            caller_may_ask(&state, AdminOnly, Some(&admin)).await,
+            caller_may_ask(&state, PrincipalOnly, Some(&admin)).await,
             Ok(())
         );
         assert_eq!(
-            caller_may_ask(&state, AdminOnly, Some(&principal_of("worker"))).await,
+            caller_may_ask(&state, PrincipalOnly, Some(&principal_of("worker"))).await,
             Err("principal_required")
         );
         assert_eq!(
-            caller_may_ask(&state, AdminOnly, Some(&principal_of("infer"))).await,
+            caller_may_ask(&state, PrincipalOnly, Some(&principal_of("infer"))).await,
             Err("principal_required")
         );
         // Deploy routes: an admin's signature, and a plain member is not one.
         assert_eq!(
-            caller_may_ask(&state, DeployAdmin, None).await,
+            caller_may_ask(&state, AnyAdmin, None).await,
             Err("signature_required")
         );
         assert_eq!(
-            caller_may_ask(&state, DeployAdmin, Some(&admin)).await,
+            caller_may_ask(&state, AnyAdmin, Some(&admin)).await,
             Ok(())
         );
         assert_eq!(
-            caller_may_ask(&state, DeployAdmin, Some(&principal_of("worker"))).await,
+            caller_may_ask(&state, AnyAdmin, Some(&principal_of("worker"))).await,
             Err("admin_required")
         );
 
         // Routes of a serving node: a peer that is not an inference node.
         assert_eq!(
-            caller_may_ask(&state, NodeAdmin, None).await,
+            caller_may_ask(&state, ServingMember, None).await,
             Err("signature_required")
         );
         assert_eq!(
-            caller_may_ask(&state, NodeAdmin, Some(&admin)).await,
+            caller_may_ask(&state, ServingMember, Some(&admin)).await,
             Ok(())
         );
         // Its announce alone does not make it one: the principal has to have
         // admitted it as a regular node.
         assert_eq!(
-            caller_may_ask(&state, NodeAdmin, Some(&principal_of("worker"))).await,
+            caller_may_ask(&state, ServingMember, Some(&principal_of("worker"))).await,
             Err("role_unattested")
         );
         state
@@ -443,19 +443,19 @@ mod tests {
             .record_member_role(
                 &state.authority_signing_key,
                 "worker",
-                crate::config::EnrollmentRole::Node,
+                crate::config::EnrollmentRole::Worker,
             )
             .unwrap();
         assert_eq!(
-            caller_may_ask(&state, NodeAdmin, Some(&principal_of("worker"))).await,
+            caller_may_ask(&state, ServingMember, Some(&principal_of("worker"))).await,
             Ok(())
         );
         assert_eq!(
-            caller_may_ask(&state, NodeAdmin, Some(&principal_of("infer"))).await,
-            Err("infer_caller")
+            caller_may_ask(&state, ServingMember, Some(&principal_of("infer"))).await,
+            Err("visitor_caller")
         );
         assert_eq!(
-            caller_may_ask(&state, NodeAdmin, Some(&principal_of("stranger"))).await,
+            caller_may_ask(&state, ServingMember, Some(&principal_of("stranger"))).await,
             Err("unknown_caller")
         );
 
@@ -466,16 +466,16 @@ mod tests {
             .request_admission(
                 "worker",
                 Default::default(),
-                crate::config::EnrollmentRole::Infer,
+                crate::config::EnrollmentRole::Visitor,
             )
             .unwrap();
         assert_eq!(
-            caller_may_ask(&state, NodeAdmin, Some(&principal_of("worker"))).await,
-            Err("infer_caller")
+            caller_may_ask(&state, ServingMember, Some(&principal_of("worker"))).await,
+            Err("visitor_caller")
         );
 
         // Inference and the common routes are open to every member.
-        for scope in [InferNodeAdmin, CommonOrInternal] {
+        for scope in [AnyMember, HandlerAuth] {
             assert_eq!(caller_may_ask(&state, scope, None).await, Ok(()));
             assert_eq!(
                 caller_may_ask(&state, scope, Some(&principal_of("infer"))).await,
@@ -486,7 +486,7 @@ mod tests {
         // even by the principal's signature.
         for issuer in [None, Some(&admin), Some(&principal_of("infer"))] {
             assert_eq!(
-                caller_may_ask(&state, LocalOperator, issuer).await,
+                caller_may_ask(&state, LocalOnly, issuer).await,
                 Err("local_operator_only")
             );
         }
@@ -617,10 +617,10 @@ mod tests {
     /// when it announces `node`, and the chain refuses to make it an admin.
     #[tokio::test]
     async fn an_inference_role_signed_into_the_chain_holds_on_every_member() {
-        use crate::webui::RouteScope::NodeAdmin;
+        use crate::webui::RouteScope::ServingMember;
         let principal = testkit::state_with("principal", vec![]).await;
         let mut disguised = testkit::peer("infer", "infer", 8091);
-        disguised.profile = crate::profile::NodeProfile::Node;
+        disguised.profile = crate::profile::NodeProfile::Worker;
         let infer = crate::admin_trust::AuthorityPrincipal {
             node_id: "infer".into(),
             peer_id: String::new(),
@@ -630,14 +630,14 @@ mod tests {
         member.admin_trust =
             Arc::new(crate::admin_trust::AdminTrust::in_memory(principal.admin_trust.document()).unwrap());
         assert_eq!(
-            caller_may_ask(&member, NodeAdmin, Some(&infer)).await,
+            caller_may_ask(&member, ServingMember, Some(&infer)).await,
             Err("role_unattested"),
             "the announce alone attests nothing"
         );
 
         principal
             .network_chat
-            .request_admission("infer", Default::default(), crate::config::EnrollmentRole::Infer)
+            .request_admission("infer", Default::default(), crate::config::EnrollmentRole::Visitor)
             .unwrap();
         principal.network_chat.decide_admission(
             "infer",
@@ -659,8 +659,8 @@ mod tests {
             .reconcile_from(principal.admin_trust.document(), false)
             .unwrap());
         assert_eq!(
-            caller_may_ask(&member, NodeAdmin, Some(&infer)).await,
-            Err("infer_caller")
+            caller_may_ask(&member, ServingMember, Some(&infer)).await,
+            Err("visitor_caller")
         );
         assert!(principal
             .admin_trust
@@ -682,7 +682,7 @@ mod tests {
         {
             let mut auth = state.auth.write().await;
             auth.connection_key = "connection-secret".into();
-            auth.profile = crate::profile::NodeProfile::Node;
+            auth.profile = crate::profile::NodeProfile::Worker;
             auth.admin_exposure = crate::config::AdminExposure::Network;
         }
         let app = router_with_surface_gate(&state, &["/api/transfer/download"]);
@@ -716,7 +716,7 @@ mod tests {
             state
                 .admin_trust
                 .effective_authority(&state.authority_principal, profile),
-            Some(crate::admin_trust::EffectiveAuthority::Secondary)
+            Some(crate::admin_trust::EffectiveAuthority::Admin)
         );
         let primary_signing_key = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
         state
@@ -724,7 +724,7 @@ mod tests {
             .record_member_role(
                 &primary_signing_key,
                 &state.authority_principal.node_id,
-                crate::config::EnrollmentRole::Infer,
+                crate::config::EnrollmentRole::Visitor,
             )
             .unwrap();
         assert_eq!(
@@ -741,7 +741,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_secondary_admin_deploys_and_does_nothing_else() {
-        use crate::webui::RouteScope::{AdminOnly, DeployAdmin, NodeAdmin};
+        use crate::webui::RouteScope::{PrincipalOnly, AnyAdmin, ServingMember};
         use axum::http::Method;
         // A network with a principal and one secondary admin, seen from a
         // third member that holds the same chain.
@@ -755,19 +755,19 @@ mod tests {
         // Between nodes: the secondary's signature opens the deploy routes
         // and a node's routes, and none of the routes that govern the network.
         assert_eq!(
-            caller_may_ask(&member, DeployAdmin, Some(&secondary)).await,
+            caller_may_ask(&member, AnyAdmin, Some(&secondary)).await,
             Ok(())
         );
         assert_eq!(
-            caller_may_ask(&member, NodeAdmin, Some(&secondary)).await,
+            caller_may_ask(&member, ServingMember, Some(&secondary)).await,
             Ok(())
         );
         assert_eq!(
-            caller_may_ask(&member, AdminOnly, Some(&secondary)).await,
+            caller_may_ask(&member, PrincipalOnly, Some(&secondary)).await,
             Err("principal_required")
         );
         assert_eq!(
-            caller_may_ask(&member, AdminOnly, Some(&principal)).await,
+            caller_may_ask(&member, PrincipalOnly, Some(&principal)).await,
             Ok(())
         );
         assert!(issuer_is_principal(&member, &principal));
@@ -850,7 +850,7 @@ mod tests {
         {
             let mut auth = state.auth.write().await;
             auth.connection_key = "connection-secret".into();
-            auth.profile = crate::profile::NodeProfile::Infer;
+            auth.profile = crate::profile::NodeProfile::Visitor;
         }
         let app = Router::new()
             .route(
@@ -892,7 +892,7 @@ mod tests {
             assert_eq!(refused.status(), StatusCode::FORBIDDEN, "{path}");
             assert_eq!(
                 testkit::body_of(refused).await["reason"],
-                "infer_profile",
+                "visitor_profile",
                 "{path}"
             );
         }
@@ -1062,12 +1062,12 @@ mod tests {
     /// scope change has somewhere to attach.
     #[tokio::test]
     async fn the_reclassified_routes_open_for_the_right_profiles_only() {
-        use crate::profile::NodeProfile::{Admin, Infer, Node};
+        use crate::profile::NodeProfile::{Admin, Visitor, Worker};
 
         // (method, path, profiles that **get in**)
         let cases: &[(&str, &str, &[crate::profile::NodeProfile])] = &[
             // The `node` Network screen reads the network snapshot.
-            ("GET", "/admin/nodes", &[Node, Admin]),
+            ("GET", "/admin/nodes", &[Worker, Admin]),
             // Administering those machines stays with the administrator.
             ("POST", "/admin/nodes/outra/block", &[Admin]),
             ("POST", "/admin/nodes/outra/unblock", &[Admin]),
@@ -1077,27 +1077,27 @@ mod tests {
             ("POST", "/admin/regenerate-key", &[Admin]),
             // The API key is the credential of whoever serves `/v1`, and every profile
             // serves - including `infer`, whose footer opens this screen.
-            ("GET", "/admin/api-keys", &[Infer, Node, Admin]),
-            ("POST", "/admin/api-keys", &[Infer, Node, Admin]),
-            ("DELETE", "/admin/api-keys/abc", &[Infer, Node, Admin]),
+            ("GET", "/admin/api-keys", &[Visitor, Worker, Admin]),
+            ("POST", "/admin/api-keys", &[Visitor, Worker, Admin]),
+            ("DELETE", "/admin/api-keys/abc", &[Visitor, Worker, Admin]),
             // Leaving the network is abdicating one's own post.
-            ("POST", "/api/ui/leave", &[Infer, Node, Admin]),
-            ("POST", "/api/ui/rejoin", &[Infer, Node, Admin]),
+            ("POST", "/api/ui/leave", &[Visitor, Worker, Admin]),
+            ("POST", "/api/ui/rejoin", &[Visitor, Worker, Admin]),
             // Fixing the announced address describes this very machine.
             (
                 "POST",
                 "/api/ui/network/advertise-addr",
-                &[Infer, Node, Admin],
+                &[Visitor, Worker, Admin],
             ),
             // And so does its name.
-            ("POST", "/api/ui/network/node-name", &[Infer, Node, Admin]),
+            ("POST", "/api/ui/network/node-name", &[Visitor, Worker, Admin]),
             // What was not touched stays where it was.
-            ("GET", "/api/ui/deployments", &[Node, Admin]),
-            ("GET", "/api/ui/models", &[Node, Admin]),
+            ("GET", "/api/ui/deployments", &[Worker, Admin]),
+            ("GET", "/api/ui/models", &[Worker, Admin]),
         ];
 
         for (method, path, allowed) in cases {
-            for profile in [Infer, Node, Admin] {
+            for profile in [Visitor, Worker, Admin] {
                 let status = browser_request(profile, method, path).await;
                 if allowed.contains(&profile) {
                     assert!(
@@ -1126,7 +1126,7 @@ mod tests {
         {
             let mut auth = state.auth.write().await;
             auth.connection_key = "connection-secret".into();
-            auth.profile = crate::profile::NodeProfile::Infer;
+            auth.profile = crate::profile::NodeProfile::Visitor;
         }
         struct ConfigPathGuard {
             previous: Option<std::ffi::OsString>,
@@ -1215,7 +1215,7 @@ mod tests {
         {
             let mut auth = state.auth.write().await;
             auth.connection_key = "connection-secret".into();
-            auth.profile = crate::profile::NodeProfile::Infer;
+            auth.profile = crate::profile::NodeProfile::Visitor;
         }
         struct ConfigPathGuard {
             previous: Option<std::ffi::OsString>,
@@ -1304,7 +1304,7 @@ mod tests {
         {
             let mut auth = state.auth.write().await;
             auth.connection_key = "connection-secret".into();
-            auth.profile = crate::profile::NodeProfile::Infer;
+            auth.profile = crate::profile::NodeProfile::Visitor;
         }
         struct ConfigPathGuard {
             previous: Option<std::ffi::OsString>,
@@ -1416,9 +1416,9 @@ mod tests {
     /// target does not judge by the profile of whoever asked.
     #[tokio::test]
     async fn only_an_administrator_takes_another_machine_off_the_network() {
-        use crate::profile::NodeProfile::{Infer, Node};
+        use crate::profile::NodeProfile::{Visitor, Worker};
 
-        for profile in [Infer, Node] {
+        for profile in [Visitor, Worker] {
             let state = testkit::state_with("connection-secret", vec![]).await;
             {
                 let mut auth = state.auth.write().await;
@@ -1464,7 +1464,7 @@ mod tests {
         let state = testkit::state_with("connection-secret", vec![]).await;
         {
             let mut auth = state.auth.write().await;
-            auth.profile = crate::profile::NodeProfile::Node;
+            auth.profile = crate::profile::NodeProfile::Worker;
             auth.admin_exposure = crate::config::AdminExposure::Network;
             auth.admin_access_token =
                 Some(crate::auth::hash_admin_password("person-secret").unwrap());
@@ -1545,12 +1545,12 @@ mod tests {
     async fn each_profile_reaches_its_scope_and_gets_an_explicit_refusal() {
         let cases = [
             (
-                crate::profile::NodeProfile::Infer,
+                crate::profile::NodeProfile::Visitor,
                 "/api/ui/infer/heads",
                 "/api/ui/models",
             ),
             (
-                crate::profile::NodeProfile::Node,
+                crate::profile::NodeProfile::Worker,
                 "/api/ui/models",
                 "/api/ui/access",
             ),
@@ -2853,7 +2853,7 @@ mod peer_visibility_tests {
             inference_frame_capabilities: Vec::new(),
             gateway_port: Some(8090),
             gateway_quic_port: None,
-            profile: crate::profile::NodeProfile::Node,
+            profile: crate::profile::NodeProfile::Worker,
             hostname: String::new(),
             capabilities: Vec::new(),
             connection_verified: false,
@@ -3540,7 +3540,7 @@ pub(crate) mod testkit {
             inference_frame_capabilities: Vec::new(),
             gateway_port: Some(gateway_port),
             gateway_quic_port: None,
-            profile: crate::profile::NodeProfile::Node,
+            profile: crate::profile::NodeProfile::Worker,
             hostname: hostname.into(),
             capabilities: Vec::new(),
             connection_verified: true,
@@ -3589,7 +3589,7 @@ pub(crate) mod testkit {
             .signed_secondary_grant(&primary_signing_key, secondary.clone(), &primary.node_id)
             .expect("test secondary grant");
         admin_trust
-            .apply_secondary_grant(grant, &secondary, crate::profile::NodeProfile::Node)
+            .apply_secondary_grant(grant, &secondary, crate::profile::NodeProfile::Worker)
             .expect("application of the test secondary grant");
 
         state
@@ -3633,7 +3633,7 @@ pub(crate) mod testkit {
             )
             .await
             .expect("UDP socket on an ephemeral port")
-            .with_identity(crate::profile::NodeProfile::Node, hostname.into()),
+            .with_identity(crate::profile::NodeProfile::Worker, hostname.into()),
         );
         {
             let mut table = net.peers.write().await;
@@ -3668,7 +3668,7 @@ pub(crate) mod testkit {
             thermal: Default::default(),
             cache_type_k: crate::config::KvCacheType::F16,
             cache_type_v: crate::config::KvCacheType::F16,
-            profile: crate::profile::NodeProfile::Node,
+            profile: crate::profile::NodeProfile::Worker,
             setup_pending: false,
             local_auto_discovery: false,
             tls_required: false,

@@ -20,8 +20,8 @@ callbacks) separate from the administrative surface (`/api/ui/**`, `/admin/**`, 
 static UI), and the two never share an authorization rule. The rules that decide who
 may call what - the profile table, the in-memory browser session and its single
 `ADMIN_SESSION_TTL`, the signed control envelope between nodes, the per-route
-`RouteScope` (`AdminOnly`, `DeployAdmin`, `NodeAdmin`, `InferNodeAdmin`,
-`LocalOperator`, `CommonOrInternal`) and the `x-pom-admin-error` header the browser reads to know its
+`RouteScope` (`PrincipalOnly`, `AnyAdmin`, `ServingMember`, `AnyMember`,
+`LocalOnly`, `HandlerAuth`) and the `x-pom-admin-error` header the browser reads to know its
 session died instead of printing a raw 401 inside whatever screen was open - are
 `docs/subsystems/http-api.md`. The deployment lifecycle, the idle wake
 (`reload_model`) and the role gate (`deployment_authority` /
@@ -134,7 +134,7 @@ boundary.
   `POST /api/ui/plugins/activate` activates every `plugin_code` granted by the
   server in one batch; `POST /api/ui/plugins/:code/refresh|deactivate|update/check|update/apply`
   acts on one plugin. GitHub repositories are local to the node and use the
-  AdminOnly routes `GET/POST /api/ui/plugins/github-repositories`,
+  PrincipalOnly routes `GET/POST /api/ui/plugins/github-repositories`,
   `POST /api/ui/plugins/github-repositories/:id/refresh`,
   `DELETE /api/ui/plugins/github-repositories/:id` and
   `POST /api/ui/plugins/github-repositories/:id/install` with
@@ -147,7 +147,7 @@ boundary.
   /api/ui/plugins/dev-sources` lists mounted sources and
   `POST /api/ui/plugins/dev-sources/:repository/rebuild-install` builds and
   installs or rebuilds a local plugin without prior activation. Both routes
-  are AdminOnly; the handler accepts mounted direct-child `pom-plugin-*`
+  are PrincipalOnly; the handler accepts mounted direct-child `pom-plugin-*`
   sources only after validating their manifests and plugin codes, uses fixed
   Cargo commands and never exposes compiler output. A development-only installation persists in
   `plugin_dev_install:<code>` and starts the host without granting licensed
@@ -163,9 +163,9 @@ boundary.
   when the system does not report board power. The
   `/api/ui/network/geo/{countries,cities,nearest}` routes read the offline
   city database embedded in the binary (`utils/geo.rs`) for the location
-  editor and use `LocalOperator`; they do not create or change network data
-  and look nothing up on the internet. `GET /api/ui/deployments` is `NodeAdmin` so a
-  `node` profile can see the read-only inspector, while mutations and deployment actions stay
+  editor and use `LocalOnly`; they do not create or change network data
+  and look nothing up on the internet. `GET /api/ui/deployments` is `ServingMember` so a
+  `worker` profile can see the read-only inspector, while mutations and deployment actions stay
   under the existing administrative policy.
   The authority surface exposes the presentation contract in
   `/api/ui/network/admin-authority`. There is no route that changes a
@@ -175,8 +175,8 @@ boundary.
   **The trust anchor predates all of that** and lives in `webui/trust.rs`:
   `GET/POST /api/ui/network/trust-anchor` shows the anchor's fingerprint and the anchored/not
   yet anchored state, and installs the chain the operator
-  carried over. The route is `CommonOrInternal` on purpose - an unanchored `profile: admin`
-  does not pass `AdminOnly`, which is exactly the state where the operator needs it - and it
+  carried over. The route is `HandlerAuth` on purpose - an unanchored `profile: admin`
+  does not pass `PrincipalOnly`, which is exactly the state where the operator needs it - and it
   does not demand the cluster's connection key, for the reason recorded in the file's header.
   The installation's three locks are the server's: loopback measured in `serve::PeerAddr` (never
   `admin_exposure`, which may be open to the network, and never `X-Forwarded-For`), a node still
@@ -201,7 +201,7 @@ boundary.
   heads: it delivers the candidates and the planner's choice, without general peers or control
   actions. A head still loading its model (`is_warming`) is never a candidate. The capacity gate
   (`request_output_limit_for_head`) plans the route from the head the request chose
-  (`inference_head`), as generation does. The route is `LocalOperator`, so admin and infer can read it from their own screen. Each candidate's load
+  (`inference_head`), as generation does. The route is `LocalOnly`, so admin and infer can read it from their own screen. Each candidate's load
   comes from its own `/api/ui/node` and stays `null` when the report does not arrive, so the UI
   shows it unavailable instead of zero. The RTT's validity is five minutes; expired values
   appear as a diagnostic, but they do not enter the generation's selection.
@@ -363,7 +363,7 @@ boundary.
   the member list stay with the principal.
 - `admin_trust.rs` - the protected, durable Ed25519 authority chain. It stores
   the manually anchored root, one-level secondary grants, signed demotions,
-  signed member role records (`record_member_role`, `recorded_infer`: a
+  signed member role records (`record_member_role`, `recorded_visitor`: a
   machine recorded as an inference node is never an admin, whatever grant it
   held), transfer offer and acceptance state, and full-chain reconciliation. Consumed
   nonces live in a local replay ledger beside the chain
@@ -447,7 +447,7 @@ boundary.
   download invalidates the receiver's catalog.
 - `webui/kv_cache.rs` - this machine's KV cache for the dashboard:
   `kv_cache_disk` measures the snapshot directory (`NodeInfo.kv_cache`) and
-  `POST /api/ui/kv-cache/clear` (AdminOnly, also empties the `strata-sessions/` subfolder, forwarded by `node_id` like
+  `POST /api/ui/kv-cache/clear` (PrincipalOnly, also empties the `strata-sessions/` subfolder, forwarded by `node_id` like
   `/api/ui/leave`) deletes its `.bin`/`.json` files, resets
   `GatewayState.prefix_disk` and clears the inference server's host-memory
   cache. See `http-api.md`.
@@ -550,7 +550,7 @@ boundary.
   `webui::sign_member_roles` (at each admission decision and every 15 s from
   `spawn_member_role_keeper`) signs the role of each approved machine into the
   chain, which this same sync carries to every member. A non-admin caller of
-  a `NodeAdmin` route needs that signed `node` role (`caller_may_ask`). `chain_status` feeds
+  a `ServingMember` route needs that signed `worker` role (`caller_may_ask`). `chain_status` feeds
   `NodeInfo.cluster_version` and `POST /api/ui/network/trust-sync`.
 - `reqlog.rs` - the audit adapter and the migration fallback. With the plugin
   active, the host writes in `enterprise.db`; independently of that destination, the
@@ -864,7 +864,7 @@ The projector side (`mmproj_candidates` / `mmproj_reason` from the whole model o
 refusing with the file named, `webui::ApplyRequest.use_mmproj` persisting the choice in
 `NodeConfig`) is `docs/subsystems/http-api.md` and `docs/subsystems/deployment.md`. The Chat side
 (`GET /api/ui/chat/capabilities?model=<label>` aggregating coverage, `mmproj_path` and `no_thinking`
-of the deployment's head without exposing the topology to the `infer` profile; `supported` /
+of the deployment's head without exposing the topology to the `visitor` profile; `supported` /
 `unsupported` / `unavailable`, never an invented empty value; `openai::ChatRequest.thinking_enabled`
 travelling in `GenerationInput` and the prefill metadata, with the head applying the global
 kill-switch before rendering the template) is `docs/subsystems/web-ui.md` and

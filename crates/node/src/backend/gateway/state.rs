@@ -878,13 +878,13 @@ pub(super) fn is_public_ui_static_path(path: &str) -> bool {
 /// signed role record decides (`AdminTrust::record_member_role`), and on the
 /// principal its member list as well, before the record is signed.
 /// Everywhere, a node that announces itself as an inference node is one.
-pub(crate) fn peer_is_infer(state: &GatewayState, peer: &PeerInfo) -> bool {
-    peer.profile == crate::profile::NodeProfile::Infer
-        || crate::admin_trust::recorded_infer(&state.admin_trust.document(), &peer.node_id)
+pub(crate) fn peer_is_visitor(state: &GatewayState, peer: &PeerInfo) -> bool {
+    peer.profile == crate::profile::NodeProfile::Visitor
+        || crate::admin_trust::recorded_visitor(&state.admin_trust.document(), &peer.node_id)
         || state
             .network_chat
             .admission_of(&peer.node_id)
-            .is_some_and(|record| record.role == crate::config::EnrollmentRole::Infer)
+            .is_some_and(|record| record.role == crate::config::EnrollmentRole::Visitor)
 }
 
 /// What a node-to-node request may reach, by the caller's identity.
@@ -896,7 +896,7 @@ pub(crate) fn peer_is_infer(state: &GatewayState, peer: &PeerInfo) -> bool {
 /// - A route of a serving node (catalog, planning, transfers) takes a signed
 ///   request from an admin or from a peer the principal admitted as a regular
 ///   node (`peer_role_is_attested`) - never on the strength of its announce.
-/// - A route of this machine's own operator (`LocalOperator`) is refused to
+/// - A route of this machine's own operator (`LocalOnly`) is refused to
 ///   every other node, signed or not.
 /// - Everything else - inference, the node's own description, the internal
 ///   sync routes - stays as it was.
@@ -909,12 +909,12 @@ pub(crate) async fn caller_may_ask(
     issuer: Option<&crate::admin_trust::AuthorityPrincipal>,
 ) -> Result<(), &'static str> {
     use crate::webui::RouteScope;
-    if scope == RouteScope::LocalOperator {
+    if scope == RouteScope::LocalOnly {
         return Err("local_operator_only");
     }
     if !matches!(
         scope,
-        RouteScope::AdminOnly | RouteScope::DeployAdmin | RouteScope::NodeAdmin
+        RouteScope::PrincipalOnly | RouteScope::AnyAdmin | RouteScope::ServingMember
     ) {
         return Ok(());
     }
@@ -924,18 +924,18 @@ pub(crate) async fn caller_may_ask(
     if issuer == &state.authority_principal || issuer_is_principal(state, issuer) {
         return Ok(());
     }
-    if scope == RouteScope::AdminOnly {
+    if scope == RouteScope::PrincipalOnly {
         return Err("principal_required");
     }
     if crate::admin_trust::control_issuer_is_admin(&state.admin_trust.document(), issuer) {
         return Ok(());
     }
-    if scope == RouteScope::DeployAdmin {
+    if scope == RouteScope::AnyAdmin {
         return Err("admin_required");
     }
     let peers = state.network.alive_peers().await;
     match peers.iter().find(|peer| peer.node_id == issuer.node_id) {
-        Some(peer) if peer_is_infer(state, peer) => Err("infer_caller"),
+        Some(peer) if peer_is_visitor(state, peer) => Err("visitor_caller"),
         Some(peer) if peer_role_is_attested(state, peer).await => Ok(()),
         Some(_) => Err("role_unattested"),
         None => Err("unknown_caller"),
@@ -949,9 +949,9 @@ pub(crate) async fn caller_may_ask(
 /// with the anchor has no admissions to record, and keeps the announce.
 async fn peer_role_is_attested(state: &GatewayState, peer: &PeerInfo) -> bool {
     use crate::config::EnrollmentRole;
-    state.admin_trust.recorded_role(&peer.node_id) == Some(EnrollmentRole::Node)
+    state.admin_trust.recorded_role(&peer.node_id) == Some(EnrollmentRole::Worker)
         || state.network_chat.admission_of(&peer.node_id).is_some_and(|record| {
-            record.role == EnrollmentRole::Node
+            record.role == EnrollmentRole::Worker
                 && record.status == crate::network_lobby::AdmissionStatus::Approved
         })
         || state.auth.read().await.network.open_admission()
@@ -984,12 +984,12 @@ pub(crate) async fn require_admin_for_surface(
     // An inference node holds and serves no model, whoever asks. This comes
     // before everything else on purpose: the profile gate below lets a
     // node-to-node request through, and an admin's request is one.
-    if profile == crate::profile::NodeProfile::Infer && crate::webui::infer_node_refuses(&path) {
+    if profile == crate::profile::NodeProfile::Visitor && crate::webui::visitor_refuses(&path) {
         return (
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({
                 "error": "this machine was admitted for inference only and does not hold or serve models",
-                "reason": "infer_profile",
+                "reason": "visitor_profile",
                 "path": path,
             })),
         )
@@ -1035,10 +1035,10 @@ pub(crate) async fn require_admin_for_surface(
         .admin_trust
         .effective_authority(&state.authority_principal, profile);
     let authority_access = match scope {
-        crate::webui::RouteScope::AdminOnly => {
-            local_authority == Some(crate::admin_trust::EffectiveAuthority::Primary)
+        crate::webui::RouteScope::PrincipalOnly => {
+            local_authority == Some(crate::admin_trust::EffectiveAuthority::Principal)
         }
-        crate::webui::RouteScope::DeployAdmin => local_authority.is_some(),
+        crate::webui::RouteScope::AnyAdmin => local_authority.is_some(),
         _ => true,
     };
     let profile_access = crate::webui::profile_can_access(profile, scope) && authority_access;

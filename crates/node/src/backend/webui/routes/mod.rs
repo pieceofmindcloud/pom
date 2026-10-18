@@ -3,10 +3,10 @@ use axum::http::Method;
 
 mod admin;
 mod common;
-mod infer;
-mod node;
+mod visitor;
+mod worker;
 
-/// Profile scope attached to a gateway route. `CommonOrInternal` is also
+/// Profile scope attached to a gateway route. `HandlerAuth` is also
 /// the explicit band for protocols whose caller is another node and proves the
 /// shared internal credential. Setup and the separate inference listener
 /// are represented on purpose so they do not vanish from the inventory by
@@ -16,21 +16,28 @@ pub(crate) enum RouteScope {
     /// The network's principal only. A secondary admin does not reach these:
     /// everything that governs the network (members, admissions, settings,
     /// keys, the trust chain) comes from the principal.
-    AdminOnly,
+    PrincipalOnly,
     /// Any admin of the trust chain, principal or secondary: putting models
     /// in and out of service. It is the one thing a secondary admin may do
-    /// that a node may not.
-    DeployAdmin,
-    NodeAdmin,
-    InferNodeAdmin,
+    /// that a worker may not.
+    AnyAdmin,
+    /// A machine that serves models: an admin, or a worker the principal
+    /// admitted as one. Never a visitor (catalog, planning, transfers).
+    ServingMember,
+    /// Every member, visitors included: inference, and leaving the network.
+    AnyMember,
     /// Every profile, but only from this machine's own interface: the
     /// operator acting on their own node (API keys, plugins, the machine's
     /// name, relay and address, its networks, its logs). Another node never
     /// reaches these, whoever signed the request - every member holds the
-    /// connection key, inference nodes included.
-    LocalOperator,
-    CommonOrInternal,
-    OutOfScope,
+    /// connection key, visitors included.
+    LocalOnly,
+    /// The handler authenticates the caller itself: public routes, policy
+    /// probes and the sync protocols between nodes.
+    HandlerAuth,
+    /// Served by another router: the setup wizard, or the inference listener
+    /// on its own port.
+    OtherRouter,
 }
 
 struct RouteRule {
@@ -57,102 +64,102 @@ const ROUTE_RULES: &[RouteRule] = &[
     RouteRule {
         prefix: "/api/setup/",
         method: None,
-        scope: RouteScope::OutOfScope,
+        scope: RouteScope::OtherRouter,
     },
     // Public/common gateway routes and policy probes between nodes.
     RouteRule {
         prefix: "/api/access",
         method: None,
-        scope: RouteScope::CommonOrInternal,
+        scope: RouteScope::HandlerAuth,
     },
     RouteRule {
         prefix: "/api/public/",
         method: None,
-        scope: RouteScope::CommonOrInternal,
+        scope: RouteScope::HandlerAuth,
     },
     RouteRule {
         prefix: "/peers",
         method: None,
-        scope: RouteScope::CommonOrInternal,
+        scope: RouteScope::HandlerAuth,
     },
     RouteRule {
         prefix: "/health",
         method: None,
-        scope: RouteScope::CommonOrInternal,
+        scope: RouteScope::HandlerAuth,
     },
     RouteRule {
         prefix: "/handshake",
         method: None,
-        scope: RouteScope::CommonOrInternal,
+        scope: RouteScope::HandlerAuth,
     },
     RouteRule {
         prefix: "/api/cluster/tls",
         method: None,
-        scope: RouteScope::CommonOrInternal,
+        scope: RouteScope::HandlerAuth,
     },
     RouteRule {
         prefix: "/api/cluster/quic",
         method: None,
-        scope: RouteScope::CommonOrInternal,
+        scope: RouteScope::HandlerAuth,
     },
     RouteRule {
         prefix: "/api/cluster/logs",
         method: None,
-        scope: RouteScope::CommonOrInternal,
+        scope: RouteScope::HandlerAuth,
     },
     RouteRule {
         prefix: "/api/cluster/network-chat",
         method: None,
-        scope: RouteScope::CommonOrInternal,
+        scope: RouteScope::HandlerAuth,
     },
     RouteRule {
         prefix: "/api/cluster/member-left",
         method: None,
-        scope: RouteScope::CommonOrInternal,
+        scope: RouteScope::HandlerAuth,
     },
     RouteRule {
         prefix: "/api/cluster/network-settings",
         method: None,
-        scope: RouteScope::CommonOrInternal,
+        scope: RouteScope::HandlerAuth,
     },
     RouteRule {
         prefix: "/api/internal/",
         method: None,
-        scope: RouteScope::CommonOrInternal,
+        scope: RouteScope::HandlerAuth,
     },
     RouteRule {
         prefix: "/v1/relay-result",
         method: None,
-        scope: RouteScope::CommonOrInternal,
+        scope: RouteScope::HandlerAuth,
     },
     RouteRule {
         prefix: "/v1/remote-stream-result",
         method: None,
-        scope: RouteScope::CommonOrInternal,
+        scope: RouteScope::HandlerAuth,
     },
     // Inference-compatible APIs. The callbacks above win by
     // specificity.
     RouteRule {
         prefix: "/api/generate",
         method: None,
-        scope: RouteScope::InferNodeAdmin,
+        scope: RouteScope::AnyMember,
     },
     RouteRule {
         prefix: "/generate",
         method: None,
-        scope: RouteScope::InferNodeAdmin,
+        scope: RouteScope::AnyMember,
     },
     RouteRule {
         prefix: "/v1/",
         method: None,
-        scope: RouteScope::InferNodeAdmin,
+        scope: RouteScope::AnyMember,
     },
     // Common UI routes. The handlers still reduce the cluster data for
     // infer.
     RouteRule {
         prefix: "/api/ui/node",
         method: None,
-        scope: RouteScope::CommonOrInternal,
+        scope: RouteScope::HandlerAuth,
     },
     // Plugins are local to each node (see `crate::plugins`): activating a
     // license, registering a GitHub repository, installing, updating and using a
@@ -162,54 +169,54 @@ const ROUTE_RULES: &[RouteRule] = &[
     RouteRule {
         prefix: "/api/ui/plugins",
         method: None,
-        scope: RouteScope::LocalOperator,
+        scope: RouteScope::LocalOnly,
     },
     // Update of the `pom` binary itself - a boundary separate from plugins on
     // purpose, see `crate::pom_core_update`.
     RouteRule {
         prefix: "/api/ui/pom-update",
         method: Some(Method::GET),
-        scope: RouteScope::CommonOrInternal,
+        scope: RouteScope::HandlerAuth,
     },
     RouteRule {
         prefix: "/api/ui/pom-update",
         method: Some(Method::POST),
-        scope: RouteScope::AdminOnly,
+        scope: RouteScope::PrincipalOnly,
     },
     RouteRule {
         prefix: "/api/ui/cluster",
         method: None,
-        scope: RouteScope::CommonOrInternal,
+        scope: RouteScope::HandlerAuth,
     },
     RouteRule {
         prefix: "/api/ui/peer/",
         method: None,
-        scope: RouteScope::CommonOrInternal,
+        scope: RouteScope::HandlerAuth,
     },
     RouteRule {
         prefix: "/api/ui/network/rtt",
         method: None,
-        scope: RouteScope::CommonOrInternal,
+        scope: RouteScope::HandlerAuth,
     },
     RouteRule {
         prefix: "/api/ui/network/info",
         method: None,
-        scope: RouteScope::LocalOperator,
+        scope: RouteScope::LocalOnly,
     },
     RouteRule {
         prefix: "/api/ui/network/firewall",
         method: None,
-        scope: RouteScope::LocalOperator,
+        scope: RouteScope::LocalOnly,
     },
     RouteRule {
         prefix: "/api/ui/network/geo/",
         method: Some(Method::GET),
-        scope: RouteScope::LocalOperator,
+        scope: RouteScope::LocalOnly,
     },
     RouteRule {
         prefix: "/api/ui/network-chat",
         method: None,
-        scope: RouteScope::CommonOrInternal,
+        scope: RouteScope::HandlerAuth,
     },
     // The lobby is this machine knocking on another network's door: asking
     // to be admitted, chatting there, forgetting a request. Its operator's
@@ -217,298 +224,298 @@ const ROUTE_RULES: &[RouteRule] = &[
     RouteRule {
         prefix: "/api/ui/network-chat/lobby",
         method: None,
-        scope: RouteScope::LocalOperator,
+        scope: RouteScope::LocalOnly,
     },
     RouteRule {
         prefix: "/api/ui/chat/",
         method: None,
-        scope: RouteScope::CommonOrInternal,
+        scope: RouteScope::HandlerAuth,
     },
     RouteRule {
         prefix: "/api/ui/chat/history",
         method: None,
-        scope: RouteScope::LocalOperator,
+        scope: RouteScope::LocalOnly,
     },
     RouteRule {
         prefix: "/api/ui/chat-key",
         method: None,
-        scope: RouteScope::LocalOperator,
+        scope: RouteScope::LocalOnly,
     },
     // Catching up with the trust chain is a node acting on itself.
     RouteRule {
         prefix: "/api/ui/network/trust-sync",
         method: None,
-        scope: RouteScope::LocalOperator,
+        scope: RouteScope::LocalOnly,
     },
     RouteRule {
         prefix: "/api/ui/network/admin-authority",
         method: None,
-        scope: RouteScope::CommonOrInternal,
+        scope: RouteScope::HandlerAuth,
     },
     // Anchoring the trust root is the work that precedes any authority existing:
-    // an unanchored `profile: admin` does not pass `AdminOnly`, and whoever receives
+    // an unanchored `profile: admin` does not pass `PrincipalOnly`, and whoever receives
     // the anchor is usually `node` or `infer`. The real locks are of origin and
     // of state, in the handler; see `webui/trust.rs`.
     RouteRule {
         prefix: "/api/ui/network/trust-anchor",
         method: None,
-        scope: RouteScope::CommonOrInternal,
+        scope: RouteScope::HandlerAuth,
     },
     RouteRule {
         prefix: "/api/ui/infer/heads",
         method: None,
-        scope: RouteScope::LocalOperator,
+        scope: RouteScope::LocalOnly,
     },
     // Local operations of the node and the model. The announced address is the description
     // of this very machine, so it is also allowed to the `infer` profile.
     RouteRule {
         prefix: "/api/ui/models",
         method: None,
-        scope: RouteScope::NodeAdmin,
+        scope: RouteScope::ServingMember,
     },
     // Which projector and which MTP belong to each model: read by whoever sees the
     // catalog, written only by an administrator (and only on the principal).
     RouteRule {
         prefix: "/api/ui/model-sidecar-links",
         method: Some(Method::GET),
-        scope: RouteScope::NodeAdmin,
+        scope: RouteScope::ServingMember,
     },
     RouteRule {
         prefix: "/api/ui/model-sidecar-links",
         method: Some(Method::POST),
-        scope: RouteScope::AdminOnly,
+        scope: RouteScope::PrincipalOnly,
     },
     RouteRule {
         prefix: "/api/ui/paths",
         method: None,
-        scope: RouteScope::NodeAdmin,
+        scope: RouteScope::ServingMember,
     },
     RouteRule {
         prefix: "/api/ui/thermal",
         method: None,
-        scope: RouteScope::NodeAdmin,
+        scope: RouteScope::ServingMember,
     },
     RouteRule {
         prefix: "/api/ui/cache-types",
         method: None,
-        scope: RouteScope::NodeAdmin,
+        scope: RouteScope::ServingMember,
     },
     RouteRule {
         prefix: "/api/ui/network/advertise-addr",
         method: None,
-        scope: RouteScope::LocalOperator,
+        scope: RouteScope::LocalOnly,
     },
     // The operator's own list of networks: this one and the imported ones.
     RouteRule {
         prefix: "/api/ui/networks",
         method: None,
-        scope: RouteScope::LocalOperator,
+        scope: RouteScope::LocalOnly,
     },
     // The first run guide belongs to whoever sits at this machine.
     RouteRule {
         prefix: "/api/ui/guide",
         method: None,
-        scope: RouteScope::LocalOperator,
+        scope: RouteScope::LocalOnly,
     },
     // The machine's own name: its operator's to choose, whatever its role.
     RouteRule {
         prefix: "/api/ui/network/node-name",
         method: None,
-        scope: RouteScope::LocalOperator,
+        scope: RouteScope::LocalOnly,
     },
     // A relay option is a decision about this machine's own bandwidth: it
     // belongs to whoever runs the machine, whatever its role in the network.
     RouteRule {
         prefix: "/api/ui/network/relay",
         method: None,
-        scope: RouteScope::LocalOperator,
+        scope: RouteScope::LocalOnly,
     },
     RouteRule {
         prefix: "/api/ui/network/settings",
         method: Some(Method::POST),
-        scope: RouteScope::AdminOnly,
+        scope: RouteScope::PrincipalOnly,
     },
     RouteRule {
         prefix: "/api/ui/network/trust-share",
         method: Some(Method::GET),
-        scope: RouteScope::AdminOnly,
+        scope: RouteScope::PrincipalOnly,
     },
     RouteRule {
         prefix: "/api/ui/network/leave",
         method: Some(Method::POST),
-        scope: RouteScope::LocalOperator,
+        scope: RouteScope::LocalOnly,
     },
     // Joining replaces the network this machine is in; like leaving, it is
     // the operator's own machine and no profile needs a licence for it.
     RouteRule {
         prefix: "/api/ui/network/join",
         method: Some(Method::POST),
-        scope: RouteScope::LocalOperator,
+        scope: RouteScope::LocalOnly,
     },
     // Who gets into the network is an administrator's decision.
     RouteRule {
         prefix: "/api/ui/network/admissions",
         method: None,
-        scope: RouteScope::AdminOnly,
+        scope: RouteScope::PrincipalOnly,
     },
     RouteRule {
         prefix: "/api/ui/plan",
         method: None,
-        scope: RouteScope::NodeAdmin,
+        scope: RouteScope::ServingMember,
     },
     RouteRule {
         prefix: "/api/ui/model-identity",
         method: None,
-        scope: RouteScope::NodeAdmin,
+        scope: RouteScope::ServingMember,
     },
     RouteRule {
         prefix: "/api/ui/model-metadata",
         method: None,
-        scope: RouteScope::NodeAdmin,
+        scope: RouteScope::ServingMember,
     },
     RouteRule {
         prefix: "/api/ui/model-layer-options",
         method: None,
-        scope: RouteScope::NodeAdmin,
+        scope: RouteScope::ServingMember,
     },
     RouteRule {
         prefix: "/api/ui/slice-ranges",
         method: None,
-        scope: RouteScope::NodeAdmin,
+        scope: RouteScope::ServingMember,
     },
     RouteRule {
         prefix: "/api/ui/slice",
         method: None,
-        scope: RouteScope::NodeAdmin,
+        scope: RouteScope::ServingMember,
     },
     RouteRule {
         prefix: "/api/ui/tp/check",
         method: None,
-        scope: RouteScope::NodeAdmin,
+        scope: RouteScope::ServingMember,
     },
     RouteRule {
         prefix: "/api/ui/jobs",
         method: None,
-        scope: RouteScope::NodeAdmin,
+        scope: RouteScope::ServingMember,
     },
     RouteRule {
         prefix: "/api/ui/model-provider/",
         method: None,
-        scope: RouteScope::NodeAdmin,
+        scope: RouteScope::ServingMember,
     },
     RouteRule {
         prefix: "/api/transfer/",
         method: None,
-        scope: RouteScope::NodeAdmin,
+        scope: RouteScope::ServingMember,
     },
     // Administrative and lifecycle operations.
     RouteRule {
         prefix: "/admin/",
         method: None,
-        scope: RouteScope::AdminOnly,
+        scope: RouteScope::PrincipalOnly,
     },
     // API keys are the credential of whoever serves inference, and every profile
-    // serves: `/v1` is `InferNodeAdmin`. An `infer` swaps its own key through the
+    // serves: `/v1` is `AnyMember`. An `infer` swaps its own key through the
     // API KEYS screen, which is the destination of its footer. Denying here left the
     // two profiles with no way to issue the token the node itself demands.
     RouteRule {
         prefix: "/admin/api-keys",
         method: None,
-        scope: RouteScope::LocalOperator,
+        scope: RouteScope::LocalOnly,
     },
     // Reading who is on the network is what the Network screen shows; blocking, unblocking,
     // removing and promoting a machine are POST/DELETE and remain under
-    // `/admin/`, that is, `AdminOnly`.
+    // `/admin/`, that is, `PrincipalOnly`.
     RouteRule {
         prefix: "/admin/nodes",
         method: Some(Method::GET),
-        scope: RouteScope::NodeAdmin,
+        scope: RouteScope::ServingMember,
     },
     RouteRule {
         prefix: "/api/ui/access",
         method: None,
-        scope: RouteScope::AdminOnly,
+        scope: RouteScope::PrincipalOnly,
     },
     RouteRule {
         prefix: "/api/ui/network/tls",
         method: None,
-        scope: RouteScope::AdminOnly,
+        scope: RouteScope::PrincipalOnly,
     },
     RouteRule {
         prefix: "/api/ui/network/quic",
         method: None,
-        scope: RouteScope::AdminOnly,
+        scope: RouteScope::PrincipalOnly,
     },
     RouteRule {
         prefix: "/api/ui/network/logs",
         method: None,
-        scope: RouteScope::AdminOnly,
+        scope: RouteScope::PrincipalOnly,
     },
     RouteRule {
         prefix: "/api/ui/network/auto-discovery",
         method: None,
-        scope: RouteScope::AdminOnly,
+        scope: RouteScope::PrincipalOnly,
     },
     RouteRule {
         prefix: "/api/ui/cluster-logs",
         method: None,
-        scope: RouteScope::DeployAdmin,
+        scope: RouteScope::AnyAdmin,
     },
     RouteRule {
         prefix: "/api/ui/deploy",
         method: None,
-        scope: RouteScope::DeployAdmin,
+        scope: RouteScope::AnyAdmin,
     },
     RouteRule {
         prefix: "/api/ui/deployments",
         method: Some(Method::GET),
-        scope: RouteScope::NodeAdmin,
+        scope: RouteScope::ServingMember,
     },
     RouteRule {
         prefix: "/api/ui/deployments",
         method: None,
-        scope: RouteScope::DeployAdmin,
+        scope: RouteScope::AnyAdmin,
     },
     RouteRule {
         prefix: "/api/ui/apply",
         method: None,
-        scope: RouteScope::DeployAdmin,
+        scope: RouteScope::AnyAdmin,
     },
     RouteRule {
         prefix: "/api/ui/launch",
         method: None,
-        scope: RouteScope::DeployAdmin,
+        scope: RouteScope::AnyAdmin,
     },
     RouteRule {
         prefix: "/api/ui/undeploy",
         method: None,
-        scope: RouteScope::DeployAdmin,
+        scope: RouteScope::AnyAdmin,
     },
     RouteRule {
         prefix: "/api/ui/stop-inference",
         method: None,
-        scope: RouteScope::DeployAdmin,
+        scope: RouteScope::AnyAdmin,
     },
     RouteRule {
         prefix: "/api/ui/unload",
         method: None,
-        scope: RouteScope::DeployAdmin,
+        scope: RouteScope::AnyAdmin,
     },
     // Emptying a machine's KV cache deletes what its conversations saved.
     RouteRule {
         prefix: "/api/ui/kv-cache",
         method: None,
-        scope: RouteScope::AdminOnly,
+        scope: RouteScope::PrincipalOnly,
     },
     RouteRule {
         prefix: "/api/ui/reconfigure",
         method: None,
-        scope: RouteScope::DeployAdmin,
+        scope: RouteScope::AnyAdmin,
     },
     RouteRule {
         prefix: "/api/ui/release",
         method: None,
-        scope: RouteScope::AdminOnly,
+        scope: RouteScope::PrincipalOnly,
     },
     // Leaving the network is abdicating one's own post, not a privilege: any
     // profile shuts down its own machine at any time, and coming back is the other
@@ -518,27 +525,27 @@ const ROUTE_RULES: &[RouteRule] = &[
     RouteRule {
         prefix: "/api/ui/leave",
         method: None,
-        scope: RouteScope::InferNodeAdmin,
+        scope: RouteScope::AnyMember,
     },
     RouteRule {
         prefix: "/api/ui/rejoin",
         method: None,
-        scope: RouteScope::LocalOperator,
+        scope: RouteScope::LocalOnly,
     },
     RouteRule {
         prefix: "/api/ui/requests",
         method: None,
-        scope: RouteScope::LocalOperator,
+        scope: RouteScope::LocalOnly,
     },
     RouteRule {
         prefix: "/api/ui/dev/",
         method: None,
-        scope: RouteScope::AdminOnly,
+        scope: RouteScope::PrincipalOnly,
     },
     RouteRule {
         prefix: "/admin/authority",
         method: None,
-        scope: RouteScope::AdminOnly,
+        scope: RouteScope::PrincipalOnly,
     },
 ];
 
@@ -563,15 +570,15 @@ pub(crate) fn route_scope(method: &Method, path: &str) -> RouteScope {
         .map(|rule| rule.scope)
         .unwrap_or_else(|| {
             if path.starts_with("/api/setup/") {
-                RouteScope::OutOfScope
+                RouteScope::OtherRouter
             } else if path.starts_with("/api/") || path.starts_with("/admin/") {
                 // New control routes fail closed until they receive a
                 // profile in this table.
-                RouteScope::AdminOnly
+                RouteScope::PrincipalOnly
             } else if path.starts_with("/v1/") {
-                RouteScope::InferNodeAdmin
+                RouteScope::AnyMember
             } else {
-                RouteScope::CommonOrInternal
+                RouteScope::HandlerAuth
             }
         })
 }
@@ -580,7 +587,7 @@ pub(crate) fn route_scope(method: &Method, path: &str) -> RouteScope {
 /// are how a machine comes to hold and serve a model - receiving files,
 /// slicing, loading a slice, being a deployment target. The role is what the
 /// network admitted the machine as, and no request changes that.
-const INFER_NODE_REFUSES: &[&str] = &[
+const VISITOR_REFUSES: &[&str] = &[
     "/api/ui/apply",
     "/api/ui/launch",
     "/api/ui/deploy",
@@ -590,8 +597,8 @@ const INFER_NODE_REFUSES: &[&str] = &[
     "/api/transfer",
 ];
 
-pub(crate) fn infer_node_refuses(path: &str) -> bool {
-    INFER_NODE_REFUSES
+pub(crate) fn visitor_refuses(path: &str) -> bool {
+    VISITOR_REFUSES
         .iter()
         .any(|prefix| is_under(path, prefix))
 }
@@ -601,17 +608,17 @@ pub(crate) const fn profile_can_access(
     scope: RouteScope,
 ) -> bool {
     match scope {
-        RouteScope::AdminOnly | RouteScope::DeployAdmin => {
+        RouteScope::PrincipalOnly | RouteScope::AnyAdmin => {
             matches!(profile, crate::profile::NodeProfile::Admin)
         }
-        RouteScope::NodeAdmin => matches!(
+        RouteScope::ServingMember => matches!(
             profile,
-            crate::profile::NodeProfile::Node | crate::profile::NodeProfile::Admin
+            crate::profile::NodeProfile::Worker | crate::profile::NodeProfile::Admin
         ),
-        RouteScope::InferNodeAdmin
-        | RouteScope::LocalOperator
-        | RouteScope::CommonOrInternal => true,
-        RouteScope::OutOfScope => false,
+        RouteScope::AnyMember
+        | RouteScope::LocalOnly
+        | RouteScope::HandlerAuth => true,
+        RouteScope::OtherRouter => false,
     }
 }
 
@@ -621,8 +628,8 @@ pub(crate) const fn profile_can_access(
 pub fn routes() -> Router<GatewayState> {
     Router::new()
         .merge(common::routes())
-        .merge(infer::routes())
-        .merge(node::routes())
+        .merge(visitor::routes())
+        .merge(worker::routes())
         .merge(admin::routes())
 }
 
@@ -639,21 +646,21 @@ mod policy_tests {
     fn route_policy_exposes_the_four_declared_scopes() {
         assert_eq!(
             route_scope(&Method::DELETE, "/admin/nodes/abc"),
-            RouteScope::AdminOnly
+            RouteScope::PrincipalOnly
         );
-        assert_eq!(scope_of("/api/ui/requests/stats"), RouteScope::LocalOperator);
-        assert_eq!(scope_of("/api/ui/plugins"), RouteScope::LocalOperator);
+        assert_eq!(scope_of("/api/ui/requests/stats"), RouteScope::LocalOnly);
+        assert_eq!(scope_of("/api/ui/plugins"), RouteScope::LocalOnly);
         assert_eq!(
             scope_of("/api/ui/plugins/github-repositories"),
-            RouteScope::LocalOperator
+            RouteScope::LocalOnly
         );
         assert_eq!(
             scope_of("/api/ui/plugins/dev-sources"),
-            RouteScope::LocalOperator
+            RouteScope::LocalOnly
         );
         assert_eq!(
             scope_of("/api/ui/pom-update/status"),
-            RouteScope::CommonOrInternal
+            RouteScope::HandlerAuth
         );
         // Plugins are local to each node: activating, registering a repository,
         // installing and updating is allowed to every profile.
@@ -670,17 +677,17 @@ mod policy_tests {
             "/api/ui/plugins/logs/preferences",
         ] {
             let scope = route_scope(&Method::POST, path);
-            assert_eq!(scope, RouteScope::LocalOperator, "rota={path}");
-            assert!(profile_can_access(crate::profile::NodeProfile::Node, scope));
+            assert_eq!(scope, RouteScope::LocalOnly, "rota={path}");
+            assert!(profile_can_access(crate::profile::NodeProfile::Worker, scope));
             assert!(profile_can_access(
-                crate::profile::NodeProfile::Infer,
+                crate::profile::NodeProfile::Visitor,
                 scope
             ));
         }
         for path in ["/api/ui/pom-update/check", "/api/ui/pom-update/apply"] {
             assert_eq!(
                 route_scope(&Method::POST, path),
-                RouteScope::AdminOnly,
+                RouteScope::PrincipalOnly,
                 "rota={path}"
             );
         }
@@ -689,7 +696,7 @@ mod policy_tests {
                 &Method::DELETE,
                 "/api/ui/plugins/github-repositories/repository-id"
             ),
-            RouteScope::LocalOperator
+            RouteScope::LocalOnly
         );
         // The plugin interface proxy serves any method and inherits the
         // prefix rule: open to every profile on every method.
@@ -706,47 +713,47 @@ mod policy_tests {
                     &method,
                     "/api/ui/plugins/deepseek_harness/proxy/api/remote.mux"
                 ),
-                RouteScope::LocalOperator,
+                RouteScope::LocalOnly,
                 "method={method}"
             );
         }
-        assert_eq!(scope_of("/api/ui/models"), RouteScope::NodeAdmin);
+        assert_eq!(scope_of("/api/ui/models"), RouteScope::ServingMember);
         assert_eq!(
             scope_of("/api/ui/model-provider/status"),
-            RouteScope::NodeAdmin
+            RouteScope::ServingMember
         );
         assert_eq!(
             scope_of("/api/ui/network/advertise-addr"),
-            RouteScope::LocalOperator
+            RouteScope::LocalOnly
         );
         assert_eq!(
             scope_of("/api/ui/network/relay"),
-            RouteScope::LocalOperator
+            RouteScope::LocalOnly
         );
         assert_eq!(
             scope_of("/api/ui/network/admin-authority"),
-            RouteScope::CommonOrInternal
+            RouteScope::HandlerAuth
         );
         assert_eq!(
             scope_of("/api/ui/network/trust-anchor"),
-            RouteScope::CommonOrInternal
+            RouteScope::HandlerAuth
         );
         assert_eq!(
             scope_of("/api/ui/network/geo/nearest"),
-            RouteScope::LocalOperator
+            RouteScope::LocalOnly
         );
         assert_eq!(
             scope_of("/api/ui/network/firewall"),
-            RouteScope::LocalOperator
+            RouteScope::LocalOnly
         );
         assert_eq!(
             scope_of("/api/ui/network/auto-discovery"),
-            RouteScope::AdminOnly
+            RouteScope::PrincipalOnly
         );
-        assert_eq!(scope_of("/api/ui/deployments"), RouteScope::NodeAdmin);
+        assert_eq!(scope_of("/api/ui/deployments"), RouteScope::ServingMember);
         assert_eq!(
             route_scope(&Method::POST, "/api/ui/deployments"),
-            RouteScope::DeployAdmin
+            RouteScope::AnyAdmin
         );
         // Deploying is the one admin scope a secondary admin shares; what
         // governs the network stays with the principal.
@@ -756,58 +763,58 @@ mod policy_tests {
             "/api/ui/apply",
             "/api/ui/unload",
         ] {
-            assert_eq!(scope_of(path), RouteScope::DeployAdmin, "{path}");
+            assert_eq!(scope_of(path), RouteScope::AnyAdmin, "{path}");
         }
         for path in [
             "/api/ui/network/admissions",
             "/admin/authority/resign",
             "/api/ui/release",
         ] {
-            assert_eq!(scope_of(path), RouteScope::AdminOnly, "{path}");
+            assert_eq!(scope_of(path), RouteScope::PrincipalOnly, "{path}");
         }
         assert!(profile_can_access(
             crate::profile::NodeProfile::Admin,
-            RouteScope::DeployAdmin
+            RouteScope::AnyAdmin
         ));
         assert!(!profile_can_access(
-            crate::profile::NodeProfile::Node,
-            RouteScope::DeployAdmin
+            crate::profile::NodeProfile::Worker,
+            RouteScope::AnyAdmin
         ));
         // Changing a role in place is not a route any more: with no rule,
         // the old paths fall to the closed default.
         assert_eq!(
             scope_of("/api/ui/network/request-node"),
-            RouteScope::AdminOnly
+            RouteScope::PrincipalOnly
         );
         assert_eq!(
             scope_of("/api/ui/network/relinquish-node"),
-            RouteScope::AdminOnly
+            RouteScope::PrincipalOnly
         );
-        assert_eq!(scope_of("/api/ui/infer/heads"), RouteScope::LocalOperator);
+        assert_eq!(scope_of("/api/ui/infer/heads"), RouteScope::LocalOnly);
         assert!(profile_can_access(
             crate::profile::NodeProfile::Admin,
             scope_of("/api/ui/infer/heads")
         ));
-        assert_eq!(scope_of("/v1/chat/completions"), RouteScope::InferNodeAdmin);
-        assert_eq!(scope_of("/api/ui/node"), RouteScope::CommonOrInternal);
+        assert_eq!(scope_of("/v1/chat/completions"), RouteScope::AnyMember);
+        assert_eq!(scope_of("/api/ui/node"), RouteScope::HandlerAuth);
         assert_eq!(
             scope_of("/api/ui/chat/capabilities"),
-            RouteScope::CommonOrInternal
+            RouteScope::HandlerAuth
         );
         assert_eq!(
             scope_of("/api/ui/chat/history/abc"),
-            RouteScope::LocalOperator
+            RouteScope::LocalOnly
         );
-        assert_eq!(scope_of("/api/ui/chat-key"), RouteScope::LocalOperator);
+        assert_eq!(scope_of("/api/ui/chat-key"), RouteScope::LocalOnly);
         assert_eq!(
             scope_of("/api/internal/api-keys/validate"),
-            RouteScope::CommonOrInternal
+            RouteScope::HandlerAuth
         );
     }
 
     #[test]
     fn development_plugin_routes_are_open_to_every_profile() {
-        use crate::profile::NodeProfile::{Admin, Infer, Node};
+        use crate::profile::NodeProfile::{Admin, Visitor, Worker};
 
         // A local build installs on this machine only, like any plugin;
         // `POM_DEV_MODE` is what turns it on (checked by the handlers).
@@ -820,26 +827,26 @@ mod policy_tests {
             ),
         ] {
             let scope = route_scope(&method, path);
-            assert_eq!(scope, RouteScope::LocalOperator, "{method} {path}");
+            assert_eq!(scope, RouteScope::LocalOnly, "{method} {path}");
             assert!(profile_can_access(Admin, scope));
-            assert!(profile_can_access(Node, scope));
-            assert!(profile_can_access(Infer, scope));
+            assert!(profile_can_access(Worker, scope));
+            assert!(profile_can_access(Visitor, scope));
         }
     }
 
     #[test]
     fn route_policy_matches_segments_not_similar_prefixes() {
-        assert_eq!(scope_of("/api/ui/models-old"), RouteScope::AdminOnly);
-        assert_eq!(scope_of("/admin"), RouteScope::AdminOnly);
-        assert_eq!(scope_of("/api/ui"), RouteScope::AdminOnly);
+        assert_eq!(scope_of("/api/ui/models-old"), RouteScope::PrincipalOnly);
+        assert_eq!(scope_of("/admin"), RouteScope::PrincipalOnly);
+        assert_eq!(scope_of("/api/ui"), RouteScope::PrincipalOnly);
         assert_eq!(
             scope_of("/api/ui/requests/stats/today"),
-            RouteScope::LocalOperator
+            RouteScope::LocalOnly
         );
-        assert_eq!(scope_of("/api/new-control"), RouteScope::AdminOnly);
+        assert_eq!(scope_of("/api/new-control"), RouteScope::PrincipalOnly);
         assert_eq!(
             scope_of("/api/ui/chat/telemetry"),
-            RouteScope::CommonOrInternal
+            RouteScope::HandlerAuth
         );
     }
 
@@ -850,27 +857,27 @@ mod policy_tests {
     fn reading_the_roster_is_wider_than_administering_it() {
         assert_eq!(
             route_scope(&Method::GET, "/admin/nodes"),
-            RouteScope::NodeAdmin
+            RouteScope::ServingMember
         );
         assert_eq!(
             route_scope(&Method::POST, "/admin/nodes/abc/block"),
-            RouteScope::AdminOnly
+            RouteScope::PrincipalOnly
         );
         assert_eq!(
             route_scope(&Method::POST, "/admin/nodes/abc/unblock"),
-            RouteScope::AdminOnly
+            RouteScope::PrincipalOnly
         );
         assert_eq!(
             route_scope(&Method::POST, "/admin/nodes/abc/promote-admin"),
-            RouteScope::AdminOnly
+            RouteScope::PrincipalOnly
         );
         assert_eq!(
             route_scope(&Method::DELETE, "/admin/nodes/abc"),
-            RouteScope::AdminOnly
+            RouteScope::PrincipalOnly
         );
         assert_eq!(
             route_scope(&Method::POST, "/admin/regenerate-key"),
-            RouteScope::AdminOnly
+            RouteScope::PrincipalOnly
         );
     }
 
@@ -880,30 +887,30 @@ mod policy_tests {
         for method in [Method::GET, Method::POST, Method::DELETE] {
             assert_eq!(
                 route_scope(&method, "/admin/api-keys"),
-                RouteScope::LocalOperator,
+                RouteScope::LocalOnly,
                 "method={method}"
             );
         }
         assert_eq!(
             route_scope(&Method::DELETE, "/admin/api-keys/abc"),
-            RouteScope::LocalOperator
+            RouteScope::LocalOnly
         );
     }
 
     /// Leaving the network is abdicating: no profile needs a license for it.
     #[test]
     fn leaving_and_rejoining_belong_to_every_profile() {
-        use crate::profile::NodeProfile::{Admin, Infer, Node};
+        use crate::profile::NodeProfile::{Admin, Visitor, Worker};
 
         // Leaving stays reachable by the principal's forwarded, signed leave;
         // rejoining is only ever this machine's own act.
         for (path, expected) in [
-            ("/api/ui/leave", RouteScope::InferNodeAdmin),
-            ("/api/ui/rejoin", RouteScope::LocalOperator),
+            ("/api/ui/leave", RouteScope::AnyMember),
+            ("/api/ui/rejoin", RouteScope::LocalOnly),
         ] {
             let scope = route_scope(&Method::POST, path);
             assert_eq!(scope, expected, "rota={path}");
-            for profile in [Infer, Node, Admin] {
+            for profile in [Visitor, Worker, Admin] {
                 assert!(profile_can_access(profile, scope), "{profile} on {path}");
             }
         }
@@ -920,7 +927,7 @@ mod policy_tests {
             "/api/transfer/offer",
             "/api/transfer/download",
         ] {
-            assert!(infer_node_refuses(path), "{path} should be refused");
+            assert!(visitor_refuses(path), "{path} should be refused");
         }
         // Running inference, reading its own state and leaving stay open.
         for path in [
@@ -932,29 +939,29 @@ mod policy_tests {
             "/api/ui/applying",
             "/api/transferred",
         ] {
-            assert!(!infer_node_refuses(path), "{path} should stay open");
+            assert!(!visitor_refuses(path), "{path} should stay open");
         }
     }
 
     #[test]
     fn setup_is_explicitly_out_of_scope() {
-        assert_eq!(scope_of("/api/setup/save"), RouteScope::OutOfScope);
+        assert_eq!(scope_of("/api/setup/save"), RouteScope::OtherRouter);
     }
 
     #[test]
     fn every_profile_has_a_permitted_and_a_refused_scope() {
-        use crate::profile::NodeProfile::{Admin, Infer, Node};
+        use crate::profile::NodeProfile::{Admin, Visitor, Worker};
 
         assert!(profile_can_access(Admin, scope_of("/admin/api-keys")));
         assert!(!profile_can_access(Admin, scope_of("/api/setup/save")));
 
-        assert!(profile_can_access(Node, scope_of("/api/ui/models")));
+        assert!(profile_can_access(Worker, scope_of("/api/ui/models")));
         assert!(!profile_can_access(
-            Node,
+            Worker,
             route_scope(&Method::POST, "/admin/regenerate-key")
         ));
 
-        assert!(profile_can_access(Infer, scope_of("/api/ui/infer/heads")));
-        assert!(!profile_can_access(Infer, scope_of("/api/ui/models")));
+        assert!(profile_can_access(Visitor, scope_of("/api/ui/infer/heads")));
+        assert!(!profile_can_access(Visitor, scope_of("/api/ui/models")));
     }
 }

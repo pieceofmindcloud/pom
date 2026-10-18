@@ -154,8 +154,8 @@ mod leave_tests {
     #[tokio::test]
     async fn any_profile_detaches_its_own_machine() {
         for profile in [
-            crate::profile::NodeProfile::Infer,
-            crate::profile::NodeProfile::Node,
+            crate::profile::NodeProfile::Visitor,
+            crate::profile::NodeProfile::Worker,
         ] {
             let state = state_with("eu", vec![]).await;
             state.auth.write().await.profile = profile;
@@ -248,7 +248,7 @@ mod tls_settings_tests {
     #[tokio::test]
     async fn a_regular_node_cannot_turn_tls_on() {
         let state = state_with("eu", vec![]).await;
-        state.auth.write().await.profile = crate::profile::NodeProfile::Node;
+        state.auth.write().await.profile = crate::profile::NodeProfile::Worker;
 
         let resp = save_tls(
             ConnectionAuth,
@@ -309,7 +309,7 @@ mod tls_settings_tests {
     #[tokio::test]
     async fn node_info_reports_state_and_authority() {
         let state = state_with("eu", vec![]).await;
-        state.auth.write().await.profile = crate::profile::NodeProfile::Node;
+        state.auth.write().await.profile = crate::profile::NodeProfile::Worker;
         let info = node_info(State(state.clone())).await;
         assert!(!info.0.tls_required);
         assert!(!info.0.tls_authority, "a regular node does not decide");

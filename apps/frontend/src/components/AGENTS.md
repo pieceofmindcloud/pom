@@ -140,12 +140,12 @@ Per-file list:
   commands). Used by `Chat`. `compact` shrinks text, headings and block gaps
   together for side panels (the Networks screen's network panel).
 - `ChatSessionList.tsx` - shared conversation history list. The Chat screen
-  uses the wide variant; the `infer` Sidebar uses the compact variant. The
+  uses the wide variant; the `visitor` Sidebar uses the compact variant. The
   list owns the bounded `overflow-y-auto` region, active `aria-pressed` state,
   delete action and localized new-conversation button.
 - `ApiKeysTable.tsx` - the full-bleed API keys table. The administrator picks the
   node at creation, sees their own tokens in full and the others masked;
-  `node` and `infer` stay restricted to their own node's keys.
+  `worker` and `visitor` stay restricted to their own node's keys.
 - `DeploymentLogDock.tsx` - the Dashboard's collapsed bar for the admin, which
   expands upwards to half the area and follows the deployment log in
   real time with auto-scroll.
@@ -173,9 +173,9 @@ Per-file list:
   before filtering; rewriting `NAV` would leave the other profile with the pruned menu.
   Statistics is a first-level entry after Logs, keeping the operational
   sequence of consulting events before their aggregates. The same table marks the entries that go
-  to the `infer` footer and promotes the network to the main menu; `navForProfile` and
+  to the `visitor` footer and promotes the network to the main menu; `navForProfile` and
   `navFooterForProfile` are its two projections. Request Logs and Statistics stay visible to admin
-  and node even without a license, for product discovery; the `infer` profile does not see them.
+  and node even without a license, for product discovery; the `visitor` profile does not see them.
   Tests in `nav.test.ts`.
   The main Network section contains Information, Participants, My Machine,
   Administrators, Sharing and API Keys. Settings contains Preferences,
@@ -213,7 +213,7 @@ Per-file list:
   `SidebarUtilityControls` is the footer, and the node's `build_commit` lives
   there now, beside the controls: the bare hash in mono, no "build" label in
   front of it, with the explanation in a `title` tooltip; the hash stays hidden
-  for `infer`. `SidebarUtilityControls` shows language as **one flag**, the current locale
+  for `visitor`. `SidebarUtilityControls` shows language as **one flag**, the current locale
   (`brand.flags[locale]`, from `brand.json`), rather than "EN"/"PT-BR" or a row
   of both flags: a click opens a submenu (`LanguageFlags.tsx`, `useLanguageMenu`)
   with the options, and picking one switches the language and closes it. The
@@ -222,7 +222,7 @@ Per-file list:
   what the code means and the target here is whoever opened the panel in the
   wrong language - the language name stays in `aria-label`/`title`, because a flag is not a language to a
   screen reader. Plus the dark/light toggle (`../lib/theme`). `TlsIndicator.tsx`
-  currently renders no TLS icon in the Sidebar. For `infer`, the footer also renders documentation
+  currently renders no TLS icon in the Sidebar. For `visitor`, the footer also renders documentation
   and API keys, while the main column is replaced by `ChatSessionList` and
   the network link. The history keeps the new-conversation button and the network outside the
   scrollable area, so a long list does not push any action out.

@@ -177,7 +177,7 @@ describe("Notifications network offers", () => {
   it("shows an admission request with what the admin needs to decide, and approves it", async () => {
     admissionMocks.admissions.data = [{
       node_id: "candidate-node-id-0001",
-      role: "node",
+      role: "worker",
       status: "pending",
       requested_at: "2026-10-05T12:00:00Z",
       card: {
@@ -185,7 +185,7 @@ describe("Notifications network offers", () => {
         gpus: [{ name: "RTX 5060 Ti", vram_total_mb: 16384 }], rtt_ms: 42, relayed: true,
       },
     }, {
-      node_id: "already-decided", role: "infer", status: "approved", requested_at: "2026-10-05T11:00:00Z",
+      node_id: "already-decided", role: "visitor", status: "approved", requested_at: "2026-10-05T11:00:00Z",
       card: { hostname: "antigo", os: "", arch: "", cpu_count: 0, ram_total_mb: 0, gpus: [] },
     }];
     admissionMocks.api.decide.mockResolvedValue([]);
@@ -210,10 +210,10 @@ describe("Notifications network offers", () => {
 
   it("tells the candidate it was approved and joins only when asked to", async () => {
     admissionMocks.requests.data = [
-      { key: "pk:curitiba", name: "Rede Curitiba", role: "node", status: "approved" },
-      { key: "pk:waiting", name: "Rede Espera", role: "node", status: "pending" },
+      { key: "pk:curitiba", name: "Rede Curitiba", role: "worker", status: "approved" },
+      { key: "pk:waiting", name: "Rede Espera", role: "worker", status: "pending" },
       // Admitted before and never asked again: not an answer, so not news.
-      { key: "pk:antiga", name: "Rede Antiga", role: "node", status: "approved", standing: true },
+      { key: "pk:antiga", name: "Rede Antiga", role: "worker", status: "approved", standing: true },
     ];
     admissionMocks.api.join.mockResolvedValue({ joined: true });
     renderNotifications([]);

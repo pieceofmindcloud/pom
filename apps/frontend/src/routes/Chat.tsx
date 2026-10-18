@@ -258,7 +258,7 @@ export function Bubble({
 }) {
   const { t } = useI18n();
   const { profile } = useProfile();
-  const showTelemetry = profile !== "infer";
+  const showTelemetry = profile !== "visitor";
   const trace = message.trace ?? telemetryTrace;
   const timings = message.timings ?? telemetryTimings;
   const source = message.source ?? telemetrySource;
@@ -664,8 +664,8 @@ function ModelPicker({
 function ChatScreen() {
   const { t, locale } = useI18n();
   const { profile } = useProfile();
-  const showTelemetry = profile !== "infer";
-  const historyLivesInMainMenu = profile === "infer";
+  const showTelemetry = profile !== "visitor";
+  const historyLivesInMainMenu = profile === "visitor";
   const {
     sessions,
     session,

@@ -108,7 +108,7 @@ as raw text at build time and interprets the messages synchronously with
   ecosystem labels, version and repository.
 - `provider.tsx` - `LocaleProvider`, the `useI18n()` hook and the `LanguageSelect` component.
 
-The official profile identifiers are `admin`, `node` and `infer`. The visible
+The official profile identifiers are `admin`, `worker` and `visitor`. The visible
 label of the first goes through `profile.admin`; the last two stay lowercase by
 product decision. The toolbar, the network screen and the bootstrap use these
 keys, never literals nailed into components.
@@ -200,7 +200,7 @@ The inference head combo also has keys for its accessible name and for the
 diagnostic hint shown next to the native selector with a model visual.
 
 The `chat.history` message names the bounded conversation list used by the
-`infer` Sidebar. It remains in both CSV columns even though it is primarily an
+`visitor` Sidebar. It remains in both CSV columns even though it is primarily an
 accessible label, so the menu has no language-specific copy in the component.
 
 The `chat.head*` messages name the infer-only entry choice: selected head,

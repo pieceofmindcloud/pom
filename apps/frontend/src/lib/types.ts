@@ -435,8 +435,8 @@ export type NetworkVisibility = "local" | "private" | "public";
 export type NetworkAccessPolicy = "authorized" | "auto_approve" | "anyone_with_anchor" | "local_only";
 
 /** A role a new machine can enroll with; `admin` is never an enrollment. */
-export type EnrollmentRole = "node" | "infer";
-export const ENROLLMENT_ROLES: EnrollmentRole[] = ["node", "infer"];
+export type EnrollmentRole = "worker" | "visitor";
+export const ENROLLMENT_ROLES: EnrollmentRole[] = ["worker", "visitor"];
 
 export interface NetworkLocation {
   latitude: number;
@@ -1590,7 +1590,7 @@ export interface AdminNode {
   addr: string;
   route?: PeerRoute | null;
   role?: string;
-  /** The node's role in the network: `admin`, `node` or `infer`. */
+  /** The node's role in the network: `admin`, `worker` or `visitor`. */
   profile?: string;
   /** The trust chain version the node announces. */
   trust_version?: string | null;
@@ -1604,7 +1604,7 @@ export interface AdminNode {
   verified: boolean;
 }
 
-export type AdminAuthorityViewer = "principal" | "secondary" | "node";
+export type AdminAuthorityViewer = "principal" | "admin" | "member";
 
 export interface AdminAuthorityMember {
   node_id: string;

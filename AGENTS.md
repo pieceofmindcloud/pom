@@ -225,7 +225,7 @@ breaks the whole product.
   (`crates/node/src/plugins.rs`) keeps an activation, lease, heartbeat, process
   host and version-update state PER `plugin_code` returned by the license server
   or restored from local state, with no static catalog in the binary and no state
-  shared between plugins. Any profile (`admin`, `node`, `infer`) activates and
+  shared between plugins. Any profile (`admin`, `worker`, `visitor`) activates and
   installs plugins on its own node, including the development rebuild (which
   requires `POM_DEV_MODE`). Each plugin can only be loaded by `pom-plugin-host`
   through the C ABI and the versioned IPC in `crates/enterprise-protocol` - the

@@ -258,12 +258,12 @@ local-only notice. Routes:
   stays. `/logs/statistics` remains a native alias of `/statistics`.
   Plugin menus and screens are available to all profiles; manifest `roles` and
   legacy `profiles` are validated and preserved but do not gate this POM's UI.
-  Native route restrictions remain in force, so `infer` cannot open `/logs`,
+  Native route restrictions remain in force, so `visitor` cannot open `/logs`,
   `/statistics` or `/deployments`, even when a plugin claims an extension point.
 - `/plugins` -> Plugins, the showcase of publishable items returned by
   `https://license.pieceofmind.cloud/v1/plugins`, crossed by `code` with the
   local license and install state. Open to every profile: plugins are local to
-  each node, so `admin`, `node` and `infer` can activate licenses, add GitHub
+  each node, so `admin`, `worker` and `visitor` can activate licenses, add GitHub
   repositories and install plugins on their own machine. The browser reads the
   public catalog without node credentials, and the client only accepts plugins
   with valid releases. The screen shows icon, up to four screenshots,
@@ -297,7 +297,7 @@ local-only notice. Routes:
   do not show up for other profiles or for nodes without the flag. A
   development-only install grants no licensed features, while rebuilding an
   existing licensed or GitHub install preserves its entitlement. That endpoint
-  is AdminOnly and the UI only gets success or the step/exit code, not compiler
+  is PrincipalOnly and the UI only gets success or the step/exit code, not compiler
   logs. The
   GitHub release flow stays separate. See `docs/subsystems/plugins-ui.md`,
   section "Local rebuild in development".
@@ -402,7 +402,7 @@ local-only notice. Routes:
 - There is no `/setup` route: the address falls to the not-found page. See
   "First access wizard" below.
 - `/config/network` -> NetworkSettings; `/config/network/participants` -> the
-  participant list for `admin` and `node`; `/config/preferences` ->
+  participant list for `admin` and `worker`; `/config/preferences` ->
   Preferences; `/config/preferences/admin` -> administrative preferences;
   `/config/about` -> About, the last item of Settings, with links to the
   repository's AGPL-3.0 `LICENSE` and the official GNU page, an LGPD
@@ -422,14 +422,14 @@ local-only notice. Routes:
 - `*` -> NotFound
 
 On a public network, the local `NetworkSettings` is a read-only replica for
-`node` and `infer`. The entry directory only carries the data needed to
+`worker` and `visitor`. The entry directory only carries the data needed to
 discover the network; after the principal's authenticated `Announce` arrives,
 the backend fetches the full document, including name, organization,
 description, rules, channels and visibility. The screen must not treat
 capabilities announced during boot as a ready pipeline: the catalog only marks
 full coverage when each peer confirmed `/health` or is `idle`.
 
-On the `infer` profile, the Sidebar stops being a list of screens:
+On the `visitor` profile, the Sidebar stops being a list of screens:
 `ChatSessionList` takes the main menu with `New conversation` and the saved
 conversations. The new button stays outside the scrollable area, the list uses
 `min-h-0` + `overflow-y-auto` and the active session gets a highlight and
@@ -528,9 +528,9 @@ what is documented in `http-api.md`.
 
 ### Profiles: what each one sees
 
-The node announces a profile persisted in `pom.json`: `admin`, `node` or
-`infer`. The administrator operates the cluster; the node takes care of its own
-machine; `infer` has a reduced view to talk to the models, read the
+The node announces a profile persisted in `pom.json`: `admin`, `worker` or
+`visitor`. The administrator operates the cluster; the worker takes care of its own
+machine; `visitor` has a reduced view to talk to the models, read the
 documentation, manage its own API key and ask to join the network's processing.
 Any of the three can activate and install plugins on its own machine.
 `GET /api/ui/node` is the source the browser uses and the toolbar shows the
@@ -548,8 +548,8 @@ node cannot edit them.
 
 On the Dashboard, the reading is split by responsibility. The `admin` sees the
 cluster aggregates, such as coverage, machines, active model and in-flight
-load. The `node` and `infer` profiles only see the local machine's facts:
-served model, layer range and in-flight requests. For `infer`, global coverage
+load. The `worker` and `visitor` profiles only see the local machine's facts:
+served model, layer range and in-flight requests. For `visitor`, global coverage
 is not an operational indicator of its screen, so it is not rendered as a
 pipeline alarm. If `/api/ui/node` is unavailable, those fields show
 unavailable; missing data never becomes an empty model, an incomplete pipeline
@@ -563,18 +563,18 @@ from the coordinator's tracker.
 
 `src/lib/access.ts` combines the native routes with the profiles from the
 plugin registry (`lib/pluginUi.ts`); a native route missing from the table is
-open to `admin` and `node`. Today `/deploy` and `/deployments` are
+open to `admin` and `worker`. Today `/deploy` and `/deployments` are
 administrator only. A plain node keeps the Models section (search, full
 models, slicing, shards) for its own files, but deploys nothing, not even a
 full model on itself: to deploy, it returns to its own network, where it is
 the admin. The native showcases `/logs` and `/statistics` stay
 reachable for discovery; plugin screens follow the profiles declared in the
-manifest. For `infer`, the list of allowed and denied native routes lives in
+manifest. For `visitor`, the list of allowed and denied native routes lives in
 `INFER_ROUTES` and `INFER_DENIED_ROUTES`. In the Chat, run telemetry and its
 summaries are also hidden. The key matches a **whole segment**, so `/logs` does
 not cover `/logs-antigos`.
 
-In the Chat, `infer` gets its own slice through
+In the Chat, `visitor` gets its own slice through
 `GET /api/ui/infer/heads?model=...`: the **Inference entry** box shows the
 selected head and the other ranges starting at L0, with RTT, age and in-flight
 load. If the candidate's live read does not arrive, the load shows as
@@ -622,22 +622,22 @@ rendered in the browser.
 to prune the menu. Two separate lists would give the two classic defects: a menu
 offering what the route refuses, or a route open to a typed address the menu
 already hid. A section with leaves disappears when **no** leaf is left - "Logs"
-disappears entirely for the `node` profile, "Settings" would stay up if only
+disappears entirely for the `worker` profile, "Settings" would stay up if only
 one leaf closed.
 
 **This is not the only authorization.** The profile comes from the node in
 `pom.json` and the browser uses it for presentation and navigation; the backend
 enforces the same profile table (`ROUTE_RULES`, see `http-api.md`) and the
 credential is still checked at the gateway (see *Authentication*). The backend
-also enforces `infer`'s local view: `/api/ui/cluster` and
+also enforces `visitor`'s local view: `/api/ui/cluster` and
 `/api/ui/cluster/models` do not fan out to peers, `/admin/nodes` answers 403 and
 another machine's details answer 403. There is no profile switch in the UI.
 
-On the `/config/network` screen, an `infer` sees its own machine's data. Nothing
+On the `/config/network` screen, a `visitor` sees its own machine's data. Nothing
 changes a role in place, in the interface or on the node: the role is decided
 when the network admits the machine, so the card only explains that serving
 models takes leaving and asking for admission again as a network node. A
-`node` likewise has no way to step down to `infer` without rejoining. The principal
+`node` likewise has no way to step down to `visitor` without rejoining. The principal
 administrator (a secondary admin sees this screen and the rest of the
 interface as a node does, plus the deploy screens: the profile context
 carries `secondary`, and principal-only controls check it) can promote a
@@ -682,9 +682,9 @@ translates (see `http-api.md`, "Anchoring the root from the UI").
 `profile: admin` has no effective admin capability and does not open the
 administrative surface - putting this screen behind the administrator profile
 would make it unreachable exactly in the state it exists to serve. And whoever
-receives the anchor is usually a `node` or an `infer`. That is why
+receives the anchor is usually a `worker` or a `visitor`. That is why
 `/config/trust` is not in `RESTRICTED` (`lib/access.ts`), shows up in the
-Settings menu and is promoted to `infer`'s main menu.
+Settings menu and is promoted to `visitor`'s main menu.
 
 The `Topbar` header keeps the node's identification, profile, notifications and
 the native window shortcut; the `This node` button is not rendered. The
@@ -708,7 +708,7 @@ the node's `build_commit` (only the hash, in mono, with the explanation in the
 tooltip) and the light/dark theme. The PipelineRail is still rendered hidden on
 the Dashboard (`hidden`, for a future surface).
 
-On `infer`, the footer puts Documentation and Settings next to the flags; the
+On `visitor`, the footer puts Documentation and Settings next to the flags; the
 main network item stays in the history column to keep access to the request to
 join processing. Those positions are `NAV` metadata, not a second list of
 routes.
@@ -941,7 +941,7 @@ the list yet falls back to the project volume. Next to "Add node" there is
 `UndeployPipeline` when a model is live, but both controls are only mounted
 when `/api/ui/node` reports the `admin` profile. The server also refuses
 `POST /api/ui/deploy/node`, `POST /api/ui/deploy/node/remove` and
-`POST /api/ui/undeploy` for the `node` and `infer` profiles, with the message
+`POST /api/ui/undeploy` for the `worker` and `visitor` profiles, with the message
 localized by the UI. `PipelineRail` still exports `pipelinePeers`/`trackOf`,
 used by the Dashboard and DeployModel.
 
@@ -1123,7 +1123,7 @@ besides the turns:
   `asleep` - a machine of the pipeline unloaded its model for idleness or is
   loading it again - then `pieces`, `assemble` and `long` as the seconds pass.
 - The single file field reads `GET /api/ui/chat/capabilities?model=<chosen>`,
-  which aggregates the chosen model's head and coverage without reusing the topology the `infer`
+  which aggregates the chosen model's head and coverage without reusing the topology the `visitor`
   profile cannot query. It accepts any file type, button and drag and drop.
   Images require `vision: supported`; `unsupported` keeps the model without
   vision and `unavailable` says the read was refused or could not finish,
@@ -1185,7 +1185,7 @@ besides the turns:
   possible and goes straight into the text field.
 
 `ChatSessionProvider` shares the active session and the actions between the
-Chat and the Sidebar. On `infer`, the Sidebar uses `ChatSessionList` as the main
+Chat and the Sidebar. On `visitor`, the Sidebar uses `ChatSessionList` as the main
 menu: the history list has internal scrolling limited to the available space,
 highlights the active conversation and keeps `New conversation` fixed above it.
 Switching or deleting a session does not abort a generation in progress;

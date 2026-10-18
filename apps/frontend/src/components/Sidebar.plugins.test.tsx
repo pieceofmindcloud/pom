@@ -32,7 +32,7 @@ vi.mock("../lib/api", async (importOriginal) => ({
 vi.mock("../lib/pluginUi", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/pluginUi")>()),
   pluginMenuItems: () => [
-    { code: "harness", id: "harness", label: { en: "Harness" }, to: "/harness", roles: ["admin", "node", "infer"] },
+    { code: "harness", id: "harness", label: { en: "Harness" }, to: "/harness", roles: ["admin", "worker", "visitor"] },
   ],
   pluginLabel: (key: string) => (key === "plugin:harness:harness" ? "Harness" : null),
 }));

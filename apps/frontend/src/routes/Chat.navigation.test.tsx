@@ -215,7 +215,7 @@ describe("navigation after the chat", () => {
 
   it("asks a machine that cannot deploy to call an administrator", async () => {
     chatScenario.models = [];
-    mount("infer");
+    mount("visitor");
     const missing = await screen.findByTestId("chat-missing-piece");
     expect(missing.textContent).toContain("Peça a um administrador");
     expect(screen.queryByTestId("no-model-steps")).toBeNull();
@@ -254,7 +254,7 @@ describe("navigation after the chat", () => {
     window.localStorage.setItem("pom.chat.sessions", JSON.stringify([
       { id: "older", title: "Conversa antiga", model: "qwen", messages: [{ id: "m1", role: "user", content: "oi", at: "2026-09-06T10:00:00.000Z" }], updatedAt: "2026-09-06T10:00:00.000Z" },
     ]));
-    mount("infer");
+    mount("visitor");
 
     await screen.findByRole("textbox");
     expect(screen.getAllByTestId("chat-session-list")).toHaveLength(1);
@@ -305,7 +305,7 @@ describe("navigation after the chat", () => {
     expect(await screen.findByText("dados.bin")).toBeTruthy();
   });
 
-  it.each(["admin", "node", "infer"] as const)(
+  it.each(["admin", "worker", "visitor"] as const)(
     "refuses a dropped image when the model has no vision in the %s profile",
     async (profile) => {
       mount(profile);
@@ -320,7 +320,7 @@ describe("navigation after the chat", () => {
     },
   );
 
-  it.each(["node", "infer"] as const)(
+  it.each(["worker", "visitor"] as const)(
     "allows an image attachment in the %s profile when the aggregated network confirms vision and coverage",
     async (profile) => {
       chatScenario.cluster = {
@@ -361,7 +361,7 @@ describe("navigation after the chat", () => {
         { id: "c1", title: "Conversa", model: "qwen", messages: [{ id: "m1", role: "user", content: "oi", at: "2026-09-06T10:00:00.000Z" }], updatedAt: "2026-09-06T10:00:00.000Z" },
       ]));
 
-      mount("infer");
+      mount("visitor");
 
       expect(await screen.findByText("cobertura indisponível")).toBeTruthy();
       expect(screen.queryByText("cobertura incompleta")).toBeNull();

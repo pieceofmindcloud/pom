@@ -755,7 +755,7 @@ mod ipv6_tests {
             inference_quic_port: None,
             gateway_port: Some(8090),
             gateway_quic_port: None,
-            profile: crate::profile::NodeProfile::Node,
+            profile: crate::profile::NodeProfile::Worker,
             hostname: String::new(),
             capabilities: Vec::new(),
             connection_verified: false,

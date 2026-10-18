@@ -1530,7 +1530,7 @@ mod tests {
         assert_eq!(readable_node(&secondary, None).await, None);
 
         let infer = crate::gateway::testkit::state_with("infer", vec![]).await;
-        infer.auth.write().await.profile = crate::profile::NodeProfile::Infer;
+        infer.auth.write().await.profile = crate::profile::NodeProfile::Visitor;
         let own = Some(infer.network.node_id.clone());
         assert_eq!(readable_node(&infer, Some("other".into())).await, own);
         assert_eq!(readable_node(&infer, None).await, own);

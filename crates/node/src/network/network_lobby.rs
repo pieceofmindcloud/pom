@@ -1677,7 +1677,7 @@ mod tests {
         let now = chrono::Utc::now();
         let mut records = Vec::new();
         assert_eq!(
-            apply_admission_request(&mut records, "a", card("alpha"), EnrollmentRole::Node, now),
+            apply_admission_request(&mut records, "a", card("alpha"), EnrollmentRole::Worker, now),
             Ok(AdmissionStatus::Pending)
         );
         // Asking again while pending only refreshes what the admin will read.
@@ -1686,14 +1686,14 @@ mod tests {
                 &mut records,
                 "a",
                 card("renamed"),
-                EnrollmentRole::Infer,
+                EnrollmentRole::Visitor,
                 now
             ),
             Ok(AdmissionStatus::Pending)
         );
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].card.hostname, "renamed");
-        assert_eq!(records[0].role, EnrollmentRole::Infer);
+        assert_eq!(records[0].role, EnrollmentRole::Visitor);
 
         // A rejection holds for a while, then the machine may ask again.
         records[0].status = AdmissionStatus::Rejected;
@@ -1715,7 +1715,7 @@ mod tests {
             None
         );
         assert_eq!(
-            apply_admission_request(&mut records, "a", card("alpha"), EnrollmentRole::Node, now),
+            apply_admission_request(&mut records, "a", card("alpha"), EnrollmentRole::Worker, now),
             Err("admission_rejected")
         );
         let later = now + chrono::Duration::seconds(ADMISSION_RETRY_AFTER_SECS + 1);
@@ -1724,7 +1724,7 @@ mod tests {
                 &mut records,
                 "a",
                 card("alpha"),
-                EnrollmentRole::Node,
+                EnrollmentRole::Worker,
                 later
             ),
             Ok(AdmissionStatus::Pending)
@@ -1733,10 +1733,10 @@ mod tests {
         // An approval is never undone by the candidate asking again.
         records[0].status = AdmissionStatus::Approved;
         assert_eq!(
-            apply_admission_request(&mut records, "a", card("x"), EnrollmentRole::Infer, later),
+            apply_admission_request(&mut records, "a", card("x"), EnrollmentRole::Visitor, later),
             Ok(AdmissionStatus::Approved)
         );
-        assert_eq!(records[0].role, EnrollmentRole::Node);
+        assert_eq!(records[0].role, EnrollmentRole::Worker);
 
         // Full of pending requests, a new one is refused rather than evicting.
         let mut full: Vec<AdmissionRecord> = Vec::new();
@@ -1745,18 +1745,18 @@ mod tests {
                 &mut full,
                 &format!("n{index}"),
                 card("x"),
-                EnrollmentRole::Node,
+                EnrollmentRole::Worker,
                 now,
             )
             .unwrap();
         }
         assert_eq!(
-            apply_admission_request(&mut full, "late", card("x"), EnrollmentRole::Node, now),
+            apply_admission_request(&mut full, "late", card("x"), EnrollmentRole::Worker, now),
             Err("admissions_full")
         );
         full[3].status = AdmissionStatus::Rejected;
         assert!(
-            apply_admission_request(&mut full, "late", card("x"), EnrollmentRole::Node, now)
+            apply_admission_request(&mut full, "late", card("x"), EnrollmentRole::Worker, now)
                 .is_ok()
         );
         assert!(full.iter().all(|record| record.node_id != "n3"));

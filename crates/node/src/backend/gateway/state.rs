@@ -825,6 +825,12 @@ pub(super) async fn admin_access_status(State(state): State<GatewayState>) -> im
 /// Routes used by inference or by the public compatibility API. This list is
 /// the existing pipeline boundary from `20dfe12`; the UI gate must never be
 /// applied to it, even when the node is in localhost-only mode.
+///
+/// `/api/transfer/*` is not on it: a peer reaches those routes signed, as a
+/// node-to-node request that `caller_may_ask` checks, and this machine's own
+/// screen through the browser session. Outside the surface, a request with
+/// only the connection key - which every member holds - pulled model files
+/// with no check at all.
 pub(super) fn is_pipeline_or_public_path(path: &str) -> bool {
     path == "/api/access"
         || path == "/api/generate"
@@ -839,7 +845,6 @@ pub(super) fn is_pipeline_or_public_path(path: &str) -> bool {
         || path == crate::webui::NETWORK_SETTINGS_POLICY_PATH
         || path == crate::webui::MEMBER_LEFT_PATH
         || path.starts_with("/api/internal/")
-        || path.starts_with("/api/transfer/")
         || path.starts_with("/v1/")
 }
 
@@ -889,7 +894,8 @@ pub(crate) fn peer_is_infer(state: &GatewayState, peer: &PeerInfo) -> bool {
 /// - A deploy route (deploy, load, unload, stop) takes a request signed by
 ///   any admin of the trust chain, principal or secondary.
 /// - A route of a serving node (catalog, planning, transfers) takes a signed
-///   request from an admin or from a peer that is not an inference node.
+///   request from an admin or from a peer the principal admitted as a regular
+///   node (`peer_role_is_attested`) - never on the strength of its announce.
 /// - A route of this machine's own operator (`LocalOperator`) is refused to
 ///   every other node, signed or not.
 /// - Everything else - inference, the node's own description, the internal
@@ -929,10 +935,26 @@ pub(crate) async fn caller_may_ask(
     }
     let peers = state.network.alive_peers().await;
     match peers.iter().find(|peer| peer.node_id == issuer.node_id) {
-        Some(peer) if !peer_is_infer(state, peer) => Ok(()),
-        Some(_) => Err("infer_caller"),
+        Some(peer) if peer_is_infer(state, peer) => Err("infer_caller"),
+        Some(peer) if peer_role_is_attested(state, peer).await => Ok(()),
+        Some(_) => Err("role_unattested"),
         None => Err("unknown_caller"),
     }
+}
+
+/// Whether the principal vouched that `peer` was admitted as a regular
+/// node, rather than taking the peer's word for it. The chain's signed role
+/// record says so on every node; on the principal its own approved admission
+/// does too, before the record is signed. A legacy network open to anyone
+/// with the anchor has no admissions to record, and keeps the announce.
+async fn peer_role_is_attested(state: &GatewayState, peer: &PeerInfo) -> bool {
+    use crate::config::EnrollmentRole;
+    state.admin_trust.recorded_role(&peer.node_id) == Some(EnrollmentRole::Node)
+        || state.network_chat.admission_of(&peer.node_id).is_some_and(|record| {
+            record.role == EnrollmentRole::Node
+                && record.status == crate::network_lobby::AdmissionStatus::Approved
+        })
+        || state.auth.read().await.network.open_admission()
 }
 
 /// Whether `issuer` is the principal of this node's trust chain.

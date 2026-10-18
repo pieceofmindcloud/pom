@@ -432,6 +432,20 @@ mod tests {
             caller_may_ask(&state, NodeAdmin, Some(&admin)).await,
             Ok(())
         );
+        // Its announce alone does not make it one: the principal has to have
+        // admitted it as a regular node.
+        assert_eq!(
+            caller_may_ask(&state, NodeAdmin, Some(&principal_of("worker"))).await,
+            Err("role_unattested")
+        );
+        state
+            .admin_trust
+            .record_member_role(
+                &state.authority_signing_key,
+                "worker",
+                crate::config::EnrollmentRole::Node,
+            )
+            .unwrap();
         assert_eq!(
             caller_may_ask(&state, NodeAdmin, Some(&principal_of("worker"))).await,
             Ok(())
@@ -617,8 +631,8 @@ mod tests {
             Arc::new(crate::admin_trust::AdminTrust::in_memory(principal.admin_trust.document()).unwrap());
         assert_eq!(
             caller_may_ask(&member, NodeAdmin, Some(&infer)).await,
-            Ok(()),
-            "before the record, the member only has the announce"
+            Err("role_unattested"),
+            "the announce alone attests nothing"
         );
 
         principal
@@ -656,6 +670,40 @@ mod tests {
                 &principal.network.node_id
             )
             .is_err());
+    }
+
+    /// `/api/transfer/*` serves model files. Every member holds the
+    /// connection key, so the key alone - with or without the node-to-node
+    /// marker - reaches none of it: a peer signs, the local screen has its
+    /// session.
+    #[tokio::test]
+    async fn the_connection_key_alone_pulls_no_model_file() {
+        let state = testkit::state_with("serving", vec![]).await;
+        {
+            let mut auth = state.auth.write().await;
+            auth.connection_key = "connection-secret".into();
+            auth.profile = crate::profile::NodeProfile::Node;
+            auth.admin_exposure = crate::config::AdminExposure::Network;
+        }
+        let app = router_with_surface_gate(&state, &["/api/transfer/download"]);
+        let mut bare = Request::get("/api/transfer/download?path=m.gguf")
+            .header("authorization", "Bearer connection-secret")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        bare.extensions_mut()
+            .insert(crate::serve::PeerAddr("192.0.2.9:1234".parse().unwrap()));
+        assert_ne!(app.clone().oneshot(bare).await.unwrap().status(), StatusCode::OK);
+
+        let marked = app
+            .oneshot(from_another_node(
+                axum::http::Method::GET,
+                "/api/transfer/download",
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(marked.status(), StatusCode::FORBIDDEN);
+        assert_eq!(testkit::body_of(marked).await["reason"], "signature_required");
     }
 
     /// A grant already in the chain stops counting once the chain records
@@ -3030,7 +3078,7 @@ mod replicated_admin_logs_tests {
 
         assert!(state
             .cluster_logs
-            .try_ingest_remote(crate::cluster_logs::LogBatch {
+            .try_ingest_remote("worker", crate::cluster_logs::LogBatch {
                 source_node_id: "worker".into(),
                 entries: vec![crate::cluster_logs::LogEntry {
                     node_id: "worker".into(),
@@ -3069,13 +3117,13 @@ mod replicated_admin_logs_tests {
         };
         assert!(state
             .audit
-            .try_ingest_remote(crate::reqlog::AuditEvent::Complete {
+            .try_ingest_remote("worker", crate::reqlog::AuditEvent::Complete {
                 id: request.id.clone(),
                 completion,
             }));
         assert!(state
             .audit
-            .try_ingest_remote(crate::reqlog::AuditEvent::Begin(request)));
+            .try_ingest_remote("worker", crate::reqlog::AuditEvent::Begin(request)));
 
         state.audit.flush();
         // The secondary accepts the process log, and keeping it is the logs

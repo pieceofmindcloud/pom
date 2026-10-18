@@ -522,21 +522,18 @@ pub(crate) fn spawn_member_list_keeper(state: GatewayState) {
     });
 }
 
-/// Signs into the chain the role of every machine the principal admitted
-/// as an inference node, so every member - not only the principal, which
-/// keeps the admission list - treats it as one whatever it announces. A node
-/// admitted as `node` is only recorded when it replaces an earlier role.
-/// Does nothing off the principal.
+/// Signs into the chain the role of every machine the principal admitted,
+/// so every member - not only the principal, which keeps the admission list -
+/// knows it whatever the machine announces: an inference node is refused as
+/// one, and a regular node's role is what lets it reach another node's
+/// serving routes (`gateway::caller_may_ask`). Does nothing off the principal.
 pub(crate) fn sign_member_roles(state: &GatewayState) {
     if state.admin_trust.current_primary().pubkey != state.authority_principal.pubkey {
         return;
     }
     let mut changed = false;
     for record in state.network_chat.admissions() {
-        if record.status != crate::network_lobby::AdmissionStatus::Approved
-            || (record.role == crate::config::EnrollmentRole::Node
-                && state.admin_trust.recorded_role(&record.node_id).is_none())
-        {
+        if record.status != crate::network_lobby::AdmissionStatus::Approved {
             continue;
         }
         match state.admin_trust.record_member_role(

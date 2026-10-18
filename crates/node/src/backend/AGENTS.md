@@ -548,9 +548,9 @@ boundary.
   (`chain_sources`, `POST /api/internal/admin-trust/chain`) - any member, so
   it works with the principal offline. On the principal,
   `webui::sign_member_roles` (at each admission decision and every 15 s from
-  `spawn_member_role_keeper`) signs the role of each machine approved as an
-  inference node into the chain, which this same sync carries to every
-  member. `chain_status` feeds
+  `spawn_member_role_keeper`) signs the role of each approved machine into the
+  chain, which this same sync carries to every member. A non-admin caller of
+  a `NodeAdmin` route needs that signed `node` role (`caller_may_ask`). `chain_status` feeds
   `NodeInfo.cluster_version` and `POST /api/ui/network/trust-sync`.
 - `reqlog.rs` - the audit adapter and the migration fallback. With the plugin
   active, the host writes in `enterprise.db`; independently of that destination, the

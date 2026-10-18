@@ -180,8 +180,15 @@ last):
     "signature_required"` for the key alone, `"principal_required"`
     otherwise). A `DeployAdmin` route needs it signed by any admin of the
     trust chain, principal or secondary (`"admin_required"`). A
-    `NodeAdmin` route needs it signed by an admin or by an admitted peer that
-    is not an inference node (`"infer_caller"`, `"unknown_caller"`). A
+    `NodeAdmin` route needs it signed by an admin or by a live peer the
+    principal admitted as a regular node (`"infer_caller"`,
+    `"unknown_caller"`, `"role_unattested"`): the chain's signed role record,
+    or on the principal its approved admission, says so - the announce never
+    does. Only a legacy network open to anyone with the anchor
+    (`open_admission`), which has no admissions, keeps the announce. These
+    routes include `/api/transfer/*`, which is on the administrative surface:
+    a peer reaches it signed, and the local screen with its session, never
+    with the connection key alone. A
     `LocalOperator` route belongs to the operator at that machine and is
     refused to every other node, signed or not (`"local_operator_only"`):
     `/admin/api-keys`, `/api/ui/plugins/*`, `/api/ui/requests/*`, the
@@ -398,20 +405,20 @@ carries the full signed chain to the target, and then to every other member. `PO
 opens a signed offer to the last active secondary, and
 `POST /api/transfer/offers/{id}/accept` only completes when the successor
 presents the signed acceptance. `POST /admin/authority/secondaries/:id/demote`
-is exclusive to the principal. The infer to node path is a signed request
-authorized by any admin, and node to infer is a local decision with a warning.
+is exclusive to the principal. A machine's role (`node` or `infer`) is not
+changed by a request between nodes: it is set when the principal admits the
+machine and signed into the chain as a member role record (2 above).
 
-The promotion request is a two-leg node-to-node transaction. The `infer` sends
-the signed request to `/api/internal/profile/authorize-node`; the admin
-authorizes through the Ed25519 chain and sends the signed command to
-`/api/internal/profile/accept-node`. Each leg tries the
-`PeerInfo::gateway_candidates()` in the announced order, so `gateway_url()` is
-only the first attempt and not the peer's permanent truth. An HTTP answer is
-kept as an explicit refusal; only a transport failure moves to the next
-address. The forward deadline is longer than one attempt of the return, since
-the admin's answer must contain the second call. The same signed mutation is
-not resent automatically after a timeout, so replay protection does not reject
-it as if it were a new request.
+The promotion is one signed delivery. `POST /admin/nodes/:id/promote-admin`
+signs the secondary grant on the principal, records it in the chain and posts
+the whole chain to the target over `POST /api/internal/admin-trust/reconcile`,
+signed with the control envelope; `spawn_trust_fanout` then sends it to every
+other member. The call goes through `admin::post_internal_json`, which tries
+each of the target's gateway addresses in turn and, last, the libp2p tunnel
+(`peer_client::send_to_gateway_over`); an HTTP answer is kept as an explicit refusal, only a transport failure
+moves to the next address. When the target answers without becoming an admin,
+the principal takes the grant back with a signed demotion; silence leaves the
+grant standing (`202`, `pending`).
 
 Inference frames get no per-frame administrative signature; the peer is
 authenticated by the libp2p transport and control stays separate.

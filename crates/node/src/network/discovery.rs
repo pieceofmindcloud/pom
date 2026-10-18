@@ -1758,7 +1758,10 @@ async fn handle_event(
                 request_response::Message::Request {
                     request, channel, ..
                 } => {
-                    let accepted = logs.try_ingest_remote(request);
+                    let accepted = match network.live_node_of(&peer).await {
+                        Some(sender) => logs.try_ingest_remote(&sender, request),
+                        None => false,
+                    };
                     if !accepted {
                         debug!("cluster-logs: batch refused from {peer}");
                     }
@@ -1784,7 +1787,11 @@ async fn handle_event(
                 request_response::Message::Request {
                     request, channel, ..
                 } => {
-                    let accepted = match audit_log.order_remote_events(request) {
+                    let ordered = match network.live_node_of(&peer).await {
+                        Some(sender) => audit_log.order_remote_events(&sender, request),
+                        None => None,
+                    };
+                    let accepted = match ordered {
                         Some(events) if events.is_empty() => true,
                         Some(events) => match remote_audit_tx.try_send(events) {
                             Ok(()) => true,

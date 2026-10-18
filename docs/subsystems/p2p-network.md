@@ -1364,7 +1364,12 @@ Each effective admin
 persists the entry in its own replica's arrival order, without sorting by the
 remote clock, and keeps `origin_at` only as informative data. The receiver
 checks its own effective authority in `AdminTrust`; an `admin` profile without
-a grant does not become a read target nor accepts the copy.
+a grant does not become a read target nor accepts the copy. It also binds what
+arrives to the swarm connection: the libp2p `PeerId` must be a live peer
+(`Network::live_node_of`), a log batch must name that node as its source and
+every line as its own, and a request-audit begin must name it as the entry
+node, with only the node that began a request allowed to complete it
+(`ClusterLogs::try_ingest_remote`, `AuditLog::order_remote_events`).
 
 Request audit follows the same topology on `/pom/request-audit/1.0.0`: POM's
 transport replicates `Begin` and `Complete` to every known admin, even when the

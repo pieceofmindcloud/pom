@@ -4106,6 +4106,22 @@ impl Network {
         self.peers.read().await.len()
     }
 
+    /// The node behind a libp2p connection, when it is a live peer of this
+    /// network - which a peer only becomes after admission. What a node sends
+    /// over the swarm is bound to this identity, never to what it says it is.
+    pub async fn live_node_of(&self, endpoint: &crate::p2p::EndpointId) -> Option<String> {
+        self.peers
+            .read()
+            .await
+            .values()
+            .find(|peer| {
+                peer.is_alive()
+                    && peer.endpoint_id.as_deref().and_then(crate::p2p::parse_endpoint_id)
+                        == Some(*endpoint)
+            })
+            .map(|peer| peer.node_id.clone())
+    }
+
     pub async fn alive_peers(&self) -> Vec<PeerInfo> {
         self.peers
             .read()

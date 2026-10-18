@@ -481,7 +481,10 @@ impl Discovery {
             p2p::Serve::new(ClusterLogsCodec, move |connection: Connection, request| {
                 let ctx = ctx.clone();
                 async move {
-                    let accepted = ctx.logs.try_ingest_remote(request);
+                    let accepted = match ctx.network.live_node_of(&connection.remote_id()).await {
+                        Some(sender) => ctx.logs.try_ingest_remote(&sender, request),
+                        None => false,
+                    };
                     if !accepted {
                         debug!(
                             "cluster-logs: batch refused from {}",
@@ -498,7 +501,11 @@ impl Discovery {
             p2p::Serve::new(AuditCodec, move |connection: Connection, request| {
                 let ctx = ctx.clone();
                 async move {
-                    let accepted = match ctx.audit_log.order_remote_events(request) {
+                    let ordered = match ctx.network.live_node_of(&connection.remote_id()).await {
+                        Some(sender) => ctx.audit_log.order_remote_events(&sender, request),
+                        None => None,
+                    };
+                    let accepted = match ordered {
                         Some(events) if events.is_empty() => true,
                         Some(events) => match ctx.remote_audit_tx.try_send(events) {
                             Ok(()) => true,

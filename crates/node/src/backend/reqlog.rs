@@ -370,8 +370,9 @@ enum Command {
 
 #[derive(Default)]
 struct RemoteAuditState {
-    begun: HashSet<String>,
-    completions_waiting_for_begin: HashMap<String, AuditCompletion>,
+    /// Request id -> the node that began it, the only one that may complete it.
+    begun: HashMap<String, String>,
+    completions_waiting_for_begin: HashMap<String, (String, AuditCompletion)>,
 }
 
 /// Handle shared by gateway tasks and the authenticated query route.
@@ -505,7 +506,15 @@ impl AuditLog {
     /// Order an event received from another admin without selecting its local
     /// sink. This keeps completion-before-begin handling identical whether the
     /// destination stores the event in PomDb or forwards it to a plugin host.
-    pub(crate) fn order_remote_events(&self, event: AuditEvent) -> Option<Vec<AuditEvent>> {
+    /// Orders an event `sender` - the live peer the swarm connection belongs
+    /// to - sent. A node only reports the requests that entered through it:
+    /// a begin must name `sender` as its entry node, and only the node that
+    /// began a request may complete it. Anything else is refused.
+    pub(crate) fn order_remote_events(
+        &self,
+        sender: &str,
+        event: AuditEvent,
+    ) -> Option<Vec<AuditEvent>> {
         if !self
             .admin_receiver
             .load(std::sync::atomic::Ordering::Acquire)
@@ -515,25 +524,36 @@ impl AuditLog {
         let mut state = self.remote_state.lock().ok()?;
         match event {
             AuditEvent::Begin(request) => {
+                if request.entry_node_id != sender {
+                    return None;
+                }
                 let id = request.id.clone();
-                if state.begun.contains(&id) {
-                    return Some(Vec::new());
+                if let Some(owner) = state.begun.get(&id) {
+                    return (owner == sender).then(Vec::new);
                 }
                 if state.begun.len() >= MAX_REMOTE_AUDIT_IDS {
-                    if let Some(oldest) = state.begun.iter().next().cloned() {
+                    if let Some(oldest) = state.begun.keys().next().cloned() {
                         state.begun.remove(&oldest);
                     }
                 }
-                let completed = state.completions_waiting_for_begin.remove(&id);
-                state.begun.insert(id.clone());
+                let completed = state
+                    .completions_waiting_for_begin
+                    .remove(&id)
+                    .filter(|(owner, _)| owner == sender);
+                state.begun.insert(id.clone(), sender.to_string());
                 let mut events = vec![AuditEvent::Begin(request)];
-                if let Some(completion) = completed {
+                if let Some((_, completion)) = completed {
                     events.push(AuditEvent::Complete { id, completion });
                 }
                 Some(events)
             }
-            AuditEvent::Complete { id, completion } => {
-                if !state.begun.remove(&id) {
+            AuditEvent::Complete { id, completion } => match state.begun.get(&id) {
+                Some(owner) if owner == sender => {
+                    state.begun.remove(&id);
+                    Some(vec![AuditEvent::Complete { id, completion }])
+                }
+                Some(_) => None,
+                None => {
                     if state.completions_waiting_for_begin.len() >= MAX_REMOTE_AUDIT_IDS {
                         if let Some(oldest) =
                             state.completions_waiting_for_begin.keys().next().cloned()
@@ -541,11 +561,12 @@ impl AuditLog {
                             state.completions_waiting_for_begin.remove(&oldest);
                         }
                     }
-                    state.completions_waiting_for_begin.insert(id, completion);
-                    return Some(Vec::new());
+                    state
+                        .completions_waiting_for_begin
+                        .insert(id, (sender.to_string(), completion));
+                    Some(Vec::new())
                 }
-                Some(vec![AuditEvent::Complete { id, completion }])
-            }
+            },
         }
     }
 
@@ -567,8 +588,8 @@ impl AuditLog {
     /// Persist a remote event locally without re-replicating it. A completion
     /// can arrive before its begin because each peer has an independent endpoint
     /// queue, so it is held briefly until the matching begin is observed.
-    pub fn try_ingest_remote(&self, event: AuditEvent) -> bool {
-        let Some(ordered) = self.order_remote_events(event) else {
+    pub fn try_ingest_remote(&self, sender: &str, event: AuditEvent) -> bool {
+        let Some(ordered) = self.order_remote_events(sender, event) else {
             return false;
         };
         ordered
@@ -1501,6 +1522,54 @@ mod tests {
         let own = Some(infer.network.node_id.clone());
         assert_eq!(readable_node(&infer, Some("other".into())).await, own);
         assert_eq!(readable_node(&infer, None).await, own);
+    }
+
+    /// A node only reports the requests that entered through it, and only
+    /// the node that began a request completes it.
+    #[tokio::test]
+    async fn a_remote_event_is_bound_to_the_node_that_sent_it() {
+        let state = crate::gateway::testkit::state_with("admin", vec![]).await;
+        let audit = state.audit.clone();
+        audit.set_admin_receiver(true);
+        let mut begin = request("r1", "key", "hello");
+        begin.entry_node_id = "worker".into();
+        let complete = |status| AuditEvent::Complete {
+            id: "r1".into(),
+            completion: AuditCompletion {
+                completed_at: chrono::Utc::now().to_rfc3339(),
+                result: None,
+                telemetry: None,
+                timings: None,
+                source: "distributed".into(),
+                hops: Vec::new(),
+                prompt_tokens: None,
+                completion_tokens: None,
+                duration_ms: None,
+                status,
+                error: None,
+            },
+        };
+        assert!(audit
+            .order_remote_events("impostor", AuditEvent::Begin(begin.clone()))
+            .is_none());
+        assert_eq!(
+            audit
+                .order_remote_events("worker", AuditEvent::Begin(begin.clone()))
+                .map(|events| events.len()),
+            Some(1)
+        );
+        assert!(audit
+            .order_remote_events("impostor", complete(AuditStatus::Ok))
+            .is_none());
+        assert!(audit
+            .order_remote_events("impostor", AuditEvent::Begin(begin))
+            .is_none());
+        assert_eq!(
+            audit
+                .order_remote_events("worker", complete(AuditStatus::Ok))
+                .map(|events| events.len()),
+            Some(1)
+        );
     }
 
     #[test]

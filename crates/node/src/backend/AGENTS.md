@@ -55,9 +55,9 @@ boundary.
   port does not use the shared `connection_key` alone on private networks; on public
   networks it demands TLS transport and the internal marker, while the result callbacks validate
   the per-frame `Ticket`.
-- `/handshake` is the admission proof of the private discovery. The comparison demands
-  that the configured key and the received one both be non-empty; an empty key never turns a
-  setup process into a member of the swarm.
+- `/handshake` is the admission proof of the private discovery. The key never travels: the
+  node answers a challenge with a signed HMAC of it (`session.rs`), and a node without a key
+  answers nothing, so an empty key never turns a setup process into a member of the swarm.
 - `gateway/` - the module split into state/selection, budgets and generation types,
   generation, snapshots/planning, HTTP and tests: `GatewayState`,
   `start_gateway_with_ready`, `generate_stream_with_stops` /
@@ -610,14 +610,15 @@ boundary.
   `/health`: it returns the last value and schedules a background check of at most 500 ms
   every 15 s. It does not inherit the generation's 300 s, and a cold or absent Ollama never
   holds up the gateway's answer.
-- `session.rs` - `POST /handshake` uses a two-step Ed25519 challenge. A
-  request without a `nonce` and a `signature` is refused with HTTP 403
-  `challenge_required` and receives a random 32-byte hexadecimal nonce. The
-  verifier keeps that nonce for 30 seconds and consumes it before checking the signature sent;
-  only the signature of the raw nonce by the key whose `SHA256` is the `node_id` gets
-  `approved: true`. A node that uses the old body sees the challenge's 403 answer and never gets
-  in until it speaks the new signed format.
-  Reuse, expiration, key divergence and a missing signature are refused.
+- `session.rs` - `POST /handshake` proves the connection key without sending
+  it. The prober sends `{node_id, pubkey, challenge}` (32 random bytes, hex);
+  the node answers `{node_id, proofs, signature}`: one HMAC-SHA256 per key it
+  accepts (current, and the old one during a rotation's grace) over a fixed
+  label, the challenge, its own id and the prober's, all signed with its node
+  key. `answer_proves_key` is the prober's check: the signature against the
+  peer's announced key, then the HMAC recomputed with its own key, in constant
+  time. Refusals (403 `reason`): `blocked`, `no_key`, `identity_mismatch`,
+  `invalid_challenge`. The node keeps no state per probe.
 
 ## Key functions and routes
 
@@ -827,10 +828,8 @@ change lands in the right place.
   rejects `..`, absolute and prefixed components. Cache: index.html no-cache,
   hashed assets immutable (1 year). Missing bundle -> 500 explaining the
   `npm run build` / `POM_UI_DIST` remedy.
-- `session.rs` - `handle_handshake` compares the `connection_key` (403
-  `invalid_key`), ties the `node_id` to the `pubkey`, consults `blocked_nodes`, demands the
-  single-use Ed25519 challenge and approves with a `peer_id`; the challenge's refusals are
-  described in the file's entry above.
+- `session.rs` - `handle_handshake` answers a challenge with signed key proofs
+  and `answer_proves_key` checks them; see the file's entry above.
 
 ## Links to other folders
 

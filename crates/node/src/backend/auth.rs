@@ -258,6 +258,26 @@ pub fn connection_key_accepted(config: &Config, token: &str) -> bool {
     connection_key_accepted_at(config, token, chrono::Utc::now().timestamp())
 }
 
+/// The connection keys this node accepts right now: the current one and,
+/// while a rotation's grace lasts, the one being replaced. Empty without a key.
+pub fn accepted_connection_keys(config: &Config) -> Vec<String> {
+    if config.connection_key.is_empty() {
+        return Vec::new();
+    }
+    let mut keys = vec![config.connection_key.clone()];
+    if let Some(transition) = transition_for(&config.connection_key, chrono::Utc::now().timestamp()) {
+        if !transition.old.is_empty() && transition.old != config.connection_key {
+            keys.push(transition.old);
+        }
+    }
+    keys
+}
+
+/// Compares two byte strings without leaking where they differ.
+pub(crate) fn constant_time_bytes_eq(expected: &[u8], supplied: &[u8]) -> bool {
+    expected.len() == supplied.len() && bool::from(expected.ct_eq(supplied))
+}
+
 /// Validates an API key presented by the client's inference surface.
 /// This rule stays separate from authentication between peers.
 #[cfg_attr(not(test), allow(dead_code))]

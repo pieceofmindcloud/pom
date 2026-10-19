@@ -22,7 +22,6 @@ import { MachineIcon, gpuDisplayName, machineKind } from "./MachineIcon";
 import { trackOf } from "./PipelineRail";
 import { ReleaseSlice } from "./ReleaseSlice";
 import { RemoveNode } from "./RemoveNode";
-import { LeaveNode } from "./LeaveNode";
 import { KvCache } from "./KvCache";
 import { PluginServiceBadge } from "./PluginServices";
 import { isCpuBuffer, ModelPlacementSection } from "./ModelPlacement";
@@ -527,8 +526,9 @@ export function PeerDetailCard({
               {peer.is_self && cfg && (
                 <ReleaseSlice compact startLayer={cfg.start_layer} endLayer={cfg.end_layer} />
               )}
-              {/* Two different exits: "Remove" takes it out of the model and leaves the
-                  machine in the cluster; "Leave the network" takes it out of the whole cluster. */}
+              {/* Only "Remove": it takes the machine out of the model and leaves it in the
+                  cluster. Leaving the whole network is not offered from here; the machine
+                  does it from its own My Machine screen. */}
               {serving && group && range && (
                 <RemoveNode
                   nodeId={peer.node_id}
@@ -538,11 +538,6 @@ export function PeerDetailCard({
                   existingRanges={otherRanges}
                 />
               )}
-              <LeaveNode
-                nodeId={peer.node_id}
-                hostname={n?.hostname || peer.short_id}
-                isSelf={peer.is_self}
-              />
             </div>
           </div>
 

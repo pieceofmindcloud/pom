@@ -249,7 +249,7 @@ function RouteFallback({ fullScreen = false }: { fullScreen?: boolean }) {
 export default function App() {
   const { t, locale } = useI18n();
   const location = useLocation();
-  const { profile } = useProfile();
+  const { profile, known: profileKnown } = useProfile();
   const pluginUi = usePluginUi();
   // The registry is read by `canAccessRoute` and by the menu; it must be up to date
   // before any child consults the guard.
@@ -268,7 +268,8 @@ export default function App() {
    *
    * The decision is made by `lib/access.ts`, the same table that filters the menu.
    */
-  const allowed = canAccessRoute(location.pathname, profile);
+  // Fails closed: until the node says which profile this is, no route opens.
+  const allowed = profileKnown && canAccessRoute(location.pathname, profile);
   /*
    * Screens provided by plugins (`lib/pluginUi.ts`) use the namespace of the
    * plugin's own `plugin_code` inside the `/admin-ui` basename. A manifest may
@@ -403,7 +404,9 @@ export default function App() {
           >
             <ErrorBoundary resetKey={location.pathname}>
               <Suspense fallback={<RouteFallback />}>
-                {!allowed && location.pathname === "/" ? (
+                {!profileKnown ? (
+                  <RouteFallback />
+                ) : !allowed && location.pathname === "/" ? (
                   /*
                    * The `/` is the Dashboard, which `infer` does not open. Sending it to the
                    * refusal would make the interface open in a dead end: the profile's

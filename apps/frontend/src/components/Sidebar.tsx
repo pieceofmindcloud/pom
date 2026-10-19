@@ -168,14 +168,14 @@ export function ScrollableNav({ className, children }: { className?: string; chi
  */
 function SidebarUtilityControls({ collapsed }: { collapsed: boolean }) {
   const { t } = useI18n();
-  const { profile } = useProfile();
+  const { profile, known } = useProfile();
   const { theme, toggle } = useTheme();
   // This node's commit lives here, beside the controls: in a cluster of several
   // machines "which build is this?" cannot be answered without a shell, and a peer running
   // an old binary looks healthy until inference time. Without the word "build"
   // in front - it is a hash in mono font, and what it is stays in the tooltip.
   const { data: node } = useNode();
-  const footerLinks = navFooterForProfile(profile);
+  const footerLinks = known ? navFooterForProfile(profile) : [];
   return (
     <div className={clsx("border-t border-line py-2.5", collapsed ? "px-2" : "px-3")}>
       {footerLinks.length > 0 && (
@@ -690,8 +690,8 @@ function InferenceMainMenu({
       startNew: () => {},
       deleteSession: () => {},
     };
-  const { profile } = useProfile();
-  const sections = navForProfile(profile);
+  const { profile, known } = useProfile();
+  const sections = known ? navForProfile(profile) : [];
   const navigate = useNavigate();
   const { pathname } = useLocation();
 
@@ -714,8 +714,13 @@ function InferenceMainMenu({
         collapsed ? "overflow-visible px-2" : "px-3",
       )}
     >
-      {/* No conversation yet: the menu is only the network and the rest. */}
-      {hasConversations(sessions) && <ChatSessionList
+      {/*
+       * No conversation yet: on the chat's opening screen the menu is only the
+       * network and the rest, since that screen already is a new chat. On any
+       * other route New chat stays, or deleting every conversation left the
+       * infer menu with no way back to the chat.
+       */}
+      {(hasConversations(sessions) || pathname !== "/chat") && <ChatSessionList
         sessions={sessions}
         activeId={session?.id ?? ""}
         compact
@@ -758,7 +763,7 @@ export function SidebarContent({
 }) {
   // The menu follows the profile: what this profile does not open is not offered either.
   // See `navForProfile` and the table in `lib/access.ts`.
-  const { profile } = useProfile();
+  const { profile, known } = useProfile();
   const { unreadCount, snapshot } = useNetworkChatUnread(false);
   const { data: node } = useNode();
   // Only an administrator answers the lobby, and only while the network has it on.
@@ -771,7 +776,7 @@ export function SidebarContent({
       ) : (
         <nav className="flex min-h-0 flex-1 flex-col">
           <ScrollableNav className={clsx("pb-4 pt-[5px]", collapsed ? "px-2" : "px-3")}>
-            {navForProfile(profile).map((s) => (
+            {(known ? navForProfile(profile) : []).map((s) => (
               <Section
                 key={s.labelKey}
                 section={s}

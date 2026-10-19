@@ -11,7 +11,7 @@
  * app: the sidebar and the topbar are what make the error recoverable.
  */
 import { Component, type ErrorInfo, type ReactNode } from "react";
-import { RotateCw, Unplug } from "lucide-react";
+import { RefreshCw, RotateCw, Unplug } from "lucide-react";
 import { Button, Empty, Panel } from "./ui";
 import { formatMessage, getActiveLocale } from "../i18n/locales";
 
@@ -56,13 +56,25 @@ export class ErrorBoundary extends Component<Props, { error: Error | null }> {
           icon={<Unplug className="h-5 w-5" />}
           title={t("errorBoundary.title")}
           action={
-            <Button
-              variant="primary"
-              icon={<RotateCw className="h-3.5 w-3.5" />}
-              onClick={() => this.setState({ error: null })}
-            >
-              {t("errorBoundary.retry")}
-            </Button>
+            <div className="flex flex-wrap justify-center gap-2">
+              <Button
+                variant="primary"
+                icon={<RotateCw className="h-3.5 w-3.5" />}
+                onClick={() => this.setState({ error: null })}
+              >
+                {t("errorBoundary.retry")}
+              </Button>
+              {/* Rendering again cannot fix a screen whose code failed to load:
+                  `lazy` keeps the rejected import and throws it again. Only a
+                  fresh page fetches the module anew - and the macOS window has
+                  no browser reload button to do it. */}
+              <Button
+                icon={<RefreshCw className="h-3.5 w-3.5" />}
+                onClick={() => window.location.reload()}
+              >
+                {t("errorBoundary.reload")}
+              </Button>
+            </div>
           }
         >
           {t("errorBoundary.detail")}

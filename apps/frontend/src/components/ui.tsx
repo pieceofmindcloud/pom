@@ -7,7 +7,7 @@
  */
 import clsx from "clsx";
 import { motion } from "framer-motion";
-import { AlertTriangle, Info, Loader2 } from "lucide-react";
+import { AlertTriangle, Info, Loader2, X } from "lucide-react";
 import { createPortal } from "react-dom";
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
@@ -494,6 +494,58 @@ export function InfoTip({ label, message }: { label: string; message: string }) 
   );
 }
 
+/**
+ * An icon that explains itself: the same popover as `InfoTip`, opened by
+ * hover, focus or touch, but the trigger is the icon being explained. A click
+ * on it never reaches a clickable row underneath.
+ */
+export function IconTip({ label, message, children, className }: { label: string; message: string; children: ReactNode; className?: string }) {
+  const { open, setOpen, pinned, setPinned, position, triggerRef, tooltipRef } =
+    usePositionedPopover();
+  const tooltipId = `icon-tip-${useId().replaceAll(":", "")}`;
+  const closeIfUnpinned = () => {
+    if (!pinned) setOpen(false);
+  };
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        aria-label={label}
+        aria-expanded={open}
+        aria-describedby={open ? tooltipId : undefined}
+        onMouseEnter={() => setOpen(true)}
+        onMouseLeave={closeIfUnpinned}
+        onFocus={() => setOpen(true)}
+        onBlur={closeIfUnpinned}
+        onClick={(event) => {
+          event.stopPropagation();
+          const next = !pinned;
+          setPinned(next);
+          setOpen(next);
+        }}
+        className={clsx("inline-flex shrink-0 items-center justify-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iris/50", className)}
+      >
+        {children}
+      </button>
+      {open &&
+        createPortal(
+          <div
+            ref={tooltipRef}
+            id={tooltipId}
+            role="tooltip"
+            className="fixed z-[80] w-[min(18rem,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] break-words whitespace-normal rounded-lg border border-line-strong bg-ink px-3 py-2 text-[0.68rem] leading-relaxed text-fg shadow-lift"
+            style={{ top: position.top, left: position.left }}
+          >
+            <p className="font-semibold">{label}</p>
+            <p className="mt-0.5 text-muted">{message}</p>
+          </div>,
+          document.body,
+        )}
+    </>
+  );
+}
+
 export function Badge({
   tone = "neutral",
   mono = false,
@@ -532,6 +584,10 @@ export type TabItem<T extends string> = {
   /** After the label, e.g. a count. */
   badge?: ReactNode;
   disabled?: boolean;
+  /** Draws a close button beside the tab (a sibling, never nested in the tab button). */
+  onClose?: () => void;
+  /** Accessible name of the close button. */
+  closeLabel?: string;
 };
 
 /**
@@ -546,6 +602,7 @@ export function Tabs<T extends string>({
   label,
   fill = false,
   className,
+  actions,
 }: {
   items: TabItem<T>[];
   value: T;
@@ -553,11 +610,51 @@ export function Tabs<T extends string>({
   label?: string;
   fill?: boolean;
   className?: string;
+  /** Controls drawn at the right end of the tab row, outside the tablist. */
+  actions?: ReactNode;
 }) {
+  if (actions) {
+    return (
+      <div className={clsx("pom-tabs pom-tabs-with-actions", className)}>
+        <Tabs items={items} value={value} onChange={onChange} label={label} fill={fill} className="pom-tabs-inner" />
+        <div className="pom-tabs-actions">{actions}</div>
+      </div>
+    );
+  }
   return (
     <div role="tablist" aria-label={label} className={clsx("pom-tabs", fill && "pom-tabs-fill", className)}>
       {items.map((item) => {
         const on = item.value === value;
+        const content = (
+          <>
+            {item.icon && (
+              <span className="pom-tab-icon" aria-hidden="true">
+                {item.icon}
+              </span>
+            )}
+            {item.label}
+            {item.badge}
+          </>
+        );
+        if (item.onClose) {
+          return (
+            <span key={item.value} className={clsx("pom-tab pom-tab-closable", on && "pom-tab-on")}>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={on}
+                disabled={item.disabled}
+                onClick={() => onChange(item.value)}
+                className="pom-tab-main"
+              >
+                {content}
+              </button>
+              <button type="button" aria-label={item.closeLabel} title={item.closeLabel} onClick={item.onClose} className="pom-tab-close">
+                <X className="h-3 w-3" aria-hidden="true" />
+              </button>
+            </span>
+          );
+        }
         return (
           <button
             key={item.value}

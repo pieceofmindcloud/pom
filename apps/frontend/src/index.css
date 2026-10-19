@@ -168,6 +168,29 @@ body {
   .pom-tab-icon { display: inline-flex; color: var(--tab-icon); }
   .pom-tab-icon svg { width: 14px; height: 14px; }
   .pom-tabs-fill .pom-tab { flex: 1 1 0; justify-content: center; min-width: 0; }
+  /* A tab row with controls on the right: the tabs scroll, the controls stay. */
+  .pom-tabs-with-actions { align-items: flex-end; gap: 8px; }
+  .pom-tabs-inner { flex: 1 1 auto; min-width: 0; overflow-x: auto; padding: 0; border-bottom: 0; background: transparent; }
+  .pom-tabs-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 6px; padding-bottom: 6px; }
+  /* A tab with its own close button: the tab button and the X are siblings. */
+  .pom-tab-closable { padding-right: 6px; gap: 4px; }
+  .pom-tab-main { display: inline-flex; align-items: center; gap: 8px; color: inherit; white-space: nowrap; }
+  .pom-tab-main:focus-visible, .pom-tab-close:focus-visible { outline: 2px solid var(--tab-icon); outline-offset: 2px; border-radius: 4px; }
+  .pom-tab-close { display: inline-flex; padding: 3px; border-radius: 4px; color: var(--tab-ink); opacity: .7; }
+  .pom-tab-close:hover { opacity: 1; color: rgb(var(--rose)); }
+
+  /* The trust file travelling from one machine to the other (TrustTransferGuide). */
+  .trust-travel { animation: trust-travel 2.8s ease-in-out infinite; }
+  @keyframes trust-travel {
+    0%, 12% { left: 0%; opacity: 0; }
+    22% { opacity: 1; }
+    78% { opacity: 1; }
+    88%, 100% { left: 100%; opacity: 0; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    /* Still: the file rests between the two machines instead of vanishing. */
+    .trust-travel { animation: none !important; left: 50%; opacity: 1; }
+  }
 
   .panel {
     @apply rounded-xl border border-line bg-surface shadow-panel;

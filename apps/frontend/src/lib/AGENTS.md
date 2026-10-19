@@ -89,12 +89,13 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   It is what the Flow's miniature card shows - before it read only `gpus[0]` and
   half the hardware of a box with two cards vanished from the screen. Tests in
   `gpu.test.ts`.
-- `networkGraph.ts` - flattens `ClusterView` into per-model layer-range lists for the canvas.
+- `networkGraph.ts` - flattens `ClusterView` into per-model layer-range lists for the canvas; `canvasModelIds`/`selectedCanvasModel` are the Flow bar's model list and choice, shared with the Dashboard so its actions hit the model on screen.
 - `networkLayout.ts` - canvas node positions persisted by deployment
   fingerprint (the dragged gateway enters as `GATEWAY_LAYOUT_ID`);
   `CARD_SIZE`/`COMPACT_CARD_SIZE`/`GATEWAY_SIZE` feed edges, arrangement and
   dragging, and `readCardModes`/`writeCardModes` keep which Flow cards are
-  minimized.
+  minimized. `deployLayout` is the Deploy Studio's arrangement: multi-stage
+  plans in columns, a single stage and machines without a range side by side.
 - `peerSpeed.ts` - `rateSpeed`: the decode/prefill tone of a slice from its
   ratio to the fastest of the same model; with a single measurement, `solo`.
 - `networkPeers.ts` - how the panel reads the peer list: who serves the active model (pipeline order) vs who is on the network without a slice.
@@ -528,7 +529,11 @@ fits.
 ### profile.tsx / access.ts
 - `PROFILES` / `Profile` - `["admin", "node", "infer"]` and the literal union.
 - `DEFAULT_PROFILE` - `admin` only while `/api/ui/node` has not answered yet.
-  The node's answer replaces the fallback as soon as it arrives.
+  The node's answer replaces the fallback as soon as it arrives. The context's
+  `known` is false until then, and the shell fails closed on it: `App.tsx`
+  opens no route and the Sidebar draws no menu, so an inference node never sees
+  the administrator's screens (administrative preferences included) while its
+  profile is pending or `/api/ui/node` is failing.
 - `ProfileProvider({ children, initialProfile })` - reads the profile from `useNode()`;
   `initialProfile` exists only for presentation tests. It writes
   `<html data-profile>` and persists no state in the browser.

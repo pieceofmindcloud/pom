@@ -560,7 +560,11 @@ server), DCuTR, AutoNAT and the bitswap behaviour. It listens on the same
   document's `relay_hints` into `relay_peers`. `--no-default-relays` is still
   accepted and has no practical effect today. The relay server always has
   capacity (128 slots, 4 per peer, 1 h reservation) and circuits of up to 24 h
-  with no byte ceiling (`max_circuit_bytes: 0`); who gets a reservation is
+  with no byte ceiling (`max_circuit_bytes: 0`); the circuit-source rate limits are
+  raised from libp2p's defaults to a burst of 60 per source peer (one more every
+  5 s) and 512 per source IP (one more per second), because every node behind
+  the same NAT shares the IP bucket and the defaults made the relay answer
+  "resource limit exceeded" to the whole site, lobby included; who gets a reservation is
   decided per request (see "Who relays for whom"). Both libp2p limits apply to the whole circuit, not per
   request: bytes in both directions add up since opening. The old ceiling, the
   size of a prefill frame, and the 120 s deadline dropped the circuit within
@@ -703,7 +707,12 @@ fits in 900 B (`MAX_RECORD_ADDRS` 4, `MAX_RECORD_RELAYS` 3).
   `alive_peers`. It replaces the IP the trust document used to carry: a node
   that only has the document finds the principal by its key. The swarm loop
   does not redial a target that is already connected or backing off
-  (`DialBackoff`).
+  (`DialBackoff`). A key that stays out of the table backs off on its own
+  (`main::pkarr_bootstrap_wait`): 30 s after the first miss, doubling up to
+  10 min, and back to every tick once it is alive. Each dial through a relay
+  takes a circuit from the relay's per-source budget, which every node behind
+  the same NAT shares, so a dead target redialed every 30 s by each of them
+  used to drain it.
 - **No internet** (`--no-pkarr` / `POM_NO_PKARR=1`): no pkarr client is
   created - no publication, no key resolution and no cold dial by key;
   `/api/public/networks/locate` answers `unresolved`. Paths stay on UDP/mDNS on

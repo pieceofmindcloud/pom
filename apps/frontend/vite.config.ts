@@ -42,6 +42,39 @@ function brandHtml(): Plugin {
 }
 
 /**
+ * Fails the build when a shipped script carries a regex lookbehind.
+ *
+ * The macOS app renders this UI in the system WebKit, and the WebKit of macOS 12
+ * (Safari 15) predates lookbehind (Safari 16.4). Such a regex is a SyntaxError
+ * when its module is parsed - "Invalid regular expression: invalid group
+ * specifier name" - so the whole screen that imports it dies, not one feature.
+ * A dependency update brought one in once (`mdast-util-gfm-autolink-literal`
+ * 2.0.1, pinned back in `package.json` `overrides`); this check makes the next
+ * one fail here instead of on the user's Mac. The `docs-*` chunks are skipped:
+ * they hold documentation text, not regexes.
+ */
+function noRegexLookbehind(): Plugin {
+  return {
+    name: "no-regex-lookbehind",
+    generateBundle(_options, bundle) {
+      const offenders = Object.values(bundle).filter(
+        (chunk) =>
+          chunk.type === "chunk" &&
+          !chunk.name.startsWith("docs-") &&
+          /\(\?<[=!]/.test(chunk.code),
+      );
+      if (offenders.length > 0) {
+        this.error(
+          `regex lookbehind breaks the UI on macOS 12 WebKit; found in ${offenders
+            .map((chunk) => chunk.fileName)
+            .join(", ")}`,
+        );
+      }
+    },
+  };
+}
+
+/**
  * Where the browser's API calls are forwarded.
  *
  * A node serves the API and the UI on the same port, so in production the app
@@ -79,7 +112,7 @@ const proxied = ["/api", "/v1", "^/admin(?!-ui)", "/peers", "/health", "/generat
 
 export default defineConfig({
   base: "/admin-ui/",
-  plugins: [react(), brandHtml()],
+  plugins: [react(), brandHtml(), noRegexLookbehind()],
   /**
    * Pinned, and not left to the default, because the default has a silent
    * fallback that hid a real failure for a while.

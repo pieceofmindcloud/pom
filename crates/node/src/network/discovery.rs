@@ -749,8 +749,25 @@ impl Discovery {
                     // "resource limit exceeded".
                     max_circuits: 1024,
                     max_circuits_per_peer: 32,
+                    // libp2p's default circuit-source limits (one circuit
+                    // per 2 min per peer, burst 30; one per minute per IP,
+                    // burst 60) are shared by every node behind the same NAT,
+                    // and each of them redials a peer only the relay reaches
+                    // over TCP and QUIC. They drained the bucket and the relay
+                    // refused every later circuit from that IP, the lobby's
+                    // included, with "resource limit exceeded". Still
+                    // bounded, but sized for a site of nodes.
+                    circuit_src_rate_limiters: Vec::new(),
                     ..relay::Config::default()
-                };
+                }
+                .circuit_src_per_peer(
+                    std::num::NonZeroU32::new(60).expect("60 > 0"),
+                    Duration::from_secs(5),
+                )
+                .circuit_src_per_ip(
+                    std::num::NonZeroU32::new(512).expect("512 > 0"),
+                    Duration::from_secs(1),
+                );
                 // Added to libp2p's own rate limits, which stay.
                 relay_server_cfg.reservation_rate_limiters.push(Box::new(
                     move |peer: PeerId, _: &Multiaddr, _: std::time::Instant| {

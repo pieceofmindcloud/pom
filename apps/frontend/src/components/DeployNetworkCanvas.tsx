@@ -3,10 +3,10 @@ import { ArrowRight, LayoutGrid, Minus, Plus, RotateCcw, ServerCog, Sparkles, X 
 import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import { layerRange, megabytes } from "../lib/format";
 import {
-  autoLayout,
   CARD_HEIGHT,
   CARD_WIDTH,
   clearPositions,
+  deployLayout,
   deploymentLayoutKey,
   fallbackPosition,
   gatewayRouteGeometry,
@@ -400,10 +400,13 @@ export function DeployNetworkCanvas({
     () => deploymentLayoutKey(plan.deployment_name || plan.group, machines.map((machine) => ({ node_id: machine.node_id, ...machineBounds(rows, machine) }))),
     [machines, plan.deployment_name, plan.group, rows],
   );
-  const arrangement = useMemo(
-    () => autoLayout(machines.map((machine) => ({ id: machine.node_id, ...machineBounds(rows, machine) }))),
-    [machines, rows],
-  );
+  const arrangement = useMemo(() => {
+    const assigned = machines.filter((machine) => machineRows(rows, machine.node_id).length > 0);
+    return deployLayout(
+      assigned.map((machine) => ({ id: machine.node_id, ...machineBounds(rows, machine) })),
+      machines.filter((machine) => !assigned.includes(machine)).map((machine) => machine.node_id),
+    );
+  }, [machines, rows]);
   const positionOf = (nodeId: string, index: number) => positions[nodeId] ?? arrangement[nodeId] ?? fallbackPosition(index);
 
   useEffect(() => {

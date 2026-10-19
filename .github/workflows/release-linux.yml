@@ -2,8 +2,9 @@ name: Release · Linux
 
 # It only runs when you ask for it, and it runs on the **self-hosted runner `ksia`** - it
 # consumes no quota at all. If ksia is switched off the job waits in the queue instead of
-# failing. See `docs/subsystems/build-and-run.md`, "Release through GitHub
-# Actions".
+# failing. The package is one AppImage with CUDA and Vulkan both in it: it runs by double
+# click on Linux distributions. See `docs/subsystems/build-and-run.md`, "Release through
+# GitHub Actions".
 on:
   workflow_dispatch:
     inputs:
@@ -11,11 +12,6 @@ on:
         description: 'Release version (e.g. v0.3.0)'
         required: true
         type: string
-      cuda:
-        description: 'Also build the CUDA variant (adds ~20 min of toolkit alone)'
-        required: false
-        default: false
-        type: boolean
       prerelease:
         description: 'Publish as a prerelease'
         required: false
@@ -25,12 +21,16 @@ on:
 permissions:
   contents: write
 
+# The appimagetool that packs the AppImage. It is kept in the runner user's cache, outside
+# the workspace, so each run reuses it instead of downloading it again.
+env:
+  APPIMAGETOOL_VERSION: 1.9.1
+
 jobs:
-  # A single job: on a self-hosted runner there is no minute multiplier, so
-  # splitting the interface into another job would only add a round trip of
-  # artifacts between two jobs that would run on the same machine anyway.
+  # A single job: on a self-hosted runner there is no minute multiplier, so splitting it
+  # would only add a round trip of artifacts between two jobs on the same machine.
   build:
-    name: Linux x86_64 (${{ matrix.variante.label }})
+    name: Linux x86_64 (AppImage)
     runs-on: [self-hosted, Linux, X64, ksia]
     env:
       LLAMA_SOURCE: ${{ github.workspace }}/.ci-cache/llama.cpp
@@ -40,17 +40,6 @@ jobs:
       CMAKE_CXX_COMPILER_LAUNCHER: sccache
       CMAKE_CUDA_COMPILER_LAUNCHER: sccache
       CCACHE: sccache
-    strategy:
-      fail-fast: false
-      matrix:
-        # The CUDA variant only enters the matrix when it is asked for - the toolkit alone
-        # takes ~20 min and almost every release is CPU only. Building the matrix with
-        # `fromJSON` instead of skipping steps with `if:` is deliberate: in GitHub
-        # Actions the **string** "false" is truthy, so an `if: matrix.algo`
-        # fed by a boolean input always runs. Here the variant that was not
-        # asked for simply does not exist.
-        variante: ${{ fromJSON(inputs.cuda && '[{"label":"CPU","features":"","suffix":"cpu"},{"label":"CUDA","features":"cuda","suffix":"cuda"}]' || '[{"label":"CPU","features":"","suffix":"cpu"}]') }}
-
     steps:
       - uses: actions/checkout@v4
 
@@ -68,6 +57,15 @@ jobs:
       # `target/` is already there, and restoring over it would only spend time and disk -
       # which on this machine is exactly the scarce resource.
 
+      # The toolkit is installed on ksia under /usr/local/cuda, but the runner's PATH does
+      # not include it.
+      - name: Put the CUDA toolkit on PATH
+        shell: bash
+        run: |
+          if [ -x /usr/local/cuda/bin/nvcc ]; then
+            echo "/usr/local/cuda/bin" >> "$GITHUB_PATH"
+          fi
+
       - name: Check the machine's dependencies
         run: |
           # On a self-hosted runner the dependencies are provisioned once on the
@@ -76,18 +74,22 @@ jobs:
           # is missing, is better than dying deep inside the llama.cpp build.
           #
           # `mold` is not optional: `.cargo/config.toml` forces `-fuse-ld=mold`
-          # on Linux, so without it the link fails. `libclang` is for bindgen.
+          # on Linux, so without it the link fails. `libclang` is for bindgen. The Vulkan
+          # backend needs the headers and `glslc` (the shader compiler).
           faltou=""
-          for p in cmake clang mold git; do
+          for p in cmake clang mold git glslc; do
             command -v "$p" >/dev/null || faltou="$faltou $p"
           done
+          [ -f /usr/include/vulkan/vulkan.h ] || faltou="$faltou libvulkan-dev"
+          # The window of the desktop feature: GTK 3 and WebKitGTK 4.1 headers and libraries.
+          for m in gtk+-3.0 webkit2gtk-4.1 libsoup-3.0; do
+            pkg-config --exists "$m" || faltou="$faltou $m(pkg-config)"
+          done
           [ -n "$(ldconfig -p 2>/dev/null | grep libclang)" ] || faltou="$faltou libclang-dev"
-          if [ "${{ matrix.variante.features }}" = "cuda" ]; then
-            command -v nvcc >/dev/null || faltou="$faltou nvcc(cuda-toolkit)"
-          fi
+          command -v nvcc >/dev/null || faltou="$faltou nvcc(cuda-toolkit)"
           if [ -n "$faltou" ]; then
             echo "missing on ksia:$faltou" >&2
-            echo "install as root: apt-get install -y cmake clang mold libclang-dev" >&2
+            echo "install as root: apt-get install -y cmake clang mold libclang-dev libvulkan-dev glslc libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev pkg-config" >&2
             exit 1
           fi
 
@@ -109,22 +111,27 @@ jobs:
           cache: npm
           cache-dependency-path: apps/frontend/package-lock.json
 
+      # Built before `cargo build`: the feature `embed-ui` compiles this bundle into `pom`.
       - name: Web interface
         run: |
           npm ci
           npm run build
         working-directory: apps/frontend
 
-      - name: SSH access to the engine repository (pom-plugin-llama.cpp)
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.PLUGIN_REPO_SSH_KEY }}
-
-      - name: github.com key in known_hosts
+      - name: Access to the engine repository (pom-plugin-llama.cpp)
         shell: bash
+        env:
+          ENGINE_TOKEN: ${{ secrets.POM_LLAMACPP_TOKEN }}
         run: |
-          mkdir -p ~/.ssh
-          ssh-keyscan github.com >> ~/.ssh/known_hosts
+          # Cargo.toml names the engine as ssh://git@github.com/...; this rewrites that URL to
+          # HTTPS with a fine-grained token (read-only on pom-plugin-llama.cpp). It is passed as
+          # environment variables of the job, not written to ~/.gitconfig: this machine is
+          # self-hosted, and the token must not outlive the job.
+          {
+            echo "GIT_CONFIG_COUNT=1"
+            echo "GIT_CONFIG_KEY_0=url.https://x-access-token:${ENGINE_TOKEN}@github.com/.insteadOf"
+            echo "GIT_CONFIG_VALUE_0=ssh://git@github.com/"
+          } >> "$GITHUB_ENV"
 
       - name: Compile
         # `CUDAARCHS` empty on purpose, and not by oversight: without it the llama.cpp CMake
@@ -139,39 +146,43 @@ jobs:
         env:
           CUDAARCHS: ''
         run: |
-          if [ -n "${{ matrix.variante.features }}" ]; then
-            cargo build --release --locked -p node -p pom-plugin-host --features ${{ matrix.variante.features }}
-          else
-            cargo build --release --locked -p node -p pom-plugin-host
-          fi
+          # sccache cannot wrap nvcc for the wide list of architectures (it fails with
+          # "Missing cubin file output" on every CUDA compile test); nvcc runs directly.
+          # C and C++ keep the cache.
+          unset CMAKE_CUDA_COMPILER_LAUNCHER
+          # Every nvcc of the llama.cpp build takes gigabytes; with all 16 cores the kernel
+          # ran out of memory on ksia (exit 137) and killed a process of the running node.
+          # cargo passes this count to the CMake build as well.
+          export CARGO_BUILD_JOBS=4
+          cargo build --release --locked -p node -p pom-plugin-host --features cuda,vulkan,embed-ui,desktop
 
-      # The binary sits at the package root with `apps/` beside it: `project_root()`
-      # walks up from the executable's directory, so the package works unpacked
-      # anywhere, with no `POM_HOME`.
-      - name: Assemble the package
+      - name: Get appimagetool
+        shell: bash
         run: |
-          nome="pom-${{ inputs.version }}-x86_64-unknown-linux-gnu-${{ matrix.variante.suffix }}"
-          # The workspace persists between runs on this runner: clearing the leftovers from
-          # the previous release avoids packaging the old package along with it.
-          rm -rf pacote pom-*.tar.gz "$nome"
-          mkdir -p pacote/apps/frontend
-          cp -R apps/frontend/dist pacote/apps/frontend/dist
-          cp target/release/pom pacote/
-          # Without the host beside the pom no plugin installs.
-          cp target/release/pom-plugin-host pacote/
-          cp README.md pacote/ 2>/dev/null || true
-          # A Unix executable does not carry an icon: on Linux the one that shows it is the
-          # .desktop pointing at the hicolor tree.
-          mkdir -p pacote/share
-          cp -R assets/brand/linux/hicolor pacote/share/
-          cp assets/brand/pom.desktop pacote/share/
-          mv pacote "$nome"
-          tar czf "$nome.tar.gz" "$nome"
+          tool="$HOME/.cache/pom-release/appimagetool-${APPIMAGETOOL_VERSION}-x86_64.AppImage"
+          mkdir -p "$(dirname "$tool")"
+          if [ ! -x "$tool" ]; then
+            curl -fsSL -o "$tool" \
+              "https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-x86_64.AppImage"
+            chmod 755 "$tool"
+          fi
+          echo "APPIMAGETOOL=$tool" >> "$GITHUB_ENV"
+
+      # The AppImage: one file, runs by double click after `chmod +x`. The script lives in
+      # scripts/make-linux-appimage.sh and documents what is bundled and what is not.
+      - name: Assemble the AppImage
+        run: |
+          # The workspace persists between runs on this runner: clearing the output of the
+          # previous release avoids uploading the old file along with it.
+          rm -rf dist-linux pom-*.AppImage
+          ./scripts/make-linux-appimage.sh \
+            target/release/pom target/release/pom-plugin-host \
+            "${{ inputs.version }}" dist-linux
 
       - uses: actions/upload-artifact@v4
         with:
-          name: pacote-linux-${{ matrix.variante.suffix }}
-          path: pom-*.tar.gz
+          name: pacote-linux
+          path: dist-linux/pom-*.AppImage
           if-no-files-found: error
           # Only they pass between the jobs of this run; the release keeps the packages.
           retention-days: 2
@@ -189,8 +200,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          pattern: pacote-linux-*
-          merge-multiple: true
+          name: pacote-linux
           path: pacotes
       - name: Check that something was produced
         run: |

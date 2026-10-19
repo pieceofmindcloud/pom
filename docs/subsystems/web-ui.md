@@ -49,16 +49,32 @@ panel on both axes. In a regular browser that button is not rendered.
 
 The larger window title and its menu-bar tooltip use the display name from
 `brand.json`; the packaged app's Dock label uses the same name. The bundle also
-installs the regular macOS application menu in AppKit, with About and Quit. The
-app runs as an accessory (no Dock icon), and an accessory
-shows no menu bar, so Quit is also reachable three other ways:
+installs the macOS menu bar in AppKit: the application menu with About and Quit
+(Cmd+Q), an Edit menu (Undo, Redo, Cut, Copy, Paste, Select All) and a View
+menu with Reload (Cmd+R). The Edit menu is what makes Cmd+C/Cmd+V work: AppKit
+delivers those shortcuts through the menu bar's key equivalents to the first
+responder, the focused web view, and without the menu they do nothing. The app is a regular one (Dock
+icon, menu bar, full screen); closing the window only hides it and the app stays
+in the menu bar. Besides the menu bar:
 - a right click (or Control-click) on the status item opens a menu with
-  "Open in a larger window" and "Quit POM";
-- while the larger window is open the app switches to a regular one, with a
-  Dock icon, its menu bar and Cmd+Q, and goes back to an accessory when the
-  window closes (closing only hides it; the app stays in the menu bar);
+  "Open POM", "Reload" and "Quit POM";
+- right-clicking the Dock icon offers Quit;
 - the `pomQuit` WebKit bridge, behind a power button in the top bar
   (`QuitNativeAppButton`), rendered only inside the macOS app.
+
+Reload exists because a WebKit window has no browser reload button, and a
+screen that stopped working had no way back. On the interface it reloads the
+current page from the origin, fetching its code again; while a native loading or
+"could not reach the gateway" page is showing, it goes back to waiting for the
+gateway instead. The menu bar's Reload acts on the open panel, else the window;
+the status item's acts on both.
+
+The window renders in the system WebKit, so the interface must parse on the
+oldest macOS the app supports: macOS 11/12 ship Safari 14/15, which has no regex
+lookbehind (`(?<=`, `(?<!`). One in any chunk is a `SyntaxError` that kills the
+whole screen importing it ("Invalid regular expression: invalid group specifier
+name"). The `noRegexLookbehind` plugin in `apps/frontend/vite.config.ts` fails
+the build when a shipped chunk carries one.
 Quit calls the standard application termination and ends the whole process,
 including the Tokio service on the background thread.
 
@@ -292,7 +308,9 @@ local-only notice. Routes:
   (`GET /api/ui/networks/known`, `http-api.md`): the screen paints from that
   table at once and, when the live listing (`GET /api/public/networks`, which
   records what it finds) answers, reads the page again; a row the live
-  listing did not return says when it was last seen. The search box, the
+  listing did not return says when it was last seen. The screen has one
+  header, a search box with its own Search button and the filters folded
+  behind a "+"; on a phone the table becomes a list of cards. The search box, the
   country, city and distance filters and the order (distance, name) go to the
   node; latency is measured in the browser and reorders the page. Each name
   is preceded by its discovery icon (public globe, hidden eye-off, off
@@ -305,14 +323,17 @@ local-only notice. Routes:
   the network's actions at the bottom (quick setup, ask to join, lobby,
   leave, more details, trust document, remove). "More details" opens a near full-screen window with every field,
   technical ones included. A network whose record says `lobby_chat` (its
-  Chat is on) offers "Talk and ask to join" and a "Lobby" button. Every lobby
+  Chat is on) offers "Talk" and a "Lobby" button. Every lobby
   (`LobbyChat` with `layout="page"`) replaces the list and the page header on
-  the same screen, with "Back to networks" at its top left; open lobbies stay
-  in a tab strip over the list (and in the lobby header when more than one is
-  open) and keep polling, so several conversations run at once. Without
+  the same screen; open lobbies stay in the same folder tabs as Network Chat,
+  shown over the list and over every lobby ("Networks" is the way back, each
+  lobby tab has its own close button), and keep polling, so several
+  conversations run at once. Without
   `lobby_chat` there is nothing to talk in: the button is "Ask to join" and
-  the full-screen lobby shows only the hardware card and the request. Only a
-  network whose lobby answers `lobby_disabled` falls back to a window. Two
+  the full-screen lobby shows only the hardware card and the request. "Ask to join"
+  opens that request alone in a dialog, without a tab. A network whose lobby
+  answers `lobby_disabled` refuses admission as well, so the dialog or tab
+  shows only the notice that it cannot be reached for admission now. Two
   kinds of rows stay at the top of every page whatever the order, filtered
   client-side by the same search, country, city and distance as the list
   (`GET /api/ui/networks/pinned`): the
@@ -816,6 +837,12 @@ The Dashboard keeps the indicators and actions in the compact top bar. When
 there is an active deployment, the properties button is only an icon inside the
 map, in the top right corner, lined up with the zoom and Fit controls.
 
+With several models live, the model picked in the map's bar is the one the top
+bar's Add and Undeploy act on, and the one the properties panel shows: the
+Dashboard owns that choice (`ModelNetworkCanvas` `model`/`onModelChange`,
+resolved by `selectedCanvasModel` in `lib/networkGraph.ts`). Before, both
+buttons always acted on the node's active model, whatever the map showed.
+
 ## Modal windows: portal and Esc stack
 
 `Modal`/`Confirm` (`src/components/Confirm.tsx`) go through `createPortal` to
@@ -881,8 +908,9 @@ at all in that case.
 
 The machine's actions live in a **toolbar at the top of the card**, next to the
 MTP badge: free memory (`ReleaseSlice`, only on the machine itself),
-`RemoveNode` (leaves the model, only when it serves), `LeaveNode` (leaves the
-network, always) and update/restart when the peer announces `dev_update`. They
+`RemoveNode` (leaves the model, only when it serves) and update/restart when the
+peer announces `dev_update`. Leaving the whole network is not offered on the
+card: the machine does that from its own My Machine screen. They
 used to be scattered across the bottom of the card, one per section, and
 restarting a machine meant scrolling to the end of everything it reports.
 
@@ -1141,8 +1169,10 @@ besides the turns:
   `chat.prompt.*` lines, in the tone of the waiting lines, chosen from the
   conversation id (`promptPlaceholderKey`) so it does not change while typing;
   the network Chat keeps "Write to the network". While no conversation has
-  messages, the conversation list and its New chat are not drawn, beside the
-  Chat or in the infer menu.
+  messages, the conversation list and its New chat are not drawn beside the
+  Chat, nor in the infer menu while the route is `/chat`. On any other route the
+  infer menu keeps New chat (with the empty list), since that menu has no other
+  way back to the chat once every conversation was deleted.
 - Text files are still refused before sending when the estimated size exceeds
   the model's effective context: first `context_length` from `/v1/models`, then
   the active node's `n_ctx`. Images use the same budget, but are reduced before
@@ -1345,6 +1375,20 @@ Two buttons, and the difference between them matters:
   the operator dragged**. A hand-made arrangement is a decision, and a button
   that erased decisions would be the button nobody presses.
 - **Reset** (`RotateCcw`) - discards everything, including the drags.
+
+The stack uses each expanded card's **measured** height (a `ResizeObserver`
+on the card; `offsetHeight` ignores the zoom transform) and adds the height of
+the plugin service badges hanging under a card (`SERVICE_TETHER_HEIGHT`), so
+Arrange/Reset never put a card on top of the one above or of its badges. The
+badges are icon-only in the Flow and open to name and kind on hover or focus.
+The engine badge follows what serves the machine's model (`servicesInUse`):
+llama.cpp gets its own badge, and an installed inference plugin that is not the
+engine in use (Strata on a llama.cpp deployment) is not drawn.
+
+The Deploy Studio's map uses `deployLayout` instead: a multi-stage plan keeps
+the columns, a single stage (a whole model or replicas of one range) is laid
+side by side, and machines on the map without a range yet sit side by side in
+a row under the plan instead of stacking in the column of a range they hold.
 
 `autoLayout` is stable with respect to input order (tie-break by
 `start_layer`, `end_layer`, `id`): the peer list reorders on every cluster
@@ -1752,7 +1796,8 @@ the slice is identified by its range (`keyOf`), not by index. Tests in
 
 - DEFECT NOTED: `LeaveNode` reuses the trigger's label on the confirm button -
   the window shows two buttons with the same text ("Leave network"). Cosmetic,
-  but a user can confuse the trigger with the confirmation.
+  but a user can confuse the trigger with the confirmation. The component is no
+  longer rendered by the machine card; the note stands for any future caller.
 - DEFECT NOTED: in a narrow window (~420 px) the content column overflows
   horizontally and the panels come out cut on the right - `node_id`, help text
   and buttons fall outside the viewport. It is not a single screen: it

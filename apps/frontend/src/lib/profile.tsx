@@ -27,11 +27,19 @@ type ProfileContextValue = {
    * members, admissions, settings and the trust chain are the principal's.
    */
   secondary: boolean;
+  /**
+   * Whether the node has answered with its profile. Until then `profile` is only
+   * the `admin` fallback, and nothing may be offered or opened on its strength:
+   * an inference node saw the administrator's menu and screens (administrative
+   * preferences included) while `/api/ui/node` was pending or failing.
+   */
+  known: boolean;
 };
 
 const ProfileContext = createContext<ProfileContextValue>({
   profile: DEFAULT_PROFILE,
   secondary: false,
+  known: false,
 });
 
 export function ProfileProvider({
@@ -43,7 +51,7 @@ export function ProfileProvider({
   initialProfile?: Profile;
 }) {
   if (initialProfile !== undefined) {
-    return <ProfileContextProvider profile={initialProfile}>{children}</ProfileContextProvider>;
+    return <ProfileContextProvider profile={initialProfile} known>{children}</ProfileContextProvider>;
   }
 
   return <ProfileFromNode>{children}</ProfileFromNode>;
@@ -55,6 +63,7 @@ function ProfileFromNode({ children }: { children: ReactNode }) {
     <ProfileContextProvider
       profile={node.data?.profile ?? DEFAULT_PROFILE}
       secondary={node.data?.authority_level === "secondary"}
+      known={isProfile(node.data?.profile)}
     >
       {children}
     </ProfileContextProvider>
@@ -65,17 +74,19 @@ function ProfileContextProvider({
   children,
   profile,
   secondary = false,
+  known,
 }: {
   children: ReactNode;
   profile: Profile;
   secondary?: boolean;
+  known: boolean;
 }) {
 
   useEffect(() => {
     document.documentElement.dataset.profile = profile;
   }, [profile]);
 
-  const value = useMemo(() => ({ profile, secondary }), [profile, secondary]);
+  const value = useMemo(() => ({ profile, secondary, known }), [profile, secondary, known]);
 
   return <ProfileContext.Provider value={value}>{children}</ProfileContext.Provider>;
 }

@@ -112,6 +112,8 @@ mod link;
 #[cfg(test)]
 #[path = "inference/link_lab.rs"]
 mod link_lab;
+#[cfg(all(target_os = "linux", feature = "desktop"))]
+mod linux_window;
 #[path = "network/local_discovery.rs"]
 mod local_discovery;
 #[cfg(test)]
@@ -198,6 +200,8 @@ mod rag;
 mod relay;
 #[path = "backend/reqlog.rs"]
 mod reqlog;
+#[path = "utils/instance_lock.rs"]
+mod instance_lock;
 #[path = "utils/respawn.rs"]
 mod respawn;
 #[path = "network/route.rs"]
@@ -540,6 +544,21 @@ fn main() -> Result<()> {
         return run_command(command);
     }
 
+    // Before any port is probed: a leftover POM on this root holds the ports
+    // too, and moving away from it would start a second node with its identity.
+    let mut instance = if is_windows_supervisor() {
+        None
+    } else {
+        match instance_lock::acquire(instance_lock::RESPAWN_GRACE)
+            .context("could not lock the POM home")?
+        {
+            instance_lock::Acquired::Lock(lock) => Some(lock),
+            instance_lock::Acquired::HeldBy { gateway_port } => {
+                return already_running(gateway_port)
+            }
+        }
+    };
+
     if !config::Config::exists() {
         let gateway_was_default = args.gateway_port == initial_ports::DEFAULT_GATEWAY_PORT
             && !args.gateway_port_from_env
@@ -560,9 +579,15 @@ fn main() -> Result<()> {
             args.gateway_port = selected.gateway;
             args.port = selected.p2p;
         }
+    } else if DESKTOP {
+        move_busy_saved_ports(&args)?;
     }
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
     let gateway_port = configured_gateway_port(&args);
+    if let Some(lock) = instance.as_mut() {
+        if let Err(error) = lock.record_gateway_port(gateway_port) {
+            warn!("could not record the interface port in the instance lock: {error}");
+        }
+    }
 
     let service = move |gateway_ready: Option<gateway::GatewayReadySender>| {
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -580,13 +605,21 @@ fn main() -> Result<()> {
     {
         let (gateway_ready, gateway_ready_rx) = std::sync::mpsc::sync_channel(1);
         return windows_status::run(
-            gateway_port,
             move || service(Some(gateway_ready)),
             gateway_ready_rx,
         );
     }
 
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(all(target_os = "linux", feature = "desktop"))]
+    {
+        let (gateway_ready, gateway_ready_rx) = std::sync::mpsc::sync_channel(1);
+        return linux_window::run(
+            move || service(Some(gateway_ready)),
+            gateway_ready_rx,
+        );
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows", all(target_os = "linux", feature = "desktop"))))]
     service(None)
 }
 
@@ -714,17 +747,15 @@ fn anchor_admin(
     Ok(())
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows", all(target_os = "linux", feature = "desktop")))]
 fn gateway_url(port: u16) -> String {
     format!("http://127.0.0.1:{port}/admin-ui/chat")
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn select_gateway_port(config_port: Option<u16>, cli_port: u16) -> u16 {
     config_port.unwrap_or(cli_port)
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn configured_gateway_port(args: &Args) -> u16 {
     if args.gateway_port_from_env {
         return args.gateway_port;
@@ -733,6 +764,96 @@ fn configured_gateway_port(args: &Args) -> u16 {
         .ok()
         .map(|config| config.gateway_port);
     select_gateway_port(persisted, args.gateway_port)
+}
+
+/// A build with a native window, used by people rather than by a cluster.
+const DESKTOP: bool = cfg!(any(
+    target_os = "macos",
+    target_os = "windows",
+    all(target_os = "linux", feature = "desktop")
+));
+
+/// The Windows supervisor only relaunches the child, which claims the root.
+fn is_windows_supervisor() -> bool {
+    #[cfg(windows)]
+    {
+        std::env::var_os(windows_status::SUPERVISED_CHILD_ENV).is_none()
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+/// Another process already serves this root.
+///
+/// The Linux window opens on it; elsewhere, and on a server, the second launch
+/// stops with the port to open.
+fn already_running(gateway_port: Option<u16>) -> Result<()> {
+    let root = config::project_root();
+    #[cfg(all(target_os = "linux", feature = "desktop"))]
+    if let Some(port) = gateway_port {
+        info!(
+            "POM is already running from {}; opening its interface on port {port}",
+            root.display()
+        );
+        return linux_window::show_running(port);
+    }
+    let location = gateway_port
+        .map(|port| format!(", interface at http://127.0.0.1:{port}/"))
+        .unwrap_or_default();
+    anyhow::bail!(
+        "POM is already running from {}{location}. Close it first, or give this node its own {}",
+        root.display(),
+        brand::env_var("HOME")
+    )
+}
+
+/// On a desktop, a saved port another program holds moves to the next free one.
+///
+/// A desktop user does not choose ports, so failing on a busy one only leaves
+/// POM unable to start. A server keeps failing instead: its ports are part of
+/// the cluster's configuration. A port set through the environment is never
+/// moved. The new ports are saved in `pom.json`, so the rest of the startup,
+/// the window and the next start all use them.
+fn move_busy_saved_ports(args: &Args) -> Result<()> {
+    let Ok(mut saved) = config::Config::load() else {
+        // The full startup reports the unreadable config.
+        return Ok(());
+    };
+    let mut effective = saved.clone();
+    apply_env_overrides(&mut effective, args);
+    let selected = initial_ports::select(
+        effective.gateway_port,
+        effective.p2p_port,
+        !args.gateway_port_from_env,
+        !args.port_from_env,
+    )?;
+    if !moved_ports(&mut saved, args, selected) {
+        return Ok(());
+    }
+    warn!(
+        "the saved ports are in use (gateway {}, P2P {}); moved to gateway {} and P2P {}",
+        effective.gateway_port, effective.p2p_port, selected.gateway, selected.p2p
+    );
+    saved.save().context("could not save the new ports")
+}
+
+/// Writes into `saved` the selected ports that did not come from the
+/// environment, and tells whether any changed.
+fn moved_ports(saved: &mut config::Config, args: &Args, selected: initial_ports::InitialPorts) -> bool {
+    let mut changed = false;
+    if !args.gateway_port_from_env && saved.gateway_port != selected.gateway {
+        saved.gateway_port = selected.gateway;
+        // The probe checked the inference port that follows the gateway.
+        saved.inference_port = None;
+        changed = true;
+    }
+    if !args.port_from_env && saved.p2p_port != selected.p2p {
+        saved.p2p_port = selected.p2p;
+        changed = true;
+    }
+    changed
 }
 
 async fn async_main(
@@ -1148,7 +1269,7 @@ async fn start_setup_mode(
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     if let Some(ready) = gateway_ready {
-        let _ = ready.send(());
+        let _ = ready.send(gateway_port);
     }
     axum::serve(listener, app).await?;
     Ok(())
@@ -1196,13 +1317,27 @@ fn pkarr_bootstrap_keys(
 
 /// Interval of the cold dial by key while the target is not in the table.
 const PKARR_BOOTSTRAP_INTERVAL: Duration = Duration::from_secs(30);
+/// Longest wait between cold dials of a key that keeps failing.
+const PKARR_BOOTSTRAP_CEILING: Duration = Duration::from_secs(10 * 60);
+
+/// Wait before the next cold dial of a key after `misses` dials in a row that
+/// left it out of the table: the interval, doubled per miss up to the ceiling.
+/// Each dial through a relay costs a circuit from the relay's per-source
+/// budget, which every node behind the same NAT shares; redialing a dead
+/// target every 30 s from each of them drained it and the relay refused the
+/// whole site.
+fn pkarr_bootstrap_wait(misses: u32) -> Duration {
+    PKARR_BOOTSTRAP_INTERVAL
+        .saturating_mul(1u32 << misses.saturating_sub(1).min(8))
+        .min(PKARR_BOOTSTRAP_CEILING)
+}
 
 /// Resolves through pkarr, and dials through libp2p, every key in
 /// `pkarr_bootstrap_keys` that is not yet a live peer. The ladder is the one in
 /// `pkarr_node::dial_addrs`: direct addresses first, then the circuit through
 /// each published relay, and DCuTR upgrades the relayed connection to a direct
 /// one when the NAT allows. A target already in `alive_peers` is not dialed
-/// again.
+/// again, and one that stays out backs off (`pkarr_bootstrap_wait`).
 fn spawn_pkarr_bootstrap(
     node: Arc<pkarr_node::PkarrNode>,
     dial_tx: mpsc::Sender<libp2p::Multiaddr>,
@@ -1214,8 +1349,13 @@ fn spawn_pkarr_bootstrap(
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(PKARR_BOOTSTRAP_INTERVAL);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // Per key: dials in a row that did not bring it into the table, and
+        // when the next one may go out.
+        let mut backoff: std::collections::HashMap<String, (u32, tokio::time::Instant)> =
+            std::collections::HashMap::new();
         loop {
             ticker.tick().await;
+            let now = tokio::time::Instant::now();
             let alive: std::collections::HashSet<String> = net
                 .alive_peers()
                 .await
@@ -1230,8 +1370,15 @@ fn spawn_pkarr_bootstrap(
                     continue;
                 };
                 if alive.contains(&peer_id.to_string()) {
+                    backoff.remove(&key);
                     continue;
                 }
+                let entry = backoff.entry(key.clone()).or_insert((0, now));
+                if entry.1 > now {
+                    continue;
+                }
+                entry.0 = entry.0.saturating_add(1);
+                entry.1 = now + pkarr_bootstrap_wait(entry.0);
                 let addrs =
                     tokio::time::timeout(Duration::from_secs(10), node.resolve_dial_addrs(&key))
                         .await
@@ -2130,6 +2277,32 @@ mod main_tests {
         assert_eq!((from_env.p2p_port, from_env.gateway_port), (43000, 9000));
     }
 
+    /// A moved port is saved; one set through the environment stays out of
+    /// `pom.json`, and moving the gateway lets the inference port follow it.
+    #[test]
+    fn moved_ports_save_only_what_the_environment_did_not_set() {
+        let mut saved: config::Config = serde_json::from_str(
+            r#"{"profile":"node","p2p_port":42777,"gateway_port":8080,"inference_port":8181}"#,
+        )
+        .unwrap();
+        let mut args = Args::parse_from(["pom"]);
+        args.port_from_env = true;
+        let selected = initial_ports::InitialPorts {
+            gateway: 8081,
+            p2p: 43000,
+        };
+
+        assert!(moved_ports(&mut saved, &args, selected));
+        assert_eq!((saved.gateway_port, saved.p2p_port), (8081, 42777));
+        assert_eq!(saved.inference_port, None);
+
+        let unchanged = initial_ports::InitialPorts {
+            gateway: 8081,
+            p2p: 42777,
+        };
+        assert!(!moved_ports(&mut saved, &args, unchanged));
+    }
+
     #[test]
     fn comma_list_trims_and_drops_empty_entries() {
         assert_eq!(comma_list(" pk:a, ,pk:b,"), vec!["pk:a", "pk:b"]);
@@ -2231,5 +2404,15 @@ mod llama_engine_contract {
             llama_engine::gguf_key("tp_size"),
             brand::gguf_key("tp_size")
         );
+    }
+
+    #[test]
+    fn a_key_that_stays_unreachable_is_dialed_less_and_less_often() {
+        use std::time::Duration;
+        assert_eq!(super::pkarr_bootstrap_wait(1), Duration::from_secs(30));
+        assert_eq!(super::pkarr_bootstrap_wait(2), Duration::from_secs(60));
+        assert_eq!(super::pkarr_bootstrap_wait(5), Duration::from_secs(480));
+        assert_eq!(super::pkarr_bootstrap_wait(6), super::PKARR_BOOTSTRAP_CEILING);
+        assert_eq!(super::pkarr_bootstrap_wait(u32::MAX), super::PKARR_BOOTSTRAP_CEILING);
     }
 }

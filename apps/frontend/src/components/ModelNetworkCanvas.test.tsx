@@ -7,7 +7,8 @@ import type { PipelineCycleCost, PipelineRouteCost } from "./PipelineGatewayNode
 import { LocaleProvider } from "../i18n/provider";
 import type { ChatTelemetryPeerPerf, ChatTelemetryRtt, ClusterView } from "../lib/types";
 import { fakeCluster, fakeNode, fakePeer, fakeSlicePeer, fakeSystem } from "../test/fixtures";
-import { deploymentLayoutKey, writePositions } from "../lib/networkLayout";
+import { CARD_HEIGHT, deploymentLayoutKey, writePositions } from "../lib/networkLayout";
+import { SERVICE_TETHER_HEIGHT } from "./PluginServices";
 
 describe("edgeStyle", () => {
   it("paints the main route green, solid and with an arrow", () => {
@@ -509,6 +510,26 @@ describe("ModelNetworkCanvas: the drawing of a new deployment", () => {
 
     expect(salem.style.left).toBe(salem2.style.left);
     expect(salem.style.top).not.toBe(salem2.style.top);
+  });
+
+  it("leaves room under a replica for the service badges it hangs", () => {
+    const withServices = fakeCluster([
+      fakeSlicePeer("salem", 19, 34, {
+        node: fakeNode({
+          node_id: "salem", short_id: "salem", hostname: "salem",
+          plugin_services: [{ plugin_code: "qdrant", id: "rag", kind: "rag", name: "Qdrant", status: "ready" }],
+        }),
+      }),
+      fakeSlicePeer("salem2", 19, 34),
+    ]);
+    const { container } = mount(withServices);
+    const top = (name: string) => parseFloat(cardOf(container, name).style.top);
+    const [upper, lower] = top("salem") < top("salem2") ? ["salem", "salem2"] : ["salem2", "salem"];
+    const gap = top(lower) - top(upper);
+    // Card plus the tether (line + badge) when the upper one carries services.
+    expect(gap).toBeGreaterThanOrEqual(CARD_HEIGHT + (upper === "salem" ? SERVICE_TETHER_HEIGHT : 0));
+    // A llama.cpp machine gets the engine badge.
+    expect(container.querySelector('[data-testid="plugin-service"][aria-label^="llama.cpp"]')).toBeTruthy();
   });
 
   /** The entry and the exit stay on the middle axis of the replicas: that is what makes the

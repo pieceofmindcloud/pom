@@ -47,6 +47,11 @@ Nothing here talks to peers; everything is used by `main.rs` and
   same build. A kernel line `in pom[X,...]` gives the **file** offset: add the
   difference between the executable `LOAD` segment's `p_vaddr` and `p_offset`
   (`readelf -lW`) before `addr2line`.
+- `instance_lock.rs` - one running node per project root: an advisory file
+  lock (`.<slug>-instance.lock`) the kernel releases at exit. `acquire` waits
+  up to `RESPAWN_GRACE` because a respawn starts the new process just before
+  the old one exits; the holder records its interface port in the file so a
+  second launch can open it (unreadable on Windows, where the lock is mandatory).
 - `respawn.rs` - restart this process preserving the startup argv, creating a new
   session on Unix and redirecting stdout/stderr to `<project_root>/pom.log` so
   failures right after the restart leave a trace. `respawn_at` receives the path

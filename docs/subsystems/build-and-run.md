@@ -686,7 +686,7 @@ repository (not even in git history).
 | Variable | Effect |
 |---|---|
 | `POM_HOME` | First step of `project_root()` resolution: config, `models/`, UI. Without it: a cwd that looks like the project, then walking up from the executable's directory, then the default home: `~/.pom` (created on the first database open), or on Windows the folder of `pom.exe`. Two nodes on the same machine need distinct homes (the `node_id` identity also lives in the project root). |
-| `POM_PORT`, `POM_BOOTSTRAP`, `POM_ADVERTISE_ADDR`, `POM_OLLAMA_URL`, `POM_GATEWAY_PORT`, `POM_PKARR_PEERS`, `POM_PUBLIC_ADDR`, `POM_RELAY_PEERS`, `POM_SERVE_RELAY`, `POM_NO_CLUSTER_RELAY`, `POM_NO_RELAY_TRANSFERS`, `POM_NO_DEFAULT_RELAYS`, `POM_NO_DISCOVERY`, `POM_NO_PKARR` | One per command line option (`--port`, `--bootstrap`, ...; the `ARG_ENV` table in `main.rs`). The flag beats the variable, which beats the default; the booleans accept `1/0`, `true/false`, `yes/no`, `on/off`. The variable beats `pom.json`: `POM_PORT` and `POM_GATEWAY_PORT` replace the stored port, unlike `--port`/`--gateway-port`, which only apply while there is no `pom.json`; `POM_BOOTSTRAP` and `POM_RELAY_PEERS` add to the config lists, like the flags. |
+| `POM_PORT`, `POM_BOOTSTRAP`, `POM_ADVERTISE_ADDR`, `POM_OLLAMA_URL`, `POM_GATEWAY_PORT`, `POM_PKARR_PEERS`, `POM_PUBLIC_ADDR`, `POM_RELAY_PEERS`, `POM_SERVE_RELAY`, `POM_NO_CLUSTER_RELAY`, `POM_NO_RELAY_TRANSFERS`, `POM_NO_DEFAULT_RELAYS`, `POM_NO_DISCOVERY`, `POM_NO_PKARR` | One per command line option (`--port`, `--bootstrap`, ...; the `ARG_ENV` table in `main.rs`). The flag beats the variable, which beats the default; the booleans accept `1/0`, `true/false`, `yes/no`, `on/off`. The variable beats `pom.json`: `POM_PORT` and `POM_GATEWAY_PORT` replace the stored port, unlike `--port`/`--gateway-port`, which only apply while there is no `pom.json` (a desktop build moves a busy saved port by itself and saves the new one; a server fails naming the port); `POM_BOOTSTRAP` and `POM_RELAY_PEERS` add to the config lists, like the flags. |
 | `POM_RETURN_MODE` | `direct` or `ring` forces the gateway's reply return mode (planner and decision), to test a path the planner would not pick - for example direct delivery to a gateway behind NAT, which the ring would hide. Absent or `auto`, the planner picks. With `direct`, a missing return path becomes an inference failure. See `parallelism.md`. |
 | `POM_SLICE_BENCH` | `0` turns off the slice speed test when the model loads (`infer_server/perf.rs`). |
 | `POM_CONFIG` | Path of `pom.json` (default `<project_root>/pom.json`). |
@@ -717,7 +717,7 @@ Three workflows, one per system, all manual only (`workflow_dispatch`):
 
 | File | Target | Runs on | Inputs |
 |---|---|---|---|
-| `.github/workflows/release-linux.yml` | Linux x86_64 (CPU, and optional CUDA) | self-hosted Linux runner (label `ksia`) | `version`, `cuda`, `prerelease` |
+| `.github/workflows/release-linux.yml` | Linux x86_64 AppImage (CUDA + Vulkan, one file, embedded interface) | self-hosted Linux runner (label `ksia`) | `version`, `prerelease` |
 | `.github/workflows/release-macos.yml` | macOS arm64, Metal | self-hosted macOS runner (label `macbook`) | `version`, `prerelease` |
 | `.github/workflows/release-windows.yml` | Windows x86_64, CUDA + Vulkan and/or CPU | hosted (`windows-2022`) | `version`, `variantes` (`gpu`/`cpu`/`ambos` - "both"), `prerelease` |
 
@@ -993,6 +993,13 @@ plugin host sits beside it in the same folder, and the interface is in
 goes in (`codesign --force --deep --sign -`): any change to the bundle after
 that breaks the seal, and Gatekeeper then reports it as "damaged". Without
 `POM_HOME` it keeps its state in `~/.pom`. The Windows package works the same way, but its default home is the folder that contains `pom.exe`, so the package keeps its own data.
+
+To test a change in the packaged app, `packaging/macos/build-local-dmg.sh
+[output.dmg]` builds the same disk image on a developer Mac: UI, release build
+with Metal and `MACOSX_DEPLOYMENT_TARGET=11.0`, bundle, ad hoc signature and
+`make-dmg.sh`, for the host architecture only (no `lipo`). It needs
+Rust >= 1.88 (`RUSTUP_TOOLCHAIN` picks a non-default one), `create-dmg`, Node >= 20 on PATH and the `llama.cpp` fork at the root; the
+default output is `dist-release/pom-local-<arch>-apple-darwin.dmg`.
 
 Linux packages put the binary at the package root with `apps/` next to it, so
 `project_root()` finds the UI from the executable's directory - the unpacked

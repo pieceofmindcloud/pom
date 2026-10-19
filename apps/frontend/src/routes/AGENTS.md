@@ -64,8 +64,38 @@ Per-file list:
   table): it paints from there at once, then `refreshLive` asks
   `/api/public/networks` (which records what it finds) and reads the page
   again. A row the live listing did not return shows "Not seen now - last
-  seen ..." (`network-cached-<fingerprint>`). The search box (debounced
-  300 ms), country, city (narrowed by country), distance radius and order go
+  seen ..." (`network-cached-<fingerprint>`). There is no page title:
+  the tab row (`Tabs` with `actions`) is the header, with Add network, Quick
+  setup and Refresh on its right while the list is shown. The table has six
+  columns: name, place, reach with latency below, nodes with VRAM below, the
+  served models one per line (three at most, then "and N more", all of them
+  in the tooltip) and the action. A count the network does not publish (nodes, VRAM,
+  models) is a dash. The distance sits under the place; the accepted roles
+  (or "closed") have a column of their own with no title, right before the
+  right-aligned actions, each role an `IconTip` that explains it on hover,
+  focus or touch. Once "Measure latency" ran, the page is ordered by the measured
+  latency (unanswered last) unless the order chosen is by name. An unmeasured
+  latency draws nothing; a measured one is colored by `latencyBand` (under 60
+  ms green, under 150 amber, under 300 orange, above red), with the tooltip
+  saying how much inference slows, and "no answer" is red: the network may be
+  down or out of reach. The organization and the full model list
+  are in the side panel. No footer notes. The search box (debounced 300 ms, or applied at
+  once by its Search button/Enter) sits alone in the toolbar; country, city
+  (narrowed by country), distance radius, order, browser location, latency and
+  the distance-origin line are folded behind a "+" Filters toggle that counts
+  the active filters. Below 768 px (`useNarrowScreen`) the table, which forced
+  a sideways scroll, becomes a list of cards (`NetworkRow layout="card"`) and
+  the header actions are icons. The filters toggle uses a sliders icon (the
+  "+" is Add network). "Measure latency" is a toolbar action beside the
+  search, not a filter, and "Use my browser's location" is drawn only in a
+  secure context (HTTPS or localhost), since POM serves plain HTTP by default.
+  The list and the open lobbies use the shared `Tabs` (as Network Chat), with
+  a close button per lobby tab (`TabItem.onClose`). The join action reads
+  "Talk". "Share" (own network) and "Add network" both open
+  `TrustTransferGuide` (`../components/`), one animated diagram of the trust
+  file going from a machine of the network to the other machine, with "You
+  are here" on the operator's side; the download or the file picker is its
+  primary button. The country, city, distance radius and order go
   to the node as query parameters, and any change returns to page 1; the
   country and city options come from the answer. **No IP is shown**:
   reachability comes from `usePublicLocator` (`lib/publicLocator.ts`), which
@@ -91,13 +121,25 @@ Per-file list:
   `PublicNetworkDetails`, a `Modal size="full"` with every field, technical
   ones (fingerprint, publisher key, relays, trust document) included.
   A lobby opens in place of the list and the page header (`LobbyChat
-  layout="page"`, "Back to networks" at the top left), also for a network
-  whose Chat is off (request side only); only a lobby that answers
-  `lobby_disabled` falls back to a window (`onUnavailable`). Open lobbies are
-  kept in a tab strip over the list ("Networks" plus one closable tab per
-  lobby, and a switcher in the lobby header with two or more) and stay
+  layout="page"`, no back button). A network whose Chat is off
+  (`lobby_chat` false) has nothing to talk in: "Ask to join" opens the
+  request alone in a dialog (`LobbyChat` modal), never a tab. When a lobby
+  answers `lobby_disabled` the network refuses admission too (the serving
+  node gates every lobby request, admission included), so the dialog or tab
+  shows only that notice. Open lobbies are
+  kept in a tab strip that stays on top of the list and of every open lobby
+  ("Networks" plus one closable tab per lobby; going back is picking the
+  Networks tab) and stay
   mounted and polling while hidden, so the operator can talk in several at
   once. "Ask to join" opens the lobby with the focus on the admission request.
+  When the operator's own network is the only row (no search) and it can
+  still take the quick setup, a card under it (`network-discovery-off`) says
+  the machine is not connected to other networks, names the two ways to use
+  POM (several of your own computers, or hardware shared over the internet)
+  and opens the quick setup. It is centered, carries the compact puzzle of
+  `MissingPiece` (the fourth piece hovering) and has an X that hides it for
+  good in this browser (`pom.networks.discovery-off-card.dismissed` in
+  `localStorage`); the quick setup stays in the tab row.
   The principal of a network whose discovery is off or hidden gets "Quick
   setup" (`../components/NetworkQuickSetup.tsx`) in the header, on its row
   and in the panel.
@@ -451,11 +493,14 @@ Per-file list:
   `../lib/api`, `../lib/networkPeers`, `../lib/queries`, `../lib/types`
   (`PeerView`, `DeployPlan`). The per-machine actions that used to live here
   moved to `PeerDetailCard`: `RemoveNode` (out of the model, only when serving
-  a slice) and `LeaveNode` (out of the whole network, always). The
+  a slice); leaving the network is not offered there. The
   development-only update-and-restart action is not rendered in the card. Next to
   "Adicionar nó" ("Add node") there is a `UndeployPipeline` button for an administrator
   when a model is live - `undeployTargets` is the list the confirmation shows
-  (peers on `group` with `total_layers > 0`, sorted by start layer); the node
+  (peers on `group` with `total_layers > 0`, sorted by start layer). `group` is
+  the model selected in the Flow's bar (`pickedModel`, resolved by
+  `selectedCanvasModel`), not always the active one: Add, Undeploy, their
+  `deploy_id` and the properties panel follow the model on screen; the node
   re-scans the cluster before acting, so the list is just the preview. The flow
   canvas receives the
   directional RTT measurements for its adjacent routing edges and complete

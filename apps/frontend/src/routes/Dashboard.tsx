@@ -20,6 +20,7 @@ import { Button, Empty, ErrorState, Footnote, Panel, Skeleton } from "../compone
 import { canSeePeerDetails } from "../lib/access";
 import { engineOfParams, inferenceServiceCatalog, inferenceServicesOf } from "../lib/inferenceServices";
 import { isServing, layerRange, num, pct, since } from "../lib/format";
+import { selectedCanvasModel } from "../lib/networkGraph";
 import { networkPeers } from "../lib/networkPeers";
 import { useCluster, useDeployments, useEnterpriseStatus, useInvalidate, useNetworkRtt, useNode } from "../lib/queries";
 import { useProfile } from "../lib/profile";
@@ -141,6 +142,8 @@ export function Dashboard() {
   const [showProperties, setShowProperties] = useState(true);
   // The machine picked on the map: its own configuration shows in the properties panel (null: the version's).
   const [propertiesMachine, setPropertiesMachine] = useState<string | null>(null);
+  // The model picked in the Flow's bar. Add and Undeploy act on it, not on the first one.
+  const [pickedModel, setPickedModel] = useState<string | null>(null);
   const cluster = useCluster();
   const node = useNode();
   const deployments = useDeployments();
@@ -162,7 +165,14 @@ export function Dashboard() {
   const { pipeline: peers, others } = c
     ? networkPeers(c)
     : { pipeline: [] as PeerView[], others: [] as PeerView[] };
-  const group = c?.active_model ?? "";
+  // The model shown on the map, which is the one the toolbar actions and the
+  // properties panel are about. With several models live, acting on the active
+  // one while another is on screen took down the wrong deployment.
+  const group = (c ? selectedCanvasModel(c, pickedModel) : undefined) ?? "";
+  // Who serves that model, in layer order; `peers` stays the active pipeline the details tab shows.
+  const groupPeers = (c?.peers ?? [])
+    .filter((p) => p.model === group && p.total_layers > 0)
+    .sort((a, b) => a.start_layer - b.start_layer || a.short_id.localeCompare(b.short_id));
   const hasActiveModel = Boolean(group);
   const view: View = viewOverride ?? (hasActiveModel ? "minima" : "estendida");
   const modelDeployments = deployments.data?.deployments.filter(
@@ -198,7 +208,7 @@ export function Dashboard() {
   }, [cluster.data]);
   const activeDeployId =
     activeDeployment?.deploy_id
-    ?? peers.find((peer) => peer.node?.config?.deploy_id)?.node?.config?.deploy_id;
+    ?? groupPeers.find((peer) => peer.node?.config?.deploy_id)?.node?.config?.deploy_id;
   const rttNodeIds = useMemo(() => {
     if (!c) return [];
     return Array.from(new Set(
@@ -214,15 +224,13 @@ export function Dashboard() {
   // The machines the undeploy will reach, in pipeline order. The node
   // re-surveys the cluster before acting; this list is only what the
   // confirmation shows, so the operator sees who it is talking about.
-  const undeployTargets = peers
-    .filter((p) => p.model === group && p.total_layers > 0)
+  const undeployTargets = groupPeers
     .map((p) => ({
       node_id: p.node_id,
       hostname: p.node?.hostname || p.short_id,
       start_layer: p.start_layer,
       end_layer: p.end_layer,
-    }))
-    .sort((a, b) => a.start_layer - b.start_layer);
+    }));
 
   if (cluster.isError) {
     return <div className="p-6"><ErrorState title={t("dashboard.nodeNoResponse")} error={cluster.error} onRetry={() => void cluster.refetch()} /></div>;
@@ -329,7 +337,7 @@ export function Dashboard() {
                 {t("dashboard.mixedEngines", { models: mixedEngineModels.join(", ") })}
               </p>
             )}
-          <div className="min-h-0 flex-1"><ModelNetworkCanvas cluster={c} rttMeasurements={networkRtt.data?.measurements} pipelineCost={networkRtt.data?.pipeline_cost ? { legsMs: networkRtt.data.pipeline_cost.legs_ms, computeMs: networkRtt.data.pipeline_cost.compute_ms } : undefined} pipelineRoutes={networkRtt.data?.pipeline_routes?.map((route) => ({ nodeIds: route.node_ids, legsMs: route.legs_ms, computeMs: route.compute_ms ?? null, rttMs: route.rtt_ms, networkMs: route.network_ms ?? null, totalMs: route.total_ms ?? null, returnMode: route.return_mode ?? null, relayed: route.relayed ?? false, relayedLegs: route.relayed_legs ?? [], relayBypassedByRing: route.relay_bypassed_by_ring ?? false }))} peerPerf={networkRtt.data?.peer_perf} propertiesOpen={showProperties} onToggleProperties={activeVersion ? () => setShowProperties((value) => !value) : undefined} onSelectNode={activeVersion ? (nodeId) => setPropertiesMachine(nodeId) : undefined} /></div>
+          <div className="min-h-0 flex-1"><ModelNetworkCanvas cluster={c} rttMeasurements={networkRtt.data?.measurements} pipelineCost={networkRtt.data?.pipeline_cost ? { legsMs: networkRtt.data.pipeline_cost.legs_ms, computeMs: networkRtt.data.pipeline_cost.compute_ms } : undefined} pipelineRoutes={networkRtt.data?.pipeline_routes?.map((route) => ({ nodeIds: route.node_ids, legsMs: route.legs_ms, computeMs: route.compute_ms ?? null, rttMs: route.rtt_ms, networkMs: route.network_ms ?? null, totalMs: route.total_ms ?? null, returnMode: route.return_mode ?? null, relayed: route.relayed ?? false, relayedLegs: route.relayed_legs ?? [], relayBypassedByRing: route.relay_bypassed_by_ring ?? false }))} peerPerf={networkRtt.data?.peer_perf} propertiesOpen={showProperties} onToggleProperties={activeVersion ? () => setShowProperties((value) => !value) : undefined} onSelectNode={activeVersion ? (nodeId) => setPropertiesMachine(nodeId) : undefined} model={group || undefined} onModelChange={(next) => { setPickedModel(next); setPropertiesMachine(null); }} /></div>
           </>
         ) : (
           <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
@@ -389,7 +397,7 @@ export function Dashboard() {
         peers={c.peers.filter((p) => p.node?.profile !== "infer").map((p) => ({ node_id: p.node_id, short_id: p.short_id, hostname: p.node?.hostname ?? p.short_id }))}
         slices={[]}
         services={inferenceServicesOf(c.peers)}
-        existingRanges={peers.map((p) => [p.start_layer, p.end_layer] as [number, number])}
+        existingRanges={groupPeers.map((p) => [p.start_layer, p.end_layer] as [number, number])}
         onClose={() => setAdding(false)}
         onDone={() => invalidateAll()}
       />

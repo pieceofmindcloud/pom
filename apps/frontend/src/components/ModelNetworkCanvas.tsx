@@ -1,19 +1,18 @@
 import clsx from "clsx";
 import { LayoutGrid, Maximize2, Minimize2, Minus, PanelRightClose, PanelRightOpen, Plus, RotateCcw } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { gpuDisplayName, machineKind, MachineIcon } from "./MachineIcon";
 import { PeerDetailDialog } from "./PeerDetailCard";
 import { GpuTemperature } from "./GpuTemperature";
 import { Button, Dot } from "./ui";
 import { canSeePeerDetails } from "../lib/access";
-import { graphFromCluster, type GraphRange } from "../lib/networkGraph";
+import { canvasModelIds, graphFromCluster, selectedCanvasModel, type GraphRange } from "../lib/networkGraph";
 import { pipelinePeers } from "../lib/networkPeers";
 import { useProfile } from "../lib/profile";
 import { useI18n } from "../i18n/provider";
 import {
   autoLayout,
   CARD_HEIGHT,
-  CARD_SIZE,
   CARD_WIDTH,
   clearPositions,
   COMPACT_CARD_HEIGHT,
@@ -43,7 +42,7 @@ import { layerPlacement, type LayerPlacement } from "../lib/layerPlacement";
 import type { ChatTelemetryPeerPerf, ChatTelemetryRtt, ClusterView, PluginService, RoutingEdge } from "../lib/types";
 import { RouteRttLabel } from "./RouteRttLabel";
 import { PipelineGatewayNode, type PipelineCycleCost, type PipelineRouteCost } from "./PipelineGatewayNode";
-import { PluginServiceTether } from "./PluginServices";
+import { PluginServiceTether, SERVICE_TETHER_HEIGHT, servicesInUse } from "./PluginServices";
 
 export type EdgeState = "principal" | "paralela" | "inativa";
 
@@ -163,6 +162,8 @@ type NetworkNodeProps = {
   compact?: boolean;
   /** Plugin services to hang under the expanded card, which has variable height. */
   services?: PluginService[];
+  /** Reports the expanded card's real height, which grows with its content. */
+  onMeasure?: (height: number) => void;
   onToggleCompact?: () => void;
   onPointerDown: (event: React.PointerEvent<HTMLElement>) => void;
   onPointerMove: (event: React.PointerEvent<HTMLElement>) => void;
@@ -173,7 +174,24 @@ type NetworkNodeProps = {
 
 const UNRATED = { decode: { tone: "unknown", ratio: null }, prefill: { tone: "unknown", ratio: null } } as const satisfies PeerSpeed;
 
-function NetworkNode({ range, position, dragging, perf, speed = UNRATED, compact = false, services, onToggleCompact, onPointerDown, onPointerMove, onPointerUp, onOpen, onSelect }: NetworkNodeProps) {
+function NetworkNode({ range, position, dragging, perf, speed = UNRATED, compact = false, services, onMeasure, onToggleCompact, onPointerDown, onPointerMove, onPointerUp, onOpen, onSelect }: NetworkNodeProps) {
+  const article = useRef<HTMLElement>(null);
+  /*
+   * The expanded card has a minimum height, not a fixed one: a second GPU, the layer
+   * placement row or a long name make it taller. The arrangement stacked cards by the
+   * minimum, so a taller card ran over the one below it (and over its service badges).
+   * `offsetHeight` ignores the zoom transform, which is the unit the layout works in.
+   */
+  useLayoutEffect(() => {
+    const element = article.current;
+    if (compact || !element || !onMeasure) return;
+    const report = () => onMeasure(Math.ceil(element.offsetHeight));
+    report();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(report);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [compact, onMeasure]);
   const system = range.node?.system;
   /*
    * A machine may have more than one card, and the miniature card showed only
@@ -247,6 +265,7 @@ function NetworkNode({ range, position, dragging, perf, speed = UNRATED, compact
     </article>;
   }
   return <article
+    ref={article}
     onPointerDown={onPointerDown}
     onPointerMove={onPointerMove}
     onPointerUp={onPointerUp}
@@ -310,6 +329,8 @@ export function ModelNetworkCanvas({
   propertiesOpen = false,
   onToggleProperties,
   onSelectNode,
+  model: controlledModel,
+  onModelChange,
 }: {
   cluster: ClusterView;
   rttMeasurements?: ChatTelemetryRtt[];
@@ -320,14 +341,33 @@ export function ModelNetworkCanvas({
   onToggleProperties?: () => void;
   /** A single click on a machine's card selects it (its configuration shows in the properties panel). */
   onSelectNode?: (nodeId: string) => void;
+  /**
+   * The model picked in the bar, when the caller owns it: the Dashboard does, because
+   * its Add and Undeploy act on the model shown here, not on the first one.
+   */
+  model?: string;
+  onModelChange?: (model: string) => void;
 }) {
   const { t } = useI18n();
   const graph = useMemo(() => graphFromCluster(cluster), [cluster]);
-  const [model, setModel] = useState<string | undefined>();
+  const [ownModel, setOwnModel] = useState<string | undefined>();
+  const model = onModelChange ? controlledModel : ownModel;
+  const setModel = onModelChange ?? setOwnModel;
   const [zoom, setZoom] = useState(1);
   const [positions, setPositions] = useState<Record<string, CanvasPosition>>({});
   const [dragging, setDragging] = useState<string | null>(null);
   const [cardModes, setCardModes] = useState<CardModes>(readCardModes);
+  // Measured height of each expanded card, by layout id; see `NetworkNode`.
+  const [cardHeights, setCardHeights] = useState<Record<string, number>>({});
+  const measurers = useRef(new Map<string, (height: number) => void>());
+  const measurerOf = (id: string) => {
+    let measure = measurers.current.get(id);
+    if (!measure) {
+      measure = (height: number) => setCardHeights((current) => (current[id] === height ? current : { ...current, [id]: height }));
+      measurers.current.set(id, measure);
+    }
+    return measure;
+  };
   // Keeps the `node_id`, and not the peer: the list is renewed on every refresh of the
   // cluster, and a copy kept here would freeze the numbers of the open window.
   const [detailNodeId, setDetailNodeId] = useState<string | null>(null);
@@ -338,12 +378,8 @@ export function ModelNetworkCanvas({
   const showClusterCoverage = profile === "admin";
   const canvas = useRef<HTMLDivElement>(null);
   const dragOffset = useRef({ x: 0, y: 0 });
-  const modelIds = useMemo(() => Array.from(new Set([
-    ...(cluster.model_inventory ?? []).map((inventory) => inventory.model_id),
-    ...graph.models,
-    ...(cluster.active_model ? [cluster.active_model] : []),
-  ])).sort(), [cluster.active_model, cluster.model_inventory, graph.models]);
-  const selected = model && modelIds.includes(model) ? model : cluster.active_model || modelIds[0];
+  const modelIds = useMemo(() => canvasModelIds(cluster), [cluster]);
+  const selected = selectedCanvasModel(cluster, model, modelIds);
   const ranges = selected ? (graph.byModel[selected] ?? []) : [];
   const inventory = (cluster.model_inventory ?? []).find((entry) => entry.model_id === selected);
   // How many machines of this model the node could not read in this pass.
@@ -365,7 +401,22 @@ export function ModelNetworkCanvas({
   useEffect(() => { setPositions(readPositions(layoutKey)); }, [layoutKey]);
 
   const compactOf = (id: string) => isCardCompact(cardModes, id);
-  const sizeOf = (id: string): CardSize => (compactOf(id) ? COMPACT_CARD_SIZE : CARD_SIZE);
+  const expandedSize = (id: string): CardSize => ({ width: CARD_WIDTH, height: Math.max(CARD_HEIGHT, cardHeights[id] ?? CARD_HEIGHT) });
+  const sizeOf = (id: string): CardSize => (compactOf(id) ? COMPACT_CARD_SIZE : expandedSize(id));
+  /*
+   * The services a card hangs below itself. A machine with several ranges of this
+   * model gets them only on its first card. The engine badge follows what runs the
+   * model: llama.cpp gets its own badge and an installed Strata that is not in use is left out.
+   */
+  const servicesByCard = useMemo(() => {
+    const byCard: Record<string, PluginService[]> = {};
+    ranges.forEach((range, index) => {
+      if (ranges.findIndex((other) => other.node_id === range.node_id) !== index) return;
+      const services = servicesInUse(range.node?.plugin_services, range.engine, Boolean(range.model));
+      if (services.length > 0) byCard[keyFor(range)] = services;
+    });
+    return byCard;
+  }, [ranges]);
   const changeCardModes = (next: CardModes) => { writeCardModes(next); setCardModes(next); };
   const toggleCard = (id: string) => changeCardModes({ ...cardModes, overrides: { ...cardModes.overrides, [id]: !compactOf(id) } });
   // With everything minimized the button expands; with any card open, it minimizes.
@@ -395,9 +446,16 @@ export function ModelNetworkCanvas({
   const arrangement = useMemo(
     () => autoLayout(
       ranges.map((range) => ({ id: keyFor(range), start_layer: range.start_layer, end_layer: range.end_layer })),
-      (id) => (isCardCompact(cardModes, id) ? COMPACT_CARD_SIZE : CARD_SIZE),
+      // The stack leaves room for the real card height and for the service badges
+      // hanging under it, so a card never lands on the badges of the one above.
+      (id) => {
+        const size = isCardCompact(cardModes, id)
+          ? COMPACT_CARD_SIZE
+          : { width: CARD_WIDTH, height: Math.max(CARD_HEIGHT, cardHeights[id] ?? CARD_HEIGHT) };
+        return servicesByCard[id] ? { width: size.width, height: size.height + SERVICE_TETHER_HEIGHT } : size;
+      },
     ),
-    [ranges, cardModes],
+    [ranges, cardModes, cardHeights, servicesByCard],
   );
 
   // The dragged position beats the arrangement, and the arrangement beats the grid. The grid
@@ -558,15 +616,15 @@ export function ModelNetworkCanvas({
       })}
       {ranges.map((range, index) => {
         const id = keyFor(range);
-        return <NetworkNode key={id} range={range} position={positionOf(range, index)} dragging={dragging === id} perf={peerPerf?.[range.node_id]} speed={speedOf(range)} compact={compactOf(id)} services={ranges.findIndex((other) => other.node_id === range.node_id) === index ? range.node?.plugin_services : undefined} onToggleCompact={() => toggleCard(id)} onPointerDown={(event) => beginDrag(id, positionOf(range, index), event)} onPointerMove={(event) => drag(id, sizeOf(id), event)} onPointerUp={endDrag} onOpen={detailed ? () => setDetailNodeId(range.node_id) : undefined} onSelect={onSelectNode ? () => onSelectNode(range.node_id) : undefined} />;
+        return <NetworkNode key={id} range={range} position={positionOf(range, index)} dragging={dragging === id} perf={peerPerf?.[range.node_id]} speed={speedOf(range)} compact={compactOf(id)} services={servicesByCard[id]} onMeasure={measurerOf(id)} onToggleCompact={() => toggleCard(id)} onPointerDown={(event) => beginDrag(id, positionOf(range, index), event)} onPointerMove={(event) => drag(id, sizeOf(id), event)} onPointerUp={endDrag} onOpen={detailed ? () => setDetailNodeId(range.node_id) : undefined} onSelect={onSelectNode ? () => onSelectNode(range.node_id) : undefined} />;
       })}
       {/* What each machine's plugins serve to the network (Qdrant as a RAG
           database, for example), attached to its card. A machine with several
           ranges gets the badges only on the first. */}
       {ranges.map((range, index) => {
-        const services = range.node?.plugin_services ?? [];
-        if (services.length === 0 || ranges.findIndex((other) => other.node_id === range.node_id) !== index) return null;
         const id = keyFor(range);
+        const services = servicesByCard[id];
+        if (!services) return null;
         // The expanded card grows with its content and hangs its own badges;
         // the compact one has a fixed height and clips what comes out of it, so they stay here.
         if (!compactOf(id)) return null;

@@ -11,7 +11,7 @@
  * (`/api/ui/network/relay`), asked here to encourage relaying for any
  * network; it is saved after the network, and only when it changed.
  */
-import { BrainCircuit, Check, ChevronLeft, ChevronRight, EyeOff, Globe2, Monitor, MapPin, Rocket, Server, ShieldAlert, ShieldQuestion, Users, WifiOff } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, EyeOff, Globe2, Monitor, MapPin, MessagesSquare, Rocket, Server, ShieldAlert, ShieldQuestion, Users, WifiOff } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { Modal } from "./Confirm";
@@ -44,7 +44,7 @@ export const VISIBILITY_LABELS: Record<NetworkSettings["visibility"], string> = 
 /** The icon of each role a machine can ask to join with. */
 export const ENROLLMENT_ICONS: Record<EnrollmentRole, typeof Server> = {
   node: Server,
-  infer: BrainCircuit,
+  infer: MessagesSquare,
 };
 
 /**

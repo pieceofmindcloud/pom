@@ -314,6 +314,23 @@ describe("Dashboard", () => {
     });
   });
 
+  it("undeploys the model selected on the map, not the first one", async () => {
+    const other = { model_id: "glm", start_layer: 0, end_layer: 15, total_layers: 16, supports_inference: true };
+    const cluster = fakeCluster([
+      fakeSlicePeer("ksia", 0, 31),
+      fakeSlicePeer("salem", 0, 15, { model: "glm", total_layers: 16, capabilities: [other] }),
+    ], "qwen35");
+
+    mount(cluster, "admin");
+
+    fireEvent.click(await screen.findByRole("button", { name: "glm" }));
+    expect(screen.getByRole("button", { name: "glm" }).getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "Desimplantar" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.textContent).toContain("salem");
+    expect(dialog.textContent).not.toContain("ksia");
+  });
+
   it("uses the default deployment to keep the properties on the map", async () => {
     const stale = deploymentRow("d-stale", {
       isDefault: false,

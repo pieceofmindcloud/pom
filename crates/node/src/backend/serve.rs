@@ -119,7 +119,7 @@ pub(crate) struct TransportSecurity(pub bool);
 /// policy on.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PlainPolicy {
-    /// A port that also serves people: answers 301 to `https://` on the same
+    /// A port that also serves people: answers 307 to `https://` on the same
     /// port, so the operator is not locked out of the dashboard.
     Redirect,
     /// A port exclusively for peers (the inference server): the connection is
@@ -135,21 +135,26 @@ pub enum PlainAction {
     /// Tells the client to retry over `https://`.
     Redirect,
     /// A route only peers use: nothing to redirect, and `reqwest` follows
-    /// redirects by default - returning 301 here would make an old peer try
+    /// redirects by default - returning 307 here would make an old peer try
     /// TLS without knowing how to verify anything and fail with an error that
     /// does not say why. The 403 does.
     Refuse,
 }
 
 /// Routes that only exist between peers, and that are therefore never redirected.
+/// The transfer routes the screen calls (`jobs`, `offers`, `pull`, `send`) are
+/// not among them: `POM_INSECURE_ADMIN_UI` must serve them to the browser.
 pub fn plain_action(path: &str) -> PlainAction {
-    const PEER_ONLY: [&str; 4] = [
-        "/api/transfer/",
+    const PEER_PREFIXES: [&str; 6] = [
+        "/api/transfer/manifest",
+        "/api/transfer/pom",
+        "/api/transfer/download",
         "/v1/relay-result",
         "/v1/prefill",
         "/v1/step",
     ];
-    if PEER_ONLY.iter().any(|p| path.starts_with(p)) {
+    const PEER_EXACT: [&str; 2] = ["/api/transfer/offer", "/api/transfer/offers/answer"];
+    if PEER_PREFIXES.iter().any(|p| path.starts_with(p)) || PEER_EXACT.contains(&path) {
         PlainAction::Refuse
     } else {
         PlainAction::Redirect
@@ -557,7 +562,9 @@ pub fn plain_reply(host: &str, path_and_query: &str) -> (u16, Option<String>) {
         // is worse than a refusal: the client follows it and fails far from here.
         return (403, None);
     }
-    (301, Some(format!("https://{host}{path_and_query}")))
+    // 307, not 301: a browser caches a 301 for good, and would keep sending
+    // the operator to https after `POM_INSECURE_ADMIN_UI` is turned on.
+    (307, Some(format!("https://{host}{path_and_query}")))
 }
 
 /// The 403 a peer-only route gets in plain text, even with the admin UI open.
@@ -1177,21 +1184,21 @@ mod tests {
         assert_eq!(plain_action("/v1/step"), PlainAction::Refuse);
     }
 
-    /// The dashboard is redirected preserving path and query - a 301 that
+    /// The dashboard is redirected preserving path and query - a redirect that
     /// drops the operator at the root loses the link they opened.
     #[test]
     fn the_redirect_preserves_the_path_and_the_query() {
         assert_eq!(
             plain_reply("ksia:8080", "/config/network?tab=tls"),
             (
-                301,
+                307,
                 Some("https://ksia:8080/config/network?tab=tls".to_string())
             )
         );
         // The port goes along because it is the same: the server serves both protocols.
         assert_eq!(
             plain_reply("192.168.100.138:8080", "/"),
-            (301, Some("https://192.168.100.138:8080/".to_string()))
+            (307, Some("https://192.168.100.138:8080/".to_string()))
         );
     }
 
@@ -1202,6 +1209,16 @@ mod tests {
             (403, None)
         );
         assert_eq!(plain_reply("ksia:8080", "/v1/relay-result"), (403, None));
+        assert_eq!(plain_reply("ksia:8080", "/api/transfer/offer"), (403, None));
+        assert_eq!(plain_reply("ksia:8080", "/api/transfer/offers/answer"), (403, None));
+    }
+
+    /// The transfer routes the screen polls are the operator's, not peer-only.
+    #[test]
+    fn the_screen_transfer_routes_are_not_peer_only() {
+        for path in ["/api/transfer/jobs", "/api/transfer/offers", "/api/transfer/pull"] {
+            assert_eq!(plain_action(path), PlainAction::Redirect, "{path}");
+        }
     }
 
     /// Without `Host` there is nowhere to send it, and a broken `Location`

@@ -1238,23 +1238,23 @@ machine is another project.
 
 ### Clear text: redirect, except where it must not
 
-With the policy on, the gateway port answers **301 to `https://` on the same
-port** to whoever arrives in clear text, instead of closing the connection.
+With the policy on, the gateway port answers **307 to `https://` on the same
+port** (not 301, which a browser caches for good) to whoever arrives in clear text, instead of closing the connection.
 Path and query are kept, and the host comes from the `Host` header - rebuilding
 it from the socket would give the IP and swap the name the operator typed for
 an address that may not even be in the certificate.
 
 Two exceptions, both for a concrete reason:
 
-- **Peer-only routes** (`/api/transfer/*`, `/v1/relay-result`,
+- **Peer-only routes** (`/api/transfer/{manifest,pom,download,offer,offers/answer}`, `/v1/relay-result`,
   `/v1/remote-stream-result`, `/v1/prefill`, `/v1/step`, `/v1/step-stream`)
-  answer **403**, not 301. `reqwest` follows redirects by default: a 301 here
+  answer **403**, not 307. `reqwest` follows redirects by default: a 307 here
   would make an old peer try TLS without knowing how to verify anything and
   fail with an error that does not say why.
 - **The inference port (`serve::PlainPolicy::Refuse`)** closes the connection,
   as before. There is no browser there to accommodate.
 
-For development, `POM_INSECURE_ADMIN_UI=1` turns the 301 off: the gateway port
+For development, `POM_INSECURE_ADMIN_UI=1` turns the 307 off: the gateway port
 serves the admin UI in clear text to a remote browser as well, so a machine
 reached by IP works without trusting its self signed certificate. The two
 exceptions still hold (peer-only routes answer 403, the inference port closes),

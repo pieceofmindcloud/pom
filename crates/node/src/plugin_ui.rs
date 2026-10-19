@@ -566,7 +566,7 @@ fn valid_rpc_op(op: &str) -> bool {
 /// `POST /api/ui/plugins/:code/rpc/:op`: a plugin's own API for its screens.
 ///
 /// The body (a JSON value, at most 256 KiB) reaches the plugin's generic
-/// `query` as operation `rpc.<op>` with `{params, profile}`; the plugin's
+/// `query` as operation `rpc.<op>` with `{params, profile, node_id}`; the plugin's
 /// JSON reply is returned as is. The node knows no operation: the plugin owns
 /// its API and authorizes by `profile`. Only active plugins answer, and the
 /// request must come from the same origin as the UI.
@@ -612,12 +612,18 @@ pub(crate) async fn plugin_rpc(
         }
     };
     let profile = state.auth.read().await.profile;
+    // The node's own id lets the plugin keep a non-admin to the requests this
+    // node received: rows from before it lost the admin role stay in its store.
     match state
         .plugins
         .query_audit(
             &code,
             &format!("rpc.{op}"),
-            json!({ "params": params, "profile": profile.to_string() }),
+            json!({
+                "params": params,
+                "profile": profile.to_string(),
+                "node_id": state.network.node_id,
+            }),
         )
         .await
     {

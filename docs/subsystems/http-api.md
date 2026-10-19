@@ -1154,7 +1154,7 @@ and no synthetic entitlement.
 `POST /api/ui/plugins/:code/rpc/:op` is a plugin's own API for its screens
 (`plugin_ui::plugin_rpc`, contract in `plugins-ui.md`). The JSON body (at most
 256 KiB) reaches the plugin's generic `query` as operation `rpc.<op>` with
-`{params, profile}`, and the plugin's JSON reply is returned unchanged. `op` is
+`{params, profile, node_id}`, and the plugin's JSON reply is returned unchanged. `op` is
 lowercase letters, digits, `.`, `_` and `-` (up to 64). Same-origin only, like
 the proxy; 400 for a bad name or body, 413 above the ceiling, 502 when the
 plugin is inactive or the operation fails. Open to every profile; the plugin

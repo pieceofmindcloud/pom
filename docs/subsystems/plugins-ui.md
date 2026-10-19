@@ -230,13 +230,15 @@ A resident plugin behaves as before.
 A plugin screen that needs more than reading (saving settings, a directory,
 custom queries) calls `__POM_HOST__.plugin(code).rpc(op, params)` (host
 version 4). It posts to `POST /api/ui/plugins/<code>/rpc/<op>`; the node
-forwards `{params, profile}` to the plugin's `query` as operation
+forwards `{params, profile, node_id}` to the plugin's `query` as operation
 `rpc.<op>` and returns the plugin's JSON reply as is. The node knows no
 operation and checks only the name, the size (256 KiB), the same origin and
 that the plugin is active. `profile` is the node's persisted profile
-(`admin`, `worker` or `visitor`), so the plugin decides who may call each
-operation; the enterprise plugin, for example, answers its directory and
-insights only for `admin`. On the browser side the helper is
+(`admin`, `worker` or `visitor`) and `node_id` its own id, so the plugin
+decides who may call each operation and what each profile sees; the logs
+plugin, for example, lets only `admin` edit its directory and rules, and keeps
+any other profile to the requests this node received, since its store can hold
+rows from a time the node was an admin. On the browser side the helper is
 `scopedPluginApi(code).rpc(op, params)` (`lib/pluginEvents.ts`), which posts to
 that route for one plugin only.
 

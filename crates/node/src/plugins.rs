@@ -6808,6 +6808,7 @@ mod tests {
         assert_eq!(reply["operation"], "rpc.directory.set_node");
         assert_eq!(reply["params"]["person"], "Ana");
         assert!(reply["profile"].is_string());
+        assert!(reply["node_id"].is_string());
         for (uri, body, origin, status) in [
             (
                 "/api/ui/plugins/logs/rpc/insights",

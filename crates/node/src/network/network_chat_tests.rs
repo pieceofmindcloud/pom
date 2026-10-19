@@ -106,22 +106,10 @@ async fn quic_policy_probe_only_accepts_the_configured_principal_identity() {
 }
 
 #[tokio::test]
-async fn principal_rejects_invalid_and_blocked_api_keys_before_relay() {
+async fn principal_rejects_a_spoofed_or_blocked_sender_before_relay() {
     let path =
         std::env::temp_dir().join(format!("pom-network-chat-auth-{}.db", uuid::Uuid::new_v4()));
     let database = std::sync::Arc::new(crate::db::PomDb::open(&path).unwrap());
-    database
-        .insert_api_key(&crate::config::ApiKey {
-            id: "key-a".into(),
-            key_hash: crate::auth::api_key_hash("sk-node-a"),
-            key_hint: String::new(),
-            label: "node-a".into(),
-            node_id: "node-a".into(),
-            origin_node_id: "node-a".into(),
-            active: true,
-            created_at: "2026-09-09T00:00:00Z".into(),
-        })
-        .unwrap();
     let config: crate::config::Config = serde_json::from_value(serde_json::json!({
         "profile": "admin",
         "connection_key": "cluster-key",
@@ -131,19 +119,11 @@ async fn principal_rejects_invalid_and_blocked_api_keys_before_relay() {
     let (chat, _receiver) = super::network_chat::NetworkChat::new(database, auth.clone(), true);
     let action = ChatAction::text_message("network", "node-a", "hello");
 
-    assert!(chat
-        .validate_original(&action, "sk-node-a", "node-a")
-        .await
-        .is_ok());
-    assert!(chat
-        .validate_original(&action, "wrong", "node-a")
-        .await
-        .is_err());
+    assert!(chat.validate_original(&action, "node-a").await.is_ok());
+    // The transport's node is the sender; the JSON cannot name another.
+    assert!(chat.validate_original(&action, "node-b").await.is_err());
     auth.write().await.blocked_nodes.push("node-a".into());
-    assert!(chat
-        .validate_original(&action, "sk-node-a", "node-a")
-        .await
-        .is_err());
+    assert!(chat.validate_original(&action, "node-a").await.is_err());
     let _ = std::fs::remove_file(path);
 }
 
@@ -250,7 +230,7 @@ async fn lobby_presence_is_kept_in_memory_and_never_vouched_for_by_an_api_key() 
 
     // A member cannot originate a presence, whatever its key.
     let error = chat
-        .validate_original(&presence("lobby"), "sk-anything", "candidate")
+        .validate_original(&presence("lobby"), "candidate")
         .await
         .unwrap_err();
     assert_eq!(error.to_string(), "lobby_presence_not_allowed");

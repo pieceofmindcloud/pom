@@ -153,8 +153,8 @@ HTTPS and QUIC can use the secure transport and the marker without depending on
 the secret. A client API key is not a fallback and does not cross the pipeline.
 The tunnel's loopback keeps the session release's JSON `Content-Type` instead of
 applying the binary default. The gateway validates the client's API key at the
-entry surface and can query the principal for an unknown key. That query takes
-no part in authenticating the internal hops. When a step's announced target is
+entry surface, against the keys that node minted; no other node is asked
+about a key, and keys take no part in authenticating the internal hops. When a step's announced target is
 this process's own `node_id`, the relay dispatches the frame straight to the
 in-process inference handler. That call opens no socket and does not go through
 HTTP. The HTTP inference server stays up for health checks and for remote peers;

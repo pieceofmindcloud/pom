@@ -2718,7 +2718,7 @@ pub(super) async fn network_chat_snapshot(
 pub(super) async fn network_chat_action(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
-    Json(request): Json<crate::network_chat::ChatRequest>,
+    Json(mut request): Json<crate::network_chat::ChatRequest>,
 ) -> Response {
     if request.api_key.is_empty() {
         return (
@@ -2727,6 +2727,22 @@ pub(super) async fn network_chat_action(
         )
             .into_response();
     }
+    // The key is checked here, on the node that minted it, and never sent on:
+    // the principal admits the action by this node's transport and membership.
+    let key_holds = state
+        .database
+        .api_key_for_token(&request.api_key)
+        .ok()
+        .flatten()
+        .is_some();
+    if !key_holds || request.action.sender_node_id() != state.network.node_id {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(crate::network_chat::ChatResponse::rejected("api_key_invalid")),
+        )
+            .into_response();
+    }
+    request.api_key.clear();
     match state.network_chat.submit(request).await {
         Ok(response) if response.accepted => Json(response).into_response(),
         Ok(response) => (StatusCode::FORBIDDEN, Json(response)).into_response(),

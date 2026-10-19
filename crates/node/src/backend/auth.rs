@@ -926,7 +926,6 @@ impl<S> FromRequestParts<S> for ApiKeyAuth
 where
     S: Send + Sync,
     Arc<crate::db::PomDb>: axum::extract::FromRef<S>,
-    crate::gateway::GatewayState: axum::extract::FromRef<S>,
 {
     type Rejection = AuthRejection;
 
@@ -934,10 +933,6 @@ where
         let State(database): State<Arc<crate::db::PomDb>> = State::from_request_parts(parts, state)
             .await
             .map_err(|_| AuthRejection::MissingHeader)?;
-        let State(gateway): State<crate::gateway::GatewayState> =
-            State::from_request_parts(parts, state)
-                .await
-                .map_err(|_| AuthRejection::MissingHeader)?;
         // `Authorization: Bearer <key>` (OpenAI/`ANTHROPIC_AUTH_TOKEN` style)
         // or `x-api-key: <key>` (Anthropic Messages API style, what
         // `ANTHROPIC_API_KEY` sends). Consider both independently because a
@@ -950,19 +945,10 @@ where
         for token in candidates {
             // SQLite is authoritative here rather than the startup snapshot:
             // a key minted by another process becomes usable immediately, and
-            // a revocation made there takes effect without a restart.
+            // a revocation made there takes effect without a restart. A key
+            // this node did not mint is unknown: keys never leave the node
+            // that issued them, and no other node is asked about one.
             if let Some(key) = database.api_key_for_token(token).ok().flatten() {
-                let blocked = gateway.auth.read().await.blocked_nodes.iter().any(|node| {
-                    let origin = if key.origin_node_id.is_empty() {
-                        &key.node_id
-                    } else {
-                        &key.origin_node_id
-                    };
-                    node == origin
-                });
-                if blocked {
-                    continue;
-                }
                 return Ok(ApiKeyAuth {
                     caller: crate::reqlog::Caller {
                         key_id: api_key_identity(&key),
@@ -971,40 +957,6 @@ where
                     },
                     token: token.into(),
                 });
-            }
-            // Unknown inference bearers are looked up only through the
-            // authenticated node-to-node admin channel. The bearer itself is
-            // never used to authorize this lookup.
-            if let Ok(Some(key)) = crate::admin::validate_api_key_remote(&gateway, token).await {
-                if key.active
-                    && key.key_hash == api_key_hash(token)
-                    && database.insert_api_key(&key).is_ok()
-                {
-                    let blocked = gateway.auth.read().await.blocked_nodes.iter().any(|node| {
-                        let origin = if key.origin_node_id.is_empty() {
-                            &key.node_id
-                        } else {
-                            &key.origin_node_id
-                        };
-                        node == origin
-                    });
-                    if blocked {
-                        continue;
-                    }
-                    let mut cfg = gateway.auth.write().await;
-                    cfg.api_keys.retain(|existing| {
-                        existing.id != key.id && existing.key_hash != key.key_hash
-                    });
-                    cfg.api_keys.push(key.clone());
-                    return Ok(ApiKeyAuth {
-                        caller: crate::reqlog::Caller {
-                            key_id: api_key_identity(&key),
-                            key_label: key.label,
-                            key_node_id: (!key.node_id.is_empty()).then_some(key.node_id),
-                        },
-                        token: token.into(),
-                    });
-                }
             }
         }
         Err(AuthRejection::InvalidKey)

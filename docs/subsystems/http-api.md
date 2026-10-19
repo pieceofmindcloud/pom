@@ -35,7 +35,9 @@ erased. The internal routes of
 that listener require the `connection_key` and `x-pom-internal-node: 1` on
 private networks; on public networks, HTTPS and QUIC can use the secure
 transport and the marker, while the HTTP fallback carries the same shared
-`connection_key` with the marker. They do not accept client API keys. That
+`connection_key` with the marker. On both, the caller must be a member as the
+transport proves it (an admin of the chain or a node with a valid membership
+token). They do not accept client API keys. That
 recheck does not sign the inference frames. The admission handshake proves
 the key with a signed HMAC and never sends it (`POST /handshake` below).
 
@@ -225,9 +227,7 @@ last):
     regenerate the key, slots), network settings and their
     fan-out, QUIC/logs policy, the trust share, slice release, the KV
     cache, sidecar links, the cluster log. A secondary cannot demote itself:
-    demotion is a principal route. API keys of other nodes are synced only
-    under the principal's signature (`require_signed_principal`); a node's
-    own chat key is unchanged. The one signature a secondary still gives is
+    demotion is a principal route. The one signature a secondary still gives is
     its acceptance of a principal transfer the principal offered to it. Routes of
     the other scopes - `/v1`, `/api/generate`, the node's own description, the
     `/api/internal` and `/api/cluster` sync routes - are unchanged.
@@ -317,11 +317,21 @@ last):
 - **Dev update** (`devupdate.rs`): `POST /api/ui/dev/update`,
   `POST /api/ui/dev/restart` (gated by `POM_DEV_UPDATE`).
 - **Operator** (`admin.rs`): `/admin/*`.
-- **API key sync** (`admin.rs`): the principal node exposes
-  `/api/internal/api-keys/{upsert,revoke,revoke-origin,validate}` only for
-  node-to-node calls authenticated by the `connection_key` and the internal
-  marker. The central registry keeps `origin_node_id`; create and revoke
-  notifications are idempotent and have three attempts with a bounded timeout.
+- **API keys never leave the node that minted them** (`admin.rs`,
+  `auth.rs`). There is no registry on the principal and no remote validation:
+  `/admin/api-keys` mints, lists and revokes this node's keys only, and
+  `ApiKeyAuth` looks a presented key up in the local `pom.db` alone. A key
+  keeps working when the node leaves or joins a network, so a harness pointed
+  at its own node needs no change whichever network serves the inference. The
+  cluster authenticates the inference by the gateway node, not by the client:
+  mutual TLS plus the membership an admin signed (`src/membership.rs`). What
+  the network learns of a key is its non-secret identity in the audit
+  (`id`, `label`, `node_id`), replicated to the admins with the `trace_id`. At
+  startup the node deletes key rows another node minted
+  (`PomDb::forget_foreign_api_keys`). The Network Chat follows the same rule:
+  the browser's key is checked by its own node's gateway and cleared before
+  the action leaves; the principal admits the action by the sender's
+  transport and membership.
 - **UI** (`webapp.rs`): `GET /` redirects to `/admin-ui/`, which serves the
   bundle from disk (`config::ui_dist_dir()`); assets and SPA routes live under
   that mount. `API_PREFIXES` is the list of path prefixes that are never handed
@@ -681,9 +691,8 @@ inference routes require an active API key: `Authorization: Bearer <key>` or
 one valid credential authenticates even if the other is invalid; two invalid
 ones are still HTTP 403. The `connection_key` identifies the node-to-node
 channel, but does not authenticate client inference. An active API key keeps
-its `Caller` in the audit log, and a key unknown locally is validated on the
-principal over the authenticated internal channel; timeout, error or an invalid
-answer fail closed before dispatch. This mapping follows the
+its `Caller` in the audit log. Only a key this node minted is valid here: a
+key unknown locally is refused, and no other node is asked about it. This mapping follows the
 [Claude API authentication](https://platform.claude.com/docs/en/manage-claude/authentication):
 `ANTHROPIC_API_KEY` uses `x-api-key` and a Bearer token uses `Authorization`.
 `render_prompt` flattens the conversation into a single text and **labels every
@@ -827,8 +836,8 @@ uses the same convention as OpenAI; an output cut by the **total** budget uses
 For Claude Code, `ANTHROPIC_BASE_URL` must point to the gateway's origin, for
 example `http://<gateway-host>:8080`; the SDK appends `/v1/messages`. The
 `ANTHROPIC_API_KEY` variable is sent as `x-api-key`; `ANTHROPIC_AUTH_TOKEN` is
-sent as `Authorization: Bearer`. The value must be an active API key from
-`pom.db`, never a `connection_key` or an external Anthropic key. If the client
+sent as `Authorization: Bearer`. The value must be an active API key minted
+by that same node (its `pom.db`), never a `connection_key` or an external Anthropic key. If the client
 sends both headers, the gateway considers both independently, without logging
 any secret.
 
@@ -1611,8 +1620,8 @@ router. `/v1/prefill`, `/v1/step`, `/v1/step-stream`, `/v1/link`,
 `/v1/session/release`, `/v1/session/rollback`, `/v1/session/slot` and
 `/v1/tp/reduce` require the private credential on private networks, with the
 same member check of the transport as `InternalNodeAuth` (also on each frame
-of `/v1/link`), or TLS plus the marker on public networks; client API keys are
-refused. `/health` stays
+of `/v1/link`), or TLS plus the marker and that member check on public
+networks; client API keys are refused. `/health` stays
 public for readiness probes.
 
 The `x-pom-inference-session` identifier is still only opaque session context.

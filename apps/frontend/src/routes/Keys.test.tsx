@@ -94,7 +94,6 @@ describe("TokenKeys in the infer profile", () => {
     await waitFor(() => expect(mocks.del).toHaveBeenCalledWith("/admin/api-keys/old-id"));
     expect(mocks.post).toHaveBeenCalledWith("/admin/api-keys", {
       label: "Inferência",
-      node_id: "inference-node",
     });
     expect(mocks.refetch).toHaveBeenCalled();
   });

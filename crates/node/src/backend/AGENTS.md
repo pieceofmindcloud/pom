@@ -54,11 +54,12 @@ boundary.
   `AuthState = Arc<RwLock<Config>>`.
   When both headers are present they are checked independently, so an invalid
   one cannot hide a valid one; a valid API key still supplies its non-secret
-  `Caller`. An unknown key is consulted on the principal through the authenticated
-  internal channel, sending only the hash, and it fails closed on timeout or error. The inference
+  `Caller`. Only a key this node minted is valid: keys never leave the node,
+  no registry exists elsewhere and no other node is asked about an unknown
+  key. The inference
   port does not use the shared `connection_key` alone on private networks; on public
-  networks it demands TLS transport and the internal marker, while the result callbacks validate
-  the per-frame `Ticket`.
+  networks it demands TLS transport, the internal marker and a member caller, while the
+  result callbacks validate the per-frame `Ticket`.
 - `/handshake` is the admission proof of the private discovery. The key never travels: the
   node answers a challenge with a signed HMAC of it (`session.rs`), and a node without a key
   answers nothing, so an empty key never turns a setup process into a member of the swarm.
@@ -194,10 +195,11 @@ boundary.
   local principal and writes the chain before the download; a secondary authority cannot
   fabricate that metadata.
   `POST /api/ui/chat-key` is allowed to `node` because it only creates the local
-  key `pom-<node_id>` and registers it on the principal through the signed internal route
-  (only the hash goes; the secret stays in `local_secrets`, `PomDb::node_api_key`, and
-  it is swapped when it no longer matches an active key);
-  the exception does not allow creating, revoking or validating other people's keys.
+  key `pom-<node_id>`, which stays on this node like every key (the secret in
+  `local_secrets`, `PomDb::node_api_key`, swapped when it no longer matches an
+  active key). Joining or leaving a network keeps the node's keys.
+  `POST /api/ui/network-chat` checks the browser's key locally and clears it
+  before the action goes to the principal.
   The read `/api/cluster/network-settings` is internal and read-only: a
   node adopts the complete `NetworkSettings` document from the principal, including
   visibility and metadata, after the first authenticated `Announce`.
@@ -600,10 +602,9 @@ boundary.
   (`peer_client::send_to_gateway_over`), which is the path to a peer behind symmetric
   NAT. A signed command that changes state is sent to **one** delivered address: after a timeout on an established connection it is not repeated elsewhere, because the same envelope would be refused as a replay (409) while the peer still runs the first copy. Calls that stop a server (`/api/ui/unload`, `/api/ui/stop-inference`, `/api/ui/leave`) use `webui::PEER_STOP_TIMEOUT` (60 s), not `PEER_TIMEOUT`. `control_get_via_tunnel` is the last resort of whoever already
   traversed the addresses with the `RouteTable`'s failure memory (the read of
-  `/api/ui/cluster`). `admin.rs` sync with the principal (`sync_json`,
-  `post_internal_json`, `validate_api_key_remote_parts`) uses the same
-  `send_to_gateway_over`: direct addresses and, last, the tunnel; `sync_json`
-  signs a new envelope on every attempt. Only weight transfer stays outside
+  `/api/ui/cluster`). `admin.rs` calls to the principal (`post_internal_json`)
+  use the same `send_to_gateway_over`: direct addresses and, last, the
+  tunnel. Only weight transfer stays outside
   the tunnel.
 - `serve.rs` - the accept loop: it spies on the first byte, keeps the `PeerAddr` in the
   request (`request_origin`: a request from the loopback carrying the p2p tunnel's mark becomes

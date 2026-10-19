@@ -1102,9 +1102,12 @@ async fn answer_chat_request(ctx: &Ctx, peer: EndpointId, request: ChatRequest) 
         };
     }
     match sender {
-        Some(sender) => {
+        // The transport names the sender; membership is what lets it speak.
+        // No credential travels in the request.
+        Some(sender) if network.is_member_key(&sender.node_id, &sender.pubkey).await => {
             accept_original_chat(ctx, network, chat, request, Some((peer, sender.node_id))).await
         }
+        Some(_) => ChatResponse::rejected("sender_not_member"),
         None => ChatResponse::rejected("sender_unknown"),
     }
 }
@@ -1127,7 +1130,7 @@ async fn accept_original_chat(
         .map(|(_, node_id)| node_id.as_str())
         .unwrap_or(network.node_id.as_str());
     if let Err(error) = chat
-        .validate_original(&request.action, &request.api_key, transport_node_id)
+        .validate_original(&request.action, transport_node_id)
         .await
     {
         return ChatResponse::rejected(error.to_string());

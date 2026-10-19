@@ -855,14 +855,12 @@ Since then `reply_to` also carries the gateway's `endpoint_id` and
 URL failed. It was the hole that was left: the forward leg already crossed the
 NAT and the return died silently until the frame deadline expired.
 
-Administrative sync with the principal (`admin.rs`: registering and revoking
-API keys, validating an unknown key, reconciling the trust chain, completing
-succession and infer admission) also tries the announced addresses and falls
-back to the tunnel (`peer_client::send_to_gateway_over`); the matching
-`/api/internal/{api-keys,admin-trust,profile}/*` routes are on the closed list,
-and all of them require `InternalNodeAuth`. Without it, a node that only
-reaches the principal through the relay could not even prepare the Chat key
-("could not prepare the chat key").
+Administrative sync with the principal (`admin.rs`: reconciling the trust
+chain, completing succession and infer admission) also tries the announced
+addresses and falls back to the tunnel (`peer_client::send_to_gateway_over`);
+the matching `/api/internal/{admin-trust,profile}/*` routes are on the closed
+list, and all of them require `InternalNodeAuth`. API keys are not synced at
+all: they never leave the node that minted them.
 
 **Files and relays.** A file comes by direct HTTP when an address answers.
 When none connects, the download falls back to the tunnel, in bounded pieces,

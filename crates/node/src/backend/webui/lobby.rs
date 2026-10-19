@@ -553,9 +553,8 @@ pub(super) async fn join_network(
     if let Err(error) = state.database.save_network_settings(&config.network) {
         warn!("could not save the network details in the database: {error:#}");
     }
-    if let Err(error) = state.database.clear_api_keys() {
-        warn!("could not clear the local API keys: {error:#}");
-    }
+    // The node's API keys stay: they belong to this machine, not to the
+    // network, so a harness keeps working whichever network serves it.
     candidate_state()
         .lock()
         .expect("candidate state lock")

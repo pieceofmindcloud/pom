@@ -1078,9 +1078,11 @@ pub(super) fn terminal_prefill_meta(
     })
 }
 
-/// The inference port is a channel between peers. It accepts only the shared
-/// `connection_key`, with the internal request marker; API keys belong to the
-/// client's inference routes on the gateway.
+/// The inference port is a channel between peers. It accepts only a member of
+/// the network, as the transport proves it (an admin of the chain or a node
+/// holding a valid membership token), with the internal request marker; on a
+/// private network the caller also presents the shared `connection_key`. API
+/// keys belong to the client's routes on the gateway and never reach a peer.
 pub(super) async fn require_inference_auth(
     State(config): State<crate::auth::AuthState>,
     request: Request<axum::body::Body>,
@@ -1101,6 +1103,19 @@ pub(super) async fn require_inference_auth(
                 == Some("1")
     };
     if public_transport {
+        // The secure transport names the caller; membership is what admits
+        // it. Any machine can open a TLS connection to a public node.
+        if !crate::auth::caller_is_member(&parts.extensions).await {
+            tracing::warn!(
+                caller = parts
+                    .extensions
+                    .get::<crate::serve::TransportPeer>()
+                    .map(|peer| peer.node_id.as_str())
+                    .unwrap_or("none"),
+                "inference call refused: the caller is not a member"
+            );
+            return crate::auth::AuthRejection::InvalidKey.into_response();
+        }
         return next.run(Request::from_parts(parts, body)).await;
     }
     match crate::auth::validate_internal_node_headers(&config, &parts.headers, &parts.extensions)

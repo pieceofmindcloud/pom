@@ -1749,6 +1749,13 @@ async fn start_node(
     let pubkey = identity.public_key_hex();
     // Internal keys a node swapped before the principal knew to retire them
     // (the swap of the migration to hash): only the newest of each node counts.
+    // Keys never leave the node that minted them: a row another node pushed
+    // here is dropped, never honoured.
+    match database.forget_foreign_api_keys(&node_id) {
+        Ok(0) => {}
+        Ok(count) => info!("{count} API key(s) minted by other nodes forgotten"),
+        Err(error) => warn!("could not forget the API keys of other nodes: {error:#}"),
+    }
     match database.revoke_superseded_node_keys(&node_id) {
         Ok(0) => {}
         // Validation reads the database, not the snapshot in `api_keys`: nothing to reload.

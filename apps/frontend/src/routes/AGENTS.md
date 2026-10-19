@@ -711,7 +711,7 @@ Per-file list:
   harnesses - `GET/POST /admin/api-keys`, `DELETE /admin/api-keys/:id`. The
   list carries only `key_hint` and the tracking id; the secret appears once,
   in the `IssuedSecret` window right after creation.
-  On the `visitor` profile, it shows only this node's active key, hides the node selector
+  On the `visitor` profile, it shows only this node's active key
   and, when generating a new key, revokes the previous one. The API key routes are
   `infer+node+admin`: they are the credential of whoever serves `/v1`, and every profile
   serves. `ConnectionKeys`: the cluster operator key, read from
@@ -719,9 +719,9 @@ Per-file list:
   is in that machine's `pom.json` and the screen only exists behind the administrative boundary.
   **Changing it** (`POST /admin/regenerate-key`) is another thing: the key is the same
   across the whole cluster and rotating it cuts every other node, so the button only
-  appears when `authority_level` is present. The administrator chooses the node when
-  creating one and sees their own full tokens, while the tokens of other nodes
-  stay masked; node and infer see and create only their own.
+  appears when `authority_level` is present. A token belongs to the node that
+  minted it: it works there only, never leaves it, and survives a change of
+  network, so the screen has no node picker.
 - Request Logs and Statistics **do not exist here**: they are screens of the
   `enterprise` plugin, delivered by `pom-plugin-logs` through the plugin UI
   mechanism (`docs/subsystems/plugins-ui.md`). `App.tsx` shows the fallback

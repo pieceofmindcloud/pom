@@ -270,8 +270,9 @@ dedicated or member, with iroh's hole punching), are in
   `AdminTrust`; the announced profile does not identify authority. A switch opened
   on a secondary admin routes the mutation to the principal and only its write
   changes the authoritative policy. The Network Chat relay is a star: the
-  principal validates an active API key and `blocked_nodes` before sending to other
-  `node_id`s.
+  principal admits an action by the sender's transport and membership and checks
+  `blocked_nodes` before sending to other `node_id`s; the browser's API key is
+  checked by the sender's own gateway and never travels.
 - `NetworkSettings` has the same authority boundary, but with an explicit
   read: after the principal's first authenticated `Announce`,
   `Network::handle_message` wakes the `GET /api/cluster/network-settings`

@@ -256,8 +256,11 @@ impl ChatAction {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ChatRequest {
     pub action: ChatAction,
-    /// Client credential. The principal validates this field on the original frame;
-    /// a relay leaves it empty so the secret is not spread across the network.
+    /// The browser's API key, checked by this node's own gateway and cleared
+    /// before the request leaves it: an API key never leaves the node that
+    /// minted it. Between nodes the sender is the transport's node, admitted
+    /// by its membership.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub api_key: String,
     #[serde(default)]
     pub relayed: bool,
@@ -866,12 +869,11 @@ impl NetworkChat {
     }
 
     /// Validates the original action on the principal. The `transport_node_id` was
-    /// already bound to the endpoint id in discovery, so the API key cannot be used by
-    /// another node just by changing the JSON field.
+    /// already bound to the endpoint id in discovery and its membership checked
+    /// there, so a node cannot speak for another just by changing the JSON field.
     pub async fn validate_original(
         &self,
         action: &ChatAction,
-        api_key: &str,
         transport_node_id: &str,
     ) -> Result<()> {
         if !self.enabled() {
@@ -879,33 +881,15 @@ impl NetworkChat {
         }
         action.validate().map_err(|error| anyhow::anyhow!(error))?;
         // Presence is the principal's statement about a transport it
-        // authenticated; a member's API key never vouches for one.
+        // authenticated; a member never vouches for one.
         if matches!(action, ChatAction::LobbyPresence { .. }) {
             anyhow::bail!("lobby_presence_not_allowed")
-        }
-        if api_key.is_empty() {
-            anyhow::bail!("api_key_missing")
         }
         if action.sender_node_id() != transport_node_id {
             anyhow::bail!("sender_node_id_mismatch")
         }
-        let key = self
-            .database
-            .api_key_for_token(api_key)?
-            .ok_or_else(|| anyhow::anyhow!("api_key_invalid"))?;
-        if !key.active || key.node_id != action.sender_node_id() {
-            anyhow::bail!("api_key_invalid")
-        }
         let blocked = self.auth.read().await.blocked_nodes.clone();
-        let origin = if key.origin_node_id.is_empty() {
-            &key.node_id
-        } else {
-            &key.origin_node_id
-        };
-        if blocked
-            .iter()
-            .any(|node| node == origin || node == &key.node_id)
-        {
+        if blocked.iter().any(|node| node == transport_node_id) {
             anyhow::bail!("node_blocked")
         }
         if !self.rate_allows(

@@ -17,6 +17,14 @@ const dump = reference as ReferenceDump;
 // The dump is the frozen pre-ICU baseline. Keep intentional product-copy
 // revisions here rather than rewriting the generated 1.8 MB single-line file.
 const copyUpdates: Record<string, string> = {
+  "en:keys.nodeHint":
+    "The token works on this node only and never leaves it. It keeps working when this node joins another network, so clients need no change.",
+  "pt-BR:keys.nodeHint":
+    "O token funciona só neste nó e nunca sai dele. Ele continua valendo quando este nó entra em outra rede, então os clientes não precisam mudar nada.",
+  "en:keys.issuedDetail":
+    "This is the only time this token is shown. This node keeps only its hash and the start and end you see in the list, so copy it now and store it somewhere safe.",
+  "pt-BR:keys.issuedDetail":
+    "Esta é a única vez que este token aparece. Este nó guarda só o hash dele e o começo e o fim que você vê na lista, então copie agora e guarde num lugar seguro.",
   "en:chat.noModel": "One piece is missing: the network is not serving any model",
   "pt-BR:chat.noModel": "Falta uma peça: a rede não está servindo nenhum modelo",
   "en:chat.noModelDetail": "The machines are here, but there is no mind to put together yet. Deploy a model and every piece starts talking.",

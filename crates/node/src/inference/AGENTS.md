@@ -42,9 +42,10 @@ Every frame rechecks the secret locally in constant time, with no extra call to
 the network. The public key and the Ed25519 signature belong to the handshake
 and to the peer's identity; they do not replace the symmetric credential of the
 private channel.
-The gateway validates API keys on the client surface and may consult the
-principal for an unknown key. That remote flow is not reachable from the
-inference port when the internal credential is missing. The result callbacks on
+The gateway validates API keys on the client surface, against the keys that
+node minted; a key never leaves it and no other node is asked about one. On a
+public network the inference port admits a TLS caller only when it is a
+member (`auth::caller_is_member`). The result callbacks on
 the gateway are another boundary: the per-frame `Ticket` is their credential.
 The inference HTTP listener is dual-stack, or falls back to IPv4 when the
 machine does not offer IPv6, regardless of how the administrative interface is

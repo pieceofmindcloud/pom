@@ -120,15 +120,11 @@ pub fn gateway_path_is_allowed(path: &str) -> bool {
             | "/api/ui/network/rtt"
             | "/api/ui/network/chat"
             | "/api/internal/reload_model"
-            // Administrative sync with the principal (`admin.rs`): API keys,
-            // trust chain, succession and infer admission. A node that only
+            // Administrative sync with the principal (`admin.rs`): trust
+            // chain, succession and infer admission. A node that only
             // reaches the principal through the relay had no other path. All
             // of them require `InternalNodeAuth` (control signature or
             // connection key), never the socket's origin.
-            | "/api/internal/api-keys/upsert"
-            | "/api/internal/api-keys/revoke"
-            | "/api/internal/api-keys/revoke-origin"
-            | "/api/internal/api-keys/validate"
             | "/api/internal/admin-trust/reconcile"
             | "/api/internal/admin-trust/complete-transfer"
             | "/api/internal/admin-trust/chain"
@@ -747,15 +743,11 @@ mod tests {
     }
 
     /// Administrative sync with the principal passes: a node that only reaches
-    /// the principal through the relay must register the Chat key. The other
-    /// internal routes stay out.
+    /// the principal through the relay must follow the trust chain. The other
+    /// internal routes stay out, API keys among them: they never leave a node.
     #[test]
     fn the_tunnel_carries_the_sync_with_the_principal() {
         for path in [
-            "/api/internal/api-keys/upsert",
-            "/api/internal/api-keys/revoke",
-            "/api/internal/api-keys/revoke-origin",
-            "/api/internal/api-keys/validate",
             "/api/internal/admin-trust/reconcile",
             "/api/internal/admin-trust/complete-transfer",
             "/api/internal/admin-trust/chain",
@@ -765,7 +757,8 @@ mod tests {
         assert!(!gateway_path_is_allowed(
             "/api/internal/enterprise/fingerprint"
         ));
-        assert!(!gateway_path_is_allowed("/api/internal/api-keys/upsert/x"));
+        assert!(!gateway_path_is_allowed("/api/internal/api-keys/upsert"));
+        assert!(!gateway_path_is_allowed("/api/internal/api-keys/validate"));
     }
 
     /// A plugin's calls between nodes pass, and only in their exact shape.

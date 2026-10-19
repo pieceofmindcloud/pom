@@ -190,7 +190,9 @@ breaks the whole product.
 - **The connection key is the same across the whole cluster** and is the operator
   credential: it authenticates `/admin/*`, `/api/ui/{plan,apply,launch}` and the
   node-to-node synchronization. `POST /api/generate` and every `/v1/` route accept
-  only an active API key. The UI's administrative surface uses an in-memory session
+  only an active API key **minted by that same node**: a key never leaves its
+  node and survives a change of network, while the cluster authenticates the
+  inference by the gateway node's membership, never by the client's key. The UI's administrative surface uses an in-memory session
   with an `HttpOnly` cookie; the human password lives only in the tab's memory and
   never goes to storage or a URL. The node persists only its Argon2id hash. In
   local mode, the same boundary covers the static files, but never the pipeline

@@ -1246,13 +1246,13 @@ keys.inferenceSingle,One active key for this node.,Uma chave ativa para este nó
 keys.inferenceSubtitle,Use this key to talk to models available on the network. This view keeps one active key for this node.,Use esta chave para conversar com os modelos disponíveis na rede. Esta tela mantém uma chave ativa para este nó.
 keys.inferenceTitle,Your Inference API key,Sua API key de inferência
 keys.issuedCopied,Copied,Copiado
-keys.issuedDetail,"This is the only time this token is shown. The network keeps only its hash and the start and end you see in the list, so copy it now and store it somewhere safe.","Esta é a única vez que este token aparece. A rede guarda só o hash dele e o começo e o fim que você vê na lista, então copie agora e guarde num lugar seguro."
+keys.issuedDetail,"This is the only time this token is shown. This node keeps only its hash and the start and end you see in the list, so copy it now and store it somewhere safe.","Esta é a única vez que este token aparece. Este nó guarda só o hash dele e o começo e o fim que você vê na lista, então copie agora e guarde num lugar seguro."
 keys.issuedDone,I copied it,Já copiei
 keys.issuedTitle,Copy your new token,Copie o seu novo token
 keys.keyAccess,What this key grants access to,O que esta chave abre
 keys.networkNode,Network node,Nó da rede
 keys.newToken,New token,Novo token
-keys.nodeHint,Shows where calls came from. It does not restrict the token to that node - any peer accepts any cluster token.,Mostra de onde vieram as chamadas. Não restringe o token a esse nó - qualquer peer aceita qualquer token do cluster.
+keys.nodeHint,"The token works on this node only and never leaves it. It keeps working when this node joins another network, so clients need no change.","O token funciona só neste nó e nunca sai dele. Ele continua valendo quando este nó entra em outra rede, então os clientes não precisam mudar nada."
 keys.openaiAccess,"OpenAI-compatible routes (/v1), so chat works without creating a token.","As rotas compatíveis com OpenAI (/v1), para que o chat funcione sem criar token."
 keys.purpose,Purpose,Para que serve
 keys.purposeHint,Appears on the Logs screen for every request.,Aparece na tela de Logs em todas as requisições.

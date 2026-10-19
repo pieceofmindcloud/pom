@@ -1661,8 +1661,11 @@ mod tests {
             .iter()
             .map(|value| value.to_str().unwrap().to_string())
             .collect();
-        assert_eq!(cookies.len(), 3);
+        assert_eq!(cookies.len(), 4);
         assert!(cookies.iter().any(|cookie| cookie.contains("Path=/api/ui")));
+        assert!(cookies
+            .iter()
+            .any(|cookie| cookie.contains("Path=/api/transfer")));
         assert!(cookies.iter().any(|cookie| cookie.contains("Path=/admin")));
         assert!(cookies
             .iter()

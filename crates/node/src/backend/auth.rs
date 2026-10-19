@@ -27,7 +27,11 @@ pub(crate) const ADMIN_SESSION_TTL: Duration = Duration::from_secs(8 * 60 * 60);
 /// Suffix of the session cookie name; the whole name comes from
 /// `admin_session_cookie_name`.
 const ADMIN_SESSION_COOKIE_SUFFIX: &str = "admin_session";
-pub(crate) const ADMIN_SESSION_COOKIE_PATHS: [&str; 3] = ["/api/ui", "/admin", "/admin-ui"];
+/// Every prefix of the administrative surface the browser calls. A path left
+/// out never receives the cookie, and its call is refused as having no
+/// password even with a live session.
+pub(crate) const ADMIN_SESSION_COOKIE_PATHS: [&str; 4] =
+    ["/api/ui", "/api/transfer", "/admin", "/admin-ui"];
 pub(crate) type AdminSessionState = Arc<Mutex<AdminSessionStore>>;
 
 #[derive(Default)]
@@ -1029,6 +1033,18 @@ mod tests {
         assert!(!hash.contains(password));
         assert!(verify_admin_password(&hash, password));
         assert!(!verify_admin_password(&hash, "incorrect password"));
+    }
+
+    #[test]
+    fn the_session_cookie_reaches_every_surface_the_interface_calls() {
+        for path in ["/api/ui/jobs", "/api/transfer/jobs", "/api/transfer/offers", "/admin/api-keys"] {
+            assert!(
+                ADMIN_SESSION_COOKIE_PATHS
+                    .iter()
+                    .any(|prefix| path == *prefix || path.starts_with(&format!("{prefix}/"))),
+                "{path}"
+            );
+        }
     }
 
     #[test]

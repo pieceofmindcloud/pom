@@ -529,7 +529,11 @@ messages in English and Portuguese. In `network`, the static login screen is
 public, but the administrative data requires `X-POM-Access-Token` on the first
 call; the server then issues an in-memory session identified by an `HttpOnly`,
 `SameSite=Strict` cookie, valid for the single `ADMIN_SESSION_TTL` (8 hours) and
-only on administrative paths.
+only on administrative paths: one cookie per prefix of
+`auth::ADMIN_SESSION_COOKIE_PATHS` (`/api/ui`, `/api/transfer`, `/admin`,
+`/admin-ui`). A prefix the interface calls and the list leaves out never gets
+the cookie, and its calls answer "missing administrative access password" with
+a live session.
 The cookie name carries the `Host` port (`<slug>_admin_session_<port>`,
 `auth::admin_session_cookie_name`): cookies do not separate by port, and two
 nodes on the same host (`<host>:8080` and `<host>:8081`) logged each other out on

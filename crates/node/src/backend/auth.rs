@@ -128,16 +128,18 @@ pub(crate) fn session_cookie_header(
     cookie
 }
 
+/// Every `Cookie` header counts: over HTTP/2 a browser splits its cookies into
+/// one header each, and the session's need not be the first.
 fn session_id_from_cookie(headers: &HeaderMap) -> Option<&str> {
     let cookie_name = admin_session_cookie_name(headers);
     headers
-        .get(axum::http::header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|cookies| {
-            cookies.split(';').find_map(|cookie| {
-                let (name, value) = cookie.trim().split_once('=')?;
-                (name == cookie_name && !value.is_empty()).then_some(value)
-            })
+        .get_all(axum::http::header::COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|cookies| cookies.split(';'))
+        .find_map(|cookie| {
+            let (name, value) = cookie.trim().split_once('=')?;
+            (name == cookie_name && !value.is_empty()).then_some(value)
         })
 }
 
@@ -1076,6 +1078,18 @@ mod tests {
             format!("{base}_8080=da-outra-porta; {base}_8081=desta-porta")
                 .parse()
                 .unwrap(),
+        );
+        assert_eq!(session_id_from_cookie(&request), Some("desta-porta"));
+
+        // Over HTTP/2 the browser sends each cookie in a header of its own.
+        let mut request = headers("ksia:8080");
+        request.append(
+            axum::http::header::COOKIE,
+            format!("{base}=sem-porta").parse().unwrap(),
+        );
+        request.append(
+            axum::http::header::COOKIE,
+            format!("{base}_8080=desta-porta").parse().unwrap(),
         );
         assert_eq!(session_id_from_cookie(&request), Some("desta-porta"));
     }

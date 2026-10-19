@@ -157,8 +157,10 @@ boundary.
   Cargo commands and never exposes compiler output. A development-only installation persists in
   `plugin_dev_install:<code>` and starts the host without granting licensed
   features. If a license or GitHub installation already exists, its
-  entitlement is preserved. The browser reads the commercial catalog without
-  credentials. Purchases redirect the operator to the public store with the
+  entitlement is preserved. The browser reads the commercial catalog through
+  `GET /api/ui/plugin-catalog[/:code]` (`plugins::plugin_catalog`), which
+  passes on only `q`, `page` and `per_page`, sends the store no credential and
+  returns its JSON as it is. Purchases redirect the operator to the public store with the
   plugin code. Updating the `pom_core` release is a separate boundary in
   `crate::pom_core_update`: `GET /api/ui/pom-update/status`,
   `POST /api/ui/pom-update/check` forces an on-demand check, and

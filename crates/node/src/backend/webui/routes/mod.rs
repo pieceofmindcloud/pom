@@ -166,6 +166,13 @@ const ROUTE_RULES: &[RouteRule] = &[
         method: None,
         scope: RouteScope::LocalOnly,
     },
+    // The public plugin store, read by the node so the browser never leaves
+    // its own origin (`crate::plugins::plugin_catalog`).
+    RouteRule {
+        prefix: "/api/ui/plugin-catalog",
+        method: Some(Method::GET),
+        scope: RouteScope::LocalOnly,
+    },
     // Update of the `pom` binary itself - a boundary separate from plugins on
     // purpose, see `crate::pom_core_update`.
     RouteRule {
@@ -646,6 +653,11 @@ mod policy_tests {
         );
         assert_eq!(scope_of("/api/ui/requests/stats"), RouteScope::LocalOnly);
         assert_eq!(scope_of("/api/ui/plugins"), RouteScope::LocalOnly);
+        assert_eq!(scope_of("/api/ui/plugin-catalog"), RouteScope::LocalOnly);
+        assert_eq!(
+            scope_of("/api/ui/plugin-catalog/logs"),
+            RouteScope::LocalOnly
+        );
         assert_eq!(
             scope_of("/api/ui/plugins/github-repositories"),
             RouteScope::LocalOnly

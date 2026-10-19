@@ -228,8 +228,9 @@ origin. Errors come back as `checkout_request_invalid` (400),
 ## Entitlement and UI
 
 `GET /api/ui/plugins` publishes the local states of the plugins restored or
-seen by the runtime. The public catalog `GET /v1/plugins` is read directly by
-the browser and includes plugins with no local state yet; the Plugins screen
+seen by the runtime. The public catalog `GET /v1/plugins` is read by the node
+for the browser (`GET /api/ui/plugin-catalog[/:code]`, so the page never
+leaves its own origin and the store's CORS policy does not matter) and includes plugins with no local state yet; the Plugins screen
 asks it for one page at a time (`q`, `page`, `per_page`, answered with `total`). Each local state has
 its own entitlement, `manage_url` and `available_update`. The answer starts at
 `needs_activation`. The `state` field follows the license, while `active`

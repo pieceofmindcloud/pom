@@ -8,6 +8,11 @@ pub(super) fn routes() -> Router<GatewayState> {
         .route("/api/ui/node", get(node_info))
         .route("/api/ui/plugins", get(crate::plugins::list_plugins))
         .route("/api/ui/plugins/ui", get(crate::plugin_ui::list_plugin_ui))
+        .route("/api/ui/plugin-catalog", get(crate::plugins::plugin_catalog))
+        .route(
+            "/api/ui/plugin-catalog/:code",
+            get(crate::plugins::plugin_catalog_entry),
+        )
         .route(
             "/api/ui/plugins/events",
             get(crate::plugins::list_plugin_events),

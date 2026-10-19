@@ -211,10 +211,10 @@ Per-file list:
   Description and rules are edited as plain Markdown text with no live
   preview, and the channels in one line; the read-only view renders them with
   the Markdown renderer the Chat uses.
-- `Plugins.tsx` - `/plugins` combines the public catalog at
-  `https://license.pieceofmind.cloud/v1/plugins` with local state from
+- `Plugins.tsx` - `/plugins` combines the public catalog, read by the node
+  (`/api/ui/plugin-catalog`), with local state from
   `GET /api/ui/plugins`, using `code` as the identity. The public client lives
-  in `lib/pluginCatalog.ts`, sends no node credentials and accepts plugins
+  in `lib/pluginCatalog.ts` and accepts plugins
   with a compatible commercial release. Missing image data uses placeholders;
   up to four screenshots open in an Escape-dismissible lightbox that restores
   focus. Descriptions use Brazilian Portuguese when available and otherwise

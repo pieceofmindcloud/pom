@@ -1,5 +1,13 @@
-export const PUBLIC_PLUGIN_CATALOG_URL = "https://license.pieceofmind.cloud/v1/plugins";
-const PUBLIC_PLUGIN_ORIGIN = new URL(PUBLIC_PLUGIN_CATALOG_URL).origin;
+import { api, ApiError } from "./api";
+
+/** Origin of the public store; its images are the only ones a card shows. */
+export const PUBLIC_PLUGIN_ORIGIN = "https://license.pieceofmind.cloud";
+/**
+ * The node reads the store for the browser (`plugins::plugin_catalog`), so
+ * the page never leaves its own origin: a page served over plain HTTP from
+ * another machine is an origin the store's CORS policy does not know.
+ */
+export const PLUGIN_CATALOG_PATH = "/api/ui/plugin-catalog";
 const MAX_SCREENSHOTS = 4;
 
 export interface PublicPluginRelease {
@@ -197,27 +205,22 @@ export function normalizePublicPluginCatalog(value: unknown): PublicPluginCatalo
   return { plugins, total };
 }
 
-/** Public storefront read. It intentionally bypasses the authenticated node API client. */
+/** Public storefront read, through this node. */
 export async function fetchPublicPluginCatalog(signal?: AbortSignal, query: PublicPluginCatalogQuery = {}): Promise<PublicPluginCatalog> {
-  const url = new URL(PUBLIC_PLUGIN_CATALOG_URL);
-  if (query.q?.trim()) url.searchParams.set("q", query.q.trim());
-  if (query.page !== undefined) url.searchParams.set("page", String(query.page));
-  if (query.perPage !== undefined) url.searchParams.set("per_page", String(query.perPage));
-  const response = await fetch(url.toString(), {
-    credentials: "omit",
-    signal,
-  });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  return normalizePublicPluginCatalog(await response.json());
+  const params = new URLSearchParams();
+  if (query.q?.trim()) params.set("q", query.q.trim());
+  if (query.page !== undefined) params.set("page", String(query.page));
+  if (query.perPage !== undefined) params.set("per_page", String(query.perPage));
+  const search = params.toString();
+  return normalizePublicPluginCatalog(await api.get<unknown>(search ? `${PLUGIN_CATALOG_PATH}?${search}` : PLUGIN_CATALOG_PATH, { signal }));
 }
 
 /** One plugin's public entry, or null when the store does not list it. */
 export async function fetchPublicPlugin(code: string, signal?: AbortSignal): Promise<PublicPluginCatalogEntry | null> {
-  const response = await fetch(`${PUBLIC_PLUGIN_CATALOG_URL}/${encodeURIComponent(code)}`, {
-    credentials: "omit",
-    signal,
-  });
-  if (response.status === 404) return null;
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  return catalogEntry(await response.json());
+  try {
+    return catalogEntry(await api.get<unknown>(`${PLUGIN_CATALOG_PATH}/${encodeURIComponent(code)}`, { signal }));
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
+  }
 }

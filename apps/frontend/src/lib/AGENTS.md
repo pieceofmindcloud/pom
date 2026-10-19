@@ -233,12 +233,12 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `speculation.ts` - the single speculation choice (`none`/`mtp`/`lookup`) over
   `mtp_enabled` + `speculative_decoding_enabled`, and `MTP_MIN_PROBABILITY`
   (0.75, the node's default), written when MTP is chosen.
-- `pluginCatalog.ts` - reads the public plugin catalog directly from the
-  license server with `credentials: "omit"`; `fetchPublicPluginCatalog` takes an
+- `pluginCatalog.ts` - reads the public plugin catalog through this node
+  (`/api/ui/plugin-catalog`, `api.ts`), so the page never leaves its own origin
+  and the store's CORS policy does not matter; `fetchPublicPluginCatalog` takes an
   optional `{q, page, perPage}` (search and paging done by the server, `total`
   is null from a server without paging), `fetchPublicPlugin(code)` reads one
-  entry, and `supportedPlatforms` lists the systems with builds; it does not use `api.ts` or send
-  the connection key or administrative session. It validates required fields
+  entry (null on 404), and `supportedPlatforms` lists the systems with builds. It validates required fields
   for each commercial release and discards plugins without a valid release.
   GitHub sources stay local: the catalog's `github_url` (a free plugin the
   license server lists as installed from GitHub) is only a suggestion, accepted

@@ -260,12 +260,13 @@ local-only notice. Routes:
   legacy `profiles` are validated and preserved but do not gate this POM's UI.
   Native route restrictions remain in force, so `visitor` cannot open `/logs`,
   `/statistics` or `/deployments`, even when a plugin claims an extension point.
-- `/plugins` -> Plugins, the showcase of publishable items returned by
-  `https://license.pieceofmind.cloud/v1/plugins`, crossed by `code` with the
+- `/plugins` -> Plugins, the showcase of publishable items returned by the
+  license server's `/v1/plugins`, read through the node, crossed by `code` with the
   local license and install state. Open to every profile: plugins are local to
   each node, so `admin`, `worker` and `visitor` can activate licenses, add GitHub
   repositories and install plugins on their own machine. The browser reads the
-  public catalog without node credentials, and the client only accepts plugins
+  public catalog through `GET /api/ui/plugin-catalog` on its own node, which
+  sends the store no credential, and the client only accepts plugins
   with valid releases. The screen shows icon, up to four screenshots,
   description, price and release when the server provides them; missing fields
   and images have a visual fallback. The description uses the pt-BR version if

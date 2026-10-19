@@ -52,7 +52,14 @@ pub struct AdmissionHealth {
 }
 
 /// How old a remembered admission may be to stand in for a probe that missed the budget.
-pub(crate) const ADMISSION_MEMORY: Duration = Duration::from_secs(15);
+///
+/// A late probe is not a refusal: it keeps running, and if the peer is really gone it ends
+/// refused and erases the memory (`forget`). With 15 s, a peer whose `/health` sometimes took
+/// longer than the budget was left out of the plan on the first request after a quiet minute,
+/// and a deployment still served failed with "No valid pipeline" (2026-10-19). The window now
+/// covers the gaps between requests; it stays bounded so a probe that never ends cannot keep a
+/// peer in the plan forever.
+pub(crate) const ADMISSION_MEMORY: Duration = Duration::from_secs(5 * 60);
 
 /// The whole admission of a request. The planner waits no longer than this for the probes;
 /// a probe that has not finished by then keeps running and refreshes the memory.

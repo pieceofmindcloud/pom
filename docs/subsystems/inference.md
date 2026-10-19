@@ -291,6 +291,14 @@ with an announcer that swallows SYN: 2005 ms before, 301 ms on the first request
 and 0 ms on the following ones. Coming back is automatic: once the deadline
 passes, the next request pays one probe and the peer re-enters if it answers.
 
+The request waits at most `ADMISSION_BUDGET` (250 ms) for all the probes. A probe
+that misses it keeps running and refreshes the memory; meanwhile the peer's last
+successful admission stands in for it for `ADMISSION_MEMORY` (5 min). A late
+probe is not a refusal: one that ends refused erases the memory at once. With a
+15 s memory, a peer whose `/health` was sometimes slower than the budget fell out
+of the plan on the first request after a quiet minute, and a deployment still
+being served failed with "No valid pipeline".
+
 The probe follows the pinned route (`bases_by_route_plan`): a tunnel route goes
 straight to the tunnel, an HTTP/QUIC route puts the measured address first. It
 tries every inference address in `Network::inference_bases` order (the host that

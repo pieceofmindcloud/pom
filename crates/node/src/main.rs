@@ -1898,6 +1898,12 @@ async fn start_node(
     net.set_policy_principal_pubkey(admin_trust.current_primary().pubkey);
     net.set_trust_version(admin_trust.chain_version());
     net.set_announce_key(authority_signing_key.clone());
+    {
+        let chat = network_chat.clone();
+        net.set_readmission(Arc::new(move |node_id, revoked_at| {
+            chat.admitted_role(node_id, Some(revoked_at)).is_some()
+        }));
+    }
     crate::auth::set_member_oracle(net.clone());
     cluster_logs.set_admin_receiver(local_is_admin);
     audit.set_admin_receiver(local_is_admin);

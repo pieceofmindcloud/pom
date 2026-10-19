@@ -4594,11 +4594,11 @@ mod tests {
             .map(|(peer_id, _)| peer_id.to_string())
             .collect::<Vec<_>>();
         admins.sort();
-        let mut expected = vec![primary.peer_id.clone(), secondary.peer_id.clone()];
+        let mut expected = vec![primary.pubkey.clone(), secondary.pubkey.clone()];
         expected.sort();
         assert_eq!(admins, expected);
         let (principal_peer, _) = net.principal_peer().await.expect("the chain's principal");
-        assert_eq!(principal_peer.to_string(), primary.peer_id);
+        assert_eq!(principal_peer.to_string(), primary.pubkey);
     }
 
     #[tokio::test]

@@ -760,7 +760,11 @@ routes.
 ## Authentication
 
 Before reaching the handlers, the gateway applies the administrative gate to
-`/api/ui/**` and `/admin/**`. In local mode it checks the connection's real
+`/api/ui/**`, `/api/transfer/**` and `/admin/**`, and the browser sends the
+person's token to all three (`isAdminSurfacePath`): the session cookie is only
+written when a session is issued, so a session older than a cookie path never
+reaches it, and the transfer polls failed with "missing administrative access
+password" while the rest of the screen worked. In local mode it checks the connection's real
 address and only accepts loopback; in network mode it requires
 `X-POM-Access-Token`. The person's token is different from the
 `connection_key`: the first opens the administrative UI, while the second

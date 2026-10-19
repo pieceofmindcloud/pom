@@ -38,6 +38,19 @@ describe("administrative access token", () => {
     expect(inferenceCall?.[1]).toMatchObject({ credentials: "same-origin" });
   });
 
+  it("also goes to the transfer routes, which a session cookie may not reach yet", async () => {
+    apiModule.setAdminAccessToken("admin-secret");
+    const fetchMock = vi.fn(() => Promise.resolve({ ok: true, status: 200, text: vi.fn().mockResolvedValue("{}") }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await apiModule.api.get("/api/transfer/jobs");
+    await apiModule.api.get("/api/transfer/offers");
+
+    for (const call of fetchMock.mock.calls) {
+      expect((call as unknown as [string, RequestInit])[1].headers).toMatchObject({ "X-POM-Access-Token": "admin-secret" });
+    }
+  });
+
   it("recreates a revoked dedicated key and retries inference once", async () => {
     const fetchMock = vi
       .fn()

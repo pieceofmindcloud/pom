@@ -12,8 +12,8 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 ## Per-file
 
 - `api.ts` - fetch wrapper over relative paths with same-origin credentials,
-  connection-key auth, administrative-password auth only for `/api/ui/**` and
-  `/admin/**`, conditional JSON GETs with ETag caching, the SSE reader and the deployment
+  connection-key auth, administrative-password auth only for `/api/ui/**`,
+  `/api/transfer/**` and `/admin/**`, conditional JSON GETs with ETag caching, the SSE reader and the deployment
   registry actions (`listDeployments`, `redeployDeployment` - `{ params }` or
   `{ version }` to redeploy a registered version -, `activateDeployment`),
   plus the authenticated status of the remote provider. `addNodeOptions` queries

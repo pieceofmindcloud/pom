@@ -553,6 +553,8 @@ pub(crate) struct EngineRequest {
     pub probe_prefix_bytes: Option<usize>,
     /// The turn's images, as `data:image/...;base64,` URLs (see `image_data_url`).
     pub images: Vec<String>,
+    /// The prefill machine the client chose as the head of a prefill/decode split, when it chose one.
+    pub prefill_node: Option<String>,
 }
 
 /// An image as a `data:` URL, its type read from the first bytes (JPEG when none is recognized).
@@ -824,12 +826,25 @@ pub(crate) async fn generate(
     let _in_flight = state.loads.acquire(node_id).await;
     let mut body = generation_body(&request);
     let session_key = request.session.clone();
+    let mut prefill_leg: Option<PrefillLeg> = None;
     // Prefill/decode split: a prefill machine of this model reads the prompt first, and the head fetches the
     // session it saved. Any problem leaves the head to read the prompt itself.
     if plan.steps.len() == 1 && request.images.is_empty() && request.probe_labels.is_empty() {
         if let Some(key) = &session_key {
-            if let Some(source) = prefill_on_peer(state, code, model, node_id, key, &body, cancellation).await {
-                body["session_source"] = json!(source);
+            if let Some(source) = prefill_on_peer(
+                state,
+                code,
+                model,
+                node_id,
+                request.prefill_node.as_deref(),
+                key,
+                &body,
+                cancellation,
+            )
+            .await
+            {
+                body["session_source"] = json!(source.node_id);
+                prefill_leg = Some(source);
             }
             if cancellation.is_cancelled() || tx.is_closed() {
                 return;
@@ -937,12 +952,22 @@ pub(crate) async fn generate(
                     .unwrap_or(0);
                 let prompt_tokens = report.prompt_tokens;
                 let cached_tokens = report.cached_tokens;
-                let prefill_ms = engine_prefill_ms.unwrap_or(ttft_ms);
+                // a prefill/decode split: the prompt was read on the prefill machine, the head read only the rest
+                // after restoring its session, so the prompt phase is both (the session's transfer included)
+                let (prefill_ms, prompt_read) = match &prefill_leg {
+                    Some(leg) => (
+                        engine_prefill_ms.unwrap_or(0) + leg.elapsed_ms,
+                        prompt_tokens
+                            .saturating_sub(cached_tokens)
+                            .saturating_add(leg.tokens.min(u64::from(u32::MAX)) as u32),
+                    ),
+                    None => (engine_prefill_ms.unwrap_or(ttft_ms), prompt_tokens.saturating_sub(cached_tokens)),
+                };
                 let mut timings = crate::gateway::timing_metrics(
                     total_ms,
                     ttft_ms,
                     prefill_ms,
-                    prompt_tokens.saturating_sub(cached_tokens),
+                    prompt_read,
                     generated,
                 );
                 timings.server_ttft_ms = Some(ttft_ms);
@@ -953,12 +978,19 @@ pub(crate) async fn generate(
                 let finish = report.finish.clone();
                 // The same record a one-hop llama.cpp pipeline leaves: the request audit, the statistics and the
                 // logs the admins receive read the source and this trace, whatever the engine.
+                // the prefill machine of a split is the first hop of the trace, before the head that decodes
+                let shown_plan = match prefill_leg.as_ref().and_then(|leg| leg.step.clone()) {
+                    Some(step) => crate::pipeline::plan_from_steps(
+                        std::iter::once(step).chain(plan.steps.iter().cloned()).collect(),
+                    ),
+                    None => plan.clone(),
+                };
                 let mut trace = super::engine_telemetry::build_trace(
                     trace_id
                         .clone()
                         .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string()),
                     model,
-                    plan,
+                    &shown_plan,
                     code,
                     &report,
                 );
@@ -977,7 +1009,18 @@ pub(crate) async fn generate(
                     );
                 }
                 super::engine_telemetry::merge_reported_links(code, done);
-                super::engine_telemetry::apply_stage_links(&mut trace, code, prefill_ms);
+                super::engine_telemetry::apply_stage_links(&mut trace, code, engine_prefill_ms.unwrap_or(prefill_ms));
+                if let Some(leg) = &prefill_leg {
+                    if let Some(hop) = trace.hops.iter_mut().find(|hop| hop.node_id == leg.node_id) {
+                        // it read the prompt and decoded nothing
+                        hop.prefill.processing_ms = leg.engine_ms;
+                        hop.prefill.round_trip_ms = leg.elapsed_ms;
+                        hop.prefill.network_ms = leg.elapsed_ms.saturating_sub(leg.engine_ms);
+                        hop.decode.calls = 0;
+                        hop.decode.reported_spans = 0;
+                        hop.decode.processing_ms = 0;
+                    }
+                }
                 // The speed belongs to the machine that runs the engine; a remote head records it on its own /health.
                 if node_id == state.network.node_id {
                     super::engine_telemetry::record_head_perf(code, &report);
@@ -1005,7 +1048,7 @@ pub(crate) async fn generate(
                     "generation completed by the plugin inference service"
                 );
                 let summary = GenSummary {
-                    source: format!("pipeline:{}", plan.hop_chain()),
+                    source: format!("pipeline:{}", shown_plan.hop_chain()),
                     tokens_generated: generated,
                     reasoning_tokens,
                     tokens_per_sec: timings.generation_tokens_per_sec.unwrap_or(0.0),
@@ -1037,8 +1080,15 @@ pub(crate) async fn generate(
 // ── Prefill/decode split ─────────────────────────────────────────────────────
 
 /// The prefill machine for a turn of `model` whose head is `head`: a live peer of the same plugin engine, announced
-/// with the role `prefill`, that serves the whole model. The least busy one wins.
-async fn prefill_peer(state: &GatewayState, code: &str, model: &str, head: &str) -> Option<crate::network::PeerInfo> {
+/// with the role `prefill`, that serves the whole model. The one the client chose (`preferred`) when it is one of
+/// them, else the least busy one.
+async fn prefill_peer(
+    state: &GatewayState,
+    code: &str,
+    model: &str,
+    head: &str,
+    preferred: Option<&str>,
+) -> Option<crate::network::PeerInfo> {
     let mut best: Option<(u32, crate::network::PeerInfo)> = None;
     for peer in state.all_peers().await {
         let whole = peer.total_layers > 0 && peer.start_layer == 0 && peer.end_layer + 1 == peer.total_layers;
@@ -1050,6 +1100,9 @@ async fn prefill_peer(state: &GatewayState, code: &str, model: &str, head: &str)
         {
             continue;
         }
+        if preferred == Some(peer.node_id.as_str()) {
+            return Some(peer);
+        }
         let load = state.loads.load(&peer.node_id).await;
         if best.as_ref().is_none_or(|(least, _)| load < *least) {
             best = Some((load, peer));
@@ -1058,19 +1111,31 @@ async fn prefill_peer(state: &GatewayState, code: &str, model: &str, head: &str)
     best.map(|(_, peer)| peer)
 }
 
+/// What a prefill machine did for a turn: who it is (its step, for the trace), the tokens it read and how long its
+/// engine took, and the whole call from this gateway.
+pub(crate) struct PrefillLeg {
+    pub node_id: String,
+    pub step: Option<crate::pipeline::PipelineStep>,
+    pub tokens: u64,
+    pub engine_ms: u64,
+    pub elapsed_ms: u64,
+}
+
 /// Runs the prompt of a turn on a prefill machine (`prefill_only`), which saves the conversation's session there.
-/// Returns that machine's node id when it saved it, so the head fetches it (`session_source`); `None` when there is
+/// Returns what that machine did when it saved it, so the head fetches it (`session_source`); `None` when there is
 /// no prefill machine, the new part of the prompt was too short to be worth the transfer, or anything failed.
+#[allow(clippy::too_many_arguments)]
 async fn prefill_on_peer(
     state: &GatewayState,
     code: &str,
     model: &str,
     head: &str,
+    preferred: Option<&str>,
     key: &str,
     body: &Value,
     cancellation: &crate::prefill::Cancellation,
-) -> Option<String> {
-    let peer = prefill_peer(state, code, model, head).await?;
+) -> Option<PrefillLeg> {
+    let peer = prefill_peer(state, code, model, head, preferred).await?;
     // what the head already holds of the conversation: the prefill machine reads the prompt only when the part the
     // head lacks is long enough
     let holds = match super::plugin_session::offer_of(state, code, key, head).await {
@@ -1134,12 +1199,21 @@ async fn prefill_on_peer(
                 info!(plugin = %code, session = %key, prefill = %peer.node_id, "prefill split: the prefill machine kept no session; the head reads the prompt");
                 return None;
             }
+            let report = super::engine_telemetry::EngineReport::from_done(done, 0);
+            let engine_ms = report.prefill_ms.map(|ms| ms.round() as u64).unwrap_or(0);
+            let elapsed_ms = started.elapsed().as_millis() as u64;
             info!(
                 plugin = %code, session = %key, prefill = %peer.node_id, head = %head, tokens = read, holds,
-                ms = started.elapsed().as_millis() as u64,
+                ms = elapsed_ms, engine_ms,
                 "prefill split: the prompt was read on the prefill machine; the head fetches its session"
             );
-            return Some(peer.node_id.clone());
+            return Some(PrefillLeg {
+                node_id: peer.node_id.clone(),
+                step: crate::pipeline::step_for(&peer, 0),
+                tokens: read,
+                engine_ms,
+                elapsed_ms,
+            });
         }
     }
 }
@@ -1588,6 +1662,7 @@ mod tests {
             probe_labels: vec!["Yes".into(), "No".into()],
             probe_prefix_bytes: Some(12),
             images: vec!["data:image/png;base64,AAAA".into()],
+            prefill_node: None,
         });
         assert_eq!(body["prompt"], "User: oi");
         assert_eq!(body["probe"]["labels"], json!(["Yes", "No"]));

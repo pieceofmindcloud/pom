@@ -1834,6 +1834,17 @@ pub(super) async fn inference_heads(
     let mut heads = crate::pipeline::model_head_candidates(&peers, model, deploy_id);
     // a head still loading its model is not a choice: a request sent to it waits until it is ready
     heads.retain(|peer| !peer.is_warming());
+    // A prefill/decode split is one head: its prefill machine, which reads the prompt first. The machines that decode
+    // after a prefill machine of the same engine are not offered on their own (the gateway picks among them).
+    let split_engines: Vec<Option<String>> = heads
+        .iter()
+        .filter(|peer| crate::plugin_engine::is_prefill_only(peer))
+        .map(|peer| crate::plugin_engine::engine_of_peer(peer))
+        .collect();
+    heads.retain(|peer| {
+        crate::plugin_engine::is_prefill_only(peer)
+            || !split_engines.contains(&crate::plugin_engine::engine_of_peer(peer))
+    });
     heads.sort_by(|a, b| a.node_id.cmp(&b.node_id));
     let rtt_snapshots = state.network.rtts.snapshot_with_age();
     let rtts = rtt_snapshots
@@ -1852,11 +1863,18 @@ pub(super) async fn inference_heads(
         .map(|peer| peer.total_layers)
         .max()
         .unwrap_or(0);
+    // the planner never makes a prefill machine the head (see `generation.rs`); its plan's head that decodes after a
+    // prefill machine is shown as that prefill machine
+    let planning: Vec<PeerInfo> = peers
+        .iter()
+        .filter(|peer| !crate::plugin_engine::is_prefill_only(peer))
+        .cloned()
+        .collect();
     let selected_node_id = if heads.is_empty() || total_layers == 0 {
         None
     } else {
         crate::pipeline::plan_pipeline_with_rtt(
-            &peers,
+            &planning,
             model,
             deploy_id,
             total_layers,
@@ -1869,6 +1887,21 @@ pub(super) async fn inference_heads(
                 .first()
                 .filter(|step| step.start_layer == 0)
                 .map(|step| step.node_id.clone())
+        })
+        .map(|node_id| {
+            let engine = planning
+                .iter()
+                .find(|peer| peer.node_id == node_id)
+                .and_then(crate::plugin_engine::engine_of_peer);
+            heads
+                .iter()
+                .find(|peer| {
+                    crate::plugin_engine::is_prefill_only(peer)
+                        && engine.is_some()
+                        && crate::plugin_engine::engine_of_peer(peer) == engine
+                })
+                .map(|peer| peer.node_id.clone())
+                .unwrap_or(node_id)
         })
     };
 

@@ -747,8 +747,9 @@ Key logic carriers:
   `roleOf`), so the principal edge goes Prefill -> Decode and the gateway sits
   after the decode machines. `DeployModel` lets a service that declares
   `inference_role` take a second machine for a whole model (the first becomes
-  `prefill`, the new one `decode`) and edits the role per machine in the
-  machine inspector.
+  `prefill`, the new one `decode`); the role of each machine is edited in
+  the POM settings card (`DeploymentInspector` `machineRoles`, one row per
+  machine), never in the machine card.
 - `DeployNetworkCanvas.tsx` - the compact, deploy-time topology view. It
   reuses the visual contract of the `ModelNetworkCanvas`: the dotted background, machine
   cards, `autoLayout`, positions persisted per fingerprint, pointer drag,

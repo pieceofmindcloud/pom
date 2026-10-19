@@ -2673,7 +2673,14 @@ may also put the whole model on several machines, each with its own role
 accepts several machines for a whole model only when their roles hold at
 least one `prefill` and one that decodes. The Flow draws the split as
 Prefill -> Decode: the cluster view's `PeerView.role` and a candidate edge
-from each prefill machine to each decode machine of the same layers. The role reaches
+from each prefill machine to each decode machine of the same layers. The
+Chat's head list (`/api/ui/infer/heads`) offers the split as one head, its
+prefill machine; a request pinned to a prefill machine is planned on a head
+that decodes and reads its prompt on that prefill machine
+(`EngineRequest::prefill_node`). The trace of a split turn has the prefill
+machine as its first hop (its engine's prompt time, the call's round trip),
+and the prompt phase of the timings covers both machines and the session's
+transfer. The role reaches
 the plugin in `engine.load` (`role`) and is announced as
 `engine/plugin-role-v1:<role>` beside the engine capability (the `/health`
 `capabilities` carry it too). A stage of a split model has no role.

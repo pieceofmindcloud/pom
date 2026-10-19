@@ -374,6 +374,8 @@ export function DeploymentInspector({
   inferenceModeAlert,
   /** The hidden-state precision only exists when the pipeline crosses machines. */
   showHiddenStateDtype = false,
+  machineRoles,
+  onMachineRole,
   pomDevMode = false,
   inferenceService,
 }: {
@@ -388,6 +390,9 @@ export function DeploymentInspector({
   showInferenceMode?: boolean;
   inferenceModeAlert?: string | null;
   showHiddenStateDtype?: boolean;
+  /** A whole model on several machines split into prefill and decode: each machine's role, edited in the POM card. */
+  machineRoles?: { nodeId: string; label: string; role: InferenceRole }[];
+  onMachineRole?: (nodeId: string, role: InferenceRole) => void;
   pomDevMode?: boolean;
   /** A plugin's inference service runs the model (Strata): its card holds only
    *  what that engine reads - the context, the concurrent requests, idle
@@ -580,17 +585,18 @@ export function DeploymentInspector({
     </>
   );
 
-  /** A whole-model machine's part in a prefill/decode split (the POM's, whatever the engine). */
-  const inferenceRoleField = () => (
-    <InspectorRow label={t("deploy.knob.inference_role")} tip={t("deploy.knob.inference_roleHint")}>
+  /** A whole-model machine's part in a prefill/decode split (the POM's, whatever the engine): the deployment's, or
+   *  one row per machine when the whole model runs on several of them. */
+  const roleRow = (key: string, label: string, role: InferenceRole, onRole: (role: InferenceRole) => void) => (
+    <InspectorRow key={key} label={label} tip={t("deploy.knob.inference_roleHint")}>
       {readOnly ? (
-        <ReadValue>{value.inference_role ?? "both"}</ReadValue>
+        <ReadValue>{role}</ReadValue>
       ) : (
         <Select
-          aria-label={t("deploy.knob.inference_role")}
-          name="inference_role"
-          value={value.inference_role ?? "both"}
-          onChange={(event) => set({ inference_role: event.target.value as InferenceRole })}
+          aria-label={label}
+          name={key}
+          value={role}
+          onChange={(event) => onRole(event.target.value as InferenceRole)}
           compact
         >
           <option value="both">{t("deploy.knob.inference_roleBoth")}</option>
@@ -600,6 +606,17 @@ export function DeploymentInspector({
       )}
     </InspectorRow>
   );
+  const inferenceRoleField = () =>
+    machineRoles && machineRoles.length > 1
+      ? machineRoles.map((machine) =>
+          roleRow(
+            `inference_role_${machine.nodeId}`,
+            `${t("deploy.knob.inference_role")} · ${machine.label}`,
+            machine.role,
+            (role) => onMachineRole?.(machine.nodeId, role),
+          ))
+      : roleRow("inference_role", t("deploy.knob.inference_role"), value.inference_role ?? "both", (role) =>
+          set({ inference_role: role }));
 
   if (inferenceService) {
     // The POM carries the hidden state between the plugin's stages, so its own

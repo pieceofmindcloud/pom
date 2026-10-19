@@ -769,6 +769,20 @@ pub(super) async fn generate_stream_inner(
         request_details,
         probe,
     } = input;
+    // A prefill machine chosen as the head (the Chat shows it as the head of its prefill/decode split) never answers:
+    // the planner picks the head that decodes, and the plugin engine reads the prompt on the chosen prefill machine.
+    let (preferred_head, pinned_prefill) = match preferred_head {
+        Some(head)
+            if state
+                .all_peers()
+                .await
+                .iter()
+                .any(|peer| peer.node_id == head && crate::plugin_engine::is_prefill_only(peer)) =>
+        {
+            (None, Some(head))
+        }
+        other => (other, None),
+    };
     let mut budget = budget.normalized();
     if cancellation.is_cancelled() {
         log_early_outcome("cancelado", "the client gave up before the start");
@@ -1038,6 +1052,7 @@ pub(super) async fn generate_stream_inner(
                     .iter()
                     .map(|bytes| crate::plugin_engine::image_data_url(bytes))
                     .collect(),
+                prefill_node: pinned_prefill.clone(),
             },
             &tx,
             &cancellation,

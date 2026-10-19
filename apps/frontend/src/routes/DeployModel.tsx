@@ -1560,6 +1560,14 @@ export function DeployModel() {
                   : (inferenceModeReason ?? t("deployStudio.engineUnsupported"))
               }
               showHiddenStateDtype={crossesPeerBoundary}
+              machineRoles={isWhole && service && splitRoles && rows.length > 1
+                ? rows.map((row) => ({
+                    nodeId: row.target_node_id,
+                    label: labelOf(row.target_node_id),
+                    role: row.inference_role ?? eff.inference_role ?? "both",
+                  }))
+                : undefined}
+              onMachineRole={setPeerRole}
               vision={{
                 available: visionAvailable,
                 enabled: useVision,
@@ -1748,23 +1756,6 @@ export function DeployModel() {
                       paragraph under the switch; now it is in the `[i]`,
                       like all the others. Both are llama.cpp's: a plugin's
                       engine does not read them. */}
-                  {first && service && isWhole && splitRoles && (
-                    <div className="mt-3 space-y-1 border-t border-line pt-2">
-                      <InspectorRow label={t("deploy.knob.inference_role")} tip={t("deploy.knob.inference_roleHint")}>
-                        <Select
-                          aria-label={t("deploy.knob.inference_role")}
-                          name={`inference_role_${machine.node_id}`}
-                          value={first.inference_role ?? eff.inference_role ?? "both"}
-                          onChange={(event) => setPeerRole(machine.node_id, event.target.value as InferenceRole)}
-                          compact
-                        >
-                          <option value="both">{t("deploy.knob.inference_roleBoth")}</option>
-                          <option value="prefill">{t("deploy.knob.inference_rolePrefill")}</option>
-                          <option value="decode">{t("deploy.knob.inference_roleDecode")}</option>
-                        </Select>
-                      </InspectorRow>
-                    </div>
-                  )}
                   {first && !service && (
                     <div className="mt-3 space-y-1 border-t border-line pt-2">
                       <InspectorRow label={t("deployStudio.gpuLayers")} tip={t("deploy.knob.n_gpu_layersHint")}>

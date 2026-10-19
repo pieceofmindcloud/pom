@@ -568,9 +568,14 @@ export function useCacheTypes() {
  * This is the reason the notification menu survives a reload: the work lives on
  * the node, and the browser only asks what is running.
  */
-export function useJobs() {
+/**
+ * Slicing, deploy and apply jobs of this machine. `enabled` is false on a
+ * `visitor`: it runs none, and its node refuses `/api/ui/jobs`.
+ */
+export function useJobs(enabled = true) {
   return useQuery({
     queryKey: keys.jobs,
+    enabled,
     queryFn: () =>
       optional(
         api.getConditional<{ jobs: Job[] }>("/api/ui/jobs", { auth: false }),

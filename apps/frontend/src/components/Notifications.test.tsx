@@ -14,6 +14,7 @@ const queryMocks = vi.hoisted(() => ({
   jobs: { data: { jobs: [] } },
   transfers: { data: { jobs: [] }, refetch: vi.fn() },
   offers: { data: { offers: [] as NetworkOffer[] }, refetch: vi.fn() },
+  jobsEnabled: [] as boolean[],
   transfersEnabled: [] as boolean[],
   offersEnabled: [] as boolean[],
 }));
@@ -30,7 +31,10 @@ const admissionMocks = vi.hoisted(() => ({
 vi.mock("../lib/api", () => ({ api: { post: vi.fn() } }));
 vi.mock("../lib/queries", () => ({
   useAdminAccess: () => queryMocks.access,
-  useJobs: () => queryMocks.jobs,
+  useJobs: (enabled = true) => {
+    queryMocks.jobsEnabled.push(enabled);
+    return queryMocks.jobs;
+  },
   useTransfers: (enabled = true) => {
     queryMocks.transfersEnabled.push(enabled);
     return queryMocks.transfers;
@@ -78,20 +82,23 @@ describe("Notifications network offers", () => {
     resetPluginInboxForTest();
     resetDefaultPasswordNoticeForTest();
     queryMocks.access.data = { default_password: false, boot_id: "boot-1" };
+    queryMocks.jobsEnabled = [];
     queryMocks.transfersEnabled = [];
     queryMocks.offersEnabled = [];
     profileMock.profile = "admin";
   });
 
-  it("does not poll the transfer routes a visitor's node refuses", () => {
+  it("does not poll the job and transfer routes a visitor's node refuses", () => {
     profileMock.profile = "visitor";
     renderNotifications([]);
+    expect(queryMocks.jobsEnabled).not.toContain(true);
     expect(queryMocks.transfersEnabled).not.toContain(true);
     expect(queryMocks.offersEnabled).not.toContain(true);
     cleanup();
 
     profileMock.profile = "worker";
     renderNotifications([]);
+    expect(queryMocks.jobsEnabled.at(-1)).toBe(true);
     expect(queryMocks.transfersEnabled.at(-1)).toBe(true);
     expect(queryMocks.offersEnabled.at(-1)).toBe(true);
   });

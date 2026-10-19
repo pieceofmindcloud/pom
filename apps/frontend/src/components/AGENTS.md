@@ -350,8 +350,8 @@ Per-file list:
   replaced the fixed `DefaultPasswordNotice` banner), counts running slicing jobs
   (`useJobs`), transfers worth notifying (`useTransfers` +
   `isWorthNotifying`) and pending offers (`useOffers`), and shows progress bars
-  inside the popover. Transfers and offers are not polled on a `visitor`,
-  whose node refuses every `/api/transfer` route. Offers can be accepted/rejected right there
+  inside the popover. Jobs, transfers and offers are not polled on a
+  `visitor`, whose node refuses `/api/ui/jobs` and every `/api/transfer` route. Offers can be accepted/rejected right there
   (`POST /api/transfer/offers/:id/accept|reject`). It also lists admission
   (`lib/admissions.ts`): for the network's admin, each machine asking to join
   with its role, direct or relayed connection, latency and hardware, and

@@ -182,9 +182,9 @@ export function Notifications() {
   const toast = useToast();
 
   const { profile } = useProfile();
-  const jobs = useJobs();
-  // A visitor holds no model: its node refuses every transfer route.
+  // A visitor holds no model: its node refuses the job and transfer routes.
   const holdsModels = Boolean(profile) && profile !== "visitor";
+  const jobs = useJobs(holdsModels);
   const transfers = useTransfers(holdsModels);
   const offers = useOffers(holdsModels);
   // Machines asking to join this network (for its admin), and the answers to

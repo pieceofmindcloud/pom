@@ -53,7 +53,7 @@ pub(crate) fn request_origin<B>(peer: SocketAddr, req: &mut hyper::Request<B>) -
         if let Some(caller) = tunnel_peer
             .as_ref()
             .and_then(|value| value.to_str().ok())
-            .and_then(TransportPeer::from_peer_id)
+            .and_then(TransportPeer::from_endpoint_id)
         {
             req.extensions_mut().insert(caller);
         }

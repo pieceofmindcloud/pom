@@ -7100,7 +7100,7 @@ mod tests {
         let primary_key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
         let primary = crate::admin_trust::AuthorityPrincipal::from_signing_key(
             "primary",
-            &libp2p::PeerId::random().to_string(),
+            crate::identity::trust_peer_id(primary_key.verifying_key().as_bytes()),
             &primary_key,
         );
         let trust = Arc::new(

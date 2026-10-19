@@ -588,7 +588,7 @@ mod tests {
         let secondary = secondary_node.authority_principal.clone();
         let mut seen = testkit::peer("secondary", "secondary", 8092);
         seen.pubkey = secondary.pubkey.clone();
-        seen.libp2p_peer_id = Some(secondary.peer_id.clone());
+        seen.endpoint_id = Some(secondary.pubkey.clone());
         let ask = |target: GatewayState| {
             let signed = secondary_node
                 .signed_control_headers("POST", "/api/ui/leave", b"")

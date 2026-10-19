@@ -438,6 +438,11 @@ the network and nobody else: the Qdrant plugin answers `peer.connection` with
 its port and API key only when `caller.head` is true. The body is capped at
 256 KiB and the plugin's reply is returned as is.
 
+The POM itself uses the same route for token budgets: the node that receives
+an inference request asks an admin's logs plugin `peer.quota.check` before the
+pipeline, and the Budget screen reads `peer.quota.status` (see `http-api.md`,
+"Token budgets, checked before the pipeline").
+
 `GET /api/internal/plugins/services` (signed or key-authenticated peer call)
 returns the same service list, so a peer can find which machine serves what.
 

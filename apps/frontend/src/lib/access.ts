@@ -54,6 +54,8 @@ const INFER_ROUTES = [
   "/plugins",
   "/config/network",
   "/config/my-machine",
+  // Its own token budget: every profile that runs inference has one.
+  "/config/budget",
   "/config/sharing",
   "/config/preferences",
   // Anchoring trust precedes authority and is not the privilege of any

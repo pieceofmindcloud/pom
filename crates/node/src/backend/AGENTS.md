@@ -574,6 +574,13 @@ boundary.
   below), and a non-admin caller of a `ServingMember` route needs a `worker`
   token (`caller_may_ask`). `chain_status` feeds
   `NodeInfo.cluster_version` and `POST /api/ui/network/trust-sync`.
+- `quota.rs` - token budgets before the pipeline: `admit` asks the local logs
+  plugin, then each live admin (`peer.quota.check` over the signed peer call),
+  and the inference handlers answer its `Denial` with 429 + `Retry-After` and
+  `record_rejected`. Fail-open with a per-node memory of refusals; the plugin's
+  `cache_ms` sets how long a verdict is reused. Also the node's own Budget
+  routes (`/api/ui/quota`, `/reset`, `/request`). Contract:
+  `docs/subsystems/http-api.md`, "Token budgets, checked before the pipeline".
 - `reqlog.rs` - the audit adapter and the migration fallback. With the plugin
   active, the host writes in `enterprise.db`; independently of that destination, the
   POM's `AuditLog` replicates `begin` and `complete` to the effective admins over the p2p endpoint.

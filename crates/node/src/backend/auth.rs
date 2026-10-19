@@ -914,6 +914,10 @@ impl ApiKeyAuth {
         self.caller
     }
 
+    pub fn caller(&self) -> &crate::reqlog::Caller {
+        &self.caller
+    }
+
     pub fn token(&self) -> &str {
         &self.token
     }

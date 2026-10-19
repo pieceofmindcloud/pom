@@ -954,6 +954,36 @@ send.
 it reaches generation; whether the served model knows how to use it is a
 cluster measurement.
 
+### Token budgets, checked before the pipeline
+
+`/v1/chat/completions`, `/v1/completions`, `/v1/messages`, `/api/generate` and
+each question of `/v1/systemone` / `/v1/decisions` call `quota::admit`
+(`backend/quota.rs`) after the output-limit check and before the generation
+starts. The POM owns no budget: plans, windows and consumption live in the logs
+plugin of an admin, over the request log the admins already replicate. The
+request belongs to the API key's node (`Caller.key_node_id`), else to the
+receiving node. The receiving node asks its own logs plugin, if it runs one,
+then each live admin through the signed peer call
+`POST /api/internal/plugins/logs/peer/quota.check` (1.5 s each, with the
+request body cut to the system prompt and the newest turns so a project can be
+recognized); the first answer from a plugin with budgets configured decides.
+A refusal is HTTP 429 in the route's own error shape (`rate_limit_error` for
+Anthropic), with `Retry-After` when the window's end is known, and is recorded
+in the audit as a rejected request. With no plugin answering the request goes
+on (fail-open, one warning a minute), except for a node already refused, which
+stays refused until the time that refusal named. A verdict the plugin marks as
+independent of the request (`cache_ms`: no budgets at all, no budget for this
+node, or a refusal that does not depend on the project) is reused for that long.
+
+`GET /api/ui/quota`, `POST /api/ui/quota/reset` and `POST /api/ui/quota/request`
+(`{note}`), `LocalOnly`, are this machine's own budget: its counters
+(`peer.quota.status`), spending one session-reset credit
+(`peer.quota.self_reset`, 409 `no_reset_credits` / `no_active_session`) and a
+request for more budget the admins see in the plugin's Quota screen
+(`peer.quota.request`). The plugin identifies the node by the signed caller,
+so a node only reads and resets its own budget. `{available: false}` means no
+admin's plugin answered.
+
 ### `/admin/*`
 
 `GET /admin/nodes` (includes blocked but disconnected nodes, so the panel is

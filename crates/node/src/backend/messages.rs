@@ -577,6 +577,24 @@ async fn messages(
         };
         return error_response(status, "invalid_request_error", error);
     }
+    if let Some(denial) =
+        crate::quota::admit(&state, auth.caller(), &prompt, input_tokens, &request_details).await
+    {
+        crate::gateway::record_rejected(
+            &state,
+            "/v1/messages",
+            auth.into_caller(),
+            model.clone(),
+            prompt,
+            request_details,
+            denial.message.clone(),
+        );
+        return denial.decorate(error_response(
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limit_error",
+            denial.message.clone(),
+        ));
+    }
     let budget = output_limit.budget();
     // What the client needs to decrement the next request's `remaining`. It
     // stays only in `x_pom`: Anthropic does not return the remaining budget in

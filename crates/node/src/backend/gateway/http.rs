@@ -1488,6 +1488,43 @@ pub(super) async fn handle_generate(
         )
             .into_response();
     }
+    if let Some(denial) = crate::quota::admit(
+        &state,
+        &caller,
+        &req.prompt,
+        crate::openai::approx_tokens(&req.prompt),
+        &request_details,
+    )
+    .await
+    {
+        record_rejected(
+            &state,
+            "/api/generate",
+            caller.clone(),
+            model.clone(),
+            req.prompt.clone(),
+            request_details.clone(),
+            denial.message.clone(),
+        );
+        return denial.decorate(
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(GenerateResponse {
+                    response: denial.message.clone(),
+                    source: "error".to_string(),
+                    tokens_generated: 0,
+                    tokens_per_sec: 0.0,
+                    duration_ms: 0,
+                    timings: None,
+                    stop_sequence: None,
+                    finish_reason: None,
+                    partial: false,
+                    trace: None,
+                }),
+            )
+                .into_response(),
+        );
+    }
 
     info!(
         "📨 /api/generate model={} prompt_len={}",

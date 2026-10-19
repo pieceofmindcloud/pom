@@ -296,6 +296,14 @@ Per-file list:
   from `Esquecer rede` ("Forget network") in `NetworkSettings.tsx`: one disconnects the machine from the cluster,
   the other erases the local configuration and restarts in the setup.
 
+- `MyBudget.tsx` - "Budget" (route `/config/budget`, Network menu, every
+  profile): this machine's token budgets from `GET /api/ui/quota` - one panel per
+  plan with input/output bars and the window's turnover, the session-reset
+  credits (`POST /api/ui/quota/reset`) and the request for more budget
+  (`POST /api/ui/quota/request`). Without an admin's logs plugin answering it
+  says so instead of showing zero. The admins' side is the logs plugin's Quota
+  screen.
+
 ## Chat
 - `Chat.tsx` - The chat: `POST /v1/chat/completions` with `stream: true`,
   with no title bar on an empty conversation, `../components/MissingPiece`

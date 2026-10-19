@@ -7,6 +7,9 @@ pub(super) fn routes() -> Router<GatewayState> {
     Router::new()
         .route("/api/ui/node", get(node_info))
         .route("/api/ui/plugins", get(crate::plugins::list_plugins))
+        .route("/api/ui/quota", get(crate::quota::my_quota))
+        .route("/api/ui/quota/reset", post(crate::quota::reset_my_session))
+        .route("/api/ui/quota/request", post(crate::quota::request_more))
         .route("/api/ui/plugins/ui", get(crate::plugin_ui::list_plugin_ui))
         .route("/api/ui/plugin-catalog", get(crate::plugins::plugin_catalog))
         .route(

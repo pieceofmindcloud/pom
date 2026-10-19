@@ -202,6 +202,8 @@ pub mod quic_policy;
 mod rag;
 #[path = "inference/relay.rs"]
 mod relay;
+#[path = "backend/quota.rs"]
+mod quota;
 #[path = "backend/reqlog.rs"]
 mod reqlog;
 #[path = "utils/instance_lock.rs"]

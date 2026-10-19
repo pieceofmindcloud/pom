@@ -250,6 +250,13 @@ const ROUTE_RULES: &[RouteRule] = &[
         method: None,
         scope: RouteScope::LocalOnly,
     },
+    // A node's own token budget: reading it, spending a session reset,
+    // asking the admins for more. A machine's own operator route.
+    RouteRule {
+        prefix: "/api/ui/quota",
+        method: None,
+        scope: RouteScope::LocalOnly,
+    },
     // Catching up with the trust chain is a node acting on itself.
     RouteRule {
         prefix: "/api/ui/network/trust-sync",
@@ -821,6 +828,7 @@ mod policy_tests {
             RouteScope::LocalOnly
         );
         assert_eq!(scope_of("/api/ui/chat-key"), RouteScope::LocalOnly);
+        assert_eq!(scope_of("/api/ui/quota/reset"), RouteScope::LocalOnly);
         assert_eq!(
             scope_of("/api/internal/api-keys/validate"),
             RouteScope::HandlerAuth

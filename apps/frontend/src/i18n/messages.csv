@@ -116,6 +116,46 @@ adminAuthority.successorLabel,Successor,Sucessor
 adminAuthority.successorRule,This is the last node promoted by the principal. You cannot choose another one.,Este é o último nó promovido pelo principal. Não é possível escolher outro.
 adminAuthority.title,Network administration,Administração da rede
 app.topbarFailed,The top bar failed. The rest of the interface is still available.,A barra superior falhou. O resto da interface continua.
+"budget.blocked","Blocked","Bloqueado"
+"budget.credits","{count, plural, =0 {No reset credits} one {# reset credit} other {# reset credits}} · {used} used","{count, plural, =0 {Nenhum crédito de reset} one {# crédito de reset} other {# créditos de reset}} · {used} usados"
+"budget.grantUntil","for {time} more","por mais {time}"
+"budget.grantsTitle","Exceptional increases in force","Aumentos excepcionais em vigor"
+"budget.includesGrant","includes +{amount} granted by an admin","inclui +{amount} concedidos por um admin"
+"budget.input","Input","Entrada"
+"budget.loadFailed","Could not read the budget","Não foi possível ler o budget"
+"budget.none","No budget limits this machine","Nenhum budget limita esta máquina"
+"budget.noneHint","The admins have not assigned a plan to this machine, its team or everyone.","Os admins não atribuíram um plano a esta máquina, à equipe dela nem a todos."
+"budget.output","Output","Saída"
+"budget.pending","Request waiting since {date}","Pedido aguardando desde {date}"
+"budget.period.daily","Daily","Diário"
+"budget.period.monthly","Monthly","Mensal"
+"budget.period.session","{hours} h session","Sessão de {hours} h"
+"budget.period.weekly","Weekly","Semanal"
+"budget.requestAction","Send request","Enviar pedido"
+"budget.requestFailed","Could not send the request","Não foi possível enviar o pedido"
+"budget.requestHint","The admins see the request in the Exceptions tab of the Quota screen and may grant more tokens or reset credits.","Os admins veem o pedido na aba Exceções da tela Quota e podem conceder mais tokens ou créditos de reset."
+"budget.requestPlaceholder","Why you need it (optional)","Por que você precisa (opcional)"
+"budget.requestSent","Request sent to the admins","Pedido enviado aos admins"
+"budget.requestTitle","Ask for more budget","Pedir mais budget"
+"budget.requestUpdate","Update request","Atualizar pedido"
+"budget.resetAction","Reset session","Resetar sessão"
+"budget.resetDone","Session reset","Sessão resetada"
+"budget.resetFailed","Could not reset the session","Não foi possível resetar a sessão"
+"budget.resetHint","Spends one credit to end this machine's running session windows; the next request starts fresh ones. Shared pools are not reset.","Gasta um crédito para encerrar as janelas de sessão em andamento desta máquina; a próxima requisição começa novas. Pools compartilhados não são zerados."
+"budget.resetTitle","Reset my session","Resetar minha sessão"
+"budget.resetsIn","Turns over in {time} · {date}","Renova em {time} · {date}"
+"budget.scope.everyone","shared by the whole network","compartilhado pela rede inteira"
+"budget.scope.everyoneMember","each machine of the network","cada máquina da rede"
+"budget.scope.node","this machine","esta máquina"
+"budget.scope.team","shared by team {team}","compartilhado pela equipe {team}"
+"budget.scope.teamMember","each member of team {team}","cada membro da equipe {team}"
+"budget.sessionIdle","No session running: the next request starts one","Sem sessão em andamento: a próxima requisição inicia uma"
+"budget.subtitle","The token budgets the network's admins set for this machine, checked before each request enters the pipeline.","Os budgets de tokens que os admins da rede definiram para esta máquina, verificados antes de cada requisição entrar na pipeline."
+"budget.title","Budget","Budget"
+"budget.unavailable","No admin answered","Nenhum admin respondeu"
+"budget.unavailableHint","Budgets live in the Request Logs plugin of an admin. While none answers, this machine's requests are not limited.","Os budgets ficam no plugin de Logs de Requisições de um admin. Enquanto nenhum responde, as requisições desta máquina não são limitadas."
+"budget.unlimited","no limit","sem limite"
+"budget.within","Within budget","Dentro do budget"
 canvas.autoLayout,Arrange by layer order (keeps what you dragged),Organizar pela ordem das camadas (mantém o que você arrastou)
 canvas.cardExpand,Expand card,Expandir card
 canvas.cardMinimize,Minimize card,Minimizar card
@@ -1425,6 +1465,7 @@ nav.administration,Administration,Administração
 nav.administrativePreferences,Administrative preferences,Preferências administrativas
 nav.administrators,Administrators,Administradores
 nav.apiKeys,API keys,API keys
+"nav.budget","Budget","Budget"
 nav.chat,Chat,Chat
 nav.connectionKeys,Connection keys,Chaves de conexão
 nav.dashboard,Dashboard,Painel

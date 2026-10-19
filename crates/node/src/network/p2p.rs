@@ -363,6 +363,11 @@ pub struct P2p {
     /// the endpoint consults when it dials a key.
     book: iroh::address_lookup::MemoryLookup,
     connections: Mutex<HashMap<(EndpointId, &'static str), Connection>>,
+    /// One dial at a time per peer and ALPN. Every announce of a peer not yet
+    /// connected warms the tunnel, and every call dials too: without this,
+    /// the dials in flight at once each became a connection, and only the
+    /// last one stayed in `connections`.
+    dialing: Mutex<HashMap<(EndpointId, &'static str), Arc<tokio::sync::Mutex<()>>>>,
     backoff: Mutex<DialBackoff>,
     /// Called once for each outbound connection established.
     on_connection: Mutex<Option<Arc<dyn Fn(&Connection) + Send + Sync>>>,
@@ -374,6 +379,7 @@ impl P2p {
             endpoint,
             book,
             connections: Mutex::new(HashMap::new()),
+            dialing: Mutex::new(HashMap::new()),
             backoff: Mutex::new(DialBackoff::default()),
             on_connection: Mutex::new(None),
         })
@@ -439,6 +445,21 @@ impl P2p {
         if self.backing_off(&id) {
             return Err("peer on hold after dials that failed".to_string());
         }
+        // Wait for a dial already in flight, then take what it left.
+        let slot = self
+            .dialing
+            .lock()
+            .expect("dialing lock")
+            .entry((id, alpn))
+            .or_default()
+            .clone();
+        let _dialing = slot.lock().await;
+        if let Some(connection) = self.live(id, alpn) {
+            return Ok(connection);
+        }
+        if self.backing_off(&id) {
+            return Err("peer on hold after dials that failed".to_string());
+        }
         self.learn(id, addrs);
         let dial = self
             .endpoint
@@ -455,10 +476,16 @@ impl P2p {
                 {
                     hook(&connection);
                 }
-                self.connections
+                let replaced = self
+                    .connections
                     .lock()
                     .expect("connections lock")
                     .insert((id, alpn), connection.clone());
+                // Only a closed connection is ever replaced, but if one is
+                // still open it must not linger beside the new one.
+                if let Some(old) = replaced {
+                    old.close(0u32.into(), b"replaced");
+                }
                 Ok(connection)
             }
             Err(error) => {

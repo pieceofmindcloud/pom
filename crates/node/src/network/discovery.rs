@@ -188,22 +188,27 @@ struct Ctx {
 /// Follows the paths of one connection for the screens and the traversal
 /// counters, until it closes. A connection that starts on a relay and moves
 /// to a direct path is a hole punch.
+///
+/// The task holds no `Connection`, only its path events and a weak handle. A
+/// connection closes itself when its last handle is dropped; a clone held
+/// here until the close would keep every connection open for good, and
+/// iroh's keep-alive never lets one go idle. That is how dials that lost a
+/// race, and connections gossip let go, piled up by the dozen per peer, each
+/// still probing its paths.
 fn link_tracker(network: Arc<Network>) -> Arc<dyn Fn(&Connection) + Send + Sync> {
     Arc::new(move |connection: &Connection| {
         let network = network.clone();
-        let connection = connection.clone();
+        let peer = connection.remote_id();
+        let id = connection.stable_id();
+        let weak = connection.weak_handle();
+        let mut events = connection.path_events();
+        let initial = p2p::selected_path(connection);
         tokio::spawn(async move {
-            let peer = connection.remote_id();
             let peer_text = peer.to_string();
-            let id = connection.stable_id();
             let mut relayed_before = false;
             let mut hole_punched = false;
-            let mut paths = connection.paths_stream();
-            while let Some(list) = paths.next().await {
-                let selected = list
-                    .iter()
-                    .find(|path| path.is_selected())
-                    .and_then(|path| p2p::link_path(path.remote_addr()));
+            let mut selected = initial;
+            loop {
                 match &selected {
                     Some(LinkPath::Relay(_)) => relayed_before = true,
                     Some(LinkPath::Direct(address)) if relayed_before && !hole_punched => {
@@ -216,11 +221,33 @@ fn link_tracker(network: Arc<Network>) -> Arc<dyn Fn(&Connection) + Send + Sync>
                     }
                     _ => {}
                 }
-                if let Some(path) = selected {
+                if let Some(path) = selected.clone() {
                     network.note_link(&peer_text, id, P2pLink::new(path, hole_punched));
                 }
+                selected = loop {
+                    match events.next().await {
+                        Some(iroh::endpoint::PathEvent::Selected { remote_addr, .. }) => {
+                            break p2p::link_path(&remote_addr);
+                        }
+                        // Events were lost: read the selection from the
+                        // connection itself, holding it only for that read.
+                        Some(iroh::endpoint::PathEvent::Lagged { .. }) => {
+                            match weak.upgrade() {
+                                Some(connection) => break p2p::selected_path(&connection),
+                                None => {
+                                    network.drop_link(&peer_text, id);
+                                    return;
+                                }
+                            }
+                        }
+                        Some(_) => {}
+                        None => {
+                            network.drop_link(&peer_text, id);
+                            return;
+                        }
+                    }
+                };
             }
-            network.drop_link(&peer_text, id);
         });
     })
 }

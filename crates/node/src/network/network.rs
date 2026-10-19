@@ -1254,6 +1254,9 @@ impl PeerInfo {
     }
 }
 
+/// Whether `node_id`, banned at the given time, was approved again after it.
+pub type Readmission = Arc<dyn Fn(&str, i64) -> bool + Send + Sync>;
+
 pub struct Network {
     pub node_id: String,
     pub pubkey: String,
@@ -1416,6 +1419,10 @@ pub struct Network {
     /// The node key, which signs every announce this node sends. Absent
     /// only in tests that build a `Network` without an identity.
     announce_key: std::sync::RwLock<Option<Arc<ed25519_dalek::SigningKey>>>,
+    /// On an admin: whether a banned node was approved again after the ban
+    /// (`set_readmission`). Such a node holds no token yet, and it can only
+    /// fetch one from an admin that keeps it in the peers table.
+    readmission: std::sync::RwLock<Option<Readmission>>,
     /// When each peer's own signed announce last arrived (UDP or
     /// gossipsub). A `PeerList` is another node's unsigned snapshot, and it
     /// never moves the addresses of a peer heard first hand recently.
@@ -1856,6 +1863,7 @@ impl Network {
             trust_version: std::sync::RwLock::new(None),
             membership: std::sync::RwLock::new(None),
             announce_key: std::sync::RwLock::new(None),
+            readmission: std::sync::RwLock::new(None),
             firsthand: std::sync::Mutex::new(HashMap::new()),
             broadcast_warning_logged: AtomicBool::new(false),
             observed_addr: std::sync::RwLock::new(None),
@@ -1984,6 +1992,12 @@ impl Network {
     }
 
     /// The key that signs this node's announces: the node key.
+    pub fn set_readmission(&self, check: Readmission) {
+        if let Ok(mut current) = self.readmission.write() {
+            *current = Some(check);
+        }
+    }
+
     pub fn set_announce_key(&self, key: Arc<ed25519_dalek::SigningKey>) {
         if let Ok(mut current) = self.announce_key.write() {
             *current = Some(key);
@@ -2813,8 +2827,16 @@ impl Network {
         let Some(admission) = self.admission.as_ref() else {
             return false;
         };
-        admission.trust.revoked_node_at(&peer.node_id).is_some()
-            && crate::membership::peer_role(peer, &admission.trust).is_none()
+        let Some(revoked_at) = admission.trust.revoked_node_at(&peer.node_id) else {
+            return false;
+        };
+        let readmitted = self
+            .readmission
+            .read()
+            .ok()
+            .and_then(|check| check.clone())
+            .is_some_and(|check| check(&peer.node_id, revoked_at));
+        !readmitted && crate::membership::peer_role(peer, &admission.trust).is_none()
     }
 
     /// Takes a banned node out of the peers table at once, so no plan routes
@@ -7068,5 +7090,45 @@ mod tests {
             .unwrap();
         trust.merge_revocations(vec![ban]);
         assert!(!net.is_member_key("worker", "worker-key").await);
+    }
+
+    /// A banned node approved again holds no token yet, and fetches its
+    /// first one from an admin: that admin must keep it in the peers table,
+    /// or the node is locked out for good.
+    #[tokio::test]
+    async fn a_banned_node_approved_again_is_admitted_to_fetch_its_token() {
+        let primary_key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+        let primary = crate::admin_trust::AuthorityPrincipal::from_signing_key(
+            "primary",
+            &libp2p::PeerId::random().to_string(),
+            &primary_key,
+        );
+        let trust = Arc::new(
+            crate::admin_trust::AdminTrust::bootstrap_primary_in_memory(
+                "test-cluster",
+                primary.clone(),
+                &primary_key,
+            )
+            .unwrap(),
+        );
+        let net = Network::testkit("local".into(), "pk".into(), vec![], None, None, None)
+            .await
+            .unwrap()
+            .with_admission(
+                admission_config("key", crate::config::NetworkVisibility::Private),
+                trust.clone(),
+            );
+        let now = chrono::Utc::now().timestamp();
+        let ban =
+            crate::membership::revoke(&primary_key, &primary, &trust.document(), "visitor", now)
+                .unwrap();
+        trust.merge_revocations(vec![ban]);
+        let visitor = dummy_peer("visitor", "127.0.0.1:9");
+        assert!(net.is_revoked(&visitor));
+
+        net.set_readmission(Arc::new(move |node_id, revoked_at| {
+            node_id == "visitor" && revoked_at == now
+        }));
+        assert!(!net.is_revoked(&visitor));
     }
 }

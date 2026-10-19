@@ -266,6 +266,10 @@ last):
   the next request: its token stops holding, its admission stops counting
   (`NetworkChat::admitted_role` ignores an approval not newer than the ban),
   and no admin issues it a token until it is approved again, after the ban.
+  A banned node stays out of an admin's peers table until then; once it is
+  approved again the admin admits it without a token
+  (`Network::set_readmission`, checked by `Network::is_revoked`), because a
+  token is fetched from an admin that knows the caller.
   Since every node-to-node call proves the caller's key (`p2p-network.md`,
   section 5), the connection key it still holds opens nothing. Demoting an admin voids every token it signed at the next chain
   sync. A visitor is never made an admin: the principal's promotion refuses

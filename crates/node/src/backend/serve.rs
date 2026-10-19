@@ -271,6 +271,29 @@ pub fn plain_allowed(peer: SocketAddr, strict: bool) -> bool {
     }
 }
 
+/// `POM_INSECURE_ADMIN_UI=1` serves the admin UI in plain HTTP to remote
+/// browsers too, for development machines reached by IP with no trusted
+/// certificate. Peer-only routes (`plain_action`) are still refused, and a
+/// node-to-node call in plain text still carries no `TransportPeer`, so it
+/// proves no membership.
+pub fn insecure_admin_ui_env() -> String {
+    crate::brand::env_var("INSECURE_ADMIN_UI")
+}
+
+fn insecure_admin_ui() -> bool {
+    static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FLAG.get_or_init(|| {
+        let on = std::env::var(insecure_admin_ui_env()).is_ok_and(|v| v == "1");
+        if on {
+            warn!(
+                "{}=1: the admin UI is served in plain HTTP to remote browsers",
+                insecure_admin_ui_env()
+            );
+        }
+        on
+    })
+}
+
 /// Serves `app` on `listener`, accepting TLS and plain text per the policy.
 ///
 /// `tls: None` is the behavior from before this feature, and it is what the
@@ -427,8 +450,10 @@ async fn handle_conn(
         .map(|t| t.strict.load(Ordering::Relaxed))
         .unwrap_or(false);
 
-    if !is_tls && !plain_allowed(peer, strict) {
-        let policy = tls.as_ref().map(|t| t.plain).unwrap_or(PlainPolicy::Refuse);
+    let plain_remote = !is_tls && !plain_allowed(peer, strict);
+    let policy = tls.as_ref().map(|t| t.plain).unwrap_or(PlainPolicy::Refuse);
+    let insecure_ui = plain_remote && policy == PlainPolicy::Redirect && insecure_admin_ui();
+    if plain_remote && !insecure_ui {
         if policy == PlainPolicy::Refuse {
             warn!("refused plain text connection from {peer}: the cluster is on TLS");
             return Ok(());
@@ -449,6 +474,9 @@ async fn handle_conn(
             let mut app = app.clone();
             let caller = caller.clone();
             async move {
+                if insecure_ui && plain_action(req.uri().path()) == PlainAction::Refuse {
+                    return Ok(refuse_plain().map(axum::body::Body::from));
+                }
                 let mut req = req;
                 let origin = request_origin(peer, &mut req);
                 req.extensions_mut().insert(PeerAddr(origin));
@@ -525,6 +553,14 @@ pub fn plain_reply(host: &str, path_and_query: &str) -> (u16, Option<String>) {
         return (403, None);
     }
     (301, Some(format!("https://{host}{path_and_query}")))
+}
+
+/// The 403 a peer-only route gets in plain text, even with the admin UI open.
+fn refuse_plain() -> hyper::Response<String> {
+    hyper::Response::builder()
+        .status(403)
+        .body("this cluster requires TLS between nodes; repeat the call over https\n".to_string())
+        .expect("response is constructible")
 }
 
 /// Answer for whoever spoke plain text on a port that requires TLS.

@@ -615,7 +615,9 @@ boundary.
   even when the TCP is in plain HTTP; `TlsServer` covers only the TCP configurations, the strict
   mode and the duration of the last handshake. The TLS configuration is picked per connection
   from the ClientHello (`LazyConfigAcceptor`, `tls::wants_peer`): a peer is asked for its node
-  certificate, a browser for nothing. `TransportPeer` is the caller's node as the transport
+  certificate, a browser for nothing. A plain connection from outside is redirected to https, or, with
+  `POM_INSECURE_ADMIN_UI=1` (`insecure_admin_ui`), served as is except the peer-only routes.
+  `TransportPeer` is the caller's node as the transport
   proved it - the client certificate, or the tunnel's PeerId beside the mark - and goes into the
   request's extensions. See
   `docs/subsystems/p2p-network.md`, section 5.

@@ -1304,6 +1304,13 @@ Two exceptions, both for a concrete reason:
 - **The inference port (`serve::PlainPolicy::Refuse`)** closes the connection,
   as before. There is no browser there to accommodate.
 
+For development, `POM_INSECURE_ADMIN_UI=1` turns the 301 off: the gateway port
+serves the admin UI in clear text to a remote browser as well, so a machine
+reached by IP works without trusting its self signed certificate. The two
+exceptions still hold (peer-only routes answer 403, the inference port closes),
+and a clear-text node-to-node call carries no `TransportPeer`, so the key alone
+still opens nothing. Loopback is clear text with or without it.
+
 ### 5.1 Optional QUIC for inference
 
 `Config.quic_enabled` is a network-wide preference, on by default (a new

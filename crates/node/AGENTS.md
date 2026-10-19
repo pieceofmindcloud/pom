@@ -308,7 +308,10 @@ with the `/api/ui/network-chat` routes; the cluster policy is applied by the
 `src/plugins.rs` manages licensed plugins and independent local installs:
 `PluginManager` creates a `PluginRuntime` for codes granted by a license or when a
 local GitHub release is installed. Licensed runtimes persist in
-`plugin_license:<code>` and keep their license/heartbeat cycle. Registered GitHub
+`plugin_license:<code>` and keep their license/heartbeat cycle. Every persisted
+install carries the machine fingerprint; without `/etc/machine-id` its machine
+component is `stored_machine_id` (`.<slug>-machine-id` in the project root), so a
+recreated container keeps its plugins. Registered GitHub
 repositories live in `plugin_github_repositories` in the `pom.db`; the POM reads a
 `manifest.json` at the root or, in its absence, a `ui/manifest.json` of the
 `pom-plugin-ui/v1` contract, always directly from GitHub and without consulting the

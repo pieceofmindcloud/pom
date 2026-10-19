@@ -4466,7 +4466,26 @@ fn machine_component() -> String {
             }
         }
     }
-    std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown-machine".into())
+    stored_machine_id(&crate::config::project_root())
+}
+
+/// The machine component where the OS gives none: a random id kept beside the
+/// node key. A container has no `/etc/machine-id` and its `HOSTNAME` is the
+/// container id, so the fingerprint changed on every recreate and the node
+/// dropped its activated plugins at startup.
+fn stored_machine_id(root: &std::path::Path) -> String {
+    let path = root.join(format!(".{}-machine-id", crate::brand::slug()));
+    if let Ok(value) = std::fs::read_to_string(&path) {
+        let value = value.trim();
+        if !value.is_empty() {
+            return value.to_owned();
+        }
+    }
+    let value = hex::encode(rand::random::<[u8; 16]>());
+    if let Err(error) = std::fs::write(&path, &value) {
+        tracing::warn!(%error, path = %path.display(), "the machine id could not be stored; plugin activations will not survive a restart");
+    }
+    value
 }
 
 fn board_component() -> String {
@@ -5260,6 +5279,14 @@ pub(crate) mod tests_support {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_stored_machine_id_is_the_same_across_restarts() {
+        let root = tempfile::tempdir().unwrap();
+        let first = super::stored_machine_id(root.path());
+        assert_eq!(first.len(), 32);
+        assert_eq!(super::stored_machine_id(root.path()), first);
+    }
 
     #[test]
     fn the_catalog_relay_passes_on_only_a_bounded_query() {

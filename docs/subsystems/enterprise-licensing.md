@@ -11,7 +11,12 @@ catalog of installable plugins: `PluginManager`/`PluginRuntime` in
 `crates/node/src/plugins.rs` creates runtimes for every `plugin_code` granted by
 the server and restores the codes persisted locally. Each plugin has its own
 activation state, lease, heartbeat, process host and version update check, with
-nothing shared between plugins. The Request Logs/Statistics plugin's
+nothing shared between plugins. Every persisted install is bound to the machine
+fingerprint and dropped at startup when it no longer matches. Its machine
+component is `/etc/machine-id` on Linux and, where there is none (a container),
+a random id stored once in `.<slug>-machine-id` under the project root: the
+container's `HOSTNAME` used before changed on every recreate, and the node came
+back with its plugins gone. The Request Logs/Statistics plugin's
 `plugin_code` was `"enterprise"` until 2026-10-04 and is now `"logs"`
 (`LOGS_PLUGIN_CODE`); "POM Enterprise" is the product/plan name, and this
 file and the `enterprise-protocol` crate kept the name. What

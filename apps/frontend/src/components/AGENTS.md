@@ -143,9 +143,8 @@ Per-file list:
   uses the wide variant; the `visitor` Sidebar uses the compact variant. The
   list owns the bounded `overflow-y-auto` region, active `aria-pressed` state,
   delete action and localized new-conversation button.
-- `ApiKeysTable.tsx` - the full-bleed API keys table. The administrator picks the
-  node at creation, sees their own tokens in full and the others masked;
-  `worker` and `visitor` stay restricted to their own node's keys.
+- `ApiKeysTable.tsx` - the full-bleed API keys table. Every key belongs to the
+  node that minted it and works there only, so there is no node picker.
 - `DeploymentLogDock.tsx` - the Dashboard's collapsed bar for the admin, which
   expands upwards to half the area and follows the deployment log in
   real time with auto-scroll.
@@ -351,7 +350,8 @@ Per-file list:
   replaced the fixed `DefaultPasswordNotice` banner), counts running slicing jobs
   (`useJobs`), transfers worth notifying (`useTransfers` +
   `isWorthNotifying`) and pending offers (`useOffers`), and shows progress bars
-  inside the popover. Offers can be accepted/rejected right there
+  inside the popover. Transfers and offers are not polled on a `visitor`,
+  whose node refuses every `/api/transfer` route. Offers can be accepted/rejected right there
   (`POST /api/transfer/offers/:id/accept|reject`). It also lists admission
   (`lib/admissions.ts`): for the network's admin, each machine asking to join
   with its role, direct or relayed connection, latency and hardware, and

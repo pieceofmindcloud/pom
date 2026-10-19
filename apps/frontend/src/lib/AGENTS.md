@@ -444,7 +444,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `/api/ui/chat/capabilities` (vision, thinking availability and coverage
   aggregated for the active model), `useLocalCatalog()` 30s (stale 15s), `useClusterCatalog(enabled)`
   60s, `usePaths()` (stale 30s), `useCacheTypes()` (stale 30s), `useJobs()` 2s
-  while running or 10s idle, `useTransfers()` 2s, `useOffers()` 2s while
+  while running or 10s idle, `useTransfers(enabled)` 2s, `useOffers(enabled)` 2s while
   waiting or 10s idle, `useAdminNodes()` 8s, `usePluginUi()` 30s (the active
   plugins' `pom-plugin-ui/v1` manifests),
   `useServableModels()` 30s. The latter preserves `context_length` and

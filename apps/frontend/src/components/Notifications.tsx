@@ -181,13 +181,15 @@ export function Notifications() {
   const navigate = useNavigate();
   const toast = useToast();
 
+  const { profile } = useProfile();
   const jobs = useJobs();
-  const transfers = useTransfers();
-  const offers = useOffers();
+  // A visitor holds no model: its node refuses every transfer route.
+  const holdsModels = Boolean(profile) && profile !== "visitor";
+  const transfers = useTransfers(holdsModels);
+  const offers = useOffers(holdsModels);
   // Machines asking to join this network (for its admin), and the answers to
   // what this machine asked of other networks.
   // Any admin approves a machine; a secondary's decision goes to the principal.
-  const { profile } = useProfile();
   const admissions = useAdmissions(profile === "admin");
   const admissionRequests = useAdmissionRequests();
   const pendingAdmissions = (admissions.data ?? []).filter((record) => record.status === "pending");

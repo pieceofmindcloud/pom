@@ -14,7 +14,12 @@ const queryMocks = vi.hoisted(() => ({
   jobs: { data: { jobs: [] } },
   transfers: { data: { jobs: [] }, refetch: vi.fn() },
   offers: { data: { offers: [] as NetworkOffer[] }, refetch: vi.fn() },
+  transfersEnabled: [] as boolean[],
+  offersEnabled: [] as boolean[],
 }));
+
+const profileMock = vi.hoisted(() => ({ profile: "admin" as string | undefined }));
+vi.mock("../lib/profile", () => ({ useProfile: () => ({ profile: profileMock.profile }) }));
 
 const admissionMocks = vi.hoisted(() => ({
   admissions: { data: [] as unknown[], refetch: vi.fn() },
@@ -26,8 +31,14 @@ vi.mock("../lib/api", () => ({ api: { post: vi.fn() } }));
 vi.mock("../lib/queries", () => ({
   useAdminAccess: () => queryMocks.access,
   useJobs: () => queryMocks.jobs,
-  useTransfers: () => queryMocks.transfers,
-  useOffers: () => queryMocks.offers,
+  useTransfers: (enabled = true) => {
+    queryMocks.transfersEnabled.push(enabled);
+    return queryMocks.transfers;
+  },
+  useOffers: (enabled = true) => {
+    queryMocks.offersEnabled.push(enabled);
+    return queryMocks.offers;
+  },
 }));
 vi.mock("../lib/admissions", () => ({
   useAdmissions: () => admissionMocks.admissions,
@@ -67,6 +78,22 @@ describe("Notifications network offers", () => {
     resetPluginInboxForTest();
     resetDefaultPasswordNoticeForTest();
     queryMocks.access.data = { default_password: false, boot_id: "boot-1" };
+    queryMocks.transfersEnabled = [];
+    queryMocks.offersEnabled = [];
+    profileMock.profile = "admin";
+  });
+
+  it("does not poll the transfer routes a visitor's node refuses", () => {
+    profileMock.profile = "visitor";
+    renderNotifications([]);
+    expect(queryMocks.transfersEnabled).not.toContain(true);
+    expect(queryMocks.offersEnabled).not.toContain(true);
+    cleanup();
+
+    profileMock.profile = "worker";
+    renderNotifications([]);
+    expect(queryMocks.transfersEnabled.at(-1)).toBe(true);
+    expect(queryMocks.offersEnabled.at(-1)).toBe(true);
   });
 
   it("warns about the default password once per start of the node", () => {

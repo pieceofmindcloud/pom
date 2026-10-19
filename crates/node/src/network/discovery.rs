@@ -609,7 +609,12 @@ impl Discovery {
                 event = mdns_events.next() => {
                     if let Some(iroh_mdns_address_lookup::DiscoveryEvent::Discovered { endpoint_info, .. }) = event {
                         let id = endpoint_info.endpoint_id;
-                        if !network.is_detached() && id != endpoint.id() {
+                        // mDNS repeats a discovery on every response it hears,
+                        // so only a peer not already joined is news.
+                        if !network.is_detached()
+                            && id != endpoint.id()
+                            && !policy.joined.contains(&id)
+                        {
                             info!("mDNS: {}", id.fmt_short());
                             join_gossip(&gossip_tx, &mut policy, id).await;
                         }

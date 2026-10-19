@@ -492,17 +492,33 @@ pub(crate) async fn validate_internal_node_headers(
         let config = config.read().await;
         is_internal && is_valid_internal_node_token(&config, supplied)
     };
+    let is_member = caller_is_member(extensions).await;
+    let caller = extensions
+        .get::<crate::serve::TransportPeer>()
+        .map(|peer| peer.node_id.as_str())
+        .unwrap_or("none: no client certificate or tunnel id");
     if !key_holds {
-        tracing::warn!(
-            internal = is_internal,
-            "node-to-node call refused: the connection key does not match"
-        );
+        // A member with the wrong key missed a rotation, which an operator
+        // needs to see. A non-member is routine wherever several networks
+        // share a LAN, and logging each of its calls floods the log.
+        if is_member {
+            tracing::warn!(
+                internal = is_internal,
+                caller,
+                "node-to-node call refused: the connection key does not match"
+            );
+        } else {
+            tracing::debug!(
+                internal = is_internal,
+                caller,
+                "node-to-node call refused: the connection key does not match"
+            );
+        }
         return Err(AuthRejection::InvalidKey);
     }
-    if !caller_is_member(extensions).await {
-        let caller = extensions.get::<crate::serve::TransportPeer>();
+    if !is_member {
         tracing::warn!(
-            caller = caller.map(|peer| peer.node_id.as_str()).unwrap_or("none: no client certificate or tunnel id"),
+            caller,
             "node-to-node call refused: the caller is not a member (no admin key, no valid membership token)"
         );
         return Err(AuthRejection::InvalidKey);

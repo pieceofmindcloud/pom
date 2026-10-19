@@ -135,6 +135,9 @@ pub struct Step {
     pub(super) n_gpu_layers: Option<u32>,
     /// Per-machine KV cache placement. `None` takes `params.offload_kqv`.
     pub(super) offload_kqv: Option<bool>,
+    /// Per-machine prefill/decode role. `None` takes `params.inference_role`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) inference_role: Option<crate::webui::InferenceRole>,
     /// Every machine the operator could move this range to.
     pub(super) options: Vec<Alternative>,
     /// Set when this assignment cannot be carried out, and why.
@@ -1166,6 +1169,7 @@ pub(super) fn plan_with_rtt_options(
                     PeerOverrides {
                         n_gpu_layers: s.n_gpu_layers,
                         offload_kqv: s.offload_kqv,
+                        inference_role: s.inference_role,
                     },
                 ));
             }
@@ -1540,6 +1544,7 @@ pub(super) fn plan_with_rtt_options(
                 primary: start_layer == 0,
                 n_gpu_layers: grp[0].2.n_gpu_layers,
                 offload_kqv: grp[0].2.offload_kqv,
+                inference_role: grp[0].2.inference_role,
                 options: merged_alternatives(&parts, machines),
                 problem,
                 note,
@@ -1660,6 +1665,7 @@ pub(super) fn plan_with_rtt_options(
                     primary: c.start_layer == 0,
                     n_gpu_layers: over.n_gpu_layers,
                     offload_kqv: over.offload_kqv,
+                    inference_role: over.inference_role,
                     options: alternatives(c, machines, kind),
                     problem,
                     note,

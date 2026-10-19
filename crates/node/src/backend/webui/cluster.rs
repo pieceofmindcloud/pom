@@ -5,6 +5,10 @@ use super::*;
 pub(super) struct PeerView {
     /// The plugin whose engine runs this machine's model, `None` for llama.cpp. A pipeline is built on one engine.
     pub(super) engine: Option<String>,
+    /// That engine's part in a prefill/decode split (`prefill` or `decode`), `None` when it does both. The Flow draws
+    /// a prefill machine as the head and an edge from it to the decode machines of the model.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) role: Option<&'static str>,
     pub(super) node_id: String,
     pub(super) short_id: String,
     pub(super) addr: String,
@@ -64,9 +68,33 @@ pub(super) struct RoutingEdgeView {
 
 /// All viable handoffs observed in the model inventory. These are candidates,
 /// not routing commands: the planner remains the sole authority selecting the
-/// live path and balancing load.
+/// live path and balancing load. A prefill machine of a plugin engine hands a
+/// prompt's state to every decode (or both) machine of the same model and
+/// layers: that is an edge too, from its last layer to the other's first.
 pub(super) fn candidate_edges(views: &[PeerView]) -> Vec<RoutingEdgeView> {
     let mut edges = Vec::new();
+    for from in views.iter().filter(|view| view.role == Some("prefill")) {
+        for to in views.iter().filter(|view| {
+            view.node_id != from.node_id && view.engine == from.engine && view.role != Some("prefill")
+        }) {
+            for from_capability in from.capabilities.iter().filter(|c| c.supports_inference) {
+                if to.capabilities.iter().any(|c| {
+                    c.supports_inference
+                        && c.model_id == from_capability.model_id
+                        && c.start_layer == from_capability.start_layer
+                        && c.end_layer == from_capability.end_layer
+                }) {
+                    edges.push(RoutingEdgeView {
+                        from_node_id: from.node_id.clone(),
+                        to_node_id: to.node_id.clone(),
+                        model_id: from_capability.model_id.clone(),
+                        from_end_layer: from_capability.end_layer,
+                        to_start_layer: from_capability.start_layer,
+                    });
+                }
+            }
+        }
+    }
     for from in views {
         for from_capability in &from.capabilities {
             if !from_capability.supports_inference {
@@ -458,6 +486,9 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
         };
         views.push(PeerView {
             engine: crate::plugin_engine::engine_of_peer(p),
+            role: Some(crate::plugin_engine::role_of_capabilities(&p.inference_frame_capabilities))
+                .filter(|role| !role.is_both() && crate::plugin_engine::engine_of_peer(p).is_some())
+                .map(|role| role.as_str()),
             short_id: p.node_id[..p.node_id.len().min(12)].to_string(),
             node_id: p.node_id.clone(),
             addr: p.addr.clone(),

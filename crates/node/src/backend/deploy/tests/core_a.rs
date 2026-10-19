@@ -378,6 +378,7 @@
             target_node_id: target.to_string(),
             n_gpu_layers: None,
             offload_kqv: None,
+            inference_role: None,
         }
     }
 

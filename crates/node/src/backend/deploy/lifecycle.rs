@@ -335,6 +335,7 @@ pub(super) async fn run(
                 target_node_id: step.target_node_id.clone(),
                 n_gpu_layers: None,
                 offload_kqv: None,
+                inference_role: step.inference_role,
             })
             .collect::<Vec<_>>()
     });

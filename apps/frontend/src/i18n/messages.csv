@@ -172,6 +172,8 @@ canvas.returnDirect,direct return,resposta direta
 canvas.returnDirectHint,Direct return: the last machine answers the gateway itself; each leg costs half a round trip.,Resposta direta: a última máquina responde ao próprio gateway; cada perna custa meio RTT.
 canvas.returnRing,ring,anel
 canvas.returnRingHint,"Ring: the answer comes back over the forward connections, so the tail''s return is not paid.","Anel: a resposta volta pelas conexões da ida, então a volta da cauda não é paga."
+canvas.roleDecode,Decode,Decode
+canvas.rolePrefill,Prefill,Prefill
 canvas.speedDecode,decode,decode
 canvas.speedPrefill,prefill,prefill
 canvas.speedRelative,"{kind}: {value} tok/s, {percent}% of the fastest slice of this model. Green from 75%, amber from 40%, red below.","{kind}: {value} tok/s, {percent}% da fatia mais rápida deste modelo. Verde a partir de 75%, âmbar a partir de 40%, vermelho abaixo."

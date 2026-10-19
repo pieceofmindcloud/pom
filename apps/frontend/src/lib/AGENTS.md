@@ -619,6 +619,7 @@ would go.
 ### networkLayout.ts
 - `deploymentLayoutKey(model, peers)` - per-deployment fingerprint key (node id + range + `changed_at`), so hand-arranged layouts do not leak into a new deploy.
 - `fallbackPosition(index)` / `readPositions` / `writePositions` / `clearPositions` - canvas persistence in `localStorage`.
+- `autoLayout` / `deployLayout` - one column per stage; a `LayoutNode` with `role: "prefill"` heads its range and the other machines of that range (decode) take the next column, so a prefill/decode split reads Prefill -> Decode instead of two stacked heads. The canvases put the role in the layout key, so a saved arrangement does not keep the old one.
 - `mergePositions(current, persisted, arrangement, nodeIds)` - keeps positions already visible when a new peer is added and uses the automatic arrangement only for nodes without a position.
 
 ### transferStatus.ts

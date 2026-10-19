@@ -423,6 +423,10 @@ Per-file list:
   outline when the ring avoids the return relay) and the icon opens the
   `pipeline-relay-popup` card (it closes with Esc, an outside click or the X) with the legs by
   relay, whether POM bypasses it through the ring and how to improve it.
+- `ModelNetworkCanvas.tsx` - a machine whose peer announces a prefill/decode
+  `role` gets a Prefill/Decode badge; the prefill machine heads the layout,
+  the backend's candidate edge prefill -> decode is drawn, and the gateway
+  sits after the decode machines (a prefill machine never answers).
 - `ModelNetworkCanvas.tsx` - the main operational view: an SVG graph with
   pan/zoom of nodes (range cards with grouped RAM/load/VRAM meters,
   followed by the compact temperatures when there is a GPU) and curved edges, guided by
@@ -737,6 +741,14 @@ Key logic carriers:
   persisted on every move (`writePositions`).
 ## Deploy-time views and inspectors
 
+- `DeployNetworkCanvas.tsx` - in a prefill/decode split (a whole model on
+  several machines, each row with its `inference_role`), the prefill
+  machines are a stage of their own before the decode ones (`stagesOf`,
+  `roleOf`), so the principal edge goes Prefill -> Decode and the gateway sits
+  after the decode machines. `DeployModel` lets a service that declares
+  `inference_role` take a second machine for a whole model (the first becomes
+  `prefill`, the new one `decode`) and edits the role per machine in the
+  machine inspector.
 - `DeployNetworkCanvas.tsx` - the compact, deploy-time topology view. It
   reuses the visual contract of the `ModelNetworkCanvas`: the dotted background, machine
   cards, `autoLayout`, positions persisted per fingerprint, pointer drag,

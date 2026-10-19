@@ -1173,14 +1173,17 @@ pub(crate) async fn services_of(state: &GatewayState, node_id: &str) -> Option<V
 }
 
 /// Why a deployment on a plugin's inference service cannot go ahead, if it
-/// cannot. A whole model goes to one machine; layer slices go one per
-/// machine, to a service that publishes `stages`. Every machine runs the
-/// plugin with an inference service that is not in error.
+/// cannot. A whole model goes to one machine - or to several in a
+/// prefill/decode split, where `roles` (each target's role, in the order of
+/// `targets`) has at least one prefill machine and one that decodes; layer
+/// slices go one per machine, to a service that publishes `stages`. Every
+/// machine runs the plugin with an inference service that is not in error.
 pub(crate) async fn deploy_block(
     state: &GatewayState,
     service: &str,
     whole: bool,
     targets: &[String],
+    roles: &[crate::webui::InferenceRole],
 ) -> Option<String> {
     if !valid_code(service) {
         return Some(format!("invalid inference service: {service}"));
@@ -1192,9 +1195,17 @@ pub(crate) async fn deploy_block(
     if unique.is_empty() {
         return Some("choose the machine that runs the inference service".into());
     }
-    if whole && unique.len() != 1 {
+    use crate::webui::InferenceRole;
+    let split = roles.contains(&InferenceRole::Prefill) && roles.iter().any(|role| *role != InferenceRole::Prefill);
+    if whole && unique.len() != 1 && !split {
         return Some(format!(
-            "the inference service {service} runs the whole model on a single machine: choose one machine"
+            "the inference service {service} runs the whole model on a single machine: choose one machine, or give \
+             the machines a prefill/decode split (one prefill machine and one that decodes)"
+        ));
+    }
+    if whole && unique.len() != named.len() {
+        return Some(format!(
+            "the inference service {service} runs the whole model once per machine: choose different machines"
         ));
     }
     if !whole && unique.len() != named.len() {

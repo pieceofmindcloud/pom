@@ -253,6 +253,7 @@ function NetworkNode({ range, position, dragging, perf, speed = UNRATED, compact
           <h3 className="truncate text-[13px] font-semibold leading-tight text-fg">{hostname}</h3>
           <p className="flex items-center gap-1.5 text-[10px] leading-tight">
             <span data-testid="machine-layers" className={clsx("font-mono font-semibold", placement && placement.cpu > 0 ? "text-amber" : "text-iris")} title={placement && placement.cpu > 0 ? t("canvas.layersOnCpu", { cpu: placement.cpu }) : undefined}>L{range.start_layer} - L{range.end_layer}</span>
+            {range.role && <span data-testid="machine-role" className="rounded border border-aqua/40 px-1 font-semibold uppercase tracking-[0.08em] text-aqua">{t(range.role === "prefill" ? "canvas.rolePrefill" : "canvas.roleDecode")}</span>}
           </p>
         </div>
         <span data-testid="machine-status" title={statusLabel} aria-label={statusLabel} className="flex shrink-0 items-center"><Dot tone={statusTone} pulse={rediscovering || (serving && !unread)} /></span>
@@ -286,6 +287,7 @@ function NetworkNode({ range, position, dragging, perf, speed = UNRATED, compact
       <div className="flex shrink-0 flex-col items-end gap-0.5">
         <span data-testid="machine-status" className="flex items-center gap-1.5 text-[11px] text-muted"><Dot tone={statusTone} pulse={rediscovering || (serving && !unread)} />{statusLabel}</span>
         <span data-testid="machine-layers" className="font-mono text-[9px] font-semibold text-iris">L{range.start_layer} - L{range.end_layer}</span>
+        {range.role && <span data-testid="machine-role" className="text-[9px] font-semibold uppercase tracking-[0.08em] text-aqua">{t(range.role === "prefill" ? "canvas.rolePrefill" : "canvas.roleDecode")}</span>}
       </div>
       {onToggleCompact && <div className="-mr-1.5 -mt-1"><CompactToggle compact={false} onToggle={onToggleCompact} /></div>}
     </div>
@@ -384,7 +386,7 @@ export function ModelNetworkCanvas({
   const inventory = (cluster.model_inventory ?? []).find((entry) => entry.model_id === selected);
   // How many machines of this model the node could not read in this pass.
   const coverageUnconfirmed = inventory?.unreadable_nodes?.length ?? 0;
-  const layoutKey = useMemo(() => deploymentLayoutKey(selected ?? "", ranges.map((range) => ({ node_id: keyFor(range), start_layer: range.start_layer, end_layer: range.end_layer, changed_at: range.node?.status.changed_at }))), [ranges, selected]);
+  const layoutKey = useMemo(() => deploymentLayoutKey(selected ?? "", ranges.map((range) => ({ node_id: range.role ? `${keyFor(range)}:${range.role}` : keyFor(range), start_layer: range.start_layer, end_layer: range.end_layer, changed_at: range.node?.status.changed_at }))), [ranges, selected]);
   const selectedEdges = selected ? cluster.routing_edges.filter((edge) => edge.model_id === selected) : [];
   const candidates = selected ? cluster.candidate_edges.filter((edge) => edge.model_id === selected) : [];
   const selectedEdgeIds = new Set(selectedEdges.map(edgeKey));
@@ -445,7 +447,7 @@ export function ModelNetworkCanvas({
    */
   const arrangement = useMemo(
     () => autoLayout(
-      ranges.map((range) => ({ id: keyFor(range), start_layer: range.start_layer, end_layer: range.end_layer })),
+      ranges.map((range) => ({ id: keyFor(range), start_layer: range.start_layer, end_layer: range.end_layer, role: range.role })),
       // The stack leaves room for the real card height and for the service badges
       // hanging under it, so a card never lands on the badges of the one above.
       (id) => {
@@ -472,7 +474,9 @@ export function ModelNetworkCanvas({
   const detailPeer = detailNodeId ? cluster.peers.find((peer) => peer.node_id === detailNodeId) ?? null : null;
   const pipeline = pipelinePeers(cluster);
   const terminalEndLayer = ranges.length > 0 ? Math.max(...ranges.map((range) => range.end_layer)) : null;
-  const terminalRanges = terminalEndLayer == null ? [] : ranges.filter((range) => range.end_layer === terminalEndLayer);
+  // A prefill machine never answers: the answer leaves from the machines that decode.
+  const answering = ranges.some((range) => range.role !== "prefill") ? ranges.filter((range) => range.role !== "prefill") : ranges;
+  const terminalRanges = terminalEndLayer == null ? [] : answering.filter((range) => range.end_layer === terminalEndLayer);
   const gatewayPosition = terminalRanges.length === 0
     ? null
     : positions[GATEWAY_LAYOUT_ID] ?? pipelineGatewayPosition(
@@ -482,7 +486,9 @@ export function ModelNetworkCanvas({
   const forwardEdges = edges.filter((edge) => {
     const from = rangeForEdge(ranges, edge, "from");
     const to = rangeForEdge(ranges, edge, "to");
-    return Boolean(from && to && to.start_layer > from.start_layer);
+    // a prefill machine hands the prompt's state to a decode machine of the same layers
+    const handoff = from?.role === "prefill" && to?.role !== "prefill";
+    return Boolean(from && to && (to.start_layer > from.start_layer || handoff));
   });
 
   /**

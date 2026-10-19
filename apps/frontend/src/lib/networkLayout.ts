@@ -153,6 +153,8 @@ export interface LayoutNode {
   id: string;
   start_layer: number;
   end_layer: number;
+  /** A plugin engine's part in a prefill/decode split: a prefill machine heads its range, the others follow it. */
+  role?: "prefill" | "decode" | null;
 }
 
 /**
@@ -191,6 +193,15 @@ export function autoLayout(
       }
     }
     depth.set(node.id, level);
+  }
+  // A prefill/decode split: the prefill machines of a range are its head, and the
+  // machines that decode it take the next column, after them, instead of being
+  // stacked with them as replicas.
+  for (const node of byStart) {
+    if (node.role === "prefill") continue;
+    const headed = byStart.some((other) =>
+      other.role === "prefill" && other.start_layer === node.start_layer && other.end_layer === node.end_layer);
+    if (headed) depth.set(node.id, (depth.get(node.id) ?? 0) + 1);
   }
   const columns = new Map<number, LayoutNode[]>();
   for (const node of byStart) {

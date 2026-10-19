@@ -2666,7 +2666,14 @@ with an error.
 inference service may be deployed with `RuntimeParams::inference_role`
 (`both`, the default, `prefill` or `decode`; the POM settings card of the
 deploy inspector draws it when the service declares `inference_role` in
-`pom_settings` and the model is not split across machines). The role reaches
+`pom_settings` and the model is not split across machines). One deployment
+may also put the whole model on several machines, each with its own role
+(`SelectedSlice::inference_role`, carried by `PeerOverrides`, the plan's
+`Step`, `LaunchTarget` and `params_for`): `plugin_engine::deploy_block`
+accepts several machines for a whole model only when their roles hold at
+least one `prefill` and one that decodes. The Flow draws the split as
+Prefill -> Decode: the cluster view's `PeerView.role` and a candidate edge
+from each prefill machine to each decode machine of the same layers. The role reaches
 the plugin in `engine.load` (`role`) and is announced as
 `engine/plugin-role-v1:<role>` beside the engine capability (the `/health`
 `capabilities` carry it too). A stage of a split model has no role.

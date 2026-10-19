@@ -765,6 +765,10 @@ pub struct LaunchTarget {
     /// pipeline cannot both be right about where it fits.
     #[serde(default)]
     pub offload_kqv: Option<bool>,
+    /// This machine's part in a prefill/decode split of a whole model served by a plugin's inference service,
+    /// overriding `params.inference_role` for it alone: the machines of one such deployment differ on it by design.
+    #[serde(default)]
+    pub inference_role: Option<crate::webui::InferenceRole>,
     /// Per-target override, computed from the plan's topology. `None`
     /// preserves the final peer's automatic behaviour.
     #[serde(default)]
@@ -846,6 +850,9 @@ pub(crate) fn params_for(base: &RuntimeParams, target: &LaunchTarget) -> Runtime
     }
     if let Some(kqv) = target.offload_kqv {
         params.offload_kqv = kqv;
+    }
+    if let Some(role) = target.inference_role {
+        params.inference_role = role;
     }
     if let Some(no_embeddings) = target.no_embeddings {
         params.no_embeddings = no_embeddings;

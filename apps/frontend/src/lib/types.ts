@@ -621,6 +621,8 @@ export interface NetworkChatSnapshot {
 export interface PeerView {
   /** The plugin engine that runs this machine's model; null for llama.cpp. A pipeline is built on one engine. */
   engine?: string | null;
+  /** That engine's part in a prefill/decode split; absent when the machine does both. */
+  role?: Exclude<InferenceRole, "both"> | null;
   node_id: string;
   short_id: string;
   addr: string;
@@ -1889,6 +1891,8 @@ export interface DeployStep {
   n_gpu_layers: number | null;
   /** Per-machine KV cache placement. `null` means "the cluster's answer". */
   offload_kqv: boolean | null;
+  /** Per-machine prefill/decode role; absent means the deployment's `params.inference_role`. */
+  inference_role?: InferenceRole | null;
   options: DeployAlternative[];
   /** Set when this assignment cannot be carried out, and why. */
   problem: string | null;
@@ -2146,6 +2150,9 @@ export interface DeploySelection {
   target_node_id: string;
   /** Overrides `params.n_gpu_layers` for this machine alone. */
   n_gpu_layers?: number | null;
+  /** This machine's part in a prefill/decode split of a whole model on a plugin's
+   *  inference service; `null` takes `params.inference_role`. */
+  inference_role?: InferenceRole | null;
   /**
    * Where this machine's KV cache lives, overriding `params.offload_kqv`.
    *

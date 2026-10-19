@@ -352,6 +352,7 @@ mod tests {
             merge: None,
             n_gpu_layers: gpu,
             offload_kqv: kqv,
+            inference_role: None,
             no_embeddings: None,
             peer_index: None,
             peer_count: None,

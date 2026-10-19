@@ -492,11 +492,22 @@ pub(crate) async fn validate_internal_node_headers(
         let config = config.read().await;
         is_internal && is_valid_internal_node_token(&config, supplied)
     };
-    if key_holds && caller_is_member(extensions).await {
-        Ok(())
-    } else {
-        Err(AuthRejection::InvalidKey)
+    if !key_holds {
+        tracing::warn!(
+            internal = is_internal,
+            "node-to-node call refused: the connection key does not match"
+        );
+        return Err(AuthRejection::InvalidKey);
     }
+    if !caller_is_member(extensions).await {
+        let caller = extensions.get::<crate::serve::TransportPeer>();
+        tracing::warn!(
+            caller = caller.map(|peer| peer.node_id.as_str()).unwrap_or("none: no client certificate or tunnel id"),
+            "node-to-node call refused: the caller is not a member (no admin key, no valid membership token)"
+        );
+        return Err(AuthRejection::InvalidKey);
+    }
+    Ok(())
 }
 
 #[derive(Debug)]

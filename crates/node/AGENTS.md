@@ -475,7 +475,8 @@ a signed call from a live peer to the plugin's `peer.<op>` operation together
 with the caller (`node_id`, `head`). A call without the signed envelope is
 refused. A service of kind `inference` may also list the GGUF
 `architectures` its engine runs and the POM deployment settings that apply to
-it (`pom_settings`, checked against `POM_SETTINGS`). See `docs/subsystems/plugins-ui.md`, "Services
+it (`pom_settings`, checked against `POM_SETTINGS`: `prefill_max_inflight_chunks`,
+`hidden_state_dtype`, `inference_role`). See `docs/subsystems/plugins-ui.md`, "Services
 a plugin offers to the cluster", and `src/inference/plugin_engine.rs` for how
 an inference service replaces llama.cpp on a deployment.
 

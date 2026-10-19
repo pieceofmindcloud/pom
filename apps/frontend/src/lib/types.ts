@@ -750,7 +750,10 @@ export interface PluginService {
 }
 
 /** A POM deployment setting an inference service can declare, by its `RuntimeParams` name. */
-export type PomSetting = "prefill_max_inflight_chunks" | "hidden_state_dtype";
+export type PomSetting = "prefill_max_inflight_chunks" | "hidden_state_dtype" | "inference_role";
+
+/** A whole-model machine's part in a prefill/decode split of a plugin inference service. */
+export type InferenceRole = "both" | "prefill" | "decode";
 
 /** One setting an inference service's engine publishes (`host.services`). */
 export interface EngineSetting {
@@ -2039,6 +2042,8 @@ export interface RuntimeParams {
   engine_settings?: EngineSettingValues;
   /** Format negotiated for the hidden state between peers; absent in old config = f16. */
   hidden_state_dtype?: WireDtype;
+  /** A whole-model plugin engine's part in a prefill/decode split; absent = both. */
+  inference_role?: InferenceRole;
   n_gpu_layers: number;
   n_ctx: number;
   offload_kqv: boolean;

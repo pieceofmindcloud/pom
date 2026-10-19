@@ -1385,6 +1385,9 @@ pub struct Network {
     /// `engine/plugin-v1:<code>` instead of the hidden-state capabilities, so
     /// no gateway plans this peer as a pipeline hop. See `plugin_engine`.
     external_engine: std::sync::RwLock<Option<String>>,
+    /// That engine's part in a prefill/decode split, when it is not both: the announce adds
+    /// `engine/plugin-role-v1:<role>` (`plugin_engine::role_capability`).
+    external_engine_role: std::sync::RwLock<Option<crate::webui::InferenceRole>>,
     /// Whether this node speaks TLS with the peers, in the form the announce
     /// reads. Always on in the binary (`main.rs`); off only on test benches
     /// that talk plain HTTP on loopback.
@@ -1851,6 +1854,7 @@ impl Network {
             relay_gate: Arc::new(RelayGate::new(false, true, true)),
             slot_persist_ready: Arc::new(AtomicBool::new(false)),
             external_engine: std::sync::RwLock::new(None),
+            external_engine_role: std::sync::RwLock::new(None),
             tls: Arc::new(AtomicBool::new(false)),
             quic_probe: std::sync::RwLock::new(None),
             cluster_logs_probe: std::sync::RwLock::new(None),
@@ -2566,6 +2570,21 @@ impl Network {
             .unwrap_or_else(|error| error.into_inner()) = plugin_code;
     }
 
+    /// See `external_engine_role`.
+    pub fn set_external_engine_role(&self, role: Option<crate::webui::InferenceRole>) {
+        *self
+            .external_engine_role
+            .write()
+            .unwrap_or_else(|error| error.into_inner()) = role;
+    }
+
+    pub fn external_engine_role(&self) -> Option<crate::webui::InferenceRole> {
+        *self
+            .external_engine_role
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+    }
+
     pub fn external_engine(&self) -> Option<String> {
         self.external_engine
             .read()
@@ -2580,6 +2599,9 @@ impl Network {
     pub fn plugin_engine_capabilities(&self) -> Option<Vec<String>> {
         let code = self.external_engine()?;
         let mut caps = vec![crate::plugin_engine::capability(&code)];
+        if let Some(role) = self.external_engine_role() {
+            caps.push(crate::plugin_engine::role_capability(role));
+        }
         if self.p2p_tunnel_ready() {
             caps.push("transport/iroh-tunnel-v1".into());
         }

@@ -2662,6 +2662,44 @@ engines exchange their own hidden states, never POM's hop protocol of section
 Only the last stage takes requests: the earlier one answers `engine.upstream`
 with an error.
 
+**Prefill/decode split.** A machine that runs the whole model on a plugin
+inference service may be deployed with `RuntimeParams::inference_role`
+(`both`, the default, `prefill` or `decode`; the POM settings card of the
+deploy inspector draws it when the service declares `inference_role` in
+`pom_settings` and the model is not split across machines). The role reaches
+the plugin in `engine.load` (`role`) and is announced as
+`engine/plugin-role-v1:<role>` beside the engine capability (the `/health`
+`capabilities` carry it too). A stage of a split model has no role.
+
+- **Planning.** The gateway drops every `prefill` machine from the peers it
+  plans with (`plugin_engine::is_prefill_only`), so such a machine is never the
+  head of a plan; `decode` and `both` machines are planned as before.
+- **The prefill step** (`plugin_engine::prefill_on_peer`). Before a turn that
+  names its conversation (`session`, or the `auto-` name) runs on a one-step
+  plan without images or a typed decision, the gateway looks for a live
+  `prefill` machine of the same plugin and model that serves the whole model
+  (the least busy). It asks the head what it holds of the conversation
+  (`engine/session/offer`, the larger of `tokens` and `ram_tokens`) and sends
+  the turn to the prefill machine with `prefill_only: true`, `max_tokens: 1`
+  and `decode_holds`. That machine reads the prompt into a batch slot and keeps
+  the conversation's session (`done.session` deferred, `done.prefill.tokens`),
+  or answers `done.prefill.skipped` when the part of the prompt the head lacks
+  is too short to be worth the transfer. Its generated token is dropped.
+- **The decode step.** When the session was kept, the head's turn carries
+  `session_source: <prefill node id>`. The head (`plugin_session::pull_from`,
+  from `prepare_for_body`) asks that machine's offer until its save is written
+  (up to 5 minutes), checks that the layers match, and fetches the session into
+  its own session folder whatever the transfer costs; the bridge then restores
+  it and reads only the rest of the prompt. Any failure of either step is
+  logged and leaves the head to read the prompt itself: the split is never a
+  reason for a turn to fail.
+- **What crosses.** One session file per split turn: the recurrent state of the
+  GDN layers (about 118 MB on the qwen4exp geometry, whatever the prompt) plus
+  the K/V of the attention layers (about 7.5 KB per token in q4_0), once, after
+  the prompt is read. Nothing crosses per generated token. Both machines need
+  the same model files and KV type: the engine refuses a session of another
+  identity, and the head then reads the prompt again.
+
 ## 8. direct_lab.rs - the "law"
 
 `direct_lab.rs` (cfg(test)) keeps the whole fix, measured: **the cost per token

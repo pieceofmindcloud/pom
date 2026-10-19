@@ -187,6 +187,9 @@ pub struct NodeConfig {
     /// That engine's settings (`RuntimeParams::engine_settings`).
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub engine_settings: std::collections::BTreeMap<String, serde_json::Value>,
+    /// The machine's part in a prefill/decode split (`RuntimeParams::inference_role`).
+    #[serde(default, skip_serializing_if = "crate::webui::InferenceRole::is_both")]
+    pub inference_role: crate::webui::InferenceRole,
 
     pub inference_port: u16,
     pub n_gpu_layers: u32,
@@ -392,6 +395,7 @@ impl NodeConfig {
             inference_mode: p.inference_mode,
             inference_service: p.inference_service.clone(),
             engine_settings: p.engine_settings.clone(),
+            inference_role: p.inference_role,
             inference_port: 0,
             single_peer: false,
             no_embeddings: p.no_embeddings,
@@ -1177,6 +1181,7 @@ impl NodeRuntime {
         self.net.set_batching_ready(false);
         self.net.set_slot_persist_ready(false);
         self.net.set_external_engine(None);
+        self.net.set_external_engine_role(None);
         self.net.set_runtime_generation(generation);
 
         // Stopping is the decision of whoever operated. Forgetting the annotation is what keeps the
@@ -1307,6 +1312,12 @@ impl NodeRuntime {
         self.request_activity.mark_now();
         self.net.set_idle(waking);
         self.net.set_external_engine(cfg.inference_service.clone());
+        // a prefill/decode role is a whole-model machine's: a stage of a split model always does both
+        self.net.set_external_engine_role(
+            (cfg.inference_service.is_some() && !crate::plugin_stage_link::is_stage(&cfg))
+                .then_some(cfg.inference_role)
+                .filter(|role| !role.is_both()),
+        );
         // The new configuration only becomes effective capacity after the
         // new process's `/health` answers `model_loaded`.
         self.net.set_runtime_generation(generation);
@@ -2323,6 +2334,7 @@ mod tests {
             inference_mode: Default::default(),
             inference_service: None,
             engine_settings: Default::default(),
+            inference_role: Default::default(),
             inference_port: 8181,
             n_gpu_layers: 99,
             n_ctx: 8192,

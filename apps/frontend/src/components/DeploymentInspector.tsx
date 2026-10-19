@@ -50,7 +50,7 @@ import {
   seedText,
   withLlamaCppName,
 } from "../lib/llamaCppNames";
-import type { EngineSetting, MtpPlacement, PomSetting, SidecarOption, SidecarSlot } from "../lib/types";
+import type { EngineSetting, InferenceRole, MtpPlacement, PomSetting, SidecarOption, SidecarSlot } from "../lib/types";
 import type {
   DeploymentCapabilities,
   InferenceMode,
@@ -580,10 +580,35 @@ export function DeploymentInspector({
     </>
   );
 
+  /** A whole-model machine's part in a prefill/decode split (the POM's, whatever the engine). */
+  const inferenceRoleField = () => (
+    <InspectorRow label={t("deploy.knob.inference_role")} tip={t("deploy.knob.inference_roleHint")}>
+      {readOnly ? (
+        <ReadValue>{value.inference_role ?? "both"}</ReadValue>
+      ) : (
+        <Select
+          aria-label={t("deploy.knob.inference_role")}
+          name="inference_role"
+          value={value.inference_role ?? "both"}
+          onChange={(event) => set({ inference_role: event.target.value as InferenceRole })}
+          compact
+        >
+          <option value="both">{t("deploy.knob.inference_roleBoth")}</option>
+          <option value="prefill">{t("deploy.knob.inference_rolePrefill")}</option>
+          <option value="decode">{t("deploy.knob.inference_roleDecode")}</option>
+        </Select>
+      )}
+    </InspectorRow>
+  );
+
   if (inferenceService) {
     // The POM carries the hidden state between the plugin's stages, so its own
-    // settings only exist when the slices cross machines.
-    const pomSettings = showHiddenStateDtype ? (inferenceService.pomSettings ?? []) : [];
+    // settings only exist when the slices cross machines. The prefill/decode
+    // role is the opposite: it belongs to a machine that runs the whole model.
+    const declared = inferenceService.pomSettings ?? [];
+    const pomSettings = declared.filter((setting) =>
+      setting === "inference_role" ? !showHiddenStateDtype : showHiddenStateDtype,
+    );
     // The engine's own settings, and the ones the service places in the POM card (whatever the slices).
     const engineSettings = (inferenceService.settings ?? []).filter((setting) => setting.placement !== "pom");
     const pomCardSettings = (inferenceService.settings ?? []).filter((setting) => setting.placement === "pom");
@@ -617,6 +642,7 @@ export function DeploymentInspector({
           <Section title={t("inspector.sectionPom")} tone="aqua" guide={DEPLOY_SETTINGS_GUIDES.pom}>
             {pomSettings.includes("prefill_max_inflight_chunks") && numeric("prefill_max_inflight_chunks")}
             {pomSettings.includes("hidden_state_dtype") && hiddenStateField()}
+            {pomSettings.includes("inference_role") && inferenceRoleField()}
             {pomCardSettings.length > 0 && (
               <EngineSettingsFields
                 settings={pomCardSettings}

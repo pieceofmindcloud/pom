@@ -16,6 +16,34 @@ pub enum InferenceMode {
     Moe,
 }
 
+/// What a whole-model machine of a plugin inference service does with a request
+/// (`RuntimeParams::inference_role`). `Prefill` machines only read prompts: the
+/// gateway never plans them as the machine that answers, and hands the state of
+/// a long prompt they read to a `Decode` or `Both` machine, which generates the
+/// answer (`plugin_engine`, prefill/decode split).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InferenceRole {
+    #[default]
+    Both,
+    Prefill,
+    Decode,
+}
+
+impl InferenceRole {
+    pub fn is_both(&self) -> bool {
+        *self == Self::Both
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Both => "both",
+            Self::Prefill => "prefill",
+            Self::Decode => "decode",
+        }
+    }
+}
+
 /// Sampling and context knobs. Defaults match `run-p1.sh`, which is the
 /// configuration the two-peer cluster was validated with.
 ///
@@ -40,6 +68,11 @@ pub struct RuntimeParams {
     /// plugin validates them. Empty for llama.cpp.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub engine_settings: std::collections::BTreeMap<String, serde_json::Value>,
+    /// What this machine does when a plugin inference service runs the whole
+    /// model here: read prompts only, answer only, or both (the default). See
+    /// `InferenceRole`.
+    #[serde(default, skip_serializing_if = "InferenceRole::is_both")]
+    pub inference_role: InferenceRole,
     #[serde(default = "d_gpu_layers")]
     pub n_gpu_layers: u32,
     #[serde(default = "d_n_ctx")]
@@ -284,6 +317,7 @@ impl Default for RuntimeParams {
             inference_mode: InferenceMode::Dense,
             inference_service: None,
             engine_settings: Default::default(),
+            inference_role: Default::default(),
             n_gpu_layers: d_gpu_layers(),
             n_ctx: d_n_ctx(),
             offload_kqv: d_true(),
@@ -345,6 +379,7 @@ impl From<&NodeConfig> for RuntimeParams {
             inference_mode: c.inference_mode,
             inference_service: c.inference_service.clone(),
             engine_settings: c.engine_settings.clone(),
+            inference_role: c.inference_role,
             n_gpu_layers: c.n_gpu_layers,
             n_ctx: c.n_ctx,
             offload_kqv: c.offload_kqv,

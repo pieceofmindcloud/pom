@@ -799,7 +799,10 @@ Key logic carriers:
   settings that service declares (`PluginService.pom_settings`:
   `prefill_max_inflight_chunks`, `hidden_state_dtype`) are not in that card:
   the inspector draws them in a separate "POM settings" card below it, like
-  under llama.cpp, when the slices cross machines (`showHiddenStateDtype`). A
+  under llama.cpp, when the slices cross machines (`showHiddenStateDtype`).
+  `inference_role` (the prefill/decode split of a whole-model machine:
+  both, prefill or decode, `RuntimeParams.inference_role`) is the opposite:
+  that card draws it only when the model is not split across machines. A
   setting the service publishes with `placement: "pom"` (the Strata's
   `session_save`) goes to that same card in both modes, whole model and slices,
   and is not in the engine's card. A service that declares none has no such card.

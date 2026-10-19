@@ -8,6 +8,9 @@
 //! conversation. A peer that no longer holds the delta's base gets the whole session instead. Each machine restores
 //! the longest saved start of a prompt itself, so the gateway's choice of machine does not change.
 //!
+//! A turn of a prefill/decode split names the prefill machine that read its prompt (`session_source`): the head
+//! fetches the session from that machine before the turn, whatever the transfer costs (`pull_from`).
+//!
 //! Routes (signed peer calls, the same checks as the generation route):
 //! - `POST /api/internal/plugins/:code/engine/session/chunk?key=..&kind=..&offset=..&total=..`, one piece of a file
 //! - `POST /api/internal/plugins/:code/engine/session/apply`, `{"key": ..}`: apply a received delta here
@@ -621,6 +624,16 @@ pub(crate) async fn prepare_for_body(state: &GatewayState, code: &str, body: &Va
     let Some(key) = body["session"].as_str().filter(|key| valid_key(key)) else {
         return;
     };
+    // a prefill/decode split: the prefill machine read this prompt just now, and its session is the one to take
+    if let Some(source) = body["session_source"]
+        .as_str()
+        .filter(|source| *source != state.network.node_id)
+    {
+        if let Err(error) = pull_from(state, code, key, source).await {
+            warn!(plugin = %code, session = %key, source = %source, "prefill split: session not fetched from the prefill machine: {error}");
+        }
+        return;
+    }
     if let Err(error) = pull(state, code, key).await {
         info!(plugin = %code, session = %key, "session not fetched from a peer: {error}");
     }
@@ -681,6 +694,65 @@ async fn pull(state: &GatewayState, code: &str, key: &str) -> Result<(), String>
     info!(plugin = %code, session = %key, peer = %node, gained, bytes = offer.bytes, seconds,
           forced, "session pull: fetched from a peer; the turn restores it from this machine's disk");
     Ok(())
+}
+
+/// How long the head waits for the prefill machine's save of a split turn to be written.
+const SOURCE_SAVE_WAIT: Duration = Duration::from_secs(300);
+
+/// A prefill/decode split: fetches the session the prefill machine `source` saved for this turn. Its save may still be
+/// being written (the engine writes it once the prefill request has ended), so the offer is asked again until it is not
+/// pending. No cost check: the gateway sent the prompt there to be read instead of here.
+async fn pull_from(state: &GatewayState, code: &str, key: &str, source: &str) -> Result<(), String> {
+    let (port, token) = local_upstream(&state.plugins, code).await?;
+    let local = offer_here(port, &token, key).await?;
+    let peer = state
+        .all_peers()
+        .await
+        .into_iter()
+        .find(|peer| peer.node_id == source)
+        .ok_or_else(|| format!("{source} left the network"))?;
+    let waited = Instant::now();
+    let offer = loop {
+        let offer = offer_of_peer(state, code, key, &peer).await?;
+        if !offer.pending {
+            break offer;
+        }
+        if waited.elapsed() > SOURCE_SAVE_WAIT {
+            return Err(format!("its save was still pending after {} s", SOURCE_SAVE_WAIT.as_secs()));
+        }
+        tokio::time::sleep(SAVE_POLL).await;
+    };
+    if !layers_compatible(&local.layers, &offer.layers) {
+        return Err(format!("its layers ({}) are not this machine's ({})", offer.layers, local.layers));
+    }
+    if offer.bytes == 0 || offer.tokens <= local.have() {
+        info!(plugin = %code, session = %key, source = %source, tokens = offer.tokens, local = local.have(),
+              "prefill split: this machine already holds as much of the conversation");
+        return Ok(());
+    }
+    let started = Instant::now();
+    fetch_session(state, code, key, &peer, port, &token).await?;
+    let seconds = started.elapsed().as_secs_f64().max(1e-3);
+    fold_rate(&LINK_RATE, offer.bytes as f64 / seconds);
+    info!(plugin = %code, session = %key, source = %source, tokens = offer.tokens, bytes = offer.bytes, seconds,
+          waited_s = waited.elapsed().as_secs_f64() - seconds,
+          "prefill split: session fetched from the prefill machine; the turn restores it");
+    Ok(())
+}
+
+/// What the machine `node_id` (this one or a peer) holds for the conversation `key`.
+pub(crate) async fn offer_of(state: &GatewayState, code: &str, key: &str, node_id: &str) -> Result<Offer, String> {
+    if node_id == state.network.node_id {
+        let (port, token) = local_upstream(&state.plugins, code).await?;
+        return offer_here(port, &token, key).await;
+    }
+    let peer = state
+        .all_peers()
+        .await
+        .into_iter()
+        .find(|peer| peer.node_id == node_id)
+        .ok_or_else(|| format!("{node_id} left the network"))?;
+    offer_of_peer(state, code, key, &peer).await
 }
 
 async fn offer_here(port: u16, token: &str, key: &str) -> Result<Offer, String> {

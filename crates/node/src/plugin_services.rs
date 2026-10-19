@@ -68,9 +68,14 @@ pub(crate) struct PluginService {
 }
 
 /// The POM deployment settings an inference service may declare, by their
-/// `RuntimeParams` name. Both act on the hidden state the nodes carry between
-/// the stages of a model split across machines.
-const POM_SETTINGS: [&str; 2] = ["prefill_max_inflight_chunks", "hidden_state_dtype"];
+/// `RuntimeParams` name. The first two act on the hidden state the nodes carry
+/// between the stages of a model split across machines; `inference_role` is a
+/// whole-model machine's part in a prefill/decode split (`plugin_engine`).
+const POM_SETTINGS: [&str; 3] = [
+    "prefill_max_inflight_chunks",
+    "hidden_state_dtype",
+    "inference_role",
+];
 
 fn parse_pom_settings(kind: &str, value: &Value) -> Vec<String> {
     let mut settings: Vec<String> = Vec::new();

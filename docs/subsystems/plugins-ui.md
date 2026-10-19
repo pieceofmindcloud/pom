@@ -456,13 +456,16 @@ settings card, whatever the slices (whole model or slices), not in the engine's
 card; the node passes the field on unchanged. A service
 that also runs POM layer slices, one stage per machine, publishes
 `stages: true`, and lists in `pom_settings` the POM deployment settings that
-apply to it, by their `RuntimeParams` name: `prefill_max_inflight_chunks` and
-`hidden_state_dtype` are the known ones, any other name is dropped. The deploy
-inspector draws only the declared ones, in their own card. Such a
+apply to it, by their `RuntimeParams` name: `prefill_max_inflight_chunks`,
+`hidden_state_dtype` and `inference_role` are the known ones, any other name is
+dropped. The deploy inspector draws only the declared ones, in their own card
+(the first two when the slices cross machines, `inference_role` when the model
+runs whole on one machine; see `inference.md`, "Prefill/decode split"). Such a
 plugin implements four operations the node calls through its own local host,
 never from another machine or a browser: `engine.load` (`params`:
 `model_path`, `model_label`, `n_ctx`, `max_sessions`, `kv`, `gpus`,
-`settings`, and for a slice `link`),
+`settings`, for a slice `link`, and for a whole-model machine with a
+prefill/decode role other than both, `role`: `prefill` or `decode`),
 `engine.unload`, `engine.status` (`state` among `idle`, `installing`,
 `preparing`, `loading`, `ready`, `stopping`, `error`, with `detail`, `n_ctx`,
 `busy`) and `engine.upstream` (`{status: "ready", port, token}` of a loopback

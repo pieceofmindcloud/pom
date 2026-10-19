@@ -33,6 +33,14 @@
 //! `{"t": answer_text}`, `{"r": reasoning_text}`, `{"p": [read, total]}`,
 //! `{"done": {finish, prompt_tokens, completion_tokens, reasoning_tokens, cached_tokens}}` or
 //! `{"error": message}`.
+//!
+//! **Prefill/decode split** ([`prefill_on_peer`]): a whole-model machine may be deployed with the role `prefill`
+//! (`RuntimeParams::inference_role`), which it announces as `engine/plugin-role-v1:prefill`. The planner never
+//! makes it the head. Before a named conversation's turn runs on a head, the gateway sends the turn to a prefill
+//! machine of the same model with `prefill_only: true`: that machine reads the prompt into a batch slot and saves
+//! the conversation's session (or answers that the new part of the prompt is too short to be worth it). The head's
+//! turn then names it as `session_source`, and the head fetches that session before it reads its prompt
+//! (`plugin_session::prepare_for_body`), so it reads only what the session does not hold and decodes.
 
 use crate::gateway::{GatewayState, GenEvent, GenSummary};
 use axum::body::Bytes;
@@ -48,6 +56,10 @@ use tracing::{info, warn};
 
 /// The capability a node announces while a plugin engine serves its model.
 pub(crate) const CAPABILITY_PREFIX: &str = "engine/plugin-v1:";
+/// The capability that says a whole-model plugin engine has a prefill/decode role other than both.
+pub(crate) const ROLE_CAPABILITY_PREFIX: &str = "engine/plugin-role-v1:";
+/// How long the gateway waits for a prefill machine to read a prompt and answer.
+const PREFILL_TIMEOUT: Duration = Duration::from_secs(3600);
 /// A prompt is the whole conversation; the generation route is not the
 /// small-JSON peer route.
 const MAX_GENERATION_BODY: usize = 32 * 1024 * 1024;
@@ -85,6 +97,29 @@ pub(crate) fn capability(code: &str) -> String {
     format!("{CAPABILITY_PREFIX}{code}")
 }
 
+pub(crate) fn role_capability(role: crate::webui::InferenceRole) -> String {
+    format!("{ROLE_CAPABILITY_PREFIX}{}", role.as_str())
+}
+
+/// The prefill/decode role a peer announces; `Both` when it announces none.
+pub(crate) fn role_of_capabilities(capabilities: &[String]) -> crate::webui::InferenceRole {
+    use crate::webui::InferenceRole;
+    match capabilities
+        .iter()
+        .find_map(|cap| cap.strip_prefix(ROLE_CAPABILITY_PREFIX))
+    {
+        Some("prefill") => InferenceRole::Prefill,
+        Some("decode") => InferenceRole::Decode,
+        _ => InferenceRole::Both,
+    }
+}
+
+/// A peer whose plugin engine only reads prompts: it is never the head of a plan.
+pub(crate) fn is_prefill_only(peer: &crate::network::PeerInfo) -> bool {
+    engine_of_peer(peer).is_some()
+        && role_of_capabilities(&peer.inference_frame_capabilities) == crate::webui::InferenceRole::Prefill
+}
+
 /// The plugin whose engine serves a peer, from its announced capabilities.
 pub(crate) fn plugin_of_capabilities(capabilities: &[String]) -> Option<&str> {
     capabilities
@@ -118,6 +153,22 @@ mod engine_group_tests {
         assert_eq!(pipeline_engines(&peers, Some("gpu1")), vec![Some("strata".to_string())]);
         let llama: Vec<String> = peers_of_engine(&peers, None).into_iter().map(|p| p.node_id).collect();
         assert_eq!(llama, ["gpu2"]);
+    }
+
+    #[test]
+    fn a_prefill_machine_is_known_by_its_role_capability() {
+        use crate::webui::InferenceRole;
+        let plugin = capability("strata");
+        let prefill = role_capability(InferenceRole::Prefill);
+        let decode = role_capability(InferenceRole::Decode);
+        assert_eq!(prefill, "engine/plugin-role-v1:prefill");
+        assert!(is_prefill_only(&peer("p", "m", &[plugin.as_str(), prefill.as_str()])));
+        assert!(!is_prefill_only(&peer("d", "m", &[plugin.as_str(), decode.as_str()])));
+        assert!(!is_prefill_only(&peer("b", "m", &[plugin.as_str()])));
+        // a role without a plugin engine means nothing
+        assert!(!is_prefill_only(&peer("l", "m", &[prefill.as_str()])));
+        assert_eq!(role_of_capabilities(&[decode]), InferenceRole::Decode);
+        assert_eq!(role_of_capabilities(&[]), InferenceRole::Both);
     }
 }
 
@@ -240,6 +291,10 @@ pub(crate) fn load_params(
         "gpu_devices": gpu_devices,
         "settings": cfg.engine_settings,
     });
+    // a whole-model machine's part in a prefill/decode split: the plugin keeps the sessions on for it
+    if !cfg.inference_role.is_both() && !crate::plugin_stage_link::is_stage(cfg) {
+        params["role"] = json!(cfg.inference_role.as_str());
+    }
     if let Some(link) = link {
         params["link"] = link.clone();
     }
@@ -283,7 +338,7 @@ pub(crate) fn health_body(cfg: &crate::runtime::NodeConfig, code: &str, status: 
         "n_ctx_total": n_ctx,
         // The plugin engine gives every request the whole window.
         "n_ctx_per_session": n_ctx,
-        "capabilities": [capability(code)],
+        "capabilities": health_capabilities(cfg, code),
         "engine": {
             "plugin": code,
             "state": status["state"],
@@ -303,6 +358,14 @@ pub(crate) fn health_body(cfg: &crate::runtime::NodeConfig, code: &str, status: 
         "decode_ms_per_step": measured.decode_ms_per_step,
     });
     body
+}
+
+fn health_capabilities(cfg: &crate::runtime::NodeConfig, code: &str) -> Vec<String> {
+    let mut caps = vec![capability(code)];
+    if !cfg.inference_role.is_both() && !crate::plugin_stage_link::is_stage(cfg) {
+        caps.push(role_capability(cfg.inference_role));
+    }
+    caps
 }
 
 async fn query(code: &str, operation: &str, payload: Value) -> Option<Value> {
@@ -759,8 +822,20 @@ pub(crate) async fn generate(
     // In flight on the serving node until the stream ends: the dashboard's load and the planner's queue read it,
     // as they read the llama.cpp path's (`infer_server`).
     let _in_flight = state.loads.acquire(node_id).await;
-    let body = generation_body(&request);
+    let mut body = generation_body(&request);
     let session_key = request.session.clone();
+    // Prefill/decode split: a prefill machine of this model reads the prompt first, and the head fetches the
+    // session it saved. Any problem leaves the head to read the prompt itself.
+    if plan.steps.len() == 1 && request.images.is_empty() && request.probe_labels.is_empty() {
+        if let Some(key) = &session_key {
+            if let Some(source) = prefill_on_peer(state, code, model, node_id, key, &body, cancellation).await {
+                body["session_source"] = json!(source);
+            }
+            if cancellation.is_cancelled() || tx.is_closed() {
+                return;
+            }
+        }
+    }
     // Totals left by an earlier generation that never reached its end belong to nobody now: drop them, and the
     // frames of this one are the prompt's until the first token.
     let _ = super::plugin_stage_link::take_link_stats(code);
@@ -957,6 +1032,116 @@ pub(crate) async fn generate(
             "the plugin engine closed the request without an answer".into()
         }))
         .await;
+}
+
+// ── Prefill/decode split ─────────────────────────────────────────────────────
+
+/// The prefill machine for a turn of `model` whose head is `head`: a live peer of the same plugin engine, announced
+/// with the role `prefill`, that serves the whole model. The least busy one wins.
+async fn prefill_peer(state: &GatewayState, code: &str, model: &str, head: &str) -> Option<crate::network::PeerInfo> {
+    let mut best: Option<(u32, crate::network::PeerInfo)> = None;
+    for peer in state.all_peers().await {
+        let whole = peer.total_layers > 0 && peer.start_layer == 0 && peer.end_layer + 1 == peer.total_layers;
+        if peer.node_id == head
+            || peer.model != model
+            || !whole
+            || engine_of_peer(&peer).as_deref() != Some(code)
+            || !is_prefill_only(&peer)
+        {
+            continue;
+        }
+        let load = state.loads.load(&peer.node_id).await;
+        if best.as_ref().is_none_or(|(least, _)| load < *least) {
+            best = Some((load, peer));
+        }
+    }
+    best.map(|(_, peer)| peer)
+}
+
+/// Runs the prompt of a turn on a prefill machine (`prefill_only`), which saves the conversation's session there.
+/// Returns that machine's node id when it saved it, so the head fetches it (`session_source`); `None` when there is
+/// no prefill machine, the new part of the prompt was too short to be worth the transfer, or anything failed.
+async fn prefill_on_peer(
+    state: &GatewayState,
+    code: &str,
+    model: &str,
+    head: &str,
+    key: &str,
+    body: &Value,
+    cancellation: &crate::prefill::Cancellation,
+) -> Option<String> {
+    let peer = prefill_peer(state, code, model, head).await?;
+    // what the head already holds of the conversation: the prefill machine reads the prompt only when the part the
+    // head lacks is long enough
+    let holds = match super::plugin_session::offer_of(state, code, key, head).await {
+        Ok(offer) => offer.tokens.max(offer.ram_tokens),
+        Err(error) => {
+            info!(plugin = %code, session = %key, head = %head, "prefill split: no offer from the head: {error}");
+            0
+        }
+    };
+    let mut prefill = body.clone();
+    prefill["max_tokens"] = json!(1);
+    prefill["prefill_only"] = json!(true);
+    prefill["decode_holds"] = json!(holds);
+    let _busy = state.loads.acquire(&peer.node_id).await;
+    let started = Instant::now();
+    let response = match open_stream(state, &peer.node_id, code, &prefill).await {
+        Ok(response) => response,
+        Err(error) => {
+            warn!(plugin = %code, session = %key, prefill = %peer.node_id, "prefill split: the prefill machine refused: {error}");
+            return None;
+        }
+    };
+    let mut stream = response.bytes_stream();
+    let mut pending: Vec<u8> = Vec::new();
+    let deadline = Instant::now() + PREFILL_TIMEOUT;
+    loop {
+        if cancellation.is_cancelled() || Instant::now() > deadline {
+            return None;
+        }
+        let chunk = match tokio::time::timeout(Duration::from_millis(500), stream.next()).await {
+            Err(_) => continue,
+            Ok(None) => {
+                warn!(plugin = %code, session = %key, prefill = %peer.node_id, "prefill split: the prefill machine closed without an answer");
+                return None;
+            }
+            Ok(Some(Err(error))) => {
+                warn!(plugin = %code, session = %key, prefill = %peer.node_id, "prefill split: the stream broke: {error}");
+                return None;
+            }
+            Ok(Some(Ok(chunk))) => chunk,
+        };
+        pending.extend_from_slice(&chunk);
+        while let Some(end) = pending.iter().position(|byte| *byte == b'\n') {
+            let line: Vec<u8> = pending.drain(..=end).collect();
+            let Ok(event) = serde_json::from_slice::<Value>(&line[..line.len() - 1]) else {
+                continue;
+            };
+            if let Some(error) = event["error"].as_str() {
+                warn!(plugin = %code, session = %key, prefill = %peer.node_id, "prefill split: the prefill machine failed: {error}");
+                return None;
+            }
+            let Some(done) = event.get("done") else {
+                continue;
+            };
+            let read = done["prefill"]["tokens"].as_u64().unwrap_or(0);
+            if let Some(reason) = done["prefill"]["skipped"].as_str() {
+                info!(plugin = %code, session = %key, prefill = %peer.node_id, holds, "prefill split: skipped ({reason}); the head reads the prompt");
+                return None;
+            }
+            if super::plugin_session::saved_session(done).as_deref() != Some(key) {
+                info!(plugin = %code, session = %key, prefill = %peer.node_id, "prefill split: the prefill machine kept no session; the head reads the prompt");
+                return None;
+            }
+            info!(
+                plugin = %code, session = %key, prefill = %peer.node_id, head = %head, tokens = read, holds,
+                ms = started.elapsed().as_millis() as u64,
+                "prefill split: the prompt was read on the prefill machine; the head fetches its session"
+            );
+            return Some(peer.node_id.clone());
+        }
+    }
 }
 
 // ── Deployment ───────────────────────────────────────────────────────────────
@@ -1366,6 +1551,17 @@ mod tests {
         assert_eq!(ready["end_layer"], 47);
         assert_eq!(ready["total_layers"], 48);
         assert_eq!(ready["capabilities"], json!(["engine/plugin-v1:strata"]));
+        // a whole-model prefill machine says its role; the plugin hears it in engine.load
+        let prefill = crate::runtime::NodeConfig {
+            inference_role: crate::webui::InferenceRole::Prefill,
+            ..cfg.clone()
+        };
+        assert_eq!(
+            health_body(&prefill, "strata", &json!({"state": "ready"}))["capabilities"],
+            json!(["engine/plugin-v1:strata", "engine/plugin-role-v1:prefill"])
+        );
+        assert_eq!(load_params(&prefill, &[0], &[], None)["role"], "prefill");
+        assert!(load_params(&cfg, &[0], &[], None).get("role").is_none());
     }
 
     #[test]

@@ -664,6 +664,16 @@ UI.
   a background task, after the turn's `done` reports the save (or its deferral:
   the task polls the bridge's `/pom/session/pending` until the save is written),
   and the session routes apply it.
+  Prefill/decode split: a whole-model machine deployed with
+  `RuntimeParams::inference_role` = `prefill` announces
+  `engine/plugin-role-v1:prefill` (`Network::set_external_engine_role`,
+  `role_capability`), which `generation.rs` drops from planning
+  (`is_prefill_only`), so it is never a head. `prefill_on_peer` sends a named
+  turn to such a machine first (`prefill_only`, `max_tokens` 1, `decode_holds`
+  from the head's session offer); when it saved the session, the head's turn
+  carries `session_source` and `plugin_session::pull_from` fetches that session
+  (waiting for its save) before the turn reads its prompt. `engine.load` gets
+  `role` for a non-default role.
   `deploy_block` is the deployment check: a whole model on one machine, or
   slices on distinct machines for a service that publishes `stages`, each
   running the plugin's `inference` service. A slice's `engine.load` also gets

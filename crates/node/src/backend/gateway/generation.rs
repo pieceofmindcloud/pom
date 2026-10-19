@@ -855,6 +855,12 @@ pub(super) async fn generate_stream_inner(
             ADMISSION_PROBE_TIMEOUT,
         )
         .await;
+        // A machine of a prefill/decode split that only reads prompts never answers a request: it is no head and no
+        // hop. The plugin engine sends it the prompts itself (`plugin_engine::prefill_on_peer`).
+        let peers: Vec<crate::network::PeerInfo> = peers
+            .into_iter()
+            .filter(|peer| !crate::plugin_engine::is_prefill_only(peer))
+            .collect();
         record_gateway_span(
             &mut gateway_spans,
             request_started,

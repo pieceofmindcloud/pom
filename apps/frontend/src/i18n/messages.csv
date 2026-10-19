@@ -600,6 +600,11 @@ deploy.knob.hidden_state_dtypeI4G64,i4g64 - signed int4 with FP16 scale per 64 v
 deploy.knob.hidden_state_dtypeUnavailable,Selected hidden-state format unavailable:,Formato selecionado do estado oculto indisponível:
 deploy.knob.idle_minutes,Idle time (minutes),Tempo ocioso (minutos)
 deploy.knob.idle_minutesHint,"Minutes without a request before this peer unloads its model.","Minutos sem requisição antes de este peer descarregar o modelo."
+deploy.knob.inference_role,Inference role,Papel na inferência
+deploy.knob.inference_roleBoth,Prefill and decode,Prefill e decode
+deploy.knob.inference_roleDecode,Decode only,Só decode
+deploy.knob.inference_roleHint,"What this machine does with a request when it runs the whole model. Prefill: it only reads long prompts and hands their state to a decode machine of the same model, which writes the answer. Decode: it answers, fetching the state a prefill machine read. Both: it does everything (the default).","O que esta máquina faz com uma requisição quando roda o modelo inteiro. Prefill: só lê prompts longos e entrega o estado deles a uma máquina de decode do mesmo modelo, que escreve a resposta. Decode: responde, buscando o estado que uma máquina de prefill leu. Ambos: faz tudo (o padrão)."
+deploy.knob.inference_rolePrefill,Prefill only,Só prefill
 deploy.knob.max_new_tokens,Max new tokens,Máx. tokens novos
 deploy.knob.max_new_tokensHint,"Ceiling for one leg of the gateway''s continuation loop, not for the request. The client''s max_tokens is what actually bounds a response and produces finish_reason length.","Teto de uma perna do laço de continuação do gateway, não da requisição. Quem limita a resposta e produz finish_reason length é o max_tokens do cliente."
 deploy.knob.max_sessions,Concurrent requests,Requisições simultâneas

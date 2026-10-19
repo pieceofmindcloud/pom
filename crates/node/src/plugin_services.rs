@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 
 const MAX_SERVICES_PER_PLUGIN: usize = 8;
 const MAX_TEXT: usize = 200;
-const MAX_PEER_BODY: usize = 256 * 1024;
+pub(crate) const MAX_PEER_BODY: usize = 256 * 1024;
 /// `/api/ui/node` is polled by every dashboard; the plugins are asked at most
 /// this often.
 const SERVICES_TTL: Duration = Duration::from_secs(5);
@@ -309,7 +309,7 @@ pub(crate) async fn node_services(plugins: &crate::plugins::PluginManager) -> Ve
 
 /// An operation name of the peer API: lowercase words separated by dots,
 /// dashes or underscores.
-fn valid_peer_op(op: &str) -> bool {
+pub(crate) fn valid_peer_op(op: &str) -> bool {
     !op.is_empty()
         && op.len() <= 64
         && op.bytes().all(|byte| {
@@ -330,6 +330,21 @@ pub(crate) fn caller_of(peer: &crate::network::PeerInfo, role: &str) -> Value {
         "model": peer.model,
         "role": role,
     })
+}
+
+/// This machine's own role, as the trust chain proves it: what a plugin is
+/// told when the caller is its own node.
+pub(crate) async fn local_role(state: &crate::gateway::GatewayState) -> &'static str {
+    let profile = state.auth.read().await.profile;
+    match state
+        .admin_trust
+        .effective_authority(&state.authority_principal, profile)
+    {
+        Some(crate::admin_trust::EffectiveAuthority::Principal) => "principal",
+        Some(_) => "admin",
+        None if profile == crate::profile::NodeProfile::Visitor => "visitor",
+        None => "member",
+    }
 }
 
 /// The caller's role as the trust chain proves it, for a plugin that shares

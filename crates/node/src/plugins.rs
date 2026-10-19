@@ -961,6 +961,9 @@ pub(crate) struct PluginRuntime {
     /// `lifecycle: "on_demand"` of the last known manifest. It comes from the cache, so
     /// it applies at boot, before any process starts.
     on_demand: std::sync::atomic::AtomicBool,
+    /// This plugin's secret for the node's loopback API (`crate::plugin_host_api`),
+    /// new at every start of the node and handed over in `host.configure`.
+    host_api_token: String,
 }
 
 /// What the node hands to each plugin host through the `host.configure` operation.
@@ -1019,6 +1022,7 @@ impl PluginRuntime {
             host_context,
             ui_manifest_raw: Arc::new(Mutex::new(ui_manifest_raw)),
             on_demand: std::sync::atomic::AtomicBool::new(on_demand),
+            host_api_token: hex::encode(rand::random::<[u8; 32]>()),
         }
     }
 
@@ -1058,6 +1062,13 @@ impl PluginRuntime {
         };
         if let Some(object) = payload.as_object_mut() {
             object.insert("operation".into(), "host.configure".into());
+            // The shared context names where the node's API is; the secret is this plugin's own.
+            if let Some(base_url) = object.remove("host_api_base_url") {
+                object.insert(
+                    "host_api".into(),
+                    serde_json::json!({"base_url": base_url, "token": self.host_api_token}),
+                );
+            }
             let licensed_schema = self
                 .persisted
                 .lock()
@@ -3265,6 +3276,25 @@ impl PluginManager {
         }
     }
 
+    /// The plugin a loopback API token belongs to (`crate::plugin_host_api`).
+    pub(crate) fn code_for_host_api_token(&self, token: &str) -> Option<String> {
+        use subtle::ConstantTimeEq;
+        if token.is_empty() {
+            return None;
+        }
+        self.runtime_values()
+            .into_iter()
+            .find(|runtime| bool::from(runtime.host_api_token.as_bytes().ct_eq(token.as_bytes())))
+            .map(|runtime| runtime.code.clone())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn host_api_token_for_test(&self, code: &str) -> String {
+        self.runtime_for(code)
+            .map(|runtime| runtime.host_api_token.clone())
+            .unwrap_or_default()
+    }
+
     pub(crate) fn runtime_for(&self, code: &str) -> Option<Arc<PluginRuntime>> {
         self.runtimes
             .read()
@@ -3851,6 +3881,10 @@ fn host_context_payload(
             "api_key": api_key,
         },
         "workspace_root": workspace_root,
+        "host_api_base_url": format!(
+            "http://127.0.0.1:{gateway_port}{}",
+            crate::plugin_host_api::HOST_API_PREFIX
+        ),
     })
 }
 
@@ -6790,6 +6824,10 @@ mod tests {
         assert_eq!(
             context.get("workspace_root").and_then(Value::as_str),
             Some("/data/workspace")
+        );
+        assert_eq!(
+            context.get("host_api_base_url").and_then(Value::as_str),
+            Some("http://127.0.0.1:8080/api/plugin-host")
         );
     }
 

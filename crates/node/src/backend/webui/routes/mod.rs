@@ -122,6 +122,13 @@ const ROUTE_RULES: &[RouteRule] = &[
         method: None,
         scope: RouteScope::HandlerAuth,
     },
+    // A plugin calling back into its own node, with the secret its host got
+    // in `host.configure` (`crate::plugin_host_api`).
+    RouteRule {
+        prefix: "/api/plugin-host/",
+        method: None,
+        scope: RouteScope::HandlerAuth,
+    },
     RouteRule {
         prefix: "/v1/relay-result",
         method: None,
@@ -856,6 +863,8 @@ mod policy_tests {
             scope_of("/api/ui/chat/telemetry"),
             RouteScope::HandlerAuth
         );
+        assert_eq!(scope_of("/api/plugin-host/sign"), RouteScope::HandlerAuth);
+        assert_eq!(scope_of("/api/plugin-hosts"), RouteScope::PrincipalOnly);
     }
 
     /// The Network screen of the `node` profile reads the network snapshot; changing what it

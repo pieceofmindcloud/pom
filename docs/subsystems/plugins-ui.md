@@ -370,6 +370,7 @@ operation:
 {"operation": "host.configure",
  "gateway": {"openai_base_url": "http://127.0.0.1:8080/v1", "api_key": "sk-..."},
  "workspace_root": "/data/workspace",
+ "host_api": {"base_url": "http://127.0.0.1:8080/api/plugin-host", "token": "<hex>"},
  "preferences": {"features": {"capture_headers": false}, "storage_directory": null}}
 ```
 
@@ -468,6 +469,33 @@ plus `engine.link` (`{status, port?, token?}`) for a service with `stages`: the
 loopback port of an earlier stage's link and its secret.
 The deployment and generation contract is in `inference.md`, section 7.1, and
 `deployment.md`, section 1.6.
+
+## Calling back into the node (`host_api`)
+
+The node reaches a plugin through its `query`; `host_api` is the way back
+(`crates/node/src/plugin_host_api.rs`). Each plugin host gets its own random
+secret in `host.configure`, new at every start of the node, and sends it in
+`x-pom-plugin-host-token` to the loopback routes under `/api/plugin-host/`
+(`RouteScope::HandlerAuth`, outside the session gate). The token names the
+plugin, so a plugin only ever speaks as itself.
+
+| Route | Answer |
+|---|---|
+| `GET /api/plugin-host/node` | `{node_id, hostname, public_key, did_key, role, principal_node_id}`: the node key in hex and as a `did:key`, the node's role in the trust chain (`principal`, `admin`, `visitor` or `member`) |
+| `GET /api/plugin-host/peers` | `{peers: [{node_id, hostname, principal, visitor}]}`: the live peers |
+| `POST /api/plugin-host/peer` | `{node_id, op, params}` runs `peer.<op>` of **the same plugin** on that machine, through the signed peer call above (or locally, with `caller.local: true`, for this node's own `node_id`), and answers `{reply}`; 404 when the node is not a live peer, 502 when its plugin refused |
+| `POST /api/plugin-host/sign` | `{statement}` signed by the node key: `{signature, public_key, did_key}` (hex) |
+
+The node key also signs announces, control envelopes, grants and the pkarr
+record, so `sign` never signs arbitrary bytes: only one line of printable
+ASCII, at most 1 KiB, that opens with a known external identity statement
+naming **this node's own** `did:key` (today Ghostly's WISP 300 binding,
+`Ghostly identity proof v1: I control did:<did:key> and authorize the Ghostly
+key …`). Anything else is 403. Each signature is logged with the plugin code.
+
+`pom-plugin-ghostly` is the reference: its principal holds the network's
+Ghostly group and hands the link to the other nodes' plugins with
+`peer.group_link`, and each profile proves the node key as a `did` identity.
 
 ## Transparent retrieval (RAG)
 

@@ -163,6 +163,7 @@ mod plugin_engine;
 #[path = "inference/plugin_session.rs"]
 mod plugin_session;
 mod plugin_github;
+mod plugin_host_api;
 #[path = "plugin_host.rs"]
 mod plugin_host;
 mod plugin_proxy;

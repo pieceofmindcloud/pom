@@ -817,6 +817,7 @@ pub(super) fn is_pipeline_or_public_path(path: &str) -> bool {
         || path == crate::webui::NETWORK_SETTINGS_POLICY_PATH
         || path == crate::webui::MEMBER_LEFT_PATH
         || path.starts_with("/api/internal/")
+        || path.starts_with("/api/plugin-host/")
         || path.starts_with("/v1/")
 }
 

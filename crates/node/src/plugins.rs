@@ -4466,6 +4466,10 @@ fn machine_component() -> String {
             }
         }
     }
+    // Tests run with the crate as the project root: no id is written there.
+    if cfg!(test) {
+        return "test-machine".into();
+    }
     stored_machine_id(&crate::config::project_root())
 }
 

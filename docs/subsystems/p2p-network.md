@@ -826,7 +826,12 @@ overwriting whatever the peer sent under that name, and `serve::request_origin`
 replaces the origin of a loopback request carrying that mark with a
 non-loopback address (`TUNNELED_ORIGIN`); the header is stripped from every
 request, marked or not. And `infer_tunnel::gateway_path_is_allowed` still
-compares the exact path, with no prefix or wildcard, on the receiving side. The
+compares the exact path, with no prefix or wildcard, on the receiving side.
+The one shape matched by segment is a plugin call between nodes
+(`plugin_path_is_allowed`): `/api/internal/plugins/services`,
+`/api/internal/plugins/<code>/peer/<op>` and
+`/api/internal/plugins/<code>/engine/generate`, each segment a plain name. The
+engine's session files and stage links stay off the tunnel. The
 sender picks the `target` variant; the receiver resolves the port, with the two
 ports it chose itself.
 

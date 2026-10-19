@@ -74,7 +74,8 @@ pub fn gateway_path_is_allowed(path: &str) -> bool {
     // The query string does not change the route, but it must not serve to escape the
     // exact comparison.
     let path = path.split(['?', '#']).next().unwrap_or(path);
-    matches!(
+    plugin_path_is_allowed(path)
+        || matches!(
         path,
         "/handshake"
             | "/health"
@@ -152,6 +153,29 @@ pub fn gateway_path_is_allowed(path: &str) -> bool {
             | "/api/transfer/manifest"
             | "/api/transfer/pom"
     )
+}
+
+/// The plugin calls between nodes that `control_get`/`control_post_json`
+/// send through the tunnel when no address answers: the services listing,
+/// a plugin's peer operation (`plugin_services::plugin_peer_call`) and a
+/// generation on the machine serving a plugin engine's model. Each one
+/// takes `InternalNodeAuth`. The engine's session files and stage links are
+/// not here.
+fn plugin_path_is_allowed(path: &str) -> bool {
+    if path == "/api/internal/plugins/services" {
+        return true;
+    }
+    let Some(rest) = path.strip_prefix("/api/internal/plugins/") else {
+        return false;
+    };
+    let segment = |s: &str| {
+        !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    };
+    match rest.split('/').collect::<Vec<_>>().as_slice() {
+        [code, "peer", op] => segment(code) && segment(op),
+        [code, "engine", "generate"] => segment(code),
+        _ => false,
+    }
 }
 
 /// The route that carries the bytes of a file. The receiving node refuses it
@@ -742,6 +766,19 @@ mod tests {
             "/api/internal/enterprise/fingerprint"
         ));
         assert!(!gateway_path_is_allowed("/api/internal/api-keys/upsert/x"));
+    }
+
+    /// A plugin's calls between nodes pass, and only in their exact shape.
+    #[test]
+    fn the_tunnel_carries_the_plugin_calls() {
+        assert!(gateway_path_is_allowed("/api/internal/plugins/services"));
+        assert!(gateway_path_is_allowed("/api/internal/plugins/rag/peer/search"));
+        assert!(gateway_path_is_allowed("/api/internal/plugins/moe_x/engine/generate"));
+        assert!(!gateway_path_is_allowed("/api/internal/plugins/rag/peer/search/x"));
+        assert!(!gateway_path_is_allowed("/api/internal/plugins/rag/peer/"));
+        assert!(!gateway_path_is_allowed("/api/internal/plugins/../peer/x"));
+        assert!(!gateway_path_is_allowed("/api/internal/plugins/rag/engine/session/file"));
+        assert!(!gateway_path_is_allowed("/api/internal/plugins/rag/engine/link/d"));
     }
 
     /// The mark is a process secret: constant while it lives and never

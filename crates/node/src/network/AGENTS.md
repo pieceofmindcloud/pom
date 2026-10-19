@@ -38,7 +38,8 @@ the ladder direct -> dedicated relay (with DCuTR) -> member relay, are in
   receiver resolves the port. `is_transfer_data_path`, `closed_range` and
   `transfer_chunk_is_bounded` hold the file rule on the receiving side (a piece is a bounded
   range, refused with `TRANSFER_ROUTE_REFUSED_STATUS` 421 on a connection that crosses a public
-  relay); `gateway_path_is_allowed` is the closed exact-comparison list; `serve_loopback` hands
+  relay); `gateway_path_is_allowed` is the closed exact-comparison list, plus the plugin calls in
+  their fixed shape (`plugin_path_is_allowed`: services, `<code>/peer/<op>`, `<code>/engine/generate`); `serve_loopback` hands
   the call to the gateway over `127.0.0.1` and marks it with `TUNNEL_ORIGIN_HEADER` and
   `tunnel_mark` so `serve::request_origin` never reads it as local. `peer_client::send_to_gateway_over`
   is the control plane's sender: each announced address and, last, the tunnel. `measure_rtt`

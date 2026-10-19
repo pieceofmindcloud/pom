@@ -1,0 +1,209 @@
+# Security model
+
+The nodes themselves enforce every role, between nodes as well as on the
+screen. The trust chain names the admins only, and every other machine proves
+its role with a short-lived membership token signed by an admin. This guide is
+the overview; `http-api.md` has the full route reference and `p2p-network.md`
+the transport.
+
+## Roles
+
+A network has one principal, any number of secondary admins, and members that
+are either workers or visitors.
+
+| Role | Proven by | May do |
+| --- | --- | --- |
+| Principal | The trust chain (anchor and transfers) | Everything: settings, keys, grants and demotions, admissions, removals, deploys |
+| Secondary admin | A grant signed by the principal in the trust chain | Deploy and undeploy models, view logs and telemetry, approve and reject admissions, remove workers and visitors |
+| Worker | Membership token with role `worker` | Serve models; reach other nodes' serving routes (catalog, planning, transfers) |
+| Visitor | Membership token with role `visitor` | Run inference through its own node; never holds or serves a model; no administrative call to any node |
+
+- Every profile installs plugins on its own machine.
+- A machine's own operator routes (API keys, plugins, its name, relay,
+  networks, its logs) are reached by no other node, whoever signed the request.
+- The role is set at admission. A machine admitted as a visitor stays one
+  whatever it announces, and the principal refuses to promote it
+  (`visitor_target`).
+- A visitor node refuses to hold or serve a model even when an admin asks
+  (`visitor_profile`): `apply`, `launch`, `deploy`, `reconfigure`, `slice` and
+  every `/api/transfer` route are refused before any other check.
+
+## Identity and trust chain
+
+Each node has a single Ed25519 key (`.pom-node.key`). Its node id, iroh
+endpoint id, pkarr key, TLS certificate and authority key all derive from it,
+and an IP address is never an identity.
+
+- **Trust chain (`AdminTrustDocument`, `admin_trust.rs`)**: an anchored
+  principal, secondary grants signed by the principal, signed demotions,
+  principal transfers (an offer plus the successor's acceptance) and signed
+  revocations. Every signature is checked back to the anchor.
+- **Admins only**: the chain carries no member roles. Admitting a worker or a
+  visitor changes no trust document.
+- **Version** `<transfers>.<grants>.<demotions>.<open transfer>-<hash>`: a node
+  adopts a copy with higher counters from any member, so a node that was away
+  catches up while the principal is offline.
+- **Signed control envelope**: node-to-node control calls carry a signature over
+  the method, path, a hash of the body, a nonce and the issue time, with a
+  5 minute window and replay protection. The receiver authorizes on that
+  signature.
+- **Connection key**: a shared secret every member holds, visitors included.
+  It guards the transport and opens no administrative route on its own.
+- **Admission handshake**: the prober sends a random 32-byte challenge, and the
+  peer answers with an HMAC-SHA256 of it and both node ids, keyed by the
+  connection key and signed with its node key. The key never travels and an
+  answer cannot be faked.
+
+## Membership tokens
+
+A worker or visitor proves its role with a compact JWT signed with EdDSA by an
+admin's node key (`membership.rs`). It lasts 10 minutes and is accepted only
+from the node and key it names.
+
+| Claim | Meaning |
+| --- | --- |
+| `iss`, `iss_key` | Issuing admin's node id and public key |
+| `sub`, `sub_key` | Member's node id and public key |
+| `net` | The chain's cluster id |
+| `role` | `worker` or `visitor` |
+| `iat`, `exp`, `jti` | Issued at, expiry (iat + 600 s), unique id |
+
+1. **Request**: a non-admin node calls `POST /api/internal/membership/token`
+   on an admin (the principal first, then the secondaries), signed with its own
+   key.
+2. **Issue**: the admin issues a token only for an approved, unrevoked
+   admission, with the role admitted. On a network open to anyone with the
+   anchor (`open_admission`), the announced role is used.
+3. **Carry**: the node puts the token in its announce (`membership`) and
+   renews it two thirds of the way through, or at once if it stops being
+   valid. The keeper checks every 30 s.
+4. **Check**: any node checks it against its own trust chain alone:
+   - the header must be exactly `{"alg":"EdDSA","typ":"JWT"}`;
+   - the signer must be an admin in the current chain;
+   - `net` must match;
+   - not expired, with 30 s of clock leeway;
+   - lifetime no longer than 10 minutes;
+   - `sub` and `sub_key` must equal the peer's node id and key, so a copied
+     token proves nothing;
+   - the member must not be revoked after `iat`.
+
+Demoting an admin voids every token it signed once the chain syncs.
+
+## Revocation
+
+A ban is a revocation entry `{net, sub, sub_key, revoked_at, issuer,
+issuer_key, signature}` (`membership::Revocation`), so it holds while the
+principal is away.
+
+- Any admin signs entries for workers and visitors. An admin cannot be revoked
+  this way; only the principal removes an admin, through the trust chain.
+- Each entry is signed on its own, so lists from different admins merge as a
+  plain union.
+- The banning admin pushes the entry to every live peer at once, and every node
+  trades its list with an admin each 30 s tick
+  (`/api/internal/membership/revocations`), so a missed push still arrives.
+- A token for a revoked member is refused when it was issued at or before
+  `revoked_at`, and admins do not renew it unless the member was approved again
+  after the ban. Live requests are checked against the list too, so a ban takes
+  effect on the next request, not at token expiry.
+- The principal, on seeing a revocation of a member it approved, forgets the
+  admission and rotates the connection key, as with a departure.
+
+## Transport
+
+- **Mutual TLS between nodes, always.** Each node presents its certificate,
+  derived from its node key and verified by `SHA256(pubkey) == node_id`, as
+  server and as client. There is no switch to turn it off.
+- **The connection key alone opens nothing.** A call authenticated by the key is
+  accepted only when the transport proves the caller is a current member: an
+  admin of the chain, or a node holding a valid, unrevoked membership token.
+- **The iroh endpoint** authenticates the endpoint id, which is the node key,
+  on every connection; the receiving side hands that identity to the request
+  the same way. Announces over gossip are signed by the node key and dropped
+  when the signature does not verify.
+- **Plain HTTP** is served only to loopback, so the operator opens
+  `http://localhost` without a certificate warning. `POM_INSECURE_ADMIN_UI=1`
+  extends it to remote browsers, for development only.
+
+## Request authorization
+
+Every route has a scope in one table (`webui/routes/mod.rs`). A path missing
+from the table is treated as administrative. The browser goes through the
+session gate; another node goes through `caller_may_ask` (`gateway/state.rs`).
+
+| Scope | Browser on this node | Another node | Refusal reason |
+| --- | --- | --- | --- |
+| PrincipalOnly | Principal | Signed by the principal | `signature_required`, `principal_required` |
+| AnyAdmin | Any admin | Signed by any admin in the chain | `admin_required` |
+| ServingMember | Admin or worker | Signed by an admin, or by a peer with a valid worker token | `visitor_caller`, `role_unattested`, `unknown_caller` |
+| AnyMember | Every profile | Every member (inference, leaving) | - |
+| LocalOnly | Every profile | Never | `local_operator_only` |
+| HandlerAuth | The handler checks | The handler checks (sync protocols) | - |
+
+- `/api/transfer/*` (model files) needs a signed request; the connection key
+  alone pulls nothing.
+- A forwarded `POST /api/ui/leave` (removing another machine) needs an admin's
+  signature, and the principal's when the machine leaving is an admin.
+- **The administrative UI** uses an in-memory session with an `HttpOnly`,
+  `SameSite=Strict` cookie, `Secure` on TLS, issued for `/api/ui`,
+  `/api/transfer`, `/admin` and `/admin-ui`. The human password lives only in
+  the tab's memory; the node keeps its Argon2id hash.
+- **Plugins** are reached through the node: the plugin proxy and the public
+  catalog relay (`/api/ui/plugin-catalog`) are same-origin, so the browser never
+  calls a plugin or the store directly.
+
+## API keys and inference
+
+An API key never leaves the node that minted it.
+
+- `POST /api/generate` and every `/v1/` route accept only an active key minted
+  by this node (`ApiKeyAuth`, local `pom.db`). Keys minted elsewhere are
+  forgotten at startup (`forget_foreign_api_keys`).
+- Keys survive joining or leaving a network, so a client keeps its credential
+  whichever cluster serves the inference.
+- The cluster authenticates the inference by the gateway node's membership,
+  never by the client's key: each hop's inference port requires the transport
+  identity of a current member.
+- The audit records the key's non-secret identity and the `trace_id`, and
+  replicates them to the admins; the secret never leaves the node.
+- The network Chat checks the browser's key on the sender's own node and clears
+  it before the request leaves; the principal admits the message by the
+  sender's transport identity and membership.
+
+## Logs, audit and plugins
+
+Admins see every member's logs and request audit; any other node sees only its
+own.
+
+- **Fan-out**: cluster logs and audit events go over the iroh endpoint only to
+  the admins the chain proves, never to a node that merely announces `admin`.
+- **Ingestion is bound to the sender**: a log batch is accepted only when its
+  source and every entry's `node_id` equal the sending node. An audit event's
+  entry node must be the sender, and only that sender completes it.
+- **Reading**: on a non-admin, the request-log query is forced to the node's own
+  `node_id`.
+- **Plugins**: a peer call carries a `caller` object with its `role`
+  (`principal`, `admin`, `member`, `visitor`) and `head: false` for visitors.
+  Each plugin must check `caller.role` itself.
+
+## Known limits
+
+- **Rogue secondary admin**: while the principal is offline, a secondary admin
+  can still issue tokens and ban members until the principal removes it;
+  expiring admin grants is not implemented.
+- **Principal offline**: secondaries issue tokens from their copy of the
+  admission list but cannot decide admissions. A secondary that restarts while
+  the principal is down has an empty copy until it returns.
+- **Open-admission networks** trust the announced role.
+- **Unsigned peer snapshots**: a `PeerList` never moves the addresses of a peer
+  heard first hand in the last 30 s, but can seed a forged address for a peer
+  not yet known; TLS pinning then refuses it, so that is a denial of service at
+  most. The UDP `Heartbeat` is unsigned and can keep a departed peer looking
+  alive.
+- **Clock skew** beyond 30 s breaks token checks between the affected nodes.
+- **Plugins** enforce roles themselves through `caller.role`.
+
+Code: `crates/node/src/membership.rs`, `admin_trust.rs`,
+`backend/webui/membership.rs`, `backend/gateway/state.rs` (`caller_may_ask`),
+`backend/auth.rs`, `backend/webui/routes/mod.rs`,
+`inference/infer_server/prefix.rs` (`require_inference_auth`).

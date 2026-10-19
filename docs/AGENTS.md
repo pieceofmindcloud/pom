@@ -60,6 +60,9 @@ The permanent runtime guides. Beyond what their titles say:
   global broadcast; authenticated cluster policy probes use real listeners in
   the testkit and walk gateway candidates when a ghost address answers
   401/403.
+- `security-model.md` - the overview of who may do what: roles, trust chain,
+  membership tokens and revocation, mutual TLS, route scopes and node-local API
+  keys. `http-api.md` stays the route reference.
 - `slicing.md` - required tensor selection, the real cost of repeated heads,
   rebasing layer metadata to local numbering and header-only catalog reads,
   including for the selected model.

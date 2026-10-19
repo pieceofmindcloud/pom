@@ -638,6 +638,7 @@ async fn serve_connection(connection: quinn::Connection, router: axum::Router) -
                 }
             }));
             let mut request = http::Request::from_parts(parts, body);
+            crate::serve::host_from_authority(&mut request);
             request
                 .extensions_mut()
                 .insert(crate::serve::PeerAddr(remote));

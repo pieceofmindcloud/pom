@@ -29,6 +29,24 @@ use tracing::{debug, warn};
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PeerAddr(pub SocketAddr);
 
+/// HTTP/2 and HTTP/3 carry the host in the `:authority` pseudo-header, never
+/// in `Host`. Every check that reads `Host` - the plugin proxy's same-origin
+/// fence, the session cookie's name - would see no host over https and refuse
+/// the browser, so the authority becomes the `Host` a request without one has.
+pub(crate) fn host_from_authority<B>(req: &mut hyper::Request<B>) {
+    if req.headers().contains_key(hyper::header::HOST) {
+        return;
+    }
+    let Some(host) = req
+        .uri()
+        .authority()
+        .and_then(|authority| hyper::header::HeaderValue::from_str(authority.as_str()).ok())
+    else {
+        return;
+    };
+    req.headers_mut().insert(hyper::header::HOST, host);
+}
+
 /// The origin that counts for authentication: a request the p2p tunnel
 /// delivers over loopback, with this process's mark, counts as remote.
 ///
@@ -483,6 +501,7 @@ async fn handle_conn(
                     return Ok(refuse_plain().map(axum::body::Body::from));
                 }
                 let mut req = req;
+                host_from_authority(&mut req);
                 let origin = request_origin(peer, &mut req);
                 req.extensions_mut().insert(PeerAddr(origin));
                 req.extensions_mut().insert(TransportSecurity(is_tls));
@@ -1099,6 +1118,30 @@ mod tests {
             value.parse().unwrap(),
         );
         req
+    }
+
+    /// An https browser speaks HTTP/2: its host is only in the URI, and the
+    /// checks that read `Host` must still see it.
+    #[test]
+    fn the_authority_fills_a_missing_host() {
+        let mut req = hyper::Request::builder()
+            .uri("https://ksia:8080/api/ui/node")
+            .body(())
+            .unwrap();
+        host_from_authority(&mut req);
+        assert_eq!(req.headers()[hyper::header::HOST], "ksia:8080");
+
+        let mut req = hyper::Request::builder()
+            .uri("https://ksia:8080/")
+            .header(hyper::header::HOST, "salem:8080")
+            .body(())
+            .unwrap();
+        host_from_authority(&mut req);
+        assert_eq!(req.headers()[hyper::header::HOST], "salem:8080");
+
+        let mut req = hyper::Request::new(());
+        host_from_authority(&mut req);
+        assert!(req.headers().get(hyper::header::HOST).is_none());
     }
 
     /// What the tunnel delivers over loopback, with this process's mark, is

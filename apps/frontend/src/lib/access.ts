@@ -65,11 +65,8 @@ const INFER_ROUTES = [
 const INFER_DENIED_ROUTES = [
   "/config/network/participants",
   "/config/preferences/admin",
-  // Request logs, deployment logs and statistics are the network's
-  // operation, not an inference node's: hidden even where a plugin claims
-  // the route and before activation.
-  "/logs",
-  "/statistics",
+  // Deployment logs are the network's operation, not an inference node's:
+  // hidden even where a plugin claims the route.
   "/deployments",
 ] as const;
 
@@ -101,7 +98,10 @@ export function canAccessRoute(path: string, profile: Profile): boolean {
   if (profile === "visitor" && INFER_DENIED_ROUTES.some((prefix) => isUnder(path, prefix))) return false;
   const pluginProfiles = pluginRouteProfiles(path);
   if (pluginProfiles) return pluginProfiles.includes(profile);
-  if (isEnterprisePath(path)) return true;
+  // Request logs and statistics: a visitor sees the requests that entered
+  // through its own node once a plugin serves them, but gets no advertising
+  // fallback before that.
+  if (isEnterprisePath(path)) return profile !== "visitor";
   if (profile === "visitor") return INFER_ROUTES.some((prefix) => isUnder(path, prefix));
   const allowed = routeProfiles(path);
   return allowed === null || allowed.includes(profile);

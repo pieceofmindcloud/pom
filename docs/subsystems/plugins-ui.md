@@ -120,8 +120,11 @@ Every active plugin menu and route is available to `admin`, `worker` and `visito
 profiles. Each node owns its installed plugins, so manifest `roles` and legacy
 `profiles` are validated and preserved for compatibility with older hosts but
 do not gate this POM's plugin UI. The POM's native route restrictions still
-apply: for example, `visitor` cannot open `/logs`, `/statistics` or
-`/deployments`, even when a plugin claims an extension point. Plugin APIs and
+apply: for example, `visitor` cannot open `/deployments` (deployment logs
+included), even when a plugin claims an extension point. `/logs` and
+`/statistics` open to a `visitor` only when an active plugin serves them, and
+show the requests that entered through that node; the advertising fallback is
+not shown to it. Plugin APIs and
 sensitive operations must enforce their own authorization on the backend.
 
 The registry lives in `lib/pluginUi.ts`: `setPluginUi` validates and installs a

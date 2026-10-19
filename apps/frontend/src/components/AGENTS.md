@@ -174,7 +174,8 @@ Per-file list:
   sequence of consulting events before their aggregates. The same table marks the entries that go
   to the `visitor` footer and promotes the network to the main menu; `navForProfile` and
   `navFooterForProfile` are its two projections. Request Logs and Statistics stay visible to admin
-  and node even without a license, for product discovery; the `visitor` profile does not see them.
+  and node even without a license, for product discovery; the `visitor` profile sees them only
+  once an active plugin serves them.
   Tests in `nav.test.ts`.
   The main Network section contains Information, Participants, My Machine,
   Administrators, Sharing and API Keys. Settings contains Preferences,

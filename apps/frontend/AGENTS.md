@@ -98,8 +98,10 @@ development builds on this machine) and the local network screen (read-only: the
 role is decided at admission, and the interface does not offer becoming `worker`
 in its place). Plugins and the menus of installed plugins sit below the
 conversations list.
-It never sees request logs, deployment logs or statistics (denied in
-`lib/access.ts` even where a plugin claims the route), and its preferences hide
+It never sees deployment logs (denied in `lib/access.ts` even where a plugin
+claims the route); request logs and statistics open only once an active plugin
+serves them, with its own node's requests, and never as the advertising
+fallback. Its preferences hide
 the GPU thermal protection and the Hugging Face token. The cluster's connection
 key shows only to `admin` (`/config/keys/connection` and the Sharing screen). The value
 comes from `/api/ui/node`, it is a persisted property of the node, and it appears

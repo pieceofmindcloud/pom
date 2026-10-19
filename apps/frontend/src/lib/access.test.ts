@@ -8,6 +8,12 @@ describe("canAccessRoute", () => {
     }
   });
 
+  it("opens a plugin's logs to a visitor, never the fallback or the deployment logs", () => {
+    expect(canAccessRoute("/logs", "visitor")).toBe(false);
+    expect(canAccessRoute("/statistics", "visitor")).toBe(false);
+    expect(canAccessRoute("/deployments/logs", "visitor")).toBe(false);
+  });
+
   it("closes deployment to the node profile, but keeps the Enterprise screens navigable", () => {
     for (const path of ["/deploy", "/deployments"]) {
       expect(canAccessRoute(path, "worker")).toBe(false);

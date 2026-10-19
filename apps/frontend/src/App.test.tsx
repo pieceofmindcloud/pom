@@ -241,7 +241,7 @@ describe("profile guard per route", () => {
     expect(await screen.findAllByRole("button", { name: "Comprar agora" })).toBeTruthy();
   });
 
-  it("renders plugin screens across profiles while retaining native infer restrictions", async () => {
+  it("renders plugin screens across profiles, visitor logs included, keeping deployment logs closed", async () => {
     pluginUi.plugins = [enterpriseManifest(["admin", "worker"])];
     open("/logs", "admin");
     expect(await screen.findByText("tela-plugin:logs:logs")).toBeTruthy();
@@ -249,10 +249,13 @@ describe("profile guard per route", () => {
     open("/statistics", "worker");
     expect(await screen.findByText("tela-plugin:logs:stats")).toBeTruthy();
     cleanup();
-    // POM keeps Logs closed to infer, even when a plugin provides it.
+    // A visitor sees the requests of its own node once the plugin serves
+    // them; deployment logs stay closed to it.
     open("/logs", "visitor");
+    expect(await screen.findByText("tela-plugin:logs:logs")).toBeTruthy();
+    cleanup();
+    open("/deployments/logs", "visitor");
     expect(await screen.findByText("Tela restrita a outro perfil")).toBeTruthy();
-    expect(screen.queryByText(/^tela-plugin:/)).toBeNull();
   });
 
   it("opens an admin-only manifest route for node and infer profiles", async () => {

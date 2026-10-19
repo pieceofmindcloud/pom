@@ -258,8 +258,10 @@ local-only notice. Routes:
   stays. `/logs/statistics` remains a native alias of `/statistics`.
   Plugin menus and screens are available to all profiles; manifest `roles` and
   legacy `profiles` are validated and preserved but do not gate this POM's UI.
-  Native route restrictions remain in force, so `visitor` cannot open `/logs`,
-  `/statistics` or `/deployments`, even when a plugin claims an extension point.
+  Native route restrictions remain in force, so `visitor` cannot open
+  `/deployments` (deployment logs included), even when a plugin claims an
+  extension point. `/logs` and `/statistics` open to a `visitor` only when an
+  active plugin serves them: its own node's requests, never the fallback.
 - `/plugins` -> Plugins, the showcase of publishable items returned by the
   license server's `/v1/plugins`, read through the node, crossed by `code` with the
   local license and install state. Open to every profile: plugins are local to

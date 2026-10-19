@@ -606,10 +606,13 @@ impl Discovery {
                         }
                         Some(Ok(GossipEvent::NeighborUp(peer))) => {
                             debug!("gossip: neighbor up {}", peer.fmt_short());
+                            policy.neighbors.insert(peer);
                         }
+                        // A neighbor going down is HyParView at work, not a
+                        // peer to join again: see `PolicyState::joined`.
                         Some(Ok(GossipEvent::NeighborDown(peer))) => {
                             debug!("gossip: neighbor down {}", peer.fmt_short());
-                            policy.joined.remove(&peer);
+                            policy.neighbors.remove(&peer);
                         }
                         Some(Ok(GossipEvent::Lagged)) => debug!("gossip: receiver lagged"),
                         Some(Err(error)) => warn!("gossip: {error}"),
@@ -739,11 +742,25 @@ impl Discovery {
 /// What the periodic policy round remembers between rounds.
 #[derive(Default)]
 struct PolicyState {
-    /// Endpoints asked to join the gossip topic and not since seen leaving.
+    /// Endpoints asked to join the gossip topic, once each. From there the
+    /// overlay is HyParView's: it keeps 5 active neighbors and promotes
+    /// passive ones by itself. Asking again after every `NeighborDown` fought
+    /// it: a join into a full view evicts another neighbor, whose node asks
+    /// for it back within a round, and so on for good, a fresh QUIC connection
+    /// each time (5 a second between two nodes of a 10-node network).
     joined: HashSet<EndpointId>,
+    /// The topic's active neighbors right now.
+    neighbors: HashSet<EndpointId>,
+    /// When this node, with no neighbor at all, last asked every admitted
+    /// peer again.
+    isolated_rejoin: Option<std::time::Instant>,
     /// Member relays this node added to its relay map.
     member_relays: HashSet<RelayUrl>,
 }
+
+/// Wait between two rounds of asking every admitted peer to join, while this
+/// node has no gossip neighbor at all.
+const ISOLATED_REJOIN_INTERVAL: Duration = Duration::from_secs(30);
 
 async fn join_gossip(gossip: &GossipSender, policy: &mut PolicyState, peer: EndpointId) {
     if policy.joined.insert(peer) {
@@ -831,7 +848,10 @@ async fn apply_policy(
     );
 
     // Gossip membership: every admitted peer this node has not asked yet.
+    // Asked again only when this node has no neighbor left, which HyParView
+    // cannot repair alone, and then not more than once per interval.
     if !network.is_detached() {
+        let mut admitted = Vec::new();
         for peer in &peers {
             let Some(id) = peer.endpoint_id.as_deref().and_then(p2p::parse_endpoint_id) else {
                 continue;
@@ -841,6 +861,18 @@ async fn apply_policy(
             }
             ctx.p2p.learn(id, &peer.endpoint_dialable_addrs());
             join_gossip(gossip, policy, id).await;
+            admitted.push(id);
+        }
+        let now = std::time::Instant::now();
+        let rejoin_due = policy
+            .isolated_rejoin
+            .is_none_or(|last| now.duration_since(last) >= ISOLATED_REJOIN_INTERVAL);
+        if policy.neighbors.is_empty() && !admitted.is_empty() && rejoin_due {
+            policy.isolated_rejoin = Some(now);
+            debug!("gossip: no neighbor, asking {} peer(s) again", admitted.len());
+            if let Err(error) = gossip.join_peers(admitted).await {
+                debug!("gossip: rejoin: {error}");
+            }
         }
     }
 

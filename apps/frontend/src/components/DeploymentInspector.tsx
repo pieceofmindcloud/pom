@@ -618,13 +618,38 @@ export function DeploymentInspector({
       : roleRow("inference_role", t("deploy.knob.inference_role"), value.inference_role ?? "both", (role) =>
           set({ inference_role: role }));
 
+  /** The prefill/decode split's threshold; empty takes the engine's default. */
+  const prefillMinTokensField = () => (
+    <InspectorRow key="prefill_min_tokens" label={t("deploy.knob.prefill_min_tokens")} tip={t("deploy.knob.prefill_min_tokensHint")}>
+      {readOnly ? (
+        <ReadValue>{value.prefill_min_tokens == null ? "-" : showNumber(value.prefill_min_tokens)}</ReadValue>
+      ) : (
+        <Input
+          aria-label={t("deploy.knob.prefill_min_tokens")}
+          name="prefill_min_tokens"
+          type="number"
+          min={0}
+          placeholder="4096"
+          value={value.prefill_min_tokens ?? ""}
+          onChange={(event) =>
+            set({
+              prefill_min_tokens: event.target.value === "" ? null : Math.max(0, Math.round(Number(event.target.value) || 0)),
+            })
+          }
+          compact
+          className="text-right font-mono"
+        />
+      )}
+    </InspectorRow>
+  );
+
   if (inferenceService) {
     // The POM carries the hidden state between the plugin's stages, so its own
     // settings only exist when the slices cross machines. The prefill/decode
     // role is the opposite: it belongs to a machine that runs the whole model.
     const declared = inferenceService.pomSettings ?? [];
     const pomSettings = declared.filter((setting) =>
-      setting === "inference_role" ? !showHiddenStateDtype : showHiddenStateDtype,
+      setting === "inference_role" || setting === "prefill_min_tokens" ? !showHiddenStateDtype : showHiddenStateDtype,
     );
     // The engine's own settings, and the ones the service places in the POM card (whatever the slices).
     const engineSettings = (inferenceService.settings ?? []).filter((setting) => setting.placement !== "pom");
@@ -660,6 +685,7 @@ export function DeploymentInspector({
             {pomSettings.includes("prefill_max_inflight_chunks") && numeric("prefill_max_inflight_chunks")}
             {pomSettings.includes("hidden_state_dtype") && hiddenStateField()}
             {pomSettings.includes("inference_role") && inferenceRoleField()}
+            {pomSettings.includes("prefill_min_tokens") && prefillMinTokensField()}
             {pomCardSettings.length > 0 && (
               <EngineSettingsFields
                 settings={pomCardSettings}

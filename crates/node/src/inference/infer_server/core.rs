@@ -1750,6 +1750,7 @@ mod tests {
             inference_service: None,
             engine_settings: Default::default(),
             inference_role: Default::default(),
+            prefill_min_tokens: None,
             inference_port: port,
             n_gpu_layers: 99,
             n_ctx: 8192,

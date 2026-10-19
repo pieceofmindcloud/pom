@@ -294,6 +294,9 @@ pub(crate) fn load_params(
     // a whole-model machine's part in a prefill/decode split: the plugin keeps the sessions on for it
     if !cfg.inference_role.is_both() && !crate::plugin_stage_link::is_stage(cfg) {
         params["role"] = json!(cfg.inference_role.as_str());
+        if let Some(tokens) = cfg.prefill_min_tokens {
+            params["prefill_min_tokens"] = json!(tokens);
+        }
     }
     if let Some(link) = link {
         params["link"] = link.clone();
@@ -1639,6 +1642,7 @@ mod tests {
         // a whole-model prefill machine says its role; the plugin hears it in engine.load
         let prefill = crate::runtime::NodeConfig {
             inference_role: crate::webui::InferenceRole::Prefill,
+            prefill_min_tokens: Some(2048),
             ..cfg.clone()
         };
         assert_eq!(
@@ -1646,6 +1650,7 @@ mod tests {
             json!(["engine/plugin-v1:strata", "engine/plugin-role-v1:prefill"])
         );
         assert_eq!(load_params(&prefill, &[0], &[], None)["role"], "prefill");
+        assert_eq!(load_params(&prefill, &[0], &[], None)["prefill_min_tokens"], 2048);
         assert!(load_params(&cfg, &[0], &[], None).get("role").is_none());
     }
 

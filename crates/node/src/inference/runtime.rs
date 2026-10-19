@@ -190,6 +190,9 @@ pub struct NodeConfig {
     /// The machine's part in a prefill/decode split (`RuntimeParams::inference_role`).
     #[serde(default, skip_serializing_if = "crate::webui::InferenceRole::is_both")]
     pub inference_role: crate::webui::InferenceRole,
+    /// The prefill/decode split's threshold (`RuntimeParams::prefill_min_tokens`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefill_min_tokens: Option<u32>,
 
     pub inference_port: u16,
     pub n_gpu_layers: u32,
@@ -396,6 +399,7 @@ impl NodeConfig {
             inference_service: p.inference_service.clone(),
             engine_settings: p.engine_settings.clone(),
             inference_role: p.inference_role,
+            prefill_min_tokens: p.prefill_min_tokens,
             inference_port: 0,
             single_peer: false,
             no_embeddings: p.no_embeddings,
@@ -2335,6 +2339,7 @@ mod tests {
             inference_service: None,
             engine_settings: Default::default(),
             inference_role: Default::default(),
+            prefill_min_tokens: None,
             inference_port: 8181,
             n_gpu_layers: 99,
             n_ctx: 8192,

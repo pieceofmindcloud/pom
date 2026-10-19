@@ -73,6 +73,10 @@ pub struct RuntimeParams {
     /// `InferenceRole`.
     #[serde(default, skip_serializing_if = "InferenceRole::is_both")]
     pub inference_role: InferenceRole,
+    /// The prefill/decode split's threshold: a turn goes through the prefill machine only when the part of its prompt
+    /// the decode machine does not already hold has at least this many tokens. `None` takes the engine's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefill_min_tokens: Option<u32>,
     #[serde(default = "d_gpu_layers")]
     pub n_gpu_layers: u32,
     #[serde(default = "d_n_ctx")]
@@ -318,6 +322,7 @@ impl Default for RuntimeParams {
             inference_service: None,
             engine_settings: Default::default(),
             inference_role: Default::default(),
+            prefill_min_tokens: None,
             n_gpu_layers: d_gpu_layers(),
             n_ctx: d_n_ctx(),
             offload_kqv: d_true(),
@@ -380,6 +385,7 @@ impl From<&NodeConfig> for RuntimeParams {
             inference_service: c.inference_service.clone(),
             engine_settings: c.engine_settings.clone(),
             inference_role: c.inference_role,
+            prefill_min_tokens: c.prefill_min_tokens,
             n_gpu_layers: c.n_gpu_layers,
             n_ctx: c.n_ctx,
             offload_kqv: c.offload_kqv,

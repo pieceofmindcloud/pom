@@ -2698,7 +2698,11 @@ the plugin in `engine.load` (`role`) and is announced as
   and `decode_holds`. That machine reads the prompt into a batch slot and keeps
   the conversation's session (`done.session` deferred, `done.prefill.tokens`),
   or answers `done.prefill.skipped` when the part of the prompt the head lacks
-  is too short to be worth the transfer. Its generated token is dropped.
+  is shorter than the deployment's `prefill_min_tokens` (a POM setting, sent to
+  the plugin in `engine.load`; the engine's default when unset, 4096 on
+  Strata): the head then reads it itself, so the next turn of a long
+  conversation the head already holds does not cross. Its generated token is
+  dropped.
 - **The decode step.** When the session was kept, the head's turn carries
   `session_source: <prefill node id>`. The head (`plugin_session::pull_from`,
   from `prepare_for_body`) asks that machine's offer until its save is written

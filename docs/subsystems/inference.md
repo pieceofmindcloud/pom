@@ -2105,8 +2105,8 @@ client and a bounded channel, so the hypothesis that SSE writing caused the
 
 The new transport sends a `/v1/step-stream` control frame once to the remote
 head. The peer's producer calls the same `handle_step` and keeps inferring; a
-separate emitter drains at most eight tokens already in the queue and makes one
-POST per batch to `/v1/remote-stream-result`, with no sleep or timer. The
+separate emitter drains every token already in the queue (up to 64, the
+producer queue's size) and makes one POST per batch to `/v1/remote-stream-result`, with no sleep or timer. The
 callback queue has capacity 64: a slow client blocks the emitter when it fills
 up and then the producer, instead of letting memory grow without bound. In
 sliced plans, the head keeps the other hops inside the network. The trace counts
@@ -2117,7 +2117,11 @@ overlapping intervals: `producer_wait` is the cycle until production,
 the ready item to the emitter and `delivery_ms` is the previous callback.
 `node_timings.mtp_draft_ms` makes the synchronous `nextn` visible; so
 `5108 ms / 59` with channel and queue close to zero is production cadence, not
-network. The content still comes from the existing sampler and UTF-8 assembler,
+network. One callback is in flight at a time, so a batch cap bounds delivery
+at `cap / RTT`: with the old cap of eight, a visitor 270 ms away through a
+public relay got 22 tok/s from a head producing 72; the cap now matches the
+producer queue, so a batch carries everything generated during the previous
+callback. The content still comes from the existing sampler and UTF-8 assembler,
 in the same order.
 
 **`prompt_progress`**: with no way back, the head can no longer overlay

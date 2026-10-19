@@ -22,8 +22,12 @@ fn is_zero_u64(value: &u64) -> bool {
 
 /// Maximum number of generated tokens the remote emitter drains from its
 /// queue in one callback. This is a cap, not a target: a token is sent as soon
-/// as the emitter is free, and no timer fills the gap.
-pub(crate) const REMOTE_STREAM_BATCH_LIMIT: usize = 8;
+/// as the emitter is free, and no timer fills the gap. One callback is in
+/// flight at a time, so the cap bounds delivery at `limit / RTT`: at 8, a
+/// 270 ms relayed path delivered 26 tok/s from a head producing 75. It
+/// matches the producer's queue (`step.rs`, 64), so a batch takes everything
+/// already generated.
+pub(crate) const REMOTE_STREAM_BATCH_LIMIT: usize = 64;
 /// One control frame starts generation on a remote head. Subsequent tokens
 /// return through `crate::direct::REMOTE_STREAM_RESULT_PATH` in batches.
 pub(crate) const REMOTE_STREAM_PATH: &str = "/v1/step-stream";

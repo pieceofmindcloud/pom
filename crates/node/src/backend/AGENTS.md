@@ -838,7 +838,11 @@ change lands in the right place.
   convention), `CallKind::FunctionCalls` (the older
   `<function_calls><invoke name=...>` repair dialect, including multiple
   invokes) and `CallKind::BareFunction` (a tolerated wrapper-less
-  `<function>NAME</function>` fallback, name-only, whitespace guard).
+  `<function>NAME</function>` fallback, name-only, whitespace guard). A
+  `<tool_call>` opened with `<parameter=NAME>` where `<function=NAME>`
+  belongs is read as a call to NAME (`repair_parameter_opening`) when the next
+  tag is another `<parameter=` and, for a complete call, it closes with
+  `</function>`.
   `parse_call_body` accepts the nested `<function=...>` XML form or the legacy
   Hermes JSON-object form, including an extra JSON-encoded `arguments` string;
   a sole object parameter named `arguments` is unwrapped for provider schemas;

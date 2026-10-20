@@ -37,6 +37,10 @@
 //! `CallKind::BareFunction`), recovering a name with **no arguments**, since
 //! none are ever present in it — a real, accepted limit, not an oversight.
 //!
+//! A Strata `IQ3_XXS` session also opened a call with `<parameter=NAME>`
+//! where `<function=NAME>` belongs, the rest well formed and closed by
+//! `</function>`; `repair_parameter_opening` reads that shape as a call.
+//!
 //! Some Qwen turns also fall back to the older
 //! `<function_calls><invoke name="…"><parameter name="…">` dialect after a
 //! tool validation error. That recovery form is accepted as one container
@@ -456,6 +460,8 @@ fn parse_partial_call_body(raw: &str, kind: CallKind) -> Option<PartialCall> {
             let trimmed = raw.trim_start();
             if trimmed.starts_with("<function=") {
                 parse_partial_function_call_xml(trimmed)
+            } else if let Some(repaired) = repair_parameter_opening(trimmed) {
+                parse_partial_function_call_xml(&repaired)
             } else {
                 parse_partial_function_call_json(trimmed)
             }
@@ -665,6 +671,11 @@ fn parse_call_body(raw: &str, kind: CallKind) -> Result<(String, serde_json::Val
             if raw.trim_start().starts_with("<function=") {
                 return parse_function_call_xml(raw).ok_or_else(fallback);
             }
+            if let Some(repaired) = repair_parameter_opening(raw) {
+                if raw.trim_end().ends_with("</function>") {
+                    return parse_function_call_xml(&repaired).ok_or_else(fallback);
+                }
+            }
             match serde_json::from_str::<serde_json::Value>(raw.trim()) {
                 Ok(v) => match v.get("name").and_then(|n| n.as_str()) {
                     Some(name) if !name.is_empty() => Ok((
@@ -679,6 +690,23 @@ fn parse_call_body(raw: &str, kind: CallKind) -> Result<(String, serde_json::Val
             }
         }
     }
+}
+
+/// A call whose opening tag the model wrote as `<parameter=NAME>` instead of
+/// `<function=NAME>` (seen from a 3-bit Strata quant on a long turn):
+/// `<tool_call><parameter=bash><parameter=command>ls</parameter></function></tool_call>`.
+/// Rewritten to the `<function=NAME>` form only when the next tag is another
+/// `<parameter=`, so a tag holding a value is never taken for a name; the
+/// complete parser also requires the closing `</function>`.
+fn repair_parameter_opening(raw: &str) -> Option<String> {
+    let rest = raw.trim_start().strip_prefix("<parameter=")?;
+    let (name, after) = rest.split_once('>')?;
+    let name = name.trim();
+    if name.is_empty() || name.contains(char::is_whitespace) {
+        return None;
+    }
+    let after = after.trim_start();
+    after.starts_with("<parameter=").then(|| format!("<function={name}>\n{after}"))
 }
 
 /// Hermes-style templates normally emit `arguments` as an object, but some
@@ -1611,6 +1639,39 @@ mod tests {
     }
 
     // ── bare `<function>NAME</function>`, no wrapper ─────────────────────────
+
+    #[test]
+    fn parse_output_recovers_a_call_opened_with_a_parameter_tag() {
+        let text = "Looking.\n<tool_call>\n<parameter=bash>\n<parameter=command>\ncd /x && grep -n \"seal(\" a.rs | head -20\n</parameter>\n</function>\n</tool_call>";
+        assert_eq!(
+            parse_output(text),
+            vec![
+                OutputPart::Text("Looking.\n".into()),
+                OutputPart::ToolCall {
+                    name: "bash".into(),
+                    arguments: json!({"command": "cd /x && grep -n \"seal(\" a.rs | head -20"}),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_parameter_tag_holding_a_value_is_not_taken_for_a_call_name() {
+        let text = "<tool_call>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call>";
+        assert_eq!(parse_output(text), vec![OutputPart::Text(text.into())]);
+    }
+
+    #[test]
+    fn a_parameter_opened_call_cut_by_the_cap_keeps_its_name() {
+        let (parts, truncated) = parse_output_truncated(
+            "<tool_call>\n<parameter=bash>\n<parameter=command>\nls -la",
+        );
+        assert!(truncated);
+        match parts.as_slice() {
+            [OutputPart::ToolCallTruncated(partial)] => assert_eq!(partial.name, "bash"),
+            other => panic!("expected one truncated call, got {other:?}"),
+        }
+    }
 
     #[test]
     fn parse_output_recovers_a_bare_function_call_with_no_wrapper() {

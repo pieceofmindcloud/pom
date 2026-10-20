@@ -629,7 +629,9 @@ boundary.
   before the SQL query, preserving the broad search when the field was not filled in. The routes
   `/api/ui/requests` and `/api/ui/requests/stats` are Enterprise and fail closed with
   `enterprise_required` without an entitlement. With an active entitlement, the handlers forward
-  the listing and the statistics to the `pom-plugin-host` process.
+  the listing and the statistics (filters, `kind` included) to the
+  `pom-plugin-host` process; while that plugin runs, a query it does not answer
+  is 503 `logs_plugin_unavailable`, never the stale legacy store.
 - **Every call to a peer leaves through `GatewayState.peer_http`** (`PeerClients`), which
   pins the destination's certificate by node_id. There is no longer a shared client without
   pinning in the state: with TLS on it verified no one,

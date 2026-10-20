@@ -1364,8 +1364,12 @@ reach only the admins the chain proves (`Network::admin_peers`): announcing
 `profile: admin` is not enough, and an inference node never receives them.
 The filters are `node_id`, `user` (the API
 key's human label), `api_key` (id, label or associated node), `model`, `prompt`
-(FTS5 search), `from`, `to`, `limit` and `offset`; sorting is by most recent
-`received_at`. The UI uses `limit` and `offset` for infinite scroll, without
+(FTS5 search), `from`, `to`, `kind` (`normal` or `jev`, classified by the
+logs plugin), `limit` and `offset`; sorting is by most recent `received_at`.
+With the logs plugin running, both routes answer only from it: when its query
+does not come back within the plugin host's IPC timeout, the route answers 503
+`logs_plugin_unavailable` instead of falling back to the legacy `pom.db`
+store, which only holds requests from before the plugin took over. The UI uses `limit` and `offset` for infinite scroll, without
 loading the whole history on the first request. The database lives in
 `pom.db`, in `POM_DB_DIR` when set or in `config::project_root()` by default, is
 created idempotently at startup and keeps indexes on the prompt and on the
@@ -1381,7 +1385,7 @@ or enqueue failure is logged on the server with the operation and the lost
 request id, and is not propagated to the inference request.
 
 `GET /api/ui/requests/stats` requires the same `ConnectionAuth` and accepts the
-filters `node_id`, `user`, `api_key`, `model`, `prompt`, `from` and `to`, but
+filters `node_id`, `user`, `api_key`, `model`, `prompt`, `from`, `to` and `kind`, but
 does not paginate. The server makes a single aggregation over the filtered rows
 and returns totals per token, node, day and model, consumption per peer
 (`bytes_sent`, `bytes_received`, `network_ms`), average inference, average

@@ -667,6 +667,26 @@ impl GatewayState {
         .await
     }
 
+    /// Signed control GET to `peer`'s gateway along the measured route, as
+    /// [`Self::control_post_json_routed`]: a large download (a plugin
+    /// engine's session file) goes over the address that reaches the peer
+    /// fastest, not the first announced one that answers or the tunnel.
+    pub(crate) async fn control_get_routed(
+        &self,
+        peer: &crate::network::PeerInfo,
+        path: &str,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<reqwest::Response> {
+        use crate::route_plan::{book, Plane, RouteKind};
+        let bases = match book().active(&peer.node_id, Plane::Gateway) {
+            Some(route) if route.kind == RouteKind::Tunnel => Vec::new(),
+            Some(route) => vec![route.base_url.trim_end_matches('/').to_string()],
+            None => self.gateway_bases(peer).into_iter().take(1).collect(),
+        };
+        self.control_call_over(peer, &bases, reqwest::Method::GET, path, None, timeout)
+            .await
+    }
+
     /// [`Self::control_post_json_routed`] with a body of raw bytes (a frame of
     /// a plugin engine's stage link, `plugin_stage_link`).
     pub(crate) async fn control_post_bytes_routed(

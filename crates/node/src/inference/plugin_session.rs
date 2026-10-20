@@ -538,13 +538,15 @@ pub(crate) fn note_prefill_rate(tokens_per_s: f64) {
 }
 
 /// What a machine can give for a conversation: the tokens and bytes of its file on disk, the tokens its slot holds in
-/// RAM (not fetchable), the layer split it runs, and whether its save is still being written.
+/// RAM (not fetchable), the layer split it runs, the engine settings its sessions are bound to (`config`, None from an
+/// older bridge), and whether its save is still being written.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Offer {
     pub tokens: u64,
     pub bytes: u64,
     pub ram_tokens: u64,
     pub layers: String,
+    pub config: Option<String>,
     pub pending: bool,
 }
 
@@ -555,6 +557,7 @@ impl Offer {
             bytes: value["bytes"].as_u64()?,
             ram_tokens: value["ram_tokens"].as_u64().unwrap_or(0),
             layers: value["layers"].as_str()?.to_owned(),
+            config: value["config"].as_str().map(str::to_owned),
             pending: value["pending"].as_bool().unwrap_or(false),
         })
     }
@@ -568,6 +571,15 @@ impl Offer {
 /// Whether a session saved with the layers `saved` can be restored on a machine running the layers `local`: the same
 /// split, or a machine that runs the whole model (`whole`) and a session saved on a split that covers every layer, from
 /// 0 to the end, as one contiguous chain of ranges (the engine joins the stages into one image on that machine).
+/// Whether a session saved with the engine settings `saved` restores on a machine running `local` (Strata's config
+/// fingerprint). Unknown on either side (an older bridge): the engine decides.
+pub(crate) fn configs_compatible(local: Option<&str>, saved: Option<&str>) -> bool {
+    match (local, saved) {
+        (Some(local), Some(saved)) => local == saved,
+        _ => true,
+    }
+}
+
 pub(crate) fn layers_compatible(local: &str, saved: &str) -> bool {
     if local == saved {
         return true;
@@ -759,6 +771,13 @@ async fn pull_from(state: &GatewayState, code: &str, key: &str, source: &str) ->
     if !layers_compatible(&local.layers, &offer.layers) {
         return Err(format!("its layers ({}) are not this machine's ({})", offer.layers, local.layers));
     }
+    if !configs_compatible(local.config.as_deref(), offer.config.as_deref()) {
+        return Err(format!(
+            "its engine settings ({}) are not this machine's ({}): the engine would refuse the session",
+            offer.config.as_deref().unwrap_or("?"),
+            local.config.as_deref().unwrap_or("?")
+        ));
+    }
     if offer.bytes == 0 || offer.tokens <= local.have() {
         info!(plugin = %code, session = %key, source = %source, tokens = offer.tokens, local = local.have(),
               "prefill split: this machine already holds as much of the conversation");
@@ -851,7 +870,7 @@ async fn fetch_session(
                 break;
             }
             let response = state
-                .control_get(
+                .control_get_routed(
                     peer,
                     &format!(
                         "/api/internal/plugins/{code}/engine/session/file?key={key}&kind={kind}&offset={offset}&len={SESSION_PIECE}"
@@ -1061,8 +1080,20 @@ mod pull_tests {
             bytes,
             ram_tokens: 0,
             layers: layers.to_owned(),
+            config: None,
             pending: false,
         }
+    }
+
+    #[test]
+    fn a_session_with_other_engine_settings_is_not_fetched() {
+        let a = "engine=0.1.44.1 backend=cuda kv=int8 max_context=200000 kv_resident=32768 mtp_window=32768 kv_rot=0";
+        let b = "engine=0.1.44.1 backend=cuda kv=int8 max_context=200000 kv_resident=32768 mtp_window=-1 kv_rot=0";
+        assert!(configs_compatible(Some(a), Some(a)));
+        assert!(!configs_compatible(Some(a), Some(b)));
+        assert!(configs_compatible(None, Some(b)), "an older bridge: the engine decides");
+        let value = json!({"tokens": 5, "bytes": 9, "layers": "whole", "config": a});
+        assert_eq!(Offer::from_json(&value).unwrap().config.as_deref(), Some(a));
     }
 
     const GIB: u64 = 1 << 30;

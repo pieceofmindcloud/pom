@@ -1171,13 +1171,28 @@ async fn prefill_on_peer(
     let peer = prefill_peer(state, code, model, head, preferred).await?;
     // what the head already holds of the conversation: the prefill machine reads the prompt only when the part the
     // head lacks is long enough
-    let holds = match super::plugin_session::offer_of(state, code, key, head).await {
+    let head_offer = super::plugin_session::offer_of(state, code, key, head).await;
+    let holds = match &head_offer {
         Ok(offer) => offer.tokens.max(offer.ram_tokens),
         Err(error) => {
             info!(plugin = %code, session = %key, head = %head, "prefill split: no offer from the head: {error}");
             0
         }
     };
+    // a session saved with other engine settings than the head's is refused by its engine: the head reads the prompt
+    if let Ok(head_offer) = &head_offer {
+        if let Ok(prefill_offer) = super::plugin_session::offer_of(state, code, key, &peer.node_id).await {
+            if !super::plugin_session::configs_compatible(head_offer.config.as_deref(), prefill_offer.config.as_deref()) {
+                warn!(
+                    plugin = %code, session = %key, prefill = %peer.node_id, head = %head,
+                    prefill_config = prefill_offer.config.as_deref().unwrap_or("?"),
+                    head_config = head_offer.config.as_deref().unwrap_or("?"),
+                    "prefill split: the prefill machine runs other engine settings than the head; the head reads the prompt"
+                );
+                return None;
+            }
+        }
+    }
     let mut prefill = body.clone();
     prefill["max_tokens"] = json!(1);
     prefill["prefill_only"] = json!(true);

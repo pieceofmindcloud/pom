@@ -1475,6 +1475,13 @@ punch count. It enters the cache fingerprint, otherwise the snapshot would
 freeze - neither the NAT report nor a change of relay touches `peers`. See
 `docs/subsystems/p2p-network.md`, "NAT traversal".
 
+It also carries `relayed_peers`, `[{node_id, hostname, relay_kind}]`: the peers
+this node reaches only through a relay right now (`Network::peer_route` kind
+`relayed`), the relay having coordinated a hole punch that did not close and
+fallen back to carrying the traffic. `relay_kind` is `public` (n0's default
+relays), `dedicated` or `member`. It enters the fingerprint too. The top bar's
+"Behind NAT" badge shows only when it is not empty.
+
 In the `/api/ui/cluster` payload, `PeerView.load` is the in-flight request
 reading published by the peer itself. For the local peer the gateway queries
 its `LoadTracker`; for remote peers it uses the `load` field of the respective
@@ -1587,6 +1594,14 @@ mirrored under `/api/setup/geo/` in the dormant wizard router:
 A city is `{id, name, state, country_code, country_name, latitude,
 longitude}`; `limit` is clamped to 1..50. They answer from memory, store
 nothing and contact nobody. See `web-ui.md`, "Network location".
+
+The node's local CA (`network/web_ca.rs`, `webui/https.rs`), `LocalOnly`:
+
+| Route | Answer |
+|---|---|
+| `GET /api/ui/tls/ca` | `{fingerprint, trust, declined, can_install, filename}`: SHA-256 of the CA, `trusted`/`not_trusted`/`unknown` on the node's machine, whether the person refused the system dialog for this CA, and whether this request comes from loopback on a system the node can install on |
+| `GET /api/ui/tls/ca.crt` | the CA certificate (PEM, `application/x-x509-ca-cert`, `attachment`), never a key |
+| `POST /api/ui/tls/ca/install` | asks the node machine's system to trust the CA and answers `{outcome, detail}` (`installed`, `already_trusted`, `declined`, `unavailable`); 403 `not_loopback` from anywhere else, since the dialog opens on the node's screen |
 
 `GET /api/ui/network/trust-share` is only for the authorized administrator. It
 returns the root document with the real file name for download and includes

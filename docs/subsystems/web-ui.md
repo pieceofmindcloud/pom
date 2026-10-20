@@ -101,7 +101,7 @@ gateway and the administrative session alive, like the macOS status item. The
 runtime is a dependency installed on Windows, not a helper executable shipped
 by POM.
 
-The address is `http://127.0.0.1:<gateway_port>/admin-ui/chat`, with the port
+The address is `https://127.0.0.1:<gateway_port>/admin-ui/chat` (plain `http` only when the node could not make its certificate), with the port
 from `pom.json`, `--gateway-port` as a fallback and 8080 as the default - the
 panel never hardcodes 8080. Both WebViews use
 `WKWebsiteDataStore.defaultDataStore`, so they share cookies with the panel
@@ -692,10 +692,12 @@ Settings menu and is promoted to `visitor`'s main menu.
 The `Topbar` header keeps the node's identification, profile, notifications and
 the native window shortcut; the `This node` button is not rendered. The node's
 short id is not shown there: in its place an amber "Behind NAT" badge appears
-while the NAT report says the machine has no public address
-(`ClusterView.traversal.nat: "private"`), and a click opens a dialog on what
-that costs (a relay detour, about 2 MB/s on public relays) and how to give the
-machine a direct path (`components/NatBadge.tsx`). The
+only while some peer is reached through a relay that carries the traffic, the
+hole punch it coordinated having failed (`ClusterView.relayed_peers`, from
+`Network::peer_route` kind `relayed`). Being behind a NAT whose hole punch
+worked shows nothing. A click opens a dialog naming those machines and their
+relay kind, what it costs (a detour, about 2 MB/s on public relays) and how to
+give the machine a direct path (`components/NatBadge.tsx`). The
 Sidebar's TLS indicator (`components/TlsIndicator.tsx`) is also hidden for
 every profile. The policy is still available in Administrative preferences; no
 TLS configuration or behavior changed.
@@ -1066,8 +1068,14 @@ the Sidebar no TLS icon (`p2p-network.md`, section 5). The QUIC panel
 (`QuicPanel`) is always shown on the administrative preferences route, and the
 local discovery switch takes its authority from `NodeInfo.quic_authority`,
 which is the same principal check. The interface on `http://localhost` stays
-plain HTTP; from another machine the browser is sent to `https://` and warns
-once about the self-signed certificate.
+plain HTTP; from another machine the browser is sent to `https://`, and warns
+about an unknown issuer until that machine trusts the node's local CA. The
+Preferences screen has the "Node certificate" panel
+(`components/HttpsCertificatePanel.tsx`, `GET /api/ui/tls/ca`): whether this
+computer trusts the CA, its fingerprint, the `.crt` download, the manual steps
+per system and for harnesses (`NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`), and
+"Install on this computer", offered only to a request from the node's own
+machine, since the trust store is that machine's.
 
 ## Settings / Administrative preferences: QUIC transport
 
@@ -1313,9 +1321,11 @@ browser gets is a self-signed ECDSA one, different from the Ed25519 one the
 peers get - a browser does not verify Ed25519. See `p2p-network.md`, "Two
 certificates on the same port".
 
-**The browser warns on the first visit to each machine**, because the
-certificate is self-signed and there is no CA to validate it. It is expected;
-the operator accepts it once per machine.
+**The browser warns about an unknown issuer** until the computer trusts the
+node's local CA (Preferences, "Node certificate", or the desktop app's prompt at
+start). The certificate keeps its key across restarts, so an accepted warning
+does not come back after a restart. See `p2p-network.md`, "Two certificates on
+the same port".
 
 ## The Flow card says how much of the model fit on the GPU
 

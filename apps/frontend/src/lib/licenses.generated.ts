@@ -283,6 +283,13 @@ export const THIRD_PARTY_LICENSES: readonly LicenseEntry[] = [
     "ecosystem": "rust"
   },
   {
+    "name": "hmac",
+    "version": "0.12.1",
+    "license": "MIT OR Apache-2.0",
+    "repository": "https://github.com/RustCrypto/MACs",
+    "ecosystem": "rust"
+  },
+  {
     "name": "http",
     "version": "1.4.0",
     "license": "MIT OR Apache-2.0",
@@ -546,6 +553,13 @@ export const THIRD_PARTY_LICENSES: readonly LicenseEntry[] = [
     "version": "1.23.0",
     "license": "Apache-2.0 OR MIT",
     "repository": "https://github.com/uuid-rs/uuid",
+    "ecosystem": "rust"
+  },
+  {
+    "name": "webview2-com",
+    "version": "0.39.1",
+    "license": "MIT",
+    "repository": "https://github.com/wravery/webview2-rs",
     "ecosystem": "rust"
   },
   {

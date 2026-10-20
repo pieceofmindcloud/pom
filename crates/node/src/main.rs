@@ -236,6 +236,9 @@ mod thermal;
 pub mod tls;
 #[path = "backend/tool_call.rs"]
 mod tool_call;
+#[path = "network/web_ca.rs"]
+pub mod web_ca;
+mod trust_store;
 #[path = "inference/tp.rs"]
 mod tp;
 #[path = "backend/transfer.rs"]
@@ -751,9 +754,24 @@ fn anchor_admin(
     Ok(())
 }
 
+/// Whether the gateway serves TLS, so the native windows load it over
+/// `https://`. Set off at startup only when the certificate could not be made.
+static WEB_TLS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// The scheme the native windows use for the local interface: `https`, with
+/// the certificate the window pins (`web_ca::is_local_web_certificate`) or the
+/// system trusts through the local CA.
+fn local_scheme() -> &'static str {
+    if WEB_TLS.load(std::sync::atomic::Ordering::Relaxed) {
+        "https"
+    } else {
+        "http"
+    }
+}
+
 #[cfg(any(target_os = "macos", target_os = "windows", all(target_os = "linux", feature = "desktop")))]
 fn gateway_url(port: u16) -> String {
-    format!("http://127.0.0.1:{port}/admin-ui/chat")
+    format!("{}://127.0.0.1:{port}/admin-ui/chat", local_scheme())
 }
 
 fn select_gateway_port(config_port: Option<u16>, cli_port: u16) -> u16 {
@@ -804,7 +822,7 @@ fn already_running(gateway_port: Option<u16>) -> Result<()> {
         return linux_window::show_running(port);
     }
     let location = gateway_port
-        .map(|port| format!(", interface at http://127.0.0.1:{port}/"))
+        .map(|port| format!(", interface at {}://127.0.0.1:{port}/", local_scheme()))
         .unwrap_or_default();
     anyhow::bail!(
         "POM is already running from {}{location}. Close it first, or give this node its own {}",
@@ -1896,6 +1914,7 @@ async fn start_node(
             Ok(t) => Some(t),
             Err(e) => {
                 warn!("could not derive the certificate of this node, TLS unavailable: {e}");
+                WEB_TLS.store(false, std::sync::atomic::Ordering::Relaxed);
                 None
             }
         };
@@ -2149,8 +2168,8 @@ mod main_tests {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[test]
     fn menu_bar_chat_url_uses_loopback_and_gateway_port() {
-        assert_eq!(gateway_url(8080), "http://127.0.0.1:8080/admin-ui/chat");
-        assert_eq!(gateway_url(8090), "http://127.0.0.1:8090/admin-ui/chat");
+        assert_eq!(gateway_url(8080), "https://127.0.0.1:8080/admin-ui/chat");
+        assert_eq!(gateway_url(8090), "https://127.0.0.1:8090/admin-ui/chat");
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]

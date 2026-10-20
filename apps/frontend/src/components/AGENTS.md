@@ -305,13 +305,23 @@ Per-file list:
   reachable from the internet). The panel stays out when the node does not
   answer. Tests in `RelayOptions.test.tsx`.
 - `NatBadge.tsx` - the top bar's amber "Behind NAT" badge, drawn only while
-  `ClusterView.traversal.nat` is `private` (nothing for `public` or a report
-  not in yet). It took the place of the node's short id. A click opens a
-  `Modal` explaining the NAT, the relay detour (public relays cap it at about
+  `ClusterView.relayed_peers` is not empty: a peer reached through a relay that
+  carries the traffic because the hole punch it coordinated did not close.
+  Behind a NAT whose hole punch worked it draws nothing. It took the place of
+  the node's short id. A click opens a `Modal` naming those machines and their
+  relay kind, explaining the relay detour (public relays cap it at about
   2 MB/s), why it makes the pipeline slow and how to give the machine a direct
   path: IPv6, router port forwarding (this node's P2P and endpoint UDP ports,
   `p2p_port` and `p2p_port + 10000`) or UPnP, and the firewall. Tests in
   `Topbar.test.tsx`.
+- `HttpsCertificatePanel.tsx` - "Node certificate" on Preferences, every
+  profile: whether this computer trusts the node's local CA
+  (`GET /api/ui/tls/ca`), its fingerprint, a refusal remembered from the
+  desktop app's prompt, the `.crt` download (`/api/ui/tls/ca.crt`, fetched
+  with the session and saved as a blob), "Install on this computer"
+  (`POST /api/ui/tls/ca/install`, only when `can_install`, i.e. the request
+  came from the node's own machine) and the manual steps per system and for
+  harnesses. Tests in `HttpsCertificatePanel.test.tsx`.
 - `ClusterVersion.tsx` - Panel with the trust chain version this node holds
   (`NodeInfo.cluster_version`, formatted by `lib/clusterVersion.ts`), an
   outdated badge with the hosts announcing a newer one, and "Sync now"

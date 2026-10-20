@@ -154,6 +154,7 @@ mod jobs;
 mod known_networks;
 pub(crate) use known_networks::remember_public_networks;
 mod guide;
+mod https;
 mod jobs_apply;
 mod kv_cache;
 mod lifecycle;

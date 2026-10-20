@@ -33,7 +33,7 @@ embed-ui = ["dep:include_dir"]
 # and Windows shells open. It needs the GTK 3 and WebKitGTK 4.1 development packages to
 # build, and WebKitGTK at run time. Off by default, so a Linux server or a Docker image
 # builds without any graphical library.
-desktop = ["dep:tao", "dep:wry"]
+desktop = ["dep:tao", "dep:wry", "dep:webkit2gtk"]
 
 [dependencies]
 # All the llama.cpp code (FFI, MTP, MoE, GGUF, sysmon) lives here, so that
@@ -75,7 +75,7 @@ axum = "0.7"
 # See `network/tls.rs` for why there is no CA and no certificate file.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
-rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
+rcgen = { version = "0.13", default-features = false, features = ["pem", "ring", "x509-parser"] }
 x509-parser = "0.16"
 hyper = { version = "1", features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
@@ -123,6 +123,9 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 tao = { version = "0.37", default-features = false, features = ["rwh_06"] }
 tray-icon = { version = "0.25", default-features = false }
 wry = { version = "0.57", default-features = false }
+# The WebView2 interfaces wry does not wrap: the server certificate error event
+# (`windows_status.rs`). Same version wry builds on.
+webview2-com = "0.39"
 
 # It only compiles `src/macos_status.m`, the AppKit/WebKit bridge of the status bar
 # item. Like the `winresource` above, the `cfg` here is the host's.
@@ -133,6 +136,9 @@ wry = { version = "0.57", default-features = false }
 # tao: without `os-webview` wry has no WebKitGTK to build on.
 tao = { version = "0.37", optional = true }
 wry = { version = "0.57", optional = true }
+# The view's TLS failure signal and certificate exception (`linux_window.rs`), from
+# the same WebKitGTK bindings wry builds on.
+webkit2gtk = { version = "2.0", optional = true }
 
 [target.'cfg(target_os = "macos")'.build-dependencies]
 cc = "1"

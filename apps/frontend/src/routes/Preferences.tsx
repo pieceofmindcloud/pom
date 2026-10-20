@@ -4,6 +4,7 @@
  */
 import { Ban, Lock, MessagesSquare, RadioTower, ScrollText, ShieldCheck, Thermometer, Zap } from "lucide-react";
 import { useEffect, useState } from "react";
+import { HttpsCertificatePanel } from "../components/HttpsCertificatePanel";
 import { HuggingFaceSettingsPanel } from "../components/HuggingFaceSettingsPanel";
 import {
   Badge,
@@ -607,6 +608,7 @@ export function Preferences({ administrative = false }: { administrative?: boole
           {autoDiscoveryLoaded && <AutoDiscoveryPanel status={autoDiscovery} authority={node.data?.quic_authority ?? false} busy={autoDiscoverySaving} onToggle={(next) => void toggleAutoDiscovery(next)} />}
         </> : <>
           <AdminAccessPanel />
+          <HttpsCertificatePanel />
           {!inferOnly && <ThermalPanel policy={node.data?.thermal} busy={thermalSaving} onSave={(next) => void saveThermal(next)} />}
           {!inferOnly && <HuggingFaceSettingsPanel />}
         </>}

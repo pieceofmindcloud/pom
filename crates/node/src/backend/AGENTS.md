@@ -434,6 +434,12 @@ boundary.
   ranges are allowed when they belong to distinct paths;
   the coverage is validated by the executable path, not by the union of the files.
   `undeploy` takes a whole pipeline off the air.
+- `webui/https.rs` - the local CA for the interface (`LocalOnly`):
+  `GET /api/ui/tls/ca` (fingerprint, trust state, a past refusal, whether this
+  request may install), `GET /api/ui/tls/ca.crt` (the public certificate as a
+  download) and `POST /api/ui/tls/ca/install`, which also demands loopback
+  (`serve::PeerAddr`) because it opens the system dialog of the node's own
+  machine. The CA is `network/web_ca.rs`, the installers `src/trust_store.rs`.
 - `webui/sidecars.rs` - `GET/POST /api/ui/model-sidecar-links`: the
   principal's model -> projector / MTP draft links (`model_sidecar_links` in
   `pom.db`). A secondary reads them from the principal and keeps the last copy

@@ -3787,6 +3787,8 @@ dependencies = [
  "tray-icon",
  "url",
  "uuid",
+ "webkit2gtk",
+ "webview2-com",
  "windows",
  "winresource",
  "wry",
@@ -4970,6 +4972,7 @@ dependencies = [
  "ring",
  "rustls-pki-types",
  "time",
+ "x509-parser 0.16.0",
  "yasna 0.5.2",
 ]
 
@@ -7494,6 +7497,7 @@ dependencies = [
  "lazy_static",
  "nom",
  "oid-registry 0.7.1",
+ "ring",
  "rusticata-macros",
  "thiserror 1.0.69",
  "time",

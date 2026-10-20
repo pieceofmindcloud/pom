@@ -18,6 +18,7 @@ import type { NodeInfo } from "../lib/types";
 
 let nodeData: NodeInfo | undefined;
 let natStatus: "unknown" | "public" | "private" | undefined;
+let relayedPeers: { node_id: string; hostname: string; relay_kind: "public" | "dedicated" | "member" | null }[] = [];
 
 vi.mock("../lib/queries", async (original) => ({
   ...(await original<typeof import("../lib/queries")>()),
@@ -34,6 +35,7 @@ vi.mock("../lib/queries", async (original) => ({
         hole_punch_failed: 0,
         last_hole_punch_error: null,
       },
+      relayed_peers: relayedPeers,
     },
   }),
 }));
@@ -170,6 +172,7 @@ describe("NAT badge in the toolbar", () => {
   afterEach(() => {
     cleanup();
     natStatus = undefined;
+    relayedPeers = [];
   });
 
   it("no longer shows the node id", () => {
@@ -178,19 +181,18 @@ describe("NAT badge in the toolbar", () => {
     expect(screen.queryByText(nodeData.short_id)).toBeNull();
   });
 
-  it("shows nothing while the machine is reachable or the NAT report is not in", () => {
+  it("shows nothing behind a NAT whose hole punch worked", () => {
     nodeData = fakeNode();
-    for (const status of [undefined, "unknown", "public"] as const) {
-      natStatus = status;
-      mountTopbar("admin");
-      expect(screen.queryByTestId("topbar-nat")).toBeNull();
-      cleanup();
-    }
+    natStatus = "private";
+    relayedPeers = [];
+    mountTopbar("admin");
+    expect(screen.queryByTestId("topbar-nat")).toBeNull();
   });
 
   it("shows Behind NAT and opens the explanation with this machine's ports", () => {
     nodeData = { ...fakeNode(), p2p_port: 42777 };
     natStatus = "private";
+    relayedPeers = [{ node_id: "abc123", hostname: "machine-b", relay_kind: "public" }];
     mountTopbar("admin");
 
     const badge = screen.getByTestId("topbar-nat");
@@ -203,5 +205,7 @@ describe("NAT badge in the toolbar", () => {
     expect(dialog.textContent).toContain("IPv6");
     expect(dialog.textContent).toContain("UDP 42777");
     expect(dialog.textContent).toContain("UDP 52777");
+    expect(screen.getByTestId("nat-relayed-peers").textContent).toContain("machine-b");
+    expect(screen.getByTestId("nat-relayed-peers").textContent).toContain("relé público");
   });
 });

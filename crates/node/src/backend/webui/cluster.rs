@@ -239,6 +239,32 @@ fn reported_peer_load(node: &serde_json::Value) -> Option<u32> {
         .and_then(|load| u32::try_from(load).ok())
 }
 
+/// The peers this node reaches only through a relay right now.
+///
+/// The relay first coordinates a hole punch; when it does not close, the
+/// relay carries the traffic itself (`Network::peer_route`, kind `relayed`).
+/// That fallback is what costs latency and, on a public relay, bandwidth, and
+/// it is the only case the interface warns about: being behind a NAT whose
+/// hole punch worked is not.
+pub(super) fn relayed_peers(state: &GatewayState, peers: &[PeerInfo]) -> Vec<serde_json::Value> {
+    let mut relayed: Vec<serde_json::Value> = peers
+        .iter()
+        .filter(|peer| peer.node_id != state.network.node_id)
+        .filter_map(|peer| {
+            let route = state.network.peer_route(peer);
+            (route.kind == "relayed").then(|| {
+                json!({
+                    "node_id": peer.node_id,
+                    "hostname": peer.hostname,
+                    "relay_kind": route.relay_kind,
+                })
+            })
+        })
+        .collect();
+    relayed.sort_by(|a, b| a["node_id"].as_str().cmp(&b["node_id"].as_str()));
+    relayed
+}
+
 pub(super) async fn cluster_fingerprint(state: &GatewayState, peers: &[PeerInfo]) -> String {
     let mut peer_state = serde_json::to_value(peers).expect("UI peers must serialize");
     if let Some(peers) = peer_state.as_array_mut() {
@@ -285,6 +311,9 @@ pub(super) async fn cluster_fingerprint(state: &GatewayState, peers: &[PeerInfo]
         // Without this the traversal snapshot would freeze in the cache: neither
         // the NAT report nor a change of relay touches `peers`.
         "traversal": state.network.traversal_status(),
+        // A peer moving between a hole punched path and the relay fallback
+        // touches neither.
+        "relayed_peers": relayed_peers(state, peers),
         // The pinned route of each edge changes without touching `peers`.
         "route_plan": crate::route_plan::book().signature(),
     }))
@@ -339,6 +368,7 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
                 || peer.node_id == self_id
         })
         .collect::<Vec<_>>();
+    let relayed = relayed_peers(&state, &peers);
     let runtime_ready_by_node: HashMap<_, _> = peers
         .iter()
         .map(|peer| {
@@ -708,6 +738,9 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
         // without this, "the two nodes do not talk to each other" can only be
         // investigated with `RUST_LOG=debug` on the right machine.
         "traversal": state.network.traversal_status(),
+        // Peers reached only through a relay: the hole punch did not close
+        // and the relay carries the traffic (`relayed_peers`).
+        "relayed_peers": relayed,
         // Pinned route per outgoing edge of this node (`route_plan`): over which
         // transport inference and the return to the gateway go right now, and
         // the alternatives already measured.

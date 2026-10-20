@@ -250,8 +250,18 @@ dedicated or member, with iroh's hole punching), are in
   `server_configs` builds the peer configuration (node certificate, asks for the
   caller's, `AnyNodeClient`) and the browser one (ECDSA, asks for nothing), picked
   per connection by `wants_peer` on the ALPN; `client_config` presents this node's
-  certificate (`set_client_identity`). Nothing goes to disk; there is no CA. TLS
-  between nodes is always on. See `docs/subsystems/p2p-network.md`, section 5.
+  certificate (`set_client_identity`). The peer certificate never goes to disk.
+  TLS between nodes is always on. See `docs/subsystems/p2p-network.md`, section 5.
+- `web_ca.rs` - the browser side of that TLS: the persisted web key
+  (`.pom-web.key`) and the machine's local CA (`.pom-ca.key`, public half in
+  `.pom-ca.crt`), name-constrained to `localhost`, the host name and
+  `<SLUG>_TLS_NAMES`; `browser_certificate` issues the ECDSA certificate the
+  browser gets, signed by that CA, with a fresh serial and only the DNS names
+  the CA permits. `is_local_web_certificate` (by public key, not by
+  certificate) and `local_host_of` are what the native windows check before
+  accepting the interface's certificate when the system does not trust the CA.
+  Files are created with a link so two processes agree on one key. The OS
+  trust store side is `src/trust_store.rs`.
 - `quic_policy.rs` - the authenticated ratchet of the QUIC preference: the
   Announce's `quic` field only triggers `GET /api/cluster/quic`; the trigger is only
   accepted when the `pubkey` identifies the anchored principal, never by

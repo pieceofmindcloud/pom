@@ -782,7 +782,8 @@ Per-file list:
 - `Preferences.tsx` - Local settings screen under Settings (`Configurações`): owns the
   administrative exposure mode and gateway port, accepts a password only in
   network mode, and saves its Argon2id hash to `pom.json` through
-  `POST /api/ui/access`. It also mounts `ThermalPanel` and
+  `POST /api/ui/access`. It also mounts `HttpsCertificatePanel` (the node's
+  local CA, for every profile), `ThermalPanel` and
   `HuggingFaceSettingsPanel`; there is no TLS panel, since TLS between nodes is
   always on. It also mounts the cluster logs switch,
   available only to the principal and applied in real time, and `QuicPanel`, which

@@ -43,6 +43,7 @@ fn build_macos_status() {
         .compile("pom_macos_status");
     println!("cargo:rustc-link-lib=framework=AppKit");
     println!("cargo:rustc-link-lib=framework=WebKit");
+    println!("cargo:rustc-link-lib=framework=Security");
 }
 
 #[cfg(not(target_os = "macos"))]

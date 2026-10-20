@@ -7,8 +7,9 @@
 //! only needs to **prove possession of the key that yields that node_id**, and that
 //! is what the TLS handshake does.
 //!
-//! Nothing here goes to disk: the certificate is derived from the key on every
-//! start. There is nothing to renew, revoke or distribute.
+//! Nothing here goes to disk: the peer certificate is derived from the key on
+//! every start. There is nothing to renew, revoke or distribute. The browser's
+//! certificate is the exception, and lives in `web_ca.rs`.
 //!
 //! The same certificate is the client certificate of every peer connection
 //! (mutual TLS), so the server knows which node is calling as well. What
@@ -190,37 +191,12 @@ pub const PEER_ALPN: &[u8] = b"pom/1";
 /// It cannot be the same as the pinning one: that one is Ed25519, because its key is
 /// the node's identity, and a browser does not verify an Ed25519 certificate - measured
 /// with macOS's curl/LibreSSL, which answers `sslv3 alert handshake failure`. This
-/// one is ECDSA P-256, which they know how to verify.
-///
-/// It is still self-signed, so the browser warns on the first visit from each
-/// machine. That is inherent to having no CA; the addresses go into the SAN so the
-/// warning is "unknown issuer" and not "wrong host", which is what would make the
-/// operator distrust the machine instead of the certificate.
+/// one is ECDSA P-256, signed by this machine's local CA with a persisted key, so it
+/// survives restarts and a system that trusts the CA shows no warning. The addresses
+/// go into the SAN so the warning, where the CA is not trusted, is "unknown issuer"
+/// and not "wrong host". See `web_ca.rs`.
 pub fn browser_certificate(sans: &[String]) -> Result<NodeCertificate> {
-    use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair};
-
-    let mut names: Vec<String> = vec!["localhost".into()];
-    names.extend(sans.iter().cloned());
-    names.sort();
-    names.dedup();
-
-    let mut params = CertificateParams::new(names)
-        .map_err(|e| anyhow!("invalid browser certificate parameters: {e}"))?;
-    let mut dn = DistinguishedName::new();
-    dn.push(DnType::CommonName, "pom");
-    params.distinguished_name = dn;
-
-    // rcgen's default: ECDSA P-256.
-    let key_pair = KeyPair::generate().map_err(|e| anyhow!("web certificate key: {e}"))?;
-    let cert = params
-        .self_signed(&key_pair)
-        .map_err(|e| anyhow!("could not self-sign the web certificate: {e}"))?;
-
-    Ok(NodeCertificate {
-        cert: cert.der().clone(),
-        key: PrivateKeyDer::try_from(key_pair.serialize_der())
-            .map_err(|e| anyhow!("invalid web certificate key: {e}"))?,
-    })
+    crate::web_ca::browser_certificate(sans)
 }
 
 /// Whether a ClientHello comes from a peer: it offers `PEER_ALPN`, which no

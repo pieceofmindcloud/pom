@@ -35,6 +35,7 @@ import { getTrendingModels } from "./publicModelDiscovery";
 import { fetchPublicPlugin, fetchPublicPluginCatalog, type PublicPluginCatalogQuery } from "./pluginCatalog";
 import { jobsPollInterval, offersPollInterval } from "./polling";
 import type {
+  LocalCaStatus,
   SidecarLink,
   ChatCapabilities,
   AdminNode,
@@ -85,6 +86,7 @@ async function optional<T>(promise: Promise<T>, fallback: T): Promise<T> {
 
 export const keys = {
   node: ["node"] as const,
+  localCa: ["tls", "ca"] as const,
   adminAccess: ["admin-access"] as const,
   adminSurface: ["admin-surface"] as const,
   adminAccessInfo: ["admin-access-info"] as const,
@@ -781,6 +783,16 @@ export function useRemoteModelProviderStatus() {
   return useQuery({
     queryKey: keys.remoteModelProviderStatus,
     queryFn: ({ signal }) => getRemoteModelProviderStatus(signal),
+    staleTime: 30_000,
+    retry: false,
+  });
+}
+
+/** This machine's local CA and whether this computer trusts it (`webui/https.rs`). */
+export function useLocalCa() {
+  return useQuery({
+    queryKey: keys.localCa,
+    queryFn: ({ signal }) => api.get<LocalCaStatus>("/api/ui/tls/ca", { signal }),
     staleTime: 30_000,
     retry: false,
   });

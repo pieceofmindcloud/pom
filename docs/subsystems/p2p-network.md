@@ -1233,9 +1233,18 @@ offers `pom/1` (`tls::PEER_ALPN`), no browser does. If that choice ever goes
 wrong for a peer, it gets the ECDSA one and the verifier, which only accepts
 Ed25519, refuses: fail closed.
 
-Being self-signed, the browser warns on the first visit to each machine. That
-is inherent to having no CA; distributing an own CA and installing it on each
-machine is another project.
+**The browser's certificate is issued by a local CA of the machine**
+(`network/web_ca.rs`). Its key is persisted (`.pom-web.key`), so it survives
+restarts; it is signed by a CA made once per machine (`.pom-ca.key`, the public
+half exported as `.pom-ca.crt`), name-constrained to `localhost`, the host name
+and `<SLUG>_TLS_NAMES` (IP addresses stay unconstrained, because they move). A
+DNS name the CA may not sign never goes into the certificate. Once the system
+trusts the CA (`trust_store.rs`: the desktop app asks at start, a refusal is
+remembered, and Preferences offers the `.crt` and a retry), browsers, curl and
+harnesses accept `https://` to the machine with no warning. Without that, the
+browser warns about an unknown issuer, once per machine and no longer once per
+restart. The native windows load `https://127.0.0.1` and accept exactly the
+certificate of the persisted web key on loopback, so they work either way.
 
 ### Clear text: redirect, except where it must not
 

@@ -68,7 +68,7 @@ in `../routing-contract`, empty for the runtime).
   `CCACHE=ccache` wraps the `nvcc`. The procedure and the separate target are in
   `docs/subsystems/build-and-run.md`.
 - On the macOS target, `build.rs` compiles `src/macos_status.m` and links only the
-  system's AppKit and WebKit frameworks. Linux and Windows do not get that bridge.
+  system's AppKit, WebKit and Security frameworks. Linux and Windows do not get that bridge.
 
 ## src/main.rs - startup flow and CLI
 
@@ -285,6 +285,23 @@ troubled deployment.
   do not implement a parallel API.
 - `windows_status.rs` - the WebView2 window and Windows tray, with the testable
   policy of hiding to the notification area on close and really quitting.
+- `trust_store.rs` - puts the local CA (`network/web_ca.rs`) in the system
+  trust store: the macOS login keychain (`security add-trusted-cert`, the
+  system asks for the password), the Windows current user's root store
+  (`certutil -user -addstore Root`, Windows' own confirmation) and on Linux
+  the NSS databases of Chrome and Firefox (`certutil`, no prompt) plus the
+  system store under `pkexec` (`update-ca-certificates`/`update-ca-trust`).
+  `auto_install` runs once at the start of each desktop shell and never asks
+  again for a CA the person refused (`.pom-ca.declined`); `install` is also
+  behind `POST /api/ui/tls/ca/install` (`backend/webui/https.rs`).
+- The three native windows load `https://127.0.0.1` (`main::gateway_url`,
+  plain `http` only when TLS could not start) and accept, besides a CA the
+  system trusts, exactly the certificate of the persisted web key on loopback:
+  WebKitGTK through `load-failed-with-tls-errors` +
+  `allow_tls_certificate_for_host`, WebView2 through
+  `ServerCertificateErrorDetected` (`webview2-com`), WKWebView and the gateway
+  probe's `NSURLSession` through their authentication challenge, which asks
+  Rust (`pom_macos_is_local_web_certificate`).
 - `linux_window.rs` - the WebKitGTK window of the `desktop` feature (the
   AppImage). The view is built into the window's GTK box (`build_gtk`), not as
   an X11 child window, which painted nothing - and does not exist under

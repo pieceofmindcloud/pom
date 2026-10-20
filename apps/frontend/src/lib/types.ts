@@ -978,6 +978,35 @@ export interface ClusterView {
   node: NodeInfo | null;
   /** Diagnostics of this node's NAT traversal. Absent on an old node. */
   traversal?: TraversalView;
+  /**
+   * Peers this node reaches only through a relay right now: the relay tried a
+   * hole punch, it did not close, and the relay carries the traffic itself.
+   */
+  relayed_peers?: RelayedPeer[];
+}
+
+export interface RelayedPeer {
+  node_id: string;
+  hostname: string;
+  /** `public` (n0's default relays), `dedicated` or `member`. */
+  relay_kind: "public" | "dedicated" | "member" | null;
+}
+
+/** `GET /api/ui/tls/ca`: this machine's local CA (`webui/https.rs`). */
+export interface LocalCaStatus {
+  fingerprint: string;
+  trust: "trusted" | "not_trusted" | "unknown";
+  /** The person refused the system's dialog for this CA before. */
+  declined: boolean;
+  /** This request comes from the node's own machine, which can install it. */
+  can_install: boolean;
+  filename: string;
+}
+
+/** `POST /api/ui/tls/ca/install`. */
+export interface LocalCaInstallReport {
+  outcome: "installed" | "already_trusted" | "declined" | "unavailable";
+  detail: string;
 }
 
 /**

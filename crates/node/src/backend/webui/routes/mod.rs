@@ -217,6 +217,13 @@ const ROUTE_RULES: &[RouteRule] = &[
         method: None,
         scope: RouteScope::LocalOnly,
     },
+    // The local CA of this machine (`webui/https.rs`): every profile reads it
+    // and downloads its certificate; installing it also demands loopback.
+    RouteRule {
+        prefix: "/api/ui/tls",
+        method: None,
+        scope: RouteScope::LocalOnly,
+    },
     RouteRule {
         prefix: "/api/ui/network/geo/",
         method: Some(Method::GET),

@@ -112,6 +112,9 @@ pub(super) fn routes() -> Router<GatewayState> {
             "/api/ui/network/firewall/retry",
             post(crate::windows_firewall::retry),
         )
+        .route("/api/ui/tls/ca", get(super::super::https::ca_status))
+        .route("/api/ui/tls/ca.crt", get(super::super::https::ca_certificate))
+        .route("/api/ui/tls/ca/install", post(super::super::https::ca_install))
         .route("/api/ui/network/geo/countries", get(geo_countries))
         .route("/api/ui/network/geo/cities", get(geo_cities))
         .route("/api/ui/network/geo/nearest", get(geo_nearest))

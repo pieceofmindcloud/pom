@@ -44,6 +44,7 @@ vi.mock("../lib/queries", () => ({
     isError: false,
   }),
   useInvalidate: () => mocks.invalidate,
+  useLocalCa: () => ({ data: undefined, isError: true, refetch: mocks.invalidate }),
   useNode: () => ({ data: mocks.node }),
 }));
 

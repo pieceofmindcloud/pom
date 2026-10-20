@@ -1,12 +1,13 @@
 /**
  * The top bar's "Behind NAT" badge and the dialog it opens.
  *
- * The node learns from the NAT report whether the public address the relays
- * saw is one of its own (`ClusterView.traversal.nat`). When it is not, other
- * networks can only reach this machine through a hole punch or a relay, and a
- * slow pipeline usually starts there. The badge says so on every screen, and
- * the dialog explains what it means and how to give the machine a direct path.
- * Nothing is drawn while the report is `public` or not in yet (`unknown`).
+ * Being behind a NAT costs nothing while the hole punch works: the relay only
+ * coordinates it and the machines then talk directly. The badge shows only
+ * when that failed for some peer and the relay fell back to carrying the
+ * traffic itself (`ClusterView.relayed_peers`, from `Network::peer_route`
+ * kind `relayed`), which is what adds latency and, on a public relay, caps the
+ * bandwidth. The dialog names those machines, explains why it is slow and how
+ * to give this machine a direct path.
  */
 import { useState } from "react";
 import { Link } from "react-router-dom";
@@ -25,7 +26,8 @@ export function NatBadge() {
   const node = useNode();
   const [open, setOpen] = useState(false);
 
-  if (cluster.data?.traversal?.nat !== "private") return null;
+  const relayed = cluster.data?.relayed_peers ?? [];
+  if (relayed.length === 0) return null;
 
   const p2p = node.data?.p2p_port;
   const ports = p2p ? { p2p, endpoint: p2p + ENDPOINT_PORT_OFFSET } : null;
@@ -64,6 +66,19 @@ export function NatBadge() {
         <div data-testid="nat-dialog" className="space-y-4 text-sm leading-relaxed text-muted">
           <p className="text-fg">{t("nat.intro")}</p>
           <p>{t("nat.relay")}</p>
+          <div data-testid="nat-relayed-peers">
+            <h3 className="mb-2 font-display text-sm font-semibold text-fg">{t("nat.relayedTitle")}</h3>
+            <ul className="space-y-1">
+              {relayed.map((peer) => (
+                <li key={peer.node_id} className="flex flex-wrap items-center gap-2">
+                  <span className="text-fg">{peer.hostname || peer.node_id.slice(0, 12)}</span>
+                  <Badge tone={peer.relay_kind === "public" ? "amber" : "neutral"}>
+                    {t(`nat.relayKind.${peer.relay_kind ?? "member"}`)}
+                  </Badge>
+                </li>
+              ))}
+            </ul>
+          </div>
           <p>{t("nat.slowness")}</p>
           <div>
             <h3 className="mb-2 font-display text-sm font-semibold text-fg">{t("nat.fixTitle")}</h3>

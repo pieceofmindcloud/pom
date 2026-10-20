@@ -16,7 +16,9 @@ use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tao::platform::run_return::EventLoopExtRunReturn;
 use tao::platform::unix::WindowExtUnix;
 use tao::window::WindowBuilder;
-use wry::{WebViewBuilder, WebViewBuilderExtUnix};
+use webkit2gtk::gio::prelude::TlsCertificateExt;
+use webkit2gtk::{WebContextExt, WebViewExt};
+use wry::{WebViewBuilder, WebViewBuilderExtUnix, WebViewExtUnix};
 
 /// The same size as the macOS and Windows windows.
 pub const WINDOW_SIZE: (f64, f64) = (1120.0, 880.0);
@@ -64,6 +66,9 @@ where
         .with_url(crate::gateway_url(port))
         .build_gtk(container)
         .context("could not start the WebKitGTK view; install the webkit2gtk-4.1 runtime")?;
+    accept_local_certificate(&webview.webview());
+    // The system asks the person once; a refusal is remembered.
+    thread::spawn(crate::trust_store::auto_install);
 
     let mut closed_by_user = false;
     event_loop.run_return(|event, _, control_flow| {
@@ -94,6 +99,31 @@ where
     service
         .join()
         .map_err(|_| anyhow!("the service thread ended in a panic"))?
+}
+
+/// Lets the view open this machine's own interface over `https://` when the
+/// system does not trust the local CA: WebKitGTK reports the failed load with
+/// the certificate, and only the certificate of the persisted web key, on a
+/// loopback address, is allowed for that host before loading again. Any other
+/// certificate keeps the error page.
+fn accept_local_certificate(view: &webkit2gtk::WebView) {
+    view.connect_load_failed_with_tls_errors(|view, uri, certificate, _errors| {
+        let Some(host) = crate::web_ca::local_host_of(uri) else {
+            return false;
+        };
+        let Some(der) = certificate.certificate() else {
+            return false;
+        };
+        if !crate::web_ca::is_local_web_certificate(&der) {
+            return false;
+        }
+        let Some(context) = view.context() else {
+            return false;
+        };
+        context.allow_tls_certificate_for_host(certificate, &host);
+        view.load_uri(uri);
+        true
+    });
 }
 
 /// Opens a window on a POM that is already running from the same project root, instead of

@@ -1,7 +1,14 @@
 #import <AppKit/AppKit.h>
 #import <WebKit/WebKit.h>
+#import <Security/Security.h>
 #import <dispatch/dispatch.h>
 #include <stdatomic.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+// `macos_status.rs`: whether a DER certificate is this machine's web certificate.
+extern bool pom_macos_is_local_web_certificate(const uint8_t *der, size_t len);
 
 static NSString *POMChatURL;
 static NSString *POMWindowURL;
@@ -242,6 +249,84 @@ static NSString *POMLoadingHTML(void) {
         message];
 }
 
+static BOOL POMIsLocalHost(NSString *host) {
+    return [host isEqualToString:@"127.0.0.1"] || [host isEqualToString:@"localhost"] ||
+           [host isEqualToString:@"::1"];
+}
+
+/// The interface is served over https://127.0.0.1 with a certificate of the
+/// node's local CA. When the system trusts that CA, the default handling
+/// accepts it. When it does not, the window still accepts exactly the
+/// certificate of this machine's persisted web key, and only on loopback; any
+/// other certificate gets the default handling, which refuses it.
+static BOOL POMTrustIsLocalNode(NSURLProtectionSpace *space) {
+    if (![space.authenticationMethod isEqualToString:NSURLAuthenticationMethodServerTrust] ||
+        !POMIsLocalHost(space.host)) {
+        return NO;
+    }
+    SecTrustRef trust = space.serverTrust;
+    if (!trust) {
+        return NO;
+    }
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    // The chain-copying replacement only exists from macOS 12; the app also runs on 11.
+    if (SecTrustGetCertificateCount(trust) < 1) {
+        return NO;
+    }
+    SecCertificateRef leaf = SecTrustGetCertificateAtIndex(trust, 0);
+#pragma clang diagnostic pop
+    if (!leaf) {
+        return NO;
+    }
+    CFDataRef der = SecCertificateCopyData(leaf);
+    if (!der) {
+        return NO;
+    }
+    bool local = pom_macos_is_local_web_certificate(CFDataGetBytePtr(der), (size_t)CFDataGetLength(der));
+    CFRelease(der);
+    return local ? YES : NO;
+}
+
+static void POMAnswerChallenge(NSURLAuthenticationChallenge *challenge,
+                               void (^completionHandler)(NSURLSessionAuthChallengeDisposition,
+                                                         NSURLCredential *)) {
+    if (POMTrustIsLocalNode(challenge.protectionSpace)) {
+        completionHandler(NSURLSessionAuthChallengeUseCredential,
+                          [NSURLCredential credentialForTrust:challenge.protectionSpace.serverTrust]);
+    } else {
+        completionHandler(NSURLSessionAuthChallengePerformDefaultHandling, nil);
+    }
+}
+
+/// The gateway probe below asks over https too, so its session answers the
+/// same challenge the web views do.
+@interface POMProbeSessionDelegate : NSObject <NSURLSessionDelegate>
+@end
+
+@implementation POMProbeSessionDelegate
+- (void)URLSession:(NSURLSession *)session
+    didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
+      completionHandler:(void (^)(NSURLSessionAuthChallengeDisposition,
+                                  NSURLCredential *))completionHandler {
+    (void)session;
+    POMAnswerChallenge(challenge, completionHandler);
+}
+@end
+
+static NSURLSession *POMProbeSession(void) {
+    static NSURLSession *session;
+    static POMProbeSessionDelegate *delegate;
+    if (!session) {
+        delegate = [[POMProbeSessionDelegate alloc] init];
+        session = [NSURLSession
+            sessionWithConfiguration:[NSURLSessionConfiguration ephemeralSessionConfiguration]
+                            delegate:delegate
+                       delegateQueue:nil];
+    }
+    return session;
+}
+
 static NSString *POMAddressOf(WKWebView *webView) {
     return webView == POMWindowWebView ? POMWindowURL : POMChatURL;
 }
@@ -269,7 +354,7 @@ static void POMProbeGateway(WKWebView *webView, int attempt) {
     }
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
     request.timeoutInterval = 2.0;
-    [[NSURLSession.sharedSession dataTaskWithRequest:request
+    [[POMProbeSession() dataTaskWithRequest:request
                                    completionHandler:^(NSData *data, NSURLResponse *response,
                                                        NSError *error) {
         (void)data;
@@ -390,6 +475,14 @@ static WKWebView *POMMakeWebView(NSRect frame) {
 }
 
 @implementation POMNavigationDelegate
+
+- (void)webView:(WKWebView *)webView
+    didReceiveAuthenticationChallenge:(NSURLAuthenticationChallenge *)challenge
+                    completionHandler:(void (^)(NSURLSessionAuthChallengeDisposition,
+                                                NSURLCredential *))completionHandler {
+    (void)webView;
+    POMAnswerChallenge(challenge, completionHandler);
+}
 
 - (void)webView:(WKWebView *)webView
     didFailProvisionalNavigation:(WKNavigation *)navigation

@@ -50,7 +50,19 @@ fn chat_url(port: u16) -> String {
 /// The web interface the main window shows: the same address the browser opens
 /// when it is pointed at the node (`/` redirects here).
 fn admin_url(port: u16) -> String {
-    format!("http://127.0.0.1:{port}/admin-ui/")
+    format!("{}://127.0.0.1:{port}/admin-ui/", crate::local_scheme())
+}
+
+/// Asked by the WebKit bridge (`macos_status.m`) for the certificate of a
+/// local page: whether it is this machine's web certificate, the one the
+/// window accepts even when the system does not trust the local CA.
+#[no_mangle]
+pub extern "C" fn pom_macos_is_local_web_certificate(der: *const u8, len: usize) -> bool {
+    if der.is_null() || len == 0 {
+        return false;
+    }
+    let der = unsafe { std::slice::from_raw_parts(der, len) };
+    crate::web_ca::is_local_web_certificate(der)
 }
 
 /// Path of the bar item's 1x artwork; the native side looks for `@2x` and
@@ -90,6 +102,8 @@ where
         unsafe { pom_macos_status_stop() };
         result
     });
+    // The system asks the person once; a refusal is remembered.
+    std::thread::spawn(crate::trust_store::auto_install);
     let url = CString::new(chat_url(port))?;
     let window_url = CString::new(admin_url(port))?;
     let icon = CString::new(icon_path().to_string_lossy().as_bytes())?;
@@ -145,9 +159,9 @@ mod tests {
 
     #[test]
     fn the_address_uses_the_port_chosen_by_rust() {
-        assert_eq!(chat_url(9123), "http://127.0.0.1:9123/admin-ui/chat");
-        assert_eq!(chat_url(8080), "http://127.0.0.1:8080/admin-ui/chat");
-        assert_eq!(admin_url(8080), "http://127.0.0.1:8080/admin-ui/");
+        assert_eq!(chat_url(9123), "https://127.0.0.1:9123/admin-ui/chat");
+        assert_eq!(chat_url(8080), "https://127.0.0.1:8080/admin-ui/chat");
+        assert_eq!(admin_url(8080), "https://127.0.0.1:8080/admin-ui/");
     }
 
     #[test]

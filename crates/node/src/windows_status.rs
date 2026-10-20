@@ -64,7 +64,52 @@ mod native {
     use tao::window::WindowBuilder;
     use tray_icon::menu::{Menu, MenuEvent, MenuItem};
     use tray_icon::{Icon, TrayIconBuilder};
-    use wry::WebViewBuilder;
+    use tracing::warn;
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2_14, COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_ALWAYS_ALLOW,
+    };
+    use webview2_com::{take_pwstr, ServerCertificateErrorDetectedEventHandler};
+    use windows::core::{Interface, PWSTR};
+    use wry::{WebViewBuilder, WebViewExtWindows};
+
+    /// Lets the view open this machine's own interface over `https://` when
+    /// Windows does not trust the local CA. WebView2 reports the certificate it
+    /// could not verify; only the one of the persisted web key, on a loopback
+    /// address, is allowed, and WebView2 remembers that for the session. Any
+    /// other certificate keeps WebView2's error page.
+    fn accept_local_certificate(webview: &wry::WebView) -> Result<()> {
+        let core: ICoreWebView2_14 = webview
+            .webview()
+            .cast()
+            .context("the WebView2 runtime is too old for the certificate event")?;
+        let handler = ServerCertificateErrorDetectedEventHandler::create(Box::new(|_, args| {
+            let Some(args) = args else {
+                return Ok(());
+            };
+            let uri = {
+                let mut uri = PWSTR::null();
+                unsafe { args.RequestUri(&mut uri)? };
+                take_pwstr(uri)
+            };
+            if crate::web_ca::local_host_of(&uri).is_none() {
+                return Ok(());
+            }
+            let pem = {
+                let certificate = unsafe { args.ServerCertificate()? };
+                let mut pem = PWSTR::null();
+                unsafe { certificate.ToPemEncoding(&mut pem)? };
+                take_pwstr(pem)
+            };
+            if crate::web_ca::is_local_web_certificate_pem(&pem) {
+                unsafe { args.SetAction(COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_ALWAYS_ALLOW)? };
+            }
+            Ok(())
+        }));
+        let mut token = 0i64;
+        unsafe { core.add_ServerCertificateErrorDetected(&handler, &mut token) }
+            .context("could not listen for WebView2 certificate errors")?;
+        Ok(())
+    }
 
     enum UserEvent {
         Menu(MenuEvent),
@@ -149,6 +194,11 @@ mod native {
             .with_url(crate::gateway_url(port))
             .build(&window)
             .context("could not start WebView2; confirm that the runtime is installed")?;
+        if let Err(error) = accept_local_certificate(&webview) {
+            warn!("WebView2 cannot pin the interface certificate: {error:#}");
+        }
+        // The system asks the person once; a refusal is remembered.
+        thread::spawn(crate::trust_store::auto_install);
 
         let menu = Menu::new();
         let show_item = MenuItem::with_id(TRAY_SHOW_ID, "Open POM", true, None);

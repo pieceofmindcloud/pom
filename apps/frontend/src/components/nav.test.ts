@@ -88,9 +88,11 @@ describe("navigation structure", () => {
 
 describe("navForProfile", () => {
   it("shows the administrator the whole menu", () => {
-    // Without the logs plugin, Statistics folds into the one Logs / Stats / Quota entry.
+    // Without the Business Pack plugin, Logs and Statistics fold into its one entry.
     const labels = navForProfile("admin").map((s) => s.labelKey);
-    expect(labels).toEqual(NAV.map((s) => s.labelKey).filter((label) => label !== "nav.statistics"));
+    expect(labels).toEqual(NAV.map((s) => s.labelKey)
+      .filter((label) => label !== "nav.statistics")
+      .map((label) => label === "nav.logs" ? "nav.businessPack" : label));
     expect(navFooterForProfile("admin")).toEqual([]);
     expect(navFooterForProfile("worker")).toEqual([]);
   });
@@ -99,20 +101,20 @@ describe("navForProfile", () => {
     const labels = navForProfile("worker").map((s) => s.labelKey);
     expect(labels).not.toContain("nav.deploy");
     expect(labels).not.toContain("nav.deployments");
-    expect(labels).toContain("nav.logs");
+    expect(labels).toContain("nav.businessPack");
   });
 
   it("keeps the Enterprise surfaces for admin and node when the license is inactive", () => {
-    expect(navForProfile("visitor", false).map((s) => s.labelKey)).not.toContain("nav.logs");
+    expect(navForProfile("visitor", false).map((s) => s.labelKey)).not.toContain("nav.businessPack");
     expect(navForProfile("visitor", false).map((s) => s.labelKey)).not.toContain("nav.statistics");
     for (const profile of ["admin", "worker"] as const) {
       const sections = navForProfile(profile, false);
       const labels = sections.map((s) => s.labelKey);
-      expect(labels, profile).toContain("nav.logs");
-      // One entry for the one purchase: Request Logs, Statistics and Quota.
+      // One entry for the one purchase: logs, statistics and quota.
+      expect(labels, profile).not.toContain("nav.logs");
       expect(labels, profile).not.toContain("nav.statistics");
-      expect(sections.find((s) => s.labelKey === "nav.logs")?.children, profile)
-        .toContainEqual(expect.objectContaining({ to: "/logs", labelKey: "nav.logsStatsQuota" }));
+      expect(sections.find((s) => s.labelKey === "nav.businessPack"), profile)
+        .toMatchObject({ to: "/logs" });
     }
   });
 

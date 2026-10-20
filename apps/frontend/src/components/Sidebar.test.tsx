@@ -200,7 +200,7 @@ describe("Sidebar", () => {
 
     expect(screen.queryByText("Implantar na rede")).toBeNull();
     expect(screen.queryByText("Implantações")).toBeNull();
-    expect(screen.getByText("Logs")).toBeTruthy();
+    expect(screen.getByText("Business Pack")).toBeTruthy();
     // What nobody restricted stays in place.
     expect(screen.getByText("Painel")).toBeTruthy();
     expect(screen.getByText("Modelos")).toBeTruthy();
@@ -224,7 +224,7 @@ describe("Sidebar", () => {
     fireEvent.click(screen.getByRole("button", { name: "Implantações" }));
     expect(screen.getByText("Implantar na rede")).toBeTruthy();
     expect(screen.getByText("Histórico")).toBeTruthy();
-    expect(screen.getByText("Logs")).toBeTruthy();
+    expect(screen.getByText("Business Pack")).toBeTruthy();
     expect(screen.getByTestId("network-chat-unread").textContent).toBe("2");
   });
 

@@ -1017,11 +1017,11 @@ enterprise.store.badgeInstant,Installs in seconds,Instala em segundos
 enterprise.store.badgeLocal,Your data stays on your nodes,Seus dados ficam nos seus nós
 "enterprise.store.badgePaddle","Secure payment with Paddle","Pagamento seguro com Paddle"
 enterprise.store.buy,Buy now,Comprar agora
-"enterprise.store.ctaBody","One purchase brings Request Logs, Statistics and Quota. The price is shown at checkout. Cancel anytime.","Uma compra traz Logs de Requisições, Estatísticas e Quota. O preço aparece no checkout. Cancele quando quiser."
-"enterprise.store.ctaPrice","Request Logs, Statistics and Quota for {price}. Cancel anytime.","Logs de Requisições, Estatísticas e Quota por {price}. Cancele quando quiser."
+"enterprise.store.ctaBody","One purchase brings Request Logs, Deployment Logs, Statistics and Quota. The price is shown at checkout. Cancel anytime.","Uma compra traz Logs de Requisições, Logs de Implantação, Estatísticas e Quota. O preço aparece no checkout. Cancele quando quiser."
+"enterprise.store.ctaPrice","Business Pack (logs, statistics and quota) for {price}. Cancel anytime.","Business Pack (logs, estatísticas e quota) por {price}. Cancele quando quiser."
 enterprise.store.ctaTitle,Ready to see inside your cluster?,Pronto para enxergar dentro do seu cluster?
 enterprise.store.description,"Advanced observability for POM inference workloads: searchable request logs with a complete, redacted request inspector, and an operational statistics dashboard for tokens, latency, cache, nodes and network.","Observabilidade avançada para a inferência no POM: logs de requisições pesquisáveis com um inspetor completo e com segredos redigidos, e um painel de estatísticas operacionais de tokens, latência, cache, nós e rede."
-"enterprise.store.eyebrow","POM plugin · Logs, Statistics and Quota","Plugin do POM · Logs, Estatísticas e Quota"
+"enterprise.store.eyebrow","POM plugin · Business Pack: logs, statistics and quota","Plugin do POM · Business Pack: logs, estatísticas e quota"
 enterprise.store.faq1.a,"On your own administrative nodes, in the plugin's local database. Prompts and answers are never sent to POM or to the license server.","Nos seus próprios nós administradores, no banco local do plugin. Prompts e respostas nunca são enviados ao POM nem ao servidor de licenças."
 enterprise.store.faq1.q,Where is my request data stored?,Onde ficam os dados das minhas requisições?
 enterprise.store.faq2.a,Only to activate and to renew the license from time to time. Logging and charts work locally.,Só para ativar e renovar a licença de tempos em tempos. Os logs e os gráficos funcionam localmente.
@@ -1036,7 +1036,7 @@ enterprise.store.featuresLabel,Features,Recursos
 "enterprise.store.featuresTitle","Three screens, one purchase","Três telas, uma compra"
 "enterprise.store.forAdmins","Made for the network's admins: they see every node's requests, usage and budgets.","Feito para os admins da rede: eles veem as requisições, o uso e as quotas de todos os nós."
 enterprise.store.haveKey,I already have a license key,Já tenho uma chave de licença
-"enterprise.store.included1","Request Logs, Statistics and Quota screens","Telas de Logs de Requisições, Estatísticas e Quota"
+"enterprise.store.included1","Request Logs, Deployment Logs, Statistics and Quota screens","Telas de Logs de Requisições, Logs de Implantação, Estatísticas e Quota"
 enterprise.store.included2,Updates while the license is active,Atualizações enquanto a licença estiver ativa
 enterprise.store.included3,Activation on your cluster machines,Ativação nas máquinas do seu cluster
 enterprise.store.included4,Cancel anytime; the POM keeps working,Cancele quando quiser; o POM continua funcionando
@@ -1054,7 +1054,7 @@ enterprise.store.logs.summary,Find any request and inspect it whole.,Encontre qu
 enterprise.store.logs.titleA,See every request.,Veja cada requisição.
 enterprise.store.logs.titleB,Fix issues in minutes.,Resolva problemas em minutos.
 enterprise.store.moreOnSite,More on the plugin store,Mais na loja de plugins
-"enterprise.store.name","Logs, Statistics and Quota","Logs, Estatísticas e Quota"
+"enterprise.store.name","Business Pack","Business Pack"
 "enterprise.store.opensInBrowser","Opens the purchase in your browser; POM keeps running here.","Abre a compra no seu navegador; o POM continua rodando aqui."
 "enterprise.store.quota.feature1","Plans of input and output tokens per day, week, month or a rolling session","Planos de tokens de entrada e saída por dia, semana, mês ou sessão contínua"
 "enterprise.store.quota.feature2","Assign them to a machine, a team, a project or the whole network","Atribua a uma máquina, a uma equipe, a um projeto ou à rede inteira"
@@ -1531,7 +1531,7 @@ nav.fullModels,Full models,Modelos inteiros
 nav.history,History,Histórico
 nav.inProgress,In progress,Em andamento
 nav.logs,Logs,Logs
-"nav.logsStatsQuota","Logs / Stats / Quota","Logs / Stats / Quota"
+"nav.businessPack","Business Pack","Business Pack"
 nav.modelFolders,Storage,Armazenamento
 nav.models,Models,Modelos
 nav.myMachine,My machine,Minha máquina

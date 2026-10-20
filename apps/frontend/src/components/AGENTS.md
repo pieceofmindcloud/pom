@@ -100,8 +100,8 @@ Per-file list:
   answer; the price is formatted in the interface's language. "Buy now" and
   the footer link open the site's purchase wizard (`/comprar/`, Paddle) in a
   new tab with the plugin, the billing period and `lang`. While no plugin
-  serves `/logs` or `/statistics`, `nav.ts` folds the two menu entries into
-  one "Logs / Stats / Quota". Tests in `EnterpriseFeatureShowcase.test.tsx`.
+  serves `/logs` or `/statistics`, `nav.ts` folds the Logs section and
+  Statistics into one "Business Pack" entry. Tests in `EnterpriseFeatureShowcase.test.tsx`.
 - `PluginBridge.tsx` - mounted once in the shell (`App.tsx`). It publishes
   `locale.changed`/`theme.changed`, forwards the node's events read every 3 s
   in `GET /api/ui/plugins/events`, runs the plugins' commands (a local toast, a `plugin_notice`

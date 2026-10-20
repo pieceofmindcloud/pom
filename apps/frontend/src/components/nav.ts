@@ -191,13 +191,14 @@ function withPluginMenu(sections: NavSection[], profile: Profile): NavSection[] 
     return copy;
   });
   // Without a plugin serving them, Request Logs and Statistics are the same
-  // advertising page of one purchase (the logs plugin also brings Quota): one
-  // menu entry, so it does not look like three things to buy.
+  // advertising page of one purchase (the Business Pack plugin, `logs`, also
+  // brings Quota): one menu entry, so it does not look like three things to buy.
   if (!resolvePluginRoute("/logs") && !resolvePluginRoute("/statistics")) {
-    for (const section of result) {
-      for (const child of section.children ?? []) {
-        if (child.to === "/logs") child.labelKey = "nav.logsStatsQuota";
-      }
+    // The deployment logs are kept by the same plugin, so without it the whole
+    // Logs section is that one entry: the Business Pack plugin's page.
+    const logs = result.findIndex((section) => section.labelKey === "nav.logs");
+    if (logs >= 0) {
+      result[logs] = { labelKey: "nav.businessPack", icon: result[logs].icon, to: "/logs" };
     }
     const statistics = result.findIndex((section) => section.to === "/statistics");
     if (statistics >= 0) result.splice(statistics, 1);

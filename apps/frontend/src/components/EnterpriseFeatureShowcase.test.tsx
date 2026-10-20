@@ -78,7 +78,7 @@ describe("EnterpriseFeatureShowcase", () => {
   it("keeps working without the catalog and sells Logs, Statistics and Quota as one plugin", () => {
     renderPage();
 
-    expect(screen.getByText("Logs, Estatísticas e Quota")).toBeTruthy();
+    expect(screen.getByText("Business Pack")).toBeTruthy();
     expect(screen.getByText("Preço mostrado no checkout")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Quota" })).toBeTruthy();
     expect(screen.getByText(/Feito para os admins da rede/)).toBeTruthy();

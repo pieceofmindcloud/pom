@@ -295,7 +295,7 @@ describe("plugin UI registry", () => {
     expect(admin[docsIndex - 1]).toMatchObject({ labelKey: "plugin:acme:extra", to: "/acme/extra" });
     // Without a plugin again, POM's fallback comes back, as one entry for the one purchase.
     setPluginUi([]);
-    expect(navForProfile("admin").find((s) => s.labelKey === "nav.logs")?.children?.map((c) => c.labelKey)).toContain("nav.logsStatsQuota");
+    expect(navForProfile("admin").find((s) => s.labelKey === "nav.businessPack")).toMatchObject({ to: "/logs" });
   });
 
   it("replaces both native Enterprise menu destinations when claimed by plugin manifests", () => {
@@ -353,9 +353,9 @@ describe("plugin UI registry", () => {
       ["plugin:base:plugin", "/base/plugin-de-base"],
       ["plugin:base:example", "/base/example"],
     ]);
-    expect(navigation.find((section) => section.labelKey === "nav.logs")?.children?.some(
-      ({ labelKey }) => labelKey === "plugin:base:example",
-    )).toBe(false);
+    // No plugin serves the logs here, so that section is the one Business Pack entry.
+    expect(navigation.find((section) => section.labelKey === "nav.businessPack")).toMatchObject({ to: "/logs" });
+    expect(JSON.stringify(navigation.find((section) => section.labelKey === "nav.businessPack"))).not.toContain("plugin:base:example");
   });
 
   it("shows plugin items to every profile even when the manifest lists only admin", () => {

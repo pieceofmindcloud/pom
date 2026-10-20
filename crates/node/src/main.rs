@@ -335,7 +335,7 @@ struct Args {
     #[arg(long, default_value = "")]
     advertise_addr: String,
 
-    /// Ollama base URL (model resolution, /health, and the port announced to peers)
+    /// Ollama base URL (model resolution and the `ollama_available` field of /health)
     #[arg(long, default_value = "http://localhost:11434")]
     ollama_url: String,
 
@@ -996,24 +996,6 @@ async fn async_main(
     .await
 }
 
-/// The Ollama port this node announces to peers.
-///
-/// It depends on no flag: every node serves the API, and a node that served
-/// the local Ollama without announcing the port would be invisible to routing.
-fn advertised_ollama_port(ollama_url: &str) -> Option<u16> {
-    parse_ollama_port(ollama_url)
-}
-
-/// Extract the port from an Ollama URL like "http://localhost:11434".
-fn parse_ollama_port(url: &str) -> Option<u16> {
-    url.trim_start_matches("http://")
-        .trim_start_matches("https://")
-        .split(':')
-        .nth(1)
-        .and_then(|s| s.split('/').next())
-        .and_then(|s| s.parse::<u16>().ok())
-}
-
 /// Where the last consumed `POM_FORCE_SETUP` is recorded.
 #[allow(dead_code)]
 fn forced_setup_marker() -> std::path::PathBuf {
@@ -1413,7 +1395,6 @@ struct P2pStackArgs {
     signing_key: ed25519_dalek::SigningKey,
     p2p_port: u16,
     bootstrap_nodes: Vec<String>,
-    ollama_port: Option<u16>,
     inference_port: Option<u16>,
     inference_quic_port: Option<u16>,
     gateway_port: u16,
@@ -1529,7 +1510,6 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
             args.pubkey,
             args.p2p_port,
             bootstrap_nodes.clone(),
-            args.ollama_port,
             args.inference_port,
             Some(args.gateway_port),
         )
@@ -1777,7 +1757,6 @@ async fn start_node(
         &public_addr_cli,
         app_config.advertise_addr.as_deref(),
     );
-    let ollama_port = advertised_ollama_port(&ollama_url);
     let inference_port = Some(app_config.inference_port_or_default());
     // QUIC ports derived from this node's `p2p_port`: see `quic::gateway_quic_port`.
     let inference_quic_port =
@@ -1794,7 +1773,6 @@ async fn start_node(
         signing_key: identity.signing_key.clone(),
         p2p_port: app_config.p2p_port,
         bootstrap_nodes,
-        ollama_port,
         inference_port,
         inference_quic_port,
         gateway_port,
@@ -2320,15 +2298,6 @@ mod main_tests {
             gateway < restore,
             "restoring the slice cannot delay the gateway bind"
         );
-    }
-
-    /// Every node announces the Ollama port of the configured URL, with no flag:
-    /// when the announce depended on a flag, a node without it served the local
-    /// Ollama without any peer knowing.
-    #[test]
-    fn every_node_advertises_the_ollama_port() {
-        let args = Args::parse_from(["pom"]);
-        assert_eq!(advertised_ollama_port(&args.ollama_url), Some(11434));
     }
 
     #[test]

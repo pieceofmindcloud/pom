@@ -916,14 +916,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_local_batch_is_sent_to_all_known_admins() {
-        let network = crate::network::Network::testkit(
-            "worker".into(),
-            "pk".into(),
-            vec![],
-            None,
-            None,
-            None,
-        )
+        let network = crate::network::Network::testkit("worker".into(), "pk".into(), vec![], None, None)
         .await
         .expect("rede de teste");
         let mut admin = crate::gateway::testkit::peer("secondary", "secondary", 8081);

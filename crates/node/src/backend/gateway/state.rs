@@ -1618,7 +1618,6 @@ impl GatewayState {
                 total_layers: local.as_ref().map(|l| l.total_layers).unwrap_or(0),
                 memory_mb: local.as_ref().map(|l| l.memory_used_mb).unwrap_or(0.0),
                 last_seen: chrono::Utc::now(),
-                ollama_port: self.network.ollama_port,
                 inference_port: self.network.inference_port,
                 inference_quic_port: self.network.inference_quic_port,
                 // Keep in sync with network.rs's `self_announce` and

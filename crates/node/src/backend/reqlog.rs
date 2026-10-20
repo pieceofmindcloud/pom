@@ -1863,14 +1863,7 @@ mod tests {
 
     #[tokio::test]
     async fn local_audit_events_are_fanned_out_to_admin_peers() {
-        let network = crate::network::Network::testkit(
-            "worker".into(),
-            "pk".into(),
-            vec![],
-            None,
-            None,
-            None,
-        )
+        let network = crate::network::Network::testkit("worker".into(), "pk".into(), vec![], None, None)
         .await
         .expect("rede de teste");
         let mut admin = crate::gateway::testkit::peer("secondary", "secondary", 8081);

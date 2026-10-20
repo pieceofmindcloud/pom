@@ -1606,7 +1606,6 @@ pub(super) async fn handle_peers(State(state): State<GatewayState>) -> Json<Peer
             addr: p.addr.clone(),
             model: p.model.clone(),
             layers: p.layer_range(),
-            ollama_url: p.ollama_url(),
             inference_url: p.inference_url(),
             load,
         });

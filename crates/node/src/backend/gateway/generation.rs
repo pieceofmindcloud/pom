@@ -3057,14 +3057,7 @@ mod audit_replication_tests {
     #[tokio::test]
     async fn plugin_accepted_inference_log_reaches_every_admin_peer() {
         let network = Arc::new(
-            crate::network::Network::testkit(
-                "admin-source".into(),
-                "source-key".into(),
-                vec![],
-                None,
-                None,
-                None,
-            )
+            crate::network::Network::testkit("admin-source".into(), "source-key".into(), vec![], None, None)
             .await
             .expect("isolated network"),
         );

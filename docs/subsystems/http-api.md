@@ -624,8 +624,8 @@ describe that dormant code.
   does not treat the file as absent from the peer. The client should wait for
   the next answer with `metadata_complete: true` and repeat the selection.
 - **`GET /peers`** - `{ peers: [PeerSummary], count }`. `PeerSummary` carries
-  `node_id` (first 12 chars), `addr`, `model`, `layers`, `ollama_url`,
-  `inference_url`, `load` (in-flight load).
+  `node_id` (first 12 chars), `addr`, `model`, `layers`, `inference_url`,
+  `load` (in-flight load).
 - **`GET /health`** - `status`, `ollama_available`, `peer_count`,
   `pipeline_peers` (with `inference_port`), `default_model` and
   `runtime_capacity` (`n_ctx`, `max_new_tokens`) when the local runtime has

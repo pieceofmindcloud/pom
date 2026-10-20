@@ -236,8 +236,10 @@ same endpoint accepts IPv4 and IPv6 on Windows, Linux and macOS; Quinn's client
 constructor already applies the same option.
 
 `start_setup_mode` (dead code, see above) and `start_node` live in `main.rs` (not
-in a separate module). `advertised_ollama_port` (over `parse_ollama_port`) extracts
-the port from `--ollama-url` and announces it **always**.
+in a separate module). `--ollama-url` is a local setting only: it feeds
+`OllamaClient` (model resolution and `ollama_available` in `/health`). It is not
+announced to peers - nothing in the cluster dials a peer's Ollama, and the
+`Announce` never carried a port for it.
 
 On Windows, the parent process supervises the native child: an abnormal exit
 relaunches the POM, but `Quit POM` returns exit code zero and does not relaunch.

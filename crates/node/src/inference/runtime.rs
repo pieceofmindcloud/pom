@@ -2107,7 +2107,7 @@ mod tests {
         let port = occupant.local_addr().unwrap().port();
 
         let net = Arc::new(
-            Network::testkit("no".into(), "pk".into(), vec![], None, None, None)
+            Network::testkit("no".into(), "pk".into(), vec![], None, None)
                 .await
                 .expect("UDP socket on an ephemeral port"),
         );
@@ -2447,7 +2447,7 @@ mod tests {
         });
 
         let net = Arc::new(
-            Network::testkit("no".into(), "pk".into(), vec![], None, None, None)
+            Network::testkit("no".into(), "pk".into(), vec![], None, None)
                 .await
                 .expect("UDP socket on an ephemeral port"),
         );
@@ -2524,7 +2524,7 @@ mod tests {
     #[tokio::test]
     async fn a_slice_that_did_not_load_shows_up_in_the_status_with_the_reason() {
         let net = Arc::new(
-            Network::testkit("no".into(), "pk".into(), vec![], None, None, None)
+            Network::testkit("no".into(), "pk".into(), vec![], None, None)
                 .await
                 .expect("UDP socket on an ephemeral port"),
         );
@@ -2550,7 +2550,7 @@ mod tests {
     #[tokio::test]
     async fn a_manual_stop_cancels_the_pending_thermal_resume() {
         let net = Arc::new(
-            Network::testkit("no".into(), "pk".into(), vec![], None, None, None)
+            Network::testkit("no".into(), "pk".into(), vec![], None, None)
                 .await
                 .expect("UDP socket on an ephemeral port"),
         );

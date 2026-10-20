@@ -830,7 +830,6 @@ pub struct PeerSummary {
     pub addr: String,
     pub model: String,
     pub layers: String,
-    pub ollama_url: Option<String>,
     pub inference_url: Option<String>,
     pub load: u32,
 }

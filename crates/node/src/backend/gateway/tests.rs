@@ -2887,7 +2887,6 @@ mod peer_visibility_tests {
             total_layers: 32,
             memory_mb: 0.0,
             last_seen: chrono::Utc::now(),
-            ollama_port: None,
             inference_port: Some(8181),
             inference_quic_port: None,
             inference_frame_capabilities: Vec::new(),
@@ -3575,7 +3574,6 @@ pub(crate) mod testkit {
             total_layers: 0,
             memory_mb: 0.0,
             last_seen: chrono::Utc::now(),
-            ollama_port: None,
             inference_port: None,
             inference_quic_port: None,
             inference_frame_capabilities: Vec::new(),
@@ -3658,20 +3656,13 @@ pub(crate) mod testkit {
         peers: Vec<PeerInfo>,
     ) -> GatewayState {
         let net = Arc::new(
-            Network::testkit(
-                node_id.into(),
-                // The same key as `authority_signing_key` below: a node has a
+            Network::testkit(node_id.into(), // The same key as `authority_signing_key` below: a node has a
                 // single key.
                 hex::encode(
                     ed25519_dalek::SigningKey::from_bytes(&[7; 32])
                         .verifying_key()
                         .as_bytes(),
-                ),
-                vec![],
-                None,
-                None,
-                None,
-            )
+                ), vec![], None, None)
             .await
             .expect("UDP socket on an ephemeral port")
             .with_identity(crate::profile::NodeProfile::Worker, hostname.into()),
@@ -3898,7 +3889,7 @@ pub(crate) mod testkit {
         });
 
         state.gateway_port = port;
-        let net = Network::testkit("eu".into(), "pk".into(), vec![], None, None, Some(port))
+        let net = Network::testkit("eu".into(), "pk".into(), vec![], None, Some(port))
             .await
             .expect("UDP socket on an ephemeral port");
         // First in the `self_reply_hosts` list, so the tail hits on the

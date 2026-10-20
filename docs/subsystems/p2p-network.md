@@ -158,7 +158,7 @@ A JSON tagged enum (`serde(tag = "type")`) over UDP:
   key, which derives `node_id`, `endpoint_id` and the pkarr key),
   `cluster_id` (if there is an anchored public chain), `endpoint_id`,
   `endpoint_addrs`, `addr`, `addr_candidates`, `model`, `start_layer`,
-  `end_layer`, `total_layers`, `memory_mb`, `timestamp`, `ollama_port`,
+  `end_layer`, `total_layers`, `memory_mb`, `timestamp`,
   `inference_port`, `inference_quic_port`, `inference_frame_capabilities`,
   `gateway_port`, `gateway_quic_port`, `profile`, `hostname`, `capabilities`
   (the full `ModelCapability` catalog), `disk_total_mb`, `disk_free_mb`, and
@@ -1202,8 +1202,6 @@ pins the two routes the operator uses to deploy.
 - **Nothing, on the browser side** - see "Two certificates on the same port"
   below. The first version left the UI out, and the result was that turning TLS
   on locked the operator out of the panel.
-- **Ollama.** `PeerInfo::ollama_url` stays `http://`: it is a third-party
-  server on the peer's machine, without our certificate and our identity.
 
 ### Two certificates on the same port
 

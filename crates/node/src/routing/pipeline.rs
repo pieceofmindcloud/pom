@@ -751,7 +751,6 @@ mod ipv6_tests {
             total_layers: 32,
             memory_mb: 0.0,
             last_seen: chrono::Utc::now(),
-            ollama_port: None,
             inference_port: Some(8181),
             inference_quic_port: None,
             gateway_port: Some(8090),

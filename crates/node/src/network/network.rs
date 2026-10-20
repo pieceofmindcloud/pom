@@ -458,7 +458,6 @@ struct RuntimeCapacityState {
 
 struct NetworkInit {
     bootstrap_nodes: Vec<String>,
-    ollama_port: Option<u16>,
     inference_port: Option<u16>,
     inference_quic_port: Option<u16>,
     gateway_port: Option<u16>,
@@ -611,10 +610,6 @@ pub enum P2PMessage {
         total_layers: u32,
         memory_mb: f64,
         timestamp: DateTime<Utc>,
-        /// Port where this node's Ollama is reachable (if any).
-        /// Other nodes can build the URL as http://<peer_ip>:<ollama_port>.
-        #[serde(default)]
-        ollama_port: Option<u16>,
         #[serde(default)]
         inference_port: Option<u16>,
         /// Dedicated UDP port for this node's inference HTTP/3 endpoint.
@@ -763,8 +758,6 @@ pub struct PeerInfo {
     pub total_layers: u32,
     pub memory_mb: f64,
     pub last_seen: DateTime<Utc>,
-    #[serde(default)]
-    pub ollama_port: Option<u16>,
     /// Port of the llama-cpp-python inference server on this peer.
     /// Used by the gateway pipeline to POST hidden states.
     #[serde(default)]
@@ -1069,17 +1062,6 @@ impl PeerInfo {
         diff.num_seconds() < PEER_TIMEOUT_SECS
     }
 
-    /// Full Ollama HTTP URL for this peer (None if no ollama_port advertised).
-    ///
-    /// **It stays `http://` even with the cluster on TLS, on purpose**: Ollama
-    /// is a third-party server running on the peer's machine, not a node
-    /// of this cluster. It has neither our certificate nor our identity, and
-    /// asking it for TLS would only produce a refused connection.
-    pub fn ollama_url(&self) -> Option<String> {
-        self.ollama_port
-            .map(|port| format!("http://{}:{}", ip_host(&self.addr), port))
-    }
-
     /// Adds the address the packet really came from when the source is still
     /// the only clue. An `Announce` with explicit `addr_candidates` stays the
     /// authority, so a LAN or bridge address the peer itself filtered out is
@@ -1266,8 +1248,6 @@ pub struct Network {
     broadcast_addr: SocketAddr,
     pub peers: Arc<RwLock<HashMap<String, PeerInfo>>>,
     pub bootstrap_nodes: Vec<String>,
-    /// Port of the local Ollama instance, advertised in P2P messages.
-    pub ollama_port: Option<u16>,
     /// Port of the local llama-cpp-python inference server.
     pub inference_port: Option<u16>,
     /// Dedicated UDP port of the local inference HTTP/3 endpoint.
@@ -1670,7 +1650,6 @@ impl Network {
         pubkey: String,
         port: u16,
         bootstrap_nodes: Vec<String>,
-        ollama_port: Option<u16>,
         inference_port: Option<u16>,
         gateway_port: Option<u16>,
     ) -> Result<Self> {
@@ -1685,7 +1664,6 @@ impl Network {
             SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::BROADCAST), discovery_port),
             NetworkInit {
                 bootstrap_nodes,
-                ollama_port,
                 inference_port,
                 inference_quic_port: None,
                 gateway_port,
@@ -1748,7 +1726,6 @@ impl Network {
         node_id: String,
         pubkey: String,
         bootstrap_nodes: Vec<String>,
-        ollama_port: Option<u16>,
         inference_port: Option<u16>,
         gateway_port: Option<u16>,
     ) -> Result<Self> {
@@ -1762,7 +1739,6 @@ impl Network {
             socket,
             NetworkInit {
                 bootstrap_nodes,
-                ollama_port,
                 inference_port,
                 inference_quic_port: None,
                 gateway_port,
@@ -1776,7 +1752,6 @@ impl Network {
         node_id: String,
         pubkey: String,
         bootstrap_nodes: Vec<String>,
-        ollama_port: Option<u16>,
         inference_port: Option<u16>,
         gateway_port: Option<u16>,
         broadcast_addr: SocketAddr,
@@ -1796,7 +1771,6 @@ impl Network {
             socket,
             NetworkInit {
                 bootstrap_nodes,
-                ollama_port,
                 inference_port,
                 inference_quic_port: None,
                 gateway_port,
@@ -1823,7 +1797,6 @@ impl Network {
             broadcast_addr,
             peers: Arc::new(RwLock::new(HashMap::new())),
             bootstrap_nodes: init.bootstrap_nodes,
-            ollama_port: init.ollama_port,
             inference_port: init.inference_port,
             inference_quic_port: init.inference_quic_port,
             gateway_port: init.gateway_port,
@@ -2413,7 +2386,6 @@ impl Network {
             total_layers: assignment.map(|a| a.total_layers).unwrap_or(0),
             memory_mb: assignment.map(|a| a.memory_used_mb).unwrap_or(0.0),
             timestamp: Utc::now(),
-            ollama_port: self.ollama_port,
             inference_port: self.inference_port,
             inference_quic_port: self.inference_quic_port,
             // Keep this list in sync with the other two `Announce` builders
@@ -3377,7 +3349,6 @@ impl Network {
                 total_layers,
                 memory_mb,
                 timestamp,
-                ollama_port,
                 inference_port,
                 inference_quic_port,
                 inference_frame_capabilities,
@@ -3433,7 +3404,6 @@ impl Network {
                     total_layers,
                     memory_mb,
                     last_seen: timestamp,
-                    ollama_port,
                     inference_port,
                     inference_quic_port,
                     inference_frame_capabilities,
@@ -3472,16 +3442,12 @@ impl Network {
                 };
 
                 if is_new {
-                    let ollama_tag = ollama_port
-                        .map(|p| format!(" ollama:{}", p))
-                        .unwrap_or_default();
                     info!(
-                        "🆕 New peer: {} | model={} layers={}-{}{}",
+                        "🆕 New peer: {} | model={} layers={}-{}",
                         short(&node_id),
                         model,
                         start_layer,
                         end_layer,
-                        ollama_tag,
                     );
                 } else {
                     debug!(
@@ -4386,7 +4352,7 @@ mod tests {
     /// was invisible over the internet while the LAN saw it normally.
     #[tokio::test]
     async fn gossipsub_and_udp_publish_the_same_announce() {
-        let net = Network::testkit("n".into(), "p".into(), vec![], None, Some(8181), Some(8080))
+        let net = Network::testkit("n".into(), "p".into(), vec![], Some(8181), Some(8080))
             .await
             .unwrap()
             .with_identity(crate::profile::NodeProfile::Admin, "macbook".into())
@@ -4476,15 +4442,7 @@ mod tests {
     async fn testkit_broadcasts_only_to_an_injected_loopback_endpoint() {
         let probe = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let destination = probe.local_addr().unwrap();
-        let net = Network::testkit_with_broadcast_addr(
-            "n".into(),
-            "p".into(),
-            vec![],
-            None,
-            None,
-            None,
-            destination,
-        )
+        let net = Network::testkit_with_broadcast_addr("n".into(), "p".into(), vec![], None, None, destination)
         .await
         .unwrap();
 
@@ -4501,7 +4459,7 @@ mod tests {
 
     #[tokio::test]
     async fn testkit_default_is_isolated_from_the_global_broadcast() {
-        let net = Network::testkit("n".into(), "p".into(), vec![], None, None, None)
+        let net = Network::testkit("n".into(), "p".into(), vec![], None, None)
             .await
             .unwrap();
 
@@ -4516,7 +4474,7 @@ mod tests {
 
     #[tokio::test]
     async fn secondary_authority_is_not_mistaken_for_the_primary() {
-        let net = Network::testkit("local".into(), "pk".into(), vec![], None, None, None)
+        let net = Network::testkit("local".into(), "pk".into(), vec![], None, None)
             .await
             .expect("UDP socket on an ephemeral port");
         let (probe, mut received) = tokio::sync::mpsc::unbounded_channel();
@@ -4531,7 +4489,7 @@ mod tests {
 
     #[tokio::test]
     async fn admin_peers_returns_all_live_admin_destinations() {
-        let net = Network::testkit("local".into(), "pk".into(), vec![], None, None, None)
+        let net = Network::testkit("local".into(), "pk".into(), vec![], None, None)
             .await
             .expect("UDP socket on an ephemeral port");
         let mut first = dummy_peer("admin-a", "127.0.0.1:8081");
@@ -4582,7 +4540,7 @@ mod tests {
             .signed_secondary_grant(&primary_key, secondary.clone(), &primary.node_id)
             .unwrap();
         trust.record_secondary_grant(grant, &primary_key).unwrap();
-        let net = Network::testkit("local".into(), "pk".into(), vec![], None, None, None)
+        let net = Network::testkit("local".into(), "pk".into(), vec![], None, None)
             .await
             .expect("UDP socket on an ephemeral port")
             .with_admission(
@@ -4625,15 +4583,7 @@ mod tests {
 
     #[tokio::test]
     async fn testkit_rejects_a_global_broadcast_endpoint() {
-        let result = Network::testkit_with_broadcast_addr(
-            "n".into(),
-            "p".into(),
-            vec![],
-            None,
-            None,
-            None,
-            SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::BROADCAST), DISCOVERY_PORT),
-        )
+        let result = Network::testkit_with_broadcast_addr("n".into(), "p".into(), vec![], None, None, SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::BROADCAST), DISCOVERY_PORT))
         .await;
 
         assert!(result.is_err());
@@ -4641,7 +4591,7 @@ mod tests {
 
     #[tokio::test]
     async fn production_network_keeps_the_global_broadcast_default() {
-        let net = Network::new("n".into(), "p".into(), 0, vec![], None, None, None)
+        let net = Network::new("n".into(), "p".into(), 0, vec![], None, None)
             .await
             .unwrap();
 
@@ -4653,7 +4603,7 @@ mod tests {
 
     #[tokio::test]
     async fn announce_carries_the_capacity_confirmed_by_inference_health() {
-        let net = Network::testkit("n".into(), "p".into(), vec![], None, Some(8181), Some(8080))
+        let net = Network::testkit("n".into(), "p".into(), vec![], Some(8181), Some(8080))
             .await
             .unwrap();
         net.set_runtime_capacity(Some(RuntimeCapacity {
@@ -4684,7 +4634,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_old_runtime_generation_cannot_restore_its_capacity() {
-        let net = Network::testkit("n".into(), "p".into(), vec![], None, Some(8181), Some(8080))
+        let net = Network::testkit("n".into(), "p".into(), vec![], Some(8181), Some(8080))
             .await
             .unwrap();
         net.set_runtime_generation(2);
@@ -4717,7 +4667,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_ephemeral_p2p_socket_never_announces_port_zero() {
-        let net = Network::testkit("n".into(), "p".into(), vec![], None, None, None)
+        let net = Network::testkit("n".into(), "p".into(), vec![], None, None)
             .await
             .unwrap();
 
@@ -4736,7 +4686,7 @@ mod tests {
     /// discovery on one side only, which is very hard to spot.
     #[tokio::test]
     async fn ipv4_destinations_are_mapped_on_a_dual_stack_socket() {
-        let net = Network::new("n".into(), "p".into(), 0, vec![], None, None, None)
+        let net = Network::new("n".into(), "p".into(), 0, vec![], None, None)
             .await
             .unwrap();
 
@@ -4897,7 +4847,7 @@ mod tests {
     /// (e.g. a new peer connects) must never override it.
     #[tokio::test]
     async fn a_pinned_address_always_outranks_an_observed_one() {
-        let net = Network::testkit("n".into(), "p".into(), vec![], None, None, None)
+        let net = Network::testkit("n".into(), "p".into(), vec![], None, None)
             .await
             .unwrap()
             .with_advertise_addr(Some("198.51.100.9:42777".into()));
@@ -4958,7 +4908,7 @@ mod tests {
     /// sentinel with something equally useless.
     #[tokio::test]
     async fn a_private_observed_address_is_ignored() {
-        let net = Network::testkit("n".into(), "p".into(), vec![], None, None, None)
+        let net = Network::testkit("n".into(), "p".into(), vec![], None, None)
             .await
             .unwrap();
 
@@ -4973,7 +4923,7 @@ mod tests {
     /// actually override an earlier pin, since that's the entire point.
     #[tokio::test]
     async fn set_advertise_addr_overrides_a_previous_pin_live() {
-        let net = Network::testkit("n".into(), "p".into(), vec![], None, None, None)
+        let net = Network::testkit("n".into(), "p".into(), vec![], None, None)
             .await
             .unwrap()
             .with_advertise_addr(Some("198.51.100.9:42777".into()));
@@ -4990,7 +4940,7 @@ mod tests {
     /// out: iroh dials addresses.
     #[tokio::test]
     async fn the_advertise_hint_leads_the_endpoint_addrs_live() {
-        let net = Network::testkit("n".into(), "p".into(), vec![], None, None, None)
+        let net = Network::testkit("n".into(), "p".into(), vec![], None, None)
             .await
             .unwrap();
         net.set_endpoint_addrs(vec!["https://relay.example.org/".into()]);
@@ -5021,7 +4971,7 @@ mod tests {
     /// back to an observed address if no current public local address exists.
     #[tokio::test]
     async fn clearing_the_pin_falls_back_to_an_observed_address() {
-        let net = Network::testkit("n".into(), "p".into(), vec![], None, None, None)
+        let net = Network::testkit("n".into(), "p".into(), vec![], None, None)
             .await
             .unwrap()
             .with_advertise_addr(Some("198.51.100.9:42777".into()));
@@ -5044,7 +4994,7 @@ mod tests {
     /// *before* calling this — this test documents what happens if it didn't.
     #[tokio::test]
     async fn an_unparseable_value_clears_rather_than_corrupts() {
-        let net = Network::testkit("n".into(), "p".into(), vec![], None, None, None)
+        let net = Network::testkit("n".into(), "p".into(), vec![], None, None)
             .await
             .unwrap();
         net.set_advertise_addr(Some(""));
@@ -5102,7 +5052,6 @@ mod tests {
             total_layers: 32,
             memory_mb: 0.0,
             last_seen: Utc::now(),
-            ollama_port: None,
             inference_port: Some(8181),
             inference_quic_port: Some(8182),
             gateway_port: Some(8090),
@@ -5156,7 +5105,6 @@ mod tests {
             total_layers: 32,
             memory_mb: 6780.0,
             last_seen: Utc::now(),
-            ollama_port: None,
             inference_port: Some(8181),
             inference_quic_port: None,
             gateway_port: Some(8090),
@@ -5200,7 +5148,7 @@ mod tests {
     /// at different times compute different holes for the same slice.
     #[tokio::test]
     async fn a_peer_list_refreshes_existing_peer_coverage() {
-        let net = Network::new("local".into(), "pubkey".into(), 0, vec![], None, None, None)
+        let net = Network::new("local".into(), "pubkey".into(), 0, vec![], None, None)
             .await
             .unwrap();
         let assignment = Arc::new(RwLock::new(None));
@@ -5250,7 +5198,6 @@ mod tests {
             total_layers: 40,
             memory_mb: 1.0,
             last_seen: Utc::now(),
-            ollama_port: None,
             inference_port: Some(8181),
             inference_quic_port: None,
             inference_frame_capabilities: Vec::new(),
@@ -5279,7 +5226,7 @@ mod tests {
     /// dialing an address that existed on no machine.
     #[tokio::test]
     async fn gossip_does_not_resurrect_an_address_already_proved_dead() {
-        let net = Network::new("local".into(), "pubkey".into(), 0, vec![], None, None, None)
+        let net = Network::new("local".into(), "pubkey".into(), 0, vec![], None, None)
             .await
             .unwrap();
         let assignment = Arc::new(RwLock::new(None));
@@ -5328,7 +5275,7 @@ mod tests {
     /// or an old address that the operator already stopped announcing.
     #[tokio::test]
     async fn gossip_drops_an_observed_candidate_when_the_peer_announces_a_set() {
-        let net = Network::new("local".into(), "pubkey".into(), 0, vec![], None, None, None)
+        let net = Network::new("local".into(), "pubkey".into(), 0, vec![], None, None)
             .await
             .unwrap();
         let assignment = Arc::new(RwLock::new(None));
@@ -5363,15 +5310,7 @@ mod tests {
     /// the `advertise_addr` the peer wants to publish.
     #[tokio::test]
     async fn an_announce_does_not_add_the_socket_source_to_an_explicit_set() {
-        let net = Network::new(
-            "local".into(),
-            "pubkey".into(),
-            0,
-            vec![],
-            None,
-            Some(8181),
-            None,
-        )
+        let net = Network::new("local".into(), "pubkey".into(), 0, vec![], Some(8181), None)
         .await
         .unwrap();
         let assignment = Arc::new(RwLock::new(None));
@@ -5396,7 +5335,6 @@ mod tests {
                 total_layers: 32,
                 memory_mb: 0.0,
                 timestamp: Utc::now(),
-                ollama_port: None,
                 inference_port: Some(8181),
                 inference_quic_port: None,
                 inference_frame_capabilities: Vec::new(),
@@ -5662,14 +5600,7 @@ mod tests {
     /// bound for the later `rejoin`.
     #[tokio::test]
     async fn a_detached_node_neither_announces_nor_looks_for_bootstrap() {
-        let net = Network::testkit(
-            "n".into(),
-            "p".into(),
-            vec!["127.0.0.1:1".into()],
-            None,
-            None,
-            None,
-        )
+        let net = Network::testkit("n".into(), "p".into(), vec!["127.0.0.1:1".into()], None, None)
         .await
         .unwrap();
 
@@ -5717,7 +5648,6 @@ mod tests {
             total_layers: 0,
             memory_mb: 0.0,
             last_seen: Utc::now(),
-            ollama_port: None,
             inference_port: None,
             inference_quic_port: None,
             inference_frame_capabilities: Vec::new(),
@@ -5824,7 +5754,6 @@ mod tests {
             total_layers: 0,
             memory_mb: 0.0,
             last_seen: Utc::now(),
-            ollama_port: None,
             inference_port: None,
             inference_quic_port: None,
             inference_frame_capabilities: Vec::new(),
@@ -5864,14 +5793,7 @@ mod tests {
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
         let identity = crate::identity::Identity::generate();
-        let wrong = Network::testkit(
-            identity.node_id.0.clone(),
-            identity.public_key_hex(),
-            vec![],
-            None,
-            None,
-            None,
-        )
+        let wrong = Network::testkit(identity.node_id.0.clone(), identity.public_key_hex(), vec![], None, None)
         .await
         .unwrap()
         .with_admission(
@@ -5881,14 +5803,7 @@ mod tests {
         wrong.insert_peer(admission_peer_for(gateway_port, &responder.signing_key)).await;
         assert_eq!(wrong.peer_count().await, 0);
 
-        let valid = Network::testkit(
-            identity.node_id.0.clone(),
-            identity.public_key_hex(),
-            vec![],
-            None,
-            None,
-            None,
-        )
+        let valid = Network::testkit(identity.node_id.0.clone(), identity.public_key_hex(), vec![], None, None)
         .await
         .unwrap()
         .with_admission(
@@ -5908,7 +5823,7 @@ mod tests {
         let _policy = crate::peer_client::GLOBAL_POLICY
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let network = Network::testkit("eu".into(), String::new(), vec![], None, None, None)
+        let network = Network::testkit("eu".into(), String::new(), vec![], None, None)
             .await
             .unwrap();
         let mut peer = admission_peer(8081);
@@ -6020,7 +5935,7 @@ mod tests {
     #[tokio::test]
     async fn a_file_crosses_a_member_relay_but_never_a_public_one() {
         use crate::p2p::LinkPath;
-        let network = Network::testkit("eu".into(), String::new(), vec![], None, None, None)
+        let network = Network::testkit("eu".into(), String::new(), vec![], None, None)
             .await
             .unwrap();
         let remote = crate::p2p::random_endpoint_id().to_string();
@@ -6134,7 +6049,7 @@ mod tests {
     #[tokio::test]
     async fn peer_route_prefers_http_then_direct_then_relay() {
         use crate::p2p::LinkPath;
-        let network = Network::testkit("eu".into(), String::new(), vec![], None, None, None)
+        let network = Network::testkit("eu".into(), String::new(), vec![], None, None)
             .await
             .unwrap();
         let remote = crate::p2p::random_endpoint_id().to_string();
@@ -6195,7 +6110,7 @@ mod tests {
     /// A path through one of n0's relays is a public one.
     #[tokio::test]
     async fn a_path_through_an_n0_relay_is_public() {
-        let network = Network::testkit("eu".into(), String::new(), vec![], None, None, None)
+        let network = Network::testkit("eu".into(), String::new(), vec![], None, None)
             .await
             .unwrap();
         let Some(n0) = iroh::RelayMode::Default
@@ -6221,14 +6136,7 @@ mod tests {
     #[tokio::test]
     async fn a_cache_miss_is_answered_without_probing() {
         let identity = crate::identity::Identity::generate();
-        let network = Network::testkit(
-            identity.node_id.0.clone(),
-            identity.public_key_hex(),
-            vec![],
-            None,
-            None,
-            None,
-        )
+        let network = Network::testkit(identity.node_id.0.clone(), identity.public_key_hex(), vec![], None, None)
         .await
         .unwrap()
         .with_admission(
@@ -6264,14 +6172,7 @@ mod tests {
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
         let identity = crate::identity::Identity::generate();
-        let network = Network::testkit(
-            identity.node_id.0.clone(),
-            identity.public_key_hex(),
-            vec![],
-            None,
-            None,
-            None,
-        )
+        let network = Network::testkit(identity.node_id.0.clone(), identity.public_key_hex(), vec![], None, None)
         .await
         .unwrap()
         .with_admission(
@@ -6336,14 +6237,7 @@ mod tests {
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
         let identity = crate::identity::Identity::generate();
-        let network = Network::testkit(
-            identity.node_id.0.clone(),
-            identity.public_key_hex(),
-            vec![],
-            None,
-            None,
-            None,
-        )
+        let network = Network::testkit(identity.node_id.0.clone(), identity.public_key_hex(), vec![], None, None)
         .await
         .unwrap()
         .with_admission(
@@ -6385,14 +6279,7 @@ mod tests {
 
         let identity = crate::identity::Identity::generate();
         let network = Arc::new(
-            Network::testkit(
-                identity.node_id.0.clone(),
-                identity.public_key_hex(),
-                vec![],
-                None,
-                None,
-                None,
-            )
+            Network::testkit(identity.node_id.0.clone(), identity.public_key_hex(), vec![], None, None)
             .await
             .unwrap()
             .with_admission(
@@ -6434,7 +6321,7 @@ mod tests {
         let identity = crate::identity::Identity::generate();
         let node_id = identity.node_id.0.clone();
         let pubkey = identity.public_key_hex();
-        let unknown = Network::testkit(node_id.clone(), pubkey.clone(), vec![], None, None, None)
+        let unknown = Network::testkit(node_id.clone(), pubkey.clone(), vec![], None, None)
             .await
             .unwrap()
             .with_admission(
@@ -6481,7 +6368,7 @@ mod tests {
             &signing_key,
         )
         .unwrap();
-        let trusted = Network::testkit(node_id, pubkey, vec![], None, None, None)
+        let trusted = Network::testkit(node_id, pubkey, vec![], None, None)
             .await
             .unwrap()
             .with_admission(
@@ -6512,14 +6399,7 @@ mod tests {
             &signing_key,
         )
         .unwrap();
-        let gated = Network::testkit(
-            identity.node_id.0.clone(),
-            identity.public_key_hex(),
-            vec![],
-            None,
-            None,
-            None,
-        )
+        let gated = Network::testkit(identity.node_id.0.clone(), identity.public_key_hex(), vec![], None, None)
         .await
         .unwrap()
         .with_admission(
@@ -6580,14 +6460,7 @@ mod tests {
         worker.endpoint_id = Some(worker_peer_id);
         worker.cluster_id = Some("cluster".into());
 
-        let net = Network::testkit(
-            local.node_id.0.clone(),
-            local.public_key_hex(),
-            vec![],
-            None,
-            None,
-            None,
-        )
+        let net = Network::testkit(local.node_id.0.clone(), local.public_key_hex(), vec![], None, None)
         .await
         .unwrap()
         .with_admission(
@@ -6634,14 +6507,7 @@ mod tests {
 
         // authorized + worker without a grant => refused.
         let (trust, peer) = build(Some("cluster"));
-        let net = Network::testkit(
-            local.node_id.0.clone(),
-            local.public_key_hex(),
-            vec![],
-            None,
-            None,
-            None,
-        )
+        let net = Network::testkit(local.node_id.0.clone(), local.public_key_hex(), vec![], None, None)
         .await
         .unwrap()
         .with_admission(
@@ -6657,14 +6523,7 @@ mod tests {
 
         // anyone_with_anchor + cluster_id that is not the anchor's => refused.
         let (trust, peer) = build(Some("outro-enxame"));
-        let net = Network::testkit(
-            local.node_id.0.clone(),
-            local.public_key_hex(),
-            vec![],
-            None,
-            None,
-            None,
-        )
+        let net = Network::testkit(local.node_id.0.clone(), local.public_key_hex(), vec![], None, None)
         .await
         .unwrap()
         .with_admission(
@@ -6682,14 +6541,7 @@ mod tests {
     #[tokio::test]
     async fn public_directory_keeps_unadmitted_public_candidates_out_of_pipeline() {
         let identity = crate::identity::Identity::generate();
-        let network = Network::testkit(
-            identity.node_id.0.clone(),
-            identity.public_key_hex(),
-            vec![],
-            None,
-            None,
-            None,
-        )
+        let network = Network::testkit(identity.node_id.0.clone(), identity.public_key_hex(), vec![], None, None)
         .await
         .unwrap()
         .with_admission(
@@ -6724,7 +6576,7 @@ mod tests {
     #[tokio::test]
     async fn a_known_peer_is_asked_for_its_peers_periodically() {
         let (sock, addr) = probe().await;
-        let net = Network::testkit("n".into(), "p".into(), vec![], None, None, None)
+        let net = Network::testkit("n".into(), "p".into(), vec![], None, None)
             .await
             .unwrap();
         net.peers
@@ -6750,7 +6602,7 @@ mod tests {
     /// time.
     #[tokio::test]
     async fn the_sweep_rotates_over_a_bounded_subset() {
-        let net = Network::testkit("n".into(), "p".into(), vec![], None, None, None)
+        let net = Network::testkit("n".into(), "p".into(), vec![], None, None)
             .await
             .unwrap();
         let mut probes = Vec::new();
@@ -6794,7 +6646,7 @@ mod tests {
     #[tokio::test]
     async fn a_detached_node_does_not_sweep() {
         let (sock, addr) = probe().await;
-        let net = Network::testkit("n".into(), "p".into(), vec![], None, None, None)
+        let net = Network::testkit("n".into(), "p".into(), vec![], None, None)
             .await
             .unwrap();
         net.peers
@@ -6812,7 +6664,7 @@ mod tests {
     #[tokio::test]
     async fn receive_loop_survives_a_panicking_message_and_processes_the_next() {
         let net = Arc::new(
-            Network::new("n".into(), "p".into(), 0, vec![], None, None, None)
+            Network::new("n".into(), "p".into(), 0, vec![], None, None)
                 .await
                 .unwrap(),
         );
@@ -6870,7 +6722,7 @@ mod tests {
 
     #[tokio::test]
     async fn ipv6_destinations_are_left_alone() {
-        let net = Network::testkit("n".into(), "p".into(), vec![], None, None, None)
+        let net = Network::testkit("n".into(), "p".into(), vec![], None, None)
             .await
             .unwrap();
         let v6: SocketAddr = "[fe80::1]:42777".parse().unwrap();
@@ -6922,7 +6774,6 @@ mod tests {
             total_layers: 0,
             memory_mb: 1.5,
             timestamp: Utc::now(),
-            ollama_port: None,
             inference_port: Some(9000),
             inference_quic_port: None,
             inference_frame_capabilities: Vec::new(),
@@ -7002,15 +6853,7 @@ mod tests {
     async fn the_node_signs_its_own_announce() {
         let key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
         let pubkey = key.verifying_key();
-        let net = Network::new(
-            crate::identity::NodeId::from_pubkey(&pubkey).0,
-            hex::encode(pubkey.as_bytes()),
-            0,
-            vec![],
-            None,
-            None,
-            None,
-        )
+        let net = Network::new(crate::identity::NodeId::from_pubkey(&pubkey).0, hex::encode(pubkey.as_bytes()), 0, vec![], None, None)
         .await
         .unwrap();
         net.set_announce_key(Arc::new(key));
@@ -7022,7 +6865,7 @@ mod tests {
     /// peer whose own announce arrived recently.
     #[tokio::test]
     async fn a_peer_list_does_not_move_a_peer_heard_first_hand() {
-        let net = Network::new("local".into(), "pubkey".into(), 0, vec![], None, None, None)
+        let net = Network::new("local".into(), "pubkey".into(), 0, vec![], None, None)
             .await
             .unwrap();
         let assignment = Arc::new(RwLock::new(None));
@@ -7074,7 +6917,7 @@ mod tests {
             )
             .unwrap(),
         );
-        let net = Network::testkit("local".into(), "pk".into(), vec![], None, None, None)
+        let net = Network::testkit("local".into(), "pk".into(), vec![], None, None)
             .await
             .unwrap()
             .with_admission(
@@ -7133,7 +6976,7 @@ mod tests {
             )
             .unwrap(),
         );
-        let net = Network::testkit("local".into(), "pk".into(), vec![], None, None, None)
+        let net = Network::testkit("local".into(), "pk".into(), vec![], None, None)
             .await
             .unwrap()
             .with_admission(

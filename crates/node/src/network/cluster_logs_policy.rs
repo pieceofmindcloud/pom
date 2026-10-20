@@ -225,26 +225,12 @@ mod tests {
     #[tokio::test]
     async fn probe_from_secondary_retries_a_ghost_gateway_candidate() {
         let principal = std::sync::Arc::new(
-            crate::network::Network::testkit(
-                PRINCIPAL.into(),
-                "principal-authority".into(),
-                vec![],
-                None,
-                None,
-                None,
-            )
+            crate::network::Network::testkit(PRINCIPAL.into(), "principal-authority".into(), vec![], None, None)
             .await
             .unwrap(),
         );
         principal.set_cluster_logs_enabled(true);
-        let secondary = crate::network::Network::testkit(
-            "secondary-1".into(),
-            "secondary-authority".into(),
-            vec![],
-            None,
-            None,
-            None,
-        )
+        let secondary = crate::network::Network::testkit("secondary-1".into(), "secondary-authority".into(), vec![], None, None)
         .await
         .unwrap();
 
@@ -289,7 +275,6 @@ mod tests {
                 total_layers: 2,
                 memory_mb: 1.0,
                 last_seen: chrono::Utc::now(),
-                ollama_port: None,
                 inference_port: None,
                 inference_quic_port: None,
                 inference_frame_capabilities: Vec::new(),

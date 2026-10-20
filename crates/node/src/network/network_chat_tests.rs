@@ -73,7 +73,7 @@ fn network_chat_policy_never_adopts_an_unauthenticated_announce() {
 
 #[tokio::test]
 async fn network_chat_probe_only_accepts_the_configured_principal_identity() {
-    let network = Network::testkit("local".into(), "pk-local".into(), vec![], None, None, None)
+    let network = Network::testkit("local".into(), "pk-local".into(), vec![], None, None)
         .await
         .unwrap();
     let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -89,7 +89,7 @@ async fn network_chat_probe_only_accepts_the_configured_principal_identity() {
 
 #[tokio::test]
 async fn quic_policy_probe_only_accepts_the_configured_principal_identity() {
-    let network = Network::testkit("local".into(), "pk-local".into(), vec![], None, None, None)
+    let network = Network::testkit("local".into(), "pk-local".into(), vec![], None, None)
         .await
         .unwrap();
     let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();

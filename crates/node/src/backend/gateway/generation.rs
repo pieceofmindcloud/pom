@@ -871,10 +871,27 @@ pub(super) async fn generate_stream_inner(
         .await;
         // A machine of a prefill/decode split that only reads prompts never answers a request: it is no head and no
         // hop. The plugin engine sends it the prompts itself (`plugin_engine::prefill_on_peer`).
-        let peers: Vec<crate::network::PeerInfo> = peers
+        let (prefill_only, peers): (Vec<_>, Vec<_>) = peers
             .into_iter()
-            .filter(|peer| !crate::plugin_engine::is_prefill_only(peer))
-            .collect();
+            .partition(|peer| crate::plugin_engine::is_prefill_only(peer));
+        if !prefill_only.is_empty()
+            && !peers.iter().any(|p| match deploy_id {
+                Some(id) => p.deploy_id == id,
+                None => p.model == model,
+            })
+            && prefill_only.iter().any(|p| match deploy_id {
+                Some(id) => p.deploy_id == id,
+                None => p.model == model,
+            })
+        {
+            let error = format!(
+                "No valid pipeline for model '{model}': only prefill machines serve it, and a prefill machine \
+                 never answers a request (deploy a machine with the decode or both role)"
+            );
+            log_early_outcome("refused", &error);
+            let _ = tx.send(GenEvent::Failed(error)).await;
+            return;
+        }
         record_gateway_span(
             &mut gateway_spans,
             request_started,

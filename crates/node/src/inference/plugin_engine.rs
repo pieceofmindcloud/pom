@@ -1327,6 +1327,12 @@ pub(crate) async fn deploy_block(
         return Some("choose the machine that runs the inference service".into());
     }
     use crate::webui::InferenceRole;
+    if !roles.is_empty() && roles.iter().all(|role| *role == InferenceRole::Prefill) {
+        return Some(format!(
+            "the inference service {service} has no machine that answers: a prefill machine only reads prompts, so \
+             give one machine the decode role, or the role both"
+        ));
+    }
     let split = roles.contains(&InferenceRole::Prefill) && roles.iter().any(|role| *role != InferenceRole::Prefill);
     if whole && unique.len() != 1 && !split {
         return Some(format!(
@@ -1499,6 +1505,26 @@ mod tests {
             Some(GenEvent::Token(text)) if text == "done"
         ));
         assert!(generated_text_event(&json!({"r": ""})).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_deployment_of_prefill_machines_only_is_refused() {
+        use crate::webui::InferenceRole;
+        let state = crate::gateway::testkit::state_with("me", vec![]).await;
+        let reason = deploy_block(&state, "strata", true, &["a".into()], &[InferenceRole::Prefill])
+            .await
+            .expect("a lone prefill machine answers no request");
+        assert!(reason.contains("no machine that answers"), "{reason}");
+        let reason = deploy_block(
+            &state,
+            "strata",
+            true,
+            &["a".into(), "b".into()],
+            &[InferenceRole::Prefill, InferenceRole::Prefill],
+        )
+        .await
+        .expect("two prefill machines answer no request either");
+        assert!(reason.contains("no machine that answers"), "{reason}");
     }
 
     #[test]

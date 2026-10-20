@@ -737,11 +737,20 @@ export function DeployModel() {
     if (!isWhole) setMerge(memory.merge);
   }, [p, chosen, kind, memoryKey, isWhole]);
 
-  /** What is on screen right now: the operator's edit, or the suggestion. */
-  const rows = useMemo(
-    () => (selection ?? rowsOf(p)).slice().sort(byLayer),
-    [selection, p],
-  );
+  /** What is on screen right now: the operator's edit, or the suggestion.
+   *  A per-machine role only exists in a prefill/decode split: with a single
+   *  machine the inspector shows the deployment's role, so a role left on the
+   *  row (a second machine that was removed, a remembered split) would
+   *  silently override what the operator sees. */
+  const rows = useMemo((): DeploySelection[] => {
+    const current = (selection ?? rowsOf(p)).slice().sort(byLayer);
+    if (new Set(current.map((row) => row.target_node_id)).size > 1) return current;
+    return current.map((row) => {
+      const single = { ...row };
+      delete single.inference_role;
+      return single;
+    });
+  }, [selection, p]);
   /** The canvas, TP selectors and card actions all use this same membership.
    *  Complete strategy puts every live machine on the map except in whole mode,
    *  where the operator adds each machine. */

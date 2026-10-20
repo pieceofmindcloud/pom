@@ -749,7 +749,9 @@ Key logic carriers:
   `inference_role` take a second machine for a whole model (the first becomes
   `prefill`, the new one `decode`); the role of each machine is edited in
   the POM settings card (`DeploymentInspector` `machineRoles`, one row per
-  machine), never in the machine card.
+  machine), never in the machine card. Back to one machine, `DeployModel`'s
+  `rows` drops the row's role, so the deployment's role the inspector shows
+  is the one deployed.
 - `DeployNetworkCanvas.tsx` - the compact, deploy-time topology view. It
   reuses the visual contract of the `ModelNetworkCanvas`: the dotted background, machine
   cards, `autoLayout`, positions persisted per fingerprint, pointer drag,

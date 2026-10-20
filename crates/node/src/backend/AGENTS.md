@@ -847,8 +847,9 @@ change lands in the right place.
   invokes) and `CallKind::BareFunction` (a tolerated wrapper-less
   `<function>NAME</function>` fallback, name-only, whitespace guard). A
   `<tool_call>` opened with `<parameter=NAME>` where `<function=NAME>`
-  belongs is read as a call to NAME (`repair_parameter_opening`) when the next
-  tag is another `<parameter=` and, for a complete call, it closes with
+  belongs (either spelling, `<parameter name="NAME">` too) is read as a call
+  to NAME (`repair_parameter_opening`) when the next tag is another parameter
+  tag and, for a complete call, it closes with
   `</function>`. The quantized models also misspell the wrapper, so
   `<function_call>` and `<parameter_call>` open a `Wrapped` call, a bare
   `<invoke name=...>` is `CallKind::Invoke`, and any closer of the family

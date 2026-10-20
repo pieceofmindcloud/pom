@@ -980,14 +980,19 @@ fn normalize_wrapped_body(raw: &str) -> String {
 /// `<parameter=`, so a tag holding a value is never taken for a name; the
 /// complete parser also requires the closing `</function>`.
 fn repair_parameter_opening(raw: &str) -> Option<String> {
-    let rest = raw.trim_start().strip_prefix("<parameter=")?;
-    let (name, after) = rest.split_once('>')?;
-    let name = name.trim();
-    if name.is_empty() || name.contains(char::is_whitespace) {
+    // Either spelling: `<parameter=edit>` or `<parameter name="edit">`.
+    let (name, after) = parameter_open(raw.trim_start())?;
+    if name.contains(char::is_whitespace) {
         return None;
     }
     let after = after.trim_start();
-    after.starts_with("<parameter=").then(|| format!("<function={name}>\n{after}"))
+    is_parameter_tag(after).then(|| format!("<function={name}>\n{after}"))
+}
+
+/// `<parameter=` or `<parameter ` - the start of a parameter tag in either
+/// spelling, and not `<parameters>` or another word.
+fn is_parameter_tag(text: &str) -> bool {
+    text.starts_with("<parameter=") || text.starts_with("<parameter ")
 }
 
 /// Hermes-style templates normally emit `arguments` as an object, but some
@@ -2711,6 +2716,19 @@ mod tests {
             "<tool_call>\n<function=bash>\n<parameter=command>\nls\n</parameter>\n</function>\n</function_calls>",
         );
         assert_eq!(name, "bash");
+    }
+
+
+    #[test]
+    fn a_call_named_by_a_quoted_parameter_tag_is_read_as_that_call() {
+        // Logged verbatim (Strata, 2026-10-20): the name in the quoted
+        // spelling and never closed, inside a misspelt wrapper.
+        let (name, args) = only_call(
+            "Let me add it. <function_call>\n<parameter name=\"edit\">\n<parameter name=\"path\">crates/node/src/backend/db.rs</parameter>\n<parameter name=\"edits\">[{\"newText\": \"a\", \"oldText\": \"b\"}]\n</parameter>\n</function>\n</tool_call>\n",
+        );
+        assert_eq!(name, "edit");
+        assert_eq!(args["path"], "crates/node/src/backend/db.rs");
+        assert_eq!(args["edits"], json!([{"newText": "a", "oldText": "b"}]));
     }
 
 }

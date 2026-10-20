@@ -1094,7 +1094,7 @@ pub(crate) async fn require_admin_for_surface(
         .extensions
         .get::<crate::serve::TransportSecurity>()
         .is_some_and(|transport| transport.0);
-    let cookie_name = crate::auth::admin_session_cookie_name(&parts.headers);
+    let cookie_name = crate::auth::admin_session_cookie_name(&parts.headers, secure);
     let mut response = next.run(Request::from_parts(parts, body)).await;
     if let Some(session_id) = auth.session_id_to_set {
         for path in crate::auth::ADMIN_SESSION_COOKIE_PATHS {

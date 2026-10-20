@@ -1671,18 +1671,28 @@ mod tests {
             .iter()
             .any(|cookie| cookie.contains("Path=/admin-ui")));
         assert!(cookies.iter().all(|cookie| cookie.contains("; Secure")));
+        assert!(cookies.iter().all(|cookie| cookie.starts_with("__Secure-")));
         let cookie = cookies[0].split(';').next().unwrap().to_string();
 
-        let mut next_request = Request::builder()
-            .uri("/api/ui/new-admin-endpoint")
-            .header(axum::http::header::COOKIE, cookie)
-            .body(axum::body::Body::empty())
-            .unwrap();
-        next_request
-            .extensions_mut()
-            .insert(crate::serve::PeerAddr("192.0.2.7:1234".parse().unwrap()));
-        let next_response = app.oneshot(next_request).await.unwrap();
+        let next_request = |tls: bool| {
+            let mut request = Request::builder()
+                .uri("/api/ui/new-admin-endpoint")
+                .header(axum::http::header::COOKIE, cookie.clone())
+                .body(axum::body::Body::empty())
+                .unwrap();
+            request
+                .extensions_mut()
+                .insert(crate::serve::PeerAddr("192.0.2.7:1234".parse().unwrap()));
+            request
+                .extensions_mut()
+                .insert(crate::serve::TransportSecurity(tls));
+            request
+        };
+        let next_response = app.clone().oneshot(next_request(true)).await.unwrap();
         assert_eq!(next_response.status(), StatusCode::OK);
+        // The TLS session is not read over plain HTTP, which keeps its own cookie.
+        let plain_response = app.oneshot(next_request(false)).await.unwrap();
+        assert_eq!(plain_response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

@@ -95,8 +95,20 @@ impl AdminSessionStore {
 /// `ksia:8081`) wrote the same name, and signing in to one dropped the other's
 /// session - the tab went back to the gate without the node having restarted. The port of the
 /// `Host` goes into the name; without an explicit port, only the base name remains.
-pub(crate) fn admin_session_cookie_name(headers: &HeaderMap) -> String {
-    let base = format!("{}_{ADMIN_SESSION_COOKIE_SUFFIX}", crate::brand::slug());
+///
+/// Cookies do not separate by scheme either: the same port serves HTTP and
+/// HTTPS, and a browser refuses a plain HTTP cookie whose name matches a
+/// `Secure` one it already holds. After one HTTPS sign-in the HTTP session was
+/// never stored, and what only the cookie authenticates (a plugin screen's
+/// module, loaded by `import()` without the password header) answered 401. The
+/// session over TLS (`secure`) carries the `__Secure-` prefix, so each scheme
+/// keeps its own cookie.
+pub(crate) fn admin_session_cookie_name(headers: &HeaderMap, secure: bool) -> String {
+    let base = format!(
+        "{}{}_{ADMIN_SESSION_COOKIE_SUFFIX}",
+        if secure { "__Secure-" } else { "" },
+        crate::brand::slug()
+    );
     let port = headers
         .get(axum::http::header::HOST)
         .and_then(|value| value.to_str().ok())
@@ -130,8 +142,8 @@ pub(crate) fn session_cookie_header(
 
 /// Every `Cookie` header counts: over HTTP/2 a browser splits its cookies into
 /// one header each, and the session's need not be the first.
-fn session_id_from_cookie(headers: &HeaderMap) -> Option<&str> {
-    let cookie_name = admin_session_cookie_name(headers);
+fn session_id_from_cookie(headers: &HeaderMap, secure: bool) -> Option<&str> {
+    let cookie_name = admin_session_cookie_name(headers, secure);
     headers
         .get_all(axum::http::header::COOKIE)
         .iter()
@@ -818,7 +830,11 @@ where
             });
         }
 
-        if let Some(session_id) = session_id_from_cookie(&parts.headers).map(str::to_owned) {
+        let secure = parts
+            .extensions
+            .get::<crate::serve::TransportSecurity>()
+            .is_some_and(|transport| transport.0);
+        if let Some(session_id) = session_id_from_cookie(&parts.headers, secure).map(str::to_owned) {
             let State(sessions): State<AdminSessionState> = State::from_request_parts(parts, state)
                 .await
                 .map_err(|_| AdminAuthRejection::InvalidToken)?;
@@ -1062,16 +1078,16 @@ mod tests {
         };
         let base = format!("{}_admin_session", crate::brand::slug());
         assert_eq!(
-            admin_session_cookie_name(&headers("ksia:8080")),
+            admin_session_cookie_name(&headers("ksia:8080"), false),
             format!("{base}_8080")
         );
         assert_eq!(
-            admin_session_cookie_name(&headers("ksia:8081")),
+            admin_session_cookie_name(&headers("ksia:8081"), false),
             format!("{base}_8081")
         );
-        assert_eq!(admin_session_cookie_name(&headers("ksia")), base);
+        assert_eq!(admin_session_cookie_name(&headers("ksia"), false), base);
         assert_eq!(
-            admin_session_cookie_name(&headers("[::1]:8081")),
+            admin_session_cookie_name(&headers("[::1]:8081"), false),
             format!("{base}_8081")
         );
 
@@ -1083,7 +1099,7 @@ mod tests {
                 .parse()
                 .unwrap(),
         );
-        assert_eq!(session_id_from_cookie(&request), Some("desta-porta"));
+        assert_eq!(session_id_from_cookie(&request, false), Some("desta-porta"));
 
         // Over HTTP/2 the browser sends each cookie in a header of its own.
         let mut request = headers("ksia:8080");
@@ -1095,7 +1111,25 @@ mod tests {
             axum::http::header::COOKIE,
             format!("{base}_8080=desta-porta").parse().unwrap(),
         );
-        assert_eq!(session_id_from_cookie(&request), Some("desta-porta"));
+        assert_eq!(session_id_from_cookie(&request, false), Some("desta-porta"));
+    }
+
+    #[test]
+    fn http_and_https_on_one_port_do_not_share_the_session_cookie() {
+        let mut headers = HeaderMap::new();
+        headers.insert(axum::http::header::HOST, "ksia:8080".parse().unwrap());
+        let base = format!("{}_admin_session_8080", crate::brand::slug());
+        assert_eq!(admin_session_cookie_name(&headers, false), base);
+        assert_eq!(admin_session_cookie_name(&headers, true), format!("__Secure-{base}"));
+
+        // A browser that signed in over both schemes sends both cookies over
+        // HTTPS; each transport reads only its own.
+        headers.insert(
+            axum::http::header::COOKIE,
+            format!("{base}=plain; __Secure-{base}=tls").parse().unwrap(),
+        );
+        assert_eq!(session_id_from_cookie(&headers, false), Some("plain"));
+        assert_eq!(session_id_from_cookie(&headers, true), Some("tls"));
     }
 
     #[test]

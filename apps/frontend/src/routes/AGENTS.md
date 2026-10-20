@@ -234,8 +234,9 @@ Per-file list:
   missing or expired/revoked, and is hidden when all known licensed plugins
   are active. Purchase sends licensed plugins to the site's purchase wizard
   (`/comprar/`) with an encoded `plugin=<code>` parameter via
-  `lib/pluginPurchase.ts`; the wizard asks for the account and billing details
-  before Stripe and shows the license key at the end. Cards are
+  `lib/pluginPurchase.ts`, in a new browser tab (a desktop shell hands it to
+  the system browser and POM keeps running); the wizard asks for the account
+  and billing details before Paddle and shows the license key at the end. Cards are
   compact, two per row from `xl`, and grouped by `plugin_code`: the commercial
   catalog, GitHub repository and local state for the same code share one card.
   The screen has two tabs, on the right side of the title bar

@@ -64,6 +64,19 @@ where
         .ok_or_else(|| anyhow!("the window has no GTK container for the view"))?;
     let webview = WebViewBuilder::new()
         .with_url(crate::gateway_url(port))
+        // A link that leaves the interface (a purchase, the site) opens in the
+        // system browser, and so does any new window, so POM stays where it was.
+        .with_navigation_handler(|url| {
+            if crate::external_links::is_external(&url) {
+                crate::external_links::open_in_browser(&url);
+                return false;
+            }
+            true
+        })
+        .with_new_window_req_handler(|url, _features| {
+            crate::external_links::open_in_browser(&url);
+            wry::NewWindowResponse::Deny
+        })
         .build_gtk(container)
         .context("could not start the WebKitGTK view; install the webkit2gtk-4.1 runtime")?;
     accept_local_certificate(&webview.webview());

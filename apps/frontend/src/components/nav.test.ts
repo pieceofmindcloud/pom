@@ -88,8 +88,9 @@ describe("navigation structure", () => {
 
 describe("navForProfile", () => {
   it("shows the administrator the whole menu", () => {
+    // Without the logs plugin, Statistics folds into the one Logs / Stats / Quota entry.
     const labels = navForProfile("admin").map((s) => s.labelKey);
-    expect(labels).toEqual(NAV.map((s) => s.labelKey));
+    expect(labels).toEqual(NAV.map((s) => s.labelKey).filter((label) => label !== "nav.statistics"));
     expect(navFooterForProfile("admin")).toEqual([]);
     expect(navFooterForProfile("worker")).toEqual([]);
   });
@@ -99,7 +100,6 @@ describe("navForProfile", () => {
     expect(labels).not.toContain("nav.deploy");
     expect(labels).not.toContain("nav.deployments");
     expect(labels).toContain("nav.logs");
-    expect(labels).toContain("nav.statistics");
   });
 
   it("keeps the Enterprise surfaces for admin and node when the license is inactive", () => {
@@ -109,10 +109,10 @@ describe("navForProfile", () => {
       const sections = navForProfile(profile, false);
       const labels = sections.map((s) => s.labelKey);
       expect(labels, profile).toContain("nav.logs");
-      expect(labels, profile).toContain("nav.statistics");
-      expect(sections.find((s) => s.labelKey === "nav.logs")?.children?.map((child) => child.to), profile)
-        .toContain("/logs");
-      expect(sections.find((s) => s.labelKey === "nav.statistics")?.to, profile).toBe("/statistics");
+      // One entry for the one purchase: Request Logs, Statistics and Quota.
+      expect(labels, profile).not.toContain("nav.statistics");
+      expect(sections.find((s) => s.labelKey === "nav.logs")?.children, profile)
+        .toContainEqual(expect.objectContaining({ to: "/logs", labelKey: "nav.logsStatsQuota" }));
     }
   });
 

@@ -293,9 +293,9 @@ describe("plugin UI registry", () => {
     expect(logsGroup?.children?.find((c) => c.labelKey === "plugin:acme:logs")?.to).toBe("/logs");
     const docsIndex = admin.findIndex((s) => s.labelKey === "nav.documentation");
     expect(admin[docsIndex - 1]).toMatchObject({ labelKey: "plugin:acme:extra", to: "/acme/extra" });
-    // Without a plugin again, POM's fallback comes back.
+    // Without a plugin again, POM's fallback comes back, as one entry for the one purchase.
     setPluginUi([]);
-    expect(navForProfile("admin").find((s) => s.labelKey === "nav.logs")?.children?.map((c) => c.labelKey)).toContain("nav.requestLogs");
+    expect(navForProfile("admin").find((s) => s.labelKey === "nav.logs")?.children?.map((c) => c.labelKey)).toContain("nav.logsStatsQuota");
   });
 
   it("replaces both native Enterprise menu destinations when claimed by plugin manifests", () => {

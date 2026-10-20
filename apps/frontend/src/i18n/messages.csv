@@ -1010,20 +1010,18 @@ enterprise.requiredSubtitle,Request Logs and Statistics become available after a
 enterprise.requiredTitle,This feature is part of Enterprise,Este recurso faz parte do Enterprise
 enterprise.showcase.logs.screenshotAlt,Preview of the Request Logs screen,Prévia da tela de Logs de Requisições
 enterprise.showcase.logs.title,Request Logs,Logs de Requisições
+"enterprise.showcase.quota.title","Quota","Quota"
 enterprise.showcase.statistics.screenshotAlt,Preview of the Statistics screen,Prévia da tela de Estatísticas
 enterprise.showcase.statistics.title,Statistics,Estatísticas
 enterprise.store.badgeInstant,Installs in seconds,Instala em segundos
 enterprise.store.badgeLocal,Your data stays on your nodes,Seus dados ficam nos seus nós
-enterprise.store.badgeStripe,Secure payment with Stripe,Pagamento seguro com Stripe
+"enterprise.store.badgePaddle","Secure payment with Paddle","Pagamento seguro com Paddle"
 enterprise.store.buy,Buy now,Comprar agora
-enterprise.store.buyFailed,Could not open the checkout right now.,Não foi possível abrir o checkout agora.
-enterprise.store.buyForbidden,Only an administrator of this node can buy plugins.,Só um administrador deste nó pode comprar plugins.
-enterprise.store.buyOnSite,Buy on pieceofmind.cloud,Comprar em pieceofmind.cloud
-enterprise.store.ctaBody,The price is shown at checkout. Cancel anytime.,O preço aparece no checkout. Cancele quando quiser.
-enterprise.store.ctaPrice,Statistics and Logs for {price}. Cancel anytime.,Estatísticas e Logs por {price}. Cancele quando quiser.
+"enterprise.store.ctaBody","One purchase brings Request Logs, Statistics and Quota. The price is shown at checkout. Cancel anytime.","Uma compra traz Logs de Requisições, Estatísticas e Quota. O preço aparece no checkout. Cancele quando quiser."
+"enterprise.store.ctaPrice","Request Logs, Statistics and Quota for {price}. Cancel anytime.","Logs de Requisições, Estatísticas e Quota por {price}. Cancele quando quiser."
 enterprise.store.ctaTitle,Ready to see inside your cluster?,Pronto para enxergar dentro do seu cluster?
 enterprise.store.description,"Advanced observability for POM inference workloads: searchable request logs with a complete, redacted request inspector, and an operational statistics dashboard for tokens, latency, cache, nodes and network.","Observabilidade avançada para a inferência no POM: logs de requisições pesquisáveis com um inspetor completo e com segredos redigidos, e um painel de estatísticas operacionais de tokens, latência, cache, nós e rede."
-enterprise.store.eyebrow,POM plugin · Statistics and Logs,Plugin do POM · Estatísticas e Logs
+"enterprise.store.eyebrow","POM plugin · Logs, Statistics and Quota","Plugin do POM · Logs, Estatísticas e Quota"
 enterprise.store.faq1.a,"On your own administrative nodes, in the plugin's local database. Prompts and answers are never sent to POM or to the license server.","Nos seus próprios nós administradores, no banco local do plugin. Prompts e respostas nunca são enviados ao POM nem ao servidor de licenças."
 enterprise.store.faq1.q,Where is my request data stored?,Onde ficam os dados das minhas requisições?
 enterprise.store.faq2.a,Only to activate and to renew the license from time to time. Logging and charts work locally.,Só para ativar e renovar a licença de tempos em tempos. Os logs e os gráficos funcionam localmente.
@@ -1035,12 +1033,14 @@ enterprise.store.faq4.q,Can I try it before buying?,Posso ver antes de comprar?
 enterprise.store.faqLabel,Questions,Perguntas
 enterprise.store.faqTitle,Before you buy,Antes de comprar
 enterprise.store.featuresLabel,Features,Recursos
-enterprise.store.featuresTitle,"Two screens, one audit trail","Duas telas, uma trilha de auditoria"
+"enterprise.store.featuresTitle","Three screens, one purchase","Três telas, uma compra"
+"enterprise.store.forAdmins","Made for the network's admins: they see every node's requests, usage and budgets.","Feito para os admins da rede: eles veem as requisições, o uso e as quotas de todos os nós."
 enterprise.store.haveKey,I already have a license key,Já tenho uma chave de licença
-enterprise.store.included1,Request Logs and Statistics screens,Telas de Logs de Requisições e Estatísticas
+"enterprise.store.included1","Request Logs, Statistics and Quota screens","Telas de Logs de Requisições, Estatísticas e Quota"
 enterprise.store.included2,Updates while the license is active,Atualizações enquanto a licença estiver ativa
 enterprise.store.included3,Activation on your cluster machines,Ativação nas máquinas do seu cluster
 enterprise.store.included4,Cancel anytime; the POM keeps working,Cancele quando quiser; o POM continua funcionando
+"enterprise.store.included5","Token budgets per machine, team or project, with a default plan for the network","Quotas de tokens por máquina, equipe ou projeto, com um plano padrão para a rede"
 enterprise.store.interval,Billing period,Período de cobrança
 enterprise.store.interval.month,Monthly,Mensal
 enterprise.store.interval.year,Yearly,Anual
@@ -1054,7 +1054,14 @@ enterprise.store.logs.summary,Find any request and inspect it whole.,Encontre qu
 enterprise.store.logs.titleA,See every request.,Veja cada requisição.
 enterprise.store.logs.titleB,Fix issues in minutes.,Resolva problemas em minutos.
 enterprise.store.moreOnSite,More on the plugin store,Mais na loja de plugins
-enterprise.store.name,Statistics and Logs,Estatísticas e Logs
+"enterprise.store.name","Logs, Statistics and Quota","Logs, Estatísticas e Quota"
+"enterprise.store.opensInBrowser","Opens the purchase in your browser; POM keeps running here.","Abre a compra no seu navegador; o POM continua rodando aqui."
+"enterprise.store.quota.feature1","Plans of input and output tokens per day, week, month or a rolling session","Planos de tokens de entrada e saída por dia, semana, mês ou sessão contínua"
+"enterprise.store.quota.feature2","Assign them to a machine, a team, a project or the whole network","Atribua a uma máquina, a uma equipe, a um projeto ou à rede inteira"
+"enterprise.store.quota.feature3","A default plan for every machine that joins without one","Um plano padrão para toda máquina que entrar sem plano"
+"enterprise.store.quota.feature4","Grants, session resets and requests for more, in an exceptions inbox","Concessões, resets de sessão e pedidos de mais quota, numa caixa de exceções"
+"enterprise.store.quota.feature5","Each machine sees its own usage on its Usage screen","Cada máquina vê o próprio consumo na tela Uso"
+"enterprise.store.quota.summary","Keep the network's tokens fair, without a spreadsheet.","Mantenha os tokens da rede justos, sem planilha."
 enterprise.store.per.month,/month,/mês
 enterprise.store.per.year,/year,/ano
 enterprise.store.priceAtCheckout,Price shown at checkout,Preço mostrado no checkout
@@ -1072,11 +1079,11 @@ enterprise.store.statistics.lede,"Statistics turns the same trail into charts: t
 enterprise.store.statistics.summary,An operational overview for capacity and performance.,Uma visão operacional para capacidade e desempenho.
 enterprise.store.statistics.titleA,Know your cluster.,Conheça o seu cluster.
 enterprise.store.statistics.titleB,Optimize with data.,Otimize com dados.
-enterprise.store.step1.body,The button opens Stripe Checkout with the official price published by POM. Card data never touches your node.,O botão abre o checkout do Stripe com o preço oficial publicado pelo POM. Os dados do cartão nunca passam pelo seu nó.
-enterprise.store.step1.title,Buy with Stripe,Compre com Stripe
+"enterprise.store.step1.body","The button opens the purchase in your browser, with Paddle and the official price published by POM. Card data never touches your node.","O botão abre a compra no seu navegador, com o Paddle e o preço oficial publicado pelo POM. Os dados do cartão nunca passam pelo seu nó."
+"enterprise.store.step1.title","Buy with Paddle","Compre com Paddle"
 enterprise.store.step2.body,"After payment, the confirmation page shows your license key.","Depois do pagamento, a página de confirmação mostra a sua chave de licença."
 enterprise.store.step2.title,Get your license key,Receba a sua chave de licença
-enterprise.store.step3.body,"Paste the key in the Plugins menu. The plugin installs itself and these screens replace this page.","Cole a chave no menu Plugins. O plugin se instala sozinho e as telas substituem esta página."
+"enterprise.store.step3.body","Paste the key in the Plugins menu on an admin machine. The plugin installs itself and its screens replace this page.","Cole a chave no menu Plugins de uma máquina admin. O plugin se instala sozinho e as telas dele substituem esta página."
 enterprise.store.step3.title,Activate in Plugins,Ative em Plugins
 enterprise.store.stepsLabel,How it works,Como funciona
 enterprise.store.stepsTitle,From checkout to your first log in three steps,Do checkout ao primeiro log em três passos
@@ -1524,6 +1531,7 @@ nav.fullModels,Full models,Modelos inteiros
 nav.history,History,Histórico
 nav.inProgress,In progress,Em andamento
 nav.logs,Logs,Logs
+"nav.logsStatsQuota","Logs / Stats / Quota","Logs / Stats / Quota"
 nav.modelFolders,Storage,Armazenamento
 nav.models,Models,Modelos
 nav.myMachine,My machine,Minha máquina

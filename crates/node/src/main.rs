@@ -208,6 +208,9 @@ mod reqlog;
 mod instance_lock;
 #[path = "utils/respawn.rs"]
 mod respawn;
+#[path = "utils/external_links.rs"]
+#[cfg_attr(not(any(windows, feature = "desktop", test)), allow(dead_code))]
+mod external_links;
 #[path = "network/route.rs"]
 pub mod route;
 #[path = "network/route_plan.rs"]

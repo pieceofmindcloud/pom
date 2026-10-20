@@ -93,13 +93,15 @@ Per-file list:
 - `EnterpriseFeatureShowcase.tsx` - the advertising fallback of `/logs` and
   `/statistics` **when no active plugin provides them** (rendered outside
   `<Routes>` in `App.tsx`, like the chat). It receives `kind: "logs" | "statistics"`.
-  It is the sales page of the Statistics and Logs plugin in the pieceofmind.cloud look (the
+  It is the sales page of the logs plugin (Request Logs, Statistics and Quota, one purchase, aimed at the network's admins) in the pieceofmind.cloud look (the
   `.pom-store*` styles in `index.css`): the name, description,
   icon, official screenshots and price come from the license-server's public catalog
   (`usePublicPluginCatalog`), with local SVG text and previews when it does not
-  answer. "Buy now" calls `POST /api/ui/plugins/checkout` and takes the
-  browser to the Stripe checkout; the server picks the `price_id` by plugin and
-  interval. Tests in `EnterpriseFeatureShowcase.test.tsx`.
+  answer; the price is formatted in the interface's language. "Buy now" and
+  the footer link open the site's purchase wizard (`/comprar/`, Paddle) in a
+  new tab with the plugin, the billing period and `lang`. While no plugin
+  serves `/logs` or `/statistics`, `nav.ts` folds the two menu entries into
+  one "Logs / Stats / Quota". Tests in `EnterpriseFeatureShowcase.test.tsx`.
 - `PluginBridge.tsx` - mounted once in the shell (`App.tsx`). It publishes
   `locale.changed`/`theme.changed`, forwards the node's events read every 3 s
   in `GET /api/ui/plugins/events`, runs the plugins' commands (a local toast, a `plugin_notice`

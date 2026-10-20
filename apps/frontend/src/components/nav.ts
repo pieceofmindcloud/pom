@@ -29,7 +29,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { canAccessRoute } from "../lib/access";
-import { pluginAssetUrl, pluginLabelKey, pluginMenuItems } from "../lib/pluginUi";
+import { pluginAssetUrl, pluginLabelKey, pluginMenuItems, resolvePluginRoute } from "../lib/pluginUi";
 import type { Profile } from "../lib/profile";
 
 export interface NavLeaf {
@@ -190,6 +190,18 @@ function withPluginMenu(sections: NavSection[], profile: Profile): NavSection[] 
     if (section.children) copy.children = section.children.map((child) => ({ ...child }));
     return copy;
   });
+  // Without a plugin serving them, Request Logs and Statistics are the same
+  // advertising page of one purchase (the logs plugin also brings Quota): one
+  // menu entry, so it does not look like three things to buy.
+  if (!resolvePluginRoute("/logs") && !resolvePluginRoute("/statistics")) {
+    for (const section of result) {
+      for (const child of section.children ?? []) {
+        if (child.to === "/logs") child.labelKey = "nav.logsStatsQuota";
+      }
+    }
+    const statistics = result.findIndex((section) => section.to === "/statistics");
+    if (statistics >= 0) result.splice(statistics, 1);
+  }
   const replace = (
     target: { labelKey: string; icon?: LucideIcon; iconImage?: string; pluginCode?: string },
     item: ReturnType<typeof pluginMenuItems>[number],

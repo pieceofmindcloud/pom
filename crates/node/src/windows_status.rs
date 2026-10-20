@@ -192,6 +192,19 @@ mod native {
             .map_err(|error| anyhow!("could not open the Windows window: {error}"))?;
         let webview = WebViewBuilder::new()
             .with_url(crate::gateway_url(port))
+            // A link that leaves the interface (a purchase, the site) opens in the
+            // system browser, and so does any new window, so POM stays where it was.
+            .with_navigation_handler(|url| {
+                if crate::external_links::is_external(&url) {
+                    crate::external_links::open_in_browser(&url);
+                    return false;
+                }
+                true
+            })
+            .with_new_window_req_handler(|url, _features| {
+                crate::external_links::open_in_browser(&url);
+                wry::NewWindowResponse::Deny
+            })
             .build(&window)
             .context("could not start WebView2; confirm that the runtime is installed")?;
         if let Err(error) = accept_local_certificate(&webview) {

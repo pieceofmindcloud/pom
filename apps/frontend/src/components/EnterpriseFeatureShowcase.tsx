@@ -5,23 +5,23 @@
  * It follows the pieceofmind.cloud look (dark floating hero, navy -> teal
  * gradient, numbered mono eyebrows, round cards, pill buttons) and reads what
  * the license server publishes in its public catalog: name, description,
- * icon, the official screenshots and the price. "Buy" asks this node for a
- * Stripe Checkout session (`POST /api/ui/plugins/checkout`): the license
- * server picks the Stripe `price_id` from the plugin and the interval, and the
- * browser goes straight to the Stripe page. Without the catalog, the page keeps
- * working from its own copy and drawn previews.
+ * icon, the official screenshots and the price, formatted in the interface's
+ * language. "Buy" opens the site's purchase wizard (`/comprar/`, Paddle) in a
+ * new browser tab with the plugin, the billing period and the language, so a
+ * desktop shell hands it to the system browser and POM keeps running. One
+ * purchase brings Request Logs, Statistics and Quota, and the plugin matters
+ * most to the network's admins. Without the catalog, the page keeps working
+ * from its own copy and drawn previews.
  */
-import { ArrowRight, BarChart3, Check, ChevronLeft, ChevronRight, CreditCard, KeyRound, ListTree, Lock, ShieldCheck, X, Zap } from "lucide-react";
+import { ArrowRight, BarChart3, Check, ChevronLeft, ChevronRight, CreditCard, Gauge, KeyRound, ListTree, Lock, ShieldCheck, UserCog, X, Zap } from "lucide-react";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { Link } from "react-router-dom";
-import { api, ApiError } from "../lib/api";
 import { usePublicPluginCatalog } from "../lib/queries";
 import type { PublicPluginPrice } from "../lib/pluginCatalog";
 import { useI18n } from "../i18n/provider";
-import { publicPluginPurchaseUrl } from "../lib/pluginPurchase";
+import { navigateToPluginPurchase, publicPluginPurchaseUrl } from "../lib/pluginPurchase";
 
 const PLUGIN_CODE = "logs";
-const STORE_URL = publicPluginPurchaseUrl(PLUGIN_CODE);
 
 type ShowcaseKind = "logs" | "statistics";
 type Interval = "month" | "year";
@@ -101,25 +101,8 @@ export function EnterpriseFeatureShowcase({ kind }: { kind: ShowcaseKind }) {
     : entry?.description || t("enterprise.store.description");
   const screenshots = entry?.screenshot_urls ?? [];
 
-  const [busy, setBusy] = useState(false);
-  const [failed, setFailed] = useState<"forbidden" | "failed" | null>(null);
-  async function buy() {
-    setBusy(true);
-    setFailed(null);
-    try {
-      const session = await api.post<{ url?: string }>("/api/ui/plugins/checkout", {
-        plugin_code: PLUGIN_CODE,
-        interval,
-        locale: locale === "en" ? "en" : "pt-BR",
-      });
-      if (!session.url) throw new Error("checkout_unavailable");
-      window.location.assign(session.url);
-    } catch (error) {
-      setBusy(false);
-      // A node profile without the administrative surface cannot buy for the cluster.
-      setFailed(error instanceof ApiError && (error.status === 401 || error.status === 403) ? "forbidden" : "failed");
-    }
-  }
+  const storeUrl = publicPluginPurchaseUrl(PLUGIN_CODE, { interval, locale });
+  const buy = () => navigateToPluginPurchase(PLUGIN_CODE, { interval, locale });
 
   const [shot, setShot] = useState<number | null>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -136,10 +119,10 @@ export function EnterpriseFeatureShowcase({ kind }: { kind: ShowcaseKind }) {
   }, [shot]);
   const move = (delta: number) => setShot((current) => current === null ? current : (current + delta + screenshots.length) % screenshots.length);
 
-  const focus = kind === "logs" ? ["logs", "statistics"] as const : ["statistics", "logs"] as const;
+  const focus = kind === "logs" ? ["logs", "statistics", "quota"] as const : ["statistics", "logs", "quota"] as const;
   const buyButton = (className = "") => (
-    <button type="button" className={`pom-store-buy ${className}`} onClick={() => void buy()} disabled={busy}>
-      {busy ? <span className="pom-store-spinner" aria-hidden="true" /> : <CreditCard className="h-4 w-4" aria-hidden="true" />}
+    <button type="button" className={`pom-store-buy ${className}`} onClick={buy}>
+      <CreditCard className="h-4 w-4" aria-hidden="true" />
       {t("enterprise.store.buy")}
     </button>
   );
@@ -157,8 +140,9 @@ export function EnterpriseFeatureShowcase({ kind }: { kind: ShowcaseKind }) {
           <ul className="pom-store-badges">
             <li><Lock className="h-3.5 w-3.5" aria-hidden="true" />{t("enterprise.store.badgeLocal")}</li>
             <li><Zap className="h-3.5 w-3.5" aria-hidden="true" />{t("enterprise.store.badgeInstant")}</li>
-            <li><ShieldCheck className="h-3.5 w-3.5" aria-hidden="true" />{t("enterprise.store.badgeStripe")}</li>
+            <li><ShieldCheck className="h-3.5 w-3.5" aria-hidden="true" />{t("enterprise.store.badgePaddle")}</li>
           </ul>
+          <p className="pom-store-admins"><UserCog className="h-3.5 w-3.5" aria-hidden="true" />{t("enterprise.store.forAdmins")}</p>
         </div>
 
         <aside className="pom-store-price" aria-label={t("enterprise.store.priceLabel")}>
@@ -187,14 +171,9 @@ export function EnterpriseFeatureShowcase({ kind }: { kind: ShowcaseKind }) {
             {priceLabel && <span>{t(`enterprise.store.per.${interval}`)}</span>}
           </p>
           {buyButton("pom-store-buy-wide")}
-          {failed && (
-            <p role="alert" className="pom-store-error">
-              {t(failed === "forbidden" ? "enterprise.store.buyForbidden" : "enterprise.store.buyFailed")}{" "}
-              <a href={STORE_URL} target="_blank" rel="noreferrer">{t("enterprise.store.buyOnSite")}</a>
-            </p>
-          )}
+          <p className="pom-store-opens">{t("enterprise.store.opensInBrowser")}</p>
           <ul className="pom-store-included">
-            {["included1", "included2", "included3", "included4"].map((key) => (
+            {["included1", "included5", "included2", "included3", "included4"].map((key) => (
               <li key={key}><Check className="h-3.5 w-3.5" aria-hidden="true" />{t(`enterprise.store.${key}`)}</li>
             ))}
           </ul>
@@ -236,7 +215,7 @@ export function EnterpriseFeatureShowcase({ kind }: { kind: ShowcaseKind }) {
         <div className="pom-store-pair">
           {focus.map((part, partIndex) => (
             <article key={part} className={partIndex === 0 ? "pom-store-card pom-store-card-accent" : "pom-store-card"} style={stagger(partIndex)}>
-              <span className="pom-store-card-icon" aria-hidden="true">{part === "logs" ? <ListTree className="h-5 w-5" /> : <BarChart3 className="h-5 w-5" />}</span>
+              <span className="pom-store-card-icon" aria-hidden="true">{part === "logs" ? <ListTree className="h-5 w-5" /> : part === "quota" ? <Gauge className="h-5 w-5" /> : <BarChart3 className="h-5 w-5" />}</span>
               <h3 className="pom-store-h3">{t(`enterprise.showcase.${part}.title`)}</h3>
               <p>{t(`enterprise.store.${part}.summary`)}</p>
               <ul className="pom-store-list">
@@ -285,7 +264,7 @@ export function EnterpriseFeatureShowcase({ kind }: { kind: ShowcaseKind }) {
           <p>{priceLabel ? t("enterprise.store.ctaPrice", { price: `${priceLabel}${t(`enterprise.store.per.${interval}`)}` }) : t("enterprise.store.ctaBody")}</p>
         </div>
         {buyButton()}
-        <a className="pom-store-site" href={STORE_URL} target="_blank" rel="noreferrer">
+        <a className="pom-store-site" href={storeUrl} target="_blank" rel="noopener noreferrer">
           {t("enterprise.store.moreOnSite")}<ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
         </a>
       </section>

@@ -247,8 +247,13 @@ local-only notice. Routes:
   controls the minimum captured level and defaults to `info`.
 - `/transfers` -> Transfers; `/transfers/send` -> SendFile
 - `/logs` and `/statistics` -> `EnterpriseFeatureShowcase`, the sales page
-  of the Statistics and Logs plugin (public catalog and Stripe checkout), when
-  no active plugin declares the target. A single manifest declaration replaces
+  of the logs plugin (Request Logs, Statistics and Quota, one purchase; public
+  catalog, purchase on the site in a new tab), when no active plugin declares
+  the target. While neither is declared the menu shows one "Logs / Stats /
+  Quota" entry in place of Request logs and Statistics. The desktop shells
+  (WebView2, WebKitGTK, the macOS panel) open any link to another host and any
+  new window in the system browser (`crates/node/src/utils/external_links.rs`,
+  `macos_status.m`). A single manifest declaration replaces
   the fallback at that URL, including for Enterprise. Other plugin screens come
   from `pom-plugin-ui/v1` and live under `/<plugin_code>/<manifest path>`; for
   example, `plugin_code: "base"` and `/example` open at

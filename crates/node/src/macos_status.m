@@ -47,8 +47,32 @@ static WKWebView *POMMakeWebView(NSRect frame);
 static NSImage *POMStatusImage(void);
 static void POMInstallApplicationMenu(void);
 
-@interface POMNavigationDelegate : NSObject <WKNavigationDelegate>
+@interface POMNavigationDelegate : NSObject <WKNavigationDelegate, WKUIDelegate>
 @end
+
+/// Whether a link leaves this machine's interface: a web address on another
+/// host, or a mail address. Those open in the system browser, so a purchase
+/// or the site never replaces POM inside its own window.
+static BOOL POMIsExternalURL(NSURL *url) {
+    NSString *scheme = url.scheme.lowercaseString;
+    if ([scheme isEqualToString:@"mailto"]) {
+        return YES;
+    }
+    if (![scheme isEqualToString:@"http"] && ![scheme isEqualToString:@"https"]) {
+        return NO;
+    }
+    NSString *host = url.host.lowercaseString ?: @"";
+    return !([host isEqualToString:@"127.0.0.1"] || [host isEqualToString:@"localhost"] ||
+             [host isEqualToString:@"::1"] || [host hasSuffix:@".localhost"]);
+}
+
+static void POMOpenInBrowser(NSURL *url) {
+    NSString *scheme = url.scheme.lowercaseString;
+    if ([scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"] ||
+        [scheme isEqualToString:@"mailto"]) {
+        [[NSWorkspace sharedWorkspace] openURL:url];
+    }
+}
 
 @interface POMScriptHandler : NSObject <WKScriptMessageHandler>
 @end
@@ -470,11 +494,40 @@ static WKWebView *POMMakeWebView(NSRect frame) {
 
     WKWebView *webView = [[WKWebView alloc] initWithFrame:frame configuration:configuration];
     webView.navigationDelegate = POMNavigationDelegateInstance;
+    webView.UIDelegate = POMNavigationDelegateInstance;
     webView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     return webView;
 }
 
 @implementation POMNavigationDelegate
+
+- (void)webView:(WKWebView *)webView
+    decidePolicyForNavigationAction:(WKNavigationAction *)navigationAction
+                    decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
+    (void)webView;
+    NSURL *url = navigationAction.request.URL;
+    if (url && (navigationAction.targetFrame == nil || POMIsExternalURL(url)) &&
+        (navigationAction.targetFrame == nil || navigationAction.targetFrame.isMainFrame)) {
+        POMOpenInBrowser(url);
+        decisionHandler(WKNavigationActionPolicyCancel);
+        return;
+    }
+    decisionHandler(WKNavigationActionPolicyAllow);
+}
+
+/// `window.open` and `target="_blank"`: a new tab in the system browser.
+- (WKWebView *)webView:(WKWebView *)webView
+    createWebViewWithConfiguration:(WKWebViewConfiguration *)configuration
+               forNavigationAction:(WKNavigationAction *)navigationAction
+                    windowFeatures:(WKWindowFeatures *)windowFeatures {
+    (void)webView;
+    (void)configuration;
+    (void)windowFeatures;
+    if (navigationAction.request.URL) {
+        POMOpenInBrowser(navigationAction.request.URL);
+    }
+    return nil;
+}
 
 - (void)webView:(WKWebView *)webView
     didReceiveAuthenticationChallenge:(NSURLAuthenticationChallenge *)challenge

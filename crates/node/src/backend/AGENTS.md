@@ -851,7 +851,9 @@ change lands in the right place.
   `</function>`. The quantized models also misspell the wrapper, so
   `<function_call>` and `<parameter_call>` open a `Wrapped` call, a bare
   `<invoke name=...>` is `CallKind::Invoke`, and any closer of the family
-  (`CallKind::closers`) ends a span, whichever tag opened it. A
+  (`CallKind::closers`) ends a span, whichever tag opened it - the kind's
+  own closer anywhere, a foreign one only outside an open parameter value
+  (`closer_position`), so content that mentions those tags is not cut. A
   `<function_calls>` holding a `<function=...>` body is read as one call, a
   repeated `<tool_call>` opener and a doubled or foreign trailing closer are
   normalized (`normalize_wrapped_body`), both `<parameter=P>` and

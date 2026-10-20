@@ -503,11 +503,14 @@ impl TagScanner {
                         }
                     }
                 }
-                ScanState::Inside(_, kind) => {
+                ScanState::Inside(raw, kind) => {
                     let closed = kind
                         .closers()
                         .iter()
-                        .filter_map(|tag| self.pending.find(tag).map(|at| (at, tag.len())))
+                        .filter_map(|tag| {
+                            closer_position(raw, &self.pending, tag, *tag == kind.close())
+                                .map(|at| (at, tag.len()))
+                        })
                         .min_by_key(|(at, _)| *at);
                     match closed {
                         Some((i, close_len)) => {
@@ -808,6 +811,31 @@ fn longest_prefix_overlap(s: &str, tag: &str) -> usize {
         .rev()
         .find(|&len| s.ends_with(&tag[..len]))
         .unwrap_or(0)
+}
+
+/// Where `tag` ends the span opened by `raw`, in `pending`. The kind's own
+/// closer ends it wherever it appears, as it always did. A closer of another
+/// dialect only counts outside a parameter value: a `write` whose content
+/// mentions `</function_call>` must not be cut there.
+fn closer_position(raw: &str, pending: &str, tag: &str, own: bool) -> Option<usize> {
+    if own {
+        return pending.find(tag);
+    }
+    let mut from = 0;
+    while let Some(relative) = pending[from..].find(tag) {
+        let at = from + relative;
+        if open_parameters(raw) + open_parameters(&pending[..at]) <= 0 {
+            return Some(at);
+        }
+        from = at + tag.len();
+    }
+    None
+}
+
+/// Parameter tags opened minus closed in `text`, in either spelling.
+fn open_parameters(text: &str) -> isize {
+    let opened = text.matches("<parameter=").count() + text.matches("<parameter ").count();
+    opened as isize - text.matches(PARAM_CLOSE).count() as isize
 }
 
 /// Resolves the close of one scanner span. The compatibility
@@ -2658,6 +2686,31 @@ mod tests {
             matches!(parts.as_slice(), [OutputPart::ToolCallTruncated(p)] if p.name == "bash"),
             "{parts:?}"
         );
+    }
+
+
+    #[test]
+    fn a_foreign_closer_inside_a_value_does_not_cut_the_call() {
+        let text = "<tool_call>\n<function=write>\n<parameter=content>\nends with </function_call> and </function_calls>\n</parameter>\n</function>\n</tool_call>";
+        let (name, args) = only_call(text);
+        assert_eq!(name, "write");
+        assert_eq!(args["content"], "ends with </function_call> and </function_calls>");
+        // Byte by byte, the same answer.
+        let mut scanner = TagScanner::new();
+        let mut events = Vec::new();
+        for (i, _) in text.char_indices() {
+            events.extend(scanner.feed(&text[i..i + 1]));
+        }
+        events.extend(scanner.finish());
+        assert_eq!(merge_adjacent_text(events_to_parts(events)), parse_output(text));
+    }
+
+    #[test]
+    fn a_foreign_closer_outside_a_value_still_ends_the_call() {
+        let (name, _) = only_call(
+            "<tool_call>\n<function=bash>\n<parameter=command>\nls\n</parameter>\n</function>\n</function_calls>",
+        );
+        assert_eq!(name, "bash");
     }
 
 }

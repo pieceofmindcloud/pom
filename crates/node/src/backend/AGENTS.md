@@ -848,7 +848,17 @@ change lands in the right place.
   `<tool_call>` opened with `<parameter=NAME>` where `<function=NAME>`
   belongs is read as a call to NAME (`repair_parameter_opening`) when the next
   tag is another `<parameter=` and, for a complete call, it closes with
-  `</function>`.
+  `</function>`. The quantized models also misspell the wrapper, so
+  `<function_call>` and `<parameter_call>` open a `Wrapped` call, a bare
+  `<invoke name=...>` is `CallKind::Invoke`, and any closer of the family
+  (`CallKind::closers`) ends a span, whichever tag opened it. A
+  `<function_calls>` holding a `<function=...>` body is read as one call, a
+  repeated `<tool_call>` opener and a doubled or foreign trailing closer are
+  normalized (`normalize_wrapped_body`), both `<parameter=P>` and
+  `<parameter name="P">` are read inside one call (`parameter_open`), a
+  complete call the model left unshut at the end of its output is a call
+  (`TagScanner::finish`), and a closer that trails a finished call is dropped
+  instead of shown (`after_call`, `STRAY_CLOSERS`).
   `parse_call_body` accepts the nested `<function=...>` XML form or the legacy
   Hermes JSON-object form, including an extra JSON-encoded `arguments` string;
   a sole object parameter named `arguments` is unwrapped for provider schemas;

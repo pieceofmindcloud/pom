@@ -670,9 +670,11 @@ async fn open_stream(
     node_id: &str,
     code: &str,
     body: &Value,
-) -> Result<reqwest::Response, String> {
+) -> Result<(reqwest::Response, Option<super::plugin_session::SessionFetch>), String> {
+    // the session this machine fetched for a turn it heads (a remote head reports its own in the done line)
+    let mut fetched = None;
     let response = if node_id == state.network.node_id {
-        super::plugin_session::prepare_for_body(state, code, body).await;
+        fetched = super::plugin_session::prepare_for_body(state, code, body).await;
         let bytes = serde_json::to_vec(body).map_err(|error| error.to_string())?;
         post_local(&state.plugins, code, bytes).await?
     } else {
@@ -695,7 +697,7 @@ async fn open_stream(
             .map_err(|error| format!("the machine serving this model did not answer: {error}"))?
     };
     if response.status().is_success() {
-        return Ok(response);
+        return Ok((response, fetched));
     }
     let status = response.status();
     let text = response.text().await.unwrap_or_default();
@@ -718,11 +720,13 @@ async fn open_stream(
 /// The first token moves the links to the decode phase.
 fn relay_with_links(
     code: String,
+    fetched: Option<Value>,
     upstream: impl futures::Stream<Item = Result<Bytes, reqwest::Error>> + Unpin + Send + 'static,
 ) -> impl futures::Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static {
     struct Relay<S> {
         upstream: S,
         code: String,
+        fetched: Option<Value>,
         pending: Vec<u8>,
         first_token: bool,
         ended: bool,
@@ -731,6 +735,7 @@ fn relay_with_links(
         Relay {
             upstream,
             code,
+            fetched,
             pending: Vec::new(),
             first_token: false,
             ended: false,
@@ -739,7 +744,7 @@ fn relay_with_links(
             loop {
                 if let Some(end) = relay.pending.iter().position(|byte| *byte == b'\n') {
                     let line: Vec<u8> = relay.pending.drain(..=end).collect();
-                    let out = rewrite_line(&relay.code, &line, &mut relay.first_token);
+                    let out = rewrite_line(&relay.code, &line, &mut relay.first_token, relay.fetched.as_ref());
                     return Some((Ok(Bytes::from(out)), relay));
                 }
                 if relay.ended {
@@ -759,8 +764,9 @@ fn relay_with_links(
     )
 }
 
-/// One NDJSON line of the engine's answer, with the stage links added to its `done` event.
-fn rewrite_line(code: &str, line: &[u8], first_token: &mut bool) -> Vec<u8> {
+/// One NDJSON line of the engine's answer, with the stage links (and the session this machine fetched for the turn,
+/// `session_fetch`) added to its `done` event.
+fn rewrite_line(code: &str, line: &[u8], first_token: &mut bool, fetched: Option<&Value>) -> Vec<u8> {
     let text = line.strip_suffix(b"\n").unwrap_or(line);
     let Ok(mut value) = serde_json::from_slice::<Value>(text) else {
         return line.to_vec();
@@ -778,6 +784,9 @@ fn rewrite_line(code: &str, line: &[u8], first_token: &mut bool) -> Vec<u8> {
         &super::engine_telemetry::EngineReport::from_done(done, 0),
     );
     done["links"] = json!(super::plugin_stage_link::drain_reported_links(code));
+    if let Some(fetched) = fetched {
+        done["session_fetch"] = fetched.clone();
+    }
     let mut out = serde_json::to_vec(&value).unwrap_or_else(|_| text.to_vec());
     if line.ends_with(b"\n") {
         out.push(b'\n');
@@ -863,8 +872,8 @@ pub(crate) async fn generate(
     super::plugin_stage_link::set_phase(code, super::plugin_stage_link::LinkPhase::Prefill);
     let channel = super::plugin_stage_link::channel_of(node_id, &state.network.node_id);
     let leg_started = Instant::now();
-    let response = match open_stream(state, node_id, code, &body).await {
-        Ok(response) => response,
+    let (response, fetched_here) = match open_stream(state, node_id, code, &body).await {
+        Ok(opened) => opened,
         Err(error) => {
             let _ = tx.send(GenEvent::Failed(error)).await;
             return;
@@ -957,9 +966,14 @@ pub(crate) async fn generate(
                 let cached_tokens = report.cached_tokens;
                 // a prefill/decode split: the prompt was read on the prefill machine, the head read only the rest
                 // after restoring its session, so the prompt phase is both (the session's transfer included)
+                // the session the head fetched before it read the rest: here, or in a remote head's done line
+                let fetched = fetched_here
+                    .clone()
+                    .or_else(|| super::plugin_session::SessionFetch::from_json(&done["session_fetch"]));
+                let fetch_ms = fetched.as_ref().map_or(0, |fetch| fetch.transfer_ms + fetch.save_wait_ms);
                 let (prefill_ms, prompt_read) = match &prefill_leg {
                     Some(leg) => (
-                        engine_prefill_ms.unwrap_or(0) + leg.elapsed_ms,
+                        engine_prefill_ms.unwrap_or(0) + leg.elapsed_ms + fetch_ms,
                         prompt_tokens
                             .saturating_sub(cached_tokens)
                             .saturating_add(leg.tokens.min(u64::from(u32::MAX)) as u32),
@@ -1015,10 +1029,15 @@ pub(crate) async fn generate(
                 super::engine_telemetry::apply_stage_links(&mut trace, code, engine_prefill_ms.unwrap_or(prefill_ms));
                 if let Some(leg) = &prefill_leg {
                     if let Some(hop) = trace.hops.iter_mut().find(|hop| hop.node_id == leg.node_id) {
-                        // it read the prompt and decoded nothing
+                        // it read the prompt and decoded nothing; what it sent is the session the head fetched
                         hop.prefill.processing_ms = leg.engine_ms;
                         hop.prefill.round_trip_ms = leg.elapsed_ms;
                         hop.prefill.network_ms = leg.elapsed_ms.saturating_sub(leg.engine_ms);
+                        if let Some(fetch) = fetched.as_ref().filter(|fetch| fetch.source == leg.node_id) {
+                            hop.prefill.network_ms += fetch.transfer_ms;
+                            hop.prefill.round_trip_ms += fetch.transfer_ms + fetch.save_wait_ms;
+                            hop.prefill.bytes_sent += fetch.bytes;
+                        }
                         hop.decode.calls = 0;
                         hop.decode.reported_spans = 0;
                         hop.decode.processing_ms = 0;
@@ -1027,6 +1046,17 @@ pub(crate) async fn generate(
                 // The speed belongs to the machine that runs the engine; a remote head records it on its own /health.
                 if node_id == state.network.node_id {
                     super::engine_telemetry::record_head_perf(code, &report);
+                }
+                if let Some(fetch) = &fetched {
+                    trace.total_bytes_sent += fetch.bytes;
+                    trace.session_transfer = Some(crate::prefill::SessionTransferTrace::new(
+                        &fetch.source,
+                        node_id,
+                        fetch.tokens,
+                        fetch.bytes,
+                        fetch.transfer_ms,
+                        fetch.save_wait_ms,
+                    ));
                 }
                 trace.input_tokens = prompt_tokens;
                 trace.cached_tokens = cached_tokens;
@@ -1155,7 +1185,7 @@ async fn prefill_on_peer(
     let _busy = state.loads.acquire(&peer.node_id).await;
     let started = Instant::now();
     let response = match open_stream(state, &peer.node_id, code, &prefill).await {
-        Ok(response) => response,
+        Ok((response, _)) => response,
         Err(error) => {
             warn!(plugin = %code, session = %key, prefill = %peer.node_id, "prefill split: the prefill machine refused: {error}");
             return None;
@@ -1388,7 +1418,9 @@ pub(crate) async fn engine_generate_route(
     super::plugin_stage_link::set_phase(&code, super::plugin_stage_link::LinkPhase::Prefill);
     // a remote head's turn: the session it lacks is fetched from a peer here, before the turn reads its prompt
     let turn = serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null);
-    super::plugin_session::prepare_for_body(&state, &code, &turn).await;
+    let fetched = super::plugin_session::prepare_for_body(&state, &code, &turn)
+        .await
+        .map(|fetch| fetch.to_json());
     let response = match post_local(&state.plugins, &code, body.to_vec()).await {
         Ok(response) => response,
         Err(error) => return refuse(StatusCode::SERVICE_UNAVAILABLE, &error),
@@ -1397,6 +1429,7 @@ pub(crate) async fn engine_generate_route(
         StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     let stream = relay_with_links(
         code.clone(),
+        fetched,
         Box::pin(super::engine_telemetry::track(&code, response.bytes_stream())),
     );
     // This machine ran the turn: when its bridge reports the conversation saved, the turn goes on to the peers.
@@ -1689,6 +1722,30 @@ mod relay_tests {
     use super::super::plugin_stage_link::{merge_reported_link, LinkPhase, LinkStats, ReportedLink};
 
     #[test]
+    fn the_done_line_carries_the_session_the_head_fetched() {
+        let fetch = super::super::plugin_session::SessionFetch {
+            source: "prefill-node".to_string(),
+            tokens: 7632,
+            bytes: 237_139_332,
+            transfer_ms: 1900,
+            save_wait_ms: 40,
+        };
+        let mut first = false;
+        let done = rewrite_line(
+            "strata-fetch-test",
+            b"{\"done\":{\"finish\":\"stop\"}}\n",
+            &mut first,
+            Some(&fetch.to_json()),
+        );
+        let value: Value = serde_json::from_slice(&done).unwrap();
+        let carried = super::super::plugin_session::SessionFetch::from_json(&value["done"]["session_fetch"]);
+        assert_eq!(carried, Some(fetch));
+        let trace = crate::prefill::SessionTransferTrace::new("prefill-node", "head", 7632, 237_139_332, 1900, 40);
+        assert!((trace.megabytes - 237.139332).abs() < 1e-9);
+        assert!((trace.megabytes_per_sec.unwrap() - 124.81).abs() < 0.01);
+    }
+
+    #[test]
     fn the_done_line_carries_the_links_and_the_first_token_starts_decode() {
         merge_reported_link(
             "strata-relay-test",
@@ -1708,10 +1765,10 @@ mod relay_tests {
             },
         );
         let mut first = false;
-        let token = rewrite_line("strata-relay-test", b"{\"t\":\"hi\"}\n", &mut first);
+        let token = rewrite_line("strata-relay-test", b"{\"t\":\"hi\"}\n", &mut first, None);
         assert!(first, "a text line is the first token");
         assert_eq!(token, b"{\"t\":\"hi\"}\n", "text lines pass through unchanged");
-        let done = rewrite_line("strata-relay-test", b"{\"done\":{\"finish\":\"stop\"}}\n", &mut first);
+        let done = rewrite_line("strata-relay-test", b"{\"done\":{\"finish\":\"stop\"}}\n", &mut first, None);
         let value: Value = serde_json::from_slice(&done[..done.len() - 1]).unwrap();
         assert_eq!(value["done"]["links"][0]["node"], "node-9");
         assert_eq!(value["done"]["links"][0]["phase"], "prefill");

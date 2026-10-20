@@ -618,28 +618,56 @@ pub(crate) fn fetch_pays(bytes: u64, gained: u64, link_bytes_per_s: f64, prefill
     fetch < reread
 }
 
+/// A session this machine fetched from a peer before a turn: the head's part of the trace (`session_transfer`).
+/// It reaches the gateway in the turn's done line (`session_fetch`) when the head is another machine.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SessionFetch {
+    pub source: String,
+    pub tokens: u64,
+    pub bytes: u64,
+    pub transfer_ms: u64,
+    pub save_wait_ms: u64,
+}
+
+impl SessionFetch {
+    pub(crate) fn to_json(&self) -> Value {
+        json!({"source": self.source, "tokens": self.tokens, "bytes": self.bytes,
+               "transfer_ms": self.transfer_ms, "save_wait_ms": self.save_wait_ms})
+    }
+
+    pub(crate) fn from_json(value: &Value) -> Option<Self> {
+        Some(Self {
+            source: value["source"].as_str()?.to_owned(),
+            tokens: value["tokens"].as_u64().unwrap_or(0),
+            bytes: value["bytes"].as_u64()?,
+            transfer_ms: value["transfer_ms"].as_u64().unwrap_or(0),
+            save_wait_ms: value["save_wait_ms"].as_u64().unwrap_or(0),
+        })
+    }
+}
+
 /// Before a turn runs on this machine: fetches the conversation's session from a peer when that is faster than
-/// reading the prompt again. Never fails the turn: any problem leaves the turn to read its prompt.
-pub(crate) async fn prepare_for_body(state: &GatewayState, code: &str, body: &Value) {
-    let Some(key) = body["session"].as_str().filter(|key| valid_key(key)) else {
-        return;
-    };
+/// reading the prompt again. Never fails the turn: any problem leaves the turn to read its prompt. Returns what it
+/// fetched, if anything.
+pub(crate) async fn prepare_for_body(state: &GatewayState, code: &str, body: &Value) -> Option<SessionFetch> {
+    let key = body["session"].as_str().filter(|key| valid_key(key))?;
     // a prefill/decode split: the prefill machine read this prompt just now, and its session is the one to take
     if let Some(source) = body["session_source"]
         .as_str()
         .filter(|source| *source != state.network.node_id)
     {
-        if let Err(error) = pull_from(state, code, key, source).await {
+        return pull_from(state, code, key, source).await.unwrap_or_else(|error| {
             warn!(plugin = %code, session = %key, source = %source, "prefill split: session not fetched from the prefill machine: {error}");
-        }
-        return;
+            None
+        });
     }
-    if let Err(error) = pull(state, code, key).await {
+    pull(state, code, key).await.unwrap_or_else(|error| {
         info!(plugin = %code, session = %key, "session not fetched from a peer: {error}");
-    }
+        None
+    })
 }
 
-async fn pull(state: &GatewayState, code: &str, key: &str) -> Result<(), String> {
+async fn pull(state: &GatewayState, code: &str, key: &str) -> Result<Option<SessionFetch>, String> {
     let (port, token) = local_upstream(&state.plugins, code).await?;
     let local = offer_here(port, &token, key).await?;
     let mut offers = Vec::new();
@@ -666,7 +694,7 @@ async fn pull(state: &GatewayState, code: &str, key: &str) -> Result<(), String>
     }
     let Some((node, offer)) = best_source(&local, &offers).cloned() else {
         info!(plugin = %code, session = %key, "session pull: no peer holds more of it on this split; the prompt is read here");
-        return Ok(());
+        return Ok(None);
     };
     let gained = offer.tokens - local.have();
     let link = measured(&LINK_RATE, DEFAULT_LINK_BYTES_PER_S);
@@ -679,7 +707,7 @@ async fn pull(state: &GatewayState, code: &str, key: &str) -> Result<(), String>
             "session not fetched: reading the prompt again is faster ({:.0} MiB/s link, {:.0} tok/s prefill)",
             link / (1024.0 * 1024.0), prefill
         );
-        return Ok(());
+        return Ok(None);
     }
     let peer = state
         .all_peers()
@@ -693,7 +721,13 @@ async fn pull(state: &GatewayState, code: &str, key: &str) -> Result<(), String>
     fold_rate(&LINK_RATE, offer.bytes as f64 / seconds);
     info!(plugin = %code, session = %key, peer = %node, gained, bytes = offer.bytes, seconds,
           forced, "session pull: fetched from a peer; the turn restores it from this machine's disk");
-    Ok(())
+    Ok(Some(SessionFetch {
+        source: node,
+        tokens: offer.tokens,
+        bytes: offer.bytes,
+        transfer_ms: (seconds * 1000.0).round() as u64,
+        save_wait_ms: 0,
+    }))
 }
 
 /// How long the head waits for the prefill machine's save of a split turn to be written.
@@ -702,7 +736,7 @@ const SOURCE_SAVE_WAIT: Duration = Duration::from_secs(300);
 /// A prefill/decode split: fetches the session the prefill machine `source` saved for this turn. Its save may still be
 /// being written (the engine writes it once the prefill request has ended), so the offer is asked again until it is not
 /// pending. No cost check: the gateway sent the prompt there to be read instead of here.
-async fn pull_from(state: &GatewayState, code: &str, key: &str, source: &str) -> Result<(), String> {
+async fn pull_from(state: &GatewayState, code: &str, key: &str, source: &str) -> Result<Option<SessionFetch>, String> {
     let (port, token) = local_upstream(&state.plugins, code).await?;
     let local = offer_here(port, &token, key).await?;
     let peer = state
@@ -728,7 +762,7 @@ async fn pull_from(state: &GatewayState, code: &str, key: &str, source: &str) ->
     if offer.bytes == 0 || offer.tokens <= local.have() {
         info!(plugin = %code, session = %key, source = %source, tokens = offer.tokens, local = local.have(),
               "prefill split: this machine already holds as much of the conversation");
-        return Ok(());
+        return Ok(None);
     }
     let started = Instant::now();
     fetch_session(state, code, key, &peer, port, &token).await?;
@@ -737,7 +771,13 @@ async fn pull_from(state: &GatewayState, code: &str, key: &str, source: &str) ->
     info!(plugin = %code, session = %key, source = %source, tokens = offer.tokens, bytes = offer.bytes, seconds,
           waited_s = waited.elapsed().as_secs_f64() - seconds,
           "prefill split: session fetched from the prefill machine; the turn restores it");
-    Ok(())
+    Ok(Some(SessionFetch {
+        source: source.to_owned(),
+        tokens: offer.tokens,
+        bytes: offer.bytes,
+        transfer_ms: (seconds * 1000.0).round() as u64,
+        save_wait_ms: ((waited.elapsed().as_secs_f64() - seconds).max(0.0) * 1000.0).round() as u64,
+    }))
 }
 
 /// What the machine `node_id` (this one or a peer) holds for the conversation `key`.

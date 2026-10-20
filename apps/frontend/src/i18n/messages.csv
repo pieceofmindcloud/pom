@@ -890,6 +890,9 @@ deployStudio.wholeOnEachPeer,whole model on each peer,modelo inteiro em cada pee
 deploymentLogs.allDeployments,All deployments,Todas as implantações
 deploymentLogs.autoScrollOff,Auto-scroll: off,Rolagem automática: desligada
 deploymentLogs.autoScrollOn,Auto-scroll: on,Rolagem automática: ligada
+"deploymentLogs.collectionOff","Collection of the cluster process logs is off, so no new line arrives: what is shown is the last batch received.","A coleta dos logs de processo do cluster está desligada, então nenhuma linha nova chega: o que aparece é o último lote recebido."
+"deploymentLogs.collectionOffLink","Turn it on in Administrative preferences","Ligue nas Preferências administrativas"
+"deploymentLogs.collectionOffPrincipal","Collection of the cluster process logs is off on this network, so no new line arrives. The principal admin turns it on in Administrative preferences.","A coleta dos logs de processo do cluster está desligada nesta rede, então nenhuma linha nova chega. O admin principal liga nas Preferências administrativas."
 deploymentLogs.consoleSubtitle,Node names and source timestamps are informational; arrival order is authoritative.,Nomes dos nós e horários de origem são informativos; a ordem de chegada é a que vale.
 deploymentLogs.consoleTitle,Cluster console,Console do cluster
 deploymentLogs.copyFailed,Could not copy logs.,Não foi possível copiar os logs.
@@ -903,6 +906,7 @@ deploymentLogs.filterLabel,Filter by deployment,Filtrar por implantação
 deploymentLogs.live,Live,Ao vivo
 deploymentLogs.logsCopied,Logs copied,Logs copiados
 deploymentLogs.offline,Offline,Indisponível
+"deploymentLogs.paused","Collection off","Coleta desligada"
 deploymentLogs.pluginRequiredHint,"The cluster process logs are kept by the Logs plugin. Activate it on this admin machine, then turn collection on in Administrative preferences.","Os logs de processo do cluster ficam no plugin de Logs. Ative-o nesta máquina administradora e depois ligue a coleta nas Preferências administrativas."
 deploymentLogs.pluginRequiredTitle,The Logs plugin is not active here,O plugin de Logs não está ativo aqui
 deploymentLogs.subtitle,The cluster process console. Lines are shown in the order they reached this local replica.,O console do processo do cluster. As linhas aparecem na ordem em que chegaram a esta réplica local.

@@ -5,7 +5,7 @@
  */
 import { ArrowDownToLine, Check, Copy, Terminal } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import {
   Badge,
   ErrorState,
@@ -18,7 +18,7 @@ import {
 import { isNearBottom } from "../lib/chatScroll";
 import { copyText } from "../lib/clipboard";
 import { clock } from "../lib/format";
-import { useClusterLogs, useDeployments, useEnterpriseStatus } from "../lib/queries";
+import { useClusterLogs, useDeployments, useEnterpriseStatus, useNode } from "../lib/queries";
 import { useI18n } from "../i18n/provider";
 
 function logLineText(entry: {
@@ -40,6 +40,10 @@ export function DeploymentLogs() {
   const pluginActive = logsPlugin.data.active;
   const logs = useClusterLogs(selectedDeployId, pluginActive);
   const deployments = useDeployments();
+  // The nodes only send their lines while the principal's collection is on;
+  // with it off the console keeps showing the last lines it ever received.
+  const node = useNode();
+  const collecting = node.data?.cluster_logs_enabled !== false;
   const entries = logs.data?.entries ?? [];
   const terminalRef = useRef<HTMLDivElement>(null);
   const wasAtBottom = useRef(true);
@@ -123,11 +127,21 @@ export function DeploymentLogs() {
           }
           subtitle={t("deploymentLogs.consoleSubtitle")}
           actions={
-            <Badge tone={logs.isError || !pluginActive ? "rose" : "aqua"}>
-              {logs.isError || !pluginActive ? t("deploymentLogs.offline") : t("deploymentLogs.live")}
+            <Badge tone={logs.isError || !pluginActive ? "rose" : collecting ? "aqua" : "amber"}>
+              {logs.isError || !pluginActive
+                ? t("deploymentLogs.offline")
+                : collecting ? t("deploymentLogs.live") : t("deploymentLogs.paused")}
             </Badge>
           }
         />
+
+        {pluginActive && !collecting && (
+          <div role="status" className="border-b border-amber/20 bg-amber/[0.08] px-5 py-2 text-xs text-amber">
+            {node.data?.cluster_logs_authority
+              ? <>{t("deploymentLogs.collectionOff")} <Link className="underline" to="/config/preferences/admin">{t("deploymentLogs.collectionOffLink")}</Link></>
+              : t("deploymentLogs.collectionOffPrincipal")}
+          </div>
+        )}
 
         {logs.data && logs.data.dropped > 0 && (
           <div className="border-b border-amber/20 bg-amber/[0.08] px-5 py-2 text-xs text-amber">

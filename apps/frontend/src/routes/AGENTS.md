@@ -720,7 +720,7 @@ Per-file list:
 - `DeploymentLogs.tsx` - the full-bleed console of the cluster's process log on
   `/deployments/logs`. It queries the admin's local replica, refreshes every
   second, keeps the arrival order the API returns and can filter by
-  `deploy_id`; it keeps only the black terminal, follows the end while the
+  `deploy_id`; while the node reports `cluster_logs_enabled: false` it shows a "Collection off" badge and a notice (with a link to Administrative preferences for the principal) instead of "Live", since no new line arrives; it keeps only the black terminal, follows the end while the
   reader is at the end, pauses the follow when scrolling up, offers a visible state button to
   reactivate it and copies the last 500 lines. It is not the
   request audit, which belongs to the `enterprise` plugin.

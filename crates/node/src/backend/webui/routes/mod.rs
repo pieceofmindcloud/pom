@@ -473,7 +473,9 @@ const ROUTE_RULES: &[RouteRule] = &[
     RouteRule {
         prefix: "/api/ui/network/logs",
         method: None,
-        scope: RouteScope::PrincipalOnly,
+        // Every admin decides it; a secondary's request is passed on to the
+        // principal, which owns the policy the nodes adopt.
+        scope: RouteScope::AnyAdmin,
     },
     RouteRule {
         prefix: "/api/ui/network/auto-discovery",

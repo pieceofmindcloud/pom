@@ -79,7 +79,8 @@ dedicated or member, with iroh's hole punching), are in
   persists them in the `pom.db` if it does not accept, without retransmitting
   received copies.
 - `cluster_logs_policy.rs` - the authenticated ratchet of the logs switch; the
-  announced field only triggers reading the policy on the principal.
+  announced field only triggers reading the policy on the principal, which
+  every admin can change (a secondary forwards `POST /api/ui/network/logs`).
 - `network_chat.rs` - also transports `ChatAction::PluginNotice`, the notice a
   plugin sends to every node (`notification.notify` with
   `scope: "network"`): the same authenticated path and the same rate limit as the

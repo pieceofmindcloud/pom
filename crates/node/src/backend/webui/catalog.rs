@@ -138,10 +138,11 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
                 .admin_trust
                 .effective_authority(&state.authority_principal, cfg.profile)
                 == Some(crate::admin_trust::EffectiveAuthority::Principal),
+            // Any admin turns the cluster's process logs on or off.
             state
                 .admin_trust
                 .effective_authority(&state.authority_principal, cfg.profile)
-                == Some(crate::admin_trust::EffectiveAuthority::Principal),
+                .is_some(),
             state
                 .admin_trust
                 .effective_authority(&state.authority_principal, cfg.profile)
@@ -1499,25 +1500,87 @@ pub(super) async fn save_quic(
     Json(json!({ "quic_enabled": req.quic_enabled })).into_response()
 }
 
+/// A secondary admin's switch: the principal decides for the network, and
+/// this node applies the answer to itself right away.
+async fn forward_cluster_logs_to_principal(state: &GatewayState, enabled: bool) -> Response {
+    let primary = state.admin_trust.current_primary();
+    let Some(principal) = crate::admin::principal_peer_for(&state.network, &primary).await else {
+        return (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "code": "principal_unreachable", "error": "the principal admin is not reachable now; try again when it is online." })),
+        )
+            .into_response();
+    };
+    let answer = crate::admin::post_internal_json(
+        state,
+        &principal,
+        "/api/ui/network/logs",
+        &json!({ "logs_enabled": enabled }),
+        std::time::Duration::from_secs(15),
+    )
+    .await;
+    match answer {
+        Ok(response) if response.status().is_success() => {
+            {
+                let mut cfg = state.auth.write().await;
+                cfg.cluster_logs_enabled = enabled;
+                if let Err(error) = cfg.save() {
+                    warn!("logs policy set on the principal but not written here: {error}");
+                }
+            }
+            state.network.set_cluster_logs_enabled(enabled);
+            state.cluster_logs.set_enabled(enabled);
+            info!(
+                "cluster process logs {} through the principal",
+                if enabled { "on" } else { "off" }
+            );
+            Json(json!({ "logs_enabled": enabled })).into_response()
+        }
+        Ok(response) => {
+            let status = StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+            let body = response
+                .json::<serde_json::Value>()
+                .await
+                .unwrap_or_else(|_| json!({ "error": "the principal refused the change." }));
+            (status, Json(body)).into_response()
+        }
+        Err(error) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "code": "principal_unreachable", "error": format!("could not reach the principal admin: {error}") })),
+        )
+            .into_response(),
+    }
+}
+
 #[derive(Deserialize)]
 pub struct SaveClusterLogsRequest {
     pub logs_enabled: bool,
 }
 
-/// Turns the cluster's collection on or off with no restart. The principal
-/// writes the policy and the other nodes adopt it only after the authenticated
-/// fetch described in `cluster_logs_policy`.
+/// Turns the cluster's collection on or off with no restart. Any admin may:
+/// the principal writes the policy and the other nodes adopt it only after
+/// the authenticated fetch described in `cluster_logs_policy`; a secondary
+/// admin passes its request on to the principal, signed, and takes the value
+/// at once instead of waiting for the next announce.
 pub(super) async fn save_cluster_logs(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
     Json(req): Json<SaveClusterLogsRequest>,
 ) -> Response {
     if !local_is_primary(&state).await {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "only the principal node decides the logs of the cluster." })),
-        )
-            .into_response();
+        let profile = state.auth.read().await.profile;
+        if state
+            .admin_trust
+            .effective_authority(&state.authority_principal, profile)
+            .is_none()
+        {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({ "error": "only an admin decides the logs of the cluster." })),
+            )
+                .into_response();
+        }
+        return forward_cluster_logs_to_principal(&state, req.logs_enabled).await;
     }
     // The admin only tells the network to collect; keeping the lines is the
     // logs plugin's, so collection is not turned on where nobody keeps them.

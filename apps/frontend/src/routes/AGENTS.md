@@ -796,7 +796,7 @@ Per-file list:
   local CA, for every profile), `ThermalPanel` and
   `HuggingFaceSettingsPanel`; there is no TLS panel, since TLS between nodes is
   always on. It also mounts the cluster logs switch,
-  available only to the principal and applied in real time, and `QuicPanel`, which
+  available to every admin (`cluster_logs_authority`) and applied in real time, and `QuicPanel`, which
   toggles the HTTP/3 preference in `POST /api/ui/network/quic` with the same
   authority control. The access password is a human credential and is not the
   cluster `connection_key`. The route `/config/preferences/admin` renders

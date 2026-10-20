@@ -1100,11 +1100,13 @@ screen polls for new batches every second. The deployment selector sends
 The lines are kept by the logs plugin (`pom-plugin-logs`) on each admin; the
 POM only captures, carries them to the admins and holds the collection policy.
 Without the plugin active on this node the console says so instead of
-polling, and the Dashboard does not show the dock.
+polling, and the Dashboard does not show the dock. While
+`NodeInfo.cluster_logs_enabled` is false the console and the dock show
+"Collection off" instead of "Live", since no new line arrives.
 
 `Preferences.tsx` shows the "Process logs between nodes" panel only when the
-logs plugin is active on this machine. The switch is disabled outside the
-principal, and the backend rejects turning collection on unless the plugin is
+logs plugin is active on this machine. The switch is open to every admin
+(a secondary admin's change is passed on to the principal), and the backend rejects turning collection on unless the plugin is
 active there; turning it off always works. Only the admins need the plugin. State and authority come from `GET /api/ui/node`; the change
 uses `POST /api/ui/network/logs` and needs no restart. The counter of entries
 dropped by the bounded queue shows above the terminal, so the screen does not

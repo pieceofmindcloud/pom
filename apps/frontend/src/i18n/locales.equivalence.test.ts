@@ -17,6 +17,13 @@ const dump = reference as ReferenceDump;
 // The dump is the frozen pre-ICU baseline. Keep intentional product-copy
 // revisions here rather than rewriting the generated 1.8 MB single-line file.
 const copyUpdates: Record<string, string> = {
+  // Every admin decides the cluster's process logs, not only the principal.
+  "en:network.logsNotAuthority": "Only an admin decides this, and the decision applies to the whole cluster.",
+  "pt-BR:network.logsNotAuthority": "Só um admin decide isso, e a decisão vale para o cluster inteiro.",
+  "en:network.logsPropagates":
+    "No restart needed. Any admin can change it: a secondary admin's change goes to the main node, and the other nodes confirm the policy with it before adopting.",
+  "pt-BR:network.logsPropagates":
+    "Não precisa reiniciar. Qualquer admin pode mudar: a mudança de um admin secundário vai para o principal, e os demais nós confirmam a política com ele antes de adotar.",
   "en:keys.nodeHint":
     "The token works on this node only and never leaves it. It keeps working when this node joins another network, so clients need no change.",
   "pt-BR:keys.nodeHint":

@@ -1432,9 +1432,12 @@ The batched pruning and the WAL recovery do not reach `audit_requests`,
 `audit_request_hops` or `audit_prompt_fts*`.
 
 **`POST /api/ui/network/logs`** - body `{ logs_enabled: bool }`, turns the
-capture and sending of the cluster's real-time process log on or off. Only the
-principal accepts the operation; the effect applies without a restart and is
-announced as a trigger for the other nodes' authenticated fetch.
+capture and sending of the cluster's real-time process log on or off.
+`AnyAdmin`: on the principal it writes the policy; on a secondary admin it is
+passed on to the principal as a signed admin request (`502
+principal_unreachable` while the principal is away) and applied locally once
+the principal accepts. The effect needs no restart and is announced as a
+trigger for the other nodes' authenticated fetch.
 
 **`GET /api/ui/cluster-logs`** - `AnyAdmin`: requires `ConnectionAuth` on
 any admin with effective authority, principal or secondary, and returns the lines persisted in the local replica, in

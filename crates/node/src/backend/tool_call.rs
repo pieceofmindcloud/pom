@@ -282,6 +282,66 @@ const CALL_FORMATS: &[CallFormat] = &[
     },
 ];
 
+/// The request's declared tools, by name and parameter names. It lets the
+/// scanner attribute a call the model wrote with no name at all
+/// (`<tool_call><parameter name="command">ls</parameter></invoke>`): the
+/// parameters name the tool when exactly one declared tool takes them all.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ToolSignatures(std::sync::Arc<Vec<(String, Vec<String>)>>);
+
+impl ToolSignatures {
+    pub(crate) fn of(tools: &[ToolDef]) -> Self {
+        Self(std::sync::Arc::new(
+            tools
+                .iter()
+                .map(|tool| {
+                    let params = tool
+                        .input_schema
+                        .get("properties")
+                        .and_then(|p| p.as_object())
+                        .map(|p| p.keys().cloned().collect())
+                        .unwrap_or_default();
+                    (tool.name.clone(), params)
+                })
+                .collect(),
+        ))
+    }
+
+    fn attribute(&self, arguments: &serde_json::Value) -> Option<String> {
+        let keys = arguments.as_object().filter(|keys| !keys.is_empty())?;
+        let mut matching = self
+            .0
+            .iter()
+            .filter(|(_, params)| keys.keys().all(|key| params.contains(key)));
+        let (name, _) = matching.next()?;
+        matching.next().is_none().then(|| name.clone())
+    }
+}
+
+/// A `Wrapped` call that failed to parse only because it carries no name:
+/// its body is parameters alone. Attributed through `tools`, or left as the
+/// failure it was.
+fn attribute_nameless(
+    events: Vec<ScanEvent>,
+    raw: &str,
+    kind: CallKind,
+    tools: &ToolSignatures,
+) -> Vec<ScanEvent> {
+    if kind != CallKind::Wrapped || !matches!(events.as_slice(), [ScanEvent::ToolCallClose(Err(_))]) {
+        return events;
+    }
+    let body = normalize_wrapped_body(raw);
+    let call = body
+        .starts_with("<parameter")
+        .then(|| parse_invoke_parameters(&body))
+        .flatten()
+        .and_then(|arguments| Some((tools.attribute(&arguments)?, arguments)));
+    match call {
+        Some(call) => vec![ScanEvent::ToolCallClose(Ok(call))],
+        None => events,
+    }
+}
+
 /// One classified span of raw model output.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ScanEvent {
@@ -352,6 +412,7 @@ pub(crate) struct TagScanner {
     /// A call just closed and only whitespace followed: a closing tag that
     /// comes next belongs to that call and is dropped instead of shown.
     after_call: bool,
+    tools: ToolSignatures,
 }
 
 impl TagScanner {
@@ -360,6 +421,15 @@ impl TagScanner {
             pending: String::new(),
             state: ScanState::Outside,
             after_call: false,
+            tools: ToolSignatures::default(),
+        }
+    }
+
+    /// A scanner that can attribute a nameless call to one of `tools`.
+    pub(crate) fn with_tools(tools: ToolSignatures) -> Self {
+        Self {
+            tools,
+            ..Self::new()
         }
     }
 
@@ -453,7 +523,12 @@ impl TagScanner {
                                 raw.push_str(&head);
                                 events.push(ScanEvent::ToolCallChunk(head));
                             }
-                            events.extend(complete_call_events(&raw, kind));
+                            events.extend(attribute_nameless(
+                                complete_call_events(&raw, kind),
+                                &raw,
+                                kind,
+                                &self.tools,
+                            ));
                         }
                         None => {
                             let hold = kind
@@ -496,7 +571,8 @@ impl TagScanner {
                 // wrote is a whole call, it is one: the missing closer is the
                 // quantized model's slip, not a reason to show the markup.
                 let body = format!("{raw}{}", self.pending);
-                let calls = complete_call_events(&body, kind);
+                let calls =
+                    attribute_nameless(complete_call_events(&body, kind), &body, kind, &self.tools);
                 let whole = kind != CallKind::BareFunction
                     && !calls.is_empty()
                     && calls
@@ -541,6 +617,8 @@ impl TagScanner {
                 let body = format!("{raw}{}", self.pending);
                 let events = if kind == CallKind::FunctionCalls {
                     partial_function_call_events(&body)
+                } else if kind == CallKind::Invoke {
+                    partial_function_call_events(&format!("{INVOKE_OPEN}{body}"))
                 } else {
                     parse_partial_call_body(&body, kind)
                         .map(ScanEvent::ToolCallTruncated)
@@ -1283,13 +1361,11 @@ fn streamable_arguments_prefix(raw: &str, eager: bool) -> Option<String> {
     let mut sole_arguments_object = false;
     loop {
         let t = cursor.trim_start();
-        let Some(after_open) = t.strip_prefix("<parameter=") else {
+        // Both spellings, as the complete parser reads them: a parameter this
+        // skipped would be missing from the streamed arguments for good.
+        let Some((pname, after_name)) = parameter_open(t) else {
             break;
         };
-        let Some((pname, after_name)) = after_open.split_once('>') else {
-            break;
-        };
-        let pname = pname.trim();
         match after_name.find("</parameter>") {
             Some(close) => {
                 let value_raw = after_name[..close].trim();
@@ -1553,8 +1629,14 @@ fn merge_adjacent_text(parts: Vec<OutputPart>) -> Vec<OutputPart> {
 /// calls — a thin wrapper over [`TagScanner`], so this and each adapter's
 /// streaming path can never disagree about how a given span of text is
 /// classified.
+#[cfg(test)]
 pub(crate) fn parse_output(text: &str) -> Vec<OutputPart> {
-    let mut scanner = TagScanner::new();
+    parse_output_with_tools(text, &ToolSignatures::default())
+}
+
+/// [`parse_output`] that can attribute a nameless call to a declared tool.
+pub(crate) fn parse_output_with_tools(text: &str, tools: &ToolSignatures) -> Vec<OutputPart> {
+    let mut scanner = TagScanner::with_tools(tools.clone());
     let mut events = scanner.feed(text);
     events.extend(scanner.finish());
     merge_adjacent_text(events_to_parts(events))
@@ -1564,8 +1646,17 @@ pub(crate) fn parse_output(text: &str) -> Vec<OutputPart> {
 /// a call open and not closed comes back **structured and incomplete** instead
 /// of degrading into text. The `bool` says whether the cut fell inside a
 /// call - see [`TagScanner::finish_truncated`].
+#[cfg(test)]
 pub(crate) fn parse_output_truncated(text: &str) -> (Vec<OutputPart>, bool) {
-    let mut scanner = TagScanner::new();
+    parse_output_truncated_with_tools(text, &ToolSignatures::default())
+}
+
+/// [`parse_output_truncated`] that can attribute a nameless call.
+pub(crate) fn parse_output_truncated_with_tools(
+    text: &str,
+    tools: &ToolSignatures,
+) -> (Vec<OutputPart>, bool) {
+    let mut scanner = TagScanner::with_tools(tools.clone());
     let mut events = scanner.feed(text);
     let (tail, discarded) = scanner.finish_truncated();
     events.extend(tail);
@@ -2497,6 +2588,76 @@ mod tests {
             events.extend(scanner.finish());
             assert_eq!(merge_adjacent_text(events_to_parts(events)), whole, "chunk {size}");
         }
+    }
+
+
+    fn signatures() -> ToolSignatures {
+        let tool = |name: &str, params: serde_json::Value| ToolDef {
+            name: name.to_string(),
+            description: None,
+            input_schema: json!({"type": "object", "properties": params}),
+            eager_input_streaming: None,
+        };
+        ToolSignatures::of(&[
+            tool("read", json!({"path": {}, "offset": {}, "limit": {}})),
+            tool("bash", json!({"command": {}, "timeout": {}})),
+            tool("write", json!({"path": {}, "content": {}})),
+        ])
+    }
+
+    #[test]
+    fn a_nameless_call_is_attributed_by_its_parameters() {
+        let text = "<tool_call>\n<parameter name=\"command\">ls -la</parameter>\n</invoke>\n";
+        let parts = parse_output_with_tools(text, &signatures());
+        assert_eq!(
+            parts,
+            vec![OutputPart::ToolCall {
+                name: "bash".to_string(),
+                arguments: json!({"command": "ls -la"}),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_nameless_call_two_tools_could_take_stays_text() {
+        let text = "<tool_call>\n<parameter=path>\na.rs\n</parameter>\n</tool_call>";
+        let parts = parse_output_with_tools(text, &signatures());
+        assert!(parts.iter().all(|p| matches!(p, OutputPart::Text(_))), "{parts:?}");
+    }
+
+    #[test]
+    fn without_declared_tools_a_nameless_call_stays_text() {
+        let text = "<tool_call>\n<parameter name=\"command\">ls</parameter>\n</tool_call>";
+        assert!(parse_output(text).iter().all(|p| matches!(p, OutputPart::Text(_))));
+    }
+
+
+    #[test]
+    fn a_mixed_spelling_call_streams_every_parameter() {
+        let raw = "<function=edit>\n<parameter=path>\nf\n</parameter>\n<parameter name=\"oldText\">aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa</parameter>\n</function>\n";
+        let mut streamer = CallArgsStreamer::new(true);
+        let mut out = String::new();
+        for end in 1..=raw.len() {
+            if let Some(delta) = streamer.advance(&raw[..end]) {
+                out.push_str(&delta);
+            }
+        }
+        let (_, parsed) = parse_function_call_xml(raw).unwrap();
+        if let Some(delta) = streamer.finish_complete(raw, &parsed) {
+            out.push_str(&delta);
+        }
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&out).unwrap(), parsed);
+    }
+
+    #[test]
+    fn a_bare_invoke_cut_by_the_cap_comes_back_structured() {
+        let (parts, cut) =
+            parse_output_truncated("<invoke name=\"bash\">\n<parameter name=\"command\">ls -l");
+        assert!(cut);
+        assert!(
+            matches!(parts.as_slice(), [OutputPart::ToolCallTruncated(p)] if p.name == "bash"),
+            "{parts:?}"
+        );
     }
 
 }

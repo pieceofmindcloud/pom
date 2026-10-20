@@ -859,6 +859,10 @@ change lands in the right place.
   complete call the model left unshut at the end of its output is a call
   (`TagScanner::finish`), and a closer that trails a finished call is dropped
   instead of shown (`after_call`, `STRAY_CLOSERS`).
+  A call written with parameters and no name at all is attributed through
+  the request's declared tools (`ToolSignatures`, passed by both adapters to
+  `TagScanner::with_tools` / `parse_output_with_tools`) when exactly one tool
+  takes every parameter it carries; otherwise it stays text.
   `parse_call_body` accepts the nested `<function=...>` XML form or the legacy
   Hermes JSON-object form, including an extra JSON-encoded `arguments` string;
   a sole object parameter named `arguments` is unwrapped for provider schemas;

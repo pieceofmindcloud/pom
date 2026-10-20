@@ -1179,9 +1179,18 @@ async fn prefill_on_peer(
             0
         }
     };
-    // a session saved with other engine settings than the head's is refused by its engine: the head reads the prompt
+    // a session saved with other engine settings than the head's, or on a layer split the head's engine cannot restore
+    // (a whole model's session on a head split across GPUs), is refused there: the head reads the prompt
     if let Ok(head_offer) = &head_offer {
         if let Ok(prefill_offer) = super::plugin_session::offer_of(state, code, key, &peer.node_id).await {
+            if !super::plugin_session::layers_compatible(&head_offer.layers, &prefill_offer.layers) {
+                warn!(
+                    plugin = %code, session = %key, prefill = %peer.node_id, head = %head,
+                    prefill_layers = %prefill_offer.layers, head_layers = %head_offer.layers,
+                    "prefill split: the head cannot restore a session of the prefill machine's layer split; the head reads the prompt"
+                );
+                return None;
+            }
             if !super::plugin_session::configs_compatible(head_offer.config.as_deref(), prefill_offer.config.as_deref()) {
                 warn!(
                     plugin = %code, session = %key, prefill = %peer.node_id, head = %head,

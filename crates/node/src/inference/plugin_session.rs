@@ -580,15 +580,23 @@ pub(crate) fn configs_compatible(local: Option<&str>, saved: Option<&str>) -> bo
     }
 }
 
+/// Whether a session saved on the layer split `saved` restores on a machine running `local`: the same split, or a
+/// contiguous split of the whole model on one side and the whole model on the other - Strata joins a split's stages
+/// on a machine with every layer and cuts a whole session into the stages of a split (conversation_split_stages).
 pub(crate) fn layers_compatible(local: &str, saved: &str) -> bool {
     if local == saved {
         return true;
     }
-    if local != "whole" {
-        return false;
+    match (local, saved) {
+        ("whole", split) | (split, "whole") => whole_split(split),
+        _ => false,
     }
+}
+
+/// Whether `split` ("0-35|36-47") covers a model from its first layer, its ranges end to end.
+fn whole_split(split: &str) -> bool {
     let mut next = 0u64;
-    for range in saved.split('|') {
+    for range in split.split('|') {
         let Some((start, end)) = range.split_once('-') else {
             return false;
         };
@@ -1167,7 +1175,7 @@ mod pull_tests {
 
     #[test]
     fn a_whole_session_or_a_partial_chain_is_not_restored_on_a_split_machine() {
-        assert!(!layers_compatible("0-35|36-47", "whole"));
+        assert!(layers_compatible("0-35|36-47", "whole"), "a whole session is cut into the head's stages");
         assert!(!layers_compatible("0-35|36-47", "0-47"));
         assert!(!layers_compatible("whole", "0-30|36-47"));
         assert!(!layers_compatible("whole", "1-35|36-47"));

@@ -690,7 +690,12 @@ receives the anchor is usually a `worker` or a `visitor`. That is why
 Settings menu and is promoted to `visitor`'s main menu.
 
 The `Topbar` header keeps the node's identification, profile, notifications and
-the native window shortcut; the `This node` button is not rendered. The
+the native window shortcut; the `This node` button is not rendered. The node's
+short id is not shown there: in its place an amber "Behind NAT" badge appears
+while the NAT report says the machine has no public address
+(`ClusterView.traversal.nat: "private"`), and a click opens a dialog on what
+that costs (a relay detour, about 2 MB/s on public relays) and how to give the
+machine a direct path (`components/NatBadge.tsx`). The
 Sidebar's TLS indicator (`components/TlsIndicator.tsx`) is also hidden for
 every profile. The policy is still available in Administrative preferences; no
 TLS configuration or behavior changed.

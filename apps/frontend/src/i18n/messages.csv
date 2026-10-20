@@ -1462,6 +1462,18 @@ myMachine.nameSubtitle,How this machine appears to the others in the network.,Co
 myMachine.nameTitle,Machine name,Nome da máquina
 myMachine.subtitle,This machine's identity in the cluster and the address it advertises to peers.,A identidade desta máquina no cluster e o endereço que ela anuncia aos peers.
 myMachine.title,My machine,Minha máquina
+nat.check,"Before you keep using POM with other networks over the internet, we recommend checking your connection and giving this machine a direct path.","Antes de continuar usando o POM com outras redes pela internet, recomendamos verificar a sua conexão e dar a esta máquina um caminho direto."
+nat.fixFirewall,"Firewall: allow incoming UDP traffic to POM on this machine and on the home firewall, so the hole punch between the machines can succeed.","Firewall: libere o tráfego UDP de entrada para o POM nesta máquina e no firewall de casa, para que o hole punch entre as máquinas consiga fechar."
+nat.fixIpv6,"Publish your IPv6: if your provider gives you IPv6, enable it on the router and on this machine. A global IPv6 address is reachable from the internet with no translation, as long as the router firewall lets the POM ports in.","Publique o seu IPv6: se o seu provedor oferece IPv6, ative-o no roteador e nesta máquina. Um endereço IPv6 global é alcançável pela internet sem tradução, desde que o firewall do roteador deixe as portas do POM entrarem."
+nat.fixRouter,"Router: forward the POM ports to this machine (the P2P port and the endpoint port, P2P + 10000, both UDP), or enable UPnP, so other networks can reach it directly.","Roteador: redirecione as portas do POM para esta máquina (a porta P2P e a porta do endpoint, P2P + 10000, ambas UDP), ou ative o UPnP, para que outras redes cheguem até ela diretamente."
+nat.fixRouterPorts,"Router: forward the POM ports to this machine (UDP {p2p} for P2P and UDP {endpoint} for the endpoint), or enable UPnP, so other networks can reach it directly.","Roteador: redirecione as portas do POM para esta máquina (UDP {p2p} para o P2P e UDP {endpoint} para o endpoint), ou ative o UPnP, para que outras redes cheguem até ela diretamente."
+nat.fixTitle,How to take this machine out from behind the NAT,Como tirar esta máquina de trás do NAT
+nat.ideal,"The ideal is that the machines talk to each other directly, with no intermediary: every hop through a relay adds latency and caps the bandwidth of the whole pipeline.","O ideal é que as máquinas se comuniquem diretamente, sem intermediários: cada passagem por um relé aumenta a latência e limita a banda de toda a pipeline."
+nat.intro,"This machine is behind a network with NAT: its IP address is not public on the internet. Machines in other networks cannot open a connection to it, which makes it harder for POM to talk to them.","Esta máquina está atrás de uma rede com NAT: o seu endereço IP não é público na internet. Máquinas de outras redes não conseguem abrir uma conexão até ela, e isso dificulta a comunicação do POM com elas."
+nat.openNetworkSettings,Open network settings,Abrir configurações de rede
+nat.relay,"When a direct connection cannot be made, POM may use a relay server: your traffic goes through that server to reach the destination network, and on public relays it is limited to about 2 MB/s.","Quando não é possível uma conexão direta, o POM pode usar um servidor de relé: as suas comunicações passam por esse servidor para chegar à rede de destino, e nos relés públicos ficam limitadas a cerca de 2 MB/s."
+nat.slowness,"If inference or transfers with other networks feel slow, this may be one of the reasons: a relayed link adds a detour to every token and limits how much data crosses it.","Se a inferência ou as transferências com outras redes parecem lentas, este pode ser um dos motivos: uma ligação por relé acrescenta um desvio a cada token e limita quantos dados passam por ela."
+nat.title,This machine is behind NAT,Esta máquina está atrás de NAT
 nav.about,About,Sobre
 nav.administration,Administration,Administração
 nav.administrativePreferences,Administrative preferences,Preferências administrativas
@@ -2774,6 +2786,8 @@ slice.tpSize,Number of TP ranks,Quantidade de ranks TP
 slice.tpSizeAria,Number of TP ranks,Quantidade de ranks TP
 slice.tpSizeHint,Choose the number of machines that will hold this tensor-parallel model.,Escolha quantas máquinas vão guardar este modelo em tensor parallelism.
 topbar.apiTitle,OpenAI-compatible API served by this node,API compatível com OpenAI servida por este nó
+topbar.behindNat,Behind NAT,Atrás de NAT
+topbar.behindNatHint,This machine is behind NAT. Click for what it means and how to fix it.,Esta máquina está atrás de NAT. Clique para ver o que isso significa e como resolver.
 topbar.closeMenu,Close menu,Fechar menu
 topbar.layers,{covered}/{total} layers,{covered}/{total} camadas
 topbar.leaveDescription,"The node stops announcing, forgets known peers, and unloads the model. The interface remains available. Rejoin from Settings › Network.","O nó para de anunciar, esquece os peers que conhece e descarrega o modelo. A interface continua no ar. Para voltar, use Configurações › Rede."

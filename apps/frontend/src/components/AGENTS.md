@@ -304,6 +304,14 @@ Per-file list:
   line (relaying for any network, for this network, not relaying, or not
   reachable from the internet). The panel stays out when the node does not
   answer. Tests in `RelayOptions.test.tsx`.
+- `NatBadge.tsx` - the top bar's amber "Behind NAT" badge, drawn only while
+  `ClusterView.traversal.nat` is `private` (nothing for `public` or a report
+  not in yet). It took the place of the node's short id. A click opens a
+  `Modal` explaining the NAT, the relay detour (public relays cap it at about
+  2 MB/s), why it makes the pipeline slow and how to give the machine a direct
+  path: IPv6, router port forwarding (this node's P2P and endpoint UDP ports,
+  `p2p_port` and `p2p_port + 10000`) or UPnP, and the firewall. Tests in
+  `Topbar.test.tsx`.
 - `ClusterVersion.tsx` - Panel with the trust chain version this node holds
   (`NodeInfo.cluster_version`, formatted by `lib/clusterVersion.ts`), an
   outdated badge with the hosts announcing a newer one, and "Sync now"
@@ -316,7 +324,7 @@ Per-file list:
   of the promotion candidates (the node refuses them as well).
 - `Topbar.tsx` - Sticky header: `NodeChip` (the network this machine is in,
   from `NodeInfo.network_name` and linking to `/config/network`; then hostname,
-  short_id, peer count, coverage), the i18n badge of the node's persisted profile, the macOS button of
+  the `NatBadge`, peer count, coverage), the i18n badge of the node's persisted profile, the macOS button of
   the larger window and the bell (`Notifications`). The `Este nó` ("This node") button is not
   rendered.
   Mobile drawer renders `SidebarContent` inside an animated

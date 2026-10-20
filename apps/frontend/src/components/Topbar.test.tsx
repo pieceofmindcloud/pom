@@ -17,11 +17,25 @@ import { fakeNode } from "../test/fixtures";
 import type { NodeInfo } from "../lib/types";
 
 let nodeData: NodeInfo | undefined;
+let natStatus: "unknown" | "public" | "private" | undefined;
 
 vi.mock("../lib/queries", async (original) => ({
   ...(await original<typeof import("../lib/queries")>()),
   useNode: () => ({ data: nodeData }),
-  useCluster: () => ({ data: { peers: [], complete: false } }),
+  useCluster: () => ({
+    data: {
+      peers: [],
+      complete: false,
+      traversal: natStatus && {
+        nat: natStatus,
+        addrs: [],
+        reservations: [],
+        hole_punch_ok: 0,
+        hole_punch_failed: 0,
+        last_hole_punch_error: null,
+      },
+    },
+  }),
 }));
 
 const { TlsChip } = await import("./TlsIndicator");
@@ -149,5 +163,45 @@ describe("menu mobile", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Abrir menu" }));
     expect(screen.getByRole("button", { name: "Fechar menu" })).toBeTruthy();
+  });
+});
+
+describe("NAT badge in the toolbar", () => {
+  afterEach(() => {
+    cleanup();
+    natStatus = undefined;
+  });
+
+  it("no longer shows the node id", () => {
+    nodeData = fakeNode();
+    mountTopbar("admin");
+    expect(screen.queryByText(nodeData.short_id)).toBeNull();
+  });
+
+  it("shows nothing while the machine is reachable or the NAT report is not in", () => {
+    nodeData = fakeNode();
+    for (const status of [undefined, "unknown", "public"] as const) {
+      natStatus = status;
+      mountTopbar("admin");
+      expect(screen.queryByTestId("topbar-nat")).toBeNull();
+      cleanup();
+    }
+  });
+
+  it("shows Behind NAT and opens the explanation with this machine's ports", () => {
+    nodeData = { ...fakeNode(), p2p_port: 42777 };
+    natStatus = "private";
+    mountTopbar("admin");
+
+    const badge = screen.getByTestId("topbar-nat");
+    expect(badge.textContent).toBe("Atrás de NAT");
+    expect(screen.queryByTestId("nat-dialog")).toBeNull();
+
+    fireEvent.click(badge);
+    const dialog = screen.getByTestId("nat-dialog");
+    expect(dialog.textContent).toContain("2 MB/s");
+    expect(dialog.textContent).toContain("IPv6");
+    expect(dialog.textContent).toContain("UDP 42777");
+    expect(dialog.textContent).toContain("UDP 52777");
   });
 });

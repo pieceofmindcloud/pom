@@ -101,14 +101,18 @@ impl AdminSessionStore {
 /// `Secure` one it already holds. After one HTTPS sign-in the HTTP session was
 /// never stored, and what only the cookie authenticates (a plugin screen's
 /// module, loaded by `import()` without the password header) answered 401. The
-/// session over TLS (`secure`) carries the `__Secure-` prefix, so each scheme
-/// keeps its own cookie.
+/// session over TLS (`secure`) carries the `__Secure-` prefix and the one over
+/// plain HTTP the `_http` suffix, so each scheme keeps its own cookie. The HTTP
+/// name is also one no `Secure` cookie ever had: before the split both schemes
+/// wrote `<slug>_admin_session_<port>`, and a browser still holding that
+/// `Secure` cookie would refuse an HTTP one of the same name until it expired.
 pub(crate) fn admin_session_cookie_name(headers: &HeaderMap, secure: bool) -> String {
-    let base = format!(
-        "{}{}_{ADMIN_SESSION_COOKIE_SUFFIX}",
-        if secure { "__Secure-" } else { "" },
-        crate::brand::slug()
-    );
+    let slug = crate::brand::slug();
+    let base = if secure {
+        format!("__Secure-{slug}_{ADMIN_SESSION_COOKIE_SUFFIX}")
+    } else {
+        format!("{slug}_{ADMIN_SESSION_COOKIE_SUFFIX}_http")
+    };
     let port = headers
         .get(axum::http::header::HOST)
         .and_then(|value| value.to_str().ok())
@@ -1076,7 +1080,7 @@ mod tests {
             headers.insert(axum::http::header::HOST, host.parse().unwrap());
             headers
         };
-        let base = format!("{}_admin_session", crate::brand::slug());
+        let base = format!("{}_admin_session_http", crate::brand::slug());
         assert_eq!(
             admin_session_cookie_name(&headers("ksia:8080"), false),
             format!("{base}_8080")
@@ -1118,15 +1122,18 @@ mod tests {
     fn http_and_https_on_one_port_do_not_share_the_session_cookie() {
         let mut headers = HeaderMap::new();
         headers.insert(axum::http::header::HOST, "ksia:8080".parse().unwrap());
-        let base = format!("{}_admin_session_8080", crate::brand::slug());
-        assert_eq!(admin_session_cookie_name(&headers, false), base);
-        assert_eq!(admin_session_cookie_name(&headers, true), format!("__Secure-{base}"));
+        let slug = crate::brand::slug();
+        let plain = format!("{slug}_admin_session_http_8080");
+        let tls = format!("__Secure-{slug}_admin_session_8080");
+        assert_eq!(admin_session_cookie_name(&headers, false), plain);
+        assert_eq!(admin_session_cookie_name(&headers, true), tls);
 
         // A browser that signed in over both schemes sends both cookies over
-        // HTTPS; each transport reads only its own.
+        // HTTPS, beside the old name both schemes once shared; each transport
+        // reads only its own.
         headers.insert(
             axum::http::header::COOKIE,
-            format!("{base}=plain; __Secure-{base}=tls").parse().unwrap(),
+            format!("{slug}_admin_session_8080=old; {plain}=plain; {tls}=tls").parse().unwrap(),
         );
         assert_eq!(session_id_from_cookie(&headers, false), Some("plain"));
         assert_eq!(session_id_from_cookie(&headers, true), Some("tls"));

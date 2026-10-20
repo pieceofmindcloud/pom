@@ -537,11 +537,14 @@ a live session.
 The cookie name carries the `Host` port (`<slug>_admin_session_<port>`,
 `auth::admin_session_cookie_name`): cookies do not separate by port, and two
 nodes on the same host (`<host>:8080` and `<host>:8081`) logged each other out on
-every login. Over TLS the name also carries the `__Secure-` prefix: the same
-port serves HTTP and HTTPS, and a browser refuses a plain HTTP cookie whose name
-matches a `Secure` one it holds, so after one HTTPS sign-in the HTTP session was
-never stored and a plugin screen's module (an `import()`, which only the cookie
-authenticates) answered 401. The session digest is invalidated when the password changes or
+every login. The name also says the scheme: `__Secure-<slug>_admin_session_<port>`
+over TLS and `<slug>_admin_session_http_<port>` over plain HTTP. The same port
+serves both, and a browser refuses a plain HTTP cookie whose name matches a
+`Secure` one it holds, so with one shared name an HTTPS sign-in kept the HTTP
+session from ever being stored and a plugin screen's module (an `import()`,
+which only the cookie authenticates) answered 401. The HTTP name is one no
+`Secure` cookie ever used, so a browser still holding the old shared one is not
+blocked by it. The session digest is invalidated when the password changes or
 when going back to localhost. The password is compared on the server with the
 persisted Argon2id hash, which is never returned to the UI, and is never
 replaced by the `connection_key`. On a public network, control calls between

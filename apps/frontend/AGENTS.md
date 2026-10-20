@@ -183,8 +183,9 @@ a choice.
   -> administrative preferences for TLS, QUIC, logs and network chat; and
   `/config/about` -> About, with the POM's explicit provisional license, the
   catalog grouped by license of the frontend's and the Rust's direct
-  dependencies, and the ONLY check/apply of the `pom` binary update
-  (`/api/ui/pom-update/*`) - deliberately separate from the Plugins screen, see
+  dependencies, and the check/apply of the POM update
+  (`/api/ui/pom-update/*`, GitHub releases then the site, no license; the
+  Plugins screen's "Check for updates" dialog uses the same routes), see
   `crates/node/src/pom_core_update.rs`. About is the last item of the Settings
   section.
 - `*` -> NotFound

@@ -25,6 +25,8 @@ permissions:
 # the workspace, so each run reuses it instead of downloading it again.
 env:
   APPIMAGETOOL_VERSION: 1.9.1
+  # The release the binary says it is; the update check compares it with the published ones.
+  POM_RELEASE_VERSION: ${{ inputs.version }}
 
 jobs:
   # A single job: on a self-hosted runner there is no minute multiplier, so splitting it

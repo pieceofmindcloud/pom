@@ -4759,7 +4759,7 @@ pub(crate) async fn plugin_catalog_entry(
     relay_plugin_catalog(plugin_catalog_entry_url(&license_base_url(), &code)).await
 }
 
-fn license_base_url() -> String {
+pub(crate) fn license_base_url() -> String {
     std::env::var("POM_LICENSE_BASE_URL")
         .ok()
         .filter(|_| {

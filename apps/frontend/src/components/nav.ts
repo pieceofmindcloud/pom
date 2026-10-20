@@ -137,7 +137,7 @@ export const NAV: NavSection[] = [
       { labelKey: "nav.administrators", to: "/config/administration", icon: ShieldCheck },
       { labelKey: "nav.sharing", to: "/config/sharing", icon: ShieldCheck },
       { labelKey: "nav.apiKeys", to: "/config/keys/api", icon: KeyRound },
-      { labelKey: "nav.budget", to: "/config/budget", icon: Gauge },
+      { labelKey: "nav.budget", to: "/config/usage", icon: Gauge },
     ],
   },
   {

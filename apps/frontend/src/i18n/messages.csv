@@ -14,11 +14,8 @@ about.dependenciesTitle,Third-party dependencies,Dependências de terceiros
 about.ecosystem.frontend,Frontend,Frontend
 about.ecosystem.rust,Rust,Rust
 about.empty,No dependencies match this search.,Nenhuma dependência corresponde a esta busca.
-about.enterpriseActive,Active,Ativa
 about.enterpriseCheckFailed,Could not check for POM updates.,Não foi possível verificar atualizações do POM.
 about.enterpriseCheckUpdates,Check for updates,Verificar atualizações
-about.enterpriseInactive,Inactive,Inativa
-about.enterpriseState,State,Estado
 about.licenseCount,"{count, plural, =1 {1 dependency} other {# dependencies}}","{count, plural, =1 {1 dependência} other {# dependências}}"
 about.placeholderBody,"POM is licensed under the GNU Affero General Public License, version 3 (AGPL-3.0). The complete license is available in this repository and from the Free Software Foundation.","O POM é licenciado sob a GNU Affero General Public License, versão 3 (AGPL-3.0). A licença completa está disponível neste repositório e na Free Software Foundation."
 about.placeholderLicense,AGPL-3.0,AGPL-3.0
@@ -27,13 +24,18 @@ about.placeholderLicenseValue,AGPL-3.0,AGPL-3.0
 about.placeholderTitle,POM software license,Licença do software POM
 about.pluginBaseDescription,"POM plugins are built from the Plugin Base template and SDK. Follow its README to create a repository, implement the plugin manifest and UI, then build and publish releases for POM to install.","Plugins POM podem ser criados a partir do template e SDK do Plugin Base. Siga o README para criar um repositório, implementar o manifesto e a interface do plugin, e então compilar e publicar releases para instalação no POM."
 about.pluginBaseLink,POM Plugin Base,POM Plugin Base
+"about.pomBlockedContainer","This node runs in a container: update it by rebuilding its image.","Este nó roda em um container: atualize-o reconstruindo a imagem."
+"about.pomBlockedInvitation","The site lists this release, but its download still needs an invitation, so this node cannot fetch it.","O site lista esta release, mas o download ainda exige convite, então este nó não consegue baixá-la."
+"about.pomCheckUnreachable","No release source answered:","Nenhuma fonte de releases respondeu:"
+"about.pomCurrentVersion","Running version","Versão em execução"
+"about.pomRestarting","Update downloaded. POM is restarting with the new release; this page reconnects when it is back.","Atualização baixada. O POM está reiniciando com a nova release; esta página reconecta quando ele voltar."
+"about.pomSourceGithub","GitHub releases","releases do GitHub"
+"about.pomSourceSite","POM site","site do POM"
+"about.pomUpToDate","POM is up to date.","O POM está atualizado."
 about.pomUpdateApply,Install and restart,Instalar e reiniciar
-about.pomUpdateApplyFailed,Could not apply the POM update.,Não foi possível aplicar a atualização do POM.
+"about.pomUpdateApplyFailed","Could not apply the POM update.","Não foi possível aplicar a atualização do POM."
 about.pomUpdateAvailable,POM update available: {version},Atualização do POM disponível: {version}
-about.pomUpdateNeedsPlugin,POM update checks currently borrow the logs plugin's license.,A verificação de atualização do POM hoje usa o lease do plugin logs.
-about.pomUpdateOpenPlugins,Open Plugins,Abrir Plugins
-about.pomUpdateRelease,Release {release_id},Release {release_id}
-about.pomUpdateSubtitle,"On-demand check and, once confirmed, installation of a new POM build.","Verificação sob demanda e, após confirmação, instalação de uma nova versão do POM."
+"about.pomUpdateSubtitle","Checks POM's GitHub releases, then the site, and installs a newer release once you confirm: the plugin host swaps the files and restarts POM.","Verifica as releases do POM no GitHub e depois no site, e instala uma release mais nova quando você confirma: o plugin host troca os arquivos e reinicia o POM."
 about.pomUpdateTitle,POM update,Atualização do POM
 about.repository,Repository,Repositório
 about.repositoryLicenseLink,Repository LICENSE file,Arquivo LICENSE do repositório
@@ -146,12 +148,13 @@ app.topbarFailed,The top bar failed. The rest of the interface is still availabl
 "budget.resetsIn","Turns over in {time} · {date}","Renova em {time} · {date}"
 "budget.scope.everyone","shared by the whole network","compartilhado pela rede inteira"
 "budget.scope.everyoneMember","each machine of the network","cada máquina da rede"
+"budget.scope.default","network default plan, for this machine","plano padrão da rede, para esta máquina"
 "budget.scope.node","this machine","esta máquina"
 "budget.scope.team","shared by team {team}","compartilhado pela equipe {team}"
 "budget.scope.teamMember","each member of team {team}","cada membro da equipe {team}"
 "budget.sessionIdle","No session running: the next request starts one","Sem sessão em andamento: a próxima requisição inicia uma"
 "budget.subtitle","The token budgets the network's admins set for this machine, checked before each request enters the pipeline.","Os budgets de tokens que os admins da rede definiram para esta máquina, verificados antes de cada requisição entrar na pipeline."
-"budget.title","Budget","Budget"
+"budget.title","Usage","Uso"
 "budget.unavailable","No admin answered","Nenhum admin respondeu"
 "budget.unavailableHint","Budgets live in the Request Logs plugin of an admin. While none answers, this machine's requests are not limited.","Os budgets ficam no plugin de Logs de Requisições de um admin. Enquanto nenhum responde, as requisições desta máquina não são limitadas."
 "budget.unlimited","no limit","sem limite"
@@ -999,8 +1002,6 @@ docs.tab.guides,Guides,Guias
 docs.tab.reference,Reference,Referência
 enterprise.activateHere,Activate a license,Ativar uma licença
 enterprise.learnMore,Learn about Enterprise,Conhecer o Enterprise
-enterprise.licenseState,License state,Estado da licença
-enterprise.purchaseLink,Buy or manage Enterprise,Comprar ou gerenciar Enterprise
 enterprise.requiredSubtitle,Request Logs and Statistics become available after an Enterprise license is activated.,Logs de Requisições e Estatísticas ficam disponíveis após a ativação de uma licença Enterprise.
 enterprise.requiredTitle,This feature is part of Enterprise,Este recurso faz parte do Enterprise
 enterprise.showcase.logs.screenshotAlt,Preview of the Request Logs screen,Prévia da tela de Logs de Requisições
@@ -1507,7 +1508,7 @@ nav.administration,Administration,Administração
 nav.administrativePreferences,Administrative preferences,Preferências administrativas
 nav.administrators,Administrators,Administradores
 nav.apiKeys,API keys,API keys
-"nav.budget","Budget","Budget"
+"nav.budget","Usage","Uso"
 nav.chat,Chat,Chat
 nav.connectionKeys,Connection keys,Chaves de conexão
 nav.dashboard,Dashboard,Painel
@@ -2037,19 +2038,19 @@ plugins.developTitle,Start from pom-plugin-base,Comece pelo pom-plugin-base
 plugins.featured,Featured,Destaque
 plugins.formSubtitle,The key is sent only to the license server and is not saved by the POM interface.,A chave é enviada apenas ao servidor de licenças e não é salva pela interface do POM.
 plugins.formTitle,Enter your license key,Digite sua chave de licença
-plugins.githubAddFromCatalog,Install from GitHub,Instalar do GitHub
 plugins.githubCheck,Refresh releases,Atualizar releases
 plugins.githubCheckFailed,Could not refresh this GitHub repository.,Não foi possível atualizar este repositório GitHub.
 plugins.githubInstall,Install,Instalar
 plugins.githubInstallConfirmDescription,The selected release ({version}) will replace the plugin version currently installed on this node.,A release selecionada ({version}) substituirá a versão do plugin instalada neste nó.
-plugins.githubInstallConfirmTitle,Install {name} from GitHub?,Instalar {name} pelo GitHub?
+"plugins.githubInstallConfirmTitle","Install {name}?","Instalar {name}?"
 plugins.githubInstallFailed,Could not install the selected release.,Não foi possível instalar a release selecionada.
 plugins.githubInstalled,Installed,Instalada
+"plugins.githubInstallLatestDescription","The latest release published for this machine ({version}) will be installed on this node.","A última release publicada para esta máquina ({version}) será instalada neste nó."
 plugins.githubLatest,latest,mais recente
 plugins.githubListFailed,Could not load registered GitHub repositories.,Não foi possível carregar os repositórios GitHub cadastrados.
 plugins.githubNoCompatibleReleases,No release published for this machine yet.,Nenhuma release publicada para esta máquina ainda.
 plugins.githubPrerelease,Pre-release,Pré-release
-plugins.githubReleaseSelect,Release to install,Release para instalar
+"plugins.githubReleaseSelect","Update to install","Atualização para instalar"
 plugins.githubRemove,Remove repository,Remover repositório
 plugins.githubRepositoriesLoading,Loading registered repositories,Carregando repositórios cadastrados
 plugins.githubRepositoryLabel,Public GitHub repository URL,URL do repositório público do GitHub
@@ -2061,7 +2062,7 @@ plugins.githubUninstall,Uninstall plugin,Desinstalar plugin
 plugins.githubUninstallConfirmDescription,This removes the public GitHub plugin from this node. You can install it again later.,Isso remove o plugin público do GitHub deste nó. Você poderá instalá-lo novamente depois.
 plugins.githubUninstallConfirmTitle,Uninstall {name}?,Desinstalar {name}?
 plugins.githubUpdate,Update,Atualizar
-plugins.githubUpdateConfirmTitle,Update {name} from GitHub?,Atualizar {name} pelo GitHub?
+"plugins.githubUpdateConfirmTitle","Update {name}?","Atualizar {name}?"
 plugins.inactiveTitle,Available,Disponível
 plugins.installationFailed,"Plugin installation failed. The host is not ready. Resolve the error below and activate again.","Falha na instalação do plugin. O host não está pronto. Corrija o erro abaixo e tente ativar novamente."
 plugins.installedAt,Last installed,Última instalação
@@ -2136,6 +2137,16 @@ plugins.updateApply,Install update,Instalar atualização
 plugins.updateApplyFailed,Could not apply the plugin update.,Não foi possível aplicar a atualização do plugin.
 plugins.updateAvailable,Update available: {version},Atualização disponível: {version}
 plugins.updateRelease,Release {release_id},Release {release_id}
+"plugins.updatesCheck","Check for updates","Verificar atualizações"
+"plugins.updatesCheckFailed","Some sources did not answer:","Algumas fontes não responderam:"
+"plugins.updatesFailed","Could not install this update.","Não foi possível instalar esta atualização."
+"plugins.updatesInstall","Install","Instalar"
+"plugins.updatesInstallAll","{count, plural, one {Install # update} other {Install all # updates}}","{count, plural, one {Instalar # atualização} other {Instalar todas as # atualizações}}"
+"plugins.updatesInstalled","Installed","Instalada"
+"plugins.updatesNone","POM and every installed plugin are up to date.","O POM e todos os plugins instalados estão atualizados."
+"plugins.updatesRestarting","Restarting","Reiniciando"
+"plugins.updatesRestarts","Restarts POM","Reinicia o POM"
+"plugins.updatesTitle","Available updates","Atualizações disponíveis"
 plugins.version,Version,Versão
 preferences.accessConnectionKeyNote,The connection key is separate: it authenticates nodes to each other and is not reused as the interface password.,A connection key é outra coisa: autentica os nós entre si e não é reutilizada como senha da interface.
 preferences.accessEyebrow,Administrative surface,Superfície administrativa

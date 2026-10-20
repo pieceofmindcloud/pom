@@ -66,8 +66,6 @@ mod config;
 #[cfg(test)]
 #[path = "backend/continuation_lab.rs"]
 mod continuation_lab;
-#[path = "core_update.rs"]
-mod core_update;
 #[path = "utils/crash.rs"]
 mod crash;
 #[path = "backend/db.rs"]

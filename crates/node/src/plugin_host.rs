@@ -378,7 +378,7 @@ async fn read_frame<R: AsyncRead + Unpin, T: DeserializeOwned>(reader: &mut R) -
     serde_json::from_slice(&bytes).context("parse IPC response")
 }
 
-fn host_executable() -> Result<PathBuf> {
+pub(crate) fn host_executable() -> Result<PathBuf> {
     if let Ok(path) = std::env::var("POM_PLUGIN_HOST") {
         let path = PathBuf::from(path);
         if path.is_file() {

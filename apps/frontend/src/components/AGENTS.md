@@ -115,6 +115,13 @@ Per-file list:
   `__POM_HOST__.ready()`, `lib/pluginReady.ts` - or the short wait ends; the
   wrapper then becomes layout-neutral, so the screen is never remounted. A plugin
   without the signal is opened by the wait. See `docs/subsystems/plugins-ui.md`.
+- `PluginUpdatesDialog.tsx` - the Plugins screen's "Check for updates"
+  result: one row per update found (`UpdateItem`: POM, a licensed plugin or a
+  GitHub install, with from/to versions, changelog, an unverified badge and,
+  for POM, why it cannot be installed here), Install per row and Install all.
+  POM is always last, since installing it restarts the node; each row keeps
+  its own installing/installed/failed state. The checks themselves live in
+  `../routes/Plugins.tsx` (`checkAllUpdates`); tests in `Plugins.test.tsx`.
 - `PluginLoading.tsx` - the puzzle drawn in place of a plugin screen that is
   still opening (`MissingPiece variant="loading"`, named with `plugins.loadingNamed`),
   and in place of the advertising card while the node has not answered

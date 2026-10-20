@@ -384,31 +384,37 @@ the final stage from the commit read on the host; it does not enter the build
 environment and invalidates neither Cargo nor npm. `rerun-if-changed` on
 `.git/HEAD` and `.git/index` refreshes the fallback of local builds.
 
-## Licensed executable update
+## Updating POM from its own releases
 
-The production path is in `crates/node/src/core_update.rs` (pure
-validation/install) plus `crates/node/src/pom_core_update.rs` (stateful
-orchestration, deliberately separate from `crates/node/src/plugins.rs`) and
-does not use `devupdate.rs`: while the `enterprise` plugin is active (a
-transitional mechanism that borrows its lease - see
-`docs/subsystems/enterprise-licensing.md`, Phase 7), the node queries the
-`pom_core` manifest on the license server and publishes the result at
-`GET /api/ui/pom-update/status`. Detection does not download, swap or restart.
-The UI authorizes a specific release through `POST /api/ui/pom-update/apply`;
-only then does the client download the signed artifact, check size/SHA-256,
-swap the executable and schedule the restart keeping the argv. The
-`release_id` published for this plugin must be the same short commit
-`build_commit()` returns (compiled locally or injected into the Docker
-runtime); the version comparison is SemVer and does not allow downgrades.
+`crates/node/src/pom_core_update.rs` (separate from `crates/node/src/plugins.rs`
+and from `devupdate.rs`) looks for a newer POM in the GitHub releases of
+`pieceofmindcloud/pom`, read as a public repository with no token, and falls
+back to the site's listing (`<license server>/v1/pom/latest`) when GitHub does
+not answer. Neither needs a plugin license. The release a binary is comes from
+`POM_RELEASE_VERSION`, which `crates/node/build.rs` stamps: the release
+workflows and `scripts/release-ksia.sh` set it to the tag being published, and
+any other build takes the newest `v*` tag the checkout knows (falling back to
+`v<CARGO_PKG_VERSION>`). The asset is picked by platform and build: the
+AppImage when the process runs from one (`APPIMAGE`), the
+`unknown-linux-gnu-{cuda|cpu}` tarball, the `pc-windows-msvc[-cuda-vulkan]`
+zip, or the macOS disk image. A node in a container (`/.dockerenv`) is never
+updated in place: rebuild its image.
 
-On Linux and macOS the temporary file sits in the same directory and the
-`rename` replaces the running executable through Unix unlink-on-exec
-semantics. On Windows the running executable cannot be overwritten directly:
-after authorization the client leaves a staged file and starts a PowerShell
-helper that waits for the process to end, moves the file and relaunches `pom`
-with the same arguments. If the helper does not start, the old process stays
-intact; the limitation and the full contract are in
-`docs/subsystems/enterprise-licensing.md`.
+Installing is the operator's act (`POST /api/ui/pom-update/apply`). The asset
+is downloaded into `.pom-update/` next to the installation, checked against its
+size and, when the source gives one, its SHA-256, and unpacked (`tar`, also
+used for the Windows zip; `hdiutil` + `ditto` for the disk image). The node then
+copies `pom-plugin-host` into that folder, writes a plan and starts it detached
+with `--apply-update` (`crates/plugin-host/src/update.rs`), and exits. The host
+waits for the node to be gone, moves each installed entry the package carries
+aside, moves the new one in its place (so the host, the interface and the
+libraries of a package are updated with the binary; files the package does not
+carry, such as `pom.json`, stay), and starts POM with the original arguments.
+Any failed move puts back what was already swapped and starts the old release.
+Under a service manager that kills the whole process group on exit the
+detached host may not survive; such an installation should be updated by its
+package manager. See `docs/subsystems/enterprise-licensing.md`,
+"POM updates".
 
 ## Updating a node from its own UI (development only)
 
@@ -1062,9 +1068,3 @@ use `scripts/release-ksia.sh --variant windows-cpu --debug-symbols` (see
   the node's planner (`crates/node/src/routing/pipeline.rs::plan_pipeline`)
   makes its own greedy plan. `routing-base` is dead code kept alive only by its
   own tests. Postponed until the open-core decision (see `TODO.md`).
-- DEFECT NOTED: the `pom_core` update (`pom-release.sh` +
-  `pom_core_update.rs`) publishes and swaps **only** the `pom` binary. An
-  installation born without `pom-plugin-host` next to it stays without it
-  after updating, and a change to the host's IPC protocol does not arrive
-  through that path. Today the host only arrives through the full package
-  (zip/tar.gz) or the Docker image.

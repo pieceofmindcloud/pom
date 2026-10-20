@@ -1209,17 +1209,19 @@ whose `Origin` is not the node's own or whose `Sec-Fetch-Site` is not
 (uploads go through the route). The gateway's HTTP server accepts connection
 upgrades because of it.
 
-`GET /api/ui/pom-update/status` is a common read with the result of the
-`pom_core` release detection (`PomCoreUpdateStatus`). The node only fills that
-notice after an accepted `enterprise` plugin heartbeat and while that license
-is active; installations without it do not query the core manifest. The
-PrincipalOnly action `POST /api/ui/pom-update/check` forces that detection on
-demand and returns the updated status, without downloading or restarting
-anything. `POST /api/ui/pom-update/apply` receives `{ "release_id": "..." }`,
-checks that it is the release_id still announced, queries and verifies the
-manifest again, downloads the artifact and schedules the swap and the restart.
-The action is never triggered by the daily detection. See
-`enterprise-licensing.md`.
+`GET /api/ui/pom-update/status` is a common read with the result of the POM
+release detection: `{core_update, current_version, checked_at, check_error}`,
+where `core_update` (or `null`) carries `release_id` (the tag), `version`,
+`changelog`, `published_at`, `source` (`github` or `site`), `asset`, `size`,
+`installable` and `blocked` (`container`, `invitation_required`). No license is
+involved. The PrincipalOnly action `POST /api/ui/pom-update/check` asks the
+GitHub releases, then the site, and returns that status, even when no source
+answered (then `check_error` says why), without downloading anything.
+`POST /api/ui/pom-update/apply` receives `{ "release_id": "<tag>" }`, checks
+again, refuses with `409 {error}` a tag that is no longer the update or cannot
+be installed here, and otherwise downloads and verifies the asset, starts
+`pom-plugin-host --apply-update` and answers `{restarting: true}` before the
+node exits. See `enterprise-licensing.md`, "POM updates".
 
 `GET /api/ui/node` includes `pom_dev_mode`, the decision captured at startup: it
 is only true when `POM_DEV_MODE` is exactly `1`. A missing variable, `0` and any

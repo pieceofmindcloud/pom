@@ -243,25 +243,34 @@ Per-file list:
   license server (`GET /v1/plugins?q=&page=&per_page=10`, featured and POM-team
   plugins first; the full unpaged catalog is still read to decide whether the
   license form shows and to name the plugins a key granted). Plugins known only
-  to this node (a registered repository or an active plugin outside the store)
-  are appended to the first page and filtered by the same search text. Its
-  right column is, in order, license activation, the "Add from GitHub" card
-  (public repository URL) and the development builds. "Develop your plugin"
+  to this node (a registered repository, an active plugin outside the store or,
+  in development mode, a mounted source) are appended to the first page and
+  filtered by the same search text. The example plugin (`base`) is left out of
+  this list. Its right column is license activation and the "Add from GitHub"
+  card (public repository URL), plus a development notice only when the source
+  mount is missing, empty or unreadable. The header's "Check for updates" asks
+  every installed plugin (a GitHub install refreshes its repository, a licensed
+  one calls `update/check`) and POM (`/api/ui/pom-update/check`) at once and
+  opens `components/PluginUpdatesDialog.tsx` with what is newer: Install per
+  row and Install all, POM last because it restarts the node. "Develop your plugin"
   highlights `pom-plugin-base` (the example plugin, as its own card or an
   install button) and links to `https://pieceofmind.cloud/plugins/publicar/`,
   saying that a submission is reviewed before it is listed. Cards no longer
   show the plugin code; one Version field shows the installed version or else
   the newest one this node can install, and the supported systems are icons
-  (`components/PlatformIcon.tsx`). Installing from GitHub anything whose
-  catalog entry is not `pom_team: true` adds an unverified-code warning to the
-  confirmation (the install is at the operator's own risk). A repository card shows its manifest description
-  and screenshots (`raw.githubusercontent.com`), refresh/remove icon actions,
-  and a selector containing only releases compatible with this node
-  (`available_for_node`), defaulting to the latest. Its action is Install,
-  Update (when the public installation came from that repository), or disabled
-  Installed (when the selected tag is already current). Install/update requires
-  confirmation; this source does not check `requires_license` or contact the
-  license server. The card does not show features or the last update check. Activation, installation, update and deactivation
+  (`components/PlatformIcon.tsx`). A catalog card with a `github_url` shows Install: it
+  registers the repository and installs its newest release compatible with
+  this node, at once for a `pom_team: true` plugin and after a confirmation
+  with an unverified-code warning for anything else (the install is at the
+  operator's own risk). A repository card shows its manifest description
+  and screenshots (`raw.githubusercontent.com`), refresh/remove icon actions
+  and Install (the newest compatible release). A version is only chosen for an
+  update: once installed from that repository, the card shows a selector with
+  the compatible releases newer than the installed one and Update, behind a
+  confirmation. This source does not check `requires_license` or contact the
+  license server. In development mode a plugin with a mounted source gets
+  "Build and install locally" / "Rebuild and reinstall" on its own card, with
+  the result or the build stage and exit code below it. The card does not show features or the last update check. Activation, installation, update and deactivation
   invalidate `keys.pluginUi` so the plugin menu updates immediately; 30-second
   polling covers changes made outside this tab. One form activates every
   `plugin_code` granted by the server in a batch (`POST
@@ -271,8 +280,9 @@ Per-file list:
   The modal displays typed boolean/directory defaults, sends values only to the
   node's local route and shows the node's reason on failure.
 
-  Updating the `pom` binary is separate in `About.tsx` (see
-  `crates/node/src/pom_core_update.rs`). With
+  POM's own update goes only through `/api/ui/pom-update/*` (see
+  `crates/node/src/pom_core_update.rs`), here in the updates dialog and in
+  `About.tsx`. With
   `NodeInfo.pom_dev_mode=true`, on any profile, the screen queries local sources and allows
   building and installing even inactive plugins. A local build is separate
   from license state, grants no licensed features and does not activate a
@@ -296,7 +306,8 @@ Per-file list:
   from `Esquecer rede` ("Forget network") in `NetworkSettings.tsx`: one disconnects the machine from the cluster,
   the other erases the local configuration and restarts in the setup.
 
-- `MyBudget.tsx` - "Budget" (route `/config/budget`, Network menu, every
+- `MyBudget.tsx` - "Usage" ("Uso", route `/config/usage`; `/config/budget`
+  redirects there; Network menu, every
   profile): this machine's token budgets from `GET /api/ui/quota` - one panel per
   plan with input/output bars and the window's turnover, the session-reset
   credits (`POST /api/ui/quota/reset`) and the request for more budget
@@ -439,16 +450,15 @@ Per-file list:
 - `About.tsx` - an information screen at `/config/about`, the last leaf of
   Settings. It shows the repository's AGPL-3.0 `LICENSE` and the official GNU
   page, the risk/LGPD notice and links to the site (`pieceofmind.cloud`), contact
-  (`contact.html`) and the official repositories. It is the ONLY screen that handles the update of the
-  `pom` binary itself: it checks
-  on demand through the authenticated route `/api/ui/pom-update/check`
-  (`usePomCoreUpdateStatus`), and when a release is available it shows and applies it
-  right there (`/api/ui/pom-update/apply`) - it no longer delegates to the
-  Plugins screen. It also shows, separately, the state of the `enterprise` plugin
-  (`useEnterpriseStatus`) as context for why the pom update may
-  be unavailable (the mechanism today borrows that plugin's lease - see
-  `crates/node/src/pom_core_update.rs`); activating/deactivating plugins is done in
-  `/plugins`, never here. It also lists the frontend's and the Rust workspace's direct
+  (`contact.html`) and the official repositories. It shows the running POM release
+  (`current_version`) and checks POM's releases on demand through
+  `/api/ui/pom-update/check` (`usePomCoreUpdateStatus`; GitHub first, the site
+  as fallback, no license). It says when POM is up to date or no source
+  answered, and when a release is newer it shows it with its source and applies
+  it right there (`/api/ui/pom-update/apply`), or says why this node cannot (a
+  container, or a site download that still needs an invitation). The Plugins
+  screen's updates dialog uses the same routes; activating/deactivating plugins
+  is done in `/plugins`, never here. It also lists the frontend's and the Rust workspace's direct
   dependencies grouped by the declared license, with version, ecosystem,
   a text filter and the repository link. The catalog is
   `../lib/licenses.generated.ts`, generated by `scripts/build-licenses.mjs`; the

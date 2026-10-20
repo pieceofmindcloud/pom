@@ -411,9 +411,10 @@ local-only notice. Routes:
   repository's AGPL-3.0 `LICENSE` and the official GNU page, an LGPD
   privacy/security notice and site links, a contact form
   (`https://pieceofmind.cloud/contact.html`) and official repositories; it also
-  shows the state of the plugin tied to the `pom_core` update and the on-demand
-  check. When an update is available, the screen itself offers to apply and
-  restart; it also shows the catalog of direct dependencies grouped by license;
+  shows the running POM release and the on-demand check of POM's GitHub
+  releases (the site as fallback). When an update is available, the screen
+  itself offers to apply and restart, or says why this node cannot (a
+  container, a download that still needs an invitation); it also shows the catalog of direct dependencies grouped by license;
   `/config/trust` gathers this machine, sharing and connection keys;
   `/config/keys/api` -> TokenKeys; `/config/storage` -> ModelPaths
   (`/config/folders` remains an alias). When `POM_MODEL_DIRS` or `POM_SHARD_DIR`

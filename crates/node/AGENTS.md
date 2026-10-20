@@ -513,13 +513,14 @@ never the passages. Any failure leaves the request untouched. See
 `docs/subsystems/plugins-ui.md`, "Transparent retrieval (RAG)".
 
 `src/pom_core_update.rs` is deliberately SEPARATE from `src/plugins.rs`: the
-update of the `pom` binary itself is not a plugin and will become public GitHub
-Releases without a license (another task). Until that migration, `PomCoreUpdater`
-borrows the `enterprise` plugin's lease to authenticate the generic `pom_core`
-manifest and, only with an explicit confirmation from the UI, delegates decision,
-hash, atomic swap and restart to `core_update.rs` - which stays pure and with no
-licensing dependency. The boundary and the remaining limits are in
-`docs/subsystems/enterprise-licensing.md`.
+update of POM itself is not a plugin and needs no license. `PomCoreUpdater`
+reads the GitHub releases of the POM repository (the site's listing as
+fallback), picks this build's asset (`Target`, `Install`), compares tags with
+`POM_RELEASE_VERSION` from `build.rs`, and on an explicit confirmation from the
+UI downloads, verifies and unpacks the asset next to the installation and hands
+the swap and restart to `pom-plugin-host --apply-update`
+(`crates/plugin-host/src/update.rs`). The contract is in
+`docs/subsystems/enterprise-licensing.md`, "POM updates".
 
 ## Links
 

@@ -19,7 +19,7 @@ interface QuotaLimit {
   plan: string;
   period: "daily" | "weekly" | "monthly" | "session";
   session_minutes: number;
-  scope: "node" | "team" | "project" | "everyone";
+  scope: "node" | "team" | "project" | "everyone" | "default";
   subject: string;
   mode: "shared" | "member";
   counter: string;
@@ -116,6 +116,8 @@ function scopeText(t: T, limit: QuotaLimit) {
       return limit.mode === "member" ? t("budget.scope.teamMember", { team: limit.subject }) : t("budget.scope.team", { team: limit.subject });
     case "everyone":
       return limit.mode === "member" ? t("budget.scope.everyoneMember") : t("budget.scope.everyone");
+    case "default":
+      return t("budget.scope.default");
     default:
       return t("budget.scope.node");
   }

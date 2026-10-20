@@ -54,7 +54,8 @@ const INFER_ROUTES = [
   "/plugins",
   "/config/network",
   "/config/my-machine",
-  // Its own token budget: every profile that runs inference has one.
+  // Its own token usage and budget: every profile that runs inference has one.
+  "/config/usage",
   "/config/budget",
   "/config/sharing",
   "/config/preferences",

@@ -463,7 +463,8 @@ export default function App() {
                         <Route path="/config/network" element={<Page><NetworkSettings /></Page>} />
                         <Route path="/config/network/participants" element={<Page><NetworkParticipants /></Page>} />
                         <Route path="/config/my-machine" element={<Page><MyMachine /></Page>} />
-                        <Route path="/config/budget" element={<Page><MyBudget /></Page>} />
+                        <Route path="/config/usage" element={<Page><MyBudget /></Page>} />
+                        <Route path="/config/budget" element={<Navigate to="/config/usage" replace />} />
                         <Route path="/config/administration" element={<Page><AdminAuthority /></Page>} />
                         <Route path="/config/sharing" element={<Page><NetworkSharing /></Page>} />
                         <Route path="/config/trust" element={<Page><TrustAnchor /></Page>} />

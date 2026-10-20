@@ -50,6 +50,8 @@ env:
   CUDA_VERSION: '13.4.1'
   VULKAN_VERSION: '1.4.313.2'
   LLAMA_REPOSITORY: pieceofmindcloud/llama.cpp
+  # The release the binary says it is; the update check compares it with the published ones.
+  POM_RELEASE_VERSION: ${{ inputs.version }}
 
 jobs:
   # On `ubuntu-latest` on purpose: the interface is the same for the three systems

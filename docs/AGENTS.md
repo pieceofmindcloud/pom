@@ -109,10 +109,10 @@ The permanent runtime guides. Beyond what their titles say:
   the public catalog with the node's local plugin state (open to every
   profile), local development installs without license activation, and sends
   purchases to the public store by `plugin_code`. With `http-api.md` and
-  `build-and-run.md` it documents the daily `pom_core`
-  release notice, applied only after explicit authorization in the UI; that
-  notice is not a plugin and lives in `crates/node/src/pom_core_update.rs`
-  with its own routes and screen (`/api/ui/pom-update/*`, `/config/about`).
+  `build-and-run.md` it documents the POM release check (GitHub releases,
+  then the site), applied only after explicit authorization in the UI; it is
+  not a plugin and lives in `crates/node/src/pom_core_update.rs` with its own
+  routes (`/api/ui/pom-update/*`).
 
 ## superpowers/specs/ and superpowers/plans/
 

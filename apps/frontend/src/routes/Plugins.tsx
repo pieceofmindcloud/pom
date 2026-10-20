@@ -5,9 +5,10 @@ import type { Tone } from "../components/ui";
 import { Badge, Button, Empty, ErrorState, FullBleedHeader, Input, Panel, PanelHeader, Select, Skeleton, Tabs } from "../components/ui";
 import { Confirm, Modal } from "../components/Confirm";
 import { PlatformIcon } from "../components/PlatformIcon";
+import { PluginUpdatesDialog, type UpdateItem } from "../components/PluginUpdatesDialog";
 import { ApiError, api } from "../lib/api";
 import { keys, useDevelopmentPluginSources, useGithubRepositories, useNode, usePlugins, usePublicPlugin, usePublicPluginCatalog } from "../lib/queries";
-import type { DevelopmentPluginError, DevelopmentPluginRebuildResult, DevelopmentPluginSource, GithubRepository, GithubRepositoryRelease, PluginPreferences, PluginPreferencesSchema, PluginStatus } from "../lib/types";
+import type { DevelopmentPluginError, DevelopmentPluginRebuildResult, DevelopmentPluginSource, GithubRepository, GithubRepositoryRelease, PluginPreferences, PluginPreferencesSchema, PluginStatus, PomCoreUpdateStatus } from "../lib/types";
 import { releaseForTarget, supportedPlatforms, type PublicPluginCatalogEntry, type PublicPluginPrice } from "../lib/pluginCatalog";
 import { navigateToPluginPurchase } from "../lib/pluginPurchase";
 import { pluginAssetUrl, pluginUiSnapshot } from "../lib/pluginUi";
@@ -341,9 +342,14 @@ type PluginCardProps = {
   onGithubRefresh: (id: string) => void;
   onGithubRemove: (id: string) => void;
   onGithubInstall: (repository: GithubRepository, release: GithubRepositoryRelease, update: boolean) => void;
-  /** Registers the catalog entry's GitHub repository, so its releases can be installed here. */
-  onGithubAdd: (repositoryUrl: string) => void;
-  githubAddBusy: boolean;
+  /** Registers the catalog entry's GitHub repository and installs its latest release. */
+  onInstallLatest: (repositoryUrl: string) => void;
+  /** The mounted source this plugin builds from, when local development is on. */
+  developmentSource: DevelopmentPluginSource | null;
+  developmentBusyRepository: string | null;
+  developmentSuccess: string | null;
+  developmentFailure: string | null;
+  onDevelopmentBuild: (source: DevelopmentPluginSource) => void;
 };
 
 function PluginCard({
@@ -370,12 +376,16 @@ function PluginCard({
   onGithubRefresh,
   onGithubRemove,
   onGithubInstall,
-  onGithubAdd,
-  githubAddBusy,
+  onInstallLatest,
+  developmentSource,
+  developmentBusyRepository,
+  developmentSuccess,
+  developmentFailure,
+  onDevelopmentBuild,
 }: PluginCardProps) {
   const { t } = useI18n();
   const uiPlugin = pluginUiSnapshot().find((plugin) => plugin.code === code);
-  const name = entry?.display_name ?? repository?.manifest.display_name ?? code;
+  const name = entry?.display_name ?? repository?.manifest.display_name ?? developmentSource?.display_name ?? code;
   const active = Boolean(status?.active);
   const localOnlyDevelopmentInstall = Boolean(
     status?.development_install
@@ -446,24 +456,31 @@ function PluginCard({
     : null;
   const preferenceSchema = status?.preferences_schema ?? null;
 
-  // GitHub: only releases installable on this node; the newest comes marked.
+  // GitHub: only releases installable on this node, newest first. A new
+  // install always takes the newest; a version is only picked among updates.
   const releases = repository ? compatibleReleases(repository) : [];
-  const [selectedRelease, setSelectedRelease] = useState<string>(releases[0]?.release_id ?? "");
-  const releaseKey = releases.map((item) => item.release_id).join(",");
-  useEffect(() => {
-    if (!releases.some((item) => item.release_id === selectedRelease)) {
-      setSelectedRelease(releases[0]?.release_id ?? "");
-    }
-  }, [releaseKey]);
-  const chosen = releases.find((item) => item.release_id === selectedRelease) ?? null;
   const installedFromThisRepository = Boolean(
     repository && status?.public_install && status.github_repository === repository.repository_url,
   );
+  const installedIndex = installedFromThisRepository
+    ? releases.findIndex((item) => sameVersion(item.tag_name, status?.plugin_version))
+    : -1;
+  const updates = installedFromThisRepository
+    ? installedIndex >= 0 ? releases.slice(0, installedIndex) : releases.slice(0, 1)
+    : [];
+  const latest = releases[0] ?? null;
+  const [selectedRelease, setSelectedRelease] = useState<string>(updates[0]?.release_id ?? "");
+  const updateKey = updates.map((item) => item.release_id).join(",");
+  useEffect(() => {
+    if (!updates.some((item) => item.release_id === selectedRelease)) {
+      setSelectedRelease(updates[0]?.release_id ?? "");
+    }
+  }, [updateKey]);
+  const chosen = updates.find((item) => item.release_id === selectedRelease) ?? null;
   const sourceConflict = Boolean(repository && status?.public_install && status.github_repository !== repository.repository_url);
   const licensedConflict = Boolean(repository && status && status.public_install !== true && (
     status.active || status.licensed_plugins.includes(code)
   ));
-  const chosenIsInstalled = Boolean(chosen && installedFromThisRepository && sameVersion(chosen.tag_name, status?.plugin_version));
   // One version: the installed one, otherwise the newest this node could install.
   const version = status?.plugin_version
     ?? release?.version
@@ -471,6 +488,8 @@ function PluginCard({
     ?? null;
   const platforms = entry ? supportedPlatforms(entry.releases) : [];
   const githubBusy = repository !== null && githubBusyId === repository.id;
+  const catalogInstallId = `add:${code}`;
+  const developmentBusy = developmentSource !== null && developmentBusyRepository === developmentSource.repository;
 
   return (
     <Panel className={`flex h-full flex-col ${active ? "border-aqua/35 bg-aqua/5" : "border-line"}`}>
@@ -617,11 +636,11 @@ function PluginCard({
           </div>
         )}
 
-        {repository && (
+        {repository && (releases.length === 0 || updates.length > 0 || repository.check_error || githubFailedId === repository.id) && (
           <div className="space-y-2 rounded-lg border border-line bg-raised/30 p-2.5">
             {releases.length === 0 ? (
               <p className="text-xs text-muted">{t("plugins.githubNoCompatibleReleases")}</p>
-            ) : (
+            ) : updates.length > 0 && (
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                 <label className="min-w-0 flex-1">
                   <span className="sr-only">{t("plugins.githubReleaseSelect")}</span>
@@ -631,7 +650,7 @@ function PluginCard({
                     value={selectedRelease}
                     onChange={(event) => setSelectedRelease(event.target.value)}
                   >
-                    {releases.map((item, index) => (
+                    {updates.map((item, index) => (
                       <option key={item.release_id} value={item.release_id}>
                         {[
                           item.tag_name,
@@ -646,14 +665,12 @@ function PluginCard({
                 <Button
                   variant="primary"
                   className="shrink-0 whitespace-nowrap"
-                  disabled={!chosen || chosenIsInstalled || sourceConflict || licensedConflict}
+                  disabled={!chosen || sourceConflict || licensedConflict}
                   loading={githubBusy}
                   icon={<Download className="h-3.5 w-3.5" />}
-                  onClick={() => chosen && onGithubInstall(repository, chosen, installedFromThisRepository)}
+                  onClick={() => chosen && onGithubInstall(repository, chosen, true)}
                 >
-                  {chosenIsInstalled
-                    ? t("plugins.githubInstalled")
-                    : installedFromThisRepository ? t("plugins.githubUpdate") : t("plugins.githubInstall")}
+                  {t("plugins.githubUpdate")}
                 </Button>
               </div>
             )}
@@ -686,14 +703,38 @@ function PluginCard({
               {t("plugins.githubUninstall")}
             </Button>
           )}
+          {repository && latest && !installedFromThisRepository && (
+            <Button
+              variant="primary"
+              disabled={sourceConflict || licensedConflict}
+              loading={githubBusy}
+              icon={<Download className="h-3.5 w-3.5" />}
+              onClick={() => onGithubInstall(repository, latest, false)}
+            >
+              {t("plugins.githubInstall")}
+            </Button>
+          )}
           {!active && !repository && entry?.github_url && (
             <Button
               variant="primary"
-              loading={githubAddBusy}
+              loading={githubBusyId === catalogInstallId}
               icon={<Download className="h-3.5 w-3.5" />}
-              onClick={() => onGithubAdd(entry.github_url!)}
+              onClick={() => onInstallLatest(entry.github_url!)}
             >
-              {t("plugins.githubAddFromCatalog")}
+              {t("plugins.githubInstall")}
+            </Button>
+          )}
+          {developmentSource && (
+            <Button
+              variant="outline"
+              disabled={developmentBusyRepository !== null}
+              loading={developmentBusy}
+              icon={<Hammer className="h-3.5 w-3.5" aria-hidden="true" />}
+              onClick={() => onDevelopmentBuild(developmentSource)}
+            >
+              {developmentBusy
+                ? t("plugins.devBuilding")
+                : developmentSource.active ? t("plugins.devRebuildInstall") : t("plugins.devInstall")}
             </Button>
           )}
           {!active && hasRequiredLicense && licenseStatusAvailable && entry && !hasLicense && (
@@ -712,6 +753,11 @@ function PluginCard({
         {deactivateFailedCode === code && (
           <p role="alert" className="text-xs text-rose">{t("plugins.deactivateFailed")}</p>
         )}
+        {githubFailedId === catalogInstallId && (
+          <p role="alert" className="break-words text-xs text-rose">{t("plugins.githubInstallFailed")} {githubFailureMessage}</p>
+        )}
+        {developmentSuccess && <p role="status" className="text-xs text-aqua">{developmentSuccess}</p>}
+        {developmentFailure && <p role="alert" className="break-words text-xs text-rose">{developmentFailure}</p>}
 
         {active && status?.available_update && (
           <div className="space-y-2 rounded-lg border border-iris/35 bg-iris/8 px-3 py-2.5" role="status">
@@ -845,12 +891,85 @@ export function Plugins() {
   const [preferencesError, setPreferencesError] = useState<string | null>(null);
   const [deactivateTarget, setDeactivateTarget] = useState<string | null>(null);
   const [deactivateFailedCode, setDeactivateFailedCode] = useState<string | null>(null);
+  const [updatesChecking, setUpdatesChecking] = useState(false);
+  const [updates, setUpdates] = useState<{ items: UpdateItem[]; error: string | null } | null>(null);
 
   async function refreshPluginData() {
     await Promise.all([
       plugins.refetch(),
       queryClient.invalidateQueries({ queryKey: keys.pluginUi }),
     ]);
+  }
+
+  /** Asks every installed plugin's source and POM's own releases at once. */
+  async function checkAllUpdates() {
+    setUpdatesChecking(true);
+    const items: UpdateItem[] = [];
+    const failed: string[] = [];
+    const statuses = (plugins.data ?? []).filter((status) => status.active);
+    const nameOf = (code: string) => publicEntries.find((entry) => entry.code === code)?.display_name
+      ?? repositories.find((repository) => repository.manifest.plugin_code === code)?.manifest.display_name
+      ?? code;
+    const pluginChecks = statuses.map(async (status) => {
+      if (status.public_install) {
+        const repository = repositories.find((candidate) => candidate.repository_url === status.github_repository);
+        if (!repository) return;
+        const fresh = await api.post<GithubRepository>(`/api/ui/plugins/github-repositories/${encodeURIComponent(repository.id)}/refresh`);
+        const releases = compatibleReleases(fresh ?? repository);
+        const installed = releases.findIndex((release) => sameVersion(release.tag_name, status.plugin_version));
+        const newest = releases[0];
+        if (!newest || installed === 0) return;
+        items.push({
+          key: `github:${status.code}`,
+          kind: "github",
+          name: nameOf(status.code),
+          from: status.plugin_version,
+          to: newest.tag_name,
+          changelog: newest.changelog,
+          unverified: publicEntries.find((entry) => entry.code === status.code)?.pom_team !== true,
+          install: () => api.post(`/api/ui/plugins/github-repositories/${encodeURIComponent(repository.id)}/install`, {
+            release_id: newest.release_id,
+          }),
+        });
+      } else if (!status.development_install || status.licensed_plugins.includes(status.code)) {
+        const answer = await api.post<PluginStatus[]>(`/api/ui/plugins/${encodeURIComponent(status.code)}/update/check`);
+        const update = (Array.isArray(answer) ? answer : []).find((entry) => entry.code === status.code)?.available_update;
+        if (!update) return;
+        items.push({
+          key: `licensed:${status.code}`,
+          kind: "licensed",
+          name: nameOf(status.code),
+          from: status.plugin_version,
+          to: update.version,
+          changelog: update.changelog,
+          install: () => api.post(`/api/ui/plugins/${encodeURIComponent(status.code)}/update/apply`, { release_id: update.release_id }),
+        });
+      }
+    });
+    const pomCheck = api.post<PomCoreUpdateStatus>("/api/ui/pom-update/check").then((answer) => {
+      if (answer?.check_error && !answer.core_update) failed.push(`POM: ${answer.check_error}`);
+      const update = answer?.core_update;
+      if (!update) return;
+      items.push({
+        key: "pom",
+        kind: "pom",
+        name: "POM",
+        from: answer.current_version ?? null,
+        to: update.release_id,
+        changelog: update.changelog,
+        blocked: update.installable
+          ? null
+          : t(update.blocked === "container" ? "about.pomBlockedContainer" : "about.pomBlockedInvitation"),
+        install: () => api.post("/api/ui/pom-update/apply", { release_id: update.release_id }),
+      });
+    });
+    const results = await Promise.allSettled([...pluginChecks, pomCheck]);
+    for (const result of results) {
+      if (result.status === "rejected") failed.push(result.reason instanceof Error ? result.reason.message : String(result.reason));
+    }
+    setUpdates({ items, error: failed.length > 0 ? `${t("plugins.updatesCheckFailed")} ${failed.join("; ")}` : null });
+    setUpdatesChecking(false);
+    await Promise.all([githubRepositories.refetch(), refreshPluginData()]);
   }
 
   async function activate(event: React.FormEvent<HTMLFormElement>) {
@@ -986,6 +1105,8 @@ export function Plugins() {
   const repositories = githubRepositories.data ?? [];
   const localByCode = new Map(localStatuses.map((plugin) => [plugin.code, plugin]));
   const repositoryByCode = new Map(repositories.map((repository) => [repository.manifest.plugin_code, repository]));
+  const developmentByCode = new Map((developmentEnabled ? developmentSources.data?.sources ?? [] : [])
+    .map((source) => [source.plugin_code, source]));
   const licenseStatusByCode = new Map<string, PluginStatus>();
   for (const source of localStatuses) {
     if (source.licensed_plugins.includes(source.code)) licenseStatusByCode.set(source.code, source);
@@ -1019,6 +1140,9 @@ export function Plugins() {
   };
   pageEntries.forEach((entry) => addCode(entry.code));
   if (page === 1) {
+    [...developmentByCode.values()]
+      .filter((source) => !catalogCodes.has(source.plugin_code) && matchesQuery(source.plugin_code, source.display_name))
+      .forEach((source) => addCode(source.plugin_code));
     repositories
       .filter((repository) => !catalogCodes.has(repository.manifest.plugin_code)
         && matchesQuery(repository.manifest.plugin_code, repository.manifest.display_name))
@@ -1036,7 +1160,8 @@ export function Plugins() {
     repository: repositoryByCode.get(code) ?? null,
     licenseStatus: licenseStatusByCode.get(code) ?? localByCode.get(code) ?? null,
   });
-  const cards = codes.map(cardFor);
+  // The example plugin lives in the "Develop your plugin" tab.
+  const cards = codes.filter((code) => code !== EXAMPLE_PLUGIN_CODE).map(cardFor);
   const total = storePage.data?.total ?? null;
   const pageCount = total === null ? 1 : Math.max(1, Math.ceil(total / PAGE_SIZE));
   const licenseStatusAvailable = !plugins.isLoading && !plugins.isError && plugins.data !== undefined;
@@ -1056,6 +1181,39 @@ export function Plugins() {
   const addRepository = (repositoryUrl: string) => void runGithubAction("add", () => api.post("/api/ui/plugins/github-repositories", {
     repository_url: repositoryUrl,
   }));
+
+  /** Registers a catalog plugin's repository and installs its newest release
+   * for this node; only an unverified plugin asks first. */
+  async function installLatest(code: string, repositoryUrl: string, trusted: boolean) {
+    const id = `add:${code}`;
+    setGithubBusyId(id);
+    setGithubFailedId(null);
+    setGithubFailureMessage(null);
+    try {
+      const repository = await api.post<GithubRepository>("/api/ui/plugins/github-repositories", {
+        repository_url: repositoryUrl,
+      });
+      const newest = Array.isArray(repository?.releases) ? compatibleReleases(repository)[0] : undefined;
+      if (!newest) {
+        setGithubFailedId(id);
+        setGithubFailureMessage(t("plugins.githubNoCompatibleReleases"));
+        return;
+      }
+      if (trusted) {
+        await api.post(`/api/ui/plugins/github-repositories/${encodeURIComponent(repository.id)}/install`, {
+          release_id: newest.release_id,
+        });
+      } else {
+        setInstallTarget({ repository, release: newest, update: false, trusted });
+      }
+    } catch (error) {
+      setGithubFailedId(id);
+      setGithubFailureMessage(error instanceof Error ? error.message : null);
+    } finally {
+      await Promise.all([githubRepositories.refetch(), refreshPluginData()]);
+      setGithubBusyId(null);
+    }
+  }
 
   function renderCard({ code, entry, status, repository, licenseStatus }: ReturnType<typeof cardFor>) {
     return (
@@ -1090,9 +1248,28 @@ export function Plugins() {
         onGithubRefresh={(id) => void runGithubAction(id, () => api.post(`/api/ui/plugins/github-repositories/${encodeURIComponent(id)}/refresh`))}
         onGithubRemove={(id) => void runGithubAction(id, () => api.del(`/api/ui/plugins/github-repositories/${encodeURIComponent(id)}`))}
         // Only the POM team's own plugins skip the unverified-code warning.
-        onGithubInstall={(target, release, update) => setInstallTarget({ repository: target, release, update, trusted: entry?.pom_team === true })}
-        githubAddBusy={githubBusyId === "add"}
-        onGithubAdd={addRepository}
+        onGithubInstall={(target, release, update) => {
+          const trusted = entry?.pom_team === true;
+          // A POM team plugin installs its latest release at once; anything
+          // else (and every update) is confirmed first.
+          if (trusted && !update) {
+            void runGithubAction(target.id, () => api.post(`/api/ui/plugins/github-repositories/${encodeURIComponent(target.id)}/install`, {
+              release_id: release.release_id,
+            }));
+          } else {
+            setInstallTarget({ repository: target, release, update, trusted });
+          }
+        }}
+        onInstallLatest={(repositoryUrl) => void installLatest(code, repositoryUrl, entry?.pom_team === true)}
+        developmentSource={developmentByCode.get(code) ?? null}
+        developmentBusyRepository={developmentBusyRepository}
+        developmentSuccess={developmentResult && developmentResult.plugin_code === code
+          ? t("plugins.devSucceeded", { name: developmentByCode.get(code)?.display_name ?? code, duration: developmentResult.build_ms })
+          : null}
+        developmentFailure={developmentFailure && developmentByCode.get(code)?.repository === developmentFailure.repository
+          ? developmentErrorText(developmentFailure.error)
+          : null}
+        onDevelopmentBuild={(source) => void rebuildDevelopmentPlugin(source)}
       />
     );
   }
@@ -1102,6 +1279,16 @@ export function Plugins() {
       <FullBleedHeader
         title={t("plugins.title")}
         subtitle={t("plugins.subtitle")}
+        actions={(
+          <Button
+            variant="outline"
+            loading={updatesChecking}
+            icon={<RefreshCw className="h-3.5 w-3.5" />}
+            onClick={() => void checkAllUpdates()}
+          >
+            {t("plugins.updatesCheck")}
+          </Button>
+        )}
       />
       <Tabs
         label={t("plugins.tabsLabel")}
@@ -1229,59 +1416,21 @@ export function Plugins() {
               listError={githubRepositories.error}
               onAdd={addRepository}
             />
-            {developmentEnabled && (
+            {developmentEnabled && (developmentSources.isError
+              || (developmentSources.data && (!developmentSources.data.mount_available || developmentSources.data.sources.length === 0))) && (
               <Panel>
                 <PanelHeader
                   eyebrow="Development"
                   title={t("plugins.devTitle")}
-                  subtitle={t("plugins.devDescription")}
                   actions={<Hammer className="h-5 w-5 text-iris" aria-hidden="true" />}
                 />
-                <div className="space-y-3 px-5 py-4">
-                  {developmentSources.isLoading && (
-                    <p role="status" className="text-xs text-muted">{t("plugins.devLoading")}</p>
-                  )}
-                  {developmentSources.isError && (
+                <div className="px-5 py-4">
+                  {developmentSources.isError ? (
                     <p role="alert" className="text-xs text-rose">{t("plugins.devListFailed")}</p>
-                  )}
-                  {developmentSources.data && !developmentSources.data.mount_available && (
+                  ) : !developmentSources.data?.mount_available ? (
                     <p role="status" className="text-xs text-muted">{t("plugins.devMountMissing")}</p>
-                  )}
-                  {developmentSources.data?.mount_available && developmentSources.data.sources.length === 0 && (
+                  ) : (
                     <p role="status" className="text-xs text-muted">{t("plugins.devNoSources")}</p>
-                  )}
-                  {developmentSources.data?.sources.map((source) => (
-                    <div key={source.repository} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-line bg-raised/30 p-3">
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-medium text-fg">{source.display_name}</p>
-                        <p className="truncate font-mono text-[0.68rem] text-faint">{source.repository} · {source.plugin_code}</p>
-                        {!source.active && <p className="mt-1 text-[0.68rem] text-muted">{t("plugins.devPluginInactive")}</p>}
-                      </div>
-                      <Button
-                        variant="outline"
-                        disabled={developmentBusyRepository !== null}
-                        loading={developmentBusyRepository === source.repository}
-                        icon={<Hammer className="h-3.5 w-3.5" aria-hidden="true" />}
-                        onClick={() => void rebuildDevelopmentPlugin(source)}
-                      >
-                        {developmentBusyRepository === source.repository
-                          ? t("plugins.devBuilding")
-                          : source.active ? t("plugins.devRebuildInstall") : t("plugins.devInstall")}
-                      </Button>
-                    </div>
-                  ))}
-                  {developmentResult && (
-                    <p role="status" className="text-xs text-aqua">
-                      {t("plugins.devSucceeded", {
-                        name: developmentSources.data?.sources.find((source) => source.repository === developmentResult.repository)?.display_name ?? developmentResult.plugin_code,
-                        duration: developmentResult.build_ms,
-                      })}
-                    </p>
-                  )}
-                  {developmentFailure && (
-                    <p role="alert" className="break-words text-xs text-rose">
-                      {developmentSources.data?.sources.find((source) => source.repository === developmentFailure.repository)?.display_name ?? developmentFailure.repository}: {developmentErrorText(developmentFailure.error)}
-                    </p>
                   )}
                 </div>
               </Panel>
@@ -1299,20 +1448,20 @@ export function Plugins() {
                 actions={<Sparkles className="h-5 w-5 text-iris" aria-hidden="true" />}
               />
               <div className="space-y-4 px-5 py-4">
-                {exampleCard.entry || exampleCard.repository ? (
+                {exampleCard.entry || exampleCard.repository || developmentByCode.has(EXAMPLE_PLUGIN_CODE) ? (
                   <div className="max-w-xl">{renderCard(exampleCard)}</div>
                 ) : (
                   <div className="space-y-2">
                     {examplePlugin.isLoading && <p role="status" className="text-xs text-muted">{t("plugins.catalogLoading")}</p>}
                     <Button
                       variant="primary"
-                      loading={githubBusyId === "add"}
+                      loading={githubBusyId === `add:${EXAMPLE_PLUGIN_CODE}`}
                       icon={<Download className="h-3.5 w-3.5" />}
-                      onClick={() => addRepository(EXAMPLE_PLUGIN_REPOSITORY)}
+                      onClick={() => void installLatest(EXAMPLE_PLUGIN_CODE, EXAMPLE_PLUGIN_REPOSITORY, true)}
                     >
-                      {t("plugins.githubAddFromCatalog")}
+                      {t("plugins.githubInstall")}
                     </Button>
-                    {githubFailedId === "add" && (
+                    {githubFailedId === `add:${EXAMPLE_PLUGIN_CODE}` && (
                       <p role="alert" className="break-words text-xs text-rose">{t("plugins.githubSourceFailed")} {githubFailureMessage}</p>
                     )}
                   </div>
@@ -1355,6 +1504,15 @@ export function Plugins() {
         )}
       </div>
 
+      {updates && (
+        <PluginUpdatesDialog
+          open
+          items={updates.items}
+          error={updates.error}
+          onClose={() => setUpdates(null)}
+          onInstalled={() => Promise.all([githubRepositories.refetch(), refreshPluginData()])}
+        />
+      )}
       {preferencesCard && preferencesSchema && (
         <PreferencesDialog
           open
@@ -1374,7 +1532,7 @@ export function Plugins() {
           : ""}
         description={installTarget ? (
           <div className="space-y-3">
-            <p>{t("plugins.githubInstallConfirmDescription", { version: installTarget.release.tag_name })}</p>
+            <p>{t(installTarget.update ? "plugins.githubInstallConfirmDescription" : "plugins.githubInstallLatestDescription", { version: installTarget.release.tag_name })}</p>
             {!installTarget.trusted && (
               <div role="alert" className="flex gap-2 rounded-lg border border-amber/40 bg-amber/10 px-3 py-2.5 text-xs text-fg">
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber" aria-hidden="true" />

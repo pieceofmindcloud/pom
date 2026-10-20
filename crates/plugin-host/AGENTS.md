@@ -17,6 +17,14 @@ concurrent instance per active `plugin_code`, each with its own
 process is the `plugin_code` validated in the manifest; it resolves the symbol
 `pom_<plugin_code>_plugin_v1`, without coupling the host to a specific product.
 
+`pom-plugin-host --apply-update <plan.json>` is a second, unrelated mode
+(`src/update.rs`): the node's POM update (`crates/node/src/pom_core_update.rs`)
+stages a release, writes the plan (the node's pid, each staged entry and what
+it replaces, a backup folder, the program and arguments to start, the log) and
+starts a copy of this binary from the staging folder, detached. The host waits
+for the node to exit, swaps every entry with a backup, puts everything back on
+the first failed move, and starts POM again either way. It loads no plugin.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.

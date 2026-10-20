@@ -289,12 +289,11 @@ security boundary.
 
 The **Plugins** screen (`/plugins`, `apps/frontend/src/routes/Plugins.tsx`) is
 the only one that activates, updates and deactivates plugins - it replaced the
-old single-product `Enterprise.tsx` screen. It does NOT handle updating the
-`pom` binary itself: that lives entirely in the **About** screen
-(`/config/about`), behind `GET /api/ui/pom-update/status` and
-`POST /api/ui/pom-update/check|apply` - see
-`## Authorized binary detection and update` below. The two screens and the two
-route families never mix, in code or in the UI.
+old single-product `Enterprise.tsx` screen. Its "Check for updates" dialog also
+lists a newer POM, but installs it only through
+`POST /api/ui/pom-update/check|apply`, the same routes the **About** screen
+(`/config/about`) uses - see `## POM updates` below. The plugin routes and the
+POM routes never mix.
 
 ## Public GitHub repositories and local preferences
 
@@ -454,6 +453,8 @@ and, on every save, the node also sends `host.event` with
   the `POM_RELEASE_TOKEN` token before uploading, considers releases of every
   platform and picks the next `+build.N`; `--version` is still a manual
   override. The POM binary catalog uses exactly `pom_core`, as defined in
+  `license-server/AGENTS.md`; the node no longer reads it (it updates from
+  GitHub releases, see `## POM updates`). As defined in
   `license-server/AGENTS.md`. For `pom_core`, the script builds the `node`
   package with the default features `cuda,vulkan` on Linux, `metal` on macOS
   and none on Windows CPU; `--features` replaces that set and `--feature-set`
@@ -491,66 +492,44 @@ asserted on the other side in `license-server/test/wire-contract.test.ts`
 (pom-website repository), which rewrites those fixtures with
 `POM_WIRE_FIXTURES=<dir>`.
 
-## Authorized binary detection and update
+## POM updates
 
-This section is about `pom_core`, NEVER about a plugin - see
-`crate::pom_core_update`, deliberately separate from `crate::plugins` since
-Phase 7. An installation only queries releases of `pom` itself while the
-`enterprise` plugin is `active` (a transitional mechanism: it borrows that
-plugin's lease because that is how authentication works today; the sibling
-task `rdma-pom-core-github-releases` will replace this with public GitHub
-Releases, with no license at all). Without that plugin active, this path is
-not called. Detection compares the release and publishes the result at
-`GET /api/ui/pom-update/status`; it does not download, swap or restart. The
-client uses the same public route and the same plugin DTOs, with the catalog
-code `pom_core`:
+This section is about POM itself, NEVER about a plugin - see
+`crate::pom_core_update`, deliberately separate from `crate::plugins`. It needs
+no license: the `pom_core` manifest on the license server and the borrowed
+`logs` lease are gone. Releases are read, in this order, from:
 
-```text
-GET /v1/plugins/pom_core/manifest
-    ?lease_id=<lease>&os=<consts::OS>&arch=<consts::ARCH>
-    &channel=stable&host_version=<CARGO_PKG_VERSION>&plugin_abi=1
-Authorization: Bearer <lease_token>
-```
+1. the GitHub releases of `pieceofmindcloud/pom`
+   (`GET https://api.github.com/repos/pieceofmindcloud/pom/releases`), as a
+   public repository, without a token. Drafts, pre-releases and tags that are
+   not SemVer are skipped. Not every release carries every platform, so the
+   newest release with an asset for this build wins;
+2. the site's download listing (`GET <license server>/v1/pom/latest`), which
+   names the newest file per platform with its own tag. While the site hands
+   out downloads only with an invitation it gives no address, and the update
+   is shown with `installable: false, blocked: "invitation_required"`.
 
-The expected answer is the existing `ManifestResponse`, with `manifest` and
-`download`. The server side must publish for `pom_core` a manifest with
-`product: "pom"`, `channel: "stable"`, the requested platform, a SemVer
-`version`, `min_host_version`, `sha256`, `size`, `key_id` and `signature`; the
-download grant still points to the existing route
-`/v1/plugins/pom_core/:release_id/download`. The internal release listing
-endpoint is not used. `plugin_abi` must stay at `1`; when there is no
-changelog, the field must be omitted to preserve the signed canonicalization.
-The `release_id` of a core release must be the short commit stamped in
-`POM_BUILD_COMMIT` by `crates/node/build.rs`. So the client updates when the
-SemVer version is higher or when the version is equal and the commit differs,
-without downgrading.
+A release is newer when its SemVer tag is above `POM_RELEASE_VERSION` (stamped
+by `crates/node/build.rs`, see `build-and-run.md`). Detection runs at start and
+every 6 hours, and on demand through `POST /api/ui/pom-update/check`; it
+publishes `{core_update, current_version, checked_at, check_error}` at
+`GET /api/ui/pom-update/status` and downloads nothing.
 
-When the operator confirms the displayed `release_id`, the UI calls
-`POST /api/ui/pom-update/apply` with `{ "release_id": "<release>" }`. The client
-requires that the release is still announced, queries the manifest again for a
-fresh grant, verifies the Ed25519 signature through the same `/v1/keys` list
-the plugins use, checks size and SHA-256, writes a temporary file in the same
-directory and does an atomic `rename` over the executable. On Unix, it captures
-the path before the rename and uses `respawn_at` to start the new binary with
-the same argv. If the confirmation goes stale or any download/verification
-fails, no restart is scheduled and the running binary stays intact.
+`POST /api/ui/pom-update/apply` with `{ "release_id": "<tag>" }` checks again,
+requires that tag to still be the update and to be installable (never in a
+container), downloads the asset next to the installation, verifies its size and
+SHA-256 (GitHub's asset `digest`, or the site's `x-content-sha256` header),
+unpacks it and hands over to `pom-plugin-host --apply-update <plan.json>`,
+started from a copy in the staging folder so it may replace the installed host
+too. The host waits for the node to exit, swaps every entry the package carries
+(the AppImage file, the `POM.app` bundle, or each entry of the tar.gz/zip
+folder) with a backup, rolls back on any failure, and starts POM again with the
+original arguments (`crates/plugin-host/src/update.rs`). The answer is
+`{restarting: true}`; a refusal is `409` with `{error}`.
 
-Windows normally does not allow replacing the executable in use. After
-confirmation, the client leaves the validated file next to the executable and
-starts a PowerShell helper without loading `pom`; the helper waits for the old
-process to end, runs `Move-Item -Force` and starts the target with the original
-arguments. If the helper cannot be started, the old process keeps running and
-the temporary file stays for diagnosis. The Windows swap therefore depends on
-PowerShell being present and does not have the same immediate atomicity as the
-Unix rename.
-
-The About screen calls `POST /api/ui/pom-update/check` to repeat detection on
-demand and reads `GET /api/ui/pom-update/status` for the current state
-(`usePomCoreUpdateStatus()`, its own `PomCoreUpdateStatus` contract - never
-`PluginStatus`). The status route downloads no artifacts and restarts nothing;
-`check` and `apply` are PrincipalOnly. The About screen itself holds the
-confirmation and the install, without redirecting to any other screen - see
-`## Phase 7` above.
+The Plugins screen's "Check for updates" asks this route together with every
+installed plugin and lists POM last in its dialog, since installing it restarts
+the node; the About screen shows the same state alone.
 
 ## Tests
 
@@ -560,6 +539,7 @@ cargo test -p enterprise-plugin-fixture
 cargo test -p pom-plugin-host
 cargo test -p node plugins
 cargo test -p node pom_core_update
+cargo test -p pom-plugin-host update
 cd apps/frontend && npm test -- src/lib/access.test.ts src/components/nav.test.ts src/App.test.tsx src/routes/Plugins.test.tsx src/routes/About.test.tsx
 ./scripts/build-enterprise-plugin.sh --platform macos-aarch64 --debug
 ./scripts/test_pom_release.sh
@@ -573,5 +553,4 @@ cd apps/frontend && npm test -- src/lib/access.test.ts src/components/nav.test.t
 Update this document when a phase changes state, when a new plugin enters the
 catalog, or when the boundary between the `pom` process, the host and the
 plugin library(ies) changes. Keep the migration fallbacks and the limits that
-still have no integration explicit - including the transitional dependency of
-the `pom_core` update on the `enterprise` plugin's lease.
+still have no integration explicit.

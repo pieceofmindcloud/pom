@@ -353,8 +353,28 @@ export interface PluginStatus {
  * separate from the plugins (see `crates/node/src/pom_core_update.rs`): never
  * mix this type with `PluginStatus`/`PluginUpdateInfo` in the UI.
  */
+export interface PomCoreUpdate {
+  /** The release's tag, what the apply route confirms. */
+  release_id: string;
+  version: string;
+  changelog: string | null;
+  published_at: string | null;
+  /** Where it was found: the GitHub releases first, the site as fallback. */
+  source: "github" | "site";
+  asset: string;
+  size: number;
+  /** Whether this node can install it; `blocked` says why not. */
+  installable: boolean;
+  blocked: "container" | "invitation_required" | null;
+}
+
 export interface PomCoreUpdateStatus {
-  core_update: PluginUpdateInfo | null;
+  core_update: PomCoreUpdate | null;
+  /** The release this node runs (`v0.5.6`). */
+  current_version?: string;
+  checked_at?: string | null;
+  /** Set when no release source answered the last check. */
+  check_error?: string | null;
 }
 
 export interface NodeInfo {

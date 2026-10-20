@@ -161,11 +161,12 @@ boundary.
   `GET /api/ui/plugin-catalog[/:code]` (`plugins::plugin_catalog`), which
   passes on only `q`, `page` and `per_page`, sends the store no credential and
   returns its JSON as it is. Purchases redirect the operator to the public store with the
-  plugin code. Updating the `pom_core` release is a separate boundary in
-  `crate::pom_core_update`: `GET /api/ui/pom-update/status`,
-  `POST /api/ui/pom-update/check` forces an on-demand check, and
-  `POST /api/ui/pom-update/apply` requires explicit confirmation before
-  downloading the release and restarting. The cluster view transports
+  plugin code. Updating POM itself is a separate boundary in
+  `crate::pom_core_update` (GitHub releases, then the site):
+  `GET /api/ui/pom-update/status`, `POST /api/ui/pom-update/check` forces an
+  on-demand check, and `POST /api/ui/pom-update/apply` requires explicit
+  confirmation before downloading the release and handing the swap and restart
+  to `pom-plugin-host`. The cluster view transports
   `SystemLoad.gpus[].power_watts` as optional telemetry and keeps it `null`
   when the system does not report board power. The
   `/api/ui/network/geo/{countries,cities,nearest}` routes read the offline

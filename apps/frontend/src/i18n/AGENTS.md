@@ -105,7 +105,7 @@ as raw text at build time and interprets the messages synchronously with
 - The `about.*` group covers the AGPL-3.0 license published in `LICENSE`, the
   links to the GNU text and to the repository file, the LGPD
   security/privacy notice, and the explanation of plugin creation; it also
-  covers Enterprise status, the `pom_core` update, catalog count and filter,
+  covers the POM update (running version, source, why it cannot be installed here), catalog count and filter,
   ecosystem labels, version and repository.
 - `provider.tsx` - `LocaleProvider`, the `useI18n()` hook and the `LanguageSelect` component.
 
@@ -116,8 +116,7 @@ keys, never literals nailed into components.
 
 The `enterprise.*` group covers the discovery state of the Request Logs and
 Statistics screens. Those screens stay navigable without a license so the user
-sees the activation invitation and the purchase link. The same group names the
-`pom_core` binary update notice and the explicit install-and-restart action.
+sees the activation invitation and the purchase link.
 
 ## Editing messages
 

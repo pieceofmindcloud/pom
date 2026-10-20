@@ -142,6 +142,7 @@ describe("navForProfile", () => {
       "/config/administration",
       "/config/sharing",
       "/config/keys/api",
+      "/config/usage",
     ]);
     expect(network?.children?.map((child) => child.labelKey)).toEqual([
       "nav.networkInfo",
@@ -150,6 +151,7 @@ describe("navForProfile", () => {
       "nav.administrators",
       "nav.sharing",
       "nav.apiKeys",
+      "nav.budget",
     ]);
     expect(settings?.children?.map((child) => child.to)).toEqual([
       "/config/preferences",

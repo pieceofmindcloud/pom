@@ -239,11 +239,11 @@ breaks the whole product.
   host already supports several concurrent instances, one per active plugin. The
   Request Logs and Statistics screens stay discoverable in the menu without a
   license, but the backend refuses the data until that plugin's entitlement is
-  active. Updating the `pom` binary itself is NOT a plugin and lives apart, in
-  `crates/node/src/pom_core_update.rs` - it will become a public GitHub Releases
-  without a license (another task); until then it borrows the `enterprise`
-  plugin's lease, but its code and its screen (`/config/about`) never mix with
-  those of the Plugins screen (`/plugins`). →
+  active. Updating POM itself is NOT a plugin and lives apart, in
+  `crates/node/src/pom_core_update.rs`: GitHub releases of the POM repository
+  first, the site as fallback, no license, and `pom-plugin-host` swaps the
+  files and restarts POM; the Plugins screen lists it in the same updates
+  dialog but only through its own routes. →
   `docs/subsystems/enterprise-licensing.md`
 - **First-version policy.** The product has not shipped yet. Therefore, do not
   keep in the runtime compatibility code, adapters or fallbacks for old protocol

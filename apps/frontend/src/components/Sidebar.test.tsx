@@ -191,7 +191,7 @@ describe("Sidebar", () => {
         future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <LocaleProvider initialLocale="pt-BR">
-          <ProfileProvider initialProfile="node">
+          <ProfileProvider initialProfile="worker">
             <Sidebar />
           </ProfileProvider>
         </LocaleProvider>
@@ -258,7 +258,7 @@ describe("Sidebar", () => {
   });
 
   it("hides the TLS indicator from the flags", () => {
-    sidebarNodeData = fakeNode({ tls_required: true });
+    sidebarNodeData = fakeNode();
     render(
       <MemoryRouter
         initialEntries={["/"]}
@@ -301,7 +301,7 @@ describe("Sidebar", () => {
         future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <LocaleProvider initialLocale="pt-BR">
-          <ProfileProvider initialProfile="infer">
+          <ProfileProvider initialProfile="visitor">
             <ChatSessionProvider>
               <Sidebar />
               <ChatSessionProbe />
@@ -356,7 +356,7 @@ describe("Sidebar", () => {
         future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <LocaleProvider initialLocale="pt-BR">
-          <ProfileProvider initialProfile="infer">
+          <ProfileProvider initialProfile="visitor">
             <ChatSessionProvider>
               <Sidebar />
               <RouteProbe />
@@ -376,7 +376,7 @@ describe("Sidebar", () => {
     render(
       <MemoryRouter initialEntries={["/chat"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <LocaleProvider initialLocale="pt-BR">
-          <ProfileProvider initialProfile="infer">
+          <ProfileProvider initialProfile="visitor">
             <ChatSessionProvider>
               <Sidebar />
             </ChatSessionProvider>
@@ -394,7 +394,7 @@ describe("Sidebar", () => {
     render(
       <MemoryRouter initialEntries={["/documentation"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <LocaleProvider initialLocale="pt-BR">
-          <ProfileProvider initialProfile="infer">
+          <ProfileProvider initialProfile="visitor">
             <ChatSessionProvider>
               <Sidebar />
               <RouteProbe />
@@ -417,7 +417,7 @@ describe("Sidebar", () => {
         future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <LocaleProvider initialLocale="pt-BR">
-          <ProfileProvider initialProfile="infer">
+          <ProfileProvider initialProfile="visitor">
             <ChatSessionProvider>
               <Sidebar />
               <RouteProbe />

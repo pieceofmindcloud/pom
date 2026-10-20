@@ -55,6 +55,7 @@ base64 = "0.22"
 ed25519-dalek = { version = "2", features = ["rand_core", "pkcs8"] }
 rand = "0.8"
 sha2 = "0.10"
+hmac = "0.12"
 argon2 = "0.5"
 hex = "0.4"
 chrono = { version = "0.4", features = ["serde"] }
@@ -84,13 +85,14 @@ md-5 = "0.10"
 flate2 = "1"
 memmap2 = "0.9"
 futures = "0.3"
-tokio-util = { version = "0.7", features = ["io"] }
-libp2p = { version = "0.56", features = [
-    "tokio", "tcp", "quic", "dns", "noise", "yamux",
-    "identify", "kad", "mdns", "gossipsub", "macros",
-    "relay", "dcutr", "autonat", "request-response",
-] }
-pkarr = "6"
+tokio-util = { version = "0.7", features = ["io", "compat"] }
+# Peer-to-peer transport: QUIC endpoints dialed by Ed25519 key, relays with
+# hole punching, gossip and LAN discovery. See `network/p2p.rs`.
+iroh = { version = "1.3", features = ["unstable-net-report"] }
+iroh-gossip = "0.101"
+iroh-mdns-address-lookup = "0.6"
+iroh-relay = { version = "1.3", features = ["server"] }
+pkarr = "8.1"
 async-trait = "0.1"
 subtle = "2"
 mime_guess = "2"
@@ -138,3 +140,6 @@ cc = "1"
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 tempfile = "3"
+# Local DHT testnet for the pkarr round trip (`pkarr_node.rs` tests); the
+# version pkarr itself uses.
+mainline = "8"

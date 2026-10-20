@@ -76,7 +76,7 @@ export interface NavFooterItem {
 export const NAV: NavSection[] = [
   { labelKey: "nav.publicNetworks", icon: Globe2, to: "/public-networks" },
   { labelKey: "nav.dashboard", icon: Gauge, to: "/" },
-  { labelKey: "nav.chat", icon: MessagesSquare, to: "/chat", chatPanelProfiles: ["infer"] },
+  { labelKey: "nav.chat", icon: MessagesSquare, to: "/chat", chatPanelProfiles: ["visitor"] },
   { labelKey: "nav.networkChat", icon: MessagesSquare, to: "/network-chat" },
   {
     labelKey: "nav.models",
@@ -125,7 +125,7 @@ export const NAV: NavSection[] = [
     labelKey: "nav.documentation",
     icon: BookOpen,
     to: "/documentation",
-    footerProfiles: ["infer"],
+    footerProfiles: ["visitor"],
   },
   {
     labelKey: "nav.network",
@@ -137,12 +137,13 @@ export const NAV: NavSection[] = [
       { labelKey: "nav.administrators", to: "/config/administration", icon: ShieldCheck },
       { labelKey: "nav.sharing", to: "/config/sharing", icon: ShieldCheck },
       { labelKey: "nav.apiKeys", to: "/config/keys/api", icon: KeyRound },
+      { labelKey: "nav.budget", to: "/config/budget", icon: Gauge },
     ],
   },
   {
     labelKey: "nav.settings",
     icon: Settings,
-    footerProfiles: ["infer"],
+    footerProfiles: ["visitor"],
     footerTo: "/config/preferences",
     children: [
       { labelKey: "nav.preferences", to: "/config/preferences", icon: SlidersHorizontal },

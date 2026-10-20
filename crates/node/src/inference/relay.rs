@@ -12,7 +12,7 @@ use crate::infer_tunnel::{TunnelOutbound, TunnelOutboundSender, TunnelRequest};
 use crate::wire::{self, FrameEncoding, TensorShape, WireDtype};
 use anyhow::{anyhow, Result};
 use axum::body::Bytes;
-use libp2p::PeerId;
+use crate::p2p::EndpointId;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -191,7 +191,7 @@ tokio::task_local! {
 /// cannot be repeated, the request failed, and the peer still ran the
 /// abandoned chunk, delaying the other session until it failed too. A dead
 /// peer is detected by the connection's lifetime (QUIC idle 1.2 s, TCP
-/// keep-alive ~4 s, libp2p connection closed), not by this deadline; it only
+/// keep-alive ~4 s, p2p connection closed), not by this deadline; it only
 /// bounds a live peer that stopped making progress. Decode keeps the tight
 /// `frame_deadline`.
 #[cfg(not(test))]
@@ -289,14 +289,14 @@ const DIRECT_SKIPPED: &str = "direct skipped: this peer only answers through the
 
 /// Transport that actually carried an inference frame.
 ///
-/// `tls` stays separate because the libp2p tunnel is encrypted by Noise, but it
+/// `tls` stays separate because the p2p tunnel is encrypted by QUIC (TLS 1.3 under the node key), but it
 /// is not TLS. The transport name is the evidence needed to compare the
 /// inference path with the HTTP path for files.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum InferenceTransport {
     Local,
-    Libp2pTunnel,
+    P2pTunnel,
     Http,
     Https,
     Quic,
@@ -314,7 +314,7 @@ impl InferenceTransport {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Local => "local",
-            Self::Libp2pTunnel => "libp2p-tunnel",
+            Self::P2pTunnel => "p2p-tunnel",
             Self::Http => "http",
             Self::Https => "https",
             Self::Quic => "quic",
@@ -327,7 +327,7 @@ impl InferenceTransport {
     pub fn from_wire(value: &str) -> Self {
         match value {
             "local" => Self::Local,
-            "libp2p-tunnel" => Self::Libp2pTunnel,
+            "p2p-tunnel" => Self::P2pTunnel,
             "http" => Self::Http,
             "https" => Self::Https,
             "quic" => Self::Quic,
@@ -1481,7 +1481,7 @@ async fn send_frame_with_protocol(
                     // Authentication rejection of the direct transport: on a public
                     // network without TLS there is no credential the peer accepts over
                     // clear HTTP. It is not a refusal of the request - it lets the ladder
-                    // proceed to the libp2p tunnel (Noise), which authenticates.
+                    // proceed to the p2p tunnel (QUIC under the node key), which authenticates.
                     let code = r.status;
                     let text = String::from_utf8_lossy(&r.body).into_owned();
                     last_error = format!("HTTP {code}: {text}");
@@ -1797,17 +1797,17 @@ async fn send_batch_body(
     }
 
     let peer_id = step
-        .libp2p_peer_id
+        .endpoint_id
         .as_deref()
-        .and_then(|value| value.parse::<PeerId>().ok());
+        .and_then(|value| value.parse::<EndpointId>().ok());
     // The batch path follows the same ladder as the single-frame path:
     // persistent HTTP link when selected, then QUIC/TCP direct, and only then
-    // the libp2p tunnel. Keeping this order here is essential because
+    // the p2p tunnel. Keeping this order here is essential because
     // `/v1/step` commonly enters the coordinator with a hidden-state tensor.
     let transport = hop_transport(clients, step);
     let can_use_tunnel = transport.tunnel
         && tunnel_is_allowed_for_peer(
-            step.supports(crate::pipeline::CAP_LIBP2P_TUNNEL),
+            step.supports(crate::pipeline::CAP_P2P_TUNNEL),
             peer_id.is_some(),
             tunnel.is_some(),
             crate::infer_tunnel::is_local_node(&step.node_id),
@@ -2089,7 +2089,7 @@ async fn send_batch_body(
             match send_batch_via_tunnel(
                 tunnel,
                 peer_id,
-                &step.libp2p_addr_candidates,
+                &step.endpoint_addr_candidates,
                 path,
                 body.to_vec(),
                 peer_label,
@@ -2118,7 +2118,7 @@ async fn send_batch_body(
                 }
                 Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => return Err(error),
                 Err(tunnel_error) if is_pre_delivery_error(&tunnel_error) => {
-                    last_error = format!("{direct_error}; libp2p-tunnel: {tunnel_error}");
+                    last_error = format!("{direct_error}; p2p-tunnel: {tunnel_error}");
                 }
                 Err(tunnel_error) => {
                     return Err(tunnel_error.context(format!("{direct_error}")));
@@ -2142,7 +2142,7 @@ async fn send_batch_body(
 
 async fn send_batch_via_tunnel(
     tunnel: &TunnelOutboundSender,
-    peer_id: PeerId,
+    peer_id: EndpointId,
     addr_candidates: &[String],
     path: &str,
     body: Vec<u8>,
@@ -2180,31 +2180,31 @@ async fn send_batch_via_tunnel(
         .await
         .map_err(|_| {
             anyhow::Error::new(crate::infer_tunnel::TunnelDeliveryError::before_request(
-                format!("{peer_label}: libp2p swarm is not available (channel closed)"),
+                format!("{peer_label}: p2p endpoint is not available (channel closed)"),
             ))
         })?;
     let send_finished = Instant::now();
-    // Include queueing the request into the swarm in the measured round-trip.
+    // Include queueing the request into the endpoint in the measured round-trip.
     // Starting after `send` would report only the reply wait and undercount the
     // same request-response operation used by `infer_tunnel::measure_rtt`.
     let started = send_started;
     let response = match tokio::time::timeout(frame_time_left(), reply_rx).await {
         Ok(Ok(Ok(response))) => response,
         Ok(Ok(Err(error))) => {
-            let message = format!("{peer_label}: libp2p tunnel failure: {error}");
+            let message = format!("{peer_label}: p2p tunnel failure: {error}");
             return Err(anyhow::Error::new(error).context(message));
         }
         Ok(Err(_)) => {
             return Err(anyhow::Error::new(
                 crate::infer_tunnel::TunnelDeliveryError::after_dispatch(format!(
-                    "{peer_label}: libp2p tunnel closed without answering"
+                    "{peer_label}: p2p tunnel closed without answering"
                 )),
             ))
         }
         Err(_) => {
             return Err(anyhow::Error::new(
                 crate::infer_tunnel::TunnelDeliveryError::after_dispatch(format!(
-                    "{peer_label}: libp2p tunnel did not answer in time"
+                    "{peer_label}: p2p tunnel did not answer in time"
                 )),
             ))
         }
@@ -2220,7 +2220,7 @@ async fn send_batch_via_tunnel(
     wire::validate_batch_bytes(&response.body)?;
     let profiling_spans = profile_transport_spans(
         profiling,
-        "libp2p-tunnel",
+        "p2p-tunnel",
         send_started,
         send_started,
         send_finished,
@@ -2238,7 +2238,7 @@ async fn send_batch_via_tunnel(
         connection_state: crate::peer_client::ConnectionState::Unknown,
         transport_rtt_us: None,
         tls: false,
-        transport: InferenceTransport::Libp2pTunnel,
+        transport: InferenceTransport::P2pTunnel,
         transport_fallback: false,
         transport_fallback_reason: None,
         profiling_spans,
@@ -2263,7 +2263,7 @@ pub struct RawPeerResponse {
 }
 
 /// Sends bytes over the pinned direct HTTP(S) and, if all the advertised addresses
-/// fail by transport, tries the libp2p tunnel. The direct path comes
+/// fail by transport, tries the p2p tunnel. The direct path comes
 /// first because the TP collective waits for the HTTP response inside the barrier and
 /// an unavailable tunnel must not impose its timeout before using an
 /// HTTPS address that is provably reachable. The tunnel preserves path, body and
@@ -2277,7 +2277,7 @@ pub async fn send_bytes_or_tunnel(
     body: Vec<u8>,
     headers: Vec<(String, String)>,
     tunnel: Option<&TunnelOutboundSender>,
-    peer_id: Option<PeerId>,
+    peer_id: Option<EndpointId>,
     supports_tunnel: bool,
     peer_label: &str,
 ) -> Result<RawPeerResponse> {
@@ -2299,7 +2299,7 @@ pub async fn send_bytes_or_tunnel(
 }
 
 /// Variant of the raw POST that tries all the HTTPS addresses advertised by the
-/// peer before resorting to the libp2p tunnel. The `base_url` remains the
+/// peer before resorting to the p2p tunnel. The `base_url` remains the
 /// historical address and the first candidate, to keep the contract of the
 /// current callers.
 #[allow(clippy::too_many_arguments)]
@@ -2312,7 +2312,7 @@ pub async fn send_bytes_or_tunnel_with_candidates(
     headers: Vec<(String, String)>,
     tunnel_addr_candidates: &[String],
     tunnel: Option<&TunnelOutboundSender>,
-    peer_id: Option<PeerId>,
+    peer_id: Option<EndpointId>,
     supports_tunnel: bool,
     peer_label: &str,
 ) -> Result<RawPeerResponse> {
@@ -2384,7 +2384,7 @@ pub async fn send_bytes_or_tunnel_with_candidates(
             }
             Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => return Err(error),
             Err(error) => {
-                warn!("{peer_label}: direct HTTPS and libp2p failed ({error})");
+                warn!("{peer_label}: direct HTTPS and p2p failed ({error})");
                 return Err(anyhow!("{direct_error}; tunnel: {error}"));
             }
         }
@@ -2395,7 +2395,7 @@ pub async fn send_bytes_or_tunnel_with_candidates(
 
 async fn send_bytes_via_tunnel(
     tunnel: &TunnelOutboundSender,
-    peer_id: PeerId,
+    peer_id: EndpointId,
     addr_candidates: &[String],
     path: &str,
     body: Vec<u8>,
@@ -2411,19 +2411,19 @@ async fn send_bytes_via_tunnel(
             reply: reply_tx,
         })
         .await
-        .map_err(|_| anyhow!("{peer_label}: libp2p swarm is not available (channel closed)"))?;
+        .map_err(|_| anyhow!("{peer_label}: p2p endpoint is not available (channel closed)"))?;
 
     let response = match tokio::time::timeout(TUNNEL_BYTES_TIMEOUT, reply_rx).await {
         Ok(Ok(Ok(response))) => response,
-        Ok(Ok(Err(error))) => return Err(anyhow!("{peer_label}: libp2p tunnel failure: {error}")),
+        Ok(Ok(Err(error))) => return Err(anyhow!("{peer_label}: p2p tunnel failure: {error}")),
         Ok(Err(_)) => {
             return Err(anyhow!(
-                "{peer_label}: libp2p tunnel closed without answering"
+                "{peer_label}: p2p tunnel closed without answering"
             ))
         }
         Err(_) => {
             return Err(anyhow!(
-                "{peer_label}: libp2p tunnel did not answer in time"
+                "{peer_label}: p2p tunnel did not answer in time"
             ))
         }
     };
@@ -2616,8 +2616,8 @@ async fn send_frame_planned(
 }
 
 /// Selects a frame's transport in the order QUIC, direct HTTP/HTTPS and,
-/// only as a last resort, the libp2p tunnel. The tunnel requires the capability, a
-/// known `libp2p_peer_id` and an available local swarm. It uses Noise and the
+/// only as a last resort, the p2p tunnel. The tunnel requires the capability, a
+/// known `endpoint_id` and an available local endpoint. It uses QUIC under the node key and the
 /// same credential as the inference port. An HTTP refusal is final and is not
 /// repeated over another transport.
 #[allow(clippy::too_many_arguments)]
@@ -2728,19 +2728,19 @@ async fn send_frame_or_tunnel_inner(
     let mut on_issue = on_issue;
 
     let peer_id = step
-        .libp2p_peer_id
+        .endpoint_id
         .as_deref()
-        .and_then(|s| s.parse::<PeerId>().ok());
+        .and_then(|s| s.parse::<EndpointId>().ok());
 
     // Keep the transport selector single-valued: QUIC, when preferred, takes
     // precedence over direct TCP; HTTP/HTTPS remains the first fallback and
-    // the libp2p tunnel is the last resort. A tunnel must never hide a direct
+    // the p2p tunnel is the last resort. A tunnel must never hide a direct
     // endpoint that is reachable, because that would turn a healthy
     // `/v1/step` or `/v1/prefill` hop into the slower NAT path.
     let transport = hop_transport(clients, step);
     let can_use_tunnel = transport.tunnel
         && tunnel_is_allowed_for_peer(
-            step.supports(crate::pipeline::CAP_LIBP2P_TUNNEL),
+            step.supports(crate::pipeline::CAP_P2P_TUNNEL),
             peer_id.is_some(),
             tunnel.is_some(),
             crate::infer_tunnel::is_local_node(&step.node_id),
@@ -2753,7 +2753,7 @@ async fn send_frame_or_tunnel_inner(
     // Direct prefill carries `reply_to`, so it deliberately cannot enter the
     // process-local BatchCoordinator. It must still use the same persistent
     // channel as ordinary batch frames; otherwise this path silently falls
-    // back to the libp2p tunnel while decode uses HTTP/HTTPS/QUIC.
+    // back to the p2p tunnel while decode uses HTTP/HTTPS/QUIC.
     if step.supports(crate::pipeline::CAP_LINK_STREAM)
         && can_use_single_link(path)
         && transport.link
@@ -2903,7 +2903,7 @@ async fn send_frame_or_tunnel_inner(
             match send_frame_via_tunnel_with_auth(
                 tunnel,
                 peer_id,
-                &step.libp2p_addr_candidates,
+                &step.endpoint_addr_candidates,
                 path,
                 meta,
                 tensor.clone(),
@@ -2931,10 +2931,10 @@ async fn send_frame_or_tunnel_inner(
                 }
                 Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => return Err(error),
                 Err(error) if is_pre_delivery_error(&error) => {
-                    last_error = format!("{direct_reason}; libp2p-tunnel: {error}");
+                    last_error = format!("{direct_reason}; p2p-tunnel: {error}");
                 }
                 Err(error) => {
-                    return Err(anyhow!("{direct_reason}; libp2p-tunnel: {error}"));
+                    return Err(anyhow!("{direct_reason}; p2p-tunnel: {error}"));
                 }
             }
         }
@@ -2971,7 +2971,7 @@ fn tunnel_is_allowed_for_peer(
 /// timeout finding the same answer again. Only `Timeout`/`Transport` — the
 /// peer genuinely wasn't reachable — are worth a second attempt through a
 /// path that doesn't share the same failure mode (a different route through
-/// the swarm, not just the same TCP connection retried).
+/// the endpoint, not just the same TCP connection retried).
 #[cfg(test)]
 pub fn should_attempt_tunnel_fallback(
     last_issue_kind: SendIssueKind,
@@ -2993,7 +2993,7 @@ const DIRECT_BYTES_TIMEOUT: Duration = Duration::from_secs(30);
 /// Raw bytes through the tunnel use the same deadline as the direct route for bytes.
 const TUNNEL_BYTES_TIMEOUT: Duration = DIRECT_BYTES_TIMEOUT;
 
-/// A hop-to-hop call sent through the libp2p swarm. The
+/// A hop-to-hop call sent through the p2p endpoint. The
 /// encode/decode contract is the same as `send_frame`, with a single attempt. If the
 /// tunnel fails by transport, the caller decides whether to use the direct
 /// client; repeating inside the tunnel would duplicate the latency of an already
@@ -3001,7 +3001,7 @@ const TUNNEL_BYTES_TIMEOUT: Duration = DIRECT_BYTES_TIMEOUT;
 #[cfg(test)]
 pub async fn send_frame_via_tunnel(
     tunnel: &TunnelOutboundSender,
-    peer_id: PeerId,
+    peer_id: EndpointId,
     path: &str,
     meta: &Value,
     tensor: Option<(&[f32], TensorShape)>,
@@ -3027,7 +3027,7 @@ pub async fn send_frame_via_tunnel(
 }
 
 /// A JSON call of the session lifecycle (`/v1/session/rewind`,
-/// `/v1/session/release`) through the libp2p tunnel, to the peer that only this path
+/// `/v1/session/release`) through the p2p tunnel, to the peer that only this path
 /// reaches. The inference server reads JSON on these routes, not a frame, and the
 /// `Content-Type` crosses the tunnel (`infer_tunnel::serve_loopback`).
 pub async fn post_json_via_tunnel(
@@ -3040,10 +3040,10 @@ pub async fn post_json_via_tunnel(
     timeout: std::time::Duration,
 ) -> Result<Value> {
     let peer_id = step
-        .libp2p_peer_id
+        .endpoint_id
         .as_deref()
-        .and_then(|value| value.parse::<PeerId>().ok())
-        .ok_or_else(|| anyhow!("{} does not announce a libp2p PeerId", step.node_id))?;
+        .and_then(|value| value.parse::<EndpointId>().ok())
+        .ok_or_else(|| anyhow!("{} does not announce a p2p EndpointId", step.node_id))?;
     let mut headers = vec![(
         reqwest::header::CONTENT_TYPE.as_str().to_string(),
         "application/json".to_string(),
@@ -3068,17 +3068,17 @@ pub async fn post_json_via_tunnel(
     tunnel
         .send(TunnelOutbound {
             peer_id,
-            addr_candidates: step.libp2p_addr_candidates.clone(),
+            addr_candidates: step.endpoint_addr_candidates.clone(),
             request: TunnelRequest::post(path, serde_json::to_vec(body)?, headers),
             reply: reply_tx,
         })
         .await
-        .map_err(|_| anyhow!("libp2p swarm is not available (channel closed)"))?;
+        .map_err(|_| anyhow!("p2p endpoint is not available (channel closed)"))?;
     let response = match tokio::time::timeout(timeout, reply_rx).await {
         Ok(Ok(Ok(response))) => response,
-        Ok(Ok(Err(error))) => return Err(anyhow!("libp2p tunnel: {error}")),
-        Ok(Err(_)) => return Err(anyhow!("libp2p tunnel closed without answering")),
-        Err(_) => return Err(anyhow!("libp2p tunnel did not answer in {timeout:?}")),
+        Ok(Ok(Err(error))) => return Err(anyhow!("p2p tunnel: {error}")),
+        Ok(Err(_)) => return Err(anyhow!("p2p tunnel closed without answering")),
+        Err(_) => return Err(anyhow!("p2p tunnel did not answer in {timeout:?}")),
     };
     if !(200..300).contains(&response.status) {
         // The refusal body goes along: a "snapshot does not exist" or "unknown
@@ -3109,7 +3109,7 @@ pub async fn post_json_via_tunnel(
 
 async fn send_frame_via_tunnel_with_auth(
     tunnel: &TunnelOutboundSender,
-    peer_id: PeerId,
+    peer_id: EndpointId,
     addr_candidates: &[String],
     path: &str,
     meta: &Value,
@@ -3154,7 +3154,7 @@ async fn send_frame_via_tunnel_with_auth(
     };
     tunnel.send(outbound).await.map_err(|_| {
         anyhow::Error::new(crate::infer_tunnel::TunnelDeliveryError::before_request(
-            format!("{peer_label}: libp2p swarm is not available (channel closed)"),
+            format!("{peer_label}: p2p endpoint is not available (channel closed)"),
         ))
     })?;
     let frame_sent_at = Instant::now();
@@ -3166,20 +3166,20 @@ async fn send_frame_via_tunnel_with_auth(
     let response = match tokio::time::timeout(frame_time_left(), reply_rx).await {
         Ok(Ok(Ok(response))) => response,
         Ok(Ok(Err(error))) => {
-            let message = format!("{peer_label}: libp2p tunnel failure: {error}");
+            let message = format!("{peer_label}: p2p tunnel failure: {error}");
             return Err(anyhow::Error::new(error).context(message));
         }
         Ok(Err(_)) => {
             return Err(anyhow::Error::new(
                 crate::infer_tunnel::TunnelDeliveryError::after_dispatch(format!(
-                    "{peer_label}: libp2p tunnel closed without answering"
+                    "{peer_label}: p2p tunnel closed without answering"
                 )),
             ))
         }
         Err(_) => {
             return Err(anyhow::Error::new(
                 crate::infer_tunnel::TunnelDeliveryError::after_dispatch(format!(
-                    "{peer_label}: libp2p tunnel did not answer in time"
+                    "{peer_label}: p2p tunnel did not answer in time"
                 )),
             ))
         }
@@ -3209,7 +3209,7 @@ async fn send_frame_via_tunnel_with_auth(
     let client_decode_ms = client_decode_started.elapsed().as_millis() as u64;
     let profiling_spans = profile_transport_spans(
         profile_context_for_path(&meta, peer_label, path, call_started).as_ref(),
-        "libp2p-tunnel",
+        "p2p-tunnel",
         call_started,
         call_started,
         frame_sent_at,
@@ -3219,7 +3219,7 @@ async fn send_frame_via_tunnel_with_auth(
     Ok(SentFrame {
         meta,
         tensor,
-        // The libp2p tunnel is already encrypted by Noise end to end, but it is not TLS:
+        // The p2p tunnel is already encrypted by QUIC end to end, but it is not TLS:
         // saying `true` here would make the screen claim a guarantee this hop did not
         // give. The tunnel's handshake is not the TLS one either, and stays at zero.
         tls: false,
@@ -3239,7 +3239,7 @@ async fn send_frame_via_tunnel_with_auth(
         client_decode_ms,
         connection_state: crate::peer_client::ConnectionState::Unknown,
         transport_rtt_us: None,
-        transport: InferenceTransport::Libp2pTunnel,
+        transport: InferenceTransport::P2pTunnel,
         transport_fallback: false,
         transport_fallback_reason: None,
         profiling_spans,
@@ -3624,7 +3624,7 @@ mod tests {
             let _ = axum::serve(listener, app).await;
         });
 
-        let peer_id = PeerId::random();
+        let peer_id = crate::p2p::random_endpoint_id();
         let (tunnel, mut received) = mpsc::channel::<TunnelOutbound>(1);
         let receiver = tokio::spawn(async move {
             if let Some(outbound) = received.recv().await {
@@ -3663,7 +3663,7 @@ mod tests {
 
     #[tokio::test]
     async fn raw_peer_call_falls_back_to_tunnel_and_preserves_headers() {
-        let peer_id = PeerId::random();
+        let peer_id = crate::p2p::random_endpoint_id();
         let (tunnel, mut received) = mpsc::channel::<TunnelOutbound>(1);
         let expected_body = b"partial-reduce".to_vec();
         let expected_headers = vec![
@@ -3803,11 +3803,11 @@ mod tests {
         );
         assert!(
             !should_attempt_tunnel_fallback(kind, true, false, true),
-            "the hop's PeerId must be known"
+            "the hop's EndpointId must be known"
         );
         assert!(
             !should_attempt_tunnel_fallback(kind, true, true, false),
-            "the local swarm must actually be up"
+            "the local endpoint must actually be up"
         );
     }
 
@@ -3941,12 +3941,12 @@ mod tests {
     }
 
     /// Stands in for `Discovery::run`'s outbound branch: drains one
-    /// `TunnelOutbound` and answers it, without any real libp2p swarm — this
+    /// `TunnelOutbound` and answers it, without any real p2p endpoint — this
     /// exercises exactly the risk in `send_frame_via_tunnel` itself (framing,
     /// channel/oneshot correlation, status/error mapping), the same way
     /// `infer_server.rs`'s `relay_tests` fake a next hop with a real axum
     /// server instead of mocking `send_frame`.
-    fn fake_swarm_answering_with(
+    fn fake_tunnel_answering_with(
         response: Result<
             crate::infer_tunnel::TunnelResponse,
             crate::infer_tunnel::TunnelDeliveryError,
@@ -3965,14 +3965,14 @@ mod tests {
     async fn a_successful_tunnel_call_decodes_like_a_normal_frame() {
         let meta = json!({"done": true, "token_id": 7});
         let body = wire::encode(&meta, None, WireDtype::F16).unwrap();
-        let tunnel = fake_swarm_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
+        let tunnel = fake_tunnel_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
             status: 200,
             body,
         }));
 
         let sent = send_frame_via_tunnel(
             &tunnel,
-            PeerId::random(),
+            crate::p2p::random_endpoint_id(),
             "/v1/step",
             &json!({"session_id": "s1"}),
             None,
@@ -3989,14 +3989,14 @@ mod tests {
 
     #[tokio::test]
     async fn a_non_success_status_becomes_an_http_refusal() {
-        let tunnel = fake_swarm_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
+        let tunnel = fake_tunnel_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
             status: 500,
             body: b"kv cache corrupted".to_vec(),
         }));
 
         let result = send_frame_via_tunnel(
             &tunnel,
-            PeerId::random(),
+            crate::p2p::random_endpoint_id(),
             "/v1/step",
             &json!({}),
             None,
@@ -4015,14 +4015,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_swarm_side_failure_surfaces_as_an_error() {
-        let tunnel = fake_swarm_answering_with(Err(
+    async fn a_transport_side_failure_surfaces_as_an_error() {
+        let tunnel = fake_tunnel_answering_with(Err(
             crate::infer_tunnel::TunnelDeliveryError::before_request("dial failed"),
         ));
 
         let result = send_frame_via_tunnel(
             &tunnel,
-            PeerId::random(),
+            crate::p2p::random_endpoint_id(),
             "/v1/step",
             &json!({}),
             None,
@@ -4031,12 +4031,12 @@ mod tests {
             "peer-x",
         )
         .await;
-        let err = expect_err(result, "swarm failure must surface as an error");
+        let err = expect_err(result, "endpoint failure must surface as an error");
 
         assert!(err.to_string().contains("dial failed"));
     }
 
-    /// No `Discovery::run` task at all (libp2p disabled this run) — the
+    /// No `Discovery::run` task at all (p2p disabled this run) — the
     /// channel itself has no live receiver, so `send` fails immediately
     /// instead of hanging until the reply timeout.
     #[tokio::test]
@@ -4046,7 +4046,7 @@ mod tests {
 
         let result = send_frame_via_tunnel(
             &tx,
-            PeerId::random(),
+            crate::p2p::random_endpoint_id(),
             "/v1/step",
             &json!({}),
             None,
@@ -4064,7 +4064,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_session_lifecycle_call_crosses_the_tunnel_as_json() {
-        let peer_id = PeerId::random();
+        let peer_id = crate::p2p::random_endpoint_id();
         let (tunnel, mut received) = mpsc::channel::<TunnelOutbound>(1);
         let receiver = tokio::spawn(async move {
             let outbound = received.recv().await.expect("request through the tunnel");
@@ -4129,28 +4129,28 @@ mod tests {
             exec_start: 0,
             exec_end: 1,
             inference_frame_capabilities: if supports_tunnel {
-                vec![crate::pipeline::CAP_LIBP2P_TUNNEL.to_string()]
+                vec![crate::pipeline::CAP_P2P_TUNNEL.to_string()]
             } else {
                 Vec::new()
             },
-            libp2p_peer_id: peer_id,
-            libp2p_addr_candidates: Vec::new(),
+            endpoint_id: peer_id,
+            endpoint_addr_candidates: Vec::new(),
             quic_addr_candidates: Vec::new(),
         }
     }
 
     /// A hop that advertises the tunnel uses it only after direct HTTP fails.
-    /// The response is supplied by a fake swarm, so this test never waits for
+    /// The response is supplied by a fake endpoint, so this test never waits for
     /// the 75-second tunnel timeout.
     #[tokio::test]
     async fn a_qualified_peer_prefers_the_tunnel() {
         let step = step_with(
             "http://127.0.0.1:1",
             true,
-            Some(PeerId::random().to_string()),
+            Some(crate::p2p::random_endpoint_id().to_string()),
         );
         let tunnel_body = wire::encode(&json!({"done": true}), None, WireDtype::F16).unwrap();
-        let tunnel_tx = fake_swarm_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
+        let tunnel_tx = fake_tunnel_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
             status: 200,
             body: tunnel_body,
         }));
@@ -4169,7 +4169,7 @@ mod tests {
             |_| {},
         )
         .await
-        .expect("qualified peer must succeed over libp2p");
+        .expect("qualified peer must succeed over p2p");
 
         assert_eq!(sent.meta["done"], true);
     }
@@ -4188,14 +4188,14 @@ mod tests {
         let step = step_with(
             &format!("http://127.0.0.1:{port}"),
             true,
-            Some(PeerId::random().to_string()),
+            Some(crate::p2p::random_endpoint_id().to_string()),
         );
         let tunnel_attempts = Arc::new(AtomicUsize::new(0));
-        let attempts_for_swarm = tunnel_attempts.clone();
+        let attempts_for_tunnel = tunnel_attempts.clone();
         let (tunnel_tx, mut tunnel_rx) = mpsc::channel::<TunnelOutbound>(1);
         tokio::spawn(async move {
             if let Some(outbound) = tunnel_rx.recv().await {
-                attempts_for_swarm.fetch_add(1, Ordering::Relaxed);
+                attempts_for_tunnel.fetch_add(1, Ordering::Relaxed);
                 let _ = outbound.reply.send(Err(
                     crate::infer_tunnel::TunnelDeliveryError::before_request("dial failed"),
                 ));
@@ -4257,7 +4257,7 @@ mod tests {
             node,
             &format!("http://127.0.0.1:{port}"),
             true,
-            Some(PeerId::random().to_string()),
+            Some(crate::p2p::random_endpoint_id().to_string()),
         );
         crate::route_plan::book().install(
             node,
@@ -4265,7 +4265,7 @@ mod tests {
             vec![planned(crate::route_plan::RouteKind::Tunnel, "", 20)],
             1,
         );
-        let tunnel_tx = fake_swarm_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
+        let tunnel_tx = fake_tunnel_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
             status: 200,
             body: wire::encode(&json!({"done": true}), None, WireDtype::F16).unwrap(),
         }));
@@ -4357,14 +4357,14 @@ mod tests {
         let step = step_with(
             &format!("http://127.0.0.1:{port}"),
             true,
-            Some(PeerId::random().to_string()),
+            Some(crate::p2p::random_endpoint_id().to_string()),
         );
         let tunnel_attempts = Arc::new(AtomicUsize::new(0));
-        let attempts_for_swarm = tunnel_attempts.clone();
+        let attempts_for_tunnel = tunnel_attempts.clone();
         let (tunnel_tx, mut tunnel_rx) = mpsc::channel::<TunnelOutbound>(1);
         tokio::spawn(async move {
             if let Some(outbound) = tunnel_rx.recv().await {
-                attempts_for_swarm.fetch_add(1, Ordering::Relaxed);
+                attempts_for_tunnel.fetch_add(1, Ordering::Relaxed);
                 let body = wire::encode(&json!({"done": false}), None, WireDtype::F16).unwrap();
                 let _ = outbound.reply.send(Ok(crate::infer_tunnel::TunnelResponse {
                     status: 200,
@@ -4441,10 +4441,10 @@ mod tests {
         let step = step_with(
             &format!("http://127.0.0.1:{port}"),
             true,
-            Some(PeerId::random().to_string()),
+            Some(crate::p2p::random_endpoint_id().to_string()),
         );
         let tunnel_body = wire::encode(&json!({"done": false}), None, WireDtype::F16).unwrap();
-        let tunnel_tx = fake_swarm_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
+        let tunnel_tx = fake_tunnel_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
             status: 200,
             body: tunnel_body,
         }));
@@ -4568,11 +4568,11 @@ mod tests {
         let step = step_with(
             "http://127.0.0.1:1",
             true,
-            Some(PeerId::random().to_string()),
+            Some(crate::p2p::random_endpoint_id().to_string()),
         );
         clients.remember_tunnel_win(&step.node_id);
         let tunnel_body = wire::encode(&json!({"done": true}), None, WireDtype::F16).unwrap();
-        let tunnel_tx = fake_swarm_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
+        let tunnel_tx = fake_tunnel_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
             status: 200,
             body: tunnel_body,
         }));
@@ -4593,7 +4593,7 @@ mod tests {
         .await
         .expect("the chosen tunnel must deliver");
 
-        assert_eq!(sent.transport, InferenceTransport::Libp2pTunnel);
+        assert_eq!(sent.transport, InferenceTransport::P2pTunnel);
         assert!(!sent.transport_fallback);
         assert_eq!(sent.transport_fallback_reason, None);
     }
@@ -4606,12 +4606,12 @@ mod tests {
         let step = step_with(
             "http://127.0.0.1:1",
             true,
-            Some(PeerId::random().to_string()),
+            Some(crate::p2p::random_endpoint_id().to_string()),
         );
         clients.remember_tunnel_win(&step.node_id);
         let reply =
             wire::encode_batch_single(&json!({"done": true}), None, WireDtype::F16).unwrap();
-        let tunnel_tx = fake_swarm_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
+        let tunnel_tx = fake_tunnel_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
             status: 200,
             body: reply,
         }));
@@ -4644,10 +4644,10 @@ mod tests {
         let step = step_with(
             "http://127.0.0.1:1",
             true,
-            Some(PeerId::random().to_string()),
+            Some(crate::p2p::random_endpoint_id().to_string()),
         );
         let tunnel_body = wire::encode(&json!({"done": true}), None, WireDtype::F16).unwrap();
-        let tunnel_tx = fake_swarm_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
+        let tunnel_tx = fake_tunnel_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
             status: 200,
             body: tunnel_body,
         }));
@@ -4668,7 +4668,7 @@ mod tests {
         .await
         .expect("the tunnel must be the last resort when HTTP and QUIC fail");
 
-        assert_eq!(sent.transport, InferenceTransport::Libp2pTunnel);
+        assert_eq!(sent.transport, InferenceTransport::P2pTunnel);
         assert!(sent.transport_fallback);
         assert!(sent
             .transport_fallback_reason
@@ -4678,7 +4678,7 @@ mod tests {
 
     /// A 401/403 from the direct HTTP is not a considered refusal of the request: on a
     /// public clear-text network the peer has no credential to accept the HTTP
-    /// channel. The ladder has to fall to the libp2p tunnel (Noise), not return a
+    /// channel. The ladder has to fall to the p2p tunnel (QUIC), not return a
     /// terminal error - this is what left the prefill hanging.
     #[tokio::test]
     async fn a_direct_http_401_falls_back_to_the_tunnel() {
@@ -4688,10 +4688,10 @@ mod tests {
         let step = step_with(
             &format!("http://127.0.0.1:{port}"),
             true,
-            Some(PeerId::random().to_string()),
+            Some(crate::p2p::random_endpoint_id().to_string()),
         );
         let tunnel_body = wire::encode(&json!({"done": true}), None, WireDtype::F16).unwrap();
-        let tunnel_tx = fake_swarm_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
+        let tunnel_tx = fake_tunnel_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
             status: 200,
             body: tunnel_body,
         }));
@@ -4712,7 +4712,7 @@ mod tests {
         .await
         .expect("a 401 from direct HTTP must fall to the tunnel, not fail");
 
-        assert_eq!(sent.transport, InferenceTransport::Libp2pTunnel);
+        assert_eq!(sent.transport, InferenceTransport::P2pTunnel);
         assert!(sent.transport_fallback);
         assert!(sent
             .transport_fallback_reason
@@ -4730,12 +4730,12 @@ mod tests {
         let mut step = step_with(
             "http://127.0.0.1:1",
             true,
-            Some(PeerId::random().to_string()),
+            Some(crate::p2p::random_endpoint_id().to_string()),
         );
         // 127.0.0.1:9 (discard) has no QUIC endpoint: the handshake never closes.
         step.quic_addr_candidates = vec!["127.0.0.1:9".to_string()];
         let tunnel_body = wire::encode(&json!({"done": true}), None, WireDtype::F16).unwrap();
-        let tunnel_tx = fake_swarm_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
+        let tunnel_tx = fake_tunnel_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
             status: 200,
             body: tunnel_body,
         }));
@@ -4757,7 +4757,7 @@ mod tests {
         .await
         .expect("dead QUIC must fall to the tunnel, not hang");
 
-        assert_eq!(sent.transport, InferenceTransport::Libp2pTunnel);
+        assert_eq!(sent.transport, InferenceTransport::P2pTunnel);
         assert!(
             started.elapsed() < Duration::from_secs(3),
             "fallback took {:?}, should be sub-second per transport",
@@ -4849,11 +4849,11 @@ mod tests {
             &identity.node_id.0,
             &format!("http://127.0.0.1:{port}"),
             true,
-            Some(PeerId::random().to_string()),
+            Some(crate::p2p::random_endpoint_id().to_string()),
         );
         step.quic_addr_candidates = vec![format!("127.0.0.1:{quic_port}")];
         let tunnel_body = wire::encode(&json!({"done": false}), None, WireDtype::F16).unwrap();
-        let tunnel_tx = fake_swarm_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
+        let tunnel_tx = fake_tunnel_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
             status: 200,
             body: tunnel_body,
         }));
@@ -4966,17 +4966,17 @@ mod tests {
     }
 
     /// The scenario the whole fallback exists for: the direct hop is
-    /// unreachable, but it advertises the capability and a known `PeerId`, so
+    /// unreachable, but it advertises the capability and a known endpoint id, so
     /// the call still completes via the tunnel instead of failing outright.
     #[tokio::test]
     async fn an_unreachable_peer_recovers_via_the_tunnel_when_qualified() {
         let unreachable = step_with(
             "http://127.0.0.1:1",
             true,
-            Some(PeerId::random().to_string()),
+            Some(crate::p2p::random_endpoint_id().to_string()),
         );
         let tunnel_body = wire::encode(&json!({"token_id": 99}), None, WireDtype::F16).unwrap();
-        let tunnel_tx = fake_swarm_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
+        let tunnel_tx = fake_tunnel_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
             status: 200,
             body: tunnel_body,
         }));
@@ -5074,16 +5074,16 @@ mod tests {
         let mut step = step_with(
             &format!("http://127.0.0.1:{port}"),
             true,
-            Some(PeerId::random().to_string()),
+            Some(crate::p2p::random_endpoint_id().to_string()),
         );
         step.inference_frame_capabilities
             .push(crate::pipeline::CAP_FRAME_BATCH.into());
         let tunnel_attempts = Arc::new(AtomicUsize::new(0));
-        let attempts_for_swarm = tunnel_attempts.clone();
+        let attempts_for_tunnel = tunnel_attempts.clone();
         let (tunnel_tx, mut tunnel_rx) = mpsc::channel::<TunnelOutbound>(1);
         tokio::spawn(async move {
             if let Some(outbound) = tunnel_rx.recv().await {
-                attempts_for_swarm.fetch_add(1, Ordering::Relaxed);
+                attempts_for_tunnel.fetch_add(1, Ordering::Relaxed);
                 let batch = wire::decode_batch(&outbound.request.body).unwrap();
                 let item = &batch.items[0];
                 let body = wire::encode_batch_items(
@@ -5135,17 +5135,17 @@ mod tests {
         let mut step = step_with(
             &format!("http://127.0.0.1:{port}"),
             true,
-            Some(PeerId::random().to_string()),
+            Some(crate::p2p::random_endpoint_id().to_string()),
         );
         step.inference_frame_capabilities
             .push(crate::pipeline::CAP_FRAME_BATCH.into());
 
         let tunnel_attempts = Arc::new(AtomicUsize::new(0));
-        let attempts_for_swarm = tunnel_attempts.clone();
+        let attempts_for_tunnel = tunnel_attempts.clone();
         let (tunnel_tx, mut tunnel_rx) = mpsc::channel::<TunnelOutbound>(2);
         tokio::spawn(async move {
             while let Some(outbound) = tunnel_rx.recv().await {
-                let attempt = attempts_for_swarm.fetch_add(1, Ordering::Relaxed);
+                let attempt = attempts_for_tunnel.fetch_add(1, Ordering::Relaxed);
                 if attempt == 0 {
                     let _ = outbound.reply.send(Err(
                         crate::infer_tunnel::TunnelDeliveryError::before_request(
@@ -5193,7 +5193,7 @@ mod tests {
         .expect("after a dial fails, the retry must walk the transport ladder");
 
         assert_eq!(sent.meta["done"], true);
-        assert_eq!(sent.transport, InferenceTransport::Libp2pTunnel);
+        assert_eq!(sent.transport, InferenceTransport::P2pTunnel);
         assert_eq!(tunnel_attempts.load(Ordering::Relaxed), 2);
     }
 
@@ -5271,7 +5271,7 @@ mod tests {
         assert_eq!(second.unwrap().meta["done"], true);
     }
 
-    /// Missing any one precondition (capability, known `PeerId`, or a live
+    /// Missing any one precondition (capability, known endpoint id, or a live
     /// tunnel at all) must leave the original HTTP failure as the answer —
     /// never a silent success from a path that was never actually offered.
     #[tokio::test]
@@ -5279,9 +5279,9 @@ mod tests {
         let unreachable = step_with(
             "http://127.0.0.1:1",
             false,
-            Some(PeerId::random().to_string()),
+            Some(crate::p2p::random_endpoint_id().to_string()),
         );
-        let tunnel_tx = fake_swarm_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
+        let tunnel_tx = fake_tunnel_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
             status: 200,
             body: wire::encode(&json!({}), None, WireDtype::F16).unwrap(),
         }));
@@ -5315,9 +5315,9 @@ mod tests {
         let step = step_with(
             &format!("http://127.0.0.1:{port}"),
             true,
-            Some(PeerId::random().to_string()),
+            Some(crate::p2p::random_endpoint_id().to_string()),
         );
-        let tunnel_tx = fake_swarm_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
+        let tunnel_tx = fake_tunnel_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
             status: 500,
             body: b"model crashed in tunnel".to_vec(),
         }));
@@ -5345,13 +5345,13 @@ mod tests {
     /// The transport switch, against a machine that is really on the network.
     ///
     /// The tests above prove the decision with a fake channel; this one proves what
-    /// they cannot: that the frame leaves here through the libp2p swarm, reaches the
+    /// they cannot: that the frame leaves here through the p2p endpoint, reaches the
     /// inference server on the other side and comes back with *its* response. It is the
     /// gap the tunnel commit recorded in writing ("only loopback and
     /// in-process fakes").
     ///
     /// ```sh
-    /// POM_TUNNEL_PROBE=/ip6/<ip-do-peer>/tcp/<porta-p2p+10000>/p2p/<peer-id> \\
+    /// POM_TUNNEL_PROBE=<endpoint-id>@<peer-ip>:<p2p-port+10000> \\
     ///   cargo test -p node --bin pom the_tunnel_carries_a_real_frame -- --ignored --nocapture
     /// ```
     ///
@@ -5374,17 +5374,16 @@ mod tests {
     #[ignore = "needs a live peer; see the test doc"]
     async fn the_tunnel_carries_a_real_frame_to_a_live_peer() {
         let target = std::env::var("POM_TUNNEL_PROBE")
-            .expect("set POM_TUNNEL_PROBE to the multiaddr of the peer");
-        let addr: libp2p::Multiaddr = target.parse().expect("invalid multiaddr");
-        let peer_id = addr
-            .iter()
-            .find_map(|p| match p {
-                libp2p::multiaddr::Protocol::P2p(id) => Some(id),
-                _ => None,
-            })
-            .expect("the multiaddr must end in /p2p/<peer-id>");
+            .expect("set POM_TUNNEL_PROBE to <endpoint-id>[@addr,addr]");
+        let (id, addrs) = target.split_once('@').unwrap_or((target.as_str(), ""));
+        let peer_id = crate::p2p::parse_endpoint_id(id).expect("invalid endpoint id");
+        let addrs: Vec<String> = addrs
+            .split(',')
+            .filter(|a| !a.is_empty())
+            .map(str::to_string)
+            .collect();
 
-        let tunnel_tx = crate::infer_tunnel::live_probe_swarm(peer_id, addr);
+        let tunnel_tx = crate::infer_tunnel::live_probe_sender(peer_id, addrs).await;
         // An address that never answers: this is how `Timeout` is forced without
         // touching the other side's machine.
         let step = step_with("http://192.0.2.1:8181", true, Some(peer_id.to_string()));

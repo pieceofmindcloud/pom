@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { setupProfileUsesOnlyTrust, setupStepsFor } from "./setupWizardFlow";
 
-const ids = (profile: "admin" | "node" | "infer" | null) => setupStepsFor(profile).map((step) => step.id);
+const ids = (profile: "admin" | "worker" | "visitor" | null) => setupStepsFor(profile).map((step) => step.id);
 
 describe("first-access wizard flow", () => {
   it("creates a network in three steps: start, network and invite", () => {
@@ -9,9 +9,9 @@ describe("first-access wizard flow", () => {
   });
 
   it("joins a network in two steps for node and infer", () => {
-    expect(ids("node")).toEqual(["setup-profile", "setup-join"]);
-    expect(ids("infer")).toEqual(["setup-profile", "setup-join"]);
-    expect(setupProfileUsesOnlyTrust("node")).toBe(true);
+    expect(ids("worker")).toEqual(["setup-profile", "setup-join"]);
+    expect(ids("visitor")).toEqual(["setup-profile", "setup-join"]);
+    expect(setupProfileUsesOnlyTrust("worker")).toBe(true);
     expect(setupProfileUsesOnlyTrust("admin")).toBe(false);
   });
 
@@ -20,7 +20,7 @@ describe("first-access wizard flow", () => {
   });
 
   it("never asks for location, review, password or resources as their own steps", () => {
-    for (const profile of ["admin", "node", "infer"] as const) {
+    for (const profile of ["admin", "worker", "visitor"] as const) {
       const steps = ids(profile);
       expect(steps).not.toContain("setup-location");
       expect(steps).not.toContain("setup-review");

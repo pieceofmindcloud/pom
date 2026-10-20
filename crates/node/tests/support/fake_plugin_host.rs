@@ -115,6 +115,7 @@ fn main() {
                             "operation": op,
                             "params": payload.get("params").cloned().unwrap_or(Value::Null),
                             "profile": payload.get("profile").cloned().unwrap_or(Value::Null),
+                            "node_id": payload.get("node_id").cloned().unwrap_or(Value::Null),
                         }, "error": null})
                     }
                     _ => {

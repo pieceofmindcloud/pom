@@ -77,7 +77,7 @@ export function LobbyChat({ network, endpoint, onClose, layout = "modal", backLa
   const [failure, setFailure] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
-  const [role, setRole] = useState<EnrollmentRole>("node");
+  const [role, setRole] = useState<EnrollmentRole>("worker");
   const [asking, setAsking] = useState(false);
   const [joinConfirm, setJoinConfirm] = useState(false);
   const [joining, setJoining] = useState(false);
@@ -172,10 +172,11 @@ export function LobbyChat({ network, endpoint, onClose, layout = "modal", backLa
   }, [admissionFormShown, focusAdmission]);
 
   async function requestAdmission() {
-    if (!key || !askRole || asking) return;
+    const role = admission?.status === "pending" ? admission.role : askRole;
+    if (!key || !role || asking) return;
     setAsking(true);
     try {
-      adopt(await api.post<LobbyExchange>(`${endpoint}/admission`, { key, role: askRole, name: network?.name ?? "" }));
+      adopt(await api.post<LobbyExchange>(`${endpoint}/admission`, { key, role, name: network?.name ?? "" }));
     } catch {
       setFailure("lobby.errorUnreachable");
     } finally {
@@ -261,7 +262,15 @@ export function LobbyChat({ network, endpoint, onClose, layout = "modal", backLa
                   <p className="text-[0.68rem] leading-relaxed text-faint">{t("lobby.admissionAskDetail")}</p>
                 </div>
               ))}
-              {admission?.status === "pending" && <p className="text-xs leading-relaxed text-amber">{t("lobby.admissionPending", { role: t(`network.enrollment.${admission.role}`) })}</p>}
+              {admission?.status === "pending" && (
+                <div className="space-y-2">
+                  <p className="text-xs leading-relaxed text-amber">{t("lobby.admissionPending", { role: t(`network.enrollment.${admission.role}`) })}</p>
+                  {/* A pending request is never a dead end: sending it again
+                      only refreshes it on the principal, and it reaches an
+                      admin who may have missed it. */}
+                  <Button size="sm" variant="ghost" loading={asking} onClick={() => void requestAdmission()}>{t("lobby.admissionAskAgain")}</Button>
+                </div>
+              )}
               {admission?.status === "rejected" && waitMinutes > 0 && (
                 <p className="text-xs leading-relaxed text-rose" data-testid="lobby-admission-wait">
                   {t("lobby.admissionRejectedWait", { minutes: waitMinutes })}

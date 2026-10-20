@@ -1,5 +1,6 @@
+// @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchPublicPluginCatalog, PUBLIC_PLUGIN_CATALOG_URL, releaseForTarget } from "./pluginCatalog";
+import { fetchPublicPlugin, fetchPublicPluginCatalog, PLUGIN_CATALOG_PATH, releaseForTarget } from "./pluginCatalog";
 
 function release(overrides: Record<string, unknown> = {}) {
   return {
@@ -31,7 +32,7 @@ afterEach(() => {
 });
 
 describe("fetchPublicPluginCatalog", () => {
-  it("reads multiple published plugins without sending credentials", async () => {
+  it("reads multiple published plugins through this node, on the page's own origin", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       plugins: [
         publicPlugin("alpha"),
@@ -48,11 +49,23 @@ describe("fetchPublicPluginCatalog", () => {
 
     expect(catalog.plugins.map((plugin) => plugin.code)).toEqual(["alpha", "beta"]);
     expect(catalog.plugins[1].screenshot_urls).toHaveLength(4);
-    expect(fetchMock).toHaveBeenCalledWith(PUBLIC_PLUGIN_CATALOG_URL, {
-      credentials: "omit",
-      signal: undefined,
-    });
-    expect(fetchMock.mock.calls[0][1]).not.toHaveProperty("headers");
+    expect(fetchMock.mock.calls[0][0]).toBe(PLUGIN_CATALOG_PATH);
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ credentials: "same-origin" });
+  });
+
+  it("passes the store query to the node", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ plugins: [] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchPublicPluginCatalog(undefined, { q: " rag ", page: 2, perPage: 10 });
+
+    expect(fetchMock.mock.calls[0][0]).toBe(`${PLUGIN_CATALOG_PATH}?q=rag&page=2&per_page=10`);
+  });
+
+  it("answers null for a plugin the store does not list", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: "plugin_not_listed" }), { status: 404 })));
+
+    await expect(fetchPublicPlugin("missing")).resolves.toBeNull();
   });
 
   it("drops invalid releases and plugins that have no valid release", async () => {

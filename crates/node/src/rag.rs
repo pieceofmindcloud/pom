@@ -727,7 +727,12 @@ async fn peer_call(
 ) -> Option<Value> {
     if provider.node_id == state.network.node_id {
         // The plugin is on this machine: the same operation, without the hop.
-        let caller = json!({ "node_id": state.network.node_id, "head": true, "local": true });
+        let caller = json!({
+            "node_id": state.network.node_id,
+            "head": true,
+            "local": true,
+            "role": crate::plugin_services::local_role(state).await,
+        });
         return state
             .plugins
             .query_audit(

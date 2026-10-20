@@ -9,6 +9,11 @@
 //!
 //! Nothing here goes to disk: the certificate is derived from the key on every
 //! start. There is nothing to renew, revoke or distribute.
+//!
+//! The same certificate is the client certificate of every peer connection
+//! (mutual TLS), so the server knows which node is calling as well. What
+//! that node may do is decided from its key per request, against the trust
+//! chain and the membership tokens (`auth::validate_internal_node_headers`).
 
 use anyhow::{anyhow, Context, Result};
 use ed25519_dalek::pkcs8::EncodePrivateKey;
@@ -218,75 +223,152 @@ pub fn browser_certificate(sans: &[String]) -> Result<NodeCertificate> {
     })
 }
 
-/// Picks the certificate per connection: a peer gets the pinning one, a browser
-/// gets the one it knows how to verify.
+/// Whether a ClientHello comes from a peer: it offers `PEER_ALPN`, which no
+/// browser does. It picks the server configuration per connection
+/// (`serve::handle_conn`): a peer gets the pinning certificate and is asked
+/// for its own, a browser gets the one it can verify and is asked for none.
+pub fn wants_peer<'a>(alpn: Option<impl Iterator<Item = &'a [u8]>>) -> bool {
+    match alpn {
+        Some(mut offered) => offered.any(|p| p == PEER_ALPN),
+        None => false,
+    }
+}
+
+/// Client certificate verifier of the peer configuration: any node
+/// certificate, proven by the handshake signature. Who the node is, and
+/// whether it is a member, is decided per request from the certificate's key
+/// (`serve::TransportPeer`, `auth::validate_internal_node_headers`), not
+/// here: the chain and the tokens change while a connection lives.
 #[derive(Debug)]
-pub struct NodeCertResolver {
-    peer: Arc<rustls::sign::CertifiedKey>,
-    browser: Arc<rustls::sign::CertifiedKey>,
+struct AnyNodeClient;
+
+/// The client verifier peers are served with, for the QUIC endpoint too.
+pub(crate) fn any_node_client() -> Arc<dyn rustls::server::danger::ClientCertVerifier> {
+    Arc::new(AnyNodeClient)
 }
 
-impl NodeCertResolver {
-    pub fn new(id: &Identity, sans: &[String]) -> Result<Self> {
-        Ok(Self {
-            peer: Arc::new(certified(node_certificate(id)?)?),
-            browser: Arc::new(certified(browser_certificate(sans)?)?),
-        })
+impl rustls::server::danger::ClientCertVerifier for AnyNodeClient {
+    fn offer_client_auth(&self) -> bool {
+        true
     }
 
-    /// The rule, isolated from the trait so it can be tested without a handshake.
-    pub fn wants_peer<'a>(alpn: Option<impl Iterator<Item = &'a [u8]>>) -> bool {
-        match alpn {
-            Some(mut offered) => offered.any(|p| p == PEER_ALPN),
-            None => false,
-        }
+    /// Optional, so a peer config still serves a client without a node
+    /// key; such a request carries no identity and is refused wherever one
+    /// is needed.
+    fn client_auth_mandatory(&self) -> bool {
+        false
     }
-}
 
-fn certified(c: NodeCertificate) -> Result<rustls::sign::CertifiedKey> {
-    let key = rustls::crypto::ring::sign::any_supported_type(&c.key)
-        .map_err(|e| anyhow!("rustls could not sign with this key: {e}"))?;
-    Ok(rustls::sign::CertifiedKey::new(vec![c.cert], key))
-}
+    fn root_hint_subjects(&self) -> &[rustls::DistinguishedName] {
+        &[]
+    }
 
-impl rustls::server::ResolvesServerCert for NodeCertResolver {
-    fn resolve(
+    fn verify_client_cert(
         &self,
-        client_hello: rustls::server::ClientHello<'_>,
-    ) -> Option<Arc<rustls::sign::CertifiedKey>> {
-        if Self::wants_peer(client_hello.alpn()) {
-            Some(self.peer.clone())
-        } else {
-            Some(self.browser.clone())
-        }
+        end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _now: UnixTime,
+    ) -> std::result::Result<rustls::server::danger::ClientCertVerified, rustls::Error> {
+        node_id_of_cert(end_entity.as_ref())
+            .map(|_| rustls::server::danger::ClientCertVerified::assertion())
+            .map_err(|e| rustls::Error::General(e.to_string()))
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        vec![SignatureScheme::ED25519]
     }
 }
 
-/// Server configuration: presents the node's certificate, does not ask for
-/// a client certificate.
-///
-/// mTLS is left out because the client already authenticates with the connection key
-/// in the header, and duplicating the authorization policy in two places is how it
-/// starts to diverge.
-pub fn server_config(id: &Identity, sans: &[String]) -> Result<Arc<rustls::ServerConfig>> {
-    install_crypto_provider();
-    let mut cfg = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_cert_resolver(Arc::new(NodeCertResolver::new(id, sans)?));
-    // `pom/1` first: the preference is the server's, and a peer that offers
-    // both has to settle on ours. `h2` and `http/1.1` exist for the browser,
-    // and hyper's automatic builder serves both.
-    cfg.alpn_protocols = vec![PEER_ALPN.to_vec(), b"h2".to_vec(), b"http/1.1".to_vec()];
-    Ok(Arc::new(cfg))
+/// The two server configurations of a node: one for peers, one for browsers.
+#[derive(Clone)]
+pub struct ServerConfigs {
+    /// Presents the node certificate and asks the peer for its own (mutual TLS).
+    pub peer: Arc<rustls::ServerConfig>,
+    /// Presents the browser certificate and asks for nothing.
+    pub browser: Arc<rustls::ServerConfig>,
 }
 
-/// Client configuration that only accepts the peer whose node_id is `expected`.
-pub fn client_config(expected: &str) -> Result<rustls::ClientConfig> {
+pub fn server_configs(id: &Identity, sans: &[String]) -> Result<ServerConfigs> {
     install_crypto_provider();
-    let mut cfg = rustls::ClientConfig::builder()
+    let node = node_certificate(id)?;
+    let mut peer = rustls::ServerConfig::builder()
+        .with_client_cert_verifier(any_node_client())
+        .with_single_cert(vec![node.cert], node.key)
+        .map_err(|e| anyhow!("node certificate rejected by rustls: {e}"))?;
+    peer.alpn_protocols = vec![PEER_ALPN.to_vec(), b"http/1.1".to_vec()];
+    let web = browser_certificate(sans)?;
+    let mut browser = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(vec![web.cert], web.key)
+        .map_err(|e| anyhow!("web certificate rejected by rustls: {e}"))?;
+    // `h2` and `http/1.1` exist for the browser, and hyper's automatic
+    // builder serves both.
+    browser.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    Ok(ServerConfigs {
+        peer: Arc::new(peer),
+        browser: Arc::new(browser),
+    })
+}
+
+/// This node's certificate, presented as the client certificate on every
+/// peer connection it opens. Set once at startup (`set_client_identity`);
+/// a test bench that never sets it connects without one.
+static CLIENT_IDENTITY: std::sync::OnceLock<NodeCertificate> = std::sync::OnceLock::new();
+
+pub fn set_client_identity(id: &Identity) -> Result<()> {
+    let _ = CLIENT_IDENTITY.set(node_certificate(id)?);
+    Ok(())
+}
+
+/// Client configuration that only accepts the peer whose node_id is
+/// `expected`, and proves this node's own identity to it.
+pub fn client_config(expected: &str) -> Result<rustls::ClientConfig> {
+    client_config_as(expected, CLIENT_IDENTITY.get())
+}
+
+/// `client_config` presenting `own` as the client certificate, or none.
+pub(crate) fn client_config_as(
+    expected: &str,
+    own: Option<&NodeCertificate>,
+) -> Result<rustls::ClientConfig> {
+    install_crypto_provider();
+    let builder = rustls::ClientConfig::builder()
         .dangerous()
-        .with_custom_certificate_verifier(Arc::new(PinnedNodeId::new(expected.to_string())))
-        .with_no_client_auth();
+        .with_custom_certificate_verifier(Arc::new(PinnedNodeId::new(expected.to_string())));
+    let mut cfg = match own {
+        Some(own) => builder
+            .with_client_auth_cert(vec![own.cert.clone()], own.key.clone_key())
+            .map_err(|e| anyhow!("node certificate rejected as a client certificate: {e}"))?,
+        None => builder.with_no_client_auth(),
+    };
     // `pom/1` is what makes the server pick the pinning certificate; without it
     // the browser certificate would come, which is ECDSA, and this verifier - which only
     // accepts Ed25519 - would refuse it. Fail-closed, but by mistake. `http/1.1`

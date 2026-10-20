@@ -11,7 +11,7 @@
 //!   see [`dev_auto_accept_env`].
 //!
 //! The bytes travel over the peers' existing HTTP gateway rather than the
-//! libp2p bitswap behaviour: that is the path already proven to carry traffic
+//! p2p bitswap behaviour: that is the path already proven to carry traffic
 //! between these machines (the inference pipeline uses it), and it gives byte
 //! ranges — so an interrupted multi-gigabyte transfer resumes instead of
 //! starting over.
@@ -766,7 +766,7 @@ async fn download(
     let total = meta.len();
 
     // The direct download asks for "bytes=<start>-", to resume. The download
-    // through the libp2p tunnel asks for one closed piece at a time
+    // through the p2p tunnel asks for one closed piece at a time
     // ("bytes=<first>-<last>"), because the tunnel holds an answer in memory.
     let range = headers.get(header::RANGE).and_then(|v| v.to_str().ok());
     let piece = range.and_then(crate::infer_tunnel::closed_range);
@@ -2281,7 +2281,7 @@ async fn fetch_pom(
     resp.json().await.ok()
 }
 
-/// The node a file comes from, as the libp2p tunnel addresses it.
+/// The node a file comes from, as the p2p tunnel addresses it.
 async fn tunnel_peer(
     state: &GatewayState,
     peer_id: &str,
@@ -2292,12 +2292,12 @@ async fn tunnel_peer(
         .find(|peer| peer.node_id == peer_id)
         .ok_or_else(|| "the source is not on the network".to_string())?;
     let tunnel = crate::peer_client::TunnelPeer::from_peer(peer)
-        .ok_or_else(|| "the source does not announce the libp2p tunnel".to_string())?;
-    Ok((tunnel, peer.libp2p_peer_id.clone().unwrap_or_default()))
+        .ok_or_else(|| "the source does not announce the p2p tunnel".to_string())?;
+    Ok((tunnel, peer.endpoint_id.clone().unwrap_or_default()))
 }
 
 /// Signed GET to the gateway of the node a file comes from, through the
-/// libp2p tunnel: the path left when no direct address connects.
+/// p2p tunnel: the path left when no direct address connects.
 async fn tunnel_get(
     state: &GatewayState,
     peer_id: &str,
@@ -2334,15 +2334,16 @@ async fn tunnel_get(
 /// and takes a few seconds to close.
 const TRANSFER_LINK_WAIT: Duration = Duration::from_secs(if cfg!(test) { 0 } else { 12 });
 
-/// Brings a file through the libp2p tunnel, one bounded piece at a time,
+/// Brings a file through the p2p tunnel, one bounded piece at a time,
 /// appending to `file` from `already`. Returns the bytes on disk.
 ///
-/// **Never through a public relay.** A piece only travels over a direct
-/// libp2p connection (dialed or hole punched) or a circuit through a member
-/// relay that allows transfers; the serving node checks the connection each
-/// piece arrives on and answers `TRANSFER_ROUTE_REFUSED_STATUS` otherwise.
-/// libp2p spreads requests over every connection with the peer, so a refusal
-/// is retried while a connection that may carry the file exists.
+/// **Never through a public relay.** A piece only travels when the
+/// connection's selected path is direct (dialed or hole punched) or goes
+/// through a member relay that allows transfers; the serving node checks the
+/// path of the connection each piece arrives on and answers
+/// `TRANSFER_ROUTE_REFUSED_STATUS` otherwise. A connection moves from a relay
+/// to a direct path when the punch closes, so a refusal is retried while a
+/// connection that may carry the file exists.
 #[allow(clippy::too_many_arguments)]
 async fn download_over_tunnel(
     state: &GatewayState,
@@ -2356,11 +2357,11 @@ async fn download_over_tunnel(
 ) -> Result<u64, String> {
     use crate::infer_tunnel::{TRANSFER_CHUNK_BYTES, TRANSFER_ROUTE_REFUSED_STATUS};
 
-    let (_, libp2p_peer) = tunnel_peer(state, peer_id).await?;
+    let (_, endpoint_peer) = tunnel_peer(state, peer_id).await?;
     let no_route = "no direct route to the source: the only path goes through a public relay, which does not carry files";
     let waited = Instant::now();
     loop {
-        let (allowed, _) = state.network.transfer_links(&libp2p_peer).await;
+        let (allowed, _) = state.network.transfer_links(&endpoint_peer).await;
         if allowed > 0 {
             break;
         }
@@ -2370,7 +2371,7 @@ async fn download_over_tunnel(
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
     info!(
-        "{}: no direct address, bringing it through the libp2p tunnel",
+        "{}: no direct address, bringing it through the p2p tunnel",
         part.display()
     );
 
@@ -2397,7 +2398,7 @@ async fn download_over_tunnel(
             let status = resp.status();
             if status.as_u16() == TRANSFER_ROUTE_REFUSED_STATUS {
                 // This request went over a connection that carries no files.
-                let (allowed, links) = state.network.transfer_links(&libp2p_peer).await;
+                let (allowed, links) = state.network.transfer_links(&endpoint_peer).await;
                 refusals += 1;
                 if allowed == 0 || refusals > 4 * links + 4 {
                     return Err(no_route.to_string());
@@ -2567,7 +2568,7 @@ async fn run_download(
     }
 
     // Direct HTTP first. Only when no address connects does the file come
-    // through the libp2p tunnel, and never across a public relay.
+    // through the p2p tunnel, and never across a public relay.
     let direct = match req.send().await {
         Ok(resp) => Some(resp),
         Err(error) if error.is_connect() => {
@@ -3160,7 +3161,7 @@ mod offer_latency_tests {
         .await
     }
 
-    /// The download through the libp2p tunnel asks for one closed piece at a
+    /// The download through the p2p tunnel asks for one closed piece at a
     /// time. The sender answers exactly that piece, keeps one job for the
     /// whole file, and does not reopen a job it already closed.
     #[tokio::test]

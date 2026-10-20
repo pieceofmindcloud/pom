@@ -52,14 +52,17 @@ separately). Layout:
 
 The permanent runtime guides. Beyond what their titles say:
 
-- `p2p-network.md` - discovery, identity, TLS, the libp2p channels for process
-  logs and audit replicated between admins, and the network Chat (libp2p
+- `p2p-network.md` - discovery, identity, TLS, the iroh endpoint's protocols for process
+  logs and audit replicated between admins, and the network Chat (endpoint
   protocol, validation and relay by the principal, authenticated switch
   ratchet, inference tunnel priority over chat traffic). Tests use
   `Network::testkit` on loopback with an injectable announce target and no
   global broadcast; authenticated cluster policy probes use real listeners in
   the testkit and walk gateway candidates when a ghost address answers
   401/403.
+- `security-model.md` - the overview of who may do what: roles, trust chain,
+  membership tokens and revocation, mutual TLS, route scopes and node-local API
+  keys. `http-api.md` stays the route reference.
 - `slicing.md` - required tensor selection, the real cost of repeated heads,
   rebasing layer metadata to local numbering and header-only catalog reads,
   including for the selected model.
@@ -124,8 +127,9 @@ before relying on them, the code moves.
 Notable pairs:
 
 - `2026-05-24-pkarr-discovery-design.md` and
-  `2026-05-25-dcutr-nat-traversal-design.md` - internet discovery, the basis of
-  `pkarr_node.rs`/`discovery.rs`.
+  `2026-05-25-dcutr-nat-traversal-design.md` - internet discovery under libp2p,
+  the basis of `pkarr_node.rs`; the transport has since moved to iroh (see
+  `subsystems/p2p-network.md`, section 3).
 - `2026-08-07-principal-node-architecture-design.md` - setup mode and the
   connection key.
 - `2026-08-13-rota-dinamica-e-implantacao-incremental-design.md` and its plan -

@@ -41,7 +41,7 @@ Per-file list:
   the principal's key, and neither the trust root nor joining from Public
   networks brings an IP bootstrap. When the wizard was opened from Public
   networks, `SetupState.joinAccepts` holds that network's
-  `accepted_enrollments` and `StartScreen` disables the `node`/`infer` roles
+  `accepted_enrollments` and `StartScreen` disables the `worker`/`visitor` roles
   it does not accept (`admin` founds its own network and stays available).
   `PublicDirectoryPanel`, in the join step, lists public networks from
   `GET /api/setup/public-networks`. A machine in setup mode has nobody to ask,
@@ -195,8 +195,8 @@ Per-file list:
   `../components/LocationEditor` (map, browser location on request, city from
   the node's offline database, and what the network publishes); the discovery
   label is shown read-only below it. `TraversalPanel` shows the
-  `traversal` field of `/api/ui/cluster` - the AutoNAT state, the direct addresses and
-  the published circuits, the relay reservations and the hole punches - because two nodes behind
+  `traversal` field of `/api/ui/cluster` - the NAT report state, the direct addresses and
+  the relay URLs, the relays connected and the hole punches - because two nodes behind
   a NAT that cannot see each other fail at one of three steps, and before this knowing which one
   required debug logs on the right machine; an older node does not send the field and
   the panel does not appear. The screen also aggregates nodes,
@@ -211,10 +211,10 @@ Per-file list:
   Description and rules are edited as plain Markdown text with no live
   preview, and the channels in one line; the read-only view renders them with
   the Markdown renderer the Chat uses.
-- `Plugins.tsx` - `/plugins` combines the public catalog at
-  `https://license.pieceofmind.cloud/v1/plugins` with local state from
+- `Plugins.tsx` - `/plugins` combines the public catalog, read by the node
+  (`/api/ui/plugin-catalog`), with local state from
   `GET /api/ui/plugins`, using `code` as the identity. The public client lives
-  in `lib/pluginCatalog.ts`, sends no node credentials and accepts plugins
+  in `lib/pluginCatalog.ts` and accepts plugins
   with a compatible commercial release. Missing image data uses placeholders;
   up to four screenshots open in an Escape-dismissible lightbox that restores
   focus. Descriptions use Brazilian Portuguese when available and otherwise
@@ -277,14 +277,14 @@ Per-file list:
   building and installing even inactive plugins. A local build is separate
   from license state, grants no licensed features and does not activate a
   license; an existing licensed/GitHub installation keeps its entitlement.
-  The action calls the AdminOnly route and shows success or the build
+  The action calls the PrincipalOnly route and shows success or the build
   stage/exit code without compiler output, and does not use the GitHub release
   route. The page has its own Settings > Plugins menu entry. Commercial release
   data is selected for the local node's `system.os`/`system.arch`; if the
   catalog does not publish that target, the screen shows no release rather than
   suggesting one for another platform.
 - `MyMachine.tsx` - "My Machine" (route `/config/my-machine`, its own
-  entry in the Network menu, also accessible to `infer`). It contains exactly what
+  entry in the Network menu, also accessible to `visitor`). It contains exactly what
   left `NetworkSettings.tsx`: the "This machine" panel (hostname, `node_id`,
   ports, profile, effective authority, and `Sair da rede`/`Voltar para a rede` ("Leave the network"/"Return to the network") via
   `POST /api/ui/leave`/`/api/ui/rejoin` - abdication, not privilege, available
@@ -295,6 +295,14 @@ Per-file list:
   The relay options moved to `NetworkSettings.tsx`. `Sair da rede` ("Leave the network") here is different
   from `Esquecer rede` ("Forget network") in `NetworkSettings.tsx`: one disconnects the machine from the cluster,
   the other erases the local configuration and restarts in the setup.
+
+- `MyBudget.tsx` - "Budget" (route `/config/budget`, Network menu, every
+  profile): this machine's token budgets from `GET /api/ui/quota` - one panel per
+  plan with input/output bars and the window's turnover, the session-reset
+  credits (`POST /api/ui/quota/reset`) and the request for more budget
+  (`POST /api/ui/quota/request`). Without an admin's logs plugin answering it
+  says so instead of showing zero. The admins' side is the logs plugin's Quota
+  screen.
 
 ## Chat
 - `Chat.tsx` - The chat: `POST /v1/chat/completions` with `stream: true`,
@@ -335,7 +343,7 @@ Per-file list:
   assistant message keeps its summary and full telemetry without a reload.
   Each hop's backend telemetry separates the llama.cpp evaluation call from
   explicit backend synchronization.
-  The `infer` profile hides the source, the timing and throughput summaries and the
+  The `visitor` profile hides the source, the timing and throughput summaries and the
   detailed telemetry panel on this screen; that is presentation, not
   authorization.
   In the same composer, `InferenceHeadChoice` shows through which layer-0 head
@@ -368,7 +376,7 @@ Per-file list:
 - `NetworkChat.tsx` - its own page `/network-chat`, with the same visual pattern
   as the AI Chat. It reads the
   authenticated snapshot and sends text, file and typing actions through the
-  node's libp2p-backed gateway. It resolves `node_id` to the node hostname/name
+  node's endpoint-backed gateway. It resolves `node_id` to the node hostname/name
   map used by the dashboard, downloads persisted file blobs on demand, and
   polls typing state without touching the AI session store. Message and typing
   ids come from `lib/id.ts`, so sending over plain HTTP does not call the
@@ -711,7 +719,7 @@ Per-file list:
   harnesses - `GET/POST /admin/api-keys`, `DELETE /admin/api-keys/:id`. The
   list carries only `key_hint` and the tracking id; the secret appears once,
   in the `IssuedSecret` window right after creation.
-  On the `infer` profile, it shows only this node's active key, hides the node selector
+  On the `visitor` profile, it shows only this node's active key
   and, when generating a new key, revokes the previous one. The API key routes are
   `infer+node+admin`: they are the credential of whoever serves `/v1`, and every profile
   serves. `ConnectionKeys`: the cluster operator key, read from
@@ -719,9 +727,9 @@ Per-file list:
   is in that machine's `pom.json` and the screen only exists behind the administrative boundary.
   **Changing it** (`POST /admin/regenerate-key`) is another thing: the key is the same
   across the whole cluster and rotating it cuts every other node, so the button only
-  appears when `authority_level` is present. The administrator chooses the node when
-  creating one and sees their own full tokens, while the tokens of other nodes
-  stay masked; node and infer see and create only their own.
+  appears when `authority_level` is present. A token belongs to the node that
+  minted it: it works there only, never leaves it, and survives a change of
+  network, so the screen has no node picker.
 - Request Logs and Statistics **do not exist here**: they are screens of the
   `enterprise` plugin, delivered by `pom-plugin-logs` through the plugin UI
   mechanism (`docs/subsystems/plugins-ui.md`). `App.tsx` shows the fallback
@@ -734,7 +742,7 @@ Per-file list:
 - `NetworkSettings.tsx` - This node's membership and network information
   screen. Its `NetworkParticipants` export reuses the known-node area at
   `/config/network/participants`; the route is allowed only to `admin` and
-  `node`, and block/unblock mutations remain admin-only. Each peer row shows
+  `worker`, and block/unblock mutations remain admin-only. Each peer row shows
   the route actually in use (`AdminNode.route`: `RouteBadge` + `routeAddress`),
   never the advertised `addr`, which only goes into the row's `title`. A
   relayed route names the relay kind (`relay_kind`: dedicated relay or member
@@ -747,11 +755,11 @@ Per-file list:
   present - `profile: admin` alone grants nothing. The "Papel" ("Role") row was replaced
   by the effective authority: the old `NodeInfo.role` left `/api/ui/node` with
   the trust model and was rendering an empty cell.
-  The `infer` profile also opens `/config/network`, but the backend returns only its
-  own machine. The screen no longer offers turning an `infer` into a
-  `node`: the role is what the network admitted the machine as, and changing
+  The `visitor` profile also opens `/config/network`, but the backend returns only its
+  own machine. The screen no longer offers turning a `visitor` into a
+  `worker`: the role is what the network admitted the machine as, and changing
   it means leaving and asking for admission again. The card says so and has
-  no action. A `node` has no step down to `infer` either. Both node routes
+  no action. A `worker` has no step down to `visitor` either. Both node routes
   are gone: roles are set at admission and changing one means rejoining. O
   administrador principal pode promover um nó via
   `POST /admin/nodes/:id/promote-admin`.
@@ -774,14 +782,14 @@ Per-file list:
 - `Preferences.tsx` - Local settings screen under Settings (`Configurações`): owns the
   administrative exposure mode and gateway port, accepts a password only in
   network mode, and saves its Argon2id hash to `pom.json` through
-  `POST /api/ui/access`. It also mounts `TlsPanel`, which moves the cluster TLS
-  choice out of Network and explains when it is useful, plus `ThermalPanel` and
-  `HuggingFaceSettingsPanel`. It also mounts the cluster logs switch,
+  `POST /api/ui/access`. It also mounts `ThermalPanel` and
+  `HuggingFaceSettingsPanel`; there is no TLS panel, since TLS between nodes is
+  always on. It also mounts the cluster logs switch,
   available only to the principal and applied in real time, and `QuicPanel`, which
   toggles the HTTP/3 preference in `POST /api/ui/network/quic` with the same
   authority control. The access password is a human credential and is not the
   cluster `connection_key`. The route `/config/preferences/admin` renders
-  only TLS, QUIC, process logs between nodes and the network chat, besides the
+  only QUIC, process logs between nodes and the network chat, besides the
   local discovery switch, off by default; the normal route keeps
   exposure, Hugging Face and thermal protection; Storage only has a menu entry.
 - `NotFound.tsx` - 404 fallback with a link back to `/`.

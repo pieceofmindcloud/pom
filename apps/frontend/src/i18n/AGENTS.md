@@ -54,7 +54,8 @@ as raw text at build time and interprets the messages synchronously with
   `notifications.*` group also names succession offers. The keys of the
   removed in-place role changes (`notifications.nodePromotion*`,
   `notifications.nodeRelinquish*`, `network.requestNode*`,
-  `network.relinquishNode*`) are still in the table and unused.
+  `network.relinquishNode*`) are still in the table and unused, and so are the
+  `network.tls*` keys of the removed TLS switch.
 - The `plugins.*` group covers loading, errors and empty-catalog states,
   missing metadata, available releases, prices, active or unnecessary licenses,
   per-plugin activation usage and limits, public-store purchase links, the
@@ -108,7 +109,7 @@ as raw text at build time and interprets the messages synchronously with
   ecosystem labels, version and repository.
 - `provider.tsx` - `LocaleProvider`, the `useI18n()` hook and the `LanguageSelect` component.
 
-The official profile identifiers are `admin`, `node` and `infer`. The visible
+The official profile identifiers are `admin`, `worker` and `visitor`. The visible
 label of the first goes through `profile.admin`; the last two stay lowercase by
 product decision. The toolbar, the network screen and the bootstrap use these
 keys, never literals nailed into components.
@@ -179,7 +180,9 @@ The keys `network.forgetNetwork*` name the confirmation and the outcome of the
 local network cleanup; they must not be confused with `network.leave`, which
 takes the machine out of the cluster without erasing its configuration.
 The keys `network.traversal*` label the NAT traversal panel, including the three
-AutoNAT states in `network.traversalNat.{unknown,public,private}`.
+NAT report states in `network.traversalNat.{unknown,public,private}`. The
+`network.*` copy that named libp2p now names the p2p transport (revisions in
+`locales.equivalence.test.ts`).
 The keys `publicNetworks.*`, `network.metrics*`, `network.participants*`,
 `keys.*`, `preferences.admin*` and `nav.*` cover the reorganization of the
 screens, including unavailable metric states, the reachable/unreachable states
@@ -200,7 +203,7 @@ The inference head combo also has keys for its accessible name and for the
 diagnostic hint shown next to the native selector with a model visual.
 
 The `chat.history` message names the bounded conversation list used by the
-`infer` Sidebar. It remains in both CSV columns even though it is primarily an
+`visitor` Sidebar. It remains in both CSV columns even though it is primarily an
 accessible label, so the menu has no language-specific copy in the component.
 
 The `chat.head*` messages name the infer-only entry choice: selected head,

@@ -48,7 +48,8 @@ If you click **No** on the UAC prompt, POM still runs, but other nodes may not b
 | 42777 | UDP | Discovery of nodes on the local network |
 | 43777 | UDP | Inference traffic |
 | 44777 | UDP | Gateway traffic |
-| 52777 | TCP | Peer connections (libp2p) |
+| 52777 | UDP | Peer connections (p2p endpoint) |
+| 52777 | TCP | Relay for the cluster's nodes behind NAT |
 
 The ports follow the discovery port, 42777. If you change it, the rules change with it.
 

@@ -83,7 +83,7 @@ vi.mock("../lib/queries", () => ({
       if (!enabled) return;
       const rtt = streamIndex === 1 ? 12.5 : 25;
       const timer = setTimeout(() => {
-        setData({ measurements: [{ from_node_id: "abcdef0123456789", to_node_id: "fedcba9876543210", rtt_ms: rtt, transport: "libp2p" }] });
+        setData({ measurements: [{ from_node_id: "abcdef0123456789", to_node_id: "fedcba9876543210", rtt_ms: rtt, transport: "p2p" }] });
       }, 30);
       return () => clearTimeout(timer);
     }, [enabled, _messageId]);

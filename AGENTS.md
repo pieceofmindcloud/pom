@@ -15,7 +15,7 @@ place is there, not here.
 |---|---|
 | `build-and-run.md` | crate workspace, `cargo build`/features, Docker, release, environment variables, scripts |
 | `operations.md` | bringing up a cluster, verifying the inference is joint, field gotchas, two peers on the same machine, harness, load monitor |
-| `p2p-network.md` | UDP + libp2p discovery, announced addresses, dynamic routes, pkarr/DCuTR, identity |
+| `p2p-network.md` | UDP + iroh discovery, announced addresses, dynamic routes, pkarr, relays and hole punching, identity |
 | `inference.md` | prefill, decode, hidden-state wire, ring vs direct reply, speculative/MTP, prompt limit |
 | `parallelism.md` | pipeline parallelism, tensor parallelism, choice by topology and telemetry |
 | `slicing.md` | GGUF split/merge, ggml type table, size-based planning |
@@ -26,6 +26,7 @@ place is there, not here.
 | `web-ui.md` | how the UI comes up, menu, modals, Panel, Chat, slicing/deploy screens |
 | `plugins-ui.md` | menus, screens, routes, profiles and i18n provided by plugins (`pom-plugin-ui/v1` manifest) |
 | `enterprise-licensing.md` | independent plugins, licenses, lease, process host, GitHub repositories |
+| `security-model.md` | roles, trust chain, membership tokens, revocation, mutual TLS, route scopes, local API keys |
 
 **By folder** (`AGENTS.md`) - what each file does, function by function, and the
 links to other folders: `crates/`, `crates/node/`, and inside
@@ -153,7 +154,7 @@ and `build-and-run.md` for the scripts and variables.
 ## Architecture in one paragraph
 
 A single Rust binary (`crates/node`, package `node`) that coordinates LLM layers
-across machines. Each node discovers peers over UDP/libp2p, announces the layer
+across machines. Each node discovers peers over UDP and an iroh endpoint, announces the layer
 range it serves, and any node can be the gateway: `POST /api/generate` and the
 `/v1` routes run **only** the distributed pipeline - with no plan covering
 `0..total_layers` the request fails with a message, there is no fallback to
@@ -182,14 +183,17 @@ breaks the whole product.
 - **`node_id` is the machine's name in the cluster** and the key of
   `blocked_nodes`; deleting `.pom-node.key` creates a new machine. It is the
   node's **only** key:
-  the `PeerId`, the pkarr `pk:` key and the authority key all derive from it.
-  **An IP is never an identity**: signed documents and screens carry keys, and
-  an address is only resolved at dial time (direct, a dedicated relay with DCuTR,
-  and beside it a member relay). → `p2p-network.md`, section 0
+  the iroh endpoint id (the public key itself), the pkarr `pk:` key and the
+  authority key all derive from it. **An IP is never an identity**: signed
+  documents and screens carry keys (and relay URLs with host names), and an
+  address is only resolved at dial time (direct, or through a relay - n0's, a
+  dedicated one or a member - with iroh punching the NAT underneath). → `p2p-network.md`, section 0
 - **The connection key is the same across the whole cluster** and is the operator
   credential: it authenticates `/admin/*`, `/api/ui/{plan,apply,launch}` and the
   node-to-node synchronization. `POST /api/generate` and every `/v1/` route accept
-  only an active API key. The UI's administrative surface uses an in-memory session
+  only an active API key **minted by that same node**: a key never leaves its
+  node and survives a change of network, while the cluster authenticates the
+  inference by the gateway node's membership, never by the client's key. The UI's administrative surface uses an in-memory session
   with an `HttpOnly` cookie; the human password lives only in the tab's memory and
   never goes to storage or a URL. The node persists only its Argon2id hash. In
   local mode, the same boundary covers the static files, but never the pipeline
@@ -211,19 +215,24 @@ breaks the whole product.
   (transfers, slicing, `apply`, being a deploy target), whoever asks, an admin
   included. What one node may ask of another depends on who signed the request:
   routes that govern the network take the principal, deploy routes take any admin
-  of the trust chain, routes of a serving node take a peer that is not an
-  inference node, and the connection key alone opens none of them - every member
-  holds it. **A secondary admin deploys and undeploys models and nothing else**:
-  members, admissions, settings, keys and every change to the trust chain come
-  from the principal, on the screen and between nodes. The role is granted at
-  admission; on the principal a machine admitted as an inference node stays one
-  whatever it announces. → `http-api.md`
+  of the trust chain, routes of a serving node take a worker, and the
+  connection key alone opens none of them - every member holds it. A machine's
+  own operator routes (API keys, plugins, its name, networks, logs) are reached
+  by no other node at all. **The trust chain names the admins only**: a worker
+  or a visitor carries a short lived membership token an admin signed
+  (`src/membership.rs`), which every node checks against the chain alone, so
+  admitting a member changes no trust document. **A secondary admin deploys
+  models, decides admissions and removes workers and visitors, and nothing
+  else**: settings, keys, admins and every change to the trust chain come from
+  the principal, on the screen and between nodes. The role is granted at
+  admission and a machine admitted as a visitor stays one whatever it
+  announces. → `http-api.md`
 - **Plugins are independent of each other and are a process boundary.** POM no
   longer has a single product-wide "Enterprise license": `PluginManager`
   (`crates/node/src/plugins.rs`) keeps an activation, lease, heartbeat, process
   host and version-update state PER `plugin_code` returned by the license server
   or restored from local state, with no static catalog in the binary and no state
-  shared between plugins. Any profile (`admin`, `node`, `infer`) activates and
+  shared between plugins. Any profile (`admin`, `worker`, `visitor`) activates and
   installs plugins on its own node, including the development rebuild (which
   requires `POM_DEV_MODE`). Each plugin can only be loaded by `pom-plugin-host`
   through the C ABI and the versioned IPC in `crates/enterprise-protocol` - the
@@ -291,8 +300,8 @@ breaks the whole product.
   up. → `deployment.md`, `p2p-network.md`
 - **No weight travels the network because of slicing**: each peer extracts
   its own range from its own copy. A file transfer is an explicit act of the
-  operator, and **a file never crosses a public relay** (one in `relay_peers`,
-  or one that is not a member of the cluster): it goes direct, over a hole
+  operator, and **a file never crosses a public relay** (n0's, one in
+  `relay_peers`, or one that is not a member of the cluster): it goes direct, over a hole
   punched connection, or through a relay of the cluster itself. A node the
   internet reaches relays for its own cluster by default; relaying for everyone
   is an option. → `slicing.md`, `file-transfer.md`, `p2p-network.md`
@@ -301,12 +310,16 @@ breaks the whole product.
   (`brand::config_filename()`, `brand::env_var()`, `brand::gguf_key()`,
   `brand::dns_record()`). The only exception cargo forces is the `[[bin]]` in
   `crates/node/Cargo.toml`. → `build-and-run.md`
-- **Gossip is never the source of truth of the TLS flag.** The `tls` field of the
-  Announce is a trigger; the policy is only written after an authenticated read
-  from the principal, and a failed read preserves the local value. UDP is in the
-  clear and unauthenticated: obeying it would offer the downgrade TLS exists to
-  prevent. Each node's certificate is derived from its `.pom-node.key` and
-  verified by `SHA256(pubkey) == node_id`. → `p2p-network.md`
+- **Between nodes it is always mutual TLS, and the key alone opens nothing.**
+  There is no TLS switch; plain HTTP is served only to loopback (or, in development,
+  to remote browsers with `POM_INSECURE_ADMIN_UI=1`), which keeps
+  `http://localhost` working for the operator. Each node's certificate is
+  derived from its `.pom-node.key`, verified by `SHA256(pubkey) == node_id`, and
+  presented on both ends, so a call authorized by the connection key also needs
+  the caller to be a member today: an admin of the chain, or a node with a valid
+  membership token no admin revoked. Every UDP announce is signed by the node
+  key. A ban is a revocation any admin signs, so it holds while the principal is
+  away. → `p2p-network.md` (2, 5), `http-api.md`
 - **Route tests use `gateway::testkit`**, never real UDP - the suite transmits on
   the LAN and could inject messages into a live cluster. → `http-api.md`
 

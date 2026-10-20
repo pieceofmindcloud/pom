@@ -692,7 +692,7 @@ repository (not even in git history).
 | `POM_CONFIG` | Path of `pom.json` (default `<project_root>/pom.json`). |
 | `POM_DB_DIR` | Directory of `pom.db` and its WAL/SHM files. If absent or empty, uses `<project_root>`; the directory is created at startup. |
 | `POM_DEV` | The common Compose sends `1` for development configuration; it is not the flag that enables local rebuilds. |
-| `POM_DEV_MODE` | Only the exact value `1` enables the panel and the AdminOnly plugin rebuild/reinstall routes. The local Compose sends that value. |
+| `POM_DEV_MODE` | Only the exact value `1` enables the panel and the PrincipalOnly plugin rebuild/reinstall routes. The local Compose sends that value. |
 | `POM_DEV_PLUGINS_DIR` | Host directory with known plugin sources (`..` by default, the workspace containing the sibling plugin repositories), mounted at `/opt/pom/dev-plugins` in the local Compose. |
 | `POM_UI_DIST` | Where `webapp.rs` reads the UI bundle (default `<project_root>/apps/frontend/dist`). The Docker image sets it explicitly. |
 | `POM_MODEL_DIRS` / `POM_SHARD_DIR` | Whole-model folders (several, separated like `PATH`: `:` on Unix, `;` on Windows) and the slice folder. They beat `model_dirs`/`shard_dir` in `pom.json` and are not persisted; empty counts as absent. The Storage screen locks the field set by one of them. |
@@ -701,6 +701,7 @@ repository (not even in git history).
 | `POM_RAG` | `0` turns transparent retrieval off on this gateway. `POM_RAG_TIMEOUT_MS` (default 300), `POM_RAG_PASSAGES` (default 1), `POM_RAG_MIN_SCORE` (default 0.8), `POM_RAG_REWRITE` (`0` keeps long messages away from the model), `POM_RAG_REWRITE_MIN_CHARS` (default 400), `POM_RAG_DECISION` (`1` first asks the model whether the message needs documents; off by default) and `POM_RAG_DECISION_MIN` (default 0.3) tune it. See `plugins-ui.md`, "Transparent retrieval (RAG)". |
 | `POM_CACHE_RAM` | Host-memory KV cache in MiB (llama-server's `--cache-ram`): a positive ceiling, `0` for off, `-1` or unset for as much as the machine allows. Beats `cache_ram_mib` in `pom.json`. Half of the host RAM always stays available to the user and a host with less than 12 GiB caches nothing. See `inference.md` §3.1.2. |
 | `POM_SLOT_AUTO_TTL_SECS` | TTL of an unused automatic prefix snapshot, in seconds (default 7 days). Beats `slot_auto_ttl_secs` in `pom.json`. Read at gateway startup. |
+| `POM_INSECURE_ADMIN_UI` | `=1` serves the admin UI in plain HTTP to remote browsers too, instead of redirecting them to https. Development only, for machines reached by IP with no trusted certificate; read once at startup. Peer-only routes stay refused in plain text and plain node-to-node calls still prove no membership. Loopback never needs it. |
 | `POM_DEV_AUTO_ACCEPT_TRANSFERS` | `=1` makes the **receiving** node accept every transfer offer without a click. Development only; read once at startup. The sender cannot ask for it. |
 | `POM_DEV_UPDATE` | `=1` turns on the "Update and restart" gate on the peer card (`devupdate.rs`). Per process, never in the config. |
 | `POM_BUILD_FEATURES` | Features the machine builds with in devupdate (`cuda`/`metal`); without it a CUDA machine loses the GPU on the first click. |

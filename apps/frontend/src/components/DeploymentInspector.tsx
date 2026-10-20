@@ -50,7 +50,7 @@ import {
   seedText,
   withLlamaCppName,
 } from "../lib/llamaCppNames";
-import type { EngineSetting, MtpPlacement, PomSetting, SidecarOption, SidecarSlot } from "../lib/types";
+import type { EngineSetting, InferenceRole, MtpPlacement, PomSetting, SidecarOption, SidecarSlot } from "../lib/types";
 import type {
   DeploymentCapabilities,
   InferenceMode,
@@ -374,6 +374,8 @@ export function DeploymentInspector({
   inferenceModeAlert,
   /** The hidden-state precision only exists when the pipeline crosses machines. */
   showHiddenStateDtype = false,
+  machineRoles,
+  onMachineRole,
   pomDevMode = false,
   inferenceService,
 }: {
@@ -388,6 +390,9 @@ export function DeploymentInspector({
   showInferenceMode?: boolean;
   inferenceModeAlert?: string | null;
   showHiddenStateDtype?: boolean;
+  /** A whole model on several machines split into prefill and decode: each machine's role, edited in the POM card. */
+  machineRoles?: { nodeId: string; label: string; role: InferenceRole }[];
+  onMachineRole?: (nodeId: string, role: InferenceRole) => void;
   pomDevMode?: boolean;
   /** A plugin's inference service runs the model (Strata): its card holds only
    *  what that engine reads - the context, the concurrent requests, idle
@@ -580,10 +585,72 @@ export function DeploymentInspector({
     </>
   );
 
+  /** A whole-model machine's part in a prefill/decode split (the POM's, whatever the engine): the deployment's, or
+   *  one row per machine when the whole model runs on several of them. */
+  const roleRow = (key: string, label: string, role: InferenceRole, onRole: (role: InferenceRole) => void) => (
+    <InspectorRow key={key} label={label} tip={t("deploy.knob.inference_roleHint")}>
+      {readOnly ? (
+        <ReadValue>{role}</ReadValue>
+      ) : (
+        <Select
+          aria-label={label}
+          name={key}
+          value={role}
+          onChange={(event) => onRole(event.target.value as InferenceRole)}
+          compact
+        >
+          <option value="both">{t("deploy.knob.inference_roleBoth")}</option>
+          <option value="prefill">{t("deploy.knob.inference_rolePrefill")}</option>
+          <option value="decode">{t("deploy.knob.inference_roleDecode")}</option>
+        </Select>
+      )}
+    </InspectorRow>
+  );
+  const inferenceRoleField = () =>
+    machineRoles && machineRoles.length > 1
+      ? machineRoles.map((machine) =>
+          roleRow(
+            `inference_role_${machine.nodeId}`,
+            `${t("deploy.knob.inference_role")} · ${machine.label}`,
+            machine.role,
+            (role) => onMachineRole?.(machine.nodeId, role),
+          ))
+      : roleRow("inference_role", t("deploy.knob.inference_role"), value.inference_role ?? "both", (role) =>
+          set({ inference_role: role }));
+
+  /** The prefill/decode split's threshold; empty takes the engine's default. */
+  const prefillMinTokensField = () => (
+    <InspectorRow key="prefill_min_tokens" label={t("deploy.knob.prefill_min_tokens")} tip={t("deploy.knob.prefill_min_tokensHint")}>
+      {readOnly ? (
+        <ReadValue>{value.prefill_min_tokens == null ? "-" : showNumber(value.prefill_min_tokens)}</ReadValue>
+      ) : (
+        <Input
+          aria-label={t("deploy.knob.prefill_min_tokens")}
+          name="prefill_min_tokens"
+          type="number"
+          min={0}
+          placeholder="4096"
+          value={value.prefill_min_tokens ?? ""}
+          onChange={(event) =>
+            set({
+              prefill_min_tokens: event.target.value === "" ? null : Math.max(0, Math.round(Number(event.target.value) || 0)),
+            })
+          }
+          compact
+          className="text-right font-mono"
+        />
+      )}
+    </InspectorRow>
+  );
+
   if (inferenceService) {
     // The POM carries the hidden state between the plugin's stages, so its own
-    // settings only exist when the slices cross machines.
-    const pomSettings = showHiddenStateDtype ? (inferenceService.pomSettings ?? []) : [];
+    // settings only exist when the slices cross machines. The prefill/decode
+    // role is the opposite: it belongs to a machine that runs the whole model.
+    const declared = inferenceService.pomSettings ?? [];
+    const pomSettings = declared.filter((setting) =>
+      setting === "inference_role" || setting === "prefill_min_tokens" ? !showHiddenStateDtype : showHiddenStateDtype,
+    );
     // The engine's own settings, and the ones the service places in the POM card (whatever the slices).
     const engineSettings = (inferenceService.settings ?? []).filter((setting) => setting.placement !== "pom");
     const pomCardSettings = (inferenceService.settings ?? []).filter((setting) => setting.placement === "pom");
@@ -617,6 +684,8 @@ export function DeploymentInspector({
           <Section title={t("inspector.sectionPom")} tone="aqua" guide={DEPLOY_SETTINGS_GUIDES.pom}>
             {pomSettings.includes("prefill_max_inflight_chunks") && numeric("prefill_max_inflight_chunks")}
             {pomSettings.includes("hidden_state_dtype") && hiddenStateField()}
+            {pomSettings.includes("inference_role") && inferenceRoleField()}
+            {pomSettings.includes("prefill_min_tokens") && prefillMinTokensField()}
             {pomCardSettings.length > 0 && (
               <EngineSettingsFields
                 settings={pomCardSettings}

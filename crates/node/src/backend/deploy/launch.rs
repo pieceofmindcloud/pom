@@ -103,11 +103,17 @@ pub(super) async fn deploy_endpoint(
                 .iter()
                 .map(|step| step.target_node_id.clone())
                 .collect();
+            let roles: Vec<crate::webui::InferenceRole> = plan
+                .steps
+                .iter()
+                .map(|step| step.inference_role.unwrap_or(params.inference_role))
+                .collect();
             plan.blocked = crate::plugin_engine::deploy_block(
                 &state,
                 service,
                 req.kind == DeployKind::Whole,
                 &targets,
+                &roles,
             )
             .await;
         }
@@ -500,7 +506,7 @@ pub(super) fn tp_members(
             } else {
                 m.addr_candidates.clone()
             },
-            libp2p_peer_id: m.libp2p_peer_id.clone(),
+            endpoint_id: m.endpoint_id.clone(),
             supports_tunnel: m.supports_tunnel,
         })
     };
@@ -572,6 +578,7 @@ pub(super) fn launch_targets(
                 merge: None,
                 n_gpu_layers: target.n_gpu_layers,
                 offload_kqv: target.offload_kqv,
+                inference_role: None,
                 no_embeddings: None,
                 peer_index: None,
                 peer_count: None,
@@ -666,6 +673,7 @@ pub(super) fn launch_targets(
                 merge: Some(merge),
                 n_gpu_layers: step.n_gpu_layers,
                 offload_kqv: step.offload_kqv,
+                inference_role: step.inference_role,
                 no_embeddings: None,
                 peer_index,
                 peer_count,
@@ -712,6 +720,7 @@ pub(super) fn launch_targets(
             merge: None,
             n_gpu_layers: step.n_gpu_layers,
             offload_kqv: step.offload_kqv,
+            inference_role: step.inference_role,
             no_embeddings: None,
             peer_index,
             peer_count,
@@ -757,6 +766,7 @@ pub(super) fn launch_targets(
                 merge: None,
                 n_gpu_layers: head.n_gpu_layers,
                 offload_kqv: head.offload_kqv,
+                inference_role: None,
                 no_embeddings: None,
                 peer_index: None,
                 peer_count: None,

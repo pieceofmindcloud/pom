@@ -31,7 +31,6 @@ pub(crate) async fn start_gateway_with_ready(
         )
         .route("/peers", get(handle_peers))
         .route("/health", get(handle_health))
-        .route(crate::tls_policy::TLS_POLICY_PATH, get(cluster_tls))
         .route(crate::quic_policy::QUIC_POLICY_PATH, get(cluster_quic))
         .route(
             crate::cluster_logs_policy::CLUSTER_LOGS_POLICY_PATH,
@@ -731,21 +730,15 @@ pub(crate) async fn local_network_view(state: &GatewayState) -> Option<PublicNet
     })
 }
 
-/// Host of an IP multiaddress (brackets for IPv6), to build the gateway URL at
+/// Host of an IP endpoint address (brackets for IPv6), to build the gateway URL at
 /// dial time.
-fn multiaddr_host(addr: &str) -> Option<String> {
-    use libp2p::multiaddr::Protocol;
-    addr.parse::<libp2p::Multiaddr>()
-        .ok()?
-        .iter()
-        .find_map(|protocol| match protocol {
-            Protocol::Ip4(ip) => Some(ip.to_string()),
-            Protocol::Ip6(ip) => Some(format!("[{ip}]")),
-            Protocol::Dns(host) | Protocol::Dns4(host) | Protocol::Dns6(host) => {
-                Some(host.to_string())
-            }
-            _ => None,
-        })
+/// The host of a direct endpoint address (`ip:port`), ready for a URL.
+fn endpoint_addr_host(addr: &str) -> Option<String> {
+    let socket = addr.parse::<std::net::SocketAddr>().ok()?;
+    Some(match socket.ip() {
+        std::net::IpAddr::V4(ip) => ip.to_string(),
+        std::net::IpAddr::V6(ip) => format!("[{ip}]"),
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -810,7 +803,7 @@ pub(crate) fn locator_from(record: Option<&crate::pkarr_node::PkarrRecord>) -> N
             relays: 0,
         },
         Some(record) => NetworkLocator {
-            reachability: if !record.multiaddrs.is_empty() {
+            reachability: if !record.addrs.is_empty() {
                 "direct"
             } else if !record.relays.is_empty() {
                 "relayed"
@@ -864,7 +857,7 @@ async fn locatable_keys(state: &GatewayState) -> std::collections::HashSet<Strin
 /// `GET /api/public/networks/locate?key=pk:...` - resolves the publisher's key
 /// through pkarr and says whether the network has a direct path, only a relay
 /// path, or no record. The node does the resolving: the browser does not speak
-/// libp2p and must not receive anyone's IP.
+/// p2p and must not receive anyone's IP.
 pub(super) async fn locate_public_network(
     State(state): State<GatewayState>,
     Query(query): Query<LocateQuery>,
@@ -1156,9 +1149,9 @@ async fn collect_public_networks(
         let mut bases = Vec::new();
         if let Some(port) = pkarr_record.gateway_port.or(peer.gateway_port) {
             for host in pkarr_record
-                .multiaddrs
+                .addrs
                 .iter()
-                .filter_map(|a| multiaddr_host(a))
+                .filter_map(|a| endpoint_addr_host(a))
             {
                 bases.push(crate::peer_client::peer_base_url(
                     &host,
@@ -1279,7 +1272,7 @@ pub(crate) fn spawn_directory_publisher(state: GatewayState) {
 }
 
 /// Fills `DirectoryBoard` on demand: this node's own public network and, when
-/// it gathers them, the public networks it knows. The swarm loop answers
+/// it gathers them, the public networks it knows. The transport task answers
 /// `Describe` and `Directory` from the board and wakes this task when it is
 /// stale; one listing per `network_lobby::INFO_REFRESH` at most, none while
 /// nobody asks.
@@ -1340,21 +1333,6 @@ pub(crate) async fn ensure_gateway_port_available(port: u16, current: Option<u16
 
 // ── Route handlers ────────────────────────────────────────────────────────────
 
-/// What the principal answers to the other nodes' ratchet.
-///
-/// Authenticated by the signed envelope of the trust chain. On a private network
-/// the shared key may accompany the signature as a transport guard; this keeps
-/// an intruder from answering for the principal and downgrading the cluster to
-/// clear text. See `tls_policy`.
-pub(super) async fn cluster_tls(
-    _auth: crate::auth::InternalNodeAuth,
-    State(state): State<GatewayState>,
-) -> impl IntoResponse {
-    Json(serde_json::json!({
-        "tls_required": state.auth.read().await.tls_required,
-    }))
-}
-
 pub(super) async fn cluster_quic(
     _auth: crate::auth::ConnectionAuth,
     State(state): State<GatewayState>,
@@ -1383,17 +1361,20 @@ pub(super) async fn handle_remote_stream_result(
 /// frame, because the connection can outlive a change of the cluster key.
 pub(super) async fn handle_remote_stream_link(
     State(state): State<GatewayState>,
-    headers: axum::http::HeaderMap,
-    body: axum::body::Body,
+    request: axum::extract::Request,
 ) -> axum::response::Response {
+    let (parts, body) = request.into_parts();
+    let headers = parts.headers;
+    let extensions = parts.extensions;
     let inbox = state.reply_inbox.clone();
     let auth = state.auth.clone();
     crate::link::serve(body, move |path, bytes| {
         let inbox = inbox.clone();
         let auth = auth.clone();
         let headers = headers.clone();
+        let extensions = extensions.clone();
         async move {
-            crate::auth::validate_internal_node_headers(&auth, &headers)
+            crate::auth::validate_internal_node_headers(&auth, &headers, &extensions)
                 .await
                 .map_err(|_| anyhow::anyhow!("invalid peer credential"))?;
             if path != crate::direct::REMOTE_STREAM_RESULT_PATH {
@@ -1506,6 +1487,43 @@ pub(super) async fn handle_generate(
             }),
         )
             .into_response();
+    }
+    if let Some(denial) = crate::quota::admit(
+        &state,
+        &caller,
+        &req.prompt,
+        crate::openai::approx_tokens(&req.prompt),
+        &request_details,
+    )
+    .await
+    {
+        record_rejected(
+            &state,
+            "/api/generate",
+            caller.clone(),
+            model.clone(),
+            req.prompt.clone(),
+            request_details.clone(),
+            denial.message.clone(),
+        );
+        return denial.decorate(
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(GenerateResponse {
+                    response: denial.message.clone(),
+                    source: "error".to_string(),
+                    tokens_generated: 0,
+                    tokens_per_sec: 0.0,
+                    duration_ms: 0,
+                    timings: None,
+                    stop_sequence: None,
+                    finish_reason: None,
+                    partial: false,
+                    trace: None,
+                }),
+            )
+                .into_response(),
+        );
     }
 
     info!(

@@ -7,7 +7,15 @@ pub(super) fn routes() -> Router<GatewayState> {
     Router::new()
         .route("/api/ui/node", get(node_info))
         .route("/api/ui/plugins", get(crate::plugins::list_plugins))
+        .route("/api/ui/quota", get(crate::quota::my_quota))
+        .route("/api/ui/quota/reset", post(crate::quota::reset_my_session))
+        .route("/api/ui/quota/request", post(crate::quota::request_more))
         .route("/api/ui/plugins/ui", get(crate::plugin_ui::list_plugin_ui))
+        .route("/api/ui/plugin-catalog", get(crate::plugins::plugin_catalog))
+        .route(
+            "/api/ui/plugin-catalog/:code",
+            get(crate::plugins::plugin_catalog_entry),
+        )
         .route(
             "/api/ui/plugins/events",
             get(crate::plugins::list_plugin_events),
@@ -36,6 +44,13 @@ pub(super) fn routes() -> Router<GatewayState> {
             "/api/internal/plugins/:code/peer/:op",
             post(crate::plugin_services::plugin_peer_call),
         )
+        .route("/api/plugin-host/node", get(crate::plugin_host_api::node))
+        .route("/api/plugin-host/peers", get(crate::plugin_host_api::peers))
+        .route(
+            "/api/plugin-host/peer",
+            post(crate::plugin_host_api::peer_call),
+        )
+        .route("/api/plugin-host/sign", post(crate::plugin_host_api::sign))
         .route(
             "/api/internal/plugins/:code/engine/generate",
             post(crate::plugin_engine::engine_generate_route),

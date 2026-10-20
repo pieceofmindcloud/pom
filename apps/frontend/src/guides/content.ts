@@ -84,7 +84,7 @@ const ptBR: Guide[] = [
       {
         kind: "cards",
         items: [
-          { title: "Nó", text: "Uma máquina no cluster. Anuncia quem é, quanta memória tem e qual faixa de camadas serve. Descobre os outros por UDP na rede local e por libp2p pela internet." },
+          { title: "Nó", text: "Uma máquina no cluster. Anuncia quem é, quanta memória tem e qual faixa de camadas serve. Descobre os outros por UDP na rede local e pelo endpoint iroh pela internet." },
           { title: "Fatia", text: "Um arquivo GGUF com uma faixa de camadas do modelo original. Fatiar é local: cada máquina extrai a própria faixa da própria cópia, nenhum peso viaja pela rede por causa disso." },
           { title: "Pipeline", text: "A cadeia ordenada de nós que cobre da camada 0 até a última. Sem cobertura completa não há resposta - a requisição falha com a explicação em vez de responder pior." },
           { title: "Gateway", text: "A porta de entrada HTTP, servida por todos os nós: a interface, a API compatível com OpenAI e a rota de geração." },
@@ -368,17 +368,18 @@ const ptBR: Guide[] = [
         kind: "cards",
         items: [
           { title: "Rede local", text: "Descoberta por UDP com broadcast e troca periódica de anúncios. Funciona sem infraestrutura nenhuma e anuncia mesmo sem modelo carregado." },
-          { title: "Internet", text: "Um swarm libp2p sobre TCP, com relay para atravessar NAT e hole punching. Os endereços também são publicados numa DHT." },
+          { title: "Internet", text: "Um endpoint iroh sobre QUIC (UDP), com relés para atravessar NAT e hole punching. Os endereços também são publicados numa DHT." },
         ],
       },
-      { kind: "diagram", id: "network", caption: "Na rede local a descoberta é por broadcast UDP. Pela internet, o libp2p usa relé e hole punching para alcançar uma máquina atrás de NAT." },
+      { kind: "diagram", id: "network", caption: "Na rede local a descoberta é por broadcast UDP. Pela internet, o endpoint usa relé e hole punching para alcançar uma máquina atrás de NAT." },
       { kind: "h", text: "As portas" },
       {
         kind: "table",
         head: ["Uso", "Padrão", "Protocolo"],
         rows: [
           ["Descoberta P2P (--port)", "42777", "UDP"],
-          ["libp2p", "P2P + 10000 (52777)", "TCP"],
+          ["Endpoint p2p", "P2P + 10000 (52777)", "UDP"],
+          ["Relé do cluster", "P2P + 10000 (52777)", "TCP"],
           ["Interface e API (--gateway-port)", "8080", "TCP"],
           ["Servidor de inferência", "8181", "TCP"],
           ["QUIC da inferência", "P2P + 1000 (43777)", "UDP"],
@@ -548,7 +549,7 @@ const en: Guide[] = [
       {
         kind: "cards",
         items: [
-          { title: "Node", text: "One machine in the cluster. It announces who it is, how much memory it has and which layer range it serves. It finds the others over UDP on the local network and over libp2p across the internet." },
+          { title: "Node", text: "One machine in the cluster. It announces who it is, how much memory it has and which layer range it serves. It finds the others over UDP on the local network and through its iroh endpoint across the internet." },
           { title: "Slice", text: "A GGUF file holding a range of layers of the original model. Slicing is local: each machine extracts its own range from its own copy, and no weights travel the network because of it." },
           { title: "Pipeline", text: "The ordered chain of nodes covering layer 0 through the last one. Without full coverage there is no answer - the request fails with the reason instead of answering worse." },
           { title: "Gateway", text: "The HTTP front door, served by every node: this interface, the OpenAI-compatible API and the generation route." },
@@ -832,17 +833,18 @@ const en: Guide[] = [
         kind: "cards",
         items: [
           { title: "Local network", text: "Discovery over UDP with broadcast and periodic exchange of announcements. It works with no infrastructure at all and announces even without a loaded model." },
-          { title: "Internet", text: "A libp2p swarm over TCP, with relay to cross NAT and hole punching. Addresses are also published in a DHT." },
+          { title: "Internet", text: "An iroh endpoint over QUIC (UDP), with relays to cross NAT and hole punching. Addresses are also published in a DHT." },
         ],
       },
-      { kind: "diagram", id: "network", caption: "On the local network discovery is by UDP broadcast. Across the internet, libp2p uses a relay and hole punching to reach a machine behind NAT." },
+      { kind: "diagram", id: "network", caption: "On the local network discovery is by UDP broadcast. Across the internet, the endpoint uses a relay and hole punching to reach a machine behind NAT." },
       { kind: "h", text: "The ports" },
       {
         kind: "table",
         head: ["Use", "Default", "Protocol"],
         rows: [
           ["P2P discovery (--port)", "42777", "UDP"],
-          ["libp2p", "P2P + 10000 (52777)", "TCP"],
+          ["P2P endpoint", "P2P + 10000 (52777)", "UDP"],
+          ["Cluster relay", "P2P + 10000 (52777)", "TCP"],
           ["Interface and API (--gateway-port)", "8080", "TCP"],
           ["Inference server", "8181", "TCP"],
           ["Inference QUIC", "P2P + 1000 (43777)", "UDP"],

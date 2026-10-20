@@ -235,7 +235,7 @@ mod chat_telemetry_tests {
             "hops": [
                 {"node_id": "a", "decode": {"transport_summary": {"transports": [{"transport": "https-link", "calls": 2, "rtt_median_ms": 8}]} }},
                 {"node_id": "b", "decode": {"transport_summary": {"transports": [{"transport": "https-link", "calls": 2, "rtt_median_ms": 9}]} }},
-                {"node_id": "outside-pipeline", "decode": {"transport_summary": {"transports": [{"transport": "libp2p-tunnel", "calls": 5, "rtt_median_ms": 99}]} }}
+                {"node_id": "outside-pipeline", "decode": {"transport_summary": {"transports": [{"transport": "p2p-tunnel", "calls": 5, "rtt_median_ms": 99}]} }}
             ]
         });
         assert_eq!(
@@ -260,7 +260,7 @@ mod chat_telemetry_tests {
                     "decode": {
                         "transport_summary": {
                             "transports": [{
-                                "transport": "libp2p-tunnel",
+                                "transport": "p2p-tunnel",
                                 "calls": 1,
                                 "rtt_median_ms": 91
                             }]
@@ -341,7 +341,7 @@ mod chat_telemetry_tests {
         );
         assert!(execution_transport_measurements(&trace, &requested)
             .iter()
-            .all(|measurement| measurement.transport != "libp2p-tunnel"));
+            .all(|measurement| measurement.transport != "p2p-tunnel"));
     }
 
     #[test]
@@ -476,7 +476,7 @@ mod chat_telemetry_tests {
             from_node_id: "head-fast".into(),
             to_node_id: "tail".into(),
             rtt_ms: 12.0,
-            transport: "libp2p-tunnel".into(),
+            transport: "p2p-tunnel".into(),
             relayed: false,
         }));
         assert!(measurements.contains(&ChatTelemetryMeasurement {
@@ -591,15 +591,15 @@ mod chat_telemetry_tests {
         let measurements = planned_route_measurements(&routes, &inputs);
         assert_eq!(measurements.len(), 1);
         assert_eq!(measurements[0].to_node_id, "gw");
-        assert_eq!(measurements[0].transport, "libp2p-tunnel");
+        assert_eq!(measurements[0].transport, "p2p-tunnel");
     }
 
     #[tokio::test]
-    async fn chat_telemetry_ignores_libp2p_probe_when_execution_trace_exists() {
+    async fn chat_telemetry_ignores_tunnel_probe_when_execution_trace_exists() {
         let state = crate::gateway::testkit::state_with("gateway", vec![]).await;
         let trace = json!({
             "hops": [
-                {"node_id": "head", "decode": {"transport_summary": {"transports": [{"transport": "libp2p-tunnel", "calls": 1, "rtt_median_ms": 90}]} }},
+                {"node_id": "head", "decode": {"transport_summary": {"transports": [{"transport": "p2p-tunnel", "calls": 1, "rtt_median_ms": 90}]} }},
                 {"node_id": "tail", "decode": {"transport_summary": {"transports": [{"transport": "https-link", "calls": 4, "rtt_median_ms": 6}]} }}
             ]
         });
@@ -662,7 +662,7 @@ mod chat_telemetry_tests {
         state
             .network
             .rtts
-            .remember_for_test("tail", 900.0, "libp2p");
+            .remember_for_test("tail", 900.0, "p2p");
 
         let app = routes().with_state(state);
         let response = app

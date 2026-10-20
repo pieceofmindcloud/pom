@@ -732,6 +732,23 @@ async fn chat_completions(
         );
         return error_response(status, error);
     }
+    if let Some(denial) =
+        crate::quota::admit(&state, &caller, &prompt, prompt_tokens, &request_details).await
+    {
+        crate::gateway::record_rejected(
+            &state,
+            "/v1/chat/completions",
+            caller,
+            model.clone(),
+            prompt,
+            request_details,
+            denial.message.clone(),
+        );
+        return denial.decorate(error_response(
+            StatusCode::TOO_MANY_REQUESTS,
+            denial.message.clone(),
+        ));
+    }
     let budget = output_limit.budget();
     let thinking_enabled = req.thinking_enabled.unwrap_or(true);
 
@@ -821,6 +838,24 @@ async fn completions(
             StatusCode::PAYLOAD_TOO_LARGE
         };
         return error_response(status, error);
+    }
+    if let Some(denial) =
+        crate::quota::admit(&state, auth.caller(), &req.prompt, prompt_tokens, &request_details)
+            .await
+    {
+        crate::gateway::record_rejected(
+            &state,
+            "/v1/completions",
+            auth.into_caller(),
+            model.clone(),
+            req.prompt.clone(),
+            request_details,
+            denial.message.clone(),
+        );
+        return denial.decorate(error_response(
+            StatusCode::TOO_MANY_REQUESTS,
+            denial.message.clone(),
+        ));
     }
     let budget = output_limit.budget();
     let id = format!("cmpl-{}", uuid::Uuid::new_v4().simple());

@@ -11,7 +11,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocaleProvider } from "../i18n/provider";
-import { TlsPanel } from "./Preferences";
 import { NetworkParticipants, NetworkSettings } from "./NetworkSettings";
 import { api } from "../lib/api";
 
@@ -23,14 +22,12 @@ const queryMocks = vi.hoisted(() => ({
       p2p_port: 42777,
       gateway_port: 8080,
       inference_port: 8181,
-      profile: "node",
+      profile: "worker",
       authority_level: "primary" as "primary" | null,
       role: "principal",
       detached: false,
       advertise_addr: null,
       effective_address: "127.0.0.1:42777",
-      tls_required: false,
-      tls_authority: true,
       thermal: { limit_c: 85, hysteresis_c: 8, cooldown_secs: 30 },
     },
   },
@@ -50,7 +47,7 @@ const queryMocks = vi.hoisted(() => ({
         geo_label: "com.br.curitiba.node",
         visibility: "private",
         access_policy: "authorized",
-        accepted_enrollments: ["node", "infer"],
+        accepted_enrollments: ["worker", "visitor"],
         location: { latitude: -25.4, longitude: -49.2 },
       },
       can_edit: false,
@@ -103,46 +100,6 @@ vi.mock("../lib/queries", () => ({
   useInvalidate: () => vi.fn(),
 }));
 
-function mount(props: Parameters<typeof TlsPanel>[0]) {
-  return render(
-    <LocaleProvider initialLocale="pt-BR">
-      <TlsPanel {...props} />
-    </LocaleProvider>,
-  );
-}
-
-describe("TlsPanel", () => {
-  afterEach(cleanup);
-
-  it("on the principal, the switch is usable and propagates the flip", () => {
-    const onToggle = vi.fn();
-    mount({ tlsRequired: false, authority: true, onToggle });
-    const button = screen.getByRole("switch");
-    expect((button as HTMLButtonElement).disabled).toBe(false);
-    fireEvent.click(button);
-    expect(onToggle).toHaveBeenCalledWith(true);
-  });
-
-  it("when on, the principal can turn it off - the flip works both ways", () => {
-    const onToggle = vi.fn();
-    mount({ tlsRequired: true, authority: true, onToggle });
-    fireEvent.click(screen.getByRole("switch"));
-    expect(onToggle).toHaveBeenCalledWith(false);
-  });
-
-  it("outside the principal, shows the state but does not allow changes, and says who decides", () => {
-    mount({ tlsRequired: true, authority: false });
-    expect((screen.getByRole("switch") as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByText("cifrado")).toBeTruthy();
-    expect(screen.getByText(/só o nó principal decide/i)).toBeTruthy();
-  });
-
-  it("when off, the state is spelled out", () => {
-    mount({ tlsRequired: false, authority: false });
-    expect(screen.getByText("em texto claro")).toBeTruthy();
-  });
-});
-
 describe("NetworkSettings", () => {
   afterEach(cleanup);
 
@@ -159,13 +116,13 @@ describe("NetworkSettings", () => {
   });
 
   it("keeps the network accessible to infer, without listing peers, and sends a request", async () => {
-    queryMocks.node.data.profile = "infer";
+    queryMocks.node.data.profile = "visitor";
     queryMocks.nodes.data = [{
       node_id: "outro",
       short_id: "outro",
       hostname: "salem",
       addr: "127.0.0.1:8081",
-      role: "node",
+      role: "worker",
       is_self: false,
       connected: true,
       blocked: false,
@@ -178,7 +135,7 @@ describe("NetworkSettings", () => {
       </LocaleProvider>,
     );
 
-    expect(screen.getAllByText("infer").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("visitor").length).toBeGreaterThan(0);
     // The role is decided at admission: there is no upgrade in place.
     expect(screen.queryByRole("button", { name: /pedir para virar node/i })).toBeNull();
     expect(screen.getByText(/pedir admissão de novo como nó da rede/)).toBeTruthy();
@@ -188,7 +145,7 @@ describe("NetworkSettings", () => {
   });
 
   it("shows the network information to an infer without offering editing", () => {
-    queryMocks.node.data.profile = "infer";
+    queryMocks.node.data.profile = "visitor";
     queryMocks.node.data.authority_level = null;
     queryMocks.networkInfo.data.network.description = "# Uma descrição formatada";
     queryMocks.networkInfo.data.network.rules = "- Regra em Markdown";
@@ -298,9 +255,9 @@ describe("NetworkSettings", () => {
 
   it("lets the admin revoke an admitted machine, behind a confirmation", async () => {
     admissionMocks.admissions.data = [
-      { node_id: "aaaaaaaaaaaa1111", role: "node", status: "approved", requested_at: "", card: { hostname: "forasteiro", os: "", arch: "", cpu_count: 0, ram_total_mb: 0, gpus: [] } },
+      { node_id: "aaaaaaaaaaaa1111", role: "worker", status: "approved", requested_at: "", card: { hostname: "forasteiro", os: "", arch: "", cpu_count: 0, ram_total_mb: 0, gpus: [] } },
       // A request still waiting is decided in the notifications, not here.
-      { node_id: "bbbbbbbbbbbb2222", role: "infer", status: "pending", requested_at: "", card: { hostname: "esperando", os: "", arch: "", cpu_count: 0, ram_total_mb: 0, gpus: [] } },
+      { node_id: "bbbbbbbbbbbb2222", role: "visitor", status: "pending", requested_at: "", card: { hostname: "esperando", os: "", arch: "", cpu_count: 0, ram_total_mb: 0, gpus: [] } },
     ];
     admissionMocks.decide.mockResolvedValue([]);
     render(
@@ -324,7 +281,7 @@ describe("NetworkSettings", () => {
 
   it("offers no role change in place: a node cannot step down to inference here", () => {
     const before = queryMocks.node.data;
-    queryMocks.node.data = { ...before, profile: "node", authority_level: null } as typeof before;
+    queryMocks.node.data = { ...before, profile: "worker", authority_level: null } as typeof before;
     render(
       <LocaleProvider initialLocale="pt-BR">
         <NetworkSettings />
@@ -410,7 +367,7 @@ describe("NetworkParticipants", () => {
   it("shows the route in use and whether it is direct or relayed, not the announced address", () => {
     queryMocks.node.data.profile = "admin";
     queryMocks.node.data.authority_level = "primary";
-    const base = { role: "node", is_self: false, connected: true, blocked: false, verified: true };
+    const base = { role: "worker", is_self: false, connected: true, blocked: false, verified: true };
     queryMocks.nodes.data = [
       {
         ...base,

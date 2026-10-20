@@ -105,7 +105,7 @@ slice on its peer.
 On startup, the node:
 1. Sends `PeerRequest` to the bootstrap nodes
 2. Broadcasts locally over UDP (mDNS-style)
-3. Joins the libp2p gossip for peers outside the LAN
+3. Joins the iroh gossip for peers outside the LAN (QUIC, relays, hole punching)
 
 ### 2. Deployment
 Deployment is done through the web interface: it measures the memory and GPU each node
@@ -117,7 +117,7 @@ Every 5 seconds the node:
 - Announces its layers to every peer it knows
 - Broadcasts locally for new nodes on the LAN
 - Drops peers that have not answered for 30s
-- Exchanges peer lists (Kademlia-style gossip)
+- Exchanges peer lists
 
 ---
 
@@ -198,7 +198,6 @@ Machine C (2GB)  → gemma3 layers 0-9    (already covered, stays as redundancy)
 - [ ] Capability tokens for memory access control
 - [ ] QUIC as the transport (replace raw UDP)
 - [ ] Support for more models (auto-detect via the Ollama manifest)
-- [ ] Full Kademlia DHT via libp2p
 
 ---
 

@@ -117,15 +117,15 @@ pub struct PipelineStep {
     pub exec_end: u32,
     /// Capabilities of the canonical inference frame and relay.
     pub inference_frame_capabilities: Vec<String>,
-    /// This hop's libp2p `PeerId` (base58), when known — lets a caller reach
-    /// it over the swarm as a NAT-traversal fallback when direct HTTP fails.
+    /// This hop's endpoint id (the public key, hex), when known — lets a caller reach
+    /// it over the endpoint as a NAT-traversal fallback when direct HTTP fails.
     #[serde(default)]
-    pub libp2p_peer_id: Option<String>,
-    /// UDP addresses announced by the hop to rebuild the libp2p tunnel.
+    pub endpoint_id: Option<String>,
+    /// UDP addresses announced by the hop to rebuild the p2p tunnel.
     /// The plan carries these addresses because the process that executes the hop may
     /// not have received the same announce in its own discovery table.
     #[serde(default)]
-    pub libp2p_addr_candidates: Vec<String>,
+    pub endpoint_addr_candidates: Vec<String>,
 }
 
 /// Advertised when a node can continue a relay itself — see the `next_hops`
@@ -173,13 +173,13 @@ pub const CAP_SPECULATE_MTP: &str = "speculate/v1-mtp";
 /// steps rules the scenario out at once, instead of living with it.
 pub const CAP_SPECULATE_MTP_SLICED: &str = "speculate/v1-mtp-sliced";
 
-/// Advertised when a node's libp2p swarm has actually come up
-/// (`Network::libp2p_tunnel_ready`) — unlike the other capabilities above,
+/// Advertised when a node's p2p endpoint has actually come up
+/// (`Network::p2p_tunnel_ready`) — unlike the other capabilities above,
 /// this is checked **per-hop**, not all-or-nothing across a plan: a mix of
 /// directly-reachable and NAT'd hops in the same pipeline is normal. The
 /// relay prefers this transport per hop and falls back to the direct client
 /// when it is unavailable or fails at the transport layer.
-pub const CAP_LIBP2P_TUNNEL: &str = "transport/libp2p-tunnel-v1";
+pub const CAP_P2P_TUNNEL: &str = "transport/iroh-tunnel-v1";
 
 /// Advertised when the node serves `/v1/link`: one long-lived HTTP body pair
 /// carrying successive `frame/v1-batch` frames instead of a fresh request per
@@ -659,8 +659,8 @@ pub(crate) fn step_for(peer: &PeerInfo, pos: u32) -> Option<PipelineStep> {
         exec_start: pos,
         exec_end: peer.end_layer,
         inference_frame_capabilities: peer.inference_frame_capabilities.clone(),
-        libp2p_peer_id: peer.libp2p_peer_id.clone(),
-        libp2p_addr_candidates: peer.libp2p_dialable_addrs(),
+        endpoint_id: peer.endpoint_id.clone(),
+        endpoint_addr_candidates: peer.endpoint_dialable_addrs(),
     })
 }
 
@@ -741,6 +741,7 @@ mod ipv6_tests {
             pubkey: "p".into(),
             cluster_id: None,
             trust_version: None,
+            membership: None,
             relay: None,
             addr: addr.into(),
             addr_candidates: Vec::new(),
@@ -755,7 +756,7 @@ mod ipv6_tests {
             inference_quic_port: None,
             gateway_port: Some(8090),
             gateway_quic_port: None,
-            profile: crate::profile::NodeProfile::Node,
+            profile: crate::profile::NodeProfile::Worker,
             hostname: String::new(),
             capabilities: Vec::new(),
             connection_verified: false,
@@ -763,8 +764,8 @@ mod ipv6_tests {
             disk_free_mb: 0,
             api_keys_active: 0,
             inference_frame_capabilities: Vec::new(),
-            libp2p_peer_id: None,
-            libp2p_addrs: Vec::new(),
+            endpoint_id: None,
+            endpoint_addrs: Vec::new(),
             tp: None,
             runtime_capacity: None,
             idle: false,
@@ -1069,8 +1070,8 @@ mod ipv6_tests {
             exec_start: 0,
             exec_end: 1,
             inference_frame_capabilities: Vec::new(),
-            libp2p_peer_id: None,
-            libp2p_addr_candidates: Vec::new(),
+            endpoint_id: None,
+            endpoint_addr_candidates: Vec::new(),
         };
         assert_eq!(step.frame_encoding(), crate::wire::FrameEncoding::F16);
     }
@@ -1138,8 +1139,8 @@ mod ipv6_tests {
                     exec_start: 0,
                     exec_end: 7,
                     inference_frame_capabilities: Vec::new(),
-                    libp2p_peer_id: None,
-                    libp2p_addr_candidates: Vec::new(),
+                    endpoint_id: None,
+                    endpoint_addr_candidates: Vec::new(),
                 },
                 PipelineStep {
                     node_id: "replica-b".into(),
@@ -1151,8 +1152,8 @@ mod ipv6_tests {
                     exec_start: 8,
                     exec_end: 15,
                     inference_frame_capabilities: Vec::new(),
-                    libp2p_peer_id: None,
-                    libp2p_addr_candidates: Vec::new(),
+                    endpoint_id: None,
+                    endpoint_addr_candidates: Vec::new(),
                 },
             ],
             edges: Vec::new(),
@@ -1177,8 +1178,8 @@ mod ipv6_tests {
             exec_start: 0,
             exec_end: 9,
             inference_frame_capabilities: Vec::new(),
-            libp2p_peer_id: None,
-            libp2p_addr_candidates: Vec::new(),
+            endpoint_id: None,
+            endpoint_addr_candidates: Vec::new(),
         }
     }
 
@@ -1281,8 +1282,8 @@ mod ipv6_tests {
             exec_start: 0,
             exec_end: 1,
             inference_frame_capabilities: caps.iter().map(|c| c.to_string()).collect(),
-            libp2p_peer_id: None,
-            libp2p_addr_candidates: Vec::new(),
+            endpoint_id: None,
+            endpoint_addr_candidates: Vec::new(),
         }
     }
 

@@ -388,9 +388,8 @@ pub(super) async fn leave_network_and_reset(
     if let Err(error) = state.database.save_network_settings(&config.network) {
         warn!("could not clear the network details in the database: {error:#}");
     }
-    if let Err(error) = state.database.clear_api_keys() {
-        warn!("could not clear the local API keys: {error:#}");
-    }
+    // The node's API keys stay: they belong to this machine, not to the
+    // network, so a harness keeps working whichever network serves it.
 
     info!(
         trust = %trust_path.display(),
@@ -766,6 +765,10 @@ pub struct LaunchTarget {
     /// pipeline cannot both be right about where it fits.
     #[serde(default)]
     pub offload_kqv: Option<bool>,
+    /// This machine's part in a prefill/decode split of a whole model served by a plugin's inference service,
+    /// overriding `params.inference_role` for it alone: the machines of one such deployment differ on it by design.
+    #[serde(default)]
+    pub inference_role: Option<crate::webui::InferenceRole>,
     /// Per-target override, computed from the plan's topology. `None`
     /// preserves the final peer's automatic behaviour.
     #[serde(default)]
@@ -847,6 +850,9 @@ pub(crate) fn params_for(base: &RuntimeParams, target: &LaunchTarget) -> Runtime
     }
     if let Some(kqv) = target.offload_kqv {
         params.offload_kqv = kqv;
+    }
+    if let Some(role) = target.inference_role {
+        params.inference_role = role;
     }
     if let Some(no_embeddings) = target.no_embeddings {
         params.no_embeddings = no_embeddings;
@@ -948,12 +954,12 @@ pub(crate) async fn launch(
         peers
             .iter()
             .find(|peer| peer.node_id == target.node_id)
-            .filter(|peer| crate::gateway::peer_is_infer(&state, peer))
+            .filter(|peer| crate::gateway::peer_is_visitor(&state, peer))
     }) {
         return (
             StatusCode::CONFLICT,
             Json(json!({
-                "reason": "infer_target",
+                "reason": "visitor_target",
                 "error": format!(
                     "{} was admitted for inference only and cannot serve a model",
                     infer.hostname

@@ -6,6 +6,7 @@
 
 use crate::auth::ConnectionAuth;
 use anyhow::{Context, Result};
+use crate::p2p::Codec;
 use async_trait::async_trait;
 use axum::{
     extract::{Query, State},
@@ -14,7 +15,7 @@ use axum::{
     Json,
 };
 use futures::prelude::*;
-use libp2p::{request_response, PeerId, StreamProtocol};
+use crate::p2p::EndpointId;
 use rusqlite::{params, params_from_iter, types::Value, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
@@ -262,7 +263,7 @@ pub struct AuditResponse {
 
 #[derive(Debug, Clone)]
 pub struct AuditOutbound {
-    pub peer_id: PeerId,
+    pub peer_id: EndpointId,
     pub addr_candidates: Vec<String>,
     pub event: AuditEvent,
 }
@@ -308,14 +309,13 @@ where
 }
 
 #[async_trait]
-impl request_response::Codec for AuditCodec {
-    type Protocol = StreamProtocol;
+impl Codec for AuditCodec {
+    const PROTOCOL: &'static str = AUDIT_LOG_PROTOCOL;
     type Request = AuditEvent;
     type Response = AuditResponse;
 
     async fn read_request<T>(
         &mut self,
-        _: &Self::Protocol,
         io: &mut T,
     ) -> std::io::Result<Self::Request>
     where
@@ -326,7 +326,6 @@ impl request_response::Codec for AuditCodec {
 
     async fn read_response<T>(
         &mut self,
-        _: &Self::Protocol,
         io: &mut T,
     ) -> std::io::Result<Self::Response>
     where
@@ -337,7 +336,6 @@ impl request_response::Codec for AuditCodec {
 
     async fn write_request<T>(
         &mut self,
-        _: &Self::Protocol,
         io: &mut T,
         request: Self::Request,
     ) -> std::io::Result<()>
@@ -349,7 +347,6 @@ impl request_response::Codec for AuditCodec {
 
     async fn write_response<T>(
         &mut self,
-        _: &Self::Protocol,
         io: &mut T,
         response: Self::Response,
     ) -> std::io::Result<()>
@@ -360,15 +357,6 @@ impl request_response::Codec for AuditCodec {
     }
 }
 
-pub fn audit_behaviour() -> request_response::Behaviour<AuditCodec> {
-    request_response::Behaviour::new(
-        [(
-            StreamProtocol::new(AUDIT_LOG_PROTOCOL),
-            request_response::ProtocolSupport::Full,
-        )],
-        request_response::Config::default().with_request_timeout(std::time::Duration::from_secs(3)),
-    )
-}
 
 enum Command {
     Begin(AuditRequest),
@@ -382,8 +370,9 @@ enum Command {
 
 #[derive(Default)]
 struct RemoteAuditState {
-    begun: HashSet<String>,
-    completions_waiting_for_begin: HashMap<String, AuditCompletion>,
+    /// Request id -> the node that began it, the only one that may complete it.
+    begun: HashMap<String, String>,
+    completions_waiting_for_begin: HashMap<String, (String, AuditCompletion)>,
 }
 
 /// Handle shared by gateway tasks and the authenticated query route.
@@ -517,7 +506,15 @@ impl AuditLog {
     /// Order an event received from another admin without selecting its local
     /// sink. This keeps completion-before-begin handling identical whether the
     /// destination stores the event in PomDb or forwards it to a plugin host.
-    pub(crate) fn order_remote_events(&self, event: AuditEvent) -> Option<Vec<AuditEvent>> {
+    /// Orders an event `sender` - the live peer the swarm connection belongs
+    /// to - sent. A node only reports the requests that entered through it:
+    /// a begin must name `sender` as its entry node, and only the node that
+    /// began a request may complete it. Anything else is refused.
+    pub(crate) fn order_remote_events(
+        &self,
+        sender: &str,
+        event: AuditEvent,
+    ) -> Option<Vec<AuditEvent>> {
         if !self
             .admin_receiver
             .load(std::sync::atomic::Ordering::Acquire)
@@ -527,25 +524,36 @@ impl AuditLog {
         let mut state = self.remote_state.lock().ok()?;
         match event {
             AuditEvent::Begin(request) => {
+                if request.entry_node_id != sender {
+                    return None;
+                }
                 let id = request.id.clone();
-                if state.begun.contains(&id) {
-                    return Some(Vec::new());
+                if let Some(owner) = state.begun.get(&id) {
+                    return (owner == sender).then(Vec::new);
                 }
                 if state.begun.len() >= MAX_REMOTE_AUDIT_IDS {
-                    if let Some(oldest) = state.begun.iter().next().cloned() {
+                    if let Some(oldest) = state.begun.keys().next().cloned() {
                         state.begun.remove(&oldest);
                     }
                 }
-                let completed = state.completions_waiting_for_begin.remove(&id);
-                state.begun.insert(id.clone());
+                let completed = state
+                    .completions_waiting_for_begin
+                    .remove(&id)
+                    .filter(|(owner, _)| owner == sender);
+                state.begun.insert(id.clone(), sender.to_string());
                 let mut events = vec![AuditEvent::Begin(request)];
-                if let Some(completion) = completed {
+                if let Some((_, completion)) = completed {
                     events.push(AuditEvent::Complete { id, completion });
                 }
                 Some(events)
             }
-            AuditEvent::Complete { id, completion } => {
-                if !state.begun.remove(&id) {
+            AuditEvent::Complete { id, completion } => match state.begun.get(&id) {
+                Some(owner) if owner == sender => {
+                    state.begun.remove(&id);
+                    Some(vec![AuditEvent::Complete { id, completion }])
+                }
+                Some(_) => None,
+                None => {
                     if state.completions_waiting_for_begin.len() >= MAX_REMOTE_AUDIT_IDS {
                         if let Some(oldest) =
                             state.completions_waiting_for_begin.keys().next().cloned()
@@ -553,11 +561,12 @@ impl AuditLog {
                             state.completions_waiting_for_begin.remove(&oldest);
                         }
                     }
-                    state.completions_waiting_for_begin.insert(id, completion);
-                    return Some(Vec::new());
+                    state
+                        .completions_waiting_for_begin
+                        .insert(id, (sender.to_string(), completion));
+                    Some(Vec::new())
                 }
-                Some(vec![AuditEvent::Complete { id, completion }])
-            }
+            },
         }
     }
 
@@ -577,10 +586,10 @@ impl AuditLog {
     }
 
     /// Persist a remote event locally without re-replicating it. A completion
-    /// can arrive before its begin because each peer has an independent swarm
+    /// can arrive before its begin because each peer has an independent endpoint
     /// queue, so it is held briefly until the matching begin is observed.
-    pub fn try_ingest_remote(&self, event: AuditEvent) -> bool {
-        let Some(ordered) = self.order_remote_events(event) else {
+    pub fn try_ingest_remote(&self, sender: &str, event: AuditEvent) -> bool {
+        let Some(ordered) = self.order_remote_events(sender, event) else {
             return false;
         };
         ordered
@@ -1362,6 +1371,25 @@ pub struct LogQuery {
     pub offset: Option<usize>,
 }
 
+/// The node filter a reader may use. An admin of the chain, principal or
+/// secondary, reads the whole network's audit; any other node, an inference
+/// node included, only the requests it took part in, whatever it asks for.
+async fn readable_node(
+    state: &crate::gateway::GatewayState,
+    requested: Option<String>,
+) -> Option<String> {
+    let profile = state.auth.read().await.profile;
+    if state
+        .admin_trust
+        .effective_authority(&state.authority_principal, profile)
+        .is_some()
+    {
+        requested
+    } else {
+        Some(state.network.node_id.clone())
+    }
+}
+
 /// Authenticated because every response contains user prompts and request
 /// bodies, not merely operational counters.
 pub async fn list_requests(
@@ -1382,7 +1410,7 @@ pub async fn list_requests(
             .into_response();
     }
     let query = AuditQuery {
-        node_id: query.node_id,
+        node_id: readable_node(&state, query.node_id).await,
         user: query.user,
         api_key: query.api_key,
         model: query.model,
@@ -1436,7 +1464,7 @@ pub async fn stats_requests(
             .into_response();
     }
     let query = AuditQuery {
-        node_id: query.node_id,
+        node_id: readable_node(&state, query.node_id).await,
         user: query.user,
         api_key: query.api_key,
         model: query.model,
@@ -1473,6 +1501,76 @@ pub async fn stats_requests(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An admin of the chain, principal or secondary, reads the network's
+    /// audit; any other node, an inference node included, only its own.
+    #[tokio::test]
+    async fn only_an_admin_reads_other_nodes_requests() {
+        let principal = crate::gateway::testkit::state_with("principal", vec![]).await;
+        principal.auth.write().await.profile = crate::profile::NodeProfile::Admin;
+        assert_eq!(
+            readable_node(&principal, Some("other".into())).await,
+            Some("other".into())
+        );
+        assert_eq!(readable_node(&principal, None).await, None);
+
+        let secondary = crate::gateway::testkit::state_with_secondary_admin("secondary", vec![]).await;
+        assert_eq!(readable_node(&secondary, None).await, None);
+
+        let infer = crate::gateway::testkit::state_with("infer", vec![]).await;
+        infer.auth.write().await.profile = crate::profile::NodeProfile::Visitor;
+        let own = Some(infer.network.node_id.clone());
+        assert_eq!(readable_node(&infer, Some("other".into())).await, own);
+        assert_eq!(readable_node(&infer, None).await, own);
+    }
+
+    /// A node only reports the requests that entered through it, and only
+    /// the node that began a request completes it.
+    #[tokio::test]
+    async fn a_remote_event_is_bound_to_the_node_that_sent_it() {
+        let state = crate::gateway::testkit::state_with("admin", vec![]).await;
+        let audit = state.audit.clone();
+        audit.set_admin_receiver(true);
+        let mut begin = request("r1", "key", "hello");
+        begin.entry_node_id = "worker".into();
+        let complete = |status| AuditEvent::Complete {
+            id: "r1".into(),
+            completion: AuditCompletion {
+                completed_at: chrono::Utc::now().to_rfc3339(),
+                result: None,
+                telemetry: None,
+                timings: None,
+                source: "distributed".into(),
+                hops: Vec::new(),
+                prompt_tokens: None,
+                completion_tokens: None,
+                duration_ms: None,
+                status,
+                error: None,
+            },
+        };
+        assert!(audit
+            .order_remote_events("impostor", AuditEvent::Begin(begin.clone()))
+            .is_none());
+        assert_eq!(
+            audit
+                .order_remote_events("worker", AuditEvent::Begin(begin.clone()))
+                .map(|events| events.len()),
+            Some(1)
+        );
+        assert!(audit
+            .order_remote_events("impostor", complete(AuditStatus::Ok))
+            .is_none());
+        assert!(audit
+            .order_remote_events("impostor", AuditEvent::Begin(begin))
+            .is_none());
+        assert_eq!(
+            audit
+                .order_remote_events("worker", complete(AuditStatus::Ok))
+                .map(|events| events.len()),
+            Some(1)
+        );
+    }
 
     #[test]
     fn request_activity_marks_and_compares_idle_without_a_timer() {
@@ -1777,7 +1875,7 @@ mod tests {
         .expect("rede de teste");
         let mut admin = crate::gateway::testkit::peer("secondary", "secondary", 8081);
         admin.profile = crate::profile::NodeProfile::Admin;
-        admin.libp2p_peer_id = Some(PeerId::random().to_string());
+        admin.endpoint_id = Some(crate::p2p::random_endpoint_id().to_string());
         network
             .peers
             .write()

@@ -12,11 +12,11 @@ const plugin: ActivePluginUi = {
     icon_image: "ui/icon.png",
     menu: [
       { id: "logs", label: { en: "Audit", "pt-BR": "Auditoria" }, icon: "list-tree", to: "/logs", group: "logs", profiles: ["admin"] },
-      { id: "extra", label: { en: "Extra" }, icon: "unknown", to: "/acme/extra", profiles: ["admin", "infer"] },
+      { id: "extra", label: { en: "Extra" }, icon: "unknown", to: "/acme/extra", profiles: ["admin", "visitor"] },
     ],
     routes: [
       { path: "/logs", screen: "logs", profiles: ["admin"] },
-      { path: "/acme/extra", screen: "extra", profiles: ["admin", "infer"] },
+      { path: "/acme/extra", screen: "extra", profiles: ["admin", "visitor"] },
       { path: "/acme", screen: "root", profiles: ["admin"] },
     ],
     screens: { logs: { module: "a.js" }, extra: { module: "b.js" }, root: { module: "c.js" } },
@@ -32,11 +32,11 @@ const basePlugin: ActivePluginUi = {
     plugin_code: "base",
     menu: [
       { id: "plugin", label: { en: "Plugin" }, to: "/plugin-de-base", profiles: ["admin"] },
-      { id: "example", label: { en: "Example" }, to: "/example", group: "logs", profiles: ["admin", "node"] },
+      { id: "example", label: { en: "Example" }, to: "/example", group: "logs", profiles: ["admin", "worker"] },
     ],
     routes: [
       { path: "/plugin-de-base", screen: "plugin", profiles: ["admin"] },
-      { path: "/example", screen: "example", profiles: ["admin", "node"] },
+      { path: "/example", screen: "example", profiles: ["admin", "worker"] },
     ],
     screens: {
       plugin: { module: "ui/plugin.js" },
@@ -53,9 +53,9 @@ const otherPlugin: ActivePluginUi = {
     schema: "pom-plugin-ui/v1",
     plugin_code: "analytics",
     menu: [
-      { id: "example", label: { en: "Analytics Example" }, to: "//example//", profiles: ["infer"] },
+      { id: "example", label: { en: "Analytics Example" }, to: "//example//", profiles: ["visitor"] },
     ],
-    routes: [{ path: "//example//", screen: "example", profiles: ["infer"] }],
+    routes: [{ path: "//example//", screen: "example", profiles: ["visitor"] }],
     screens: { example: { module: "ui/example.js" } },
     assets: ["ui/example.js"],
   },
@@ -80,12 +80,12 @@ describe("plugin UI registry", () => {
   it("makes plugin routes available to every profile regardless of manifest roles", () => {
     setPluginUi([plugin]);
     expect(canAccessRoute("/acme/extra", "admin")).toBe(true);
-    expect(canAccessRoute("/acme/extra", "node")).toBe(true);
-    expect(canAccessRoute("/acme/extra", "infer")).toBe(true);
-    expect(canAccessRoute("/acme", "infer")).toBe(true);
-    expect(canAccessRoute("/logs", "node")).toBe(true);
+    expect(canAccessRoute("/acme/extra", "worker")).toBe(true);
+    expect(canAccessRoute("/acme/extra", "visitor")).toBe(true);
+    expect(canAccessRoute("/acme", "visitor")).toBe(true);
+    expect(canAccessRoute("/logs", "worker")).toBe(true);
     expect(canAccessRoute("/logs", "admin")).toBe(true);
-    expect(canAccessRoute("/logs", "infer")).toBe(false, "the POM still denies native logs to infer");
+    expect(canAccessRoute("/logs", "visitor")).toBe(false, "the POM still denies native logs to infer");
   });
 
   it("accepts route roles without requiring legacy profiles", () => {
@@ -95,18 +95,18 @@ describe("plugin UI registry", () => {
       manifest: {
         ...basePlugin.manifest,
         plugin_code: "roles",
-        menu: [{ ...basePlugin.manifest.menu[0], to: "/roles-only", roles: ["infer"], profiles: undefined }],
-        routes: [{ path: "/roles-only", screen: "plugin", roles: ["infer"] }],
+        menu: [{ ...basePlugin.manifest.menu[0], to: "/roles-only", roles: ["visitor"], profiles: undefined }],
+        routes: [{ path: "/roles-only", screen: "plugin", roles: ["visitor"] }],
       },
     };
     setPluginUi([rolesOnly]);
 
     expect(pluginUiSnapshot()[0]?.manifest.routes[0]).toMatchObject({
       path: "/roles-only",
-      roles: ["infer"],
+      roles: ["visitor"],
     });
-    expect(canAccessRoute("/roles/roles-only", "infer")).toBe(true);
-    expect(canAccessRoute("/roles/roles-only", "node")).toBe(true);
+    expect(canAccessRoute("/roles/roles-only", "visitor")).toBe(true);
+    expect(canAccessRoute("/roles/roles-only", "worker")).toBe(true);
     expect(canAccessRoute("/roles/roles-only", "admin")).toBe(true);
   });
 
@@ -118,7 +118,7 @@ describe("plugin UI registry", () => {
       ["base", "example", "/base/example"],
       ["analytics", "example", "/analytics/example"],
     ];
-    for (const profile of ["admin", "node", "infer"] as const) {
+    for (const profile of ["admin", "worker", "visitor"] as const) {
       expect(pluginMenuItems(profile).map(({ code, id, to }) => [code, id, to])).toEqual(allPluginMenus);
     }
     expect(resolvePluginRoute("/base/plugin-de-base")).toMatchObject({
@@ -131,9 +131,9 @@ describe("plugin UI registry", () => {
     });
     expect(resolvePluginRoute("/example")).toBeNull();
     expect(resolvePluginRoute("/base/example")?.code).toBe("base");
-    expect(canAccessRoute("/base/example", "node")).toBe(true);
-    expect(canAccessRoute("/base/example", "infer")).toBe(true);
-    expect(canAccessRoute("/analytics/example", "infer")).toBe(true);
+    expect(canAccessRoute("/base/example", "worker")).toBe(true);
+    expect(canAccessRoute("/base/example", "visitor")).toBe(true);
+    expect(canAccessRoute("/analytics/example", "visitor")).toBe(true);
     expect(canAccessRoute("/analytics/example", "admin")).toBe(true);
 
     const adminLinks = navForProfile("admin").flatMap((section) => [
@@ -207,7 +207,7 @@ describe("plugin UI registry", () => {
 
     expect(pluginMenuItems("admin")).toEqual([]);
     expect(resolvePluginRoute("/chat")).toBeNull();
-    expect(canAccessRoute("/chat", "node")).toBe(true);
+    expect(canAccessRoute("/chat", "worker")).toBe(true);
   });
 
   it("ignores mismatched or invalid plugin codes", () => {
@@ -228,9 +228,9 @@ describe("plugin UI registry", () => {
 
   it("exposes plugin menus across profiles while retaining native infer restrictions", () => {
     setPluginUi([plugin]);
-    expect(pluginMenuItems("node").map((i) => i.id)).toEqual(["logs", "extra"]);
-    expect(pluginMenuItems("infer").map((i) => i.id)).toEqual(["logs", "extra"]);
-    const inferNavigation = navForProfile("infer").flatMap((section) => [
+    expect(pluginMenuItems("worker").map((i) => i.id)).toEqual(["logs", "extra"]);
+    expect(pluginMenuItems("visitor").map((i) => i.id)).toEqual(["logs", "extra"]);
+    const inferNavigation = navForProfile("visitor").flatMap((section) => [
       ...(section.to ? [section.labelKey] : []),
       ...(section.children ?? []).map((child) => child.labelKey),
     ]);
@@ -249,15 +249,15 @@ describe("plugin UI registry", () => {
         plugin_code: "roles",
         menu: [
           { id: "admin", label: { en: "Admin" }, to: "/admin", roles: ["admin"] },
-          { id: "node", label: { en: "Node" }, to: "/node", roles: ["node"] },
-          { id: "infer", label: { en: "Infer" }, to: "/infer", roles: ["infer"] },
+          { id: "node", label: { en: "Node" }, to: "/node", roles: ["worker"] },
+          { id: "infer", label: { en: "Infer" }, to: "/infer", roles: ["visitor"] },
           { id: "all", label: { en: "All" }, to: "/all" },
         ],
         routes: [
-          { path: "/admin", screen: "admin", profiles: ["admin", "node", "infer"] },
-          { path: "/node", screen: "node", profiles: ["admin", "node", "infer"] },
-          { path: "/infer", screen: "infer", profiles: ["admin", "node", "infer"] },
-          { path: "/all", screen: "all", profiles: ["admin", "node", "infer"] },
+          { path: "/admin", screen: "admin", profiles: ["admin", "worker", "visitor"] },
+          { path: "/node", screen: "node", profiles: ["admin", "worker", "visitor"] },
+          { path: "/infer", screen: "infer", profiles: ["admin", "worker", "visitor"] },
+          { path: "/all", screen: "all", profiles: ["admin", "worker", "visitor"] },
         ],
         screens: {
           admin: { module: "admin.js" },
@@ -270,7 +270,7 @@ describe("plugin UI registry", () => {
     };
     setPluginUi([rolesPlugin]);
 
-    for (const profile of ["admin", "node", "infer"] as const) {
+    for (const profile of ["admin", "worker", "visitor"] as const) {
       const menuIds = pluginMenuItems(profile).map(({ id }) => id);
       expect(menuIds).toEqual(["admin", "node", "infer", "all"]);
       const navKeys = navForProfile(profile).flatMap((section) => [
@@ -360,9 +360,9 @@ describe("plugin UI registry", () => {
 
   it("shows plugin items to every profile even when the manifest lists only admin", () => {
     setPluginUi([plugin]);
-    const node = navForProfile("node");
+    const node = navForProfile("worker");
     expect(JSON.stringify(node)).toContain("plugin:acme:extra");
-    expect(canAccessRoute("/acme/extra", "node")).toBe(true);
+    expect(canAccessRoute("/acme/extra", "worker")).toBe(true);
   });
 
   it("registers menu children as a sidebar section available to every profile", () => {
@@ -395,7 +395,7 @@ describe("plugin UI registry", () => {
 
     const [admin] = pluginMenuItems("admin");
     expect(admin.children?.map((child) => child.to)).toEqual(["/base/plugin", "/base/projects"]);
-    const [node] = pluginMenuItems("node");
+    const [node] = pluginMenuItems("worker");
     expect(node.children?.map((child) => child.id)).toEqual(["plugin", "projects"]);
     expect(pluginLabel("plugin:base:projects", "pt-BR")).toBe("Projetos");
     expect(pluginDisplayName("base", "en")).toBe("POM - Plugins");
@@ -403,8 +403,8 @@ describe("plugin UI registry", () => {
     const section = navForProfile("admin").find((entry) => entry.labelKey === "plugin:base:base");
     expect(section?.to).toBeUndefined();
     expect(section?.children?.map((child) => child.to)).toEqual(["/base/plugin", "/base/projects"]);
-    expect(canAccessRoute("/base/projects", "node")).toBe(true);
-    expect(canAccessRoute("/base/plugin", "node")).toBe(true);
+    expect(canAccessRoute("/base/projects", "worker")).toBe(true);
+    expect(canAccessRoute("/base/plugin", "worker")).toBe(true);
   });
 
   it("rejects a manifest whose child id repeats or points outside the declared routes", () => {

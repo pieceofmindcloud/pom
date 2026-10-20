@@ -3,7 +3,7 @@ use super::windows_firewall::{
 };
 
 #[test]
-fn firewall_rules_use_the_effective_port_and_the_four_protocols() {
+fn firewall_rules_use_the_effective_port_and_both_protocols_of_the_p2p_port() {
     let rules = desired_rules(42778).unwrap();
 
     assert_eq!(
@@ -15,6 +15,7 @@ fn firewall_rules_use_the_effective_port_and_the_four_protocols() {
             (FirewallProtocol::Udp, 42778),
             (FirewallProtocol::Udp, 43778),
             (FirewallProtocol::Udp, 44778),
+            (FirewallProtocol::Udp, 52778),
             (FirewallProtocol::Tcp, 52778),
         ]
     );

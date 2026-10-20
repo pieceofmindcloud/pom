@@ -290,4 +290,38 @@ describe("DeployModel · plugin inference service", () => {
       });
     });
   });
+
+  it("a single machine takes the deployment's role, never a role left on its row", async () => {
+    // Adding a second machine makes the first the split's prefill machine;
+    // removing the second leaves one machine, whose inspector shows the
+    // deployment's role - the `prefill` left on its row must not reach the
+    // deploy (it made a deployment no machine answers for).
+    const strata = { ...CLUSTER.peers[0].node.plugin_services[0], pom_settings: ["inference_role"] };
+    cluster = {
+      peers: [
+        { node_id: "ksia", node: { plugin_services: [strata] } },
+        { node_id: "salem", node: { plugin_services: [strata] } },
+      ],
+    };
+    mount();
+    fireEvent.change(await screen.findByRole("combobox", { name: "Serviço de inferência" }), {
+      target: { value: "strata" },
+    });
+    fireEvent.click(await screen.findByRole("button", { name: /ksia RTT/ }));
+    await screen.findByRole("button", { name: /Remover ksia da implantação/ });
+    fireEvent.click(await screen.findByRole("button", { name: /salem RTT/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /Remover salem da implantação/ }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: /Remover salem da implantação/ })).toBeNull());
+
+    const button = screen.getByRole("button", { name: /^Implantar$/ });
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(button);
+    await waitFor(() => {
+      const deploy = post.mock.calls.find(([url]) => url === "/api/ui/deploy");
+      expect(deploy).toBeTruthy();
+      const selection = (deploy?.[1] as { selection: Array<Record<string, unknown>> }).selection;
+      expect(selection.map((row) => row.target_node_id)).toEqual(["ksia"]);
+      expect(selection[0]).not.toHaveProperty("inference_role");
+    });
+  });
 });

@@ -107,7 +107,7 @@ the gateway also logs the full chain at `warn`.
 The inference server (`inference_port` in `pom.json`) keeps listening on IPv4
 and IPv6, with a fallback to plain IPv4 when the machine offers no IPv6. That
 port is not closed by the administrative UI preference: direct HTTP is the
-required fallback when the libp2p tunnel fails. On the gateway, `/api/generate`
+required fallback when the p2p tunnel fails. On the gateway, `/api/generate`
 and `/v1/**` follow the same availability rule; only `/api/ui/**` and
 `/admin/**` enter the localhost/token boundary described in `http-api.md`.
 
@@ -142,8 +142,8 @@ partial to the primary. `broadcast_to` keeps the base URL and the route separate
 so the tunnel forwards the request to the right path on the worker's loopback.
 The broadcast and the remote reduce follow the transport preference: with QUIC
 on, they try HTTP/3 and fall to HTTP/HTTPS; with QUIC off, they try the direct
-candidates. In both cases, the libp2p tunnel is only used after a direct
-transport failure, when the member announced a `PeerId` and the capability.
+candidates. In both cases, the p2p tunnel is only used after a direct
+transport failure, when the member announced an endpoint id and the capability.
 That order is required by the collective: the call waits inside the barrier and
 an unavailable tunnel must not delay a reachable HTTPS address.
 `TunnelRequest` keeps the barrier, rank and authorization headers. The routes
@@ -153,13 +153,13 @@ HTTPS and QUIC can use the secure transport and the marker without depending on
 the secret. A client API key is not a fallback and does not cross the pipeline.
 The tunnel's loopback keeps the session release's JSON `Content-Type` instead of
 applying the binary default. The gateway validates the client's API key at the
-entry surface and can query the principal for an unknown key. That query takes
-no part in authenticating the internal hops. When a step's announced target is
+entry surface, against the keys that node minted; no other node is asked
+about a key, and keys take no part in authenticating the internal hops. When a step's announced target is
 this process's own `node_id`, the relay dispatches the frame straight to the
 in-process inference handler. That call opens no socket and does not go through
 HTTP. The HTTP inference server stays up for health checks and for remote peers;
 with QUIC on, the remote order is QUIC, direct HTTP/HTTPS and, only last, the
-libp2p tunnel. With QUIC off, direct HTTP/HTTPS also comes before the tunnel.
+p2p tunnel. With QUIC off, direct HTTP/HTTPS also comes before the tunnel.
 That ladder only applies to an edge with no analysis yet. With a route pinned by
 the route plan (`route_plan`, see `p2p-network.md`, "Per-edge route plan"), the
 frame only uses the measured transport; a failure before delivery retries the
@@ -167,7 +167,7 @@ route once, moves to the next measured route and, with the list exhausted, asks
 for a reanalysis and goes down the full ladder. The return to the gateway
 (`reply_to` and remote-stream) follows the pinned route of the delivering
 node's `Gateway` plan. A failure in a call first walks the available transport
-ladder without waiting for the backoff: QUIC, HTTP/HTTPS and, last, the libp2p
+ladder without waiting for the backoff: QUIC, HTTP/HTTPS and, last, the p2p
 tunnel. Only if every path confirms the body did not reach the peer can the same
 chunk be repeated, with three attempts and a short backoff of 100/200 ms. A
 timeout or a lost answer after the body started is ambiguous and does not
@@ -291,10 +291,18 @@ with an announcer that swallows SYN: 2005 ms before, 301 ms on the first request
 and 0 ms on the following ones. Coming back is automatic: once the deadline
 passes, the next request pays one probe and the peer re-enters if it answers.
 
+The request waits at most `ADMISSION_BUDGET` (250 ms) for all the probes. A probe
+that misses it keeps running and refreshes the memory; meanwhile the peer's last
+successful admission stands in for it for `ADMISSION_MEMORY` (5 min). A late
+probe is not a refusal: one that ends refused erases the memory at once. With a
+15 s memory, a peer whose `/health` was sometimes slower than the budget fell out
+of the plan on the first request after a quiet minute, and a deployment still
+being served failed with "No valid pipeline".
+
 The probe follows the pinned route (`bases_by_route_plan`): a tunnel route goes
 straight to the tunnel, an HTTP/QUIC route puts the measured address first. It
 tries every inference address in `Network::inference_bases` order (the host that
-already answered first) and, last, `/health` over the libp2p tunnel
+already answered first) and, last, `/health` over the p2p tunnel
 (`infer_tunnel::health_via_tunnel`, 3 s) - the only way to reach a peer behind
 symmetric NAT. Session lifecycle calls use `SESSION_LIFECYCLE_TIMEOUT` (60 s)
 instead, because the peer's handler needs the engine lock. Each successful body
@@ -758,8 +766,8 @@ traditional modes:
    dispatches each frame once to the head, carrying a `reply_to`; the tail
    delivers the result straight to the gateway at `/v1/relay-result`. The
    `reply_to` URLs are the gateway's local interfaces; when none answers - the
-   normal case with the gateway behind NAT/CGNAT - delivery falls to the libp2p
-   tunnel, using the `libp2p_peer_id` and `libp2p_addrs` that `reply_to` also
+   normal case with the gateway behind NAT/CGNAT - delivery falls to the p2p
+   tunnel, using the `endpoint_id` and `endpoint_addrs` that `reply_to` also
    carries. See `docs/subsystems/p2p-network.md`, "NAT traversal".
 3. **Bubbled ring** (`relay/v1-chain`, `run_ring`/`step_ring`) - when
    `supports_relay_chain()`: the gateway makes **one** call (to the head) and
@@ -975,8 +983,8 @@ global lock. Each frame, in both directions:
 
 **Degradation.** A transport failure on the channel does not kill the
 generation: with QUIC off, the call goes back over per-request HTTP/HTTPS and
-only then through the libp2p tunnel; with QUIC on, it falls first to HTTP/HTTPS
-and uses libp2p only as the last reserve. In both cases it publishes
+only then through the p2p tunnel; with QUIC on, it falls first to HTTP/HTTPS
+and uses the p2p tunnel only as the last reserve. In both cases it publishes
 `transport_fallback=true`, and the dead channel leaves the pool. A target whose
 opening failed stays in quarantine for 5 min, the same deadline as the route
 memory, so the opening attempt is not paid per token on a cluster where the
@@ -1014,11 +1022,10 @@ restarts the model nor interrupts a call in flight. Each request opens an
 independent stream of the QUIC connection per peer and announced address, and
 the session stays in the pool to allow future multiplexing.
 
-QUIC always negotiates its own TLS 1.3 and validates the Ed25519 certificate
-against the `node_id`; that is why `quic` is encrypted even with
-`tls_required=false`. If the negotiation fails, the peer does not offer HTTP/3
-yet or the route answers 404/405, the same frame is tried over the TCP chosen
-by the TLS policy: `http://` when it is off and `https://` when it is on. The
+QUIC always negotiates its own TLS 1.3, validates the Ed25519 certificate
+against the `node_id` and presents the caller's own. If the negotiation fails,
+the peer does not offer HTTP/3 yet or the route answers 404/405, the same frame
+is tried over HTTPS on TCP. The
 fallback path keeps the run going and publishes `transport_fallback=true`; an
 inference HTTP refusal outside those codes stays final.
 
@@ -1038,7 +1045,7 @@ exception: its deadline is a liveness one, 10 min per hop
 (`PREFILL_FRAME_DEADLINE_PER_HOP`), because the chunk may wait in the peer's
 queue behind another session's chunk; the work-based deadline expired during
 that wait, the delivered frame could not be repeated, and both sessions failed
-in cascade ("libp2p tunnel did not answer in time"). The gateway's wait for each
+in cascade ("p2p tunnel did not answer in time"). The gateway's wait for each
 chunk's direct result (`prefill/pipeline.rs`) uses the same deadline.
 
 **Cleanup.** Every pending delivery lives in a per-channel registry and leaves
@@ -2025,7 +2032,7 @@ unbounded boundary reuses nothing.
 
 **Chunking.** Decisions use the same chunked prefill and in-flight window as
 chat (`prefill_chunk_tokens`, `prefill_max_inflight_chunks`). When a hop runs
-over a slow route (relay or libp2p tunnel), the hidden state of the prompt
+over a slow route (relay or p2p tunnel), the hidden state of the prompt
 dominates the time to the answer; chunking overlaps compute with transfer but
 does not reduce the bytes. What reduces them is prefix reuse, a compact state
 and the wire dtype.
@@ -2106,8 +2113,8 @@ client and a bounded channel, so the hypothesis that SSE writing caused the
 
 The new transport sends a `/v1/step-stream` control frame once to the remote
 head. The peer's producer calls the same `handle_step` and keeps inferring; a
-separate emitter drains at most eight tokens already in the queue and makes one
-POST per batch to `/v1/remote-stream-result`, with no sleep or timer. The
+separate emitter drains every token already in the queue (up to 64, the
+producer queue's size) and makes one POST per batch to `/v1/remote-stream-result`, with no sleep or timer. The
 callback queue has capacity 64: a slow client blocks the emitter when it fills
 up and then the producer, instead of letting memory grow without bound. In
 sliced plans, the head keeps the other hops inside the network. The trace counts
@@ -2118,7 +2125,11 @@ overlapping intervals: `producer_wait` is the cycle until production,
 the ready item to the emitter and `delivery_ms` is the previous callback.
 `node_timings.mtp_draft_ms` makes the synchronous `nextn` visible; so
 `5108 ms / 59` with channel and queue close to zero is production cadence, not
-network. The content still comes from the existing sampler and UTF-8 assembler,
+network. One callback is in flight at a time, so a batch cap bounds delivery
+at `cap / RTT`: with the old cap of eight, a visitor 270 ms away through a
+public relay got 22 tok/s from a head producing 72; the cap now matches the
+producer queue, so a batch carries everything generated during the previous
+callback. The content still comes from the existing sampler and UTF-8 assembler,
 in the same order.
 
 **`prompt_progress`**: with no way back, the head can no longer overlay
@@ -2135,7 +2146,7 @@ covers both situations.
 **Telemetry** (`direct::hop_entry`/`accumulate`/`record_transport`): each hop
 describes itself on the way out and the caller sends separate evidence of the
 crossing. `transport_traversals` holds one entry per call, in order, with
-`transport` (`local`, `libp2p-tunnel`, `http`, `https` or `quic`),
+`transport` (`local`, `p2p-tunnel`, `http`, `https` or `quic`),
 `transport_fallback`, time and bytes sent and received. `transport_fallback`
 only marks a call that tried one transport and fell to another after a failure;
 a tunnel chosen on purpose (route pinned to it or a peer that only answers
@@ -2484,7 +2495,7 @@ complete paths; this greedy planner is the fallback.
   timeout **before** planning - an old UDP announcement must not poison the plan
   nor leave a request waiting on a hop that no longer serves HTTP. The probe
   tries each inference address, the host that already answered first
-  (`Network::inference_bases`), and last the libp2p tunnel (3 s): only the first
+  (`Network::inference_bases`), and last the p2p tunnel (3 s): only the first
   announced address used to leave out of the plan a peer behind an unreachable
   IPv6, and the request failed with "Gap at layer 0". The same answer updates
   the executable identity and range when gossip has not propagated the most
@@ -2541,7 +2552,7 @@ runs it through that plugin or fails.
   `engine.unload`; an `error` state, or `idle` after the engine had served,
   ends the generation with the plugin's reason and the supervisor restarts it
   within its budget. While a plugin engine serves, the node announces
-  `engine/plugin-v1:<code>` (and the libp2p tunnel capability) instead of the
+  `engine/plugin-v1:<code>` (and the p2p tunnel capability) instead of the
   frame, relay and speculation capabilities, so no gateway can plan it as a
   hidden-state hop. `Network::plugin_engine_capabilities` is that rule, and
   every builder of the node's capabilities uses it: the announce, the
@@ -2650,6 +2661,68 @@ engines exchange their own hidden states, never POM's hop protocol of section
 
 Only the last stage takes requests: the earlier one answers `engine.upstream`
 with an error.
+
+**Prefill/decode split.** A machine that runs the whole model on a plugin
+inference service may be deployed with `RuntimeParams::inference_role`
+(`both`, the default, `prefill` or `decode`; the POM settings card of the
+deploy inspector draws it when the service declares `inference_role` in
+`pom_settings` and the model is not split across machines). One deployment
+may also put the whole model on several machines, each with its own role
+(`SelectedSlice::inference_role`, carried by `PeerOverrides`, the plan's
+`Step`, `LaunchTarget` and `params_for`): `plugin_engine::deploy_block`
+accepts several machines for a whole model only when their roles hold at
+least one `prefill` and one that decodes, and refuses a deployment whose
+machines are all `prefill`: a prefill machine is never a head, so no machine
+would answer. The deploy screen keeps a per-machine role only while two or
+more machines are on the map; with a single machine the row's role is dropped
+and the deployment's role (the one the inspector shows) applies. A gateway
+whose only peers for the model are prefill machines answers "only prefill
+machines serve it" instead of the layer-coverage refusal. The Flow draws the split as
+Prefill -> Decode: the cluster view's `PeerView.role` and a candidate edge
+from each prefill machine to each decode machine of the same layers. The
+Chat's head list (`/api/ui/infer/heads`) offers the split as one head, its
+prefill machine; a request pinned to a prefill machine is planned on a head
+that decodes and reads its prompt on that prefill machine
+(`EngineRequest::prefill_node`). The trace of a split turn has the prefill
+machine as its first hop (its engine's prompt time, the call's round trip),
+and the prompt phase of the timings covers both machines and the session's
+transfer. The role reaches
+the plugin in `engine.load` (`role`) and is announced as
+`engine/plugin-role-v1:<role>` beside the engine capability (the `/health`
+`capabilities` carry it too). A stage of a split model has no role.
+
+- **Planning.** The gateway drops every `prefill` machine from the peers it
+  plans with (`plugin_engine::is_prefill_only`), so such a machine is never the
+  head of a plan; `decode` and `both` machines are planned as before.
+- **The prefill step** (`plugin_engine::prefill_on_peer`). Before a turn that
+  names its conversation (`session`, or the `auto-` name) runs on a one-step
+  plan without images or a typed decision, the gateway looks for a live
+  `prefill` machine of the same plugin and model that serves the whole model
+  (the least busy). It asks the head what it holds of the conversation
+  (`engine/session/offer`, the larger of `tokens` and `ram_tokens`) and sends
+  the turn to the prefill machine with `prefill_only: true`, `max_tokens: 1`
+  and `decode_holds`. That machine reads the prompt into a batch slot and keeps
+  the conversation's session (`done.session` deferred, `done.prefill.tokens`),
+  or answers `done.prefill.skipped` when the part of the prompt the head lacks
+  is shorter than the deployment's `prefill_min_tokens` (a POM setting, sent to
+  the plugin in `engine.load`; the engine's default when unset, 4096 on
+  Strata): the head then reads it itself, so the next turn of a long
+  conversation the head already holds does not cross. Its generated token is
+  dropped.
+- **The decode step.** When the session was kept, the head's turn carries
+  `session_source: <prefill node id>`. The head (`plugin_session::pull_from`,
+  from `prepare_for_body`) asks that machine's offer until its save is written
+  (up to 5 minutes), checks that the layers match, and fetches the session into
+  its own session folder whatever the transfer costs; the bridge then restores
+  it and reads only the rest of the prompt. Any failure of either step is
+  logged and leaves the head to read the prompt itself: the split is never a
+  reason for a turn to fail.
+- **What crosses.** One session file per split turn: the recurrent state of the
+  GDN layers (about 118 MB on the qwen4exp geometry, whatever the prompt) plus
+  the K/V of the attention layers (about 7.5 KB per token in q4_0), once, after
+  the prompt is read. Nothing crosses per generated token. Both machines need
+  the same model files and KV type: the engine refuses a session of another
+  identity, and the head then reads the prompt again.
 
 ## 8. direct_lab.rs - the "law"
 
@@ -2900,7 +2973,7 @@ The bench is `crates/node/src/backend/continuation_lab.rs`.
 measurement, and they show up in their own row of the Chat telemetry table.
 
 - **`transport_summary`** - a bounded summary of this hop's crossings, grouped
-  by transport (`local`, `libp2p-tunnel`, `http`, `https`, `quic`,
+  by transport (`local`, `p2p-tunnel`, `http`, `https`, `quic`,
   `remote-stream` or `unknown`). Each entry reports calls, bytes sent and
   received, minimum, median, p95 and maximum RTT, plus how many calls arrived
   through a fallback on that transport. The summary also reports the total
@@ -2952,9 +3025,10 @@ channel having failed and the generation having continued - which is the
 requested behavior, not a defect. `tls_handshake_ms` stays zero on the channel's
 crossings for the usual reason: the handshake happened once, at opening.
 
-**A hop through the libp2p tunnel reports `tls: false`.** It is encrypted - by
-Noise, end to end -, but not by TLS, and saying `true` there would claim a
-guarantee that hop did not give.
+**A hop through the p2p tunnel reports `tls: false`.** It is encrypted end to
+end - by QUIC's TLS 1.3 under the two endpoint keys -, but not by the
+cluster's TLS (certificates pinned to the `node_id`, section 5 of
+`p2p-network.md`), and saying `true` there would claim that guarantee.
 
 In the remote transport, the `remote-stream` record represents a batch
 callback, not a new inference round trip. `bytes_received` is the batch's body

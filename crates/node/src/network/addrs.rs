@@ -60,7 +60,7 @@ fn disposable(ip: &str) -> bool {
 /// unique-local (`fc00::/7`).
 ///
 /// Used to decide whether a peer-observed address (`Network::set_observed_addr`,
-/// from libp2p `identify`) is real new information about this node's public
+/// from the endpoint's NAT report) is real new information about this node's public
 /// IP, or just the peer telling us about a private range we already know
 /// isn't reachable from the internet — e.g. a peer on the same LAN, or a NAT
 /// that rewrote to another private range instead of a routable one.

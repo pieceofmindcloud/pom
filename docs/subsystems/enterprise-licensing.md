@@ -11,7 +11,12 @@ catalog of installable plugins: `PluginManager`/`PluginRuntime` in
 `crates/node/src/plugins.rs` creates runtimes for every `plugin_code` granted by
 the server and restores the codes persisted locally. Each plugin has its own
 activation state, lease, heartbeat, process host and version update check, with
-nothing shared between plugins. The Request Logs/Statistics plugin's
+nothing shared between plugins. Every persisted install is bound to the machine
+fingerprint and dropped at startup when it no longer matches. Its machine
+component is `/etc/machine-id` on Linux and, where there is none (a container),
+a random id stored once in `.<slug>-machine-id` under the project root: the
+container's `HOSTNAME` used before changed on every recreate, and the node came
+back with its plugins gone. The Request Logs/Statistics plugin's
 `plugin_code` was `"enterprise"` until 2026-10-04 and is now `"logs"`
 (`LOGS_PLUGIN_CODE`); "POM Enterprise" is the product/plan name, and this
 file and the `enterprise-protocol` crate kept the name. What
@@ -204,8 +209,10 @@ only the generic boundary, reusable by any future `plugin_code`:
   "Checkout through the node" below). An earlier version (97bb0e91) showed only
   the showcase even with the plugin active ("This plugin is already active in
   this cluster") - defect fixed. The `/api/ui/requests` and
-  `/api/ui/requests/stats` routes stay in the node, AdminOnly, and refuse the
-  data without entitlement.
+  `/api/ui/requests/stats` routes stay in the node, `LocalOnly`, and refuse
+  the data without entitlement. An admin of the chain reads every node's
+  requests; any other node, an inference node included, only its own
+  (`http-api.md`).
 
 ## Checkout through the node
 
@@ -226,8 +233,9 @@ origin. Errors come back as `checkout_request_invalid` (400),
 ## Entitlement and UI
 
 `GET /api/ui/plugins` publishes the local states of the plugins restored or
-seen by the runtime. The public catalog `GET /v1/plugins` is read directly by
-the browser and includes plugins with no local state yet; the Plugins screen
+seen by the runtime. The public catalog `GET /v1/plugins` is read by the node
+for the browser (`GET /api/ui/plugin-catalog[/:code]`, so the page never
+leaves its own origin and the store's CORS policy does not matter) and includes plugins with no local state yet; the Plugins screen
 asks it for one page at a time (`q`, `page`, `per_page`, answered with `total`). Each local state has
 its own entitlement, `manage_url` and `available_update`. The answer starts at
 `needs_activation`. The `state` field follows the license, while `active`
@@ -247,9 +255,9 @@ error keeps the license.
 
 Plugins are local to each node, so activating a license, registering a GitHub
 repository, installing, updating and using a plugin's UI is allowed to the
-`admin`, `node` and `infer` profiles on their own machine, including the
+`admin`, `worker` and `visitor` profiles on their own machine, including the
 development rebuild (`/api/ui/plugins/dev-sources*`), which also requires
-`POM_DEV_MODE=1`. The `infer` UI lists Plugins and the installed plugins' menus
+`POM_DEV_MODE=1`. The `visitor` UI lists Plugins and the installed plugins' menus
 below its conversations. The rule
 lives in `ROUTE_RULES` (`backend/webui/routes/mod.rs`).
 
@@ -540,7 +548,7 @@ The About screen calls `POST /api/ui/pom-update/check` to repeat detection on
 demand and reads `GET /api/ui/pom-update/status` for the current state
 (`usePomCoreUpdateStatus()`, its own `PomCoreUpdateStatus` contract - never
 `PluginStatus`). The status route downloads no artifacts and restarts nothing;
-`check` and `apply` are AdminOnly. The About screen itself holds the
+`check` and `apply` are PrincipalOnly. The About screen itself holds the
 confirmation and the install, without redirecting to any other screen - see
 `## Phase 7` above.
 

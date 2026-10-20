@@ -476,7 +476,7 @@ mod tests {
             0,
             Phase::Decode,
             TransportTrace {
-                transport: crate::relay::InferenceTransport::Libp2pTunnel,
+                transport: crate::relay::InferenceTransport::P2pTunnel,
                 fallback: false,
                 round_trip_ms: 20,
                 network_ms: 20,
@@ -1459,7 +1459,7 @@ mod tests {
             (crate::relay::InferenceTransport::Local, false, 20),
             (crate::relay::InferenceTransport::Https, true, 30),
             (crate::relay::InferenceTransport::Https, false, 40),
-            (crate::relay::InferenceTransport::Libp2pTunnel, false, 50),
+            (crate::relay::InferenceTransport::P2pTunnel, false, 50),
         ] {
             trace.record_transport(
                 0,
@@ -1544,8 +1544,8 @@ mod tests {
             phase["transport_summary"]["transport_switches"],
             serde_json::json!([
                 {"from": "local", "to": "https", "calls": 1},
-                {"from": "https", "to": "libp2p-tunnel", "calls": 1},
-                {"from": "libp2p-tunnel", "to": "local", "calls": 1},
+                {"from": "https", "to": "p2p-tunnel", "calls": 1},
+                {"from": "p2p-tunnel", "to": "local", "calls": 1},
             ])
         );
         // The normal trace now carries request-level integrity and remote

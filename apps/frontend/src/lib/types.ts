@@ -412,10 +412,6 @@ export interface NodeInfo {
   advertise_addr: string | null;
   /** What this node actually announces now (pinned, observed, or the sentinel). */
   effective_address: string;
-  /** Whether the cluster speaks TLS between peers now. `webui.rs` - `NodeInfo`. */
-  tls_required: boolean;
-  /** Whether **this** node can change that: only the principal can. */
-  tls_authority: boolean;
   /** Whether the cluster prefers HTTP/3 over QUIC on new hops. */
   quic_enabled: boolean;
   /** Only the principal can change the QUIC preference. */
@@ -435,8 +431,8 @@ export type NetworkVisibility = "local" | "private" | "public";
 export type NetworkAccessPolicy = "authorized" | "auto_approve" | "anyone_with_anchor" | "local_only";
 
 /** A role a new machine can enroll with; `admin` is never an enrollment. */
-export type EnrollmentRole = "node" | "infer";
-export const ENROLLMENT_ROLES: EnrollmentRole[] = ["node", "infer"];
+export type EnrollmentRole = "worker" | "visitor";
+export const ENROLLMENT_ROLES: EnrollmentRole[] = ["worker", "visitor"];
 
 export interface NetworkLocation {
   latitude: number;
@@ -625,6 +621,8 @@ export interface NetworkChatSnapshot {
 export interface PeerView {
   /** The plugin engine that runs this machine's model; null for llama.cpp. A pipeline is built on one engine. */
   engine?: string | null;
+  /** That engine's part in a prefill/decode split; absent when the machine does both. */
+  role?: Exclude<InferenceRole, "both"> | null;
   node_id: string;
   short_id: string;
   addr: string;
@@ -754,7 +752,14 @@ export interface PluginService {
 }
 
 /** A POM deployment setting an inference service can declare, by its `RuntimeParams` name. */
-export type PomSetting = "prefill_max_inflight_chunks" | "hidden_state_dtype";
+export type PomSetting =
+  | "prefill_max_inflight_chunks"
+  | "hidden_state_dtype"
+  | "inference_role"
+  | "prefill_min_tokens";
+
+/** A whole-model machine's part in a prefill/decode split of a plugin inference service. */
+export type InferenceRole = "both" | "prefill" | "decode";
 
 /** One setting an inference service's engine publishes (`host.services`). */
 export interface EngineSetting {
@@ -855,7 +860,7 @@ export interface ChatTelemetryRtt {
   to_node_id: string;
   rtt_ms: number;
   transport: string;
-  /** The edge goes through a circuit on a libp2p relay: a route to review. */
+  /** The edge goes through a relay: a route to review. */
   relayed?: boolean;
 }
 
@@ -981,9 +986,9 @@ export interface ClusterView {
  */
 export interface TraversalView {
   nat: "unknown" | "public" | "private";
-  /** Published multiaddresses, including the relay circuit. */
+  /** Published endpoint addresses: direct `ip:port` and relay URLs. */
   addrs: string[];
-  /** PeerId of the relays that accepted a reservation. */
+  /** URLs of the relays the endpoint holds a live connection to. */
   reservations: string[];
   hole_punch_ok: number;
   hole_punch_failed: number;
@@ -1559,25 +1564,26 @@ export interface OfferManifest {
   };
 }
 
-/** A live libp2p connection with the peer. */
+/** A live endpoint connection with the peer, as its selected path stands now. */
 export interface PeerRouteLink {
   address: string;
   relayed: boolean;
-  relay_peer_id?: string | null;
+  /** URL of the relay, when the path goes through one. */
+  relay_url?: string | null;
   hole_punched: boolean;
 }
 
 /**
  * Through where this node actually talks to the peer, observed - not the
  * address the peer announces. `http`: a direct address answered; `p2p_direct`:
- * direct libp2p connection (dialed or by hole punch); `relayed`: only through
- * the relay. `relay_kind` says, in `relayed`, whether the relay is dedicated
- * (configured) or a cluster member serving as relay - the last rung of the ladder.
+ * direct endpoint path (dialed or by hole punch); `relayed`: only through a
+ * relay. `relay_kind` says, in `relayed`, whether the relay is dedicated
+ * (configured), public (one of n0's) or a cluster member serving as relay.
  */
 export interface PeerRoute {
   kind: "http" | "p2p_direct" | "relayed" | "none";
   address?: string | null;
-  relay_kind?: "dedicated" | "member" | null;
+  relay_kind?: "dedicated" | "public" | "member" | null;
   hole_punched: boolean;
   links: PeerRouteLink[];
 }
@@ -1590,7 +1596,7 @@ export interface AdminNode {
   addr: string;
   route?: PeerRoute | null;
   role?: string;
-  /** The node's role in the network: `admin`, `node` or `infer`. */
+  /** The node's role in the network: `admin`, `worker` or `visitor`. */
   profile?: string;
   /** The trust chain version the node announces. */
   trust_version?: string | null;
@@ -1604,7 +1610,7 @@ export interface AdminNode {
   verified: boolean;
 }
 
-export type AdminAuthorityViewer = "principal" | "secondary" | "node";
+export type AdminAuthorityViewer = "principal" | "admin" | "member";
 
 export interface AdminAuthorityMember {
   node_id: string;
@@ -1889,6 +1895,8 @@ export interface DeployStep {
   n_gpu_layers: number | null;
   /** Per-machine KV cache placement. `null` means "the cluster's answer". */
   offload_kqv: boolean | null;
+  /** Per-machine prefill/decode role; absent means the deployment's `params.inference_role`. */
+  inference_role?: InferenceRole | null;
   options: DeployAlternative[];
   /** Set when this assignment cannot be carried out, and why. */
   problem: string | null;
@@ -2042,6 +2050,11 @@ export interface RuntimeParams {
   engine_settings?: EngineSettingValues;
   /** Format negotiated for the hidden state between peers; absent in old config = f16. */
   hidden_state_dtype?: WireDtype;
+  /** A whole-model plugin engine's part in a prefill/decode split; absent = both. */
+  inference_role?: InferenceRole;
+  /** The split's threshold: the new part of a prompt goes through the prefill machine from this many tokens;
+   *  absent = the engine's default. */
+  prefill_min_tokens?: number | null;
   n_gpu_layers: number;
   n_ctx: number;
   offload_kqv: boolean;
@@ -2144,6 +2157,9 @@ export interface DeploySelection {
   target_node_id: string;
   /** Overrides `params.n_gpu_layers` for this machine alone. */
   n_gpu_layers?: number | null;
+  /** This machine's part in a prefill/decode split of a whole model on a plugin's
+   *  inference service; `null` takes `params.inference_role`. */
+  inference_role?: InferenceRole | null;
   /**
    * Where this machine's KV cache lives, overriding `params.offload_kqv`.
    *

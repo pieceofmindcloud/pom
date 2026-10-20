@@ -182,6 +182,18 @@ describe("autoLayout", () => {
 });
 
 describe("deployLayout", () => {
+  it("puts the decode machines of a whole model after its prefill machine, not under it", () => {
+    const positions = deployLayout(
+      [
+        { id: "decode", start_layer: 0, end_layer: 47, role: "decode" },
+        { id: "prefill", start_layer: 0, end_layer: 47, role: "prefill" },
+      ],
+      [],
+    );
+    expect(positions.prefill.left).toBeLessThan(positions.decode.left);
+    expect(positions.prefill.top).toBe(positions.decode.top);
+  });
+
   it("puts machines of a single stage side by side", () => {
     const positions = deployLayout([
       { id: "a", start_layer: 0, end_layer: 31 },

@@ -283,7 +283,7 @@ mod profile_network_tests {
     #[tokio::test]
     async fn infer_network_response_contains_only_the_local_node() {
         let state = state_with("eu", vec![peer("outro", "salem", 1)]).await;
-        state.auth.write().await.profile = crate::profile::NodeProfile::Infer;
+        state.auth.write().await.profile = crate::profile::NodeProfile::Visitor;
 
         let body = body_of(cluster(HeaderMap::new(), State(state)).await).await;
         let peers = body["peers"].as_array().expect("peers must be a list");
@@ -326,7 +326,7 @@ mod profile_network_tests {
                 n_ctx: 8_192,
                 max_new_tokens: 256,
             }));
-        state.auth.write().await.profile = crate::profile::NodeProfile::Infer;
+        state.auth.write().await.profile = crate::profile::NodeProfile::Visitor;
 
         let body = body_of(chat_capabilities(State(state.clone()), Query(Default::default())).await.into_response()).await;
         assert_eq!(body["vision"], "supported");
@@ -460,10 +460,10 @@ mod profile_network_tests {
         loading.runtime_capacity = None;
 
         let state = state_with("eu", vec![slow, fast, middle, loading]).await;
-        state.auth.write().await.profile = crate::profile::NodeProfile::Infer;
+        state.auth.write().await.profile = crate::profile::NodeProfile::Visitor;
         state.network.rtts.remember("loading", 1.0, "direct-health");
         state.network.rtts.remember("slow", 80.0, "direct-health");
-        state.network.rtts.remember("fast", 12.0, "libp2p");
+        state.network.rtts.remember("fast", 12.0, "p2p");
 
         let body = body_of(
             inference_heads(
@@ -501,7 +501,7 @@ mod profile_network_tests {
     #[tokio::test]
     async fn infer_head_response_explains_when_no_candidate_exists() {
         let state = state_with("eu", vec![]).await;
-        state.auth.write().await.profile = crate::profile::NodeProfile::Infer;
+        state.auth.write().await.profile = crate::profile::NodeProfile::Visitor;
 
         let body = body_of(
             inference_heads(
@@ -537,12 +537,12 @@ mod profile_network_tests {
         stale.inference_port = Some(8181);
 
         let state = state_with("eu", vec![fresh, stale]).await;
-        state.auth.write().await.profile = crate::profile::NodeProfile::Infer;
+        state.auth.write().await.profile = crate::profile::NodeProfile::Visitor;
         state.network.rtts.remember("fresh", 80.0, "direct-health");
         state.network.rtts.remember_for_test_with_age(
             "stale",
             1.0,
-            "libp2p",
+            "p2p",
             crate::route::RTT_MEASURE_INTERVAL + std::time::Duration::from_secs(1),
         );
 

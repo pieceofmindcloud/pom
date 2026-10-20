@@ -36,7 +36,7 @@
 //! ## Degradation
 //!
 //! A transport failure on the channel **does not kill the generation**: the call
-//! goes back through the usual path (libp2p tunnel, then HTTP or HTTPS per
+//! goes back through the usual path (p2p tunnel, then HTTP or HTTPS per
 //! request) with `transport_fallback=true`, and the dead channel leaves the pool.
 //! A destination that refused to open is quarantined for
 //! [`OPEN_FAILURE_COOLDOWN`], so that the attempt to open is not paid per token

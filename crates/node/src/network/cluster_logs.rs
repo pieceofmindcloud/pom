@@ -2,14 +2,15 @@
 //!
 //! This module is deliberately independent of the inference tunnel. The
 //! `tracing` layer only uses `try_send` on a bounded queue; the writer and the
-//! libp2p send live in their own tasks and may lose lines when they are busy.
+//! p2p send live in their own tasks and may lose lines when they are busy.
 
 use crate::network::Network;
 use anyhow::Result;
 use arc_swap::ArcSwap;
+use crate::p2p::Codec;
 use async_trait::async_trait;
 use futures::prelude::*;
-use libp2p::{request_response, PeerId, StreamProtocol};
+use crate::p2p::EndpointId;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
@@ -300,7 +301,7 @@ where
 
 #[derive(Debug, Clone)]
 pub struct LogOutbound {
-    pub peer_id: PeerId,
+    pub peer_id: EndpointId,
     pub addr_candidates: Vec<String>,
     pub request: LogBatch,
 }
@@ -346,14 +347,13 @@ where
 }
 
 #[async_trait]
-impl request_response::Codec for ClusterLogsCodec {
-    type Protocol = StreamProtocol;
+impl Codec for ClusterLogsCodec {
+    const PROTOCOL: &'static str = CLUSTER_LOGS_PROTOCOL;
     type Request = LogBatch;
     type Response = LogResponse;
 
     async fn read_request<T>(
         &mut self,
-        _: &Self::Protocol,
         io: &mut T,
     ) -> std::io::Result<Self::Request>
     where
@@ -364,7 +364,6 @@ impl request_response::Codec for ClusterLogsCodec {
 
     async fn read_response<T>(
         &mut self,
-        _: &Self::Protocol,
         io: &mut T,
     ) -> std::io::Result<Self::Response>
     where
@@ -375,7 +374,6 @@ impl request_response::Codec for ClusterLogsCodec {
 
     async fn write_request<T>(
         &mut self,
-        _: &Self::Protocol,
         io: &mut T,
         request: Self::Request,
     ) -> std::io::Result<()>
@@ -387,7 +385,6 @@ impl request_response::Codec for ClusterLogsCodec {
 
     async fn write_response<T>(
         &mut self,
-        _: &Self::Protocol,
         io: &mut T,
         response: Self::Response,
     ) -> std::io::Result<()>
@@ -398,15 +395,6 @@ impl request_response::Codec for ClusterLogsCodec {
     }
 }
 
-pub fn cluster_logs_behaviour() -> request_response::Behaviour<ClusterLogsCodec> {
-    request_response::Behaviour::new(
-        [(
-            StreamProtocol::new(CLUSTER_LOGS_PROTOCOL),
-            request_response::ProtocolSupport::Full,
-        )],
-        request_response::Config::default().with_request_timeout(Duration::from_secs(3)),
-    )
-}
 
 /// Cluster log state.
 ///
@@ -520,9 +508,14 @@ impl ClusterLogs {
         self.admin_receiver.store(enabled, Ordering::Release);
     }
 
-    pub fn try_ingest_remote(&self, batch: LogBatch) -> bool {
+    /// Takes a batch `sender` - the live peer the swarm connection belongs
+    /// to - sent about itself. A batch that claims another source, or lines
+    /// of another node, is refused: no member writes into another's log.
+    pub fn try_ingest_remote(&self, sender: &str, batch: LogBatch) -> bool {
         if !self.admin_receiver.load(Ordering::Acquire)
             || batch.entries.len() > LOG_BATCH_MAX_ENTRIES
+            || batch.source_node_id != sender
+            || batch.entries.iter().any(|entry| entry.node_id != sender)
         {
             self.dropped.fetch_add(
                 batch.entries.len() as u64 + batch.dropped,
@@ -847,12 +840,12 @@ mod tests {
         let (capture, receiver) = LogCapture::new(8);
         let service = ClusterLogs::new(capture, receiver);
         service.set_admin_receiver(true);
-        assert!(service.try_ingest_remote(LogBatch {
+        assert!(service.try_ingest_remote("node-a", LogBatch {
             source_node_id: "node-a".into(),
             entries: vec![entry("first")],
             dropped: 2,
         }));
-        assert!(service.try_ingest_remote(LogBatch {
+        assert!(service.try_ingest_remote("node-a", LogBatch {
             source_node_id: "node-a".into(),
             entries: vec![entry("segundo")],
             dropped: 0,
@@ -883,11 +876,30 @@ mod tests {
         assert!(receiver.try_recv().is_err());
     }
 
+    /// A batch is bound to the swarm connection it came on: a member cannot
+    /// write lines into another node's log.
+    #[tokio::test]
+    async fn a_batch_about_another_node_is_refused() {
+        let (capture, receiver) = LogCapture::new(8);
+        let service = ClusterLogs::new(capture, receiver);
+        service.set_admin_receiver(true);
+        let batch = || LogBatch {
+            source_node_id: "node-a".into(),
+            entries: vec![entry("forged")],
+            dropped: 0,
+        };
+        assert!(!service.try_ingest_remote("node-b", batch()));
+        let mut mixed = batch();
+        mixed.source_node_id = "node-b".into();
+        assert!(!service.try_ingest_remote("node-b", mixed));
+        assert!(service.try_ingest_remote("node-a", batch()));
+    }
+
     #[tokio::test]
     async fn a_non_admin_refuses_and_counts_the_batch() {
         let (capture, receiver) = LogCapture::new(8);
         let service = ClusterLogs::new(capture, receiver);
-        assert!(!service.try_ingest_remote(LogBatch {
+        assert!(!service.try_ingest_remote("node-a", LogBatch {
             source_node_id: "node-a".into(),
             entries: vec![entry("refused")],
             dropped: 1,
@@ -916,7 +928,7 @@ mod tests {
         .expect("rede de teste");
         let mut admin = crate::gateway::testkit::peer("secondary", "secondary", 8081);
         admin.profile = crate::profile::NodeProfile::Admin;
-        admin.libp2p_peer_id = Some(PeerId::random().to_string());
+        admin.endpoint_id = Some(crate::p2p::random_endpoint_id().to_string());
         network
             .peers
             .write()

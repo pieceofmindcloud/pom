@@ -162,6 +162,7 @@ export const routeLoaders = {
   networkSettings: () => import("./routes/NetworkSettings").then(({ NetworkSettings }) => NetworkSettings),
   networkParticipants: () => import("./routes/NetworkSettings").then(({ NetworkParticipants }) => NetworkParticipants),
   myMachine: () => import("./routes/MyMachine").then(({ MyMachine }) => MyMachine),
+  myBudget: () => import("./routes/MyBudget").then(({ MyBudget }) => MyBudget),
   adminAuthority: () => import("./routes/AdminAuthority").then(({ AdminAuthority }) => AdminAuthority),
   trustAnchor: () => import("./routes/TrustAnchor").then(({ TrustAnchor }) => TrustAnchor),
   networkSharing: () => import("./routes/NetworkSharing").then(({ NetworkSharing }) => NetworkSharing),
@@ -196,6 +197,7 @@ const ModelPaths = lazyRoute(routeLoaders.modelPaths);
 const NetworkSettings = lazyRoute(routeLoaders.networkSettings);
 const NetworkParticipants = lazyRoute(routeLoaders.networkParticipants);
 const MyMachine = lazyRoute(routeLoaders.myMachine);
+const MyBudget = lazyRoute(routeLoaders.myBudget);
 const AdminAuthority = lazyRoute(routeLoaders.adminAuthority);
 const TrustAnchor = lazyRoute(routeLoaders.trustAnchor);
 const NetworkSharing = lazyRoute(routeLoaders.networkSharing);
@@ -461,6 +463,7 @@ export default function App() {
                         <Route path="/config/network" element={<Page><NetworkSettings /></Page>} />
                         <Route path="/config/network/participants" element={<Page><NetworkParticipants /></Page>} />
                         <Route path="/config/my-machine" element={<Page><MyMachine /></Page>} />
+                        <Route path="/config/budget" element={<Page><MyBudget /></Page>} />
                         <Route path="/config/administration" element={<Page><AdminAuthority /></Page>} />
                         <Route path="/config/sharing" element={<Page><NetworkSharing /></Page>} />
                         <Route path="/config/trust" element={<Page><TrustAnchor /></Page>} />

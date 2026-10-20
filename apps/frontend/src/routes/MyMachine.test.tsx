@@ -18,7 +18,7 @@ const queryMocks = vi.hoisted(() => ({
       p2p_port: 42777,
       gateway_port: 8080,
       inference_port: 8181,
-      profile: "node",
+      profile: "worker",
       authority_level: "primary" as "primary" | null,
       detached: false,
       node_name: null as string | null,
@@ -100,7 +100,7 @@ describe("MyMachine", () => {
   });
 
   it("lets a node leave even without authority and without a loaded model", async () => {
-    queryMocks.node.data.profile = "node";
+    queryMocks.node.data.profile = "worker";
     queryMocks.node.data.authority_level = null;
     mount();
 

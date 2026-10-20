@@ -568,9 +568,14 @@ export function useCacheTypes() {
  * This is the reason the notification menu survives a reload: the work lives on
  * the node, and the browser only asks what is running.
  */
-export function useJobs() {
+/**
+ * Slicing, deploy and apply jobs of this machine. `enabled` is false on a
+ * `visitor`: it runs none, and its node refuses `/api/ui/jobs`.
+ */
+export function useJobs(enabled = true) {
   return useQuery({
     queryKey: keys.jobs,
+    enabled,
     queryFn: () =>
       optional(
         api.getConditional<{ jobs: Job[] }>("/api/ui/jobs", { auth: false }),
@@ -610,12 +615,17 @@ export function useClusterLogs(deployId?: string, enabled = true) {
   });
 }
 
-export function useTransfers() {
+/**
+ * File transfers of this machine. `enabled` is false on a `visitor`: it holds
+ * no model, and its node refuses every `/api/transfer` route.
+ */
+export function useTransfers(enabled = true) {
   return useQuery({
     queryKey: keys.transfers,
     queryFn: () =>
       optional(api.get<{ jobs: TransferJob[] }>("/api/transfer/jobs"), { jobs: [] }),
-    refetchInterval: 2000,
+    enabled,
+    refetchInterval: enabled ? 2000 : false,
   });
 }
 
@@ -628,9 +638,10 @@ export function useTransfers() {
  * 4.2 GB slice against 5 s of polling); with the offer going out in milliseconds,
  * what remains of the wait is precisely this.
  */
-export function useOffers() {
+export function useOffers(enabled = true) {
   return useQuery({
     queryKey: keys.offers,
+    enabled,
     queryFn: () =>
       optional(
         api.getConditional<{ offers: NetworkOffer[] }>("/api/transfer/offers"),

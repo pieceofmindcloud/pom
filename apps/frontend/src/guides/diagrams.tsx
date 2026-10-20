@@ -380,7 +380,7 @@ function Profiles() {
   );
 }
 
-/** Two sites: UDP on the LAN, libp2p with a relay across the internet. */
+/** Two sites: UDP on the LAN, the iroh endpoint with a relay across the internet. */
 function Network() {
   return (
     <svg viewBox="0 0 520 224" role="img" className="h-auto w-full">
@@ -415,7 +415,7 @@ function Network() {
       <text x="352" y="38" className={FAINT}>
         behind NAT
       </text>
-      <Machine x={354} y={84} name="C" range="libp2p TCP 52777" w={140} h={50} tone="aqua" pulse={0.6} />
+      <Machine x={354} y={84} name="C" range="iroh UDP 52777" w={140} h={50} tone="aqua" pulse={0.6} />
 
       <path d="M 164 75 L 200 98" className="stroke-iris/60 guide-dash" fill="none" strokeWidth="1.5" />
       <path d="M 318 108 L 350 108" className="stroke-iris/60 guide-dash" fill="none" strokeWidth="1.5" markerEnd="url(#a-net)" />

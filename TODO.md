@@ -19,9 +19,11 @@ context and must not be proposed again as new defects.
 
 ## NAT traversal (IPv4 with no public address)
 
-Delivered on 2026-09-22, in six parts. The diagnosis and the final design are
-in `docs/subsystems/p2p-network.md`, section "NAT traversal"; this list stays
-as a record of what was done and has no open item.
+Delivered on 2026-09-22, in six parts, under libp2p. On 2026-10-17 the
+transport moved to iroh, which does N1, N2 and N5 on its own (relays, hole
+punching and relay URLs as addresses); N0, N3 and N4 carried over. The current
+design is in `docs/subsystems/p2p-network.md`, sections 3 and "NAT traversal";
+this list stays as a record of what was done and has no open item.
 
 - [x] **N1 - A swarm that can do traversal.** QUIC in the `SwarmBuilder` and in the listen
   addresses; `DEFAULT_RELAY_NODES` emptied, because the IPFS bootstrapper does not

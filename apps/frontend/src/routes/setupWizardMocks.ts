@@ -127,7 +127,7 @@ export const MOCK_TEST_INFERENCE = {
 
 export const INITIAL_SETUP: PomSetup = {
   intent: null,
-  roles: { admin: false, node: false, infer: false },
+  roles: { admin: false, worker: false, visitor: false },
   network: { name: "Minha rede", mode: "local", discovery: "automatic" },
   hardware: null,
   nodes: [],

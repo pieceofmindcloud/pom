@@ -33,9 +33,9 @@ struct TpState {
     /// the same host when only one of them is reachable from this rank.
     rank0_urls: Vec<String>,
     /// UDP addresses announced by the primary, so the tunnel can rebuild the
-    /// TCP multiaddresses without depending on this rank's discovery table.
+    /// TCP endpoint addresses without depending on this rank's discovery table.
     rank0_addr_candidates: Vec<String>,
-    /// PeerId and tunnel capability of the primary, for networks with no
+    /// endpoint id and tunnel capability of the primary, for networks with no
     /// direct HTTPS route between the machines.
     rank0_peer_id: Option<String>,
     rank0_supports_tunnel: bool,
@@ -325,7 +325,7 @@ pub fn is_active() -> bool {
 /// Wires the bridge the `llama-engine` uses to query this module from inside
 /// the decode (`llm.rs` -> `llama_engine::tp_probe`). Called once at `node`
 /// startup; `tp.rs` stays in `node` because the collective talks to the primary
-/// over HTTP/libp2p tunnel.
+/// over HTTP/p2p tunnel.
 pub fn install_probe() {
     llama_engine::tp_probe::install(llama_engine::tp_probe::TpProbe {
         is_active,
@@ -619,7 +619,7 @@ pub fn broadcast_to(
         let who = member.node_id.clone();
         let auth = tp_state().and_then(|state| state.auth.clone());
         let peer_id = member
-            .libp2p_peer_id
+            .endpoint_id
             .as_deref()
             .and_then(|id| id.parse().ok());
         let supports_tunnel = member.supports_tunnel;
@@ -977,7 +977,7 @@ mod tests {
             2,
             "https://[2001:db8::1]:8181".into(),
             Some("primary-node".into()),
-            Some("12D3KooWPrimary".into()),
+            Some("primary-endpoint".into()),
             true,
             None,
         );
@@ -1099,7 +1099,7 @@ mod tests {
 
     #[tokio::test]
     async fn reduce_uses_the_tunnel_when_the_primary_http_endpoint_is_unreachable() {
-        let peer_id = libp2p::PeerId::random();
+        let peer_id = crate::p2p::random_endpoint_id();
         let (tunnel, mut received) = mpsc::channel::<crate::infer_tunnel::TunnelOutbound>(1);
         let receiver = tokio::spawn(async move {
             let outbound = received.recv().await.expect("tunnel request");

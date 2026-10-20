@@ -37,7 +37,7 @@ struct QuicReply {
 }
 
 /// Asks the principal for the QUIC policy through all of its addresses, the one
-/// that answered first before the others, and last through the libp2p tunnel
+/// that answered first before the others, and last through the p2p tunnel
 /// (`/api/cluster/quic` is on the tunnel's list). Only the first announced address
 /// failed forever with a principal behind NAT or on an unreachable IPv6.
 pub(crate) async fn fetch_from_principal(
@@ -173,7 +173,7 @@ mod tests {
     #[test]
     fn on_by_default_and_a_failed_fetch_keeps_the_local_value() {
         let cfg: crate::config::Config =
-            serde_json::from_str(r#"{"profile":"node","connection_key":"k"}"#).unwrap();
+            serde_json::from_str(r#"{"profile":"worker","connection_key":"k"}"#).unwrap();
         assert!(cfg.quic_enabled);
         assert!(cfg.network_chat_enabled);
         assert_eq!(

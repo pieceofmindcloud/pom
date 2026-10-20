@@ -8,7 +8,7 @@
 import { useContext, useEffect, useMemo, createContext, type ReactNode } from "react";
 import { useNode } from "./queries";
 
-export const PROFILES = ["admin", "node", "infer"] as const;
+export const PROFILES = ["admin", "worker", "visitor"] as const;
 
 export type Profile = (typeof PROFILES)[number];
 

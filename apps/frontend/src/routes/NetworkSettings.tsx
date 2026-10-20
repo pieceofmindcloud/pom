@@ -53,7 +53,7 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
   const cluster = useCluster();
   const networkInfo = useNetworkInfo(Boolean(node.data));
   const firewall = useWindowsFirewall(Boolean(node.data));
-  const isInfer = node.data?.profile === "infer";
+  const isInfer = node.data?.profile === "visitor";
   /*
    * Reading the network's picture belongs to `node` and `admin`; blocking and
    * unblocking a machine remains an administrator's act, and only with the grant -
@@ -211,7 +211,7 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
           <Panel>
             <PanelHeader
               eyebrow={t("network.profile")}
-              title={t("profile.infer")}
+              title={t("profile.visitor")}
               subtitle={t("network.inferRequestDetail")}
             />
           </Panel>
@@ -331,8 +331,9 @@ function NetworkMetricsPanel({ metrics, t }: { metrics: ReturnType<typeof networ
  */
 function TraversalPanel({ traversal, t }: { traversal: TraversalView; t: (key: string, values?: Record<string, string | number>) => string }) {
   const natTone = traversal.nat === "public" ? "aqua" : traversal.nat === "private" ? "amber" : "neutral";
-  const circuits = traversal.addrs.filter((addr) => addr.includes("/p2p-circuit"));
-  const direct = traversal.addrs.filter((addr) => !addr.includes("/p2p-circuit"));
+  const isRelay = (addr: string) => addr.startsWith("https://") || addr.startsWith("http://");
+  const circuits = traversal.addrs.filter(isRelay);
+  const direct = traversal.addrs.filter((addr) => !isRelay(addr));
   return (
     <Panel>
       <PanelHeader eyebrow={t("network.traversalEyebrow")} title={t("network.traversalTitle")} subtitle={t("network.traversalSubtitle")} />

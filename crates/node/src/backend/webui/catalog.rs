@@ -40,10 +40,10 @@ pub struct NodeInfo {
     pub authority_fingerprint: Option<String>,
     pub p2p_port: u16,
     /// UDP addresses announced by the node, needed for the plan to rebuild
-    /// the tunnel's TCP multiaddresses in the process that runs the hop.
+    /// the tunnel's TCP endpoint addresses in the process that runs the hop.
     pub addr_candidates: Vec<String>,
-    /// Identity and capabilities of the libp2p tunnel announced by this node.
-    pub libp2p_peer_id: Option<String>,
+    /// Identity and capabilities of the p2p tunnel announced by this node.
+    pub endpoint_id: Option<String>,
     pub inference_frame_capabilities: Vec<String>,
     pub gateway_port: u16,
     pub admin_exposure: AdminExposure,
@@ -75,12 +75,6 @@ pub struct NodeInfo {
     /// receiver" sentinel. Always present — lets the UI show the fix taking
     /// effect without a second round trip.
     pub effective_address: String,
-    /// Whether the cluster speaks TLS between peers right now.
-    pub tls_required: bool,
-    /// Whether **this** node may change that - only the principal may. The screen
-    /// uses it to decide between a switch and a read-only value; the check that
-    /// counts is the one in `save_tls`, on the server.
-    pub tls_authority: bool,
     /// Whether the cluster prefers HTTP/3 over QUIC on new hops.
     pub quic_enabled: bool,
     /// Only the principal may change the QUIC preference.
@@ -111,9 +105,7 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         authority_fingerprint,
         node_name,
         advertise_addr,
-        tls_required,
         quic_enabled,
-        tls_authority,
         quic_authority,
         cluster_logs_authority,
         network_chat_authority,
@@ -130,10 +122,10 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
                 .admin_trust
                 .effective_authority(&state.authority_principal, cfg.profile)
                 .map(|authority| match authority {
-                    crate::admin_trust::EffectiveAuthority::Primary => {
+                    crate::admin_trust::EffectiveAuthority::Principal => {
                         crate::admin_trust::AdminLevel::Primary
                     }
-                    crate::admin_trust::EffectiveAuthority::Secondary => {
+                    crate::admin_trust::EffectiveAuthority::Admin => {
                         crate::admin_trust::AdminLevel::Secondary
                     }
                 }),
@@ -141,24 +133,19 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
                 .then(|| crate::admin_trust::fingerprint_of(&state.authority_principal.pubkey)),
             cfg.node_name.clone(),
             cfg.advertise_addr.clone(),
-            cfg.tls_required,
             cfg.quic_enabled,
             state
                 .admin_trust
                 .effective_authority(&state.authority_principal, cfg.profile)
-                == Some(crate::admin_trust::EffectiveAuthority::Primary),
+                == Some(crate::admin_trust::EffectiveAuthority::Principal),
             state
                 .admin_trust
                 .effective_authority(&state.authority_principal, cfg.profile)
-                == Some(crate::admin_trust::EffectiveAuthority::Primary),
+                == Some(crate::admin_trust::EffectiveAuthority::Principal),
             state
                 .admin_trust
                 .effective_authority(&state.authority_principal, cfg.profile)
-                == Some(crate::admin_trust::EffectiveAuthority::Primary),
-            state
-                .admin_trust
-                .effective_authority(&state.authority_principal, cfg.profile)
-                == Some(crate::admin_trust::EffectiveAuthority::Primary),
+                == Some(crate::admin_trust::EffectiveAuthority::Principal),
             cfg.thermal,
             cfg.admin_exposure,
             cfg.admin_access_token
@@ -193,7 +180,7 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         authority_fingerprint,
         p2p_port: state.network.bind_addr.port(),
         addr_candidates: state.network.self_addr_candidates(),
-        libp2p_peer_id: state.network.libp2p_peer_id.clone(),
+        endpoint_id: state.network.endpoint_id.clone(),
         inference_frame_capabilities: if let Some(caps) = state.network.plugin_engine_capabilities()
         {
             caps
@@ -215,8 +202,8 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
             if state.network.batching_ready() {
                 capabilities.push(crate::pipeline::CAP_FRAME_BATCH.to_string());
             }
-            if state.network.libp2p_tunnel_ready() {
-                capabilities.push(crate::pipeline::CAP_LIBP2P_TUNNEL.to_string());
+            if state.network.p2p_tunnel_ready() {
+                capabilities.push(crate::pipeline::CAP_P2P_TUNNEL.to_string());
             }
             capabilities
         },
@@ -238,9 +225,7 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         node_name,
         advertise_addr,
         effective_address: state.network.announce_addr(),
-        tls_required,
         quic_enabled,
-        tls_authority,
         quic_authority,
         cluster_logs_enabled: state.network.cluster_logs_enabled(),
         cluster_logs_authority,
@@ -291,7 +276,7 @@ pub(super) async fn local_is_primary(state: &GatewayState) -> bool {
     state
         .admin_trust
         .effective_authority(&state.authority_principal, profile)
-        == Some(crate::admin_trust::EffectiveAuthority::Primary)
+        == Some(crate::admin_trust::EffectiveAuthority::Principal)
 }
 
 #[derive(Debug, Serialize)]
@@ -1458,7 +1443,7 @@ pub(super) async fn get_relay(
 }
 
 /// Saves the relay options and applies them live, with no restart: new
-/// reservations follow them at once and the next announce carries the offer.
+/// relay connections follow them at once and the next announce carries the offer.
 /// An option the command line fixed for this run is saved but stays fixed.
 pub(super) async fn save_relay(
     _auth: ConnectionAuth,
@@ -1476,11 +1461,6 @@ pub(super) async fn save_relay(
     gate.set(req.everyone, req.cluster, req.transfers);
     info!("relay options updated from the interface: {req:?}");
     Json(gate.status()).into_response()
-}
-
-#[derive(Deserialize)]
-pub struct SaveTlsRequest {
-    pub tls_required: bool,
 }
 
 #[derive(Deserialize)]
@@ -1517,55 +1497,6 @@ pub(super) async fn save_quic(
         if req.quic_enabled { "on" } else { "off" }
     );
     Json(json!({ "quic_enabled": req.quic_enabled })).into_response()
-}
-
-/// Turns TLS between peers on or off, for the whole cluster.
-///
-/// It needs no restart, and can be flipped as many times as the operator wants:
-/// the server accepts both protocols from startup (`serve.rs`), and what changes
-/// here is which of them the clients use and whether remote plaintext starts
-/// being refused. The other nodes find out through the `tls_policy` ratchet,
-/// within one gossip cycle (5 s), in both directions.
-pub(super) async fn save_tls(
-    _auth: ConnectionAuth,
-    State(state): State<GatewayState>,
-    Json(req): Json<SaveTlsRequest>,
-) -> Response {
-    // Authority is checked **here**, on the server. Hiding the switch on the
-    // screen of an ordinary node is convenience; this is the control.
-    if !local_is_primary(&state).await {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "only the principal node decides the TLS of the cluster." })),
-        )
-            .into_response();
-    }
-
-    {
-        let mut cfg = state.auth.write().await;
-        cfg.tls_required = req.tls_required;
-        if let Err(e) = cfg.save() {
-            return bad_request(format!(
-                "could not write {}: {e}",
-                crate::brand::config_filename()
-            ));
-        }
-    }
-
-    // The order matters little, but all three have to happen together: the URL
-    // scheme and the client cache, what the announcement says, and whether the
-    // server starts refusing plaintext from outside.
-    state.peer_http.apply_cluster_policy(req.tls_required);
-    state.network.set_tls(req.tls_required);
-    if let Some(t) = &state.tls_server {
-        t.set_strict(req.tls_required);
-    }
-    info!(
-        "TLS between peers {} from the interface",
-        if req.tls_required { "on" } else { "off" }
-    );
-
-    Json(json!({ "tls_required": req.tls_required })).into_response()
 }
 
 #[derive(Deserialize)]
@@ -1642,7 +1573,7 @@ async fn forward_network_chat_to_primary(
     let primary = state.admin_trust.current_primary();
     let Some(peer) = state.all_peers().await.into_iter().find(|peer| {
         peer.node_id == primary.node_id
-            && peer.libp2p_peer_id.as_deref() == Some(primary.peer_id.as_str())
+            && crate::identity::trust_peer_id_from_hex(&peer.pubkey).as_deref() == Some(primary.peer_id.as_str())
             && peer.pubkey == primary.pubkey
             && peer.gateway_port.is_some()
     }) else {
@@ -1903,6 +1834,17 @@ pub(super) async fn inference_heads(
     let mut heads = crate::pipeline::model_head_candidates(&peers, model, deploy_id);
     // a head still loading its model is not a choice: a request sent to it waits until it is ready
     heads.retain(|peer| !peer.is_warming());
+    // A prefill/decode split is one head: its prefill machine, which reads the prompt first. The machines that decode
+    // after a prefill machine of the same engine are not offered on their own (the gateway picks among them).
+    let split_engines: Vec<Option<String>> = heads
+        .iter()
+        .filter(|peer| crate::plugin_engine::is_prefill_only(peer))
+        .map(|peer| crate::plugin_engine::engine_of_peer(peer))
+        .collect();
+    heads.retain(|peer| {
+        crate::plugin_engine::is_prefill_only(peer)
+            || !split_engines.contains(&crate::plugin_engine::engine_of_peer(peer))
+    });
     heads.sort_by(|a, b| a.node_id.cmp(&b.node_id));
     let rtt_snapshots = state.network.rtts.snapshot_with_age();
     let rtts = rtt_snapshots
@@ -1921,11 +1863,18 @@ pub(super) async fn inference_heads(
         .map(|peer| peer.total_layers)
         .max()
         .unwrap_or(0);
+    // the planner never makes a prefill machine the head (see `generation.rs`); its plan's head that decodes after a
+    // prefill machine is shown as that prefill machine
+    let planning: Vec<PeerInfo> = peers
+        .iter()
+        .filter(|peer| !crate::plugin_engine::is_prefill_only(peer))
+        .cloned()
+        .collect();
     let selected_node_id = if heads.is_empty() || total_layers == 0 {
         None
     } else {
         crate::pipeline::plan_pipeline_with_rtt(
-            &peers,
+            &planning,
             model,
             deploy_id,
             total_layers,
@@ -1938,6 +1887,21 @@ pub(super) async fn inference_heads(
                 .first()
                 .filter(|step| step.start_layer == 0)
                 .map(|step| step.node_id.clone())
+        })
+        .map(|node_id| {
+            let engine = planning
+                .iter()
+                .find(|peer| peer.node_id == node_id)
+                .and_then(crate::plugin_engine::engine_of_peer);
+            heads
+                .iter()
+                .find(|peer| {
+                    crate::plugin_engine::is_prefill_only(peer)
+                        && engine.is_some()
+                        && crate::plugin_engine::engine_of_peer(peer) == engine
+                })
+                .map(|peer| peer.node_id.clone())
+                .unwrap_or(node_id)
         })
     };
 
@@ -2014,7 +1978,7 @@ pub(super) struct ChatTelemetryMeasurement {
     pub(super) to_node_id: String,
     pub(super) rtt_ms: f64,
     pub(super) transport: String,
-    /// The edge goes through a circuit on a relay (libp2p tunnel with no direct
+    /// The edge goes through a circuit on a relay (p2p tunnel with no direct
     /// connection): every frame crosses an intermediate server.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(super) relayed: bool,
@@ -2089,7 +2053,7 @@ pub(super) struct ChatTelemetryPipelineRoute {
     pub(super) relay_bypassed_by_ring: bool,
 }
 
-/// The `from -> to` leg is pinned to the libp2p tunnel and `from` only reaches
+/// The `from -> to` leg is pinned to the p2p tunnel and `from` only reaches
 /// `to` through a circuit on a relay. `returns` picks the gateway plane (the
 /// tail's return) instead of the inference one.
 fn leg_is_relayed(
@@ -2256,7 +2220,7 @@ pub(super) fn planned_route_measurements(
     inputs: &crate::fastest::CostInputs,
 ) -> Vec<ChatTelemetryMeasurement> {
     let transport = |kind: Option<&String>| match kind.map(String::as_str) {
-        Some("tunnel") => "libp2p-tunnel".to_owned(),
+        Some("tunnel") => "p2p-tunnel".to_owned(),
         Some(kind) => kind.to_owned(),
         None => String::new(),
     };
@@ -2488,7 +2452,7 @@ pub(super) fn execution_pipeline_cost(
 /// Returns only the transport observed in the distributed execution.
 ///
 /// `RttTable` remains the source of probes for route selection, but it is not
-/// a measurement of the execution: in particular, a libp2p probe must not show
+/// a measurement of the execution: in particular, a p2p probe must not show
 /// up in the Chat or on the map when the real frame crossed over `https-link`.
 pub(super) async fn chat_telemetry(
     _auth: ConnectionAuth,
@@ -2787,7 +2751,7 @@ pub(super) async fn network_chat_snapshot(
 pub(super) async fn network_chat_action(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
-    Json(request): Json<crate::network_chat::ChatRequest>,
+    Json(mut request): Json<crate::network_chat::ChatRequest>,
 ) -> Response {
     if request.api_key.is_empty() {
         return (
@@ -2796,6 +2760,22 @@ pub(super) async fn network_chat_action(
         )
             .into_response();
     }
+    // The key is checked here, on the node that minted it, and never sent on:
+    // the principal admits the action by this node's transport and membership.
+    let key_holds = state
+        .database
+        .api_key_for_token(&request.api_key)
+        .ok()
+        .flatten()
+        .is_some();
+    if !key_holds || request.action.sender_node_id() != state.network.node_id {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(crate::network_chat::ChatResponse::rejected("api_key_invalid")),
+        )
+            .into_response();
+    }
+    request.api_key.clear();
     match state.network_chat.submit(request).await {
         Ok(response) if response.accepted => Json(response).into_response(),
         Ok(response) => (StatusCode::FORBIDDEN, Json(response)).into_response(),

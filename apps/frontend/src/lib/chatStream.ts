@@ -278,7 +278,7 @@ export interface TelemetrySpan {
 export interface TransportSummaryEntry {
   transport:
     | "local"
-    | "libp2p-tunnel"
+    | "p2p-tunnel"
     | "http"
     | "https"
     | "quic"

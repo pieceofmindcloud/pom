@@ -1,6 +1,6 @@
 import type { ClusterView, ModelCapability, PeerView } from "./types";
 
-export type GraphRange = ModelCapability & Pick<PeerView, "node_id" | "short_id" | "load" | "node" | "unreachable" | "rediscovering" | "engine" | "model">;
+export type GraphRange = ModelCapability & Pick<PeerView, "node_id" | "short_id" | "load" | "node" | "unreachable" | "rediscovering" | "engine" | "role" | "model">;
 
 export function graphFromCluster(cluster: ClusterView) {
   const byModel: Record<string, GraphRange[]> = {};

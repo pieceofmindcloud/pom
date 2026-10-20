@@ -42,13 +42,14 @@ Every frame rechecks the secret locally in constant time, with no extra call to
 the network. The public key and the Ed25519 signature belong to the handshake
 and to the peer's identity; they do not replace the symmetric credential of the
 private channel.
-The gateway validates API keys on the client surface and may consult the
-principal for an unknown key. That remote flow is not reachable from the
-inference port when the internal credential is missing. The result callbacks on
+The gateway validates API keys on the client surface, against the keys that
+node minted; a key never leaves it and no other node is asked about one. On a
+public network the inference port admits a TLS caller only when it is a
+member (`auth::caller_is_member`). The result callbacks on
 the gateway are another boundary: the per-frame `Ticket` is their credential.
 The inference HTTP listener is dual-stack, or falls back to IPv4 when the
 machine does not offer IPv6, regardless of how the administrative interface is
-exposed: it is the reserve when the libp2p tunnel fails.
+exposed: it is the reserve when the p2p tunnel fails.
 The HTTP/3 listener uses a dedicated UDP port, announced in
 `inference_quic_port`, derived from **this node's** `p2p_port`
 (`quic::inference_quic_port` = `p2p_port + 1000`); never from
@@ -59,7 +60,7 @@ HTTP/HTTPS if the endpoint does not answer.
 On the handoff between peers, the QUIC preference picks the HTTP/3 endpoint;
 without it, the persistent link publishes `https-link` or `http-link` according
 to the address actually used. Prefill and decode use this same ladder, and a
-fall to libp2p or to direct HTTP stays recorded with the fallback reason.
+fall to the p2p tunnel or to direct HTTP stays recorded with the fallback reason.
 The model is loaded **in-process** by `llm.rs`; there is no Python process. The
 normal paths receive a ready `next_hops` from `routing/pipeline.rs`; TP is the
 controlled exception, since it coordinates its ranks and its transport tunnel in
@@ -92,10 +93,10 @@ UI.
   reconciles it until it expires.
   The `reply_to` URLs come from the gateway's local interfaces, so behind
   NAT/CGNAT none of them is valid at the other end: `deliver_via_tunnel` is the
-  last route, through the libp2p tunnel to the
-  `libp2p_peer_id`/`libp2p_addrs` that `reply_to` now carries. Without it the
+  last route, through the p2p tunnel to the
+  `endpoint_id`/`endpoint_addrs` that `reply_to` now carries. Without it the
   frame died silently at the frame's deadline. The transport annotated in the
-  metadata is `libp2p-tunnel`, so the gateway's trace does not publish as HTTP a
+  metadata is `p2p-tunnel`, so the gateway's trace does not publish as HTTP a
   path that was not. A gateway on an older binary does not send the fields and
   delivery proceeds without the last route.
 - `direct_lab.rs` (580, `#![cfg(test)]`) - the law: fake hops speaking the real
@@ -663,6 +664,16 @@ UI.
   a background task, after the turn's `done` reports the save (or its deferral:
   the task polls the bridge's `/pom/session/pending` until the save is written),
   and the session routes apply it.
+  Prefill/decode split: a whole-model machine deployed with
+  `RuntimeParams::inference_role` = `prefill` announces
+  `engine/plugin-role-v1:prefill` (`Network::set_external_engine_role`,
+  `role_capability`), which `generation.rs` drops from planning
+  (`is_prefill_only`), so it is never a head. `prefill_on_peer` sends a named
+  turn to such a machine first (`prefill_only`, `max_tokens` 1, `decode_holds`
+  from the head's session offer); when it saved the session, the head's turn
+  carries `session_source` and `plugin_session::pull_from` fetches that session
+  (waiting for its save) before the turn reads its prompt. `engine.load` gets
+  `role` for a non-default role.
   `deploy_block` is the deployment check: a whole model on one machine, or
   slices on distinct machines for a service that publishes `stages`, each
   running the plugin's `inference` service. A slice's `engine.load` also gets
@@ -767,12 +778,12 @@ UI.
 
   `relay::send_bytes_or_tunnel` tries the pinned direct HTTPS candidates first. HTTP/3 comes
   before HTTP/HTTPS when QUIC is on; the tunnel only enters after every direct address fails
-  on transport. With QUIC off, the member still has to announce `libp2p_peer_id` and
-  `transport/libp2p-tunnel-v1` to enable the last reserve. That order matters on the TP
+  on transport. With QUIC off, the member still has to announce `endpoint_id` and
+  `transport/iroh-tunnel-v1` to enable the last reserve. That order matters on the TP
   reduce: the call sits inside the barrier and an unavailable tunnel must not delay a
   reachable HTTPS address. `broadcast_to` keeps the base URL and the route separate, because
   the tunnel forwards the route to the worker's loopback. The plan also carries the peer's
-  UDP candidates to the `TunnelOutbound`, so the swarm can rebuild the TCP address even when
+  endpoint addresses to the `TunnelOutbound` as dial hints, so the endpoint can dial even when
   the announcement is not in the local table. The `TunnelRequest` carries the barrier, rank
   and authorization headers. The internal authorization uses the shared `connection_key` and
   the internal node marker. On public networks, HTTPS and QUIC may validate through the
@@ -1183,7 +1194,7 @@ UI.
   it became text and the route swap did not recognize the failure.
 - `send_frame` - HTTP to the next hop with the wire-encoded body;
   `SentFrame{round_trip_ms, bytes_sent/received, encode/headers/body/decode ms}`
-  also identifies the `transport` (`local`, `libp2p-tunnel`, `https`,
+  also identifies the `transport` (`local`, `p2p-tunnel`, `https`,
 `http`, `https`, `quic` or `remote-stream`). The internal detail
 `https-link` is normalized to `http`/`https` in the telemetry. The
 `transport_fallback` field reports when the call walked down the ladder after a
@@ -1197,7 +1208,7 @@ reason that only shows up in the error of a tunnel that also failed.
   different session. That is where the transport selection lives: with QUIC on,
   it tries QUIC and falls to HTTP/HTTPS; with QUIC off, it tries the persistent
   channel (`link::send_batch`, when the hop announces `transport/link-v1`), then
-  HTTP/HTTPS by request and only then the libp2p tunnel. Each step is only used
+  HTTP/HTTPS by request and only then the p2p tunnel. Each step is only used
   after the previous one failed on **transport**; an HTTP refusal from the peer is
   final, except 404/405 on QUIC, which mean a peer without the HTTP/3 route. The
   step used becomes `transport`, and having walked down the ladder becomes
@@ -1206,7 +1217,7 @@ reason that only shows up in the error of a tunnel that also failed.
   receive the batch".
 - The per-request transport tries QUIC before the TCP client when the
   preference is on; a QUIC failure falls to the pinned HTTP client and, only if
-  every direct address fails, to the libp2p/Noise tunnel. The QUIC destinations
+  every direct address fails, to the p2p tunnel (QUIC under the peer key). The QUIC destinations
   come from the `host:port` the peer announced, not from the `inference_url`, and
   use the dedicated UDP port published in the `Announce`. With QUIC off, the
   HTTP/HTTPS client is still tried before the tunnel;

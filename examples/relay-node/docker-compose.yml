@@ -1,35 +1,37 @@
 # Relay-only node: a POM node on a public address that serves no model and is
 # not a participant of your network. It only helps nodes behind NAT reach each
-# other: they reserve a slot on it, connect to each other through it, and the
-# connection is upgraded to a direct one by hole punching (DCuTR) when the NATs
-# allow it. Traffic stays relayed when they don't.
+# other: it runs an iroh relay server, nodes connect to each other through it,
+# and iroh upgrades the connection to a direct one by hole punching when the
+# NATs allow it. Traffic stays relayed when they don't. n0's public relays do
+# the same job out of the box; a relay of your own keeps the traffic metadata
+# off third-party infrastructure.
 #
 # ── Image ────────────────────────────────────────────────────────────────────
 # Build it from the repository root with scripts/build-docker.sh, which tags
 # `pom:latest`. The relay needs no GPU; the same image runs on a CPU-only host.
 #
 # ── First start ──────────────────────────────────────────────────────────────
-# With no pom.json in ./data the node starts in setup mode, where libp2p does
-# not run. Open http://<relay-public-ip>:8080/ once and create a standalone
+# With no pom.json in ./data the node starts on a local network of its own. Open http://<relay-public-ip>:8080/ once and create a standalone
 # network with its own connection key, NOT your cluster's key: the relay must
 # not show up as a participant of your network. Deploy no model on it.
 #
 # ── Ports (open them in the host/cloud firewall) ─────────────────────────────
 # With the default P2P port 42777:
-#   42777/udp  UDP discovery - NAT'd nodes use this host as --bootstrap
-#   52777/tcp  libp2p over TCP  (P2P port + 10000): reservations and circuits
-#   52777/udp  libp2p over QUIC (P2P port + 10000): what hole punching uses
+#   42777/udp  UDP discovery
+#   52777/tcp  relay server, plain HTTP (P2P port + 10000)
+#   52777/udp  the node's own iroh endpoint (P2P port + 10000)
 #   8080/tcp   web UI - only needed for the first setup; close it afterwards
 #              or restrict it to your own address.
 # If you change p2p_port in the relay's pom.json, shift all three accordingly.
 #
 # ── The NAT'd nodes (admin and the others) ───────────────────────────────────
-# Point them at this relay by its key, never by its IP: the relay logs
-# `Pkarr address: pk:...` on start. Put that key in `relay_peers` in the
-# admin's pom.json (or `--relay-peers pk:...`); the trust document then carries
-# it as a relay hint, and every node that joins copies it into its own
-# relay_peers. A node resolves the key through pkarr and reserves a slot here
-# (a dedicated relay). A relay configured this way is a public one: it bridges
+# Point them at this relay by its URL: `http://<relay-public-ip>:52777`, or,
+# better, a DNS name for it behind a TLS proxy (`https://relay.example.org`).
+# Put it in `relay_peers` in the admin's pom.json (or `--relay-peers <url>`).
+# Only a URL with a host name goes into the trust document as a relay hint (a
+# signed document never carries an IP), and every node that joins copies the
+# hints into its own relay_peers. A relay configured this way is a dedicated,
+# public one: it bridges
 # control and inference between nodes behind NAT, and never a file transfer.
 # Files only cross relays that are members of the cluster itself.
 # advertise_addr is a hint that goes first, never the only address announced.
@@ -54,7 +56,8 @@ services:
     restart: unless-stopped
     command:
       - --serve-relay
-      # HOST:PORT, where PORT is the UDP P2P port; libp2p uses PORT + 10000.
+      # HOST:PORT, where PORT is the UDP P2P port; the endpoint and the relay
+      # server use PORT + 10000.
       - --public-addr
       - ${RELAY_PUBLIC_IP:?set RELAY_PUBLIC_IP to this host's public address}:42777
     environment:
@@ -64,6 +67,6 @@ services:
       POM_BIN: /usr/local/bin/pom
     volumes:
       # pom.json and the node identity key (.pom-node.key) live here. Keep
-      # this directory: the key is the relay's PeerId and its pk: address, and
-      # deleting it makes every node's relay_peers entry stale.
+      # this directory: the key is the relay's identity (endpoint id and pk:
+      # address).
       - ./data:/data

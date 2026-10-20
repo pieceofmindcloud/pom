@@ -371,10 +371,10 @@ pub(super) async fn add_node_endpoint(
     }
 
     if state.all_peers().await.iter().any(|peer| {
-        peer.node_id == req.target_node_id && crate::gateway::peer_is_infer(&state, peer)
+        peer.node_id == req.target_node_id && crate::gateway::peer_is_visitor(&state, peer)
     }) {
         return bad(json!({
-            "reason": "infer_target",
+            "reason": "visitor_target",
             "error": "this machine was admitted for inference only and cannot serve a model",
         }));
     }
@@ -427,6 +427,7 @@ pub(super) async fn add_node_endpoint(
             service,
             whole,
             std::slice::from_ref(&req.target_node_id),
+            &[node_params.inference_role],
         )
         .await
         {
@@ -570,6 +571,7 @@ pub(super) async fn add_node_endpoint(
                 merge: None,
                 n_gpu_layers: req.n_gpu_layers,
                 offload_kqv: req.offload_kqv,
+                inference_role: None,
                 no_embeddings: None,
                 // One target per request, but the position is the pipeline's: without
                 // this the added node says it is the last of the split.
@@ -617,6 +619,7 @@ pub(super) async fn add_node_endpoint(
             merge: None,
             n_gpu_layers: req.n_gpu_layers,
             offload_kqv: req.offload_kqv,
+            inference_role: None,
             no_embeddings: None,
             peer_index: Some(peer_index),
             peer_count: Some(peer_count),

@@ -99,7 +99,7 @@ describe("LobbyChat", () => {
   it("offers to switch at once to a network that already admitted this machine", async () => {
     mocks.get.mockResolvedValue({
       ...exchange,
-      admission: { key: "pk:curitiba", name: "Rede Curitiba", role: "node", status: "approved", standing: true },
+      admission: { key: "pk:curitiba", name: "Rede Curitiba", role: "worker", status: "approved", standing: true },
     });
     mocks.post.mockResolvedValue({ joined: true });
     mount();
@@ -118,7 +118,7 @@ describe("LobbyChat", () => {
   it("asks for confirmation when the approval answers a request just made", async () => {
     mocks.get.mockResolvedValue({
       ...exchange,
-      admission: { key: "pk:curitiba", name: "Rede Curitiba", role: "node", status: "approved", standing: false },
+      admission: { key: "pk:curitiba", name: "Rede Curitiba", role: "worker", status: "approved", standing: false },
     });
     mount();
 
@@ -130,7 +130,7 @@ describe("LobbyChat", () => {
   it("tells a declined machine how long to wait, then lets it ask again", async () => {
     const declined = (retryAt: number | null) => ({
       ...exchange,
-      admission: { key: "pk:curitiba", name: "Rede Curitiba", role: "node", status: "rejected", retry_at: retryAt },
+      admission: { key: "pk:curitiba", name: "Rede Curitiba", role: "worker", status: "rejected", retry_at: retryAt },
     });
     // 41 minutes and a few seconds left: rounded up, never down to "now".
     mocks.get.mockResolvedValue(declined(Math.floor(Date.now() / 1000) + 41 * 60 + 5));

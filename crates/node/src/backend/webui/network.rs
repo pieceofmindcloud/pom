@@ -375,7 +375,7 @@ pub(crate) async fn notify_principal_of_departure(state: &GatewayState) {
     }
 }
 
-/// Rotates the connection key for departures the swarm loop heard on the
+/// Rotates the connection key for departures the transport task heard on the
 /// lobby connection (`LobbyRequest::Leave`): it can record them, but pushing
 /// a new key is the gateway's work.
 pub(crate) fn spawn_departure_worker(state: GatewayState) {
@@ -506,10 +506,10 @@ pub(crate) fn spawn_member_list_keeper(state: GatewayState) {
                 continue;
             }
             for peer in state.network.alive_peers().await {
-                let role = if peer.profile == crate::profile::NodeProfile::Infer {
-                    crate::config::EnrollmentRole::Infer
+                let role = if peer.profile == crate::profile::NodeProfile::Visitor {
+                    crate::config::EnrollmentRole::Visitor
                 } else {
-                    crate::config::EnrollmentRole::Node
+                    crate::config::EnrollmentRole::Worker
                 };
                 if state
                     .network_chat
@@ -676,7 +676,7 @@ pub(crate) fn spawn_network_settings_ratchet(state: GatewayState) {
                     break;
                 }
             }
-            // No direct address answered: the libp2p tunnel, like the other
+            // No direct address answered: the p2p tunnel, like the other
             // policy ratchets. A node that only reaches the principal through
             // the relay (Docker bridge, NAT) has no other path.
             let mut tunnel_error = None;
@@ -745,7 +745,7 @@ async fn network_info_view(state: &GatewayState) -> NetworkInfoView {
     let can_edit = state
         .admin_trust
         .effective_authority(&state.authority_principal, config.profile)
-        == Some(crate::admin_trust::EffectiveAuthority::Primary);
+        == Some(crate::admin_trust::EffectiveAuthority::Principal);
     NetworkInfoView { network, can_edit }
 }
 

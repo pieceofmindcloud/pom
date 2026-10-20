@@ -79,6 +79,7 @@ import type {
   DeploySelection,
   DeployStrategy,
   CacheTypesResponse,
+  InferenceRole,
   KvCacheType,
   RuntimeParams,
   TpLaunch,
@@ -114,6 +115,7 @@ function rowsOf(plan: DeployPlan | undefined): DeploySelection[] {
           // Per-machine, so every part of a merged step carries the same pair.
           n_gpu_layers: s.n_gpu_layers,
           offload_kqv: s.offload_kqv,
+          ...(s.inference_role ? { inference_role: s.inference_role } : {}),
         }))
       : [
           {
@@ -122,6 +124,7 @@ function rowsOf(plan: DeployPlan | undefined): DeploySelection[] {
             target_node_id: s.target_node_id,
             n_gpu_layers: s.n_gpu_layers,
             offload_kqv: s.offload_kqv,
+            ...(s.inference_role ? { inference_role: s.inference_role } : {}),
           },
         ],
   );
@@ -167,6 +170,7 @@ const launchOverridesKey = (rows: DeploySelection[] | null) =>
             row.target_node_id,
             row.n_gpu_layers ?? null,
             row.offload_kqv ?? null,
+            row.inference_role ?? null,
           ])
           .sort((a, b) =>
             Number(a[0]) - Number(b[0]) ||
@@ -418,6 +422,8 @@ export function DeployModel() {
    *  inference service that runs the whole model. */
   const [serviceCode, setServiceCode] = useState("");
   const service = inferenceServices.find((entry) => entry.code === serviceCode) ?? null;
+  /** The service runs a whole model on several machines split into prefill and decode. */
+  const splitRoles = Boolean(service?.pomSettings.includes("inference_role"));
   /** Every un-sliced model anyone in the cluster holds, named once - with an
    *  inference service, only the models its engine runs. */
   const allWholes = useMemo(() => wholeModelsOf(cluster.data?.peers), [cluster.data]);
@@ -731,11 +737,20 @@ export function DeployModel() {
     if (!isWhole) setMerge(memory.merge);
   }, [p, chosen, kind, memoryKey, isWhole]);
 
-  /** What is on screen right now: the operator's edit, or the suggestion. */
-  const rows = useMemo(
-    () => (selection ?? rowsOf(p)).slice().sort(byLayer),
-    [selection, p],
-  );
+  /** What is on screen right now: the operator's edit, or the suggestion.
+   *  A per-machine role only exists in a prefill/decode split: with a single
+   *  machine the inspector shows the deployment's role, so a role left on the
+   *  row (a second machine that was removed, a remembered split) would
+   *  silently override what the operator sees. */
+  const rows = useMemo((): DeploySelection[] => {
+    const current = (selection ?? rowsOf(p)).slice().sort(byLayer);
+    if (new Set(current.map((row) => row.target_node_id)).size > 1) return current;
+    return current.map((row) => {
+      const single = { ...row };
+      delete single.inference_role;
+      return single;
+    });
+  }, [selection, p]);
   /** The canvas, TP selectors and card actions all use this same membership.
    *  Complete strategy puts every live machine on the map except in whole mode,
    *  where the operator adds each machine. */
@@ -963,6 +978,13 @@ export function DeployModel() {
     );
   }
 
+  /** This machine's part in a prefill/decode split, or `null` to take the deployment's. */
+  function setPeerRole(nodeId: string, value: InferenceRole | null) {
+    edit((base) =>
+      base.map((r) => (r.target_node_id === nodeId ? { ...r, inference_role: value } : r)),
+    );
+  }
+
   /** Adds a route for the range, preserving existing replicas. */
   function assignRangeToMachine(startLayer: number, endLayer: number, nodeId: string) {
     const candidate = p?.available.find(
@@ -996,6 +1018,7 @@ export function DeployModel() {
           target_node_id: nodeId,
           n_gpu_layers: existing?.n_gpu_layers ?? null,
           offload_kqv: existing?.offload_kqv ?? null,
+          ...(existing?.inference_role ? { inference_role: existing.inference_role } : {}),
         },
       ].sort(byLayer);
     });
@@ -1122,13 +1145,35 @@ export function DeployModel() {
 
   function addPeerToDeployment(nodeId: string) {
     // An inference service runs a whole model on a single machine; the node
-    // refuses a second one, so the map does not take it.
+    // refuses a second one, so the map does not take it - unless the service
+    // splits prefill and decode across machines: then the next machine joins
+    // as a decode machine of the same whole model, and the first one becomes
+    // its prefill machine (the head) when it had no role yet.
     if (isWhole && service && mapMachineIds.length > 0 && !mapMachineIds.includes(nodeId)) {
-      toast.warning(
-        t("deploy.serviceSingleMachineTitle", { name: service.name }),
-        t("deploy.serviceSingleMachineDetail"),
-      );
-      return;
+      if (!splitRoles) {
+        toast.warning(
+          t("deploy.serviceSingleMachineTitle", { name: service.name }),
+          t("deploy.serviceSingleMachineDetail"),
+        );
+        return;
+      }
+      const whole = rows[0];
+      if (whole) {
+        setSelection([
+          ...rows.map((row) => ({
+            ...row,
+            inference_role: row.inference_role ?? (rows.length === 1 ? "prefill" as const : null),
+          })),
+          {
+            start_layer: whole.start_layer,
+            end_layer: whole.end_layer,
+            target_node_id: nodeId,
+            n_gpu_layers: null,
+            offload_kqv: null,
+            inference_role: "decode" as const,
+          },
+        ].sort(byLayer));
+      }
     }
     inspectMachine(nodeId);
     setPreferredNodeIds((current) =>
@@ -1524,6 +1569,14 @@ export function DeployModel() {
                   : (inferenceModeReason ?? t("deployStudio.engineUnsupported"))
               }
               showHiddenStateDtype={crossesPeerBoundary}
+              machineRoles={isWhole && service && splitRoles && rows.length > 1
+                ? rows.map((row) => ({
+                    nodeId: row.target_node_id,
+                    label: labelOf(row.target_node_id),
+                    role: row.inference_role ?? eff.inference_role ?? "both",
+                  }))
+                : undefined}
+              onMachineRole={setPeerRole}
               vision={{
                 available: visionAvailable,
                 enabled: useVision,

@@ -325,8 +325,8 @@ mod reload_tests {
                     exec_start: 0,
                     exec_end: 0,
                     inference_frame_capabilities: Vec::new(),
-                    libp2p_peer_id: None,
-                    libp2p_addr_candidates: Vec::new(),
+                    endpoint_id: None,
+                    endpoint_addr_candidates: Vec::new(),
                 })
                 .collect(),
             edges: Vec::new(),
@@ -769,6 +769,20 @@ pub(super) async fn generate_stream_inner(
         request_details,
         probe,
     } = input;
+    // A prefill machine chosen as the head (the Chat shows it as the head of its prefill/decode split) never answers:
+    // the planner picks the head that decodes, and the plugin engine reads the prompt on the chosen prefill machine.
+    let (preferred_head, pinned_prefill) = match preferred_head {
+        Some(head)
+            if state
+                .all_peers()
+                .await
+                .iter()
+                .any(|peer| peer.node_id == head && crate::plugin_engine::is_prefill_only(peer)) =>
+        {
+            (None, Some(head))
+        }
+        other => (other, None),
+    };
     let mut budget = budget.normalized();
     if cancellation.is_cancelled() {
         log_early_outcome("cancelado", "the client gave up before the start");
@@ -855,6 +869,29 @@ pub(super) async fn generate_stream_inner(
             ADMISSION_PROBE_TIMEOUT,
         )
         .await;
+        // A machine of a prefill/decode split that only reads prompts never answers a request: it is no head and no
+        // hop. The plugin engine sends it the prompts itself (`plugin_engine::prefill_on_peer`).
+        let (prefill_only, peers): (Vec<_>, Vec<_>) = peers
+            .into_iter()
+            .partition(|peer| crate::plugin_engine::is_prefill_only(peer));
+        if !prefill_only.is_empty()
+            && !peers.iter().any(|p| match deploy_id {
+                Some(id) => p.deploy_id == id,
+                None => p.model == model,
+            })
+            && prefill_only.iter().any(|p| match deploy_id {
+                Some(id) => p.deploy_id == id,
+                None => p.model == model,
+            })
+        {
+            let error = format!(
+                "No valid pipeline for model '{model}': only prefill machines serve it, and a prefill machine \
+                 never answers a request (deploy a machine with the decode or both role)"
+            );
+            log_early_outcome("refused", &error);
+            let _ = tx.send(GenEvent::Failed(error)).await;
+            return;
+        }
         record_gateway_span(
             &mut gateway_spans,
             request_started,
@@ -1032,6 +1069,7 @@ pub(super) async fn generate_stream_inner(
                     .iter()
                     .map(|bytes| crate::plugin_engine::image_data_url(bytes))
                     .collect(),
+                prefill_node: pinned_prefill.clone(),
             },
             &tx,
             &cancellation,
@@ -1188,9 +1226,9 @@ pub(super) async fn generate_stream_inner(
     .map(|reply| {
         reply
             .with_quic_addresses(state.network.gateway_quic_addr_candidates())
-            .with_libp2p(
-                state.network.libp2p_peer_id.clone(),
-                state.network.libp2p_addrs(),
+            .with_endpoint(
+                state.network.endpoint_id.clone(),
+                state.network.endpoint_addrs(),
             )
     });
     // The return mode is chosen together with the path by the delivery-time
@@ -2326,7 +2364,7 @@ async fn post_session_lifecycle(
     // announced addresses, and trying QUIC and TCP on them before used up the whole deadline - the
     // rewind failed (prefix lost) and so did the release (KV stuck on the peer,
     // which then showed up with a queue for the planner).
-    let tunnel = crate::infer_tunnel::tunnel_sender().filter(|_| step.libp2p_peer_id.is_some());
+    let tunnel = crate::infer_tunnel::tunnel_sender().filter(|_| step.endpoint_id.is_some());
     let pinned_tunnel = crate::route_plan::book()
         .kind_map(crate::route_plan::Plane::Inference)
         .get(&step.node_id)
@@ -2343,7 +2381,7 @@ async fn post_session_lifecycle(
         (Err(direct), Some(tunnel)) if !direct.contains(" answered HTTP ") => {
             crate::relay::post_json_via_tunnel(http, tunnel, step, path, body, session_id, timeout)
                 .await
-                .map_err(|error| format!("{direct}; libp2p-tunnel: {error}"))
+                .map_err(|error| format!("{direct}; p2p-tunnel: {error}"))
         }
         (result, _) => result,
     }
@@ -2638,7 +2676,7 @@ pub(super) async fn slot_call_step(
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default()
         .to_string();
-    let tunnel = crate::infer_tunnel::tunnel_sender().filter(|_| step.libp2p_peer_id.is_some());
+    let tunnel = crate::infer_tunnel::tunnel_sender().filter(|_| step.endpoint_id.is_some());
     let pinned_tunnel = crate::route_plan::book()
         .kind_map(crate::route_plan::Plane::Inference)
         .get(&step.node_id)
@@ -2681,7 +2719,7 @@ pub(super) async fn slot_call_step(
             Some(tunnel) => via_tunnel(tunnel).await.map_err(|error| match error {
                 SlotCallError::Refused(message) => message,
                 SlotCallError::Unreachable(tunnel) => {
-                    format!("{direct}; libp2p-tunnel: {tunnel}")
+                    format!("{direct}; p2p-tunnel: {tunnel}")
                 }
             }),
             None => Err(direct),
@@ -3004,7 +3042,7 @@ async fn route_audit_event_to_local_store<F>(
 mod audit_replication_tests {
     use super::*;
     use crate::reqlog::{AuditCompletion, AuditEvent, AuditRequest, Caller};
-    use libp2p::PeerId;
+    use crate::p2p::EndpointId;
     use std::collections::{HashMap, HashSet};
 
     // Representative reproduction from the admins' point of view:
@@ -3014,7 +3052,7 @@ mod audit_replication_tests {
     // Trigger: the plugin's positive answer must trigger the POM fanout.
     // Mask: when the plugin is not active, the AuditLog fallback already replicated.
     // Symptom: with the plugin active, the two remote admins received no event.
-    // This test covers the fanout up to the libp2p queue, not the real POM processes nor
+    // This test covers the fanout up to the p2p queue, not the real POM processes nor
     // the extracted cdylib; it does not claim equivalence with that full E2E execution.
     #[tokio::test]
     async fn plugin_accepted_inference_log_reaches_every_admin_peer() {
@@ -3034,11 +3072,11 @@ mod audit_replication_tests {
 
         let mut expected_peers = HashSet::new();
         for node_id in ["admin-secondary-a", "admin-secondary-b"] {
-            let peer_id = PeerId::random();
+            let peer_id = crate::p2p::random_endpoint_id();
             expected_peers.insert(peer_id.clone());
             let mut peer = crate::gateway::testkit::peer(node_id, node_id, 8080);
             peer.profile = crate::profile::NodeProfile::Admin;
-            peer.libp2p_peer_id = Some(peer_id.to_string());
+            peer.endpoint_id = Some(peer_id.to_string());
             network.peers.write().await.insert(node_id.into(), peer);
         }
 
@@ -3090,7 +3128,7 @@ mod audit_replication_tests {
         )
         .await;
 
-        let mut received_by_peer: HashMap<PeerId, Vec<AuditEvent>> = HashMap::new();
+        let mut received_by_peer: HashMap<EndpointId, Vec<AuditEvent>> = HashMap::new();
         while received_by_peer.values().map(Vec::len).sum::<usize>() < 4 {
             let delivery = tokio::time::timeout(Duration::from_secs(2), received.recv())
                 .await

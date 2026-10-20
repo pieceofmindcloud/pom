@@ -40,7 +40,7 @@ function mount() {
   );
 }
 
-function mountTopbar(profile: "admin" | "node" | "infer") {
+function mountTopbar(profile: "admin" | "worker" | "visitor") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
@@ -78,7 +78,7 @@ describe("TlsChip", () => {
   afterEach(cleanup);
 
   it("does not render the TLS indicator", () => {
-    nodeData = fakeNode({ tls_required: true });
+    nodeData = fakeNode();
     const { container } = mount();
     expect(container.querySelector('[data-testid="tls-indicator"]')).toBeNull();
   });
@@ -89,7 +89,7 @@ describe("profile in the toolbar", () => {
 
   it("shows the network this machine is in, linking to its settings", () => {
     nodeData = { ...fakeNode(), network_name: "POM-SALEM" };
-    mountTopbar("node");
+    mountTopbar("worker");
 
     const network = screen.getByTestId("topbar-network");
     expect(network.textContent).toBe("POM-SALEM");
@@ -104,10 +104,10 @@ describe("profile in the toolbar", () => {
   });
 
   it("hides the This node button and keeps the official profile in the toolbar", () => {
-    nodeData = fakeNode({ profile: "infer" });
-    mountTopbar("infer");
+    nodeData = fakeNode({ profile: "visitor" });
+    mountTopbar("visitor");
 
-    expect(screen.getByTestId("node-profile").textContent).toBe("infer");
+    expect(screen.getByTestId("node-profile").textContent).toBe("visitor");
     expect(screen.queryByText(/perfil em visualização/i)).toBeNull();
     expect(screen.queryByRole("button", { name: "Este nó" })).toBeNull();
     expect(screen.queryByRole("button", { name: /administrador|node|infer/i })).toBeNull();
@@ -126,8 +126,8 @@ describe("profile in the toolbar", () => {
   });
 
   it("hides the TLS indicator and the build hash outside admin", () => {
-    nodeData = fakeNode({ profile: "infer", build_commit: "abc123" });
-    mountTopbar("infer");
+    nodeData = fakeNode({ profile: "visitor", build_commit: "abc123" });
+    mountTopbar("visitor");
 
     expect(screen.queryByTestId("tls-indicator")).toBeNull();
     expect(screen.queryByText("abc123")).toBeNull();

@@ -1000,7 +1000,7 @@ pub(super) async fn run_apply(
                     .map(|member| member.addr_candidates.clone())
                     .unwrap_or_default(),
                 tp.rank0_node_id.clone(),
-                rank0.and_then(|m| m.libp2p_peer_id.clone()),
+                rank0.and_then(|m| m.endpoint_id.clone()),
                 rank0.is_some_and(|m| m.supports_tunnel),
                 Some(state.auth.clone()),
             );

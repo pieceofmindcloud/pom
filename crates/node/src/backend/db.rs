@@ -370,24 +370,6 @@ impl PomDb {
         })
     }
 
-    /// Remove every locally stored API credential when the node leaves a
-    /// network. The trust boundary is reset together with these rows, so a
-    /// later setup cannot accidentally resurrect a network-owned secret from
-    /// the database.
-    pub fn clear_api_keys(&self) -> Result<()> {
-        self.with_write("clear local API keys", |connection| {
-            let tx = connection.unchecked_transaction()?;
-            tx.execute("DELETE FROM api_key_revocations", [])?;
-            tx.execute("DELETE FROM api_keys", [])?;
-            tx.execute(
-                "DELETE FROM local_secrets WHERE secret_key = ?",
-                params![NODE_API_KEY_SECRET],
-            )?;
-            tx.commit()?;
-            Ok(())
-        })
-    }
-
     /// The active key whose hash matches a presented token. The token itself
     /// is hashed here and never reaches SQLite.
     pub fn api_key_for_token(&self, token: &str) -> Result<Option<ApiKey>> {
@@ -544,37 +526,18 @@ impl PomDb {
         })
     }
 
-    /// Revoke every active key from an origin. The update and audit inserts
-    /// are one transaction, so retries are safe and cannot duplicate history.
-    pub fn revoke_api_keys_by_origin(&self, origin: &str, revoked_by: &str) -> Result<usize> {
-        self.with_write("revoke the keys of the origin", |connection| {
-            let tx = connection.unchecked_transaction()?;
-            let ids = {
-                let mut statement = tx.prepare(
-                    "SELECT id, key_hash FROM api_keys
-                     WHERE origin_node_id = ? OR (origin_node_id = '' AND node_id = ?)",
-                )?;
-                let rows = statement.query_map(params![origin, origin], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })?;
-                rows.collect::<rusqlite::Result<Vec<_>>>()?
-            };
-            let mut changed = 0;
-            for (id, key_hash) in ids {
-                changed += tx.execute(
-                    "UPDATE api_keys SET active = 0 WHERE id = ? AND active = 1",
-                    params![&id],
-                )?;
-                tx.execute(
-                    "INSERT INTO api_key_revocations
-                        (key_id, key_sha256, revoked_by, revoked_at)
-                     SELECT ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-                     WHERE NOT EXISTS (SELECT 1 FROM api_key_revocations WHERE key_id = ?)",
-                    params![&id, &key_hash, revoked_by, &id],
-                )?;
-            }
-            tx.commit()?;
-            Ok(changed)
+    /// Delete every key another node minted. Keys never leave the node that
+    /// issued them; rows another node pushed here, before that rule, are
+    /// credentials this node must not honour.
+    pub fn forget_foreign_api_keys(&self, own_node_id: &str) -> Result<usize> {
+        self.with_write("forget the keys of other nodes", |connection| {
+            connection
+                .execute(
+                    "DELETE FROM api_keys
+                     WHERE (CASE WHEN origin_node_id = '' THEN node_id ELSE origin_node_id END) <> ?",
+                    params![own_node_id],
+                )
+                .context("forget the keys of other nodes")
         })
     }
 
@@ -2153,16 +2116,21 @@ mod tests {
     }
 
     #[test]
-    fn revoking_an_origin_is_idempotent_and_does_not_touch_other_origins() {
-        let path = temporary_path("revoke-origin");
+    fn keys_minted_by_other_nodes_are_forgotten() {
+        let path = temporary_path("forget-foreign");
         let db = PomDb::open(&path).expect("open a new database");
-        for (id, origin) in [("a-1", "node-a"), ("a-2", "node-a"), ("b-1", "node-b")] {
+        for (id, node, origin) in [
+            ("own", "node-a", "node-a"),
+            ("labelled", "node-b", "node-a"),
+            ("pushed", "node-b", "node-b"),
+            ("legacy", "node-c", ""),
+        ] {
             db.insert_api_key(&ApiKey {
                 id: id.into(),
                 key_hash: crate::auth::api_key_hash(&format!("sk-{id}")),
                 key_hint: String::new(),
                 label: id.into(),
-                node_id: origin.into(),
+                node_id: node.into(),
                 origin_node_id: origin.into(),
                 active: true,
                 created_at: "2026-09-07T00:00:00Z".into(),
@@ -2170,18 +2138,12 @@ mod tests {
             .unwrap();
         }
 
-        assert_eq!(
-            db.revoke_api_keys_by_origin("node-a", "principal").unwrap(),
-            2
-        );
-        assert_eq!(
-            db.revoke_api_keys_by_origin("node-a", "principal").unwrap(),
-            0
-        );
-        assert!(db.api_key_for_token("sk-a-1").unwrap().is_none());
-        assert!(db.api_key_for_token("sk-a-2").unwrap().is_none());
-        assert!(db.api_key_for_token("sk-b-1").unwrap().is_some());
-        assert_eq!(db.api_key_revocations().unwrap().len(), 2);
+        assert_eq!(db.forget_foreign_api_keys("node-a").unwrap(), 2);
+        assert_eq!(db.forget_foreign_api_keys("node-a").unwrap(), 0);
+        assert!(db.api_key_for_token("sk-own").unwrap().is_some());
+        assert!(db.api_key_for_token("sk-labelled").unwrap().is_some());
+        assert!(db.api_key_for_token("sk-pushed").unwrap().is_none());
+        assert!(db.api_key_for_token("sk-legacy").unwrap().is_none());
         remove_database(&path);
     }
 

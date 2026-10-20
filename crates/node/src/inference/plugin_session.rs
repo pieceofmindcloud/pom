@@ -8,6 +8,9 @@
 //! conversation. A peer that no longer holds the delta's base gets the whole session instead. Each machine restores
 //! the longest saved start of a prompt itself, so the gateway's choice of machine does not change.
 //!
+//! A turn of a prefill/decode split names the prefill machine that read its prompt (`session_source`): the head
+//! fetches the session from that machine before the turn, whatever the transfer costs (`pull_from`).
+//!
 //! Routes (signed peer calls, the same checks as the generation route):
 //! - `POST /api/internal/plugins/:code/engine/session/chunk?key=..&kind=..&offset=..&total=..`, one piece of a file
 //! - `POST /api/internal/plugins/:code/engine/session/apply`, `{"key": ..}`: apply a received delta here
@@ -535,13 +538,15 @@ pub(crate) fn note_prefill_rate(tokens_per_s: f64) {
 }
 
 /// What a machine can give for a conversation: the tokens and bytes of its file on disk, the tokens its slot holds in
-/// RAM (not fetchable), the layer split it runs, and whether its save is still being written.
+/// RAM (not fetchable), the layer split it runs, the engine settings its sessions are bound to (`config`, None from an
+/// older bridge), and whether its save is still being written.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Offer {
     pub tokens: u64,
     pub bytes: u64,
     pub ram_tokens: u64,
     pub layers: String,
+    pub config: Option<String>,
     pub pending: bool,
 }
 
@@ -552,6 +557,7 @@ impl Offer {
             bytes: value["bytes"].as_u64()?,
             ram_tokens: value["ram_tokens"].as_u64().unwrap_or(0),
             layers: value["layers"].as_str()?.to_owned(),
+            config: value["config"].as_str().map(str::to_owned),
             pending: value["pending"].as_bool().unwrap_or(false),
         })
     }
@@ -565,15 +571,32 @@ impl Offer {
 /// Whether a session saved with the layers `saved` can be restored on a machine running the layers `local`: the same
 /// split, or a machine that runs the whole model (`whole`) and a session saved on a split that covers every layer, from
 /// 0 to the end, as one contiguous chain of ranges (the engine joins the stages into one image on that machine).
+/// Whether a session saved with the engine settings `saved` restores on a machine running `local` (Strata's config
+/// fingerprint). Unknown on either side (an older bridge): the engine decides.
+pub(crate) fn configs_compatible(local: Option<&str>, saved: Option<&str>) -> bool {
+    match (local, saved) {
+        (Some(local), Some(saved)) => local == saved,
+        _ => true,
+    }
+}
+
+/// Whether a session saved on the layer split `saved` restores on a machine running `local`: the same split, or a
+/// contiguous split of the whole model on one side and the whole model on the other - Strata joins a split's stages
+/// on a machine with every layer and cuts a whole session into the stages of a split (conversation_split_stages).
 pub(crate) fn layers_compatible(local: &str, saved: &str) -> bool {
     if local == saved {
         return true;
     }
-    if local != "whole" {
-        return false;
+    match (local, saved) {
+        ("whole", split) | (split, "whole") => whole_split(split),
+        _ => false,
     }
+}
+
+/// Whether `split` ("0-35|36-47") covers a model from its first layer, its ranges end to end.
+fn whole_split(split: &str) -> bool {
     let mut next = 0u64;
-    for range in saved.split('|') {
+    for range in split.split('|') {
         let Some((start, end)) = range.split_once('-') else {
             return false;
         };
@@ -615,18 +638,56 @@ pub(crate) fn fetch_pays(bytes: u64, gained: u64, link_bytes_per_s: f64, prefill
     fetch < reread
 }
 
-/// Before a turn runs on this machine: fetches the conversation's session from a peer when that is faster than
-/// reading the prompt again. Never fails the turn: any problem leaves the turn to read its prompt.
-pub(crate) async fn prepare_for_body(state: &GatewayState, code: &str, body: &Value) {
-    let Some(key) = body["session"].as_str().filter(|key| valid_key(key)) else {
-        return;
-    };
-    if let Err(error) = pull(state, code, key).await {
-        info!(plugin = %code, session = %key, "session not fetched from a peer: {error}");
+/// A session this machine fetched from a peer before a turn: the head's part of the trace (`session_transfer`).
+/// It reaches the gateway in the turn's done line (`session_fetch`) when the head is another machine.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SessionFetch {
+    pub source: String,
+    pub tokens: u64,
+    pub bytes: u64,
+    pub transfer_ms: u64,
+    pub save_wait_ms: u64,
+}
+
+impl SessionFetch {
+    pub(crate) fn to_json(&self) -> Value {
+        json!({"source": self.source, "tokens": self.tokens, "bytes": self.bytes,
+               "transfer_ms": self.transfer_ms, "save_wait_ms": self.save_wait_ms})
+    }
+
+    pub(crate) fn from_json(value: &Value) -> Option<Self> {
+        Some(Self {
+            source: value["source"].as_str()?.to_owned(),
+            tokens: value["tokens"].as_u64().unwrap_or(0),
+            bytes: value["bytes"].as_u64()?,
+            transfer_ms: value["transfer_ms"].as_u64().unwrap_or(0),
+            save_wait_ms: value["save_wait_ms"].as_u64().unwrap_or(0),
+        })
     }
 }
 
-async fn pull(state: &GatewayState, code: &str, key: &str) -> Result<(), String> {
+/// Before a turn runs on this machine: fetches the conversation's session from a peer when that is faster than
+/// reading the prompt again. Never fails the turn: any problem leaves the turn to read its prompt. Returns what it
+/// fetched, if anything.
+pub(crate) async fn prepare_for_body(state: &GatewayState, code: &str, body: &Value) -> Option<SessionFetch> {
+    let key = body["session"].as_str().filter(|key| valid_key(key))?;
+    // a prefill/decode split: the prefill machine read this prompt just now, and its session is the one to take
+    if let Some(source) = body["session_source"]
+        .as_str()
+        .filter(|source| *source != state.network.node_id)
+    {
+        return pull_from(state, code, key, source).await.unwrap_or_else(|error| {
+            warn!(plugin = %code, session = %key, source = %source, "prefill split: session not fetched from the prefill machine: {error}");
+            None
+        });
+    }
+    pull(state, code, key).await.unwrap_or_else(|error| {
+        info!(plugin = %code, session = %key, "session not fetched from a peer: {error}");
+        None
+    })
+}
+
+async fn pull(state: &GatewayState, code: &str, key: &str) -> Result<Option<SessionFetch>, String> {
     let (port, token) = local_upstream(&state.plugins, code).await?;
     let local = offer_here(port, &token, key).await?;
     let mut offers = Vec::new();
@@ -653,7 +714,7 @@ async fn pull(state: &GatewayState, code: &str, key: &str) -> Result<(), String>
     }
     let Some((node, offer)) = best_source(&local, &offers).cloned() else {
         info!(plugin = %code, session = %key, "session pull: no peer holds more of it on this split; the prompt is read here");
-        return Ok(());
+        return Ok(None);
     };
     let gained = offer.tokens - local.have();
     let link = measured(&LINK_RATE, DEFAULT_LINK_BYTES_PER_S);
@@ -666,7 +727,7 @@ async fn pull(state: &GatewayState, code: &str, key: &str) -> Result<(), String>
             "session not fetched: reading the prompt again is faster ({:.0} MiB/s link, {:.0} tok/s prefill)",
             link / (1024.0 * 1024.0), prefill
         );
-        return Ok(());
+        return Ok(None);
     }
     let peer = state
         .all_peers()
@@ -680,7 +741,85 @@ async fn pull(state: &GatewayState, code: &str, key: &str) -> Result<(), String>
     fold_rate(&LINK_RATE, offer.bytes as f64 / seconds);
     info!(plugin = %code, session = %key, peer = %node, gained, bytes = offer.bytes, seconds,
           forced, "session pull: fetched from a peer; the turn restores it from this machine's disk");
-    Ok(())
+    Ok(Some(SessionFetch {
+        source: node,
+        tokens: offer.tokens,
+        bytes: offer.bytes,
+        transfer_ms: (seconds * 1000.0).round() as u64,
+        save_wait_ms: 0,
+    }))
+}
+
+/// How long the head waits for the prefill machine's save of a split turn to be written.
+const SOURCE_SAVE_WAIT: Duration = Duration::from_secs(300);
+
+/// A prefill/decode split: fetches the session the prefill machine `source` saved for this turn. Its save may still be
+/// being written (the engine writes it once the prefill request has ended), so the offer is asked again until it is not
+/// pending. No cost check: the gateway sent the prompt there to be read instead of here.
+async fn pull_from(state: &GatewayState, code: &str, key: &str, source: &str) -> Result<Option<SessionFetch>, String> {
+    let (port, token) = local_upstream(&state.plugins, code).await?;
+    let local = offer_here(port, &token, key).await?;
+    let peer = state
+        .all_peers()
+        .await
+        .into_iter()
+        .find(|peer| peer.node_id == source)
+        .ok_or_else(|| format!("{source} left the network"))?;
+    let waited = Instant::now();
+    let offer = loop {
+        let offer = offer_of_peer(state, code, key, &peer).await?;
+        if !offer.pending {
+            break offer;
+        }
+        if waited.elapsed() > SOURCE_SAVE_WAIT {
+            return Err(format!("its save was still pending after {} s", SOURCE_SAVE_WAIT.as_secs()));
+        }
+        tokio::time::sleep(SAVE_POLL).await;
+    };
+    if !layers_compatible(&local.layers, &offer.layers) {
+        return Err(format!("its layers ({}) are not this machine's ({})", offer.layers, local.layers));
+    }
+    if !configs_compatible(local.config.as_deref(), offer.config.as_deref()) {
+        return Err(format!(
+            "its engine settings ({}) are not this machine's ({}): the engine would refuse the session",
+            offer.config.as_deref().unwrap_or("?"),
+            local.config.as_deref().unwrap_or("?")
+        ));
+    }
+    if offer.bytes == 0 || offer.tokens <= local.have() {
+        info!(plugin = %code, session = %key, source = %source, tokens = offer.tokens, local = local.have(),
+              "prefill split: this machine already holds as much of the conversation");
+        return Ok(None);
+    }
+    let started = Instant::now();
+    fetch_session(state, code, key, &peer, port, &token).await?;
+    let seconds = started.elapsed().as_secs_f64().max(1e-3);
+    fold_rate(&LINK_RATE, offer.bytes as f64 / seconds);
+    info!(plugin = %code, session = %key, source = %source, tokens = offer.tokens, bytes = offer.bytes, seconds,
+          waited_s = waited.elapsed().as_secs_f64() - seconds,
+          "prefill split: session fetched from the prefill machine; the turn restores it");
+    Ok(Some(SessionFetch {
+        source: source.to_owned(),
+        tokens: offer.tokens,
+        bytes: offer.bytes,
+        transfer_ms: (seconds * 1000.0).round() as u64,
+        save_wait_ms: ((waited.elapsed().as_secs_f64() - seconds).max(0.0) * 1000.0).round() as u64,
+    }))
+}
+
+/// What the machine `node_id` (this one or a peer) holds for the conversation `key`.
+pub(crate) async fn offer_of(state: &GatewayState, code: &str, key: &str, node_id: &str) -> Result<Offer, String> {
+    if node_id == state.network.node_id {
+        let (port, token) = local_upstream(&state.plugins, code).await?;
+        return offer_here(port, &token, key).await;
+    }
+    let peer = state
+        .all_peers()
+        .await
+        .into_iter()
+        .find(|peer| peer.node_id == node_id)
+        .ok_or_else(|| format!("{node_id} left the network"))?;
+    offer_of_peer(state, code, key, &peer).await
 }
 
 async fn offer_here(port: u16, token: &str, key: &str) -> Result<Offer, String> {
@@ -739,7 +878,7 @@ async fn fetch_session(
                 break;
             }
             let response = state
-                .control_get(
+                .control_get_routed(
                     peer,
                     &format!(
                         "/api/internal/plugins/{code}/engine/session/file?key={key}&kind={kind}&offset={offset}&len={SESSION_PIECE}"
@@ -949,8 +1088,20 @@ mod pull_tests {
             bytes,
             ram_tokens: 0,
             layers: layers.to_owned(),
+            config: None,
             pending: false,
         }
+    }
+
+    #[test]
+    fn a_session_with_other_engine_settings_is_not_fetched() {
+        let a = "engine=0.1.44.1 backend=cuda kv=int8 max_context=200000 kv_resident=32768 mtp_window=32768 kv_rot=0";
+        let b = "engine=0.1.44.1 backend=cuda kv=int8 max_context=200000 kv_resident=32768 mtp_window=-1 kv_rot=0";
+        assert!(configs_compatible(Some(a), Some(a)));
+        assert!(!configs_compatible(Some(a), Some(b)));
+        assert!(configs_compatible(None, Some(b)), "an older bridge: the engine decides");
+        let value = json!({"tokens": 5, "bytes": 9, "layers": "whole", "config": a});
+        assert_eq!(Offer::from_json(&value).unwrap().config.as_deref(), Some(a));
     }
 
     const GIB: u64 = 1 << 30;
@@ -1024,7 +1175,7 @@ mod pull_tests {
 
     #[test]
     fn a_whole_session_or_a_partial_chain_is_not_restored_on_a_split_machine() {
-        assert!(!layers_compatible("0-35|36-47", "whole"));
+        assert!(layers_compatible("0-35|36-47", "whole"), "a whole session is cut into the head's stages");
         assert!(!layers_compatible("0-35|36-47", "0-47"));
         assert!(!layers_compatible("whole", "0-30|36-47"));
         assert!(!layers_compatible("whole", "1-35|36-47"));

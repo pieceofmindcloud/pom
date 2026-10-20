@@ -181,14 +181,16 @@ export function Notifications() {
   const navigate = useNavigate();
   const toast = useToast();
 
-  const jobs = useJobs();
-  const transfers = useTransfers();
-  const offers = useOffers();
+  const { profile } = useProfile();
+  // A visitor holds no model: its node refuses the job and transfer routes.
+  const holdsModels = Boolean(profile) && profile !== "visitor";
+  const jobs = useJobs(holdsModels);
+  const transfers = useTransfers(holdsModels);
+  const offers = useOffers(holdsModels);
   // Machines asking to join this network (for its admin), and the answers to
   // what this machine asked of other networks.
-  // Approving a machine is the principal's; a secondary admin is not asked.
-  const { profile, secondary } = useProfile();
-  const admissions = useAdmissions(profile === "admin" && !secondary);
+  // Any admin approves a machine; a secondary's decision goes to the principal.
+  const admissions = useAdmissions(profile === "admin");
   const admissionRequests = useAdmissionRequests();
   const pendingAdmissions = (admissions.data ?? []).filter((record) => record.status === "pending");
   // An answer to something this machine asked. A standing approval (it was

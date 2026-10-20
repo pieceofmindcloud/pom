@@ -26,9 +26,10 @@ namespace. The real code of Request Logs and Statistics lives in
      includes the menu PNG and documentation Markdown. i18n catalogs go through
      `validate_catalog` before leaving.
    Both sit under `/api/ui/plugins`, open to every profile
-   (`RouteScope::InferNodeAdmin`, since plugins are local to each node); the
-   authorization of the data the screen reads stays in the plugin's routes (for
-   example `/api/ui/requests`, AdminOnly).
+   (`RouteScope::LocalOnly`, since plugins are local to each node: no other
+   node reaches them, signed or not); the authorization of the data the screen
+   reads stays in the plugin's routes (for example `/api/ui/requests`, where
+   only an admin of the chain reads other nodes' requests).
 3. The frontend (`usePluginUi`) stores the result in `lib/pluginUi.ts`. The menu
    (`components/nav.ts`), the profile guard (`lib/access.ts`), text loading
    (`lib/pluginI18n.ts`) and the router (`App.tsx`) all read the same validated
@@ -46,9 +47,9 @@ namespace. The real code of Request Logs and Statistics lives in
 | `lifecycle` | optional; `resident` (default, the process starts with POM and the heartbeat restarts it) or `on_demand` (see "On-demand processes"). Any other value refuses the manifest |
 | `description` | optional; short text per language (`en` required, up to 2000 bytes each), shown on the Plugins screen card |
 | `screenshots` | optional; up to 8 images (`.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`) as paths relative to the root of the plugin's GitHub repository or `https://` URLs without credentials. They are not assets and the node never serves them: relative paths become `https://raw.githubusercontent.com/<owner>/<repo>/HEAD/<path>` and the browser loads them straight from GitHub |
-| `menu[]` | `id` (unique in the manifest, including children), `label` per language (`en` required), `icon` (a known name, otherwise generic), `to`, optional `roles` (`admin`/`node`/`infer`) or legacy `profiles`; both fields are validated and retained for compatibility, but do not restrict plugin UI visibility in the current POM. `group` is accepted but does not organize items |
+| `menu[]` | `id` (unique in the manifest, including children), `label` per language (`en` required), `icon` (a known name, otherwise generic), `to`, optional `roles` (`admin`/`worker`/`visitor`) or legacy `profiles`; both fields are validated and retained for compatibility, but do not restrict plugin UI visibility in the current POM. `group` is accepted but does not organize items |
 | `menu[].children[]` | optional; submenus with `id`, `label`, `icon`, `to` and optional role metadata. With children, the item becomes an expandable section of the sidebar; the parent's `to` is still required for hosts without submenu support |
-| `routes[]` | `path`, `screen`, optional `roles` (`admin`/`node`/`infer`) or legacy `profiles` (`admin`/`node`/`infer`, non-empty), `full_bleed`; role metadata is validated and retained, but does not restrict plugin routes in the current POM |
+| `routes[]` | `path`, `screen`, optional `roles` (`admin`/`worker`/`visitor`) or legacy `profiles` (`admin`/`worker`/`visitor`, non-empty), `full_bleed`; role metadata is validated and retained, but does not restrict plugin routes in the current POM |
 | `screens{}` | `module` (ES asset), `export` (default `default`), `styles[]` |
 | `i18n{}` | language -> JSON asset; if present, `en` is required |
 | `documentation` | optional; current format with `guides[]` and `reference[]`, each entry with `id`, a localized `title` (with `en`) and a relative Markdown asset under `docs/`; a published list of `docs/*.md` paths is also normalized into guides |
@@ -115,12 +116,15 @@ registry normalizes each target once and both navigation and the router
 consume that same path. The `/admin-ui` basename is still applied by
 `BrowserRouter`, including on direct reloads and browser history navigation.
 
-Every active plugin menu and route is available to `admin`, `node` and `infer`
+Every active plugin menu and route is available to `admin`, `worker` and `visitor`
 profiles. Each node owns its installed plugins, so manifest `roles` and legacy
 `profiles` are validated and preserved for compatibility with older hosts but
 do not gate this POM's plugin UI. The POM's native route restrictions still
-apply: for example, `infer` cannot open `/logs`, `/statistics` or
-`/deployments`, even when a plugin claims an extension point. Plugin APIs and
+apply: for example, `visitor` cannot open `/deployments` (deployment logs
+included), even when a plugin claims an extension point. `/logs` and
+`/statistics` open to a `visitor` only when an active plugin serves them, and
+show the requests that entered through that node; the advertising fallback is
+not shown to it. Plugin APIs and
 sensitive operations must enforce their own authorization on the backend.
 
 The registry lives in `lib/pluginUi.ts`: `setPluginUi` validates and installs a
@@ -226,13 +230,15 @@ A resident plugin behaves as before.
 A plugin screen that needs more than reading (saving settings, a directory,
 custom queries) calls `__POM_HOST__.plugin(code).rpc(op, params)` (host
 version 4). It posts to `POST /api/ui/plugins/<code>/rpc/<op>`; the node
-forwards `{params, profile}` to the plugin's `query` as operation
+forwards `{params, profile, node_id}` to the plugin's `query` as operation
 `rpc.<op>` and returns the plugin's JSON reply as is. The node knows no
 operation and checks only the name, the size (256 KiB), the same origin and
 that the plugin is active. `profile` is the node's persisted profile
-(`admin`, `node` or `infer`), so the plugin decides who may call each
-operation; the enterprise plugin, for example, answers its directory and
-insights only for `admin`. On the browser side the helper is
+(`admin`, `worker` or `visitor`) and `node_id` its own id, so the plugin
+decides who may call each operation and what each profile sees; the logs
+plugin, for example, lets only `admin` edit its directory and rules, and keeps
+any other profile to the requests this node received, since its store can hold
+rows from a time the node was an admin. On the browser side the helper is
 `scopedPluginApi(code).rpc(op, params)` (`lib/pluginEvents.ts`), which posts to
 that route for one plugin only.
 
@@ -249,7 +255,7 @@ error card. Hosts ignore slot ids they do not offer.
 
 | Slot | Where | Props |
 |---|---|---|
-| `chat.telemetry` | end of the compact telemetry line under each Chat answer (not for `infer`, not while streaming) | `ChatTelemetrySlotProps` in `lib/chatTelemetry.ts`: `messageId`, `trace`, `timings`, `source`, `environment` (cluster snapshot, network RTT, runtimes - fetched only while a plugin claims the slot), `model`, `onAsk({visibleText, requestContent})`, `askDisabled` |
+| `chat.telemetry` | end of the compact telemetry line under each Chat answer (not for `visitor`, not while streaming) | `ChatTelemetrySlotProps` in `lib/chatTelemetry.ts`: `messageId`, `trace`, `timings`, `source`, `environment` (cluster snapshot, network RTT, runtimes - fetched only while a plugin claims the slot), `model`, `onAsk({visibleText, requestContent})`, `askDisabled` |
 
 ~~~json
 {
@@ -290,7 +296,7 @@ digest from the GitHub API, downloads and verifies the asset and installs the
 chosen version without checking whether it needs a license. The repository
 list stays local to the node; installing creates no lease, grant or
 entitlement. Plugin activation/licensing stays separate. Any profile (`admin`,
-`node`, `infer`) can register repositories, install and activate plugins on its
+`worker`, `visitor`) can register repositories, install and activate plugins on its
 own node. See `enterprise-licensing.md` for contract, integrity and
 persistence.
 
@@ -319,7 +325,7 @@ source mount; a mounted directory is listed only when its Cargo manifest and
 root `manifest.json` or `ui/manifest.json` are valid and all plugin manifests
 agree on a safe `plugin_code`. The code-server source uses
 `plugin_code: "code_server"`. `GET /api/ui/plugins/dev-sources` lists only
-valid mounted sources. The AdminOnly route
+valid mounted sources. The PrincipalOnly route
 `POST /api/ui/plugins/dev-sources/:repository/rebuild-install` uses fixed
 arguments for `cargo metadata --no-deps --locked` and `cargo build --release
 --locked`, requires a single `cdylib` target and checks canonical source and
@@ -366,6 +372,7 @@ operation:
 {"operation": "host.configure",
  "gateway": {"openai_base_url": "http://127.0.0.1:8080/v1", "api_key": "sk-..."},
  "workspace_root": "/data/workspace",
+ "host_api": {"base_url": "http://127.0.0.1:8080/api/plugin-host", "token": "<hex>"},
  "preferences": {"features": {"capture_headers": false}, "storage_directory": null}}
 ```
 
@@ -416,14 +423,25 @@ plugin receives who is asking and decides what to hand over:
 
 ```json
 {"operation": "peer.connection", "params": null,
- "caller": {"node_id": "<node>", "head": true, "model": "<model>"}}
+ "caller": {"node_id": "<node>", "head": true, "model": "<model>",
+            "role": "admin"}}
 ```
 
-`head` is true when the caller announces layer 0 of a model, the machine every
-prompt enters through. This is how a plugin shares a secret with the heads of
+`role` is the caller's role as the trust chain proves it
+(`plugin_services::caller_role`): `principal`, `admin`, `visitor` or `member`.
+The announced profile never makes a caller an admin, so a plugin that shares
+something only with the admins answers when `role` is `principal` or
+`admin`. `head` is true when the caller announces layer 0 of a model, the
+machine every prompt enters through, and is always false for an inference
+node. This is how a plugin shares a secret with the heads of
 the network and nobody else: the Qdrant plugin answers `peer.connection` with
 its port and API key only when `caller.head` is true. The body is capped at
 256 KiB and the plugin's reply is returned as is.
+
+The POM itself uses the same route for token budgets: the node that receives
+an inference request asks an admin's logs plugin `peer.quota.check` before the
+pipeline, and the Budget screen reads `peer.quota.status` (see `http-api.md`,
+"Token budgets, checked before the pipeline").
 
 `GET /api/internal/plugins/services` (signed or key-authenticated peer call)
 returns the same service list, so a peer can find which machine serves what.
@@ -443,13 +461,16 @@ settings card, whatever the slices (whole model or slices), not in the engine's
 card; the node passes the field on unchanged. A service
 that also runs POM layer slices, one stage per machine, publishes
 `stages: true`, and lists in `pom_settings` the POM deployment settings that
-apply to it, by their `RuntimeParams` name: `prefill_max_inflight_chunks` and
-`hidden_state_dtype` are the known ones, any other name is dropped. The deploy
-inspector draws only the declared ones, in their own card. Such a
+apply to it, by their `RuntimeParams` name: `prefill_max_inflight_chunks`,
+`hidden_state_dtype` and `inference_role` are the known ones, any other name is
+dropped. The deploy inspector draws only the declared ones, in their own card
+(the first two when the slices cross machines, `inference_role` when the model
+runs whole on one machine; see `inference.md`, "Prefill/decode split"). Such a
 plugin implements four operations the node calls through its own local host,
 never from another machine or a browser: `engine.load` (`params`:
 `model_path`, `model_label`, `n_ctx`, `max_sessions`, `kv`, `gpus`,
-`settings`, and for a slice `link`),
+`settings`, for a slice `link`, and for a whole-model machine with a
+prefill/decode role other than both, `role`: `prefill` or `decode`),
 `engine.unload`, `engine.status` (`state` among `idle`, `installing`,
 `preparing`, `loading`, `ready`, `stopping`, `error`, with `detail`, `n_ctx`,
 `busy`) and `engine.upstream` (`{status: "ready", port, token}` of a loopback
@@ -458,6 +479,33 @@ plus `engine.link` (`{status, port?, token?}`) for a service with `stages`: the
 loopback port of an earlier stage's link and its secret.
 The deployment and generation contract is in `inference.md`, section 7.1, and
 `deployment.md`, section 1.6.
+
+## Calling back into the node (`host_api`)
+
+The node reaches a plugin through its `query`; `host_api` is the way back
+(`crates/node/src/plugin_host_api.rs`). Each plugin host gets its own random
+secret in `host.configure`, new at every start of the node, and sends it in
+`x-pom-plugin-host-token` to the loopback routes under `/api/plugin-host/`
+(`RouteScope::HandlerAuth`, outside the session gate). The token names the
+plugin, so a plugin only ever speaks as itself.
+
+| Route | Answer |
+|---|---|
+| `GET /api/plugin-host/node` | `{node_id, hostname, public_key, did_key, role, principal_node_id}`: the node key in hex and as a `did:key`, the node's role in the trust chain (`principal`, `admin`, `visitor` or `member`) |
+| `GET /api/plugin-host/peers` | `{peers: [{node_id, hostname, principal, visitor}]}`: the live peers |
+| `POST /api/plugin-host/peer` | `{node_id, op, params}` runs `peer.<op>` of **the same plugin** on that machine, through the signed peer call above (or locally, with `caller.local: true`, for this node's own `node_id`), and answers `{reply}`; 404 when the node is not a live peer, 502 when its plugin refused |
+| `POST /api/plugin-host/sign` | `{statement}` signed by the node key: `{signature, public_key, did_key}` (hex) |
+
+The node key also signs announces, control envelopes, grants and the pkarr
+record, so `sign` never signs arbitrary bytes: only one line of printable
+ASCII, at most 1 KiB, that opens with a known external identity statement
+naming **this node's own** `did:key` (today Ghostly's WISP 300 binding,
+`Ghostly identity proof v1: I control did:<did:key> and authorize the Ghostly
+key …`). Anything else is 403. Each signature is logged with the plugin code.
+
+`pom-plugin-ghostly` is the reference: its principal holds the network's
+Ghostly group and hands the link to the other nodes' plugins with
+`peer.group_link`, and each profile proves the node key as a `did` identity.
 
 ## Transparent retrieval (RAG)
 
@@ -506,7 +554,7 @@ service of kind `rag`; the gateway knows no plugin by name.
   plugin's `peer.search` - directly when the plugin is on this node, through
   the peer route otherwise. The call goes along the route already measured to
   that machine (`GatewayState::control_post_json_routed`): the pinned address,
-  or the libp2p tunnel alone when that is what reaches a peer behind NAT,
+  or the p2p tunnel alone when that is what reaches a peer behind NAT,
   instead of walking every announced address. The whole search has 300 ms
   (`POM_RAG_TIMEOUT_MS`, 20 to 5000); past it, or on any failure, the request
   goes on unchanged. Retrieval never fails a request.

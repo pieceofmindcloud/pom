@@ -86,7 +86,7 @@ impl PublicDirectorySettings {
 ///
 /// There is no address here. The network is found by the publisher's key
 /// (`publisher_pubkey`, the same as the principal's and the pkarr record's)
-/// and by the relay keys in `relay_hints`; nobody's IP is ever listed.
+/// and by the relay URLs in `relay_hints` (host names); nobody's IP is ever listed.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct PublicDirectoryNetwork {
     pub cluster_id: String,
@@ -276,8 +276,8 @@ fn validate_network(network: &PublicDirectoryNetwork) -> Result<()> {
         bail!("the record announces too many relays");
     }
     for relay in &network.relay_hints {
-        if !relay.starts_with("pk:") || crate::pkarr_node::peer_id_from_uri(relay).is_none() {
-            bail!("a public record relay must be a pk: key, never an address");
+        if crate::p2p::relay_hint(relay).is_none() {
+            bail!("a public record relay must be a relay URL with a host name, never an IP");
         }
     }
     Ok(())
@@ -399,14 +399,16 @@ mod tests {
         assert!(tampered.validate(1_700_000_001).is_err());
     }
 
-    /// A public record names relays by key. An address does not pass.
+    /// A public record names relays by a host name. An IP does not pass,
+    /// in a URL or bare.
     #[test]
-    fn relay_hints_must_be_keys_not_addresses() {
+    fn relay_hints_must_be_host_names_not_addresses() {
         let mut network = PublicDirectoryNetwork::test_fixture();
-        network.relay_hints =
-            vec!["pk:yg4gxe7z1r7mr6orids9fh95y7gxhdsxjqi6nngsxxtakqaxr5no".to_string()];
+        network.relay_hints = vec!["https://relay.example.org/".to_string()];
         assert!(validate_network(&network).is_ok());
         network.relay_hints = vec!["198.51.100.1:42777".to_string()];
+        assert!(validate_network(&network).is_err());
+        network.relay_hints = vec!["http://198.51.100.1:52777".to_string()];
         assert!(validate_network(&network).is_err());
     }
 

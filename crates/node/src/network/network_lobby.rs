@@ -4,7 +4,7 @@
 //! can decide on admission. The candidate is not in the cluster: it has no API
 //! key, no gossip announce and no admission. What it has is its node key. The
 //! connection runs under a transport key derived from it (see
-//! [`transport_keypair`]), and each chat request carries the node key's
+//! [`transport_key`]), and each chat request carries the node key's
 //! signature over that transport identity: the principal names the candidate
 //! by the key that signed, never by a field the frame merely states.
 //!
@@ -16,22 +16,19 @@
 //! relayed `ChatAction`, and members answer through the usual authenticated
 //! star.
 //!
-//! [`LobbyClient`] is the candidate's side. It is a small swarm of its own
-//! (dial only, relay client and DCuTR) so it also runs in setup mode, where
-//! the node has no cluster swarm yet.
+//! [`LobbyClient`] is the candidate's side. It is a small endpoint of its own
+//! (dial only, over n0's relays when no direct path answers) so it also runs
+//! in setup mode, where the node has no cluster endpoint yet.
 
 use anyhow::{Context, Result};
+use crate::p2p::Codec;
 use async_trait::async_trait;
 use futures::prelude::*;
-use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
-use libp2p::{
-    dcutr, identify, noise, relay, request_response, tcp, yamux, Multiaddr, PeerId, StreamProtocol,
-};
+use crate::p2p::{EndpointAddr, EndpointId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::sync::{mpsc, oneshot};
 
 pub const NETWORK_LOBBY_PROTOCOL: &str = "/pom/network-lobby/1.0.0";
 /// Room id of the lobby inside the network Chat.
@@ -267,7 +264,7 @@ pub enum AdmissionStatus {
 
 /// What an approved candidate needs to join: the network's trust document and
 /// its connection key. It only ever travels in an answer to the candidate
-/// whose signed identity an admin approved, over the Noise connection that
+/// whose signed identity an admin approved, over the QUIC connection that
 /// identity was proven on.
 #[derive(Clone, Serialize, Deserialize, PartialEq)]
 pub struct AdmissionGrant {
@@ -466,46 +463,43 @@ impl LobbyResponse {
 const TRANSPORT_KEY_DOMAIN: &[u8] = b"pom/network-lobby/transport-key/1";
 const IDENTITY_DOMAIN: &[u8] = b"pom/network-lobby/identity/1:";
 
-/// The libp2p key the lobby client connects with.
+/// The endpoint key the lobby client connects with.
 ///
-/// It is **not** the node key, on purpose. The cluster swarm already runs
-/// under the node key, and a peer that holds two connections to one `PeerId`
-/// spreads its requests across them (`request_response` picks the connection
-/// by request id). A lobby connection only speaks the lobby protocol, so
-/// under the node key it would swallow about half of that peer's inference
-/// tunnel, chat, log and audit requests meant for the cluster swarm. A
-/// separate `PeerId` keeps the two apart; the derivation is deterministic so
-/// the candidate keeps one identity across restarts.
-pub fn transport_keypair(identity: &crate::identity::Identity) -> libp2p::identity::Keypair {
+/// It is **not** the node key, on purpose. The node's own endpoint already
+/// runs under the node key, and two endpoints under one key confuse the
+/// relays, which hold one connection per key: the second would knock the
+/// first off its home relay. A separate key keeps the two apart; the
+/// derivation is deterministic so the candidate keeps one identity across
+/// restarts.
+pub fn transport_key(identity: &crate::identity::Identity) -> crate::p2p::SecretKey {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(TRANSPORT_KEY_DOMAIN);
     hasher.update(identity.signing_key.to_bytes());
-    let mut seed: [u8; 32] = hasher.finalize().into();
-    libp2p::identity::Keypair::ed25519_from_bytes(&mut seed[..])
-        .expect("a 32-byte Ed25519 seed is always a valid libp2p key")
+    let seed: [u8; 32] = hasher.finalize().into();
+    crate::p2p::SecretKey::from_bytes(&seed)
 }
 
-fn identity_message(transport: &PeerId) -> Vec<u8> {
+fn identity_message(transport: &EndpointId) -> Vec<u8> {
     let mut message = IDENTITY_DOMAIN.to_vec();
-    message.extend_from_slice(&transport.to_bytes());
+    message.extend_from_slice(transport.as_bytes());
     message
 }
 
 /// Proof that the transport identity of a lobby connection belongs to a
-/// node: the node key's signature over that transport `PeerId`. It is only
+/// node: the node key's signature over that transport endpoint id. It is only
 /// worth something together with the transport private key, which never
 /// leaves the node, so replaying it from another connection proves nothing.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LobbyIdentity {
     /// The node's Ed25519 public key, hex.
     pub pubkey: String,
-    /// Signature over the transport `PeerId`, hex.
+    /// Signature over the transport endpoint id, hex.
     pub signature: String,
 }
 
 impl LobbyIdentity {
-    pub fn sign(identity: &crate::identity::Identity, transport: &PeerId) -> Self {
+    pub fn sign(identity: &crate::identity::Identity, transport: &EndpointId) -> Self {
         use ed25519_dalek::Signer;
         Self {
             pubkey: identity.public_key_hex(),
@@ -519,7 +513,7 @@ impl LobbyIdentity {
     }
 
     /// The `node_id` this proof names, when it was signed for `transport`.
-    pub fn verified_node_id(&self, transport: &PeerId) -> Option<String> {
+    pub fn verified_node_id(&self, transport: &EndpointId) -> Option<String> {
         use ed25519_dalek::Verifier;
         let pubkey: [u8; 32] = hex::decode(&self.pubkey).ok()?.try_into().ok()?;
         let key = ed25519_dalek::VerifyingKey::from_bytes(&pubkey).ok()?;
@@ -673,7 +667,7 @@ pub const INFO_MAX_AGE: Duration = Duration::from_secs(5 * 60);
 
 /// The stats a principal publishes, and who is asking for them.
 ///
-/// The swarm loop answers from this slot and never computes: the numbers come
+/// The protocol handler answers from this slot and never computes: the numbers come
 /// from the cluster view, which reads every peer over HTTP. A request that
 /// finds the slot stale wakes the gateway task that fills it
 /// (`webui::spawn_public_stats_publisher`), so nothing is computed while
@@ -741,7 +735,7 @@ type Listed = Vec<crate::gateway::PublicNetworkView>;
 
 /// What a node answers to `Describe` and `Directory`.
 ///
-/// Like [`PublicStats`], the swarm loop only reads it: the listing resolves
+/// Like [`PublicStats`], the protocol handler only reads it: the listing resolves
 /// pkarr records and talks to other nodes. A request that finds a slot
 /// missing or stale wakes `gateway::spawn_directory_board_publisher`.
 #[derive(Default)]
@@ -959,14 +953,13 @@ where
 }
 
 #[async_trait]
-impl request_response::Codec for LobbyCodec {
-    type Protocol = StreamProtocol;
+impl Codec for LobbyCodec {
+    const PROTOCOL: &'static str = NETWORK_LOBBY_PROTOCOL;
     type Request = LobbyRequest;
     type Response = LobbyResponse;
 
     async fn read_request<T>(
         &mut self,
-        _: &Self::Protocol,
         io: &mut T,
     ) -> std::io::Result<Self::Request>
     where
@@ -977,7 +970,6 @@ impl request_response::Codec for LobbyCodec {
 
     async fn read_response<T>(
         &mut self,
-        _: &Self::Protocol,
         io: &mut T,
     ) -> std::io::Result<Self::Response>
     where
@@ -988,7 +980,6 @@ impl request_response::Codec for LobbyCodec {
 
     async fn write_request<T>(
         &mut self,
-        _: &Self::Protocol,
         io: &mut T,
         request: Self::Request,
     ) -> std::io::Result<()>
@@ -1000,7 +991,6 @@ impl request_response::Codec for LobbyCodec {
 
     async fn write_response<T>(
         &mut self,
-        _: &Self::Protocol,
         io: &mut T,
         response: Self::Response,
     ) -> std::io::Result<()>
@@ -1011,16 +1001,6 @@ impl request_response::Codec for LobbyCodec {
     }
 }
 
-/// The lobby on a cluster swarm: it only answers, it never asks.
-pub fn network_lobby_behaviour() -> request_response::Behaviour<LobbyCodec> {
-    request_response::Behaviour::new(
-        [(
-            StreamProtocol::new(NETWORK_LOBBY_PROTOCOL),
-            request_response::ProtocolSupport::Inbound,
-        )],
-        request_response::Config::default().with_request_timeout(Duration::from_secs(10)),
-    )
-}
 
 // ── Candidate side ───────────────────────────────────────────────────────────
 
@@ -1029,116 +1009,40 @@ const DIAL_CACHE_TTL: Duration = Duration::from_secs(60);
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(8);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 
-#[derive(NetworkBehaviour)]
-struct LobbyClientBehaviour {
-    relay: relay::client::Behaviour,
-    identify: identify::Behaviour,
-    dcutr: dcutr::Behaviour,
-    lobby: request_response::Behaviour<LobbyCodec>,
-}
-
-struct ClientCommand {
-    peer_id: PeerId,
-    addresses: Vec<Multiaddr>,
-    request: LobbyRequest,
-    reply: oneshot::Sender<std::result::Result<LobbyResponse, String>>,
-}
-
-/// Dial-only libp2p client that reaches a network's principal by its key.
+/// Dial-only endpoint that reaches a network's principal by its key.
 pub struct LobbyClient {
-    commands: mpsc::Sender<ClientCommand>,
+    p2p: Arc<crate::p2p::P2p>,
     pkarr: crate::pkarr_node::PkarrNode,
-    dial_cache: Mutex<HashMap<String, (Instant, Vec<Multiaddr>)>>,
+    dial_cache: Mutex<HashMap<String, (Instant, EndpointAddr)>>,
     node_id: String,
     proof: LobbyIdentity,
 }
 
 impl LobbyClient {
-    /// Builds the swarm and starts its task. It connects under
-    /// [`transport_keypair`], not the node key, and listens on nothing: a
-    /// candidate only ever dials.
-    pub fn start(identity: &crate::identity::Identity) -> Result<Arc<Self>> {
+    /// Binds the endpoint. It runs under [`transport_key`], not the node key,
+    /// on an ephemeral port, and reaches the principal over n0's relays when
+    /// no direct path answers: a candidate only ever dials.
+    pub async fn start(identity: &crate::identity::Identity) -> Result<Arc<Self>> {
+        Self::start_with(identity, iroh::RelayMode::Default).await
+    }
+
+    async fn start_with(
+        identity: &crate::identity::Identity,
+        relay_mode: iroh::RelayMode,
+    ) -> Result<Arc<Self>> {
         let pkarr = crate::pkarr_node::PkarrNode::from_signing_key(&identity.signing_key)?;
-        let transport = transport_keypair(identity);
-        let proof = LobbyIdentity::sign(identity, &transport.public().to_peer_id());
-        let mut swarm = libp2p::SwarmBuilder::with_existing_identity(transport)
-            .with_tokio()
-            .with_tcp(
-                tcp::Config::default().nodelay(true),
-                noise::Config::new,
-                yamux::Config::default,
-            )?
-            .with_quic()
-            .with_dns()?
-            .with_relay_client(noise::Config::new, yamux::Config::default)?
-            .with_behaviour(|key, relay| LobbyClientBehaviour {
-                relay,
-                identify: identify::Behaviour::new(
-                    identify::Config::new("/pom/1.0.0".to_string(), key.public())
-                        .with_cache_size(0),
-                ),
-                dcutr: dcutr::Behaviour::new(key.public().to_peer_id()),
-                lobby: request_response::Behaviour::new(
-                    [(
-                        StreamProtocol::new(NETWORK_LOBBY_PROTOCOL),
-                        request_response::ProtocolSupport::Outbound,
-                    )],
-                    request_response::Config::default()
-                        .with_request_timeout(Duration::from_secs(15)),
-                ),
-            })?
-            .with_swarm_config(|config| {
-                config.with_idle_connection_timeout(Duration::from_secs(60))
-            })
-            .build();
-
-        let (commands, mut receiver) = mpsc::channel::<ClientCommand>(16);
-        tokio::spawn(async move {
-            let mut pending: HashMap<
-                request_response::OutboundRequestId,
-                oneshot::Sender<std::result::Result<LobbyResponse, String>>,
-            > = HashMap::new();
-            loop {
-                tokio::select! {
-                    command = receiver.recv() => {
-                        let Some(command) = command else { break };
-                        for address in command.addresses {
-                            swarm.add_peer_address(command.peer_id, address);
-                        }
-                        let id = swarm
-                            .behaviour_mut()
-                            .lobby
-                            .send_request(&command.peer_id, command.request);
-                        pending.insert(id, command.reply);
-                    }
-                    event = swarm.select_next_some() => {
-                        let SwarmEvent::Behaviour(LobbyClientBehaviourEvent::Lobby(event)) = event
-                        else {
-                            continue;
-                        };
-                        match event {
-                            request_response::Event::Message {
-                                message: request_response::Message::Response { request_id, response },
-                                ..
-                            } => {
-                                if let Some(reply) = pending.remove(&request_id) {
-                                    let _ = reply.send(Ok(response));
-                                }
-                            }
-                            request_response::Event::OutboundFailure { request_id, error, .. } => {
-                                if let Some(reply) = pending.remove(&request_id) {
-                                    let _ = reply.send(Err(error.to_string()));
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            }
-        });
-
+        let transport = transport_key(identity);
+        let proof = LobbyIdentity::sign(identity, &transport.public());
+        let book = iroh::address_lookup::MemoryLookup::new();
+        let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .secret_key(transport)
+            .relay_mode(relay_mode)
+            .address_lookup(book.clone())
+            .bind()
+            .await
+            .context("binding the lobby endpoint")?;
         Ok(Arc::new(Self {
-            commands,
+            p2p: crate::p2p::P2p::new(endpoint, book),
             pkarr,
             dial_cache: Mutex::new(HashMap::new()),
             node_id: identity.node_id.0.clone(),
@@ -1156,8 +1060,8 @@ impl LobbyClient {
         &self.node_id
     }
 
-    async fn dial_addresses(&self, key: &str) -> Vec<Multiaddr> {
-        if let Some((at, addresses)) = self
+    async fn dial_address(&self, key: &str) -> Option<EndpointAddr> {
+        if let Some((at, address)) = self
             .dial_cache
             .lock()
             .expect("lobby dial cache lock")
@@ -1165,31 +1069,28 @@ impl LobbyClient {
             .cloned()
         {
             if at.elapsed() < DIAL_CACHE_TTL {
-                return addresses;
+                return Some(address);
             }
         }
-        let addresses = tokio::time::timeout(RESOLVE_TIMEOUT, self.pkarr.resolve_dial_addrs(key))
+        let address = tokio::time::timeout(RESOLVE_TIMEOUT, self.pkarr.resolve_dial_addr(key))
             .await
-            .unwrap_or_default();
-        if !addresses.is_empty() {
-            self.dial_cache
-                .lock()
-                .expect("lobby dial cache lock")
-                .insert(key.to_string(), (Instant::now(), addresses.clone()));
-        }
-        addresses
+            .ok()
+            .flatten()?;
+        self.dial_cache
+            .lock()
+            .expect("lobby dial cache lock")
+            .insert(key.to_string(), (Instant::now(), address.clone()));
+        Some(address)
     }
 
     /// Sends one request to the principal whose key is `key` (`pk:...`). The
     /// address is resolved through pkarr at dial time and never stored.
     pub async fn request(&self, key: &str, request: LobbyRequest) -> Result<LobbyResponse> {
-        let peer_id =
-            crate::pkarr_node::peer_id_from_uri(key).context("the publisher key is invalid")?;
-        let addresses = self.dial_addresses(key).await;
-        if addresses.is_empty() {
+        crate::pkarr_node::endpoint_id_from_uri(key).context("the publisher key is invalid")?;
+        let Some(address) = self.dial_address(key).await else {
             anyhow::bail!("publisher_unresolved");
-        }
-        let result = self.request_at(peer_id, addresses, request).await;
+        };
+        let result = self.request_at(address, request).await;
         if matches!(&result, Err(error) if error.to_string().starts_with("publisher_unreachable")) {
             // A stale address is the usual cause; resolve again next time.
             self.dial_cache
@@ -1200,26 +1101,18 @@ impl LobbyClient {
         result
     }
 
-    /// Sends one request to `peer_id` at already resolved addresses.
+    /// Sends one request to an already resolved endpoint address.
     async fn request_at(
         &self,
-        peer_id: PeerId,
-        addresses: Vec<Multiaddr>,
+        address: EndpointAddr,
         request: LobbyRequest,
     ) -> Result<LobbyResponse> {
-        let (reply, receiver) = oneshot::channel();
-        self.commands
-            .try_send(ClientCommand {
-                peer_id,
-                addresses,
-                request,
-                reply,
-            })
-            .map_err(|_| anyhow::anyhow!("lobby_busy"))?;
-        match tokio::time::timeout(REQUEST_TIMEOUT, receiver).await {
-            Ok(Ok(Ok(response))) => Ok(response),
-            Ok(Ok(Err(error))) => Err(anyhow::anyhow!("publisher_unreachable: {error}")),
-            _ => Err(anyhow::anyhow!("publisher_timeout")),
+        let texts = crate::p2p::addr_texts(&address);
+        let call = self.p2p.call(LobbyCodec, address.id, &texts, request);
+        match tokio::time::timeout(REQUEST_TIMEOUT, call).await {
+            Ok(Ok(response)) => Ok(response),
+            Ok(Err(error)) => Err(anyhow::anyhow!("publisher_unreachable: {error}")),
+            Err(_) => Err(anyhow::anyhow!("publisher_timeout")),
         }
     }
 }
@@ -1233,7 +1126,7 @@ pub async fn client() -> Result<Arc<LobbyClient>> {
     CLIENT
         .get_or_try_init(|| async {
             let identity = crate::identity::Identity::load_or_create(&crate::identity::key_path());
-            LobbyClient::start(&identity)
+            LobbyClient::start(&identity).await
         })
         .await
         .cloned()
@@ -1242,6 +1135,43 @@ pub async fn client() -> Result<Arc<LobbyClient>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A principal's endpoint on loopback, answering the lobby protocol with
+    /// `answer`. No relay: the candidate dials the direct address.
+    async fn serve_lobby<F>(
+        identity: &crate::identity::Identity,
+        answer: F,
+    ) -> (EndpointAddr, iroh::protocol::Router)
+    where
+        F: Fn(EndpointId, LobbyRequest) -> LobbyResponse + Clone + Send + Sync + 'static,
+    {
+        let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .secret_key(identity.secret_key())
+            .relay_mode(iroh::RelayMode::Disabled)
+            .bind_addr(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+            .unwrap()
+            .bind()
+            .await
+            .unwrap();
+        let address = EndpointAddr::from_parts(
+            endpoint.id(),
+            endpoint
+                .bound_sockets()
+                .into_iter()
+                .map(iroh::TransportAddr::Ip),
+        );
+        let serve = crate::p2p::Serve::new(
+            LobbyCodec,
+            move |connection: iroh::endpoint::Connection, request| {
+                let answer = answer.clone();
+                async move { answer(connection.remote_id(), request) }
+            },
+        );
+        let router = iroh::protocol::Router::builder(endpoint)
+            .accept(NETWORK_LOBBY_PROTOCOL.as_bytes(), serve)
+            .spawn();
+        (address, router)
+    }
 
     fn card(hostname: &str) -> LobbyCard {
         LobbyCard {
@@ -1348,93 +1278,60 @@ mod tests {
         );
     }
 
-    /// The candidate's swarm against a swarm that only speaks the lobby
-    /// protocol, over loopback TCP: the dial, the codec and the identity the
+    /// The candidate's endpoint against an endpoint that only speaks the lobby
+    /// protocol, over loopback: the dial, the codec and the identity the
     /// answering side derives from the transport.
     #[tokio::test]
     async fn a_candidate_reaches_a_principal_and_is_named_by_its_transport_key() {
         let principal = crate::identity::Identity::generate();
-        let mut swarm = libp2p::SwarmBuilder::with_existing_identity(principal.libp2p_keypair())
-            .with_tokio()
-            .with_tcp(
-                tcp::Config::default(),
-                noise::Config::new,
-                yamux::Config::default,
-            )
-            .unwrap()
-            .with_behaviour(|_| network_lobby_behaviour())
-            .unwrap()
-            .build();
-        swarm
-            .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
-            .unwrap();
-        let address = loop {
-            if let SwarmEvent::NewListenAddr { address, .. } = swarm.select_next_some().await {
-                break address;
-            }
-        };
-        let principal_peer = *swarm.local_peer_id();
-        tokio::spawn(async move {
-            loop {
-                if let SwarmEvent::Behaviour(request_response::Event::Message {
-                    peer,
-                    message:
-                        request_response::Message::Request {
-                            request, channel, ..
-                        },
-                    ..
-                }) = swarm.select_next_some().await
-                {
-                    let text = match &request {
-                        LobbyRequest::Post { text, .. } => text.clone(),
-                        LobbyRequest::Fetch { .. }
-                        | LobbyRequest::Admission { .. }
-                        | LobbyRequest::ClaimKey { .. }
-                        | LobbyRequest::Leave { .. }
-                        | LobbyRequest::Publish { .. }
-                        | LobbyRequest::Info
-                        | LobbyRequest::Describe
-                        | LobbyRequest::Directory => String::new(),
-                    };
-                    let node_id = match &request {
-                        LobbyRequest::Post { identity, .. }
-                        | LobbyRequest::Fetch { identity, .. }
-                        | LobbyRequest::Admission { identity, .. } => {
-                            identity.verified_node_id(&peer).unwrap_or_default()
-                        }
-                        _ => String::new(),
-                    };
-                    let _ = swarm.behaviour_mut().send_response(
-                        channel,
-                        LobbyResponse {
-                            accepted: true,
-                            error: None,
-                            node_id: node_id.clone(),
-                            info: None,
-                            networks: Vec::new(),
-                            pending: false,
-                            admission: None,
-                            messages_closed: false,
-                            messages: vec![LobbyMessage {
-                                message_id: "m1".into(),
-                                sender_node_id: node_id,
-                                sender_name: String::new(),
-                                member: false,
-                                text,
-                                sent_at: String::new(),
-                            }],
-                        },
-                    );
+        let (address, _router) = serve_lobby(&principal, |peer, request| {
+            let text = match &request {
+                LobbyRequest::Post { text, .. } => text.clone(),
+                LobbyRequest::Fetch { .. }
+                | LobbyRequest::Admission { .. }
+                | LobbyRequest::ClaimKey { .. }
+                | LobbyRequest::Leave { .. }
+                | LobbyRequest::Publish { .. }
+                | LobbyRequest::Info
+                | LobbyRequest::Describe
+                | LobbyRequest::Directory => String::new(),
+            };
+            let node_id = match &request {
+                LobbyRequest::Post { identity, .. }
+                | LobbyRequest::Fetch { identity, .. }
+                | LobbyRequest::Admission { identity, .. } => {
+                    identity.verified_node_id(&peer).unwrap_or_default()
                 }
+                _ => String::new(),
+            };
+            LobbyResponse {
+                accepted: true,
+                error: None,
+                node_id: node_id.clone(),
+                info: None,
+                networks: Vec::new(),
+                pending: false,
+                admission: None,
+                messages_closed: false,
+                messages: vec![LobbyMessage {
+                    message_id: "m1".into(),
+                    sender_node_id: node_id,
+                    sender_name: String::new(),
+                    member: false,
+                    text,
+                    sent_at: String::new(),
+                }],
             }
-        });
+        })
+        .await;
 
         let candidate = crate::identity::Identity::generate();
-        let client = LobbyClient::start(&candidate).unwrap();
+        let client = LobbyClient::start_with(&candidate, iroh::RelayMode::Disabled)
+            .await
+            .unwrap();
         let response = client
             .request_at(
-                principal_peer,
-                vec![address],
+                address,
                 LobbyRequest::Post {
                     identity: client.proof(),
                     card: card("candidate"),
@@ -1535,56 +1432,25 @@ mod tests {
     #[tokio::test]
     async fn a_directory_answer_larger_than_a_request_frame_reaches_the_asker() {
         let relay = crate::identity::Identity::generate();
-        let mut swarm = libp2p::SwarmBuilder::with_existing_identity(relay.libp2p_keypair())
-            .with_tokio()
-            .with_tcp(
-                tcp::Config::default(),
-                noise::Config::new,
-                yamux::Config::default,
-            )
-            .unwrap()
-            .with_behaviour(|_| network_lobby_behaviour())
-            .unwrap()
-            .build();
-        swarm
-            .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
-            .unwrap();
-        let address = loop {
-            if let SwarmEvent::NewListenAddr { address, .. } = swarm.select_next_some().await {
-                break address;
+        let (address, _router) = serve_lobby(&relay, |_, request| {
+            assert_eq!(request, LobbyRequest::Directory);
+            LobbyResponse {
+                accepted: true,
+                networks: vec![
+                    listed("big", "d".repeat(300 * 1024)),
+                    listed("small", String::new()),
+                ],
+                ..LobbyResponse::default()
             }
-        };
-        let relay_peer = *swarm.local_peer_id();
-        tokio::spawn(async move {
-            loop {
-                if let SwarmEvent::Behaviour(request_response::Event::Message {
-                    message:
-                        request_response::Message::Request {
-                            request, channel, ..
-                        },
-                    ..
-                }) = swarm.select_next_some().await
-                {
-                    assert_eq!(request, LobbyRequest::Directory);
-                    let _ = swarm.behaviour_mut().send_response(
-                        channel,
-                        LobbyResponse {
-                            accepted: true,
-                            networks: vec![
-                                listed("big", "d".repeat(300 * 1024)),
-                                listed("small", String::new()),
-                            ],
-                            ..LobbyResponse::default()
-                        },
-                    );
-                }
-            }
-        });
+        })
+        .await;
 
         let fresh = crate::identity::Identity::generate();
-        let client = LobbyClient::start(&fresh).unwrap();
+        let client = LobbyClient::start_with(&fresh, iroh::RelayMode::Disabled)
+            .await
+            .unwrap();
         let response = client
-            .request_at(relay_peer, vec![address], LobbyRequest::Directory)
+            .request_at(address, LobbyRequest::Directory)
             .await
             .unwrap();
         assert!(response.accepted);
@@ -1665,7 +1531,7 @@ mod tests {
     fn default_directory_relays_are_keys() {
         for key in DEFAULT_DIRECTORY_RELAYS {
             assert!(
-                crate::pkarr_node::peer_id_from_uri(key).is_some(),
+                crate::pkarr_node::endpoint_id_from_uri(key).is_some(),
                 "{key} is not a pkarr key"
             );
         }
@@ -1677,7 +1543,7 @@ mod tests {
         let now = chrono::Utc::now();
         let mut records = Vec::new();
         assert_eq!(
-            apply_admission_request(&mut records, "a", card("alpha"), EnrollmentRole::Node, now),
+            apply_admission_request(&mut records, "a", card("alpha"), EnrollmentRole::Worker, now),
             Ok(AdmissionStatus::Pending)
         );
         // Asking again while pending only refreshes what the admin will read.
@@ -1686,14 +1552,14 @@ mod tests {
                 &mut records,
                 "a",
                 card("renamed"),
-                EnrollmentRole::Infer,
+                EnrollmentRole::Visitor,
                 now
             ),
             Ok(AdmissionStatus::Pending)
         );
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].card.hostname, "renamed");
-        assert_eq!(records[0].role, EnrollmentRole::Infer);
+        assert_eq!(records[0].role, EnrollmentRole::Visitor);
 
         // A rejection holds for a while, then the machine may ask again.
         records[0].status = AdmissionStatus::Rejected;
@@ -1715,7 +1581,7 @@ mod tests {
             None
         );
         assert_eq!(
-            apply_admission_request(&mut records, "a", card("alpha"), EnrollmentRole::Node, now),
+            apply_admission_request(&mut records, "a", card("alpha"), EnrollmentRole::Worker, now),
             Err("admission_rejected")
         );
         let later = now + chrono::Duration::seconds(ADMISSION_RETRY_AFTER_SECS + 1);
@@ -1724,7 +1590,7 @@ mod tests {
                 &mut records,
                 "a",
                 card("alpha"),
-                EnrollmentRole::Node,
+                EnrollmentRole::Worker,
                 later
             ),
             Ok(AdmissionStatus::Pending)
@@ -1733,10 +1599,10 @@ mod tests {
         // An approval is never undone by the candidate asking again.
         records[0].status = AdmissionStatus::Approved;
         assert_eq!(
-            apply_admission_request(&mut records, "a", card("x"), EnrollmentRole::Infer, later),
+            apply_admission_request(&mut records, "a", card("x"), EnrollmentRole::Visitor, later),
             Ok(AdmissionStatus::Approved)
         );
-        assert_eq!(records[0].role, EnrollmentRole::Node);
+        assert_eq!(records[0].role, EnrollmentRole::Worker);
 
         // Full of pending requests, a new one is refused rather than evicting.
         let mut full: Vec<AdmissionRecord> = Vec::new();
@@ -1745,18 +1611,18 @@ mod tests {
                 &mut full,
                 &format!("n{index}"),
                 card("x"),
-                EnrollmentRole::Node,
+                EnrollmentRole::Worker,
                 now,
             )
             .unwrap();
         }
         assert_eq!(
-            apply_admission_request(&mut full, "late", card("x"), EnrollmentRole::Node, now),
+            apply_admission_request(&mut full, "late", card("x"), EnrollmentRole::Worker, now),
             Err("admissions_full")
         );
         full[3].status = AdmissionStatus::Rejected;
         assert!(
-            apply_admission_request(&mut full, "late", card("x"), EnrollmentRole::Node, now)
+            apply_admission_request(&mut full, "late", card("x"), EnrollmentRole::Worker, now)
                 .is_ok()
         );
         assert!(full.iter().all(|record| record.node_id != "n3"));
@@ -1765,23 +1631,20 @@ mod tests {
     #[test]
     fn the_lobby_connects_under_a_key_that_is_not_the_node_key() {
         let identity = crate::identity::Identity::generate();
-        let node_peer = identity.libp2p_keypair().public().to_peer_id();
-        let transport = transport_keypair(&identity).public().to_peer_id();
-        // Two connections under one PeerId would split the cluster's requests.
-        assert_ne!(transport, node_peer);
+        let node_key = identity.secret_key().public();
+        let transport = transport_key(&identity).public();
+        // Two endpoints under one key would knock each other off the relays.
+        assert_ne!(transport, node_key);
         // Stable across restarts, and different for another node.
-        assert_eq!(
-            transport,
-            transport_keypair(&identity).public().to_peer_id()
-        );
+        assert_eq!(transport, transport_key(&identity).public());
         let other = crate::identity::Identity::generate();
-        assert_ne!(transport, transport_keypair(&other).public().to_peer_id());
+        assert_ne!(transport, transport_key(&other).public());
     }
 
     #[test]
     fn a_lobby_identity_names_the_node_only_on_the_transport_it_was_signed_for() {
         let identity = crate::identity::Identity::generate();
-        let transport = transport_keypair(&identity).public().to_peer_id();
+        let transport = transport_key(&identity).public();
         let proof = LobbyIdentity::sign(&identity, &transport);
         assert_eq!(
             proof.verified_node_id(&transport).as_deref(),
@@ -1790,7 +1653,7 @@ mod tests {
 
         // Replayed from someone else's connection, it proves nothing.
         let thief = crate::identity::Identity::generate();
-        let thief_transport = transport_keypair(&thief).public().to_peer_id();
+        let thief_transport = transport_key(&thief).public();
         assert_eq!(proof.verified_node_id(&thief_transport), None);
 
         // Claiming another node's key without its signature fails too.

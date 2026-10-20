@@ -249,8 +249,9 @@ local-only notice. Routes:
 - `/logs` and `/statistics` -> `EnterpriseFeatureShowcase`, the sales page
   of the logs plugin (Request Logs, Statistics and Quota, one purchase; public
   catalog, purchase on the site in a new tab), when no active plugin declares
-  the target. While neither is declared the menu shows one "Logs / Stats /
-  Quota" entry in place of Request logs and Statistics. The desktop shells
+  the target. While neither is declared the menu shows one "Business Pack"
+  entry (to `/logs`) in place of the whole Logs section and Statistics, since
+  the deployment logs are kept by the same plugin. The desktop shells
   (WebView2, WebKitGTK, the macOS panel) open any link to another host and any
   new window in the system browser (`crates/node/src/utils/external_links.rs`,
   `macos_status.m`). A single manifest declaration replaces

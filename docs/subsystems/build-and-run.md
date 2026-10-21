@@ -1003,7 +1003,9 @@ the runner by `packaging/macos/make-dmg.sh` with `create-dmg`. It holds the
 `make-dmg-background.py`, shows the arrow between them) and `README.txt`
 (installation steps: Gatekeeper, Applications, Local Network). The guide is
 plain text so a clean macOS installation opens it in TextEdit before the user
-authorizes the non-notarized app.
+authorizes the non-notarized app. It documents **Open Anyway** first and limits
+`xattr -dr com.apple.quarantine /Applications/POM.app` to a verified official or
+self-built app when Gatekeeper still leaves the first process stuck.
 The binaries are universal (arm64 and x86_64, `lipo`), built with
 `MACOSX_DEPLOYMENT_TARGET=11.0`, so the app runs on macOS 11 (Big Sur) and later. The bundle's `Info.plist` declares
 `NSLocalNetworkUsageDescription`, the text macOS shows in the Local Network prompt.

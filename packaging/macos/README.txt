@@ -30,6 +30,19 @@ Open, and confirm Open again.
 If a POM process appears in Activity Monitor but no window appears during the
 first launch, quit that process before completing the Open Anyway steps above.
 
+Advanced recovery for a verified POM build
+------------------------------------------
+
+If Open Anyway still leaves the app stuck, and you downloaded POM from its
+official release or built it yourself, quit the stuck process and run this in
+Terminal:
+
+xattr -dr com.apple.quarantine "/Applications/POM.app"
+open "/Applications/POM.app"
+
+The first command removes macOS quarantine recursively and therefore bypasses
+that Gatekeeper check. Never use it on an app from an untrusted source.
+
 3. Allow network access
 -----------------------
 

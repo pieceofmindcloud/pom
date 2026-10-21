@@ -105,8 +105,11 @@ last):
   public network it has heard of (`known_public_networks` in `pom.db`). The
   live listings (`GET /api/public/networks`, `GET /api/setup/public-networks`
   and a relay's background directory scan) record what they return there,
-  already validated and with the place resolved; a row not seen for 90 days
-  leaves, and the table keeps at most 5000 rows. It is a cache for the
+  already validated and with the place resolved; a row no live listing
+  returned for 2 days leaves (a listed network is described to the relays
+  every 30 s; its pkarr record cannot tell, since it only proves the node is
+  alive), checked on every write and on every read of this page, and the
+  table keeps at most 5000 rows. It is a cache for the
   screen: nothing decides trust or admission from it. Query: `q` (every word
   must appear in name, cluster id, organization, description, city, state or
   country; case and common Latin accents are folded), `country` (code, or the

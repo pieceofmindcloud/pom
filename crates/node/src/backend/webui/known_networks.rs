@@ -12,8 +12,13 @@ use super::*;
 use crate::db::{KnownNetworkEntry, PomDb};
 use crate::gateway::PublicNetworkView;
 
-/// A network not heard of for this long leaves the table.
-const KNOWN_NETWORK_MAX_AGE_SECS: i64 = 90 * 24 * 60 * 60;
+/// A network the live listing has not returned for this long leaves the
+/// table. A published network is described to the relays every 30 s
+/// (`network_lobby::INFO_REFRESH`), so two days without it means it is no
+/// longer public, or its machine is gone; it comes back with its next listing.
+/// The pkarr record cannot tell: it says the node is alive, not that its
+/// network is still listed.
+const KNOWN_NETWORK_MAX_AGE_SECS: i64 = 2 * 24 * 60 * 60;
 /// Rows kept at most, the most recently seen.
 const KNOWN_NETWORKS_MAX: usize = 5000;
 const DEFAULT_PAGE_SIZE: usize = 25;
@@ -278,9 +283,13 @@ pub(super) async fn known_networks(
         excluded.insert(own.fingerprint);
     }
     let database = state.database.clone();
-    let page =
-        tokio::task::spawn_blocking(move || known_networks_page(&database, &query, &excluded))
-            .await;
+    let page = tokio::task::spawn_blocking(move || {
+        // Also here, not only after a live listing: one that fails records
+        // nothing, and the stale rows would stay on the screen.
+        remember_public_networks(&database, &[]);
+        known_networks_page(&database, &query, &excluded)
+    })
+    .await;
     match page {
         Ok(Ok(page)) => {
             // The reachability column asks about these keys, and the locate
@@ -455,6 +464,29 @@ mod tests {
         let page = known_networks_page(&database, &query, &Default::default()).unwrap();
         assert_eq!(page.total, 1);
         assert_eq!(page.networks[0].network.fingerprint, "near");
+    }
+
+    #[test]
+    fn a_network_the_live_listing_dropped_two_days_ago_leaves_when_the_page_is_read() {
+        let database = temporary_db("stale");
+        let entry = |fingerprint: &str| KnownNetworkEntry {
+            fingerprint: fingerprint.to_string(),
+            view_json: serde_json::to_string(&network(fingerprint, fingerprint, "C", -25.0))
+                .unwrap(),
+            search_text: fingerprint.to_string(),
+        };
+        let now = unix_now();
+        database
+            .remember_public_networks(&[entry("gone")], now - KNOWN_NETWORK_MAX_AGE_SECS - 60, i64::MAX, 10)
+            .unwrap();
+        database
+            .remember_public_networks(&[entry("recent")], now - 60 * 60, i64::MAX, 10)
+            .unwrap();
+        // What the page handler runs before reading: no live answer needed.
+        remember_public_networks(&database, &[]);
+        let page = known_networks_page(&database, &query(), &Default::default()).unwrap();
+        let listed: Vec<&str> = page.networks.iter().map(|known| known.network.fingerprint.as_str()).collect();
+        assert_eq!(listed, ["recent"]);
     }
 
     #[test]

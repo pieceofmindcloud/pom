@@ -422,6 +422,8 @@ export interface NodeInfo {
   detached?: boolean;
   /** Commit the binary was built from. */
   build_commit: string;
+  /** The POM release this node runs, as GitHub tags it (`v0.5.6`). */
+  pom_version?: string;
   /** This node accepts updating itself through the interface (POM_DEV_UPDATE=1). */
   dev_update: boolean;
   /** Whether the development-only POM controls are exposed. */
@@ -1649,6 +1651,9 @@ export interface AdminNode {
   profile?: string;
   /** The trust chain version the node announces. */
   trust_version?: string | null;
+  /** The POM release (`v0.5.6`) and build commit the node announces. */
+  pom_version?: string;
+  pom_build?: string;
   model?: string;
   start_layer?: number;
   end_layer?: number;

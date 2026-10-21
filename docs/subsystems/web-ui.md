@@ -722,8 +722,14 @@ in an edge-to-edge band (`LogoFull variant="band"`) closed by a divider line.
 The **footer** carries the language as **flags** (`brand.flags`, from
 `brand.json`) instead of "EN"/"PT-BR" - with the language name in
 `aria-label`/`title`, because a flag is not a language for a screen reader -,
-the node's `build_commit` (only the hash, in mono, with the explanation in the
-tooltip) and the light/dark theme. The PipelineRail is still rendered hidden on
+the POM release the node runs (`NodeInfo.pom_version`, `v0.5.6` as GitHub tags
+it; `· <build_commit>` after it only with `pom_dev_mode`) and the light/dark
+theme. When `/api/ui/pom-update/status` reports a newer release the version
+turns amber and a "New version" link above the row names it and opens About,
+where it is installed or told why it cannot be. Network > Participants shows
+each machine's announced `pom_version` (amber when it differs from this node's,
+"version unknown" for a node that announces none; the build only in development
+mode). The PipelineRail is still rendered hidden on
 the Dashboard (`hidden`, for a future surface).
 
 On `visitor`, the footer puts Documentation and Settings next to the flags; the

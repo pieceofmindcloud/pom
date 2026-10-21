@@ -646,6 +646,8 @@ async fn list_nodes(
                 "route": (p.node_id != self_id).then(|| state.network.peer_route(p)),
                 "profile": p.profile,
                 "trust_version": p.trust_version,
+                "pom_version": p.pom_version,
+                "pom_build": p.pom_build,
                 "model": p.model,
                 "start_layer": p.start_layer,
                 "end_layer": p.end_layer,

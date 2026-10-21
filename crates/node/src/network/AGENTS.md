@@ -162,7 +162,10 @@ dedicated or member, with iroh's hole punching), are in
   read with `hostname()` and changed live with `set_hostname` (the My machine
   screen), never through the field; `trust_version` is the trust chain version
   each node announces (`set_trust_version`), a hint of who has a newer chain
-  and never proof; `membership` is this node's membership token
+  and never proof; `pom_version`/`pom_build` are the release
+  (`pom_core_update::RELEASE_VERSION`) and the build commit the node runs,
+  copied into `PeerInfo` and `/admin/nodes` for the participants screen and
+  never used for a decision; `membership` is this node's membership token
   (`set_membership`, renewed by `webui::spawn_token_keeper`), announced and
   carried in `PeerInfo`, and only believed once `membership::peer_role`
   checks it against the chain; `is_principal` / `peer_is_principal` tell the

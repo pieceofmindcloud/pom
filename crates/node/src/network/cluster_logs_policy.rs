@@ -264,6 +264,8 @@ mod tests {
                 pubkey: "principal-authority".into(),
                 cluster_id: None,
                 trust_version: None,
+                pom_version: String::new(),
+                pom_build: String::new(),
                 membership: None,
                 relay: None,
                 addr: format!("[::1]:{gateway_port}"),

@@ -1724,6 +1724,9 @@ network.operationFailed,The node did not accept the operation,A operação não 
 network.organization,Organization,Organização
 network.participantsSubtitle,Known machines in this network and their current reachability.,Máquinas conhecidas nesta rede e a conectividade atual.
 network.participantsTitle,Network participants,Participantes da rede
+network.pomVersionDiffers,Runs a different POM version than this node ({version}),Roda uma versão do POM diferente da deste nó ({version})
+network.pomVersionSame,Same POM version as this node,Mesma versão do POM deste nó
+network.pomVersionUnknown,version unknown,versão desconhecida
 network.portValues,P2P {p2p} · gateway {gateway} · inference {inference},P2P {p2p} · gateway {gateway} · inferência {inference}
 network.ports,Ports,Portas
 network.profile,Profile,Perfil
@@ -2743,10 +2746,14 @@ sidebar.leaveNetworkConfirm,Leave network,Sair da rede
 sidebar.leaveNetworkDescription,"This removes the trust document and private network secret from this node, keeps local preferences, and restarts the first-access setup.","Isso remove o documento de confiança e o segredo privado da rede deste nó, preserva as preferências locais e reinicia a configuração inicial."
 sidebar.leaveNetworkFailed,The node could not leave the network,Não foi possível sair da rede
 sidebar.leaveNetworkNamed,Leave the network {name},Sair da rede {name}
+sidebar.newVersion,New version,Nova versão
+sidebar.newVersionTitle,{version} is available; this node runs {current}.,{version} disponível; este nó roda {current}.
 sidebar.pluginClose,Stop plugin process,Parar processo do plugin
 sidebar.scrollDown,Scroll menu down,Rolar menu para baixo
 sidebar.scrollUp,Scroll menu up,Rolar menu para cima
 sidebar.thisNetwork,this network,esta rede
+sidebar.update,Update,Atualizar
+sidebar.versionTitle,POM version this node runs,Versão do POM que este nó roda
 sidecars.copy,{host} copies it from {source} ({size}) before starting,{host} copia de {source} ({size}) antes de subir
 sidecars.details,More info,Mais informações
 sidecars.embedded,Embedded in the model,Embutido no modelo

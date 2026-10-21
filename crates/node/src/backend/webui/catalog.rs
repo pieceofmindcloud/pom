@@ -8,8 +8,9 @@ pub struct NodeInfo {
     pub hostname: String,
     /// Commit this binary was built from, so "which build is that peer running?"
     /// is answerable without a shell on the machine.
-    /// test
     pub build_commit: String,
+    /// The POM release this binary is (`v0.5.6`), as GitHub tags it.
+    pub pom_version: String,
     /// This node accepts updating itself through the interface. The screen only
     /// draws the button when this is true, so it never offers what will give 403.
     pub dev_update: bool,
@@ -168,6 +169,7 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         // value `/admin/nodes` already shows correctly on the Network tab.
         hostname: state.network.hostname(),
         build_commit: crate::build_commit(),
+        pom_version: crate::pom_core_update::RELEASE_VERSION.to_string(),
         dev_update: crate::devupdate::enabled(),
         pom_dev_mode: crate::pom_dev_mode_enabled(),
         profile,

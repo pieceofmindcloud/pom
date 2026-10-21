@@ -741,6 +741,8 @@ mod ipv6_tests {
             pubkey: "p".into(),
             cluster_id: None,
             trust_version: None,
+            pom_version: String::new(),
+            pom_build: String::new(),
             membership: None,
             relay: None,
             addr: addr.into(),

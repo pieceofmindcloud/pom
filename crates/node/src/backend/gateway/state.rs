@@ -1608,6 +1608,8 @@ impl GatewayState {
                 pubkey: self.network.pubkey.clone(),
                 cluster_id: self.network.cluster_id(),
                 trust_version: self.network.trust_version(),
+                pom_version: crate::pom_core_update::RELEASE_VERSION.to_string(),
+                pom_build: crate::build_commit(),
                 membership: self.network.membership(),
                 relay: self.network.relay_gate().offer(),
                 addr: format!("{}:{}", self_host, self.network.bind_addr.port()),

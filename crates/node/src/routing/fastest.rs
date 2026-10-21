@@ -767,6 +767,8 @@ mod tests {
             pubkey: "p".into(),
             cluster_id: None,
             trust_version: None,
+            pom_version: String::new(),
+            pom_build: String::new(),
             membership: None,
             relay: None,
             addr: "10.0.0.1:42777".into(),

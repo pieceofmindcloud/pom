@@ -1,6 +1,6 @@
 import clsx from "clsx";
 import { AnimatePresence, motion } from "framer-motion";
-import { ChevronDown, ChevronUp, Moon, Sun, X } from "lucide-react";
+import { ArrowUpCircle, ChevronDown, ChevronUp, Moon, Sun, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
@@ -12,7 +12,8 @@ import { closePlugin, openPlugin } from "../lib/api";
 import { useProfile } from "../lib/profile";
 import { hasConversations, useOptionalChatSessionController } from "../lib/chatStore";
 import { useLobbyUnread, useNetworkChatUnread } from "../lib/networkChatUnread";
-import { keys, useMyQuota, useNode, usePluginUi } from "../lib/queries";
+import { keys, useMyQuota, useNode, usePluginUi, usePomCoreUpdateStatus } from "../lib/queries";
+import { canAccessRoute } from "../lib/access";
 import { useTheme } from "../lib/theme";
 import { useToast } from "../lib/toast";
 import { TlsChip } from "./TlsIndicator";
@@ -158,6 +159,8 @@ export function ScrollableNav({ className, children }: { className?: string; chi
   );
 }
 
+const ABOUT_ROUTE = "/config/about";
+
 /**
  * Language and theme, at the foot of the bar.
  *
@@ -176,8 +179,36 @@ function SidebarUtilityControls({ collapsed }: { collapsed: boolean }) {
   // in front - it is a hash in mono font, and what it is stays in the tooltip.
   const { data: node } = useNode();
   const footerLinks = known ? navFooterForProfile(profile) : [];
+  // The release as GitHub tags it (`v0.5.6`); the commit only in development
+  // mode. A newer release turns it amber and puts "New version" above it, with
+  // the way to About, where the update is installed (or told why it cannot be).
+  const { data: coreUpdate } = usePomCoreUpdateStatus();
+  const version = node?.pom_version || coreUpdate?.current_version || "";
+  const update = coreUpdate?.core_update ?? null;
+  const canUpdate = known && canAccessRoute(ABOUT_ROUTE, profile);
   return (
     <div className={clsx("border-t border-line py-2.5", collapsed ? "px-2" : "px-3")}>
+      {update && canUpdate && (
+        <NavLink
+          to={ABOUT_ROUTE}
+          data-testid="sidebar-new-version"
+          title={t("sidebar.newVersionTitle", { version: update.version, current: version })}
+          aria-label={t("sidebar.newVersionTitle", { version: update.version, current: version })}
+          className={clsx(
+            "mb-2 flex h-8 min-w-0 items-center gap-1.5 rounded-md border border-amber/50 bg-amber/10 text-[0.72rem] text-amber transition-colors hover:bg-amber/20",
+            collapsed ? "justify-center px-0" : "px-2",
+          )}
+        >
+          <ArrowUpCircle className="h-3.5 w-3.5 shrink-0" />
+          {!collapsed && (
+            <>
+              <span className="rounded bg-amber/20 px-1.5 py-px text-[0.62rem] font-semibold uppercase tracking-wide">{t("sidebar.newVersion")}</span>
+              <span className="min-w-0 flex-1 truncate font-mono">{update.version}</span>
+              <span className="shrink-0 font-medium">{t("sidebar.update")}</span>
+            </>
+          )}
+        </NavLink>
+      )}
       {footerLinks.length > 0 && (
         <div className={clsx("mb-2 grid gap-1.5", collapsed ? "grid-cols-1" : "grid-cols-2")}>
           {footerLinks.map((item) => {
@@ -206,12 +237,17 @@ function SidebarUtilityControls({ collapsed }: { collapsed: boolean }) {
         <LanguageFlags className={collapsed ? "flex-col" : "flex-row"}>
           <TlsChip />
         </LanguageFlags>
-        {!collapsed && profile !== "visitor" && node?.build_commit && (
+        {!collapsed && version && (
           <span
-            title={t("sidebar.buildTitle")}
-            className="min-w-0 flex-1 truncate px-1 text-center font-mono text-[0.68rem] text-muted"
+            title={node?.pom_dev_mode ? `${t("sidebar.versionTitle")} · ${t("sidebar.buildTitle")}` : t("sidebar.versionTitle")}
+            data-testid="sidebar-version"
+            className={clsx(
+              "min-w-0 flex-1 truncate px-1 text-center font-mono text-[0.68rem]",
+              update ? "text-amber" : "text-muted",
+            )}
           >
-            {node.build_commit}
+            {version}
+            {node?.pom_dev_mode && node.build_commit ? ` · ${node.build_commit}` : null}
           </span>
         )}
         <button

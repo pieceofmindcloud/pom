@@ -758,7 +758,9 @@ Per-file list:
   `/config/network/participants`; the route is allowed only to `admin` and
   `worker`, and block/unblock mutations remain admin-only. Each peer row shows
   the route actually in use (`AdminNode.route`: `RouteBadge` + `routeAddress`),
-  never the advertised `addr`, which only goes into the row's `title`. A
+  never the advertised `addr`, which only goes into the row's `title`, and the
+  POM release it announces (`PomVersionBadge`: amber when it is not this
+  node's, the build commit beside it only in development mode). A
   relayed route names the relay kind (`relay_kind`: dedicated relay or member
   relay, the last rung of the ladder).
   (`POST /api/ui/leave` / `/api/ui/rejoin`, reachable by every profile: leaving

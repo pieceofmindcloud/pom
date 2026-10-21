@@ -312,10 +312,43 @@ describe("Plugins", () => {
     expect(screen.getByText("Destaque")).toBeTruthy();
     expect(screen.getByText("Comunidade")).toBeTruthy();
     expect(mocks.post).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Instalar do GitHub" }));
+    fireEvent.click(screen.getByRole("button", { name: "Instalar" }));
     await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/api/ui/plugins/github-repositories", {
       repository_url: "https://github.com/dev/pom-plugin-community",
     }));
+  });
+
+  it("installs the latest release of a POM team plugin in one click, without picking a version", async () => {
+    const repository = {
+      id: "repo-q",
+      repository_url: "https://github.com/pieceofmindcloud/pom-plugin-qdrant",
+      manifest: { schema: 1, plugin_code: "qdrant", display_name: "Qdrant", description: null, plugin_abi: 1, feature_set: [], artifacts: {}, preferences: null },
+      releases: [
+        { release_id: "1", tag_name: "v1.0.0", name: null, changelog: null, published_at: "2026-01-01T00:00:00Z", prerelease: false, asset_name: "q.so", asset_size: 1, available_for_node: true },
+        { release_id: "2", tag_name: "v1.1.0", name: null, changelog: null, published_at: "2026-02-01T00:00:00Z", prerelease: false, asset_name: "q.so", asset_size: 1, available_for_node: true },
+      ],
+      checked_at: "2026-09-24T00:00:00Z",
+      check_error: null,
+    };
+    mocks.post.mockImplementation(async (path: string) => path === "/api/ui/plugins/github-repositories" ? repository : []);
+    mocks.catalog.data = { plugins: [publicPlugin("qdrant", {
+      display_name: "Qdrant", requires_license: false, pom_team: true, github_url: repository.repository_url,
+    })] };
+    renderPage();
+    expect(screen.queryByRole("combobox")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Instalar" }));
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith(
+      "/api/ui/plugins/github-repositories/repo-q/install",
+      { release_id: "2" },
+    ));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("leaves the example plugin out of the store list", () => {
+    mocks.catalog.data = { plugins: [publicPlugin("base", { display_name: "POM Plugin Base" }), publicPlugin("alpha")] };
+    renderPage();
+    expect(screen.queryByRole("heading", { name: "POM Plugin Base" })).toBeNull();
+    expect(screen.getByRole("heading", { name: "alpha" })).toBeTruthy();
   });
 
   it("shows the release of the local system instead of the latest global release", () => {
@@ -743,7 +776,7 @@ describe("Plugins", () => {
     expect(mocks.post).not.toHaveBeenCalledWith(expect.stringContaining("license"), expect.anything());
   });
 
-  it("lists only compatible releases, preselects the latest and updates an installed plugin", async () => {
+  it("offers only the newer compatible releases of an installed plugin as updates", async () => {
     const repositoryUrl = "https://github.com/acme/new-plugin";
     const githubRelease = (release_id: string, tag_name: string, published_at: string, available_for_node = true) => ({
       release_id,
@@ -793,12 +826,12 @@ describe("Plugins", () => {
     expect(screen.queryByText("Ver detalhes do manifest.json")).toBeNull();
     expect(screen.getByAltText("Captura de tela 1 de Acme Plugin").getAttribute("src"))
       .toBe("https://raw.githubusercontent.com/acme/new-plugin/HEAD/docs/shot.png");
-    const select = screen.getByRole("combobox", { name: "Release para instalar" }) as HTMLSelectElement;
-    expect(Array.from(select.options).map((option) => option.value)).toEqual(["103", "101"]);
+    const select = screen.getByRole("combobox", { name: "Atualização para instalar" }) as HTMLSelectElement;
+    expect(Array.from(select.options).map((option) => option.value)).toEqual(["103"]);
     expect(select.value).toBe("103");
 
     fireEvent.click(screen.getByRole("button", { name: "Atualizar" }));
-    const dialog = screen.getByRole("dialog", { name: "Atualizar Acme Plugin pelo GitHub?" });
+    const dialog = screen.getByRole("dialog", { name: "Atualizar Acme Plugin?" });
     fireEvent.click(within(dialog).getByRole("button", { name: "Atualizar" }));
     await waitFor(() => expect(mocks.post).toHaveBeenCalledWith(
       "/api/ui/plugins/github-repositories/repo-id/install",
@@ -807,9 +840,6 @@ describe("Plugins", () => {
     await waitFor(() => expect(mocks.queryClient.invalidateQueries).toHaveBeenCalledWith({
       queryKey: ["plugin-ui"],
     }));
-
-    fireEvent.change(select, { target: { value: "101" } });
-    expect((screen.getByRole("button", { name: "Instalada" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("offers Install for a repository that is not installed and explains when no release fits", () => {
@@ -869,8 +899,8 @@ describe("Plugins", () => {
   });
 
   it("opens preferences from the settings icon and submits only to the local preferences route", async () => {
-    mocks.catalog.data = { plugins: [publicPlugin("base")] };
-    mocks.plugins.data = [pluginStatus("base", {
+    mocks.catalog.data = { plugins: [publicPlugin("alpha")] };
+    mocks.plugins.data = [pluginStatus("alpha", {
       active: true,
       state: "active",
       preferences_schema: {
@@ -888,7 +918,7 @@ describe("Plugins", () => {
     renderPage();
 
     expect(screen.queryByRole("checkbox", { name: /Incluir cabeçalhos/ })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Abrir preferências de base" }));
+    fireEvent.click(screen.getByRole("button", { name: "Abrir preferências de alpha" }));
     fireEvent.click(await screen.findByRole("checkbox", { name: /Incluir cabeçalhos/ }));
     fireEvent.change(await screen.findByLabelText("Pasta de dados"), {
       target: { value: "/tmp/plugin-data" },
@@ -896,15 +926,15 @@ describe("Plugins", () => {
     fireEvent.click(screen.getByRole("button", { name: "Salvar preferências" }));
 
     await waitFor(() => expect(mocks.post).toHaveBeenCalledWith(
-      "/api/ui/plugins/base/preferences",
+      "/api/ui/plugins/alpha/preferences",
       { preferences: { features: { include_headers: true }, storage_directory: "/tmp/plugin-data" } },
     ));
     expect(mocks.post).not.toHaveBeenCalledWith("/api/ui/plugins/activate", expect.anything());
   });
 
   it("shows the node's reason when saving preferences fails", async () => {
-    mocks.catalog.data = { plugins: [publicPlugin("base")] };
-    mocks.plugins.data = [pluginStatus("base", {
+    mocks.catalog.data = { plugins: [publicPlugin("alpha")] };
+    mocks.plugins.data = [pluginStatus("alpha", {
       active: true,
       state: "active",
       preferences_schema: { features: [{ key: "flag", label: "Flag", default: false }] },
@@ -913,7 +943,7 @@ describe("Plugins", () => {
     mocks.post.mockRejectedValue(new Error("preferência booleana desconhecida para este plugin"));
     renderPage();
 
-    fireEvent.click(screen.getByRole("button", { name: "Abrir preferências de base" }));
+    fireEvent.click(screen.getByRole("button", { name: "Abrir preferências de alpha" }));
     fireEvent.click(await screen.findByRole("button", { name: "Salvar preferências" }));
 
     const alert = await screen.findByRole("alert");
@@ -926,16 +956,16 @@ describe("Plugins", () => {
     mocks.developmentSources.data = {
       mount_available: true,
       sources: [{
-        repository: "pom-plugin-base",
-        plugin_code: "base",
-        display_name: "POM Plugin Base",
+        repository: "pom-plugin-alpha",
+        plugin_code: "alpha",
+        display_name: "POM Plugin Alpha",
         active: true,
         install_kind: "licensed",
       }],
     };
     mocks.post.mockResolvedValue({
-      repository: "pom-plugin-base",
-      plugin_code: "base",
+      repository: "pom-plugin-alpha",
+      plugin_code: "alpha",
       build_ms: 1234,
       installed_at: "2026-10-01T10:00:00Z",
     });
@@ -943,7 +973,7 @@ describe("Plugins", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Recompilar e reinstalar" }));
     await waitFor(() => expect(mocks.post).toHaveBeenCalledWith(
-      "/api/ui/plugins/dev-sources/pom-plugin-base/rebuild-install",
+      "/api/ui/plugins/dev-sources/pom-plugin-alpha/rebuild-install",
     ));
     expect(await screen.findByText(/foi compilado e instalado localmente em .* ms/)).toBeTruthy();
     expect(mocks.post).not.toHaveBeenCalledWith(
@@ -1002,9 +1032,9 @@ describe("Plugins", () => {
     mocks.developmentSources.data = {
       mount_available: true,
       sources: [{
-        repository: "pom-plugin-base",
-        plugin_code: "base",
-        display_name: "POM Plugin Base",
+        repository: "pom-plugin-alpha",
+        plugin_code: "alpha",
+        display_name: "POM Plugin Alpha",
         active: true,
         install_kind: "github",
       }],
@@ -1021,16 +1051,22 @@ describe("Plugins", () => {
     expect(alert.textContent).not.toContain("secret build output");
   });
 
-  it("offers local rebuilds to every profile when development mode is on", () => {
-    for (const profile of ["node", "infer"]) {
+  it("offers local rebuilds on the plugin's card to every profile when development mode is on", () => {
+    mocks.catalog.data = { plugins: [publicPlugin("harness", { display_name: "Harness" })] };
+    mocks.developmentSources.data = {
+      mount_available: true,
+      sources: [{ repository: "pom-plugin-harness", plugin_code: "harness", display_name: "POM Plugin Harness", active: true, install_kind: "development" }],
+    };
+    for (const profile of ["worker", "visitor"]) {
       mocks.node.data = { profile, pom_dev_mode: true, system: { os: "linux", arch: "x86_64" } };
       const { unmount } = renderPage();
-      expect(screen.getByText("Builds locais de desenvolvimento")).toBeTruthy();
+      const card = screen.getByRole("heading", { name: "Harness" }).closest(".panel") as HTMLElement;
+      expect(within(card).getByRole("button", { name: "Recompilar e reinstalar" })).toBeTruthy();
       unmount();
     }
-    mocks.node.data = { profile: "infer", pom_dev_mode: false, system: { os: "linux", arch: "x86_64" } };
+    mocks.node.data = { profile: "visitor", pom_dev_mode: false, system: { os: "linux", arch: "x86_64" } };
     renderPage();
-    expect(screen.queryByText("Builds locais de desenvolvimento")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Recompilar e reinstalar" })).toBeNull();
   });
 
   it("deactivates a plugin without calling the pom_core update route", async () => {
@@ -1068,9 +1104,13 @@ describe("Plugins", () => {
     cleanup();
 
     mocks.catalog.data = { plugins: [publicPlugin("alpha", { display_name: "Alpha", requires_license: false, pom_team: true })] };
+    mocks.post.mockResolvedValue([]);
     renderPage();
     fireEvent.click(screen.getByRole("button", { name: "Instalar" }));
-    expect(await screen.findByRole("dialog")).toBeTruthy();
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith(
+      "/api/ui/plugins/github-repositories/repo-a/install",
+      { release_id: "1" },
+    ));
     expect(screen.queryByText("Código não verificado")).toBeNull();
   });
 
@@ -1094,9 +1134,65 @@ describe("Plugins", () => {
     const publish = screen.getByRole("link", { name: /Enviar meu plugin/ });
     expect(publish.getAttribute("href")).toBe("https://pieceofmind.cloud/plugins/publicar/");
     expect(screen.getByText(/processo de revisão/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Instalar do GitHub" }));
+    fireEvent.click(screen.getByRole("button", { name: "Instalar" }));
     await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/api/ui/plugins/github-repositories", {
       repository_url: "https://github.com/pieceofmindcloud/pom-plugin-base",
     }));
+  });
+  it("checks every installed plugin and POM at once and installs all the updates, POM last", async () => {
+    const repository = {
+      id: "repo-q",
+      repository_url: "https://github.com/pieceofmindcloud/pom-plugin-qdrant",
+      manifest: { schema: 1, plugin_code: "qdrant", display_name: "Qdrant", description: null, plugin_abi: 1, feature_set: [], artifacts: {}, preferences: null },
+      releases: [
+        { release_id: "1", tag_name: "v1.0.0", name: null, changelog: null, published_at: "2026-01-01T00:00:00Z", prerelease: false, asset_name: "q.so", asset_size: 1, available_for_node: true },
+        { release_id: "2", tag_name: "v1.1.0", name: null, changelog: "Faster", published_at: "2026-02-01T00:00:00Z", prerelease: false, asset_name: "q.so", asset_size: 1, available_for_node: true },
+      ],
+      checked_at: "2026-09-24T00:00:00Z",
+      check_error: null,
+    };
+    mocks.githubRepositories.data = [repository];
+    mocks.plugins.data = [
+      pluginStatus("qdrant", { active: true, state: "active", public_install: true, github_repository: repository.repository_url, plugin_version: "1.0.0" }),
+      pluginStatus("logs", { active: true, state: "active", licensed_plugins: ["logs"], plugin_version: "2.0.0" }),
+    ];
+    mocks.post.mockImplementation(async (path: string) => {
+      if (path.endsWith("/refresh")) return repository;
+      if (path === "/api/ui/plugins/logs/update/check") {
+        return [pluginStatus("logs", { active: true, available_update: { release_id: "logs-3", version: "3.0.0", changelog: null } })];
+      }
+      if (path === "/api/ui/pom-update/check") {
+        return {
+          current_version: "v0.5.5",
+          core_update: { release_id: "v0.5.6", version: "0.5.6", changelog: null, published_at: null, source: "github", asset: "pom.AppImage", size: 1, installable: true, blocked: null },
+        };
+      }
+      return {};
+    });
+    renderPage();
+
+    fireEvent.click(screen.getByRole("button", { name: "Verificar atualizações" }));
+    const dialog = await screen.findByRole("dialog", { name: "Atualizações disponíveis" });
+    expect(within(dialog).getByText("1.0.0 → v1.1.0")).toBeTruthy();
+    expect(within(dialog).getByText("2.0.0 → 3.0.0")).toBeTruthy();
+    expect(within(dialog).getByText("v0.5.5 → v0.5.6")).toBeTruthy();
+
+    mocks.post.mockClear();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Instalar todas as 3 atualizações" }));
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/api/ui/pom-update/apply", { release_id: "v0.5.6" }));
+    const installs = mocks.post.mock.calls.map(([path]) => path).filter((path: string) => !path.endsWith("/check") && !path.endsWith("/refresh"));
+    expect(installs).toEqual([
+      "/api/ui/plugins/github-repositories/repo-q/install",
+      "/api/ui/plugins/logs/update/apply",
+      "/api/ui/pom-update/apply",
+    ]);
+    expect(await within(dialog).findByText("Reiniciando")).toBeTruthy();
+  });
+
+  it("says everything is up to date when no source has anything newer", async () => {
+    mocks.post.mockResolvedValue({ core_update: null, current_version: "v0.5.6" });
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: "Verificar atualizações" }));
+    expect(await screen.findByText("O POM e todos os plugins instalados estão atualizados.")).toBeTruthy();
   });
 });

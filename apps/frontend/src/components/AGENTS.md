@@ -93,13 +93,15 @@ Per-file list:
 - `EnterpriseFeatureShowcase.tsx` - the advertising fallback of `/logs` and
   `/statistics` **when no active plugin provides them** (rendered outside
   `<Routes>` in `App.tsx`, like the chat). It receives `kind: "logs" | "statistics"`.
-  It is the sales page of the Statistics and Logs plugin in the pieceofmind.cloud look (the
+  It is the sales page of the logs plugin (Request Logs, Statistics and Quota, one purchase, aimed at the network's admins) in the pieceofmind.cloud look (the
   `.pom-store*` styles in `index.css`): the name, description,
   icon, official screenshots and price come from the license-server's public catalog
   (`usePublicPluginCatalog`), with local SVG text and previews when it does not
-  answer. "Buy now" calls `POST /api/ui/plugins/checkout` and takes the
-  browser to the Stripe checkout; the server picks the `price_id` by plugin and
-  interval. Tests in `EnterpriseFeatureShowcase.test.tsx`.
+  answer; the price is formatted in the interface's language. "Buy now" and
+  the footer link open the site's purchase wizard (`/comprar/`, Paddle) in a
+  new tab with the plugin, the billing period and `lang`. While no plugin
+  serves `/logs` or `/statistics`, `nav.ts` folds the Logs section and
+  Statistics into one "Business Pack" entry. Tests in `EnterpriseFeatureShowcase.test.tsx`.
 - `PluginBridge.tsx` - mounted once in the shell (`App.tsx`). It publishes
   `locale.changed`/`theme.changed`, forwards the node's events read every 3 s
   in `GET /api/ui/plugins/events`, runs the plugins' commands (a local toast, a `plugin_notice`
@@ -115,6 +117,13 @@ Per-file list:
   `__POM_HOST__.ready()`, `lib/pluginReady.ts` - or the short wait ends; the
   wrapper then becomes layout-neutral, so the screen is never remounted. A plugin
   without the signal is opened by the wait. See `docs/subsystems/plugins-ui.md`.
+- `PluginUpdatesDialog.tsx` - the Plugins screen's "Check for updates"
+  result: one row per update found (`UpdateItem`: POM, a licensed plugin or a
+  GitHub install, with from/to versions, changelog, an unverified badge and,
+  for POM, why it cannot be installed here), Install per row and Install all.
+  POM is always last, since installing it restarts the node; each row keeps
+  its own installing/installed/failed state. The checks themselves live in
+  `../routes/Plugins.tsx` (`checkAllUpdates`); tests in `Plugins.test.tsx`.
 - `PluginLoading.tsx` - the puzzle drawn in place of a plugin screen that is
   still opening (`MissingPiece variant="loading"`, named with `plugins.loadingNamed`),
   and in place of the advertising card while the node has not answered
@@ -140,12 +149,11 @@ Per-file list:
   commands). Used by `Chat`. `compact` shrinks text, headings and block gaps
   together for side panels (the Networks screen's network panel).
 - `ChatSessionList.tsx` - shared conversation history list. The Chat screen
-  uses the wide variant; the `infer` Sidebar uses the compact variant. The
+  uses the wide variant; the `visitor` Sidebar uses the compact variant. The
   list owns the bounded `overflow-y-auto` region, active `aria-pressed` state,
   delete action and localized new-conversation button.
-- `ApiKeysTable.tsx` - the full-bleed API keys table. The administrator picks the
-  node at creation, sees their own tokens in full and the others masked;
-  `node` and `infer` stay restricted to their own node's keys.
+- `ApiKeysTable.tsx` - the full-bleed API keys table. Every key belongs to the
+  node that minted it and works there only, so there is no node picker.
 - `DeploymentLogDock.tsx` - the Dashboard's collapsed bar for the admin, which
   expands upwards to half the area and follows the deployment log in
   real time with auto-scroll.
@@ -173,9 +181,10 @@ Per-file list:
   before filtering; rewriting `NAV` would leave the other profile with the pruned menu.
   Statistics is a first-level entry after Logs, keeping the operational
   sequence of consulting events before their aggregates. The same table marks the entries that go
-  to the `infer` footer and promotes the network to the main menu; `navForProfile` and
+  to the `visitor` footer and promotes the network to the main menu; `navForProfile` and
   `navFooterForProfile` are its two projections. Request Logs and Statistics stay visible to admin
-  and node even without a license, for product discovery; the `infer` profile does not see them.
+  and node even without a license, for product discovery; the `visitor` profile sees them only
+  once an active plugin serves them.
   Tests in `nav.test.ts`.
   The main Network section contains Information, Participants, My Machine,
   Administrators, Sharing and API Keys. Settings contains Preferences,
@@ -213,7 +222,7 @@ Per-file list:
   `SidebarUtilityControls` is the footer, and the node's `build_commit` lives
   there now, beside the controls: the bare hash in mono, no "build" label in
   front of it, with the explanation in a `title` tooltip; the hash stays hidden
-  for `infer`. `SidebarUtilityControls` shows language as **one flag**, the current locale
+  for `visitor`. `SidebarUtilityControls` shows language as **one flag**, the current locale
   (`brand.flags[locale]`, from `brand.json`), rather than "EN"/"PT-BR" or a row
   of both flags: a click opens a submenu (`LanguageFlags.tsx`, `useLanguageMenu`)
   with the options, and picking one switches the language and closes it. The
@@ -222,7 +231,7 @@ Per-file list:
   what the code means and the target here is whoever opened the panel in the
   wrong language - the language name stays in `aria-label`/`title`, because a flag is not a language to a
   screen reader. Plus the dark/light toggle (`../lib/theme`). `TlsIndicator.tsx`
-  currently renders no TLS icon in the Sidebar. For `infer`, the footer also renders documentation
+  currently renders no TLS icon in the Sidebar. For `visitor`, the footer also renders documentation
   and API keys, while the main column is replaced by `ChatSessionList` and
   the network link. The history keeps the new-conversation button and the network outside the
   scrollable area, so a long list does not push any action out.
@@ -296,7 +305,7 @@ Per-file list:
   which the node applies live, inside a panel or, with `section`, inside the
   caller's own section (Network settings); the quick setup uses
   `RelayChoices` as a draft and saves it at the end. Nothing is drawn while
-  the report says `reachable: false` (`canRelay`): AutoNAT has not confirmed
+  the report says `reachable: false` (`canRelay`): the NAT report has not confirmed
   a public address and none is configured, so behind a NAT the machine
   cannot relay for anyone and there is nothing to choose. An option the command line fixed for this run is
   shown locked, with the reason; file transfers are locked while the machine
@@ -304,6 +313,24 @@ Per-file list:
   line (relaying for any network, for this network, not relaying, or not
   reachable from the internet). The panel stays out when the node does not
   answer. Tests in `RelayOptions.test.tsx`.
+- `NatBadge.tsx` - the top bar's amber "Behind NAT" badge, drawn only while
+  `ClusterView.relayed_peers` is not empty: a peer reached through a relay that
+  carries the traffic because the hole punch it coordinated did not close.
+  Behind a NAT whose hole punch worked it draws nothing. It took the place of
+  the node's short id. A click opens a `Modal` naming those machines and their
+  relay kind, explaining the relay detour (public relays cap it at about
+  2 MB/s), why it makes the pipeline slow and how to give the machine a direct
+  path: IPv6, router port forwarding (this node's P2P and endpoint UDP ports,
+  `p2p_port` and `p2p_port + 10000`) or UPnP, and the firewall. Tests in
+  `Topbar.test.tsx`.
+- `HttpsCertificatePanel.tsx` - "Node certificate" on Preferences, every
+  profile: whether this computer trusts the node's local CA
+  (`GET /api/ui/tls/ca`), its fingerprint, a refusal remembered from the
+  desktop app's prompt, the `.crt` download (`/api/ui/tls/ca.crt`, fetched
+  with the session and saved as a blob), "Install on this computer"
+  (`POST /api/ui/tls/ca/install`, only when `can_install`, i.e. the request
+  came from the node's own machine) and the manual steps per system and for
+  harnesses. Tests in `HttpsCertificatePanel.test.tsx`.
 - `ClusterVersion.tsx` - Panel with the trust chain version this node holds
   (`NodeInfo.cluster_version`, formatted by `lib/clusterVersion.ts`), an
   outdated badge with the hosts announcing a newer one, and "Sync now"
@@ -316,7 +343,7 @@ Per-file list:
   of the promotion candidates (the node refuses them as well).
 - `Topbar.tsx` - Sticky header: `NodeChip` (the network this machine is in,
   from `NodeInfo.network_name` and linking to `/config/network`; then hostname,
-  short_id, peer count, coverage), the i18n badge of the node's persisted profile, the macOS button of
+  the `NatBadge`, peer count, coverage), the i18n badge of the node's persisted profile, the macOS button of
   the larger window and the bell (`Notifications`). The `Este nó` ("This node") button is not
   rendered.
   Mobile drawer renders `SidebarContent` inside an animated
@@ -351,7 +378,8 @@ Per-file list:
   replaced the fixed `DefaultPasswordNotice` banner), counts running slicing jobs
   (`useJobs`), transfers worth notifying (`useTransfers` +
   `isWorthNotifying`) and pending offers (`useOffers`), and shows progress bars
-  inside the popover. Offers can be accepted/rejected right there
+  inside the popover. Jobs, transfers and offers are not polled on a
+  `visitor`, whose node refuses `/api/ui/jobs` and every `/api/transfer` route. Offers can be accepted/rejected right there
   (`POST /api/transfer/offers/:id/accept|reject`). It also lists admission
   (`lib/admissions.ts`): for the network's admin, each machine asking to join
   with its role, direct or relayed connection, latency and hardware, and
@@ -413,7 +441,7 @@ Per-file list:
   network/mode/compute split of the best route (`pipeline-route-breakdown`). The
   interface never sums the legs: that would count whole round trips of each
   edge. The edges' RTT labels come from the planned routes, identical on
-  any node. An edge with `relayed` (a tunneled circuit through a relay) turns strong
+  any node. An edge with `relayed` (a tunneled path through a relay) turns strong
   orange (token `--relay`, `stroke-relay` dashed), and the
   `RouteRttLabel` swaps the transport for "RELAY" with an information icon and the
   explanation in the `title`; if the best route has `relayed` or
@@ -422,6 +450,10 @@ Per-file list:
   outline when the ring avoids the return relay) and the icon opens the
   `pipeline-relay-popup` card (it closes with Esc, an outside click or the X) with the legs by
   relay, whether POM bypasses it through the ring and how to improve it.
+- `ModelNetworkCanvas.tsx` - a machine whose peer announces a prefill/decode
+  `role` gets a Prefill/Decode badge; the prefill machine heads the layout,
+  the backend's candidate edge prefill -> decode is drawn, and the gateway
+  sits after the decode machines (a prefill machine never answers).
 - `ModelNetworkCanvas.tsx` - the main operational view: an SVG graph with
   pan/zoom of nodes (range cards with grouped RAM/load/VRAM meters,
   followed by the compact temperatures when there is a GPU) and curved edges, guided by
@@ -457,7 +489,7 @@ Per-file list:
 - `RouteRttLabel.tsx` - the shared directional RTT visual badge used by the
   Dashboard map and by the deployment map. On the Dashboard it also identifies the
   effective transport (`HTTP`, `HTTPS` or `QUIC`) observed in the execution; when
-  the measurement does not exist yet, it keeps `RTT -` instead of using the libp2p probe.
+  the measurement does not exist yet, it keeps `RTT -` instead of using the tunnel probe.
 - `PeerDetailCard.tsx` - The card of one machine, in the same drawing for every
   machine. Each GPU is one tile (`gpu-telemetry-row`: name, VRAM, usage,
   temperature, power). `variant="dialog"` is the Flow window: no frame, larger
@@ -592,6 +624,9 @@ Per-file list:
   it. When the network answers `messages_closed` (its Chat is off) the
   conversation column is not rendered: the window, or the full-screen page
   centered, is only the hardware card and the request panel (`lobby-request`).
+  A pending request keeps a "Send the request again" button (same role): the
+  principal only refreshes a pending record, so the candidate is never stuck
+  waiting on an admin who missed it.
   Test: `LobbyChat.test.tsx`.
 - `NetworkQuickSetup.tsx` - step-by-step window that publishes this
   machine's own network from the Networks screen: discovery (public, hidden,
@@ -733,6 +768,17 @@ Key logic carriers:
   persisted on every move (`writePositions`).
 ## Deploy-time views and inspectors
 
+- `DeployNetworkCanvas.tsx` - in a prefill/decode split (a whole model on
+  several machines, each row with its `inference_role`), the prefill
+  machines are a stage of their own before the decode ones (`stagesOf`,
+  `roleOf`), so the principal edge goes Prefill -> Decode and the gateway sits
+  after the decode machines. `DeployModel` lets a service that declares
+  `inference_role` take a second machine for a whole model (the first becomes
+  `prefill`, the new one `decode`); the role of each machine is edited in
+  the POM settings card (`DeploymentInspector` `machineRoles`, one row per
+  machine), never in the machine card. Back to one machine, `DeployModel`'s
+  `rows` drops the row's role, so the deployment's role the inspector shows
+  is the one deployed.
 - `DeployNetworkCanvas.tsx` - the compact, deploy-time topology view. It
   reuses the visual contract of the `ModelNetworkCanvas`: the dotted background, machine
   cards, `autoLayout`, positions persisted per fingerprint, pointer drag,
@@ -795,7 +841,10 @@ Key logic carriers:
   settings that service declares (`PluginService.pom_settings`:
   `prefill_max_inflight_chunks`, `hidden_state_dtype`) are not in that card:
   the inspector draws them in a separate "POM settings" card below it, like
-  under llama.cpp, when the slices cross machines (`showHiddenStateDtype`). A
+  under llama.cpp, when the slices cross machines (`showHiddenStateDtype`).
+  `inference_role` (the prefill/decode split of a whole-model machine:
+  both, prefill or decode, `RuntimeParams.inference_role`) is the opposite:
+  that card draws it only when the model is not split across machines. A
   setting the service publishes with `placement: "pom"` (the Strata's
   `session_save`) goes to that same card in both modes, whole model and slices,
   and is not in the engine's card. A service that declares none has no such card.

@@ -130,6 +130,8 @@ else
   printf 'llama.cpp %s at %s\n' "$llama_ref" "$wanted" >&2
 fi
 export LLAMA_SOURCE="$llama_source"
+# The release the binary says it is (crates/node/build.rs); the update check compares it.
+export POM_RELEASE_VERSION="$version"
 export CARGO_TARGET_DIR="$target_dir"
 # llama.cpp's CMake picks up ccache on its own. Keep it inside the release
 # cache so a machine-wide cache_dir (ccache.conf) that this user cannot write

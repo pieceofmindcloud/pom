@@ -12,7 +12,7 @@ import { closePlugin, openPlugin } from "../lib/api";
 import { useProfile } from "../lib/profile";
 import { hasConversations, useOptionalChatSessionController } from "../lib/chatStore";
 import { useLobbyUnread, useNetworkChatUnread } from "../lib/networkChatUnread";
-import { keys, useNode, usePluginUi } from "../lib/queries";
+import { keys, useMyQuota, useNode, usePluginUi } from "../lib/queries";
 import { useTheme } from "../lib/theme";
 import { useToast } from "../lib/toast";
 import { TlsChip } from "./TlsIndicator";
@@ -206,7 +206,7 @@ function SidebarUtilityControls({ collapsed }: { collapsed: boolean }) {
         <LanguageFlags className={collapsed ? "flex-col" : "flex-row"}>
           <TlsChip />
         </LanguageFlags>
-        {!collapsed && profile !== "infer" && node?.build_commit && (
+        {!collapsed && profile !== "visitor" && node?.build_commit && (
           <span
             title={t("sidebar.buildTitle")}
             className="min-w-0 flex-1 truncate px-1 text-center font-mono text-[0.68rem] text-muted"
@@ -691,7 +691,8 @@ function InferenceMainMenu({
       deleteSession: () => {},
     };
   const { profile, known } = useProfile();
-  const sections = known ? navForProfile(profile) : [];
+  const quota = useMyQuota(known);
+  const sections = known ? navForProfile(profile, true, { usage: Boolean(quota.data?.available || quota.data?.pending) }) : [];
   const navigate = useNavigate();
   const { pathname } = useLocation();
 
@@ -768,15 +769,19 @@ export function SidebarContent({
   const { data: node } = useNode();
   // Only an administrator answers the lobby, and only while the network has it on.
   const lobbyUnread = useLobbyUnread(Boolean(node?.authority_level) && snapshot?.lobbyEnabled === true);
+  // Usage only where some machine runs the logs plugin that keeps the budgets;
+  // hidden until that is known, so it never shows and then vanishes.
+  const quota = useMyQuota(known);
+  const usageShown = Boolean(quota.data?.available || quota.data?.pending);
   return (
     <>
       <SidebarBrand collapsed={collapsed} onToggle={onToggle} />
-      {profile === "infer" ? (
+      {profile === "visitor" ? (
         <InferenceMainMenu onNavigate={onNavigate} collapsed={collapsed} unreadCount={unreadCount} />
       ) : (
         <nav className="flex min-h-0 flex-1 flex-col">
           <ScrollableNav className={clsx("pb-4 pt-[5px]", collapsed ? "px-2" : "px-3")}>
-            {(known ? navForProfile(profile) : []).map((s) => (
+            {(known ? navForProfile(profile, true, { usage: usageShown }) : []).map((s) => (
               <Section
                 key={s.labelKey}
                 section={s}

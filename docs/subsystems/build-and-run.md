@@ -124,10 +124,11 @@ the shared server/socket.
 
 ### Cache in GitHub Actions
 
-The three release workflows (`.github/workflows/release-{linux,macos,windows}.yml`)
-resolve the current SHA of the `pom-tensor-parallel` branch before the build.
-The fork checkout lives in `.ci-cache/llama.cpp`, outside the versioned symlink,
-and is stored by `actions/cache` with the key:
+The Linux and both macOS release workflows resolve the current SHA of the
+`pom-tensor-parallel` branch before the build. The Windows workflow instead uses
+a published fork tag, as described below. For the source builds, the fork
+checkout lives in `.ci-cache/llama.cpp`, outside the versioned symlink, and is
+stored by `actions/cache` with the key:
 
 ```text
 llama-source-v1-<system>-<architecture>-<fork-sha>
@@ -161,7 +162,9 @@ llama.cpp's C/C++ and the CUDA bridge when there is CUDA. Windows does **not**
 use `sccache` (a wrapped `nvcc` on Windows is not worth the risk); there, where
 the runner is ephemeral, only `Swatinem/rust-cache` covers `~/.cargo` and
 `target/`; its extra key includes the fork SHA and `hashFiles('**/Cargo.lock')`.
-Linux and macOS use persistent self-hosted runners and keep the local target,
+Linux and the alternative macOS workflow use persistent self-hosted runners.
+The self-hosted macOS workflow keeps Cargo output in
+`$HOME/.cache/pom-target`, outside the checkout that `actions/checkout` cleans,
 while `sccache` covers recompilations across revisions and worktrees.
 
 That combination invalidates the checkout when the fork changes, invalidates
@@ -384,31 +387,37 @@ the final stage from the commit read on the host; it does not enter the build
 environment and invalidates neither Cargo nor npm. `rerun-if-changed` on
 `.git/HEAD` and `.git/index` refreshes the fallback of local builds.
 
-## Licensed executable update
+## Updating POM from its own releases
 
-The production path is in `crates/node/src/core_update.rs` (pure
-validation/install) plus `crates/node/src/pom_core_update.rs` (stateful
-orchestration, deliberately separate from `crates/node/src/plugins.rs`) and
-does not use `devupdate.rs`: while the `enterprise` plugin is active (a
-transitional mechanism that borrows its lease - see
-`docs/subsystems/enterprise-licensing.md`, Phase 7), the node queries the
-`pom_core` manifest on the license server and publishes the result at
-`GET /api/ui/pom-update/status`. Detection does not download, swap or restart.
-The UI authorizes a specific release through `POST /api/ui/pom-update/apply`;
-only then does the client download the signed artifact, check size/SHA-256,
-swap the executable and schedule the restart keeping the argv. The
-`release_id` published for this plugin must be the same short commit
-`build_commit()` returns (compiled locally or injected into the Docker
-runtime); the version comparison is SemVer and does not allow downgrades.
+`crates/node/src/pom_core_update.rs` (separate from `crates/node/src/plugins.rs`
+and from `devupdate.rs`) looks for a newer POM in the GitHub releases of
+`pieceofmindcloud/pom`, read as a public repository with no token, and falls
+back to the site's listing (`<license server>/v1/pom/latest`) when GitHub does
+not answer. Neither needs a plugin license. The release a binary is comes from
+`POM_RELEASE_VERSION`, which `crates/node/build.rs` stamps: the release
+workflows and `scripts/release-ksia.sh` set it to the tag being published, and
+any other build takes the newest `v*` tag the checkout knows (falling back to
+`v<CARGO_PKG_VERSION>`). The asset is picked by platform and build: the
+AppImage when the process runs from one (`APPIMAGE`), the
+`unknown-linux-gnu-{cuda|cpu}` tarball, the `pc-windows-msvc[-cuda-vulkan]`
+zip, or the macOS disk image. A node in a container (`/.dockerenv`) is never
+updated in place: rebuild its image.
 
-On Linux and macOS the temporary file sits in the same directory and the
-`rename` replaces the running executable through Unix unlink-on-exec
-semantics. On Windows the running executable cannot be overwritten directly:
-after authorization the client leaves a staged file and starts a PowerShell
-helper that waits for the process to end, moves the file and relaunches `pom`
-with the same arguments. If the helper does not start, the old process stays
-intact; the limitation and the full contract are in
-`docs/subsystems/enterprise-licensing.md`.
+Installing is the operator's act (`POST /api/ui/pom-update/apply`). The asset
+is downloaded into `.pom-update/` next to the installation, checked against its
+size and, when the source gives one, its SHA-256, and unpacked (`tar`, also
+used for the Windows zip; `hdiutil` + `ditto` for the disk image). The node then
+copies `pom-plugin-host` into that folder, writes a plan and starts it detached
+with `--apply-update` (`crates/plugin-host/src/update.rs`), and exits. The host
+waits for the node to be gone, moves each installed entry the package carries
+aside, moves the new one in its place (so the host, the interface and the
+libraries of a package are updated with the binary; files the package does not
+carry, such as `pom.json`, stay), and starts POM with the original arguments.
+Any failed move puts back what was already swapped and starts the old release.
+Under a service manager that kills the whole process group on exit the
+detached host may not survive; such an installation should be updated by its
+package manager. See `docs/subsystems/enterprise-licensing.md`,
+"POM updates".
 
 ## Updating a node from its own UI (development only)
 
@@ -692,7 +701,7 @@ repository (not even in git history).
 | `POM_CONFIG` | Path of `pom.json` (default `<project_root>/pom.json`). |
 | `POM_DB_DIR` | Directory of `pom.db` and its WAL/SHM files. If absent or empty, uses `<project_root>`; the directory is created at startup. |
 | `POM_DEV` | The common Compose sends `1` for development configuration; it is not the flag that enables local rebuilds. |
-| `POM_DEV_MODE` | Only the exact value `1` enables the panel and the AdminOnly plugin rebuild/reinstall routes. The local Compose sends that value. |
+| `POM_DEV_MODE` | Only the exact value `1` enables the panel and the PrincipalOnly plugin rebuild/reinstall routes. The local Compose sends that value. |
 | `POM_DEV_PLUGINS_DIR` | Host directory with known plugin sources (`..` by default, the workspace containing the sibling plugin repositories), mounted at `/opt/pom/dev-plugins` in the local Compose. |
 | `POM_UI_DIST` | Where `webapp.rs` reads the UI bundle (default `<project_root>/apps/frontend/dist`). The Docker image sets it explicitly. |
 | `POM_MODEL_DIRS` / `POM_SHARD_DIR` | Whole-model folders (several, separated like `PATH`: `:` on Unix, `;` on Windows) and the slice folder. They beat `model_dirs`/`shard_dir` in `pom.json` and are not persisted; empty counts as absent. The Storage screen locks the field set by one of them. |
@@ -701,6 +710,8 @@ repository (not even in git history).
 | `POM_RAG` | `0` turns transparent retrieval off on this gateway. `POM_RAG_TIMEOUT_MS` (default 300), `POM_RAG_PASSAGES` (default 1), `POM_RAG_MIN_SCORE` (default 0.8), `POM_RAG_REWRITE` (`0` keeps long messages away from the model), `POM_RAG_REWRITE_MIN_CHARS` (default 400), `POM_RAG_DECISION` (`1` first asks the model whether the message needs documents; off by default) and `POM_RAG_DECISION_MIN` (default 0.3) tune it. See `plugins-ui.md`, "Transparent retrieval (RAG)". |
 | `POM_CACHE_RAM` | Host-memory KV cache in MiB (llama-server's `--cache-ram`): a positive ceiling, `0` for off, `-1` or unset for as much as the machine allows. Beats `cache_ram_mib` in `pom.json`. Half of the host RAM always stays available to the user and a host with less than 12 GiB caches nothing. See `inference.md` §3.1.2. |
 | `POM_SLOT_AUTO_TTL_SECS` | TTL of an unused automatic prefix snapshot, in seconds (default 7 days). Beats `slot_auto_ttl_secs` in `pom.json`. Read at gateway startup. |
+| `POM_INSECURE_ADMIN_UI` | `=1` serves the admin UI in plain HTTP to remote browsers too, instead of redirecting them to https. Development only, for machines reached by IP with no trusted certificate; read once at startup. Peer-only routes stay refused in plain text and plain node-to-node calls still prove no membership. Loopback never needs it. |
+| `POM_TLS_NAMES` | Comma-separated DNS names this node is reached by besides its host name (`localhost` is always in), for a node in a container whose host name is not the one browsers use. They go into the local CA's name constraints when the CA is created and into the web certificate. A name added after the CA exists stays out of the certificate until the CA files (`.pom-ca.key`, `.pom-ca.crt`) are deleted and the new CA trusted again. |
 | `POM_DEV_AUTO_ACCEPT_TRANSFERS` | `=1` makes the **receiving** node accept every transfer offer without a click. Development only; read once at startup. The sender cannot ask for it. |
 | `POM_DEV_UPDATE` | `=1` turns on the "Update and restart" gate on the peer card (`devupdate.rs`). Per process, never in the config. |
 | `POM_BUILD_FEATURES` | Features the machine builds with in devupdate (`cuda`/`metal`); without it a CUDA machine loses the GPU on the first click. |
@@ -713,12 +724,15 @@ repository (not even in git history).
 
 ## Release through GitHub Actions
 
-Three workflows, one per system, all manual only (`workflow_dispatch`):
+The platform package workflows are manual only (`workflow_dispatch`). macOS has
+two equivalent alternatives: the original GitHub-hosted build and a copy for
+the local self-hosted runner.
 
 | File | Target | Runs on | Inputs |
 |---|---|---|---|
 | `.github/workflows/release-linux.yml` | Linux x86_64 AppImage (CUDA + Vulkan, one file, embedded interface) | self-hosted Linux runner (label `ksia`) | `version`, `prerelease` |
-| `.github/workflows/release-macos.yml` | macOS arm64, Metal | self-hosted macOS runner (label `macbook`) | `version`, `prerelease` |
+| `.github/workflows/release-macos.yml` | macOS universal (arm64 + x86_64), Metal | hosted (`macos-14`) | `version`, `prerelease` |
+| `.github/workflows/release-macos-self-hosted.yml` | Same macOS package | self-hosted macOS runner (label `macbook`) | `version`, `prerelease` |
 | `.github/workflows/release-windows.yml` | Windows x86_64, CUDA + Vulkan and/or CPU | hosted (`windows-2022`) | `version`, `variantes` (`gpu`/`cpu`/`ambos` - "both"), `prerelease` |
 
 The packages are uploaded as artifacts only to pass between jobs of the same
@@ -728,9 +742,10 @@ quota and blocked new releases.
 
 **They are separate so they can run alone.** Publishing only macOS should not
 cost a Windows build, and a target that breaks does not take the others down.
-Each workflow publishes its own package **on the same tag**: the first to run
-creates the release, the following ones attach their file. Rerunning only the
-Linux one does not delete the macOS package that was already there.
+Each platform publishes its package **on the same tag**: the first workflow to
+run creates the release, and the others attach their files. The two macOS
+workflows produce the same asset and are alternatives, so run only one of them
+for a given version.
 
 ### The llama.cpp fork is the step that cannot be missing
 
@@ -738,8 +753,13 @@ The engine lives in the private repository `pom-plugin-llama.cpp`
 (`llama-engine` and `llama-cpp-sys-2`). The POM depends on it by git, pinned to
 a `rev` in `Cargo.toml` (`[patch.crates-io]`) and in `crates/node/Cargo.toml`.
 Cargo fetches it over SSH through the system `git`, enabled by
-`[net] git-fetch-with-cli = true` in `.cargo/config.toml`. Changing the engine
-means: commit and push `pom-plugin-llama.cpp`, then move both `rev`s.
+`[net] git-fetch-with-cli = true` in `.cargo/config.toml`. Every release
+workflow reaches it with the read-only token `POM_LLAMACPP_TOKEN`, rewriting
+`ssh://git@github.com/` to HTTPS. The hosted macOS and Windows workflows use the
+job's global git config. The self-hosted Linux and macOS workflows use
+`GIT_CONFIG_*` environment variables, so the token never lands in either
+runner's `~/.gitconfig`. Changing the engine means: commit and push
+`pom-plugin-llama.cpp`, then move both `rev`s.
 
 The fork of llama.cpp is not in either repository. `llama-cpp-sys-2` finds it
 through `LLAMA_SOURCE`, which `.cargo/config.toml` sets to `llama.cpp`
@@ -779,17 +799,15 @@ The UI is read from disk at runtime (`config::ui_dist_dir`), not embedded in
 the binary: without `apps/frontend/dist` in the package, the node starts and
 answers 500 on the screen.
 
-In the two self-hosted workflows it is built in the job itself, because there
-is no minute multiplier there and splitting it would only add an artifact
-round trip between two jobs that would run on the same machine anyway - the
-runner takes one job at a time. In the Windows one, which is hosted, the `ui`
-job stays on `ubuntu-latest`: there a Windows minute counts 2x and building the
-same UI there would cost double for the same `dist`.
+The Linux and both macOS workflows build it in the build job itself. In the
+Windows workflow, the `ui` job stays on `ubuntu-latest`: there a Windows minute
+counts 2x and building the same UI there would cost double for the same `dist`.
 
-The two self-hosted workflows pin Node with `actions/setup-node` instead of
-using the system one. The runner records a **snapshot of the PATH of whoever
-configured it**, and that snapshot ages: the Linux runner has Node 18, and on macOS Node
-comes from nvm, whose path changes when the default version changes.
+All platform workflows pin Node with `actions/setup-node` instead of using the
+system one. This is particularly important on self-hosted runners: they record
+a **snapshot of the PATH of whoever configured them**, and that snapshot ages.
+The Linux runner has Node 18, and on macOS Node comes from nvm, whose path
+changes when the default version changes.
 
 ### Self-hosted runners
 
@@ -827,13 +845,13 @@ To remove a runner: `./svc.sh uninstall` and then `./config.sh remove
 --token <removal token>` (`gh api --method POST
 /repos/<owner>/<repo>/actions/runners/remove-token`).
 
-### Quota (Windows workflow only)
+### Hosted workflow quota
 
 Actions is free and unlimited on a **public** repository. On this one, which is
 private, the plan's monthly quota applies (2,000 minutes on Free) with a
-multiplier per system: Linux 1x, Windows 2x, macOS 10x. Since Linux and macOS
-moved to our own runners, only the Windows one uses quota - and it is the only
-one still worth watching.
+multiplier per system: Linux 1x, Windows 2x, macOS 10x. `release-macos.yml` and
+`release-windows.yml` consume that quota. The self-hosted macOS copy and the
+Linux workflow do not consume hosted-runner minutes.
 
 A clean build from scratch - including native llama.cpp - was measured at
 **3m33s** on Apple Silicon; a `target/` of this project measures **~9 GB**,
@@ -1060,9 +1078,3 @@ use `scripts/release-ksia.sh --variant windows-cpu --debug-symbols` (see
   the node's planner (`crates/node/src/routing/pipeline.rs::plan_pipeline`)
   makes its own greedy plan. `routing-base` is dead code kept alive only by its
   own tests. Postponed until the open-core decision (see `TODO.md`).
-- DEFECT NOTED: the `pom_core` update (`pom-release.sh` +
-  `pom_core_update.rs`) publishes and swaps **only** the `pom` binary. An
-  installation born without `pom-plugin-host` next to it stays without it
-  after updating, and a change to the host's IPC protocol does not arrive
-  through that path. Today the host only arrives through the full package
-  (zip/tar.gz) or the Docker image.

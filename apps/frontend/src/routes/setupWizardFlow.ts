@@ -1,6 +1,6 @@
 import type { WizardStage, WizardStep } from "./setupWizardTypes";
 
-export type SetupProfile = "admin" | "node" | "infer";
+export type SetupProfile = "admin" | "worker" | "visitor";
 
 /**
  * First access asks only what cannot be decided later:
@@ -23,14 +23,14 @@ export function setupStepsFor(profile: SetupProfile | null): WizardStep[] {
       { id: "setup-invite", labelKey: "firstRun.stepInvite" },
     ];
   }
-  if (profile === "node" || profile === "infer") {
+  if (profile === "worker" || profile === "visitor") {
     return [start, { id: "setup-join", labelKey: "firstRun.stepJoin" }];
   }
   return [start];
 }
 
 export function setupProfileUsesOnlyTrust(profile: SetupProfile | null): boolean {
-  return profile === "node" || profile === "infer";
+  return profile === "worker" || profile === "visitor";
 }
 
 export function setupNextStage(stage: WizardStage, steps: WizardStep[]): WizardStage | null {

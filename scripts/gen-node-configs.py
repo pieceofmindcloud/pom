@@ -41,8 +41,8 @@ def inference_port(n: int) -> int:
 def _advertise_host_with_node_port(config: dict, advertise_addr: str) -> str:
     """Use the config's p2p port when the override carries an explicit port.
 
-    ``advertise_addr`` is also the UDP endpoint from which libp2p derives its
-    TCP endpoint. A full override is therefore a host base: each generated
+    ``advertise_addr`` is also the UDP endpoint from which the p2p endpoint
+    derives its own port (UDP + 10000). A full override is therefore a host base: each generated
     process keeps its own already assigned port. Applying the same full
     endpoint to every process makes all peers announce one socket and hides
     the other nodes behind it.

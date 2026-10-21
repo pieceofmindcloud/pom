@@ -961,6 +961,9 @@ pub(crate) struct PluginRuntime {
     /// `lifecycle: "on_demand"` of the last known manifest. It comes from the cache, so
     /// it applies at boot, before any process starts.
     on_demand: std::sync::atomic::AtomicBool,
+    /// This plugin's secret for the node's loopback API (`crate::plugin_host_api`),
+    /// new at every start of the node and handed over in `host.configure`.
+    host_api_token: String,
 }
 
 /// What the node hands to each plugin host through the `host.configure` operation.
@@ -1019,6 +1022,7 @@ impl PluginRuntime {
             host_context,
             ui_manifest_raw: Arc::new(Mutex::new(ui_manifest_raw)),
             on_demand: std::sync::atomic::AtomicBool::new(on_demand),
+            host_api_token: hex::encode(rand::random::<[u8; 32]>()),
         }
     }
 
@@ -1058,6 +1062,13 @@ impl PluginRuntime {
         };
         if let Some(object) = payload.as_object_mut() {
             object.insert("operation".into(), "host.configure".into());
+            // The shared context names where the node's API is; the secret is this plugin's own.
+            if let Some(base_url) = object.remove("host_api_base_url") {
+                object.insert(
+                    "host_api".into(),
+                    serde_json::json!({"base_url": base_url, "token": self.host_api_token}),
+                );
+            }
             let licensed_schema = self
                 .persisted
                 .lock()
@@ -3265,6 +3276,25 @@ impl PluginManager {
         }
     }
 
+    /// The plugin a loopback API token belongs to (`crate::plugin_host_api`).
+    pub(crate) fn code_for_host_api_token(&self, token: &str) -> Option<String> {
+        use subtle::ConstantTimeEq;
+        if token.is_empty() {
+            return None;
+        }
+        self.runtime_values()
+            .into_iter()
+            .find(|runtime| bool::from(runtime.host_api_token.as_bytes().ct_eq(token.as_bytes())))
+            .map(|runtime| runtime.code.clone())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn host_api_token_for_test(&self, code: &str) -> String {
+        self.runtime_for(code)
+            .map(|runtime| runtime.host_api_token.clone())
+            .unwrap_or_default()
+    }
+
     pub(crate) fn runtime_for(&self, code: &str) -> Option<Arc<PluginRuntime>> {
         self.runtimes
             .read()
@@ -3851,6 +3881,10 @@ fn host_context_payload(
             "api_key": api_key,
         },
         "workspace_root": workspace_root,
+        "host_api_base_url": format!(
+            "http://127.0.0.1:{gateway_port}{}",
+            crate::plugin_host_api::HOST_API_PREFIX
+        ),
     })
 }
 
@@ -4432,7 +4466,30 @@ fn machine_component() -> String {
             }
         }
     }
-    std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown-machine".into())
+    // Tests run with the crate as the project root: no id is written there.
+    if cfg!(test) {
+        return "test-machine".into();
+    }
+    stored_machine_id(&crate::config::project_root())
+}
+
+/// The machine component where the OS gives none: a random id kept beside the
+/// node key. A container has no `/etc/machine-id` and its `HOSTNAME` is the
+/// container id, so the fingerprint changed on every recreate and the node
+/// dropped its activated plugins at startup.
+fn stored_machine_id(root: &std::path::Path) -> String {
+    let path = root.join(format!(".{}-machine-id", crate::brand::slug()));
+    if let Ok(value) = std::fs::read_to_string(&path) {
+        let value = value.trim();
+        if !value.is_empty() {
+            return value.to_owned();
+        }
+    }
+    let value = hex::encode(rand::random::<[u8; 16]>());
+    if let Err(error) = std::fs::write(&path, &value) {
+        tracing::warn!(%error, path = %path.display(), "the machine id could not be stored; plugin activations will not survive a restart");
+    }
+    value
 }
 
 fn board_component() -> String {
@@ -4572,7 +4629,137 @@ pub(crate) async fn start_plugin_checkout(
     }
 }
 
-fn license_base_url() -> String {
+/// Query of the public plugin store, as the Plugins screen asks it.
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct PluginCatalogQuery {
+    q: Option<String>,
+    page: Option<u32>,
+    per_page: Option<u32>,
+}
+
+/// Largest store answer passed on to the browser.
+const PLUGIN_CATALOG_MAX_BYTES: usize = 4 * 1024 * 1024;
+
+/// The store URL for a listing, or `None` when the query is out of bounds.
+/// Only these three parameters are passed on.
+fn plugin_catalog_url(base: &str, query: &PluginCatalogQuery) -> Option<String> {
+    let mut url = reqwest::Url::parse(&format!("{}/v1/plugins", base.trim_end_matches('/'))).ok()?;
+    {
+        let mut pairs = url.query_pairs_mut();
+        if let Some(q) = query.q.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
+            if q.len() > 200 {
+                return None;
+            }
+            pairs.append_pair("q", q);
+        }
+        if let Some(page) = query.page {
+            if !(1..=10_000).contains(&page) {
+                return None;
+            }
+            pairs.append_pair("page", &page.to_string());
+        }
+        if let Some(per_page) = query.per_page {
+            if !(1..=100).contains(&per_page) {
+                return None;
+            }
+            pairs.append_pair("per_page", &per_page.to_string());
+        }
+    }
+    let url = url.to_string();
+    Some(url.strip_suffix('?').map(str::to_owned).unwrap_or(url))
+}
+
+/// The store URL of one plugin, or `None` for a code the store cannot hold.
+fn plugin_catalog_entry_url(base: &str, code: &str) -> Option<String> {
+    let valid = !code.is_empty()
+        && code.len() <= 64
+        && code
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-');
+    valid.then(|| format!("{}/v1/plugins/{code}", base.trim_end_matches('/')))
+}
+
+/// Reads the store for the browser, so the page never leaves its own origin:
+/// a page served over plain HTTP from another machine is an origin the store's
+/// CORS policy does not know. No credential goes to the store, and its answer
+/// comes back as it is, JSON only; the screen validates every field.
+async fn relay_plugin_catalog(url: Option<String>) -> axum::response::Response {
+    use axum::http::{header, StatusCode};
+    let Some(url) = url else {
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(serde_json::json!({ "error": "catalog_query_invalid" })),
+        )
+            .into_response();
+    };
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    let client = CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    });
+    let unavailable = || {
+        (
+            StatusCode::BAD_GATEWAY,
+            axum::Json(serde_json::json!({ "error": "catalog_unavailable" })),
+        )
+            .into_response()
+    };
+    let Ok(response) = client.get(&url).send().await else {
+        return unavailable();
+    };
+    let status = response.status();
+    if status == reqwest::StatusCode::NOT_FOUND {
+        return (
+            StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({ "error": "plugin_not_listed" })),
+        )
+            .into_response();
+    }
+    if !status.is_success()
+        || response
+            .content_length()
+            .is_some_and(|length| length > PLUGIN_CATALOG_MAX_BYTES as u64)
+    {
+        return unavailable();
+    }
+    let Ok(body) = response.bytes().await else {
+        return unavailable();
+    };
+    if body.len() > PLUGIN_CATALOG_MAX_BYTES
+        || serde_json::from_slice::<serde_json::Value>(&body).is_err()
+    {
+        return unavailable();
+    }
+    (
+        [
+            (header::CONTENT_TYPE, "application/json"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+/// `GET /api/ui/plugin-catalog` - the public store's listing, read by the node.
+pub(crate) async fn plugin_catalog(
+    _auth: crate::auth::ConnectionAuth,
+    axum::extract::Query(query): axum::extract::Query<PluginCatalogQuery>,
+) -> axum::response::Response {
+    relay_plugin_catalog(plugin_catalog_url(&license_base_url(), &query)).await
+}
+
+/// `GET /api/ui/plugin-catalog/:code` - one plugin's public store entry.
+pub(crate) async fn plugin_catalog_entry(
+    _auth: crate::auth::ConnectionAuth,
+    axum::extract::Path(code): axum::extract::Path<String>,
+) -> axum::response::Response {
+    relay_plugin_catalog(plugin_catalog_entry_url(&license_base_url(), &code)).await
+}
+
+pub(crate) fn license_base_url() -> String {
     std::env::var("POM_LICENSE_BASE_URL")
         .ok()
         .filter(|_| {
@@ -5096,6 +5283,48 @@ pub(crate) mod tests_support {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_stored_machine_id_is_the_same_across_restarts() {
+        let root = tempfile::tempdir().unwrap();
+        let first = super::stored_machine_id(root.path());
+        assert_eq!(first.len(), 32);
+        assert_eq!(super::stored_machine_id(root.path()), first);
+    }
+
+    #[test]
+    fn the_catalog_relay_passes_on_only_a_bounded_query() {
+        let base = "https://license.example/";
+        let url = |q: Option<&str>, page, per_page| {
+            plugin_catalog_url(
+                base,
+                &PluginCatalogQuery {
+                    q: q.map(str::to_owned),
+                    page,
+                    per_page,
+                },
+            )
+        };
+        assert_eq!(
+            url(None, None, None).as_deref(),
+            Some("https://license.example/v1/plugins")
+        );
+        assert_eq!(
+            url(Some(" rag & logs "), Some(2), Some(10)).as_deref(),
+            Some("https://license.example/v1/plugins?q=rag+%26+logs&page=2&per_page=10")
+        );
+        assert!(url(Some(&"x".repeat(201)), None, None).is_none());
+        assert!(url(None, Some(0), None).is_none());
+        assert!(url(None, None, Some(101)).is_none());
+        assert_eq!(
+            plugin_catalog_entry_url(base, "pom-plugin_base2").as_deref(),
+            Some("https://license.example/v1/plugins/pom-plugin_base2")
+        );
+        assert!(plugin_catalog_entry_url(base, "../admin").is_none());
+        assert!(plugin_catalog_entry_url(base, "Logs").is_none());
+        assert!(plugin_catalog_entry_url(base, "").is_none());
+    }
+
     use super::tests_support::MockLicenseService;
     use super::*;
     use enterprise_protocol::{ActivationResponse, Grant, LicenseErrorCode, PluginManifest};
@@ -6579,6 +6808,7 @@ mod tests {
         assert_eq!(reply["operation"], "rpc.directory.set_node");
         assert_eq!(reply["params"]["person"], "Ana");
         assert!(reply["profile"].is_string());
+        assert!(reply["node_id"].is_string());
         for (uri, body, origin, status) in [
             (
                 "/api/ui/plugins/logs/rpc/insights",
@@ -6626,6 +6856,10 @@ mod tests {
         assert_eq!(
             context.get("workspace_root").and_then(Value::as_str),
             Some("/data/workspace")
+        );
+        assert_eq!(
+            context.get("host_api_base_url").and_then(Value::as_str),
+            Some("http://127.0.0.1:8080/api/plugin-host")
         );
     }
 

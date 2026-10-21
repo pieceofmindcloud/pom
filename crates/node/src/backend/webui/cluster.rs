@@ -5,6 +5,10 @@ use super::*;
 pub(super) struct PeerView {
     /// The plugin whose engine runs this machine's model, `None` for llama.cpp. A pipeline is built on one engine.
     pub(super) engine: Option<String>,
+    /// That engine's part in a prefill/decode split (`prefill` or `decode`), `None` when it does both. The Flow draws
+    /// a prefill machine as the head and an edge from it to the decode machines of the model.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) role: Option<&'static str>,
     pub(super) node_id: String,
     pub(super) short_id: String,
     pub(super) addr: String,
@@ -64,9 +68,33 @@ pub(super) struct RoutingEdgeView {
 
 /// All viable handoffs observed in the model inventory. These are candidates,
 /// not routing commands: the planner remains the sole authority selecting the
-/// live path and balancing load.
+/// live path and balancing load. A prefill machine of a plugin engine hands a
+/// prompt's state to every decode (or both) machine of the same model and
+/// layers: that is an edge too, from its last layer to the other's first.
 pub(super) fn candidate_edges(views: &[PeerView]) -> Vec<RoutingEdgeView> {
     let mut edges = Vec::new();
+    for from in views.iter().filter(|view| view.role == Some("prefill")) {
+        for to in views.iter().filter(|view| {
+            view.node_id != from.node_id && view.engine == from.engine && view.role != Some("prefill")
+        }) {
+            for from_capability in from.capabilities.iter().filter(|c| c.supports_inference) {
+                if to.capabilities.iter().any(|c| {
+                    c.supports_inference
+                        && c.model_id == from_capability.model_id
+                        && c.start_layer == from_capability.start_layer
+                        && c.end_layer == from_capability.end_layer
+                }) {
+                    edges.push(RoutingEdgeView {
+                        from_node_id: from.node_id.clone(),
+                        to_node_id: to.node_id.clone(),
+                        model_id: from_capability.model_id.clone(),
+                        from_end_layer: from_capability.end_layer,
+                        to_start_layer: from_capability.start_layer,
+                    });
+                }
+            }
+        }
+    }
     for from in views {
         for from_capability in &from.capabilities {
             if !from_capability.supports_inference {
@@ -211,6 +239,32 @@ fn reported_peer_load(node: &serde_json::Value) -> Option<u32> {
         .and_then(|load| u32::try_from(load).ok())
 }
 
+/// The peers this node reaches only through a relay right now.
+///
+/// The relay first coordinates a hole punch; when it does not close, the
+/// relay carries the traffic itself (`Network::peer_route`, kind `relayed`).
+/// That fallback is what costs latency and, on a public relay, bandwidth, and
+/// it is the only case the interface warns about: being behind a NAT whose
+/// hole punch worked is not.
+pub(super) fn relayed_peers(state: &GatewayState, peers: &[PeerInfo]) -> Vec<serde_json::Value> {
+    let mut relayed: Vec<serde_json::Value> = peers
+        .iter()
+        .filter(|peer| peer.node_id != state.network.node_id)
+        .filter_map(|peer| {
+            let route = state.network.peer_route(peer);
+            (route.kind == "relayed").then(|| {
+                json!({
+                    "node_id": peer.node_id,
+                    "hostname": peer.hostname,
+                    "relay_kind": route.relay_kind,
+                })
+            })
+        })
+        .collect();
+    relayed.sort_by(|a, b| a["node_id"].as_str().cmp(&b["node_id"].as_str()));
+    relayed
+}
+
 pub(super) async fn cluster_fingerprint(state: &GatewayState, peers: &[PeerInfo]) -> String {
     let mut peer_state = serde_json::to_value(peers).expect("UI peers must serialize");
     if let Some(peers) = peer_state.as_array_mut() {
@@ -255,8 +309,11 @@ pub(super) async fn cluster_fingerprint(state: &GatewayState, peers: &[PeerInfo]
         "active_model": state.displayed_model().await,
         "detached": state.network.is_detached(),
         // Without this the traversal snapshot would freeze in the cache: neither
-        // the AutoNAT state nor a new reservation touches `peers`.
+        // the NAT report nor a change of relay touches `peers`.
         "traversal": state.network.traversal_status(),
+        // A peer moving between a hole punched path and the relay fallback
+        // touches neither.
+        "relayed_peers": relayed_peers(state, peers),
         // The pinned route of each edge changes without touching `peers`.
         "route_plan": crate::route_plan::book().signature(),
     }))
@@ -311,6 +368,7 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
                 || peer.node_id == self_id
         })
         .collect::<Vec<_>>();
+    let relayed = relayed_peers(&state, &peers);
     let runtime_ready_by_node: HashMap<_, _> = peers
         .iter()
         .map(|peer| {
@@ -458,6 +516,9 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
         };
         views.push(PeerView {
             engine: crate::plugin_engine::engine_of_peer(p),
+            role: Some(crate::plugin_engine::role_of_capabilities(&p.inference_frame_capabilities))
+                .filter(|role| !role.is_both() && crate::plugin_engine::engine_of_peer(p).is_some())
+                .map(|role| role.as_str()),
             short_id: p.node_id[..p.node_id.len().min(12)].to_string(),
             node_id: p.node_id.clone(),
             addr: p.addr.clone(),
@@ -677,6 +738,9 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
         // without this, "the two nodes do not talk to each other" can only be
         // investigated with `RUST_LOG=debug` on the right machine.
         "traversal": state.network.traversal_status(),
+        // Peers reached only through a relay: the hole punch did not close
+        // and the relay carries the traffic (`relayed_peers`).
+        "relayed_peers": relayed,
         // Pinned route per outgoing edge of this node (`route_plan`): over which
         // transport inference and the return to the gateway go right now, and
         // the alternatives already measured.
@@ -1001,7 +1065,7 @@ pub(super) async fn peer_runtime(
     }
 }
 
-/// A peer's `/api/ui/node` through the libp2p tunnel only: the last resort of
+/// A peer's `/api/ui/node` through the p2p tunnel only: the last resort of
 /// the reads that already walked the peer's addresses with the `RouteTable`
 /// failure memory. A peer behind symmetric NAT has no address that answers,
 /// and without this it stayed listed but unreadable.

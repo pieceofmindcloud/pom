@@ -17,11 +17,27 @@ import { fakeNode } from "../test/fixtures";
 import type { NodeInfo } from "../lib/types";
 
 let nodeData: NodeInfo | undefined;
+let natStatus: "unknown" | "public" | "private" | undefined;
+let relayedPeers: { node_id: string; hostname: string; relay_kind: "public" | "dedicated" | "member" | null }[] = [];
 
 vi.mock("../lib/queries", async (original) => ({
   ...(await original<typeof import("../lib/queries")>()),
   useNode: () => ({ data: nodeData }),
-  useCluster: () => ({ data: { peers: [], complete: false } }),
+  useCluster: () => ({
+    data: {
+      peers: [],
+      complete: false,
+      traversal: natStatus && {
+        nat: natStatus,
+        addrs: [],
+        reservations: [],
+        hole_punch_ok: 0,
+        hole_punch_failed: 0,
+        last_hole_punch_error: null,
+      },
+      relayed_peers: relayedPeers,
+    },
+  }),
 }));
 
 const { TlsChip } = await import("./TlsIndicator");
@@ -40,7 +56,7 @@ function mount() {
   );
 }
 
-function mountTopbar(profile: "admin" | "node" | "infer") {
+function mountTopbar(profile: "admin" | "worker" | "visitor") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
@@ -78,7 +94,7 @@ describe("TlsChip", () => {
   afterEach(cleanup);
 
   it("does not render the TLS indicator", () => {
-    nodeData = fakeNode({ tls_required: true });
+    nodeData = fakeNode();
     const { container } = mount();
     expect(container.querySelector('[data-testid="tls-indicator"]')).toBeNull();
   });
@@ -89,7 +105,7 @@ describe("profile in the toolbar", () => {
 
   it("shows the network this machine is in, linking to its settings", () => {
     nodeData = { ...fakeNode(), network_name: "POM-SALEM" };
-    mountTopbar("node");
+    mountTopbar("worker");
 
     const network = screen.getByTestId("topbar-network");
     expect(network.textContent).toBe("POM-SALEM");
@@ -104,10 +120,10 @@ describe("profile in the toolbar", () => {
   });
 
   it("hides the This node button and keeps the official profile in the toolbar", () => {
-    nodeData = fakeNode({ profile: "infer" });
-    mountTopbar("infer");
+    nodeData = fakeNode({ profile: "visitor" });
+    mountTopbar("visitor");
 
-    expect(screen.getByTestId("node-profile").textContent).toBe("infer");
+    expect(screen.getByTestId("node-profile").textContent).toBe("visitor");
     expect(screen.queryByText(/perfil em visualização/i)).toBeNull();
     expect(screen.queryByRole("button", { name: "Este nó" })).toBeNull();
     expect(screen.queryByRole("button", { name: /administrador|node|infer/i })).toBeNull();
@@ -126,8 +142,8 @@ describe("profile in the toolbar", () => {
   });
 
   it("hides the TLS indicator and the build hash outside admin", () => {
-    nodeData = fakeNode({ profile: "infer", build_commit: "abc123" });
-    mountTopbar("infer");
+    nodeData = fakeNode({ profile: "visitor", build_commit: "abc123" });
+    mountTopbar("visitor");
 
     expect(screen.queryByTestId("tls-indicator")).toBeNull();
     expect(screen.queryByText("abc123")).toBeNull();
@@ -149,5 +165,47 @@ describe("menu mobile", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Abrir menu" }));
     expect(screen.getByRole("button", { name: "Fechar menu" })).toBeTruthy();
+  });
+});
+
+describe("NAT badge in the toolbar", () => {
+  afterEach(() => {
+    cleanup();
+    natStatus = undefined;
+    relayedPeers = [];
+  });
+
+  it("no longer shows the node id", () => {
+    nodeData = fakeNode();
+    mountTopbar("admin");
+    expect(screen.queryByText(nodeData.short_id)).toBeNull();
+  });
+
+  it("shows nothing behind a NAT whose hole punch worked", () => {
+    nodeData = fakeNode();
+    natStatus = "private";
+    relayedPeers = [];
+    mountTopbar("admin");
+    expect(screen.queryByTestId("topbar-nat")).toBeNull();
+  });
+
+  it("shows Behind NAT and opens the explanation with this machine's ports", () => {
+    nodeData = { ...fakeNode(), p2p_port: 42777 };
+    natStatus = "private";
+    relayedPeers = [{ node_id: "abc123", hostname: "machine-b", relay_kind: "public" }];
+    mountTopbar("admin");
+
+    const badge = screen.getByTestId("topbar-nat");
+    expect(badge.textContent).toBe("Atrás de NAT");
+    expect(screen.queryByTestId("nat-dialog")).toBeNull();
+
+    fireEvent.click(badge);
+    const dialog = screen.getByTestId("nat-dialog");
+    expect(dialog.textContent).toContain("2 MB/s");
+    expect(dialog.textContent).toContain("IPv6");
+    expect(dialog.textContent).toContain("UDP 42777");
+    expect(dialog.textContent).toContain("UDP 52777");
+    expect(screen.getByTestId("nat-relayed-peers").textContent).toContain("machine-b");
+    expect(screen.getByTestId("nat-relayed-peers").textContent).toContain("relé público");
   });
 });

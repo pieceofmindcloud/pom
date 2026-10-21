@@ -1,7 +1,7 @@
 use super::super::*;
 
 /// Routes for operating the local machine and preparing models. The
-/// middleware keeps authorization for `node` and `admin` independent of this
+/// middleware keeps authorization for `worker` and `admin` independent of this
 /// presentation grouping.
 pub(super) fn routes() -> Router<GatewayState> {
     Router::new()

@@ -39,8 +39,8 @@ use crate::gateway::{
 };
 use crate::openai::{approx_tokens, cors_headers, preflight, resolve_model};
 use crate::tool_call::{
-    parse_output, parse_output_truncated, render_tool_call, render_tools_block, OutputPart,
-    ScanEvent, TagScanner, ToolDef,
+    parse_output_truncated_with_tools, parse_output_with_tools, render_tool_call, render_tools_block, OutputPart,
+    ScanEvent, TagScanner, ToolDef, ToolSignatures,
 };
 use axum::{
     extract::State,
@@ -577,6 +577,24 @@ async fn messages(
         };
         return error_response(status, "invalid_request_error", error);
     }
+    if let Some(denial) =
+        crate::quota::admit(&state, auth.caller(), &prompt, input_tokens, &request_details).await
+    {
+        crate::gateway::record_rejected(
+            &state,
+            "/v1/messages",
+            auth.into_caller(),
+            model.clone(),
+            prompt,
+            request_details,
+            denial.message.clone(),
+        );
+        return denial.decorate(error_response(
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limit_error",
+            denial.message.clone(),
+        ));
+    }
     let budget = output_limit.budget();
     // What the client needs to decrement the next request's `remaining`. It
     // stays only in `x_pom`: Anthropic does not return the remaining budget in
@@ -614,6 +632,7 @@ async fn messages(
         output_limit,
         task_budget_report,
         eager_tools: EagerTools::from(&req.tools),
+        tools: ToolSignatures::of(&req.tools),
     };
     if req.stream {
         stream_response(params)
@@ -672,6 +691,8 @@ struct ResponseParams {
     task_budget_report: Option<serde_json::Value>,
     /// Which tools asked for `eager_input_streaming`. See [`EagerTools`].
     eager_tools: EagerTools,
+    /// The declared tools, to attribute a call the model left nameless.
+    tools: ToolSignatures,
 }
 
 async fn blocking_response(params: ResponseParams) -> Response {
@@ -692,6 +713,7 @@ async fn blocking_response(params: ResponseParams) -> Response {
         // response returns the complete arguments at once, always.
         eager_tools: _,
         task_budget_report,
+        tools,
     } = params;
     match crate::gateway::generate_blocking_output_with_stops(
         "/v1/messages",
@@ -721,9 +743,9 @@ async fn blocking_response(params: ResponseParams) -> Response {
             // markup and never a discard.
             let truncated = summary.finish_reason.as_deref() == Some("length");
             let (parts, truncated_tool_call) = if truncated {
-                parse_output_truncated(&output.text)
+                parse_output_truncated_with_tools(&output.text, &tools)
             } else {
-                (parse_output(&output.text), false)
+                (parse_output_with_tools(&output.text, &tools), false)
             };
             let (mut content, saw_tool_call) = content_blocks(&parts);
             if !output.reasoning.is_empty() {
@@ -809,6 +831,7 @@ fn stream_response(params: ResponseParams) -> Response {
         output_limit,
         task_budget_report,
         eager_tools,
+        tools,
     } = params;
     let (tx, rx) = mpsc::channel::<GenEvent>(64);
     crate::gateway::spawn_logged_generation_with_stops(
@@ -843,6 +866,7 @@ fn stream_response(params: ResponseParams) -> Response {
             output_limit,
             task_budget_report,
             eager_tools,
+            tools,
         },
     );
     (
@@ -1089,6 +1113,7 @@ struct SseParams {
     output_limit: OutputTokenLimit,
     task_budget_report: Option<serde_json::Value>,
     eager_tools: EagerTools,
+    tools: ToolSignatures,
 }
 
 fn sse_stream(
@@ -1103,6 +1128,7 @@ fn sse_stream(
         output_limit,
         task_budget_report,
         eager_tools,
+        tools,
     } = params;
     enum Phase {
         Opening,
@@ -1149,7 +1175,7 @@ fn sse_stream(
         input_tokens,
         output_limit,
         queue: VecDeque::new(),
-        scanner: TagScanner::new(),
+        scanner: TagScanner::with_tools(tools),
         text_open: None,
         thinking_open: None,
         next_index: 0,
@@ -1544,7 +1570,7 @@ mod tests {
             is_error: None,
         };
         let rendered = render_block(&block);
-        let parts = parse_output(&rendered);
+        let parts = crate::tool_call::parse_output(&rendered);
         assert_eq!(parts.len(), 1);
         match &parts[0] {
             OutputPart::ToolCall { name, arguments } => {

@@ -15,6 +15,8 @@ vi.mock("../lib/queries", () => ({
   useNode: () => ({ data: sidebarNodeData }),
   // The plugin menu reads its lifecycle here; no plugin is active in these tests.
   usePluginUi: () => ({ data: { plugins: [] } }),
+  // Usage shows only where a machine runs the logs plugin; these tests have one.
+  useMyQuota: () => ({ data: { available: true, configured: false } }),
   keys: { pluginUi: ["plugin-ui"] },
 }));
 
@@ -191,7 +193,7 @@ describe("Sidebar", () => {
         future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <LocaleProvider initialLocale="pt-BR">
-          <ProfileProvider initialProfile="node">
+          <ProfileProvider initialProfile="worker">
             <Sidebar />
           </ProfileProvider>
         </LocaleProvider>
@@ -200,7 +202,7 @@ describe("Sidebar", () => {
 
     expect(screen.queryByText("Implantar na rede")).toBeNull();
     expect(screen.queryByText("Implantações")).toBeNull();
-    expect(screen.getByText("Logs")).toBeTruthy();
+    expect(screen.getByText("Business Pack")).toBeTruthy();
     // What nobody restricted stays in place.
     expect(screen.getByText("Painel")).toBeTruthy();
     expect(screen.getByText("Modelos")).toBeTruthy();
@@ -224,7 +226,7 @@ describe("Sidebar", () => {
     fireEvent.click(screen.getByRole("button", { name: "Implantações" }));
     expect(screen.getByText("Implantar na rede")).toBeTruthy();
     expect(screen.getByText("Histórico")).toBeTruthy();
-    expect(screen.getByText("Logs")).toBeTruthy();
+    expect(screen.getByText("Business Pack")).toBeTruthy();
     expect(screen.getByTestId("network-chat-unread").textContent).toBe("2");
   });
 
@@ -258,7 +260,7 @@ describe("Sidebar", () => {
   });
 
   it("hides the TLS indicator from the flags", () => {
-    sidebarNodeData = fakeNode({ tls_required: true });
+    sidebarNodeData = fakeNode();
     render(
       <MemoryRouter
         initialEntries={["/"]}
@@ -301,7 +303,7 @@ describe("Sidebar", () => {
         future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <LocaleProvider initialLocale="pt-BR">
-          <ProfileProvider initialProfile="infer">
+          <ProfileProvider initialProfile="visitor">
             <ChatSessionProvider>
               <Sidebar />
               <ChatSessionProbe />
@@ -356,7 +358,7 @@ describe("Sidebar", () => {
         future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <LocaleProvider initialLocale="pt-BR">
-          <ProfileProvider initialProfile="infer">
+          <ProfileProvider initialProfile="visitor">
             <ChatSessionProvider>
               <Sidebar />
               <RouteProbe />
@@ -376,7 +378,7 @@ describe("Sidebar", () => {
     render(
       <MemoryRouter initialEntries={["/chat"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <LocaleProvider initialLocale="pt-BR">
-          <ProfileProvider initialProfile="infer">
+          <ProfileProvider initialProfile="visitor">
             <ChatSessionProvider>
               <Sidebar />
             </ChatSessionProvider>
@@ -394,7 +396,7 @@ describe("Sidebar", () => {
     render(
       <MemoryRouter initialEntries={["/documentation"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <LocaleProvider initialLocale="pt-BR">
-          <ProfileProvider initialProfile="infer">
+          <ProfileProvider initialProfile="visitor">
             <ChatSessionProvider>
               <Sidebar />
               <RouteProbe />
@@ -417,7 +419,7 @@ describe("Sidebar", () => {
         future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <LocaleProvider initialLocale="pt-BR">
-          <ProfileProvider initialProfile="infer">
+          <ProfileProvider initialProfile="visitor">
             <ChatSessionProvider>
               <Sidebar />
               <RouteProbe />

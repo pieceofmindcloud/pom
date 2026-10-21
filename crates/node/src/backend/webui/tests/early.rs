@@ -154,8 +154,8 @@ mod leave_tests {
     #[tokio::test]
     async fn any_profile_detaches_its_own_machine() {
         for profile in [
-            crate::profile::NodeProfile::Infer,
-            crate::profile::NodeProfile::Node,
+            crate::profile::NodeProfile::Visitor,
+            crate::profile::NodeProfile::Worker,
         ] {
             let state = state_with("eu", vec![]).await;
             state.auth.write().await.profile = profile;
@@ -235,90 +235,6 @@ mod catalog_under_tls_tests {
             state.peer_http.cached_peers()
         );
         state.peer_http.apply_cluster_policy(false);
-    }
-}
-
-#[cfg(test)]
-mod tls_settings_tests {
-    use super::*;
-    use crate::gateway::testkit::{body_of, state_with};
-
-    /// Only the principal decides. The check is **on the server**: hiding the button on
-    /// the screen is convenience, not control.
-    #[tokio::test]
-    async fn a_regular_node_cannot_turn_tls_on() {
-        let state = state_with("eu", vec![]).await;
-        state.auth.write().await.profile = crate::profile::NodeProfile::Node;
-
-        let resp = save_tls(
-            ConnectionAuth,
-            State(state.clone()),
-            Json(SaveTlsRequest { tls_required: true }),
-        )
-        .await;
-
-        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-        assert!(
-            !state.auth.read().await.tls_required,
-            "403 cannot have written anything"
-        );
-        assert!(!state.network.tls_enabled());
-    }
-
-    /// On the principal, flipping the flag takes effect at once: config saved, new announce, and
-    /// the clients swapped. Without a restart, and in both directions.
-    #[tokio::test]
-    async fn the_principal_turns_it_on_and_off_without_a_restart() {
-        // This test touches the global URL scheme; see the note in
-        // `peer_client::GLOBAL_POLICY`.
-        let _guard = crate::peer_client::GLOBAL_POLICY.lock();
-        let state = state_with("eu", vec![]).await;
-        state.auth.write().await.profile = crate::profile::NodeProfile::Admin;
-
-        let resp = save_tls(
-            ConnectionAuth,
-            State(state.clone()),
-            Json(SaveTlsRequest { tls_required: true }),
-        )
-        .await;
-        assert_eq!(resp.status(), StatusCode::OK);
-        assert_eq!(body_of(resp).await["tls_required"], true);
-        assert!(state.auth.read().await.tls_required);
-        assert!(
-            state.network.tls_enabled(),
-            "the announce must tell the truth"
-        );
-        assert!(state.peer_http.tls_enabled());
-
-        let resp = save_tls(
-            ConnectionAuth,
-            State(state.clone()),
-            Json(SaveTlsRequest {
-                tls_required: false,
-            }),
-        )
-        .await;
-        assert_eq!(resp.status(), StatusCode::OK);
-        assert!(!state.auth.read().await.tls_required);
-        assert!(!state.network.tls_enabled());
-        assert!(!state.peer_http.tls_enabled());
-    }
-
-    /// The screen needs two different things: whether it is on, and whether **this**
-    /// node may change it.
-    #[tokio::test]
-    async fn node_info_reports_state_and_authority() {
-        let state = state_with("eu", vec![]).await;
-        state.auth.write().await.profile = crate::profile::NodeProfile::Node;
-        let info = node_info(State(state.clone())).await;
-        assert!(!info.0.tls_required);
-        assert!(!info.0.tls_authority, "a regular node does not decide");
-
-        state.auth.write().await.profile = crate::profile::NodeProfile::Admin;
-        state.auth.write().await.tls_required = true;
-        let info = node_info(State(state)).await;
-        assert!(info.0.tls_required);
-        assert!(info.0.tls_authority);
     }
 }
 
@@ -422,7 +338,7 @@ mod network_chat_settings_tests {
 
         let primary_key = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
         let mut primary = peer("primary", "primary", port);
-        primary.libp2p_peer_id = Some("peer-primary".into());
+        primary.endpoint_id = Some("peer-primary".into());
         primary.pubkey =
             hex::encode(primary_key.verifying_key().as_bytes());
         let state = state_with_secondary_admin("secondary", vec![primary]).await;

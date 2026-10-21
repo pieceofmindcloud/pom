@@ -257,7 +257,7 @@ pub(super) async fn run(
 
         // (target peer, job id). The whole peer and not a URL: the request and
         // the polling go by every path the peer announces and, last, by the
-        // libp2p tunnel - a target behind NAT has no address that answers.
+        // p2p tunnel - a target behind NAT has no address that answers.
         let mut watching: Vec<(crate::network::PeerInfo, String)> = Vec::new();
         for pull in &pulls {
             if pull.target_node_id == pull.source_node_id {
@@ -335,6 +335,7 @@ pub(super) async fn run(
                 target_node_id: step.target_node_id.clone(),
                 n_gpu_layers: None,
                 offload_kqv: None,
+                inference_role: step.inference_role,
             })
             .collect::<Vec<_>>()
     });

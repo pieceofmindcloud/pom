@@ -1,6 +1,6 @@
 //! Route plan per edge: which transport this node uses to talk to each peer.
 //!
-//! The transport ladder (QUIC, HTTP/HTTPS, libp2p tunnel) rediscovered the route
+//! The transport ladder (QUIC, HTTP/HTTPS, p2p tunnel) rediscovered the route
 //! on every frame: each attempt on a dead address consumed the frame's deadline
 //! before reaching the path that works. Here the route is **measured once**,
 //! in the background, and pinned. The frame uses the pinned route; if it fails, it tries
@@ -132,7 +132,7 @@ impl PlannedRoute {
         let endpoint = match self.kind {
             RouteKind::Quic => self.quic_addr.clone().unwrap_or_default(),
             RouteKind::Http => self.base_url.clone(),
-            RouteKind::Tunnel => "libp2p".to_string(),
+            RouteKind::Tunnel => "p2p".to_string(),
         };
         format!(
             "{} {} ({:.1} ms)",
@@ -222,8 +222,8 @@ pub struct RouteBook {
     edges: RwLock<HashMap<EdgeKey, EdgePlan>>,
     attempts: RwLock<HashMap<EdgeKey, Attempt>>,
     wake: tokio::sync::Notify,
-    /// Peers this node only reaches through a relay circuit: every live libp2p
-    /// connection with them is `/p2p-circuit`. A `tunnel` route to one of them goes
+    /// Peers this node only reaches through a relay: every live endpoint
+    /// connection with them has its selected path on a relay. A `tunnel` route to one of them goes
     /// through an intermediate server on every frame. Rebuilt on every pass of the
     /// planner, because the hole punch may close after the measurement.
     relayed: RwLock<std::collections::BTreeSet<String>>,
@@ -699,8 +699,8 @@ impl EdgeTarget {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         http_bases.hash(&mut hasher);
         quic_addrs.hash(&mut hasher);
-        peer.libp2p_peer_id.hash(&mut hasher);
-        peer.libp2p_dialable_addrs().hash(&mut hasher);
+        peer.endpoint_id.hash(&mut hasher);
+        peer.endpoint_dialable_addrs().hash(&mut hasher);
         peer.deploy_id.hash(&mut hasher);
         peer.start_layer.hash(&mut hasher);
         peer.end_layer.hash(&mut hasher);
@@ -944,9 +944,9 @@ pub fn spawn_planner(network: std::sync::Arc<crate::network::Network>) {
                     .iter()
                     .filter(|peer| {
                         let links = peer
-                            .libp2p_peer_id
+                            .endpoint_id
                             .as_deref()
-                            .map(|id| network.libp2p_links(id))
+                            .map(|id| network.p2p_links(id))
                             .unwrap_or_default();
                         !links.is_empty() && links.iter().all(|link| link.relayed)
                     })

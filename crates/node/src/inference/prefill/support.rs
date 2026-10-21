@@ -22,8 +22,12 @@ fn is_zero_u64(value: &u64) -> bool {
 
 /// Maximum number of generated tokens the remote emitter drains from its
 /// queue in one callback. This is a cap, not a target: a token is sent as soon
-/// as the emitter is free, and no timer fills the gap.
-pub(crate) const REMOTE_STREAM_BATCH_LIMIT: usize = 8;
+/// as the emitter is free, and no timer fills the gap. One callback is in
+/// flight at a time, so the cap bounds delivery at `limit / RTT`: at 8, a
+/// 270 ms relayed path delivered 26 tok/s from a head producing 75. It
+/// matches the producer's queue (`step.rs`, 64), so a batch takes everything
+/// already generated.
+pub(crate) const REMOTE_STREAM_BATCH_LIMIT: usize = 64;
 /// One control frame starts generation on a remote head. Subsequent tokens
 /// return through `crate::direct::REMOTE_STREAM_RESULT_PATH` in batches.
 pub(crate) const REMOTE_STREAM_PATH: &str = "/v1/step-stream";
@@ -2065,6 +2069,10 @@ pub struct RequestTrace {
     pub mtp_draft_tokens_rejected: u64,
     /// `accepted / proposed`; null when the request proposed no MTP tokens.
     pub mtp_acceptance_rate: Option<f64>,
+    /// Prefill/decode split: the session the head fetched from the prefill machine before decoding (its bytes, the
+    /// transfer and the wait for the prefill machine's save). None when the turn did not fetch one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_transfer: Option<SessionTransferTrace>,
     #[serde(skip)]
     expected_decode_spans: u64,
     /// `/v1/step` rounds the gateway sent and got back. Every hop reports one
@@ -2083,6 +2091,36 @@ pub struct RequestTrace {
     profiling_token_index: u64,
     #[serde(skip)]
     profiling_token_indices_absolute: bool,
+}
+
+/// A session the head of a turn fetched from a peer (`plugin_session::pull_from`): from `source_node_id` to
+/// `target_node_id`, `bytes` in `transfer_ms`, after `save_wait_ms` waiting for the source's save to be written.
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
+pub struct SessionTransferTrace {
+    pub source_node_id: String,
+    pub target_node_id: String,
+    pub tokens: u64,
+    pub bytes: u64,
+    pub megabytes: f64,
+    pub transfer_ms: u64,
+    pub save_wait_ms: u64,
+    pub megabytes_per_sec: Option<f64>,
+}
+
+impl SessionTransferTrace {
+    pub fn new(source: &str, target: &str, tokens: u64, bytes: u64, transfer_ms: u64, save_wait_ms: u64) -> Self {
+        let megabytes = bytes as f64 / 1_000_000.0;
+        Self {
+            source_node_id: source.to_owned(),
+            target_node_id: target.to_owned(),
+            tokens,
+            bytes,
+            megabytes,
+            transfer_ms,
+            save_wait_ms,
+            megabytes_per_sec: (transfer_ms > 0).then(|| megabytes * 1000.0 / transfer_ms as f64),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
@@ -2363,6 +2401,7 @@ impl RequestTrace {
             mtp_draft_tokens_accepted: 0,
             mtp_draft_tokens_rejected: 0,
             mtp_acceptance_rate: None,
+            session_transfer: None,
             expected_decode_spans: 0,
             decode_rounds: 0,
             pending_direct_receipts: Vec::new(),

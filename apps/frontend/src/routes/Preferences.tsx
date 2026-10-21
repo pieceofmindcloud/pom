@@ -2,8 +2,9 @@
  * Local preferences of this node: administrative boundary, TLS between nodes,
  * thermal protection and optional credential for the Hugging Face provider.
  */
-import { Ban, Lock, MessagesSquare, RadioTower, ScrollText, ShieldCheck, ShieldOff, Thermometer, Zap } from "lucide-react";
+import { Ban, Lock, MessagesSquare, RadioTower, ScrollText, ShieldCheck, Thermometer, Zap } from "lucide-react";
 import { useEffect, useState } from "react";
+import { HttpsCertificatePanel } from "../components/HttpsCertificatePanel";
 import { HuggingFaceSettingsPanel } from "../components/HuggingFaceSettingsPanel";
 import {
   Badge,
@@ -29,67 +30,6 @@ const DEFAULT_THERMAL_POLICY: ThermalPolicy = {
   hysteresis_c: 8,
   cooldown_secs: 30,
 };
-
-export function TlsPanel({
-  tlsRequired,
-  authority,
-  busy = false,
-  onToggle,
-}: {
-  tlsRequired: boolean;
-  authority: boolean;
-  busy?: boolean;
-  onToggle?: (next: boolean) => void;
-}) {
-  const { t } = useI18n();
-  return (
-    <Panel>
-      <PanelHeader
-        title={t("network.tlsTitle")}
-        subtitle={t("network.tlsSubtitle")}
-        actions={
-          <Button
-            variant={tlsRequired ? "danger" : "primary"}
-            role="switch"
-            aria-checked={tlsRequired}
-            disabled={!authority || busy}
-            loading={busy}
-            icon={
-              tlsRequired ? (
-                <ShieldOff className="h-3.5 w-3.5" />
-              ) : (
-                <Lock className="h-3.5 w-3.5" />
-              )
-            }
-            onClick={() => onToggle?.(!tlsRequired)}
-          >
-            {t(tlsRequired ? "network.tlsDisable" : "network.tlsEnable")}
-          </Button>
-        }
-      />
-      <div className="space-y-3 px-5 py-4">
-        <KeyValue label={t("network.tlsState")}>
-          <Badge tone={tlsRequired ? "aqua" : "amber"}>
-            {tlsRequired ? (
-              <ShieldCheck className="h-3.5 w-3.5" />
-            ) : (
-              <ShieldOff className="h-3.5 w-3.5" />
-            )}
-            {t(tlsRequired ? "network.tlsOn" : "network.tlsOff")}
-          </Badge>
-        </KeyValue>
-        <Footnote icon={<ShieldCheck className="h-3.5 w-3.5" />}>
-          {t("network.tlsHowItWorks")}
-        </Footnote>
-        {!authority && (
-          <Footnote icon={<Ban className="h-3.5 w-3.5" />}>
-            {t("network.tlsNotAuthority")}
-          </Footnote>
-        )}
-      </div>
-    </Panel>
-  );
-}
 
 export function QuicPanel({
   enabled,
@@ -537,11 +477,10 @@ export function Preferences({ administrative = false }: { administrative?: boole
   // An inference node only talks to the models: GPU thermal protection and
   // the Hugging Face token are for machines that serve or download them.
   const { profile } = useProfile();
-  const inferOnly = profile === "infer";
+  const inferOnly = profile === "visitor";
   const toast = useToast();
   const invalidate = useInvalidate();
   const [thermalSaving, setThermalSaving] = useState(false);
-  const [tlsSaving, setTlsSaving] = useState(false);
   const [quicSaving, setQuicSaving] = useState(false);
   const [logsSaving, setLogsSaving] = useState(false);
   const [networkChatSaving, setNetworkChatSaving] = useState(false);
@@ -554,7 +493,6 @@ export function Preferences({ administrative = false }: { administrative?: boole
   });
   const [autoDiscoveryLoaded, setAutoDiscoveryLoaded] = useState(!administrative);
   const [autoDiscoverySaving, setAutoDiscoverySaving] = useState(false);
-  const tlsRequired = node.data?.tls_required ?? false;
   const quicEnabled = node.data?.quic_enabled ?? false;
 
   useEffect(() => {
@@ -586,22 +524,6 @@ export function Preferences({ administrative = false }: { administrative?: boole
       toast.fromError(t("network.thermalSaveFailed"), e);
     } finally {
       setThermalSaving(false);
-    }
-  }
-
-  async function toggleTls(next: boolean) {
-    setTlsSaving(true);
-    try {
-      await api.post("/api/ui/network/tls", { tls_required: next });
-      toast.success(
-        t(next ? "network.tlsEnabled" : "network.tlsDisabled"),
-        t("network.tlsPropagates"),
-      );
-      invalidate();
-    } catch (error) {
-      toast.fromError(t("network.tlsFailed"), error);
-    } finally {
-      setTlsSaving(false);
     }
   }
 
@@ -680,13 +602,13 @@ export function Preferences({ administrative = false }: { administrative?: boole
       />
       <div className="space-y-5">
         {administrative ? <>
-          {!quicEnabled && <TlsPanel tlsRequired={tlsRequired} authority={node.data?.tls_authority ?? false} busy={tlsSaving} onToggle={(next) => void toggleTls(next)} />}
-          {!tlsRequired && <QuicPanel enabled={quicEnabled} authority={node.data?.quic_authority ?? false} busy={quicSaving} onToggle={(next) => void toggleQuic(next)} />}
+          <QuicPanel enabled={quicEnabled} authority={node.data?.quic_authority ?? false} busy={quicSaving} onToggle={(next) => void toggleQuic(next)} />
           {logsPlugin.data.active && <ClusterLogsPanel enabled={node.data?.cluster_logs_enabled ?? false} authority={node.data?.cluster_logs_authority ?? false} busy={logsSaving} onToggle={(next) => void toggleLogs(next)} />}
           <NetworkChatPanel enabled={node.data?.network_chat_enabled ?? false} authority={node.data?.network_chat_authority ?? false} busy={networkChatSaving} onToggle={(next) => void toggleNetworkChat(next)} />
-          {autoDiscoveryLoaded && <AutoDiscoveryPanel status={autoDiscovery} authority={node.data?.tls_authority ?? false} busy={autoDiscoverySaving} onToggle={(next) => void toggleAutoDiscovery(next)} />}
+          {autoDiscoveryLoaded && <AutoDiscoveryPanel status={autoDiscovery} authority={node.data?.quic_authority ?? false} busy={autoDiscoverySaving} onToggle={(next) => void toggleAutoDiscovery(next)} />}
         </> : <>
           <AdminAccessPanel />
+          <HttpsCertificatePanel />
           {!inferOnly && <ThermalPanel policy={node.data?.thermal} busy={thermalSaving} onSave={(next) => void saveThermal(next)} />}
           {!inferOnly && <HuggingFaceSettingsPanel />}
         </>}

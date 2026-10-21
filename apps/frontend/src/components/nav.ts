@@ -29,7 +29,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { canAccessRoute } from "../lib/access";
-import { pluginAssetUrl, pluginLabelKey, pluginMenuItems } from "../lib/pluginUi";
+import { pluginAssetUrl, pluginLabelKey, pluginMenuItems, resolvePluginRoute } from "../lib/pluginUi";
 import type { Profile } from "../lib/profile";
 
 export interface NavLeaf {
@@ -69,6 +69,9 @@ export interface NavFooterItem {
   icon: LucideIcon;
 }
 
+/** This node's token budget screen, shown only where a logs plugin keeps budgets. */
+export const USAGE_ROUTE = "/config/usage";
+
 /**
  * The menu, in the order the operator works through it: watch the cluster, talk
  * to it, then feed it models, move files, read what happened, and configure.
@@ -76,7 +79,7 @@ export interface NavFooterItem {
 export const NAV: NavSection[] = [
   { labelKey: "nav.publicNetworks", icon: Globe2, to: "/public-networks" },
   { labelKey: "nav.dashboard", icon: Gauge, to: "/" },
-  { labelKey: "nav.chat", icon: MessagesSquare, to: "/chat", chatPanelProfiles: ["infer"] },
+  { labelKey: "nav.chat", icon: MessagesSquare, to: "/chat", chatPanelProfiles: ["visitor"] },
   { labelKey: "nav.networkChat", icon: MessagesSquare, to: "/network-chat" },
   {
     labelKey: "nav.models",
@@ -125,7 +128,7 @@ export const NAV: NavSection[] = [
     labelKey: "nav.documentation",
     icon: BookOpen,
     to: "/documentation",
-    footerProfiles: ["infer"],
+    footerProfiles: ["visitor"],
   },
   {
     labelKey: "nav.network",
@@ -137,12 +140,13 @@ export const NAV: NavSection[] = [
       { labelKey: "nav.administrators", to: "/config/administration", icon: ShieldCheck },
       { labelKey: "nav.sharing", to: "/config/sharing", icon: ShieldCheck },
       { labelKey: "nav.apiKeys", to: "/config/keys/api", icon: KeyRound },
+      { labelKey: "nav.budget", to: USAGE_ROUTE, icon: Gauge },
     ],
   },
   {
     labelKey: "nav.settings",
     icon: Settings,
-    footerProfiles: ["infer"],
+    footerProfiles: ["visitor"],
     footerTo: "/config/preferences",
     children: [
       { labelKey: "nav.preferences", to: "/config/preferences", icon: SlidersHorizontal },
@@ -179,8 +183,9 @@ function pluginIcon(name?: string | null): LucideIcon {
 
 /**
  * Applies the menu items of active plugins: an item whose `to` already exists
- * replaces that native destination; each new item goes in at the root, before the
- * documentation, in manifest order. An item with `children` becomes a section with
+ * replaces that native destination; each new item goes in at the root, right
+ * after the entries that plugin already holds, or before the documentation when
+ * it holds none, in manifest order. An item with `children` becomes a section with
  * submenus.
  */
 function withPluginMenu(sections: NavSection[], profile: Profile): NavSection[] {
@@ -189,6 +194,19 @@ function withPluginMenu(sections: NavSection[], profile: Profile): NavSection[] 
     if (section.children) copy.children = section.children.map((child) => ({ ...child }));
     return copy;
   });
+  // Without a plugin serving them, Request Logs and Statistics are the same
+  // advertising page of one purchase (the Business Pack plugin, `logs`, also
+  // brings Quota): one menu entry, so it does not look like three things to buy.
+  if (!resolvePluginRoute("/logs") && !resolvePluginRoute("/statistics")) {
+    // The deployment logs are kept by the same plugin, so without it the whole
+    // Logs section is that one entry: the Business Pack plugin's page.
+    const logs = result.findIndex((section) => section.labelKey === "nav.logs");
+    if (logs >= 0) {
+      result[logs] = { labelKey: "nav.businessPack", icon: result[logs].icon, to: "/logs" };
+    }
+    const statistics = result.findIndex((section) => section.to === "/statistics");
+    if (statistics >= 0) result.splice(statistics, 1);
+  }
   const replace = (
     target: { labelKey: string; icon?: LucideIcon; iconImage?: string; pluginCode?: string },
     item: ReturnType<typeof pluginMenuItems>[number],
@@ -217,7 +235,11 @@ function withPluginMenu(sections: NavSection[], profile: Profile): NavSection[] 
       }
     }
     if (placed) continue;
-    const docs = result.findIndex((s) => s.labelKey === "nav.documentation");
+    // Next to the entries this plugin already took (Quota after Statistics,
+    // both the logs plugin's), else at the root before the documentation.
+    const own = result.map((s) => s.pluginCode === item.code || s.children?.some((c) => c.pluginCode === item.code));
+    const last = own.lastIndexOf(true);
+    const docs = last >= 0 ? last + 1 : result.findIndex((s) => s.labelKey === "nav.documentation");
     const iconImage = item.iconImage ? pluginAssetUrl(item.code, item.iconImage) : undefined;
     // With submenus, the item becomes an expandable section; the children use the
     // named icon of each one, and the plugin's image stays only on the section.
@@ -259,8 +281,18 @@ function withPluginMenu(sections: NavSection[], profile: Profile): NavSection[] 
  * The decision of who goes where is not here: it is in `lib/access.ts`, the same
  * table the router consults.
  */
-export function navForProfile(profile: Profile, _enterpriseActive = true): NavSection[] {
+export interface NavOptions {
+  /**
+   * Whether some reachable machine runs the logs plugin that keeps the token
+   * budgets (`GET /api/ui/quota`). `false` drops Usage: without it the screen
+   * has nothing to show. Left out, Usage stays.
+   */
+  usage?: boolean;
+}
+
+export function navForProfile(profile: Profile, _enterpriseActive = true, options: NavOptions = {}): NavSection[] {
   const filterLeaf = (leaf: NavLeaf): NavLeaf | null => {
+    if (options.usage === false && leaf.to === USAGE_ROUTE) return null;
     const children = (leaf.children ?? [])
       .map(filterLeaf)
       .filter((child): child is NavLeaf => child !== null);

@@ -37,6 +37,10 @@
 //! `CallKind::BareFunction`), recovering a name with **no arguments**, since
 //! none are ever present in it — a real, accepted limit, not an oversight.
 //!
+//! A Strata `IQ3_XXS` session also opened a call with `<parameter=NAME>`
+//! where `<function=NAME>` belongs, the rest well formed and closed by
+//! `</function>`; `repair_parameter_opening` reads that shape as a call.
+//!
 //! Some Qwen turns also fall back to the older
 //! `<function_calls><invoke name="…"><parameter name="…">` dialect after a
 //! tool validation error. That recovery form is accepted as one container
@@ -160,11 +164,38 @@ const TOOL_CALL_OPEN: &str = "<tool_call>";
 const TOOL_CALL_CLOSE: &str = "</tool_call>";
 const FUNCTION_CALLS_OPEN: &str = "<function_calls>";
 const FUNCTION_CALLS_CLOSE: &str = "</function_calls>";
-/// No `=`, deliberately — `<function=NAME>` stays exclusively the *inner*
-/// content of an already-`<tool_call>`-wrapped span (see `parse_call_body`'s
-/// `Wrapped` arm). This is the unwrapped fallback shape, and only that shape.
+/// No `=`: this is the name-only `<function>NAME</function>` shape. An
+/// unwrapped `<function=NAME>` is its own guarded kind, `CallKind::BareXml`.
 const BARE_FUNCTION_OPEN: &str = "<function>";
 const BARE_FUNCTION_CLOSE: &str = "</function>";
+/// Misspelt wrappers seen from the `IQ3_XXS` quants, read as `<tool_call>`.
+const FUNCTION_CALL_OPEN: &str = "<function_call>";
+const FUNCTION_CALL_CLOSE: &str = "</function_call>";
+const PARAMETER_CALL_OPEN: &str = "<parameter_call>";
+const PARAMETER_CALL_CLOSE: &str = "</parameter_call>";
+/// Trailing space on purpose: only `<invoke name=…` opens a call.
+const INVOKE_OPEN: &str = "<invoke ";
+const INVOKE_CLOSE: &str = "</invoke>";
+const BARE_XML_OPEN: &str = "<function=";
+/// The XML namespace prefix a Strata session put on the invoke dialect's tag
+/// names (`<NS:invoke name="bash">`, then a plain `</invoke>`). Read as the
+/// plain tags; see [`strip_namespace`].
+const TAG_NAMESPACE: &str = "antml:";
+const NS_INVOKE_OPEN: &str = "<antml:invoke ";
+const NS_INVOKE_CLOSE: &str = "</antml:invoke>";
+const NS_FUNCTION_CALLS_OPEN: &str = "<antml:function_calls>";
+const NS_FUNCTION_CALLS_CLOSE: &str = "</antml:function_calls>";
+/// Closers that can trail a call that already ended; dropped, not shown.
+const STRAY_CLOSERS: &[&str] = &[
+    TOOL_CALL_CLOSE,
+    FUNCTION_CALL_CLOSE,
+    PARAMETER_CALL_CLOSE,
+    FUNCTION_CALLS_CLOSE,
+    INVOKE_CLOSE,
+    BARE_FUNCTION_CLOSE,
+    NS_INVOKE_CLOSE,
+    NS_FUNCTION_CALLS_CLOSE,
+];
 
 /// Which opening marker started the block currently being scanned — decides
 /// both which closing tag to look for and how to interpret what's captured.
@@ -179,6 +210,14 @@ enum CallKind {
     /// fallback for output that doesn't even attempt the real convention;
     /// see the module doc comment.
     BareFunction,
+    /// `<invoke name="…">...</invoke>` with no `<function_calls>` container.
+    Invoke,
+    /// `<function=NAME>...</function>` with no `<tool_call>` opener, which a
+    /// Strata session wrote straight after `</think>`. Guarded: it ends only
+    /// on a `</function>` outside any parameter value, and with tools
+    /// declared the name must be one of them, so prose quoting the tag stays
+    /// prose.
+    BareXml,
 }
 
 impl CallKind {
@@ -195,6 +234,39 @@ impl CallKind {
 
     fn close(self) -> &'static str {
         self.format().close
+    }
+
+    /// Every tag that ends a span of this kind; the earliest one wins. The
+    /// quantized models mismatch the pair they opened (`<function_call>` shut
+    /// by `</tool_call>`, `<tool_call>` shut by `</function_calls>`), so the
+    /// closer is not tied to the opener.
+    fn closers(self) -> &'static [&'static str] {
+        match self {
+            CallKind::Wrapped => &[
+                TOOL_CALL_CLOSE,
+                FUNCTION_CALL_CLOSE,
+                PARAMETER_CALL_CLOSE,
+                FUNCTION_CALLS_CLOSE,
+                NS_FUNCTION_CALLS_CLOSE,
+            ],
+            CallKind::FunctionCalls => &[
+                FUNCTION_CALLS_CLOSE,
+                TOOL_CALL_CLOSE,
+                FUNCTION_CALL_CLOSE,
+                NS_FUNCTION_CALLS_CLOSE,
+            ],
+            CallKind::BareFunction => &[BARE_FUNCTION_CLOSE],
+            // An invoke the model shut with another dialect's wrapper
+            // (`<NS:invoke …>…</function></tool_call>`) ends there too.
+            CallKind::Invoke => &[
+                INVOKE_CLOSE,
+                NS_INVOKE_CLOSE,
+                TOOL_CALL_CLOSE,
+                FUNCTION_CALLS_CLOSE,
+                NS_FUNCTION_CALLS_CLOSE,
+            ],
+            CallKind::BareXml => &[BARE_FUNCTION_CLOSE],
+        }
     }
 }
 
@@ -224,7 +296,110 @@ const CALL_FORMATS: &[CallFormat] = &[
         open: BARE_FUNCTION_OPEN,
         close: BARE_FUNCTION_CLOSE,
     },
+    CallFormat {
+        kind: CallKind::Wrapped,
+        open: FUNCTION_CALL_OPEN,
+        close: FUNCTION_CALL_CLOSE,
+    },
+    CallFormat {
+        kind: CallKind::Wrapped,
+        open: PARAMETER_CALL_OPEN,
+        close: PARAMETER_CALL_CLOSE,
+    },
+    CallFormat {
+        kind: CallKind::Invoke,
+        open: INVOKE_OPEN,
+        close: INVOKE_CLOSE,
+    },
+    CallFormat {
+        kind: CallKind::Invoke,
+        open: NS_INVOKE_OPEN,
+        close: INVOKE_CLOSE,
+    },
+    CallFormat {
+        kind: CallKind::FunctionCalls,
+        open: NS_FUNCTION_CALLS_OPEN,
+        close: FUNCTION_CALLS_CLOSE,
+    },
+    CallFormat {
+        kind: CallKind::BareXml,
+        open: BARE_XML_OPEN,
+        close: BARE_FUNCTION_CLOSE,
+    },
 ];
+
+/// The request's declared tools, by name and parameter names. It lets the
+/// scanner attribute a call the model wrote with no name at all
+/// (`<tool_call><parameter name="command">ls</parameter></invoke>`): the
+/// parameters name the tool when exactly one declared tool takes them all.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ToolSignatures(std::sync::Arc<Vec<(String, Vec<String>)>>);
+
+impl ToolSignatures {
+    pub(crate) fn of(tools: &[ToolDef]) -> Self {
+        Self(std::sync::Arc::new(
+            tools
+                .iter()
+                .map(|tool| {
+                    let params = tool
+                        .input_schema
+                        .get("properties")
+                        .and_then(|p| p.as_object())
+                        .map(|p| p.keys().cloned().collect())
+                        .unwrap_or_default();
+                    (tool.name.clone(), params)
+                })
+                .collect(),
+        ))
+    }
+
+    /// Whether `name` may be called: any name when no tools were declared.
+    fn declares(&self, name: &str) -> bool {
+        self.0.is_empty() || self.0.iter().any(|(declared, _)| declared == name)
+    }
+
+    fn attribute(&self, arguments: &serde_json::Value) -> Option<String> {
+        let keys = arguments.as_object().filter(|keys| !keys.is_empty())?;
+        let mut matching = self
+            .0
+            .iter()
+            .filter(|(_, params)| keys.keys().all(|key| params.contains(key)));
+        let (name, _) = matching.next()?;
+        matching.next().is_none().then(|| name.clone())
+    }
+}
+
+/// A `Wrapped` call that failed to parse only because it carries no name:
+/// its body is parameters alone. Attributed through `tools`, or left as the
+/// failure it was.
+fn attribute_nameless(
+    events: Vec<ScanEvent>,
+    raw: &str,
+    kind: CallKind,
+    tools: &ToolSignatures,
+) -> Vec<ScanEvent> {
+    if kind == CallKind::BareXml {
+        return match events.as_slice() {
+            [ScanEvent::ToolCallClose(Ok((name, _)))] if !tools.declares(name) => vec![
+                ScanEvent::ToolCallClose(Err(format!("{BARE_XML_OPEN}{raw}{BARE_FUNCTION_CLOSE}"))),
+            ],
+            _ => events,
+        };
+    }
+    if kind != CallKind::Wrapped || !matches!(events.as_slice(), [ScanEvent::ToolCallClose(Err(_))]) {
+        return events;
+    }
+    let body = normalize_wrapped_body(raw);
+    let call = body
+        .starts_with("<parameter")
+        .then(|| parse_invoke_parameters(&body))
+        .flatten()
+        .and_then(|arguments| Some((tools.attribute(&arguments)?, arguments)));
+    match call {
+        Some(call) => vec![ScanEvent::ToolCallClose(Ok(call))],
+        None => events,
+    }
+}
 
 /// One classified span of raw model output.
 #[derive(Debug, Clone, PartialEq)]
@@ -293,6 +468,10 @@ enum ScanState {
 pub(crate) struct TagScanner {
     pending: String,
     state: ScanState,
+    /// A call just closed and only whitespace followed: a closing tag that
+    /// comes next belongs to that call and is dropped instead of shown.
+    after_call: bool,
+    tools: ToolSignatures,
 }
 
 impl TagScanner {
@@ -300,6 +479,16 @@ impl TagScanner {
         Self {
             pending: String::new(),
             state: ScanState::Outside,
+            after_call: false,
+            tools: ToolSignatures::default(),
+        }
+    }
+
+    /// A scanner that can attribute a nameless call to one of `tools`.
+    pub(crate) fn with_tools(tools: ToolSignatures) -> Self {
+        Self {
+            tools,
+            ..Self::new()
         }
     }
 
@@ -309,6 +498,15 @@ impl TagScanner {
         loop {
             match &self.state {
                 ScanState::Outside => {
+                    while self.after_call {
+                        let trimmed = self.pending.trim_start();
+                        match STRAY_CLOSERS.iter().find(|c| trimmed.starts_with(**c)) {
+                            Some(closer) => {
+                                self.pending = trimmed[closer.len()..].to_string();
+                            }
+                            None => break,
+                        }
+                    }
                     // Earliest opener wins; the registry order breaks ties in
                     // favour of the real wrapper (higher-confidence sighting).
                     let chosen = CALL_FORMATS
@@ -317,43 +515,68 @@ impl TagScanner {
                         .filter_map(|(priority, format)| {
                             self.pending
                                 .find(format.open)
-                                .map(|position| (position, priority, format.kind))
+                                .map(|position| (position, priority, format))
                         })
                         .min_by_key(|(position, priority, _)| (*position, *priority))
-                        .map(|(position, _, kind)| (position, kind));
+                        .map(|(position, _, format)| (position, format));
                     match chosen {
-                        Some((i, kind)) => {
+                        Some((i, format)) => {
+                            let kind = format.kind;
                             let head = self.pending[..i].to_string();
-                            self.pending = self.pending[i + kind.open().len()..].to_string();
+                            self.pending = self.pending[i + format.open.len()..].to_string();
                             if !head.is_empty() {
                                 events.push(ScanEvent::Text(head));
                             }
+                            self.after_call = false;
                             events.push(ScanEvent::ToolCallOpen);
                             self.state = ScanState::Inside(String::new(), kind);
                         }
                         None => {
                             // Hold back whatever could still complete *either*
                             // candidate tag once more input arrives.
-                            let hold = CALL_FORMATS
+                            let mut hold = CALL_FORMATS
                                 .iter()
                                 .map(|format| longest_prefix_overlap(&self.pending, format.open))
                                 .max()
                                 .unwrap_or(0);
+                            if self.after_call {
+                                // A stray closer may still be arriving; keep it
+                                // (and the whitespace before it) back.
+                                let trimmed = self.pending.trim_start();
+                                if !trimmed.is_empty()
+                                    && STRAY_CLOSERS.iter().any(|c| c.starts_with(trimmed))
+                                {
+                                    hold = hold.max(self.pending.len());
+                                }
+                            }
                             let flush_len = self.pending.len() - hold;
                             if flush_len > 0 {
-                                events.push(ScanEvent::Text(self.pending[..flush_len].to_string()));
+                                let flushed = self.pending[..flush_len].to_string();
+                                if !flushed.trim().is_empty() {
+                                    self.after_call = false;
+                                }
+                                events.push(ScanEvent::Text(flushed));
                                 self.pending = self.pending[flush_len..].to_string();
                             }
                             break;
                         }
                     }
                 }
-                ScanState::Inside(_, kind) => {
-                    let close_tag = kind.close();
-                    match self.pending.find(close_tag) {
-                        Some(i) => {
+                ScanState::Inside(raw, kind) => {
+                    let closed = kind
+                        .closers()
+                        .iter()
+                        .filter_map(|tag| {
+                            let own = *tag == kind.close() && *kind != CallKind::BareXml;
+                            closer_position(raw, &self.pending, tag, own)
+                                .map(|at| (at, tag.len()))
+                        })
+                        .min_by_key(|(at, _)| *at);
+                    match closed {
+                        Some((i, close_len)) => {
                             let head = self.pending[..i].to_string();
-                            self.pending = self.pending[i + close_tag.len()..].to_string();
+                            self.pending = self.pending[i + close_len..].to_string();
+                            self.after_call = true;
                             let ScanState::Inside(mut raw, kind) =
                                 std::mem::replace(&mut self.state, ScanState::Outside)
                             else {
@@ -363,10 +586,20 @@ impl TagScanner {
                                 raw.push_str(&head);
                                 events.push(ScanEvent::ToolCallChunk(head));
                             }
-                            events.extend(complete_call_events(&raw, kind));
+                            events.extend(attribute_nameless(
+                                complete_call_events(&raw, kind),
+                                &raw,
+                                kind,
+                                &self.tools,
+                            ));
                         }
                         None => {
-                            let hold = longest_prefix_overlap(&self.pending, close_tag);
+                            let hold = kind
+                                .closers()
+                                .iter()
+                                .map(|tag| longest_prefix_overlap(&self.pending, tag))
+                                .max()
+                                .unwrap_or(0);
                             let flush_len = self.pending.len() - hold;
                             if flush_len > 0 {
                                 let flushed = self.pending[..flush_len].to_string();
@@ -396,11 +629,29 @@ impl TagScanner {
         match self.state {
             ScanState::Outside if self.pending.is_empty() => Vec::new(),
             ScanState::Outside => vec![ScanEvent::Text(self.pending)],
-            ScanState::Inside(raw, kind) => vec![ScanEvent::Text(format!(
-                "{}{raw}{}",
-                kind.open(),
-                self.pending
-            ))],
+            ScanState::Inside(raw, kind) => {
+                // The model stopped without shutting the tag. When what it
+                // wrote is a whole call, it is one: the missing closer is the
+                // quantized model's slip, not a reason to show the markup.
+                let body = format!("{raw}{}", self.pending);
+                let calls =
+                    attribute_nameless(complete_call_events(&body, kind), &body, kind, &self.tools);
+                let whole = kind != CallKind::BareFunction
+                    && !calls.is_empty()
+                    && calls
+                        .iter()
+                        .all(|e| matches!(e, ScanEvent::ToolCallOpen | ScanEvent::ToolCallClose(Ok(_))));
+                if whole {
+                    let mut events = Vec::new();
+                    if !self.pending.is_empty() {
+                        events.push(ScanEvent::ToolCallChunk(self.pending));
+                    }
+                    events.extend(calls);
+                    events
+                } else {
+                    vec![ScanEvent::Text(format!("{}{body}", kind.open()))]
+                }
+            }
         }
     }
 
@@ -428,7 +679,9 @@ impl TagScanner {
             ScanState::Inside(raw, kind) => {
                 let body = format!("{raw}{}", self.pending);
                 let events = if kind == CallKind::FunctionCalls {
-                    partial_function_call_events(&body)
+                    partial_function_call_events(&strip_namespace(&body))
+                } else if kind == CallKind::Invoke {
+                    partial_function_call_events(&strip_namespace(&format!("{INVOKE_OPEN}{body}")))
                 } else {
                     parse_partial_call_body(&body, kind)
                         .map(ScanEvent::ToolCallTruncated)
@@ -451,11 +704,14 @@ fn parse_partial_call_body(raw: &str, kind: CallKind) -> Option<PartialCall> {
     match kind {
         // `<function>NAME` with no closing: `NAME` may be half written, and
         // half a name identifies no tool at all.
-        CallKind::BareFunction | CallKind::FunctionCalls => None,
+        CallKind::BareFunction | CallKind::FunctionCalls | CallKind::Invoke => None,
+        CallKind::BareXml => parse_partial_function_call_xml(&format!("{BARE_XML_OPEN}{raw}")),
         CallKind::Wrapped => {
             let trimmed = raw.trim_start();
             if trimmed.starts_with("<function=") {
                 parse_partial_function_call_xml(trimmed)
+            } else if let Some(repaired) = repair_parameter_opening(trimmed) {
+                parse_partial_function_call_xml(&repaired)
             } else {
                 parse_partial_function_call_json(trimmed)
             }
@@ -618,16 +874,94 @@ fn longest_prefix_overlap(s: &str, tag: &str) -> usize {
         .unwrap_or(0)
 }
 
+/// One bare invoke rebuilt from the text after its opener: namespace taken
+/// off, a trailing `</function>` (another dialect's closer) dropped, and the
+/// `</invoke>` the scanner consumed, or the model never wrote, put back.
+fn invoke_body(raw: &str) -> String {
+    let normalized = strip_namespace(raw);
+    let mut body = normalized.trim_end();
+    while let Some(rest) = body
+        .strip_suffix(BARE_FUNCTION_CLOSE)
+        .or_else(|| body.strip_suffix(INVOKE_CLOSE))
+    {
+        body = rest.trim_end();
+    }
+    format!("{INVOKE_OPEN}{body}{INVOKE_CLOSE}")
+}
+
+/// Where `tag` ends the span opened by `raw`, in `pending`. The kind's own
+/// closer ends it wherever it appears, as it always did. A closer of another
+/// dialect only counts outside a parameter value: a `write` whose content
+/// mentions `</function_call>` must not be cut there.
+fn closer_position(raw: &str, pending: &str, tag: &str, own: bool) -> Option<usize> {
+    if own {
+        return pending.find(tag);
+    }
+    let mut from = 0;
+    while let Some(relative) = pending[from..].find(tag) {
+        let at = from + relative;
+        if open_parameters(raw) + open_parameters(&pending[..at]) <= 0 {
+            return Some(at);
+        }
+        from = at + tag.len();
+    }
+    None
+}
+
+/// Parameter tags opened minus closed in `text`, in either spelling.
+fn open_parameters(text: &str) -> isize {
+    let text = strip_namespace(text);
+    let opened = text.matches("<parameter=").count() + text.matches("<parameter ").count();
+    opened as isize - text.matches(PARAM_CLOSE).count() as isize
+}
+
+/// The tags of the call dialects with the XML namespace prefix taken off:
+/// `<NS:invoke`, `</NS:parameter>` and the like read as their plain forms.
+/// Only those tag names are touched, never other text.
+fn strip_namespace(text: &str) -> std::borrow::Cow<'_, str> {
+    if !text.contains(TAG_NAMESPACE) {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let mut out = text.to_string();
+    for tag in ["invoke", "parameter", "function_calls"] {
+        out = out
+            .replace(&format!("<{TAG_NAMESPACE}{tag}"), &format!("<{tag}"))
+            .replace(&format!("</{TAG_NAMESPACE}{tag}>"), &format!("</{tag}>"));
+    }
+    std::borrow::Cow::Owned(out)
+}
+
 /// Resolves the close of one scanner span. The compatibility
 /// `<function_calls>` container may hold several `<invoke>` calls; each one
 /// becomes its own open/close pair so streaming adapters allocate distinct
 /// tool-call indexes without ever exposing the container markup as content.
 fn complete_call_events(raw: &str, kind: CallKind) -> Vec<ScanEvent> {
-    if kind != CallKind::FunctionCalls {
-        return vec![ScanEvent::ToolCallClose(parse_call_body(raw, kind))];
-    }
     let fallback = || format!("{}{raw}{}", kind.open(), kind.close());
-    match parse_function_calls_xml(raw) {
+    match kind {
+        CallKind::Wrapped | CallKind::BareFunction => {
+            return vec![ScanEvent::ToolCallClose(parse_call_body(raw, kind))];
+        }
+        // `<function_calls>` around the `<function=NAME>` body of a
+        // `<tool_call>`: one call, read the way the real wrapper is.
+        CallKind::FunctionCalls if raw.trim_start().starts_with("<function=") => {
+            let call = parse_call_body(raw, CallKind::Wrapped).map_err(|_| fallback());
+            return vec![ScanEvent::ToolCallClose(call)];
+        }
+        CallKind::Invoke => {
+            let call = parse_function_calls_xml(&invoke_body(raw))
+                .filter(|calls| calls.len() == 1)
+                .and_then(|mut calls| calls.pop())
+                .ok_or_else(fallback);
+            return vec![ScanEvent::ToolCallClose(call)];
+        }
+        CallKind::BareXml => {
+            let call = parse_function_call_xml(&format!("{BARE_XML_OPEN}{raw}{BARE_FUNCTION_CLOSE}"))
+                .ok_or_else(fallback);
+            return vec![ScanEvent::ToolCallClose(call)];
+        }
+        CallKind::FunctionCalls => {}
+    }
+    match parse_function_calls_xml(&strip_namespace(raw)) {
         Some(calls) if !calls.is_empty() => calls
             .into_iter()
             .enumerate()
@@ -657,13 +991,28 @@ fn parse_call_body(raw: &str, kind: CallKind) -> Result<(String, serde_json::Val
     let fallback = || format!("{}{raw}{}", kind.open(), kind.close());
     match kind {
         CallKind::BareFunction => parse_bare_function_call(raw).ok_or_else(fallback),
-        CallKind::FunctionCalls => parse_function_calls_xml(raw)
+        CallKind::BareXml => parse_function_call_xml(&format!("{BARE_XML_OPEN}{raw}{BARE_FUNCTION_CLOSE}"))
+            .ok_or_else(fallback),
+        CallKind::FunctionCalls | CallKind::Invoke => parse_function_calls_xml(raw)
             .filter(|calls| calls.len() == 1)
             .and_then(|mut calls| calls.pop())
             .ok_or_else(fallback),
         CallKind::Wrapped => {
+            let normalized = normalize_wrapped_body(raw);
+            let raw = normalized.as_str();
+            if raw.trim_start().starts_with("<invoke") {
+                return parse_function_calls_xml(raw)
+                    .filter(|calls| calls.len() == 1)
+                    .and_then(|mut calls| calls.pop())
+                    .ok_or_else(fallback);
+            }
             if raw.trim_start().starts_with("<function=") {
                 return parse_function_call_xml(raw).ok_or_else(fallback);
+            }
+            if let Some(repaired) = repair_parameter_opening(raw) {
+                if raw.trim_end().ends_with("</function>") {
+                    return parse_function_call_xml(&repaired).ok_or_else(fallback);
+                }
             }
             match serde_json::from_str::<serde_json::Value>(raw.trim()) {
                 Ok(v) => match v.get("name").and_then(|n| n.as_str()) {
@@ -679,6 +1028,72 @@ fn parse_call_body(raw: &str, kind: CallKind) -> Result<(String, serde_json::Val
             }
         }
     }
+}
+
+/// The text between a wrapper's tags with the slips of the quantized models
+/// undone, so the dialect parsers see one canonical shape: a repeated opener
+/// (`<tool_call><tool_call><function=…>`) collapses, closers of another
+/// dialect trailing the call (`…</function></invoke>`) go, and a doubled
+/// `</function>` becomes one. An `<invoke>` body is shut when it was not.
+fn normalize_wrapped_body(raw: &str) -> String {
+    let normalized = strip_namespace(raw);
+    let mut body = normalized.trim();
+    loop {
+        let stripped = [TOOL_CALL_OPEN, FUNCTION_CALL_OPEN, PARAMETER_CALL_OPEN, FUNCTION_CALLS_OPEN]
+            .iter()
+            .find_map(|open| body.strip_prefix(open))
+            .map(str::trim_start);
+        match stripped {
+            Some(rest) => body = rest,
+            None => break,
+        }
+    }
+    let is_invoke = body.starts_with("<invoke");
+    loop {
+        // `</invoke>` is part of an invoke body and noise after anything else.
+        let noise: &[&str] = if is_invoke {
+            &[TOOL_CALL_CLOSE, FUNCTION_CALL_CLOSE, FUNCTION_CALLS_CLOSE]
+        } else {
+            &[TOOL_CALL_CLOSE, FUNCTION_CALL_CLOSE, FUNCTION_CALLS_CLOSE, INVOKE_CLOSE]
+        };
+        if let Some(rest) = noise.iter().find_map(|close| body.strip_suffix(close)) {
+            body = rest.trim_end();
+            continue;
+        }
+        if let Some(rest) = body.strip_suffix(BARE_FUNCTION_CLOSE) {
+            if rest.trim_end().ends_with(BARE_FUNCTION_CLOSE) {
+                body = rest.trim_end();
+                continue;
+            }
+        }
+        break;
+    }
+    if is_invoke && !body.ends_with(INVOKE_CLOSE) {
+        return format!("{body}{INVOKE_CLOSE}");
+    }
+    body.to_string()
+}
+
+/// A call whose opening tag the model wrote as `<parameter=NAME>` instead of
+/// `<function=NAME>` (seen from a 3-bit Strata quant on a long turn):
+/// `<tool_call><parameter=bash><parameter=command>ls</parameter></function></tool_call>`.
+/// Rewritten to the `<function=NAME>` form only when the next tag is another
+/// `<parameter=`, so a tag holding a value is never taken for a name; the
+/// complete parser also requires the closing `</function>`.
+fn repair_parameter_opening(raw: &str) -> Option<String> {
+    // Either spelling: `<parameter=edit>` or `<parameter name="edit">`.
+    let (name, after) = parameter_open(raw.trim_start())?;
+    if name.contains(char::is_whitespace) {
+        return None;
+    }
+    let after = after.trim_start();
+    is_parameter_tag(after).then(|| format!("<function={name}>\n{after}"))
+}
+
+/// `<parameter=` or `<parameter ` - the start of a parameter tag in either
+/// spelling, and not `<parameters>` or another word.
+fn is_parameter_tag(text: &str) -> bool {
+    text.starts_with("<parameter=") || text.starts_with("<parameter ")
 }
 
 /// Hermes-style templates normally emit `arguments` as an object, but some
@@ -757,6 +1172,19 @@ fn decode_parameter_value(value_raw: &str) -> serde_json::Value {
         .unwrap_or_else(|_| serde_json::Value::String(value_raw.to_string()))
 }
 
+/// Splits `<parameter=NAME>` or `<parameter name="NAME">` into the name and
+/// what follows the tag. The models mix the two spellings inside one call.
+fn parameter_open(s: &str) -> Option<(&str, &str)> {
+    let rest = s.strip_prefix("<parameter")?;
+    let (head, after) = rest.split_once('>')?;
+    let name = match head.strip_prefix('=') {
+        Some(name) => name,
+        None => quoted_attribute(head, "name")?,
+    };
+    let name = name.trim();
+    (!name.is_empty()).then_some((name, after))
+}
+
 fn parse_function_call_xml(raw: &str) -> Option<(String, serde_json::Value)> {
     let raw = raw.trim();
     let rest = raw.strip_prefix("<function=")?;
@@ -774,9 +1202,7 @@ fn parse_function_call_xml(raw: &str) -> Option<(String, serde_json::Value)> {
         if cursor_trimmed.is_empty() {
             break;
         }
-        let after_open = cursor_trimmed.strip_prefix("<parameter=")?;
-        let (pname, after_name) = after_open.split_once('>')?;
-        let pname = pname.trim();
+        let (pname, after_name) = parameter_open(cursor_trimmed)?;
         let close_idx = after_name.find(PARAM_CLOSE)?;
         let value_raw = after_name[..close_idx].trim();
         args.insert(pname.to_string(), decode_parameter_value(value_raw));
@@ -824,13 +1250,7 @@ fn parse_invoke_parameters(body: &str) -> Option<serde_json::Value> {
         if !trimmed.starts_with("<parameter") {
             return None;
         }
-        let open_end = trimmed.find('>')?;
-        let opening = &trimmed[..=open_end];
-        let name = quoted_attribute(opening, "name")?.trim();
-        if name.is_empty() {
-            return None;
-        }
-        let after_open = &trimmed[open_end + 1..];
+        let (name, after_open) = parameter_open(trimmed)?;
         let close = after_open.find(PARAM_CLOSE)?;
         args.insert(
             name.to_string(),
@@ -1075,13 +1495,11 @@ fn streamable_arguments_prefix(raw: &str, eager: bool) -> Option<String> {
     let mut sole_arguments_object = false;
     loop {
         let t = cursor.trim_start();
-        let Some(after_open) = t.strip_prefix("<parameter=") else {
+        // Both spellings, as the complete parser reads them: a parameter this
+        // skipped would be missing from the streamed arguments for good.
+        let Some((pname, after_name)) = parameter_open(t) else {
             break;
         };
-        let Some((pname, after_name)) = after_open.split_once('>') else {
-            break;
-        };
-        let pname = pname.trim();
         match after_name.find("</parameter>") {
             Some(close) => {
                 let value_raw = after_name[..close].trim();
@@ -1345,8 +1763,14 @@ fn merge_adjacent_text(parts: Vec<OutputPart>) -> Vec<OutputPart> {
 /// calls — a thin wrapper over [`TagScanner`], so this and each adapter's
 /// streaming path can never disagree about how a given span of text is
 /// classified.
+#[cfg(test)]
 pub(crate) fn parse_output(text: &str) -> Vec<OutputPart> {
-    let mut scanner = TagScanner::new();
+    parse_output_with_tools(text, &ToolSignatures::default())
+}
+
+/// [`parse_output`] that can attribute a nameless call to a declared tool.
+pub(crate) fn parse_output_with_tools(text: &str, tools: &ToolSignatures) -> Vec<OutputPart> {
+    let mut scanner = TagScanner::with_tools(tools.clone());
     let mut events = scanner.feed(text);
     events.extend(scanner.finish());
     merge_adjacent_text(events_to_parts(events))
@@ -1356,8 +1780,17 @@ pub(crate) fn parse_output(text: &str) -> Vec<OutputPart> {
 /// a call open and not closed comes back **structured and incomplete** instead
 /// of degrading into text. The `bool` says whether the cut fell inside a
 /// call - see [`TagScanner::finish_truncated`].
+#[cfg(test)]
 pub(crate) fn parse_output_truncated(text: &str) -> (Vec<OutputPart>, bool) {
-    let mut scanner = TagScanner::new();
+    parse_output_truncated_with_tools(text, &ToolSignatures::default())
+}
+
+/// [`parse_output_truncated`] that can attribute a nameless call.
+pub(crate) fn parse_output_truncated_with_tools(
+    text: &str,
+    tools: &ToolSignatures,
+) -> (Vec<OutputPart>, bool) {
+    let mut scanner = TagScanner::with_tools(tools.clone());
     let mut events = scanner.feed(text);
     let (tail, discarded) = scanner.finish_truncated();
     events.extend(tail);
@@ -1611,6 +2044,39 @@ mod tests {
     }
 
     // ── bare `<function>NAME</function>`, no wrapper ─────────────────────────
+
+    #[test]
+    fn parse_output_recovers_a_call_opened_with_a_parameter_tag() {
+        let text = "Looking.\n<tool_call>\n<parameter=bash>\n<parameter=command>\ncd /x && grep -n \"seal(\" a.rs | head -20\n</parameter>\n</function>\n</tool_call>";
+        assert_eq!(
+            parse_output(text),
+            vec![
+                OutputPart::Text("Looking.\n".into()),
+                OutputPart::ToolCall {
+                    name: "bash".into(),
+                    arguments: json!({"command": "cd /x && grep -n \"seal(\" a.rs | head -20"}),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_parameter_tag_holding_a_value_is_not_taken_for_a_call_name() {
+        let text = "<tool_call>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call>";
+        assert_eq!(parse_output(text), vec![OutputPart::Text(text.into())]);
+    }
+
+    #[test]
+    fn a_parameter_opened_call_cut_by_the_cap_keeps_its_name() {
+        let (parts, truncated) = parse_output_truncated(
+            "<tool_call>\n<parameter=bash>\n<parameter=command>\nls -la",
+        );
+        assert!(truncated);
+        match parts.as_slice() {
+            [OutputPart::ToolCallTruncated(partial)] => assert_eq!(partial.name, "bash"),
+            other => panic!("expected one truncated call, got {other:?}"),
+        }
+    }
 
     #[test]
     fn parse_output_recovers_a_bare_function_call_with_no_wrapper() {
@@ -2132,4 +2598,310 @@ mod tests {
         assert_eq!(feed_in_chunks(full, 1), whole); // byte-at-a-time
         assert_eq!(feed_in_chunks(full, 3), whole); // arbitrary split
     }
+
+    fn only_call(text: &str) -> (String, serde_json::Value) {
+        let parts = parse_output(text);
+        let calls: Vec<_> = parts
+            .iter()
+            .filter_map(|p| match p {
+                OutputPart::ToolCall { name, arguments } => Some((name.clone(), arguments.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(calls.len(), 1, "{parts:?}");
+        for part in &parts {
+            if let OutputPart::Text(t) = part {
+                assert!(!t.contains('<'), "markup leaked: {t:?}");
+            }
+        }
+        calls.into_iter().next().unwrap()
+    }
+
+    #[test]
+    fn a_function_call_wrapper_is_read_as_a_call() {
+        let (name, args) = only_call(
+            "go\n<function_call>\n<function=bash>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call>",
+        );
+        assert_eq!(name, "bash");
+        assert_eq!(args["command"], "ls");
+    }
+
+    #[test]
+    fn a_parameter_call_wrapper_is_read_as_a_call() {
+        let (name, _) = only_call(
+            "<parameter_call>\n<function=bash>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call>",
+        );
+        assert_eq!(name, "bash");
+    }
+
+    #[test]
+    fn function_calls_around_a_function_body_is_one_call() {
+        let (name, args) = only_call(
+            "<function_calls>\n<function=execute>\n<parameter=code>\nreturn 1;\n</parameter>\n</function>\n</tool_call>",
+        );
+        assert_eq!(name, "execute");
+        assert_eq!(args["code"], "return 1;");
+    }
+
+    #[test]
+    fn a_bare_invoke_is_a_call() {
+        let (name, args) = only_call(
+            "<invoke name=\"read\">\n<parameter name=\"path\">a.rs</parameter>\n</invoke>",
+        );
+        assert_eq!(name, "read");
+        assert_eq!(args["path"], "a.rs");
+    }
+
+    #[test]
+    fn a_repeated_tool_call_opener_collapses() {
+        let (name, args) = only_call(
+            "<tool_call>\n\n<tool_call>\n<function=read>\n<parameter=path>\nx\n</parameter>\n</function>\n</tool_call>",
+        );
+        assert_eq!(name, "read");
+        assert_eq!(args["path"], "x");
+    }
+
+    #[test]
+    fn both_parameter_spellings_mix_inside_one_call() {
+        let (_, args) = only_call(
+            "<tool_call>\n<function=edit>\n<parameter=path>\nf\n</parameter>\n<parameter name=\"oldText\">a</parameter>\n</function>\n</tool_call>",
+        );
+        assert_eq!(args["path"], "f");
+        assert_eq!(args["oldText"], "a");
+    }
+
+    #[test]
+    fn an_invoke_inside_a_tool_call_wrapper_is_a_call() {
+        let (name, args) =
+            only_call("<tool_call>\n<invoke name=\"bash\">\n<parameter name=\"command\">ls</parameter>\n</invoke>\n</tool_call>");
+        assert_eq!(name, "bash");
+        assert_eq!(args["command"], "ls");
+    }
+
+    #[test]
+    fn stray_closers_after_a_call_are_dropped() {
+        let (name, _) = only_call(
+            "<tool_call>\n<function=bash>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call></function>\n</tool_call>",
+        );
+        assert_eq!(name, "bash");
+    }
+
+    #[test]
+    fn a_doubled_function_close_without_tool_call_close_is_a_call() {
+        let (name, args) = only_call(
+            "<function_call>\n<function=bash>\n<parameter=command>\nls\n</parameter>\n</function>\n</function>",
+        );
+        assert_eq!(name, "bash");
+        assert_eq!(args["command"], "ls");
+    }
+
+    #[test]
+    fn an_unshut_complete_call_at_end_of_output_is_a_call() {
+        let (name, _) = only_call(
+            "<tool_call>\n<function=bash>\n<parameter=command>\nls\n</parameter>\n</function>\n",
+        );
+        assert_eq!(name, "bash");
+    }
+
+    #[test]
+    fn an_unfinished_call_at_end_of_output_stays_text() {
+        let parts = parse_output("<tool_call>\n<function=bash>\n<parameter=command>\nls");
+        assert!(parts.iter().all(|p| matches!(p, OutputPart::Text(_))), "{parts:?}");
+    }
+
+    #[test]
+    fn the_new_dialects_survive_any_chunking() {
+        let text = "hi\n<function_call>\n<function=bash>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call></function>\nbye";
+        let whole = parse_output(text);
+        for size in 1..9 {
+            let mut scanner = TagScanner::new();
+            let mut events = Vec::new();
+            for chunk in text.as_bytes().chunks(size) {
+                events.extend(scanner.feed(std::str::from_utf8(chunk).unwrap()));
+            }
+            events.extend(scanner.finish());
+            assert_eq!(merge_adjacent_text(events_to_parts(events)), whole, "chunk {size}");
+        }
+    }
+
+
+    fn signatures() -> ToolSignatures {
+        let tool = |name: &str, params: serde_json::Value| ToolDef {
+            name: name.to_string(),
+            description: None,
+            input_schema: json!({"type": "object", "properties": params}),
+            eager_input_streaming: None,
+        };
+        ToolSignatures::of(&[
+            tool("read", json!({"path": {}, "offset": {}, "limit": {}})),
+            tool("bash", json!({"command": {}, "timeout": {}})),
+            tool("write", json!({"path": {}, "content": {}})),
+        ])
+    }
+
+    #[test]
+    fn a_nameless_call_is_attributed_by_its_parameters() {
+        let text = "<tool_call>\n<parameter name=\"command\">ls -la</parameter>\n</invoke>\n";
+        let parts = parse_output_with_tools(text, &signatures());
+        assert_eq!(
+            parts,
+            vec![OutputPart::ToolCall {
+                name: "bash".to_string(),
+                arguments: json!({"command": "ls -la"}),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_nameless_call_two_tools_could_take_stays_text() {
+        let text = "<tool_call>\n<parameter=path>\na.rs\n</parameter>\n</tool_call>";
+        let parts = parse_output_with_tools(text, &signatures());
+        assert!(parts.iter().all(|p| matches!(p, OutputPart::Text(_))), "{parts:?}");
+    }
+
+    #[test]
+    fn without_declared_tools_a_nameless_call_stays_text() {
+        let text = "<tool_call>\n<parameter name=\"command\">ls</parameter>\n</tool_call>";
+        assert!(parse_output(text).iter().all(|p| matches!(p, OutputPart::Text(_))));
+    }
+
+
+    #[test]
+    fn a_mixed_spelling_call_streams_every_parameter() {
+        let raw = "<function=edit>\n<parameter=path>\nf\n</parameter>\n<parameter name=\"oldText\">aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa</parameter>\n</function>\n";
+        let mut streamer = CallArgsStreamer::new(true);
+        let mut out = String::new();
+        for end in 1..=raw.len() {
+            if let Some(delta) = streamer.advance(&raw[..end]) {
+                out.push_str(&delta);
+            }
+        }
+        let (_, parsed) = parse_function_call_xml(raw).unwrap();
+        if let Some(delta) = streamer.finish_complete(raw, &parsed) {
+            out.push_str(&delta);
+        }
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&out).unwrap(), parsed);
+    }
+
+    #[test]
+    fn a_bare_invoke_cut_by_the_cap_comes_back_structured() {
+        let (parts, cut) =
+            parse_output_truncated("<invoke name=\"bash\">\n<parameter name=\"command\">ls -l");
+        assert!(cut);
+        assert!(
+            matches!(parts.as_slice(), [OutputPart::ToolCallTruncated(p)] if p.name == "bash"),
+            "{parts:?}"
+        );
+    }
+
+
+    #[test]
+    fn a_foreign_closer_inside_a_value_does_not_cut_the_call() {
+        let text = "<tool_call>\n<function=write>\n<parameter=content>\nends with </function_call> and </function_calls>\n</parameter>\n</function>\n</tool_call>";
+        let (name, args) = only_call(text);
+        assert_eq!(name, "write");
+        assert_eq!(args["content"], "ends with </function_call> and </function_calls>");
+        // Byte by byte, the same answer.
+        let mut scanner = TagScanner::new();
+        let mut events = Vec::new();
+        for (i, _) in text.char_indices() {
+            events.extend(scanner.feed(&text[i..i + 1]));
+        }
+        events.extend(scanner.finish());
+        assert_eq!(merge_adjacent_text(events_to_parts(events)), parse_output(text));
+    }
+
+    #[test]
+    fn a_foreign_closer_outside_a_value_still_ends_the_call() {
+        let (name, _) = only_call(
+            "<tool_call>\n<function=bash>\n<parameter=command>\nls\n</parameter>\n</function>\n</function_calls>",
+        );
+        assert_eq!(name, "bash");
+    }
+
+
+    #[test]
+    fn a_call_named_by_a_quoted_parameter_tag_is_read_as_that_call() {
+        // Logged verbatim (Strata, 2026-10-20): the name in the quoted
+        // spelling and never closed, inside a misspelt wrapper.
+        let (name, args) = only_call(
+            "Let me add it. <function_call>\n<parameter name=\"edit\">\n<parameter name=\"path\">crates/node/src/backend/db.rs</parameter>\n<parameter name=\"edits\">[{\"newText\": \"a\", \"oldText\": \"b\"}]\n</parameter>\n</function>\n</tool_call>\n",
+        );
+        assert_eq!(name, "edit");
+        assert_eq!(args["path"], "crates/node/src/backend/db.rs");
+        assert_eq!(args["edits"], json!([{"newText": "a", "oldText": "b"}]));
+    }
+
+
+    #[test]
+    fn a_call_with_no_opener_after_the_reasoning_is_a_call() {
+        // Logged verbatim (Strata, 2026-10-20), right after `</think>`.
+        let (name, args) = only_call(
+            "<function=shell>\n<parameter=command>\nsed -n '1870,1895p' crates/node/src/network/network.rs\n</parameter>\n</function>\n</tool_call>\n",
+        );
+        assert_eq!(name, "shell");
+        assert_eq!(args["command"], "sed -n '1870,1895p' crates/node/src/network/network.rs");
+    }
+
+    #[test]
+    fn a_bare_function_tag_with_an_undeclared_name_stays_text() {
+        let text = "The parser reads <function=NAME><parameter=P>v</parameter></function> here.";
+        let parts = parse_output_with_tools(text, &signatures());
+        assert_eq!(parts, vec![OutputPart::Text(text.to_string())]);
+    }
+
+    #[test]
+    fn a_function_close_inside_a_value_does_not_end_a_bare_call() {
+        let (_, args) = only_call(
+            "<function=write>\n<parameter=content>\nends </function> here\n</parameter>\n</function>",
+        );
+        assert_eq!(args["content"], "ends </function> here");
+    }
+
+
+    #[test]
+    fn a_namespaced_invoke_is_a_call() {
+        // Logged verbatim (Strata, 2026-10-21): the opener carries the XML
+        // namespace, the closer does not.
+        let (name, args) = only_call(
+            "<antml:invoke name=\"bash\">\n<parameter name=\"command\">cd /x && sed -n '1526,1580p' admin.rs</parameter>\n</invoke>\n",
+        );
+        assert_eq!(name, "bash");
+        assert_eq!(args["command"], "cd /x && sed -n '1526,1580p' admin.rs");
+    }
+
+    #[test]
+    fn a_namespaced_invoke_shut_by_another_dialect_is_a_call() {
+        let (name, args) = only_call(
+            "<antml:invoke name=\"edit\">\n<parameter name=\"path\">a.rs</parameter>\n<parameter name=\"oldText\">x</parameter>\n</function>\n</tool_call>",
+        );
+        assert_eq!(name, "edit");
+        assert_eq!(args["oldText"], "x");
+    }
+
+    #[test]
+    fn a_namespaced_container_with_namespaced_tags_is_a_call() {
+        let (name, args) = only_call(
+            "<antml:function_calls>\n<antml:invoke name=\"read\">\n<antml:parameter name=\"path\">a.rs</antml:parameter>\n</antml:invoke>\n</antml:function_calls>",
+        );
+        assert_eq!(name, "read");
+        assert_eq!(args["path"], "a.rs");
+    }
+
+    #[test]
+    fn a_namespaced_invoke_survives_any_chunking() {
+        let text = "ok <antml:invoke name=\"bash\">\n<parameter name=\"command\">ls</parameter>\n</invoke>\n";
+        let whole = parse_output(text);
+        assert!(whole.iter().any(|p| matches!(p, OutputPart::ToolCall { .. })), "{whole:?}");
+        for size in 1..9 {
+            let mut scanner = TagScanner::new();
+            let mut events = Vec::new();
+            for chunk in text.as_bytes().chunks(size) {
+                events.extend(scanner.feed(std::str::from_utf8(chunk).unwrap()));
+            }
+            events.extend(scanner.finish());
+            assert_eq!(merge_adjacent_text(events_to_parts(events)), whole, "chunk {size}");
+        }
+    }
+
 }

@@ -5,8 +5,7 @@ This subsystem moves GGUF slices between machines in the cluster, entirely in
 the same download: **pull** (this node asks a peer for a slice) and **offer**
 (the machine's owner picks a file, the peer accepts and then pulls). The bytes
 travel over the peers' existing HTTP gateway, with `Range` for resume - not
-over libp2p bitswap, which left the swarm because it was an orphan protocol
-(see `p2p-network.md`).
+over a bitswap protocol, which was removed because nothing served it.
 
 Where the file lands depends on what it is. A **part** of a slicing goes to
 `<shard_dir>/<model>-<short hash of the original>/<sha256>.gguf`, with the
@@ -158,7 +157,7 @@ node (`RouteTable::last_success`, the same one the participants screen shows
 as the direct route), then the ones that have not failed recently, and last
 the discredited ones. The offer is a signed control call
 (`GatewayState::control_post_json`): it tries each address in that order and,
-last, the libp2p tunnel (`/api/transfer/offer` is on the tunnel's list). The
+last, the p2p tunnel (`/api/transfer/offer` is on the tunnel's list). The
 return address (`from_gateway`, through `local_ip_for`) comes from the first
 of that list, so it points at the interface through which the peer is really
 reached.
@@ -172,7 +171,7 @@ to a single HTTP address, so a target behind NAT could receive a file but could
 never be told to: the deployment failed with "error sending request".
 
 The download itself is direct HTTP when the address connects. When it does
-not - two machines behind NAT - `run_download` falls back to the libp2p
+not - two machines behind NAT - `run_download` falls back to the p2p
 tunnel (`download_over_tunnel`): the manifest and the `.pom` go as small signed
 requests, and the file comes in closed pieces of 4 MiB
 (`Range: bytes=<first>-<last>`, `infer_tunnel::TRANSFER_CHUNK_BYTES`), each
@@ -180,15 +179,16 @@ one signed, appended to the same `.part` and checked by the same MD5/sha256 at
 the end. The sender answers exactly the piece asked, keeps one job for the
 whole file and answers 410 to a piece of a job it already closed.
 
-**A file never crosses a public relay.** A piece travels over a direct libp2p
-connection (dialed or hole punched) or over a circuit through a relay that is
-a member of the same cluster and allows transfers; a relay configured in
-`relay_peers`, or one that is not a member, carries none. The serving node
-checks the connection each piece arrived on and answers 421 otherwise, and a
-request without a bounded range is refused with 416, because the tunnel holds
-an answer in memory. libp2p spreads requests over every connection it has
-with a peer, so the receiver retries a 421 while some connection may carry
-the file, waits up to 12 s for a hole punch to close before giving up, and
+**A file never crosses a public relay.** A piece travels only when the
+connection's selected path is direct (dialed or hole punched) or goes through
+a relay that is a member of the same cluster and allows transfers; n0's
+relays, a relay configured in `relay_peers`, or one that is not a member,
+carry none. The serving node checks the path of the connection each piece
+arrived on and answers 421 otherwise, and a request without a bounded range is
+refused with 416, because the tunnel holds an answer in memory. A connection
+moves from a relay to a direct path when the punch closes, so the receiver
+retries a 421 while some connection may carry the file, waits up to 12 s for
+a hole punch to close before giving up, and
 then fails with "the only path goes through a public relay". The rule and
 who counts as a member relay are in `p2p-network.md`, "Who relays for whom"
 and "Files and relays".
@@ -319,8 +319,8 @@ explicitly set. There is also a security test: a `?path=` outside `models/` and
 an invented `grant` are refused. `a_closed_range_serves_one_piece_and_keeps_one_job`
 covers the sender's side of a download in pieces, and
 `network::a_file_crosses_a_member_relay_but_never_a_public_one` the rule of
-which connection may carry one. The receiver's loop through the tunnel has no
-test: it needs a swarm.
+which path may carry one. The receiver's loop through the tunnel has no
+test: it needs two live endpoints.
 
 ## 11. Defects noted
 

@@ -435,6 +435,17 @@ pub(crate) async fn systemone(
             };
             return error(status, message);
         }
+        if let Some(denial) = crate::quota::admit(
+            &state,
+            &caller,
+            &prompt,
+            crate::openai::approx_tokens(&prompt),
+            &json!({}),
+        )
+        .await
+        {
+            return denial.decorate(error(StatusCode::TOO_MANY_REQUESTS, denial.message.clone()));
+        }
         let labels = question.labels();
         let result = crate::gateway::generate_blocking_with_stops(
             "/v1/systemone",

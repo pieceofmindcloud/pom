@@ -19,7 +19,7 @@ fn invalid_role_exits_with_config_error() {
     let _home = TestHome(home.clone());
     fs::write(
         home.join("pom.json"),
-        r#"{"role":"infer","profile":"infer"}"#,
+        r#"{"role":"infer","profile":"visitor"}"#,
     )
     .expect("write invalid configuration");
 

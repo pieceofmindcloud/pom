@@ -23,6 +23,10 @@ pub struct SelectedSlice {
     /// more, or the other way round.
     #[serde(default)]
     pub offload_kqv: Option<bool>,
+    /// This machine's part in a prefill/decode split (a whole model on a plugin's inference service). `None` takes
+    /// the deployment's `params.inference_role`.
+    #[serde(default)]
+    pub inference_role: Option<crate::webui::InferenceRole>,
 }
 
 /// What one machine of a deploy disagrees with the cluster about.
@@ -35,6 +39,7 @@ pub struct SelectedSlice {
 pub struct PeerOverrides {
     pub n_gpu_layers: Option<u32>,
     pub offload_kqv: Option<bool>,
+    pub inference_role: Option<crate::webui::InferenceRole>,
 }
 
 /// What is being put into service: a set of slices, or one whole model.

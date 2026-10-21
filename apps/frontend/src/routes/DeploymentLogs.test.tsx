@@ -41,17 +41,20 @@ const queryMocks = vi.hoisted(() => ({
   },
   deployments: { data: { deployments: [] } },
   logsPlugin: { data: { active: true }, isLoading: false },
+  node: { data: { cluster_logs_enabled: true, cluster_logs_authority: true } as Record<string, unknown> | undefined },
 }));
 
 vi.mock("../lib/queries", () => ({
   useEnterpriseStatus: () => queryMocks.logsPlugin,
   useClusterLogs: () => queryMocks.logs,
   useDeployments: () => queryMocks.deployments,
+  useNode: () => queryMocks.node,
 }));
 
 describe("DeploymentLogs", () => {
   beforeEach(() => {
     HTMLElement.prototype.scrollTo = vi.fn();
+    queryMocks.node.data = { cluster_logs_enabled: true, cluster_logs_authority: true };
     queryMocks.logs.data = {
       entries: [
         {
@@ -256,5 +259,18 @@ describe("DeploymentLogs", () => {
     expect(page?.className).not.toContain("bg-[#050505]");
     expect(terminal.parentElement?.className).toContain("bg-black");
     expect(terminal.closest(".panel")?.className).not.toContain("bg-black");
+  });
+  it("says the console is paused while the cluster log collection is off", () => {
+    queryMocks.node.data = { cluster_logs_enabled: false, cluster_logs_authority: true };
+    render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <LocaleProvider initialLocale="pt-BR">
+          <DeploymentLogs />
+        </LocaleProvider>
+      </MemoryRouter>,
+    );
+    expect(screen.getByText("Coleta desligada")).toBeTruthy();
+    expect(screen.queryByText("Ao vivo")).toBeNull();
+    expect(screen.getByRole("link", { name: "Ligue nas Preferências administrativas" }).getAttribute("href")).toBe("/config/preferences/admin");
   });
 });

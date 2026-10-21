@@ -530,8 +530,8 @@ pub(super) async fn join_network(
     config.admin_access_token = access_token;
     config.setup_pending = false;
     config.profile = match request.role {
-        crate::config::EnrollmentRole::Node => crate::profile::NodeProfile::Node,
-        crate::config::EnrollmentRole::Infer => crate::profile::NodeProfile::Infer,
+        crate::config::EnrollmentRole::Worker => crate::profile::NodeProfile::Worker,
+        crate::config::EnrollmentRole::Visitor => crate::profile::NodeProfile::Visitor,
     };
     config.connection_key = grant.connection_key.trim().to_string();
     config.network = network;
@@ -553,9 +553,8 @@ pub(super) async fn join_network(
     if let Err(error) = state.database.save_network_settings(&config.network) {
         warn!("could not save the network details in the database: {error:#}");
     }
-    if let Err(error) = state.database.clear_api_keys() {
-        warn!("could not clear the local API keys: {error:#}");
-    }
+    // The node's API keys stay: they belong to this machine, not to the
+    // network, so a harness keeps working whichever network serves it.
     candidate_state()
         .lock()
         .expect("candidate state lock")
@@ -572,17 +571,24 @@ pub(super) async fn join_network(
 }
 
 /// `GET /api/ui/network/admissions` - the admission requests this network
-/// received, for its admin to decide. Each carries the candidate's declared
+/// received, for an admin to decide. Each carries the candidate's declared
 /// hardware, the latency it measured and whether it reaches the principal
-/// directly or through a relay.
+/// directly or through a relay. On a secondary admin it is its copy of the
+/// principal's list, read again first when the principal answers.
 pub(super) async fn admissions(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
 ) -> Response {
-    Json(state.network_chat.admissions()).into_response()
+    if super::is_principal(&state) {
+        return Json(state.network_chat.admissions()).into_response();
+    }
+    match super::refresh_roster(&state).await {
+        Ok(records) => Json(records).into_response(),
+        Err(_) => Json(state.network_chat.roster_mirror()).into_response(),
+    }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct AdmissionDecision {
     pub node_id: String,
     /// `approve`, `reject` or `forget`.
@@ -591,39 +597,41 @@ pub struct AdmissionDecision {
 
 /// `POST /api/ui/network/admissions` - an admin's decision on one request.
 /// Approving does not send anything: the candidate collects the grant on its
-/// next poll.
+/// next poll. A secondary admin's decision goes to the principal, which
+/// keeps the list (`membership::forward_decision`).
+///
+/// Removing an approved member is a ban, and a secondary signs that itself
+/// before forwarding (`membership::ban`): it holds on every node even when
+/// the principal is unreachable, and the principal applies it to its list
+/// when it hears of it.
 pub(super) async fn decide_admission(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
     Json(decision): Json<AdmissionDecision>,
 ) -> Response {
-    let status = match decision.decision.as_str() {
-        "approve" => Some(network_lobby::AdmissionStatus::Approved),
-        "reject" => Some(network_lobby::AdmissionStatus::Rejected),
-        "forget" => None,
-        _ => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "decision must be approve, reject or forget" })),
-            )
-                .into_response()
-        }
-    };
-    let node_id = decision.node_id.trim();
-    // Forgetting a machine that was approved takes its membership away, and
-    // it still holds the connection key: same treatment as a departure.
-    let revoked = status.is_none()
-        && state
-            .network_chat
-            .admission_of(node_id)
-            .is_some_and(|record| record.status == network_lobby::AdmissionStatus::Approved);
-    if revoked {
-        state.network_chat.member_departed(node_id);
-        state.network_chat.request_rotation(node_id);
-    } else if !state.network_chat.decide_admission(node_id, status) {
-        return StatusCode::NOT_FOUND.into_response();
+    if super::is_principal(&state) {
+        return super::apply_decision(&state, decision).await;
     }
-    Json(state.network_chat.admissions()).into_response()
+    let node_id = decision.node_id.trim().to_string();
+    let banned = decision.decision == "forget"
+        && super::is_approved_member(&state, &node_id)
+        && match super::ban(&state, &node_id).await {
+            Ok(_) => true,
+            Err(error) => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(json!({ "error": format!("{error:#}"), "reason": "revocation_refused" })),
+                )
+                    .into_response()
+            }
+        };
+    let response = super::forward_decision(&state, &decision).await;
+    if banned && !response.status().is_success() {
+        // The ban already holds; the principal catches up from the
+        // revocation exchange when it is back.
+        return Json(state.network_chat.roster_mirror()).into_response();
+    }
+    response
 }
 
 /// `GET /api/setup/lobby?key=pk:...` - the same, from the setup wizard.
@@ -786,7 +794,7 @@ pub(crate) fn network_info_from_cluster(cluster: &serde_json::Value) -> network_
     }
 }
 
-/// Fills `PublicStats` on demand. The swarm loop cannot compute the stats
+/// Fills `PublicStats` on demand. The transport task cannot compute the stats
 /// (they need the cluster view, which reads every peer over HTTP), so it wakes
 /// this task when a request finds them stale; at most one cluster read per
 /// [`network_lobby::INFO_REFRESH`], and none while nobody asks.
@@ -842,7 +850,18 @@ pub async fn setup_public_networks(
     // The same field takes relay keys (`pk:...`) and addresses. Keys are the
     // normal case: a relay is found by its key, like every other node.
     let mut relay_keys = network_lobby::default_directory_relays();
-    relay_keys.extend(state.config.read().await.relay_peers.iter().cloned());
+    // `relay_peers` holds relay URLs for the endpoint; only an entry that is
+    // a node key names a directory to ask.
+    relay_keys.extend(
+        state
+            .config
+            .read()
+            .await
+            .relay_peers
+            .iter()
+            .filter(|entry| entry.starts_with("pk:"))
+            .cloned(),
+    );
     for entry in query
         .replicas
         .split(',')
@@ -915,7 +934,7 @@ mod tests {
         let request = |status, asked| CandidateRequest {
             key: "pk:x".into(),
             name: "Rede".into(),
-            role: crate::config::EnrollmentRole::Node,
+            role: crate::config::EnrollmentRole::Worker,
             status,
             grant: None,
             asked,

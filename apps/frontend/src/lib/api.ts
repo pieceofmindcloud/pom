@@ -74,6 +74,8 @@ export function isAdminSurfacePath(path: string): boolean {
   const pathname = path.split("?", 1)[0];
   return pathname === "/api/ui"
     || pathname.startsWith("/api/ui/")
+    || pathname === "/api/transfer"
+    || pathname.startsWith("/api/transfer/")
     || pathname === "/admin"
     || pathname.startsWith("/admin/");
 }

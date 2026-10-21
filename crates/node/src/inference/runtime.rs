@@ -187,6 +187,12 @@ pub struct NodeConfig {
     /// That engine's settings (`RuntimeParams::engine_settings`).
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub engine_settings: std::collections::BTreeMap<String, serde_json::Value>,
+    /// The machine's part in a prefill/decode split (`RuntimeParams::inference_role`).
+    #[serde(default, skip_serializing_if = "crate::webui::InferenceRole::is_both")]
+    pub inference_role: crate::webui::InferenceRole,
+    /// The prefill/decode split's threshold (`RuntimeParams::prefill_min_tokens`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefill_min_tokens: Option<u32>,
 
     pub inference_port: u16,
     pub n_gpu_layers: u32,
@@ -392,6 +398,8 @@ impl NodeConfig {
             inference_mode: p.inference_mode,
             inference_service: p.inference_service.clone(),
             engine_settings: p.engine_settings.clone(),
+            inference_role: p.inference_role,
+            prefill_min_tokens: p.prefill_min_tokens,
             inference_port: 0,
             single_peer: false,
             no_embeddings: p.no_embeddings,
@@ -1177,6 +1185,7 @@ impl NodeRuntime {
         self.net.set_batching_ready(false);
         self.net.set_slot_persist_ready(false);
         self.net.set_external_engine(None);
+        self.net.set_external_engine_role(None);
         self.net.set_runtime_generation(generation);
 
         // Stopping is the decision of whoever operated. Forgetting the annotation is what keeps the
@@ -1307,6 +1316,12 @@ impl NodeRuntime {
         self.request_activity.mark_now();
         self.net.set_idle(waking);
         self.net.set_external_engine(cfg.inference_service.clone());
+        // a prefill/decode role is a whole-model machine's: a stage of a split model always does both
+        self.net.set_external_engine_role(
+            (cfg.inference_service.is_some() && !crate::plugin_stage_link::is_stage(&cfg))
+                .then_some(cfg.inference_role)
+                .filter(|role| !role.is_both()),
+        );
         // The new configuration only becomes effective capacity after the
         // new process's `/health` answers `model_loaded`.
         self.net.set_runtime_generation(generation);
@@ -2092,7 +2107,7 @@ mod tests {
         let port = occupant.local_addr().unwrap().port();
 
         let net = Arc::new(
-            Network::testkit("no".into(), "pk".into(), vec![], None, None, None)
+            Network::testkit("no".into(), "pk".into(), vec![], None, None)
                 .await
                 .expect("UDP socket on an ephemeral port"),
         );
@@ -2323,6 +2338,8 @@ mod tests {
             inference_mode: Default::default(),
             inference_service: None,
             engine_settings: Default::default(),
+            inference_role: Default::default(),
+            prefill_min_tokens: None,
             inference_port: 8181,
             n_gpu_layers: 99,
             n_ctx: 8192,
@@ -2430,7 +2447,7 @@ mod tests {
         });
 
         let net = Arc::new(
-            Network::testkit("no".into(), "pk".into(), vec![], None, None, None)
+            Network::testkit("no".into(), "pk".into(), vec![], None, None)
                 .await
                 .expect("UDP socket on an ephemeral port"),
         );
@@ -2507,7 +2524,7 @@ mod tests {
     #[tokio::test]
     async fn a_slice_that_did_not_load_shows_up_in_the_status_with_the_reason() {
         let net = Arc::new(
-            Network::testkit("no".into(), "pk".into(), vec![], None, None, None)
+            Network::testkit("no".into(), "pk".into(), vec![], None, None)
                 .await
                 .expect("UDP socket on an ephemeral port"),
         );
@@ -2533,7 +2550,7 @@ mod tests {
     #[tokio::test]
     async fn a_manual_stop_cancels_the_pending_thermal_resume() {
         let net = Arc::new(
-            Network::testkit("no".into(), "pk".into(), vec![], None, None, None)
+            Network::testkit("no".into(), "pk".into(), vec![], None, None)
                 .await
                 .expect("UDP socket on an ephemeral port"),
         );

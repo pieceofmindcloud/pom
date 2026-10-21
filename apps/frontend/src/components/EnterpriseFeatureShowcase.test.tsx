@@ -59,31 +59,32 @@ describe("EnterpriseFeatureShowcase", () => {
     expect(screen.getByText("Veja cada requisição.")).toBeTruthy();
   });
 
-  it("opens Stripe Checkout through the node with the plugin and interval", async () => {
+  it("opens the site's purchase in a new tab with the plugin, the period and the language", () => {
     mocks.catalog.data = { plugins: [enterprise] };
-    mocks.post.mockResolvedValue({ url: "https://checkout.stripe.com/c/pay/cs_test_1" });
-    const assign = vi.fn();
-    Object.defineProperty(window, "location", { configurable: true, value: { ...window.location, assign } });
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
     renderPage("statistics");
 
     fireEvent.click(screen.getAllByRole("button", { name: "Comprar agora" })[0]);
 
-    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/api/ui/plugins/checkout", {
-      plugin_code: "logs",
-      interval: "month",
-      locale: "pt-BR",
-    }));
-    await waitFor(() => expect(assign).toHaveBeenCalledWith("https://checkout.stripe.com/c/pay/cs_test_1"));
+    expect(open).toHaveBeenCalledWith(
+      "https://pieceofmind.cloud/comprar/?plugin=logs&interval=month&lang=pt",
+      "_blank",
+      "noopener,noreferrer",
+    );
+    expect(mocks.post).not.toHaveBeenCalled();
+    open.mockRestore();
   });
 
-  it("keeps working without the catalog and explains a refused checkout", async () => {
-    const { ApiError } = await import("../lib/api");
-    mocks.post.mockRejectedValue(new ApiError(403, "forbidden"));
+  it("keeps working without the catalog and sells Logs, Statistics and Quota as one plugin", () => {
     renderPage();
 
-    expect(screen.getByText("Estatísticas e Logs")).toBeTruthy();
+    expect(screen.getByText("Business Pack")).toBeTruthy();
     expect(screen.getByText("Preço mostrado no checkout")).toBeTruthy();
-    fireEvent.click(screen.getAllByRole("button", { name: "Comprar agora" })[0]);
-    expect((await screen.findByRole("alert")).textContent).toContain("Só um administrador deste nó pode comprar plugins.");
+    expect(screen.getByRole("heading", { name: "Quota" })).toBeTruthy();
+    expect(screen.getByText(/Feito para os admins da rede/)).toBeTruthy();
+    expect(screen.queryByText(/Stripe/)).toBeNull();
+    const site = screen.getByRole("link", { name: /Mais na loja de plugins/ });
+    expect(site.getAttribute("href")).toBe("https://pieceofmind.cloud/comprar/?plugin=logs&interval=month&lang=pt");
+    expect(site.getAttribute("target")).toBe("_blank");
   });
 });

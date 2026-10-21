@@ -1,7 +1,7 @@
 //! The signed, durable authority chain for administrator capabilities.
 //!
 //! `Config.profile` is deliberately not consulted as a root of trust.  This
-//! module is the only place that turns a libp2p Ed25519 identity into an
+//! module is the only place that turns a p2p Ed25519 identity into an
 //! administrator capability.  The file is intentionally separate from
 //! `pom.json`: editing the product profile cannot manufacture a grant.
 
@@ -284,8 +284,8 @@ pub(crate) struct AdminDemotion {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EffectiveAuthority {
-    Primary,
-    Secondary,
+    Principal,
+    Admin,
 }
 
 #[derive(Clone)]
@@ -295,6 +295,34 @@ pub(crate) struct AdminTrust {
     /// Local replay ledger; see `ReplayLedger`. Always locked after `state`
     /// when both are taken.
     replay: Arc<Mutex<ReplayLedger>>,
+    /// The revocations this node holds (`membership::Revocation`), one per
+    /// member. Local like the replay ledger: it is merged from what the
+    /// admins sign, never part of the shared document.
+    revocations: Arc<Mutex<RevocationLedger>>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct RevocationLedger {
+    entries: Vec<crate::membership::Revocation>,
+}
+
+/// Where a chain's revocations live: next to it.
+pub(crate) fn revocations_path_for(trust_path: &Path) -> PathBuf {
+    trust_path.with_extension("revocations.json")
+}
+
+fn load_revocations(trust_path: Option<&Path>) -> Arc<Mutex<RevocationLedger>> {
+    let ledger = trust_path
+        .map(revocations_path_for)
+        .and_then(|path| std::fs::read_to_string(&path).ok().map(|content| (path, content)))
+        .map(|(path, content)| {
+            serde_json::from_str(&content).unwrap_or_else(|error| {
+                tracing::warn!("unreadable revocation list at {}: {error}", path.display());
+                RevocationLedger::default()
+            })
+        })
+        .unwrap_or_default();
+    Arc::new(Mutex::new(ledger))
 }
 
 impl AdminTrust {
@@ -330,6 +358,7 @@ impl AdminTrust {
                 setup_signature: String::new(),
             })),
             replay: Arc::new(Mutex::new(load_replay_ledger(path.as_deref()))),
+            revocations: load_revocations(path.as_deref()),
             path,
         }
     }
@@ -343,6 +372,7 @@ impl AdminTrust {
         Ok(Self {
             state: Arc::new(Mutex::new(document)),
             replay: Arc::new(Mutex::new(load_replay_ledger(Some(&path)))),
+            revocations: load_revocations(Some(&path)),
             path: Some(path),
         })
     }
@@ -365,7 +395,7 @@ impl AdminTrust {
         validate_document(&self.document()).is_ok()
     }
 
-    /// Identifier of the swarm that this machine accepted out of band.
+    /// Identifier of the endpoint that this machine accepted out of band.
     ///
     /// The value only serves to select the local chain. Admission still
     /// requires the principal's full tuple in `admits_participant`.
@@ -384,7 +414,7 @@ impl AdminTrust {
     /// operator declared that holding the matching anchor is already the proof
     /// of belonging, so an ordinary worker node that never received a grant
     /// remains a legitimate participant. The peer's identity (node <-> key <->
-    /// PeerId, and the Announce signed by that PeerId) is checked separately by
+    /// endpoint id, and the Announce signed by that endpoint id) is checked separately by
     /// the caller.
     pub(crate) fn anchors_cluster(&self, cluster_id: &str) -> bool {
         let document = self.document();
@@ -469,6 +499,7 @@ impl AdminTrust {
             state: Arc::new(Mutex::new(document)),
             path: Some(path.as_ref().to_path_buf()),
             replay: Arc::new(Mutex::new(load_replay_ledger(Some(path.as_ref())))),
+            revocations: load_revocations(Some(path.as_ref())),
         };
         trust.save()?;
         Ok(trust)
@@ -481,6 +512,7 @@ impl AdminTrust {
             state: Arc::new(Mutex::new(document)),
             path: None,
             replay: Arc::new(Mutex::new(ReplayLedger::default())),
+            revocations: load_revocations(None),
         })
     }
 
@@ -583,6 +615,63 @@ impl AdminTrust {
         Ok(true)
     }
 
+    /// When the member `node_id` was last revoked, whatever its key.
+    pub(crate) fn revoked_node_at(&self, node_id: &str) -> Option<i64> {
+        self.revocations
+            .lock()
+            .expect("revocation lock poisoned")
+            .entries
+            .iter()
+            .filter(|entry| entry.sub == node_id)
+            .map(|entry| entry.revoked_at)
+            .max()
+    }
+
+    /// Every revocation this node holds.
+    pub(crate) fn revocations(&self) -> Vec<crate::membership::Revocation> {
+        self.revocations
+            .lock()
+            .expect("revocation lock poisoned")
+            .entries
+            .clone()
+    }
+
+    /// Adds the entries that hold against the chain and are new, keeping
+    /// the latest per member, and saves the list. Returns the ones
+    /// that were added.
+    pub(crate) fn merge_revocations(
+        &self,
+        incoming: Vec<crate::membership::Revocation>,
+    ) -> Vec<crate::membership::Revocation> {
+        let document = self.document();
+        let mut ledger = self.revocations.lock().expect("revocation lock poisoned");
+        let mut added = Vec::new();
+        for entry in incoming {
+            if crate::membership::verify_revocation(&entry, &document).is_err() {
+                continue;
+            }
+            let newest = ledger
+                .entries
+                .iter()
+                .filter(|known| known.sub == entry.sub)
+                .map(|known| known.revoked_at)
+                .max();
+            if newest.is_some_and(|newest| newest >= entry.revoked_at) {
+                continue;
+            }
+            ledger.entries.retain(|known| known.sub != entry.sub);
+            ledger.entries.push(entry.clone());
+            added.push(entry);
+        }
+        if !added.is_empty() {
+            let path = self.path.as_deref().map(revocations_path_for);
+            if let Err(error) = persist_json(&*ledger, path.as_deref(), false) {
+                tracing::warn!("could not save the revocation list: {error:#}");
+            }
+        }
+        added
+    }
+
     /// How many entries the local replay ledger holds.
     #[cfg(test)]
     pub(crate) fn replay_len(&self) -> usize {
@@ -642,6 +731,7 @@ impl AdminTrust {
             state: Arc::new(Mutex::new(document)),
             path: Some(path.as_ref().to_path_buf()),
             replay: Arc::new(Mutex::new(load_replay_ledger(Some(path.as_ref())))),
+            revocations: load_revocations(Some(path.as_ref())),
         };
         trust.save()?;
         Ok(trust)
@@ -714,7 +804,7 @@ impl AdminTrust {
             return None;
         }
         if subject == &document.primary {
-            return Some(EffectiveAuthority::Primary);
+            return Some(EffectiveAuthority::Principal);
         }
         document
             .grants
@@ -727,7 +817,7 @@ impl AdminTrust {
                             && demotion.target_grant_hash == grant_hash(grant).unwrap_or_default()
                     })
             })
-            .then_some(EffectiveAuthority::Secondary)
+            .then_some(EffectiveAuthority::Admin)
     }
 
     pub(crate) fn current_primary(&self) -> AuthorityPrincipal {
@@ -837,7 +927,7 @@ impl AdminTrust {
         if document.pending_transfer.is_some() {
             bail!("cannot apply a grant while a transfer is open");
         }
-        if target_profile != NodeProfile::Node {
+        if target_profile != NodeProfile::Worker {
             bail!("only a node can receive an admin grant");
         }
         if grant.subject != *local_subject {
@@ -912,9 +1002,10 @@ impl AdminTrust {
     }
 
     /// The version of this copy of the chain:
-    /// `<epoch>.<grants>.<demotions>.<open transfer>-<content hash>`. The
-    /// counters order two copies (every change of authority moves one); the
-    /// hash tells apart two copies the counters call equal.
+    /// `<epoch>.<grants>.<demotions>.<open transfer>-<content hash>`.
+    /// The counters order two copies (every change of authority moves one);
+    /// the hash tells apart two copies the counters
+    /// call equal.
     pub(crate) fn chain_version(&self) -> String {
         chain_version_of(&self.document())
     }
@@ -1367,8 +1458,21 @@ pub(crate) fn control_issuer_is_admin(
     })
 }
 
+/// Whether `node_id` with `pubkey` is an admin of `document` today: its
+/// principal, or a secondary whose grant was not revoked. A membership
+/// token is checked against this, and against nothing else.
+pub(crate) fn is_admin_key(document: &AdminTrustDocument, node_id: &str, pubkey: &str) -> bool {
+    std::iter::once(&document.primary)
+        .chain(document.grants.iter().map(|grant| &grant.subject))
+        .any(|principal| {
+            principal.node_id == node_id
+                && principal.pubkey == pubkey
+                && control_issuer_is_admin(document, principal)
+        })
+}
+
 /// The counters that order two copies of a chain: principal transfers,
-/// grants, demotions.
+/// grants and demotions.
 fn chain_counters(document: &AdminTrustDocument) -> (u64, u64, u64) {
     (
         document.authority_epoch,
@@ -1991,7 +2095,7 @@ mod tests {
             .signed_secondary_grant(&root_key, secondary.clone(), "root")
             .unwrap();
         trust
-            .apply_secondary_grant(grant, &secondary, NodeProfile::Node)
+            .apply_secondary_grant(grant, &secondary, NodeProfile::Worker)
             .unwrap();
         let target = principal(3, "target", "peer-target");
         let mut forged = trust
@@ -1999,7 +2103,7 @@ mod tests {
             .unwrap();
         forged.issuer = secondary;
         assert!(trust
-            .apply_secondary_grant(forged, &target, NodeProfile::Node)
+            .apply_secondary_grant(forged, &target, NodeProfile::Worker)
             .is_err());
         assert_eq!(trust.current_primary(), root);
     }
@@ -2014,11 +2118,11 @@ mod tests {
             .signed_secondary_grant(&root_key, secondary.clone(), "root")
             .unwrap();
         trust
-            .apply_secondary_grant(grant.clone(), &secondary, NodeProfile::Node)
+            .apply_secondary_grant(grant.clone(), &secondary, NodeProfile::Worker)
             .unwrap();
         let reloaded = AdminTrust::load(&path).unwrap();
         assert!(reloaded
-            .apply_secondary_grant(grant, &secondary, NodeProfile::Node)
+            .apply_secondary_grant(grant, &secondary, NodeProfile::Worker)
             .is_err());
     }
 
@@ -2033,7 +2137,7 @@ mod tests {
             .signed_secondary_grant(&root_key, secondary.clone(), "root")
             .unwrap();
         trust
-            .apply_secondary_grant(grant, &secondary, NodeProfile::Node)
+            .apply_secondary_grant(grant, &secondary, NodeProfile::Worker)
             .unwrap();
         let offer = trust
             .begin_transfer(&root_key, secondary.clone(), true)
@@ -2058,7 +2162,7 @@ mod tests {
             .signed_secondary_grant(&root_key, secondary.clone(), "root")
             .unwrap();
         trust
-            .apply_secondary_grant(grant, &secondary, NodeProfile::Node)
+            .apply_secondary_grant(grant, &secondary, NodeProfile::Worker)
             .unwrap();
         let offer = AdminTransferOffer {
             version: TRUST_VERSION,
@@ -2115,11 +2219,11 @@ mod tests {
             .signed_secondary_grant(&root_key, secondary.clone(), "root")
             .unwrap();
         trust
-            .apply_secondary_grant(grant, &secondary, NodeProfile::Node)
+            .apply_secondary_grant(grant, &secondary, NodeProfile::Worker)
             .unwrap();
         assert_eq!(
             trust.effective_authority(&secondary, NodeProfile::Admin),
-            Some(EffectiveAuthority::Secondary)
+            Some(EffectiveAuthority::Admin)
         );
         trust
             .demote_secondary(&root_key, secondary.clone())
@@ -2163,7 +2267,7 @@ mod tests {
         for copy in [&trust, &reloaded] {
             assert_eq!(
                 copy.effective_authority(&secondary, NodeProfile::Admin),
-                Some(EffectiveAuthority::Secondary)
+                Some(EffectiveAuthority::Admin)
             );
         }
 
@@ -2177,7 +2281,7 @@ mod tests {
         );
         assert_eq!(
             trust.effective_authority(&other, NodeProfile::Admin),
-            Some(EffectiveAuthority::Secondary)
+            Some(EffectiveAuthority::Admin)
         );
     }
 

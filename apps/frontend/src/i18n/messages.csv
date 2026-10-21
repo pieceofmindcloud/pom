@@ -14,11 +14,8 @@ about.dependenciesTitle,Third-party dependencies,Dependências de terceiros
 about.ecosystem.frontend,Frontend,Frontend
 about.ecosystem.rust,Rust,Rust
 about.empty,No dependencies match this search.,Nenhuma dependência corresponde a esta busca.
-about.enterpriseActive,Active,Ativa
 about.enterpriseCheckFailed,Could not check for POM updates.,Não foi possível verificar atualizações do POM.
 about.enterpriseCheckUpdates,Check for updates,Verificar atualizações
-about.enterpriseInactive,Inactive,Inativa
-about.enterpriseState,State,Estado
 about.licenseCount,"{count, plural, =1 {1 dependency} other {# dependencies}}","{count, plural, =1 {1 dependência} other {# dependências}}"
 about.placeholderBody,"POM is licensed under the GNU Affero General Public License, version 3 (AGPL-3.0). The complete license is available in this repository and from the Free Software Foundation.","O POM é licenciado sob a GNU Affero General Public License, versão 3 (AGPL-3.0). A licença completa está disponível neste repositório e na Free Software Foundation."
 about.placeholderLicense,AGPL-3.0,AGPL-3.0
@@ -27,13 +24,18 @@ about.placeholderLicenseValue,AGPL-3.0,AGPL-3.0
 about.placeholderTitle,POM software license,Licença do software POM
 about.pluginBaseDescription,"POM plugins are built from the Plugin Base template and SDK. Follow its README to create a repository, implement the plugin manifest and UI, then build and publish releases for POM to install.","Plugins POM podem ser criados a partir do template e SDK do Plugin Base. Siga o README para criar um repositório, implementar o manifesto e a interface do plugin, e então compilar e publicar releases para instalação no POM."
 about.pluginBaseLink,POM Plugin Base,POM Plugin Base
+"about.pomBlockedContainer","This node runs in a container: update it by rebuilding its image.","Este nó roda em um container: atualize-o reconstruindo a imagem."
+"about.pomBlockedInvitation","The site lists this release, but its download still needs an invitation, so this node cannot fetch it.","O site lista esta release, mas o download ainda exige convite, então este nó não consegue baixá-la."
+"about.pomCheckUnreachable","No release source answered:","Nenhuma fonte de releases respondeu:"
+"about.pomCurrentVersion","Running version","Versão em execução"
+"about.pomRestarting","Update downloaded. POM is restarting with the new release; this page reconnects when it is back.","Atualização baixada. O POM está reiniciando com a nova release; esta página reconecta quando ele voltar."
+"about.pomSourceGithub","GitHub releases","releases do GitHub"
+"about.pomSourceSite","POM site","site do POM"
+"about.pomUpToDate","POM is up to date.","O POM está atualizado."
 about.pomUpdateApply,Install and restart,Instalar e reiniciar
-about.pomUpdateApplyFailed,Could not apply the POM update.,Não foi possível aplicar a atualização do POM.
+"about.pomUpdateApplyFailed","Could not apply the POM update.","Não foi possível aplicar a atualização do POM."
 about.pomUpdateAvailable,POM update available: {version},Atualização do POM disponível: {version}
-about.pomUpdateNeedsPlugin,POM update checks currently borrow the logs plugin's license.,A verificação de atualização do POM hoje usa o lease do plugin logs.
-about.pomUpdateOpenPlugins,Open Plugins,Abrir Plugins
-about.pomUpdateRelease,Release {release_id},Release {release_id}
-about.pomUpdateSubtitle,"On-demand check and, once confirmed, installation of a new POM build.","Verificação sob demanda e, após confirmação, instalação de uma nova versão do POM."
+"about.pomUpdateSubtitle","Checks POM's GitHub releases, then the site, and installs a newer release once you confirm: the plugin host swaps the files and restarts POM.","Verifica as releases do POM no GitHub e depois no site, e instala uma release mais nova quando você confirma: o plugin host troca os arquivos e reinicia o POM."
 about.pomUpdateTitle,POM update,Atualização do POM
 about.repository,Repository,Repositório
 about.repositoryLicenseLink,Repository LICENSE file,Arquivo LICENSE do repositório
@@ -116,6 +118,47 @@ adminAuthority.successorLabel,Successor,Sucessor
 adminAuthority.successorRule,This is the last node promoted by the principal. You cannot choose another one.,Este é o último nó promovido pelo principal. Não é possível escolher outro.
 adminAuthority.title,Network administration,Administração da rede
 app.topbarFailed,The top bar failed. The rest of the interface is still available.,A barra superior falhou. O resto da interface continua.
+"budget.blocked","Blocked","Bloqueado"
+"budget.credits","{count, plural, =0 {No reset credits} one {# reset credit} other {# reset credits}} · {used} used","{count, plural, =0 {Nenhum crédito de reset} one {# crédito de reset} other {# créditos de reset}} · {used} usados"
+"budget.grantUntil","for {time} more","por mais {time}"
+"budget.grantsTitle","Exceptional increases in force","Aumentos excepcionais em vigor"
+"budget.includesGrant","includes +{amount} granted by an admin","inclui +{amount} concedidos por um admin"
+"budget.input","Input","Entrada"
+"budget.loadFailed","Could not read the budget","Não foi possível ler o budget"
+"budget.none","No budget limits this machine","Nenhum budget limita esta máquina"
+"budget.noneHint","The admins have not assigned a plan to this machine, its team or everyone.","Os admins não atribuíram um plano a esta máquina, à equipe dela nem a todos."
+"budget.output","Output","Saída"
+"budget.pending","Request waiting since {date}","Pedido aguardando desde {date}"
+"budget.period.daily","Daily","Diário"
+"budget.period.monthly","Monthly","Mensal"
+"budget.period.session","{hours} h session","Sessão de {hours} h"
+"budget.period.weekly","Weekly","Semanal"
+"budget.requestAction","Send request","Enviar pedido"
+"budget.requestFailed","Could not send the request","Não foi possível enviar o pedido"
+"budget.requestHint","The admins see the request in the Exceptions tab of the Quota screen and may grant more tokens or reset credits.","Os admins veem o pedido na aba Exceções da tela Quota e podem conceder mais tokens ou créditos de reset."
+"budget.requestPlaceholder","Why you need it (optional)","Por que você precisa (opcional)"
+"budget.requestSent","Request sent to the admins","Pedido enviado aos admins"
+"budget.requestTitle","Ask for more budget","Pedir mais budget"
+"budget.requestUpdate","Update request","Atualizar pedido"
+"budget.resetAction","Reset session","Resetar sessão"
+"budget.resetDone","Session reset","Sessão resetada"
+"budget.resetFailed","Could not reset the session","Não foi possível resetar a sessão"
+"budget.resetHint","Spends one credit to end this machine's running session windows; the next request starts fresh ones. Shared pools are not reset.","Gasta um crédito para encerrar as janelas de sessão em andamento desta máquina; a próxima requisição começa novas. Pools compartilhados não são zerados."
+"budget.resetTitle","Reset my session","Resetar minha sessão"
+"budget.resetsIn","Turns over in {time} · {date}","Renova em {time} · {date}"
+"budget.scope.everyone","shared by the whole network","compartilhado pela rede inteira"
+"budget.scope.everyoneMember","each machine of the network","cada máquina da rede"
+"budget.scope.default","network default plan, for this machine","plano padrão da rede, para esta máquina"
+"budget.scope.node","this machine","esta máquina"
+"budget.scope.team","shared by team {team}","compartilhado pela equipe {team}"
+"budget.scope.teamMember","each member of team {team}","cada membro da equipe {team}"
+"budget.sessionIdle","No session running: the next request starts one","Sem sessão em andamento: a próxima requisição inicia uma"
+"budget.subtitle","The token budgets the network's admins set for this machine, checked before each request enters the pipeline.","Os budgets de tokens que os admins da rede definiram para esta máquina, verificados antes de cada requisição entrar na pipeline."
+"budget.title","Usage","Uso"
+"budget.unavailable","No admin answered","Nenhum admin respondeu"
+"budget.unavailableHint","Budgets live in the Request Logs plugin of an admin. While none answers, this machine's requests are not limited.","Os budgets ficam no plugin de Logs de Requisições de um admin. Enquanto nenhum responde, as requisições desta máquina não são limitadas."
+"budget.unlimited","no limit","sem limite"
+"budget.within","Within budget","Dentro do budget"
 canvas.autoLayout,Arrange by layer order (keeps what you dragged),Organizar pela ordem das camadas (mantém o que você arrastou)
 canvas.cardExpand,Expand card,Expandir card
 canvas.cardMinimize,Minimize card,Minimizar card
@@ -172,6 +215,8 @@ canvas.returnDirect,direct return,resposta direta
 canvas.returnDirectHint,Direct return: the last machine answers the gateway itself; each leg costs half a round trip.,Resposta direta: a última máquina responde ao próprio gateway; cada perna custa meio RTT.
 canvas.returnRing,ring,anel
 canvas.returnRingHint,"Ring: the answer comes back over the forward connections, so the tail''s return is not paid.","Anel: a resposta volta pelas conexões da ida, então a volta da cauda não é paga."
+canvas.roleDecode,Decode,Decode
+canvas.rolePrefill,Prefill,Prefill
 canvas.speedDecode,decode,decode
 canvas.speedPrefill,prefill,prefill
 canvas.speedRelative,"{kind}: {value} tok/s, {percent}% of the fastest slice of this model. Green from 75%, amber from 40%, red below.","{kind}: {value} tok/s, {percent}% da fatia mais rápida deste modelo. Verde a partir de 75%, âmbar a partir de 40%, vermelho abaixo."
@@ -600,6 +645,11 @@ deploy.knob.hidden_state_dtypeI4G64,i4g64 - signed int4 with FP16 scale per 64 v
 deploy.knob.hidden_state_dtypeUnavailable,Selected hidden-state format unavailable:,Formato selecionado do estado oculto indisponível:
 deploy.knob.idle_minutes,Idle time (minutes),Tempo ocioso (minutos)
 deploy.knob.idle_minutesHint,"Minutes without a request before this peer unloads its model.","Minutos sem requisição antes de este peer descarregar o modelo."
+deploy.knob.inference_role,Inference role,Papel na inferência
+deploy.knob.inference_roleBoth,Prefill and decode,Prefill e decode
+deploy.knob.inference_roleDecode,Decode only,Só decode
+deploy.knob.inference_roleHint,"What this machine does with a request when it runs the whole model. Prefill: it only reads long prompts and hands their state to a decode machine of the same model, which writes the answer. Decode: it answers, fetching the state a prefill machine read. Both: it does everything (the default).","O que esta máquina faz com uma requisição quando roda o modelo inteiro. Prefill: só lê prompts longos e entrega o estado deles a uma máquina de decode do mesmo modelo, que escreve a resposta. Decode: responde, buscando o estado que uma máquina de prefill leu. Ambos: faz tudo (o padrão)."
+deploy.knob.inference_rolePrefill,Prefill only,Só prefill
 deploy.knob.max_new_tokens,Max new tokens,Máx. tokens novos
 deploy.knob.max_new_tokensHint,"Ceiling for one leg of the gateway''s continuation loop, not for the request. The client''s max_tokens is what actually bounds a response and produces finish_reason length.","Teto de uma perna do laço de continuação do gateway, não da requisição. Quem limita a resposta e produz finish_reason length é o max_tokens do cliente."
 deploy.knob.max_sessions,Concurrent requests,Requisições simultâneas
@@ -624,6 +674,8 @@ deploy.knob.prefill_chunk_tokens,Tokens per chunk,Tokens por pedaço
 deploy.knob.prefill_chunk_tokensHint,Prompt tokens sent through the pipeline per round trip during prefill. Smaller chunks start streaming sooner on a slow link; larger chunks cut the number of round trips.,Tokens do prompt enviados pelo pipeline a cada ida e volta no prefill. Pedaços menores começam a transmitir antes num link lento; maiores reduzem o número de idas e voltas.
 deploy.knob.prefill_max_inflight_chunks,Prefill chunks in flight,Pedaços de prefill em voo
 deploy.knob.prefill_max_inflight_chunksHint,How many prefill chunks travel the pipeline at once (1..8). Higher hides per-hop latency on a deep pipeline; 1 turns the overlap off.,Quantos pedaços de prefill andam pelo pipeline ao mesmo tempo (1..8). Maior esconde a latência de cada salto num pipeline profundo; 1 desliga a sobreposição.
+deploy.knob.prefill_min_tokens,Prefill machine from (tokens),Máquina de prefill a partir de (tokens)
+deploy.knob.prefill_min_tokensHint,Prefill/decode split: a turn goes through the prefill machine only when the part of its prompt the decode machine does not already hold has at least this many tokens; a shorter one is read by the decode machine itself (sending the state costs about 118 MB whatever the prompt). Empty: 4096. 0: every turn with anything new.,"Divisão prefill/decode: um turno passa pela máquina de prefill só quando a parte do prompt que a máquina de decode ainda não tem soma pelo menos esse número de tokens; um menor é lido pela própria máquina de decode (enviar o estado custa cerca de 118 MB, qualquer que seja o prompt). Vazio: 4096. 0: todo turno com algo novo."
 deploy.knob.presence_penalty,Presence penalty,Penalidade de presença
 deploy.knob.presence_penaltyHint,"Subtracted once from the logit of every token already seen in the penalty window, however often it appeared, which pushes the model toward new words. 0 is off; Qwen recommends up to 1.5 against endless repetition. Same as llama.cpps presence_penalty.","Subtraída uma vez do logit de cada token já visto na janela da penalidade, não importa quantas vezes apareceu, o que empurra o modelo para palavras novas. 0 desliga; a Qwen recomenda até 1,5 contra repetição sem fim. É o presence_penalty do llama.cpp."
 deploy.knob.reasoning_budget,Reasoning budget (tokens),Limite de raciocínio (tokens)
@@ -838,6 +890,9 @@ deployStudio.wholeOnEachPeer,whole model on each peer,modelo inteiro em cada pee
 deploymentLogs.allDeployments,All deployments,Todas as implantações
 deploymentLogs.autoScrollOff,Auto-scroll: off,Rolagem automática: desligada
 deploymentLogs.autoScrollOn,Auto-scroll: on,Rolagem automática: ligada
+"deploymentLogs.collectionOff","Collection of the cluster process logs is off, so no new line arrives: what is shown is the last batch received.","A coleta dos logs de processo do cluster está desligada, então nenhuma linha nova chega: o que aparece é o último lote recebido."
+"deploymentLogs.collectionOffLink","Turn it on in Administrative preferences","Ligue nas Preferências administrativas"
+"deploymentLogs.collectionOffPrincipal","Collection of the cluster process logs is off on this network, so no new line arrives. An admin turns it on in Administrative preferences.","A coleta dos logs de processo do cluster está desligada nesta rede, então nenhuma linha nova chega. Um admin liga nas Preferências administrativas."
 deploymentLogs.consoleSubtitle,Node names and source timestamps are informational; arrival order is authoritative.,Nomes dos nós e horários de origem são informativos; a ordem de chegada é a que vale.
 deploymentLogs.consoleTitle,Cluster console,Console do cluster
 deploymentLogs.copyFailed,Could not copy logs.,Não foi possível copiar os logs.
@@ -851,6 +906,7 @@ deploymentLogs.filterLabel,Filter by deployment,Filtrar por implantação
 deploymentLogs.live,Live,Ao vivo
 deploymentLogs.logsCopied,Logs copied,Logs copiados
 deploymentLogs.offline,Offline,Indisponível
+"deploymentLogs.paused","Collection off","Coleta desligada"
 deploymentLogs.pluginRequiredHint,"The cluster process logs are kept by the Logs plugin. Activate it on this admin machine, then turn collection on in Administrative preferences.","Os logs de processo do cluster ficam no plugin de Logs. Ative-o nesta máquina administradora e depois ligue a coleta nas Preferências administrativas."
 deploymentLogs.pluginRequiredTitle,The Logs plugin is not active here,O plugin de Logs não está ativo aqui
 deploymentLogs.subtitle,The cluster process console. Lines are shown in the order they reached this local replica.,O console do processo do cluster. As linhas aparecem na ordem em que chegaram a esta réplica local.
@@ -950,26 +1006,22 @@ docs.tab.guides,Guides,Guias
 docs.tab.reference,Reference,Referência
 enterprise.activateHere,Activate a license,Ativar uma licença
 enterprise.learnMore,Learn about Enterprise,Conhecer o Enterprise
-enterprise.licenseState,License state,Estado da licença
-enterprise.purchaseLink,Buy or manage Enterprise,Comprar ou gerenciar Enterprise
 enterprise.requiredSubtitle,Request Logs and Statistics become available after an Enterprise license is activated.,Logs de Requisições e Estatísticas ficam disponíveis após a ativação de uma licença Enterprise.
 enterprise.requiredTitle,This feature is part of Enterprise,Este recurso faz parte do Enterprise
 enterprise.showcase.logs.screenshotAlt,Preview of the Request Logs screen,Prévia da tela de Logs de Requisições
 enterprise.showcase.logs.title,Request Logs,Logs de Requisições
+"enterprise.showcase.quota.title","Quota","Quota"
 enterprise.showcase.statistics.screenshotAlt,Preview of the Statistics screen,Prévia da tela de Estatísticas
 enterprise.showcase.statistics.title,Statistics,Estatísticas
 enterprise.store.badgeInstant,Installs in seconds,Instala em segundos
 enterprise.store.badgeLocal,Your data stays on your nodes,Seus dados ficam nos seus nós
-enterprise.store.badgeStripe,Secure payment with Stripe,Pagamento seguro com Stripe
+"enterprise.store.badgePaddle","Secure payment with Paddle","Pagamento seguro com Paddle"
 enterprise.store.buy,Buy now,Comprar agora
-enterprise.store.buyFailed,Could not open the checkout right now.,Não foi possível abrir o checkout agora.
-enterprise.store.buyForbidden,Only an administrator of this node can buy plugins.,Só um administrador deste nó pode comprar plugins.
-enterprise.store.buyOnSite,Buy on pieceofmind.cloud,Comprar em pieceofmind.cloud
-enterprise.store.ctaBody,The price is shown at checkout. Cancel anytime.,O preço aparece no checkout. Cancele quando quiser.
-enterprise.store.ctaPrice,Statistics and Logs for {price}. Cancel anytime.,Estatísticas e Logs por {price}. Cancele quando quiser.
+"enterprise.store.ctaBody","One purchase brings Request Logs, Deployment Logs, Statistics and Quota. The price is shown at checkout. Cancel anytime.","Uma compra traz Logs de Requisições, Logs de Implantação, Estatísticas e Quota. O preço aparece no checkout. Cancele quando quiser."
+"enterprise.store.ctaPrice","Business Pack (logs, statistics and quota) for {price}. Cancel anytime.","Business Pack (logs, estatísticas e quota) por {price}. Cancele quando quiser."
 enterprise.store.ctaTitle,Ready to see inside your cluster?,Pronto para enxergar dentro do seu cluster?
 enterprise.store.description,"Advanced observability for POM inference workloads: searchable request logs with a complete, redacted request inspector, and an operational statistics dashboard for tokens, latency, cache, nodes and network.","Observabilidade avançada para a inferência no POM: logs de requisições pesquisáveis com um inspetor completo e com segredos redigidos, e um painel de estatísticas operacionais de tokens, latência, cache, nós e rede."
-enterprise.store.eyebrow,POM plugin · Statistics and Logs,Plugin do POM · Estatísticas e Logs
+"enterprise.store.eyebrow","POM plugin · Business Pack: logs, statistics and quota","Plugin do POM · Business Pack: logs, estatísticas e quota"
 enterprise.store.faq1.a,"On your own administrative nodes, in the plugin's local database. Prompts and answers are never sent to POM or to the license server.","Nos seus próprios nós administradores, no banco local do plugin. Prompts e respostas nunca são enviados ao POM nem ao servidor de licenças."
 enterprise.store.faq1.q,Where is my request data stored?,Onde ficam os dados das minhas requisições?
 enterprise.store.faq2.a,Only to activate and to renew the license from time to time. Logging and charts work locally.,Só para ativar e renovar a licença de tempos em tempos. Os logs e os gráficos funcionam localmente.
@@ -981,12 +1033,14 @@ enterprise.store.faq4.q,Can I try it before buying?,Posso ver antes de comprar?
 enterprise.store.faqLabel,Questions,Perguntas
 enterprise.store.faqTitle,Before you buy,Antes de comprar
 enterprise.store.featuresLabel,Features,Recursos
-enterprise.store.featuresTitle,"Two screens, one audit trail","Duas telas, uma trilha de auditoria"
+"enterprise.store.featuresTitle","Three screens, one purchase","Três telas, uma compra"
+"enterprise.store.forAdmins","Made for the network's admins: they see every node's requests, usage and budgets.","Feito para os admins da rede: eles veem as requisições, o uso e as quotas de todos os nós."
 enterprise.store.haveKey,I already have a license key,Já tenho uma chave de licença
-enterprise.store.included1,Request Logs and Statistics screens,Telas de Logs de Requisições e Estatísticas
+"enterprise.store.included1","Request Logs, Deployment Logs, Statistics and Quota screens","Telas de Logs de Requisições, Logs de Implantação, Estatísticas e Quota"
 enterprise.store.included2,Updates while the license is active,Atualizações enquanto a licença estiver ativa
 enterprise.store.included3,Activation on your cluster machines,Ativação nas máquinas do seu cluster
 enterprise.store.included4,Cancel anytime; the POM keeps working,Cancele quando quiser; o POM continua funcionando
+"enterprise.store.included5","Token budgets per machine, team or project, with a default plan for the network","Quotas de tokens por máquina, equipe ou projeto, com um plano padrão para a rede"
 enterprise.store.interval,Billing period,Período de cobrança
 enterprise.store.interval.month,Monthly,Mensal
 enterprise.store.interval.year,Yearly,Anual
@@ -1000,7 +1054,14 @@ enterprise.store.logs.summary,Find any request and inspect it whole.,Encontre qu
 enterprise.store.logs.titleA,See every request.,Veja cada requisição.
 enterprise.store.logs.titleB,Fix issues in minutes.,Resolva problemas em minutos.
 enterprise.store.moreOnSite,More on the plugin store,Mais na loja de plugins
-enterprise.store.name,Statistics and Logs,Estatísticas e Logs
+"enterprise.store.name","Business Pack","Business Pack"
+"enterprise.store.opensInBrowser","Opens the purchase in your browser; POM keeps running here.","Abre a compra no seu navegador; o POM continua rodando aqui."
+"enterprise.store.quota.feature1","Plans of input and output tokens per day, week, month or a rolling session","Planos de tokens de entrada e saída por dia, semana, mês ou sessão contínua"
+"enterprise.store.quota.feature2","Assign them to a machine, a team, a project or the whole network","Atribua a uma máquina, a uma equipe, a um projeto ou à rede inteira"
+"enterprise.store.quota.feature3","A default plan for every machine that joins without one","Um plano padrão para toda máquina que entrar sem plano"
+"enterprise.store.quota.feature4","Grants, session resets and requests for more, in an exceptions inbox","Concessões, resets de sessão e pedidos de mais quota, numa caixa de exceções"
+"enterprise.store.quota.feature5","Each machine sees its own usage on its Usage screen","Cada máquina vê o próprio consumo na tela Uso"
+"enterprise.store.quota.summary","Keep the network's tokens fair, without a spreadsheet.","Mantenha os tokens da rede justos, sem planilha."
 enterprise.store.per.month,/month,/mês
 enterprise.store.per.year,/year,/ano
 enterprise.store.priceAtCheckout,Price shown at checkout,Preço mostrado no checkout
@@ -1018,11 +1079,11 @@ enterprise.store.statistics.lede,"Statistics turns the same trail into charts: t
 enterprise.store.statistics.summary,An operational overview for capacity and performance.,Uma visão operacional para capacidade e desempenho.
 enterprise.store.statistics.titleA,Know your cluster.,Conheça o seu cluster.
 enterprise.store.statistics.titleB,Optimize with data.,Otimize com dados.
-enterprise.store.step1.body,The button opens Stripe Checkout with the official price published by POM. Card data never touches your node.,O botão abre o checkout do Stripe com o preço oficial publicado pelo POM. Os dados do cartão nunca passam pelo seu nó.
-enterprise.store.step1.title,Buy with Stripe,Compre com Stripe
+"enterprise.store.step1.body","The button opens the purchase in your browser, with Paddle and the official price published by POM. Card data never touches your node.","O botão abre a compra no seu navegador, com o Paddle e o preço oficial publicado pelo POM. Os dados do cartão nunca passam pelo seu nó."
+"enterprise.store.step1.title","Buy with Paddle","Compre com Paddle"
 enterprise.store.step2.body,"After payment, the confirmation page shows your license key.","Depois do pagamento, a página de confirmação mostra a sua chave de licença."
 enterprise.store.step2.title,Get your license key,Receba a sua chave de licença
-enterprise.store.step3.body,"Paste the key in the Plugins menu. The plugin installs itself and these screens replace this page.","Cole a chave no menu Plugins. O plugin se instala sozinho e as telas substituem esta página."
+"enterprise.store.step3.body","Paste the key in the Plugins menu on an admin machine. The plugin installs itself and its screens replace this page.","Cole a chave no menu Plugins de uma máquina admin. O plugin se instala sozinho e as telas dele substituem esta página."
 enterprise.store.step3.title,Activate in Plugins,Ative em Plugins
 enterprise.store.stepsLabel,How it works,Como funciona
 enterprise.store.stepsTitle,From checkout to your first log in three steps,Do checkout ao primeiro log em três passos
@@ -1129,6 +1190,30 @@ guide.joinHere,"Pick a network and ask to join it; its administrator approves th
 guide.joinTitle,Join another network,Entre em outra rede
 guide.progress,Step {current} of {total},Passo {current} de {total}
 guide.skip,Skip this step,Pular este passo
+https.declined,"This computer refused the system dialog when the app opened. It is not asked again by itself: use Install on this computer, or download the certificate and install it by hand.","Este computador recusou o diálogo do sistema quando o app abriu. Ele não pergunta de novo sozinho: use Instalar neste computador, ou baixe o certificado e instale manualmente."
+https.download,Download certificate (.crt),Baixar certificado (.crt)
+https.downloadFailed,Could not download the certificate,Não foi possível baixar o certificado
+https.eyebrow,HTTPS,HTTPS
+https.fingerprint,SHA-256 fingerprint,Impressão digital SHA-256
+https.harnessIntro,"Programs that call this node over https, such as harnesses using /v1/chat/completions, read either the system store or their own. Node.js and Python keep their own list: point them at the certificate or at the system bundle.","Programas que chamam este nó por https, como os harnesses que usam /v1/chat/completions, leem o repositório do sistema ou um próprio. Node.js e Python têm a própria lista: aponte para o certificado ou para o pacote do sistema."
+https.harnessTitle,Harnesses and scripts,Harnesses e scripts
+https.install,Install on this computer,Instalar neste computador
+https.installFailed,Could not install the certificate,Não foi possível instalar o certificado
+https.installed,Certificate trusted,Certificado confiável
+https.installedDetail,This computer now accepts https to this node with no warning. Reopen the browser tabs that showed the warning.,Este computador agora aceita https para este nó sem aviso. Reabra as abas do navegador que mostravam o aviso.
+https.manualIntro,"Install the downloaded file as a trusted root certificate on each computer that opens this node. It can only vouch for this node, and it carries no private key.",Instale o arquivo baixado como certificado raiz confiável em cada computador que abre este nó. Ele só vale para este nó e não carrega nenhuma chave privada.
+https.manualLinux,"System store for curl and most tools, then the browsers' store for Chrome and Firefox:","Repositório do sistema, para o curl e a maioria das ferramentas, e depois o dos navegadores, para Chrome e Firefox:"
+https.manualMac,"Double-click the file, choose the login keychain, open the certificate in Keychain Access and set Trust to Always Trust. Or in the Terminal:","Dê dois cliques no arquivo, escolha as chaves de login, abra o certificado no Acesso às Chaves e marque Confiar como Sempre Confiar. Ou no Terminal:"
+https.manualTitle,Install by hand,Instalar manualmente
+https.manualWindows,"Double-click the file, choose Install Certificate, Current User, and place it in Trusted Root Certification Authorities. Or in a terminal:","Dê dois cliques no arquivo, escolha Instalar Certificado, Usuário Atual, e coloque-o em Autoridades de Certificação Raiz Confiáveis. Ou num terminal:"
+https.outcome.declined,The certificate was not installed,O certificado não foi instalado
+https.outcome.unavailable,This system cannot install the certificate from here,Este sistema não consegue instalar o certificado daqui
+https.state,On this computer,Neste computador
+https.subtitle,"This node serves https with a certificate signed by its own local CA. Trust the CA once and browsers and harnesses accept https to this node with no warning, restart after restart.","Este nó serve https com um certificado assinado pela sua própria CA local. Confie na CA uma vez e navegadores e harnesses aceitam https para este nó sem aviso, a cada reinício."
+https.title,Node certificate,Certificado do nó
+https.trust.not_trusted,Not trusted,Não confiável
+https.trust.trusted,Trusted,Confiável
+https.trust.unknown,Cannot tell,Não foi possível verificar
 huggingFace.clear,Remove saved token,Remover token salvo
 huggingFace.cleared,Saved Hugging Face token removed,Token salvo do Hugging Face removido
 huggingFace.precedence,"Precedence: HF_TOKEN, HUGGING_FACE_HUB_TOKEN, pom.json, then the Hugging Face cache file. Environment variables always win.","Precedência: HF_TOKEN, HUGGING_FACE_HUB_TOKEN, pom.json e, por fim, o arquivo de cache do Hugging Face. As variáveis de ambiente sempre vencem."
@@ -1246,13 +1331,13 @@ keys.inferenceSingle,One active key for this node.,Uma chave ativa para este nó
 keys.inferenceSubtitle,Use this key to talk to models available on the network. This view keeps one active key for this node.,Use esta chave para conversar com os modelos disponíveis na rede. Esta tela mantém uma chave ativa para este nó.
 keys.inferenceTitle,Your Inference API key,Sua API key de inferência
 keys.issuedCopied,Copied,Copiado
-keys.issuedDetail,"This is the only time this token is shown. The network keeps only its hash and the start and end you see in the list, so copy it now and store it somewhere safe.","Esta é a única vez que este token aparece. A rede guarda só o hash dele e o começo e o fim que você vê na lista, então copie agora e guarde num lugar seguro."
+keys.issuedDetail,"This is the only time this token is shown. This node keeps only its hash and the start and end you see in the list, so copy it now and store it somewhere safe.","Esta é a única vez que este token aparece. Este nó guarda só o hash dele e o começo e o fim que você vê na lista, então copie agora e guarde num lugar seguro."
 keys.issuedDone,I copied it,Já copiei
 keys.issuedTitle,Copy your new token,Copie o seu novo token
 keys.keyAccess,What this key grants access to,O que esta chave abre
 keys.networkNode,Network node,Nó da rede
 keys.newToken,New token,Novo token
-keys.nodeHint,Shows where calls came from. It does not restrict the token to that node - any peer accepts any cluster token.,Mostra de onde vieram as chamadas. Não restringe o token a esse nó - qualquer peer aceita qualquer token do cluster.
+keys.nodeHint,"The token works on this node only and never leaves it. It keeps working when this node joins another network, so clients need no change.","O token funciona só neste nó e nunca sai dele. Ele continua valendo quando este nó entra em outra rede, então os clientes não precisam mudar nada."
 keys.openaiAccess,"OpenAI-compatible routes (/v1), so chat works without creating a token.","As rotas compatíveis com OpenAI (/v1), para que o chat funcione sem criar token."
 keys.purpose,Purpose,Para que serve
 keys.purposeHint,Appears on the Logs screen for every request.,Aparece na tela de Logs em todas as requisições.
@@ -1284,6 +1369,7 @@ keys.unnamed,unnamed,sem nome
 lobby.admission,Admission,Admissão
 lobby.admissionApproved,An admin approved this machine as {role}. Joining is up to you.,Um administrador aprovou esta máquina como {role}. Entrar é decisão sua.
 lobby.admissionAsk,Request admission,Pedir admissão
+lobby.admissionAskAgain,Send the request again,Enviar o pedido de novo
 lobby.admissionAskDetail,An admin of the network decides. You can close this window: the answer arrives in the notifications.,Um administrador da rede decide. Você pode fechar esta janela: a resposta chega nas notificações.
 lobby.admissionPending,Admission as {role} requested. Waiting for an admin.,Admissão como {role} pedida. Aguardando um administrador.
 lobby.admissionRejected,An admin declined this request. You can ask again later.,Um administrador recusou este pedido. Você pode pedir de novo mais tarde.
@@ -1412,11 +1498,28 @@ myMachine.nameSubtitle,How this machine appears to the others in the network.,Co
 myMachine.nameTitle,Machine name,Nome da máquina
 myMachine.subtitle,This machine's identity in the cluster and the address it advertises to peers.,A identidade desta máquina no cluster e o endereço que ela anuncia aos peers.
 myMachine.title,My machine,Minha máquina
+nat.check,"Before you keep using POM with other networks over the internet, we recommend checking your connection and giving this machine a direct path.","Antes de continuar usando o POM com outras redes pela internet, recomendamos verificar a sua conexão e dar a esta máquina um caminho direto."
+nat.fixFirewall,"Firewall: allow incoming UDP traffic to POM on this machine and on the home firewall, so the hole punch between the machines can succeed.","Firewall: libere o tráfego UDP de entrada para o POM nesta máquina e no firewall de casa, para que o hole punch entre as máquinas consiga fechar."
+nat.fixIpv6,"Publish your IPv6: if your provider gives you IPv6, enable it on the router and on this machine. A global IPv6 address is reachable from the internet with no translation, as long as the router firewall lets the POM ports in.","Publique o seu IPv6: se o seu provedor oferece IPv6, ative-o no roteador e nesta máquina. Um endereço IPv6 global é alcançável pela internet sem tradução, desde que o firewall do roteador deixe as portas do POM entrarem."
+nat.fixRouter,"Router: forward the POM ports to this machine (the P2P port and the endpoint port, P2P + 10000, both UDP), or enable UPnP, so other networks can reach it directly.","Roteador: redirecione as portas do POM para esta máquina (a porta P2P e a porta do endpoint, P2P + 10000, ambas UDP), ou ative o UPnP, para que outras redes cheguem até ela diretamente."
+nat.fixRouterPorts,"Router: forward the POM ports to this machine (UDP {p2p} for P2P and UDP {endpoint} for the endpoint), or enable UPnP, so other networks can reach it directly.","Roteador: redirecione as portas do POM para esta máquina (UDP {p2p} para o P2P e UDP {endpoint} para o endpoint), ou ative o UPnP, para que outras redes cheguem até ela diretamente."
+nat.fixTitle,How to take this machine out from behind the NAT,Como tirar esta máquina de trás do NAT
+nat.ideal,"The ideal is that the machines talk to each other directly, with no intermediary: every hop through a relay adds latency and caps the bandwidth of the whole pipeline.","O ideal é que as máquinas se comuniquem diretamente, sem intermediários: cada passagem por um relé aumenta a latência e limita a banda de toda a pipeline."
+nat.intro,"This machine is behind a network with NAT: its IP address is not public on the internet. Machines in other networks cannot open a connection to it, which makes it harder for POM to talk to them.","Esta máquina está atrás de uma rede com NAT: o seu endereço IP não é público na internet. Máquinas de outras redes não conseguem abrir uma conexão até ela, e isso dificulta a comunicação do POM com elas."
+nat.openNetworkSettings,Open network settings,Abrir configurações de rede
+nat.relay,"A relay server first coordinates a hole punch so the machines can talk directly. When that does not work, as now, the relay carries the traffic itself: every message goes through that server to reach the other network, and on public relays it is limited to about 2 MB/s.","Um servidor de relé primeiro coordena um hole punch para as máquinas se falarem diretamente. Quando isso não funciona, como agora, o próprio relé carrega o tráfego: cada mensagem passa por esse servidor para chegar à outra rede, e nos relés públicos fica limitada a cerca de 2 MB/s."
+nat.relayKind.dedicated,dedicated relay,relé dedicado
+nat.relayKind.member,relay of a network machine,relé de uma máquina da rede
+nat.relayKind.public,"public relay, about 2 MB/s","relé público, cerca de 2 MB/s"
+nat.relayedTitle,Going through a relay right now,Passando por um relé agora
+nat.slowness,"If inference or transfers with other networks feel slow, this may be one of the reasons: a relayed link adds a detour to every token and limits how much data crosses it.","Se a inferência ou as transferências com outras redes parecem lentas, este pode ser um dos motivos: uma ligação por relé acrescenta um desvio a cada token e limita quantos dados passam por ela."
+nat.title,This machine is behind NAT,Esta máquina está atrás de NAT
 nav.about,About,Sobre
 nav.administration,Administration,Administração
 nav.administrativePreferences,Administrative preferences,Preferências administrativas
 nav.administrators,Administrators,Administradores
 nav.apiKeys,API keys,API keys
+"nav.budget","Usage","Uso"
 nav.chat,Chat,Chat
 nav.connectionKeys,Connection keys,Chaves de conexão
 nav.dashboard,Dashboard,Painel
@@ -1428,6 +1531,7 @@ nav.fullModels,Full models,Modelos inteiros
 nav.history,History,Histórico
 nav.inProgress,In progress,Em andamento
 nav.logs,Logs,Logs
+"nav.businessPack","Business Pack","Business Pack"
 nav.modelFolders,Storage,Armazenamento
 nav.models,Models,Modelos
 nav.myMachine,My machine,Minha máquina
@@ -1461,10 +1565,10 @@ network.accessAutoApproveWarning,"Every machine that asks to join is admitted at
 network.accessLocalOnly,This machine only,Apenas esta máquina
 network.accessPolicy,Who can join,Quem pode entrar
 network.addrEffective,Currently advertising,Anunciando agora
-network.addrHint,"Leave empty to auto-detect (a peer-observed public address, else this machine''s local network address).","Deixe vazio para detectar automaticamente (um endereço público observado via libp2p, senão o endereço de rede local desta máquina)."
+network.addrHint,"Leave empty to auto-detect (the public address the relays observed, else this machine''s local network address).","Deixe vazio para detectar automaticamente (um endereço público observado pelos relés, senão o endereço de rede local desta máquina)."
 network.addrLabel,Pinned address,Endereço fixado
 network.addrPlaceholder,e.g. 203.0.113.5:42777,ex.: 203.0.113.5:42777
-network.addrPrecedence,Pinned address wins if set; otherwise a public address observed via libp2p; otherwise this machine''s local network address.,"O endereço fixado vence quando definido; senão, um endereço público observado via libp2p; senão, o endereço de rede local desta máquina."
+network.addrPrecedence,Pinned address wins if set; otherwise a public address observed by the relays; otherwise this machine''s local network address.,"O endereço fixado vence quando definido; senão, um endereço público observado pelos relés; senão, o endereço de rede local desta máquina."
 network.addrSave,Save,Salvar
 network.addrSaveFailed,Could not save the address,Não foi possível salvar o endereço
 network.addrSaved,Address updated,Endereço atualizado
@@ -1532,8 +1636,8 @@ network.countryRequired,Required for a public network,Obrigatório para uma rede
 network.description,Description,Descrição
 network.detached,Disconnected from network,Fora da rede
 network.download,Download,Baixar
-network.enrollment.infer,Inference nodes,Nós de inferência
-network.enrollment.node,Network nodes,Nós da rede
+network.enrollment.visitor,Inference nodes,Nós de inferência
+network.enrollment.worker,Network nodes,Nós da rede
 network.enrollmentClosed,Not accepting new members,Não aceita novos membros
 network.enrollmentOpen,Any role,Qualquer papel
 network.firewallEyebrow,Windows Firewall,Firewall do Windows
@@ -1546,7 +1650,7 @@ network.firewallRetryFailed,Could not request the Windows Firewall permission.,N
 network.firewallRetrying,Firewall permission request finished.,O pedido de permissão do firewall terminou.
 network.firewallSubtitle,The first attempt asks Windows for administrator permission. Refusing it does not stop this node.,A primeira tentativa pede permissão de administrador ao Windows. Recusar não interrompe este nó.
 network.firewallTitle,Allow POM network traffic,Libere o tráfego de rede do POM
-network.firewallUacDetail,"Approve the Windows prompt once to allow discovery, QUIC and libp2p traffic.","Aprove o pedido do Windows uma vez para liberar descoberta, QUIC e tráfego libp2p."
+network.firewallUacDetail,"Approve the Windows prompt once to allow discovery, QUIC, p2p endpoint and relay traffic.","Aprove o pedido do Windows uma vez para liberar descoberta, QUIC, endpoint p2p e relé."
 network.forgetNetwork,Return to my own network,Voltar para a minha rede
 network.forgetNetworkDescription,"This machine leaves this network and goes back to its own, as it was. The admin of the network gives the other members a new connection key, so coming back takes a new admission request. It does not remove another machine from the cluster.","Esta máquina sai desta rede e volta para a rede própria, como estava. O administrador da rede dá uma nova chave de conexão aos outros membros, então voltar exige um novo pedido de admissão. Ela não tira outra máquina do cluster."
 network.forgetNetworkFailed,Could not leave the network,Não foi possível sair da rede
@@ -1573,11 +1677,11 @@ network.logsDisabled,Process logs turned off,Logs de processo desligados
 network.logsEnable,Turn logs on,Ligar logs
 network.logsEnabled,Process logs turned on,Logs de processo ligados
 network.logsFailed,Could not change the process log policy,Não deu para mudar a política de logs de processo
-network.logsHowItWorks,"The admin only tells the network to collect: every node sends a copy to each admin over a separate libp2p protocol, and the Logs plugin on each admin keeps arrival order and deployment id in its own database. Only the admins need the plugin.","O admin só avisa a rede para coletar: cada nó envia uma cópia para cada admin por um protocolo libp2p separado, e o plugin de Logs de cada admin grava a ordem de chegada e o deploy_id no próprio banco. Só os admins precisam do plugin."
-network.logsNotAuthority,"Only the main node decides this, and the decision applies to the whole cluster.","Só o nó principal decide isso, e a decisão vale para o cluster inteiro."
+network.logsHowItWorks,"The admin only tells the network to collect: every node sends a copy to each admin over a separate p2p protocol, and the Logs plugin on each admin keeps arrival order and deployment id in its own database. Only the admins need the plugin.","O admin só avisa a rede para coletar: cada nó envia uma cópia para cada admin por um protocolo p2p separado, e o plugin de Logs de cada admin grava a ordem de chegada e o deploy_id no próprio banco. Só os admins precisam do plugin."
+"network.logsNotAuthority","Only an admin decides this, and the decision applies to the whole cluster.","Só um admin decide isso, e a decisão vale para o cluster inteiro."
 network.logsOff,paused,pausada
 network.logsOn,collecting,coletando
-network.logsPropagates,No restart needed. Other nodes confirm the policy with the main node before adopting it.,Não precisa reiniciar. Os demais nós confirmam a política com o principal antes de adotar.
+"network.logsPropagates","No restart needed. Any admin can change it: a secondary admin's change goes to the main node, and the other nodes confirm the policy with it before adopting.","Não precisa reiniciar. Qualquer admin pode mudar: a mudança de um admin secundário vai para o principal, e os demais nós confirmam a política com ele antes de adotar."
 network.logsState,Cluster collection,Coleta do cluster
 network.logsSubtitle,"When on, this node reports its process log to every admin replica. The bounded queue drops lines under pressure so inference is never held up.","Ligado, este nó envia seu log de processo para cada réplica admin. A fila limitada descarta linhas sob pressão para nunca segurar a inferência."
 network.logsTitle,Process logs between nodes,Logs de processo entre nós
@@ -1594,7 +1698,7 @@ network.networkChatDisabled,Network chat turned off,Chat da rede desligado
 network.networkChatEnable,Turn network chat on,Ligar Chat da rede
 network.networkChatEnabled,Network chat turned on,Chat da rede ligado
 network.networkChatFailed,Could not change the network chat policy,Não foi possível mudar a política do Chat da rede
-network.networkChatHowItWorks,"Messages and files travel through the libp2p swarm and are validated by the main node.","Mensagens e arquivos viajam pelo enxame libp2p e são validados pelo nó principal."
+network.networkChatHowItWorks,Messages and files travel through the p2p network and are validated by the main node.,Mensagens e arquivos viajam pela rede p2p e são validados pelo nó principal.
 network.networkChatNotAuthority,"Only the main node decides this, and the decision is confirmed by the network.","Somente o nó principal decide isso, e a decisão é confirmada pela rede."
 network.networkChatOff,disabled,desligado
 network.networkChatOn,enabled,ligado
@@ -1718,7 +1822,7 @@ network.tlsDisabled,TLS turned off,TLS desligado
 network.tlsEnable,Turn TLS on,Ligar TLS
 network.tlsEnabled,TLS turned on,TLS ligado
 network.tlsFailed,Could not change the TLS policy,Não deu para mudar a política de TLS
-network.tlsHowItWorks,"TLS between nodes matters most when inference crosses the internet. If everything runs locally over 127.0.0.1, communication between nodes mainly uses libp2p, which is secure by nature - TLS is optional in that case and may even reduce inference speed.","O TLS entre nós vale sobretudo quando a inferência atravessa a internet. Se tudo corre localmente por 127.0.0.1, a comunicação entre nós passa principalmente por libp2p, que já é segura por natureza - o TLS torna-se opcional nesse caso e pode inclusive reduzir a velocidade da inferência."
+network.tlsHowItWorks,"TLS between nodes matters most when inference crosses the internet. If everything runs locally over 127.0.0.1, communication between nodes mainly uses the p2p endpoints (QUIC), which are encrypted by nature - TLS is optional in that case and may even reduce inference speed.","O TLS entre nós vale sobretudo quando a inferência atravessa a internet. Se tudo corre localmente por 127.0.0.1, a comunicação entre nós passa principalmente por p2p, que já é segura por natureza - o TLS torna-se opcional nesse caso e pode inclusive reduzir a velocidade da inferência."
 network.tlsNotAuthority,"Only the main node decides this, and the decision applies to the whole cluster.","Só o nó principal decide isso, e a decisão vale para o cluster inteiro."
 network.tlsOff,in the clear,em texto claro
 network.tlsOn,encrypted,cifrado
@@ -1726,7 +1830,7 @@ network.tlsPropagates,No restart needed. The other nodes confirm the change with
 network.tlsState,Cluster,Cluster
 network.tlsSubtitle,"When on, every HTTP call between peers goes over TLS, and each node''s certificate is verified against the node_id the cluster already knows.","Ligado, todo HTTP entre peers vai por TLS, e o certificado de cada nó é conferido contra o node_id que o cluster já conhece."
 network.tlsTitle,Encryption between nodes,Criptografia entre nós
-network.traversalCircuits,Relay circuits,Circuitos de relé
+network.traversalCircuits,Relay addresses,Endereços de relé
 network.traversalDirect,Direct addresses,Endereços diretos
 network.traversalEyebrow,Diagnostics,Diagnóstico
 network.traversalHolePunch,Hole punches,Hole punches
@@ -1736,7 +1840,7 @@ network.traversalNat,NAT status,Estado do NAT
 network.traversalNat.private,Behind NAT,Atrás de NAT
 network.traversalNat.public,Publicly reachable,Alcançável publicamente
 network.traversalNat.unknown,Not determined yet,Ainda não determinado
-network.traversalReservations,Relay reservations,Reservas de relé
+network.traversalReservations,Relays connected,Relés conectados
 network.traversalSubtitle,"Where NAT traversal stands for this node: what it can publish, which relays accepted it, and whether hole punching works.","Em que pé está a travessia de NAT deste nó: o que ele consegue publicar, que relés o aceitaram e se o hole punch funciona."
 network.traversalTitle,NAT traversal,Travessia de NAT
 network.trustDocument,Trust document,Documento de confiança
@@ -1758,7 +1862,7 @@ networkChat.emptyTitle,No messages yet,Nenhuma mensagem ainda
 networkChat.fileLimit,"Files are limited to 8 MiB.","Arquivos são limitados a 8 MiB."
 networkChat.fileTooLarge,File is too large,Arquivo grande demais
 networkChat.hideOnline,Hide online,Ocultar online
-networkChat.hint,"Enter sends. Files are sent through the libp2p network.","Enter envia. Arquivos são enviados pela rede libp2p."
+networkChat.hint,Enter sends. Files are sent through the p2p network.,Enter envia. Arquivos são enviados pela rede p2p.
 networkChat.loadFailed,Could not load the network chat,Não foi possível carregar o Chat da rede
 networkChat.loading,Loading network chat,Carregando o Chat da rede
 networkChat.lobbyUnread,"{count, plural, one {# new message in the lobby} other {# new messages in the lobby}}","{count, plural, one {# mensagem nova no lobby} other {# mensagens novas no lobby}}"
@@ -1946,19 +2050,19 @@ plugins.developTitle,Start from pom-plugin-base,Comece pelo pom-plugin-base
 plugins.featured,Featured,Destaque
 plugins.formSubtitle,The key is sent only to the license server and is not saved by the POM interface.,A chave é enviada apenas ao servidor de licenças e não é salva pela interface do POM.
 plugins.formTitle,Enter your license key,Digite sua chave de licença
-plugins.githubAddFromCatalog,Install from GitHub,Instalar do GitHub
 plugins.githubCheck,Refresh releases,Atualizar releases
 plugins.githubCheckFailed,Could not refresh this GitHub repository.,Não foi possível atualizar este repositório GitHub.
 plugins.githubInstall,Install,Instalar
 plugins.githubInstallConfirmDescription,The selected release ({version}) will replace the plugin version currently installed on this node.,A release selecionada ({version}) substituirá a versão do plugin instalada neste nó.
-plugins.githubInstallConfirmTitle,Install {name} from GitHub?,Instalar {name} pelo GitHub?
+"plugins.githubInstallConfirmTitle","Install {name}?","Instalar {name}?"
 plugins.githubInstallFailed,Could not install the selected release.,Não foi possível instalar a release selecionada.
 plugins.githubInstalled,Installed,Instalada
+"plugins.githubInstallLatestDescription","The latest release published for this machine ({version}) will be installed on this node.","A última release publicada para esta máquina ({version}) será instalada neste nó."
 plugins.githubLatest,latest,mais recente
 plugins.githubListFailed,Could not load registered GitHub repositories.,Não foi possível carregar os repositórios GitHub cadastrados.
 plugins.githubNoCompatibleReleases,No release published for this machine yet.,Nenhuma release publicada para esta máquina ainda.
 plugins.githubPrerelease,Pre-release,Pré-release
-plugins.githubReleaseSelect,Release to install,Release para instalar
+"plugins.githubReleaseSelect","Update to install","Atualização para instalar"
 plugins.githubRemove,Remove repository,Remover repositório
 plugins.githubRepositoriesLoading,Loading registered repositories,Carregando repositórios cadastrados
 plugins.githubRepositoryLabel,Public GitHub repository URL,URL do repositório público do GitHub
@@ -1970,7 +2074,7 @@ plugins.githubUninstall,Uninstall plugin,Desinstalar plugin
 plugins.githubUninstallConfirmDescription,This removes the public GitHub plugin from this node. You can install it again later.,Isso remove o plugin público do GitHub deste nó. Você poderá instalá-lo novamente depois.
 plugins.githubUninstallConfirmTitle,Uninstall {name}?,Desinstalar {name}?
 plugins.githubUpdate,Update,Atualizar
-plugins.githubUpdateConfirmTitle,Update {name} from GitHub?,Atualizar {name} pelo GitHub?
+"plugins.githubUpdateConfirmTitle","Update {name}?","Atualizar {name}?"
 plugins.inactiveTitle,Available,Disponível
 plugins.installationFailed,"Plugin installation failed. The host is not ready. Resolve the error below and activate again.","Falha na instalação do plugin. O host não está pronto. Corrija o erro abaixo e tente ativar novamente."
 plugins.installedAt,Last installed,Última instalação
@@ -2045,6 +2149,16 @@ plugins.updateApply,Install update,Instalar atualização
 plugins.updateApplyFailed,Could not apply the plugin update.,Não foi possível aplicar a atualização do plugin.
 plugins.updateAvailable,Update available: {version},Atualização disponível: {version}
 plugins.updateRelease,Release {release_id},Release {release_id}
+"plugins.updatesCheck","Check for updates","Verificar atualizações"
+"plugins.updatesCheckFailed","Some sources did not answer:","Algumas fontes não responderam:"
+"plugins.updatesFailed","Could not install this update.","Não foi possível instalar esta atualização."
+"plugins.updatesInstall","Install","Instalar"
+"plugins.updatesInstallAll","{count, plural, one {Install # update} other {Install all # updates}}","{count, plural, one {Instalar # atualização} other {Instalar todas as # atualizações}}"
+"plugins.updatesInstalled","Installed","Instalada"
+"plugins.updatesNone","POM and every installed plugin are up to date.","O POM e todos os plugins instalados estão atualizados."
+"plugins.updatesRestarting","Restarting","Reiniciando"
+"plugins.updatesRestarts","Restarts POM","Reinicia o POM"
+"plugins.updatesTitle","Available updates","Atualizações disponíveis"
 plugins.version,Version,Versão
 preferences.accessConnectionKeyNote,The connection key is separate: it authenticates nodes to each other and is not reused as the interface password.,A connection key é outra coisa: autentica os nós entre si e não é reutilizada como senha da interface.
 preferences.accessEyebrow,Administrative surface,Superfície administrativa
@@ -2067,7 +2181,7 @@ preferences.accessSave,Save exposure,Salvar exposição
 preferences.accessSaveFailed,Could not save the interface preference,Não foi possível salvar a preferência da interface
 preferences.accessSaved,Interface preference saved,Preferência da interface salva
 preferences.accessSavedDetail,The new administrative boundary is active now.,A nova fronteira administrativa já está ativa.
-preferences.accessSubtitle,Choose where the administration interface listens. Inference pipeline routes remain available over IPv4 and IPv6 as a fallback for the libp2p tunnel.,Escolha de onde a interface de administração aceita conexões. As rotas da pipeline de inferência continuam disponíveis por IPv4 e IPv6 como reserva para o túnel libp2p.
+preferences.accessSubtitle,Choose where the administration interface listens. Inference pipeline routes remain available over IPv4 and IPv6 as a fallback for the p2p tunnel.,Escolha de onde a interface de administração aceita conexões. As rotas da pipeline de inferência continuam disponíveis por IPv4 e IPv6 como reserva para o túnel p2p.
 preferences.accessTitle,Interface exposure,Exposição da interface
 preferences.accessTokenCopied,Copied,Copiado
 preferences.accessTokenCopy,Copy token,Copiar token
@@ -2082,8 +2196,8 @@ preferences.portInvalid,Enter a port between 1 and 65535.,Informe uma porta entr
 preferences.subtitle,Local protection and model-provider credentials for this node.,Proteção local e credenciais de provedor deste nó.
 preferences.title,Preferences,Preferências
 profile.admin,Administrator,Administrador
-profile.infer,infer,infer
-profile.node,node,node
+profile.visitor,visitor,visitor
+profile.worker,worker,worker
 publicNetworks.accepting,Accepting,Aceitando
 publicNetworks.action,Action,Ação
 publicNetworks.add,Add network,Adicionar rede
@@ -2188,8 +2302,8 @@ publicNetworks.removeTitle,Remove this network from the list?,Remover esta rede 
 publicNetworks.roleAccepted,Accepting,Aceitando
 publicNetworks.roleAcceptedNamed,Accepting {role},Aceitando {role}
 publicNetworks.roleNotAccepted,Not accepting,Não aceita
-publicNetworks.roleTip.infer,"This network admits machines that only use its models for chat and API calls, without serving any.","Esta rede admite máquinas que só usam os modelos dela para conversa e chamadas de API, sem servir nenhum."
-publicNetworks.roleTip.node,This network admits machines that serve model layers and take part in its deployments.,Esta rede admite máquinas que servem camadas dos modelos e participam das implantações dela.
+publicNetworks.roleTip.visitor,"This network admits machines that only use its models for chat and API calls, without serving any.","Esta rede admite máquinas que só usam os modelos dela para conversa e chamadas de API, sem servir nenhum."
+publicNetworks.roleTip.worker,This network admits machines that serve model layers and take part in its deployments.,Esta rede admite máquinas que servem camadas dos modelos e participam das implantações dela.
 publicNetworks.search,Search,Buscar
 publicNetworks.searchAction,Search,Buscar
 publicNetworks.searchPlaceholder,"Name, organization, city...","Nome, organização, cidade..."
@@ -2241,8 +2355,8 @@ quickSetup.publishedDetail,Other machines can now find it in the public director
 quickSetup.recommended,Recommended,Recomendado
 quickSetup.relayFailedDetail,The network was saved; set the relay again in Network settings.,A rede foi salva; ajuste o relé de novo nas configurações da rede.
 quickSetup.relayLive,"Applied to this machine as soon as it changes, without the Save button.","Aplicado a esta máquina assim que muda, sem o botão Salvar."
-quickSetup.role.infer,Use the network's models,Usam os modelos da rede
-quickSetup.role.node,Hold and serve model slices,Guardam e servem fatias de modelos
+quickSetup.role.visitor,Use the network's models,Usam os modelos da rede
+quickSetup.role.worker,Hold and serve model slices,Guardam e servem fatias de modelos
 quickSetup.rulesHint,What members agree to when they join.,O que os membros aceitam ao entrar.
 quickSetup.save,Save,Salvar
 quickSetup.saveNote,The network will not be listed in the public directory.,A rede não será listada no diretório público.
@@ -2578,7 +2692,7 @@ setupWizard.storagePathsDetail,You can change these later in Settings.,Você pod
 setupWizard.storageTitle,Where should models and shared slices live?,Onde devem ficar os modelos e as fatias compartilhadas?
 setupWizard.thermalDetail,A limit around 85°C is a comfortable target. POM stops using the GPU before it stays too hot.,Um limite perto de 85°C é um alvo confortável. O POM para de usar a GPU antes que ela fique quente demais.
 setupWizard.thermalLimit,GPU temperature limit,Limite de temperatura da GPU
-setupWizard.tlsDetail,Optional extra encryption for control links. Libp2p already protects peer connections.,Criptografia extra opcional para os links de controle. O libp2p já protege as conexões entre nós.
+setupWizard.tlsDetail,Optional extra encryption for control links. The p2p endpoints already encrypt peer connections (QUIC).,Criptografia extra opcional para os links de controle. Os endpoints p2p já criptografam as conexões entre nós (QUIC).
 setupWizard.tlsPublicRequired,Extra encryption is optional on public networks.,A criptografia extra é opcional em redes públicas.
 setupWizard.tlsRequired,Encrypt connections between nodes (optional),Criptografar conexões entre nós (opcional)
 setupWizard.trustDocument,Trust document,Documento de confiança
@@ -2723,6 +2837,8 @@ slice.tpSize,Number of TP ranks,Quantidade de ranks TP
 slice.tpSizeAria,Number of TP ranks,Quantidade de ranks TP
 slice.tpSizeHint,Choose the number of machines that will hold this tensor-parallel model.,Escolha quantas máquinas vão guardar este modelo em tensor parallelism.
 topbar.apiTitle,OpenAI-compatible API served by this node,API compatível com OpenAI servida por este nó
+topbar.behindNat,Behind NAT,Atrás de NAT
+topbar.behindNatHint,Some connections of this machine go through a relay. Click for what it means and how to fix it.,Algumas conexões desta máquina passam por um relé. Clique para ver o que isso significa e como resolver.
 topbar.closeMenu,Close menu,Fechar menu
 topbar.layers,{covered}/{total} layers,{covered}/{total} camadas
 topbar.leaveDescription,"The node stops announcing, forgets known peers, and unloads the model. The interface remains available. Rejoin from Settings › Network.","O nó para de anunciar, esquece os peers que conhece e descarrega o modelo. A interface continua no ar. Para voltar, use Configurações › Rede."

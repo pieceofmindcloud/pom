@@ -13,16 +13,18 @@ in `../routing-contract`, empty for the runtime).
   Used by `scripts/build-docker.sh`/`POM_BUILD_FEATURES` in the devupdate. The CUDA
   build keeps CUDA Graphs off by default; enabling it with `POM_CUDA_GRAPHS=1`
   requires rebuilding the binary and additional free VRAM.
-- Heavy dependencies: `libp2p` 0.56 (tokio, tcp, dns, noise, yamux, identify,
-  kad, mdns, gossipsub, relay, dcutr, autonat, request-response), `pkarr` 6,
+- Heavy dependencies: `iroh` 1.3 (`unstable-net-report` for the NAT report),
+  `iroh-gossip` 0.101, `iroh-mdns-address-lookup` 0.6, `iroh-relay` 1.3 (`server`,
+  the embedded relay), `pkarr` 8.1 (8.x is what shares `ed25519-dalek` 3 with iroh),
   `axum` 0.7, `reqwest` (json+stream), `url`, `tokio` full, `clap` 4 (derive),
   `socket2`, `tower-http` (compression-full), `rusqlite` bundled for the
   persistent audit, `arc-swap` for lock-free snapshots of the log capture
   context, `h3`/`h3-quinn`/`quinn` for the optional HTTP/3 of the inference hops,
   `routing-contract` (path).
 - On Windows, `windows_firewall.rs` uses COM `INetFwPolicy2` in a UAC-elevated
-  helper to keep four idempotent inbound rules: UDP P2P, inference UDP QUIC,
-  gateway UDP QUIC and libp2p TCP. The automatic request happens once per
+  helper to keep five idempotent inbound rules: UDP P2P, inference UDP QUIC,
+  gateway UDP QUIC, the p2p endpoint (UDP) and the relay server (TCP), both on
+  `p2p_port + 10000`. The automatic request happens once per
   effective port and stays in `pom.db`'s `local_settings`; the UI offers a retry
   without blocking the node or `Leave network`.
 - The Hugging Face provider uses native HTTP via `reqwest`; there is no `hf`
@@ -66,7 +68,7 @@ in `../routing-contract`, empty for the runtime).
   `CCACHE=ccache` wraps the `nvcc`. The procedure and the separate target are in
   `docs/subsystems/build-and-run.md`.
 - On the macOS target, `build.rs` compiles `src/macos_status.m` and links only the
-  system's AppKit and WebKit frameworks. Linux and Windows do not get that bridge.
+  system's AppKit, WebKit and Security frameworks. Linux and Windows do not get that bridge.
 
 ## src/main.rs - startup flow and CLI
 
@@ -85,8 +87,8 @@ public relay), `--no-cluster-relay`, `--no-relay-transfers` (the three are the
 `--no-default-relays`,
 `--no-discovery`, `--no-pkarr` (no pkarr client: a network without internet
 access).
-`--relay-peers` adds to the `pom.json`'s `relay_peers` (`merged_relay_peers`,
-config first), as `--bootstrap` does to `bootstrap_nodes`. There is no flag for
+`--relay-peers` (relay URLs) adds to the `pom.json`'s `relay_peers` (`merged_relay_peers`,
+config first); `--no-default-relays` drops n0's public relays, as `--bootstrap` does to `bootstrap_nodes`. There is no flag for
 model, memory, layer range, sampling or inference port: that comes from the
 deployment (`runtime::NodeConfig`) and from the `pom.json` (`inference_port`,
 default 8181; `slot_save_path`, default `~/.pom/kv-slots`).
@@ -117,15 +119,16 @@ an error naming that port. The Windows supervisor skips the lock; its child take
 
 Then, if no `pom.json` exists, `initial_ports::select` probes the implicit
 default gateway/P2P port set. It checks the HTTP gateway and its derived
-inference port, P2P UDP, both QUIC UDP ports, and the libp2p TCP/QUIC port.
-Occupied implicit defaults move to available ports; CLI/environment choices stay
-fixed. The new values flow into local-network creation and are persisted with
-the new configuration. With a `pom.json`, the desktop builds (`DESKTOP`) run the
-same probe from the saved ports (`move_busy_saved_ports`) and save the moved
-ones; environment ports stay fixed. A server never rewrites its saved ports:
-they are part of the cluster's configuration, so a busy one is a startup error
-that names the port. The native windows load the port the gateway reports
-through `GatewayReadySender` after binding, never one computed beforehand.
+inference port, P2P UDP, both QUIC UDP ports, and the endpoint's UDP port with
+the relay server's TCP port (`p2p_port + 10000`). Occupied implicit defaults
+move to available ports; CLI/environment choices stay fixed. The new values
+flow into local-network creation and are persisted with the new configuration.
+With a `pom.json`, the desktop builds (`DESKTOP`) run the same probe from the
+saved ports (`move_busy_saved_ports`) and save the moved ones; environment ports
+stay fixed. A server never rewrites its saved ports: they are part of the
+cluster's configuration, so a busy one is a startup error that names the port.
+The native windows load the port the gateway reports through
+`GatewayReadySender` after binding, never one computed beforehand.
 
 1. `respawn::remember_argv` + tracing.
 2. Without `pom.json`, or with `Config.setup_pending` (the preference shell
@@ -144,10 +147,10 @@ through `GatewayReadySender` after binding, never one computed beforehand.
 4. `start_node`, the only path of a configured node:
    - Identity `Identity::load_or_create` (`.pom-node.key`, resolved against
      `config::project_root()`): the node's only key, from which come
-     `node_id`, `PeerId`, the pkarr key and the authority key.
+     `node_id`, the endpoint id, the pkarr key and the authority key.
    - Bootstrap = config + `--bootstrap`, both going through
      `config::normalize_peer_addr` in `merged_bootstrap_nodes`; relays =
-     `relay_peers` + `--relay-peers`. `--advertise-addr` beats `--public-addr`,
+     `relay_peers` + `--relay-peers` (relay URLs). `--advertise-addr` beats `--public-addr`,
      which beats the config.
    - `start_p2p_stack`: `Network::new` receives the initial TLS policy and the
      admission ratchet before `start` (receive, gossip 5 s, route measurement
@@ -159,14 +162,14 @@ through `GatewayReadySender` after binding, never one computed beforehand.
      `peers`; the public network still keeps a local `connection_key` for the
      administrator's UI, but it is not shared nor used in admission;
      `--no-discovery` → `detach`.
-     `Discovery::new` (libp2p, TCP = UDP+10000) + a publish task on the gossipsub
-     every 5 s (`Network::gossip_announce_bytes`, the same `self_announce` as the
+     `Discovery::new` (the iroh endpoint on UDP+10000, under the node key) + a
+     publish task on gossip every 5 s (`Network::gossip_announce_bytes`, the same `self_announce` as the
      UDP, with or without assignment).
    - pkarr: `PkarrPublishHandle::spawn_republisher` always publishes (with
      `r` equal to `--serve-relay`, the path of a dedicated relay,
-     `examples/relay-node/`) and republishes when the swarm addresses change;
-     every 30 s `spawn_pkarr_bootstrap` resolves and dials by key
-     `--pkarr-peers`, the `relay_peers` relays and the trust chain principals
+     `examples/relay-node/`) and republishes when the endpoint addresses change;
+     every 30 s `spawn_pkarr_bootstrap` resolves by key and hands to
+     `Discovery` `--pkarr-peers` and the trust chain principals
      that are not alive yet, each key that stays out backing off up to
      10 min (`pkarr_bootstrap_wait`). `--no-pkarr` skips all of it; without it, a failed
      publication backs off from 15 s to 30 min and only warns at the 1st, 2nd,
@@ -233,20 +236,29 @@ same endpoint accepts IPv4 and IPv6 on Windows, Linux and macOS; Quinn's client
 constructor already applies the same option.
 
 `start_setup_mode` (dead code, see above) and `start_node` live in `main.rs` (not
-in a separate module). `advertised_ollama_port` (over `parse_ollama_port`) extracts
-the port from `--ollama-url` and announces it **always**.
+in a separate module). `--ollama-url` is a local setting only: it feeds
+`OllamaClient` (model resolution and `ollama_available` in `/health`). It is not
+announced to peers - nothing in the cluster dials a peer's Ollama, and the
+`Announce` never carried a port for it.
 
 On Windows, the parent process supervises the native child: an abnormal exit
 relaunches the POM, but `Quit POM` returns exit code zero and does not relaunch.
+A failure before the gateway is ready (`windows_status::report_startup_failure`)
+shows the error in a dialog with the `pom.log` path and exits with
+`STARTUP_FAILED_EXIT_CODE`, which is not relaunched: the GUI binary has no
+console, and retrying it every second was an invisible loop. The WebView2 is
+built without a URL and loads the interface only after the certificate handler
+is registered; the first navigation used to meet the local certificate before
+the handler existed, so without the CA trusted no interface appeared.
 `pom undeploy` writes a persistent block to prevent automatic resumptions of a
 troubled deployment.
 
 ## src/ subfolders
 
 - `initial_ports.rs` - selection of available gateway, inference, P2P, QUIC
-  and libp2p ports: on the first boot, and on every desktop boot whose saved
-  ports are busy.
-- `network/` - P2P UDP + libp2p/pkarr. See `crates/node/src/network/AGENTS.md`.
+  and endpoint/relay ports: on the first boot, and on every desktop boot whose
+  saved ports are busy.
+- `network/` - P2P UDP + iroh/pkarr. See `crates/node/src/network/AGENTS.md`.
 - `routing/` - the pipeline planner. See `crates/node/src/routing/AGENTS.md`.
 - `utils/` - config, respawn, sysmon. See `crates/node/src/utils/AGENTS.md`.
 - `models/` - model profiles and the GGUF catalog: `model.rs`
@@ -280,6 +292,23 @@ troubled deployment.
   do not implement a parallel API.
 - `windows_status.rs` - the WebView2 window and Windows tray, with the testable
   policy of hiding to the notification area on close and really quitting.
+- `trust_store.rs` - puts the local CA (`network/web_ca.rs`) in the system
+  trust store: the macOS login keychain (`security add-trusted-cert`, the
+  system asks for the password), the Windows current user's root store
+  (`certutil -user -addstore Root`, Windows' own confirmation) and on Linux
+  the NSS databases of Chrome and Firefox (`certutil`, no prompt) plus the
+  system store under `pkexec` (`update-ca-certificates`/`update-ca-trust`).
+  `auto_install` runs once at the start of each desktop shell and never asks
+  again for a CA the person refused (`.pom-ca.declined`); `install` is also
+  behind `POST /api/ui/tls/ca/install` (`backend/webui/https.rs`).
+- The three native windows load `https://127.0.0.1` (`main::gateway_url`,
+  plain `http` only when TLS could not start) and accept, besides a CA the
+  system trusts, exactly the certificate of the persisted web key on loopback:
+  WebKitGTK through `load-failed-with-tls-errors` +
+  `allow_tls_certificate_for_host`, WebView2 through
+  `ServerCertificateErrorDetected` (`webview2-com`), WKWebView and the gateway
+  probe's `NSURLSession` through their authentication challenge, which asks
+  Rust (`pom_macos_is_local_web_certificate`).
 - `linux_window.rs` - the WebKitGTK window of the `desktop` feature (the
   AppImage). The view is built into the window's GTK box (`build_gtk`), not as
   an X11 child window, which painted nothing - and does not exist under
@@ -287,7 +316,7 @@ troubled deployment.
   on a POM already running from the same root.
 
 `profile.rs` is the single source of the node's persisted profile (`admin`,
-`node` or `infer`) and of the visibility/promotion capabilities and deployment
+`worker` or `visitor`) and of the visibility/promotion capabilities and deployment
 management. `ProfileAction::ManageDeployment` limits adding a machine and
 undeploying to the `admin` profile; removing one's own machine stays a local
 action of the other profiles. The profile does not replace `Role`, which keeps
@@ -297,15 +326,18 @@ The inference protocol has not shipped yet. `frame/v1-batch` is the first and on
 official contract: do not keep a fallback, adapter or compatibility code for
 earlier v1/v2 formats. Future changes must evolve this contract explicitly.
 
-The startup creates the `NetworkChat` next to the `Discovery`, using a libp2p
-behaviour separate from the inference tunnel. The `GatewayState` shares the service
+The startup creates the `NetworkChat` next to the `Discovery`, using its own
+endpoint protocol (ALPN) separate from the inference tunnel. The `GatewayState` shares the service
 with the `/api/ui/network-chat` routes; the cluster policy is applied by the
 `network_chat_policy` ratchet.
 
 `src/plugins.rs` manages licensed plugins and independent local installs:
 `PluginManager` creates a `PluginRuntime` for codes granted by a license or when a
 local GitHub release is installed. Licensed runtimes persist in
-`plugin_license:<code>` and keep their license/heartbeat cycle. Registered GitHub
+`plugin_license:<code>` and keep their license/heartbeat cycle. Every persisted
+install carries the machine fingerprint; without `/etc/machine-id` its machine
+component is `stored_machine_id` (`.<slug>-machine-id` in the project root), so a
+recreated container keeps its plugins. Registered GitHub
 repositories live in `plugin_github_repositories` in the `pom.db`; the POM reads a
 `manifest.json` at the root or, in its absence, a `ui/manifest.json` of the
 `pom-plugin-ui/v1` contract, always directly from GitHub and without consulting the
@@ -363,7 +395,7 @@ arguments. Cargo artifacts go to
 so read-only source binds work. The cluster development image exposes Cargo to
 its non-root node user and points `CARGO_HOME` to a writable cache in the
 project data volume.
-AdminOnly routes work only with `POM_DEV_MODE=1`; a build may install a local
+PrincipalOnly routes work only with `POM_DEV_MODE=1`; a build may install a local
 plugin without a license or prior installation,
 persisting its binary and state in `plugin_dev_install:<code>` without granting
 licensed features. If a licensed or GitHub installation already exists, the
@@ -469,7 +501,8 @@ a signed call from a live peer to the plugin's `peer.<op>` operation together
 with the caller (`node_id`, `head`). A call without the signed envelope is
 refused. A service of kind `inference` may also list the GGUF
 `architectures` its engine runs and the POM deployment settings that apply to
-it (`pom_settings`, checked against `POM_SETTINGS`). See `docs/subsystems/plugins-ui.md`, "Services
+it (`pom_settings`, checked against `POM_SETTINGS`: `prefill_max_inflight_chunks`,
+`hidden_state_dtype`, `inference_role`). See `docs/subsystems/plugins-ui.md`, "Services
 a plugin offers to the cluster", and `src/inference/plugin_engine.rs` for how
 an inference service replaces llama.cpp on a deployment.
 
@@ -487,13 +520,14 @@ never the passages. Any failure leaves the request untouched. See
 `docs/subsystems/plugins-ui.md`, "Transparent retrieval (RAG)".
 
 `src/pom_core_update.rs` is deliberately SEPARATE from `src/plugins.rs`: the
-update of the `pom` binary itself is not a plugin and will become public GitHub
-Releases without a license (another task). Until that migration, `PomCoreUpdater`
-borrows the `enterprise` plugin's lease to authenticate the generic `pom_core`
-manifest and, only with an explicit confirmation from the UI, delegates decision,
-hash, atomic swap and restart to `core_update.rs` - which stays pure and with no
-licensing dependency. The boundary and the remaining limits are in
-`docs/subsystems/enterprise-licensing.md`.
+update of POM itself is not a plugin and needs no license. `PomCoreUpdater`
+reads the GitHub releases of the POM repository (the site's listing as
+fallback), picks this build's asset (`Target`, `Install`), compares tags with
+`POM_RELEASE_VERSION` from `build.rs`, and on an explicit confirmation from the
+UI downloads, verifies and unpacks the asset next to the installation and hands
+the swap and restart to `pom-plugin-host --apply-update`
+(`crates/plugin-host/src/update.rs`). The contract is in
+`docs/subsystems/enterprise-licensing.md`, "POM updates".
 
 ## Links
 

@@ -11,6 +11,8 @@ use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
+mod update;
+
 pub const MAX_FRAME_BYTES: usize = MAX_IPC_FRAME_BYTES;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -376,6 +378,12 @@ fn handle_request(request: &IpcRequest, plugin: Option<&LoadedPlugin>) -> IpcRes
 
 fn run() -> io::Result<()> {
     let mut args = std::env::args_os().skip(1);
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--apply-update")) {
+        let plan = std::env::args_os().nth(2).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "usage: pom-plugin-host --apply-update <plan.json>")
+        })?;
+        return update::run(Path::new(&plan));
+    }
     let loaded = match (args.next(), args.next(), args.next()) {
         (None, None, None) => None,
         (Some(path), Some(plugin_code), None) => {

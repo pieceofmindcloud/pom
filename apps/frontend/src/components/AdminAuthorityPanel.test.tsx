@@ -25,7 +25,7 @@ const candidate = (node_id: string, hostname: string): AdminNode => ({
   short_id: node_id.slice(0, 8),
   hostname,
   addr: "127.0.0.1:8080",
-  role: "node",
+  role: "worker",
   is_self: false,
   connected: true,
   blocked: false,
@@ -133,7 +133,7 @@ describe("AdminAuthorityPanel", () => {
   it("secondary admin sees the authority chain but no principal actions", () => {
     mount(
       baseAuthority({
-        viewer: "secondary",
+        viewer: "admin",
         permissions: { promote: false, resign: false, demote: false },
       }),
     );
@@ -147,7 +147,7 @@ describe("AdminAuthorityPanel", () => {
   it("common node sees who administers the network without actions", () => {
     mount(
       baseAuthority({
-        viewer: "node",
+        viewer: "member",
         permissions: { promote: false, resign: false, demote: false },
       }),
     );

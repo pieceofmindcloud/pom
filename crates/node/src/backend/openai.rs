@@ -17,8 +17,8 @@ use crate::gateway::{
     DEFAULT_MAX_TOKENS,
 };
 use crate::tool_call::{
-    parse_output, parse_output_truncated, render_tool_call, render_tools_block, OutputPart,
-    ScanEvent, TagScanner, ToolDef,
+    parse_output_truncated_with_tools, parse_output_with_tools, render_tool_call, render_tools_block, OutputPart,
+    ScanEvent, TagScanner, ToolDef, ToolSignatures,
 };
 use axum::{
     extract::{Path, State},
@@ -650,6 +650,7 @@ async fn chat_completions(
         .into_iter()
         .map(ChatToolDef::into_tool_def)
         .collect();
+    let signatures = ToolSignatures::of(&tools);
     let preferred_head = req.inference_head.clone();
     let (mut prompt, images) = match render_prompt_with_images(&req.messages, &tools) {
         Ok(rendered) => rendered,
@@ -732,6 +733,23 @@ async fn chat_completions(
         );
         return error_response(status, error);
     }
+    if let Some(denial) =
+        crate::quota::admit(&state, &caller, &prompt, prompt_tokens, &request_details).await
+    {
+        crate::gateway::record_rejected(
+            &state,
+            "/v1/chat/completions",
+            caller,
+            model.clone(),
+            prompt,
+            request_details,
+            denial.message.clone(),
+        );
+        return denial.decorate(error_response(
+            StatusCode::TOO_MANY_REQUESTS,
+            denial.message.clone(),
+        ));
+    }
     let budget = output_limit.budget();
     let thinking_enabled = req.thinking_enabled.unwrap_or(true);
 
@@ -766,6 +784,7 @@ async fn chat_completions(
             thinking_enabled,
             request_details.clone(),
             output_limit,
+            signatures.clone(),
         )
     } else {
         blocking_response(
@@ -788,6 +807,7 @@ async fn chat_completions(
             thinking_enabled,
             request_details,
             output_limit,
+            signatures,
         )
         .await
     }
@@ -822,6 +842,24 @@ async fn completions(
         };
         return error_response(status, error);
     }
+    if let Some(denial) =
+        crate::quota::admit(&state, auth.caller(), &req.prompt, prompt_tokens, &request_details)
+            .await
+    {
+        crate::gateway::record_rejected(
+            &state,
+            "/v1/completions",
+            auth.into_caller(),
+            model.clone(),
+            req.prompt.clone(),
+            request_details,
+            denial.message.clone(),
+        );
+        return denial.decorate(error_response(
+            StatusCode::TOO_MANY_REQUESTS,
+            denial.message.clone(),
+        ));
+    }
     let budget = output_limit.budget();
     let id = format!("cmpl-{}", uuid::Uuid::new_v4().simple());
     let created = chrono::Utc::now().timestamp();
@@ -847,6 +885,7 @@ async fn completions(
             true,
             request_details.clone(),
             output_limit,
+            ToolSignatures::default(),
         )
     } else {
         blocking_response(
@@ -869,6 +908,7 @@ async fn completions(
             true,
             request_details,
             output_limit,
+            ToolSignatures::default(),
         )
         .await
     }
@@ -940,6 +980,7 @@ async fn blocking_response(
     thinking_enabled: bool,
     request_details: serde_json::Value,
     output_limit: OutputTokenLimit,
+    tools: ToolSignatures,
 ) -> Response {
     match crate::gateway::generate_blocking_output_with_stops(
         route,
@@ -976,9 +1017,9 @@ async fn blocking_response(
             ) = match mode {
                 Mode::Chat => {
                     let (parts, cut_inside_call) = if truncated {
-                        parse_output_truncated(&output.text)
+                        parse_output_truncated_with_tools(&output.text, &tools)
                     } else {
-                        (parse_output(&output.text), false)
+                        (parse_output_with_tools(&output.text, &tools), false)
                     };
                     let (mut message, saw) = chat_message_json(&parts);
                     if !output.reasoning.is_empty() {
@@ -1158,6 +1199,7 @@ fn stream_response(
     thinking_enabled: bool,
     request_details: serde_json::Value,
     output_limit: OutputTokenLimit,
+    tools: ToolSignatures,
 ) -> Response {
     let (tx, rx) = mpsc::channel::<GenEvent>(64);
     crate::gateway::spawn_logged_generation_with_stops(
@@ -1182,7 +1224,7 @@ fn stream_response(
         tx,
     );
 
-    let stream = sse_stream(rx, id, created, model, mode, budget.total, output_limit);
+    let stream = sse_stream(rx, id, created, model, mode, budget.total, output_limit, tools);
     (
         cors_headers(),
         Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default()),
@@ -1362,6 +1404,7 @@ fn sse_stream(
     mode: Mode,
     max_tokens: u32,
     output_limit: OutputTokenLimit,
+    tools: ToolSignatures,
 ) -> impl Stream<Item = Result<Event, Infallible>> {
     enum Phase {
         Opening,
@@ -1399,7 +1442,7 @@ fn sse_stream(
         max_tokens,
         output_limit,
         queue: VecDeque::new(),
-        scanner: TagScanner::new(),
+        scanner: TagScanner::with_tools(tools),
         tool_call_index: 0,
         saw_tool_call: false,
         truncated_tool_call: false,
@@ -2786,7 +2829,7 @@ mod tests {
     #[test]
     fn audited_tool_call_becomes_structured_openai_message_without_losing_intro() {
         let raw = "I'll build a complete Tetris game. Let me start by loading the brainstorming skill to understand your full requirements.\n\n<tool_call>\n<function=skill>\n<parameter=name>\nbrainstorming\n</parameter>\n</function>\n</tool_call>";
-        let (message, saw_tool_call) = chat_message_json(&parse_output(raw));
+        let (message, saw_tool_call) = chat_message_json(&crate::tool_call::parse_output(raw));
 
         assert!(saw_tool_call);
         assert_eq!(

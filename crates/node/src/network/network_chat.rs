@@ -1,14 +1,14 @@
-//! Global chat channel over the libp2p swarm.
+//! Global chat channel over the p2p endpoint.
 //!
 //! The types and limits live in this module so that the protocol, the gateway and
-//! the interface share the same boundary. The swarm worker is added after these
+//! the interface share the same boundary. The endpoint worker is added after these
 //! contracts are validated; nothing here depends on the inference tunnel.
 
 use anyhow::{Context, Result};
+use crate::p2p::Codec;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures::prelude::*;
-use libp2p::{request_response, StreamProtocol};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -256,8 +256,11 @@ impl ChatAction {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ChatRequest {
     pub action: ChatAction,
-    /// Client credential. The principal validates this field on the original frame;
-    /// a relay leaves it empty so the secret is not spread across the network.
+    /// The browser's API key, checked by this node's own gateway and cleared
+    /// before the request leaves it: an API key never leaves the node that
+    /// minted it. Between nodes the sender is the transport's node, admitted
+    /// by its membership.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub api_key: String,
     #[serde(default)]
     pub relayed: bool,
@@ -475,7 +478,7 @@ enum PersistCommand {
     Action(ChatAction),
 }
 
-/// Channel state. Sending to the swarm is always `try_send`; the service neither
+/// Channel state. Sending to the endpoint is always `try_send`; the service neither
 /// knows nor shares the inference frame queue.
 pub struct NetworkChat {
     database: Arc<crate::db::PomDb>,
@@ -500,10 +503,14 @@ pub struct NetworkChat {
     /// Admission requests this node holds as principal. Loaded from the
     /// database and written back on every change.
     admissions: Mutex<Vec<crate::network_lobby::AdmissionRecord>>,
+    /// On a secondary admin: the principal's admission list, as last read
+    /// from it (`membership::spawn_roster_keeper`). It is what lets a
+    /// secondary issue membership tokens; it is never persisted here.
+    roster_mirror: Mutex<Vec<crate::network_lobby::AdmissionRecord>>,
     /// Nodes that left recently, kept off the member list for a while.
     departed: Mutex<HashMap<String, Instant>>,
     /// Departures heard on the lobby connection, waiting for the gateway to
-    /// rotate the connection key (the swarm loop cannot push it itself).
+    /// rotate the connection key (the transport task cannot push it itself).
     rotations: Mutex<Vec<String>>,
     rotation_wanted: tokio::sync::Notify,
 }
@@ -544,6 +551,7 @@ impl NetworkChat {
                 public_stats: Default::default(),
                 directory_board: Default::default(),
                 admissions: Mutex::new(Vec::new()),
+                roster_mirror: Mutex::new(Vec::new()),
                 departed: Mutex::new(HashMap::new()),
                 rotations: Mutex::new(Vec::new()),
                 rotation_wanted: tokio::sync::Notify::new(),
@@ -629,6 +637,44 @@ impl NetworkChat {
             .iter()
             .find(|record| record.node_id == node_id)
             .cloned()
+    }
+
+    /// Replaces the mirror of the principal's admission list.
+    pub fn set_roster_mirror(&self, records: Vec<crate::network_lobby::AdmissionRecord>) {
+        *self.roster_mirror.lock().expect("roster lock") = records;
+    }
+
+    pub fn roster_mirror(&self) -> Vec<crate::network_lobby::AdmissionRecord> {
+        self.roster_mirror.lock().expect("roster lock").clone()
+    }
+
+    /// The role `node_id` was admitted with, when its admission is approved:
+    /// on this node's own list (the principal's) or on the mirror of it. An
+    /// approval decided at or before `revoked_at` (the node's last ban,
+    /// `AdminTrust::revoked_node_at`) no longer counts.
+    pub fn admitted_role(
+        &self,
+        node_id: &str,
+        revoked_at: Option<i64>,
+    ) -> Option<crate::config::EnrollmentRole> {
+        let approved = |record: &crate::network_lobby::AdmissionRecord| {
+            record.node_id == node_id
+                && record.status == crate::network_lobby::AdmissionStatus::Approved
+                && revoked_at.is_none_or(|revoked| {
+                    record
+                        .decided_at
+                        .as_deref()
+                        .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+                        .is_some_and(|at| at.timestamp() > revoked)
+                })
+        };
+        if let Some(record) = self.admissions().into_iter().find(approved) {
+            return Some(record.role);
+        }
+        self.roster_mirror()
+            .into_iter()
+            .find(approved)
+            .map(|record| record.role)
     }
 
     /// Records a candidate's request (`network_lobby::apply_admission_request`).
@@ -823,12 +869,11 @@ impl NetworkChat {
     }
 
     /// Validates the original action on the principal. The `transport_node_id` was
-    /// already bound to the PeerId in discovery, so the API key cannot be used by
-    /// another node just by changing the JSON field.
+    /// already bound to the endpoint id in discovery and its membership checked
+    /// there, so a node cannot speak for another just by changing the JSON field.
     pub async fn validate_original(
         &self,
         action: &ChatAction,
-        api_key: &str,
         transport_node_id: &str,
     ) -> Result<()> {
         if !self.enabled() {
@@ -836,33 +881,15 @@ impl NetworkChat {
         }
         action.validate().map_err(|error| anyhow::anyhow!(error))?;
         // Presence is the principal's statement about a transport it
-        // authenticated; a member's API key never vouches for one.
+        // authenticated; a member never vouches for one.
         if matches!(action, ChatAction::LobbyPresence { .. }) {
             anyhow::bail!("lobby_presence_not_allowed")
-        }
-        if api_key.is_empty() {
-            anyhow::bail!("api_key_missing")
         }
         if action.sender_node_id() != transport_node_id {
             anyhow::bail!("sender_node_id_mismatch")
         }
-        let key = self
-            .database
-            .api_key_for_token(api_key)?
-            .ok_or_else(|| anyhow::anyhow!("api_key_invalid"))?;
-        if !key.active || key.node_id != action.sender_node_id() {
-            anyhow::bail!("api_key_invalid")
-        }
         let blocked = self.auth.read().await.blocked_nodes.clone();
-        let origin = if key.origin_node_id.is_empty() {
-            &key.node_id
-        } else {
-            &key.origin_node_id
-        };
-        if blocked
-            .iter()
-            .any(|node| node == origin || node == &key.node_id)
-        {
+        if blocked.iter().any(|node| node == transport_node_id) {
             anyhow::bail!("node_blocked")
         }
         if !self.rate_allows(
@@ -1003,14 +1030,13 @@ where
 }
 
 #[async_trait]
-impl request_response::Codec for NetworkChatCodec {
-    type Protocol = StreamProtocol;
+impl Codec for NetworkChatCodec {
+    const PROTOCOL: &'static str = NETWORK_CHAT_PROTOCOL;
     type Request = ChatRequest;
     type Response = ChatResponse;
 
     async fn read_request<T>(
         &mut self,
-        _: &Self::Protocol,
         io: &mut T,
     ) -> std::io::Result<Self::Request>
     where
@@ -1021,7 +1047,6 @@ impl request_response::Codec for NetworkChatCodec {
 
     async fn read_response<T>(
         &mut self,
-        _: &Self::Protocol,
         io: &mut T,
     ) -> std::io::Result<Self::Response>
     where
@@ -1032,7 +1057,6 @@ impl request_response::Codec for NetworkChatCodec {
 
     async fn write_request<T>(
         &mut self,
-        _: &Self::Protocol,
         io: &mut T,
         request: Self::Request,
     ) -> std::io::Result<()>
@@ -1044,7 +1068,6 @@ impl request_response::Codec for NetworkChatCodec {
 
     async fn write_response<T>(
         &mut self,
-        _: &Self::Protocol,
         io: &mut T,
         response: Self::Response,
     ) -> std::io::Result<()>
@@ -1055,15 +1078,6 @@ impl request_response::Codec for NetworkChatCodec {
     }
 }
 
-pub fn network_chat_behaviour() -> request_response::Behaviour<NetworkChatCodec> {
-    request_response::Behaviour::new(
-        [(
-            StreamProtocol::new(NETWORK_CHAT_PROTOCOL),
-            request_response::ProtocolSupport::Full,
-        )],
-        request_response::Config::default().with_request_timeout(Duration::from_secs(5)),
-    )
-}
 
 #[cfg(test)]
 #[derive(Debug, Clone)]

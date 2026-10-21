@@ -1,8 +1,11 @@
 # AGENTS.md - .github
 
 The workflows in `workflows/` publish the Linux, macOS and Windows packages.
-The native build goes through the composite action `actions/llama-cache`, which
-resolves the current SHA of the `pom-tensor-parallel` branch, restores the
+Linux (`ksia`) uses a persistent self-hosted runner. macOS has both the original
+GitHub-hosted workflow and a self-hosted copy for `macbook`; Windows remains
+GitHub-hosted. The Linux and both macOS source builds go through the composite
+action `actions/llama-cache`, which resolves the current SHA of the
+`pom-tensor-parallel` branch, restores the
 checkout by SHA and validates the clone before Cargo uses it. The full strategy,
 including `sccache`, lives in `docs/subsystems/build-and-run.md`, section "Cache in GitHub Actions".
 

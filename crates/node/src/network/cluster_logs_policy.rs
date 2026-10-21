@@ -225,26 +225,12 @@ mod tests {
     #[tokio::test]
     async fn probe_from_secondary_retries_a_ghost_gateway_candidate() {
         let principal = std::sync::Arc::new(
-            crate::network::Network::testkit(
-                PRINCIPAL.into(),
-                "principal-authority".into(),
-                vec![],
-                None,
-                None,
-                None,
-            )
+            crate::network::Network::testkit(PRINCIPAL.into(), "principal-authority".into(), vec![], None, None)
             .await
             .unwrap(),
         );
         principal.set_cluster_logs_enabled(true);
-        let secondary = crate::network::Network::testkit(
-            "secondary-1".into(),
-            "secondary-authority".into(),
-            vec![],
-            None,
-            None,
-            None,
-        )
+        let secondary = crate::network::Network::testkit("secondary-1".into(), "secondary-authority".into(), vec![], None, None)
         .await
         .unwrap();
 
@@ -278,6 +264,7 @@ mod tests {
                 pubkey: "principal-authority".into(),
                 cluster_id: None,
                 trust_version: None,
+                membership: None,
                 relay: None,
                 addr: format!("[::1]:{gateway_port}"),
                 addr_candidates: vec![format!("127.0.0.1:{gateway_port}")],
@@ -288,7 +275,6 @@ mod tests {
                 total_layers: 2,
                 memory_mb: 1.0,
                 last_seen: chrono::Utc::now(),
-                ollama_port: None,
                 inference_port: None,
                 inference_quic_port: None,
                 inference_frame_capabilities: Vec::new(),
@@ -302,8 +288,8 @@ mod tests {
                 disk_total_mb: 0,
                 disk_free_mb: 0,
                 api_keys_active: 0,
-                libp2p_peer_id: None,
-                libp2p_addrs: Vec::new(),
+                endpoint_id: None,
+                endpoint_addrs: Vec::new(),
                 tp: None,
                 runtime_capacity: None,
                 idle: false,

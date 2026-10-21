@@ -12,8 +12,8 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 ## Per-file
 
 - `api.ts` - fetch wrapper over relative paths with same-origin credentials,
-  connection-key auth, administrative-password auth only for `/api/ui/**` and
-  `/admin/**`, conditional JSON GETs with ETag caching, the SSE reader and the deployment
+  connection-key auth, administrative-password auth only for `/api/ui/**`,
+  `/api/transfer/**` and `/admin/**`, conditional JSON GETs with ETag caching, the SSE reader and the deployment
   registry actions (`listDeployments`, `redeployDeployment` - `{ params }` or
   `{ version }` to redeploy a registered version -, `activateDeployment`),
   plus the authenticated status of the remote provider. `addNodeOptions` queries
@@ -156,7 +156,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   from writing state on every render; the Chat regression test covers this
   navigation freeze.
 - `profile.tsx` - the persisted profile the node delivers at `/api/ui/node`
-  (`admin`/`node`/`infer`), the provider and `useProfile()`. There is no setter
+  (`admin`/`worker`/`visitor`), the provider and `useProfile()`. There is no setter
   nor `localStorage`: the browser only presents the value and derives the
   menu/route guard from it. **It is not authorization** - the backend remains
   the boundary.
@@ -164,7 +164,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   (`authority_level === "secondary"`): it deploys models and otherwise sees
   what a node sees, so principal-only controls check `!secondary`.
 - `access.ts` - which route each profile opens. `RESTRICTED` maps a route
-  prefix to the list of profiles; for `infer`, `/chat`, `/network-chat`,
+  prefix to the list of profiles; for `visitor`, `/chat`, `/network-chat`,
   `/documentation`, `/config/keys/api` and `/config/network` are visible. The
   network participant list and the administrative preferences stay closed to
   infer. In Chat, that profile also hides the summaries and the telemetry panel.
@@ -172,7 +172,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   read by the guard in `../App.tsx` **and** by `navForProfile` in
   `../components/nav.ts`, on purpose: two lists would give a menu that offers
   what the route refuses. Plugin routes stay open to every profile; the native
-  restrictions of `infer` still apply to `/logs`, `/statistics` and the other
+  restrictions of `visitor` still apply to `/logs`, `/statistics` and the other
   POM surfaces. Tests in `access.test.ts`.
 - `theme.tsx` - dark/light theme provider backed by `data-theme` + `localStorage`.
 - `toast.tsx` - toast context (success/error/warning/info) with auto-dismiss.
@@ -233,18 +233,19 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `speculation.ts` - the single speculation choice (`none`/`mtp`/`lookup`) over
   `mtp_enabled` + `speculative_decoding_enabled`, and `MTP_MIN_PROBABILITY`
   (0.75, the node's default), written when MTP is chosen.
-- `pluginCatalog.ts` - reads the public plugin catalog directly from the
-  license server with `credentials: "omit"`; `fetchPublicPluginCatalog` takes an
+- `pluginCatalog.ts` - reads the public plugin catalog through this node
+  (`/api/ui/plugin-catalog`, `api.ts`), so the page never leaves its own origin
+  and the store's CORS policy does not matter; `fetchPublicPluginCatalog` takes an
   optional `{q, page, perPage}` (search and paging done by the server, `total`
   is null from a server without paging), `fetchPublicPlugin(code)` reads one
-  entry, and `supportedPlatforms` lists the systems with builds; it does not use `api.ts` or send
-  the connection key or administrative session. It validates required fields
+  entry (null on 404), and `supportedPlatforms` lists the systems with builds. It validates required fields
   for each commercial release and discards plugins without a valid release.
   GitHub sources stay local: the catalog's `github_url` (a free plugin the
   license server lists as installed from GitHub) is only a suggestion, accepted
   solely as `https://github.com/<owner>/<repo>`, and the Plugins card registers
-  that repository only when the operator clicks "Install from GitHub", the same
-  as pasting it in the repository box. Nothing is registered or installed from
+  that repository only when the operator clicks "Install" (which then
+  installs its newest release for this node), much as pasting it in the
+  repository box. Nothing is registered or installed from
   the catalog on its own; other repository fields stay ignored. `featured` and
   `pom_team` are display badges. Missing optional fields remain unknown; images are accepted only
   from the expected public host and URLs may not embed credentials. Published
@@ -252,8 +253,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   candidates and usage by `plugin_code` come from the node's authenticated API
   (`PluginStatus`), never from the public catalog.
   `pluginPurchase.ts` builds the site's purchase-wizard URL
-  (`pieceofmind.cloud/comprar/?plugin=<code>`: account, billing details,
-  Stripe, then the license key) and sends no credentials. `usePublicPluginCatalog` in `queries.ts` manages
+  (`pieceofmind.cloud/comprar/?plugin=<code>[&interval=][&lang=pt|en]`:
+  account, billing details, Paddle, then the license key), opens it in a new
+  tab (`navigateToPluginPurchase`) and sends no credentials. `usePublicPluginCatalog` in `queries.ts` manages
   loading, errors and periodic refreshes. `useGithubRepositories` reads
   `/api/ui/plugins/github-repositories`, an authenticated local list that does
   not depend on the commercial catalog. Each source reports `manifest_path`
@@ -443,8 +445,8 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `useCluster()` 5s with conditional GET, `useChatCapabilities()` 5s from
   `/api/ui/chat/capabilities` (vision, thinking availability and coverage
   aggregated for the active model), `useLocalCatalog()` 30s (stale 15s), `useClusterCatalog(enabled)`
-  60s, `usePaths()` (stale 30s), `useCacheTypes()` (stale 30s), `useJobs()` 2s
-  while running or 10s idle, `useTransfers()` 2s, `useOffers()` 2s while
+  60s, `usePaths()` (stale 30s), `useCacheTypes()` (stale 30s), `useJobs(enabled)` 2s
+  while running or 10s idle, `useTransfers(enabled)` 2s, `useOffers(enabled)` 2s while
   waiting or 10s idle, `useAdminNodes()` 8s, `usePluginUi()` 30s (the active
   plugins' `pom-plugin-ui/v1` manifests),
   `useServableModels()` 30s. The latter preserves `context_length` and
@@ -539,13 +541,13 @@ fits.
   `<html data-profile>` and persists no state in the browser.
 - `homeRoute(profile)` - the profile's starting screen: `/` for one that opens
   the panel, `/chat` for one that does not. `App.tsx` redirects with it instead
-  of showing the refusal, otherwise `infer` would open the interface in a dead
+  of showing the refusal, otherwise `visitor` would open the interface in a dead
   end - and the refusal used to tell the person to switch profile, a control
   that no longer exists.
 - `routeProfiles(path)` - the profiles that get in, or `null` when the route is
   free. It matches by segment (`/logs` covers future children, and **not**
   `/logs-antigos`) and the most specific key wins.
-- `canAccessRoute(path, profile)` - for `infer`, it allows only the conversation
+- `canAccessRoute(path, profile)` - for `visitor`, it allows only the conversation
   view, documentation, API keys and the local network. It is presentation, not
   credential scope; the real boundary stayed with `rdma-perfis-escopo-backend`.
   `components/nav.ts` uses the same result to keep the network in the infer
@@ -592,7 +594,7 @@ the network of a publisher `pk:` key can be reached: `direct` (pkarr record
 with a public address), `relayed` (relays only), `unresolved` (no record),
 `unknown` (the request failed or the node refused the key, which says nothing
 about the network) or `checking`. The browser never probes or receives an IP: the node, which speaks
-pkarr/libp2p, does the resolving. 30 s cache per key; the refresh button on the
+pkarr and the endpoint, does the resolving. 30 s cache per key; the refresh button on the
 Public networks screen forces a new query.
 
 ### networkPeers.ts
@@ -619,6 +621,7 @@ would go.
 ### networkLayout.ts
 - `deploymentLayoutKey(model, peers)` - per-deployment fingerprint key (node id + range + `changed_at`), so hand-arranged layouts do not leak into a new deploy.
 - `fallbackPosition(index)` / `readPositions` / `writePositions` / `clearPositions` - canvas persistence in `localStorage`.
+- `autoLayout` / `deployLayout` - one column per stage; a `LayoutNode` with `role: "prefill"` heads its range and the other machines of that range (decode) take the next column, so a prefill/decode split reads Prefill -> Decode instead of two stacked heads. The canvases put the role in the layout key, so a saved arrangement does not keep the old one.
 - `mergePositions(current, persisted, arrangement, nodeIds)` - keeps positions already visible when a new peer is added and uses the automatic arrangement only for nodes without a position.
 
 ### transferStatus.ts
@@ -663,7 +666,7 @@ would go.
 - `i18n/locales.ts` is imported by `api.ts` and `chatStore.ts` (`getActiveLocale`) for non-React localized strings.
 - Backend endpoints hit from this folder: `/api/ui/node`, `/api/ui/cluster`, `/api/ui/models`, `/api/ui/cluster/models`, `/api/ui/peer/:node_id/runtime`, `/api/ui/paths`, `/api/ui/jobs`, `/api/ui/requests`, `/api/ui/requests/stats`, `/api/ui/network/info`, `/api/ui/network/geo/*`, `/api/ui/models/delete`, `/api/ui/deployments`, `/api/ui/deploy/node`, `/api/ui/deploy/node/remove`, `/api/ui/undeploy`, `/api/ui/leave`, `/api/ui/dev/update`, `/api/transfer/jobs`, `/api/transfer/offers`, `/admin/nodes`, `/admin/api-keys`, `/v1/models`. The queries accept `user` and `model` besides the period and identity filters.
 - The Chat of any profile with a model selected reads
-  `/api/ui/infer/heads?model=...`, which `InferNodeAdmin` authorizes and which
+  `/api/ui/infer/heads?model=...`, which `AnyMember` authorizes and which
   returns only the layer-zero candidates, the chosen node, load and RTT with
   age. The load is `null` when the candidate's live report does not arrive, and
   the UI shows "in-flight count unavailable" in that case. An RTT outside its

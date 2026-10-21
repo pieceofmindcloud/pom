@@ -52,7 +52,14 @@ pub struct AdmissionHealth {
 }
 
 /// How old a remembered admission may be to stand in for a probe that missed the budget.
-pub(crate) const ADMISSION_MEMORY: Duration = Duration::from_secs(15);
+///
+/// A late probe is not a refusal: it keeps running, and if the peer is really gone it ends
+/// refused and erases the memory (`forget`). With 15 s, a peer whose `/health` sometimes took
+/// longer than the budget was left out of the plan on the first request after a quiet minute,
+/// and a deployment still served failed with "No valid pipeline" (2026-10-19). The window now
+/// covers the gaps between requests; it stays bounded so a probe that never ends cannot keep a
+/// peer in the plan forever.
+pub(crate) const ADMISSION_MEMORY: Duration = Duration::from_secs(5 * 60);
 
 /// The whole admission of a request. The planner waits no longer than this for the probes;
 /// a probe that has not finished by then keeps running and refreshes the memory.
@@ -171,9 +178,8 @@ pub(crate) struct ClusterSnapshotCache {
 
 /// Live publisher of this node's pkarr record.
 ///
-/// The record is the "key -> where to dial now" pointer: public multiaddresses
-/// the swarm confirmed or listens on and the keys of the relays where this node
-/// holds a reservation. It is rebuilt from the live `Network` state on every
+/// The record is the "key -> where to dial now" pointer: the endpoint's public
+/// direct addresses and the URLs of the relays it is reachable through. It is rebuilt from the live `Network` state on every
 /// round and only republished when it changes, or every `PKARR_REFRESH` so it
 /// does not vanish from the DHT. It is always published, with or without a
 /// deployment: an idle admin is exactly who a new node needs to find by the
@@ -216,10 +222,10 @@ impl PkarrPublishHandle {
 
     /// The record this node should have published right now.
     pub(crate) fn desired_record(&self) -> crate::pkarr_node::PkarrRecord {
-        let (multiaddrs, relays) = record_addrs(&self.network.libp2p_addrs());
+        let (addrs, relays) = record_addrs(&self.network.endpoint_addrs());
         let geo_label = self.geo_label.lock().expect("geo label lock").clone();
         crate::pkarr_node::PkarrRecord {
-            multiaddrs,
+            addrs,
             relays,
             gateway_port: self.gateway_port,
             inference_port: self.inference_port,
@@ -344,52 +350,26 @@ impl PublishBackoff {
     }
 }
 
-/// Splits the announced multiaddresses into direct ones and relays: a circuit
-/// (`<relay>/p2p/<relay>/p2p-circuit`) becomes the relay's `pk:` key, because
-/// the relay's address changes and its key does not; the resolver rebuilds the
-/// circuit.
+/// Splits the announced endpoint addresses into direct ones and relay URLs;
+/// anything else stays out of the record.
 ///
 /// The DHT is public: a private address (LAN, CGNAT, Tailscale, loopback) never
 /// goes to it, even when it is the operator's pin. That path stays in the
 /// `Announce`, which only admitted members read.
 pub(crate) fn record_addrs(addrs: &[String]) -> (Vec<String>, Vec<String>) {
-    use libp2p::multiaddr::Protocol;
     let mut direct = Vec::new();
     let mut relays = Vec::new();
     for addr in addrs {
-        let Ok(multiaddr) = addr.parse::<libp2p::Multiaddr>() else {
-            continue;
-        };
-        let protocols: Vec<_> = multiaddr.iter().collect();
-        if let Some(circuit) = protocols
-            .iter()
-            .position(|protocol| matches!(protocol, Protocol::P2pCircuit))
-        {
-            let relay = protocols[..circuit]
-                .iter()
-                .rev()
-                .find_map(|protocol| match protocol {
-                    Protocol::P2p(peer_id) => crate::pkarr_node::uri_from_peer_id(peer_id),
-                    _ => None,
-                });
-            if let Some(relay) = relay {
-                if !relays.contains(&relay) {
-                    relays.push(relay);
-                }
-            }
-        } else {
-            let private = protocols.iter().any(|protocol| match protocol {
-                Protocol::Ip4(ip) => {
-                    ip.is_unspecified() || crate::addrs::is_private_or_local(&ip.to_string())
-                }
-                Protocol::Ip6(ip) => {
-                    ip.is_unspecified() || crate::addrs::is_private_or_local(&ip.to_string())
-                }
-                _ => false,
-            });
-            if !private && !direct.contains(addr) {
+        if let Ok(socket) = addr.parse::<std::net::SocketAddr>() {
+            let ip = socket.ip();
+            if !ip.is_unspecified()
+                && !crate::addrs::is_private_or_local(&ip.to_string())
+                && !direct.contains(addr)
+            {
                 direct.push(addr.clone());
             }
+        } else if crate::p2p::relay_url(addr).is_some() && !relays.contains(addr) {
+            relays.push(addr.clone());
         }
     }
     (direct, relays)
@@ -487,7 +467,7 @@ pub struct GatewayState {
     /// Durable anchor and grant chain for administrator capabilities. It is
     /// deliberately separate from `Config.profile`.
     pub(crate) admin_trust: Arc<crate::admin_trust::AdminTrust>,
-    /// The libp2p identity is the only signing authority for this node.
+    /// The p2p identity is the only signing authority for this node.
     pub(crate) authority_signing_key: Arc<ed25519_dalek::SigningKey>,
     pub(crate) authority_principal: crate::admin_trust::AuthorityPrincipal,
     /// In-memory browser sessions. It is intentionally not persisted beside
@@ -501,9 +481,9 @@ pub struct GatewayState {
     /// answers this process instead of the answer bubbling back through every
     /// hop — see [`crate::direct`].
     pub reply_inbox: crate::direct::ReplyInbox,
-    /// Dispatches a hop-to-hop call over the libp2p swarm instead of plain
+    /// Dispatches a hop-to-hop call over the p2p endpoint instead of plain
     /// HTTP, as a NAT-tunnel fallback — see `relay::send_frame_or_tunnel`.
-    /// `None` whenever this node's own libp2p discovery never came up
+    /// `None` whenever this node's own p2p discovery never came up
     /// (disabled or failed to start); every prefill/decode call site treats
     /// that exactly like "the fallback wasn't available this time."
     pub tunnel_tx: Option<crate::infer_tunnel::TunnelOutboundSender>,
@@ -628,7 +608,7 @@ impl GatewayState {
     }
 
     /// Signed control GET to `peer`'s gateway, over all the paths
-    /// it announces (addresses and, last, the libp2p tunnel - see
+    /// it announces (addresses and, last, the p2p tunnel - see
     /// `peer_client::send_to_gateway_over`). `path` may carry a query string; the
     /// signature covers only the path, as in `control_get_request`.
     pub(crate) async fn control_get(
@@ -657,7 +637,7 @@ impl GatewayState {
 
     /// Signed control POST to `peer`'s gateway along the route this node
     /// already measured to it (`route_plan`, gateway plane): only the pinned
-    /// address, or only the libp2p tunnel when that is what reaches the peer -
+    /// address, or only the p2p tunnel when that is what reaches the peer -
     /// a machine behind NAT, for example. Without a measured route, the
     /// address that last answered. For a call with a deadline of
     /// milliseconds, where walking every announced address would spend it on
@@ -685,6 +665,26 @@ impl GatewayState {
             timeout,
         )
         .await
+    }
+
+    /// Signed control GET to `peer`'s gateway along the measured route, as
+    /// [`Self::control_post_json_routed`]: a large download (a plugin
+    /// engine's session file) goes over the address that reaches the peer
+    /// fastest, not the first announced one that answers or the tunnel.
+    pub(crate) async fn control_get_routed(
+        &self,
+        peer: &crate::network::PeerInfo,
+        path: &str,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<reqwest::Response> {
+        use crate::route_plan::{book, Plane, RouteKind};
+        let bases = match book().active(&peer.node_id, Plane::Gateway) {
+            Some(route) if route.kind == RouteKind::Tunnel => Vec::new(),
+            Some(route) => vec![route.base_url.trim_end_matches('/').to_string()],
+            None => self.gateway_bases(peer).into_iter().take(1).collect(),
+        };
+        self.control_call_over(peer, &bases, reqwest::Method::GET, path, None, timeout)
+            .await
     }
 
     /// [`Self::control_post_json_routed`] with a body of raw bytes (a frame of
@@ -825,6 +825,12 @@ pub(super) async fn admin_access_status(State(state): State<GatewayState>) -> im
 /// Routes used by inference or by the public compatibility API. This list is
 /// the existing pipeline boundary from `20dfe12`; the UI gate must never be
 /// applied to it, even when the node is in localhost-only mode.
+///
+/// `/api/transfer/*` is not on it: a peer reaches those routes signed, as a
+/// node-to-node request that `caller_may_ask` checks, and this machine's own
+/// screen through the browser session. Outside the surface, a request with
+/// only the connection key - which every member holds - pulled model files
+/// with no check at all.
 pub(super) fn is_pipeline_or_public_path(path: &str) -> bool {
     path == "/api/access"
         || path == "/api/generate"
@@ -833,13 +839,12 @@ pub(super) fn is_pipeline_or_public_path(path: &str) -> bool {
         || path == "/health"
         || path.starts_with("/api/public/")
         || path == "/handshake"
-        || path == crate::tls_policy::TLS_POLICY_PATH
         || path == crate::cluster_logs_policy::CLUSTER_LOGS_POLICY_PATH
         || path == crate::network_chat_policy::NETWORK_CHAT_POLICY_PATH
         || path == crate::webui::NETWORK_SETTINGS_POLICY_PATH
         || path == crate::webui::MEMBER_LEFT_PATH
         || path.starts_with("/api/internal/")
-        || path.starts_with("/api/transfer/")
+        || path.starts_with("/api/plugin-host/")
         || path.starts_with("/v1/")
 }
 
@@ -867,17 +872,23 @@ pub(super) fn is_public_ui_static_path(path: &str) -> bool {
             && path != "/handshake")
 }
 
-/// Whether `peer` is an inference node. On the principal the member list
-/// decides for a machine admitted as one: it stays an inference node whatever
-/// it announces, because the role is granted at admission and an announce is
-/// only what a node says about itself. Everywhere, a node that announces
-/// itself as an inference node is one.
-pub(crate) fn peer_is_infer(state: &GatewayState, peer: &PeerInfo) -> bool {
-    peer.profile == crate::profile::NodeProfile::Infer
+/// Whether `peer` is a visitor. The role is granted at admission and an
+/// announce is only what a node says about itself, so a machine admitted as
+/// one stays one whatever it announces: on every node its membership token
+/// says so (`crate::membership`), and on the admins their admission list
+/// as well. Everywhere, a node that announces itself as a visitor is one.
+pub(crate) fn peer_is_visitor(state: &GatewayState, peer: &PeerInfo) -> bool {
+    use crate::config::EnrollmentRole;
+    peer.profile == crate::profile::NodeProfile::Visitor
+        || crate::membership::peer_role(peer, &state.admin_trust) == Some(EnrollmentRole::Visitor)
         || state
             .network_chat
             .admission_of(&peer.node_id)
-            .is_some_and(|record| record.role == crate::config::EnrollmentRole::Infer)
+            .is_some_and(|record| record.role == EnrollmentRole::Visitor)
+        || state
+            .network_chat
+            .admitted_role(&peer.node_id, None)
+            == Some(EnrollmentRole::Visitor)
 }
 
 /// What a node-to-node request may reach, by the caller's identity.
@@ -887,11 +898,14 @@ pub(crate) fn peer_is_infer(state: &GatewayState, peer: &PeerInfo) -> bool {
 /// - A deploy route (deploy, load, unload, stop) takes a request signed by
 ///   any admin of the trust chain, principal or secondary.
 /// - A route of a serving node (catalog, planning, transfers) takes a signed
-///   request from an admin or from a peer that is not an inference node.
+///   request from an admin or from a worker whose membership token says so
+///   (`peer_role_is_attested`) - never on the strength of its announce.
+/// - A route of this machine's own operator (`LocalOnly`) is refused to
+///   every other node, signed or not.
 /// - Everything else - inference, the node's own description, the internal
 ///   sync routes - stays as it was.
 ///
-/// The connection key alone opens none of the first three: every member
+/// The connection key alone opens none of the first four: every member
 /// holds it.
 pub(crate) async fn caller_may_ask(
     state: &GatewayState,
@@ -899,9 +913,12 @@ pub(crate) async fn caller_may_ask(
     issuer: Option<&crate::admin_trust::AuthorityPrincipal>,
 ) -> Result<(), &'static str> {
     use crate::webui::RouteScope;
+    if scope == RouteScope::LocalOnly {
+        return Err("local_operator_only");
+    }
     if !matches!(
         scope,
-        RouteScope::AdminOnly | RouteScope::DeployAdmin | RouteScope::NodeAdmin
+        RouteScope::PrincipalOnly | RouteScope::AnyAdmin | RouteScope::ServingMember
     ) {
         return Ok(());
     }
@@ -911,21 +928,37 @@ pub(crate) async fn caller_may_ask(
     if issuer == &state.authority_principal || issuer_is_principal(state, issuer) {
         return Ok(());
     }
-    if scope == RouteScope::AdminOnly {
+    if scope == RouteScope::PrincipalOnly {
         return Err("principal_required");
     }
     if crate::admin_trust::control_issuer_is_admin(&state.admin_trust.document(), issuer) {
         return Ok(());
     }
-    if scope == RouteScope::DeployAdmin {
+    if scope == RouteScope::AnyAdmin {
         return Err("admin_required");
     }
     let peers = state.network.alive_peers().await;
     match peers.iter().find(|peer| peer.node_id == issuer.node_id) {
-        Some(peer) if !peer_is_infer(state, peer) => Ok(()),
-        Some(_) => Err("infer_caller"),
+        Some(peer) if peer_is_visitor(state, peer) => Err("visitor_caller"),
+        Some(peer) if peer_role_is_attested(state, peer).await => Ok(()),
+        Some(_) => Err("role_unattested"),
         None => Err("unknown_caller"),
     }
+}
+
+/// Whether an admin vouched that `peer` was admitted as a worker, rather
+/// than taking the peer's word for it: the membership token it announces
+/// says so, checked against the chain alone. On an admin its own admission
+/// list does too. A legacy network open to anyone with the anchor has no
+/// admissions, and keeps the announce.
+async fn peer_role_is_attested(state: &GatewayState, peer: &PeerInfo) -> bool {
+    use crate::config::EnrollmentRole;
+    crate::membership::peer_role(peer, &state.admin_trust) == Some(EnrollmentRole::Worker)
+        || state
+            .network_chat
+            .admitted_role(&peer.node_id, state.admin_trust.revoked_node_at(&peer.node_id))
+            == Some(EnrollmentRole::Worker)
+        || state.auth.read().await.network.open_admission()
 }
 
 /// Whether `issuer` is the principal of this node's trust chain.
@@ -955,12 +988,12 @@ pub(crate) async fn require_admin_for_surface(
     // An inference node holds and serves no model, whoever asks. This comes
     // before everything else on purpose: the profile gate below lets a
     // node-to-node request through, and an admin's request is one.
-    if profile == crate::profile::NodeProfile::Infer && crate::webui::infer_node_refuses(&path) {
+    if profile == crate::profile::NodeProfile::Visitor && crate::webui::visitor_refuses(&path) {
         return (
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({
                 "error": "this machine was admitted for inference only and does not hold or serve models",
-                "reason": "infer_profile",
+                "reason": "visitor_profile",
                 "path": path,
             })),
         )
@@ -970,17 +1003,32 @@ pub(crate) async fn require_admin_for_surface(
     // connection key says "a member"; it does not say which, and every member
     // holds it, inference nodes included.
     if let Some(auth) = &internal_node {
-        // Taking a machine out of the network is the principal's act. The
-        // route is open to every profile because leaving is abdication, so
-        // the scope cannot say it: a leave forwarded by another node has to
-        // carry the principal's signature.
+        // Taking a machine out of the network is an admin's act: any admin
+        // removes a worker or a visitor, and only the principal removes an
+        // admin. The route is open to every profile because leaving is
+        // abdication, so the scope cannot say it: a leave forwarded by
+        // another node has to carry that signature.
+        // An unsigned leave is refused too: the connection key alone would
+        // let any member, a visitor included, detach this machine or have
+        // an admin forward the removal of another.
         let verdict = match auth.principal() {
+            None if path == "/api/ui/leave" => Err("principal_required"),
             Some(issuer)
                 if path == "/api/ui/leave"
                     && issuer != &state.authority_principal
                     && !issuer_is_principal(&state, issuer) =>
             {
-                Err("principal_required")
+                let document = state.admin_trust.document();
+                if !crate::admin_trust::control_issuer_is_admin(&document, issuer) {
+                    Err("admin_required")
+                } else if crate::admin_trust::control_issuer_is_admin(
+                    &document,
+                    &state.authority_principal,
+                ) {
+                    Err("principal_required")
+                } else {
+                    Ok(())
+                }
             }
             issuer => caller_may_ask(&state, scope, issuer).await,
         };
@@ -1002,10 +1050,10 @@ pub(crate) async fn require_admin_for_surface(
         .admin_trust
         .effective_authority(&state.authority_principal, profile);
     let authority_access = match scope {
-        crate::webui::RouteScope::AdminOnly => {
-            local_authority == Some(crate::admin_trust::EffectiveAuthority::Primary)
+        crate::webui::RouteScope::PrincipalOnly => {
+            local_authority == Some(crate::admin_trust::EffectiveAuthority::Principal)
         }
-        crate::webui::RouteScope::DeployAdmin => local_authority.is_some(),
+        crate::webui::RouteScope::AnyAdmin => local_authority.is_some(),
         _ => true,
     };
     let profile_access = crate::webui::profile_can_access(profile, scope) && authority_access;
@@ -1046,7 +1094,7 @@ pub(crate) async fn require_admin_for_surface(
         .extensions
         .get::<crate::serve::TransportSecurity>()
         .is_some_and(|transport| transport.0);
-    let cookie_name = crate::auth::admin_session_cookie_name(&parts.headers);
+    let cookie_name = crate::auth::admin_session_cookie_name(&parts.headers, secure);
     let mut response = next.run(Request::from_parts(parts, body)).await;
     if let Some(session_id) = auth.session_id_to_set {
         for path in crate::auth::ADMIN_SESSION_COOKIE_PATHS {
@@ -1436,7 +1484,7 @@ async fn admit_peer(
     if body.is_none() && all_refused {
         return (None, "refused-direct");
     }
-    // No address answered: the libp2p tunnel. Only a peer that announces a model can serve,
+    // No address answered: the p2p tunnel. Only a peer that announces a model can serve,
     // so only it is worth the tunnel's round trip.
     if body.is_none() && !peer.model.is_empty() {
         if let Some(tunnel) = crate::peer_client::TunnelPeer::from_peer(&peer) {
@@ -1560,6 +1608,7 @@ impl GatewayState {
                 pubkey: self.network.pubkey.clone(),
                 cluster_id: self.network.cluster_id(),
                 trust_version: self.network.trust_version(),
+                membership: self.network.membership(),
                 relay: self.network.relay_gate().offer(),
                 addr: format!("{}:{}", self_host, self.network.bind_addr.port()),
                 addr_candidates: self.network.self_addr_candidates(),
@@ -1569,7 +1618,6 @@ impl GatewayState {
                 total_layers: local.as_ref().map(|l| l.total_layers).unwrap_or(0),
                 memory_mb: local.as_ref().map(|l| l.memory_used_mb).unwrap_or(0.0),
                 last_seen: chrono::Utc::now(),
-                ollama_port: self.network.ollama_port,
                 inference_port: self.network.inference_port,
                 inference_quic_port: self.network.inference_quic_port,
                 // Keep in sync with network.rs's `self_announce` and
@@ -1601,8 +1649,8 @@ impl GatewayState {
                     if self.network.slot_persist_ready() {
                         caps.push(crate::pipeline::CAP_SLOT_PERSIST.into());
                     }
-                    if self.network.libp2p_tunnel_ready() {
-                        caps.push("transport/libp2p-tunnel-v1".into());
+                    if self.network.p2p_tunnel_ready() {
+                        caps.push("transport/iroh-tunnel-v1".into());
                     }
                     caps
                 },
@@ -1626,8 +1674,8 @@ impl GatewayState {
                 disk_total_mb: 0,
                 disk_free_mb: 0,
                 api_keys_active: 0,
-                libp2p_peer_id: self.network.libp2p_peer_id.clone(),
-                libp2p_addrs: self.network.libp2p_addrs(),
+                endpoint_id: self.network.endpoint_id.clone(),
+                endpoint_addrs: self.network.endpoint_addrs(),
                 tp: self.network.tp_identity(),
                 runtime_capacity: local.and_then(|_| self.network.runtime_capacity()),
                 idle: self.network.is_idle(),
@@ -1815,27 +1863,26 @@ mod pkarr_record_tests {
         assert_eq!(backoff.succeeded(), None);
     }
 
-    /// A circuit becomes the relay's key, a private address does not go to the
+    /// A relay URL passes as a relay, a private address does not go to the
     /// DHT, and a direct public address passes as is.
     #[test]
-    fn the_record_keeps_public_addrs_and_turns_circuits_into_relay_keys() {
-        let relay = pkarr::Keypair::random();
-        let relay_peer = crate::pkarr_node::peer_id_from_uri(&relay.to_uri_string()).unwrap();
+    fn the_record_keeps_public_addrs_and_relay_urls() {
         let (direct, relays) = record_addrs(&[
-            "/ip4/203.0.113.7/udp/52777/quic-v1".into(),
-            "/ip4/192.168.0.10/tcp/52777".into(),
-            "/ip4/100.122.132.97/tcp/52777".into(),
-            "/dns/node.example/tcp/52777".into(),
-            format!("/ip4/198.51.100.1/tcp/52777/p2p/{relay_peer}/p2p-circuit"),
+            "203.0.113.7:52777".into(),
+            "192.168.0.10:52777".into(),
+            "100.122.132.97:52777".into(),
+            "[2001:db8::1]:52777".into(),
+            "https://relay.example.org/".into(),
+            "not an address".into(),
         ]);
         assert_eq!(
             direct,
             vec![
-                "/ip4/203.0.113.7/udp/52777/quic-v1".to_string(),
-                "/dns/node.example/tcp/52777".to_string(),
+                "203.0.113.7:52777".to_string(),
+                "[2001:db8::1]:52777".to_string(),
             ]
         );
-        assert_eq!(relays, vec![relay.to_uri_string()]);
+        assert_eq!(relays, vec!["https://relay.example.org/".to_string()]);
     }
 }
 

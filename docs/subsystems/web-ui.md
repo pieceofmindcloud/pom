@@ -101,7 +101,7 @@ gateway and the administrative session alive, like the macOS status item. The
 runtime is a dependency installed on Windows, not a helper executable shipped
 by POM.
 
-The address is `http://127.0.0.1:<gateway_port>/admin-ui/chat`, with the port
+The address is `https://127.0.0.1:<gateway_port>/admin-ui/chat` (plain `http` only when the node could not make its certificate), with the port
 from `pom.json`, `--gateway-port` as a fallback and 8080 as the default - the
 panel never hardcodes 8080. Both WebViews use
 `WKWebsiteDataStore.defaultDataStore`, so they share cookies with the panel
@@ -247,25 +247,35 @@ local-only notice. Routes:
   controls the minimum captured level and defaults to `info`.
 - `/transfers` -> Transfers; `/transfers/send` -> SendFile
 - `/logs` and `/statistics` -> `EnterpriseFeatureShowcase`, the sales page
-  of the Statistics and Logs plugin (public catalog and Stripe checkout), when
-  no active plugin declares the target. A single manifest declaration replaces
+  of the logs plugin (Request Logs, Statistics and Quota, one purchase; public
+  catalog, purchase on the site in a new tab), when no active plugin declares
+  the target. While neither is declared the menu shows one "Business Pack"
+  entry (to `/logs`) in place of the whole Logs section and Statistics, since
+  the deployment logs are kept by the same plugin. The desktop shells
+  (WebView2, WebKitGTK, the macOS panel) open any link to another host and any
+  new window in the system browser (`crates/node/src/utils/external_links.rs`,
+  `macos_status.m`). A single manifest declaration replaces
   the fallback at that URL, including for Enterprise. Other plugin screens come
   from `pom-plugin-ui/v1` and live under `/<plugin_code>/<manifest path>`; for
   example, `plugin_code: "base"` and `/example` open at
   `/admin-ui/base/example`. Menu and matcher use the same normalized table; new
-  menus show up in manifest order, before Documentation. If two plugins claim
+  menus show up in manifest order, right after that plugin's other entries or,
+  without any, before Documentation. If two plugins claim
   `/logs` or `/statistics`, both use their namespaces and the native fallback
   stays. `/logs/statistics` remains a native alias of `/statistics`.
   Plugin menus and screens are available to all profiles; manifest `roles` and
   legacy `profiles` are validated and preserved but do not gate this POM's UI.
-  Native route restrictions remain in force, so `infer` cannot open `/logs`,
-  `/statistics` or `/deployments`, even when a plugin claims an extension point.
-- `/plugins` -> Plugins, the showcase of publishable items returned by
-  `https://license.pieceofmind.cloud/v1/plugins`, crossed by `code` with the
+  Native route restrictions remain in force, so `visitor` cannot open
+  `/deployments` (deployment logs included), even when a plugin claims an
+  extension point. `/logs` and `/statistics` open to a `visitor` only when an
+  active plugin serves them: its own node's requests, never the fallback.
+- `/plugins` -> Plugins, the showcase of publishable items returned by the
+  license server's `/v1/plugins`, read through the node, crossed by `code` with the
   local license and install state. Open to every profile: plugins are local to
-  each node, so `admin`, `node` and `infer` can activate licenses, add GitHub
+  each node, so `admin`, `worker` and `visitor` can activate licenses, add GitHub
   repositories and install plugins on their own machine. The browser reads the
-  public catalog without node credentials, and the client only accepts plugins
+  public catalog through `GET /api/ui/plugin-catalog` on its own node, which
+  sends the store no credential, and the client only accepts plugins
   with valid releases. The screen shows icon, up to four screenshots,
   description, price and release when the server provides them; missing fields
   and images have a visual fallback. The description uses the pt-BR version if
@@ -297,7 +307,7 @@ local-only notice. Routes:
   do not show up for other profiles or for nodes without the flag. A
   development-only install grants no licensed features, while rebuilding an
   existing licensed or GitHub install preserves its entitlement. That endpoint
-  is AdminOnly and the UI only gets success or the step/exit code, not compiler
+  is PrincipalOnly and the UI only gets success or the step/exit code, not compiler
   logs. The
   GitHub release flow stays separate. See `docs/subsystems/plugins-ui.md`,
   section "Local rebuild in development".
@@ -402,15 +412,16 @@ local-only notice. Routes:
 - There is no `/setup` route: the address falls to the not-found page. See
   "First access wizard" below.
 - `/config/network` -> NetworkSettings; `/config/network/participants` -> the
-  participant list for `admin` and `node`; `/config/preferences` ->
+  participant list for `admin` and `worker`; `/config/preferences` ->
   Preferences; `/config/preferences/admin` -> administrative preferences;
   `/config/about` -> About, the last item of Settings, with links to the
   repository's AGPL-3.0 `LICENSE` and the official GNU page, an LGPD
   privacy/security notice and site links, a contact form
   (`https://pieceofmind.cloud/contact.html`) and official repositories; it also
-  shows the state of the plugin tied to the `pom_core` update and the on-demand
-  check. When an update is available, the screen itself offers to apply and
-  restart; it also shows the catalog of direct dependencies grouped by license;
+  shows the running POM release and the on-demand check of POM's GitHub
+  releases (the site as fallback). When an update is available, the screen
+  itself offers to apply and restart, or says why this node cannot (a
+  container, a download that still needs an invitation); it also shows the catalog of direct dependencies grouped by license;
   `/config/trust` gathers this machine, sharing and connection keys;
   `/config/keys/api` -> TokenKeys; `/config/storage` -> ModelPaths
   (`/config/folders` remains an alias). When `POM_MODEL_DIRS` or `POM_SHARD_DIR`
@@ -422,14 +433,14 @@ local-only notice. Routes:
 - `*` -> NotFound
 
 On a public network, the local `NetworkSettings` is a read-only replica for
-`node` and `infer`. The entry directory only carries the data needed to
+`worker` and `visitor`. The entry directory only carries the data needed to
 discover the network; after the principal's authenticated `Announce` arrives,
 the backend fetches the full document, including name, organization,
 description, rules, channels and visibility. The screen must not treat
 capabilities announced during boot as a ready pipeline: the catalog only marks
 full coverage when each peer confirmed `/health` or is `idle`.
 
-On the `infer` profile, the Sidebar stops being a list of screens:
+On the `visitor` profile, the Sidebar stops being a list of screens:
 `ChatSessionList` takes the main menu with `New conversation` and the saved
 conversations. The new button stays outside the scrollable area, the list uses
 `min-h-0` + `overflow-y-auto` and the active session gets a highlight and
@@ -528,9 +539,9 @@ what is documented in `http-api.md`.
 
 ### Profiles: what each one sees
 
-The node announces a profile persisted in `pom.json`: `admin`, `node` or
-`infer`. The administrator operates the cluster; the node takes care of its own
-machine; `infer` has a reduced view to talk to the models, read the
+The node announces a profile persisted in `pom.json`: `admin`, `worker` or
+`visitor`. The administrator operates the cluster; the worker takes care of its own
+machine; `visitor` has a reduced view to talk to the models, read the
 documentation, manage its own API key and ask to join the network's processing.
 Any of the three can activate and install plugins on its own machine.
 `GET /api/ui/node` is the source the browser uses and the toolbar shows the
@@ -548,8 +559,8 @@ node cannot edit them.
 
 On the Dashboard, the reading is split by responsibility. The `admin` sees the
 cluster aggregates, such as coverage, machines, active model and in-flight
-load. The `node` and `infer` profiles only see the local machine's facts:
-served model, layer range and in-flight requests. For `infer`, global coverage
+load. The `worker` and `visitor` profiles only see the local machine's facts:
+served model, layer range and in-flight requests. For `visitor`, global coverage
 is not an operational indicator of its screen, so it is not rendered as a
 pipeline alarm. If `/api/ui/node` is unavailable, those fields show
 unavailable; missing data never becomes an empty model, an incomplete pipeline
@@ -563,18 +574,18 @@ from the coordinator's tracker.
 
 `src/lib/access.ts` combines the native routes with the profiles from the
 plugin registry (`lib/pluginUi.ts`); a native route missing from the table is
-open to `admin` and `node`. Today `/deploy` and `/deployments` are
+open to `admin` and `worker`. Today `/deploy` and `/deployments` are
 administrator only. A plain node keeps the Models section (search, full
 models, slicing, shards) for its own files, but deploys nothing, not even a
 full model on itself: to deploy, it returns to its own network, where it is
 the admin. The native showcases `/logs` and `/statistics` stay
 reachable for discovery; plugin screens follow the profiles declared in the
-manifest. For `infer`, the list of allowed and denied native routes lives in
+manifest. For `visitor`, the list of allowed and denied native routes lives in
 `INFER_ROUTES` and `INFER_DENIED_ROUTES`. In the Chat, run telemetry and its
 summaries are also hidden. The key matches a **whole segment**, so `/logs` does
 not cover `/logs-antigos`.
 
-In the Chat, `infer` gets its own slice through
+In the Chat, `visitor` gets its own slice through
 `GET /api/ui/infer/heads?model=...`: the **Inference entry** box shows the
 selected head and the other ranges starting at L0, with RTT, age and in-flight
 load. If the candidate's live read does not arrive, the load shows as
@@ -622,22 +633,22 @@ rendered in the browser.
 to prune the menu. Two separate lists would give the two classic defects: a menu
 offering what the route refuses, or a route open to a typed address the menu
 already hid. A section with leaves disappears when **no** leaf is left - "Logs"
-disappears entirely for the `node` profile, "Settings" would stay up if only
+disappears entirely for the `worker` profile, "Settings" would stay up if only
 one leaf closed.
 
 **This is not the only authorization.** The profile comes from the node in
 `pom.json` and the browser uses it for presentation and navigation; the backend
 enforces the same profile table (`ROUTE_RULES`, see `http-api.md`) and the
 credential is still checked at the gateway (see *Authentication*). The backend
-also enforces `infer`'s local view: `/api/ui/cluster` and
+also enforces `visitor`'s local view: `/api/ui/cluster` and
 `/api/ui/cluster/models` do not fan out to peers, `/admin/nodes` answers 403 and
 another machine's details answer 403. There is no profile switch in the UI.
 
-On the `/config/network` screen, an `infer` sees its own machine's data. Nothing
+On the `/config/network` screen, a `visitor` sees its own machine's data. Nothing
 changes a role in place, in the interface or on the node: the role is decided
 when the network admits the machine, so the card only explains that serving
 models takes leaving and asking for admission again as a network node. A
-`node` likewise has no way to step down to `infer` without rejoining. The principal
+`node` likewise has no way to step down to `visitor` without rejoining. The principal
 administrator (a secondary admin sees this screen and the rest of the
 interface as a node does, plus the deploy screens: the profile context
 carries `secondary`, and principal-only controls check it) can promote a
@@ -682,12 +693,19 @@ translates (see `http-api.md`, "Anchoring the root from the UI").
 `profile: admin` has no effective admin capability and does not open the
 administrative surface - putting this screen behind the administrator profile
 would make it unreachable exactly in the state it exists to serve. And whoever
-receives the anchor is usually a `node` or an `infer`. That is why
+receives the anchor is usually a `worker` or a `visitor`. That is why
 `/config/trust` is not in `RESTRICTED` (`lib/access.ts`), shows up in the
-Settings menu and is promoted to `infer`'s main menu.
+Settings menu and is promoted to `visitor`'s main menu.
 
 The `Topbar` header keeps the node's identification, profile, notifications and
-the native window shortcut; the `This node` button is not rendered. The
+the native window shortcut; the `This node` button is not rendered. The node's
+short id is not shown there: in its place an amber "Behind NAT" badge appears
+only while some peer is reached through a relay that carries the traffic, the
+hole punch it coordinated having failed (`ClusterView.relayed_peers`, from
+`Network::peer_route` kind `relayed`). Being behind a NAT whose hole punch
+worked shows nothing. A click opens a dialog naming those machines and their
+relay kind, what it costs (a detour, about 2 MB/s on public relays) and how to
+give the machine a direct path (`components/NatBadge.tsx`). The
 Sidebar's TLS indicator (`components/TlsIndicator.tsx`) is also hidden for
 every profile. The policy is still available in Administrative preferences; no
 TLS configuration or behavior changed.
@@ -708,7 +726,7 @@ the node's `build_commit` (only the hash, in mono, with the explanation in the
 tooltip) and the light/dark theme. The PipelineRail is still rendered hidden on
 the Dashboard (`hidden`, for a future surface).
 
-On `infer`, the footer puts Documentation and Settings next to the flags; the
+On `visitor`, the footer puts Documentation and Settings next to the flags; the
 main network item stays in the history column to keep access to the request to
 join processing. Those positions are `NAV` metadata, not a second list of
 routes.
@@ -757,7 +775,11 @@ routes.
 ## Authentication
 
 Before reaching the handlers, the gateway applies the administrative gate to
-`/api/ui/**` and `/admin/**`. In local mode it checks the connection's real
+`/api/ui/**`, `/api/transfer/**` and `/admin/**`, and the browser sends the
+person's token to all three (`isAdminSurfacePath`): the session cookie is only
+written when a session is issued, so a session older than a cookie path never
+reaches it, and the transfer polls failed with "missing administrative access
+password" while the rest of the screen worked. In local mode it checks the connection's real
 address and only accepts loopback; in network mode it requires
 `X-POM-Access-Token`. The person's token is different from the
 `connection_key`: the first opens the administrative UI, while the second
@@ -783,7 +805,7 @@ the reliable source in that mode. For a native reproduction, use
 `advertise_addr`: the interface enumeration (`preferred_local_advertise_ip`)
 only reports whether there is a public IPv6 (`public_ipv6_available`), and the
 announcement keeps redetecting the addresses on every cycle. A configured node's answer publishes
-`addr_candidates`, `libp2p_peer_id` and the tunnel capabilities, used by the TP
+`addr_candidates`, `endpoint_id` and the tunnel capabilities, used by the TP
 deploy to carry the right address to each rank.
 
 `GET /api/public/networks` combines the federated directory's cache and
@@ -817,7 +839,7 @@ publisher key and the dedicated relays (`relay_hints`). The local cluster's metr
 because the current public catalog does not provide them. The trust document
 travels inside the signed federated record for a join without a secret. A
 private node queries the directory over outgoing HTTP(S), but does not use the
-private swarm to look for candidates. Joining a public network ends the current private network; two
+private network to look for candidates. Joining a public network ends the current private network; two
 simultaneous P2P networks are not supported in v1.
 
 The UI **profile** (*Menu and routes*) is not part of this math as a
@@ -941,7 +963,7 @@ the list yet falls back to the project volume. Next to "Add node" there is
 `UndeployPipeline` when a model is live, but both controls are only mounted
 when `/api/ui/node` reports the `admin` profile. The server also refuses
 `POST /api/ui/deploy/node`, `POST /api/ui/deploy/node/remove` and
-`POST /api/ui/undeploy` for the `node` and `infer` profiles, with the message
+`POST /api/ui/undeploy` for the `worker` and `visitor` profiles, with the message
 localized by the UI. `PipelineRail` still exports `pipelinePeers`/`trackOf`,
 used by the Dashboard and DeployModel.
 
@@ -1047,21 +1069,21 @@ port. The `ThermalPanel` reads and writes the policy at
 `GET/POST /api/ui/thermal`; the Hugging Face panel uses
 `/api/ui/model-provider/config`.
 
-## Settings / Preferences: when to use TLS between nodes
+## Settings / Preferences: no TLS switch
 
-The "Encryption between nodes" panel (`TlsPanel`, in `routes/Preferences.tsx`)
-shows the cluster state and, **only on the principal node**, the switch that
-flips it. It belongs to the administrative preferences route; node and infer
-get neither the panel nor the TLS icon in the Sidebar. The state is still
-decided by the principal and applies to the whole network.
-
-The authority that counts is the server's - `POST /api/ui/network/tls` answers
-403 outside the principal (see `http-api.md`). The screen uses
-`NodeInfo.tls_authority` only to avoid lying before the click.
-
-Flipping needs no restart and works in both directions; the toast says the
-other nodes adopt it in a few seconds, which is the gossip cycle plus the
-ratchet's authenticated fetch (see `p2p-network.md`, section 5).
+TLS between nodes is always on, so the preferences have no panel for it and
+the Sidebar no TLS icon (`p2p-network.md`, section 5). The QUIC panel
+(`QuicPanel`) is always shown on the administrative preferences route, and the
+local discovery switch takes its authority from `NodeInfo.quic_authority`,
+which is the same principal check. The interface on `http://localhost` stays
+plain HTTP; from another machine the browser is sent to `https://`, and warns
+about an unknown issuer until that machine trusts the node's local CA. The
+Preferences screen has the "Node certificate" panel
+(`components/HttpsCertificatePanel.tsx`, `GET /api/ui/tls/ca`): whether this
+computer trusts the CA, its fingerprint, the `.crt` download, the manual steps
+per system and for harnesses (`NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`), and
+"Install on this computer", offered only to a request from the node's own
+machine, since the trust store is that machine's.
 
 ## Settings / Administrative preferences: QUIC transport
 
@@ -1085,11 +1107,13 @@ screen polls for new batches every second. The deployment selector sends
 The lines are kept by the logs plugin (`pom-plugin-logs`) on each admin; the
 POM only captures, carries them to the admins and holds the collection policy.
 Without the plugin active on this node the console says so instead of
-polling, and the Dashboard does not show the dock.
+polling, and the Dashboard does not show the dock. While
+`NodeInfo.cluster_logs_enabled` is false the console and the dock show
+"Collection off" instead of "Live", since no new line arrives.
 
 `Preferences.tsx` shows the "Process logs between nodes" panel only when the
-logs plugin is active on this machine. The switch is disabled outside the
-principal, and the backend rejects turning collection on unless the plugin is
+logs plugin is active on this machine. The switch is open to every admin
+(a secondary admin's change is passed on to the principal), and the backend rejects turning collection on unless the plugin is
 active there; turning it off always works. Only the admins need the plugin. State and authority come from `GET /api/ui/node`; the change
 uses `POST /api/ui/network/logs` and needs no restart. The counter of entries
 dropped by the bounded queue shows above the terminal, so the screen does not
@@ -1123,7 +1147,7 @@ besides the turns:
   `asleep` - a machine of the pipeline unloaded its model for idleness or is
   loading it again - then `pieces`, `assemble` and `long` as the seconds pass.
 - The single file field reads `GET /api/ui/chat/capabilities?model=<chosen>`,
-  which aggregates the chosen model's head and coverage without reusing the topology the `infer`
+  which aggregates the chosen model's head and coverage without reusing the topology the `visitor`
   profile cannot query. It accepts any file type, button and drag and drop.
   Images require `vision: supported`; `unsupported` keeps the model without
   vision and `unavailable` says the read was refused or could not finish,
@@ -1185,7 +1209,7 @@ besides the turns:
   possible and goes straight into the text field.
 
 `ChatSessionProvider` shares the active session and the actions between the
-Chat and the Sidebar. On `infer`, the Sidebar uses `ChatSessionList` as the main
+Chat and the Sidebar. On `visitor`, the Sidebar uses `ChatSessionList` as the main
 menu: the history list has internal scrolling limited to the available space,
 highlights the active conversation and keeps `New conversation` fixed above it.
 Switching or deleting a session does not abort a generation in progress;
@@ -1307,9 +1331,11 @@ browser gets is a self-signed ECDSA one, different from the Ed25519 one the
 peers get - a browser does not verify Ed25519. See `p2p-network.md`, "Two
 certificates on the same port".
 
-**The browser warns on the first visit to each machine**, because the
-certificate is self-signed and there is no CA to validate it. It is expected;
-the operator accepts it once per machine.
+**The browser warns about an unknown issuer** until the computer trusts the
+node's local CA (Preferences, "Node certificate", or the desktop app's prompt at
+start). The certificate keeps its key across restarts, so an accepted warning
+does not come back after a restart. See `p2p-network.md`, "Two certificates on
+the same port".
 
 ## The Flow card says how much of the model fit on the GPU
 
@@ -1569,7 +1595,7 @@ machine restarted. Today the fingerprint is only model + set of ranges.
   Dashboard map shows the last effective RTT and transport observed in the
   inference run for each edge and, at the Gateway, every complete route of the
   model with the aggregated RTT of each leg, including the return; when there is
-  a recent trace, the run's wire RTT beats the libp2p fallback probe. Routes are
+  a recent trace, the run's wire RTT beats the tunnel fallback probe. Routes are
   listed from lowest to highest cost, with the node ids as a tie-break; a whole
   model deployment with a single head is also queried, even with no edge in the
   graph. The planner's directional survey stays reserved for route choice and
@@ -1657,10 +1683,10 @@ propagates the signed mutation to the peers and republishes the public geo
 label.
 
 Below the metrics, the "NAT traversal" panel (`TraversalPanel`) shows the
-`traversal` field of `GET /api/ui/cluster`: AutoNAT state, published direct
-addresses and circuits, accepted relay reservations and the hole punch count
-with the last failure. It exists because two nodes behind NAT that do not see
-each other fail at one of three steps, and before it finding out which one
+`traversal` field of `GET /api/ui/cluster`: the NAT report state, the published
+direct addresses and relay URLs (split by `isRelay`), the relays connected and
+the hole punch count. It exists because two nodes behind NAT that do not see
+each other fail at one of a few steps, and before it finding out which one
 required `RUST_LOG=debug` on the right machine. An old binary's node does not
 send `traversal` and the panel simply does not show up.
 

@@ -331,7 +331,7 @@
                 inference_url: None,
                 inference_candidates: Vec::new(),
                 addr_candidates: Vec::new(),
-                libp2p_peer_id: None,
+                endpoint_id: None,
                 supports_tunnel: false,
                 inference_capabilities: Some(vec!["speculate/v1-lookup".to_string()]),
                 mem_free_mb: s.mem_free_mb,
@@ -378,6 +378,7 @@
             target_node_id: target.to_string(),
             n_gpu_layers: None,
             offload_kqv: None,
+            inference_role: None,
         }
     }
 

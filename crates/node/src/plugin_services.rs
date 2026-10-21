@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 
 const MAX_SERVICES_PER_PLUGIN: usize = 8;
 const MAX_TEXT: usize = 200;
-const MAX_PEER_BODY: usize = 256 * 1024;
+pub(crate) const MAX_PEER_BODY: usize = 256 * 1024;
 /// `/api/ui/node` is polled by every dashboard; the plugins are asked at most
 /// this often.
 const SERVICES_TTL: Duration = Duration::from_secs(5);
@@ -68,9 +68,16 @@ pub(crate) struct PluginService {
 }
 
 /// The POM deployment settings an inference service may declare, by their
-/// `RuntimeParams` name. Both act on the hidden state the nodes carry between
-/// the stages of a model split across machines.
-const POM_SETTINGS: [&str; 2] = ["prefill_max_inflight_chunks", "hidden_state_dtype"];
+/// `RuntimeParams` name. The first two act on the hidden state the nodes carry
+/// between the stages of a model split across machines; `inference_role` is a
+/// whole-model machine's part in a prefill/decode split (`plugin_engine`), and
+/// `prefill_min_tokens` the split's threshold.
+const POM_SETTINGS: [&str; 4] = [
+    "prefill_max_inflight_chunks",
+    "hidden_state_dtype",
+    "inference_role",
+    "prefill_min_tokens",
+];
 
 fn parse_pom_settings(kind: &str, value: &Value) -> Vec<String> {
     let mut settings: Vec<String> = Vec::new();
@@ -309,7 +316,7 @@ pub(crate) async fn node_services(plugins: &crate::plugins::PluginManager) -> Ve
 
 /// An operation name of the peer API: lowercase words separated by dots,
 /// dashes or underscores.
-fn valid_peer_op(op: &str) -> bool {
+pub(crate) fn valid_peer_op(op: &str) -> bool {
     !op.is_empty()
         && op.len() <= 64
         && op.bytes().all(|byte| {
@@ -320,13 +327,50 @@ fn valid_peer_op(op: &str) -> bool {
 }
 
 /// What the plugin is told about the peer that is calling it.
-pub(crate) fn caller_of(peer: &crate::network::PeerInfo) -> Value {
+pub(crate) fn caller_of(peer: &crate::network::PeerInfo, role: &str) -> Value {
+    let visitor = role == "visitor";
     json!({
         "node_id": peer.node_id,
-        // Layer 0 is where every prompt enters a model: its head.
-        "head": peer.total_layers > 0 && peer.start_layer == 0,
+        // Layer 0 is where every prompt enters a model: its head. An
+        // inference node serves no layer, whatever it announces.
+        "head": !visitor && peer.total_layers > 0 && peer.start_layer == 0,
         "model": peer.model,
+        "role": role,
     })
+}
+
+/// This machine's own role, as the trust chain proves it: what a plugin is
+/// told when the caller is its own node.
+pub(crate) async fn local_role(state: &crate::gateway::GatewayState) -> &'static str {
+    let profile = state.auth.read().await.profile;
+    match state
+        .admin_trust
+        .effective_authority(&state.authority_principal, profile)
+    {
+        Some(crate::admin_trust::EffectiveAuthority::Principal) => "principal",
+        Some(_) => "admin",
+        None if profile == crate::profile::NodeProfile::Visitor => "visitor",
+        None => "member",
+    }
+}
+
+/// The caller's role as the trust chain proves it, for a plugin that shares
+/// something only with the admins: `principal`, `admin`, `visitor` or
+/// `member`. The announced profile alone never makes a caller an admin.
+pub(crate) fn caller_role(
+    state: &crate::gateway::GatewayState,
+    issuer: &crate::admin_trust::AuthorityPrincipal,
+    peer: &crate::network::PeerInfo,
+) -> &'static str {
+    if crate::gateway::peer_is_visitor(state, peer) {
+        "visitor"
+    } else if crate::gateway::issuer_is_principal(state, issuer) {
+        "principal"
+    } else if crate::admin_trust::control_issuer_is_admin(&state.admin_trust.document(), issuer) {
+        "admin"
+    } else {
+        "member"
+    }
 }
 
 fn refuse(status: StatusCode, error: &str) -> Response {
@@ -370,12 +414,21 @@ pub(crate) async fn plugin_peer_call(
     else {
         return refuse(StatusCode::FORBIDDEN, "the caller is not a live peer");
     };
+    // Told apart from a failure below: the caller skips a node that does not
+    // run the plugin, but a node that runs it and did not answer may hold the
+    // data it asked for (the quota lookup, `backend/quota.rs`).
+    if !state.plugins.status(&code).await.is_some_and(|status| status.active) {
+        return refuse(StatusCode::NOT_FOUND, "the plugin does not run on this node");
+    }
     match state
         .plugins
         .query_audit(
             &code,
             &format!("peer.{op}"),
-            json!({ "params": params, "caller": caller_of(&peer) }),
+            json!({
+                "params": params,
+                "caller": caller_of(&peer, caller_role(&state, principal, &peer)),
+            }),
         )
         .await
     {
@@ -390,6 +443,20 @@ pub(crate) async fn plugin_peer_call(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A plugin learns the caller's proven role, and an inference node is
+    /// never a head even when it announces layer 0.
+    #[test]
+    fn the_caller_carries_its_role_and_an_inference_node_is_no_head() {
+        let mut peer = crate::gateway::testkit::peer("n", "n", 8080);
+        peer.start_layer = 0;
+        peer.total_layers = 32;
+        assert_eq!(caller_of(&peer, "member")["head"], true);
+        assert_eq!(caller_of(&peer, "admin")["role"], "admin");
+        let visitor = caller_of(&peer, "visitor");
+        assert_eq!(visitor["head"], false);
+        assert_eq!(visitor["role"], "visitor");
+    }
 
     #[test]
     fn a_setting_placed_in_the_pom_card_keeps_its_placement() {

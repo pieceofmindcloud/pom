@@ -43,6 +43,7 @@ fn build_macos_status() {
         .compile("pom_macos_status");
     println!("cargo:rustc-link-lib=framework=AppKit");
     println!("cargo:rustc-link-lib=framework=WebKit");
+    println!("cargo:rustc-link-lib=framework=Security");
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -120,6 +121,38 @@ fn emit_build_id(root: &Path) {
         commit,
         if dirty { "-dirty" } else { "" }
     );
+    // The release this binary is (`v0.5.6`), which the update check compares
+    // with the published releases: the release scripts set it, and any other
+    // build takes the newest `v*` tag the checkout knows (release tags are not
+    // always on the branch), so a development build is only offered a release
+    // newer than the newest one at the time it was built.
+    println!("cargo:rerun-if-env-changed=POM_RELEASE_VERSION");
+    let release = std::env::var("POM_RELEASE_VERSION")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            Command::new("git")
+                .args(["tag", "--list", "v[0-9]*", "--sort=-v:refname"])
+                .current_dir(root)
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .and_then(|o| {
+                    String::from_utf8_lossy(&o.stdout)
+                        .lines()
+                        .map(str::trim)
+                        .find(|tag| !tag.is_empty())
+                        .map(str::to_owned)
+                })
+        })
+        .unwrap_or_else(|| {
+            format!(
+                "v{}",
+                std::env::var("CARGO_PKG_VERSION").unwrap_or_default()
+            )
+        });
+    println!("cargo:rustc-env=POM_RELEASE_VERSION={release}");
     // Without this the stamp freezes at whatever the first build saw. The paths
     // are resolved against the package directory, not the workspace, so they
     // have to be spelled out from the root or they name files that never exist.

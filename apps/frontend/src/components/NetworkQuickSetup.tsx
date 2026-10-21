@@ -43,8 +43,8 @@ export const VISIBILITY_LABELS: Record<NetworkSettings["visibility"], string> = 
 
 /** The icon of each role a machine can ask to join with. */
 export const ENROLLMENT_ICONS: Record<EnrollmentRole, typeof Server> = {
-  node: Server,
-  infer: MessagesSquare,
+  worker: Server,
+  visitor: MessagesSquare,
 };
 
 /**

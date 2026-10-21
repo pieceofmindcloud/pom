@@ -19,6 +19,10 @@ on:
 permissions:
   contents: write
 
+env:
+  # The release the binary says it is; the update check compares it with the published ones.
+  POM_RELEASE_VERSION: ${{ inputs.version }}
+
 jobs:
   # A single job. On a hosted runner the interface used to be built separately, on a
   # Linux runner, because the macOS minute cost 10x; here there is no multiplier, and

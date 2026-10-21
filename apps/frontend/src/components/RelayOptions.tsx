@@ -5,7 +5,7 @@
  * draws its questions: the same cards in the wizard, which saves them at the
  * end, and in Network settings, which saves each change at once. Both draw
  * nothing while the internet does not reach this machine (`reachable`, from
- * AutoNAT or a configured public address): behind a NAT it cannot relay for
+ * the NAT report or a configured public address): behind a NAT it cannot relay for
  * anyone, so there is nothing to choose.
  */
 import { ArrowLeftRight, Check, Globe2, Network } from "lucide-react";

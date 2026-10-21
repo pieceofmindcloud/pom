@@ -20,8 +20,8 @@ callbacks) separate from the administrative surface (`/api/ui/**`, `/admin/**`, 
 static UI), and the two never share an authorization rule. The rules that decide who
 may call what - the profile table, the in-memory browser session and its single
 `ADMIN_SESSION_TTL`, the signed control envelope between nodes, the per-route
-`RouteScope` (`AdminOnly`, `DeployAdmin`, `NodeAdmin`, `InferNodeAdmin`,
-`CommonOrInternal`) and the `x-pom-admin-error` header the browser reads to know its
+`RouteScope` (`PrincipalOnly`, `AnyAdmin`, `ServingMember`, `AnyMember`,
+`LocalOnly`, `HandlerAuth`) and the `x-pom-admin-error` header the browser reads to know its
 session died instead of printing a raw 401 inside whatever screen was open - are
 `docs/subsystems/http-api.md`. The deployment lifecycle, the idle wake
 (`reload_model`) and the role gate (`deployment_authority` /
@@ -45,19 +45,24 @@ boundary.
   random identifier, bind to the current password hash, expire after the single
   `ADMIN_SESSION_TTL` value and never
   persist in the browser or on disk. `ConnectionAuth` (connection-key bearer
-  only), `InternalNodeAuth` (that key plus an internal marker), `ApiKeyAuth`
+  only), `InternalNodeAuth` (the signed envelope, or that key plus an internal
+  marker from a caller the transport proves is a member, `caller_is_member`
+  against `Network::is_member_key`, set once by `set_member_oracle`; plain HTTP
+  from loopback needs no proof, and a test bench without the oracle keeps the key
+  alone), `ApiKeyAuth`
   (active inference API key only, from `authorization: Bearer` or `x-api-key`),
   `AuthState = Arc<RwLock<Config>>`.
   When both headers are present they are checked independently, so an invalid
   one cannot hide a valid one; a valid API key still supplies its non-secret
-  `Caller`. An unknown key is consulted on the principal through the authenticated
-  internal channel, sending only the hash, and it fails closed on timeout or error. The inference
+  `Caller`. Only a key this node minted is valid: keys never leave the node,
+  no registry exists elsewhere and no other node is asked about an unknown
+  key. The inference
   port does not use the shared `connection_key` alone on private networks; on public
-  networks it demands TLS transport and the internal marker, while the result callbacks validate
-  the per-frame `Ticket`.
-- `/handshake` is the admission proof of the private discovery. The comparison demands
-  that the configured key and the received one both be non-empty; an empty key never turns a
-  setup process into a member of the swarm.
+  networks it demands TLS transport, the internal marker and a member caller, while the
+  result callbacks validate the per-frame `Ticket`.
+- `/handshake` is the admission proof of the private discovery. The key never travels: the
+  node answers a challenge with a signed HMAC of it (`session.rs`), and a node without a key
+  answers nothing, so an empty key never turns a setup process into a member of the swarm.
 - `gateway/` - the module split into state/selection, budgets and generation types,
   generation, snapshots/planning, HTTP and tests: `GatewayState`,
   `start_gateway_with_ready`, `generate_stream_with_stops` /
@@ -124,8 +129,8 @@ boundary.
   storage paths, thermal policy (`GET/POST /api/ui/thermal`), local auto-discovery
   preference (`GET/POST /api/ui/network/auto-discovery`), cluster process
   logs (`GET /api/ui/cluster-logs` answered by the logs plugin, 403
-  `logs_plugin_required` without it; `POST /api/ui/network/logs`, primary
-  only, refuses turning collection on unless the logs plugin is active on that
+  `logs_plugin_required` without it; `POST /api/ui/network/logs`, any
+  admin - a secondary forwards it to the principal, signed - refuses turning collection on unless the logs plugin is active on that
   node, while turning it off always works), slice retention
   and the authenticated CRUD of the conversation history (`/api/ui/chat/history`).
   `GET /api/ui/plugins` (all profiles) lists local state for independent
@@ -134,7 +139,7 @@ boundary.
   `POST /api/ui/plugins/activate` activates every `plugin_code` granted by the
   server in one batch; `POST /api/ui/plugins/:code/refresh|deactivate|update/check|update/apply`
   acts on one plugin. GitHub repositories are local to the node and use the
-  AdminOnly routes `GET/POST /api/ui/plugins/github-repositories`,
+  PrincipalOnly routes `GET/POST /api/ui/plugins/github-repositories`,
   `POST /api/ui/plugins/github-repositories/:id/refresh`,
   `DELETE /api/ui/plugins/github-repositories/:id` and
   `POST /api/ui/plugins/github-repositories/:id/install` with
@@ -147,25 +152,28 @@ boundary.
   /api/ui/plugins/dev-sources` lists mounted sources and
   `POST /api/ui/plugins/dev-sources/:repository/rebuild-install` builds and
   installs or rebuilds a local plugin without prior activation. Both routes
-  are AdminOnly; the handler accepts mounted direct-child `pom-plugin-*`
+  are PrincipalOnly; the handler accepts mounted direct-child `pom-plugin-*`
   sources only after validating their manifests and plugin codes, uses fixed
   Cargo commands and never exposes compiler output. A development-only installation persists in
   `plugin_dev_install:<code>` and starts the host without granting licensed
   features. If a license or GitHub installation already exists, its
-  entitlement is preserved. The browser reads the commercial catalog without
-  credentials. Purchases redirect the operator to the public store with the
-  plugin code. Updating the `pom_core` release is a separate boundary in
-  `crate::pom_core_update`: `GET /api/ui/pom-update/status`,
-  `POST /api/ui/pom-update/check` forces an on-demand check, and
-  `POST /api/ui/pom-update/apply` requires explicit confirmation before
-  downloading the release and restarting. The cluster view transports
+  entitlement is preserved. The browser reads the commercial catalog through
+  `GET /api/ui/plugin-catalog[/:code]` (`plugins::plugin_catalog`), which
+  passes on only `q`, `page` and `per_page`, sends the store no credential and
+  returns its JSON as it is. Purchases redirect the operator to the public store with the
+  plugin code. Updating POM itself is a separate boundary in
+  `crate::pom_core_update` (GitHub releases, then the site):
+  `GET /api/ui/pom-update/status`, `POST /api/ui/pom-update/check` forces an
+  on-demand check, and `POST /api/ui/pom-update/apply` requires explicit
+  confirmation before downloading the release and handing the swap and restart
+  to `pom-plugin-host`. The cluster view transports
   `SystemLoad.gpus[].power_watts` as optional telemetry and keeps it `null`
   when the system does not report board power. The
   `/api/ui/network/geo/{countries,cities,nearest}` routes read the offline
   city database embedded in the binary (`utils/geo.rs`) for the location
-  editor and use `InferNodeAdmin`; they do not create or change network data
-  and look nothing up on the internet. `GET /api/ui/deployments` is `NodeAdmin` so a
-  `node` profile can see the read-only inspector, while mutations and deployment actions stay
+  editor and use `LocalOnly`; they do not create or change network data
+  and look nothing up on the internet. `GET /api/ui/deployments` is `ServingMember` so a
+  `worker` profile can see the read-only inspector, while mutations and deployment actions stay
   under the existing administrative policy.
   The authority surface exposes the presentation contract in
   `/api/ui/network/admin-authority`. There is no route that changes a
@@ -175,8 +183,8 @@ boundary.
   **The trust anchor predates all of that** and lives in `webui/trust.rs`:
   `GET/POST /api/ui/network/trust-anchor` shows the anchor's fingerprint and the anchored/not
   yet anchored state, and installs the chain the operator
-  carried over. The route is `CommonOrInternal` on purpose - an unanchored `profile: admin`
-  does not pass `AdminOnly`, which is exactly the state where the operator needs it - and it
+  carried over. The route is `HandlerAuth` on purpose - an unanchored `profile: admin`
+  does not pass `PrincipalOnly`, which is exactly the state where the operator needs it - and it
   does not demand the cluster's connection key, for the reason recorded in the file's header.
   The installation's three locks are the server's: loopback measured in `serve::PeerAddr` (never
   `admin_exposure`, which may be open to the network, and never `X-Forwarded-For`), a node still
@@ -190,10 +198,11 @@ boundary.
   local principal and writes the chain before the download; a secondary authority cannot
   fabricate that metadata.
   `POST /api/ui/chat-key` is allowed to `node` because it only creates the local
-  key `pom-<node_id>` and registers it on the principal through the signed internal route
-  (only the hash goes; the secret stays in `local_secrets`, `PomDb::node_api_key`, and
-  it is swapped when it no longer matches an active key);
-  the exception does not allow creating, revoking or validating other people's keys.
+  key `pom-<node_id>`, which stays on this node like every key (the secret in
+  `local_secrets`, `PomDb::node_api_key`, swapped when it no longer matches an
+  active key). Joining or leaving a network keeps the node's keys.
+  `POST /api/ui/network-chat` checks the browser's key locally and clears it
+  before the action goes to the principal.
   The read `/api/cluster/network-settings` is internal and read-only: a
   node adopts the complete `NetworkSettings` document from the principal, including
   visibility and metadata, after the first authenticated `Announce`.
@@ -201,7 +210,7 @@ boundary.
   heads: it delivers the candidates and the planner's choice, without general peers or control
   actions. A head still loading its model (`is_warming`) is never a candidate. The capacity gate
   (`request_output_limit_for_head`) plans the route from the head the request chose
-  (`inference_head`), as generation does. The route is `InferNodeAdmin`, so admin and infer can read it. Each candidate's load
+  (`inference_head`), as generation does. The route is `LocalOnly`, so admin and infer can read it from their own screen. Each candidate's load
   comes from its own `/api/ui/node` and stays `null` when the report does not arrive, so the UI
   shows it unavailable instead of zero. The RTT's validity is five minutes; expired values
   appear as a diagnostic, but they do not enter the generation's selection.
@@ -359,8 +368,9 @@ boundary.
   for network visibility and profile transitions. The web UI serializes it
   through `GET /api/ui/node`. Infer nodes can read a local-only network view;
   a role never changes in place. A secondary admin keeps management access
-  but cannot promote another admin, and is not the principal: admission and
-  the member list stay with the principal.
+  but cannot promote another admin, and is not the principal: it decides
+  admissions and removes workers and visitors, but the admission list stays
+  on the principal, which it reads and sends its decisions to.
 - `admin_trust.rs` - the protected, durable Ed25519 authority chain. It stores
   the manually anchored root, one-level secondary grants, signed demotions,
   transfer offer and acceptance state, and full-chain reconciliation. Consumed
@@ -379,7 +389,7 @@ boundary.
   already has one, because replacing a root is manual re-anchoring on the
   machine (`--replace`), not an interface gesture. A chain created by first
   access also carries a signed `setup` block with the network name, visibility,
-  access policy, `relay_hints` (dedicated relay `pk:` keys, never addresses)
+  access policy, `relay_hints` (dedicated relay URLs with host names, never IPs)
   and federated-directory replicas, so a joining node does not retype network
   identity data. The network's location is not in it: country, city,
   coordinates and the discovery label are settings the principal changes at
@@ -425,6 +435,12 @@ boundary.
   ranges are allowed when they belong to distinct paths;
   the coverage is validated by the executable path, not by the union of the files.
   `undeploy` takes a whole pipeline off the air.
+- `webui/https.rs` - the local CA for the interface (`LocalOnly`):
+  `GET /api/ui/tls/ca` (fingerprint, trust state, a past refusal, whether this
+  request may install), `GET /api/ui/tls/ca.crt` (the public certificate as a
+  download) and `POST /api/ui/tls/ca/install`, which also demands loopback
+  (`serve::PeerAddr`) because it opens the system dialog of the node's own
+  machine. The CA is `network/web_ca.rs`, the installers `src/trust_store.rs`.
 - `webui/sidecars.rs` - `GET/POST /api/ui/model-sidecar-links`: the
   principal's model -> projector / MTP draft links (`model_sidecar_links` in
   `pom.db`). A secondary reads them from the principal and keeps the last copy
@@ -439,13 +455,29 @@ boundary.
   `mmproj_file` / `mtp_draft_file` so the target resolves the path on its own
   disk (`jobs_apply`). The pull request to each target and the polling of its
   copy (`node.rs::wait_for_transfers`) are `control_post_json`/`control_get`
-  calls to the peer, so they end in the libp2p tunnel for a target behind NAT;
+  calls to the peer, so they end in the p2p tunnel for a target behind NAT;
   `node.rs::peer_of` finds the peer. `transfer::servable_path` serves a path outside the
   shard folder only when it is in the node's sidecar inventory, and a finished
   download invalidates the receiver's catalog.
+- `webui/membership.rs` - membership tokens at run time (the format is
+  `crate::membership`, `src/membership.rs`: a compact EdDSA JWT naming the
+  member's node and key, its role, the network and a 10 min expiry, checked
+  against the chain alone). `internal_token` issues one on any admin for an
+  approved admission; `spawn_token_keeper` renews this node's (none on an
+  admin) and sets it in the Announce. On a secondary admin,
+  `spawn_roster_keeper` mirrors the principal's admission list
+  (`internal_roster`), and `forward_decision` sends its admission decisions
+  to the principal (`internal_decide`, applied by `apply_decision`, which
+  refuses to remove an admin). `NetworkChat::admitted_role` reads the own
+  list and the mirror, ignoring an approval not newer than the member's last
+  ban. `ban` signs a revocation on any admin and pushes it to every peer
+  (`push_revocations`); `internal_revocations` merges a caller's list and
+  answers with its own, and `spawn_revocation_keeper` trades lists with one
+  admin per tick. `on_revoked` makes the principal forget the member and
+  rotate the key.
 - `webui/kv_cache.rs` - this machine's KV cache for the dashboard:
   `kv_cache_disk` measures the snapshot directory (`NodeInfo.kv_cache`) and
-  `POST /api/ui/kv-cache/clear` (AdminOnly, also empties the `strata-sessions/` subfolder, forwarded by `node_id` like
+  `POST /api/ui/kv-cache/clear` (PrincipalOnly, also empties the `strata-sessions/` subfolder, forwarded by `node_id` like
   `/api/ui/leave`) deletes its `.bin`/`.json` files, resets
   `GatewayState.prefix_disk` and clears the inference server's host-memory
   cache. See `http-api.md`.
@@ -458,7 +490,7 @@ boundary.
   `TransferState::finish`, which stamps `finished_at`. A job carries the slice's label
   (`SliceLabel`: model + range), read from the `.pom` - a hash is not a name.
   When no direct address connects, `run_download` falls back to
-  `download_over_tunnel`: closed 4 MiB pieces through the libp2p tunnel, only
+  `download_over_tunnel`: closed 4 MiB pieces through the p2p tunnel, only
   over a connection that may carry a file - **never across a public relay**
   (`Network::transfer_links`, and the 421 the serving node answers). `download`
   serves a closed range as one piece of the same job.
@@ -544,11 +576,21 @@ boundary.
   content hash); `spawn_trust_chain_keeper` compares it every 30 s with what
   the peers announce and fetches the chain from whoever is ahead
   (`chain_sources`, `POST /api/internal/admin-trust/chain`) - any member, so
-  it works with the principal offline. `chain_status` feeds
+  it works with the principal offline. The chain names admins only: a
+  worker's or visitor's role is its membership token (`webui/membership.rs`
+  below), and a non-admin caller of a `ServingMember` route needs a `worker`
+  token (`caller_may_ask`). `chain_status` feeds
   `NodeInfo.cluster_version` and `POST /api/ui/network/trust-sync`.
+- `quota.rs` - token budgets before the pipeline: `admit` asks the local logs
+  plugin, then each live admin (`peer.quota.check` over the signed peer call),
+  and the inference handlers answer its `Denial` with 429 + `Retry-After` and
+  `record_rejected`. Fail-open with a per-node memory of refusals; the plugin's
+  `cache_ms` sets how long a verdict is reused. Also the node's own Budget
+  routes (`/api/ui/quota`, `/reset`, `/request`). Contract:
+  `docs/subsystems/http-api.md`, "Token budgets, checked before the pipeline".
 - `reqlog.rs` - the audit adapter and the migration fallback. With the plugin
   active, the host writes in `enterprise.db`; independently of that destination, the
-  POM's `AuditLog` replicates `begin` and `complete` to the effective admins over libp2p.
+  POM's `AuditLog` replicates `begin` and `complete` to the effective admins over the p2p endpoint.
   The receiver orders the events in a bounded queue and hands them to its own active
   host; if it does not accept them, it persists them in the legacy `pom.db`. Received events are
   never retransmitted. `AuditDb` creates the schema and the FTS5 index only in the test
@@ -572,54 +614,60 @@ boundary.
   `peer_http.plain()`. A control call to another node uses
   `GatewayState::control_get`/`control_post_json`/`control_post_empty`: it signs
   once, tries each announced address - in `gateway_bases` order, the host that already answered
-  first - and falls back to the libp2p tunnel
+  first - and falls back to the p2p tunnel
   (`peer_client::send_to_gateway_over`), which is the path to a peer behind symmetric
   NAT. A signed command that changes state is sent to **one** delivered address: after a timeout on an established connection it is not repeated elsewhere, because the same envelope would be refused as a replay (409) while the peer still runs the first copy. Calls that stop a server (`/api/ui/unload`, `/api/ui/stop-inference`, `/api/ui/leave`) use `webui::PEER_STOP_TIMEOUT` (60 s), not `PEER_TIMEOUT`. `control_get_via_tunnel` is the last resort of whoever already
   traversed the addresses with the `RouteTable`'s failure memory (the read of
-  `/api/ui/cluster`). `admin.rs` sync with the principal (`sync_json`,
-  `post_internal_json`, `validate_api_key_remote_parts`) uses the same
-  `send_to_gateway_over`: direct addresses and, last, the tunnel; `sync_json`
-  signs a new envelope on every attempt. Only weight transfer stays outside
+  `/api/ui/cluster`). `admin.rs` calls to the principal (`post_internal_json`)
+  use the same `send_to_gateway_over`: direct addresses and, last, the
+  tunnel. Only weight transfer stays outside
   the tunnel.
 - `serve.rs` - the accept loop: it spies on the first byte, keeps the `PeerAddr` in the
-  request (`request_origin`: a request from the loopback carrying the libp2p tunnel's mark becomes
+  request (`request_origin`: a request from the loopback carrying the p2p tunnel's mark becomes
   `TUNNELED_ORIGIN`, non-loopback, and that mark header leaves every request - see
   `p2p-network.md`) and serves TLS or cleartext on the same TCP port, with connection upgrades
   enabled (the plugin proxy's WebSocket,
   `crate::plugin_proxy`). The HTTP/3 endpoint
   receives a separate QUIC configuration and comes up on the dedicated announced UDP port,
-  even when the TCP is in plain HTTP; `TlsServer` covers only the TCP certificate, the strict
-  mode and the duration of the last handshake. See
+  even when the TCP is in plain HTTP; `TlsServer` covers only the TCP configurations, the strict
+  mode and the duration of the last handshake. The TLS configuration is picked per connection
+  from the ClientHello (`LazyConfigAcceptor`, `tls::wants_peer`): a peer is asked for its node
+  certificate, a browser for nothing. A plain connection from outside is redirected to https, or, with
+  `POM_INSECURE_ADMIN_UI=1` (`insecure_admin_ui`), served as is except the peer-only routes.
+  `TransportPeer` is the caller's node as the transport
+  proved it - the client certificate, or the tunnel's PeerId beside the mark - and goes into the
+  request's extensions. See
   `docs/subsystems/p2p-network.md`, section 5.
 - `models::OllamaClient::is_available` is only an optional probe of the
   `/health`: it returns the last value and schedules a background check of at most 500 ms
   every 15 s. It does not inherit the generation's 300 s, and a cold or absent Ollama never
   holds up the gateway's answer.
-- `session.rs` - `POST /handshake` uses a two-step Ed25519 challenge. A
-  request without a `nonce` and a `signature` is refused with HTTP 403
-  `challenge_required` and receives a random 32-byte hexadecimal nonce. The
-  verifier keeps that nonce for 30 seconds and consumes it before checking the signature sent;
-  only the signature of the raw nonce by the key whose `SHA256` is the `node_id` gets
-  `approved: true`. A node that uses the old body sees the challenge's 403 answer and never gets
-  in until it speaks the new signed format.
-  Reuse, expiration, key divergence and a missing signature are refused.
+- `session.rs` - `POST /handshake` proves the connection key without sending
+  it. The prober sends `{node_id, pubkey, challenge}` (32 random bytes, hex);
+  the node answers `{node_id, proofs, signature}`: one HMAC-SHA256 per key it
+  accepts (current, and the old one during a rotation's grace) over a fixed
+  label, the challenge, its own id and the prober's, all signed with its node
+  key. `answer_proves_key` is the prober's check: the signature against the
+  peer's announced key, then the HMAC recomputed with its own key, in constant
+  time. Refusals (403 `reason`): `blocked`, `no_key`, `identity_mismatch`,
+  `invalid_challenge`. The node keeps no state per probe.
 
 ## Key functions and routes
 
 ### The network Chat
 
-`GatewayState.network_chat` exposes the network Chat's libp2p service. `webui`
+`GatewayState.network_chat` exposes the network Chat's p2p service. `webui`
 serves `GET/POST /api/ui/network-chat` for the interface, the persistence and the actions
 with an API key. `POST /api/ui/network/chat` writes on the real principal; when the
 interface is on a secondary admin, the route forwards the authenticated mutation
 to that principal. The policy route between nodes is
 `GET /api/cluster/network-chat`, and the probe only treats the `authority_pubkey`
 confirmed by the `AdminTrust` as the principal, not the announced profile.
-The policy GETs (`/api/cluster/tls`, `/api/cluster/logs` and
-`/api/cluster/network-chat`) demand `InternalNodeAuth`: a `connection_key` plus
-`x-pom-internal-node: 1`; they are not a human-token surface.
+The policy GETs (`/api/cluster/logs` and `/api/cluster/network-chat`) demand
+`InternalNodeAuth`: a `connection_key` plus `x-pom-internal-node: 1`, from a
+caller the transport proves is a member; they are not a human-token surface.
 The backend does not retransmit through the HTTP UI: the action enters the `NetworkChat`'s bounded
-queue and the swarm validates and forwards it through `discovery.rs`. The snapshot does not
+queue and `discovery.rs` validates and forwards it over the endpoint. The snapshot does not
 repeat file bytes on every polling; `GET /api/ui/network-chat/file/:message_id`
 does the authenticated download of the persisted blob.
 
@@ -714,8 +762,8 @@ change lands in the right place.
   primary answers 401 and no TP deployment passes, on any machine. `tp_check_verdict` reads the
   answer in a separate function so it is testable and so it repeats the peer's `error` instead of
   calling every answer without `ok` an old binary's. `tp_members` transfers each machine's
-  `PeerId`, UDP address candidates and tunnel capability to every rank so `broadcast_to` and the
-  reduce can rehydrate the swarm on the destination and try each reachable HTTPS address when the
+  endpoint id, UDP address candidates and tunnel capability to every rank so `broadcast_to` and the
+  reduce can hand the destination's dial hints to the endpoint and try each reachable HTTPS address when the
   tunnel is not available; `register_tp_reduce` receives the group's size, and the node publishes
   it and the collectives snapshot in `node_timings.tp` without mixing TP bytes or waits with the
   pipeline telemetry. `RuntimeParams.fit_memory` stays on by default in shards and whole models so
@@ -746,7 +794,7 @@ change lands in the right place.
   `gateway::{snapshot,restore,erase}` - `docs/subsystems/inference.md` 3.1.1). `list_nodes`
   appends blocked-but-disconnected nodes so the panel is not empty, and gives each remote peer a
   `route` (`Network::peer_route`): the path this node actually uses to reach it - direct HTTP,
-  direct libp2p (maybe hole punched) or relayed - as opposed to `addr`, which is only what it
+  a direct endpoint path (maybe hole punched) or relayed - as opposed to `addr`, which is only what it
   advertises. **The wizard is deprecated and unreachable**: nothing starts its router, so none of
   the `/api/setup/*` handlers below is served; they are kept until the wizard is removed for good.
   Setup mode exposed `/api/setup/hardware`, `/api/setup/models`,
@@ -797,7 +845,37 @@ change lands in the right place.
   convention), `CallKind::FunctionCalls` (the older
   `<function_calls><invoke name=...>` repair dialect, including multiple
   invokes) and `CallKind::BareFunction` (a tolerated wrapper-less
-  `<function>NAME</function>` fallback, name-only, whitespace guard).
+  `<function>NAME</function>` fallback, name-only, whitespace guard). A
+  `<tool_call>` opened with `<parameter=NAME>` where `<function=NAME>`
+  belongs (either spelling, `<parameter name="NAME">` too) is read as a call
+  to NAME (`repair_parameter_opening`) when the next tag is another parameter
+  tag and, for a complete call, it closes with
+  `</function>`. The quantized models also misspell the wrapper, so
+  `<function_call>` and `<parameter_call>` open a `Wrapped` call, a bare
+  `<invoke name=...>` is `CallKind::Invoke`, and any closer of the family
+  (`CallKind::closers`) ends a span, whichever tag opened it - the kind's
+  own closer anywhere, a foreign one only outside an open parameter value
+  (`closer_position`), so content that mentions those tags is not cut. A
+  `<function_calls>` holding a `<function=...>` body is read as one call, a
+  repeated `<tool_call>` opener and a doubled or foreign trailing closer are
+  normalized (`normalize_wrapped_body`), both `<parameter=P>` and
+  `<parameter name="P">` are read inside one call (`parameter_open`), a
+  complete call the model left unshut at the end of its output is a call
+  (`TagScanner::finish`), and a closer that trails a finished call is dropped
+  instead of shown (`after_call`, `STRAY_CLOSERS`).
+  A `<function=NAME>` call with no opener at all is `CallKind::BareXml`: it
+  ends only on a `</function>` outside a parameter value and, with tools
+  declared, only for a declared name, so prose quoting the tag stays text.
+  The invoke dialect's tags may carry an XML namespace prefix (the opener
+  prefixed, the closer plain, as a Strata session wrote them): the prefixed
+  `invoke` / `function_calls` openers and closers are registered, and
+  `strip_namespace` reads the prefixed `invoke`, `parameter` and
+  `function_calls` tags as the plain ones before parsing. A bare invoke shut
+  by `</function></tool_call>` also ends and parses (`invoke_body`).
+  A call written with parameters and no name at all is attributed through
+  the request's declared tools (`ToolSignatures`, passed by both adapters to
+  `TagScanner::with_tools` / `parse_output_with_tools`) when exactly one tool
+  takes every parameter it carries; otherwise it stays text.
   `parse_call_body` accepts the nested `<function=...>` XML form or the legacy
   Hermes JSON-object form, including an extra JSON-encoded `arguments` string;
   a sole object parameter named `arguments` is unwrapped for provider schemas;
@@ -812,10 +890,8 @@ change lands in the right place.
   rejects `..`, absolute and prefixed components. Cache: index.html no-cache,
   hashed assets immutable (1 year). Missing bundle -> 500 explaining the
   `npm run build` / `POM_UI_DIST` remedy.
-- `session.rs` - `handle_handshake` compares the `connection_key` (403
-  `invalid_key`), ties the `node_id` to the `pubkey`, consults `blocked_nodes`, demands the
-  single-use Ed25519 challenge and approves with a `peer_id`; the challenge's refusals are
-  described in the file's entry above.
+- `session.rs` - `handle_handshake` answers a challenge with signed key proofs
+  and `answer_proves_key` checks them; see the file's entry above.
 
 ## Links to other folders
 
@@ -858,7 +934,7 @@ The projector side (`mmproj_candidates` / `mmproj_reason` from the whole model o
 refusing with the file named, `webui::ApplyRequest.use_mmproj` persisting the choice in
 `NodeConfig`) is `docs/subsystems/http-api.md` and `docs/subsystems/deployment.md`. The Chat side
 (`GET /api/ui/chat/capabilities?model=<label>` aggregating coverage, `mmproj_path` and `no_thinking`
-of the deployment's head without exposing the topology to the `infer` profile; `supported` /
+of the deployment's head without exposing the topology to the `visitor` profile; `supported` /
 `unsupported` / `unavailable`, never an invented empty value; `openai::ChatRequest.thinking_enabled`
 travelling in `GenerationInput` and the prefill metadata, with the head applying the global
 kill-switch before rendering the template) is `docs/subsystems/web-ui.md` and

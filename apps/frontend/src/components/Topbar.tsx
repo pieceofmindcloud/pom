@@ -10,6 +10,7 @@ import { isServing } from "../lib/format";
 import { useCluster, useNode } from "../lib/queries";
 import { useProfile } from "../lib/profile";
 import { useI18n } from "../i18n/provider";
+import { NatBadge } from "./NatBadge";
 import { Notifications } from "./Notifications";
 import { SidebarContent } from "./Sidebar";
 import { Badge, Dot, Skeleton } from "./ui";
@@ -58,9 +59,7 @@ function NodeChip() {
         <Dot tone={serving ? "aqua" : "neutral"} pulse={serving} />
         <span className="truncate">{n.hostname}</span>
       </Badge>
-      <Badge mono tone="neutral" className="hidden sm:inline-flex">
-        {n.short_id}
-      </Badge>
+      <NatBadge />
       {c && c.peers.length > 0 && (
         <Badge tone={complete ? "aqua" : "amber"} className="hidden md:inline-flex">
           {t("topbar.nodeCount", { count: c.peers.length })}

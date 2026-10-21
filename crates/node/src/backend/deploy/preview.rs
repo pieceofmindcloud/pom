@@ -77,11 +77,17 @@ pub(super) async fn plan_endpoint(
                 .iter()
                 .map(|step| step.target_node_id.clone())
                 .collect();
+            let roles: Vec<crate::webui::InferenceRole> = p
+                .steps
+                .iter()
+                .map(|step| step.inference_role.unwrap_or(req.params.inference_role))
+                .collect();
             p.blocked = crate::plugin_engine::deploy_block(
                 &state,
                 service,
                 req.kind == DeployKind::Whole,
                 &targets,
+                &roles,
             )
             .await;
         }

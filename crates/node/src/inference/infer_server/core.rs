@@ -1749,6 +1749,8 @@ mod tests {
             inference_mode: Default::default(),
             inference_service: None,
             engine_settings: Default::default(),
+            inference_role: Default::default(),
+            prefill_min_tokens: None,
             inference_port: port,
             n_gpu_layers: 99,
             n_ctx: 8192,
@@ -1862,8 +1864,8 @@ mod relay_tests {
             exec_start: 16,
             exec_end: 31,
             inference_frame_capabilities: vec!["relay/v1-chain".into()],
-            libp2p_peer_id: None,
-            libp2p_addr_candidates: Vec::new(),
+            endpoint_id: None,
+            endpoint_addr_candidates: Vec::new(),
         }
     }
 

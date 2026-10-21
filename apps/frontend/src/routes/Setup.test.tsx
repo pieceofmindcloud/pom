@@ -22,7 +22,7 @@ import {
 } from "./Setup";
 
 const base: SetupState = {
-  profile: "infer",
+  profile: "visitor",
   joinAccepts: null,
   publicDirectory: "",
   connectionKey: "",
@@ -113,9 +113,9 @@ describe("what the wizard requires", () => {
   });
 
   it("lets a node finish with the trust and the key only", () => {
-    expect(isReadyToSave({ ...base, ...trusted, profile: "node" })).toBe(false);
-    expect(isReadyToSave({ ...base, ...trusted, profile: "node", connectionKey: "secret" })).toBe(true);
-    expect(isReadyToSave({ ...base, ...trusted, profile: "node", network: { ...base.network, visibility: "public" } })).toBe(true);
+    expect(isReadyToSave({ ...base, ...trusted, profile: "worker" })).toBe(false);
+    expect(isReadyToSave({ ...base, ...trusted, profile: "worker", connectionKey: "secret" })).toBe(true);
+    expect(isReadyToSave({ ...base, ...trusted, profile: "worker", network: { ...base.network, visibility: "public" } })).toBe(true);
   });
 
   it("needs a role and a machine name to leave the first step", () => {
@@ -129,7 +129,7 @@ describe("StartScreen", () => {
   it("only offers the roles the public network being joined accepts", () => {
     render(
       <LocaleProvider initialLocale="en">
-        <StartScreen setup={{ ...base, profile: null, joinAccepts: ["infer"] }} hardware={null} update={() => undefined} t={(key) => key} />
+        <StartScreen setup={{ ...base, profile: null, joinAccepts: ["visitor"] }} hardware={null} update={() => undefined} t={(key) => key} />
       </LocaleProvider>,
     );
     const role = (name: string) => screen.getByRole("radio", { name: new RegExp(name) }) as HTMLButtonElement;
@@ -194,7 +194,7 @@ describe("PublicDirectoryPanel", () => {
     ] as never);
     const onUse = vi.fn();
     const onAddress = vi.fn();
-    wrap(<PublicDirectoryPanel setup={{ ...base, profile: "node", publicDirectory: "https://dir.example" }} onUse={onUse} onAddress={onAddress} t={t} />);
+    wrap(<PublicDirectoryPanel setup={{ ...base, profile: "worker", publicDirectory: "https://dir.example" }} onUse={onUse} onAddress={onAddress} t={t} />);
 
     const open = (await screen.findByText("Rede Curitiba")).closest("div.flex")!;
     // The setup router has no session, and the typed replicas ride along.
@@ -264,7 +264,7 @@ describe("local discovery", () => {
     } as never);
 
     function Harness() {
-      const [setup, setSetup] = useState<SetupState>({ ...base, profile: "node", nodeName: "salem" });
+      const [setup, setSetup] = useState<SetupState>({ ...base, profile: "worker", nodeName: "salem" });
       return (
         <>
           <JoinScreen setup={setup} update={(patch) => setSetup((current) => ({ ...current, ...patch }))} updateNetwork={(patch) => setSetup((current) => ({ ...current, network: { ...current.network, ...patch } }))} t={t} />

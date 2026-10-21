@@ -276,17 +276,17 @@ export const THIRD_PARTY_LICENSES: readonly LicenseEntry[] = [
     "ecosystem": "rust"
   },
   {
-    "name": "half",
-    "version": "2.7.1",
-    "license": "MIT OR Apache-2.0",
-    "repository": "https://github.com/VoidStarKat/half-rs",
-    "ecosystem": "rust"
-  },
-  {
     "name": "hex",
     "version": "0.4.3",
     "license": "MIT OR Apache-2.0",
     "repository": "https://github.com/KokaKiwi/rust-hex",
+    "ecosystem": "rust"
+  },
+  {
+    "name": "hmac",
+    "version": "0.12.1",
+    "license": "MIT OR Apache-2.0",
+    "repository": "https://github.com/RustCrypto/MACs",
     "ecosystem": "rust"
   },
   {
@@ -318,6 +318,34 @@ export const THIRD_PARTY_LICENSES: readonly LicenseEntry[] = [
     "ecosystem": "rust"
   },
   {
+    "name": "iroh",
+    "version": "1.3.0",
+    "license": "MIT OR Apache-2.0",
+    "repository": "https://github.com/n0-computer/iroh",
+    "ecosystem": "rust"
+  },
+  {
+    "name": "iroh-gossip",
+    "version": "0.101.0",
+    "license": "MIT/Apache-2.0",
+    "repository": "https://github.com/n0-computer/iroh-gossip",
+    "ecosystem": "rust"
+  },
+  {
+    "name": "iroh-mdns-address-lookup",
+    "version": "0.6.0",
+    "license": "MIT OR Apache-2.0",
+    "repository": "https://github.com/n0-computer/iroh-address-lookups",
+    "ecosystem": "rust"
+  },
+  {
+    "name": "iroh-relay",
+    "version": "1.3.0",
+    "license": "MIT OR Apache-2.0",
+    "repository": "https://github.com/n0-computer/iroh",
+    "ecosystem": "rust"
+  },
+  {
     "name": "libc",
     "version": "0.2.183",
     "license": "MIT OR Apache-2.0",
@@ -332,17 +360,10 @@ export const THIRD_PARTY_LICENSES: readonly LicenseEntry[] = [
     "ecosystem": "rust"
   },
   {
-    "name": "libp2p",
-    "version": "0.56.0",
-    "license": "MIT",
-    "repository": "https://github.com/libp2p/rust-libp2p",
-    "ecosystem": "rust"
-  },
-  {
-    "name": "llama-cpp-sys-2",
-    "version": "0.1.154",
-    "license": "MIT OR Apache-2.0",
-    "repository": "https://github.com/utilityai/llama-cpp-rs",
+    "name": "llama-engine",
+    "version": "0.1.0",
+    "license": "Not declared",
+    "repository": "https://crates.io/crates/llama-engine",
     "ecosystem": "rust"
   },
   {
@@ -368,7 +389,7 @@ export const THIRD_PARTY_LICENSES: readonly LicenseEntry[] = [
   },
   {
     "name": "pkarr",
-    "version": "6.0.0",
+    "version": "8.1.0",
     "license": "MIT",
     "repository": "https://github.com/pubky/pkarr",
     "ecosystem": "rust"
@@ -532,6 +553,13 @@ export const THIRD_PARTY_LICENSES: readonly LicenseEntry[] = [
     "version": "1.23.0",
     "license": "Apache-2.0 OR MIT",
     "repository": "https://github.com/uuid-rs/uuid",
+    "ecosystem": "rust"
+  },
+  {
+    "name": "webview2-com",
+    "version": "0.39.1",
+    "license": "MIT",
+    "repository": "https://github.com/wravery/webview2-rs",
     "ecosystem": "rust"
   },
   {

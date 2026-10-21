@@ -17,7 +17,7 @@ import {
   writePositions,
   type CanvasPosition,
 } from "../lib/networkLayout";
-import type { DeployMachine, DeployPlan, DeploySelection } from "../lib/types";
+import type { DeployMachine, DeployPlan, DeploySelection, InferenceRole } from "../lib/types";
 import { edgeStyle, type EdgeState } from "./ModelNetworkCanvas";
 import { PipelineGatewayNode, type PipelineCycleCost } from "./PipelineGatewayNode";
 import { RouteRttLabel } from "./RouteRttLabel";
@@ -52,16 +52,33 @@ type Stage = {
   start_layer: number;
   end_layer: number;
   nodeIds: string[];
+  /** The prefill machines of a prefill/decode split: a stage of their own, before the machines that decode. */
+  prefill: boolean;
 };
 
-function stagesOf(plan: DeployPlan): Stage[] {
+/** A machine's part in a prefill/decode split: its row's, else its step's. */
+function roleOf(rows: DeploySelection[], plan: DeployPlan, nodeId: string): InferenceRole | null {
+  return machineRows(rows, nodeId)[0]?.inference_role
+    ?? plan.steps.find((step) => step.target_node_id === nodeId)?.inference_role
+    ?? null;
+}
+
+function stagesOf(plan: DeployPlan, rows: DeploySelection[] = []): Stage[] {
   const stages: Stage[] = [];
-  for (const step of plan.steps) {
+  const isPrefill = (nodeId: string) => roleOf(rows, plan, nodeId) === "prefill";
+  // replicas of one range keep their order, with its prefill machines first: they are the head
+  const steps = [...plan.steps].sort((a, b) =>
+    a.start_layer - b.start_layer ||
+    a.end_layer - b.end_layer ||
+    Number(isPrefill(b.target_node_id)) - Number(isPrefill(a.target_node_id)));
+  for (const step of steps) {
     const previous = stages[stages.length - 1];
+    const prefill = isPrefill(step.target_node_id);
     if (
       previous &&
       previous.start_layer === step.start_layer &&
-      previous.end_layer === step.end_layer
+      previous.end_layer === step.end_layer &&
+      previous.prefill === prefill
     ) {
       if (step.target_node_id && !previous.nodeIds.includes(step.target_node_id)) {
         previous.nodeIds.push(step.target_node_id);
@@ -71,6 +88,7 @@ function stagesOf(plan: DeployPlan): Stage[] {
         start_layer: step.start_layer,
         end_layer: step.end_layer,
         nodeIds: step.target_node_id ? [step.target_node_id] : [],
+        prefill,
       });
     }
   }
@@ -397,16 +415,23 @@ export function DeployNetworkCanvas({
   }, [plan.machines, visibleMapNodeIds]);
   const nodeIds = useMemo(() => machines.map((machine) => machine.node_id), [machines]);
   const layoutKey = useMemo(
-    () => deploymentLayoutKey(plan.deployment_name || plan.group, machines.map((machine) => ({ node_id: machine.node_id, ...machineBounds(rows, machine) }))),
-    [machines, plan.deployment_name, plan.group, rows],
+    // the role is part of the topology: a machine that becomes the prefill head moves to its own column
+    () => deploymentLayoutKey(plan.deployment_name || plan.group, machines.map((machine) => {
+      const role = roleOf(rows, plan, machine.node_id);
+      return { node_id: role && role !== "both" ? `${machine.node_id}:${role}` : machine.node_id, ...machineBounds(rows, machine) };
+    })),
+    [machines, plan, rows],
   );
   const arrangement = useMemo(() => {
     const assigned = machines.filter((machine) => machineRows(rows, machine.node_id).length > 0);
     return deployLayout(
-      assigned.map((machine) => ({ id: machine.node_id, ...machineBounds(rows, machine) })),
+      assigned.map((machine) => {
+        const role = roleOf(rows, plan, machine.node_id);
+        return { id: machine.node_id, ...machineBounds(rows, machine), role: role === "both" ? null : role };
+      }),
       machines.filter((machine) => !assigned.includes(machine)).map((machine) => machine.node_id),
     );
-  }, [machines, rows]);
+  }, [machines, plan, rows]);
   const positionOf = (nodeId: string, index: number) => positions[nodeId] ?? arrangement[nodeId] ?? fallbackPosition(index);
 
   useEffect(() => {
@@ -453,7 +478,7 @@ export function DeployNetworkCanvas({
     });
   }
 
-  const stages = stagesOf(plan);
+  const stages = stagesOf(plan, rows);
   const bridgeIds = new Set<string>();
   for (let index = 1; index < stages.length; index += 1) {
     for (const from of stages[index - 1].nodeIds) {

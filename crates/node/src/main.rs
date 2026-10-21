@@ -52,6 +52,7 @@ use ::brand;
 pub use llama_engine::{collective, gguf, kv_budget, llm, moe, mtp, multipart, sysmon, wire};
 #[path = "admin_trust.rs"]
 mod admin_trust;
+mod membership;
 #[path = "backend/capabilities.rs"]
 mod capabilities;
 #[path = "models/catalog.rs"]
@@ -65,8 +66,6 @@ mod config;
 #[cfg(test)]
 #[path = "backend/continuation_lab.rs"]
 mod continuation_lab;
-#[path = "core_update.rs"]
-mod core_update;
 #[path = "utils/crash.rs"]
 mod crash;
 #[path = "backend/db.rs"]
@@ -148,6 +147,8 @@ mod openai;
 pub mod peer_client;
 #[path = "routing/pipeline.rs"]
 mod pipeline;
+#[path = "network/p2p.rs"]
+mod p2p;
 #[path = "network/pkarr_node.rs"]
 mod pkarr_node;
 #[path = "models/plan.rs"]
@@ -160,6 +161,7 @@ mod plugin_engine;
 #[path = "inference/plugin_session.rs"]
 mod plugin_session;
 mod plugin_github;
+mod plugin_host_api;
 #[path = "plugin_host.rs"]
 mod plugin_host;
 mod plugin_proxy;
@@ -198,12 +200,17 @@ pub mod quic_policy;
 mod rag;
 #[path = "inference/relay.rs"]
 mod relay;
+#[path = "backend/quota.rs"]
+mod quota;
 #[path = "backend/reqlog.rs"]
 mod reqlog;
 #[path = "utils/instance_lock.rs"]
 mod instance_lock;
 #[path = "utils/respawn.rs"]
 mod respawn;
+#[path = "utils/external_links.rs"]
+#[cfg_attr(not(any(windows, feature = "desktop", test)), allow(dead_code))]
+mod external_links;
 #[path = "network/route.rs"]
 pub mod route;
 #[path = "network/route_plan.rs"]
@@ -228,10 +235,11 @@ pub(crate) mod telemetry;
 mod thermal;
 #[path = "network/tls.rs"]
 pub mod tls;
-#[path = "network/tls_policy.rs"]
-pub mod tls_policy;
 #[path = "backend/tool_call.rs"]
 mod tool_call;
+#[path = "network/web_ca.rs"]
+pub mod web_ca;
+mod trust_store;
 #[path = "inference/tp.rs"]
 mod tp;
 #[path = "backend/transfer.rs"]
@@ -331,7 +339,7 @@ struct Args {
     #[arg(long, default_value = "")]
     advertise_addr: String,
 
-    /// Ollama base URL (model resolution, /health, and the port announced to peers)
+    /// Ollama base URL (model resolution and the `ollama_available` field of /health)
     #[arg(long, default_value = "http://localhost:11434")]
     ollama_url: String,
 
@@ -346,15 +354,16 @@ struct Args {
     /// External address to publish to the pkarr DHT and to advertise to
     /// peers as this node's own address (HOST:PORT) — same effect as
     /// `--advertise-addr`, which wins if both are set. PORT here is the UDP
-    /// port; libp2p TCP port will be UDP+10000. Without either, peers reached
-    /// over the internet fall back to a public address observed via libp2p
-    /// `identify`, if any peer has reported one; failing that, this node's
-    /// own local network interfaces (usually wrong for a NAT'd node).
+    /// port; the endpoint's UDP port is UDP+10000. Without either, peers
+    /// reached over the internet fall back to the public address the relays
+    /// observed (the NAT report), if any; failing that, this node's own local
+    /// network interfaces (usually wrong for a NAT'd node).
     #[arg(long, default_value = "")]
     public_addr: String,
 
-    /// Pkarr keys of relay nodes to use for NAT traversal (comma-separated, format: pk:zbase32...).
-    /// Added to `relay_peers` in pom.json.
+    /// URLs of dedicated relays to use for NAT traversal (comma-separated,
+    /// `https://relay.example.org` or `http://203.0.113.7:52777` for a node
+    /// running `--serve-relay`). Added to `relay_peers` in pom.json.
     #[arg(long, default_value = "")]
     relay_peers: String,
 
@@ -374,7 +383,8 @@ struct Args {
     #[arg(long)]
     no_relay_transfers: bool,
 
-    /// Disable the built-in public IPFS relay nodes.
+    /// Do not use n0's public relays: only the dedicated relays
+    /// (`relay_peers`) and the member relays of the cluster.
     #[arg(long)]
     no_default_relays: bool,
 
@@ -389,11 +399,9 @@ struct Args {
     no_discovery: bool,
 
     /// Turns pkarr off: publishes no record to the Mainline DHT and resolves no
-    /// `pk:` keys (`--pkarr-peers`, `relay_peers`, trust chain principals).
-    /// For a network without internet access, where the DHT is unreachable:
-    /// paths stay on UDP/mDNS on the LAN and on `bootstrap_nodes` between
-    /// segments. A relay listed in `relay_peers` is still recognised as
-    /// dedicated by its key, but it must also be in `bootstrap_nodes`.
+    /// `pk:` keys (`--pkarr-peers`, trust chain principals). For a network
+    /// without internet access, where the DHT is unreachable: paths stay on
+    /// UDP/mDNS on the LAN and on `bootstrap_nodes` between segments.
     #[arg(long)]
     no_pkarr: bool,
 
@@ -498,6 +506,15 @@ fn apply_env_overrides(config: &mut config::Config, args: &Args) {
 /// of this exists and the runtime is built right here, so that whoever runs the
 /// binary on a Linux server gains no dependency on a graphical interface.
 fn main() -> Result<()> {
+    let result = run_main();
+    #[cfg(windows)]
+    if let Err(error) = &result {
+        windows_status::report_startup_failure(error);
+    }
+    result
+}
+
+fn run_main() -> Result<()> {
     // First of all: a native crash inside llama.cpp leaves no line in the
     // node's own log otherwise.
     crash::install();
@@ -747,9 +764,24 @@ fn anchor_admin(
     Ok(())
 }
 
+/// Whether the gateway serves TLS, so the native windows load it over
+/// `https://`. Set off at startup only when the certificate could not be made.
+static WEB_TLS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// The scheme the native windows use for the local interface: `https`, with
+/// the certificate the window pins (`web_ca::is_local_web_certificate`) or the
+/// system trusts through the local CA.
+fn local_scheme() -> &'static str {
+    if WEB_TLS.load(std::sync::atomic::Ordering::Relaxed) {
+        "https"
+    } else {
+        "http"
+    }
+}
+
 #[cfg(any(target_os = "macos", target_os = "windows", all(target_os = "linux", feature = "desktop")))]
 fn gateway_url(port: u16) -> String {
-    format!("http://127.0.0.1:{port}/admin-ui/chat")
+    format!("{}://127.0.0.1:{port}/admin-ui/chat", local_scheme())
 }
 
 fn select_gateway_port(config_port: Option<u16>, cli_port: u16) -> u16 {
@@ -800,7 +832,7 @@ fn already_running(gateway_port: Option<u16>) -> Result<()> {
         return linux_window::show_running(port);
     }
     let location = gateway_port
-        .map(|port| format!(", interface at http://127.0.0.1:{port}/"))
+        .map(|port| format!(", interface at {}://127.0.0.1:{port}/", local_scheme()))
         .unwrap_or_default();
     anyhow::bail!(
         "POM is already running from {}{location}. Close it first, or give this node its own {}",
@@ -992,24 +1024,6 @@ async fn async_main(
     .await
 }
 
-/// The Ollama port this node announces to peers.
-///
-/// It depends on no flag: every node serves the API, and a node that served
-/// the local Ollama without announcing the port would be invisible to routing.
-fn advertised_ollama_port(ollama_url: &str) -> Option<u16> {
-    parse_ollama_port(ollama_url)
-}
-
-/// Extract the port from an Ollama URL like "http://localhost:11434".
-fn parse_ollama_port(url: &str) -> Option<u16> {
-    url.trim_start_matches("http://")
-        .trim_start_matches("https://")
-        .split(':')
-        .nth(1)
-        .and_then(|s| s.split('/').next())
-        .and_then(|s| s.parse::<u16>().ok())
-}
-
 /// Where the last consumed `POM_FORCE_SETUP` is recorded.
 #[allow(dead_code)]
 fn forced_setup_marker() -> std::path::PathBuf {
@@ -1111,10 +1125,10 @@ fn force_setup_mode() -> anyhow::Result<()> {
 fn blank_config(gateway_port: u16, p2p_port: u16) -> config::Config {
     use crate::config::Config;
     Config {
+        retired_tls_required: (),
         profile: crate::profile::NodeProfile::Admin,
         setup_pending: true,
         local_auto_discovery: false,
-        tls_required: false,
         // On from the start: a new network uses QUIC between its nodes and has
         // its Chat, and the principal can turn either off in the preferences.
         quic_enabled: true,
@@ -1332,15 +1346,15 @@ fn pkarr_bootstrap_wait(misses: u32) -> Duration {
         .min(PKARR_BOOTSTRAP_CEILING)
 }
 
-/// Resolves through pkarr, and dials through libp2p, every key in
-/// `pkarr_bootstrap_keys` that is not yet a live peer. The ladder is the one in
-/// `pkarr_node::dial_addrs`: direct addresses first, then the circuit through
-/// each published relay, and DCuTR upgrades the relayed connection to a direct
-/// one when the NAT allows. A target already in `alive_peers` is not dialed
-/// again, and one that stays out backs off (`pkarr_bootstrap_wait`).
+/// Resolves through pkarr, and hands to the endpoint, every key in
+/// `pkarr_bootstrap_keys` that is not yet a live peer. The record carries the
+/// direct addresses and the relays together (`pkarr_node::dial_addr`); iroh
+/// tries them all and upgrades a relayed path to a direct one when the NAT
+/// allows. A target already in `alive_peers` is not dialed again, and one
+/// that stays out backs off (`pkarr_bootstrap_wait`).
 fn spawn_pkarr_bootstrap(
     node: Arc<pkarr_node::PkarrNode>,
-    dial_tx: mpsc::Sender<libp2p::Multiaddr>,
+    dial_tx: mpsc::Sender<p2p::EndpointAddr>,
     net: Arc<Network>,
     admin_trust: Arc<crate::admin_trust::AdminTrust>,
     extra_keys: Vec<String>,
@@ -1360,13 +1374,13 @@ fn spawn_pkarr_bootstrap(
                 .alive_peers()
                 .await
                 .into_iter()
-                .filter_map(|peer| peer.libp2p_peer_id)
+                .filter_map(|peer| peer.endpoint_id)
                 .collect();
             for key in pkarr_bootstrap_keys(&admin_trust, &extra_keys) {
                 if key == own {
                     continue;
                 }
-                let Some(peer_id) = pkarr_node::peer_id_from_uri(&key) else {
+                let Some(peer_id) = pkarr_node::endpoint_id_from_uri(&key) else {
                     continue;
                 };
                 if alive.contains(&peer_id.to_string()) {
@@ -1379,28 +1393,28 @@ fn spawn_pkarr_bootstrap(
                 }
                 entry.0 = entry.0.saturating_add(1);
                 entry.1 = now + pkarr_bootstrap_wait(entry.0);
-                let addrs =
-                    tokio::time::timeout(Duration::from_secs(10), node.resolve_dial_addrs(&key))
+                let addr =
+                    tokio::time::timeout(Duration::from_secs(10), node.resolve_dial_addr(&key))
                         .await
-                        .unwrap_or_default();
-                if addrs.is_empty() {
+                        .ok()
+                        .flatten();
+                let Some(addr) = addr else {
                     debug!("pkarr: {key} has no dialable record yet");
-                }
-                for address in addrs {
-                    if dial_tx.send(address).await.is_err() {
-                        return;
-                    }
+                    continue;
+                };
+                if dial_tx.send(addr).await.is_err() {
+                    return;
                 }
             }
         }
     });
 }
 
-/// Everything `P2pStack` needs to bring up pkarr, a stable libp2p identity,
+/// Everything `P2pStack` needs to bring up pkarr, the endpoint identity,
 /// `Network`, and (best-effort) `Discovery`, kept in one function so the
-/// ordering constraint below can't be violated from outside it: the libp2p keypair must be derived
-/// *before* `Network::new()`'s builder chain (`.with_libp2p_peer_id(...)`
-/// needs the derived `PeerId` string), and `Network` becomes immutable the
+/// ordering constraint below can't be violated from outside it: the endpoint key must be derived
+/// *before* `Network::new()`'s builder chain (`.with_endpoint_id(...)`
+/// needs the endpoint id string), and `Network` becomes immutable the
 /// moment it's wrapped in `Arc`, right after that chain.
 struct P2pStackArgs {
     node_id: String,
@@ -1409,7 +1423,6 @@ struct P2pStackArgs {
     signing_key: ed25519_dalek::SigningKey,
     p2p_port: u16,
     bootstrap_nodes: Vec<String>,
-    ollama_port: Option<u16>,
     inference_port: Option<u16>,
     inference_quic_port: Option<u16>,
     gateway_port: u16,
@@ -1417,10 +1430,6 @@ struct P2pStackArgs {
     profile: crate::profile::NodeProfile,
     node_display_name: String,
     advertise_addr: Option<String>,
-    /// Initial policy, applied before the `Network` probing task.
-    /// Without it the URL was already born as HTTPS by the global client, but the
-    /// probe started on HTTP and all the remote RTTs were missing.
-    tls_required: bool,
     cluster_logs: Arc<cluster_logs::ClusterLogs>,
     audit: Arc<reqlog::AuditLog>,
     plugins: Arc<plugins::PluginManager>,
@@ -1431,17 +1440,12 @@ struct P2pStackArgs {
     auth: Arc<RwLock<config::Config>>,
     admin_trust: Arc<crate::admin_trust::AdminTrust>,
     database: Arc<db::PomDb>,
-    /// Raw pkarr public keys (`--relay-peers`), resolved to multiaddrs
-    /// *inside* this function, after it loads its own `pkarr_node` — not
-    /// pre-resolved by the caller. Resolution needs an already-loaded pkarr
-    /// identity, and that identity is loaded here, not by the caller; asking
-    /// the caller to resolve first would mean loading pkarr twice (once to
-    /// resolve, once inside this function) or restructuring who loads it.
-    relay_peer_keys: Vec<String>,
+    /// Dedicated relay URLs (`relay_peers` plus `--relay-peers`).
+    relay_urls: Vec<String>,
     relay: config::RelayConfig,
     relay_overrides: crate::network::RelayOverrides,
     /// The operator declared a public address (`--public-addr`): the node
-    /// counts as reachable before AutoNAT says anything.
+    /// counts as reachable before the NAT report says anything.
     public_addr_configured: bool,
     use_default_relays: bool,
     no_discovery: bool,
@@ -1455,26 +1459,25 @@ struct P2pStackArgs {
 struct P2pStack {
     net: Arc<Network>,
     authority_signing_key: ed25519_dalek::SigningKey,
-    libp2p_peer_id: String,
+    endpoint_id: String,
     cluster_logs: Arc<cluster_logs::ClusterLogs>,
     network_chat: Arc<network_chat::NetworkChat>,
     tunnel_tx: mpsc::Sender<infer_tunnel::TunnelOutbound>,
     pkarr_node: Option<pkarr_node::PkarrNode>,
     assignment_shared: Arc<RwLock<Option<model::LayerAssignment>>>,
-    /// `Some` only if `Discovery::new` succeeded — lets a caller dial
-    /// pkarr-resolved peers by `PeerId` on startup. `None` means libp2p
+    /// `Some` only if `Discovery::new` succeeded - lets a caller dial
+    /// pkarr-resolved peers by key on startup. `None` means the endpoint
     /// never came up this run; callers must treat that as "skip it," not
     /// an error (this function itself already logged why).
-    disc_dial_tx: Option<mpsc::Sender<libp2p::Multiaddr>>,
+    disc_dial_tx: Option<mpsc::Sender<p2p::EndpointAddr>>,
 }
 
-/// pkarr load → libp2p keypair derivation → tunnel channel → `Network`
-/// (with a stable libp2p `PeerId`) → `net.start()` (UDP) → best-effort
-/// `Discovery::new` (libp2p swarm) → the 5s periodic gossipsub re-announce.
-/// Never fails on anything libp2p-related — only `Network::new()`'s own `?`
-/// (UDP bind failure) propagates, exactly like today's CLI path. This is
-/// deliberate: every caller of this function needs to always come up and
-/// serve its gateway, with or without libp2p.
+/// pkarr load → endpoint key → tunnel channel → `Network` (with the endpoint
+/// id) → `net.start()` (UDP) → best-effort `Discovery::new` (iroh endpoint)
+/// → the 5s periodic gossip re-announce. Never fails on anything
+/// endpoint-related - only `Network::new()`'s own `?` (UDP bind failure)
+/// propagates. This is deliberate: every caller of this function needs to
+/// always come up and serve its gateway, with or without the endpoint.
 async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
     let bootstrap_nodes: Vec<String> = args
         .bootstrap_nodes
@@ -1496,7 +1499,7 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
     let audit = args.audit.clone();
     audit.set_admin_receiver(args.profile == crate::profile::NodeProfile::Admin);
 
-    // A single key (`.pom-node.key`): `node_id`, `PeerId`, pkarr record and
+    // A single key (`.pom-node.key`): `node_id`, endpoint id, pkarr record and
     // authority signature all come from it. See `identity.rs`.
     let pkarr_node = if args.no_pkarr {
         info!("pkarr off (--no-pkarr): no DHT publication or key resolution");
@@ -1515,33 +1518,8 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
     };
 
     let authority_signing_key = args.signing_key.clone();
-    let mut authority_seed = authority_signing_key.to_bytes();
-    let libp2p_keypair = libp2p::identity::Keypair::ed25519_from_bytes(&mut authority_seed[..])
-        .expect("the node Ed25519 key must be a valid libp2p identity");
-    let libp2p_peer_id = libp2p_keypair.public().to_peer_id().to_string();
-
-    // Resolved *here*, not by the caller — needs the `pkarr_node` this
-    // function just loaded (see `P2pStackArgs::relay_peer_keys`'s doc comment).
-    let resolved_relay_addrs: Vec<String> = if let Some(ref pn) = pkarr_node {
-        if !args.relay_peer_keys.is_empty() {
-            let peers = tokio::time::timeout(
-                std::time::Duration::from_secs(10),
-                pn.resolve_peers(&args.relay_peer_keys),
-            )
-            .await
-            .unwrap_or_default();
-            peers
-                .iter()
-                .filter(|p| p.record.is_relay)
-                .flat_map(|p| pkarr_node::dial_addrs(p, &[]))
-                .map(|address| address.to_string())
-                .collect()
-        } else {
-            vec![]
-        }
-    } else {
-        vec![]
-    };
+    let endpoint_key = p2p::secret_key(&authority_signing_key);
+    let endpoint_id = endpoint_key.public().to_string();
 
     // The gateway's HTTP server needs a cloneable sender before `Discovery::new`
     // — which owns the matching receiver — is ever called. Registered
@@ -1560,7 +1538,6 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
             args.pubkey,
             args.p2p_port,
             bootstrap_nodes.clone(),
-            args.ollama_port,
             args.inference_port,
             Some(args.gateway_port),
         )
@@ -1568,7 +1545,7 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
         .with_identity(args.profile, args.node_display_name)
         .with_advertise_addr(args.advertise_addr)
         .with_quic_ports(args.inference_quic_port, args.gateway_quic_port)
-        .with_libp2p_peer_id(Some(libp2p_peer_id.clone()))
+        .with_endpoint_id(Some(endpoint_id.clone()))
         .with_relay_gate(
             crate::network::RelayGate::new(
                 args.relay.everyone,
@@ -1581,7 +1558,9 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
     );
     net.relay_gate().set_reachable(args.public_addr_configured);
     net.set_policy_principal_pubkey(primary_authority_pubkey);
-    net.set_tls(args.tls_required);
+    // TLS between nodes is always on: set before the probing task, so no
+    // URL is ever built as plain HTTP.
+    net.set_tls(true);
     net.set_cluster_logs_enabled(args.cluster_logs_enabled);
     net.set_network_chat_enabled(args.network_chat_enabled);
     // Discovery off: the node announces nothing and listens to nobody. It is
@@ -1615,20 +1594,18 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
     let (audit_tx, audit_rx) = mpsc::channel(reqlog::AUDIT_TRANSPORT_QUEUE_CAPACITY);
     audit.start_replication(net.clone(), audit_tx);
 
-    // libp2p TCP port = UDP port + 10 000 (e.g. 42777 → 52777). Announce
-    // messages are published to gossipsub every 5 s so internet peers learn
-    // our layer assignment without needing a shared signalling server.
-    // `Network::new` may have received port 0 and selected an ephemeral UDP
-    // port. Discovery must derive its TCP port from the assigned value, not
-    // from the unresolved configuration value.
+    // Endpoint UDP port (and relay server TCP port) = UDP port + 10 000
+    // (e.g. 42777 → 52777). Announce messages go out on gossip every 5 s so
+    // internet peers learn our layer assignment without needing a shared
+    // signalling server. `Network::new` may have received port 0 and
+    // selected an ephemeral UDP port. Discovery must derive its port from the
+    // assigned value, not from the unresolved configuration value.
     let (disc_announce_tx, disc_dial_tx) = match Discovery::new(
         net.bind_addr.port(),
-        &bootstrap_nodes,
-        &resolved_relay_addrs,
-        &args.relay_peer_keys,
+        &args.relay_urls,
         args.use_default_relays,
         net.clone(),
-        libp2p_keypair,
+        endpoint_key,
         tunnel_rx,
         log_rx,
         cluster_logs.clone(),
@@ -1637,16 +1614,18 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
         audit_rx,
         audit,
         plugins,
-    ) {
+    )
+    .await
+    {
         Ok(disc) => {
             let ann_tx = disc.announce_tx.clone();
             let dial_tx = disc.dial_tx.clone();
-            net.set_libp2p_tunnel_ready(true);
+            net.set_p2p_tunnel_ready(true);
             tokio::spawn(async move { disc.run().await });
             (Some(ann_tx), Some(dial_tx))
         }
         Err(e) => {
-            warn!("libp2p discovery disabled ({}). UDP-only mode.", e);
+            warn!("p2p endpoint disabled ({e:#}). UDP-only mode.");
             (None, None)
         }
     };
@@ -1677,7 +1656,7 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
     Ok(P2pStack {
         net,
         authority_signing_key,
-        libp2p_peer_id,
+        endpoint_id,
         cluster_logs,
         network_chat,
         tunnel_tx,
@@ -1696,7 +1675,7 @@ fn comma_list(raw: &str) -> Vec<String> {
         .collect()
 }
 
-/// Relay pkarr keys from `pom.json` (`relay_peers`) plus `--relay-peers`,
+/// Relay URLs from `pom.json` (`relay_peers`) plus `--relay-peers`,
 /// config first, without duplicates, same as `merged_bootstrap_nodes`.
 fn merged_relay_peers(from_config: &[String], cli: &str) -> Vec<String> {
     let mut keys: Vec<String> = from_config
@@ -1746,6 +1725,9 @@ fn spawn_gateway_companions(gw_state: &GatewayState, database: &Arc<db::PomDb>, 
     crate::gateway::spawn_directory_publisher(gw_state.clone());
     crate::webui::spawn_admission_poller(gw_state.clone());
     crate::webui::spawn_member_list_keeper(gw_state.clone());
+    crate::webui::spawn_token_keeper(gw_state.clone());
+    crate::webui::spawn_roster_keeper(gw_state.clone());
+    crate::webui::spawn_revocation_keeper(gw_state.clone());
     crate::webui::spawn_key_reclaimer(gw_state.clone());
     crate::admin::spawn_trust_chain_keeper(gw_state.clone());
     crate::webui::spawn_departure_worker(gw_state.clone());
@@ -1763,7 +1745,7 @@ async fn start_node(
     no_pkarr: bool,
     no_default_relays: bool,
     bootstrap_nodes: Vec<String>,
-    relay_peer_keys: Vec<String>,
+    relay_urls: Vec<String>,
     pkarr_peer_keys: Vec<String>,
     relay_overrides: crate::network::RelayOverrides,
     advertise_addr_cli: String,
@@ -1778,6 +1760,13 @@ async fn start_node(
     let pubkey = identity.public_key_hex();
     // Internal keys a node swapped before the principal knew to retire them
     // (the swap of the migration to hash): only the newest of each node counts.
+    // Keys never leave the node that minted them: a row another node pushed
+    // here is dropped, never honoured.
+    match database.forget_foreign_api_keys(&node_id) {
+        Ok(0) => {}
+        Ok(count) => info!("{count} API key(s) minted by other nodes forgotten"),
+        Err(error) => warn!("could not forget the API keys of other nodes: {error:#}"),
+    }
     match database.revoke_superseded_node_keys(&node_id) {
         Ok(0) => {}
         // Validation reads the database, not the snapshot in `api_keys`: nothing to reload.
@@ -1796,7 +1785,6 @@ async fn start_node(
         &public_addr_cli,
         app_config.advertise_addr.as_deref(),
     );
-    let ollama_port = advertised_ollama_port(&ollama_url);
     let inference_port = Some(app_config.inference_port_or_default());
     // QUIC ports derived from this node's `p2p_port`: see `quic::gateway_quic_port`.
     let inference_quic_port =
@@ -1813,7 +1801,6 @@ async fn start_node(
         signing_key: identity.signing_key.clone(),
         p2p_port: app_config.p2p_port,
         bootstrap_nodes,
-        ollama_port,
         inference_port,
         inference_quic_port,
         gateway_port,
@@ -1821,7 +1808,6 @@ async fn start_node(
         profile: app_config.profile,
         node_display_name,
         advertise_addr: advertise_addr.clone(),
-        tls_required: app_config.tls_required,
         cluster_logs: cluster_logs.clone(),
         audit: audit.clone(),
         plugins: plugins.clone(),
@@ -1832,7 +1818,7 @@ async fn start_node(
         auth: auth_state.clone(),
         admin_trust: admin_trust.clone(),
         database: database.clone(),
-        relay_peer_keys: relay_peer_keys.clone(),
+        relay_urls: relay_urls.clone(),
         relay: app_config.relay,
         relay_overrides,
         public_addr_configured: !public_addr_cli.trim().is_empty(),
@@ -1842,9 +1828,11 @@ async fn start_node(
     })
     .await?;
     let authority_signing_key = Arc::new(stack.authority_signing_key.clone());
+    // The chain's `peer_id` form, never the endpoint id: see
+    // `identity::trust_peer_id`.
     let authority_principal = crate::admin_trust::AuthorityPrincipal::from_signing_key(
         node_id.clone(),
-        stack.libp2p_peer_id.clone(),
+        identity.peer_id(),
         &stack.authority_signing_key,
     );
     if app_config.profile == crate::profile::NodeProfile::Admin
@@ -1866,7 +1854,7 @@ async fn start_node(
     let disc_dial_tx = stack.disc_dial_tx;
 
     // The pkarr record is always published, with or without a deployment, and
-    // republished when the swarm addresses change: it is how a node that only
+    // republished when the endpoint addresses change: it is how a node that only
     // knows the key (trust document, public directory, `--relay-peers`) finds
     // out where to dial.
     let pkarr_node = stack.pkarr_node.map(Arc::new);
@@ -1882,22 +1870,30 @@ async fn start_node(
     if let Some(publisher) = pkarr_publisher.clone() {
         publisher.spawn_republisher();
     }
-    // Cold dial by key: `--pkarr-peers`, the dedicated relays and the trust
-    // chain principals. No IP comes from configuration or a document.
+    // Cold dial by key: `--pkarr-peers` and the trust chain principals. No
+    // IP comes from configuration or a document.
     if let (Some(node), Some(dial_tx)) = (pkarr_node.clone(), disc_dial_tx) {
-        let mut keys = pkarr_peer_keys;
-        for key in relay_peer_keys {
-            if !keys.contains(&key) {
-                keys.push(key);
-            }
-        }
-        spawn_pkarr_bootstrap(node, dial_tx, net.clone(), admin_trust.clone(), keys);
+        spawn_pkarr_bootstrap(
+            node,
+            dial_tx,
+            net.clone(),
+            admin_trust.clone(),
+            pkarr_peer_keys,
+        );
     }
     let local_is_admin = admin_trust
         .effective_authority(&authority_principal, app_config.profile)
         .is_some();
     net.set_policy_principal_pubkey(admin_trust.current_primary().pubkey);
     net.set_trust_version(admin_trust.chain_version());
+    net.set_announce_key(authority_signing_key.clone());
+    {
+        let chat = network_chat.clone();
+        net.set_readmission(Arc::new(move |node_id, revoked_at| {
+            chat.admitted_role(node_id, Some(revoked_at)).is_some()
+        }));
+    }
+    crate::auth::set_member_oracle(net.clone());
     cluster_logs.set_admin_receiver(local_is_admin);
     audit.set_admin_receiver(local_is_admin);
 
@@ -1910,6 +1906,11 @@ async fn start_node(
     // Addresses that go into the browser certificate: this machine's local
     // ones, the one the operator pinned, and the hostname. Without them the
     // browser would complain about the host, and not about the issuer.
+    // The same certificate is this node's client certificate on every peer
+    // connection, so the other end knows which node is calling.
+    if let Err(error) = tls::set_client_identity(&identity) {
+        warn!("could not derive the client certificate of this node: {error}");
+    }
     let tls_sans = serve::browser_sans(app_config.advertise_addr.as_deref());
     let quic_config = match serve::quic_server_config(&identity) {
         Ok(config) => Some(config),
@@ -1919,10 +1920,11 @@ async fn start_node(
         }
     };
     let tls_server =
-        match serve::TlsServer::from_identity(&identity, app_config.tls_required, &tls_sans) {
+        match serve::TlsServer::from_identity(&identity, true, &tls_sans) {
             Ok(t) => Some(t),
             Err(e) => {
                 warn!("could not derive the certificate of this node, TLS unavailable: {e}");
+                WEB_TLS.store(false, std::sync::atomic::Ordering::Relaxed);
                 None
             }
         };
@@ -1941,19 +1943,10 @@ async fn start_node(
     // Bind the gateway before restoring a persisted slice. Applying it may
     // schedule a model load, but that load must never hide the control plane.
     let peer_clients = Arc::new(peer_client::PeerClients::new(Duration::from_secs(600)));
-    peer_clients.apply_cluster_policy(app_config.tls_required);
+    peer_clients.apply_cluster_policy(true);
     peer_clients.set_quic(app_config.quic_enabled);
     peer_clients.set_auth_state(auth_state.clone());
 
-    tls_policy::spawn_ratchet(
-        net.clone(),
-        peer_clients.clone(),
-        auth_state.clone(),
-        tls_server.clone(),
-        authority_signing_key.clone(),
-        authority_principal.clone(),
-        admin_trust.clone(),
-    );
     quic_policy::spawn_ratchet(net.clone(), peer_clients.clone(), auth_state.clone());
     cluster_logs_policy::spawn_ratchet(
         net.clone(),
@@ -2185,8 +2178,8 @@ mod main_tests {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[test]
     fn menu_bar_chat_url_uses_loopback_and_gateway_port() {
-        assert_eq!(gateway_url(8080), "http://127.0.0.1:8080/admin-ui/chat");
-        assert_eq!(gateway_url(8090), "http://127.0.0.1:8090/admin-ui/chat");
+        assert_eq!(gateway_url(8080), "https://127.0.0.1:8080/admin-ui/chat");
+        assert_eq!(gateway_url(8090), "https://127.0.0.1:8090/admin-ui/chat");
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -2224,13 +2217,19 @@ mod main_tests {
     #[test]
     fn relay_peers_merge_config_first_without_duplicates() {
         assert_eq!(
-            merged_relay_peers(&["pk:relay-a".into(), " ".into()], "pk:relay-b, pk:relay-a"),
-            vec!["pk:relay-a", "pk:relay-b"]
+            merged_relay_peers(
+                &["https://a.example".into(), " ".into()],
+                "https://b.example, https://a.example"
+            ),
+            vec!["https://a.example", "https://b.example"]
         );
-        assert_eq!(merged_relay_peers(&[], "pk:relay-b"), vec!["pk:relay-b"]);
         assert_eq!(
-            merged_relay_peers(&["pk:relay-a".into()], ""),
-            vec!["pk:relay-a"]
+            merged_relay_peers(&[], "https://b.example"),
+            vec!["https://b.example"]
+        );
+        assert_eq!(
+            merged_relay_peers(&["https://a.example".into()], ""),
+            vec!["https://a.example"]
         );
     }
 
@@ -2261,7 +2260,7 @@ mod main_tests {
     #[test]
     fn env_ports_override_the_config_and_cli_ports_do_not() {
         let config: config::Config =
-            serde_json::from_str(r#"{"profile":"node","p2p_port":42777,"gateway_port":8080}"#)
+            serde_json::from_str(r#"{"profile":"worker","p2p_port":42777,"gateway_port":8080}"#)
                 .unwrap();
 
         let mut from_cli = config.clone();
@@ -2282,7 +2281,7 @@ mod main_tests {
     #[test]
     fn moved_ports_save_only_what_the_environment_did_not_set() {
         let mut saved: config::Config = serde_json::from_str(
-            r#"{"profile":"node","p2p_port":42777,"gateway_port":8080,"inference_port":8181}"#,
+            r#"{"profile":"worker","p2p_port":42777,"gateway_port":8080,"inference_port":8181}"#,
         )
         .unwrap();
         let mut args = Args::parse_from(["pom"]);
@@ -2328,15 +2327,6 @@ mod main_tests {
             gateway < restore,
             "restoring the slice cannot delay the gateway bind"
         );
-    }
-
-    /// Every node announces the Ollama port of the configured URL, with no flag:
-    /// when the announce depended on a flag, a node without it served the local
-    /// Ollama without any peer knowing.
-    #[test]
-    fn every_node_advertises_the_ollama_port() {
-        let args = Args::parse_from(["pom"]);
-        assert_eq!(advertised_ollama_port(&args.ollama_url), Some(11434));
     }
 
     #[test]

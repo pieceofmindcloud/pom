@@ -1,11 +1,10 @@
 import { Download, ExternalLink, Info, PackageOpen, RefreshCw, Scale, Search } from "lucide-react";
 import { useMemo, useState } from "react";
-import { Link } from "react-router-dom";
 import { Badge, Button, Input, PageHeader, Panel, PanelHeader } from "../components/ui";
 import { useI18n } from "../i18n/provider";
 import { api } from "../lib/api";
 import { THIRD_PARTY_LICENSES, type LicenseEntry } from "../lib/licenses.generated";
-import { useEnterpriseStatus, usePomCoreUpdateStatus } from "../lib/queries";
+import { usePomCoreUpdateStatus } from "../lib/queries";
 
 function licenseGroups(entries: readonly LicenseEntry[]) {
   const groups = new Map<string, LicenseEntry[]>();
@@ -19,18 +18,18 @@ function licenseGroups(entries: readonly LicenseEntry[]) {
 
 export function About() {
   const { t } = useI18n();
-  const enterpriseStatus = useEnterpriseStatus();
   const pomUpdate = usePomCoreUpdateStatus();
   const [query, setQuery] = useState("");
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateCheckFailed, setUpdateCheckFailed] = useState(false);
   const [applyingUpdate, setApplyingUpdate] = useState(false);
-  const [applyUpdateFailed, setApplyUpdateFailed] = useState(false);
+  const [applyUpdateFailed, setApplyUpdateFailed] = useState<string | null>(null);
+  const [checked, setChecked] = useState(false);
+  const [restarting, setRestarting] = useState(false);
   const normalizedQuery = query.trim().toLocaleLowerCase();
-  const enterpriseActive = Boolean(enterpriseStatus.data?.active);
-  const enterpriseState = enterpriseStatus.data?.state ?? "unavailable";
-  const manageUrl = enterpriseStatus.data?.manage_url ?? "https://pieceofmind.cloud/plugins/";
   const coreUpdate = pomUpdate.data?.core_update ?? null;
+  const checkError = pomUpdate.data?.check_error ?? null;
+  const currentVersion = pomUpdate.data?.current_version ?? null;
   const filteredEntries = useMemo(
     () => THIRD_PARTY_LICENSES.filter((entry) => {
       if (!normalizedQuery) return true;
@@ -47,6 +46,7 @@ export function About() {
     try {
       await api.post("/api/ui/pom-update/check");
       await pomUpdate.refetch();
+      setChecked(true);
     } catch {
       setUpdateCheckFailed(true);
     } finally {
@@ -57,11 +57,12 @@ export function About() {
   async function applyUpdate() {
     if (!coreUpdate) return;
     setApplyingUpdate(true);
-    setApplyUpdateFailed(false);
+    setApplyUpdateFailed(null);
     try {
       await api.post("/api/ui/pom-update/apply", { release_id: coreUpdate.release_id });
-    } catch {
-      setApplyUpdateFailed(true);
+      setRestarting(true);
+    } catch (error) {
+      setApplyUpdateFailed(error instanceof Error ? error.message : "");
     } finally {
       setApplyingUpdate(false);
     }
@@ -112,18 +113,12 @@ export function About() {
             subtitle={t("about.pomUpdateSubtitle")}
           />
           <div className="space-y-4 px-5 py-5">
-            <dl className="grid gap-4 sm:grid-cols-2">
-              <div>
-                <dt className="eyebrow mb-1">{t("about.enterpriseState")}</dt>
-                <dd className="text-sm text-fg">
-                  <Badge tone={enterpriseActive ? "aqua" : "amber"}>{enterpriseActive ? t("about.enterpriseActive") : t("about.enterpriseInactive")}</Badge>
-                </dd>
-              </div>
-              <div>
-                <dt className="eyebrow mb-1">{t("enterprise.licenseState")}</dt>
-                <dd className="font-mono text-sm text-fg">{enterpriseState}</dd>
-              </div>
-            </dl>
+            {currentVersion && (
+              <dl>
+                <dt className="eyebrow mb-1">{t("about.pomCurrentVersion")}</dt>
+                <dd className="font-mono text-sm text-fg">{currentVersion}</dd>
+              </dl>
+            )}
             <div className="flex flex-wrap items-center gap-3">
               <Button
                 variant="outline"
@@ -134,38 +129,40 @@ export function About() {
                 {t("about.enterpriseCheckUpdates")}
               </Button>
               {updateCheckFailed && <p role="alert" className="text-xs text-rose">{t("about.enterpriseCheckFailed")}</p>}
+              {checked && !coreUpdate && !checkError && <p role="status" className="text-xs text-aqua">{t("about.pomUpToDate")}</p>}
+              {checked && checkError && <p role="alert" className="break-words text-xs text-rose">{t("about.pomCheckUnreachable")} {checkError}</p>}
             </div>
             {coreUpdate && (
               <div className="space-y-3 rounded-xl border border-iris/35 bg-iris/8 px-4 py-3" role="status">
                 <div>
                   <p className="text-sm font-medium text-fg">
-                    {t("about.pomUpdateAvailable", { version: coreUpdate.version })}
+                    {t("about.pomUpdateAvailable", { version: coreUpdate.release_id })}
                   </p>
                   <p className="mt-1 font-mono text-xs text-muted">
-                    {t("about.pomUpdateRelease", { release_id: coreUpdate.release_id })}
+                    {coreUpdate.asset} · {t(coreUpdate.source === "github" ? "about.pomSourceGithub" : "about.pomSourceSite")}
                   </p>
-                  {coreUpdate.changelog && <p className="mt-2 text-xs leading-relaxed text-muted">{coreUpdate.changelog}</p>}
+                  {coreUpdate.changelog && <p className="mt-2 line-clamp-6 whitespace-pre-wrap text-xs leading-relaxed text-muted">{coreUpdate.changelog}</p>}
                 </div>
-                <Button
-                  variant="primary"
-                  loading={applyingUpdate}
-                  icon={<Download className="h-3.5 w-3.5" />}
-                  onClick={() => void applyUpdate()}
-                >
-                  {t("about.pomUpdateApply")}
-                </Button>
-                {applyUpdateFailed && <p role="alert" className="text-xs text-rose">{t("about.pomUpdateApplyFailed")}</p>}
+                {coreUpdate.installable ? (
+                  <Button
+                    variant="primary"
+                    loading={applyingUpdate}
+                    disabled={restarting}
+                    icon={<Download className="h-3.5 w-3.5" />}
+                    onClick={() => void applyUpdate()}
+                  >
+                    {t("about.pomUpdateApply")}
+                  </Button>
+                ) : (
+                  <p className="text-xs text-muted">
+                    {t(coreUpdate.blocked === "container" ? "about.pomBlockedContainer" : "about.pomBlockedInvitation")}
+                  </p>
+                )}
+                {restarting && <p role="status" className="text-xs text-aqua">{t("about.pomRestarting")}</p>}
+                {applyUpdateFailed !== null && (
+                  <p role="alert" className="break-words text-xs text-rose">{t("about.pomUpdateApplyFailed")} {applyUpdateFailed}</p>
+                )}
               </div>
-            )}
-            {!enterpriseActive && (
-              <p className="text-xs leading-relaxed text-muted">
-                {t("about.pomUpdateNeedsPlugin")}{" "}
-                <Link to="/plugins" className="text-iris hover:text-iris/80">{t("about.pomUpdateOpenPlugins")}</Link>
-                {" "}
-                <a href={manageUrl} target="_blank" rel="noreferrer" className="text-iris hover:text-iris/80">
-                  {t("enterprise.purchaseLink")}
-                </a>
-              </p>
             )}
           </div>
         </Panel>

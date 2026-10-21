@@ -32,7 +32,7 @@ const mocks = vi.hoisted(() => ({
     refetch: vi.fn(),
   },
   pomUpdate: {
-    data: { core_update: null as null | { release_id: string; version: string; changelog: string | null } },
+    data: { core_update: null } as { core_update: null | Record<string, unknown>; current_version?: string },
     refetch: vi.fn(),
   },
 }));
@@ -100,34 +100,50 @@ describe("About", () => {
     expect(screen.getByText("Aviso de privacidade e segurança (LGPD)")).toBeTruthy();
   });
 
-  it("allows checking for pom updates on demand, separate from the plugins", async () => {
-    mocks.enterpriseStatus.data = { ...inactiveEnterpriseStatus(), active: true, state: "active" };
-    mocks.post.mockResolvedValue({ core_update: null });
+  it("checks the pom releases on demand, without needing any plugin license", async () => {
+    mocks.post.mockResolvedValue({ core_update: null, current_version: "v0.5.6" });
     mount();
 
     fireEvent.click(screen.getByRole("button", { name: "Verificar atualizações" }));
 
     await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/api/ui/pom-update/check"));
     expect(mocks.pomUpdate.refetch).toHaveBeenCalled();
+    expect(await screen.findByText("O POM está atualizado.")).toBeTruthy();
     expect(mocks.post).not.toHaveBeenCalledWith(expect.stringContaining("/api/ui/plugins"));
   });
 
-  it("shows and applies the pom update on this very screen, without redirecting", async () => {
-    mocks.enterpriseStatus.data = { ...inactiveEnterpriseStatus(), active: true, state: "active" };
+  it("shows and applies the pom update found on GitHub on this very screen", async () => {
     mocks.pomUpdate.data = {
-      core_update: { release_id: "pom_core-0.2.0-linux-x86_64", version: "0.2.0", changelog: null },
+      current_version: "v0.5.5",
+      core_update: {
+        release_id: "v0.5.6", version: "0.5.6", changelog: "Notes", published_at: null, source: "github",
+        asset: "pom-v0.5.6-x86_64.AppImage", size: 10, installable: true, blocked: null,
+      },
     };
     mocks.post.mockResolvedValue({ restarting: true });
     mount();
 
-    expect(screen.getByText("Atualização do POM disponível: 0.2.0")).toBeTruthy();
-    expect(screen.queryByRole("link", { name: "Abrir Enterprise" })).toBeNull();
+    expect(screen.getByText("Atualização do POM disponível: v0.5.6")).toBeTruthy();
+    expect(screen.getByText("v0.5.5")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Instalar e reiniciar" }));
 
     await waitFor(() => expect(mocks.post).toHaveBeenCalledWith(
       "/api/ui/pom-update/apply",
-      { release_id: "pom_core-0.2.0-linux-x86_64" },
+      { release_id: "v0.5.6" },
     ));
+    expect(await screen.findByText(/O POM está reiniciando/)).toBeTruthy();
+  });
+
+  it("says why a release the site lists cannot be installed here", () => {
+    mocks.pomUpdate.data = {
+      core_update: {
+        release_id: "v0.5.6", version: "0.5.6", changelog: null, published_at: null, source: "site",
+        asset: "pom-v0.5.6-x86_64.AppImage", size: 10, installable: false, blocked: "invitation_required",
+      },
+    };
+    mount();
+    expect(screen.queryByRole("button", { name: "Instalar e reiniciar" })).toBeNull();
+    expect(screen.getByText(/download ainda exige convite/)).toBeTruthy();
   });
 });

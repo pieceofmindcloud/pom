@@ -21,7 +21,8 @@ field.
   chains peers with an identical `model` - shards with different labels never
   form a pipeline.
 - **Ports:** UDP P2P `--port` (42777), inference QUIC UDP = P2P + 1000 (43777),
-  gateway QUIC UDP = P2P + 2000 (44777), libp2p TCP/QUIC = UDP + 10000 (52777), HTTP
+  gateway QUIC UDP = P2P + 2000 (44777), the iroh endpoint (UDP) and the relay
+  server (TCP) = UDP + 10000 (52777), HTTP
   gateway `--gateway-port` (8080, served by *every* node), inference HTTP on
   `inference_port` in `pom.json` (8181, or gateway + 101 when unset). Different
   machines can use the same numbers.
@@ -29,7 +30,7 @@ field.
   the default gateway and P2P port sets before starting the service or native
   macOS/Windows shell. It keeps free defaults and moves only an implicit default
   that is occupied, checking the gateway/inference HTTP, P2P UDP, both QUIC UDP
-  ports and the libp2p TCP/QUIC port. The selected `gateway_port` and `p2p_port`
+  ports and the endpoint UDP / relay TCP port. The selected `gateway_port` and `p2p_port`
   are written into the new configuration; an unset inference port continues to
   follow the gateway at +101. Explicit CLI or environment port choices are not
   silently changed, and an existing configuration is never rewritten by this
@@ -253,7 +254,7 @@ dependency, which must work well without them.
 
 The only measurement so far, from 1.3 to 4.1 MB/s on a 214 KB file, was in the
 download direction and does not allow attributing the gain to a single factor.
-No performance number is promised. POM's own file transfer over libp2p reached
+No performance number is promised. POM's own file transfer over the p2p endpoint reached
 about 40 MB/s between two machines; so 126 MB would be about 3 s if the
 inference path used that same transport. That is a condition, not a
 measurement of the inference path: the earlier estimates of 20 to 90 s came

@@ -30,8 +30,8 @@ import { pluginRouteProfiles } from "./pluginUi";
 const RESTRICTED: Readonly<Record<string, readonly Profile[]>> = {
   "/deploy": ["admin"],
   "/deployments": ["admin"],
-  "/config/administration": ["admin", "node"],
-  "/config/network/participants": ["admin", "node"],
+  "/config/administration": ["admin", "worker"],
+  "/config/network/participants": ["admin", "worker"],
   // The cluster's connection key is the operator's credential: only the
   // admin sees it.
   "/config/keys/connection": ["admin"],
@@ -54,6 +54,9 @@ const INFER_ROUTES = [
   "/plugins",
   "/config/network",
   "/config/my-machine",
+  // Its own token usage and budget: every profile that runs inference has one.
+  "/config/usage",
+  "/config/budget",
   "/config/sharing",
   "/config/preferences",
   // Anchoring trust precedes authority and is not the privilege of any
@@ -65,11 +68,8 @@ const INFER_ROUTES = [
 const INFER_DENIED_ROUTES = [
   "/config/network/participants",
   "/config/preferences/admin",
-  // Request logs, deployment logs and statistics are the network's
-  // operation, not an inference node's: hidden even where a plugin claims
-  // the route and before activation.
-  "/logs",
-  "/statistics",
+  // Deployment logs are the network's operation, not an inference node's:
+  // hidden even where a plugin claims the route.
   "/deployments",
 ] as const;
 
@@ -98,11 +98,14 @@ export function routeProfiles(path: string): readonly Profile[] | null {
 export function canAccessRoute(path: string, profile: Profile): boolean {
   // Plugin UIs are local to this node and open to every profile.
   // The explicit blocks on native `infer` surfaces still apply.
-  if (profile === "infer" && INFER_DENIED_ROUTES.some((prefix) => isUnder(path, prefix))) return false;
+  if (profile === "visitor" && INFER_DENIED_ROUTES.some((prefix) => isUnder(path, prefix))) return false;
   const pluginProfiles = pluginRouteProfiles(path);
   if (pluginProfiles) return pluginProfiles.includes(profile);
-  if (isEnterprisePath(path)) return true;
-  if (profile === "infer") return INFER_ROUTES.some((prefix) => isUnder(path, prefix));
+  // Request logs and statistics: a visitor sees the requests that entered
+  // through its own node once a plugin serves them, but gets no advertising
+  // fallback before that.
+  if (isEnterprisePath(path)) return profile !== "visitor";
+  if (profile === "visitor") return INFER_ROUTES.some((prefix) => isUnder(path, prefix));
   const allowed = routeProfiles(path);
   return allowed === null || allowed.includes(profile);
 }

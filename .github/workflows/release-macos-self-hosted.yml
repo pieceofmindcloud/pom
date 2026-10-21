@@ -1,0 +1,172 @@
+name: Release · macOS · self-hosted
+
+# Self-hosted copy of release-macos.yml. Keep its build, package and publication steps in
+# sync with that workflow; only runner-specific setup should differ.
+#
+# It only runs when you ask for it, on the self-hosted `macbook` runner. It consumes no
+# hosted-runner quota; if the machine is offline, the job stays queued. The private engine
+# repository is reached over HTTPS with the POM_LLAMACPP_TOKEN secret. See
+# `docs/subsystems/build-and-run.md`, "Release through GitHub Actions".
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. v0.3.0)'
+        required: true
+        type: string
+      prerelease:
+        description: 'Publish as a prerelease'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+env:
+  # The release the binary says it is; the update check compares it with the published ones.
+  POM_RELEASE_VERSION: ${{ inputs.version }}
+
+jobs:
+  # A single job. There is no hosted-runner minute multiplier, and splitting it would only
+  # add an artifact round trip between jobs that would run on this same machine.
+  build:
+    name: macOS universal (Metal, self-hosted)
+    runs-on: [self-hosted, macOS, ARM64, macbook, metal]
+    env:
+      LLAMA_SOURCE: ${{ github.workspace }}/.ci-cache/llama.cpp
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
+      CMAKE_C_COMPILER_LAUNCHER: sccache
+      CMAKE_CXX_COMPILER_LAUNCHER: sccache
+      CMAKE_CUDA_COMPILER_LAUNCHER: sccache
+      CCACHE: sccache
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare/cache the llama.cpp checkout
+        id: llama-cache
+        uses: ./.github/actions/llama-cache
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+
+      - name: Configure the persistent build directory
+        shell: bash
+        run: |
+          # The runner may have custom tools before rustup in its captured PATH.
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          # Keep Cargo output outside the checkout: actions/checkout cleans ignored files.
+          mkdir -p "$HOME/.cache/pom-target"
+          echo "CARGO_TARGET_DIR=$HOME/.cache/pom-target" >> "$GITHUB_ENV"
+
+      - name: Enable the build cache
+        uses: mozilla-actions/sccache-action@v0.0.11
+
+      # No `Swatinem/rust-cache`: it exists to hand a target directory to a runner that
+      # starts empty. This machine keeps its Cargo output between runs, while sccache
+      # covers recompilations whose inputs changed.
+
+      - name: Check the machine's dependencies
+        run: |
+          # Dependencies are provisioned once on the self-hosted machine. Fail clearly
+          # instead of modifying the machine during a release or failing deep in the build.
+          faltou=""
+          for p in cmake git create-dmg; do
+            command -v "$p" >/dev/null || faltou="$faltou $p"
+          done
+          if [ -n "$faltou" ]; then
+            echo "missing on macbook:$faltou (install with: brew install$faltou)" >&2
+            exit 1
+          fi
+          cmake --version | head -1
+
+      # Pins Node instead of trusting the PATH snapshot captured when the self-hosted
+      # runner was configured. This is the version used by the project in development.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/frontend/package-lock.json
+
+      - name: Web interface
+        run: |
+          npm ci
+          npm run build
+        working-directory: apps/frontend
+
+      - name: Access to the engine repository (pom-plugin-llama.cpp)
+        shell: bash
+        env:
+          ENGINE_TOKEN: ${{ secrets.POM_LLAMACPP_TOKEN }}
+        run: |
+          # Cargo.toml names the engine as ssh://git@github.com/...; rewrite that URL to
+          # HTTPS with a fine-grained read-only token. Job environment variables keep the
+          # credential out of this persistent runner's ~/.gitconfig.
+          {
+            echo "GIT_CONFIG_COUNT=1"
+            echo "GIT_CONFIG_KEY_0=url.https://x-access-token:${ENGINE_TOKEN}@github.com/.insteadOf"
+            echo "GIT_CONFIG_VALUE_0=ssh://git@github.com/"
+          } >> "$GITHUB_ENV"
+
+      # One binary for Apple silicon and Intel: each slice is compiled for its own target
+      # and lipo joins them. MACOSX_DEPLOYMENT_TARGET makes both slices run from macOS 11
+      # (Big Sur) on, so Monterey and Big Sur get the same binary as the newer Macs.
+      - name: "Compile (universal, arm64 and x86_64)"
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: |
+          cargo build --release --locked --target aarch64-apple-darwin -p node -p pom-plugin-host --features metal
+          cargo build --release --locked --target x86_64-apple-darwin -p node -p pom-plugin-host --features metal
+          mkdir -p "$CARGO_TARGET_DIR/universal/release"
+          for bin in pom pom-plugin-host; do
+            lipo -create -output "$CARGO_TARGET_DIR/universal/release/$bin" \
+              "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/$bin" \
+              "$CARGO_TARGET_DIR/x86_64-apple-darwin/release/$bin"
+          done
+          lipo -info \
+            "$CARGO_TARGET_DIR/universal/release/pom" \
+            "$CARGO_TARGET_DIR/universal/release/pom-plugin-host"
+
+      # The installer window is laid out by create-dmg (Finder positions the icons), so the
+      # DMG is built here, on the runner.
+      - name: Assemble the package
+        run: |
+          nome="pom-${{ inputs.version }}-aarch64-apple-darwin"
+          # The workspace persists between runs on this runner: clearing the leftovers from
+          # the previous release avoids packaging the old package along with it.
+          rm -rf pacote pom-*.dmg "$nome.dmg"
+
+          # The app is the whole program: the binary, the plugin host (Contents/MacOS, where
+          # the binary looks for it) and the interface (Contents/Resources/apps/frontend/dist,
+          # found by `bundled_ui_dist`) all live inside the bundle.
+          ./scripts/make-macos-app.sh "$CARGO_TARGET_DIR/universal/release/pom" "pacote/POM.app"
+          mkdir -p "pacote/POM.app/Contents/Resources/apps/frontend"
+          cp -R apps/frontend/dist "pacote/POM.app/Contents/Resources/apps/frontend/"
+
+          # The ad-hoc signature must be made last: the copies above change the sealed
+          # resources. Signed before them, Gatekeeper reports the app as "damaged".
+          codesign --force --deep --sign - "pacote/POM.app"
+          codesign --verify --deep --strict "pacote/POM.app"
+
+          # The disk image holds POM.app, an Applications shortcut and the README that
+          # explains the first launch. make-dmg.sh lays out the window with create-dmg.
+          packaging/macos/make-dmg.sh "pacote/POM.app" packaging/macos/README.md "$nome.dmg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pacote-macos
+          path: pom-*.dmg
+          if-no-files-found: error
+          # Only they pass between the jobs of this run; the release keeps the packages.
+          retention-days: 2
+
+      # Each system publishes its own package on the same tag: the first workflow
+      # to run creates the release, the others attach their file.
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.version }}
+          name: ${{ inputs.version }}
+          prerelease: ${{ inputs.prerelease }}
+          files: pom-*.dmg

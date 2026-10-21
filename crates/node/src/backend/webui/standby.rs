@@ -29,8 +29,6 @@ struct PrimarySnapshot {
     #[serde(default)]
     blocked_nodes: Vec<String>,
     #[serde(default)]
-    tls_required: bool,
-    #[serde(default)]
     quic_enabled: bool,
     #[serde(default)]
     cluster_logs_enabled: bool,
@@ -88,7 +86,6 @@ fn save_primary_at(
         relay_peers: config.relay_peers.clone(),
         advertise_addr: config.advertise_addr.clone(),
         blocked_nodes: config.blocked_nodes.clone(),
-        tls_required: config.tls_required,
         quic_enabled: config.quic_enabled,
         cluster_logs_enabled: config.cluster_logs_enabled,
         network_chat_enabled: config.network_chat_enabled,
@@ -132,7 +129,6 @@ fn restore_primary_at(
     config.relay_peers = snapshot.relay_peers;
     config.advertise_addr = snapshot.advertise_addr;
     config.blocked_nodes = snapshot.blocked_nodes;
-    config.tls_required = snapshot.tls_required;
     config.quic_enabled = snapshot.quic_enabled;
     config.cluster_logs_enabled = snapshot.cluster_logs_enabled;
     config.network_chat_enabled = snapshot.network_chat_enabled;
@@ -165,12 +161,7 @@ mod tests {
 
         // This node's own network: it is the principal.
         let signing_key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-        let mut seed = signing_key.to_bytes();
-        let peer_id = libp2p::identity::Keypair::ed25519_from_bytes(&mut seed[..])
-            .unwrap()
-            .public()
-            .to_peer_id()
-            .to_string();
+        let peer_id = crate::p2p::secret_key(&signing_key).public().to_string();
         let node_id = crate::identity::NodeId::from_pubkey(&signing_key.verifying_key()).0;
         let principal = crate::admin_trust::AuthorityPrincipal::from_signing_key(
             node_id,
@@ -200,7 +191,7 @@ mod tests {
         assert!(save_primary_at(&standby, &own, &document, &own_pubkey).unwrap());
         // Moving on to a second foreign network must not overwrite it.
         let foreign = config(serde_json::json!({
-            "profile": "node",
+            "profile": "worker",
             "connection_key": "chave-alheia",
             "network": { "public_name": "Rede Alheia" },
         }));
@@ -226,7 +217,7 @@ mod tests {
         assert_eq!(restored.document().primary.pubkey, own_pubkey);
 
         // With nothing in standby there is nothing to restore.
-        let mut never = config(serde_json::json!({ "profile": "node" }));
+        let mut never = config(serde_json::json!({ "profile": "worker" }));
         assert!(!restore_primary_at(&dir.join("absent.json"), &trust_path, &mut never).unwrap());
         let _ = std::fs::remove_dir_all(dir);
     }

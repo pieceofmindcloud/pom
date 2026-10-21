@@ -531,8 +531,6 @@ pub struct SaveSetupRequest {
     #[serde(default)]
     pub admin_password: String,
     #[serde(default)]
-    pub tls_required: bool,
-    #[serde(default)]
     pub model_dirs: Vec<String>,
     #[serde(default)]
     pub shard_dir: String,
@@ -695,8 +693,8 @@ pub async fn save_setup(
     let config = state.config;
     let profile = match req.profile.as_str() {
         "admin" => crate::profile::NodeProfile::Admin,
-        "infer" => crate::profile::NodeProfile::Infer,
-        "node" => crate::profile::NodeProfile::Node,
+        "visitor" => crate::profile::NodeProfile::Visitor,
+        "worker" => crate::profile::NodeProfile::Worker,
         _ => {
             return (
                 StatusCode::BAD_REQUEST,
@@ -899,11 +897,6 @@ pub async fn save_setup(
         && !advertise_addr.trim().is_empty())
     .then(|| advertise_addr.trim().to_string());
     cfg.network = network;
-    // TLS is an optional network policy chosen by the administrator. Joining
-    // a public or private network must not silently turn it on for a node or
-    // infer profile, especially because libp2p already authenticates the
-    // transport.
-    cfg.tls_required = profile == crate::profile::NodeProfile::Admin && req.tls_required;
     cfg.resources.ram_reserve_pct = clamp_setup_percent(req.resources.ram_reserve_pct);
     cfg.resources.cpu_reserve_pct = clamp_setup_percent(req.resources.cpu_reserve_pct);
     if let Some(limit_c) = req.thermal_limit_c {
@@ -1193,20 +1186,22 @@ mod tests {
         assert!(metadata.directory_replicas.is_empty());
     }
 
-    /// The trust document names relays by key; a multiaddress (which carries
-    /// an IP) in `relay_peers` stays out.
+    /// The trust document names relays by host name; a relay on a bare IP in
+    /// `relay_peers` stays out.
     #[test]
-    fn trust_metadata_carries_relay_keys_and_no_address() {
+    fn trust_metadata_carries_relay_names_and_no_address() {
         let mut network = crate::config::NetworkSettings::default();
         network.public_name = "POM".into();
-        let relay = "pk:yg4gxe7z1r7mr6orids9fh95y7gxhdsxjqi6nngsxxtakqaxr5no".to_string();
         let metadata = trust_metadata_from_network(
             &network,
-            &[relay.clone(), "/ip4/198.51.100.1/tcp/52777".into()],
+            &[
+                "https://relay.example.org".into(),
+                "http://198.51.100.1:52777".into(),
+            ],
             &[],
         )
         .unwrap();
-        assert_eq!(metadata.relay_hints, vec![relay]);
+        assert_eq!(metadata.relay_hints, vec!["https://relay.example.org/"]);
         let json = serde_json::to_string(&metadata).unwrap();
         assert!(!json.contains("198.51.100.1"), "{json}");
     }

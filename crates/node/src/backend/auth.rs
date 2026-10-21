@@ -27,7 +27,11 @@ pub(crate) const ADMIN_SESSION_TTL: Duration = Duration::from_secs(8 * 60 * 60);
 /// Suffix of the session cookie name; the whole name comes from
 /// `admin_session_cookie_name`.
 const ADMIN_SESSION_COOKIE_SUFFIX: &str = "admin_session";
-pub(crate) const ADMIN_SESSION_COOKIE_PATHS: [&str; 3] = ["/api/ui", "/admin", "/admin-ui"];
+/// Every prefix of the administrative surface the browser calls. A path left
+/// out never receives the cookie, and its call is refused as having no
+/// password even with a live session.
+pub(crate) const ADMIN_SESSION_COOKIE_PATHS: [&str; 4] =
+    ["/api/ui", "/api/transfer", "/admin", "/admin-ui"];
 pub(crate) type AdminSessionState = Arc<Mutex<AdminSessionStore>>;
 
 #[derive(Default)]
@@ -91,8 +95,24 @@ impl AdminSessionStore {
 /// `ksia:8081`) wrote the same name, and signing in to one dropped the other's
 /// session - the tab went back to the gate without the node having restarted. The port of the
 /// `Host` goes into the name; without an explicit port, only the base name remains.
-pub(crate) fn admin_session_cookie_name(headers: &HeaderMap) -> String {
-    let base = format!("{}_{ADMIN_SESSION_COOKIE_SUFFIX}", crate::brand::slug());
+///
+/// Cookies do not separate by scheme either: the same port serves HTTP and
+/// HTTPS, and a browser refuses a plain HTTP cookie whose name matches a
+/// `Secure` one it already holds. After one HTTPS sign-in the HTTP session was
+/// never stored, and what only the cookie authenticates (a plugin screen's
+/// module, loaded by `import()` without the password header) answered 401. The
+/// session over TLS (`secure`) carries the `__Secure-` prefix and the one over
+/// plain HTTP the `_http` suffix, so each scheme keeps its own cookie. The HTTP
+/// name is also one no `Secure` cookie ever had: before the split both schemes
+/// wrote `<slug>_admin_session_<port>`, and a browser still holding that
+/// `Secure` cookie would refuse an HTTP one of the same name until it expired.
+pub(crate) fn admin_session_cookie_name(headers: &HeaderMap, secure: bool) -> String {
+    let slug = crate::brand::slug();
+    let base = if secure {
+        format!("__Secure-{slug}_{ADMIN_SESSION_COOKIE_SUFFIX}")
+    } else {
+        format!("{slug}_{ADMIN_SESSION_COOKIE_SUFFIX}_http")
+    };
     let port = headers
         .get(axum::http::header::HOST)
         .and_then(|value| value.to_str().ok())
@@ -124,16 +144,18 @@ pub(crate) fn session_cookie_header(
     cookie
 }
 
-fn session_id_from_cookie(headers: &HeaderMap) -> Option<&str> {
-    let cookie_name = admin_session_cookie_name(headers);
+/// Every `Cookie` header counts: over HTTP/2 a browser splits its cookies into
+/// one header each, and the session's need not be the first.
+fn session_id_from_cookie(headers: &HeaderMap, secure: bool) -> Option<&str> {
+    let cookie_name = admin_session_cookie_name(headers, secure);
     headers
-        .get(axum::http::header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|cookies| {
-            cookies.split(';').find_map(|cookie| {
-                let (name, value) = cookie.trim().split_once('=')?;
-                (name == cookie_name && !value.is_empty()).then_some(value)
-            })
+        .get_all(axum::http::header::COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|cookies| cookies.split(';'))
+        .find_map(|cookie| {
+            let (name, value) = cookie.trim().split_once('=')?;
+            (name == cookie_name && !value.is_empty()).then_some(value)
         })
 }
 
@@ -156,7 +178,7 @@ pub const INFERENCE_SESSION_HEADER: &str = "x-pom-inference-session";
 /// Chooses the credential a node uses in internal inference calls.
 /// API keys belong to the client surface and never cross an internal
 /// hop. The shared `connection_key` is also attached to the HTTP fallback
-/// without TLS: the transport may be protected by Noise or Tailscale underneath,
+/// without TLS: the transport may be protected by QUIC or Tailscale underneath,
 /// but the inference port still needs to receive the same credential across the whole
 /// HTTP/HTTPS/QUIC ladder. QUIC and HTTPS can still validate through the
 /// secure transport on the public network, without depending on this header.
@@ -258,6 +280,26 @@ pub fn connection_key_accepted(config: &Config, token: &str) -> bool {
     connection_key_accepted_at(config, token, chrono::Utc::now().timestamp())
 }
 
+/// The connection keys this node accepts right now: the current one and,
+/// while a rotation's grace lasts, the one being replaced. Empty without a key.
+pub fn accepted_connection_keys(config: &Config) -> Vec<String> {
+    if config.connection_key.is_empty() {
+        return Vec::new();
+    }
+    let mut keys = vec![config.connection_key.clone()];
+    if let Some(transition) = transition_for(&config.connection_key, chrono::Utc::now().timestamp()) {
+        if !transition.old.is_empty() && transition.old != config.connection_key {
+            keys.push(transition.old);
+        }
+    }
+    keys
+}
+
+/// Compares two byte strings without leaking where they differ.
+pub(crate) fn constant_time_bytes_eq(expected: &[u8], supplied: &[u8]) -> bool {
+    expected.len() == supplied.len() && bool::from(expected.ct_eq(supplied))
+}
+
 /// Validates an API key presented by the client's inference surface.
 /// This rule stays separate from authentication between peers.
 #[cfg_attr(not(test), allow(dead_code))]
@@ -349,7 +391,7 @@ async fn known_control_principal(
     state.network.alive_peers().await.into_iter().any(|peer| {
         peer.node_id == issuer.node_id
             && peer.pubkey == issuer.pubkey
-            && peer.libp2p_peer_id.as_deref() == Some(issuer.peer_id.as_str())
+            && crate::identity::trust_peer_id_from_hex(&peer.pubkey).as_deref() == Some(issuer.peer_id.as_str())
     })
 }
 
@@ -407,16 +449,57 @@ where
                 principal: Some(principal),
             });
         }
-        validate_internal_node_headers(&gateway.auth, &parts.headers).await?;
+        validate_internal_node_headers(&gateway.auth, &parts.headers, &parts.extensions).await?;
         Ok(InternalNodeAuth { principal: None })
     }
 }
 
+/// The node whose view of the network decides who is a member
+/// (`Network::is_member_key`). Set once by the binary; one node per process.
+/// A test bench that never sets it keeps the connection key alone.
+static MEMBER_ORACLE: std::sync::OnceLock<std::sync::Arc<crate::network::Network>> =
+    std::sync::OnceLock::new();
+
+pub(crate) fn set_member_oracle(network: std::sync::Arc<crate::network::Network>) {
+    let _ = MEMBER_ORACLE.set(network);
+}
+
+/// Whether the request arrived in plain text on loopback: from this very
+/// machine, with no transport identity to prove. A tunneled request shows
+/// up as remote (`serve::TUNNELED_ORIGIN`), never as this.
+fn from_local_plain(extensions: &axum::http::Extensions) -> bool {
+    extensions
+        .get::<crate::serve::PeerAddr>()
+        .is_some_and(|addr| is_loopback_addr(addr.0))
+        && !extensions
+            .get::<crate::serve::TransportSecurity>()
+            .is_some_and(|transport| transport.0)
+}
+
+/// The second half of a node-to-node call authorized by the connection
+/// key: the transport must prove the caller is a member today. Every member
+/// holds the key, and one that was banned keeps it; its node key and
+/// membership are what it cannot keep.
+pub(crate) async fn caller_is_member(extensions: &axum::http::Extensions) -> bool {
+    let Some(network) = MEMBER_ORACLE.get() else {
+        return true;
+    };
+    if from_local_plain(extensions) {
+        return true;
+    }
+    match extensions.get::<crate::serve::TransportPeer>() {
+        Some(caller) => network.is_member_key(&caller.node_id, &caller.pubkey).await,
+        None => false,
+    }
+}
+
 /// Validates a peer request, including the marker that prevents the same
-/// `Authorization` from being reused as a browser call.
+/// `Authorization` from being reused as a browser call, and the caller's
+/// membership as its transport proves it (`caller_is_member`).
 pub(crate) async fn validate_internal_node_headers(
     config: &AuthState,
     headers: &HeaderMap,
+    extensions: &axum::http::Extensions,
 ) -> Result<(), AuthRejection> {
     let supplied = headers
         .get("authorization")
@@ -427,12 +510,42 @@ pub(crate) async fn validate_internal_node_headers(
         .get(INTERNAL_NODE_REQUEST_HEADER)
         .and_then(|value| value.to_str().ok())
         == Some("1");
-    let config = config.read().await;
-    if is_internal && is_valid_internal_node_token(&config, supplied) {
-        Ok(())
-    } else {
-        Err(AuthRejection::InvalidKey)
+    let key_holds = {
+        let config = config.read().await;
+        is_internal && is_valid_internal_node_token(&config, supplied)
+    };
+    let is_member = caller_is_member(extensions).await;
+    let caller = extensions
+        .get::<crate::serve::TransportPeer>()
+        .map(|peer| peer.node_id.as_str())
+        .unwrap_or("none: no client certificate or tunnel id");
+    if !key_holds {
+        // A member with the wrong key missed a rotation, which an operator
+        // needs to see. A non-member is routine wherever several networks
+        // share a LAN, and logging each of its calls floods the log.
+        if is_member {
+            tracing::warn!(
+                internal = is_internal,
+                caller,
+                "node-to-node call refused: the connection key does not match"
+            );
+        } else {
+            tracing::debug!(
+                internal = is_internal,
+                caller,
+                "node-to-node call refused: the connection key does not match"
+            );
+        }
+        return Err(AuthRejection::InvalidKey);
     }
+    if !is_member {
+        tracing::warn!(
+            caller,
+            "node-to-node call refused: the caller is not a member (no admin key, no valid membership token)"
+        );
+        return Err(AuthRejection::InvalidKey);
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -721,7 +834,11 @@ where
             });
         }
 
-        if let Some(session_id) = session_id_from_cookie(&parts.headers).map(str::to_owned) {
+        let secure = parts
+            .extensions
+            .get::<crate::serve::TransportSecurity>()
+            .is_some_and(|transport| transport.0);
+        if let Some(session_id) = session_id_from_cookie(&parts.headers, secure).map(str::to_owned) {
             let State(sessions): State<AdminSessionState> = State::from_request_parts(parts, state)
                 .await
                 .map_err(|_| AdminAuthRejection::InvalidToken)?;
@@ -817,6 +934,10 @@ impl ApiKeyAuth {
         self.caller
     }
 
+    pub fn caller(&self) -> &crate::reqlog::Caller {
+        &self.caller
+    }
+
     pub fn token(&self) -> &str {
         &self.token
     }
@@ -835,7 +956,6 @@ impl<S> FromRequestParts<S> for ApiKeyAuth
 where
     S: Send + Sync,
     Arc<crate::db::PomDb>: axum::extract::FromRef<S>,
-    crate::gateway::GatewayState: axum::extract::FromRef<S>,
 {
     type Rejection = AuthRejection;
 
@@ -843,10 +963,6 @@ where
         let State(database): State<Arc<crate::db::PomDb>> = State::from_request_parts(parts, state)
             .await
             .map_err(|_| AuthRejection::MissingHeader)?;
-        let State(gateway): State<crate::gateway::GatewayState> =
-            State::from_request_parts(parts, state)
-                .await
-                .map_err(|_| AuthRejection::MissingHeader)?;
         // `Authorization: Bearer <key>` (OpenAI/`ANTHROPIC_AUTH_TOKEN` style)
         // or `x-api-key: <key>` (Anthropic Messages API style, what
         // `ANTHROPIC_API_KEY` sends). Consider both independently because a
@@ -859,19 +975,10 @@ where
         for token in candidates {
             // SQLite is authoritative here rather than the startup snapshot:
             // a key minted by another process becomes usable immediately, and
-            // a revocation made there takes effect without a restart.
+            // a revocation made there takes effect without a restart. A key
+            // this node did not mint is unknown: keys never leave the node
+            // that issued them, and no other node is asked about one.
             if let Some(key) = database.api_key_for_token(token).ok().flatten() {
-                let blocked = gateway.auth.read().await.blocked_nodes.iter().any(|node| {
-                    let origin = if key.origin_node_id.is_empty() {
-                        &key.node_id
-                    } else {
-                        &key.origin_node_id
-                    };
-                    node == origin
-                });
-                if blocked {
-                    continue;
-                }
                 return Ok(ApiKeyAuth {
                     caller: crate::reqlog::Caller {
                         key_id: api_key_identity(&key),
@@ -880,40 +987,6 @@ where
                     },
                     token: token.into(),
                 });
-            }
-            // Unknown inference bearers are looked up only through the
-            // authenticated node-to-node admin channel. The bearer itself is
-            // never used to authorize this lookup.
-            if let Ok(Some(key)) = crate::admin::validate_api_key_remote(&gateway, token).await {
-                if key.active
-                    && key.key_hash == api_key_hash(token)
-                    && database.insert_api_key(&key).is_ok()
-                {
-                    let blocked = gateway.auth.read().await.blocked_nodes.iter().any(|node| {
-                        let origin = if key.origin_node_id.is_empty() {
-                            &key.node_id
-                        } else {
-                            &key.origin_node_id
-                        };
-                        node == origin
-                    });
-                    if blocked {
-                        continue;
-                    }
-                    let mut cfg = gateway.auth.write().await;
-                    cfg.api_keys.retain(|existing| {
-                        existing.id != key.id && existing.key_hash != key.key_hash
-                    });
-                    cfg.api_keys.push(key.clone());
-                    return Ok(ApiKeyAuth {
-                        caller: crate::reqlog::Caller {
-                            key_id: api_key_identity(&key),
-                            key_label: key.label,
-                            key_node_id: (!key.node_id.is_empty()).then_some(key.node_id),
-                        },
-                        token: token.into(),
-                    });
-                }
             }
         }
         Err(AuthRejection::InvalidKey)
@@ -989,24 +1062,36 @@ mod tests {
     }
 
     #[test]
+    fn the_session_cookie_reaches_every_surface_the_interface_calls() {
+        for path in ["/api/ui/jobs", "/api/transfer/jobs", "/api/transfer/offers", "/admin/api-keys"] {
+            assert!(
+                ADMIN_SESSION_COOKIE_PATHS
+                    .iter()
+                    .any(|prefix| path == *prefix || path.starts_with(&format!("{prefix}/"))),
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
     fn two_nodes_on_one_host_do_not_share_the_session_cookie() {
         let headers = |host: &str| {
             let mut headers = HeaderMap::new();
             headers.insert(axum::http::header::HOST, host.parse().unwrap());
             headers
         };
-        let base = format!("{}_admin_session", crate::brand::slug());
+        let base = format!("{}_admin_session_http", crate::brand::slug());
         assert_eq!(
-            admin_session_cookie_name(&headers("ksia:8080")),
+            admin_session_cookie_name(&headers("ksia:8080"), false),
             format!("{base}_8080")
         );
         assert_eq!(
-            admin_session_cookie_name(&headers("ksia:8081")),
+            admin_session_cookie_name(&headers("ksia:8081"), false),
             format!("{base}_8081")
         );
-        assert_eq!(admin_session_cookie_name(&headers("ksia")), base);
+        assert_eq!(admin_session_cookie_name(&headers("ksia"), false), base);
         assert_eq!(
-            admin_session_cookie_name(&headers("[::1]:8081")),
+            admin_session_cookie_name(&headers("[::1]:8081"), false),
             format!("{base}_8081")
         );
 
@@ -1018,7 +1103,40 @@ mod tests {
                 .parse()
                 .unwrap(),
         );
-        assert_eq!(session_id_from_cookie(&request), Some("desta-porta"));
+        assert_eq!(session_id_from_cookie(&request, false), Some("desta-porta"));
+
+        // Over HTTP/2 the browser sends each cookie in a header of its own.
+        let mut request = headers("ksia:8080");
+        request.append(
+            axum::http::header::COOKIE,
+            format!("{base}=sem-porta").parse().unwrap(),
+        );
+        request.append(
+            axum::http::header::COOKIE,
+            format!("{base}_8080=desta-porta").parse().unwrap(),
+        );
+        assert_eq!(session_id_from_cookie(&request, false), Some("desta-porta"));
+    }
+
+    #[test]
+    fn http_and_https_on_one_port_do_not_share_the_session_cookie() {
+        let mut headers = HeaderMap::new();
+        headers.insert(axum::http::header::HOST, "ksia:8080".parse().unwrap());
+        let slug = crate::brand::slug();
+        let plain = format!("{slug}_admin_session_http_8080");
+        let tls = format!("__Secure-{slug}_admin_session_8080");
+        assert_eq!(admin_session_cookie_name(&headers, false), plain);
+        assert_eq!(admin_session_cookie_name(&headers, true), tls);
+
+        // A browser that signed in over both schemes sends both cookies over
+        // HTTPS, beside the old name both schemes once shared; each transport
+        // reads only its own.
+        headers.insert(
+            axum::http::header::COOKIE,
+            format!("{slug}_admin_session_8080=old; {plain}=plain; {tls}=tls").parse().unwrap(),
+        );
+        assert_eq!(session_id_from_cookie(&headers, false), Some("plain"));
+        assert_eq!(session_id_from_cookie(&headers, true), Some("tls"));
     }
 
     #[test]
@@ -1269,6 +1387,7 @@ mod tests {
     #[test]
     fn inference_accepts_only_an_active_api_key() {
         let cfg = crate::config::Config {
+            retired_tls_required: (),
             gpus: None,
             thermal: Default::default(),
             cache_type_k: crate::config::KvCacheType::F16,
@@ -1311,7 +1430,6 @@ mod tests {
                 },
             ],
             blocked_nodes: vec![],
-            tls_required: false,
             quic_enabled: false,
             cluster_logs_enabled: false,
             network_chat_enabled: false,
@@ -1341,6 +1459,7 @@ mod tests {
     #[test]
     fn internal_inference_token_uses_shared_connection_key() {
         let mut cfg = crate::config::Config {
+            retired_tls_required: (),
             gpus: None,
             thermal: Default::default(),
             cache_type_k: crate::config::KvCacheType::F16,
@@ -1371,7 +1490,6 @@ mod tests {
                 created_at: String::new(),
             }],
             blocked_nodes: vec![],
-            tls_required: false,
             quic_enabled: false,
             cluster_logs_enabled: false,
             network_chat_enabled: false,
@@ -1455,7 +1573,7 @@ mod tests {
     #[test]
     fn a_rotated_connection_key_overlaps_the_old_one_instead_of_cutting_it() {
         let config = |key: &str| -> Config {
-            serde_json::from_value(serde_json::json!({ "profile": "node", "connection_key": key }))
+            serde_json::from_value(serde_json::json!({ "profile": "worker", "connection_key": key }))
                 .unwrap()
         };
         let rotated = config("transition-new-key");

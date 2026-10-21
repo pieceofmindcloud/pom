@@ -31,9 +31,13 @@ pub(super) enum PreparedStepInput {
 
 pub(crate) async fn handle_step(
     State(app): State<InferenceAppState>,
+    handshake: Option<axum::Extension<crate::serve::TlsHandshake>>,
     headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Response {
+    // Taken first, whatever path the frame follows below, so the connection's
+    // handshake is reported by the request that opened it and by no other.
+    let tls_handshake_ms = handshake.map_or(0, |handshake| handshake.take_ms());
     app.request_activity.mark_now();
     let _load_guard = app.loads.acquire(&app.load_node_id).await;
     // Only the header is read here: a one-item frame - the normal case of every
@@ -62,9 +66,6 @@ pub(crate) async fn handle_step(
     let scheduler = app.scheduler.clone();
     open_tp_decode(&state, &headers, "/v1/step", &body);
     let processing_started = Instant::now();
-    // Read at the start because `state` is consumed further below, and the value
-    // is the same at any point of the handler.
-    let tls_handshake_ms = last_handshake_ms(&state);
     let inbound_bytes = body.len();
     let frame_decode_started = Instant::now();
     let (mut meta, tensor, inbound_wire_timing) =
@@ -649,7 +650,7 @@ pub(super) async fn remote_stream_producer(
                 return;
             }
         };
-        let response = handle_step(State(app.clone()), axum::http::HeaderMap::new(), body).await;
+        let response = handle_step(State(app.clone()), None, axum::http::HeaderMap::new(), body).await;
         if !response.status().is_success() {
             let body = axum::body::to_bytes(response.into_body(), INFERENCE_FRAME_BODY_LIMIT)
                 .await

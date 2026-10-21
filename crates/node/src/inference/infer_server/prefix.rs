@@ -896,13 +896,6 @@ pub(crate) struct InferState {
     pub(super) inference_path: crate::executor::InferencePath,
     /// Confidence cutoff of the MTP draft - see `NodeConfig::mtp_min_probability`.
     pub(super) mtp_min_probability: f32,
-    /// Duration of the last TLS handshake accepted by this server, in ms.
-    ///
-    /// Measured in the accept loop (`serve.rs`), which is where the `TlsAcceptor`
-    /// runs and the time is exact. It goes from here to the reply's `meta`, and
-    /// from there to the gateway's per-hop telemetry. `None` when the node has
-    /// no TLS.
-    pub(super) tls_handshake_ms: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
     /// TP identity of this node. Rank 0 needs the member list to put the
     /// workers on the same decode; without it the barrier never closes.
     pub(super) tp: Option<crate::network::TpIdentity>,

@@ -431,10 +431,10 @@ pub fn merge_manifest(shard_dir: &Path, incoming: &PomManifest) -> Result<(PathB
 /// Repeated parts are discarded by hash.
 pub fn finalize_run(shard_dir: &Path, temp: &Path, m: &PomManifest) -> Result<PathBuf> {
     m.validate()?;
-    let destination = locate_source_dir(shard_dir, &m.pom_id)
-        .unwrap_or_else(|| source_run_dir(shard_dir, &m.model.name, &m.pom_id));
-    std::fs::create_dir_all(&destination)
-        .with_context(|| format!("create {}", destination.display()))?;
+    // The manifest first: the catalog lists only the parts that exist, so a
+    // part it does not hold yet is simply not listed, while a part moved before
+    // its manifest was a loose `<sha256>.gguf` to any node scanning meanwhile.
+    let (destination, _) = merge_manifest(shard_dir, m)?;
 
     for part in m.parts.iter().chain(m.tp_parts.iter()) {
         let from = part_path(temp, &part.sha256)?;
@@ -452,16 +452,19 @@ pub fn finalize_run(shard_dir: &Path, temp: &Path, m: &PomManifest) -> Result<Pa
             .with_context(|| format!("move {} to {}", from.display(), to.display()))?;
     }
 
-    let (destination, _) = merge_manifest(shard_dir, m)?;
     // The working folder only goes away if it is empty: an unexpected file
     // there is a sign of a defect, and deleting it would hide the evidence.
     let _ = std::fs::remove_dir(temp);
     Ok(destination)
 }
 
+/// Name prefix of the working folders of rounds still running; the catalog
+/// does not walk them.
+pub const SCRATCH_PREFIX: &str = ".slicing-";
+
 /// A working folder for a round that does not have a name yet.
 pub fn scratch_dir(shard_dir: &Path) -> PathBuf {
-    shard_dir.join(format!(".slicing-{}", uuid::Uuid::new_v4().simple()))
+    shard_dir.join(format!("{SCRATCH_PREFIX}{}", uuid::Uuid::new_v4().simple()))
 }
 
 /// A name that can become a folder without surprises.

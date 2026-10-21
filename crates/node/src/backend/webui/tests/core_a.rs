@@ -56,6 +56,66 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// The slicer writes the `.pom` after the part. A node that indexed the part
+    /// in between saw a loose `<sha256>.gguf`; once the manifest is there, the
+    /// next scan must not have that old entry copied back over it, or the slice
+    /// keeps showing its hash through every rescan.
+    #[test]
+    fn a_manifest_written_after_the_part_names_the_slice_on_the_next_scan() {
+        let root = std::env::temp_dir().join(format!(
+            "pom-webui-catalog-late-manifest-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let models = root.join("models");
+        let shards = root.join("shards");
+        let run = shards.join("model-aaaaaaaa");
+        std::fs::create_dir_all(&models).unwrap();
+        std::fs::create_dir_all(&run).unwrap();
+        let part_sha = "b".repeat(64);
+        let part = crate::pom::part_path(&run, &part_sha).unwrap();
+        std::fs::write(&part, crate::splitter::test_gguf_bytes(1)).unwrap();
+
+        let before = crate::catalog::discover_fast(std::slice::from_ref(&models), &shards);
+        let enriched = crate::catalog::enrich(before);
+        assert_eq!(enriched.models[0].model_label, None, "no manifest yet");
+
+        let manifest = crate::pom::PomManifest::new(
+            crate::pom::PomModel {
+                name: "model-thing".into(),
+                label: "model thing".into(),
+                total_layers: 1,
+                quant: None,
+            },
+            crate::pom::PomKind::Layers,
+            "test",
+            "a".repeat(64),
+            vec![crate::pom::PomPart {
+                sha256: part_sha,
+                bytes: std::fs::metadata(&part).unwrap().len(),
+                start_layer: 0,
+                end_layer: 0,
+                is_first: true,
+                is_last: true,
+                tp: None,
+            }],
+        );
+        crate::pom::write_atomic(&run, &manifest).unwrap();
+
+        let mut rescanned = crate::catalog::discover_fast(std::slice::from_ref(&models), &shards);
+        let applied = reconcile_enriched_catalog(&mut rescanned, &enriched);
+        assert_eq!(applied, 0, "the loose entry is not the same slice any more");
+        assert_eq!(rescanned.models[0].model_label.as_deref(), Some("model thing"));
+        assert!(rescanned.models[0].shard_group.is_some());
+
+        // Pending again, it is enriched from the header cache and keeps its name.
+        let complete = crate::catalog::enrich(pending_metadata(&rescanned));
+        let mut published = rescanned;
+        reconcile_enriched_catalog(&mut published, &complete);
+        assert!(published.metadata_complete);
+        assert_eq!(published.models[0].model_label.as_deref(), Some("model thing"));
+        std::fs::remove_dir_all(root).ok();
+    }
+
     /// A sidecar the fast scan cannot tell by name (an MTP draft called
     /// `Ckpt_Q38.gguf`) enters as a pending model and the enrichment drops it.
     /// It has to leave the inventory too: left there it stayed pending, and

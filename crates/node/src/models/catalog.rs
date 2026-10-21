@@ -666,6 +666,16 @@ fn find_gguf(root: &Path, depth: usize, out: &mut Vec<PathBuf>) {
             if entry.file_name() == llama_engine::mtp_draft::CACHE_DIR {
                 continue;
             }
+            // A slicing still running writes its parts here (`pom::scratch_dir`);
+            // listed, they were loose `<sha256>.gguf` files with no manifest.
+            // The job shows them; they enter the catalog from their final folder.
+            if entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(crate::pom::SCRATCH_PREFIX)
+            {
+                continue;
+            }
             find_gguf(&path, depth + 1, out);
         } else if path.extension().and_then(|e| e.to_str()) == Some("gguf")
             || (is_extensionless_name(&entry.file_name().to_string_lossy())

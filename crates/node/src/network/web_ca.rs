@@ -477,7 +477,13 @@ fn colon_hex(bytes: &[u8]) -> String {
 /// (the window and an already running node) must agree on one key, so the file
 /// is written aside and linked into place, which fails when it is already there.
 fn write_new(path: &Path, contents: &[u8], private: bool) -> Result<()> {
-    let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
+    // The process id alone is not unique: two threads of one process creating
+    // the same file shared the temporary, one truncated it while the other
+    // linked it into place, and the CA or the web key came out empty or half
+    // written. The route tests, which build TLS servers in parallel, hit it.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let call = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = path.with_extension(format!("tmp-{}-{call}", std::process::id()));
     std::fs::write(&tmp, contents).with_context(|| format!("could not write {}", tmp.display()))?;
     if private {
         restrict(&tmp);

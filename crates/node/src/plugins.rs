@@ -66,6 +66,10 @@ const DEVELOPMENT_INSTALL_SETTING_PREFIX: &str = "plugin_dev_install:";
 const GITHUB_REPOSITORIES_SETTING: &str = "plugin_github_repositories";
 const PREFERENCES_SETTING_PREFIX: &str = "plugin_preferences:";
 const UI_MANIFEST_SETTING_PREFIX: &str = "plugin_ui_manifest:";
+/// `plugin_ui_asset:<code>:<path>`: the last copy of an asset the shell needs
+/// while the plugin's process is down (its i18n catalogs and menu icon), as the
+/// host answered `ui.asset`. See `PluginRuntime::shell_asset`.
+const UI_ASSET_SETTING_PREFIX: &str = "plugin_ui_asset:";
 
 /// Plugin codes come from the license service, from GitHub releases or from
 /// manifests of local sources. They also make up URL segments and directories;
@@ -958,6 +962,9 @@ pub(crate) struct PluginRuntime {
     /// in the database so the menu of an on-demand plugin keeps existing
     /// while its process is stopped (the manifest can only be requested from a running host).
     ui_manifest_raw: Arc<Mutex<Option<serde_json::Value>>>,
+    /// The shell assets of the current manifest were copied from the host
+    /// already; reset when the manifest changes.
+    shell_assets_kept: std::sync::atomic::AtomicBool,
     /// `lifecycle: "on_demand"` of the last known manifest. It comes from the cache, so
     /// it applies at boot, before any process starts.
     on_demand: std::sync::atomic::AtomicBool,
@@ -1021,6 +1028,7 @@ impl PluginRuntime {
             development_install: Arc::new(Mutex::new(development_install)),
             host_context,
             ui_manifest_raw: Arc::new(Mutex::new(ui_manifest_raw)),
+            shell_assets_kept: std::sync::atomic::AtomicBool::new(false),
             on_demand: std::sync::atomic::AtomicBool::new(on_demand),
             host_api_token: hex::encode(rand::random::<[u8; 32]>()),
         }
@@ -2130,6 +2138,65 @@ impl PluginRuntime {
             }
         }
         *cached = Some(raw);
+        // A new manifest may name other catalogs or another icon.
+        self.shell_assets_kept
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+
+    fn shell_asset_key(&self, path: &str) -> String {
+        format!("{UI_ASSET_SETTING_PREFIX}{}:{path}", self.code)
+    }
+
+    /// The kept copy of a shell asset (`{content_type, base64}`, as `ui.asset`
+    /// answers), for when the host cannot answer: an on-demand plugin whose
+    /// process is stopped still has its menu, so its labels and icon must load.
+    pub(crate) fn shell_asset(&self, path: &str) -> Option<serde_json::Value> {
+        let text = self
+            .database
+            .as_ref()?
+            .local_setting_json(&self.shell_asset_key(path))
+            .ok()
+            .flatten()?;
+        serde_json::from_str(&text).ok()
+    }
+
+    /// Keeps the host's answer for a shell asset, when it differs.
+    pub(crate) fn keep_shell_asset(&self, path: &str, reply: &serde_json::Value) {
+        let Some(database) = &self.database else {
+            return;
+        };
+        if self.shell_asset(path).as_ref() == Some(reply) {
+            return;
+        }
+        if let Err(error) = database.save_local_setting(&self.shell_asset_key(path), reply) {
+            tracing::warn!(plugin_code = %self.code, %path, %error, "plugin UI asset could not be kept");
+        }
+    }
+
+    /// Copies every shell asset of `manifest` from the running host, once per
+    /// manifest, so they are there the next time the process is stopped.
+    async fn keep_shell_assets(&self, manifest: &crate::plugin_ui::PluginUiManifest) {
+        if self.host.lock().await.is_none()
+            || self
+                .shell_assets_kept
+                .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            return;
+        }
+        for path in manifest.shell_assets() {
+            let Some(reply) = self
+                .query_audit("ui.asset", serde_json::json!({ "path": path }))
+                .await
+            else {
+                // Asked again with the next manifest read.
+                self.shell_assets_kept
+                    .store(false, std::sync::atomic::Ordering::Release);
+                continue;
+            };
+            if crate::plugin_ui::decode_asset(&reply).is_ok() {
+                self.keep_shell_asset(&path, &reply);
+            }
+        }
     }
 
     /// Starts the process of an on-demand plugin that is already installed and active. Does not touch
@@ -3702,7 +3769,28 @@ impl PluginManager {
         &self,
         code: &str,
     ) -> Option<crate::plugin_ui::PluginUiManifest> {
-        self.runtime_for(code)?.ui_manifest().await
+        let runtime = self.runtime_for(code)?;
+        let manifest = runtime.ui_manifest().await?;
+        if !runtime
+            .shell_assets_kept
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            let kept = manifest.clone();
+            tokio::spawn(async move { runtime.keep_shell_assets(&kept).await });
+        }
+        Some(manifest)
+    }
+
+    /// See `PluginRuntime::shell_asset`.
+    pub(crate) fn shell_asset(&self, code: &str, path: &str) -> Option<serde_json::Value> {
+        self.runtime_for(code)?.shell_asset(path)
+    }
+
+    /// See `PluginRuntime::keep_shell_asset`.
+    pub(crate) fn keep_shell_asset(&self, code: &str, path: &str, reply: &serde_json::Value) {
+        if let Some(runtime) = self.runtime_for(code) {
+            runtime.keep_shell_asset(path, reply);
+        }
     }
 
     /// Starts the process of an on-demand plugin (menu click).
@@ -5490,6 +5578,30 @@ mod tests {
             .mark_plugin_ready(version)
             .await
             .expect("mark ready");
+    }
+
+    #[tokio::test]
+    async fn a_stopped_plugin_keeps_its_catalogs_and_icon_for_the_menu() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let database =
+            Arc::new(crate::db::PomDb::open(directory.path().join("pom.db")).expect("database"));
+        let runtime = || {
+            PluginRuntime::new(
+                "jev",
+                Arc::new(MockLicenseService::new()),
+                test_fingerprint(),
+                Some(database.clone()),
+                HostContext::default(),
+            )
+        };
+        let catalog = serde_json::json!({ "content_type": "application/json", "base64": "e30=" });
+        let first = runtime();
+        assert_eq!(first.shell_asset("i18n/en.json"), None);
+        first.keep_shell_asset("i18n/en.json", &catalog);
+        // A later start, with the process still down, reads what was kept.
+        let again = runtime();
+        assert_eq!(again.shell_asset("i18n/en.json"), Some(catalog));
+        assert_eq!(again.shell_asset("ui/icon.png"), None);
     }
 
     #[tokio::test]

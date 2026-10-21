@@ -419,6 +419,21 @@ impl PluginUiManifest {
         self.icon_image.as_deref() == Some(asset)
     }
 
+    /// What the shell loads for an installed plugin even while its process is
+    /// stopped: the i18n catalogs and the menu icon. The node keeps a copy
+    /// (`PluginRuntime::shell_asset`).
+    pub(crate) fn shell_assets(&self) -> Vec<String> {
+        let mut assets: Vec<String> = self.i18n.values().cloned().collect();
+        assets.extend(self.icon_image.clone());
+        assets.sort();
+        assets.dedup();
+        assets
+    }
+
+    pub(crate) fn is_shell_asset(&self, asset: &str) -> bool {
+        self.is_icon_image(asset) || self.i18n.values().any(|path| path == asset)
+    }
+
     pub(crate) fn is_documentation(&self, asset: &str) -> bool {
         self.documentation.as_ref().is_some_and(|documentation| {
             documentation
@@ -648,11 +663,24 @@ pub(crate) async fn plugin_asset(
     if !manifest.serves(&path) {
         return not_found();
     }
-    let Some(reply) = state
+    let shell = manifest.is_shell_asset(&path);
+    let reply = match state
         .plugins
         .query_audit(&code, "ui.asset", json!({ "path": path }))
         .await
-    else {
+    {
+        Some(reply) => {
+            if shell && decode_asset(&reply).is_ok() {
+                state.plugins.keep_shell_asset(&code, &path, &reply);
+            }
+            Some(reply)
+        }
+        // A stopped on-demand plugin keeps its menu: its labels and icon come
+        // from the copy kept while it ran, checked below like a live answer.
+        None if shell => state.plugins.shell_asset(&code, &path),
+        None => None,
+    };
+    let Some(reply) = reply else {
         return not_found();
     };
     let decoded = decode_asset(&reply).and_then(|(content_type, bytes)| {
@@ -701,6 +729,17 @@ mod tests {
             "i18n": {"en":"i18n/en.json","pt-BR":"i18n/pt-BR.json"},
             "assets": ["ui/logs.js","ui/logs.css","i18n/en.json","i18n/pt-BR.json"]
         })
+    }
+
+    #[test]
+    fn the_shell_assets_are_the_catalogs_and_the_menu_icon() {
+        let mut value = manifest();
+        value["icon_image"] = json!("ui/icon.png");
+        value["assets"].as_array_mut().unwrap().push(json!("ui/icon.png"));
+        let parsed = PluginUiManifest::parse("logs", value).expect("valid");
+        assert_eq!(parsed.shell_assets(), ["i18n/en.json", "i18n/pt-BR.json", "ui/icon.png"]);
+        assert!(parsed.is_shell_asset("i18n/pt-BR.json"));
+        assert!(!parsed.is_shell_asset("ui/logs.js"));
     }
 
     #[test]

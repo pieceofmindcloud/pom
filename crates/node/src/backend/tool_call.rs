@@ -177,6 +177,14 @@ const PARAMETER_CALL_CLOSE: &str = "</parameter_call>";
 const INVOKE_OPEN: &str = "<invoke ";
 const INVOKE_CLOSE: &str = "</invoke>";
 const BARE_XML_OPEN: &str = "<function=";
+/// The XML namespace prefix a Strata session put on the invoke dialect's tag
+/// names (`<NS:invoke name="bash">`, then a plain `</invoke>`). Read as the
+/// plain tags; see [`strip_namespace`].
+const TAG_NAMESPACE: &str = "antml:";
+const NS_INVOKE_OPEN: &str = "<antml:invoke ";
+const NS_INVOKE_CLOSE: &str = "</antml:invoke>";
+const NS_FUNCTION_CALLS_OPEN: &str = "<antml:function_calls>";
+const NS_FUNCTION_CALLS_CLOSE: &str = "</antml:function_calls>";
 /// Closers that can trail a call that already ended; dropped, not shown.
 const STRAY_CLOSERS: &[&str] = &[
     TOOL_CALL_CLOSE,
@@ -185,6 +193,8 @@ const STRAY_CLOSERS: &[&str] = &[
     FUNCTION_CALLS_CLOSE,
     INVOKE_CLOSE,
     BARE_FUNCTION_CLOSE,
+    NS_INVOKE_CLOSE,
+    NS_FUNCTION_CALLS_CLOSE,
 ];
 
 /// Which opening marker started the block currently being scanned — decides
@@ -237,10 +247,24 @@ impl CallKind {
                 FUNCTION_CALL_CLOSE,
                 PARAMETER_CALL_CLOSE,
                 FUNCTION_CALLS_CLOSE,
+                NS_FUNCTION_CALLS_CLOSE,
             ],
-            CallKind::FunctionCalls => &[FUNCTION_CALLS_CLOSE, TOOL_CALL_CLOSE, FUNCTION_CALL_CLOSE],
+            CallKind::FunctionCalls => &[
+                FUNCTION_CALLS_CLOSE,
+                TOOL_CALL_CLOSE,
+                FUNCTION_CALL_CLOSE,
+                NS_FUNCTION_CALLS_CLOSE,
+            ],
             CallKind::BareFunction => &[BARE_FUNCTION_CLOSE],
-            CallKind::Invoke => &[INVOKE_CLOSE],
+            // An invoke the model shut with another dialect's wrapper
+            // (`<NS:invoke …>…</function></tool_call>`) ends there too.
+            CallKind::Invoke => &[
+                INVOKE_CLOSE,
+                NS_INVOKE_CLOSE,
+                TOOL_CALL_CLOSE,
+                FUNCTION_CALLS_CLOSE,
+                NS_FUNCTION_CALLS_CLOSE,
+            ],
             CallKind::BareXml => &[BARE_FUNCTION_CLOSE],
         }
     }
@@ -286,6 +310,16 @@ const CALL_FORMATS: &[CallFormat] = &[
         kind: CallKind::Invoke,
         open: INVOKE_OPEN,
         close: INVOKE_CLOSE,
+    },
+    CallFormat {
+        kind: CallKind::Invoke,
+        open: NS_INVOKE_OPEN,
+        close: INVOKE_CLOSE,
+    },
+    CallFormat {
+        kind: CallKind::FunctionCalls,
+        open: NS_FUNCTION_CALLS_OPEN,
+        close: FUNCTION_CALLS_CLOSE,
     },
     CallFormat {
         kind: CallKind::BareXml,
@@ -645,9 +679,9 @@ impl TagScanner {
             ScanState::Inside(raw, kind) => {
                 let body = format!("{raw}{}", self.pending);
                 let events = if kind == CallKind::FunctionCalls {
-                    partial_function_call_events(&body)
+                    partial_function_call_events(&strip_namespace(&body))
                 } else if kind == CallKind::Invoke {
-                    partial_function_call_events(&format!("{INVOKE_OPEN}{body}"))
+                    partial_function_call_events(&strip_namespace(&format!("{INVOKE_OPEN}{body}")))
                 } else {
                     parse_partial_call_body(&body, kind)
                         .map(ScanEvent::ToolCallTruncated)
@@ -840,6 +874,21 @@ fn longest_prefix_overlap(s: &str, tag: &str) -> usize {
         .unwrap_or(0)
 }
 
+/// One bare invoke rebuilt from the text after its opener: namespace taken
+/// off, a trailing `</function>` (another dialect's closer) dropped, and the
+/// `</invoke>` the scanner consumed, or the model never wrote, put back.
+fn invoke_body(raw: &str) -> String {
+    let normalized = strip_namespace(raw);
+    let mut body = normalized.trim_end();
+    while let Some(rest) = body
+        .strip_suffix(BARE_FUNCTION_CLOSE)
+        .or_else(|| body.strip_suffix(INVOKE_CLOSE))
+    {
+        body = rest.trim_end();
+    }
+    format!("{INVOKE_OPEN}{body}{INVOKE_CLOSE}")
+}
+
 /// Where `tag` ends the span opened by `raw`, in `pending`. The kind's own
 /// closer ends it wherever it appears, as it always did. A closer of another
 /// dialect only counts outside a parameter value: a `write` whose content
@@ -861,8 +910,25 @@ fn closer_position(raw: &str, pending: &str, tag: &str, own: bool) -> Option<usi
 
 /// Parameter tags opened minus closed in `text`, in either spelling.
 fn open_parameters(text: &str) -> isize {
+    let text = strip_namespace(text);
     let opened = text.matches("<parameter=").count() + text.matches("<parameter ").count();
     opened as isize - text.matches(PARAM_CLOSE).count() as isize
+}
+
+/// The tags of the call dialects with the XML namespace prefix taken off:
+/// `<NS:invoke`, `</NS:parameter>` and the like read as their plain forms.
+/// Only those tag names are touched, never other text.
+fn strip_namespace(text: &str) -> std::borrow::Cow<'_, str> {
+    if !text.contains(TAG_NAMESPACE) {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let mut out = text.to_string();
+    for tag in ["invoke", "parameter", "function_calls"] {
+        out = out
+            .replace(&format!("<{TAG_NAMESPACE}{tag}"), &format!("<{tag}"))
+            .replace(&format!("</{TAG_NAMESPACE}{tag}>"), &format!("</{tag}>"));
+    }
+    std::borrow::Cow::Owned(out)
 }
 
 /// Resolves the close of one scanner span. The compatibility
@@ -882,7 +948,7 @@ fn complete_call_events(raw: &str, kind: CallKind) -> Vec<ScanEvent> {
             return vec![ScanEvent::ToolCallClose(call)];
         }
         CallKind::Invoke => {
-            let call = parse_function_calls_xml(&format!("{INVOKE_OPEN}{raw}{INVOKE_CLOSE}"))
+            let call = parse_function_calls_xml(&invoke_body(raw))
                 .filter(|calls| calls.len() == 1)
                 .and_then(|mut calls| calls.pop())
                 .ok_or_else(fallback);
@@ -895,7 +961,7 @@ fn complete_call_events(raw: &str, kind: CallKind) -> Vec<ScanEvent> {
         }
         CallKind::FunctionCalls => {}
     }
-    match parse_function_calls_xml(raw) {
+    match parse_function_calls_xml(&strip_namespace(raw)) {
         Some(calls) if !calls.is_empty() => calls
             .into_iter()
             .enumerate()
@@ -970,7 +1036,8 @@ fn parse_call_body(raw: &str, kind: CallKind) -> Result<(String, serde_json::Val
 /// dialect trailing the call (`…</function></invoke>`) go, and a doubled
 /// `</function>` becomes one. An `<invoke>` body is shut when it was not.
 fn normalize_wrapped_body(raw: &str) -> String {
-    let mut body = raw.trim();
+    let normalized = strip_namespace(raw);
+    let mut body = normalized.trim();
     loop {
         let stripped = [TOOL_CALL_OPEN, FUNCTION_CALL_OPEN, PARAMETER_CALL_OPEN, FUNCTION_CALLS_OPEN]
             .iter()
@@ -2789,6 +2856,52 @@ mod tests {
             "<function=write>\n<parameter=content>\nends </function> here\n</parameter>\n</function>",
         );
         assert_eq!(args["content"], "ends </function> here");
+    }
+
+
+    #[test]
+    fn a_namespaced_invoke_is_a_call() {
+        // Logged verbatim (Strata, 2026-10-21): the opener carries the XML
+        // namespace, the closer does not.
+        let (name, args) = only_call(
+            "<antml:invoke name=\"bash\">\n<parameter name=\"command\">cd /x && sed -n '1526,1580p' admin.rs</parameter>\n</invoke>\n",
+        );
+        assert_eq!(name, "bash");
+        assert_eq!(args["command"], "cd /x && sed -n '1526,1580p' admin.rs");
+    }
+
+    #[test]
+    fn a_namespaced_invoke_shut_by_another_dialect_is_a_call() {
+        let (name, args) = only_call(
+            "<antml:invoke name=\"edit\">\n<parameter name=\"path\">a.rs</parameter>\n<parameter name=\"oldText\">x</parameter>\n</function>\n</tool_call>",
+        );
+        assert_eq!(name, "edit");
+        assert_eq!(args["oldText"], "x");
+    }
+
+    #[test]
+    fn a_namespaced_container_with_namespaced_tags_is_a_call() {
+        let (name, args) = only_call(
+            "<antml:function_calls>\n<antml:invoke name=\"read\">\n<antml:parameter name=\"path\">a.rs</antml:parameter>\n</antml:invoke>\n</antml:function_calls>",
+        );
+        assert_eq!(name, "read");
+        assert_eq!(args["path"], "a.rs");
+    }
+
+    #[test]
+    fn a_namespaced_invoke_survives_any_chunking() {
+        let text = "ok <antml:invoke name=\"bash\">\n<parameter name=\"command\">ls</parameter>\n</invoke>\n";
+        let whole = parse_output(text);
+        assert!(whole.iter().any(|p| matches!(p, OutputPart::ToolCall { .. })), "{whole:?}");
+        for size in 1..9 {
+            let mut scanner = TagScanner::new();
+            let mut events = Vec::new();
+            for chunk in text.as_bytes().chunks(size) {
+                events.extend(scanner.feed(std::str::from_utf8(chunk).unwrap()));
+            }
+            events.extend(scanner.finish());
+            assert_eq!(merge_adjacent_text(events_to_parts(events)), whole, "chunk {size}");
+        }
     }
 
 }

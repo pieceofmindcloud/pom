@@ -40,10 +40,21 @@ pub fn menu_action(id: &str) -> Option<WindowAction> {
     }
 }
 
-/// Only a successful exit represents `Quit` in the supervisor layer.
-/// `None` covers termination by exception or signal, which must be relaunched.
+/// The child's exit when it failed before the gateway was ready. The person
+/// already saw the error in a dialog, and starting again would fail the same
+/// way: relaunching it every second was an invisible loop with no window.
+pub const STARTUP_FAILED_EXIT_CODE: i32 = 3;
+
+/// Whether this process got as far as a ready gateway. A failure after that is
+/// a crash of a running node, which the supervisor relaunches.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub static GATEWAY_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Only a successful exit represents `Quit` in the supervisor layer, and a
+/// failed startup is not retried. `None` covers termination by exception or
+/// signal, which must be relaunched.
 pub fn should_relaunch(exit_code: Option<i32>) -> bool {
-    exit_code != Some(0)
+    !matches!(exit_code, Some(0) | Some(STARTUP_FAILED_EXIT_CODE))
 }
 
 #[cfg(windows)]
@@ -184,14 +195,17 @@ mod native {
                 .join()
                 .map_err(|_| anyhow!("Windows service thread ended in a panic"))?;
         };
+        super::GATEWAY_READY.store(true, std::sync::atomic::Ordering::Relaxed);
 
         let window = WindowBuilder::new()
             .with_title("POM")
             .with_inner_size(LogicalSize::new(WINDOW_SIZE.0, WINDOW_SIZE.1))
             .build(&event_loop)
             .map_err(|error| anyhow!("could not open the Windows window: {error}"))?;
+        // No URL yet: the first navigation waits for the certificate handler.
+        // Started by `build`, it met the local certificate before the handler
+        // existed, and without the CA trusted the window never showed the UI.
         let webview = WebViewBuilder::new()
-            .with_url(crate::gateway_url(port))
             // A link that leaves the interface (a purchase, the site) opens in the
             // system browser, and so does any new window, so POM stays where it was.
             .with_navigation_handler(|url| {
@@ -210,6 +224,9 @@ mod native {
         if let Err(error) = accept_local_certificate(&webview) {
             warn!("WebView2 cannot pin the interface certificate: {error:#}");
         }
+        webview
+            .load_url(&crate::gateway_url(port))
+            .context("could not open the interface in WebView2")?;
         // The system asks the person once; a refusal is remembered.
         thread::spawn(crate::trust_store::auto_install);
 
@@ -286,6 +303,36 @@ mod native {
     }
 }
 
+/// What a failed start does on Windows, where the GUI binary has no console:
+/// logs the error, shows it in a dialog with the log's path, and ends with
+/// [`STARTUP_FAILED_EXIT_CODE`] so the supervisor does not retry it. A failure
+/// after the gateway was ready returns, and the supervisor relaunches it. The
+/// elevated firewall helper reports to its parent instead.
+#[cfg(windows)]
+pub fn report_startup_failure(error: &anyhow::Error) {
+    use windows::core::PCWSTR;
+    use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+
+    if GATEWAY_READY.load(std::sync::atomic::Ordering::Relaxed)
+        || std::env::args().any(|arg| arg.starts_with("--windows-firewall-helper"))
+    {
+        return;
+    }
+    tracing::error!("POM could not start: {error:#}");
+    let log = crate::config::project_root().join(crate::windows_diagnostic_log_filename());
+    let text = format!(
+        "{} could not start:\n\n{error:#}\n\nDetails in {}",
+        crate::brand::name(),
+        log.display()
+    );
+    let wide = |value: &str| value.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let (text, caption) = (wide(&text), wide(crate::brand::name()));
+    unsafe {
+        MessageBoxW(None, PCWSTR(text.as_ptr()), PCWSTR(caption.as_ptr()), MB_OK | MB_ICONERROR);
+    }
+    std::process::exit(STARTUP_FAILED_EXIT_CODE);
+}
+
 #[cfg(windows)]
 pub use native::run;
 
@@ -316,6 +363,7 @@ mod tests {
         assert!(!should_relaunch(Some(0)));
         assert!(should_relaunch(Some(1)));
         assert!(should_relaunch(None));
+        assert!(!should_relaunch(Some(STARTUP_FAILED_EXIT_CODE)));
     }
 
     #[test]

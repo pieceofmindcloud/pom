@@ -115,6 +115,7 @@ windows = { version = "0.62.2", default-features = false, features = [
     "Win32_System_Registry",
     "Win32_System_Threading",
     "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 # The native Windows shell uses WebView2 (a system runtime), without Electron nor
 # a second browser process. Tao keeps the window and the Win32 loop; tray-icon

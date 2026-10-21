@@ -506,6 +506,15 @@ fn apply_env_overrides(config: &mut config::Config, args: &Args) {
 /// of this exists and the runtime is built right here, so that whoever runs the
 /// binary on a Linux server gains no dependency on a graphical interface.
 fn main() -> Result<()> {
+    let result = run_main();
+    #[cfg(windows)]
+    if let Err(error) = &result {
+        windows_status::report_startup_failure(error);
+    }
+    result
+}
+
+fn run_main() -> Result<()> {
     // First of all: a native crash inside llama.cpp leaves no line in the
     // node's own log otherwise.
     crash::install();

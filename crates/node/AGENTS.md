@@ -243,6 +243,13 @@ announced to peers - nothing in the cluster dials a peer's Ollama, and the
 
 On Windows, the parent process supervises the native child: an abnormal exit
 relaunches the POM, but `Quit POM` returns exit code zero and does not relaunch.
+A failure before the gateway is ready (`windows_status::report_startup_failure`)
+shows the error in a dialog with the `pom.log` path and exits with
+`STARTUP_FAILED_EXIT_CODE`, which is not relaunched: the GUI binary has no
+console, and retrying it every second was an invisible loop. The WebView2 is
+built without a URL and loads the interface only after the certificate handler
+is registered; the first navigation used to meet the local certificate before
+the handler existed, so without the CA trusted no interface appeared.
 `pom undeploy` writes a persistent block to prevent automatic resumptions of a
 troubled deployment.
 

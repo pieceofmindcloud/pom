@@ -296,8 +296,11 @@ troubled deployment.
   trust store: the macOS login keychain (`security add-trusted-cert`, the
   system asks for the password), the Windows current user's root store
   (`certutil -user -addstore Root`, Windows' own confirmation) and on Linux
-  the NSS databases of Chrome and Firefox (`certutil`, no prompt) plus the
-  system store under `pkexec` (`update-ca-certificates`/`update-ca-trust`).
+  only the user's NSS databases of Chrome and Firefox (`certutil`, no
+  prompt). The Linux system store is shared by every user of the machine, so
+  it is used only with `--trust-ca-system-wide`, under `pkexec`
+  (`update-ca-certificates`/`update-ca-trust`); without the flag nothing asks
+  for root and `state` ignores that store.
   `auto_install` runs once at the start of each desktop shell and never asks
   again for a CA the person refused (`.pom-ca.declined`); `install` is also
   behind `POST /api/ui/tls/ca/install` (`backend/webui/https.rs`).

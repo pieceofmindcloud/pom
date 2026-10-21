@@ -8,11 +8,15 @@
 //!   system asks for the user's password to change the trust settings.
 //! - **Windows**: `certutil -user -addstore Root`, the current user's root
 //!   store. Windows shows its own "install this certificate?" warning; no UAC.
-//! - **Linux**: two stores. The NSS databases of Chrome (`~/.pki/nssdb`) and
-//!   Firefox (each profile) belong to the user and take the CA with `certutil`
-//!   without asking. The system store, which curl, Python and most tools read,
-//!   is root's: the copy and `update-ca-certificates` (or `update-ca-trust`) run
-//!   under `pkexec`, which shows the desktop's password dialog.
+//! - **Linux**: the NSS databases of Chrome (`~/.pki/nssdb`) and Firefox (each
+//!   profile) belong to the user and take the CA with `certutil` without
+//!   asking, so only this user's browsers trust it. The system store, which
+//!   curl, Python and most tools read, is shared by every user of the machine:
+//!   it is touched only with `--trust-ca-system-wide`, and then the copy and
+//!   `update-ca-certificates` (or `update-ca-trust`) run under `pkexec`, which
+//!   shows the desktop's password dialog. Without the flag nothing asks for
+//!   root, and the desktop window accepts the node's own certificate in its
+//!   view alone (`linux_window.rs`).
 //!
 //! A refusal is remembered (`.pom-ca.declined`, with the CA's fingerprint): the
 //! desktop app asks once at start and never again for the same CA. The
@@ -21,6 +25,7 @@
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::web_ca::LocalCa;
 
@@ -59,6 +64,20 @@ impl InstallReport {
             detail: detail.into(),
         }
     }
+}
+
+/// `--trust-ca-system-wide`: whether the Linux system store, shared by every
+/// user of the machine, is part of trusting the CA. Off by default, so another
+/// user's tools never trust this user's node and nobody is asked for root.
+static SYSTEM_WIDE: AtomicBool = AtomicBool::new(false);
+
+pub fn set_system_wide(on: bool) {
+    SYSTEM_WIDE.store(on, Ordering::Relaxed);
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn system_wide() -> bool {
+    SYSTEM_WIDE.load(Ordering::Relaxed)
 }
 
 /// Whether this build can install the CA on this system at all.
@@ -314,7 +333,7 @@ mod platform {
     }
 
     pub fn state(ca: &LocalCa, _cert: &Path) -> TrustState {
-        let system = system_store().map(|_| system_trusts(ca));
+        let system = system_store().filter(|_| system_wide()).map(|_| system_trusts(ca));
         let nick = nickname(ca);
         let browsers = find_tool("certutil").map(|certutil| {
             nss_databases()
@@ -367,7 +386,7 @@ mod platform {
             }
         }
 
-        if let Some((_, _, tool)) = system_store().filter(|_| !system_trusts(ca)) {
+        if let Some((_, _, tool)) = system_store().filter(|_| system_wide() && !system_trusts(ca)) {
             let (Some(pkexec), Some(target)) = (find_tool("pkexec"), system_file(ca)) else {
                 return finish(done, "no pkexec to ask for the system store");
             };

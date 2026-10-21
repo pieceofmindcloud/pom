@@ -405,6 +405,12 @@ struct Args {
     #[arg(long)]
     no_pkarr: bool,
 
+    /// Linux: also install the local web CA in the system trust store, which
+    /// every user of the machine reads (asks for root through `pkexec`).
+    /// Without it the CA goes only to this user's browser databases.
+    #[arg(long)]
+    trust_ca_system_wide: bool,
+
     /// `--port` came from the environment variable, not from the command line.
     /// Filled in by `parse_args`; see `apply_env_overrides`.
     #[arg(skip)]
@@ -553,6 +559,7 @@ fn run_main() -> Result<()> {
     tp::install_probe();
 
     let mut args = parse_args();
+    trust_store::set_system_wide(args.trust_ca_system_wide);
     #[cfg(windows)]
     if let Some(port) = args.windows_firewall_helper {
         return windows_firewall::run_elevated_helper(port);

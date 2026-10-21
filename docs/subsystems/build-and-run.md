@@ -1000,8 +1000,10 @@ icon** (`embed_windows_icon` depends on the host's `cfg(windows)`).
 The macOS package is a disk image, `pom-<v>-aarch64-apple-darwin.dmg`, built on
 the runner by `packaging/macos/make-dmg.sh` with `create-dmg`. It holds the
 `POM.app` bundle, an Applications shortcut (the window background, from
-`make-dmg-background.py`, shows the arrow between them) and `README.md`
-(installation steps: Gatekeeper, Applications, Local Network).
+`make-dmg-background.py`, shows the arrow between them) and `README.txt`
+(installation steps: Gatekeeper, Applications, Local Network). The guide is
+plain text so a clean macOS installation opens it in TextEdit before the user
+authorizes the non-notarized app.
 The binaries are universal (arm64 and x86_64, `lipo`), built with
 `MACOSX_DEPLOYMENT_TARGET=11.0`, so the app runs on macOS 11 (Big Sur) and later. The bundle's `Info.plist` declares
 `NSLocalNetworkUsageDescription`, the text macOS shows in the Local Network prompt.
@@ -1009,8 +1011,11 @@ The binary is `Contents/MacOS/pom`, the
 plugin host sits beside it in the same folder, and the interface is in
 `Contents/Resources/apps/frontend/dist`. It is signed ad hoc after the last file
 goes in (`codesign --force --deep --sign -`): any change to the bundle after
-that breaks the seal, and Gatekeeper then reports it as "damaged". Without
-`POM_HOME` it keeps its state in `~/.pom`. The Windows package works the same way, but its default home is the folder that contains `pom.exe`, so the package keeps its own data.
+that breaks the seal, and Gatekeeper then reports it as "damaged". An ad hoc
+signature is not notarization, so a browser-downloaded DMG remains quarantined
+and needs the guide's **Open Anyway** procedure. While macOS waits for that
+approval, the process can exist without reaching Rust startup or opening a
+window. Without `POM_HOME` it keeps its state in `~/.pom`. The Windows package works the same way, but its default home is the folder that contains `pom.exe`, so the package keeps its own data.
 
 To test a change in the packaged app, `packaging/macos/build-local-dmg.sh
 [output.dmg]` builds the same disk image on a developer Mac: UI, release build

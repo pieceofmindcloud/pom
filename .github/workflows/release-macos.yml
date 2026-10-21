@@ -130,7 +130,7 @@ jobs:
 
           # The disk image holds POM.app, an Applications shortcut and the README that
           # explains the first launch. make-dmg.sh lays out the window with create-dmg.
-          packaging/macos/make-dmg.sh "pacote/POM.app" packaging/macos/README.md "$nome.dmg"
+          packaging/macos/make-dmg.sh "pacote/POM.app" packaging/macos/README.txt "$nome.dmg"
 
       - uses: actions/upload-artifact@v4
         with:

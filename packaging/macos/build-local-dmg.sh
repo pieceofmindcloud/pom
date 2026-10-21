@@ -51,4 +51,4 @@ codesign --force --deep --sign - "$work/POM.app"
 codesign --verify --deep --strict "$work/POM.app"
 
 mkdir -p "$(dirname "$out")"
-packaging/macos/make-dmg.sh "$work/POM.app" packaging/macos/README.md "$out"
+packaging/macos/make-dmg.sh "$work/POM.app" packaging/macos/README.txt "$out"

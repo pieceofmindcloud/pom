@@ -4,7 +4,7 @@
 # the README, laid out on the window of dmg-background*.png (see
 # make-dmg-background.py, which also holds the icon coordinates).
 #
-#     packaging/macos/make-dmg.sh <POM.app> <README.md> <output.dmg>
+#     packaging/macos/make-dmg.sh <POM.app> <README.txt> <output.dmg>
 #
 # Needs create-dmg (brew install create-dmg). Finder positions the icons, so this
 # runs only in a logged-in macOS session, which a macOS runner is.
@@ -14,9 +14,9 @@ root="$(cd "$(dirname "$0")/../.." && pwd)"
 here="$root/packaging/macos"
 icon="$root/assets/brand/pom.icns"
 
-app="${1:?usage: make-dmg.sh <POM.app> <README.md> <output.dmg>}"
-readme="${2:?usage: make-dmg.sh <POM.app> <README.md> <output.dmg>}"
-out="${3:?usage: make-dmg.sh <POM.app> <README.md> <output.dmg>}"
+app="${1:?usage: make-dmg.sh <POM.app> <README.txt> <output.dmg>}"
+readme="${2:?usage: make-dmg.sh <POM.app> <README.txt> <output.dmg>}"
+out="${3:?usage: make-dmg.sh <POM.app> <README.txt> <output.dmg>}"
 
 [ -d "$app" ] || { echo "app não encontrado: $app" >&2; exit 1; }
 [ -f "$readme" ] || { echo "README não encontrado: $readme" >&2; exit 1; }
@@ -31,7 +31,9 @@ tiffutil -cathidpicheck "$here/dmg-background.png" "$here/dmg-background@2x.png"
 staging="$work/staging"
 mkdir "$staging"
 ditto "$app" "$staging/POM.app"
-cp "$readme" "$staging/README.md"
+# TextEdit opens .txt without requiring a Markdown application. This guide must
+# remain readable before the user authorizes the non-notarized app.
+cp "$readme" "$staging/README.txt"
 
 rm -f "$out"
 create-dmg \
@@ -45,7 +47,7 @@ create-dmg \
     --icon "POM.app" 165 215 \
     --hide-extension "POM.app" \
     --app-drop-link 495 215 \
-    --icon "README.md" 330 330 \
+    --icon "README.txt" 330 330 \
     "$out" "$staging"
 
 echo "✓ $out"

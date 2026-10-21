@@ -285,7 +285,7 @@ pub fn browser_sans(pinned: Option<&str>) -> Vec<String> {
 }
 
 fn hostname_local() -> Result<String> {
-    let output = std::process::Command::new("hostname").output()?;
+    let output = crate::console::hidden(&mut std::process::Command::new("hostname")).output()?;
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 

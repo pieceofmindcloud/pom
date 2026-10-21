@@ -669,7 +669,7 @@ struct Relaunch {
 }
 
 async fn run_tool(program: &str, args: &[&std::ffi::OsStr]) -> Result<(), String> {
-    let output = tokio::process::Command::new(program)
+    let output = crate::console::hidden_async(&mut tokio::process::Command::new(program))
         .args(args)
         .output()
         .await

@@ -1945,7 +1945,7 @@ fn parse_netstat_pids(output: &str, port: u16) -> Vec<u32> {
 async fn pids_holding_port(port: u16) -> Vec<u32> {
     #[cfg(windows)]
     {
-        let out = tokio::process::Command::new("netstat")
+        let out = crate::console::hidden_async(&mut tokio::process::Command::new("netstat"))
             .args(["-ano"])
             .output()
             .await;
@@ -1976,7 +1976,7 @@ async fn pids_holding_port(port: u16) -> Vec<u32> {
 /// Kills `pid` by force.
 async fn kill_pid(pid: u32) {
     #[cfg(windows)]
-    let _ = Command::new("taskkill")
+    let _ = crate::console::hidden_async(&mut Command::new("taskkill"))
         .args(["/F", "/PID", &pid.to_string()])
         .output()
         .await;

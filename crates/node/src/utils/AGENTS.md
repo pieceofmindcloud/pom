@@ -57,6 +57,11 @@ Nothing here talks to peers; everything is used by `main.rs` and
   failures right after the restart leave a trace. `respawn_at` receives the path
   captured before an atomic rename, avoiding the `(deleted)` path that
   `current_exe()` can return on Unix.
+- `console.rs` - `hidden`/`hidden_async`: a console program (`hostname`,
+  `netstat`, `taskkill`, `tar`) started with `CREATE_NO_WINDOW` on Windows.
+  `pom.exe` is a GUI-subsystem process, and without the flag each such child
+  opened a console window on the operator's screen; a no-op elsewhere. The
+  same rule for `nvidia-smi` lives in `llama_engine::sysmon` (`host_command`).
 - `sysmon.rs` - RAM/VRAM/disk sampling per platform, with a cache.
 - `thermal.rs` - temperature policy, hysteresis and cooldown as a pure state
   machine, with no vendor or hardware dependency. Validation requires a cutoff of

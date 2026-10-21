@@ -362,7 +362,7 @@ fn is_web_certificate_in(dir: &Path, der: &[u8]) -> bool {
 /// a name its container does not know (`ksia` for a node in Docker, say).
 pub fn host_names() -> Vec<String> {
     let mut names = vec!["localhost".to_string()];
-    if let Ok(output) = std::process::Command::new("hostname").output() {
+    if let Ok(output) = crate::console::hidden(&mut std::process::Command::new("hostname")).output() {
         names.push(String::from_utf8_lossy(&output.stdout).trim().to_string());
     }
     names.extend(extra_names());

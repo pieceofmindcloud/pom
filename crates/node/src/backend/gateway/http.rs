@@ -1374,7 +1374,7 @@ pub(super) async fn handle_remote_stream_link(
         let headers = headers.clone();
         let extensions = extensions.clone();
         async move {
-            crate::auth::validate_internal_node_headers(&auth, &headers, &extensions)
+            crate::auth::validate_internal_node_headers(&auth, &headers, &extensions, &path)
                 .await
                 .map_err(|_| anyhow::anyhow!("invalid peer credential"))?;
             if path != crate::direct::REMOTE_STREAM_RESULT_PATH {

@@ -427,7 +427,7 @@ pub(super) async fn handle_link(
         let extensions = extensions.clone();
         async move {
             if let Some(config) = &state.auth {
-                crate::auth::validate_internal_node_headers(config, &headers, &extensions)
+                crate::auth::validate_internal_node_headers(config, &headers, &extensions, &path)
                     .await
                     .map_err(|_| anyhow::anyhow!("invalid peer credential"))?;
             }

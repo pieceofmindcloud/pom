@@ -267,6 +267,24 @@ RUN sed -i 's/\$(groups)/$(groups 2>\/dev\/null)/' /etc/bash.bashrc \
 # the toolchain again; only a change of RUST_TOOLCHAIN or of this list reruns
 # them. The distribution image never includes this stage.
 FROM runtime-os AS dev-os
+# A browser for the agents that run in the cluster's plugin terminals. It is
+# the first layer of this stage, before the toolchain and its RUST_TOOLCHAIN
+# argument, so nothing but a change of these lines rebuilds it. Google ships
+# Chrome for amd64 only; Ubuntu's own `chromium` is a snap transition package
+# that does not run in a container. The container runs as root, so Chrome needs
+# `--no-sandbox`, and `--headless=new` without a display.
+RUN if [ "$(dpkg --print-architecture)" != amd64 ]; then \
+      echo "google-chrome-stable is amd64 only; skipping it on $(dpkg --print-architecture)"; \
+    else \
+      apt-get update && apt-get install -y --no-install-recommends curl \
+      && install -d -m 0755 /etc/apt/keyrings \
+      && curl -fsSL https://dl.google.com/linux/linux_signing_key.pub -o /etc/apt/keyrings/google-chrome.asc \
+      && echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google-chrome.asc] https://dl.google.com/linux/chrome/deb/ stable main" \
+           > /etc/apt/sources.list.d/google-chrome.list \
+      && apt-get update && apt-get install -y --no-install-recommends google-chrome-stable \
+      && rm -rf /var/lib/apt/lists/* \
+      && google-chrome --version; \
+    fi
 ARG RUST_TOOLCHAIN=stable
 ENV CARGO_HOME=/opt/cargo \
     RUSTUP_HOME=/opt/rustup \

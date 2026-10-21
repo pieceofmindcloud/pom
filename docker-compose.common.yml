@@ -34,6 +34,9 @@ x-node: &node
       POM_PLUGIN_LLAMA_RELEASE: ${POM_PLUGIN_LLAMA_RELEASE:-}
   image: pom:latest
   network_mode: host
+  # Docker's default /dev/shm is 64 MB; Chrome (dev-os) keeps its shared
+  # memory there and crashes tabs on a real page without more room.
+  shm_size: 1gb
   restart: always
   environment:
     POM_HOME: /data

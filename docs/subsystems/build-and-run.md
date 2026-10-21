@@ -478,7 +478,9 @@ loses offload on the first click.
   the runtime. There are two final images. `runtime` is the distribution
   image and has no compiler. `dev-runtime` is the development image: its
   toolchain (Rust/Cargo under world-readable directories, native compilers,
-  Node) is installed in the `dev-os` stage, on top of the operating system
+  Node, plus Google Chrome for the agents in the plugin terminals - the
+  stage's first layer, amd64 only, run as root with `--no-sandbox`, and the
+  Compose gives it `shm_size: 1gb`) is installed in the `dev-os` stage, on top of the operating system
   stage `runtime-os` and before any POM file, and the POM files are then
   copied from `runtime`. A POM build therefore reuses the toolchain layers
   from cache; only `RUST_TOOLCHAIN` or the package list reruns them. The cluster's optional development overlays use this target

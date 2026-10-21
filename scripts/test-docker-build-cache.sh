@@ -84,7 +84,7 @@ ordered "kache is cached before backend source copies" \
     "$(index_in "$builder_instructions" '^RUN .*cargo install .*kache')" \
     "$(index_in "$builder_instructions" '^COPY --from=llama-fork')"
 if printf '%s\n' "$builder_instructions" | grep -q '^ENV[[:space:]]XDG_CACHE_HOME=/build/target$' \
-   && printf '%s\n' "$builder_instructions" | grep -Eq 'kache init --no-service && .*cargo build'; then
+   && printf '%s\n' "$builder_instructions" | grep -Eq 'kache init --no-service[^&]* && .*cargo build'; then
     pass "kache is initialised before Cargo and stores into the target cache mount"
 else
     fail "the Cargo build must run kache init first, with XDG_CACHE_HOME=/build/target"

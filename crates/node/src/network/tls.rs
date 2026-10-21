@@ -191,8 +191,8 @@ pub const PEER_ALPN: &[u8] = b"pom/1";
 /// It cannot be the same as the pinning one: that one is Ed25519, because its key is
 /// the node's identity, and a browser does not verify an Ed25519 certificate - measured
 /// with macOS's curl/LibreSSL, which answers `sslv3 alert handshake failure`. This
-/// one is ECDSA P-256, signed by this machine's local CA with a persisted key, so it
-/// survives restarts and a system that trusts the CA shows no warning. The addresses
+/// one is ECDSA P-256, signed by this machine's local CA with a persisted key and kept
+/// on disk while it names every current address, so it survives restarts and a system that trusts the CA shows no warning. The addresses
 /// go into the SAN so the warning, where the CA is not trusted, is "unknown issuer"
 /// and not "wrong host". See `web_ca.rs`.
 pub fn browser_certificate(sans: &[String]) -> Result<NodeCertificate> {

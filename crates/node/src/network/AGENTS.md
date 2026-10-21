@@ -257,8 +257,11 @@ dedicated or member, with iroh's hole punching), are in
   (`.pom-web.key`) and the machine's local CA (`.pom-ca.key`, public half in
   `.pom-ca.crt`), name-constrained to `localhost`, the host name and
   `<SLUG>_TLS_NAMES`; `browser_certificate` issues the ECDSA certificate the
-  browser gets, signed by that CA, with a fresh serial and only the DNS names
-  the CA permits. `is_local_web_certificate` (by public key, not by
+  browser gets, signed by that CA, with only the DNS names the CA permits. It is
+  kept in `.pom-web.crt` and served again at start while it was issued by the
+  current CA for the web key, names every current address and has more than 60
+  days left: a browser that does not trust the CA holds its exception for one
+  exact certificate, so reissuing on every start asked again on every restart. `is_local_web_certificate` (by public key, not by
   certificate) and `local_host_of` are what the native windows check before
   accepting the interface's certificate when the system does not trust the CA.
   Files are created with a link so two processes agree on one key. The OS

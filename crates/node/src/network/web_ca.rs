@@ -5,11 +5,15 @@
 //! self-signed with a key made on every start: each restart was a new certificate
 //! and the operator had to accept the warning again. Two things change that:
 //!
-//! - **The web key is persisted** (`.pom-web.key`). The certificate is issued again
-//!   on every start, because the addresses in its SAN move, but its key does not.
-//!   That stable key is what the native windows pin (`is_local_web_certificate`):
-//!   they load the interface over `https://127.0.0.1` and accept exactly this
-//!   key, whether or not the CA below is trusted.
+//! - **The web key and the certificate are persisted** (`.pom-web.key`,
+//!   `.pom-web.crt`). The certificate is served again on the next start while it
+//!   names every current address and has more than `WEB_RENEW_DAYS` left; only
+//!   then is a new one issued. A browser that does not trust the CA keeps its
+//!   exception for one exact certificate, so a reissue on every start asked the
+//!   operator again on every restart. The stable key is what the native windows
+//!   pin (`is_local_web_certificate`): they load the interface over
+//!   `https://127.0.0.1` and accept exactly this key, whether or not the CA below
+//!   is trusted.
 //! - **The certificate is signed by a local CA** (`.pom-ca.key`, its public half
 //!   exported as `.pom-ca.crt`), made once per machine. Once the operating system
 //!   trusts it (`trust_store.rs`, or the `.crt` downloaded from the interface),
@@ -40,9 +44,11 @@ use crate::tls::NodeCertificate;
 
 const CA_VALID_DAYS: i64 = 3650;
 /// Apple refuses a server certificate valid for more than 825 days, even under
-/// a CA the user added; 397 is what every browser accepts. The certificate is
-/// issued again on every start, so it never gets near the end.
+/// a CA the user added; 397 is what every browser accepts.
 const WEB_VALID_DAYS: i64 = 397;
+/// A kept web certificate with fewer days left is issued again at start, so a
+/// node that runs for weeks never reaches the end of one.
+const WEB_RENEW_DAYS: i64 = 60;
 
 /// The CA's private key and certificate, in one file: `.pom-ca.key`.
 pub fn ca_filename() -> String {
@@ -53,6 +59,11 @@ pub fn ca_filename() -> String {
 /// operating system installs: `.pom-ca.crt`.
 pub fn ca_cert_filename() -> String {
     format!(".{}-ca.crt", crate::brand::slug())
+}
+
+/// The browser certificate last issued, kept for the next start: `.pom-web.crt`.
+pub fn web_cert_filename() -> String {
+    format!(".{}-web.crt", crate::brand::slug())
 }
 
 /// The web certificate's key: `.pom-web.key`.
@@ -178,16 +189,62 @@ impl LocalCa {
             .any(|base| name == *base || name.ends_with(&format!(".{base}")))
     }
 
-    /// The certificate the browser receives: the persisted web key, signed by
-    /// this CA, for `sans` (IP addresses as they are, DNS names the CA permits).
-    pub fn issue_web_certificate(&self, web_key: &KeyPair, sans: &[String]) -> Result<NodeCertificate> {
+    /// The names a web certificate for `sans` carries: `localhost`, the IP
+    /// addresses as they are and the DNS names this CA permits.
+    fn web_names(&self, sans: &[String]) -> Vec<String> {
         let mut names: Vec<String> = vec!["localhost".into()];
         names.extend(sans.iter().cloned());
         names.retain(|name| name.parse::<std::net::IpAddr>().is_ok() || self.permits(name));
         names.sort();
         names.dedup();
+        names
+    }
 
-        let mut params = CertificateParams::new(names)
+    /// Whether `der`, a web certificate kept from an earlier start, can be
+    /// served again: issued by this CA for `web_key`, naming every one of
+    /// `sans`, and with more than [`WEB_RENEW_DAYS`] left.
+    fn still_serves(&self, der: &[u8], web_key: &KeyPair, sans: &[String]) -> bool {
+        let Ok((_, cert)) = x509_parser::parse_x509_certificate(der) else {
+            return false;
+        };
+        let Ok((_, ca)) = x509_parser::parse_x509_certificate(&self.cert_der) else {
+            return false;
+        };
+        if cert.issuer().as_raw() != ca.subject().as_raw()
+            || cert.public_key().raw != web_key.public_key_der().as_slice()
+        {
+            return false;
+        }
+        let renew_at = chrono::Utc::now() + chrono::Duration::days(WEB_RENEW_DAYS);
+        if cert.validity().not_after.timestamp() < renew_at.timestamp() {
+            return false;
+        }
+        let Ok(Some(san)) = cert.subject_alternative_name() else {
+            return false;
+        };
+        let held: Vec<String> = san
+            .value
+            .general_names
+            .iter()
+            .filter_map(|name| match name {
+                x509_parser::extensions::GeneralName::DNSName(dns) => Some(dns.to_ascii_lowercase()),
+                x509_parser::extensions::GeneralName::IPAddress(bytes) => ip_text(bytes),
+                _ => None,
+            })
+            .collect();
+        self.web_names(sans).iter().all(|name| {
+            let name = name
+                .parse::<std::net::IpAddr>()
+                .map(|ip| ip.to_string())
+                .unwrap_or_else(|_| name.to_ascii_lowercase());
+            held.contains(&name)
+        })
+    }
+
+    /// The certificate the browser receives: the persisted web key, signed by
+    /// this CA, for `sans` (IP addresses as they are, DNS names the CA permits).
+    pub fn issue_web_certificate(&self, web_key: &KeyPair, sans: &[String]) -> Result<NodeCertificate> {
+        let mut params = CertificateParams::new(self.web_names(sans))
             .map_err(|e| anyhow!("invalid web certificate parameters: {e}"))?;
         let mut dn = DistinguishedName::new();
         dn.push(DnType::CommonName, crate::brand::slug());
@@ -226,18 +283,40 @@ pub fn load_or_create_web_key_in(dir: &Path) -> Result<KeyPair> {
 
 /// The browser certificate of this machine: the CA and the web key of `dir()`.
 pub fn browser_certificate(sans: &[String]) -> Result<NodeCertificate> {
-    let dir = dir();
-    let ca = LocalCa::load_or_create_in(&dir, &host_names())?;
-    let key = load_or_create_web_key_in(&dir)?;
-    ca.issue_web_certificate(&key, sans)
+    browser_certificate_in(&dir(), &host_names(), sans)
+}
+
+/// The certificate kept in `dir` (`.pom-web.crt`) while it still serves, or a
+/// new one, kept for the next start. Reissued on every start, it was a new
+/// certificate each restart, and a browser that does not trust the CA holds
+/// its exception for one exact certificate: it asked again every time.
+fn browser_certificate_in(dir: &Path, ca_names: &[String], sans: &[String]) -> Result<NodeCertificate> {
+    let ca = LocalCa::load_or_create_in(dir, ca_names)?;
+    let key = load_or_create_web_key_in(dir)?;
+    let path = dir.join(web_cert_filename());
+    let kept = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| x509_parser::pem::parse_x509_pem(text.as_bytes()).ok().map(|(_, pem)| pem.contents));
+    if let Some(der) = kept.filter(|der| ca.still_serves(der, &key, sans)) {
+        return Ok(NodeCertificate {
+            cert: der.into(),
+            key: PrivateKeyDer::try_from(key.serialize_der())
+                .map_err(|e| anyhow!("invalid web certificate key: {e}"))?,
+        });
+    }
+    let issued = ca.issue_web_certificate(&key, sans)?;
+    if let Err(error) = write_replace(&path, certificate_pem(&issued.cert).as_bytes()) {
+        tracing::warn!("the web certificate will be issued again on the next start: {error:#}");
+    }
+    Ok(issued)
 }
 
 /// Whether `der` is a certificate for this machine's persisted web key.
 ///
 /// This is the check the native windows make before accepting the interface's
 /// certificate when the system does not trust the CA. It compares the public
-/// key, not the certificate, because the certificate is issued again on every
-/// start and the key is not. Any other certificate, a self-signed one from an
+/// key, not the certificate, because a new address issues a new certificate
+/// and the key stays. Any other certificate, a self-signed one from an
 /// impostor on the loopback port included, is refused.
 pub fn is_local_web_certificate(der: &[u8]) -> bool {
     is_web_certificate_in(&dir(), der)
@@ -364,6 +443,28 @@ fn random_serial() -> SerialNumber {
     SerialNumber::from_slice(&bytes)
 }
 
+/// A DER certificate as PEM, 64 base64 characters a line.
+fn certificate_pem(der: &[u8]) -> String {
+    use base64::Engine;
+    let text = base64::engine::general_purpose::STANDARD.encode(der);
+    let mut pem = String::from("-----BEGIN CERTIFICATE-----\n");
+    for line in text.as_bytes().chunks(64) {
+        pem.push_str(std::str::from_utf8(line).unwrap_or_default());
+        pem.push('\n');
+    }
+    pem.push_str("-----END CERTIFICATE-----\n");
+    pem
+}
+
+/// An IP address SAN (4 or 16 bytes) as text, the way `IpAddr` prints it.
+fn ip_text(bytes: &[u8]) -> Option<String> {
+    match bytes.len() {
+        4 => Some(std::net::IpAddr::from(<[u8; 4]>::try_from(bytes).ok()?).to_string()),
+        16 => Some(std::net::IpAddr::from(<[u8; 16]>::try_from(bytes).ok()?).to_string()),
+        _ => None,
+    }
+}
+
 fn colon_hex(bytes: &[u8]) -> String {
     bytes
         .iter()
@@ -420,6 +521,37 @@ mod tests {
 
     fn names() -> Vec<String> {
         vec!["localhost".into(), "machine-a".into()]
+    }
+
+    #[test]
+    fn the_web_certificate_survives_a_restart_until_an_address_is_new() {
+        let dir = tempfile::tempdir().unwrap();
+        let sans = vec!["machine-a".to_string(), "192.168.1.10".to_string(), "::1".to_string()];
+        let first = browser_certificate_in(dir.path(), &names(), &sans).unwrap();
+        let again = browser_certificate_in(dir.path(), &names(), &sans).unwrap();
+        assert_eq!(first.cert, again.cert);
+
+        // Fewer addresses still fit the kept certificate.
+        let fewer = browser_certificate_in(dir.path(), &names(), &sans[..1]).unwrap();
+        assert_eq!(first.cert, fewer.cert);
+
+        let mut moved = sans.clone();
+        moved.push("10.0.0.7".into());
+        let reissued = browser_certificate_in(dir.path(), &names(), &moved).unwrap();
+        assert_ne!(first.cert, reissued.cert);
+        assert!(is_web_certificate_in(dir.path(), &reissued.cert));
+        let kept = browser_certificate_in(dir.path(), &names(), &moved).unwrap();
+        assert_eq!(reissued.cert, kept.cert);
+    }
+
+    #[test]
+    fn a_kept_certificate_of_another_ca_is_issued_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let sans = vec!["machine-a".to_string()];
+        let first = browser_certificate_in(dir.path(), &names(), &sans).unwrap();
+        std::fs::remove_file(dir.path().join(ca_filename())).unwrap();
+        let after = browser_certificate_in(dir.path(), &names(), &sans).unwrap();
+        assert_ne!(first.cert, after.cert);
     }
 
     #[test]

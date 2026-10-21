@@ -82,7 +82,7 @@ jobs:
           tag_name: ${{ inputs.version }}
           name: ${{ inputs.version }}
           prerelease: ${{ inputs.prerelease }}
-          files: dist-release-ksia/pom-${{ inputs.version }}-x86_64-unknown-linux-gnu-cpu.tar.gz
+          files: dist-release-ksia/pom-${{ inputs.version }}-x86_64-unknown-linux-gnu-cpu.AppImage
 
   linux-cuda:
     name: Linux x86_64 (CUDA, all architectures)
@@ -118,7 +118,7 @@ jobs:
           tag_name: ${{ inputs.version }}
           name: ${{ inputs.version }}
           prerelease: ${{ inputs.prerelease }}
-          files: dist-release-ksia/pom-${{ inputs.version }}-x86_64-unknown-linux-gnu-cuda.tar.gz
+          files: dist-release-ksia/pom-${{ inputs.version }}-x86_64-unknown-linux-gnu-cuda.AppImage
 
   windows-cpu:
     name: Windows x86_64 (CPU, cross-compiled)

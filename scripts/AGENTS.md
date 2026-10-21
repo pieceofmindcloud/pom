@@ -131,7 +131,14 @@ the Python code. Authoritative: read the files; this is a map.
   `dist-release-ksia/`; `--dry-run` only prints the commands; `--debug-symbols`
   (windows-cpu) includes `pom.pdb`. Every variant compiles
   `-p node -p pom-plugin-host` and puts the host beside the `pom` in the package.
-  Called by `.github/workflows/release-ksia.yml`.
+  The Linux variants build with `embed-ui,desktop` and are packed as AppImages
+  (`pom-<v>-x86_64-unknown-linux-gnu-{cpu|cuda}.AppImage`) by
+  `make-linux-appimage.sh`, with appimagetool kept in the cache's `tools/`;
+  Windows stays a zip. Called by `.github/workflows/release-ksia.yml`.
+- `make-linux-appimage.sh` - packs `pom` + `pom-plugin-host` into an AppImage
+  (AppRun, desktop entry, icons). The optional fifth argument names the file;
+  the default `pom-<v>-x86_64` is the CUDA + Vulkan package of
+  `release-linux.yml`.
 - `test-release-ksia.sh` - dry-run of each variant (including the
   `pom-plugin-host` copy) and a check that the Linux runner's workflow uses no
   GitHub storage.

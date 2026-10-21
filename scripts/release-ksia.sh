@@ -2,15 +2,18 @@
 # Builds and packages one POM release variant on the ksia self-hosted runner.
 #
 # Variants:
-#   linux-cpu    x86_64-unknown-linux-gnu, CPU
+#   linux-cpu    x86_64-unknown-linux-gnu, CPU, AppImage
 #   linux-cuda   x86_64-unknown-linux-gnu, CUDA with every GPU architecture the
-#                toolkit supports (CUDA 12.9: compute_50 up to sm_120)
-#   windows-cpu  x86_64-pc-windows-msvc, CPU, cross-compiled with cargo-xwin
+#                toolkit supports (CUDA 12.9: compute_50 up to sm_120), AppImage
+#   windows-cpu  x86_64-pc-windows-msvc, CPU, cross-compiled with cargo-xwin, zip
+#
+# The Linux AppImages are built like the one of release-linux.yml (interface
+# embedded, desktop window) by scripts/make-linux-appimage.sh.
 #
 # Everything that should survive between runs lives under POM_RELEASE_CACHE
 # (default ~/.cache/pom-release): the llama.cpp checkout, one Cargo target
-# directory per variant, cargo-xwin with its MSVC/Windows SDK download, and the
-# ninja binary. Nothing is stored on GitHub: no artifacts, no Actions cache.
+# directory per variant, cargo-xwin with its MSVC/Windows SDK download, the
+# ninja binary and appimagetool. Nothing is stored on GitHub: no artifacts, no Actions cache.
 # The runner user needs no sudo; see docs/subsystems/build-and-run.md,
 # "Release na ksia".
 set -euo pipefail
@@ -27,6 +30,7 @@ llvm_bin="${POM_RELEASE_LLVM_BIN:-/usr/lib/llvm-20/bin}"
 llama_repo="${POM_LLAMA_CPP_REPOSITORY:-https://github.com/pieceofmindcloud/llama.cpp.git}"
 llama_ref="${POM_LLAMA_CPP_REF:-pom-tensor-parallel}"
 ninja_version="1.12.1"
+appimagetool_version="1.9.1"
 windows_target="x86_64-pc-windows-msvc"
 
 usage() {
@@ -84,13 +88,20 @@ missing=""
 need() {
   command -v "$1" >/dev/null 2>&1 || missing="${missing} $1"
 }
-for tool in git cargo rustup npm node tar; do need "$tool"; done
+for tool in git cargo rustup npm node curl; do need "$tool"; done
 case "$variant" in
   linux-*)
     # .cargo/config.toml links Linux binaries with clang + mold.
     need clang
     need mold
     need cmake
+    need pkg-config
+    # The desktop window (feature `desktop`): GTK 3 and WebKitGTK 4.1.
+    if command -v pkg-config >/dev/null 2>&1; then
+      for module in gtk+-3.0 webkit2gtk-4.1 libsoup-3.0; do
+        pkg-config --exists "$module" || missing="${missing} ${module}(pkg-config; apt install libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev)"
+      done
+    fi
     ;;
   windows-cpu)
     need cmake
@@ -151,9 +162,12 @@ fi
 # --- native build -------------------------------------------------------------
 
 binary=""
+# An AppImage carries no apps/ folder: the interface is compiled into pom, and
+# the desktop window is what a double click opens.
+linux_features="embed-ui,desktop"
 case "$variant" in
   linux-cpu)
-    run cargo build --release --locked -p node -p pom-plugin-host
+    run cargo build --release --locked -p node -p pom-plugin-host --features "$linux_features"
     binary="${target_dir}/release/pom"
     ;;
   linux-cuda)
@@ -165,7 +179,7 @@ case "$variant" in
     export CUDA_PATH="$cuda_home"
     export CUDACXX="${cuda_home}/bin/nvcc"
     export PATH="${cuda_home}/bin:${PATH}"
-    run cargo build --release --locked -p node -p pom-plugin-host --features cuda
+    run cargo build --release --locked -p node -p pom-plugin-host --features "cuda,${linux_features}"
     binary="${target_dir}/release/pom"
     ;;
   windows-cpu)
@@ -206,14 +220,37 @@ case "$variant" in
 esac
 
 # --- package ------------------------------------------------------------------
-# The binary sits at the package root with apps/ next to it: project_root()
-# climbs from the executable's directory, so the unpacked folder runs anywhere.
 
 case "$variant" in
   linux-cpu) name="pom-${version}-x86_64-unknown-linux-gnu-cpu" ;;
   linux-cuda) name="pom-${version}-x86_64-unknown-linux-gnu-cuda" ;;
   windows-cpu) name="pom-${version}-x86_64-pc-windows-msvc" ;;
 esac
+
+if [[ "$variant" == linux-* ]]; then
+  appimagetool="${tools}/appimagetool-${appimagetool_version}-x86_64.AppImage"
+  if [[ ! -x "$appimagetool" ]]; then
+    run mkdir -p "$tools"
+    run curl -fsSL -o "$appimagetool" "https://github.com/AppImage/appimagetool/releases/download/${appimagetool_version}/appimagetool-x86_64.AppImage"
+    run chmod 755 "$appimagetool"
+  fi
+  package="${output}/${name}.AppImage"
+  run rm -f "$package"
+  if ((dry_run)); then
+    printf '+ APPIMAGETOOL=%s %s %s %s %s %s %s\n' "$appimagetool" \
+      "$root/scripts/make-linux-appimage.sh" "$binary" "$(dirname "$binary")/pom-plugin-host" \
+      "$version" "$output" "$name"
+  else
+    APPIMAGETOOL="$appimagetool" "$root/scripts/make-linux-appimage.sh" \
+      "$binary" "$(dirname "$binary")/pom-plugin-host" "$version" "$output" "$name"
+  fi
+  printf 'package=%s\n' "$package"
+  exit 0
+fi
+
+# The Windows binary sits at the package root with apps/ next to it:
+# project_root() climbs from the executable's directory, so the unpacked folder
+# runs anywhere.
 stage="${output}/${name}"
 run rm -rf "$stage"
 run mkdir -p "${stage}/apps/frontend"
@@ -225,23 +262,12 @@ run cp "$binary" "$stage/"
 run cp "$(dirname "$binary")/pom-plugin-host${binary##*/pom}" "$stage/"
 if ((debug_symbols)); then run cp "${binary%.exe}.pdb" "$stage/"; fi
 if [[ -f "$root/README.md" ]]; then run cp "$root/README.md" "$stage/"; fi
-case "$variant" in
-  linux-*)
-    run mkdir -p "${stage}/share"
-    run cp -R "$root/assets/brand/linux/hicolor" "${stage}/share/"
-    run cp "$root/assets/brand/pom.desktop" "${stage}/share/"
-    package="${output}/${name}.tar.gz"
-    run tar -czf "$package" -C "$output" "$name"
-    ;;
-  windows-cpu)
-    package="${output}/${name}.zip"
-    run rm -f "$package"
-    if ((dry_run)); then
-      printf '+ (cd %s && zip -qr %s.zip %s)\n' "$output" "$name" "$name"
-    else
-      (cd "$output" && zip -qr "${name}.zip" "$name")
-    fi
-    ;;
-esac
+package="${output}/${name}.zip"
+run rm -f "$package"
+if ((dry_run)); then
+  printf '+ (cd %s && zip -qr %s.zip %s)\n' "$output" "$name" "$name"
+else
+  (cd "$output" && zip -qr "${name}.zip" "$name")
+fi
 run rm -rf "$stage"
 printf 'package=%s\n' "$package"

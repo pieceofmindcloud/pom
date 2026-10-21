@@ -399,7 +399,8 @@ workflows and `scripts/release-ksia.sh` set it to the tag being published, and
 any other build takes the newest `v*` tag the checkout knows (falling back to
 `v<CARGO_PKG_VERSION>`). The asset is picked by platform and build: the
 AppImage when the process runs from one (`APPIMAGE`), the
-`unknown-linux-gnu-{cuda|cpu}` tarball, the `pc-windows-msvc[-cuda-vulkan]`
+`unknown-linux-gnu-{cuda|cpu}` tarball (or AppImage, for the ksia AppImages; the
+CUDA + Vulkan AppImage of `release-linux.yml` keeps the bare `-x86_64.AppImage`), the `pc-windows-msvc[-cuda-vulkan]`
 zip, or the macOS disk image. A node in a container (`/.dockerenv`) is never
 updated in place: rebuild its image.
 
@@ -935,8 +936,8 @@ still exist; this is the quota-free alternative. Inputs: `version` (tag, e.g.
 
 | Job | Package | Timeout |
 |---|---|---|
-| `linux-cpu` | `pom-<v>-x86_64-unknown-linux-gnu-cpu.tar.gz` | 4 h |
-| `linux-cuda` | `pom-<v>-x86_64-unknown-linux-gnu-cuda.tar.gz` | 24 h |
+| `linux-cpu` | `pom-<v>-x86_64-unknown-linux-gnu-cpu.AppImage` | 4 h |
+| `linux-cuda` | `pom-<v>-x86_64-unknown-linux-gnu-cuda.AppImage` | 24 h |
 | `windows-cpu` | `pom-<v>-x86_64-pc-windows-msvc.zip` | 4 h |
 
 All three run on `[self-hosted, Linux, X64, ksia]` and in sequence
@@ -949,6 +950,15 @@ which has a quota. The only traffic to GitHub is the checkout and the upload of
 the final package to the release. `scripts/test-release-ksia.sh` checks that and
 the dry run of each variant.
 
+- **The Linux packages are AppImages**, built like the one of
+  `release-linux.yml`: `--features embed-ui,desktop` (plus `cuda` for
+  linux-cuda), packed by `scripts/make-linux-appimage.sh` with appimagetool
+  (1.9.1, kept in `tools/` of the cache). Their names keep
+  the `unknown-linux-gnu-{cpu|cuda}` suffix of the old tarballs, so they never
+  collide with the bare `pom-<v>-x86_64.AppImage` of `release-linux.yml` on the
+  same tag, and the updater picks each one by build (see "Updating POM from its
+  own releases"). The runner needs the GTK 3 / WebKitGTK 4.1 development
+  packages for the desktop window; the script checks them with `pkg-config`.
 - **linux-cuda** builds with CUDA 12.9 (`POM_RELEASE_CUDA_HOME`, default
   `/usr/local/cuda-12.9`), which is the installed toolkit with the widest list
   of architectures, and with `CUDAARCHS=''` and `CMAKE_CUDA_ARCHITECTURES`

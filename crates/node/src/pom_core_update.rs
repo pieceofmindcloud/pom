@@ -152,6 +152,9 @@ struct Target {
     arch: &'static str,
     /// The variant suffix of an archive (`cuda`, `cpu`, `cuda-vulkan`, or none).
     variant: Option<&'static str>,
+    /// Built with the Vulkan backend too: on Linux only the CUDA + Vulkan
+    /// AppImage of `release-linux.yml` is.
+    vulkan: bool,
     appimage: bool,
 }
 
@@ -167,6 +170,7 @@ impl Target {
             os: std::env::consts::OS,
             arch: std::env::consts::ARCH,
             variant,
+            vulkan: cfg!(feature = "vulkan"),
             appimage: matches!(install, Install::AppImage(_)),
         }
     }
@@ -176,10 +180,14 @@ impl Target {
         let Some(rest) = name.strip_prefix("pom-") else {
             return false;
         };
-        if self.appimage {
+        // The CUDA + Vulkan AppImage of `release-linux.yml` keeps the bare
+        // name; the ksia AppImages are named like the tarballs they replaced
+        // (`...-unknown-linux-gnu-{cpu|cuda}.AppImage`).
+        if self.appimage && self.vulkan {
             return name.ends_with(&format!("-{}.AppImage", self.arch));
         }
         let (triples, extension): (&[&str], &str) = match self.os {
+            "linux" if self.appimage => (&["unknown-linux-gnu"], ".AppImage"),
             "linux" => (&["unknown-linux-gnu"], ".tar.gz"),
             "windows" => (&["pc-windows-msvc"], ".zip"),
             "macos" => (&["apple-darwin"], ".dmg"),
@@ -889,30 +897,49 @@ mod tests {
         os: "linux",
         arch: "x86_64",
         variant: Some("cuda"),
+        vulkan: false,
         appimage: false,
     };
     const APPIMAGE: Target = Target {
         os: "linux",
         arch: "x86_64",
         variant: Some("cuda"),
+        vulkan: true,
+        appimage: true,
+    };
+    const APPIMAGE_CUDA: Target = Target {
+        os: "linux",
+        arch: "x86_64",
+        variant: Some("cuda"),
+        vulkan: false,
+        appimage: true,
+    };
+    const APPIMAGE_CPU: Target = Target {
+        os: "linux",
+        arch: "x86_64",
+        variant: Some("cpu"),
+        vulkan: false,
         appimage: true,
     };
     const WINDOWS_GPU: Target = Target {
         os: "windows",
         arch: "x86_64",
         variant: Some("cuda-vulkan"),
+        vulkan: true,
         appimage: false,
     };
     const WINDOWS_CPU: Target = Target {
         os: "windows",
         arch: "x86_64",
         variant: None,
+        vulkan: false,
         appimage: false,
     };
     const MACOS: Target = Target {
         os: "macos",
         arch: "aarch64",
         variant: None,
+        vulkan: false,
         appimage: false,
     };
 
@@ -923,6 +950,14 @@ mod tests {
         assert!(!LINUX_CUDA.matches("pom-v0.5.5-x86_64.AppImage"));
         assert!(APPIMAGE.matches("pom-v0.5.5-x86_64.AppImage"));
         assert!(!APPIMAGE.matches("pom-v0.5.3-x86_64-unknown-linux-gnu-cuda.tar.gz"));
+        assert!(!APPIMAGE.matches("pom-v0.6.0-x86_64-unknown-linux-gnu-cuda.AppImage"));
+        assert!(APPIMAGE_CUDA.matches("pom-v0.6.0-x86_64-unknown-linux-gnu-cuda.AppImage"));
+        assert!(!APPIMAGE_CUDA.matches("pom-v0.6.0-x86_64-unknown-linux-gnu-cpu.AppImage"));
+        assert!(!APPIMAGE_CUDA.matches("pom-v0.6.0-x86_64.AppImage"));
+        assert!(!APPIMAGE_CUDA.matches("pom-v0.6.0-x86_64-unknown-linux-gnu-cuda.tar.gz"));
+        assert!(APPIMAGE_CPU.matches("pom-v0.6.0-x86_64-unknown-linux-gnu-cpu.AppImage"));
+        assert!(!APPIMAGE_CPU.matches("pom-v0.6.0-x86_64-unknown-linux-gnu-cuda.AppImage"));
+        assert!(!LINUX_CUDA.matches("pom-v0.6.0-x86_64-unknown-linux-gnu-cuda.AppImage"));
         assert!(WINDOWS_GPU.matches("pom-v0.5.6-x86_64-pc-windows-msvc-cuda-vulkan.zip"));
         assert!(!WINDOWS_GPU.matches("pom-v0.5.6-x86_64-pc-windows-msvc.zip"));
         assert!(WINDOWS_CPU.matches("pom-v0.5.6-x86_64-pc-windows-msvc.zip"));

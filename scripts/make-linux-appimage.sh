@@ -8,9 +8,12 @@
 # host sits beside it, as the node requires.
 #
 #     APPIMAGETOOL=/path/to/appimagetool ./scripts/make-linux-appimage.sh \
-#         <pom> <pom-plugin-host> <version> <destination-dir>
+#         <pom> <pom-plugin-host> <version> <destination-dir> [<name>]
 #
-# The output is `<destination-dir>/pom-<version>-x86_64.AppImage`.
+# The output is `<destination-dir>/<name>.AppImage`; `<name>` defaults to
+# `pom-<version>-x86_64`, the CUDA + Vulkan package of `release-linux.yml`. The other
+# builds pass their own name so the updater tells them apart
+# (`crates/node/src/pom_core_update.rs`).
 #
 # Not bundled on purpose: the NVIDIA driver (`libcuda`) and the Vulkan loader
 # (`libvulkan.so.1`) belong to the machine's driver, and the libc is the one of the
@@ -22,6 +25,7 @@ bin="$1"
 host="$2"
 version="$3"
 destination="$4"
+name="${5:-pom-$version-x86_64}"
 tool="${APPIMAGETOOL:?set APPIMAGETOOL to the appimagetool executable}"
 
 [ -x "$bin" ] || { echo "binário não encontrado: $bin" >&2; exit 1; }
@@ -52,7 +56,7 @@ cp -R "$root/assets/brand/linux/hicolor" "$appdir/usr/share/icons/"
 install -m 644 "$root/assets/brand/linux/hicolor/256x256/apps/pom.png" "$appdir/pom.png"
 
 mkdir -p "$destination"
-out="$destination/pom-$version-x86_64.AppImage"
+out="$destination/$name.AppImage"
 # `--appimage-extract-and-run` runs the tool without FUSE, so the build machine needs no
 # FUSE mount for it.
 ARCH=x86_64 "$tool" --appimage-extract-and-run "$appdir" "$out"

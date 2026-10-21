@@ -17,6 +17,7 @@ x-node: &node
       # (.dockerignore drops .git/, and the image has no git). Build through
       # scripts/build-docker.sh, which exports the host's commit.
       POM_BUILD_COMMIT: ${POM_BUILD_COMMIT:-}
+      POM_RELEASE_VERSION: ${POM_RELEASE_VERSION:-}
       # Keys the Dockerfile's /build/target cache mount id. A bump of the
       # vendored llama.cpp fork gets a clean native tree instead of a stale
       # libllama.a. build-docker.sh exports it from the fork checkout.

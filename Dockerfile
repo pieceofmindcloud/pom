@@ -296,6 +296,8 @@ ARG POM_LLAMA_CPP_MODE=release
 # Host build metadata changes only the runtime-derived stages, never Cargo/npm.
 ARG POM_BUILD_COMMIT=""
 ENV POM_BUILD_COMMIT=${POM_BUILD_COMMIT}
+ARG POM_RELEASE_VERSION=""
+ENV POM_RELEASE_VERSION=${POM_RELEASE_VERSION}
 ENV POM_HOME=/app
 ENV POM_PLUGIN_HOST=/usr/local/bin/pom-plugin-host
 WORKDIR /app
@@ -355,6 +357,8 @@ COPY --from=frontend /build/apps/frontend/dist /app/apps/frontend/dist
 FROM dev-os AS dev-runtime
 ARG POM_BUILD_COMMIT=""
 ENV POM_BUILD_COMMIT=${POM_BUILD_COMMIT}
+ARG POM_RELEASE_VERSION=""
+ENV POM_RELEASE_VERSION=${POM_RELEASE_VERSION}
 ENV POM_HOME=/app
 ENV POM_PLUGIN_HOST=/usr/local/bin/pom-plugin-host
 WORKDIR /app

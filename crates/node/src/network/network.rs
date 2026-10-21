@@ -2386,7 +2386,7 @@ impl Network {
             pubkey: self.pubkey.clone(),
             cluster_id: self.cluster_id(),
             trust_version: self.trust_version(),
-            pom_version: crate::pom_core_update::RELEASE_VERSION.to_string(),
+            pom_version: crate::pom_core_update::release_version().to_string(),
             pom_build: crate::build_commit(),
             membership: self.membership(),
             relay: self.relay_gate.offer(),
@@ -4455,8 +4455,8 @@ mod tests {
         assert_eq!(gossip["idle"], true);
 
         // The participants screen shows each node's release from here.
-        assert_eq!(udp["pom_version"], crate::pom_core_update::RELEASE_VERSION);
-        assert_eq!(gossip["pom_version"], crate::pom_core_update::RELEASE_VERSION);
+        assert_eq!(udp["pom_version"], crate::pom_core_update::release_version());
+        assert_eq!(gossip["pom_version"], crate::pom_core_update::release_version());
         assert_eq!(udp["pom_build"], crate::build_commit());
     }
 

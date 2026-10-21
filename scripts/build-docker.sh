@@ -14,6 +14,18 @@ fi
 export POM_BUILD_COMMIT="$commit"
 echo "build commit: $POM_BUILD_COMMIT"
 
+# The release, read here for the same reason: without `.git` the binary would
+# report the crate version (`v0.1.0`). Release tags are not always on the
+# branch, so they are fetched first (best effort; offline keeps the local ones).
+# An explicit POM_RELEASE_VERSION wins. Like the commit, it only reaches the
+# runtime stages.
+if [ -z "${POM_RELEASE_VERSION:-}" ]; then
+  timeout 20 git fetch --tags --quiet 2>/dev/null || true
+  POM_RELEASE_VERSION=$(git tag --list 'v[0-9]*' --sort=-v:refname 2>/dev/null | head -n 1)
+fi
+export POM_RELEASE_VERSION="${POM_RELEASE_VERSION:-}"
+echo "release: ${POM_RELEASE_VERSION:-<crate version>}"
+
 # Select an exact published fork release or compile the local checkout.
 mode=${POM_LLAMA_CPP_MODE:-source}
 case "$mode" in

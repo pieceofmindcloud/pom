@@ -36,8 +36,28 @@ use tokio::sync::{Mutex, RwLock};
 
 /// The repository whose releases are POM's.
 pub(crate) const GITHUB_REPOSITORY: &str = "pieceofmindcloud/pom";
-/// The release this binary is, as its tag (`v0.5.6`).
+/// The release this binary was compiled as, as its tag (`v0.5.6`).
 pub(crate) const RELEASE_VERSION: &str = env!("POM_RELEASE_VERSION");
+
+/// The release this node runs: the image's runtime `POM_RELEASE_VERSION` when
+/// it is set, else the compiled one. A Docker build has no `.git` and no tags,
+/// so its compiled value falls back to the crate version (`v0.1.0`);
+/// `scripts/build-docker.sh` reads the newest tag on the host and the final
+/// stage sets it, like `POM_BUILD_COMMIT`, without invalidating Cargo.
+pub(crate) fn release_version() -> &'static str {
+    static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    VERSION.get_or_init(|| {
+        release_version_from(std::env::var("POM_RELEASE_VERSION").ok().as_deref(), RELEASE_VERSION)
+    })
+}
+
+fn release_version_from(runtime: Option<&str>, compiled: &str) -> String {
+    runtime
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(compiled)
+        .to_owned()
+}
 
 /// Cadence of the background check; the screen's check is immediate.
 const AUTO_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
@@ -360,7 +380,7 @@ impl PomCoreUpdater {
             client,
             sources,
             status: Arc::new(RwLock::new(CoreUpdateStatus {
-                current_version: RELEASE_VERSION.into(),
+                current_version: release_version().into(),
                 ..Default::default()
             })),
             update_lock: Arc::new(Mutex::new(())),
@@ -415,7 +435,7 @@ impl PomCoreUpdater {
             let url = format!("{api}/repos/{GITHUB_REPOSITORY}/releases?per_page=30");
             match self.get_json::<Vec<GithubRelease>>(&url).await {
                 Ok(releases) => {
-                    let found = newest_after(RELEASE_VERSION, github_candidates(releases, target));
+                    let found = newest_after(release_version(), github_candidates(releases, target));
                     return Ok((found, "github"));
                 }
                 Err(error) => errors.push(format!("GitHub: {error}")),
@@ -427,7 +447,7 @@ impl PomCoreUpdater {
                 .await
             {
                 Ok(listing) => {
-                    let found = newest_after(RELEASE_VERSION, site_candidates(listing, target));
+                    let found = newest_after(release_version(), site_candidates(listing, target));
                     return Ok((found, "site"));
                 }
                 Err(error) => errors.push(format!("site: {error}")),
@@ -475,7 +495,7 @@ impl PomCoreUpdater {
                 }
                 *self.status.write().await = CoreUpdateStatus {
                     core_update: update,
-                    current_version: RELEASE_VERSION.into(),
+                    current_version: release_version().into(),
                     checked_at,
                     check_error: None,
                 };
@@ -850,6 +870,18 @@ pub(crate) async fn apply_pom_update(
 }
 
 #[cfg(test)]
+mod release_version_tests {
+    use super::release_version_from;
+
+    #[test]
+    fn the_image_release_overrides_the_compiled_fallback() {
+        assert_eq!(release_version_from(Some(" v0.5.7 "), "v0.1.0"), "v0.5.7");
+        assert_eq!(release_version_from(Some(""), "v0.5.6"), "v0.5.6");
+        assert_eq!(release_version_from(None, "v0.5.6"), "v0.5.6");
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -995,7 +1027,7 @@ mod tests {
         assert!(updater.detect().await.is_err());
         let status = updater.status().await;
         assert!(status.core_update.is_none());
-        assert_eq!(status.current_version, RELEASE_VERSION);
+        assert_eq!(status.current_version, release_version());
         assert!(status.check_error.is_some());
     }
 

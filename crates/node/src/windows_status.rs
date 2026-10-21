@@ -227,8 +227,9 @@ mod native {
         webview
             .load_url(&crate::gateway_url(port))
             .context("could not open the interface in WebView2")?;
-        // The system asks the person once; a refusal is remembered.
-        thread::spawn(crate::trust_store::auto_install);
+        // No `trust_store::auto_install` here: Windows always shows its own
+        // certificate warning, and the view accepts the node's own certificate
+        // without it. Preferences installs the CA when the person wants it.
 
         let menu = Menu::new();
         let show_item = MenuItem::with_id(TRAY_SHOW_ID, "Open POM", true, None);

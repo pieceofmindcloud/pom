@@ -9,6 +9,7 @@
 //!   app never installs it at start: only the Preferences button does.
 //! - **Windows**: `certutil -user -addstore Root`, the current user's root
 //!   store. Windows shows its own "install this certificate?" warning; no UAC.
+//!   As on macOS, the app never installs it at start: only Preferences does.
 //! - **Linux**: the NSS databases of Chrome (`~/.pki/nssdb`) and Firefox (each
 //!   profile) belong to the user and take the CA with `certutil` without
 //!   asking, so only this user's browsers trust it. The system store, which
@@ -164,11 +165,11 @@ pub fn install(ca: &LocalCa) -> InstallReport {
     report
 }
 
-/// What the Windows and Linux desktop apps do at start (macOS does not: its
-/// keychain always asks for the password): install the CA unless this machine
+/// What the Linux desktop app does at start (macOS and Windows do not: their
+/// stores always show a dialog): install the CA unless this machine
 /// already trusts it or the person refused this CA before. Never on a server:
 /// there is nobody at the screen to answer the system's dialog.
-#[cfg_attr(not(any(windows, all(target_os = "linux", feature = "desktop"))), allow(dead_code))]
+#[cfg_attr(not(all(target_os = "linux", feature = "desktop")), allow(dead_code))]
 pub fn auto_install() {
     let ca = match LocalCa::load_or_create() {
         Ok(ca) => ca,

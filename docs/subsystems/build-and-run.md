@@ -746,7 +746,11 @@ The engine lives in the private repository `pom-plugin-llama.cpp`
 (`llama-engine` and `llama-cpp-sys-2`). The POM depends on it by git, pinned to
 a `rev` in `Cargo.toml` (`[patch.crates-io]`) and in `crates/node/Cargo.toml`.
 Cargo fetches it over SSH through the system `git`, enabled by
-`[net] git-fetch-with-cli = true` in `.cargo/config.toml`. Changing the engine
+`[net] git-fetch-with-cli = true` in `.cargo/config.toml`. Every release
+workflow reaches it with the read-only token `POM_LLAMACPP_TOKEN`, rewriting
+`ssh://git@github.com/` to HTTPS: the hosted ones in the job's global git
+config, `release-ksia.yml` through `GIT_CONFIG_*` on the build step only, so the
+token never lands in the self-hosted runner's `~/.gitconfig`. Changing the engine
 means: commit and push `pom-plugin-llama.cpp`, then move both `rev`s.
 
 The fork of llama.cpp is not in either repository. `llama-cpp-sys-2` finds it

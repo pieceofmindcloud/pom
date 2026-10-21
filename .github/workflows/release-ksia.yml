@@ -65,18 +65,16 @@ jobs:
           livre=$(df -BG --output=avail "$HOME" | tail -1 | tr -dc '0-9')
           echo "free in \$HOME: ${livre}G"
           [ "$livre" -ge 20 ] || echo "::warning::only ${livre}G free; each variant uses ~10G in ~/.cache/pom-release"
-      - name: SSH access to the engine repository (pom-plugin-llama.cpp)
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.PLUGIN_REPO_SSH_KEY }}
-
-      - name: github.com key in known_hosts
-        shell: bash
-        run: |
-          mkdir -p ~/.ssh
-          ssh-keyscan github.com >> ~/.ssh/known_hosts
 
       - name: Build and package
+        # Cargo.toml names the engine (pom-plugin-llama.cpp) as ssh://git@github.com/...;
+        # the same fine-grained read-only token the hosted workflows use rewrites that URL
+        # to HTTPS. Through GIT_CONFIG_* it lives only in this step's environment, never
+        # in the self-hosted runner's ~/.gitconfig.
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: url.https://x-access-token:${{ secrets.POM_LLAMACPP_TOKEN }}@github.com/.insteadOf
+          GIT_CONFIG_VALUE_0: ssh://git@github.com/
         run: scripts/release-ksia.sh --variant linux-cpu --version "${{ inputs.version }}"
       - name: Publish to the release
         uses: softprops/action-gh-release@v2
@@ -103,18 +101,16 @@ jobs:
           livre=$(df -BG --output=avail "$HOME" | tail -1 | tr -dc '0-9')
           echo "free in \$HOME: ${livre}G"
           [ "$livre" -ge 25 ] || echo "::warning::only ${livre}G free; the full CUDA build uses well more than the CPU one"
-      - name: SSH access to the engine repository (pom-plugin-llama.cpp)
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.PLUGIN_REPO_SSH_KEY }}
-
-      - name: github.com key in known_hosts
-        shell: bash
-        run: |
-          mkdir -p ~/.ssh
-          ssh-keyscan github.com >> ~/.ssh/known_hosts
 
       - name: Build and package
+        # Cargo.toml names the engine (pom-plugin-llama.cpp) as ssh://git@github.com/...;
+        # the same fine-grained read-only token the hosted workflows use rewrites that URL
+        # to HTTPS. Through GIT_CONFIG_* it lives only in this step's environment, never
+        # in the self-hosted runner's ~/.gitconfig.
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: url.https://x-access-token:${{ secrets.POM_LLAMACPP_TOKEN }}@github.com/.insteadOf
+          GIT_CONFIG_VALUE_0: ssh://git@github.com/
         run: scripts/release-ksia.sh --variant linux-cuda --version "${{ inputs.version }}"
       - name: Publish to the release
         uses: softprops/action-gh-release@v2
@@ -135,18 +131,16 @@ jobs:
         with:
           node-version: '22'
       - uses: dtolnay/rust-toolchain@stable
-      - name: SSH access to the engine repository (pom-plugin-llama.cpp)
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.PLUGIN_REPO_SSH_KEY }}
-
-      - name: github.com key in known_hosts
-        shell: bash
-        run: |
-          mkdir -p ~/.ssh
-          ssh-keyscan github.com >> ~/.ssh/known_hosts
 
       - name: Build and package
+        # Cargo.toml names the engine (pom-plugin-llama.cpp) as ssh://git@github.com/...;
+        # the same fine-grained read-only token the hosted workflows use rewrites that URL
+        # to HTTPS. Through GIT_CONFIG_* it lives only in this step's environment, never
+        # in the self-hosted runner's ~/.gitconfig.
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: url.https://x-access-token:${{ secrets.POM_LLAMACPP_TOKEN }}@github.com/.insteadOf
+          GIT_CONFIG_VALUE_0: ssh://git@github.com/
         run: scripts/release-ksia.sh --variant windows-cpu --version "${{ inputs.version }}"
       - name: Publish to the release
         uses: softprops/action-gh-release@v2

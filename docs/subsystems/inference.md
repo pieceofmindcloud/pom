@@ -3003,8 +3003,13 @@ measurement, and they show up in their own row of the Chat telemetry table.
   itself away.
 - **`tls_handshake_ms`** - measured **on the server**, around the accept loop's
   `TlsAcceptor::accept` (`backend/serve.rs`), which is where the time is exact.
-  It comes back in the answer's `meta` and is aggregated like the
-  `node_timings` already are.
+  It belongs to the connection: `serve.rs` attaches it to the connection's
+  requests as `serve::TlsHandshake`, and the `/v1/step` and `/v1/prefill`
+  handlers take it, so only the first request on that connection reports it.
+  It is rounded up to whole ms, so a sub-millisecond loopback handshake reports 1
+  and zero always means "this request opened no connection". A frame on the
+  persistent channel, a batch item or plain HTTP carries none. It comes back in
+  the answer's `meta` and is aggregated like the `node_timings` already are.
 
 **What that number is, and why the screen says it plainly.** The handshake
 happens **once per connection**, and connections stay in `reqwest`'s pool:

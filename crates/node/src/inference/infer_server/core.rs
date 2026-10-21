@@ -869,8 +869,10 @@ impl crate::relay::InProcessInference for InferenceAppState {
     async fn dispatch(&self, path: &str, body: Bytes) -> Result<Response> {
         let headers = axum::http::HeaderMap::new();
         Ok(match path {
-            "/v1/prefill" => handle_prefill(State(self.clone()), headers, body).await,
-            "/v1/step" => handle_step(State(self.clone()), headers, body).await,
+            // A frame of an already open channel opened no connection: it
+            // carries no handshake.
+            "/v1/prefill" => handle_prefill(State(self.clone()), None, headers, body).await,
+            "/v1/step" => handle_step(State(self.clone()), None, headers, body).await,
             "/v1/step-stream" => handle_step_stream(State(self.clone()), headers, body).await,
             "/v1/session/rewind" => {
                 let request = serde_json::from_slice(&body)

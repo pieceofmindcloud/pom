@@ -191,9 +191,33 @@ pub struct TlsServer {
     pub plain: PlainPolicy,
     /// With `true`, plain text from outside loopback is refused.
     pub strict: Arc<AtomicBool>,
-    /// Duration of the last accepted handshake, in ms. This is where the
-    /// `tls_handshake_ms` of the inference telemetry comes from.
-    pub last_handshake_ms: Arc<AtomicU64>,
+}
+
+/// The TLS handshake of the connection a request arrived on, in the request's
+/// extensions. This is where the `tls_handshake_ms` of the inference telemetry
+/// comes from.
+///
+/// It belongs to the connection, not to the server: the first request on the
+/// connection takes it and every later one reads zero, because only the first
+/// paid for it. A server-wide "last handshake" was read by every hop on every
+/// token - reused connections, the persistent channel's frames, even a
+/// browser's handshake - and summed by the gateway into seconds that never
+/// happened.
+#[derive(Clone, Debug)]
+pub struct TlsHandshake(Arc<AtomicU64>);
+
+impl TlsHandshake {
+    fn new(elapsed: Duration) -> Self {
+        // Rounded up: a loopback handshake can take less than a millisecond,
+        // and zero must keep meaning "this request opened no connection".
+        let ms = elapsed.as_micros().div_ceil(1_000).max(1) as u64;
+        Self(Arc::new(AtomicU64::new(ms)))
+    }
+
+    /// The handshake's duration in ms, for the first caller only; zero after.
+    pub fn take_ms(&self) -> u64 {
+        self.0.swap(0, Ordering::Relaxed)
+    }
 }
 
 impl TlsServer {
@@ -213,7 +237,6 @@ impl TlsServer {
             configs: crate::tls::server_configs(id, sans)?,
             plain: PlainPolicy::Redirect,
             strict: Arc::new(AtomicBool::new(strict)),
-            last_handshake_ms: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -228,11 +251,6 @@ impl TlsServer {
     /// Turns the refusal of remote plain text on or off.
     pub fn set_strict(&self, on: bool) {
         self.strict.store(on, Ordering::Relaxed);
-    }
-
-    /// Duration of the last handshake, for telemetry.
-    pub fn last_handshake_ms(&self) -> u64 {
-        self.last_handshake_ms.load(Ordering::Relaxed)
     }
 }
 
@@ -492,10 +510,11 @@ async fn handle_conn(
             .map_err(|e| anyhow::anyhow!("{e}"));
     }
 
-    let service = move |caller: Option<TransportPeer>| {
+    let service = move |caller: Option<TransportPeer>, handshake: Option<TlsHandshake>| {
         hyper::service::service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
             let mut app = app.clone();
             let caller = caller.clone();
+            let handshake = handshake.clone();
             async move {
                 if insecure_ui && plain_action(req.uri().path()) == PlainAction::Refuse {
                     return Ok(refuse_plain().map(axum::body::Body::from));
@@ -507,6 +526,9 @@ async fn handle_conn(
                 req.extensions_mut().insert(TransportSecurity(is_tls));
                 if let Some(caller) = caller {
                     req.extensions_mut().insert(caller);
+                }
+                if let Some(handshake) = handshake {
+                    req.extensions_mut().insert(handshake);
                 }
                 Service::call(&mut app, req).await
             }
@@ -528,17 +550,14 @@ async fn handle_conn(
                 configs.browser
             };
             let tls_stream = start.into_stream(config).await?;
-            if let Some(t) = &tls {
-                t.last_handshake_ms
-                    .store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
-            }
+            let handshake = TlsHandshake::new(started.elapsed());
             let caller = tls_stream
                 .get_ref()
                 .1
                 .peer_certificates()
                 .and_then(|chain| chain.first())
                 .and_then(|cert| TransportPeer::from_cert(cert.as_ref()));
-            let svc = service(caller);
+            let svc = service(caller, Some(handshake));
             Builder::new(TokioExecutor::new())
                 .serve_connection_with_upgrades(TokioIo::new(tls_stream), svc)
                 .await
@@ -551,7 +570,7 @@ async fn handle_conn(
         }
         (false, _) => {
             Builder::new(TokioExecutor::new())
-                .serve_connection_with_upgrades(TokioIo::new(stream), service(None))
+                .serve_connection_with_upgrades(TokioIo::new(stream), service(None, None))
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
         }
@@ -680,6 +699,80 @@ mod integration {
             .text()
             .await
             .unwrap()
+    }
+
+    /// A server whose `/handshake` answers the handshake its request reports,
+    /// or `none` when the request carries none.
+    async fn start_handshake_server(id: &Identity) -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = Router::new().route(
+            "/handshake",
+            get(|handshake: Option<axum::Extension<TlsHandshake>>| async move {
+                handshake.map_or_else(|| "none".to_string(), |h| h.take_ms().to_string())
+            }),
+        );
+        let tls = TlsServer::from_identity(id, true, &["127.0.0.1".to_string()]).unwrap();
+        tokio::spawn(async move {
+            let _ = serve(listener, app, Some(tls)).await;
+        });
+        addr
+    }
+
+    fn peer_http(server: &Identity, own: &Identity) -> reqwest::Client {
+        let own = crate::tls::node_certificate(own).unwrap();
+        let cfg = crate::tls::client_config_as(&server.node_id.0, Some(&own)).unwrap();
+        reqwest::Client::builder()
+            .use_preconfigured_tls(cfg)
+            .build()
+            .unwrap()
+    }
+
+    async fn reported_handshake(http: &reqwest::Client, addr: std::net::SocketAddr) -> u64 {
+        http.get(format!("https://127.0.0.1:{}/handshake", addr.port()))
+            .send()
+            .await
+            .expect("the handshake had to complete")
+            .text()
+            .await
+            .unwrap()
+            .parse()
+            .expect("a TLS request carries its connection's handshake")
+    }
+
+    /// The handshake is a connection's cost: the request that opened the
+    /// connection reports it, the ones reusing it from the pool report zero,
+    /// and another connection's handshake never leaks into them. Reading a
+    /// server-wide "last handshake" made every token of a generation repeat
+    /// it, and the gateway summed 2823 copies into 33 s that never happened.
+    #[tokio::test]
+    async fn the_handshake_is_reported_once_by_the_connection_that_paid_it() {
+        let server = Identity::generate();
+        let caller = Identity::generate();
+        let addr = start_handshake_server(&server).await;
+        let pooled = peer_http(&server, &caller);
+
+        assert!(reported_handshake(&pooled, addr).await >= 1);
+        assert_eq!(reported_handshake(&pooled, addr).await, 0);
+
+        let other = peer_http(&server, &caller);
+        assert!(reported_handshake(&other, addr).await >= 1);
+        assert_eq!(reported_handshake(&pooled, addr).await, 0);
+        assert_eq!(reported_handshake(&other, addr).await, 0);
+    }
+
+    /// Plain HTTP opened no TLS connection, so there is no handshake to report.
+    #[tokio::test]
+    async fn a_plain_request_carries_no_handshake() {
+        let server = Identity::generate();
+        let addr = start_handshake_server(&server).await;
+        let body = reqwest::get(format!("http://127.0.0.1:{}/handshake", addr.port()))
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert_eq!(body, "none");
     }
 
     /// Mutual TLS: the server learns which node is calling from the client

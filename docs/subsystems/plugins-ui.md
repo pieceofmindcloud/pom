@@ -210,6 +210,11 @@ A resident plugin behaves as before.
 
 - The menu keeps listing the plugin with its saved manifest while the process
   is stopped (`GET /api/ui/plugins/ui` returns `on_demand` and `running`).
+  Its labels and icon load too: `GET /api/ui/plugins/<code>/assets/<path>`
+  serves the i18n catalogs and the `icon_image` from the copy the node keeps in
+  `pom.db` (`plugin_ui_asset:<code>:<path>`), written from every live
+  `ui.asset` answer and copied from the running host once per manifest, and
+  checked like a live answer. Any other asset still needs the process.
 - Clicking the menu item calls `POST /api/ui/plugins/<code>/open`, which starts
   the process, and then opens the screen. Reached by address while stopped, the
   screen shows the puzzle of `components/MissingPiece.tsx` with its fourth

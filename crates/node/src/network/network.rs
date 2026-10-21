@@ -684,6 +684,12 @@ pub enum P2PMessage {
         /// newer chain: the chain itself is fetched and verified.
         #[serde(default)]
         trust_version: Option<String>,
+        /// The POM release this node runs (`v0.5.6`) and its build commit, for
+        /// the participants screen. Information only, never a decision.
+        #[serde(default)]
+        pom_version: String,
+        #[serde(default)]
+        pom_build: String,
         /// This node's membership token (`membership::MembershipToken`): its
         /// role, signed by an admin of the chain. Bound to `pubkey`, so it
         /// proves nothing when copied into another node's announce.
@@ -731,6 +737,11 @@ pub struct PeerInfo {
     /// The trust chain version the peer announces; a hint, never proof.
     #[serde(default)]
     pub trust_version: Option<String>,
+    /// The POM release (`v0.5.6`) and build commit the peer announces.
+    #[serde(default)]
+    pub pom_version: String,
+    #[serde(default)]
+    pub pom_build: String,
     /// The membership token the peer announces; verified where it is read
     /// (`membership::verified_role`), never trusted as it came.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2375,6 +2386,8 @@ impl Network {
             pubkey: self.pubkey.clone(),
             cluster_id: self.cluster_id(),
             trust_version: self.trust_version(),
+            pom_version: crate::pom_core_update::release_version().to_string(),
+            pom_build: crate::build_commit(),
             membership: self.membership(),
             relay: self.relay_gate.offer(),
             addr,
@@ -2426,6 +2439,7 @@ impl Network {
                 }
                 if self.p2p_tunnel_ready() {
                     caps.push("transport/iroh-tunnel-v1".into());
+                    caps.push(crate::pipeline::CAP_P2P_TUNNEL_STREAM.into());
                 }
                 caps
             },
@@ -2576,6 +2590,7 @@ impl Network {
         }
         if self.p2p_tunnel_ready() {
             caps.push("transport/iroh-tunnel-v1".into());
+            caps.push(crate::pipeline::CAP_P2P_TUNNEL_STREAM.into());
         }
         Some(caps)
     }
@@ -3370,6 +3385,8 @@ impl Network {
                 network_chat_enabled,
                 cluster_id,
                 trust_version,
+                pom_version,
+                pom_build,
                 membership,
                 relay,
                 signature: _,
@@ -3394,6 +3411,8 @@ impl Network {
                     pubkey,
                     cluster_id,
                     trust_version,
+                    pom_version,
+                    pom_build,
                     membership,
                     relay,
                     addr: peer_addr.clone(),
@@ -4436,6 +4455,11 @@ mod tests {
             serde_json::from_slice(&net.gossip_announce_bytes(None).unwrap()).unwrap();
         assert_eq!(udp["idle"], true);
         assert_eq!(gossip["idle"], true);
+
+        // The participants screen shows each node's release from here.
+        assert_eq!(udp["pom_version"], crate::pom_core_update::release_version());
+        assert_eq!(gossip["pom_version"], crate::pom_core_update::release_version());
+        assert_eq!(udp["pom_build"], crate::build_commit());
     }
 
     #[tokio::test]
@@ -5042,6 +5066,8 @@ mod tests {
             pubkey: "p".into(),
             cluster_id: None,
             trust_version: None,
+            pom_version: String::new(),
+            pom_build: String::new(),
             membership: None,
             relay: None,
             addr: "[2804:d55:5579:1000:89f3:3f94:7c07:e183]:42777".into(),
@@ -5095,6 +5121,8 @@ mod tests {
             pubkey: "a".repeat(64),
             cluster_id: None,
             trust_version: None,
+            pom_version: String::new(),
+            pom_build: String::new(),
             membership: None,
             relay: None,
             addr: "[2804:d55:5579:1000:89f3:3f94:7c07:e183]:42777".into(),
@@ -5188,6 +5216,8 @@ mod tests {
             pubkey: "p".into(),
             cluster_id: None,
             trust_version: None,
+            pom_version: String::new(),
+            pom_build: String::new(),
             membership: None,
             relay: None,
             addr: "192.168.1.9:42777".into(),
@@ -5323,6 +5353,8 @@ mod tests {
                 pubkey: "peer-key".into(),
                 cluster_id: None,
                 trust_version: None,
+                pom_version: String::new(),
+                pom_build: String::new(),
                 membership: None,
                 relay: None,
                 signature: None,
@@ -5638,6 +5670,8 @@ mod tests {
             pubkey: "p".into(),
             cluster_id: None,
             trust_version: None,
+            pom_version: String::new(),
+            pom_build: String::new(),
             membership: None,
             relay: None,
             addr: addr.into(),
@@ -5743,6 +5777,8 @@ mod tests {
             pubkey,
             cluster_id: None,
             trust_version: None,
+            pom_version: String::new(),
+            pom_build: String::new(),
             membership: None,
             relay: None,
             addr: "127.0.0.1:42777".into(),
@@ -6762,6 +6798,8 @@ mod tests {
             pubkey: hex::encode(pubkey.as_bytes()),
             cluster_id: None,
             trust_version: None,
+            pom_version: String::new(),
+            pom_build: String::new(),
             membership: None,
             relay: None,
             signature: None,

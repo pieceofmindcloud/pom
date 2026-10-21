@@ -22,6 +22,15 @@ use tokio::sync::{mpsc, oneshot};
 
 pub const INFER_TUNNEL_PROTOCOL: &str = "/pom/infer-tunnel/1.0.0";
 
+/// The tunnel for a gateway call whose answer is a stream (a plugin engine's
+/// NDJSON generation). The request is framed as in [`InferTunnelCodec`]; the
+/// answer is `[u16 status]` followed by the body's bytes as the destination's
+/// loopback produces them, until the stream finishes. The block protocol
+/// above reads the whole answer before sending it, so a generation reached
+/// the caller only when it had ended. Used toward a peer that announces
+/// `crate::pipeline::CAP_P2P_TUNNEL_STREAM`.
+pub const INFER_TUNNEL_STREAM_PROTOCOL: &str = "/pom/infer-tunnel-stream/1.0.0";
+
 /// Which local server serves a call that arrived through the tunnel.
 ///
 /// The destination is chosen by the sender but **resolved** by the receiver: it
@@ -465,6 +474,19 @@ impl Codec for InferTunnelCodec {
 
 
 static TUNNEL_SENDER: std::sync::OnceLock<TunnelOutboundSender> = std::sync::OnceLock::new();
+static STREAM_TRANSPORT: std::sync::OnceLock<std::sync::Arc<crate::p2p::P2p>> =
+    std::sync::OnceLock::new();
+
+/// Registers the endpoint the streamed tunnel dials through. A streamed call
+/// holds its QUIC stream for as long as the answer lasts, so it does not go
+/// through the transport task's request/response queue.
+pub fn set_stream_transport(p2p: std::sync::Arc<crate::p2p::P2p>) {
+    let _ = STREAM_TRANSPORT.set(p2p);
+}
+
+pub fn stream_transport() -> Option<&'static std::sync::Arc<crate::p2p::P2p>> {
+    STREAM_TRANSPORT.get()
+}
 static LOCAL_NODE_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 /// Registers this process's discovery identity so that relay callers
@@ -632,6 +654,32 @@ pub async fn serve_loopback(
     port: u16,
     request: TunnelRequest,
 ) -> TunnelResponse {
+    match forward_loopback(http, port, request).await {
+        Ok(resp) => {
+            let status = resp.status().as_u16();
+            let body = resp.bytes().await.map(|b| b.to_vec()).unwrap_or_default();
+            TunnelResponse { status, body }
+        }
+        // The peer's own inference server isn't reachable even on its own
+        // loopback (not yet started, mid-reconfiguration, crashed) — a
+        // synthetic 502 lets the caller's fallback logic tell this apart
+        // from a successful-but-erroring response, without inventing a new
+        // status code space just for the tunnel.
+        Err(e) => TunnelResponse {
+            status: NOTHING_LISTENING_STATUS,
+            body: e.to_string().into_bytes(),
+        },
+    }
+}
+
+/// Sends `request` to this node's own server on loopback and returns its
+/// answer with the body still unread: `serve_loopback` reads it whole, the
+/// streamed tunnel (`INFER_TUNNEL_STREAM_PROTOCOL`) forwards it as it comes.
+pub async fn forward_loopback(
+    http: &reqwest::Client,
+    port: u16,
+    request: TunnelRequest,
+) -> reqwest::Result<reqwest::Response> {
     // Always cleartext on loopback: `serve::plain_allowed` allows loopback
     // even with the cluster on strict TLS, and the node's certificate does not cover
     // `127.0.0.1`.
@@ -660,27 +708,10 @@ pub async fn serve_loopback(
         }
         request_builder = request_builder.header(name, value);
     }
-    let sent = request_builder
+    request_builder
         .header(TUNNEL_ORIGIN_HEADER, tunnel_mark())
         .send()
-        .await;
-
-    match sent {
-        Ok(resp) => {
-            let status = resp.status().as_u16();
-            let body = resp.bytes().await.map(|b| b.to_vec()).unwrap_or_default();
-            TunnelResponse { status, body }
-        }
-        // The peer's own inference server isn't reachable even on its own
-        // loopback (not yet started, mid-reconfiguration, crashed) — a
-        // synthetic 502 lets the caller's fallback logic tell this apart
-        // from a successful-but-erroring response, without inventing a new
-        // status code space just for the tunnel.
-        Err(e) => TunnelResponse {
-            status: NOTHING_LISTENING_STATUS,
-            body: e.to_string().into_bytes(),
-        },
-    }
+        .await
 }
 
 #[cfg(test)]

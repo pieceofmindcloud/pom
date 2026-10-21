@@ -181,6 +181,11 @@ pub const CAP_SPECULATE_MTP_SLICED: &str = "speculate/v1-mtp-sliced";
 /// when it is unavailable or fails at the transport layer.
 pub const CAP_P2P_TUNNEL: &str = "transport/iroh-tunnel-v1";
 
+/// Advertised beside [`CAP_P2P_TUNNEL`] when the node also serves the streamed
+/// tunnel (`infer_tunnel::INFER_TUNNEL_STREAM_PROTOCOL`): a gateway call whose
+/// answer is a stream reaches the caller as it is written, not when it ends.
+pub const CAP_P2P_TUNNEL_STREAM: &str = "transport/iroh-tunnel-stream-v1";
+
 /// Advertised when the node serves `/v1/link`: one long-lived HTTP body pair
 /// carrying successive `frame/v1-batch` frames instead of a fresh request per
 /// activation. Checked **per-hop**, like the tunnel: the caller opens the
@@ -741,6 +746,8 @@ mod ipv6_tests {
             pubkey: "p".into(),
             cluster_id: None,
             trust_version: None,
+            pom_version: String::new(),
+            pom_build: String::new(),
             membership: None,
             relay: None,
             addr: addr.into(),

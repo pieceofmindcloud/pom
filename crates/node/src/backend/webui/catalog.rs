@@ -8,8 +8,9 @@ pub struct NodeInfo {
     pub hostname: String,
     /// Commit this binary was built from, so "which build is that peer running?"
     /// is answerable without a shell on the machine.
-    /// test
     pub build_commit: String,
+    /// The POM release this binary is (`v0.5.6`), as GitHub tags it.
+    pub pom_version: String,
     /// This node accepts updating itself through the interface. The screen only
     /// draws the button when this is true, so it never offers what will give 403.
     pub dev_update: bool,
@@ -168,6 +169,7 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         // value `/admin/nodes` already shows correctly on the Network tab.
         hostname: state.network.hostname(),
         build_commit: crate::build_commit(),
+        pom_version: crate::pom_core_update::release_version().to_string(),
         dev_update: crate::devupdate::enabled(),
         pom_dev_mode: crate::pom_dev_mode_enabled(),
         profile,
@@ -565,7 +567,26 @@ pub(super) fn drop_discarded(
     removed
 }
 
-/// Copy completed metadata into a newer inventory by filesystem identity.
+/// Whether two entries of the same file agree on what the inventory, not the
+/// header, says about it: its name and what its `.pom` makes it (the slicing it
+/// belongs to, the model, the TP rank). The enrichment never sets these, so an
+/// unchanged file always agrees. A slice indexed before its manifest was written
+/// (the slicer writes the `.pom` last) does not: copying the old entry back kept
+/// it a nameless loose slice, shown by its hash, through every rescan.
+fn same_inventory_facts(fresh: &catalog::DiscoveredModel, enriched: &catalog::DiscoveredModel) -> bool {
+    fresh.name == enriched.name
+        && fresh.shard_group == enriched.shard_group
+        && fresh.model_label == enriched.model_label
+        && fresh.pom_id == enriched.pom_id
+        && fresh.tensor_parallel == enriched.tensor_parallel
+        && fresh.tp_rank == enriched.tp_rank
+        && fresh.tp_size == enriched.tp_size
+}
+
+/// Copy completed metadata into a newer inventory by filesystem identity, when
+/// the inventory still says the same about the file (`same_inventory_facts`);
+/// otherwise the entry stays pending and is enriched again from the header
+/// cache.
 /// Inventory refreshes necessarily create a new `Arc`, so pointer equality is
 /// not a valid publication condition. `sidecars` is left alone: the newer
 /// inventory read them itself (`scan_catalog`).
@@ -575,11 +596,10 @@ pub(super) fn reconcile_enriched_catalog(current: &mut Catalog, enriched: &Catal
         let Some(identity) = source.metadata_identity.as_ref() else {
             continue;
         };
-        let Some(target) = current
-            .models
-            .iter_mut()
-            .find(|target| catalog::current_metadata_identity(target).as_ref() == Some(identity))
-        else {
+        let Some(target) = current.models.iter_mut().find(|target| {
+            catalog::current_metadata_identity(target).as_ref() == Some(identity)
+                && same_inventory_facts(target, source)
+        }) else {
             continue;
         };
         *target = source.clone();

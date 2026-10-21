@@ -101,6 +101,7 @@ vi.mock("../lib/queries", () => ({
   useAdminAccess: () => ({ data: { default_password: false } }),
   usePluginUi: () => ({ data: { plugins: [] }, isLoading: false, isError: false }),
   useMyQuota: () => ({ data: { available: false, configured: false } }),
+  usePomCoreUpdateStatus: () => ({ data: { core_update: null } }),
   useNode: () => ({ data: nodeData, isLoading: false, isError: false }),
   useCluster: () => ({ data: chatScenario.cluster }),
   useNetworkChat: () => ({ data: { messages: [] }, isSuccess: true }),

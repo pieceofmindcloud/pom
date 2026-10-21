@@ -10,6 +10,7 @@ import { fakeNode } from "../test/fixtures";
 import type { NodeInfo } from "../lib/types";
 
 let sidebarNodeData: NodeInfo | null = null;
+let coreUpdateData: { core_update: unknown; current_version?: string } = { core_update: null };
 
 vi.mock("../lib/queries", () => ({
   useNode: () => ({ data: sidebarNodeData }),
@@ -17,6 +18,7 @@ vi.mock("../lib/queries", () => ({
   usePluginUi: () => ({ data: { plugins: [] } }),
   // Usage shows only where a machine runs the logs plugin; these tests have one.
   useMyQuota: () => ({ data: { available: true, configured: false } }),
+  usePomCoreUpdateStatus: () => ({ data: coreUpdateData }),
   keys: { pluginUi: ["plugin-ui"] },
 }));
 
@@ -61,6 +63,7 @@ describe("Sidebar", () => {
   afterEach(() => {
     cleanup();
     sidebarNodeData = null;
+    coreUpdateData = { core_update: null };
     lobby.enabledOnNetwork = true;
     vi.useRealTimers();
     window.localStorage.clear();
@@ -257,6 +260,40 @@ describe("Sidebar", () => {
     lobby.enabledOnNetwork = false;
     view();
     expect(screen.queryByTestId("network-chat-lobby-unread")).toBeNull();
+  });
+
+  it("shows the POM version at the foot, the build only in development mode, and a new release with the way to update", () => {
+    const view = () => render(
+      <MemoryRouter initialEntries={["/"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <LocaleProvider initialLocale="pt-BR">
+          <ProfileProvider initialProfile="admin">
+            <Sidebar />
+            <RouteProbe />
+          </ProfileProvider>
+        </LocaleProvider>
+      </MemoryRouter>,
+    );
+    sidebarNodeData = fakeNode({ pom_version: "v0.5.6", build_commit: "abc1234", pom_dev_mode: false });
+    view();
+    expect(screen.getByTestId("sidebar-version").textContent).toBe("v0.5.6");
+    expect(screen.queryByTestId("sidebar-new-version")).toBeNull();
+    cleanup();
+
+    sidebarNodeData = fakeNode({ pom_version: "v0.5.6", build_commit: "abc1234", pom_dev_mode: true });
+    coreUpdateData = {
+      current_version: "v0.5.6",
+      core_update: { release_id: "v0.5.7", version: "v0.5.7", installable: true, blocked: null },
+    };
+    view();
+    const version = screen.getByTestId("sidebar-version");
+    expect(version.textContent).toBe("v0.5.6 · abc1234");
+    expect(version.className).toContain("text-amber");
+    const badge = screen.getByTestId("sidebar-new-version");
+    expect(badge.textContent).toContain("Nova versão");
+    expect(badge.textContent).toContain("v0.5.7");
+    expect(badge.textContent).toContain("Atualizar");
+    fireEvent.click(badge);
+    expect(screen.getByTestId("route").textContent).toBe("/config/about");
   });
 
   it("hides the TLS indicator from the flags", () => {

@@ -50,7 +50,6 @@ impl InferState {
             )
             .collect();
         Self {
-            tls_handshake_ms: None,
             engine,
             moe,
             moe_fallback_reason,
@@ -945,7 +944,6 @@ pub async fn run(
         .filter(|plan| !plan.enabled())
         .and_then(|plan| plan.reason.clone());
     let mut state_inner = InferState::new(engine, &cfg, inference_path, moe, moe_fallback_reason);
-    state_inner.tls_handshake_ms = tls.as_ref().map(|t| t.last_handshake_ms.clone());
     state_inner.original_block_count = model_info
         .as_ref()
         .and_then(|info| info.original_block_count);
@@ -1237,24 +1235,6 @@ pub(crate) fn http_client() -> &'static crate::peer_client::PeerClients {
     c
 }
 
-/// Duration of the last TLS handshake this server accepted, in ms.
-///
-/// Zero when there is no TLS, and zero also when the hop reused a connection
-/// from the pool - which is most of them. See the doc of
-/// `SentFrame::tls_handshake_ms` on why this is the truth and not a measurement
-/// failure.
-pub(super) fn last_handshake_ms(state: &SharedState) -> u64 {
-    let Ok(state) = lock_inference_state(state) else {
-        warn!("could not read the last handshake: state mutex poisoned");
-        return 0;
-    };
-    state
-        .tls_handshake_ms
-        .as_ref()
-        .map(|v| v.load(std::sync::atomic::Ordering::Relaxed))
-        .unwrap_or(0)
-}
-
 pub(super) async fn handle_prefill_batch(
     app: InferenceAppState,
     headers: axum::http::HeaderMap,
@@ -1285,7 +1265,7 @@ pub(super) async fn handle_prefill_batch(
         let body = wire::encode_batch_item(&batch, item);
         async move {
             match body {
-                Ok(body) => handle_prefill(State(app), headers, Bytes::from(body)).await,
+                Ok(body) => handle_prefill(State(app), None, headers, Bytes::from(body)).await,
                 Err(error) => err400(format!("invalid batch item: {error}")),
             }
         }
@@ -1359,7 +1339,7 @@ pub(super) async fn handle_step_batch(
         let body = wire::encode_batch_item(&batch, item);
         async move {
             match body {
-                Ok(body) => handle_step(State(app), headers, Bytes::from(body)).await,
+                Ok(body) => handle_step(State(app), None, headers, Bytes::from(body)).await,
                 Err(error) => err400(format!("invalid batch item: {error}")),
             }
         }

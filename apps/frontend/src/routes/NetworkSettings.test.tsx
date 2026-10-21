@@ -419,4 +419,34 @@ describe("NetworkParticipants", () => {
     expect(screen.queryByText(/2804:d55::1/)).toBeNull();
     expect(screen.getByTitle("anunciado: [2804:d55::1]:42777")).toBeTruthy();
   });
+
+  it("shows each machine's POM version, amber where it is not this node's, and the build only in development mode", () => {
+    queryMocks.node.data.profile = "admin";
+    const base = { role: "worker", connected: true, blocked: false, verified: true, addr: "", route: null };
+    queryMocks.nodes.data = [
+      { ...base, node_id: "me", short_id: "me", hostname: "me", is_self: true, pom_version: "v0.5.6", pom_build: "abc1234" },
+      { ...base, node_id: "same", short_id: "same", hostname: "same", is_self: false, pom_version: "v0.5.6", pom_build: "abc1234" },
+      { ...base, node_id: "old", short_id: "old", hostname: "old", is_self: false, pom_version: "v0.5.4", pom_build: "def5678" },
+      { ...base, node_id: "silent", short_id: "silent", hostname: "silent", is_self: false },
+    ] as any;
+    const view = () => render(
+      <LocaleProvider initialLocale="pt-BR">
+        <NetworkParticipants />
+      </LocaleProvider>,
+    );
+
+    queryMocks.node.data.pom_dev_mode = false;
+    view();
+    const versions = screen.getAllByTestId("participant-version");
+    expect(versions.map((badge) => badge.textContent)).toEqual(["v0.5.6", "v0.5.6", "v0.5.4", "versão desconhecida"]);
+    expect(versions[2].className).toContain("amber");
+    expect(versions[1].className).not.toContain("amber");
+    expect(screen.getByTitle("Roda uma versão do POM diferente da deste nó (v0.5.6)")).toBeTruthy();
+    cleanup();
+
+    queryMocks.node.data.pom_dev_mode = true;
+    view();
+    expect(screen.getAllByTestId("participant-version")[2].textContent).toBe("v0.5.4 · def5678");
+    queryMocks.node.data.pom_dev_mode = false;
+  });
 });

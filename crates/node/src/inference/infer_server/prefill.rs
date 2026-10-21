@@ -111,9 +111,13 @@ mod prefix_reuse_gate_tests {
 
 pub(super) async fn handle_prefill(
     State(app): State<InferenceAppState>,
+    handshake: Option<axum::Extension<crate::serve::TlsHandshake>>,
     headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Response {
+    // Taken first, whatever path the frame follows below, so the connection's
+    // handshake is reported by the request that opened it and by no other.
+    let tls_handshake_ms = handshake.map_or(0, |handshake| handshake.take_ms());
     app.request_activity.mark_now();
     let _load_guard = app.loads.acquire(&app.load_node_id).await;
     // See the twin note in `handle_step`: the header is enough to know whether
@@ -145,9 +149,6 @@ pub(super) async fn handle_prefill(
     let scheduler = app.scheduler.clone();
     let processing_started = Instant::now();
     open_tp_decode(&state, &headers, "/v1/prefill", &body);
-    // Read at the start because `state` is consumed further down, and the value
-    // is the same at any point of the handler.
-    let tls_handshake_ms = last_handshake_ms(&state);
     let inbound_bytes = body.len();
     let frame_decode_started = Instant::now();
     let (meta, tensor, inbound_wire_timing) = match wire::decode_inference_request_profiled(&body) {

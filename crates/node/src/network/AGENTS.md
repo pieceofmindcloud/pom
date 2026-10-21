@@ -47,7 +47,13 @@ dedicated or member, with iroh's hole punching), are in
   believes only beside the process mark; the frame is binary
   (`[u32][JSON head][u32][raw body]` for a request, `[u16 status][u32][raw body]` for a
   response). `TunnelTarget` (`Inference` | `Gateway`) names which local server answers and the
-  receiver resolves the port. `is_transfer_data_path`, `closed_range` and
+  receiver resolves the port. `INFER_TUNNEL_STREAM_PROTOCOL` (`/pom/infer-tunnel-stream/1.0.0`)
+  is the streamed twin for a gateway call: the same request framing, an answer of
+  `[u16 status]` then the body's bytes as the loopback server writes them, until the stream
+  finishes (a reset when the body broke off). The block protocol reads the whole answer first,
+  so a plugin engine's NDJSON generation reached a caller behind the tunnel only at its end.
+  `forward_loopback` is the loopback call both share; `set_stream_transport` registers the
+  endpoint the streamed calls dial (`P2p::open_bi`), outside the transport task's queue. `is_transfer_data_path`, `closed_range` and
   `transfer_chunk_is_bounded` hold the file rule on the receiving side (a piece is a bounded
   range, refused with `TRANSFER_ROUTE_REFUSED_STATUS` 421 on a connection that crosses a public
   relay - the receiver checks the connection's selected path); `gateway_path_is_allowed` is the closed exact-comparison list, plus the plugin calls in
@@ -162,7 +168,10 @@ dedicated or member, with iroh's hole punching), are in
   read with `hostname()` and changed live with `set_hostname` (the My machine
   screen), never through the field; `trust_version` is the trust chain version
   each node announces (`set_trust_version`), a hint of who has a newer chain
-  and never proof; `membership` is this node's membership token
+  and never proof; `pom_version`/`pom_build` are the release
+  (`pom_core_update::RELEASE_VERSION`) and the build commit the node runs,
+  copied into `PeerInfo` and `/admin/nodes` for the participants screen and
+  never used for a decision; `membership` is this node's membership token
   (`set_membership`, renewed by `webui::spawn_token_keeper`), announced and
   carried in `PeerInfo`, and only believed once `membership::peer_role`
   checks it against the chain; `is_principal` / `peer_is_principal` tell the
@@ -470,7 +479,9 @@ dedicated or member, with iroh's hole punching), are in
   file piece with 421 when the connection's selected path may not carry it
   (`Network::path_carries_transfers`) and with 416 without a bounded range, refuses a
   route outside the closed list with 403, and forwards the rest to loopback
-  (`infer_tunnel::serve_loopback`) on the stream's own task.
+  (`infer_tunnel::serve_loopback`) on the stream's own task. The checks live in
+  `tunnel_destination` and the caller's id in `stamp_tunnel_peer`, which `StreamTunnel`
+  (`answer_tunnel_stream`, the streamed protocol) uses as they are.
 - `answer_chat_request`/`accept_original_chat`/`relay_chat` - the Chat star: the
   principal validates an original message and relays it to every member (each send on
   its own task, so a slow member holds up nobody); a member accepts only what the

@@ -430,7 +430,10 @@ heartbeat or by restore: `PluginRuntime::on_demand()` reads the flag from the
 last manifest saved in `plugin_ui_manifest:<code>`, and `open_on_demand` /
 `close_on_demand` start and stop only the process, without touching the license
 or the installation. While the host is stopped, `ui_manifest()` returns the saved
-manifest so the menu keeps listing the plugin. The plugin's own manifest decides
+manifest so the menu keeps listing the plugin, and the assets route serves
+the i18n catalogs and the menu icon (`PluginUiManifest::shell_assets`) from
+the copy kept in `plugin_ui_asset:<code>:<path>`: written from every live
+`ui.asset` answer and, once per manifest, copied from the running host. The plugin's own manifest decides
 the flag, never a list in the code.
 
 `plugin_host.rs` (`PluginHost`) is the `pom`'s only adapter to the auxiliary

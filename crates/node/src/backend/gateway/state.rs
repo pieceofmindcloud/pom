@@ -1608,6 +1608,8 @@ impl GatewayState {
                 pubkey: self.network.pubkey.clone(),
                 cluster_id: self.network.cluster_id(),
                 trust_version: self.network.trust_version(),
+                pom_version: crate::pom_core_update::release_version().to_string(),
+                pom_build: crate::build_commit(),
                 membership: self.network.membership(),
                 relay: self.network.relay_gate().offer(),
                 addr: format!("{}:{}", self_host, self.network.bind_addr.port()),
@@ -1651,6 +1653,7 @@ impl GatewayState {
                     }
                     if self.network.p2p_tunnel_ready() {
                         caps.push("transport/iroh-tunnel-v1".into());
+                        caps.push(crate::pipeline::CAP_P2P_TUNNEL_STREAM.into());
                     }
                     caps
                 },

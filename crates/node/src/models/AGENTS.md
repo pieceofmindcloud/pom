@@ -44,7 +44,14 @@ Models, GGUF reading, planning and slice files. The module is used by
   `split.tensors.count`, which the reference `gguf-split` writes as INT32.
   Each enriched result keeps only in memory the `path + size + mtime` identity of
   the file. The backend uses that mark to reuse metadata when a refresh creates
-  another inventory, and to enrich only new or changed models.
+  another inventory, and to enrich only new or changed models - but only while
+  the new inventory says the same about the file (`webui::catalog::
+  same_inventory_facts`: name, slicing, model label, `pom_id`, TP rank). A slice
+  indexed before its `.pom` existed is enriched again once the manifest shows
+  up; reusing it kept the slice nameless, shown by its hash, through every
+  rescan. The walk skips the `.slicing-*` working folders of running rounds
+  (`pom::SCRATCH_PREFIX`), and `pom::finalize_run` writes the manifest before
+  moving the parts into the model folder, so no scan sees a part without it.
   For a multipart GGUF source, `enrich` reads the headers and `stat`s the parts
   through `multipart::catalog_metadata`, without opening the full weight mapping;
   it sums the bytes and exposes the physical parts in the catalog. An incomplete

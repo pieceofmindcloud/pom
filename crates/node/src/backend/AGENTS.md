@@ -629,8 +629,10 @@ boundary.
   enabled (the plugin proxy's WebSocket,
   `crate::plugin_proxy`). The HTTP/3 endpoint
   receives a separate QUIC configuration and comes up on the dedicated announced UDP port,
-  even when the TCP is in plain HTTP; `TlsServer` covers only the TCP configurations, the strict
-  mode and the duration of the last handshake. The TLS configuration is picked per connection
+  even when the TCP is in plain HTTP; `TlsServer` covers only the TCP configurations and the strict
+  mode. Each TLS connection's handshake duration goes into its requests' extensions as
+  `TlsHandshake`, which only the connection's first request takes (`take_ms`); every
+  later request on it reads zero. The TLS configuration is picked per connection
   from the ClientHello (`LazyConfigAcceptor`, `tls::wants_peer`): a peer is asked for its node
   certificate, a browser for nothing. A plain connection from outside is redirected to https, or, with
   `POM_INSECURE_ADMIN_UI=1` (`insecure_admin_ui`), served as is except the peer-only routes.
@@ -875,7 +877,8 @@ change lands in the right place.
   A call written with parameters and no name at all is attributed through
   the request's declared tools (`ToolSignatures`, passed by both adapters to
   `TagScanner::with_tools` / `parse_output_with_tools`) when exactly one tool
-  takes every parameter it carries; otherwise it stays text.
+  takes every parameter it carries, a trailing `</function>` included;
+  otherwise it stays text.
   `parse_call_body` accepts the nested `<function=...>` XML form or the legacy
   Hermes JSON-object form, including an extra JSON-encoded `arguments` string;
   a sole object parameter named `arguments` is unwrapped for provider schemas;

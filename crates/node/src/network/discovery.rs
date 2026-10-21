@@ -348,6 +348,7 @@ impl Discovery {
         let p2p = P2p::new(endpoint.clone(), book);
         let tracker = link_tracker(network.clone());
         p2p.set_on_connection(tracker.clone());
+        infer_tunnel::set_stream_transport(p2p.clone());
 
         let (remote_audit_tx, mut remote_audit_rx) =
             mpsc::channel::<Vec<AuditEvent>>(reqlog::AUDIT_TRANSPORT_QUEUE_CAPACITY);
@@ -467,6 +468,10 @@ impl Discovery {
         ctx: &Ctx,
         tracker: Arc<dyn Fn(&Connection) + Send + Sync>,
     ) -> iroh::protocol::Router {
+        let stream_tunnel = StreamTunnel {
+            ctx: ctx.clone(),
+            tracker: tracker.clone(),
+        };
         let tunnel = {
             let ctx = ctx.clone();
             p2p::Serve::new(InferTunnelCodec, move |connection: Connection, request| {
@@ -557,6 +562,7 @@ impl Discovery {
         iroh::protocol::Router::builder(endpoint.clone())
             .accept(iroh_gossip::ALPN, gossip.clone())
             .accept(InferTunnelCodec::PROTOCOL.as_bytes(), tunnel)
+            .accept(infer_tunnel::INFER_TUNNEL_STREAM_PROTOCOL.as_bytes(), stream_tunnel)
             .accept(crate::network_lobby::LobbyCodec::PROTOCOL.as_bytes(), lobby)
             .accept(NetworkChatCodec::PROTOCOL.as_bytes(), chat)
             .accept(ClusterLogsCodec::PROTOCOL.as_bytes(), logs)
@@ -932,6 +938,8 @@ async fn handle_announce(ctx: &Ctx, sealed: &[u8]) {
         network_chat_enabled,
         cluster_id,
         trust_version,
+        pom_version,
+        pom_build,
         membership,
         relay,
         ..
@@ -960,6 +968,8 @@ async fn handle_announce(ctx: &Ctx, sealed: &[u8]) {
         pubkey: pubkey.clone(),
         cluster_id,
         trust_version,
+        pom_version,
+        pom_build,
         membership,
         relay,
         // The gossip path has no source address to rewrite, and the announced
@@ -1052,6 +1062,29 @@ async fn answer_tunnel_request(
     connection: &Connection,
     request: infer_tunnel::TunnelRequest,
 ) -> infer_tunnel::TunnelResponse {
+    match tunnel_destination(ctx, connection, &request).await {
+        Ok(port) => {
+            let request = stamp_tunnel_peer(request, connection.remote_id());
+            infer_tunnel::serve_loopback(&ctx.http, port, request).await
+        }
+        // Nothing to forward to: this node has no such server running (no
+        // layer assignment yet, a pure-relay node), or the route is not one
+        // the tunnel carries. Answer rather than dropping the stream, so the
+        // caller's fallback logic gets a definite failure instead of a timeout.
+        Err((status, message)) => infer_tunnel::TunnelResponse {
+            status,
+            body: message.into_bytes(),
+        },
+    }
+}
+
+/// The loopback port an inbound tunnel request goes to, or the status and
+/// message that refuse it. Both tunnels, block and streamed, decide here.
+async fn tunnel_destination(
+    ctx: &Ctx,
+    connection: &Connection,
+    request: &infer_tunnel::TunnelRequest,
+) -> Result<u16, (u16, String)> {
     let network = &ctx.network;
     let peer = connection.remote_id();
     // The destination is chosen by the sender and **resolved here**: the
@@ -1101,34 +1134,117 @@ async fn answer_tunnel_request(
             }
         }
     };
-    match target {
-        Ok(port) => {
-            debug!(
-                "infer-tunnel: {} → loopback :{} {}",
-                peer.fmt_short(),
-                port,
-                request.path
-            );
-            // Who is calling, as the endpoint's handshake proved it; the
-            // gateway and the inference server authorize by it.
-            let mut request = request;
-            request.headers.retain(|(name, _)| {
-                !name.eq_ignore_ascii_case(infer_tunnel::TUNNEL_PEER_HEADER)
-            });
-            request
-                .headers
-                .push((infer_tunnel::TUNNEL_PEER_HEADER.to_string(), peer.to_string()));
-            infer_tunnel::serve_loopback(&ctx.http, port, request).await
-        }
-        // Nothing to forward to: this node has no such server running (no
-        // layer assignment yet, a pure-relay node), or the route is not one
-        // the tunnel carries. Answer rather than dropping the stream, so the
-        // caller's fallback logic gets a definite failure instead of a timeout.
-        Err((status, message)) => infer_tunnel::TunnelResponse {
-            status,
-            body: message.into_bytes(),
-        },
+    if let Ok(port) = target {
+        debug!(
+            "infer-tunnel: {} → loopback :{} {}",
+            peer.fmt_short(),
+            port,
+            request.path
+        );
     }
+    target
+}
+
+/// Who is calling, as the endpoint's handshake proved it; the gateway and the
+/// inference server authorize by it, never by a header the caller wrote.
+fn stamp_tunnel_peer(
+    mut request: infer_tunnel::TunnelRequest,
+    peer: EndpointId,
+) -> infer_tunnel::TunnelRequest {
+    request
+        .headers
+        .retain(|(name, _)| !name.eq_ignore_ascii_case(infer_tunnel::TUNNEL_PEER_HEADER));
+    request
+        .headers
+        .push((infer_tunnel::TUNNEL_PEER_HEADER.to_string(), peer.to_string()));
+    request
+}
+
+/// The streamed tunnel (`infer_tunnel::INFER_TUNNEL_STREAM_PROTOCOL`): the
+/// same destinations and checks as `answer_tunnel_request`, with the answer's
+/// body forwarded as the loopback server writes it.
+struct StreamTunnel {
+    ctx: Ctx,
+    tracker: Arc<dyn Fn(&Connection) + Send + Sync>,
+}
+
+impl std::fmt::Debug for StreamTunnel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StreamTunnel").finish_non_exhaustive()
+    }
+}
+
+impl iroh::protocol::ProtocolHandler for StreamTunnel {
+    async fn accept(&self, connection: Connection) -> Result<(), iroh::protocol::AcceptError> {
+        (self.tracker)(&connection);
+        while let Ok((send, recv)) = connection.accept_bi().await {
+            let ctx = self.ctx.clone();
+            let connection = connection.clone();
+            tokio::spawn(async move {
+                answer_tunnel_stream(&ctx, &connection, send, recv).await;
+            });
+        }
+        Ok(())
+    }
+}
+
+async fn answer_tunnel_stream(
+    ctx: &Ctx,
+    connection: &Connection,
+    mut send: iroh::endpoint::SendStream,
+    recv: iroh::endpoint::RecvStream,
+) {
+    use tokio_util::compat::TokioAsyncReadCompatExt;
+    let peer = connection.remote_id();
+    let request = match InferTunnelCodec.read_request(&mut recv.compat()).await {
+        Ok(request) => request,
+        Err(error) => {
+            debug!("infer-tunnel-stream: unreadable request from {}: {error}", peer.fmt_short());
+            return;
+        }
+    };
+    let response = match tunnel_destination(ctx, connection, &request).await {
+        Ok(port) => {
+            infer_tunnel::forward_loopback(&ctx.http, port, stamp_tunnel_peer(request, peer))
+                .await
+                .map_err(|error| (infer_tunnel::NOTHING_LISTENING_STATUS, error.to_string()))
+        }
+        Err(refusal) => Err(refusal),
+    };
+    let response = match response {
+        Ok(response) => response,
+        Err((status, message)) => {
+            let _ = send.write_all(&status.to_be_bytes()).await;
+            let _ = send.write_all(message.as_bytes()).await;
+            let _ = send.finish();
+            return;
+        }
+    };
+    if send
+        .write_all(&response.status().as_u16().to_be_bytes())
+        .await
+        .is_err()
+    {
+        return;
+    }
+    let mut body = response.bytes_stream();
+    while let Some(chunk) = body.next().await {
+        let written = match chunk {
+            Ok(chunk) => send.write_all(&chunk).await.is_ok(),
+            Err(error) => {
+                debug!("infer-tunnel-stream: the loopback answer broke off: {error}");
+                false
+            }
+        };
+        if !written {
+            // A reset, not a finish: the caller must not take a cut answer
+            // for a whole one. A failed write means the caller left, and
+            // dropping the loopback response stops the work behind it.
+            let _ = send.reset(0u32.into());
+            return;
+        }
+    }
+    let _ = send.finish();
 }
 
 /// Network Chat: the principal validates an original message and relays it;

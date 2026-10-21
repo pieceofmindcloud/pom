@@ -219,10 +219,11 @@ Per-file list:
   5px top gap so the first item does not touch that line - the hash sits **on the identity** because in
   a multi-machine cluster "which build is that?" is unanswerable without a
   shell, and a peer on an old binary looks healthy until inference.
-  `SidebarUtilityControls` is the footer, and the node's `build_commit` lives
-  there now, beside the controls: the bare hash in mono, no "build" label in
-  front of it, with the explanation in a `title` tooltip; the hash stays hidden
-  for `visitor`. `SidebarUtilityControls` shows language as **one flag**, the current locale
+  `SidebarUtilityControls` is the footer: beside the controls it shows the
+  release the node runs (`NodeInfo.pom_version`, `v0.5.6`), with
+  `· <build_commit>` only when `pom_dev_mode`; a newer release from
+  `usePomCoreUpdateStatus` turns it amber and adds the "New version" link
+  (`sidebar-new-version`) to About, where the update is applied. `SidebarUtilityControls` shows language as **one flag**, the current locale
   (`brand.flags[locale]`, from `brand.json`), rather than "EN"/"PT-BR" or a row
   of both flags: a click opens a submenu (`LanguageFlags.tsx`, `useLanguageMenu`)
   with the options, and picking one switches the language and closes it. The

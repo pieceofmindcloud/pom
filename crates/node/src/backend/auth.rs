@@ -449,7 +449,13 @@ where
                 principal: Some(principal),
             });
         }
-        validate_internal_node_headers(&gateway.auth, &parts.headers, &parts.extensions).await?;
+        validate_internal_node_headers(
+            &gateway.auth,
+            &parts.headers,
+            &parts.extensions,
+            parts.uri.path(),
+        )
+        .await?;
         Ok(InternalNodeAuth { principal: None })
     }
 }
@@ -495,11 +501,13 @@ pub(crate) async fn caller_is_member(extensions: &axum::http::Extensions) -> boo
 
 /// Validates a peer request, including the marker that prevents the same
 /// `Authorization` from being reused as a browser call, and the caller's
-/// membership as its transport proves it (`caller_is_member`).
+/// membership as its transport proves it (`caller_is_member`). `route` only
+/// names the refused call in the log, so the operator can find who made it.
 pub(crate) async fn validate_internal_node_headers(
     config: &AuthState,
     headers: &HeaderMap,
     extensions: &axum::http::Extensions,
+    route: &str,
 ) -> Result<(), AuthRejection> {
     let supplied = headers
         .get("authorization")
@@ -519,6 +527,10 @@ pub(crate) async fn validate_internal_node_headers(
         .get::<crate::serve::TransportPeer>()
         .map(|peer| peer.node_id.as_str())
         .unwrap_or("none: no client certificate or tunnel id");
+    let origin = extensions
+        .get::<crate::serve::PeerAddr>()
+        .map(|addr| addr.0.to_string())
+        .unwrap_or_default();
     if !key_holds {
         // A member with the wrong key missed a rotation, which an operator
         // needs to see. A non-member is routine wherever several networks
@@ -527,12 +539,16 @@ pub(crate) async fn validate_internal_node_headers(
             tracing::warn!(
                 internal = is_internal,
                 caller,
+                route,
+                origin,
                 "node-to-node call refused: the connection key does not match"
             );
         } else {
             tracing::debug!(
                 internal = is_internal,
                 caller,
+                route,
+                origin,
                 "node-to-node call refused: the connection key does not match"
             );
         }
@@ -541,6 +557,8 @@ pub(crate) async fn validate_internal_node_headers(
     if !is_member {
         tracing::warn!(
             caller,
+            route,
+            origin,
             "node-to-node call refused: the caller is not a member (no admin key, no valid membership token)"
         );
         return Err(AuthRejection::InvalidKey);

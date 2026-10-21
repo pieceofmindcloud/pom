@@ -863,6 +863,9 @@ change lands in the right place.
   complete call the model left unshut at the end of its output is a call
   (`TagScanner::finish`), and a closer that trails a finished call is dropped
   instead of shown (`after_call`, `STRAY_CLOSERS`).
+  A `<function=NAME>` call with no opener at all is `CallKind::BareXml`: it
+  ends only on a `</function>` outside a parameter value and, with tools
+  declared, only for a declared name, so prose quoting the tag stays text.
   A call written with parameters and no name at all is attributed through
   the request's declared tools (`ToolSignatures`, passed by both adapters to
   `TagScanner::with_tools` / `parse_output_with_tools`) when exactly one tool

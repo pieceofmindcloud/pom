@@ -504,6 +504,32 @@ impl P2p {
         }
     }
 
+    /// A fresh bidirectional stream to `id` over `alpn`, for a protocol whose
+    /// answer the caller reads as it arrives instead of as one framed value.
+    pub async fn open_bi(
+        &self,
+        id: EndpointId,
+        addrs: &[String],
+        alpn: &'static str,
+    ) -> Result<(iroh::endpoint::SendStream, iroh::endpoint::RecvStream), CallError> {
+        let connection = self
+            .connect(id, addrs, alpn)
+            .await
+            .map_err(CallError::BeforeRequest)?;
+        match connection.open_bi().await {
+            Ok(streams) => Ok(streams),
+            Err(error) => {
+                if connection.close_reason().is_some() {
+                    self.connections
+                        .lock()
+                        .expect("connections lock")
+                        .remove(&(id, alpn));
+                }
+                Err(CallError::BeforeRequest(error.to_string()))
+            }
+        }
+    }
+
     /// One request/response call to `id`.
     pub async fn call<C: Codec>(
         &self,

@@ -2439,6 +2439,7 @@ impl Network {
                 }
                 if self.p2p_tunnel_ready() {
                     caps.push("transport/iroh-tunnel-v1".into());
+                    caps.push(crate::pipeline::CAP_P2P_TUNNEL_STREAM.into());
                 }
                 caps
             },
@@ -2589,6 +2590,7 @@ impl Network {
         }
         if self.p2p_tunnel_ready() {
             caps.push("transport/iroh-tunnel-v1".into());
+            caps.push(crate::pipeline::CAP_P2P_TUNNEL_STREAM.into());
         }
         Some(caps)
     }

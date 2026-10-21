@@ -655,6 +655,7 @@ and `discovery.rs` builds the endpoint and everything that rides on it.
   two nodes on the same network.
 - **Request/response protocols.** One ALPN per protocol, served by an
   `iroh::protocol::Router`: the inference tunnel (`/pom/infer-tunnel/1.0.0`),
+  its streamed twin for gateway calls (`/pom/infer-tunnel-stream/1.0.0`),
   cluster logs, the network Chat, the lobby and the request audit. Each call is
   one bidirectional QUIC stream with the protocol's framing (`p2p::Codec`);
   the outbound connection is kept per peer and ALPN (`P2p::connect`), and each
@@ -662,6 +663,18 @@ and `discovery.rs` builds the endpoint and everything that rides on it.
   loopback holds up nothing else. Outbound calls are handed to `Discovery` over
   channels (`TunnelOutbound`, `LogOutbound`, `ChatOutbound`, `AuditOutbound`)
   and each runs on its own task.
+- **A streamed answer crosses the tunnel as it is written.** The block tunnel
+  reads the destination's whole answer before sending it, so a plugin engine's
+  generation reached a visitor whose only route to the head is the tunnel when
+  it had already ended, and the chat showed nothing until then. A node that
+  serves the streamed tunnel announces `transport/iroh-tunnel-stream-v1`
+  (`pipeline::CAP_P2P_TUNNEL_STREAM`); toward such a peer, the control plane's
+  tunnel fallback (`peer_client::send_to_gateway_over`) opens a stream of
+  `/pom/infer-tunnel-stream/1.0.0` (`send_request_via_tunnel_stream`), which
+  hands over the response at its status and reads the body as it arrives,
+  under the request's deadline. Only a call that never left falls back to the
+  block tunnel; one that did is not sent again. The receiver applies the same
+  route list and checks as the block tunnel.
 - **Links.** Every connection, in or out, is followed by `link_tracker` until
   it closes: its selected path becomes a `P2pLink` (`Network::note_link`) -
   direct `ip:port (UDP)` or a relay URL - and a connection that started on a

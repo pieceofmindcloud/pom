@@ -73,6 +73,8 @@ pub static GLOBAL_POLICY: std::sync::Mutex<()> = std::sync::Mutex::new(());
 pub(crate) struct TunnelPeer {
     pub peer_id: crate::p2p::EndpointId,
     pub addrs: Vec<String>,
+    /// The peer serves the streamed tunnel (`pipeline::CAP_P2P_TUNNEL_STREAM`).
+    pub streams: bool,
 }
 
 impl TunnelPeer {
@@ -82,6 +84,7 @@ impl TunnelPeer {
         Some(Self {
             peer_id: peer_id.parse().ok()?,
             addrs,
+            streams: false,
         })
     }
 
@@ -98,6 +101,10 @@ impl TunnelPeer {
         Some(Self {
             peer_id,
             addrs: peer.endpoint_dialable_addrs(),
+            streams: peer
+                .inference_frame_capabilities
+                .iter()
+                .any(|capability| capability == crate::pipeline::CAP_P2P_TUNNEL_STREAM),
         })
     }
 }
@@ -194,6 +201,21 @@ where
         }
     }
     if let Some(tunnel) = TunnelPeer::from_peer(peer) {
+        if tunnel.streams {
+            match send_request_via_tunnel_stream(&tunnel, build("http://tunnel.invalid")).await {
+                Ok(response) => return Ok(response),
+                // The request left: sending it again could run it twice.
+                Err(error) if !error.before_request => {
+                    failures.push(format!("p2p tunnel: {error}"));
+                    anyhow::bail!(
+                        "the gateway of {} did not answer: {}",
+                        crate::network::short(&peer.node_id),
+                        failures.join(", ")
+                    );
+                }
+                Err(error) => failures.push(format!("streamed p2p tunnel: {error}")),
+            }
+        }
         match send_request_via_tunnel(&tunnel, build("http://tunnel.invalid")).await {
             Ok(response) => return Ok(response),
             Err(error) => failures.push(format!("p2p tunnel: {error:#}")),
@@ -210,45 +232,150 @@ where
     )
 }
 
+/// A built request as the tunnel carries it: method, path with query, body,
+/// headers and the deadline.
+struct TunnelCall {
+    method: String,
+    path: String,
+    body: Vec<u8>,
+    headers: Vec<(String, String)>,
+    timeout: std::time::Duration,
+}
+
+impl TunnelCall {
+    fn of(request: &reqwest::Request) -> Self {
+        let mut path = request.url().path().to_string();
+        if let Some(query) = request.url().query() {
+            path.push('?');
+            path.push_str(query);
+        }
+        Self {
+            method: request.method().as_str().to_string(),
+            path,
+            body: request
+                .body()
+                .and_then(reqwest::Body::as_bytes)
+                .map(<[u8]>::to_vec)
+                .unwrap_or_default(),
+            headers: request
+                .headers()
+                .iter()
+                .filter_map(|(name, value)| {
+                    Some((name.to_string(), value.to_str().ok()?.to_string()))
+                })
+                .collect(),
+            timeout: request
+                .timeout()
+                .copied()
+                .unwrap_or(TUNNEL_MIN_TIMEOUT)
+                .max(TUNNEL_MIN_TIMEOUT),
+        }
+    }
+}
+
 /// The same request as `build`, carried through the tunnel. The response comes back
 /// as an ordinary `reqwest::Response`, so the caller does not need to know the path.
 pub(crate) async fn send_request_via_tunnel(
     tunnel: &TunnelPeer,
     build: reqwest::RequestBuilder,
 ) -> Result<reqwest::Response> {
-    let request = build.build()?;
-    let mut path = request.url().path().to_string();
-    if let Some(query) = request.url().query() {
-        path.push('?');
-        path.push_str(query);
-    }
-    let headers: Vec<(String, String)> = request
-        .headers()
-        .iter()
-        .filter_map(|(name, value)| Some((name.to_string(), value.to_str().ok()?.to_string())))
-        .collect();
-    let body = request
-        .body()
-        .and_then(reqwest::Body::as_bytes)
-        .map(<[u8]>::to_vec)
-        .unwrap_or_default();
-    let timeout = request
-        .timeout()
-        .copied()
-        .unwrap_or(TUNNEL_MIN_TIMEOUT)
-        .max(TUNNEL_MIN_TIMEOUT);
+    let call = TunnelCall::of(&build.build()?);
     let response = tunnel_gateway_call(
         tunnel,
-        request.method().as_str(),
-        &path,
-        body,
-        headers,
-        timeout,
+        &call.method,
+        &call.path,
+        call.body,
+        call.headers,
+        call.timeout,
     )
     .await?;
     let response = http::Response::builder()
         .status(response.status)
         .body(response.body)?;
+    Ok(reqwest::Response::from(response))
+}
+
+/// [`send_request_via_tunnel`] over the streamed tunnel
+/// (`infer_tunnel::INFER_TUNNEL_STREAM_PROTOCOL`): the response is handed over
+/// once its status arrives, and its body reads the bytes as the destination
+/// writes them - a plugin engine's generation token by token instead of whole
+/// at its end. The request's deadline covers the whole answer, as reqwest's
+/// does on a direct address. A failure says whether the request left
+/// (`TunnelDeliveryError::before_request`), because only one that did not may
+/// go again by another path.
+pub(crate) async fn send_request_via_tunnel_stream(
+    tunnel: &TunnelPeer,
+    build: reqwest::RequestBuilder,
+) -> std::result::Result<reqwest::Response, crate::infer_tunnel::TunnelDeliveryError> {
+    use crate::infer_tunnel::TunnelDeliveryError;
+    use crate::p2p::Codec;
+    use tokio_util::compat::TokioAsyncWriteCompatExt;
+    let Some(transport) = crate::infer_tunnel::stream_transport() else {
+        return Err(TunnelDeliveryError::before_request(
+            "the streamed p2p tunnel is not available in this process",
+        ));
+    };
+    let request = build
+        .build()
+        .map_err(|error| TunnelDeliveryError::before_request(error.to_string()))?;
+    let call = TunnelCall::of(&request);
+    let deadline = tokio::time::Instant::now() + call.timeout;
+    let (send, mut recv) = tokio::time::timeout_at(
+        deadline,
+        transport.open_bi(
+            tunnel.peer_id,
+            &tunnel.addrs,
+            crate::infer_tunnel::INFER_TUNNEL_STREAM_PROTOCOL,
+        ),
+    )
+    .await
+    .map_err(|_| TunnelDeliveryError::before_request("no streamed tunnel in time"))??;
+    let mut send = send.compat_write();
+    crate::infer_tunnel::InferTunnelCodec
+        .write_request(
+            &mut send,
+            crate::infer_tunnel::TunnelRequest::gateway(
+                &call.method,
+                call.path,
+                call.body,
+                call.headers,
+            ),
+        )
+        .await
+        .map_err(|error| TunnelDeliveryError::after_dispatch(error.to_string()))?;
+    send.into_inner()
+        .finish()
+        .map_err(|error| TunnelDeliveryError::after_dispatch(error.to_string()))?;
+    let mut status = [0u8; 2];
+    tokio::time::timeout_at(deadline, recv.read_exact(&mut status))
+        .await
+        .map_err(|_| {
+            TunnelDeliveryError::after_dispatch(format!(
+                "the streamed p2p tunnel did not answer in {:?}",
+                call.timeout
+            ))
+        })?
+        .map_err(|error| TunnelDeliveryError::after_dispatch(error.to_string()))?;
+    let chunks = tokio_util::io::ReaderStream::new(recv);
+    let body = futures::stream::unfold(Some(chunks), move |chunks| async move {
+        let mut chunks = chunks?;
+        match tokio::time::timeout_at(deadline, futures::StreamExt::next(&mut chunks)).await {
+            Ok(Some(chunk)) => Some((chunk, Some(chunks))),
+            Ok(None) => None,
+            // The last item: the answer ends on the error.
+            Err(_) => Some((
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "the streamed p2p tunnel answer passed its deadline",
+                )),
+                None,
+            )),
+        }
+    });
+    let response = http::Response::builder()
+        .status(u16::from_be_bytes(status))
+        .body(reqwest::Body::wrap_stream(body))
+        .map_err(|error| TunnelDeliveryError::after_dispatch(error.to_string()))?;
     Ok(reqwest::Response::from(response))
 }
 
@@ -1401,5 +1528,94 @@ mod tests {
         assert_eq!(c.cached_peers(), vec!["aaaa".to_string()]);
         c.set_tls(false);
         assert!(c.cached_peers().is_empty());
+    }
+
+    /// Answers one streamed-tunnel call in two pieces, and writes the second
+    /// only once the caller says it has read the first.
+    #[derive(Debug)]
+    struct TwoPieces(tokio::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>);
+
+    impl iroh::protocol::ProtocolHandler for TwoPieces {
+        async fn accept(
+            &self,
+            connection: iroh::endpoint::Connection,
+        ) -> Result<(), iroh::protocol::AcceptError> {
+            use crate::p2p::Codec;
+            use tokio_util::compat::TokioAsyncReadCompatExt;
+            let (mut send, recv) = connection.accept_bi().await.expect("a stream");
+            let request = crate::infer_tunnel::InferTunnelCodec
+                .read_request(&mut recv.compat())
+                .await
+                .expect("a request");
+            assert_eq!(request.path, "/api/internal/plugins/strata/engine/generate");
+            assert_eq!(request.body, b"{}");
+            send.write_all(&200u16.to_be_bytes()).await.unwrap();
+            send.write_all(b"{\"t\":\"a\"}\n").await.unwrap();
+            let read_first = self.0.lock().await.take().expect("one call");
+            read_first.await.expect("the caller read the first piece");
+            send.write_all(b"{\"t\":\"b\"}\n").await.unwrap();
+            send.finish().unwrap();
+            connection.closed().await;
+            Ok(())
+        }
+    }
+
+    async fn local_endpoint() -> iroh::Endpoint {
+        iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .relay_mode(iroh::RelayMode::Disabled)
+            .bind_addr(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+            .unwrap()
+            .bind()
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_streamed_tunnel_hands_over_each_piece_as_it_is_written() {
+        let (read_first_tx, read_first_rx) = tokio::sync::oneshot::channel();
+        let server = local_endpoint().await;
+        let address = crate::p2p::EndpointAddr::from_parts(
+            server.id(),
+            server.bound_sockets().into_iter().map(iroh::TransportAddr::Ip),
+        );
+        let _router = iroh::protocol::Router::builder(server)
+            .accept(
+                crate::infer_tunnel::INFER_TUNNEL_STREAM_PROTOCOL.as_bytes(),
+                TwoPieces(tokio::sync::Mutex::new(Some(read_first_rx))),
+            )
+            .spawn();
+        let book = iroh::address_lookup::MemoryLookup::new();
+        crate::infer_tunnel::set_stream_transport(crate::p2p::P2p::new(
+            local_endpoint().await,
+            book,
+        ));
+        let tunnel = TunnelPeer {
+            peer_id: address.id,
+            addrs: crate::p2p::addr_texts(&address),
+            streams: true,
+        };
+        let build = reqwest::Client::new()
+            .post("http://tunnel.invalid/api/internal/plugins/strata/engine/generate")
+            .body("{}")
+            .timeout(Duration::from_secs(20));
+        let response = send_request_via_tunnel_stream(&tunnel, build)
+            .await
+            .expect("the streamed tunnel answers");
+        assert_eq!(response.status(), 200);
+        let mut body = response.bytes_stream();
+        // A buffered tunnel holds the first piece until the second is
+        // written, which waits on this read: it would time out here.
+        let first = tokio::time::timeout(Duration::from_secs(10), futures::StreamExt::next(&mut body))
+            .await
+            .expect("the first piece arrives before the answer ends")
+            .expect("a piece")
+            .expect("readable");
+        assert_eq!(&first[..], b"{\"t\":\"a\"}\n");
+        read_first_tx.send(()).unwrap();
+        let mut rest = Vec::new();
+        while let Some(piece) = futures::StreamExt::next(&mut body).await {
+            rest.extend_from_slice(&piece.expect("readable"));
+        }
+        assert_eq!(rest, b"{\"t\":\"b\"}\n");
     }
 }

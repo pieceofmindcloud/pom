@@ -875,7 +875,8 @@ change lands in the right place.
   A call written with parameters and no name at all is attributed through
   the request's declared tools (`ToolSignatures`, passed by both adapters to
   `TagScanner::with_tools` / `parse_output_with_tools`) when exactly one tool
-  takes every parameter it carries; otherwise it stays text.
+  takes every parameter it carries, a trailing `</function>` included;
+  otherwise it stays text.
   `parse_call_body` accepts the nested `<function=...>` XML form or the legacy
   Hermes JSON-object form, including an extra JSON-encoded `arguments` string;
   a sole object parameter named `arguments` is unwrapped for provider schemas;

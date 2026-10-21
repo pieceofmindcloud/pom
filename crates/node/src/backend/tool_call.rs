@@ -389,10 +389,16 @@ fn attribute_nameless(
     if kind != CallKind::Wrapped || !matches!(events.as_slice(), [ScanEvent::ToolCallClose(Err(_))]) {
         return events;
     }
-    let body = normalize_wrapped_body(raw);
+    let normalized = normalize_wrapped_body(raw);
+    // A nameless body may still end in the `</function>` its missing opener
+    // would have matched.
+    let body = normalized
+        .strip_suffix(BARE_FUNCTION_CLOSE)
+        .unwrap_or(&normalized)
+        .trim_end();
     let call = body
         .starts_with("<parameter")
-        .then(|| parse_invoke_parameters(&body))
+        .then(|| parse_invoke_parameters(body))
         .flatten()
         .and_then(|arguments| Some((tools.attribute(&arguments)?, arguments)));
     match call {
@@ -2750,6 +2756,27 @@ mod tests {
                 arguments: json!({"command": "ls -la"}),
             }]
         );
+    }
+
+    #[test]
+    fn a_nameless_call_shut_by_a_function_closer_is_attributed() {
+        let text = "<tool_call>\n<parameter=command>\ngrep -n \"a\" f.rs | head\n</parameter>\n</function>\n</tool_call>";
+        let parts = parse_output_with_tools(text, &signatures());
+        assert_eq!(
+            parts,
+            vec![OutputPart::ToolCall {
+                name: "bash".to_string(),
+                arguments: json!({"command": "grep -n \"a\" f.rs | head"}),
+            }]
+        );
+        let mut scanner = TagScanner::with_tools(signatures());
+        let mut events = Vec::new();
+        for c in text.chars() {
+            events.extend(scanner.feed(&c.to_string()));
+        }
+        events.extend(scanner.finish());
+        let calls: Vec<_> = events.iter().filter(|e| matches!(e, ScanEvent::ToolCallClose(_))).collect();
+        assert!(matches!(calls.as_slice(), [ScanEvent::ToolCallClose(Ok(_))]), "{events:?}");
     }
 
     #[test]

@@ -861,7 +861,10 @@ change lands in the right place.
   `<function_calls>` holding a `<function=...>` body is read as one call, a
   repeated `<tool_call>` opener and a doubled or foreign trailing closer are
   normalized (`normalize_wrapped_body`), both `<parameter=P>` and
-  `<parameter name="P">` are read inside one call (`parameter_open`), a
+  `<parameter name="P">` are read inside one call (`parameter_open`), as is
+  a parameter written as its own element, `<path>a.html</path>`, and a
+  `<function=NAME>` call shut by `</NAME>` (both seen from Gemma 4;
+  `parse_parameters`, `element_open`), a
   complete call the model left unshut at the end of its output is a call
   (`TagScanner::finish`), and a closer that trails a finished call is dropped
   instead of shown (`after_call`, `STRAY_CLOSERS`).

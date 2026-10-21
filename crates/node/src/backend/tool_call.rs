@@ -41,6 +41,10 @@
 //! where `<function=NAME>` belongs, the rest well formed and closed by
 //! `</function>`; `repair_parameter_opening` reads that shape as a call.
 //!
+//! A Gemma 4 session, given the same `<tool_call><function=NAME>` instruction,
+//! wrote each parameter as its own element (`<path>a.html</path>`) and shut
+//! the call with `</NAME>`; `parse_parameters` reads that shape as well.
+//!
 //! Some Qwen turns also fall back to the older
 //! `<function_calls><invoke name="…"><parameter name="…">` dialect after a
 //! tool validation error. That recovery form is accepted as one container
@@ -1199,25 +1203,62 @@ fn parse_function_call_xml(raw: &str) -> Option<(String, serde_json::Value)> {
     if name.is_empty() {
         return None;
     }
-    let body = rest.strip_suffix("</function>")?.trim();
-
-    let mut args = serde_json::Map::new();
-    let mut cursor = body;
-    loop {
-        let cursor_trimmed = cursor.trim_start();
-        if cursor_trimmed.is_empty() {
-            break;
-        }
-        let (pname, after_name) = parameter_open(cursor_trimmed)?;
-        let close_idx = after_name.find(PARAM_CLOSE)?;
-        let value_raw = after_name[..close_idx].trim();
-        args.insert(pname.to_string(), decode_parameter_value(value_raw));
-        cursor = &after_name[close_idx + PARAM_CLOSE.len()..];
-    }
+    // A Gemma 4 session shut the call with `</NAME>`, the tool's own name.
+    let body = rest
+        .strip_suffix("</function>")
+        .or_else(|| rest.strip_suffix(&format!("</{name}>")))?
+        .trim();
+    let args = parse_parameters(body, serde_json::Map::new())?;
     Some((
         name.to_string(),
         normalize_arguments_wrapper(serde_json::Value::Object(args)),
     ))
+}
+
+/// The parameters of a `<function=NAME>` body, in order. Besides both
+/// `<parameter=…>` spellings, a parameter written as its own element
+/// (`<path>a.html</path>`, seen from Gemma 4) is read. An element's value may
+/// hold the same closer as text (an SVG `</path>` in a file's content), so
+/// its value ends at the first `</P>` after which the rest still parses.
+fn parse_parameters(
+    body: &str,
+    mut args: serde_json::Map<String, serde_json::Value>,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    let cursor = body.trim_start();
+    if cursor.is_empty() {
+        return Some(args);
+    }
+    if let Some((pname, after_name)) = parameter_open(cursor) {
+        let close_idx = after_name.find(PARAM_CLOSE)?;
+        let value_raw = after_name[..close_idx].trim();
+        args.insert(pname.to_string(), decode_parameter_value(value_raw));
+        return parse_parameters(&after_name[close_idx + PARAM_CLOSE.len()..], args);
+    }
+    let (pname, after_name) = element_open(cursor)?;
+    let close_tag = format!("</{pname}>");
+    let mut from = 0;
+    while let Some(found) = after_name[from..].find(&close_tag) {
+        let close_idx = from + found;
+        let mut candidate = args.clone();
+        let value_raw = after_name[..close_idx].trim();
+        candidate.insert(pname.to_string(), decode_parameter_value(value_raw));
+        if let Some(done) = parse_parameters(&after_name[close_idx + close_tag.len()..], candidate) {
+            return Some(done);
+        }
+        from = close_idx + close_tag.len();
+    }
+    None
+}
+
+/// Splits `<NAME>` into the name and what follows it, for a parameter
+/// written as its own element. Only a plain identifier is a name, so a tag
+/// with attributes or a closer is never taken for one.
+fn element_open(s: &str) -> Option<(&str, &str)> {
+    let (name, after) = s.strip_prefix('<')?.split_once('>')?;
+    let mut chars = name.chars();
+    let starts_well = chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
+    let rest_well = chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    (starts_well && rest_well).then_some((name, after))
 }
 
 /// Reads one quoted XML-like attribute from an opening tag. The compatibility
@@ -2784,6 +2825,54 @@ mod tests {
         let text = "<tool_call>\n<parameter=path>\na.rs\n</parameter>\n</tool_call>";
         let parts = parse_output_with_tools(text, &signatures());
         assert!(parts.iter().all(|p| matches!(p, OutputPart::Text(_))), "{parts:?}");
+    }
+
+    /// The shape a Gemma 4 session wrote twice in a row: each parameter as
+    /// its own element and the call shut by `</write>`, the tool's name.
+    const ELEMENT_PARAMETERS_CALL: &str = "<tool_call>\n<function=write>\n<path>index.html</path>\n<content><svg><path d=\"M0 0\"></path></svg>\n</content>\n</write>\n</tool_call>\n\nDone.";
+
+    #[test]
+    fn a_call_with_element_parameters_shut_by_its_name_is_a_call() {
+        let parts = parse_output_with_tools(ELEMENT_PARAMETERS_CALL, &signatures());
+        assert_eq!(
+            parts,
+            vec![
+                OutputPart::ToolCall {
+                    name: "write".to_string(),
+                    arguments: json!({
+                        "path": "index.html",
+                        "content": "<svg><path d=\"M0 0\"></path></svg>",
+                    }),
+                },
+                OutputPart::Text("\n\nDone.".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_call_with_element_parameters_streams_its_arguments_whole() {
+        let body = ELEMENT_PARAMETERS_CALL
+            .strip_prefix("<tool_call>")
+            .and_then(|rest| rest.split("</tool_call>").next())
+            .unwrap();
+        let (_, parsed) = parse_call_body(body, CallKind::Wrapped).unwrap();
+        let mut streamer = CallArgsStreamer::new(true);
+        let mut out = String::new();
+        for end in (0..=body.len()).filter(|&i| body.is_char_boundary(i)) {
+            if let Some(delta) = streamer.advance(&body[..end]) {
+                out.push_str(&delta);
+            }
+        }
+        if let Some(delta) = streamer.finish_complete(body, &parsed) {
+            out.push_str(&delta);
+        }
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&out).unwrap(), parsed);
+    }
+
+    #[test]
+    fn a_call_shut_by_another_name_stays_text() {
+        let text = "<tool_call>\n<function=write>\n<path>a.html</path>\n</read>\n</tool_call>";
+        assert!(parse_output(text).iter().all(|p| matches!(p, OutputPart::Text(_))));
     }
 
     #[test]

@@ -124,10 +124,11 @@ the shared server/socket.
 
 ### Cache in GitHub Actions
 
-The three release workflows (`.github/workflows/release-{linux,macos,windows}.yml`)
-resolve the current SHA of the `pom-tensor-parallel` branch before the build.
-The fork checkout lives in `.ci-cache/llama.cpp`, outside the versioned symlink,
-and is stored by `actions/cache` with the key:
+The Linux and both macOS release workflows resolve the current SHA of the
+`pom-tensor-parallel` branch before the build. The Windows workflow instead uses
+a published fork tag, as described below. For the source builds, the fork
+checkout lives in `.ci-cache/llama.cpp`, outside the versioned symlink, and is
+stored by `actions/cache` with the key:
 
 ```text
 llama-source-v1-<system>-<architecture>-<fork-sha>
@@ -161,7 +162,9 @@ llama.cpp's C/C++ and the CUDA bridge when there is CUDA. Windows does **not**
 use `sccache` (a wrapped `nvcc` on Windows is not worth the risk); there, where
 the runner is ephemeral, only `Swatinem/rust-cache` covers `~/.cargo` and
 `target/`; its extra key includes the fork SHA and `hashFiles('**/Cargo.lock')`.
-Linux and macOS use persistent self-hosted runners and keep the local target,
+Linux and the alternative macOS workflow use persistent self-hosted runners.
+The self-hosted macOS workflow keeps Cargo output in
+`$HOME/.cache/pom-target`, outside the checkout that `actions/checkout` cleans,
 while `sccache` covers recompilations across revisions and worktrees.
 
 That combination invalidates the checkout when the fork changes, invalidates
@@ -721,12 +724,15 @@ repository (not even in git history).
 
 ## Release through GitHub Actions
 
-Three workflows, one per system, all manual only (`workflow_dispatch`):
+The platform package workflows are manual only (`workflow_dispatch`). macOS has
+two equivalent alternatives: the original GitHub-hosted build and a copy for
+the local self-hosted runner.
 
 | File | Target | Runs on | Inputs |
 |---|---|---|---|
 | `.github/workflows/release-linux.yml` | Linux x86_64 AppImage (CUDA + Vulkan, one file, embedded interface) | self-hosted Linux runner (label `ksia`) | `version`, `prerelease` |
-| `.github/workflows/release-macos.yml` | macOS arm64, Metal | self-hosted macOS runner (label `macbook`) | `version`, `prerelease` |
+| `.github/workflows/release-macos.yml` | macOS universal (arm64 + x86_64), Metal | hosted (`macos-14`) | `version`, `prerelease` |
+| `.github/workflows/release-macos-self-hosted.yml` | Same macOS package | self-hosted macOS runner (label `macbook`) | `version`, `prerelease` |
 | `.github/workflows/release-windows.yml` | Windows x86_64, CUDA + Vulkan and/or CPU | hosted (`windows-2022`) | `version`, `variantes` (`gpu`/`cpu`/`ambos` - "both"), `prerelease` |
 
 The packages are uploaded as artifacts only to pass between jobs of the same
@@ -736,9 +742,10 @@ quota and blocked new releases.
 
 **They are separate so they can run alone.** Publishing only macOS should not
 cost a Windows build, and a target that breaks does not take the others down.
-Each workflow publishes its own package **on the same tag**: the first to run
-creates the release, the following ones attach their file. Rerunning only the
-Linux one does not delete the macOS package that was already there.
+Each platform publishes its package **on the same tag**: the first workflow to
+run creates the release, and the others attach their files. The two macOS
+workflows produce the same asset and are alternatives, so run only one of them
+for a given version.
 
 ### The llama.cpp fork is the step that cannot be missing
 
@@ -748,10 +755,11 @@ a `rev` in `Cargo.toml` (`[patch.crates-io]`) and in `crates/node/Cargo.toml`.
 Cargo fetches it over SSH through the system `git`, enabled by
 `[net] git-fetch-with-cli = true` in `.cargo/config.toml`. Every release
 workflow reaches it with the read-only token `POM_LLAMACPP_TOKEN`, rewriting
-`ssh://git@github.com/` to HTTPS: the hosted ones in the job's global git
-config, `release-ksia.yml` through `GIT_CONFIG_*` on the build step only, so the
-token never lands in the self-hosted runner's `~/.gitconfig`. Changing the engine
-means: commit and push `pom-plugin-llama.cpp`, then move both `rev`s.
+`ssh://git@github.com/` to HTTPS. The hosted macOS and Windows workflows use the
+job's global git config. The self-hosted Linux and macOS workflows use
+`GIT_CONFIG_*` environment variables, so the token never lands in either
+runner's `~/.gitconfig`. Changing the engine means: commit and push
+`pom-plugin-llama.cpp`, then move both `rev`s.
 
 The fork of llama.cpp is not in either repository. `llama-cpp-sys-2` finds it
 through `LLAMA_SOURCE`, which `.cargo/config.toml` sets to `llama.cpp`
@@ -791,17 +799,15 @@ The UI is read from disk at runtime (`config::ui_dist_dir`), not embedded in
 the binary: without `apps/frontend/dist` in the package, the node starts and
 answers 500 on the screen.
 
-In the two self-hosted workflows it is built in the job itself, because there
-is no minute multiplier there and splitting it would only add an artifact
-round trip between two jobs that would run on the same machine anyway - the
-runner takes one job at a time. In the Windows one, which is hosted, the `ui`
-job stays on `ubuntu-latest`: there a Windows minute counts 2x and building the
-same UI there would cost double for the same `dist`.
+The Linux and both macOS workflows build it in the build job itself. In the
+Windows workflow, the `ui` job stays on `ubuntu-latest`: there a Windows minute
+counts 2x and building the same UI there would cost double for the same `dist`.
 
-The two self-hosted workflows pin Node with `actions/setup-node` instead of
-using the system one. The runner records a **snapshot of the PATH of whoever
-configured it**, and that snapshot ages: the Linux runner has Node 18, and on macOS Node
-comes from nvm, whose path changes when the default version changes.
+All platform workflows pin Node with `actions/setup-node` instead of using the
+system one. This is particularly important on self-hosted runners: they record
+a **snapshot of the PATH of whoever configured them**, and that snapshot ages.
+The Linux runner has Node 18, and on macOS Node comes from nvm, whose path
+changes when the default version changes.
 
 ### Self-hosted runners
 
@@ -839,13 +845,13 @@ To remove a runner: `./svc.sh uninstall` and then `./config.sh remove
 --token <removal token>` (`gh api --method POST
 /repos/<owner>/<repo>/actions/runners/remove-token`).
 
-### Quota (Windows workflow only)
+### Hosted workflow quota
 
 Actions is free and unlimited on a **public** repository. On this one, which is
 private, the plan's monthly quota applies (2,000 minutes on Free) with a
-multiplier per system: Linux 1x, Windows 2x, macOS 10x. Since Linux and macOS
-moved to our own runners, only the Windows one uses quota - and it is the only
-one still worth watching.
+multiplier per system: Linux 1x, Windows 2x, macOS 10x. `release-macos.yml` and
+`release-windows.yml` consume that quota. The self-hosted macOS copy and the
+Linux workflow do not consume hosted-runner minutes.
 
 A clean build from scratch - including native llama.cpp - was measured at
 **3m33s** on Apple Silicon; a `target/` of this project measures **~9 GB**,

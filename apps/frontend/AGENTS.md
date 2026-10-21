@@ -81,7 +81,8 @@ Screens, menu, routes and plugin texts come from the active plugin's
 opens at `/admin-ui/base/example`. Plugins may replace the native `/logs` and
 `/statistics` slots by declaring those destinations; without a single
 declaration, the `EnterpriseFeatureShowcase` (`src/components/`) remains as the
-fallback. New menus enter at the root, in manifest order, immediately before
+fallback. New menus enter at the root, in manifest order, right after the entries
+the same plugin already holds (Quota after Statistics), else before
 Documentation; an item with `children` becomes an expandable section with
 submenus. `components/PluginBridge.tsx` connects the shell to the plugins through
 the `pom-plugin-events/v1` protocol (`lib/pluginEvents.ts`). POM shows and opens

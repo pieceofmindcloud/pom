@@ -15,6 +15,8 @@ vi.mock("../lib/queries", () => ({
   useNode: () => ({ data: sidebarNodeData }),
   // The plugin menu reads its lifecycle here; no plugin is active in these tests.
   usePluginUi: () => ({ data: { plugins: [] } }),
+  // Usage shows only where a machine runs the logs plugin; these tests have one.
+  useMyQuota: () => ({ data: { available: true, configured: false } }),
   keys: { pluginUi: ["plugin-ui"] },
 }));
 

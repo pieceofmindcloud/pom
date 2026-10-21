@@ -313,7 +313,10 @@ Per-file list:
   plan with input/output bars and the window's turnover, the session-reset
   credits (`POST /api/ui/quota/reset`) and the request for more budget
   (`POST /api/ui/quota/request`). Without an admin's logs plugin answering it
-  says so instead of showing zero. The admins' side is the logs plugin's Quota
+  says so instead of showing zero; while a machine that runs the plugin has
+  not answered (`pending`) it keeps loading instead of "no budget". The query
+  is `useMyQuota` (`lib/queries.ts`), shared with the Sidebar, which leaves the
+  Usage entry out while `available` is false. The admins' side is the logs plugin's Quota
   screen.
 
 ## Chat

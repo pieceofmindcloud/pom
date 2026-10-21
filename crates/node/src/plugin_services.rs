@@ -414,6 +414,12 @@ pub(crate) async fn plugin_peer_call(
     else {
         return refuse(StatusCode::FORBIDDEN, "the caller is not a live peer");
     };
+    // Told apart from a failure below: the caller skips a node that does not
+    // run the plugin, but a node that runs it and did not answer may hold the
+    // data it asked for (the quota lookup, `backend/quota.rs`).
+    if !state.plugins.status(&code).await.is_some_and(|status| status.active) {
+        return refuse(StatusCode::NOT_FOUND, "the plugin does not run on this node");
+    }
     match state
         .plugins
         .query_audit(

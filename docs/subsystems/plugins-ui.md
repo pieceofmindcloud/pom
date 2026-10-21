@@ -106,8 +106,10 @@ If two plugins claim the same point, neither takes the native URL and both stay
 under their namespaces, avoiding a collision. Without a single declaration,
 POM's fallback stays available.
 
-New menus are shown as top-level items before Documentation, in the order they
-appear in the manifests and in the plugin list. An item with `children`
+New menus are shown as top-level items right after the entries the same plugin
+already holds (the logs plugin's Quota follows its Statistics), or before
+Documentation when the plugin holds none, in the order they appear in the
+manifests and in the plugin list. An item with `children`
 becomes an expandable section, like Models or Network, with one submenu per
 child visible to the profile; the section disappears when no child is left. The
 `group` field still has no effect. Older hosts ignore `children` and only show

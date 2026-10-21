@@ -259,7 +259,8 @@ local-only notice. Routes:
   from `pom-plugin-ui/v1` and live under `/<plugin_code>/<manifest path>`; for
   example, `plugin_code: "base"` and `/example` open at
   `/admin-ui/base/example`. Menu and matcher use the same normalized table; new
-  menus show up in manifest order, before Documentation. If two plugins claim
+  menus show up in manifest order, right after that plugin's other entries or,
+  without any, before Documentation. If two plugins claim
   `/logs` or `/statistics`, both use their namespaces and the native fallback
   stays. `/logs/statistics` remains a native alias of `/statistics`.
   Plugin menus and screens are available to all profiles; manifest `roles` and

@@ -8,9 +8,10 @@
  */
 import { Ban, CheckCircle2, Gauge, RotateCcw, Send, TimerReset } from "lucide-react";
 import { useEffect, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { Badge, Button, Empty, ErrorState, Input, PageHeader, Panel, PanelHeader, Skeleton } from "../components/ui";
 import { api } from "../lib/api";
+import { keys, useMyQuota } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
 
@@ -37,6 +38,8 @@ interface QuotaLimit {
 interface QuotaStatus {
   available: boolean;
   configured: boolean;
+  /** A machine that runs the logs plugin did not answer yet. */
+  pending?: boolean;
   blocked?: boolean;
   limits?: QuotaLimit[];
   reset_credits?: { available: number; used: number };
@@ -45,7 +48,7 @@ interface QuotaStatus {
   pending_request?: { id: string; at: string; note: string } | null;
 }
 
-const KEY = ["quota", "mine"];
+const KEY = keys.myQuota;
 
 type T = ReturnType<typeof useI18n>["t"];
 
@@ -130,11 +133,7 @@ export function MyBudget() {
   const now = useNow();
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState<"reset" | "request" | null>(null);
-  const quota = useQuery<QuotaStatus>({
-    queryKey: KEY,
-    queryFn: () => api.get<QuotaStatus>("/api/ui/quota"),
-    refetchInterval: 30_000,
-  });
+  const quota = useMyQuota<QuotaStatus>();
   const data = quota.data;
 
   async function act(kind: "reset" | "request") {
@@ -170,7 +169,7 @@ export function MyBudget() {
           ) : undefined
         }
       />
-      {quota.isLoading ? (
+      {quota.isLoading || (data?.pending && !data.configured) ? (
         <Skeleton className="h-40" />
       ) : quota.isError ? (
         <ErrorState title={t("budget.loadFailed")} error={quota.error} onRetry={() => void quota.refetch()} />

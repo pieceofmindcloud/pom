@@ -7,7 +7,9 @@
 //! (the API key's node, else this one): first its own logs plugin, if it runs
 //! one, then each live admin through the signed peer call
 //! (`/api/internal/plugins/logs/peer/quota.check`). The first answer from a
-//! plugin that has budgets configured decides.
+//! plugin that has budgets configured decides. A machine without the plugin
+//! is skipped; one that runs it and does not answer makes a "no budget" answer
+//! provisional (not cached, `pending` on the screen).
 //!
 //! Fail-open by design: with no plugin answering, the request goes on (and a
 //! warning is logged), except for a node this one already saw refused, which
@@ -92,9 +94,26 @@ enum Source {
     Peer(crate::network::PeerInfo),
 }
 
-async fn ask_source(state: &GatewayState, source: &Source, op: &str, params: &Value) -> Option<Value> {
+/// What one source said: an answer, that its logs plugin does not run, or
+/// nothing (a timeout, a refusal, no route). Telling the last two apart is what
+/// keeps a slow admin from reading as "no budget here".
+enum Reply {
+    Answer(Value),
+    Absent,
+    Failed,
+}
+
+async fn ask_source(state: &GatewayState, source: &Source, op: &str, params: &Value) -> Reply {
     match source {
         Source::Local => {
+            let running = state
+                .plugins
+                .status(crate::plugins::LOGS_PLUGIN_CODE)
+                .await
+                .is_some_and(|status| status.active);
+            if !running {
+                return Reply::Absent;
+            }
             state
                 .plugins
                 .query_audit(
@@ -103,20 +122,26 @@ async fn ask_source(state: &GatewayState, source: &Source, op: &str, params: &Va
                     json!({ "params": params, "caller": { "node_id": state.network.node_id } }),
                 )
                 .await
+                .map_or(Reply::Failed, Reply::Answer)
         }
         Source::Peer(peer) => {
             let path = format!(
                 "/api/internal/plugins/{}/peer/quota.{op}",
                 crate::plugins::LOGS_PLUGIN_CODE
             );
-            let response = state
-                .control_post_json(peer, &path, params, PEER_TIMEOUT)
-                .await
-                .ok()?;
-            if !response.status().is_success() {
-                return None;
+            let Ok(response) = state.control_post_json(peer, &path, params, PEER_TIMEOUT).await else {
+                return Reply::Failed;
+            };
+            if response.status() == StatusCode::NOT_FOUND {
+                return Reply::Absent;
             }
-            response.json::<Value>().await.ok()
+            if !response.status().is_success() {
+                return Reply::Failed;
+            }
+            response
+                .json::<Value>()
+                .await
+                .map_or(Reply::Failed, Reply::Answer)
         }
     }
 }
@@ -146,23 +171,52 @@ async fn sources(state: &GatewayState) -> Vec<Source> {
     sources
 }
 
-/// The first plugin answer with budgets configured; else the last answer
-/// that said there are none; `None` when no plugin answered at all.
-async fn first_configured(state: &GatewayState, op: &str, params: &Value) -> Option<(Source, Value)> {
+/// The outcome of asking every source.
+struct Lookup {
+    /// The first plugin answer with budgets configured; else the last answer
+    /// that said there are none; `None` when no plugin answered at all.
+    found: Option<(Source, Value)>,
+    /// Some source that runs the plugin did not answer: a "none" may then be
+    /// wrong, since that source could hold the budgets.
+    missed: bool,
+}
+
+impl Lookup {
+    fn configured(&self) -> bool {
+        self.found
+            .as_ref()
+            .is_some_and(|(_, reply)| reply.get("configured").and_then(Value::as_bool) == Some(true))
+    }
+}
+
+async fn lookup(state: &GatewayState, op: &str, params: &Value) -> Lookup {
     let mut unconfigured = None;
+    let mut missed = false;
     for source in sources(state).await {
-        let Some(reply) = ask_source(state, &source, op, params).await else {
-            continue;
+        let reply = match ask_source(state, &source, op, params).await {
+            Reply::Answer(reply) => reply,
+            Reply::Absent => continue,
+            Reply::Failed => {
+                missed = true;
+                continue;
+            }
         };
         if reply.get("error").is_some() {
+            missed = true;
             continue;
         }
         if reply.get("configured").and_then(Value::as_bool) == Some(true) {
-            return Some((source, reply));
+            return Lookup {
+                found: Some((source, reply)),
+                missed,
+            };
         }
         unconfigured = Some((source, reply));
     }
-    unconfigured
+    Lookup {
+        found: unconfigured,
+        missed,
+    }
 }
 
 fn truncate(text: &str, max: usize) -> String {
@@ -266,7 +320,11 @@ pub(crate) async fn admit(
         "key_label": caller.key_label,
         "request_details": digest_details(request_details),
     });
-    let Some((_, reply)) = first_configured(state, "check", &params).await else {
+    let found = lookup(state, "check", &params).await;
+    // A "no budget" while a source holding the plugin did not answer is not a
+    // verdict to keep: that source may be the one with the budgets.
+    let keep = found.configured() || !found.missed;
+    let Some((_, reply)) = found.found else {
         let mut memory = lock();
         let warn = memory
             .last_unreachable_warning
@@ -284,7 +342,7 @@ pub(crate) async fn admit(
         .get("cache_ms")
         .and_then(Value::as_u64)
         .map(Duration::from_millis)
-        .filter(|cache| !cache.is_zero());
+        .filter(|cache| keep && !cache.is_zero());
     if reply.get("allowed").and_then(Value::as_bool) != Some(false) {
         let mut memory = lock();
         memory.blocked_until.remove(&node);
@@ -323,12 +381,23 @@ fn unavailable() -> Response {
     Json(json!({ "available": false, "configured": false })).into_response()
 }
 
-/// `GET /api/ui/quota`: this node's budget.
+/// `GET /api/ui/quota`: this node's budget. `available: false` means no
+/// reachable machine runs the logs plugin, so there is no budget screen at all;
+/// `pending: true` means a machine that runs it did not answer, so "no budget"
+/// is not known yet and the screen asks again.
 pub(crate) async fn my_quota(State(state): State<GatewayState>) -> Response {
-    match first_configured(&state, "status", &json!({})).await {
+    let found = lookup(&state, "status", &json!({})).await;
+    let pending = found.missed && !found.configured();
+    match found.found {
         Some((_, mut reply)) => {
             reply["available"] = json!(true);
+            if pending {
+                reply["pending"] = json!(true);
+            }
             Json(reply).into_response()
+        }
+        None if pending => {
+            Json(json!({ "available": true, "configured": false, "pending": true })).into_response()
         }
         None => unavailable(),
     }
@@ -336,7 +405,7 @@ pub(crate) async fn my_quota(State(state): State<GatewayState>) -> Response {
 
 /// Sends a self-serve operation to the plugin that holds the budgets.
 async fn self_serve(state: &GatewayState, op: &str, params: Value) -> Response {
-    let Some((source, status)) = first_configured(state, "status", &json!({})).await else {
+    let Some((source, status)) = lookup(state, "status", &json!({})).await.found else {
         return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": "quota_unavailable" })))
             .into_response();
     };
@@ -345,16 +414,17 @@ async fn self_serve(state: &GatewayState, op: &str, params: Value) -> Response {
             .into_response();
     }
     match ask_source(state, &source, op, &params).await {
-        Some(reply) if reply.get("error").is_some() => {
+        Reply::Answer(reply) if reply.get("error").is_some() => {
             (StatusCode::CONFLICT, Json(reply)).into_response()
         }
-        Some(mut reply) => {
+        Reply::Answer(mut reply) => {
             forget(&state.network.node_id);
             reply["available"] = json!(true);
             Json(reply).into_response()
         }
-        None => (StatusCode::BAD_GATEWAY, Json(json!({ "error": "quota_unavailable" })))
-            .into_response(),
+        Reply::Absent | Reply::Failed => {
+            (StatusCode::BAD_GATEWAY, Json(json!({ "error": "quota_unavailable" }))).into_response()
+        }
     }
 }
 

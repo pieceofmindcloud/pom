@@ -989,7 +989,13 @@ node, or a refusal that does not depend on the project) is reused for that long.
 request for more budget the admins see in the plugin's Quota screen
 (`peer.quota.request`). The plugin identifies the node by the signed caller,
 so a node only reads and resets its own budget. `{available: false}` means no
-admin's plugin answered.
+reachable machine runs the logs plugin: a peer without it answers
+`POST /api/internal/plugins/:code/peer/:op` with 404, told apart from a 502 of
+a plugin that runs and did not answer. When such a source misses and no answer
+had budgets, the reply carries `pending: true` (the screen keeps loading and
+asks again in 3 s, the menu keeps Usage) and a `check` verdict of "no budget"
+is not cached, since the silent source may hold the budgets. The Usage menu
+entry is left out while `available` is false.
 
 ### `/admin/*`
 

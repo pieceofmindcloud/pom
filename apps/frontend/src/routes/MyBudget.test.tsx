@@ -71,6 +71,13 @@ describe("MyBudget", () => {
     await waitFor(() => expect(api.post).toHaveBeenCalledWith("/api/ui/quota/request", { note: "release day" }));
   });
 
+  it("waits for a machine that runs the plugin instead of saying there is no budget", async () => {
+    vi.mocked(api.get).mockResolvedValue({ available: true, configured: false, pending: true });
+    mount();
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith("/api/ui/quota"));
+    expect(screen.queryByText("No budget limits this machine")).toBeNull();
+  });
+
   it("says when no admin holds budgets", async () => {
     vi.mocked(api.get).mockResolvedValue({ available: false, configured: false });
     mount();

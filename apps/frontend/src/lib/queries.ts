@@ -112,6 +112,7 @@ export const keys = {
   developmentPluginSources: ["development-plugin-sources"] as const,
   publicPluginCatalog: ["public-plugin-catalog"] as const,
   pomCoreUpdate: ["pom-core-update"] as const,
+  myQuota: ["quota", "mine"] as const,
   peerRuntime: (nodeId: string) => ["peer-runtime", nodeId] as const,
   chatTelemetry: (executionId: string | undefined, nodeIds: string[]) => ["chat-telemetry", executionId ?? "idle", ...nodeIds] as const,
   networkRtt: (nodeIds: string[]) => ["network-rtt", ...nodeIds] as const,
@@ -338,6 +339,21 @@ export function useAdminAccessInfo() {
     queryFn: () => api.get<AdminAccessInfo>("/api/ui/access", { auth: false }),
     retry: false,
     staleTime: 10_000,
+  });
+}
+
+/**
+ * This node's token budget (`GET /api/ui/quota`), shared by the Usage screen
+ * and the menu: `available: false` means no reachable machine runs the logs
+ * plugin; `pending` means one that runs it has not answered yet, so the answer
+ * is asked again soon instead of reading as "no budget".
+ */
+export function useMyQuota<T extends { available: boolean; pending?: boolean }>(enabled = true) {
+  return useQuery<T>({
+    queryKey: keys.myQuota,
+    queryFn: () => api.get<T>("/api/ui/quota"),
+    enabled,
+    refetchInterval: (query) => (query.state.data?.pending ? 3_000 : 30_000),
   });
 }
 

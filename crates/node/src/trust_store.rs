@@ -5,7 +5,8 @@
 //! vouch for sites, so no program may add one silently. What each one shows:
 //!
 //! - **macOS**: `security add-trusted-cert` into the user's login keychain. The
-//!   system asks for the user's password to change the trust settings.
+//!   system asks for the user's password to change the trust settings, so the
+//!   app never installs it at start: only the Preferences button does.
 //! - **Windows**: `certutil -user -addstore Root`, the current user's root
 //!   store. Windows shows its own "install this certificate?" warning; no UAC.
 //! - **Linux**: the NSS databases of Chrome (`~/.pki/nssdb`) and Firefox (each
@@ -163,9 +164,11 @@ pub fn install(ca: &LocalCa) -> InstallReport {
     report
 }
 
-/// What the desktop app does at start: install the CA unless this machine
+/// What the Windows and Linux desktop apps do at start (macOS does not: its
+/// keychain always asks for the password): install the CA unless this machine
 /// already trusts it or the person refused this CA before. Never on a server:
 /// there is nobody at the screen to answer the system's dialog.
+#[cfg_attr(not(any(windows, all(target_os = "linux", feature = "desktop"))), allow(dead_code))]
 pub fn auto_install() {
     let ca = match LocalCa::load_or_create() {
         Ok(ca) => ca,

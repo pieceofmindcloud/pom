@@ -102,8 +102,9 @@ where
         unsafe { pom_macos_status_stop() };
         result
     });
-    // The system asks the person once; a refusal is remembered.
-    std::thread::spawn(crate::trust_store::auto_install);
+    // No `trust_store::auto_install` here: changing keychain trust always asks
+    // for the password, and the window accepts the node's own certificate
+    // without it. Preferences installs the CA when the person wants it.
     let url = CString::new(chat_url(port))?;
     let window_url = CString::new(admin_url(port))?;
     let icon = CString::new(icon_path().to_string_lossy().as_bytes())?;

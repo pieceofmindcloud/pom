@@ -301,7 +301,9 @@ troubled deployment.
   it is used only with `--trust-ca-system-wide`, under `pkexec`
   (`update-ca-certificates`/`update-ca-trust`); without the flag nothing asks
   for root and `state` ignores that store.
-  `auto_install` runs once at the start of each desktop shell and never asks
+  `auto_install` runs at the start of the Windows and Linux desktop shells
+  (not macOS, where any keychain trust change asks for the password; there
+  only the Preferences button installs it) and never asks
   again for a CA the person refused (`.pom-ca.declined`); `install` is also
   behind `POST /api/ui/tls/ca/install` (`backend/webui/https.rs`).
 - The three native windows load `https://127.0.0.1` (`main::gateway_url`,

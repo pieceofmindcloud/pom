@@ -451,6 +451,7 @@ const ARG_ENV: &[(&str, &str)] = &[
     ("no_default_relays", "NO_DEFAULT_RELAYS"),
     ("no_discovery", "NO_DISCOVERY"),
     ("no_pkarr", "NO_PKARR"),
+    ("trust_ca_system_wide", "TRUST_CA_SYSTEM_WIDE"),
 ];
 
 /// The command line with the variables of `ARG_ENV`. The boolean flags read the

@@ -299,6 +299,23 @@ probe is not a refusal: one that ends refused erases the memory at once. With a
 of the plan on the first request after a quiet minute, and a deployment still
 being served failed with "No valid pipeline".
 
+A peer with **no** remembered admission gets `FIRST_ADMISSION_BUDGET` (3.5 s)
+instead, enough for a direct miss followed by the tunnel. That is every peer
+right after the gateway boots or joins a network, and a peer that just appeared:
+the memory lives only in the process, every connection is cold (mutual TLS,
+iroh, maybe a relay), and with the short budget the first prompt always failed
+with "No valid pipeline" while the second one, finding the memory the late probe
+left, worked. A peer that really is gone pays that wait once and then sits in
+quarantine.
+
+`spawn_admission_warmup` keeps that wait off the request path. Every 5 s it
+probes the candidates (a model announced, or idle) whose admission is missing or
+older than 150 s (`ADMISSION_WARMUP_REFRESH`), and waits for those probes before
+looking again. So a boot, a join or a new peer is admitted within seconds,
+before any prompt, and the memory a request falls back on never ages out while
+the peer keeps answering. `/health` is not inference activity
+(`RequestActivity`), so the warm-up never keeps an `unload_if_idle` peer loaded.
+
 The probe follows the pinned route (`bases_by_route_plan`): a tunnel route goes
 straight to the tunnel, an HTTP/QUIC route puts the measured address first. It
 tries every inference address in `Network::inference_bases` order (the host that

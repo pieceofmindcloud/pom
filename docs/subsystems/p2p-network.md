@@ -1751,7 +1751,6 @@ with a live cluster endpoint.
 
 ## 7. Defects noted
 
-
 - **DEFECT NOTED: `Heartbeat` is unsigned.** A `Heartbeat` names a `node_id`
   and a `timestamp` and nothing proves either, so anyone on the LAN can keep
   a peer that went away looking alive for as long as it keeps sending them.

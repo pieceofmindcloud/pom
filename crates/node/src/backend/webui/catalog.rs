@@ -1460,7 +1460,21 @@ pub(super) async fn get_relay(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
 ) -> Response {
-    Json(state.network.relay_gate().status()).into_response()
+    Json(relay_view(&state)).into_response()
+}
+
+/// The relay status, with how many visitors' anonymous relays this node
+/// holds passes for (`Network::anonymous_relays`): on an admin, every one it
+/// sees in the network.
+fn relay_view(state: &GatewayState) -> serde_json::Value {
+    let mut view = serde_json::to_value(state.network.relay_gate().status()).unwrap_or_default();
+    if let Some(object) = view.as_object_mut() {
+        object.insert(
+            "anonymous_relays".into(),
+            json!(state.network.anonymous_relays().len()),
+        );
+    }
+    view
 }
 
 /// Saves the relay options and applies them live, with no restart: new
@@ -1482,7 +1496,7 @@ pub(super) async fn save_relay(
     gate.set(req.everyone, req.cluster, req.transfers);
     gate.set_anonymous(req.anonymous);
     info!("relay options updated from the interface: {req:?}");
-    Json(gate.status()).into_response()
+    Json(relay_view(&state)).into_response()
 }
 
 #[derive(Deserialize)]

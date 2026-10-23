@@ -313,7 +313,12 @@ Per-file list:
   does not relay for its network. `relayStateKey` turns the answer into one
   line (relaying for any network, for this network, not relaying, or not
   reachable from the internet). The panel stays out when the node does not
-  answer. Tests in `RelayOptions.test.tsx`.
+  answer. On a visitor a fourth card, "Relay anonymously for this network"
+  (`anonymous`, `anonymousOffered`), lets anyone with an admin's pass relay
+  through it without it learning who; every save posts all four options, so
+  one card never resets another. An admin sees how many visitors relay that
+  way (`anonymous_relays`, `relay-visitors`), even behind a NAT. Tests in
+  `RelayOptions.test.tsx`.
 - `NatBadge.tsx` - the top bar's amber "Behind NAT" badge, drawn only while
   `ClusterView.relayed_peers` is not empty: a peer reached through a relay that
   carries the traffic because the hole punch it coordinated did not close.

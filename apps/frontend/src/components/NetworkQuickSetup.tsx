@@ -67,6 +67,7 @@ function suggestedRelay(status: RelayStatus): RelayChoice {
     everyone: status.fixed.everyone ? status.everyone : true,
     cluster: status.cluster,
     transfers: status.transfers,
+    anonymous: status.anonymous ?? false,
   };
 }
 

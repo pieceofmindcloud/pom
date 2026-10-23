@@ -1782,6 +1782,8 @@ network.quicSubtitle,"Prefer HTTP/3 for inference hops while keeping HTTP/HTTPS 
 network.quicTitle,QUIC transport,Transporte QUIC
 network.readOnly,Read-only,Somente leitura
 network.rejoin,Rejoin network,Voltar para a rede
+network.relayAnonymous,Relay anonymously for this network,Servir de relé anônimo para esta rede
+network.relayAnonymousHint,"Members of this network, visitors included, may pass through this machine with a pass an administrator signs. It never learns which machines they are, only their addresses.","Membros desta rede, inclusive visitantes, podem passar por esta máquina com um passe que um administrador assina. Ela nunca sabe quais máquinas são, só os endereços."
 network.relayCluster,Relay for this network,Servir de relé para esta rede
 network.relayClusterHint,"When the internet reaches this machine, members of this network behind a router can reach each other through it.","Quando a internet alcança esta máquina, membros desta rede atrás de um roteador se alcançam por ela."
 network.relayEveryone,Relay for any network,Servir de relé para qualquer rede
@@ -1799,6 +1801,8 @@ network.relaySubtitle,"A relay only passes encrypted traffic between two machine
 network.relayTitle,Relay,Relé
 network.relayTransfers,Let file transfers of this network pass,Deixar transferências de arquivo desta rede passarem
 network.relayTransfersHint,"Files are large: turn this off to keep the relay for control and inference only.","Arquivos são grandes: desligue para manter o relé só para controle e inferência."
+network.relayVisitors,Visitor relays,Relés de visitantes
+network.relayVisitorsCount,"{count, plural, =0 {No visitor relays anonymously} one {# visitor relays anonymously for this network} other {# visitors relay anonymously for this network}}","{count, plural, =0 {Nenhum visitante serve de relé anônimo} one {# visitante serve de relé anônimo para esta rede} other {# visitantes servem de relé anônimo para esta rede}}"
 network.relinquishNode,Become an infer node,Virar um nó infer
 network.relinquishNodeDescription,"New inference is routed away first. In-flight inference finishes. Then this node becomes infer and releases its slice. If no other node can serve that same slice, the range becomes uncovered and generations that need it fail clearly.","A inferência nova será encaminhada para outro nó primeiro. A inferência em curso termina. Depois este nó vira infer e libera sua fatia. Se nenhum outro nó puder servir essa mesma fatia, a faixa ficará descoberta e as gerações que precisarem dela falharão claramente."
 network.relinquishNodeFailed,The node could not leave the node role,O nó não conseguiu deixar o papel de node

@@ -372,7 +372,9 @@ source of the scope the gateway enforces:
   serves `/v1`, and every profile serves), correcting this machine's own
   advertised address (`POST /api/ui/network/advertise-addr`), its own name
   (`POST /api/ui/network/node-name`), its own relay
-  options (`GET`/`POST /api/ui/network/relay`), leaving/rejoining
+  options (`GET`/`POST /api/ui/network/relay`: `everyone`, `cluster`,
+  `transfers`, `anonymous`; the answer adds the state and `anonymous_relays`,
+  how many visitors' anonymous relays this node holds passes for), leaving/rejoining
   the network (`/api/ui/leave`, `/api/ui/rejoin`) and the node's local plugins
   (`/api/ui/plugins*`: activating licenses, GitHub repositories, installing,
   updating and the plugin UIs);

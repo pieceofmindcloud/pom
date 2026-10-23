@@ -3,6 +3,8 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocaleProvider } from "../i18n/provider";
 import { api } from "../lib/api";
+import { ProfileProvider } from "../lib/profile";
+import type { Profile } from "../lib/profile";
 import { RelayOptions, relayStateKey, type RelayStatus } from "./RelayOptions";
 
 const base: RelayStatus = {
@@ -12,6 +14,9 @@ const base: RelayStatus = {
   fixed: { everyone: false, no_cluster: false, no_transfers: false },
   reachable: true,
   serving: true,
+  anonymous: false,
+  anonymous_serving: false,
+  anonymous_relays: 0,
 };
 
 vi.mock("../lib/api", () => ({ api: { get: vi.fn(), post: vi.fn() } }));
@@ -19,10 +24,12 @@ vi.mock("../lib/toast", () => ({
   useToast: () => ({ success: vi.fn(), fromError: vi.fn() }),
 }));
 
-function mount() {
+function mount(profile: Profile = "worker") {
   return render(
     <LocaleProvider initialLocale="en">
-      <RelayOptions />
+      <ProfileProvider initialProfile={profile}>
+        <RelayOptions />
+      </ProfileProvider>
     </LocaleProvider>,
   );
 }
@@ -54,6 +61,7 @@ describe("RelayOptions", () => {
         everyone: false,
         cluster: true,
         transfers: false,
+        anonymous: false,
       }),
     );
     await waitFor(() => expect((screen.getByTestId("relay-transfers") as HTMLInputElement).checked).toBe(false));
@@ -88,5 +96,34 @@ describe("RelayOptions", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(container.textContent).toBe("");
     expect(screen.queryByTestId("relay-everyone")).toBeNull();
+  });
+
+  it("offers the anonymous relay to a visitor only", async () => {
+    vi.mocked(api.get).mockResolvedValue(base);
+    vi.mocked(api.post).mockResolvedValue({ ...base, anonymous: true });
+    mount("visitor");
+
+    const anonymous = (await screen.findByTestId("relay-anonymous")) as HTMLInputElement;
+    fireEvent.click(anonymous);
+    await waitFor(() =>
+      expect(api.post).toHaveBeenCalledWith("/api/ui/network/relay", {
+        everyone: false,
+        cluster: true,
+        transfers: true,
+        anonymous: true,
+      }),
+    );
+
+    cleanup();
+    mount("worker");
+    await screen.findByTestId("relay-transfers");
+    expect(screen.queryByTestId("relay-anonymous")).toBeNull();
+  });
+
+  it("tells an admin behind a NAT how many visitors relay anonymously", async () => {
+    vi.mocked(api.get).mockResolvedValue({ ...base, reachable: false, anonymous_relays: 2 });
+    mount("admin");
+    expect((await screen.findByTestId("relay-visitors")).textContent).toContain("2 visitors");
+    expect(screen.queryByTestId("relay-choices")).toBeNull();
   });
 });

@@ -370,7 +370,9 @@ local-only notice. Routes:
   setup also has the relay step, suggesting "Relay for any network" to
   strengthen the distributed network; it is saved after the network. Both
   leave the relay out while the relay report says `reachable: false`: behind
-  a NAT the machine cannot relay for anyone. "Who can join" and "Accepting new members" appear
+  a NAT the machine cannot relay for anyone. A visitor also gets "Relay
+  anonymously for this network" (`relay.anonymous`, see `p2p-network.md`), and
+  an admin sees how many visitors relay that way, even behind a NAT. "Who can join" and "Accepting new members" appear
   only with discovery on or hidden; "Who can join" has "Anyone without
   approval" (`auto_approve`), which admits every request on arrival and
   carries its warning in the choice. The location (city, pin, geographic

@@ -430,6 +430,27 @@ describe("Sidebar", () => {
     expect(screen.getByText("Rede")).toBeTruthy();
   });
 
+  it("puts Leave network beside the theme switch for a visitor only, behind a confirmation", () => {
+    const view = (profile: "visitor" | "admin") => render(
+      <MemoryRouter initialEntries={["/documentation"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <LocaleProvider initialLocale="pt-BR">
+          <ProfileProvider initialProfile={profile}>
+            <ChatSessionProvider>
+              <Sidebar />
+            </ChatSessionProvider>
+          </ProfileProvider>
+        </LocaleProvider>
+      </MemoryRouter>,
+    );
+    const admin = view("admin");
+    expect(screen.queryByTestId("sidebar-leave-network")).toBeNull();
+    admin.unmount();
+
+    view("visitor");
+    fireEvent.click(screen.getByTestId("sidebar-leave-network"));
+    expect(screen.getByRole("dialog", { name: "Sair desta rede?" })).toBeTruthy();
+  });
+
   it("keeps New chat in the infer menu outside the chat when there is no conversation", () => {
     render(
       <MemoryRouter initialEntries={["/documentation"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>

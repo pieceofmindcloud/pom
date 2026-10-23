@@ -15,6 +15,7 @@ import { useLobbyUnread, useNetworkChatOpen, useNetworkChatUnread } from "../lib
 import { keys, useMyQuota, useNode, usePluginUi, usePomCoreUpdateStatus } from "../lib/queries";
 import { canAccessRoute } from "../lib/access";
 import { useTheme } from "../lib/theme";
+import { LeaveNetworkButton } from "./LeaveNetworkButton";
 import { useToast } from "../lib/toast";
 import { TlsChip } from "./TlsIndicator";
 import { LanguageFlags } from "./LanguageFlags";
@@ -250,6 +251,7 @@ function SidebarUtilityControls({ collapsed }: { collapsed: boolean }) {
             {node?.pom_dev_mode && node.build_commit ? ` · ${node.build_commit}` : null}
           </span>
         )}
+        {known && profile === "visitor" && <LeaveNetworkButton />}
         <button
           type="button"
           onClick={toggle}

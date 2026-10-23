@@ -113,7 +113,8 @@ limits the network answer and the promotions.
 In that profile's Sidebar, the history and `New chat` are the main menu;
 the sessions share state with the Chat, the list scrolls within the available
 space, and the network always stays below it. Documentation and Settings sit in
-the footer next to the flags. Administrator and node keep the screen navigation
+the footer next to the flags, and "Leave network" (`LeaveNetworkButton`) sits
+beside the theme switch. Administrator and node keep the screen navigation
 menu.
 
 On the Dashboard, the add-machine and undeploy controls appear only for

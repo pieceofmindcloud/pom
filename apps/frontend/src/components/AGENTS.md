@@ -614,6 +614,11 @@ Per-file list:
   silently point at another range.
 ## Joining, guards and destructive actions
 
+- `LeaveNetworkButton.tsx` - The visitor's "Leave network", an icon beside
+  the theme switch at the foot of the Sidebar. Same confirmation and act as
+  the Networks screen (`POST /api/ui/network/leave`): the node goes back to
+  its own network and the page reloads.
+
 - `LobbyChat.tsx` - Chat with a network this machine has **not** joined
   (`docs/subsystems/p2p-network.md`, 6.1). A modal that polls the node every
   3 s (`GET <endpoint>?key=<publisher_key>`) and posts through it; the browser

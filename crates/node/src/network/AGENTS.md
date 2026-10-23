@@ -155,7 +155,10 @@ dedicated or member, with iroh's hole punching), are in
   own announce arrived in the last 30 s (`firsthand`, `insert_announced_peer`).
   `is_member_key` answers whether a node key is an admin of the chain or holds a
   valid, unrevoked membership token: what every node-to-node call authorized by the
-  connection key is checked against (`auth::caller_is_member`). On a public network the
+  connection key is checked against (`auth::caller_is_member`). On a visitor, `admit_peer`
+  refuses another visitor and `alive_peers` leaves one out (`hides`, role from
+  the verified token, else the announced profile): visitors never know each
+  other. On a public network the
   rigor follows the `network.access_policy`: with `authorized` (the default) the
   `cluster_id` only selects the chain and the tuple `{node_id, peer_id, pubkey}`
   must be an active concession in `admin_trust.rs`; with `anyone_with_anchor` a
@@ -377,7 +380,8 @@ dedicated or member, with iroh's hole punching), are in
   warning and a rate limit so the log is not flooded if the panic repeats.
 - `Network::handle_message` - Announce (rewrites `0.0.0.0` with the source address
   and calls `merge_observed` only when there are no explicit candidates), PeerRequest
-  (answers an immediate Announce + a chunked `PeerList`), PeerList, Heartbeat,
+  (answers an immediate Announce + a chunked `PeerList` from `peer_list_for`,
+  which names visitors only to a known admin or worker), PeerList, Heartbeat,
   LocalDiscover. The `PeerList` also
   updates an already known peer when the snapshot is newer, preserving the local
   verification state and the address candidates **this node has not yet proven

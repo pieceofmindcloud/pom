@@ -76,7 +76,9 @@ through UDP, mDNS, pkarr or a gossip link, but none of those
 sources registers a `PeerInfo` without local proof of admission. The same rule
 applies to UDP `Announce`, gossip `Announce`, `PeerList` and direct entry
 through `insert_peer`; policies, tunnels, routes, UI and pipeline only consume
-the table after that point.
+the table after that point. On a visitor, another visitor is never admitted and
+is left out of `alive_peers`; a `PeerList` names visitors only to a requester
+known as an admin or a worker (`security-model.md`, roles).
 
 - On a private network, a non-empty `connection_key` selects the proof through
   `/handshake`. The key never leaves the node: it sends its identity and a
@@ -1739,6 +1741,14 @@ the principal's handler (`discovery.rs::answer_lobby_request`) has no test
 with a live cluster endpoint.
 
 ## 7. Defects noted
+
+- **DEFECT NOTED: a visitor's gossip `Announce` reaches other visitors.** The
+  announce is broadcast on the network's gossip topic, which every member
+  joins, so another visitor receives its bytes - node id, addresses and
+  hardware - even though its admission refuses it and it never dials it
+  (`Network::hides`). Hiding it needs a visitor to send its announce only to
+  admins and workers instead of the shared topic, without losing the workers
+  that check a visitor's membership against their peers table.
 
 - **DEFECT NOTED: `Heartbeat` is unsigned.** A `Heartbeat` names a `node_id`
   and a `timestamp` and nothing proves either, so anyone on the LAN can keep

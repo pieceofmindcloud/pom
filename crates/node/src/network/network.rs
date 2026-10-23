@@ -2848,6 +2848,63 @@ impl Network {
         !readmitted && crate::membership::peer_role(peer, &admission.trust).is_none()
     }
 
+    /// Whether `peer` is a visitor: its token, checked against the chain,
+    /// says so, or it announces itself as one. A token outranks the
+    /// announce, as everywhere: the role is granted at admission.
+    fn peer_is_visitor(&self, peer: &PeerInfo) -> bool {
+        use crate::config::EnrollmentRole;
+        match self.admission.as_ref() {
+            Some(admission) => match crate::membership::peer_role(peer, &admission.trust) {
+                Some(role) => role == EnrollmentRole::Visitor,
+                None => peer.profile == crate::profile::NodeProfile::Visitor,
+            },
+            None => peer.profile == crate::profile::NodeProfile::Visitor,
+        }
+    }
+
+    /// Whether this node is a visitor: its profile, or its own token.
+    fn is_visitor(&self) -> bool {
+        if self
+            .profile
+            .read()
+            .is_ok_and(|profile| *profile == crate::profile::NodeProfile::Visitor)
+        {
+            return true;
+        }
+        let Some(admission) = self.admission.as_ref() else {
+            return false;
+        };
+        crate::membership::member_role(
+            &admission.trust,
+            self.membership().as_deref(),
+            &self.node_id,
+            &self.pubkey,
+        ) == Some(crate::config::EnrollmentRole::Visitor)
+    }
+
+    /// Visitors never know each other: a visitor needs the admins and the
+    /// workers that serve it, and another visitor is neither. So a visitor
+    /// does not admit, list, probe, measure or gossip with one.
+    fn hides(&self, peer: &PeerInfo) -> bool {
+        peer.node_id != self.node_id && self.is_visitor() && self.peer_is_visitor(peer)
+    }
+
+    /// The live peers a `PeerRequest` from `from` is answered with. Visitors
+    /// are only listed to a requester known as an admin or a worker: a
+    /// visitor, or a node not in the table, never learns of one from here.
+    async fn peer_list_for(&self, from: &str) -> Vec<PeerInfo> {
+        let peers = self.peers.read().await;
+        let lists_visitors = peers
+            .get(from)
+            .is_some_and(|requester| !self.peer_is_visitor(requester));
+        peers
+            .values()
+            .filter(|p| p.is_alive() && !self.hides(p))
+            .filter(|p| lists_visitors || !self.peer_is_visitor(p))
+            .cloned()
+            .collect()
+    }
+
     /// Takes a banned node out of the peers table at once, so no plan routes
     /// to it while its announces are being refused.
     pub(crate) async fn drop_revoked(&self, node_id: &str) {
@@ -3531,10 +3588,7 @@ impl Network {
 
                 // Also send the list of peers we know about, split so that no
                 // single datagram exceeds the path MTU.
-                let peer_list: Vec<PeerInfo> = {
-                    let peers = self.peers.read().await;
-                    peers.values().filter(|p| p.is_alive()).cloned().collect()
-                };
+                let peer_list = self.peer_list_for(&from).await;
                 for chunk in peer_list_chunks(peer_list) {
                     let reply = P2PMessage::PeerList { peers: chunk };
                     let _ = self.send_to(&reply, &src.to_string()).await;
@@ -3884,6 +3938,10 @@ impl Network {
     }
 
     pub(crate) async fn admit_peer(&self, peer: &PeerInfo) -> bool {
+        if self.hides(peer) {
+            debug!("admission of {}: a visitor, hidden from this visitor", short(&peer.node_id));
+            return false;
+        }
         if self.is_revoked(peer) {
             debug!("admission of {}: revoked", short(&peer.node_id));
             return false;
@@ -4322,12 +4380,14 @@ impl Network {
             .map(|peer| peer.node_id.clone())
     }
 
+    /// The live peers this node may know: on a visitor, other visitors are
+    /// left out (`hides`) even when they entered the table before its token.
     pub async fn alive_peers(&self) -> Vec<PeerInfo> {
         self.peers
             .read()
             .await
             .values()
-            .filter(|p| p.is_alive())
+            .filter(|p| p.is_alive() && !self.hides(p))
             .cloned()
             .collect()
     }
@@ -6164,6 +6224,51 @@ mod tests {
         network.note_link(&remote, 1, P2pLink::new(path.clone(), false));
         assert_eq!(network.peer_route(&peer).relay_kind, Some("public"));
         assert!(!network.path_carries_transfers(Some(&path)).await);
+    }
+
+    /// Visitors never know each other: a visitor neither admits nor lists
+    /// another, and no node lists a visitor to a visitor or a stranger.
+    #[tokio::test]
+    async fn visitors_never_learn_of_each_other() {
+        use crate::profile::NodeProfile;
+        let as_role = |id: &str, profile: NodeProfile| {
+            let mut peer = dummy_peer(id, "127.0.0.1:9");
+            peer.profile = profile;
+            peer
+        };
+        let visitor_b = as_role("visitor-b", NodeProfile::Visitor);
+        let worker = as_role("worker", NodeProfile::Worker);
+
+        let visitor = Network::testkit("visitor-a".into(), String::new(), vec![], None, None)
+            .await
+            .unwrap();
+        *visitor.profile.write().unwrap() = NodeProfile::Visitor;
+        assert!(!visitor.admit_peer(&visitor_b).await);
+        assert!(visitor.admit_peer(&worker).await);
+        // One that entered the table before this node knew its own role.
+        for peer in [&visitor_b, &worker] {
+            visitor.peers.write().await.insert(peer.node_id.clone(), peer.clone());
+        }
+        let ids = |peers: Vec<PeerInfo>| peers.into_iter().map(|p| p.node_id).collect::<Vec<_>>();
+        assert_eq!(ids(visitor.alive_peers().await), vec!["worker"]);
+        assert_eq!(ids(visitor.peer_list_for("worker").await), vec!["worker"]);
+
+        let admin = Network::testkit("admin".into(), String::new(), vec![], None, None)
+            .await
+            .unwrap();
+        *admin.profile.write().unwrap() = NodeProfile::Admin;
+        let visitor_a = as_role("visitor-a", NodeProfile::Visitor);
+        for peer in [&visitor_a, &visitor_b, &worker] {
+            admin.peers.write().await.insert(peer.node_id.clone(), peer.clone());
+        }
+        let mut seen = ids(admin.alive_peers().await);
+        seen.sort();
+        assert_eq!(seen, vec!["visitor-a", "visitor-b", "worker"]);
+        assert_eq!(ids(admin.peer_list_for("visitor-a").await), vec!["worker"]);
+        assert_eq!(ids(admin.peer_list_for("stranger").await), vec!["worker"]);
+        let mut to_worker = ids(admin.peer_list_for("worker").await);
+        to_worker.sort();
+        assert_eq!(to_worker, vec!["visitor-a", "visitor-b", "worker"]);
     }
 
     /// With no verdict in the cache the answer is `None`, with no probe: it is what the

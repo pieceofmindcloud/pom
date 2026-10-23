@@ -24,6 +24,14 @@ are either workers or visitors.
 - The role is set at admission. A machine admitted as a visitor stays one
   whatever it announces, and the principal refuses to promote it
   (`visitor_target`).
+- Visitors never know each other. A visitor needs the admins and the workers
+  that serve it, so its `Network::admit_peer` refuses another visitor and
+  `alive_peers` leaves one out (`Network::hides`): it never probes, measures,
+  gossips with or lists one. Every node answers a `PeerRequest` with visitors
+  only to a requester it knows as an admin or a worker
+  (`Network::peer_list_for`). The role is the peer's token checked against the
+  chain, else its announced profile. See `p2p-network.md`, section 7, for
+  what the gossip topic still shows.
 - A visitor node refuses to hold or serve a model even when an admin asks
   (`visitor_profile`): `apply`, `launch`, `deploy`, `reconfigure`, `slice` and
   every `/api/transfer` route are refused before any other check.

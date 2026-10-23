@@ -301,7 +301,7 @@ describe("navigation after the chat", () => {
     await screen.findByRole("textbox");
     expect(screen.getAllByTestId("chat-session-list")).toHaveLength(1);
     expect(screen.getAllByRole("button", { name: "Conversa nova" })).toHaveLength(1);
-    expect(screen.getByRole("button", { name: "Rede" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Minha Rede" })).toBeTruthy();
   });
 
   it("shows the drop target, identifies the format and removes the attachment without erasing the draft", async () => {

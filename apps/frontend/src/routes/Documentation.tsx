@@ -516,9 +516,9 @@ export function Documentation() {
           mobileReaderOpen ? "hidden" : "flex",
         )}
       >
-        <div className="shrink-0 border-b border-line p-3">
-          <TabSwitch tab={tab} onChange={switchTab} />
-        </div>
+        {/* Folder tabs sit on the line of what they open: a padded box
+            around them left the tabs floating apart from the content. */}
+        <TabSwitch tab={tab} onChange={switchTab} />
 
         {tab === "reference" && (
           <div className="shrink-0 border-b border-line p-3">

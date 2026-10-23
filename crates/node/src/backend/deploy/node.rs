@@ -837,18 +837,53 @@ pub(super) async fn undeploy_endpoint(
         }
     }
 
+    // A deploy still copying or loading stops first, so it cannot bring a
+    // machine up behind the undeploy's back.
+    let aborted = abort_in_flight(&state, &req.deploy_id, &req.group).await;
+
     let peers = state.all_peers().await;
     let target = match resolve_target(&req.deploy_id, &req.group, &peers) {
         Ok(a) => a,
+        Err(e) if !aborted.is_empty() => {
+            return Json(json!({
+                "group": req.group,
+                "deploy_id": aborted.first(),
+                "cancelled": true,
+                "released": 0,
+                "failed": 0,
+                "results": [],
+                "detail": e,
+            }))
+            .into_response();
+        }
         Err(e) => return bad(json!({ "error": e })),
     };
 
     // Re-surveys instead of trusting the screen, like `deploy`: a machine that left
-    // in the meantime must not become an invented failure row.
+    // in the meantime must not become an invented failure row. A machine of
+    // the exact deployment counts even before it announces layers: it may
+    // still be loading the model the operator gave up on.
+    let exact = matches!(target, UndeployTarget::Deployment { .. });
     let serving: Vec<PeerInfo> = peers
         .into_iter()
-        .filter(|p| p.total_layers > 0 && target.matches(p))
+        .filter(|p| (p.total_layers > 0 || exact) && target.matches(p))
         .collect();
+    if serving.is_empty() && !aborted.is_empty() {
+        if let UndeployTarget::Deployment { deploy_id, .. } = &target {
+            if let Err(e) = state.database.remove_deployment(deploy_id) {
+                warn!("could not forget the deployment {deploy_id}: {e:#}");
+            }
+        }
+        return Json(json!({
+            "group": target.label(),
+            "deploy_id": aborted.first(),
+            "cancelled": true,
+            "released": 0,
+            "failed": 0,
+            "results": [],
+        }))
+        .into_response();
+    }
     if serving.is_empty() {
         return bad(json!({
             "error": format!("no machine is serving {}", target.describe())
@@ -914,6 +949,7 @@ pub(super) async fn undeploy_endpoint(
             UndeployTarget::Deployment { deploy_id, .. } => Some(deploy_id.clone()),
             UndeployTarget::Label(_) => None,
         },
+        "cancelled": !aborted.is_empty(),
         "released": released,
         "failed": failed,
         "results": results,

@@ -39,6 +39,8 @@ export function UndeployPipeline({
   group,
   targets,
   deployId,
+  label,
+  inProgress = false,
 }: {
   /** Model that is live. */
   group: string;
@@ -51,6 +53,13 @@ export function UndeployPipeline({
    * model is live twice.
    */
   deployId?: string;
+  /** What the title names, when it is not `group` (a deploy still starting). */
+  label?: string;
+  /**
+   * A deploy of this pipeline is still copying or loading: the undeploy stops
+   * it too, so the operator who gave up does not wait for the machines.
+   */
+  inProgress?: boolean;
 }) {
   const { t } = useI18n();
   const [asking, setAsking] = useState(false);
@@ -64,7 +73,9 @@ export function UndeployPipeline({
     try {
       const r = await undeployPipeline(group, deployId);
       setReport(r);
-      if (r.failed === 0) {
+      if (r.cancelled && r.results.length === 0) {
+        toast.success(t("undeploy.button"), t("undeploy.cancelled"));
+      } else if (r.failed === 0) {
         toast.success(t("undeploy.button"), t("undeploy.allReleased", { count: r.released }));
       } else {
         toast.warning(
@@ -97,15 +108,16 @@ export function UndeployPipeline({
         open={asking}
         busy={busy}
         tone="danger"
-        title={t("undeploy.title", { group })}
+        title={t("undeploy.title", { group: label ?? group })}
         confirmLabel={t("undeploy.confirm")}
         onCancel={() => setAsking(false)}
         onConfirm={() => void undeploy()}
         description={
           <>
-            <p>{t("undeploy.description", { count: targets.length })}</p>
+            {inProgress && <p className="mb-2">{t("undeploy.inProgress")}</p>}
+            {targets.length > 0 && <p>{t("undeploy.description", { count: targets.length })}</p>}
             <p className="mt-2 text-xs text-faint">{t("undeploy.keepsFiles")}</p>
-            <div className="mt-3 overflow-hidden rounded-lg border border-line">
+            {targets.length > 0 && <div className="mt-3 overflow-hidden rounded-lg border border-line">
               <div className="eyebrow border-b border-line bg-raised px-3 py-1.5">
                 {t("undeploy.machines")}
               </div>
@@ -122,7 +134,7 @@ export function UndeployPipeline({
                   </li>
                 ))}
               </ul>
-            </div>
+            </div>}
           </>
         }
       />
@@ -139,6 +151,7 @@ export function UndeployPipeline({
       >
         {report && (
           <>
+            {report.cancelled && <p className="mb-2">{t("undeploy.cancelled")}</p>}
             <p>
               {report.failed === 0
                 ? t("undeploy.allReleased", { count: report.released })

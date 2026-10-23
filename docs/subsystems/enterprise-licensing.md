@@ -126,7 +126,7 @@ boundary before and still is).
 - The production `cdylib` of the `enterprise` plugin (the audit domain in
   `enterprise.db`, with its own schema, indexes, filtered listing and
   statistics aggregations) **no longer lives in this repository**: it was
-  extracted to `https://github.com/pereirajair/pom-plugin-logs` (see
+  extracted to `https://github.com/pieceofmindcloud/pom-plugin-logs` (see
   `## Extraction to pom-plugin-logs` below). This repository only keeps the
   generic licensing/host boundary, reusable by any future `plugin_code`.
 - `crates/node/src/plugin_host.rs` (`PluginHost`, renamed from
@@ -166,14 +166,14 @@ changing the limits of the inference transport between peers.
 
 The product code of the `enterprise` plugin (the `cdylib` that writes and
 queries `enterprise.db`) left this repository for
-`https://github.com/pereirajair/pom-plugin-logs`, a licensing repository of its
+`https://github.com/pieceofmindcloud/pom-plugin-logs`, a licensing repository of its
 own with separate build, packaging and release pipeline. What **stays** here is
 only the generic boundary, reusable by any future `plugin_code`:
 
 - `crates/enterprise-protocol` (DTOs, C ABI v1, `PLUGIN_ABI_VERSION`,
   `MAX_IPC_FRAME_BYTES`) is still the single source of the contract. The new
   repository depends on it through git (`enterprise-protocol = { git =
-  "https://github.com/pereirajair/rdma-p2p", rev = "<commit>" }`), pinned to a
+  "https://github.com/pieceofmindcloud/pom", rev = "<commit>" }`), pinned to a
   commit, never a floating branch - Cargo resolves the package inside the full
   workspace clone without trying to build the other members (`node`,
   `llama-engine` etc.), because no dependency of `enterprise-protocol` uses

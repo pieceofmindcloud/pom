@@ -223,7 +223,7 @@ local-only notice. Routes:
   embedded
 - `/shards` -> Shards; `/shards/deploy` -> redirects to `/deploy` (old
   link)
-- Those four routes, plus `/transfers` and `/transfers/send`, are
+- Those four routes, plus `/transfers`, are
   full screen (`isFullBleed` in `App.tsx`), under the same contract as
   `/deployments`/`/deployments/logs`: a fixed header
   (`FullBleedHeader`/`FullBleedToolbar`, `components/ui.tsx`) and a table or
@@ -249,7 +249,8 @@ local-only notice. Routes:
   history is capped on the principal at the last seven days or 500,000
   records, whichever comes first; `cluster_logs_min_level` in `pom.json`
   controls the minimum captured level and defaults to `info`.
-- `/transfers` -> Transfers; `/transfers/send` -> SendFile
+- `/transfers` -> Transfers, which also holds the send panel (one menu entry);
+  `/transfers/send` redirects there, keeping `?filename=`
 - `/logs` and `/statistics` -> `EnterpriseFeatureShowcase`, the sales page
   of the logs plugin (Request Logs, Statistics and Quota, one purchase; public
   catalog, purchase on the site in a new tab), when no active plugin declares
@@ -511,7 +512,14 @@ good; the rest of this section describes that dormant code. Do not link to it.
   Everything can be adjusted later, inside POM. While the password is the
   default one, the gate does not ask for it (`useAdminSurface` logs in with it
   when `/api/access` says `default_password`) and the bell
-  (`Notifications.tsx`) carries a notice asking to change it in Preferences.
+  (`Notifications.tsx`) carries a notice (which does not spell the default
+  out) leading to `/config/password`: `components/ChangePassword.tsx`, a
+  screen in the wizard's look that replaces the shell on every profile. With
+  the default in force it asks only the new password twice; afterwards the
+  current one too. The new one needs 10 characters and three of lowercase,
+  uppercase, digits and symbols, never the default, checked as it is typed
+  and again by the node. Preferences links to the same screen; the exposure
+  of the interface is a separate setting there.
   The notice is sent once per start of the node (`boot_id` of `/api/access`,
   state in `lib/defaultPasswordNotice.ts`): opening the bell reads it, it can
   be dismissed, and it comes back unread after a restart. Ignoring it blocks
@@ -745,7 +753,7 @@ the POM release the node runs (`NodeInfo.pom_version`, `v0.5.6` as GitHub tags
 it; `· <build_commit>` after it only with `pom_dev_mode`) and the light/dark
 theme. When `/api/ui/pom-update/status` reports a newer release the version
 turns amber and a "New version" link above the row names it and opens About,
-where it is installed or told why it cannot be. Network > Participants shows
+where it is installed or told why it cannot be. My Network > Participants shows
 each machine's announced `pom_version` (amber when it differs from this node's,
 "version unknown" for a node that announces none; the build only in development
 mode). The PipelineRail is still rendered hidden on
@@ -1682,7 +1690,7 @@ machine restarted. Today the fingerprint is only model + set of ranges.
   Redeploying the same shape from the Deploy Studio (same proven model, same
   machines and ranges) also lands on the same `deploy_id`; changing machine or
   range mints a new id. See `deployment.md` §7.1.
-- **Transfer** (`Transfers`/`SendFile`/`Notifications`): remote model downloads
+- **Transfer** (`Transfers` with its `SendFilePanel`, `Notifications`): remote model downloads
   with progress and cancellation, pending offers (accept/refuse straight from
   the bell), active transfers (bytes, speed, ETA, cancel) and finished ones.
   Sending ("send a file from this machine") offers a file from the local
@@ -1749,22 +1757,25 @@ gate, while the current step is one of its two (`useFirstRunWizard` in
 `App.tsx`). It asks nothing about the kind of network: the network is the
 machine's own, and joining another one comes later, from the Networks screen.
 
-1. **Names** (`names`) - two fields on one screen. The machine name is
-   pre-filled with the name the machine goes by (the system hostname until
-   it is given one) and saved with `POST /api/ui/network/node-name`. The
-   network name is pre-filled with the name the network was created with,
-   under a warning that it is advertised to everyone if the network is made
-   public, and saved with `POST /api/ui/network/settings`, the rest of the
-   settings untouched. The step is reported only after both saves.
-2. **Follow the instructions** (`bootstrap`) - no field: it says that hints on
-   the screen point at what to do next, and its button opens the panel.
+1. **Name** (`names`) - one field, given to the machine and to its network:
+   at this point the network is the machine's own, so two names said the
+   same thing twice. It is pre-filled with the name the machine goes by (the
+   system hostname until it is given one) under a warning that the name is
+   advertised to everyone if the network is made public, and saved with
+   `POST /api/ui/network/node-name` and then `POST /api/ui/network/settings`
+   (`public_name`, the rest of the settings untouched). The step is reported
+   only after both saves; either name can be changed later in My Network.
+2. **Welcome** (`bootstrap`) - no field: a "Welcome to POM" animation (the
+   mark grows in, the greeting settles, a bar fills, `.pom-welcome*` in
+   `index.css`) for `WELCOME_MS` (3.6 s), after which the step is reported by
+   itself and the panel opens. A failed report keeps the screen with the error
+   and a Start button.
 
-Each name field has its own "Random" button that fills in a random name of two
-words and a number (`lib/randomName.ts`). Neither name may be empty, a
-failed save keeps the operator on the screen with the error, and "Back" only
-changes the screen shown. A reload resumes at the first step not done. The
-wizard draws on the `.pom-login*` / `.pom-setup*` shell of the access gate,
-with the language switch in the corner.
+The field has a "Random" button that fills in a random name of two words and a
+number (`lib/randomName.ts`). The name may not be empty and a failed save keeps
+the operator on the screen with the error. A reload resumes at the first step
+not done. The wizard draws on the `.pom-login*` / `.pom-setup*` shell of the
+access gate, with the language switch in the corner.
 
 ### The hints
 

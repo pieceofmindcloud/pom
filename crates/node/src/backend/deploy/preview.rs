@@ -67,6 +67,7 @@ pub(super) async fn plan_endpoint(
         true,
         req.mtp_choice.as_ref(),
     );
+    p.copies = planned_copies(&p);
     if let Some(reason) = survey.metadata_pending {
         p.blocked = Some(reason);
     }

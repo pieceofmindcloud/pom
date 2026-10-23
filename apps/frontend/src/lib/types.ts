@@ -1431,6 +1431,8 @@ export interface Job {
   kind?: string;
   /** Human label for the notification list. */
   title?: string;
+  /** The deployment a running `deploy` job brings up (`Job.deploy_id`). */
+  deploy_id?: string;
   /** Fields present when `kind === "model_download"`. */
   repo_id?: string;
   revision?: string | null;
@@ -2327,4 +2329,23 @@ export interface DeployPlan {
   load_distribution: DeployLoadDistribution[];
   /** Vision projector for the head and MTP draft for the tail. */
   sidecars?: SidecarsPlan;
+  /**
+   * Every file this deploy copies between machines. Not empty, the deploy
+   * needs `allow_transfers: true`, which the screen sends only after the
+   * operator authorized the list; the node refuses it otherwise.
+   */
+  copies?: PlannedCopy[];
+}
+
+/** One file a deploy copies between machines (`deploy/planning.rs` - `PlannedCopy`). */
+export interface PlannedCopy {
+  kind: "slice" | "mmproj" | "mtp";
+  name: string;
+  size_bytes: number;
+  /** The layer range, for a slice. */
+  layers?: [number, number];
+  source_node_id: string;
+  source_host: string;
+  target_node_id: string;
+  target_host: string;
 }

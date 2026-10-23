@@ -310,15 +310,15 @@ Per-file list:
   the other erases the local configuration and restarts in the setup.
 
 - `MyBudget.tsx` - "Usage" ("Uso", route `/config/usage`; `/config/budget`
-  redirects there; Network menu, every
-  profile): this machine's token budgets from `GET /api/ui/quota` - one panel per
+  redirects there; reached from the Usage popover beside the bell, every
+  profile, drawn only while this node has a budget configured; the meters and
+  the quota shape live in `components/QuotaParts.tsx`): this machine's token budgets from `GET /api/ui/quota` - one panel per
   plan with input/output bars and the window's turnover, the session-reset
   credits (`POST /api/ui/quota/reset`) and the request for more budget
   (`POST /api/ui/quota/request`). Without an admin's logs plugin answering it
   says so instead of showing zero; while a machine that runs the plugin has
   not answered (`pending`) it keeps loading instead of "no budget". The query
-  is `useMyQuota` (`lib/queries.ts`), shared with the Sidebar, which leaves the
-  Usage entry out while `available` is false. The admins' side is the logs plugin's Quota
+  is `useMyQuota` (`lib/queries.ts`), shared with `components/UsageButton.tsx`. The admins' side is the logs plugin's Quota
   screen.
 
 ## Chat
@@ -486,7 +486,10 @@ Per-file list:
   test in `About.test.tsx` covers the license, the notice and links, the two
   ecosystems, the filter and the on-demand check/application of the update.
 - `Dashboard.tsx` - Cluster overview: the admin sees cluster
-  coverage/machines/model/in-flight stats; node and infer see local model,
+  coverage/machines/model/in-flight stats (`ClusterStat`: two short lines, the
+  label over the value with its detail beside it and a hairline bar, so the
+  toolbar leaves the height to the map; one row that scrolls sideways, the
+  whole width on a phone with the actions below); node and infer see local model,
   slice and in-flight requests instead. Admins see the Add button only when
   `ClusterView.active_model` is nonempty. With no active model, Details is the
   initial view; with an active model, Flow remains the initial view. Manual
@@ -659,7 +662,11 @@ Per-file list:
   serve any model are listed as taken over ("Replace and deploy"), and the
   machines outside the plan that serve this same model get the choice between
   "Undeploy and deploy" and "Keep in parallel", which sends
-  `keep_existing: true`. The three confirms chain through `attemptDeploy`.
+  `keep_existing: true`. Before it, when `DeployPlan.copies` is not empty,
+  "Authorize the copies" lists each file, range, source and target; only its
+  confirmation sends `allow_transfers: true`, and a 409
+  `transfers_not_authorized` reopens it with the node's list. The confirms
+  chain through `attemptDeploy`.
   Topology edits are debounced 260 ms and validated by
   `POST /api/ui/deploy/plan`. Runtime parameters, per-machine GPU/KV overrides
   and the operational name stay local while editing: their changes do not
@@ -813,9 +820,11 @@ Per-file list:
   instead of repeating the server's text. It lives outside the profile gate - see
   the file's header and `lib/access.ts`. Test: `TrustAnchor.test.tsx`.
 - `Preferences.tsx` - Local settings screen under Settings (`Configurações`): owns the
-  administrative exposure mode and gateway port, accepts a password only in
-  network mode, and saves its Argon2id hash to `pom.json` through
-  `POST /api/ui/access`. It also mounts `HttpsCertificatePanel` (the node's
+  administrative exposure mode and gateway port (`POST /api/ui/access`, the
+  principal's; the panel hides where the node refuses it), and refuses the
+  network mode until a password exists, linking to the password screen. The
+  "Panel password" card, on every profile, opens `/config/password`
+  (`components/ChangePassword.tsx`). It also mounts `HttpsCertificatePanel` (the node's
   local CA, for every profile), `ThermalPanel` and
   `HuggingFaceSettingsPanel`; there is no TLS panel, since TLS between nodes is
   always on. It also mounts the cluster logs switch,
@@ -835,9 +844,10 @@ Per-file list:
 - `SendFile.tsx` - offers a `.gguf` from the local catalog via
   `POST /api/transfer/send` (`{to_node_id, filename}`). The UI displays the
   friendly name and full path, but sends only the basename; the backend resolves
-  it again and the receiver sees only an opaque grant. Full-bleed shell
-  (`FullBleedHeader` + scrolling body), same contract as `Deployments`/
-  `PublicNetworks`.
+  it again and the receiver sees only an opaque grant. It is `SendFilePanel`,
+  the first panel of `Transfers.tsx`, not a screen of its own; `?filename=`
+  preselects the file, and `/transfers/send` redirects to `/transfers` keeping
+  the query.
 - `Shards.tsx` - "Fatias": every local slice always listed (the Nodes screen
   only shows the difference), with who is missing it. Pipeline `parts` and TP
   `tp_parts` are separate sections; TP groups are ordered by group size and
@@ -872,7 +882,8 @@ Per-file list:
   declared part and an explicit instruction to keep the set together before
   POM slicing; incomplete sets surface the backend reason and leave the start
   action disabled.
-- `Transfers.tsx` - Shows remote model downloads from `useModelDownloads` in
+- `Transfers.tsx` - The one Transfers screen (a single menu entry): the send
+  panel (`SendFilePanel`, from `SendFile.tsx`) first, then remote model downloads from `useModelDownloads` in
   the same in-progress screen as pending offers (accept/reject via
   `POST /api/transfer/offers/:id/accept|reject`), active transfers (bytes +
   speed + ETA + cancel via `POST /api/transfer/jobs/:id/cancel`), and finished
@@ -886,7 +897,7 @@ Per-file list:
   list of cards, with a fixed header and actions in the last column.
 - `WholeModels.tsx` - Full-model catalog from `useLocalCatalog`, one full-width
   table row (`ModelRow`) per model with actions: slice (links to
-  `/models/slice?path=`), send (`/transfers/send?path=`), delete
+  `/models/slice?path=`), send (`/transfers?filename=`), delete
   (`../lib/deleteModel`). A dedicated "Vision (mmproj)" column shows the
   projector's basename (`../lib/format::optionalBasename`) when
   `DiscoveredModel.mmproj_path` is set, or "no projector" otherwise - the

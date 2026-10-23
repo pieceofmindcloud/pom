@@ -29,17 +29,10 @@ describe("plugin menu placement", () => {
 });
 
 describe("Usage", () => {
-  const usage = (options?: { usage?: boolean }) =>
-    navForProfile("admin", true, options)
-      .flatMap((section) => section.children ?? [])
-      .some((leaf) => leaf.to === USAGE_ROUTE);
-
-  it("leaves Usage out when no machine runs the logs plugin", () => {
-    expect(usage({ usage: false })).toBe(false);
-  });
-
-  it("keeps Usage when a machine runs it, or when nobody said", () => {
-    expect(usage({ usage: true })).toBe(true);
-    expect(usage()).toBe(true);
+  // Usage left the menu: it is the button beside the bell, drawn only for a
+  // node with a budget set (`UsageButton`).
+  it("is not a menu entry", () => {
+    const leaves = navForProfile("admin", true).flatMap((section) => section.children ?? []);
+    expect(leaves.some((leaf) => leaf.to === USAGE_ROUTE)).toBe(false);
   });
 });

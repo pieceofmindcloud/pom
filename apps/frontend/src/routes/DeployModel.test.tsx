@@ -528,6 +528,37 @@ describe("DeployModel", () => {
     });
   });
 
+  it("asks before copying slices and sends the authorization only after it", async () => {
+    const ok = planOutOfLayerOrder();
+    ok.copies = [{
+      kind: "slice",
+      name: "qwen-L8-15.gguf",
+      size_bytes: 4 * 1024 ** 3,
+      layers: [8, 15],
+      source_node_id: "ksia",
+      source_host: "ksia",
+      target_node_id: "salem",
+      target_host: "salem",
+    }];
+    post.mockImplementation((url: string) =>
+      url === "/api/ui/deploy" ? Promise.resolve({ job_id: "job-copies" }) : Promise.resolve(ok),
+    );
+    mount();
+
+    const button = await screen.findByRole("button", { name: /^Implantar$/ });
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(button);
+
+    const list = await screen.findByTestId("deploy-copies");
+    expect(list.textContent).toContain("de ksia para salem");
+    expect(post.mock.calls.some(([url]) => url === "/api/ui/deploy")).toBe(false);
+
+    fireEvent.click(screen.getByTestId("deploy-authorize-copies"));
+    await waitFor(() => {
+      expect(post).toHaveBeenCalledWith("/api/ui/deploy", expect.objectContaining({ allow_transfers: true }));
+    });
+  });
+
   it("displays the reason of an automatic undeploy that blocked the deploy", async () => {
     const ok = planOutOfLayerOrder();
     ok.blocked = null;

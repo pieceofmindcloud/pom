@@ -189,7 +189,7 @@ The native windows load the port the gateway reports through
      process and an immediate `429` when all are occupied.
    - Only with the gateway up does it inspect the slice's persistent journal
      (`lastslice::inspect()`) and restore only `Serving` or `Idle`. A `Pending`
-     slice counts attempts on disk and, after `MAX_AUTOMATIC_ATTEMPTS=10`, comes
+     slice counts attempts on disk and, after `MAX_AUTOMATIC_ATTEMPTS=3`, comes
      up empty with `note_unloadable_slice`. The deployment through the UI calls
      `NodeRuntime::apply` with its `NodeConfig` (it brings up the Rust inference
      server **in-process** and supervises it); the `NodeConfig` also carries the

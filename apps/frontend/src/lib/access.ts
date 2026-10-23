@@ -60,6 +60,8 @@ const INFER_ROUTES = [
   "/config/budget",
   "/config/sharing",
   "/config/preferences",
+  // The panel password belongs to every profile's own machine.
+  "/config/password",
   // Anchoring trust precedes authority and is not the privilege of any
   // profile: an `infer` also receives the admin's anchor. The lock on this screen belongs
   // to the server (loopback, node yet to be anchored, fingerprint checked).

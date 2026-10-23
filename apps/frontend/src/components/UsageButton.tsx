@@ -82,7 +82,7 @@ export function UsageButton() {
             exit={{ opacity: 0, y: -6, scale: 0.98 }}
             transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
             data-testid="usage-popover"
-            className="absolute right-0 top-11 z-50 w-[min(22rem,calc(100vw-2rem))] origin-top-right overflow-hidden rounded-xl border border-line bg-surface shadow-lift"
+            className="fixed right-3 top-[3.75rem] z-50 w-[min(22rem,calc(100vw-1.5rem))] origin-top-right sm:absolute sm:right-0 sm:top-11 overflow-hidden rounded-xl border border-line bg-surface shadow-lift"
           >
             <div className="flex items-center justify-between border-b border-line px-4 py-3">
               <span className="font-display text-sm font-semibold text-fg">{t("budget.title")}</span>

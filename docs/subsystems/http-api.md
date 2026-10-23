@@ -283,11 +283,13 @@ last):
   own from standby (`restored_own_network` in the answer); on the node's own
   network it answers `409` with `reason: "own_network"`. `GET /api/ui/connection`
   (local operator only) says where this node stands on its way into its network:
-  `{phase, since, last_error}`, with `phase` one of `standalone` (an admin, or off
+  `{phase, since, last_error, peers, admin_in_sight}`, with `phase` one of `standalone` (an admin, or off
   the network), `discovering` (no admin of the network heard yet),
   `authenticating` (an admin in sight, no valid membership token yet) and
   `connected`; `since` is when the phase started (unix seconds) and `last_error`
-  the last refused token request while the node holds none. `GET /api/ui/node`
+  the last refused token request while the node holds none; `peers` counts the
+  other live peers it sees now and `admin_in_sight` says whether an admin of
+  the network is among them. `GET /api/ui/node`
   carries `own_network` (this node is the principal of the network it is in)
   and `standby_network` (the name of its own network while it is a member
   elsewhere). `POST /api/cluster/member-left` (`{node_id}`) is node-to-node:

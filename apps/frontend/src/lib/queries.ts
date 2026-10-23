@@ -745,7 +745,8 @@ export function useApiKeys() {
   });
 }
 
-export function useServableModels() {
+/** `fast` polls every 3 s, for a screen waiting on a network's first models. */
+export function useServableModels(fast = false) {
   return useQuery({
     queryKey: keys.openaiModels,
     queryFn: () =>
@@ -757,8 +758,8 @@ export function useServableModels() {
           max_tokens?: number | null;
         }>;
       }>("/v1/models").then((r) => r.data ?? []),
-    staleTime: 20_000,
-    refetchInterval: 30_000,
+    staleTime: fast ? 0 : 20_000,
+    refetchInterval: fast ? 3_000 : 30_000,
   });
 }
 

@@ -1025,6 +1025,10 @@ export interface ConnectionStatus {
   since: number;
   /** The last refused token request, while the node holds no token. */
   last_error: string | null;
+  /** The other live peers this node sees now. */
+  peers: number;
+  /** Whether an admin of the network is among them. */
+  admin_in_sight: boolean;
 }
 
 /** `GET /api/ui/tls/ca`: this machine's local CA (`webui/https.rs`). */

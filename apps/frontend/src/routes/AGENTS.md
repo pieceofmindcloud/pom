@@ -329,7 +329,9 @@ Per-file list:
   `variant="loading"`, `ConnectingSteps` - find the network, get access, see
   the models - and, past 60 s on one step, why it may be stuck with the last
   refusal and a link to the Networks screen), so a visitor that just joined
-  is not told the network serves no model. Otherwise it shows the missing piece (with
+  is not told the network serves no model. Once the token arrives the screen
+  stays on "see the models" for 90 s (`awaitingModels`) while `/v1/models` is
+  polled every 3 s, and only then falls back to the missing piece. Otherwise it shows the missing piece (with
   `NoModelSteps` - download, deploy, talk, current step from
   `useLocalCatalog` - for a profile that may deploy, and "See earlier
   conversations" only when one exists), capabilities

@@ -384,8 +384,14 @@ common.viewWarningFor,View warning for {label},Ver aviso para {label}
 common.warningFor,Warning for {label},Aviso para {label}
 common.whatIs,What is {label},O que é {label}
 connection.badge,Connecting…,Conectando…
+connection.inSight,"{count, plural, one {Sees # machine} other {Sees # machines}}","{count, plural, one {Vê # máquina} other {Vê # máquinas}}"
+connection.inSightDetail,"This machine is in its network and sees {count, plural, one {# other machine} other {# other machines}}, an administrator among them.","Esta máquina está na rede e vê {count, plural, one {# outra máquina} other {# outras máquinas}}, entre elas um administrador."
+connection.noAdminDetail,"This machine is in its network and sees {count, plural, one {# other machine} other {# other machines}}, but no administrator right now.","Esta máquina está na rede e vê {count, plural, one {# outra máquina} other {# outras máquinas}}, mas nenhum administrador agora."
 connection.openNetworks,Open Networks,Abrir Redes
+connection.outOfSight,Network out of sight,Rede fora de alcance
+connection.outOfSightDetail,"This machine has access to its network but sees none of its machines right now. They may be offline, or a firewall or NAT may be in the way.","Esta máquina tem acesso à rede mas não vê nenhuma das máquinas dela agora. Elas podem estar desligadas, ou um firewall ou NAT pode estar no caminho."
 connection.phase.authenticating,The network was found. An administrator's machine is confirming this machine's access.,A rede foi encontrada. A máquina de um administrador está confirmando o acesso desta máquina.
+connection.phase.connected,This machine is in. The network's models are on their way.,Esta máquina entrou. Os modelos da rede estão chegando.
 connection.phase.discovering,Looking for the network's machines. The models show up as soon as this machine is in.,Procurando as máquinas da rede. Os modelos aparecem assim que esta máquina entrar.
 connection.step.authenticate,Get access,Obter acesso
 connection.step.authenticateDetail,An administrator confirms this machine's membership.,Um administrador confirma a participação desta máquina.

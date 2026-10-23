@@ -632,14 +632,24 @@ async fn refresh_connection_phase(state: &GatewayState) -> (ConnectionPhase, i64
 }
 
 /// `GET /api/ui/connection` - this node's phase on the way into its network
-/// (`ConnectionPhase`), since when (unix seconds), and the last refused token
-/// request while it has none.
+/// (`ConnectionPhase`), since when (unix seconds), the last refused token
+/// request while it has none, and how much of the cluster it sees now: the
+/// other live peers and whether an admin is among them.
 pub(super) async fn connection_status(State(state): State<GatewayState>) -> Json<Value> {
     let (phase, since, last_error) = refresh_connection_phase(&state).await;
+    let peers = state
+        .network
+        .alive_peers()
+        .await
+        .iter()
+        .filter(|peer| peer.node_id != state.network.node_id)
+        .count();
     Json(json!({
         "phase": phase,
         "since": since,
         "last_error": last_error,
+        "peers": peers,
+        "admin_in_sight": admin_in_sight(&state).await,
     }))
 }
 
@@ -719,5 +729,9 @@ mod connection_tests {
         .unwrap();
         visitor.network.set_membership(Some(token));
         assert_eq!(refresh_connection_phase(&visitor).await.0, ConnectionPhase::Connected);
+        let Json(status) = connection_status(State(visitor.clone())).await;
+        assert_eq!(status["phase"], "connected");
+        assert_eq!(status["peers"], 1);
+        assert_eq!(status["admin_in_sight"], true);
     }
 }

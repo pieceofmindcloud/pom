@@ -84,7 +84,7 @@ import {
   useServableModels,
 } from "../lib/queries";
 import { useStableRecord } from "../lib/stableRecord";
-import { connectionStuck, isConnecting } from "../lib/connection";
+import { awaitingModels, connectionStuck, isConnecting } from "../lib/connection";
 import type { ConnectionStatus } from "../lib/types";
 import { chatModelOptions } from "../lib/chatModels";
 import { useToast } from "../lib/toast";
@@ -410,7 +410,7 @@ function NoModelSteps({ hasLocalModel }: { hasLocalModel: boolean }) {
  */
 function ConnectingSteps({ status }: { status: ConnectionStatus }) {
   const { t } = useI18n();
-  const current = status.phase === "discovering" ? 0 : 1;
+  const current = status.phase === "discovering" ? 0 : status.phase === "authenticating" ? 1 : 2;
   const steps = [
     { key: "discover", icon: Radar },
     { key: "authenticate", icon: KeyRound },
@@ -745,7 +745,9 @@ function ChatScreen() {
     startStream,
     stopStream,
   } = useChatSessionController();
-  const models = useServableModels();
+  const connection = useConnection();
+  // Right after the token, the network's models are seconds away: ask often.
+  const models = useServableModels(isConnecting(connection.data) || awaitingModels(connection.data));
   const cluster = useCluster();
   const node = useNode();
   const toast = useToast();
@@ -1233,10 +1235,9 @@ function ChatScreen() {
   }
 
   const noModel = available.length === 0 && !node.data?.active_model && !cluster.data?.active_model;
-  const connection = useConnection();
-  // No models yet because this node is still on its way into its network, not
-  // because the network serves none.
-  const connecting = noModel && isConnecting(connection.data);
+  // No models yet because this node is still on its way into its network, or
+  // just got in, not because the network serves none.
+  const connecting = noModel && (isConnecting(connection.data) || awaitingModels(connection.data));
   const canDeploy = canAccessRoute("/deploy", profile);
   // Who may deploy is told the next step: download a model first if this
   // machine has none, deploy it otherwise. Asked only on that screen.

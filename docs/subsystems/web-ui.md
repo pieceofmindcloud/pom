@@ -413,8 +413,11 @@ local-only notice. Routes:
   a "Connecting…" badge sits in the top bar and on this machine's row here,
   and the Chat shows "Connecting to <network>" with the steps (find the
   network, get access, see the models). A step that lasts 60 s says why it may
-  be stuck, with the admin's last refusal. The same happens after a member
-  reboots.
+  be stuck, with the admin's last refusal. Once in, the Chat stays on "see the
+  models" for up to 90 s, polling the models every 3 s, and the badge stays on
+  a worker or visitor: how many machines it sees, amber when no admin is among
+  them, or "Network out of sight" when it sees none. The same happens after a
+  member reboots.
   Network settings calls visibility "Discovery" and offers off or on (listed);
   the announced-but-not-listed value stays selectable only where already set.
   It no longer offers the open admission mode.

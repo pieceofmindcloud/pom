@@ -471,7 +471,8 @@ boundary.
   node's `ConnectionPhase` - `standalone` (an admin, or off the network),
   `discovering` (no admin heard yet), `authenticating` (an admin in sight, no
   valid token yet), `connected` - with `since` (unix seconds, when the phase
-  started) and `last_error`. On a secondary admin,
+  started), `last_error`, `peers` (other live peers in sight) and
+  `admin_in_sight`. On a secondary admin,
   `spawn_roster_keeper` mirrors the principal's admission list
   (`internal_roster`), and `forward_decision` sends its admission decisions
   to the principal (`internal_decide`, applied by `apply_decision`, which

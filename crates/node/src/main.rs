@@ -53,6 +53,7 @@ pub use llama_engine::{collective, gguf, kv_budget, llm, moe, mtp, multipart, sy
 #[path = "admin_trust.rs"]
 mod admin_trust;
 mod membership;
+mod relay_pass;
 #[path = "backend/capabilities.rs"]
 mod capabilities;
 #[path = "models/catalog.rs"]

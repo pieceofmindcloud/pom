@@ -38,7 +38,10 @@ links to other folders: `crates/`, `crates/node/`, and inside
 (`.claude/skills/creating-pom-plugins/`): a scaffold script, a template that
 wires the whole plugin contract with its contract tests, the contract
 reference and recipes for the optional capabilities, gathered from the
-`pom-plugin-*` repositories.
+`pom-plugin-*` repositories. **New inference engines** start from the
+`pom-inference-engine` skill (`.claude/skills/pom-inference-engine/`): engine
+fork intake, an engine plugin overlay, the `engine.*` contract, feature
+levels, fork branch rules and the analysis of the llama.cpp and Strata forks.
 
 `docs/AGENTS.md` explains the specs and plans (`docs/superpowers/`);
 `docs/architecture/routing-plugin-contract.md` is the open-core boundary;

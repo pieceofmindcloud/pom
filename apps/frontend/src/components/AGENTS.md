@@ -355,9 +355,12 @@ Per-file list:
   from `NodeInfo.network_name` and linking to `/config/network`; then
   `ConnectionBadge` on a member; then hostname,
   the `NatBadge`, peer count, coverage), the i18n badge of the node's persisted profile, the macOS button of
-  the larger window, `UsageButton` ("Usage", to `/config/usage`, drawn only
-  when `GET /api/ui/quota` says `configured: true`, i.e. this node has a
-  budget set for it) and the bell (`Notifications`). The `Este nó` ("This node") button is not
+  the larger window, `UsageButton` (a gauge icon drawn only when
+  `GET /api/ui/quota` says `configured: true`, i.e. this node has a budget set
+  for it, with an amber/rose dot near or over a ceiling; a click opens a
+  popover like the bell's with each plan's spend and when it turns over, the
+  reset credits and a link to `/config/usage` to reset or ask for more; the
+  drawing is `QuotaParts.tsx`, shared with that screen) and the bell (`Notifications`). The `Este nó` ("This node") button is not
   rendered.
   Mobile drawer renders `SidebarContent` inside an animated
   panel whose fixed backdrop unmounts synchronously when navigation closes it,

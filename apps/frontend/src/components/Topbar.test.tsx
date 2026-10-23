@@ -228,7 +228,12 @@ describe("Usage beside the bell", () => {
     quotaData = { available: true, configured: true };
     mountTopbar("visitor");
     const usage = screen.getByTestId("topbar-usage");
-    expect(usage.getAttribute("href")).toBe("/config/usage");
     expect(usage.getAttribute("aria-label")).toBe("Uso");
+    expect(usage.textContent).toBe("");
+    expect(screen.queryByTestId("usage-popover")).toBeNull();
+
+    fireEvent.click(usage);
+    expect(screen.getByTestId("usage-popover").textContent).toContain("Dentro do budget");
+    expect(screen.getByTestId("usage-open-screen").getAttribute("href")).toBe("/config/usage");
   });
 });

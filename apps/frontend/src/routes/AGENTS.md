@@ -310,8 +310,9 @@ Per-file list:
   the other erases the local configuration and restarts in the setup.
 
 - `MyBudget.tsx` - "Usage" ("Uso", route `/config/usage`; `/config/budget`
-  redirects there; reached from the Usage button beside the bell, every
-  profile, drawn only while this node has a budget configured): this machine's token budgets from `GET /api/ui/quota` - one panel per
+  redirects there; reached from the Usage popover beside the bell, every
+  profile, drawn only while this node has a budget configured; the meters and
+  the quota shape live in `components/QuotaParts.tsx`): this machine's token budgets from `GET /api/ui/quota` - one panel per
   plan with input/output bars and the window's turnover, the session-reset
   credits (`POST /api/ui/quota/reset`) and the request for more budget
   (`POST /api/ui/quota/request`). Without an admin's logs plugin answering it

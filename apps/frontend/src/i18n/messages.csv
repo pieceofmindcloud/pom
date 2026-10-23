@@ -125,6 +125,7 @@ app.topbarFailed,The top bar failed. The rest of the interface is still availabl
 "budget.includesGrant","includes +{amount} granted by an admin","inclui +{amount} concedidos por um admin"
 "budget.input","Input","Entrada"
 "budget.loadFailed","Could not read the budget","Não foi possível ler o budget"
+"budget.manage","Reset the session or ask for more","Resetar a sessão ou pedir mais"
 "budget.none","No budget limits this machine","Nenhum budget limita esta máquina"
 "budget.noneHint","The admins have not assigned a plan to this machine, its team or everyone.","Os admins não atribuíram um plano a esta máquina, à equipe dela nem a todos."
 "budget.output","Output","Saída"

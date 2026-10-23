@@ -594,10 +594,16 @@ deploy.capacityWarnDetail,"The projected use is over capacity on {machines}. lla
 deploy.capacityWarnTitle,Projection exceeds a machine''s VRAM,A projeção passa da VRAM de uma máquina
 deploy.checking,checking…,conferindo…
 deploy.chooseMachine,— choose machine —,— escolher máquina —
+deploy.copiesAuthorize,Authorize and deploy,Autorizar e implantar
+deploy.copiesDetail,"{count, plural, one {This deploy copies # file ({size}) to a machine that does not have it yet.} other {This deploy copies # files ({size}) to machines that do not have them yet.}} Nothing is copied without your authorization.","{count, plural, one {Esta implantação copia # arquivo ({size}) para uma máquina que ainda não o tem.} other {Esta implantação copia # arquivos ({size}) para máquinas que ainda não os têm.}} Nada é copiado sem a sua autorização."
+deploy.copiesTitle,Authorize the copies,Autorizar as cópias
 deploy.copy, · copy, · copiar
 deploy.copyAndMerge,copy from {host} and merge into {range},copiar de {host} e fundir em {range}
 deploy.copyCount,"{count}{count, plural, =1 { copy} other { copies}}","{count}{count, plural, =1 { cópia} other { cópias}}"
 deploy.copyFrom,copy from {host},copiar de {host}
+deploy.copyMmproj,Vision projector {name},Projetor de visão {name}
+deploy.copyMtp,MTP draft {name},Rascunho MTP {name}
+deploy.copyRoute,from {from} to {to},de {from} para {to}
 deploy.copySummary,"{count}{count, plural, =1 { copy} other { copies}} · {size} over the network","{count}{count, plural, =1 { cópia} other { cópias}} · {size} pela rede"
 deploy.coverage,Layers covered by this selection,Camadas cobertas pela escolha
 deploy.deploy,Deploy this way,Implantar assim
@@ -1170,20 +1176,16 @@ firstRun.stepNetwork,Network,Rede
 firstRun.stepStart,Start,Início
 firstWizard.continue,Continue,Continuar
 firstWizard.failed,Could not save: {error},Não foi possível salvar: {error}
-firstWizard.guideDetail,"This machine now runs a network of its own. Next, hints on the screen point at what to click, one at a time: download a small model, deploy it and send a first message. Follow the instructions on screen.","Esta máquina agora tem uma rede própria. A seguir, dicas na tela apontam onde clicar, uma de cada vez: baixar um modelo pequeno, implantá-lo e enviar uma primeira mensagem. Siga as instruções na tela."
-firstWizard.guideTitle,Follow the instructions on screen,Siga as instruções na tela
-firstWizard.machineDetail,How other machines see this one.,Como as outras máquinas veem esta.
-firstWizard.machineLabel,Machine name,Nome da máquina
-firstWizard.namesDetail,Every machine starts with a network of its own. Name both; you can change them later.,Toda máquina começa com uma rede própria. Dê um nome às duas; você pode mudar depois.
+firstWizard.nameDetail,"How other machines see this one, and the name of the network it starts with.","Como as outras máquinas veem esta, e o nome da rede com que ela começa."
+firstWizard.nameLabel,Name,Nome
+firstWizard.namesDetail,"Every machine starts with a network of its own, and both take this name. You can rename either one later in My Network.","Toda máquina começa com uma rede própria, e as duas recebem este nome. Você pode renomear cada uma depois em Minha Rede."
 firstWizard.namesTitle,Name this machine and its network,Dê um nome a esta máquina e à rede dela
-firstWizard.networkDetail,The network this machine has just created.,A rede que esta máquina acabou de criar.
-firstWizard.networkLabel,Network name,Nome da rede
 firstWizard.networkWarning,"If you decide to make this network public, this name is advertised to everyone.","Se você decidir tornar esta rede pública, este nome será anunciado a todos."
 firstWizard.random,Random,Aleatório
 firstWizard.randomTitle,Generate a random name,Gerar um nome aleatório
 firstWizard.start,Start,Começar
-firstWizard.stepGuide,Hints,Dicas
-firstWizard.stepNames,Names,Nomes
+firstWizard.welcomeDetail,Your machine is ready. Hints on the screen will show you what to do next.,Sua máquina está pronta. Dicas na tela vão mostrar o que fazer a seguir.
+firstWizard.welcomeTitle,Welcome to POM,Bem-vindo ao POM
 forbidden.back,Back to dashboard,Voltar ao painel
 forbidden.detail,"The active profile is {profile}, and this screen is not part of it. The profile belongs to the node, so it cannot be changed from here.","O perfil ativo é {profile}, e esta tela não faz parte dele. O perfil é do nó, e não se troca por aqui."
 forbidden.title,Screen restricted to another profile,Tela restrita a outro perfil
@@ -1560,7 +1562,7 @@ nav.logs,Logs,Logs
 nav.modelFolders,Storage,Armazenamento
 nav.models,Models,Modelos
 nav.myMachine,My machine,Minha máquina
-nav.network,Network,Rede
+nav.network,My Network,Minha Rede
 nav.networkChat,Network Chat,Chat da rede
 nav.networkInfo,Network information,Informações da rede
 nav.networkParticipants,Network participants,Participantes da rede
@@ -3002,9 +3004,11 @@ trustGuide.youAreHere,You are here,Você está aqui
 undeploy.adminOnly,Only the administrator can undeploy a deployment.,Somente o administrador pode desimplantar uma implantação.
 undeploy.allReleased,"{count, plural, =1 {1 machine released its memory.} other {{count} machines released their memory.}}","{count, plural, =1 {1 máquina liberou a memória.} other {{count} máquinas liberaram a memória.}}"
 undeploy.button,Undeploy,Desimplantar
+undeploy.cancelled,The deploy still starting was stopped: no copy or load goes on.,A implantação que ainda estava subindo foi interrompida: nenhuma cópia ou carga continua.
 undeploy.confirm,Undeploy everywhere,Desimplantar em todas
 undeploy.description,"Every one of the {count} machines serving this model unloads it: RAM and VRAM come back, and the pipeline stops answering until it is deployed again.","Cada uma das {count} máquinas que servem este modelo o descarrega: a RAM e a VRAM voltam, e o pipeline para de responder até ser implantado de novo."
 undeploy.failedTitle,The pipeline is still up,A pipeline continua no ar
+undeploy.inProgress,This deploy is still starting. Undeploying stops it now: the copies in progress are cancelled and the machines that already began loading release their memory.,Esta implantação ainda está subindo. Desimplantar a interrompe agora: as cópias em andamento são canceladas e as máquinas que já começaram a carregar liberam a memória.
 undeploy.keepsFiles,"No slice is deleted. The files stay where they are, so the same deployment comes back with one click.","Nenhuma fatia é apagada. Os arquivos ficam onde estão, então a mesma implantação volta com um clique."
 undeploy.machines,Machines that will be freed,Máquinas que vão ser liberadas
 undeploy.noneReleased,No machine confirmed. Nothing was released.,Nenhuma máquina confirmou. Nada foi liberado.

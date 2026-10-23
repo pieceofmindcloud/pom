@@ -1381,7 +1381,8 @@ reason that only shows up in the error of a tunnel that also failed.
   7.8-8.2 ms/token against 0.14-0.67 ms without it (measured
   2026-08-12); without the callback, `hidden_state` refuses with "residual capture
   did not fire".
-- `MAX_RESTARTS=10`, `MAX_CONTEXT_TOKENS=250_000`. The restart budget is persisted in the
+- `MAX_RESTARTS=3` with `RESTART_INTERVAL=30s` between attempts (a newer generation cuts the
+  wait short), `MAX_CONTEXT_TOKENS=250_000`. The restart budget is persisted in the
   journal `<config>.last-slice.json` and shared with the supervisor: if the slice does not fit
   in memory or falls during the confirmation, each new process increments `Pending.attempts`. On
   reaching `MAX_AUTOMATIC_ATTEMPTS`, the node comes up without a model and leaves the reason in

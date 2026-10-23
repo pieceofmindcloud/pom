@@ -71,6 +71,7 @@ pub(super) async fn deploy_endpoint(
         params.mtp_enabled,
         req.mtp_choice.as_ref(),
     );
+    plan.copies = planned_copies(&plan);
     // A projector still to be copied to the head has no path there yet; it is
     // resolved on the post-copy survey in `lifecycle::run`.
     let vision_arriving = plan
@@ -129,6 +130,24 @@ pub(super) async fn deploy_endpoint(
         return (
             axum::http::StatusCode::BAD_REQUEST,
             Json(json!({ "error": "nothing to deploy" })),
+        )
+            .into_response();
+    }
+    // Copying a file is the operator's act, never a side effect of Deploy: the
+    // screen lists `plan.copies` and asks before sending `allow_transfers`.
+    // Checked on the fresh survey, so a copy the preview did not show is
+    // refused too, before any peer is touched.
+    if !plan.copies.is_empty() && !req.allow_transfers {
+        return (
+            axum::http::StatusCode::CONFLICT,
+            Json(json!({
+                "error": format!(
+                    "this deploy copies {} file(s) between machines; authorize the transfers to go on",
+                    plan.copies.len()
+                ),
+                "code": "transfers_not_authorized",
+                "copies": plan.copies,
+            })),
         )
             .into_response();
     }
@@ -211,6 +230,18 @@ pub(super) async fn deploy_endpoint(
     };
     let deploy_id = record_plan.deploy_id().to_string();
     let reused = matches!(record_plan, RecordPlan::ReuseVersion(_));
+    if let Some(job) = jobs().write().await.get_mut(&job_id) {
+        job.deploy_id = Some(deploy_id.clone());
+    }
+    in_flight().lock().unwrap_or_else(|error| error.into_inner()).insert(
+        deploy_id.clone(),
+        InFlightDeploy {
+            job_id: job_id.clone(),
+            group: req.group.clone(),
+            task: None,
+            transfers: Vec::new(),
+        },
+    );
     state.plugins.publish_event(
         "deployment.started",
         json!({
@@ -224,8 +255,9 @@ pub(super) async fn deploy_endpoint(
         }),
     );
     let id = job_id.clone();
-    tokio::spawn(async move {
-        match run(
+    let running_id = deploy_id.clone();
+    let task = tokio::spawn(async move {
+        let outcome = run(
             state,
             plan,
             params,
@@ -235,8 +267,9 @@ pub(super) async fn deploy_endpoint(
             req.keep_existing,
             &id,
         )
-        .await
-        {
+        .await;
+        finish_in_flight(&running_id);
+        match outcome {
             Ok(()) => set_job(&id, "done", "pronto", "the model is serving on the network").await,
             Err(e) => {
                 warn!("deployment failed: {e}");
@@ -244,6 +277,7 @@ pub(super) async fn deploy_endpoint(
             }
         }
     });
+    set_in_flight_task(&deploy_id, task.abort_handle());
 
     Json(json!({ "started": true, "job_id": job_id, "deploy_id": deploy_id, "reused": reused }))
         .into_response()

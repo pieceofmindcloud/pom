@@ -188,8 +188,10 @@ Per-file list:
   and node even without a license, for product discovery; the `visitor` profile sees them only
   once an active plugin serves them.
   Tests in `nav.test.ts`.
-  The main Network section contains Information, Participants, My Machine,
-  Administrators, Sharing and API Keys. Settings contains Preferences,
+  The main My Network section (`nav.network`, "My Network", so it does not read
+  as a twin of "Networks") contains Information, Participants, My Machine,
+  Administrators, Sharing and API Keys. Usage is not in the menu: it is
+  `UsageButton`, beside the bell. Settings contains Preferences,
   Storage, Administrative Preferences and About, always in this order; About
   is the last leaf and opens `/config/about`. Sharing is the single screen
   that reuses `TrustAnchor` for the trust root, this machine and the connection
@@ -259,12 +261,12 @@ Per-file list:
 - `FirstRunWizard.tsx` - The wizard of a machine's first run, rendered by
   `App.tsx` in place of the whole shell while the current guide step is one
   of `WIZARD_STEPS` (`useFirstRunWizard`, `admin` profile only): one screen
-  with the machine name (pre-filled with the hostname) and the network name
-  (with the warning that it is advertised if the network goes public), and a
-  last screen that hands over to the hints. Each name field has its own
-  "Random" button (`lib/randomName.ts`). The names screen saves each name
-  through the route its settings screen uses, then reports the one `names`
-  step; "Back" is local. It reuses the
+  with one name (pre-filled with the hostname) given to the machine and to its
+  network (with the warning that it is advertised if the network goes
+  public), then a "Welcome to POM" animation that reports `bootstrap` by
+  itself after `WELCOME_MS`. The field has a "Random" button
+  (`lib/randomName.ts`). The name screen saves it through the routes the two
+  settings screens use, then reports the one `names` step. It reuses the
   `.pom-login*` / `.pom-setup*` shell. Tests in `FirstRunWizard.test.tsx`.
 - `FirstRunGuide.tsx` - The hints of a machine's first run, mounted once in
   the shell (`App.tsx`, `admin` profile only), for the steps after the
@@ -353,7 +355,9 @@ Per-file list:
   from `NodeInfo.network_name` and linking to `/config/network`; then
   `ConnectionBadge` on a member; then hostname,
   the `NatBadge`, peer count, coverage), the i18n badge of the node's persisted profile, the macOS button of
-  the larger window and the bell (`Notifications`). The `Este nó` ("This node") button is not
+  the larger window, `UsageButton` ("Usage", to `/config/usage`, drawn only
+  when `GET /api/ui/quota` says `configured: true`, i.e. this node has a
+  budget set for it) and the bell (`Notifications`). The `Este nó` ("This node") button is not
   rendered.
   Mobile drawer renders `SidebarContent` inside an animated
   panel whose fixed backdrop unmounts synchronously when navigation closes it,
@@ -721,7 +725,10 @@ Per-file list:
   "pronto!". Nothing is deleted from disk (`undeploy_endpoint` in `deploy/node.rs`).
   `Dashboard` renders it only for the `admin` profile, while the backend is the
   final authority and its refusal text is shown as it arrives.
-  Renders both a `Confirm` and a result `Modal` (no cancel). `RemoveNode` stays
+  Renders both a `Confirm` and a result `Modal` (no cancel). `inProgress`
+  (with `label` and no targets) is the deploy still starting: the Dashboard
+  draws it from a running `deploy` job's `deploy_id`, and the node stops that
+  deploy before releasing anything (`cancelled` in the report). `RemoveNode` stays
   separate and keeps the per-machine button available to every profile.
 - `ErrorBoundary.tsx` - Class boundary placed around the routed page in
   `App.tsx` (the chrome survives a broken screen). Clears on `resetKey` change

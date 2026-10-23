@@ -284,6 +284,10 @@ The transport is the same; what changes is who chooses what:
 - **Send a file from this machine** (Nodes tab): a combobox with name and full
   path for visual checking, sending only the safe basename.
 
+A deploy's own copies are the fourth door, and also the operator's: the
+deploy screen lists them and the node refuses a deploy that copies without
+`allow_transfers` (`deployment.md`, section 4).
+
 Progress lives in the bell and comes from the nodes, so closing the tab
 interrupts nothing.
 

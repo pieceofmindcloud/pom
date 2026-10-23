@@ -22,7 +22,7 @@ import { engineOfParams, inferenceServiceCatalog, inferenceServicesOf } from "..
 import { isServing, layerRange, num, pct, since } from "../lib/format";
 import { selectedCanvasModel } from "../lib/networkGraph";
 import { networkPeers } from "../lib/networkPeers";
-import { useCluster, useDeployments, useEnterpriseStatus, useInvalidate, useNetworkRtt, useNode } from "../lib/queries";
+import { useCluster, useDeployments, useEnterpriseStatus, useInvalidate, useJobs, useNetworkRtt, useNode } from "../lib/queries";
 import { useProfile } from "../lib/profile";
 import type { PeerView, RuntimeParams } from "../lib/types";
 import { machineParamsOf } from "../lib/machineParams";
@@ -174,6 +174,12 @@ export function Dashboard() {
     .filter((p) => p.model === group && p.total_layers > 0)
     .sort((a, b) => a.start_layer - b.start_layer || a.short_id.localeCompare(b.short_id));
   const hasActiveModel = Boolean(group);
+  // A deploy still copying or loading: the admin may give up on it before any
+  // machine announces the model, so Undeploy shows while it runs.
+  const jobs = useJobs(isAdmin);
+  const startingDeploy = jobs.data?.jobs.find(
+    (job) => job.kind === "deploy" && job.state === "running" && job.deploy_id,
+  );
   const view: View = viewOverride ?? (hasActiveModel ? "minima" : "estendida");
   const modelDeployments = deployments.data?.deployments.filter(
     (row) => row.deployment.model.label === group,
@@ -320,9 +326,19 @@ export function Dashboard() {
                 group={group}
                 deployId={activeDeployId}
                 targets={undeployTargets}
+                inProgress={startingDeploy != null && startingDeploy.deploy_id === activeDeployId}
               />
             )}
           </>
+        )}
+        {isAdmin && startingDeploy && !(undeployTargets.length > 0 && startingDeploy.deploy_id === activeDeployId) && (
+          <UndeployPipeline
+            group=""
+            deployId={startingDeploy.deploy_id}
+            label={startingDeploy.title ?? startingDeploy.deploy_id}
+            targets={[]}
+            inProgress
+          />
         )}
         {detailed && <ViewSwitch view={view} onChange={(next) => setViewOverride(next)} />}
       </div>

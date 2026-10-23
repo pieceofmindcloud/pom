@@ -1380,6 +1380,14 @@ never from the file name. For a dense model the UI hides the choice; when a
 combination is not supported yet, the reason stays visible and the deploy is
 refused so a preference that will not be honored is not presented.
 
+`DeployPlan.copies` lists every file the deploy would copy between machines
+(`kind` `slice`/`mmproj`/`mtp`, `name`, `size_bytes`, `layers`, source and
+target node and host). `POST /api/ui/deploy` with copies and without
+`allow_transfers: true` answers 409 `{error, code: "transfers_not_authorized",
+copies}` before touching any peer. The deploy job carries `deploy_id`, and
+`POST /api/ui/undeploy` stops a deploy of that id still in flight (task
+aborted, copies cancelled on the targets), answering `cancelled: true`.
+
 In deployments with vision, `DeployPlan.mmproj_candidates` lists the compatible
 local paths on the peer serving layer 0. The UI preselects one of them and can
 send `DeployRequest.mmproj_path` to choose another format;

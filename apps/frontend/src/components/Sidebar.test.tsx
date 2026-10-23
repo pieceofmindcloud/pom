@@ -355,7 +355,7 @@ describe("Sidebar", () => {
     const activeButton = screen.getAllByRole("button", { name: /Conversa ativa/ })
       .find((button) => button.getAttribute("aria-pressed") === "true");
     expect(activeButton).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Rede" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Minha Rede" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Documentação" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Configurações" })).toBeTruthy();
     expect(screen.queryByText("Painel")).toBeNull();
@@ -427,7 +427,7 @@ describe("Sidebar", () => {
     expect(screen.queryByTestId("chat-session-list")).toBeNull();
     expect(screen.queryByRole("button", { name: "Conversa nova" })).toBeNull();
     // The rest of the menu stays.
-    expect(screen.getByText("Rede")).toBeTruthy();
+    expect(screen.getByText("Minha Rede")).toBeTruthy();
   });
 
   it("puts Leave network beside the theme switch for a visitor only, behind a confirmation", () => {

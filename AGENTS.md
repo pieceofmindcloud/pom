@@ -200,8 +200,8 @@ breaks the whole product.
   routes. Without `pom.json` the node creates a **local network of its own** and
   goes straight to the interface: profile `admin`, named after the host, discovery
   off (`webui::bootstrap_local_network`). On that first start the interface opens
-  on the first run wizard, which only asks the machine's name and the network's
-  (`web-ui.md`). The older setup wizard, which ran before any configuration
+  on the first run wizard, which asks one name, given to the machine and to its
+  network, then greets the operator (`web-ui.md`). The older setup wizard, which ran before any configuration
   existed, is deprecated and unreachable: its code is kept, but no flag, route or
   screen leads to it. Joining another network is asked from the Networks screen and
   approved by that network's admin, who is the only one that hands over its
@@ -300,7 +300,8 @@ breaks the whole product.
   up. → `deployment.md`, `p2p-network.md`
 - **No weight travels the network because of slicing**: each peer extracts
   its own range from its own copy. A file transfer is an explicit act of the
-  operator, and **a file never crosses a public relay** (n0's, one in
+  operator (a deploy that copies anything is refused without
+  `allow_transfers`, which the screen sends only after listing the copies), and **a file never crosses a public relay** (n0's, one in
   `relay_peers`, or one that is not a member of the cluster): it goes direct, over a hole
   punched connection, or through a relay of the cluster itself. A node the
   internet reaches relays for its own cluster by default; relaying for everyone

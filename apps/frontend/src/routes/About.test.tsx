@@ -73,12 +73,12 @@ describe("About", () => {
     expect(screen.getByText(/não pode garantir segurança ou privacidade em redes públicas/i)).toBeTruthy();
     expect(screen.getByRole("link", { name: /AGPL-3.0/i }).getAttribute("href")).toBe("https://www.gnu.org/licenses/agpl-3.0.html");
     expect(screen.getByRole("link", { name: "Arquivo LICENSE do repositório" }).getAttribute("href")).toBe(
-      "https://github.com/pereirajair/rdma-p2p/blob/feat/enterprise/LICENSE",
+      "https://github.com/pieceofmindcloud/pom/blob/main/LICENSE",
     );
     expect(screen.getByRole("link", { name: "Site do POM" }).getAttribute("href")).toBe("https://pieceofmind.cloud");
     expect(screen.getByRole("link", { name: "Contato do POM" }).getAttribute("href")).toBe("https://pieceofmind.cloud/contato/");
-    expect(screen.getByRole("link", { name: "Repositório oficial do POM no GitHub" }).getAttribute("href")).toBe("https://github.com/pereirajair/rdma-p2p");
-    expect(screen.getByRole("link", { name: "POM Plugin Base" }).getAttribute("href")).toBe("https://github.com/pereirajair/pom-plugin-base");
+    expect(screen.getByRole("link", { name: "Repositório oficial do POM no GitHub" }).getAttribute("href")).toBe("https://github.com/pieceofmindcloud/pom");
+    expect(screen.getByRole("link", { name: "POM Plugin Base" }).getAttribute("href")).toBe("https://github.com/pieceofmindcloud/pom-plugin-base");
     expect(screen.getByText("@tanstack/react-query")).toBeTruthy();
     expect(screen.getByText("tokio")).toBeTruthy();
     expect(screen.getAllByText("Frontend").length).toBeGreaterThan(0);

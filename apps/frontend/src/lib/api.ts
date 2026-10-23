@@ -505,6 +505,8 @@ export interface UndeployOutcome {
 
 export interface UndeployReport {
   group: string;
+  /** A deploy still copying or loading was stopped before it finished. */
+  cancelled?: boolean;
   released: number;
   failed: number;
   results: UndeployOutcome[];

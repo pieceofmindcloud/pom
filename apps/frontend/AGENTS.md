@@ -56,7 +56,7 @@ remain local until the deploy preflight.
 
   A machine on its first run gets the first run wizard
   (`components/FirstRunWizard.tsx`) in place of the shell, past the gate:
-  machine name, network name, then the hints. The older first access wizard
+  one name for the machine and its network, a welcome animation, then the hints. The older first access wizard
   is a different thing, deprecated and unreachable: `routes/Setup.tsx`,
   `routes/SetupWizard.tsx` and `components/setup-wizard/*` are kept in the
   source but `App.tsx` neither imports nor routes them (see
@@ -166,7 +166,7 @@ a choice.
   `/statistics` remain native fallback routes when no plugin claims them; the
   alias `/logs/statistics` still redirects to `/statistics`.
 - `/documentation` -> Documentation (full-bleed, two tabs: human guides from `src/guides/` and the repository's living markdown embedded by `scripts/build-docs.mjs`; see `src/routes/AGENTS.md` and `src/guides/AGENTS.md`). On mobile the sidebar takes the whole screen and the reader disappears until an explicit selection or a deep link; selecting opens the reader with a Back button at the top, which only closes the mobile view (the selection in `?doc=`/`?guia=` remains).
-- `/config/network` -> NetworkSettings; the main Network section also gathers
+- `/config/network` -> NetworkSettings; the main My Network section also gathers
   `/config/network/participants`, `/config/administration` (Administrators),
   `/config/sharing` (TrustAnchor with machine, root and connection key)
   and `/config/keys/api`. The old route `/config/trust` remains as a compatible

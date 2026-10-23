@@ -19,10 +19,12 @@ import type { NodeInfo } from "../lib/types";
 let nodeData: NodeInfo | undefined;
 let natStatus: "unknown" | "public" | "private" | undefined;
 let relayedPeers: { node_id: string; hostname: string; relay_kind: "public" | "dedicated" | "member" | null }[] = [];
+let quotaData: { available: boolean; configured?: boolean; pending?: boolean } | undefined;
 
 vi.mock("../lib/queries", async (original) => ({
   ...(await original<typeof import("../lib/queries")>()),
   useNode: () => ({ data: nodeData }),
+  useMyQuota: () => ({ data: quotaData }),
   useCluster: () => ({
     data: {
       peers: [],
@@ -207,5 +209,26 @@ describe("NAT badge in the toolbar", () => {
     expect(dialog.textContent).toContain("UDP 52777");
     expect(screen.getByTestId("nat-relayed-peers").textContent).toContain("machine-b");
     expect(screen.getByTestId("nat-relayed-peers").textContent).toContain("relé público");
+  });
+});
+
+describe("Usage beside the bell", () => {
+  afterEach(() => {
+    cleanup();
+    quotaData = undefined;
+  });
+
+  it("shows only when this node has a budget set for it", () => {
+    nodeData = fakeNode();
+    quotaData = { available: true, configured: false };
+    mountTopbar("visitor");
+    expect(screen.queryByTestId("topbar-usage")).toBeNull();
+    cleanup();
+
+    quotaData = { available: true, configured: true };
+    mountTopbar("visitor");
+    const usage = screen.getByTestId("topbar-usage");
+    expect(usage.getAttribute("href")).toBe("/config/usage");
+    expect(usage.getAttribute("aria-label")).toBe("Uso");
   });
 });

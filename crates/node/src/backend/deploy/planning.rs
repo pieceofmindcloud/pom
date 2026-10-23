@@ -264,6 +264,95 @@ pub struct Plan {
     /// compatible files in the network, the choice and how each one gets to
     /// its machine. Filled by `attach_sidecars`.
     pub(super) sidecars: SidecarsPlan,
+    /// Every file this deploy would copy between machines, slices and
+    /// sidecars alike (`planned_copies`). A deploy that copies anything needs
+    /// the operator's explicit `allow_transfers`: a file transfer is an act of
+    /// the operator, never a side effect of pressing Deploy.
+    pub(super) copies: Vec<PlannedCopy>,
+}
+
+/// One file that crosses the network before the deploy can start.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct PlannedCopy {
+    /// `slice`, `mmproj` or `mtp`.
+    pub(super) kind: &'static str,
+    pub(super) name: String,
+    pub(super) size_bytes: u64,
+    /// The layer range, for a slice.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) layers: Option<[u32; 2]>,
+    pub(super) source_node_id: String,
+    pub(super) source_host: String,
+    pub(super) target_node_id: String,
+    pub(super) target_host: String,
+}
+
+/// The copies `lifecycle::run` would make for this plan, in the same order
+/// and with the same skips: a part already on its target, or one cut out on
+/// the machine that loads it, crosses nothing.
+pub(super) fn planned_copies(plan: &Plan) -> Vec<PlannedCopy> {
+    let mut out = Vec::new();
+    let mut slice = |target_node_id: &str,
+                     target_host: &str,
+                     ready: bool,
+                     source_node_id: &Option<String>,
+                     source_host: &Option<String>,
+                     name: &str,
+                     size_bytes: u64,
+                     start: u32,
+                     end: u32| {
+        let Some(source) = source_node_id else { return };
+        if ready || source == target_node_id {
+            return;
+        }
+        out.push(PlannedCopy {
+            kind: "slice",
+            name: name.to_string(),
+            size_bytes,
+            layers: Some([start, end]),
+            source_node_id: source.clone(),
+            source_host: source_host.clone().unwrap_or_else(|| source.clone()),
+            target_node_id: target_node_id.to_string(),
+            target_host: target_host.to_string(),
+        });
+    };
+    if !plan.tp_targets.is_empty() {
+        for t in &plan.tp_targets {
+            slice(&t.target_node_id, &t.target_host, t.ready, &t.source_node_id, &t.source_host, &t.name, t.size_bytes, t.start_layer, t.end_layer);
+        }
+    } else {
+        for step in &plan.steps {
+            if step.merged {
+                for part in &step.parts {
+                    slice(&step.target_node_id, &step.target_host, part.ready, &part.source_node_id, &part.source_host, &part.name, part.size_bytes, part.start_layer, part.end_layer);
+                }
+            } else {
+                slice(&step.target_node_id, &step.target_host, step.ready, &step.source_node_id, &step.source_host, &step.name, step.size_bytes, step.start_layer, step.end_layer);
+            }
+        }
+    }
+    for slot in [&plan.sidecars.vision, &plan.sidecars.mtp].into_iter().flatten() {
+        let (Some(file), Some(source)) = (&slot.file, &slot.source_node_id) else {
+            continue;
+        };
+        if !slot.needs_copy() || *source == slot.target_node_id {
+            continue;
+        }
+        out.push(PlannedCopy {
+            kind: match slot.kind {
+                crate::catalog::SidecarKind::Mmproj => "mmproj",
+                crate::catalog::SidecarKind::Mtp => "mtp",
+            },
+            name: file.file_name.clone(),
+            size_bytes: file.size_bytes,
+            layers: None,
+            source_node_id: source.clone(),
+            source_host: slot.source_host.clone().unwrap_or_else(|| source.clone()),
+            target_node_id: slot.target_node_id.clone(),
+            target_host: slot.target_host.clone(),
+        });
+    }
+    out
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1893,6 +1982,7 @@ pub(super) fn plan_with_rtt_options(
         transfer_bytes,
         steps,
         tp_targets,
+        copies: Vec::new(),
         blocked,
         auto,
         merge,

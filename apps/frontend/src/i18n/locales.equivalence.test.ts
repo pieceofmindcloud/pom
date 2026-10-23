@@ -17,6 +17,9 @@ const dump = reference as ReferenceDump;
 // The dump is the frozen pre-ICU baseline. Keep intentional product-copy
 // revisions here rather than rewriting the generated 1.8 MB single-line file.
 const copyUpdates: Record<string, string> = {
+  // "Network" beside "Networks" in the main menu read as the same thing twice.
+  "en:nav.network": "My Network",
+  "pt-BR:nav.network": "Minha Rede",
   // Every admin decides the cluster's process logs, not only the principal.
   "en:network.logsNotAuthority": "Only an admin decides this, and the decision applies to the whole cluster.",
   "pt-BR:network.logsNotAuthority": "Só um admin decide isso, e a decisão vale para o cluster inteiro.",

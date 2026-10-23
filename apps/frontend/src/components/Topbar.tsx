@@ -13,6 +13,7 @@ import { useI18n } from "../i18n/provider";
 import { ConnectionBadge } from "./ConnectionStatus";
 import { NatBadge } from "./NatBadge";
 import { Notifications } from "./Notifications";
+import { UsageButton } from "./UsageButton";
 import { SidebarContent } from "./Sidebar";
 import { Badge, Dot, Skeleton } from "./ui";
 import { OpenNativeChatWindowButton, QuitNativeAppButton } from "./OpenNativeChatWindowButton";
@@ -115,6 +116,7 @@ export function Topbar() {
         <div className="flex shrink-0 items-center gap-2">
           <OpenNativeChatWindowButton />
           <ProfileBadge />
+          <UsageButton />
           <Notifications />
           <QuitNativeAppButton />
         </div>

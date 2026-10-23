@@ -12,7 +12,7 @@ import { closePlugin, openPlugin } from "../lib/api";
 import { useProfile } from "../lib/profile";
 import { hasConversations, useOptionalChatSessionController } from "../lib/chatStore";
 import { useLobbyUnread, useNetworkChatOpen, useNetworkChatUnread } from "../lib/networkChatUnread";
-import { keys, useMyQuota, useNode, usePluginUi, usePomCoreUpdateStatus } from "../lib/queries";
+import { keys, useNode, usePluginUi, usePomCoreUpdateStatus } from "../lib/queries";
 import { canAccessRoute } from "../lib/access";
 import { useTheme } from "../lib/theme";
 import { LeaveNetworkButton } from "./LeaveNetworkButton";
@@ -729,9 +729,8 @@ function InferenceMainMenu({
       deleteSession: () => {},
     };
   const { profile, known } = useProfile();
-  const quota = useMyQuota(known);
   const networkChat = useNetworkChatOpen();
-  const sections = known ? navForProfile(profile, true, { usage: Boolean(quota.data?.available || quota.data?.pending), networkChat }) : [];
+  const sections = known ? navForProfile(profile, true, { networkChat }) : [];
   const navigate = useNavigate();
   const { pathname } = useLocation();
 
@@ -810,10 +809,6 @@ export function SidebarContent({
   const { data: node } = useNode();
   // Only an administrator answers the lobby, and only while the network has it on.
   const lobbyUnread = useLobbyUnread(Boolean(node?.authority_level) && snapshot?.lobbyEnabled === true);
-  // Usage only where some machine runs the logs plugin that keeps the budgets;
-  // hidden until that is known, so it never shows and then vanishes.
-  const quota = useMyQuota(known);
-  const usageShown = Boolean(quota.data?.available || quota.data?.pending);
   return (
     <>
       <SidebarBrand collapsed={collapsed} onToggle={onToggle} />
@@ -822,7 +817,7 @@ export function SidebarContent({
       ) : (
         <nav className="flex min-h-0 flex-1 flex-col">
           <ScrollableNav className={clsx("pb-4 pt-[5px]", collapsed ? "px-2" : "px-3")}>
-            {(known ? navForProfile(profile, true, { usage: usageShown, networkChat }) : []).map((s) => (
+            {(known ? navForProfile(profile, true, { networkChat }) : []).map((s) => (
               <Section
                 key={s.labelKey}
                 section={s}

@@ -55,8 +55,10 @@ struct Annotation {
 }
 
 /// Persistent limit shared by the journal and the in-memory supervisor.
-/// Ten is already the limit the supervisor uses for failures of one generation.
-pub const MAX_AUTOMATIC_ATTEMPTS: u32 = 10;
+/// Three: a load that failed three times, each after the pause that lets the
+/// memory come back (`RESTART_INTERVAL` in `inference/runtime.rs`), is not
+/// going to load on the fourth, and ten attempts only kept the machine busy.
+pub const MAX_AUTOMATIC_ATTEMPTS: u32 = 3;
 
 /// What startup found recorded.
 ///

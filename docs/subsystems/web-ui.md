@@ -745,7 +745,7 @@ the POM release the node runs (`NodeInfo.pom_version`, `v0.5.6` as GitHub tags
 it; `· <build_commit>` after it only with `pom_dev_mode`) and the light/dark
 theme. When `/api/ui/pom-update/status` reports a newer release the version
 turns amber and a "New version" link above the row names it and opens About,
-where it is installed or told why it cannot be. Network > Participants shows
+where it is installed or told why it cannot be. My Network > Participants shows
 each machine's announced `pom_version` (amber when it differs from this node's,
 "version unknown" for a node that announces none; the build only in development
 mode). The PipelineRail is still rendered hidden on
@@ -1749,22 +1749,25 @@ gate, while the current step is one of its two (`useFirstRunWizard` in
 `App.tsx`). It asks nothing about the kind of network: the network is the
 machine's own, and joining another one comes later, from the Networks screen.
 
-1. **Names** (`names`) - two fields on one screen. The machine name is
-   pre-filled with the name the machine goes by (the system hostname until
-   it is given one) and saved with `POST /api/ui/network/node-name`. The
-   network name is pre-filled with the name the network was created with,
-   under a warning that it is advertised to everyone if the network is made
-   public, and saved with `POST /api/ui/network/settings`, the rest of the
-   settings untouched. The step is reported only after both saves.
-2. **Follow the instructions** (`bootstrap`) - no field: it says that hints on
-   the screen point at what to do next, and its button opens the panel.
+1. **Name** (`names`) - one field, given to the machine and to its network:
+   at this point the network is the machine's own, so two names said the
+   same thing twice. It is pre-filled with the name the machine goes by (the
+   system hostname until it is given one) under a warning that the name is
+   advertised to everyone if the network is made public, and saved with
+   `POST /api/ui/network/node-name` and then `POST /api/ui/network/settings`
+   (`public_name`, the rest of the settings untouched). The step is reported
+   only after both saves; either name can be changed later in My Network.
+2. **Welcome** (`bootstrap`) - no field: a "Welcome to POM" animation (the
+   mark grows in, the greeting settles, a bar fills, `.pom-welcome*` in
+   `index.css`) for `WELCOME_MS` (3.6 s), after which the step is reported by
+   itself and the panel opens. A failed report keeps the screen with the error
+   and a Start button.
 
-Each name field has its own "Random" button that fills in a random name of two
-words and a number (`lib/randomName.ts`). Neither name may be empty, a
-failed save keeps the operator on the screen with the error, and "Back" only
-changes the screen shown. A reload resumes at the first step not done. The
-wizard draws on the `.pom-login*` / `.pom-setup*` shell of the access gate,
-with the language switch in the corner.
+The field has a "Random" button that fills in a random name of two words and a
+number (`lib/randomName.ts`). The name may not be empty and a failed save keeps
+the operator on the screen with the error. A reload resumes at the first step
+not done. The wizard draws on the `.pom-login*` / `.pom-setup*` shell of the
+access gate, with the language switch in the corner.
 
 ### The hints
 

@@ -310,15 +310,14 @@ Per-file list:
   the other erases the local configuration and restarts in the setup.
 
 - `MyBudget.tsx` - "Usage" ("Uso", route `/config/usage`; `/config/budget`
-  redirects there; Network menu, every
-  profile): this machine's token budgets from `GET /api/ui/quota` - one panel per
+  redirects there; reached from the Usage button beside the bell, every
+  profile, drawn only while this node has a budget configured): this machine's token budgets from `GET /api/ui/quota` - one panel per
   plan with input/output bars and the window's turnover, the session-reset
   credits (`POST /api/ui/quota/reset`) and the request for more budget
   (`POST /api/ui/quota/request`). Without an admin's logs plugin answering it
   says so instead of showing zero; while a machine that runs the plugin has
   not answered (`pending`) it keeps loading instead of "no budget". The query
-  is `useMyQuota` (`lib/queries.ts`), shared with the Sidebar, which leaves the
-  Usage entry out while `available` is false. The admins' side is the logs plugin's Quota
+  is `useMyQuota` (`lib/queries.ts`), shared with `components/UsageButton.tsx`. The admins' side is the logs plugin's Quota
   screen.
 
 ## Chat
@@ -659,7 +658,11 @@ Per-file list:
   serve any model are listed as taken over ("Replace and deploy"), and the
   machines outside the plan that serve this same model get the choice between
   "Undeploy and deploy" and "Keep in parallel", which sends
-  `keep_existing: true`. The three confirms chain through `attemptDeploy`.
+  `keep_existing: true`. Before it, when `DeployPlan.copies` is not empty,
+  "Authorize the copies" lists each file, range, source and target; only its
+  confirmation sends `allow_transfers: true`, and a 409
+  `transfers_not_authorized` reopens it with the node's list. The confirms
+  chain through `attemptDeploy`.
   Topology edits are debounced 260 ms and validated by
   `POST /api/ui/deploy/plan`. Runtime parameters, per-machine GPU/KV overrides
   and the operational name stay local while editing: their changes do not

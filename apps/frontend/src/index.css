@@ -647,6 +647,49 @@ body {
   0%, 100% { box-shadow: 0 0 0 4px rgba(53, 201, 240, .16); } 50% { box-shadow: 0 0 0 8px rgba(53, 201, 240, .06); }
 }
 
+/* The first run wizard's welcome (`components/FirstRunWizard.tsx`): the mark
+   grows in, the greeting rises letter-spaced and settles, the gate's three
+   nodes light up, and a bar fills for as long as the screen stays
+   (`--pom-welcome-ms`), then the hints take over. */
+.pom-welcome { display: flex; flex-direction: column; align-items: center; }
+.pom-welcome-mark {
+  animation:
+    pom-welcome-grow 1.1s cubic-bezier(.22, 1, .36, 1) .1s both,
+    pom-login-breathe 3.2s ease-in-out 1.2s infinite;
+}
+.pom-welcome-title {
+  margin: 4px 0 26px;
+  font: 600 clamp(26px, 4.6vw, 38px)/1.1 "Space Grotesk", system-ui, sans-serif;
+  letter-spacing: -.02em;
+  background: linear-gradient(96deg, #fff 20%, #6fd6f3 60%, #2fdcc8);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  animation: pom-welcome-title 1.2s cubic-bezier(.22, 1, .36, 1) .55s both;
+}
+.pom-welcome-link { margin: 0 auto 22px; animation-delay: .9s; }
+.pom-welcome-detail {
+  max-width: 340px; margin: 0 auto 26px;
+  color: rgba(255, 255, 255, .62); font-size: 14px; line-height: 1.55;
+  animation: pom-login-reveal .8s cubic-bezier(.22, 1, .36, 1) 1.2s both;
+}
+.pom-welcome-progress {
+  position: relative; display: block; width: min(220px, 70%); height: 3px; overflow: hidden;
+  border-radius: 999px; background: rgba(255, 255, 255, .1);
+}
+.pom-welcome-progress::after {
+  content: ""; position: absolute; inset: 0; transform-origin: left;
+  background: linear-gradient(90deg, #4f9bff, #2fdcc8);
+  animation: pom-welcome-fill var(--pom-welcome-ms, 3600ms) linear both;
+}
+@keyframes pom-welcome-grow {
+  from { opacity: 0; transform: scale(.6); filter: blur(8px); }
+  to { opacity: 1; transform: none; filter: none; }
+}
+@keyframes pom-welcome-title {
+  from { opacity: 0; transform: translateY(14px); letter-spacing: .3em; filter: blur(6px); }
+  to { opacity: 1; transform: none; letter-spacing: -.02em; filter: none; }
+}
+@keyframes pom-welcome-fill { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+
 .pom-setup-choice {
   display: block; width: 100%; min-width: 0; padding: 16px; border-radius: 18px; text-align: left;
   border: 1px solid rgba(255, 255, 255, .12); background: rgba(255, 255, 255, .035);

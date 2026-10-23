@@ -62,8 +62,8 @@ Per-file list:
   `DeploymentLogs` already used before these existed): a fixed edge-to-edge
   header bar and, optionally, a filter strip under it, above a body that
   scrolls on its own. `WholeModels`, `Shards`, `SliceModels`, `RemoteModels`,
-  `Transfers` and `SendFile` (`../routes/`) all build on these two instead of
-  repeating the bar's markup six times; `Deployments`/`PublicNetworks` keep
+  and `Transfers` (`../routes/`) all build on these two instead of
+  repeating the bar's markup; `Deployments`/`PublicNetworks` keep
   their own hand-written bar and were not touched, since refactoring a
   screen nobody asked to change is its own risk.
   `Tabs` is the one tab row (POM-JEV's folder tabs, theme tokens `--tab-*` in

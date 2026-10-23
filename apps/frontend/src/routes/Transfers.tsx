@@ -1,6 +1,6 @@
 import { Check, CheckCircle2, Download, Inbox, Upload, X } from "lucide-react";
-import { Link } from "react-router-dom";
 import { ModelDownloadsPanel } from "../components/ModelDownloadsPanel";
+import { SendFilePanel } from "./SendFile";
 import {
   Badge,
   Button,
@@ -63,13 +63,6 @@ export function Transfers() {
       <FullBleedHeader
         title={t("transfers.title")}
         subtitle={t("transfers.subtitle")}
-        actions={
-          <Link to="/transfers/send">
-            <Button variant="primary" icon={<Upload className="h-3.5 w-3.5" />}>
-              {t("transfers.sendFile")}
-            </Button>
-          </Link>
-        }
       />
 
       <div className="min-h-0 min-w-0 flex-1 overflow-auto p-4 sm:p-5">
@@ -83,6 +76,8 @@ export function Transfers() {
         )}
 
         <div className="space-y-5">
+          <SendFilePanel />
+
           <ModelDownloadsPanel />
 
           {waiting.length > 0 && (

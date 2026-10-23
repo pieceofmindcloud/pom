@@ -839,9 +839,10 @@ Per-file list:
 - `SendFile.tsx` - offers a `.gguf` from the local catalog via
   `POST /api/transfer/send` (`{to_node_id, filename}`). The UI displays the
   friendly name and full path, but sends only the basename; the backend resolves
-  it again and the receiver sees only an opaque grant. Full-bleed shell
-  (`FullBleedHeader` + scrolling body), same contract as `Deployments`/
-  `PublicNetworks`.
+  it again and the receiver sees only an opaque grant. It is `SendFilePanel`,
+  the first panel of `Transfers.tsx`, not a screen of its own; `?filename=`
+  preselects the file, and `/transfers/send` redirects to `/transfers` keeping
+  the query.
 - `Shards.tsx` - "Fatias": every local slice always listed (the Nodes screen
   only shows the difference), with who is missing it. Pipeline `parts` and TP
   `tp_parts` are separate sections; TP groups are ordered by group size and
@@ -876,7 +877,8 @@ Per-file list:
   declared part and an explicit instruction to keep the set together before
   POM slicing; incomplete sets surface the backend reason and leave the start
   action disabled.
-- `Transfers.tsx` - Shows remote model downloads from `useModelDownloads` in
+- `Transfers.tsx` - The one Transfers screen (a single menu entry): the send
+  panel (`SendFilePanel`, from `SendFile.tsx`) first, then remote model downloads from `useModelDownloads` in
   the same in-progress screen as pending offers (accept/reject via
   `POST /api/transfer/offers/:id/accept|reject`), active transfers (bytes +
   speed + ETA + cancel via `POST /api/transfer/jobs/:id/cancel`), and finished
@@ -890,7 +892,7 @@ Per-file list:
   list of cards, with a fixed header and actions in the last column.
 - `WholeModels.tsx` - Full-model catalog from `useLocalCatalog`, one full-width
   table row (`ModelRow`) per model with actions: slice (links to
-  `/models/slice?path=`), send (`/transfers/send?path=`), delete
+  `/models/slice?path=`), send (`/transfers?filename=`), delete
   (`../lib/deleteModel`). A dedicated "Vision (mmproj)" column shows the
   projector's basename (`../lib/format::optionalBasename`) when
   `DiscoveredModel.mmproj_path` is set, or "no projector" otherwise - the

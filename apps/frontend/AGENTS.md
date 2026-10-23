@@ -140,7 +140,7 @@ a choice.
   shows the slicing jobs and their progress bars
 - `/shards` -> Shards; `/shards/deploy` -> redirects to `/deploy` (kept for old links)
 - `/models`, `/models/remote`, `/models/slice`, `/shards`,
-  `/transfers` and `/transfers/send` are full-bleed, in the same
+  and `/transfers` are full-bleed, in the same
   pattern as `/deployments`/`/deployments/logs`: fixed header
   (`FullBleedHeader`, `components/ui.tsx`) and a table or content scrolling
   inside. Whole models and Slices show the `mmproj` file name when the
@@ -157,7 +157,8 @@ a choice.
 - `/deployments/logs` -> DeploymentLogs, the terminal console of the cluster's
   process logs, in arrival order on the principal and filterable by `deploy_id`
 - `/setup` is not a route: the deprecated wizard has no path.
-- `/transfers` -> Transfers; `/transfers/send` -> SendFile
+- `/transfers` -> Transfers, with the send panel first (one menu entry);
+  `/transfers/send` redirects there keeping `?filename=`
 - Plugin routes -> `PluginScreen` under `/<plugin_code>/<manifest route>`,
   outside `<Routes>` and before the native table. The basename turns, for
   example, `base` + `/plugin-de-base` into `/admin-ui/base/plugin-de-base`.

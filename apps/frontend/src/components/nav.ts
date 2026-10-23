@@ -25,7 +25,6 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Terminal,
-  Upload,
   type LucideIcon,
 } from "lucide-react";
 import { canAccessRoute } from "../lib/access";
@@ -101,14 +100,8 @@ export const NAV: NavSection[] = [
       { labelKey: "nav.history", to: "/deployments", icon: History },
     ],
   },
-  {
-    labelKey: "nav.transfers",
-    icon: Send,
-    children: [
-      { labelKey: "nav.sendFile", to: "/transfers/send", icon: Upload },
-      { labelKey: "nav.inProgress", to: "/transfers", icon: Send, end: true },
-    ],
-  },
+  // One screen: send a file, and everything under way or just finished.
+  { labelKey: "nav.transfers", icon: Send, to: "/transfers" },
   {
     labelKey: "nav.logs",
     icon: ListTree,

@@ -281,7 +281,7 @@ The transport is the same; what changes is who chooses what:
   missing on the other side. That explains "there is no option to send a slice"
   when the machines have the same slices: the panel is a difference list and
   no row is left to click.
-- **Send a file from this machine** (Nodes tab): a combobox with name and full
+- **Send a file from this machine** (the first panel of the Transfers screen): a combobox with name and full
   path for visual checking, sending only the safe basename.
 
 A deploy's own copies are the fourth door, and also the operator's: the

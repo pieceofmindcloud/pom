@@ -223,7 +223,7 @@ local-only notice. Routes:
   embedded
 - `/shards` -> Shards; `/shards/deploy` -> redirects to `/deploy` (old
   link)
-- Those four routes, plus `/transfers` and `/transfers/send`, are
+- Those four routes, plus `/transfers`, are
   full screen (`isFullBleed` in `App.tsx`), under the same contract as
   `/deployments`/`/deployments/logs`: a fixed header
   (`FullBleedHeader`/`FullBleedToolbar`, `components/ui.tsx`) and a table or
@@ -249,7 +249,8 @@ local-only notice. Routes:
   history is capped on the principal at the last seven days or 500,000
   records, whichever comes first; `cluster_logs_min_level` in `pom.json`
   controls the minimum captured level and defaults to `info`.
-- `/transfers` -> Transfers; `/transfers/send` -> SendFile
+- `/transfers` -> Transfers, which also holds the send panel (one menu entry);
+  `/transfers/send` redirects there, keeping `?filename=`
 - `/logs` and `/statistics` -> `EnterpriseFeatureShowcase`, the sales page
   of the logs plugin (Request Logs, Statistics and Quota, one purchase; public
   catalog, purchase on the site in a new tab), when no active plugin declares
@@ -1682,7 +1683,7 @@ machine restarted. Today the fingerprint is only model + set of ranges.
   Redeploying the same shape from the Deploy Studio (same proven model, same
   machines and ranges) also lands on the same `deploy_id`; changing machine or
   range mints a new id. See `deployment.md` §7.1.
-- **Transfer** (`Transfers`/`SendFile`/`Notifications`): remote model downloads
+- **Transfer** (`Transfers` with its `SendFilePanel`, `Notifications`): remote model downloads
   with progress and cancellation, pending offers (accept/refuse straight from
   the bell), active transfers (bytes, speed, ETA, cancel) and finished ones.
   Sending ("send a file from this machine") offers a file from the local

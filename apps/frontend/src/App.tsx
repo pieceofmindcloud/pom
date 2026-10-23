@@ -175,7 +175,6 @@ export const routeLoaders = {
   sliceModels: () => import("./routes/SliceModels").then(({ SliceModels }) => SliceModels),
   tokenKeys: () => import("./routes/Keys").then(({ TokenKeys }) => TokenKeys),
   connectionKeys: () => import("./routes/Keys").then(({ ConnectionKeys }) => ConnectionKeys),
-  sendFile: () => import("./routes/SendFile").then(({ SendFile }) => SendFile),
   transfers: () => import("./routes/Transfers").then(({ Transfers }) => Transfers),
   wholeModels: () => import("./routes/WholeModels").then(({ WholeModels }) => WholeModels),
   remoteModels: () => import("./routes/RemoteModels").then(({ RemoteModels }) => RemoteModels),
@@ -210,7 +209,6 @@ const Shards = lazyRoute(routeLoaders.shards);
 const SliceModels = lazyRoute(routeLoaders.sliceModels);
 const TokenKeys = lazyRoute(routeLoaders.tokenKeys);
 const ConnectionKeys = lazyRoute(routeLoaders.connectionKeys);
-const SendFile = lazyRoute(routeLoaders.sendFile);
 const Transfers = lazyRoute(routeLoaders.transfers);
 const WholeModels = lazyRoute(routeLoaders.wholeModels);
 const RemoteModels = lazyRoute(routeLoaders.remoteModels);
@@ -248,6 +246,12 @@ function RouteFallback({ fullScreen = false }: { fullScreen?: boolean }) {
  * The chat holds a live stream and a scroll position, so it renders outside the
  * page transition: unmounting it to animate would drop tokens mid-answer.
  */
+/** `/transfers/send` from before Send file joined the Transfers screen. */
+function TransfersSendRedirect() {
+  const { search } = useLocation();
+  return <Navigate to={`/transfers${search}`} replace />;
+}
+
 export default function App() {
   const { t, locale } = useI18n();
   const location = useLocation();
@@ -310,8 +314,7 @@ export default function App() {
       location.pathname === "/models/slice" ||
       location.pathname === "/plugins" ||
       location.pathname === "/shards" ||
-      location.pathname === "/transfers" ||
-      location.pathname === "/transfers/send");
+      location.pathname === "/transfers");
   const adminSurface = useAdminSurface();
   const [adminReady, setAdminReady] = useState(false);
   // A machine on its first run names itself and its network before the panel
@@ -457,7 +460,8 @@ export default function App() {
                         {/* Keep the former deploy URL working for old bookmarks. */}
                         <Route path="/shards/deploy" element={<Navigate to="/deploy" replace />} />
                         <Route path="/transfers" element={<Page><Transfers /></Page>} />
-                        <Route path="/transfers/send" element={<Page><SendFile /></Page>} />
+                        {/* Sending a file is a panel of Transfers now; old links keep their `?filename=`. */}
+                        <Route path="/transfers/send" element={<TransfersSendRedirect />} />
                         <Route path="/plugins" element={<Page><Plugins /></Page>} />
                         <Route path="/documentation" element={<Page><Documentation /></Page>} />
                         <Route path="/config/network" element={<Page><NetworkSettings /></Page>} />

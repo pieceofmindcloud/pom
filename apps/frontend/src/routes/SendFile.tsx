@@ -1,5 +1,7 @@
 /**
- * Sending a file this machine's own operator picked.
+ * Sending a file this machine's own operator picked: the first panel of the
+ * Transfers screen (`Transfers.tsx`), which also lists what is under way.
+ * `?filename=` (the Models screen's Send) preselects the file.
  *
  * Only files already present in the local catalog can be selected. The browser
  * sends a basename and the backend resolves it again, so a path traversal can
@@ -12,7 +14,6 @@ import {
   Button,
   Empty,
   Field,
-  FullBleedHeader,
   Panel,
   PanelHeader,
   Select,
@@ -24,7 +25,7 @@ import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
 import { tpPartsOf } from "../lib/types";
 
-export function SendFile() {
+export function SendFilePanel() {
   const { t } = useI18n();
   const [params] = useSearchParams();
   const cluster = useCluster();
@@ -65,13 +66,7 @@ export function SendFile() {
   }
 
   return (
-    <div className="flex h-full min-h-0 min-w-0 flex-col bg-ink">
-      <FullBleedHeader
-        title={t("sendFile.title")}
-        subtitle={t("sendFile.subtitle")}
-      />
-
-      <div className="min-h-0 min-w-0 flex-1 overflow-auto p-4 sm:p-5">
+    <section data-testid="send-file" aria-label={t("sendFile.title")}>
       {cluster.isLoading && <Skeleton className="h-56 w-full" />}
 
       {cluster.data && peers.length === 0 ? (
@@ -83,7 +78,7 @@ export function SendFile() {
       ) : (
         <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,20rem)]">
           <Panel>
-            <PanelHeader title={t("sendFile.fileAndTarget")} />
+            <PanelHeader eyebrow={t("sendFile.title")} title={t("sendFile.fileAndTarget")} subtitle={t("sendFile.subtitle")} />
             <div className="space-y-4 px-5 py-4">
               <Field
                 label={t("sendFile.file")}
@@ -150,7 +145,6 @@ export function SendFile() {
           </Panel>
         </div>
       )}
-      </div>
-    </div>
+    </section>
   );
 }

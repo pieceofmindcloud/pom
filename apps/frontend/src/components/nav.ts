@@ -288,6 +288,12 @@ export interface NavOptions {
    * has nothing to show. Left out, Usage stays.
    */
   usage?: boolean;
+  /**
+   * Whether this node takes part in the network Chat. A visitor does only
+   * when the network opens it (`NetworkSettings.chat_visitors`); `false`
+   * drops the entry. Left out, it stays.
+   */
+  networkChat?: boolean;
 }
 
 export function navForProfile(profile: Profile, _enterpriseActive = true, options: NavOptions = {}): NavSection[] {
@@ -317,6 +323,7 @@ export function navForProfile(profile: Profile, _enterpriseActive = true, option
       continue;
     }
     if (section.to) {
+      if (options.networkChat === false && section.to === "/network-chat") continue;
       if (canAccessRoute(section.to, profile)) visible.push(section);
       continue;
     }

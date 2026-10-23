@@ -108,6 +108,7 @@ vi.mock("../lib/queries", () => ({
   useCluster: () => ({ data: chatScenario.cluster }),
   useConnection: () => ({ data: chatScenario.connection }),
   useNetworkChat: () => ({ data: { messages: [] }, isSuccess: true }),
+  useNetworkInfo: () => ({ data: undefined }),
   useChatCapabilities: () => ({ data: chatScenario.capabilities }),
   useInvalidate: () => vi.fn(),
   useServableModels: () => ({ data: chatScenario.models }),

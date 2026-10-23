@@ -186,6 +186,11 @@ pub struct NetworkSettings {
     /// (`network_lobby::PublicStats`). Only takes effect on a public network.
     #[serde(default)]
     pub public_stats: bool,
+    /// Opens the network Chat to visitors. Off, the Chat is the admins' and
+    /// workers' only: it names its members, and visitors never learn of each
+    /// other. The principal enforces it, as the hub every message crosses.
+    #[serde(default)]
+    pub chat_visitors: bool,
     /// How much of `location` is published; applied before it is stored.
     #[serde(default)]
     pub location_precision: LocationPrecision,

@@ -491,7 +491,10 @@ dedicated or member, with iroh's hole punching), are in
 - `answer_chat_request`/`accept_original_chat`/`relay_chat` - the Chat star: the
   principal validates an original message and relays it to every member (each send on
   its own task, so a slow member holds up nobody); a member accepts only what the
-  principal relays. `answer_lobby_request` answers a non-member (see `network_lobby.rs`).
+  principal relays. Visitors are out of it unless the network opens it
+  (`NetworkSettings::chat_visitors`, `NetworkChat::visitors_allowed`): the
+  principal refuses their messages and relays to none, and a visitor node
+  neither sends nor accepts one (`visitor_has_no_chat`). `answer_lobby_request` answers a non-member (see `network_lobby.rs`).
   The logs and audit handlers ingest on the receiving admin and never retransmit.
 - `apply_policy` - every 5 s (`POLICY_INTERVAL`): the relay gate's member list and the
   URL it offers (`http://<public host>:<p2p_port+10000>`), the member relays added to or

@@ -873,6 +873,12 @@ impl Discovery {
                         let _ = reply.send(ChatResponse::rejected("network_chat_disabled"));
                         continue;
                     }
+                    // The Chat names its members to each other, and visitors
+                    // never learn of each other unless the network opens it.
+                    if network.is_visitor() && !ctx.chat.visitors_allowed().await {
+                        let _ = reply.send(ChatResponse::rejected("visitor_has_no_chat"));
+                        continue;
+                    }
                     if network.is_principal() {
                         let result =
                             accept_original_chat(&ctx, &network, &ctx.chat, request, None).await;
@@ -1466,6 +1472,10 @@ async fn answer_chat_request(ctx: &Ctx, peer: EndpointId, request: ChatRequest) 
         .await
         .into_iter()
         .find(|candidate| candidate.endpoint_id.as_deref() == Some(peer_text.as_str()));
+    let visitors_allowed = chat.visitors_allowed().await;
+    if network.is_visitor() && !visitors_allowed {
+        return ChatResponse::rejected("visitor_has_no_chat");
+    }
     if request.relayed {
         let source_is_principal = sender
             .as_ref()
@@ -1485,6 +1495,9 @@ async fn answer_chat_request(ctx: &Ctx, peer: EndpointId, request: ChatRequest) 
     match sender {
         // The transport names the sender; membership is what lets it speak.
         // No credential travels in the request.
+        Some(sender) if !visitors_allowed && network.peer_is_visitor(&sender) => {
+            ChatResponse::rejected("visitor_has_no_chat")
+        }
         Some(sender) if network.is_member_key(&sender.node_id, &sender.pubkey).await => {
             accept_original_chat(ctx, network, chat, request, Some((peer, sender.node_id))).await
         }
@@ -1889,12 +1902,14 @@ async fn relay_chat(
 ) {
     let peers = network.alive_peers().await;
     let excluded_peer_id = excluded_peer.map(|id| id.to_string());
+    let visitors_allowed = chat.visitors_allowed().await;
     for peer in peers {
         if peer.node_id == network.node_id
             || peer.endpoint_id.as_deref() == excluded_peer_id.as_deref()
             || action
                 .recipient_node_id()
                 .is_some_and(|recipient| recipient != peer.node_id)
+            || (!visitors_allowed && network.peer_is_visitor(&peer))
             || chat.node_is_blocked(&peer.node_id).await
         {
             continue;

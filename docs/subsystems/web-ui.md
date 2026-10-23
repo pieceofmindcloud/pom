@@ -209,7 +209,9 @@ local-only notice. Routes:
   chrome. The two Chat surfaces are reached from the Sidebar's nav entries
   (`nav.ts`: `nav.chat` to `/chat`, `nav.networkChat` to `/network-chat`), and
   `NetworkChat.tsx` uses `Tabs` (`components/ui.tsx`) to switch between the
-  network room and the lobby room. The `Network Chat` entry shows the
+  network room and the lobby room. A visitor sees the entry only when the
+  network opens its Chat to visitors (`chat_visitors`). The `Network Chat`
+  entry shows the
   number of messages received since the last read, and entering the screen
   clears the badge. On a mobile viewport, online users start hidden and show up
   through the `See online` button. The AI/NETWORK tabs are the first strip of

@@ -11,7 +11,7 @@ import { useI18n } from "../i18n/provider";
 import { closePlugin, openPlugin } from "../lib/api";
 import { useProfile } from "../lib/profile";
 import { hasConversations, useOptionalChatSessionController } from "../lib/chatStore";
-import { useLobbyUnread, useNetworkChatUnread } from "../lib/networkChatUnread";
+import { useLobbyUnread, useNetworkChatOpen, useNetworkChatUnread } from "../lib/networkChatUnread";
 import { keys, useMyQuota, useNode, usePluginUi, usePomCoreUpdateStatus } from "../lib/queries";
 import { canAccessRoute } from "../lib/access";
 import { useTheme } from "../lib/theme";
@@ -728,7 +728,8 @@ function InferenceMainMenu({
     };
   const { profile, known } = useProfile();
   const quota = useMyQuota(known);
-  const sections = known ? navForProfile(profile, true, { usage: Boolean(quota.data?.available || quota.data?.pending) }) : [];
+  const networkChat = useNetworkChatOpen();
+  const sections = known ? navForProfile(profile, true, { usage: Boolean(quota.data?.available || quota.data?.pending), networkChat }) : [];
   const navigate = useNavigate();
   const { pathname } = useLocation();
 
@@ -801,7 +802,9 @@ export function SidebarContent({
   // The menu follows the profile: what this profile does not open is not offered either.
   // See `navForProfile` and the table in `lib/access.ts`.
   const { profile, known } = useProfile();
-  const { unreadCount, snapshot } = useNetworkChatUnread(false);
+  // A visitor has the network Chat only when the network opens it.
+  const networkChat = useNetworkChatOpen();
+  const { unreadCount, snapshot } = useNetworkChatUnread(false, networkChat);
   const { data: node } = useNode();
   // Only an administrator answers the lobby, and only while the network has it on.
   const lobbyUnread = useLobbyUnread(Boolean(node?.authority_level) && snapshot?.lobbyEnabled === true);
@@ -817,7 +820,7 @@ export function SidebarContent({
       ) : (
         <nav className="flex min-h-0 flex-1 flex-col">
           <ScrollableNav className={clsx("pb-4 pt-[5px]", collapsed ? "px-2" : "px-3")}>
-            {(known ? navForProfile(profile, true, { usage: usageShown }) : []).map((s) => (
+            {(known ? navForProfile(profile, true, { usage: usageShown, networkChat }) : []).map((s) => (
               <Section
                 key={s.labelKey}
                 section={s}

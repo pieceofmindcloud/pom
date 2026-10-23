@@ -1629,6 +1629,8 @@ network.blockTitle,Block {hostname}?,Bloquear {hostname}?
 network.blocked,Node blocked,Nó bloqueado
 network.blockedLabel,blocked,bloqueado
 network.channels,Discord or Telegram,Discord ou Telegram
+network.chatVisitors,Visitors can use the network Chat,Visitantes podem usar o Chat da rede
+"network.chatVisitorsHint","Off, the Chat is for admins and workers only. On, visitors join it and see who else talks there, other visitors included.","Desligado, o Chat é só de administradores e trabalhadores. Ligado, visitantes entram nele e veem quem mais fala ali, inclusive outros visitantes."
 network.chooseCity,Choose a city,Escolha uma cidade
 network.chooseCountry,Choose a country,Escolha um país
 network.city,City,Cidade

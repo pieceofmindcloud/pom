@@ -172,8 +172,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   (`authority_level === "secondary"`): it deploys models and otherwise sees
   what a node sees, so principal-only controls check `!secondary`.
 - `access.ts` - which route each profile opens. `RESTRICTED` maps a route
-  prefix to the list of profiles; for `visitor`, `/chat`, `/network-chat`,
-  `/documentation`, `/config/keys/api` and `/config/network` are visible. The
+  prefix to the list of profiles; for `visitor`, `/chat`, `/network-chat` (its
+  menu entry only when `useNetworkChatOpen` says the network opens the Chat to
+  visitors), `/documentation`, `/config/keys/api` and `/config/network` are visible. The
   network participant list and the administrative preferences stay closed to
   infer. In Chat, that profile also hides the summaries and the telemetry panel.
   `canAccessRoute(path, profile)` is

@@ -3018,7 +3018,7 @@ impl Network {
     /// Whether `peer` is a visitor: its token, checked against the chain,
     /// says so, or it announces itself as one. A token outranks the
     /// announce, as everywhere: the role is granted at admission.
-    fn peer_is_visitor(&self, peer: &PeerInfo) -> bool {
+    pub(crate) fn peer_is_visitor(&self, peer: &PeerInfo) -> bool {
         use crate::config::EnrollmentRole;
         match self.admission.as_ref() {
             Some(admission) => match crate::membership::peer_role(peer, &admission.trust) {

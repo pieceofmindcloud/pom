@@ -45,6 +45,7 @@ const RESTRICTED: Readonly<Record<string, readonly Profile[]>> = {
 const INFER_ROUTES = [
   "/public-networks",
   "/chat",
+  // Shown only when the network opens its Chat to visitors (`nav.ts`).
   "/network-chat",
   "/documentation",
   "/config/keys/api",

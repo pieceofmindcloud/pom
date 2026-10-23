@@ -281,6 +281,13 @@ export function AccessFields({ draft, update, t, full = false }: { draft: Networ
         </div>
         <p className="mt-1.5 text-xs text-faint">{t("network.acceptedEnrollmentsHint")}</p>
       </section>
+      <label className="flex items-start gap-3 rounded-lg border border-line px-3 py-2.5">
+        <input type="checkbox" className="mt-1" data-testid="chat-visitors" checked={Boolean(draft.chat_visitors)} onChange={(event) => update({ chat_visitors: event.target.checked })} />
+        <span>
+          <span className="block text-sm text-fg">{t("network.chatVisitors")}</span>
+          <span className="block text-xs text-faint">{t("network.chatVisitorsHint")}</span>
+        </span>
+      </label>
       {publicNetwork && (
         <label className="flex items-start gap-3 rounded-lg border border-line px-3 py-2.5">
           <input type="checkbox" className="mt-1" checked={Boolean(draft.public_stats)} onChange={(event) => update({ public_stats: event.target.checked })} />

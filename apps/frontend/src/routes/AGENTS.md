@@ -175,7 +175,8 @@ Per-file list:
   block, under the same condition. It
   includes "Accepting new members", one card per `EnrollmentRole`
   (`ENROLLMENT_ROLES` in `lib/types.ts`) with its icon; unchecking all of them
-  advertises the network as closed.
+  advertises the network as closed. "Visitors can use the network Chat"
+  (`chat_visitors`, off by default) sits beside it.
   There is no lobby option: the lobby follows discovery. "Who can join"
   (`access_policy`) and "Accepting new members" are shown only with discovery
   on or hidden, and the published stats only on a public network; with

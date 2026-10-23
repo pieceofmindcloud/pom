@@ -819,6 +819,12 @@ impl NetworkChat {
         self.auth.read().await.network.visibility != crate::config::NetworkVisibility::Local
     }
 
+    /// Whether visitors take part in the network Chat
+    /// (`NetworkSettings::chat_visitors`).
+    pub async fn visitors_allowed(&self) -> bool {
+        self.auth.read().await.network.chat_visitors
+    }
+
     /// Whether an admission request is approved on arrival, with no admin
     /// deciding it (`NetworkAccessPolicy::AutoApprove`).
     pub async fn auto_approves(&self) -> bool {

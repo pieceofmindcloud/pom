@@ -484,6 +484,8 @@ export interface NetworkSettings {
   /** Opens the lobby room of the network Chat to machines that are not members. */
   /** Publishes served models, node count and total VRAM to non-members. */
   public_stats: boolean;
+  /** Opens the network Chat to visitors; off, it is the admins' and workers' only. */
+  chat_visitors?: boolean;
   location: NetworkLocation | null;
 }
 

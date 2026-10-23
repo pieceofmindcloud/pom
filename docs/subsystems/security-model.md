@@ -24,7 +24,18 @@ are either workers or visitors.
 - The role is set at admission. A machine admitted as a visitor stays one
   whatever it announces, and the principal refuses to promote it
   (`visitor_target`).
-- Visitors never know each other. A visitor needs the admins and the workers
+- Visitors never know each other, and so have no network Chat by default: it
+  names every member who talks. An admin opens it to them with
+  `NetworkSettings::chat_visitors` (off by default; on, visitors see each
+  other there). It is a network setting, not part of the trust document: the
+  trust document names admins only, and this rule is enforced by the
+  principal, the hub every Chat message crosses, so a member's copy of the
+  setting decides nothing for others. Off, the principal refuses a visitor's
+  message and relays to no visitor (`relay_chat`), and a visitor node refuses
+  to send or show it (`visitor_has_no_chat`, a 403 on `/api/ui/network-chat`
+  and its action and file routes). The lobby of another network is not the
+  Chat and stays open.
+- A visitor needs the admins and the workers
   that serve it, so its `Network::admit_peer` refuses another visitor and
   `alive_peers` leaves one out (`Network::hides`): it never probes, measures,
   gossips with or lists one. Every node answers a `PeerRequest` with visitors

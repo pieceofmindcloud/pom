@@ -1,5 +1,6 @@
 import { useEffect, useRef, useSyncExternalStore } from "react";
-import { useNetworkChat, useNode } from "./queries";
+import { useNetworkChat, useNetworkInfo, useNode } from "./queries";
+import { useProfile } from "./profile";
 import { storageKey } from "./brand";
 import type { NetworkChatEvent } from "./types";
 
@@ -91,8 +92,21 @@ export function countUnreadNetworkChatMessages(
   ).length;
 }
 
-export function useNetworkChatUnread(active: boolean) {
-  const query = useNetworkChat();
+/**
+ * Whether this node takes part in the network Chat: always for an admin or a
+ * worker, for a visitor only when the network opens it
+ * (`NetworkSettings.chat_visitors`). Its node refuses the Chat otherwise.
+ */
+export function useNetworkChatOpen(): boolean {
+  const { profile, known } = useProfile();
+  const visitor = known && profile === "visitor";
+  const info = useNetworkInfo(visitor);
+  if (!known) return false;
+  return !visitor || info.data?.network.chat_visitors === true;
+}
+
+export function useNetworkChatUnread(active: boolean, enabled = true) {
+  const query = useNetworkChat("network", enabled);
   const node = useNode();
   const readMarker = useSyncExternalStore(subscribe, () => markers.network, () => null);
   const initialized = useRef(false);

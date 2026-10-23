@@ -2777,11 +2777,28 @@ pub(super) struct NetworkChatQuery {
     room: Option<String>,
 }
 
+/// A visitor has no network Chat unless the network opens it
+/// (`NetworkSettings::chat_visitors`): it names the network's members, other
+/// visitors among them.
+async fn visitor_has_no_chat(state: &GatewayState) -> Option<Response> {
+    let refused = state.network.is_visitor() && !state.network_chat.visitors_allowed().await;
+    refused.then(|| {
+        (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "a visitor has no network Chat" })),
+        )
+            .into_response()
+    })
+}
+
 pub(super) async fn network_chat_snapshot(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
     Query(query): Query<NetworkChatQuery>,
 ) -> Response {
+    if let Some(refused) = visitor_has_no_chat(&state).await {
+        return refused;
+    }
     let room = match query.room.as_deref() {
         Some(crate::network_lobby::LOBBY_ROOM) => crate::network_lobby::LOBBY_ROOM,
         _ => crate::network_chat::NETWORK_CHAT_ROOM,
@@ -2851,6 +2868,9 @@ pub(super) async fn network_chat_action(
     State(state): State<GatewayState>,
     Json(mut request): Json<crate::network_chat::ChatRequest>,
 ) -> Response {
+    if let Some(refused) = visitor_has_no_chat(&state).await {
+        return refused;
+    }
     if request.api_key.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -2890,6 +2910,9 @@ pub(super) async fn network_chat_file(
     Path(message_id): Path<String>,
     State(state): State<GatewayState>,
 ) -> Response {
+    if let Some(refused) = visitor_has_no_chat(&state).await {
+        return refused;
+    }
     let file = match state.database.network_chat_file(&message_id) {
         Ok(Some(file)) => file,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),

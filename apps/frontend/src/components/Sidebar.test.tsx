@@ -31,6 +31,7 @@ vi.mock("@tanstack/react-query", async (importOriginal) => ({
 const lobby = vi.hoisted(() => ({ enabledOnNetwork: true, unread: 3 }));
 
 vi.mock("../lib/networkChatUnread", () => ({
+  useNetworkChatOpen: () => true,
   useNetworkChatUnread: () => ({ unreadCount: 2, snapshot: { lobbyEnabled: lobby.enabledOnNetwork } }),
   // The real hook asks the lobby only when enabled; so does the fake.
   useLobbyUnread: (enabled: boolean) => (enabled ? lobby.unread : 0),

@@ -93,8 +93,10 @@ Logs/Statistics code does not live here: it lives in `pom-plugin-logs`. The API
 (`/api/ui/requests`, `/api/ui/requests/stats`) remains the authority and refuses
 the data without an entitlement.
 
-The `visitor` profile is a reduced view of the interface: conversations, Network
-Chat, documentation, API key, Plugins (catalog, installation and local
+The `visitor` profile is a reduced view of the interface: conversations,
+Network Chat only when the network opens it (`NetworkSettings.chat_visitors`,
+read through `useNetworkChatOpen`; otherwise the entry is hidden and the Sidebar
+and `PluginBridge` do not poll the snapshot), documentation, API key, Plugins (catalog, installation and local
 development builds on this machine) and the local network screen (read-only: the
 role is decided at admission, and the interface does not offer becoming `worker`
 in its place). Plugins and the menus of installed plugins sit below the

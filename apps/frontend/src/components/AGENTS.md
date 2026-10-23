@@ -179,6 +179,8 @@ Per-file list:
   the same table (`../lib/access.ts`) that `App.tsx`'s route guard consults -
   a section with children disappears only when **no** child is left. It copies the section
   before filtering; rewriting `NAV` would leave the other profile with the pruned menu.
+  `networkChat: false` drops the Network Chat entry (a visitor the network
+  keeps out of its Chat, `useNetworkChatOpen`).
   Statistics is a first-level entry after Logs, keeping the operational
   sequence of consulting events before their aggregates. The same table marks the entries that go
   to the `visitor` footer and promotes the network to the main menu; `navForProfile` and

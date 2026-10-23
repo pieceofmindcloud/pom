@@ -1531,8 +1531,8 @@ credential does not apply. Its own request/response protocol is
 `/pom/network-lobby/1.0.0`, and it is **pull only**:
 
 - `Post { card, message_id, text }` says something; `Fetch { card }` reads.
-  Both are answered with the last 50 text messages of the lobby room, each
-  flagged `member` or not. The principal never opens a stream to a candidate
+  Both are answered with the last 50 text messages of the candidate's own
+  thread, each flagged `member` (an admin) or not. The principal never opens a stream to a candidate
   and keeps no session, only a presence entry that expires 90 s after the last
   request - the candidate's poll is what keeps it listed.
 - The lobby connection runs under a **transport key derived from the node
@@ -1547,10 +1547,23 @@ credential does not apply. Its own request/response protocol is
   the node key, and two endpoints under one key confuse the relays, which hold
   one connection per key - the second would knock the first off its home
   relay.
-- A candidate's text becomes an ordinary `ChatAction::Text` in room `lobby`,
-  stamped with the principal's clock and with a `message_id` namespaced by the
-  sender, persisted and relayed to the members by the existing star. Members
-  answer through the normal authenticated path with `room_id: "lobby"`.
+- **Each candidate has a thread of its own**, room `lobby/<candidate
+  node_id>` (`network_lobby::thread_room`). A candidate's text becomes an
+  ordinary `ChatAction::Text` in its thread, stamped with the principal's clock
+  and with a `message_id` namespaced by the sender, persisted and relayed by
+  the star **to the admins the chain proves only** (`Network::peer_is_admin`):
+  workers and visitors never receive lobby traffic, presence included. Any
+  admin, principal or secondary, answers through the normal authenticated
+  path with `room_id: "lobby/<candidate>"`; the principal refuses a lobby
+  message from a non-admin (`lobby_admins_only`) and any text in the bare
+  `lobby` room (`lobby_room_invalid`).
+- **Threads are temporary.** When the principal approves a candidate,
+  whoever decided, it erases the thread and relays `ChatAction::LobbyClosed`
+  so every admin erases its copy (`NetworkChat::close_thread`, drained on the
+  policy tick). A thread nobody wrote in for 24 h (`THREAD_TTL`) is purged on
+  every node, rejected candidates included, and so is anything left in the
+  old shared `lobby` room (`NetworkChat::purge_stale_threads`). Nothing a
+  candidate said reaches a later one.
 - `card` is the candidate's self-declared hardware (hostname, OS, CPU count,
   RAM, GPUs with VRAM), clamped on both ends. The principal relays it to the
   members as `ChatAction::LobbyPresence` when the candidate appears, when the
@@ -1562,8 +1575,9 @@ separate from the Chat's: 64 KiB per frame, 2 KiB of text, text only, 4
 requests per second and 6 texts per 30 s per candidate, and at most 64
 candidates tracked. A blocked `node_id` and a current member are refused
 (`node_blocked`, `already_member`); with the lobby off every request answers
-`lobby_disabled`. What a candidate reads is the lobby room only - the
-`network` room, files and direct messages never leave the members.
+`lobby_disabled`. What a candidate reads is its own thread only - other
+candidates' threads, the `network` room, files and direct messages never reach
+it.
 
 **Admission.** A machine joins a network by asking, and an admin decides
 later. `Admission { identity, card, role }` on the lobby protocol records the

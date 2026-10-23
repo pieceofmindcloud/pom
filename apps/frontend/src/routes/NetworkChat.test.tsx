@@ -180,9 +180,17 @@ describe("NetworkChat", () => {
     expect(participants?.className).toContain("block");
   });
 
-  it("opens the lobby room with the candidates' hardware and sends to it", async () => {
+  it("opens each candidate's thread with its hardware and answers in it", async () => {
+    const threadMessage = (candidate: string, text: string) => ({
+      ...enabledSnapshot.messages[0],
+      messageId: `m-${candidate}`,
+      roomId: `lobby/${candidate}`,
+      senderNodeId: candidate,
+      text,
+    });
     mocks.get.mockResolvedValue({
       ...enabledSnapshot,
+      messages: [threadMessage("candidate-node-id", "Oi, sou o primeiro"), threadMessage("other-candidate", "Oi, sou o segundo")],
       lobbyEnabled: true,
       lobbyGuests: [{
         nodeId: "candidate-node-id",
@@ -193,9 +201,16 @@ describe("NetworkChat", () => {
 
     fireEvent.click(await screen.findByRole("tab", { name: /Lobby/ }));
     expect(await screen.findByTestId("lobby-card-candidate-node-id")).toBeTruthy();
-    expect(screen.getByText("forasteiro")).toBeTruthy();
+    expect(screen.getAllByText("forasteiro").length).toBeGreaterThan(0);
     expect(screen.getByText("RTX 5060 Ti")).toBeTruthy();
     expect(screen.getByText("16 GB")).toBeTruthy();
+    // One candidate's thread at a time: the other's words are not on screen.
+    expect(screen.getByText("Oi, sou o primeiro")).toBeTruthy();
+    expect(screen.queryByText("Oi, sou o segundo")).toBeNull();
+    fireEvent.click(screen.getByTestId("lobby-thread-other-candidate"));
+    expect(await screen.findByText("Oi, sou o segundo")).toBeTruthy();
+    expect(screen.queryByText("Oi, sou o primeiro")).toBeNull();
+    fireEvent.click(screen.getByTestId("lobby-thread-candidate-node-id"));
     // No file goes to a room that non-members read.
     expect(screen.queryByRole("button", { name: "Anexar arquivo" })).toBeNull();
 
@@ -203,7 +218,7 @@ describe("NetworkChat", () => {
     fireEvent.click(screen.getByRole("button", { name: "Enviar" }));
     await waitFor(() => {
       expect(mocks.post).toHaveBeenCalledWith(expect.objectContaining({
-        action: expect.objectContaining({ kind: "text", room_id: "lobby", text: "Bem-vindo" }),
+        action: expect.objectContaining({ kind: "text", room_id: "lobby/candidate-node-id", text: "Bem-vindo" }),
       }));
     });
     // Typing is a signal of the members' room only.

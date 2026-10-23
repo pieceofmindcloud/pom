@@ -19,6 +19,13 @@ import type {
 
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
 
+/** Each candidate talks to the admins in a thread of its own (`network_lobby.rs`). */
+const THREAD_PREFIX = "lobby/";
+
+function threadCandidate(roomId: string): string | null {
+  return roomId.startsWith(THREAD_PREFIX) ? roomId.slice(THREAD_PREFIX.length) || null : null;
+}
+
 function id(): string {
   return randomId();
 }
@@ -31,7 +38,7 @@ function now(): string {
   return new Date().toISOString();
 }
 
-function textAction(room: NetworkChatRoom, senderNodeId: string, text: string): NetworkChatRequest {
+function textAction(room: string, senderNodeId: string, text: string): NetworkChatRequest {
   return {
     action: {
       kind: "text",
@@ -129,8 +136,11 @@ function ParticipantList({ participants, nodeName }: { participants: NetworkChat
   );
 }
 
-/** Candidates in the lobby, each with the hardware it declared. */
-function LobbyGuestList({ guests }: { guests: LobbyGuest[] }) {
+/**
+ * The candidates with a thread or present in the lobby; picking one opens
+ * its thread. A present candidate shows the hardware it declared.
+ */
+function LobbyThreadList({ candidates, guests, selected, onSelect, nodeName }: { candidates: string[]; guests: LobbyGuest[]; selected: string | null; onSelect: (candidate: string) => void; nodeName: (id: string) => string }) {
   const { t } = useI18n();
   return (
     <aside className="border-b border-line px-4 py-4 lg:border-b-0 lg:border-l lg:py-5">
@@ -139,8 +149,23 @@ function LobbyGuestList({ guests }: { guests: LobbyGuest[] }) {
         {t("lobby.candidates", { count: guests.length })}
       </div>
       <div className="space-y-3">
-        {guests.map((guest) => <LobbyHardwareCard key={guest.nodeId} nodeId={guest.nodeId} card={guest.card} />)}
-        {!guests.length && <p className="text-sm text-faint">{t("lobby.noCandidates")}</p>}
+        {candidates.map((candidate) => {
+          const guest = guests.find((item) => item.nodeId === candidate);
+          const active = candidate === selected;
+          return (
+            <button
+              key={candidate}
+              type="button"
+              data-testid={`lobby-thread-${candidate}`}
+              aria-pressed={active}
+              onClick={() => onSelect(candidate)}
+              className={`block w-full rounded-lg border text-left transition-colors ${active ? "border-iris/60" : "border-transparent hover:border-line-strong"}`}
+            >
+              {guest ? <LobbyHardwareCard nodeId={candidate} card={guest.card} /> : <span className="block px-3 py-2 text-sm text-muted">{nodeName(candidate)}</span>}
+            </button>
+          );
+        })}
+        {!candidates.length && <p className="text-sm text-faint">{t("lobby.noCandidates")}</p>}
       </div>
       <p className="mt-3 text-[0.68rem] leading-relaxed text-faint">{t("lobby.declaredNote")}</p>
     </aside>
@@ -158,6 +183,18 @@ export function NetworkChat() {
   const snapshot = networkChat.data ?? null;
   const inLobby = room === "lobby";
   const lobbyGuests = snapshot?.lobbyGuests ?? [];
+  const [thread, setThread] = useState<string | null>(null);
+  const candidates = useMemo(() => {
+    if (!inLobby) return [];
+    const seen = new Set<string>();
+    for (const guest of lobbyGuests) seen.add(guest.nodeId);
+    for (const message of snapshot?.messages ?? []) {
+      const candidate = threadCandidate(message.roomId);
+      if (candidate) seen.add(candidate);
+    }
+    return [...seen];
+  }, [inLobby, lobbyGuests, snapshot?.messages]);
+  const selected = thread && candidates.includes(thread) ? thread : candidates[0] ?? null;
   const nodeName = useMemo(() => {
     const names = new Map<string, string>();
     for (const peer of cluster.data?.peers ?? []) {
@@ -247,7 +284,8 @@ export function NetworkChat() {
     if (!text || !localNodeId) return;
     setDraft("");
     notifyTyping(false);
-    await send(textAction(room, localNodeId, text));
+    if (inLobby && !selected) return;
+    await send(textAction(inLobby ? `${THREAD_PREFIX}${selected}` : room, localNodeId, text));
   }
 
   async function onFile(file: File | undefined) {
@@ -279,7 +317,11 @@ export function NetworkChat() {
     () => inLobby ? [] : snapshot?.typing.filter((event) => event.senderNodeId !== localNodeId) ?? [],
     [inLobby, localNodeId, snapshot?.typing],
   );
-  const messages = snapshot?.messages ?? [];
+  const allMessages = snapshot?.messages ?? [];
+  const messages = useMemo(
+    () => inLobby ? allMessages.filter((message) => threadCandidate(message.roomId) === selected) : allMessages,
+    [allMessages, inLobby, selected],
+  );
   const latestMessageId = messages[messages.length - 1]?.messageId;
 
   useEffect(() => {
@@ -385,7 +427,7 @@ export function NetworkChat() {
                 onChange={(event) => { setDraft(event.target.value); notifyTyping(event.target.value.trim().length > 0); }}
                 onBlur={() => notifyTyping(false)}
                 onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submit(); } }}
-                disabled={sending || !localNodeId}
+                disabled={sending || !localNodeId || (inLobby && !selected)}
               />
               <Button variant="primary" className="h-9 w-9 shrink-0 px-0" aria-label={t("networkChat.send")} disabled={!draft.trim() || sending} loading={sending} onClick={() => void submit()}>
                 <Send className="h-4 w-4" />
@@ -395,7 +437,7 @@ export function NetworkChat() {
           </div>
         </div>
         <div className={showParticipants ? "block lg:block" : "hidden lg:block"}>
-          {inLobby ? <LobbyGuestList guests={lobbyGuests} /> : <ParticipantList participants={snapshot?.participants ?? []} nodeName={nodeName} />}
+          {inLobby ? <LobbyThreadList candidates={candidates} guests={lobbyGuests} selected={selected} onSelect={setThread} nodeName={nodeName} /> : <ParticipantList participants={snapshot?.participants ?? []} nodeName={nodeName} />}
         </div>
       </div>
     </div>

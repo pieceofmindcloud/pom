@@ -787,6 +787,19 @@ impl Discovery {
                     }
                 }
                 _ = policy_tick.tick() => {
+                    ctx.chat.purge_stale_threads();
+                    if network.is_principal() {
+                        for room_id in ctx.chat.take_closed_threads() {
+                            let closed = network_chat::ChatAction::LobbyClosed {
+                                message_id: uuid::Uuid::new_v4().simple().to_string(),
+                                room_id,
+                                sender_node_id: network.node_id.clone(),
+                                recipient_node_id: None,
+                                sent_at: chrono::Utc::now(),
+                            };
+                            relay_chat(&ctx, &network, &ctx.chat, closed, None).await;
+                        }
+                    }
                     if network.is_detached() {
                         anon.sync(&[]).await;
                         network.set_anon_tunnel(None);
@@ -1498,6 +1511,12 @@ async fn answer_chat_request(ctx: &Ctx, peer: EndpointId, request: ChatRequest) 
         Some(sender) if !visitors_allowed && network.peer_is_visitor(&sender) => {
             ChatResponse::rejected("visitor_has_no_chat")
         }
+        Some(sender)
+            if crate::network_lobby::is_lobby_room(request.action.room_id())
+                && !network.peer_is_admin(&sender) =>
+        {
+            ChatResponse::rejected("lobby_admins_only")
+        }
         Some(sender) if network.is_member_key(&sender.node_id, &sender.pubkey).await => {
             accept_original_chat(ctx, network, chat, request, Some((peer, sender.node_id))).await
         }
@@ -1837,7 +1856,7 @@ async fn answer_lobby_request(
         // ignores a repeated id) a message someone else is about to send.
         let action = network_chat::ChatAction::Text {
             message_id: format!("lobby-{}-{message_id}", &node_id[..node_id.len().min(16)]),
-            room_id: LOBBY_ROOM.to_string(),
+            room_id: crate::network_lobby::thread_room(&node_id),
             sender_node_id: node_id.clone(),
             recipient_node_id: None,
             text,
@@ -1850,13 +1869,14 @@ async fn answer_lobby_request(
             Err(error) => return LobbyResponse::rejected(error.to_string()),
         }
     }
-    let history = match chat.history(LOBBY_ROOM, LobbyLimits::HISTORY) {
+    // The candidate reads its own thread and nothing else.
+    let history = match chat.history(&crate::network_lobby::thread_room(&node_id), LobbyLimits::HISTORY) {
         Ok(history) => history,
         Err(error) => return LobbyResponse::rejected(error.to_string()),
     };
     let messages = history
         .into_iter()
-        .filter(|event| event.kind == "text" && event.recipient_node_id.is_none())
+        .filter(|event| event.kind == "text")
         .map(|event| {
             let member = if event.sender_node_id == network.node_id {
                 Some(network.hostname())
@@ -1903,6 +1923,7 @@ async fn relay_chat(
     let peers = network.alive_peers().await;
     let excluded_peer_id = excluded_peer.map(|id| id.to_string());
     let visitors_allowed = chat.visitors_allowed().await;
+    let lobby = crate::network_lobby::is_lobby_room(action.room_id());
     for peer in peers {
         if peer.node_id == network.node_id
             || peer.endpoint_id.as_deref() == excluded_peer_id.as_deref()
@@ -1910,6 +1931,9 @@ async fn relay_chat(
                 .recipient_node_id()
                 .is_some_and(|recipient| recipient != peer.node_id)
             || (!visitors_allowed && network.peer_is_visitor(&peer))
+            // The lobby is the admins' only: a candidate's words reach no
+            // worker or visitor.
+            || (lobby && !network.peer_is_admin(&peer))
             || chat.node_is_blocked(&peer.node_id).await
         {
             continue;

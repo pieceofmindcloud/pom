@@ -307,3 +307,114 @@ async fn the_member_list_takes_admitted_peers_and_keeps_out_one_that_just_left()
     assert!(reloaded.admission_of("candidate").is_some());
     let _ = std::fs::remove_file(path);
 }
+
+#[test]
+fn a_lobby_thread_names_its_candidate() {
+    use crate::network_lobby::{is_lobby_room, thread_candidate, thread_room, LOBBY_ROOM};
+    assert_eq!(thread_room("cand"), "lobby/cand");
+    assert_eq!(thread_candidate("lobby/cand"), Some("cand"));
+    assert_eq!(thread_candidate("lobby/"), None);
+    assert_eq!(thread_candidate("network"), None);
+    assert!(is_lobby_room(LOBBY_ROOM) && is_lobby_room("lobby/cand"));
+    assert!(!is_lobby_room("network"));
+}
+
+#[tokio::test]
+async fn approving_a_candidate_erases_its_thread_and_queues_it_for_the_admins() {
+    let path = std::env::temp_dir().join(format!(
+        "pom-network-chat-threads-{}.db",
+        uuid::Uuid::new_v4()
+    ));
+    let database = std::sync::Arc::new(crate::db::PomDb::open(&path).unwrap());
+    let config: crate::config::Config = serde_json::from_value(serde_json::json!({
+        "profile": "admin",
+        "connection_key": "cluster-key",
+    }))
+    .unwrap();
+    let auth = std::sync::Arc::new(tokio::sync::RwLock::new(config));
+    let (chat, _receiver) =
+        super::network_chat::NetworkChat::new(database.clone(), auth.clone(), true);
+    for (candidate, text) in [("cand-a", "hello from a"), ("cand-b", "hello from b")] {
+        let action = ChatAction::text_message(
+            crate::network_lobby::thread_room(candidate),
+            candidate,
+            text,
+        );
+        assert!(database.append_network_chat(&action).unwrap());
+    }
+    // Each candidate's words stay in its own thread.
+    let a = database.network_chat_messages("lobby/cand-a", 10).unwrap();
+    assert_eq!(a.len(), 1);
+    assert_eq!(a[0].text.as_deref(), Some("hello from a"));
+    assert_eq!(chat.lobby_threads(10).unwrap().len(), 2);
+
+    chat.request_admission(
+        "cand-a",
+        Default::default(),
+        crate::config::EnrollmentRole::Visitor,
+    )
+    .unwrap();
+    chat.request_admission(
+        "cand-b",
+        Default::default(),
+        crate::config::EnrollmentRole::Visitor,
+    )
+    .unwrap();
+    // A rejection keeps the thread; an approval erases it.
+    chat.decide_admission(
+        "cand-b",
+        Some(crate::network_lobby::AdmissionStatus::Rejected),
+    );
+    chat.decide_admission(
+        "cand-a",
+        Some(crate::network_lobby::AdmissionStatus::Approved),
+    );
+    assert!(database
+        .network_chat_messages("lobby/cand-a", 10)
+        .unwrap()
+        .is_empty());
+    assert_eq!(database.network_chat_messages("lobby/cand-b", 10).unwrap().len(), 1);
+    assert_eq!(chat.take_closed_threads(), vec!["lobby/cand-a".to_string()]);
+    assert!(chat.take_closed_threads().is_empty());
+
+    // The closure the principal relays erases the thread on another admin.
+    let closed = ChatAction::LobbyClosed {
+        message_id: "closed-1".into(),
+        room_id: "lobby/cand-b".into(),
+        sender_node_id: "principal".into(),
+        recipient_node_id: None,
+        sent_at: chrono::Utc::now(),
+    };
+    assert!(chat.accept(closed.clone()).unwrap());
+    assert!(chat.lobby_threads(10).unwrap().is_empty());
+    // No member originates one, and the bare lobby room takes no text.
+    let error = chat.validate_original(&closed, "principal").await.unwrap_err();
+    assert_eq!(error.to_string(), "lobby_closed_not_allowed");
+    let bare = ChatAction::text_message(crate::network_lobby::LOBBY_ROOM, "member", "hi");
+    let error = chat.validate_original(&bare, "member").await.unwrap_err();
+    assert_eq!(error.to_string(), "lobby_room_invalid");
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn threads_nobody_wrote_in_for_a_day_are_purged() {
+    let path = std::env::temp_dir().join(format!(
+        "pom-network-chat-purge-{}.db",
+        uuid::Uuid::new_v4()
+    ));
+    let db = crate::db::PomDb::open(&path).unwrap();
+    for room in ["lobby/old", "lobby/fresh", "lobby", "network"] {
+        let action = ChatAction::text_message(room, "someone", "text");
+        assert!(db.append_network_chat(&action).unwrap());
+    }
+    // Every message is fresh: only the shared lobby room goes.
+    db.purge_lobby_threads(24 * 60 * 60).unwrap();
+    assert!(db.network_chat_messages("lobby", 10).unwrap().is_empty());
+    assert_eq!(db.network_chat_lobby_threads(10).unwrap().len(), 2);
+    // With no time to live, every thread is stale; the members' room stays.
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    db.purge_lobby_threads(0).unwrap();
+    assert!(db.network_chat_lobby_threads(10).unwrap().is_empty());
+    assert_eq!(db.network_chat_messages("network", 10).unwrap().len(), 1);
+    let _ = std::fs::remove_file(path);
+}

@@ -35,6 +35,9 @@ are either workers or visitors.
   to send or show it (`visitor_has_no_chat`, a 403 on `/api/ui/network-chat`
   and its action and file routes). The lobby of another network is not the
   Chat and stays open.
+- The lobby is the admins' only: each candidate talks in a thread of its own
+  that only the admins the chain proves receive, erased on approval or after a
+  day without messages (`p2p-network.md`, 6.1).
 - A visitor needs the admins and the workers
   that serve it, so its `Network::admit_peer` refuses another visitor and
   `alive_peers` leaves one out (`Network::hides`): it never probes, measures,

@@ -3029,6 +3029,19 @@ impl Network {
         }
     }
 
+    /// Whether `peer` is an admin the chain proves, never one that only
+    /// announces it. Without admission (a test bench), the announce decides.
+    pub(crate) fn peer_is_admin(&self, peer: &PeerInfo) -> bool {
+        match self.admission.as_ref() {
+            Some(admission) => crate::admin_trust::is_admin_key(
+                &admission.trust.document(),
+                &peer.node_id,
+                &peer.pubkey,
+            ),
+            None => peer.profile == crate::profile::NodeProfile::Admin,
+        }
+    }
+
     /// Whether this node is a visitor: its profile, or its own token.
     pub(crate) fn is_visitor(&self) -> bool {
         if self

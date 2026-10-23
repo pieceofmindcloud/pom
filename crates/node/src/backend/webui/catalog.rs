@@ -2803,7 +2803,22 @@ pub(super) async fn network_chat_snapshot(
         Some(crate::network_lobby::LOBBY_ROOM) => crate::network_lobby::LOBBY_ROOM,
         _ => crate::network_chat::NETWORK_CHAT_ROOM,
     };
-    let mut messages = match state.network_chat.history(room, 100) {
+    // The lobby is the admins' only: its threads are candidates talking to
+    // them, and every thread comes back here, one room per candidate.
+    let profile = state.auth.read().await.profile;
+    let is_admin = state
+        .admin_trust
+        .effective_authority(&state.authority_principal, profile)
+        .is_some();
+    let in_lobby = room == crate::network_lobby::LOBBY_ROOM;
+    let history = if !in_lobby {
+        state.network_chat.history(room, 100)
+    } else if is_admin {
+        state.network_chat.lobby_threads(200)
+    } else {
+        Ok(Vec::new())
+    };
+    let mut messages = match history {
         Ok(messages) => messages,
         Err(error) => {
             tracing::error!("could not read the network Chat: {error:#}");
@@ -2850,13 +2865,16 @@ pub(super) async fn network_chat_snapshot(
         "dropped": state.network_chat.dropped(),
         "room": room,
         // The lobby room is read through the network Chat.
-        "lobbyEnabled": state.network_chat.enabled() && state.network_chat.lobby_enabled().await,
+        "lobbyEnabled": is_admin
+            && state.network_chat.enabled()
+            && state.network_chat.lobby_enabled().await,
         // Candidates talking in the lobby, with the hardware they declared.
         "lobbyGuests": state
             .network_chat
             .lobby_guests()
             .snapshot()
             .into_iter()
+            .filter(|_| is_admin)
             .map(|(node_id, card)| json!({ "nodeId": node_id, "card": card }))
             .collect::<Vec<_>>(),
     }))

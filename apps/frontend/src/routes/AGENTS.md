@@ -412,9 +412,11 @@ Per-file list:
   the Sidebar entry receives the counter of unread messages and opening
   the route marks the current snapshot as read. When the snapshot says
   `lobbyEnabled`, a tab pair switches between the `network` and `lobby` rooms
-  (`useNetworkChat(room)`). The lobby tab lists the candidates with
-  `LobbyHardwareCard`, sends text with `room_id: "lobby"`, and offers neither
-  files nor typing, because machines that are not members read that room.
+  (`useNetworkChat(room)`); only an admin gets the lobby (the snapshot's
+  `lobbyEnabled`). The lobby tab lists the candidates (`LobbyThreadList`,
+  `LobbyHardwareCard` for one present) and shows one candidate's thread at a
+  time, sending with `room_id: "lobby/<candidate>"`; it offers neither files
+  nor typing, because the candidate reads that thread.
 ## Information screens
 - `Documentation.tsx` - Two audiences, one screen, switched by a tab pair at
   the top of the navigation column (`?tab=guides|referencia`).

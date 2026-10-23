@@ -1409,9 +1409,9 @@ lobby.connectionRelayed,through a relay,por um relé
 lobby.cpu,CPU,CPU
 lobby.cpuCount,{count} CPU threads,{count} threads de CPU
 lobby.declaredNote,Hardware is declared by each candidate and is not verified.,O hardware é declarado por cada candidato e não é verificado.
-lobby.detail,You are talking to this network before joining it. Its members read what you write here and see the hardware card beside it.,Você está conversando com esta rede antes de entrar. Os membros leem o que você escreve aqui e veem o cartão de hardware ao lado.
+"lobby.detail","You are talking to this network's admins before joining it. Only they read what you write here and see the hardware card beside it, and the conversation is erased once you are admitted.","Você está conversando com os administradores desta rede antes de entrar. Só eles leem o que você escreve aqui e veem o cartão de hardware ao lado, e a conversa é apagada quando você for admitido."
 lobby.empty,No messages yet. Introduce yourself to the network.,Nenhuma mensagem ainda. Apresente-se à rede.
-lobby.emptyMember,Machines that have not joined yet write here before asking to be admitted.,Máquinas que ainda não entraram escrevem aqui antes de pedir admissão.
+"lobby.emptyMember","Machines that have not joined yet write here before asking to be admitted, each in its own conversation with the admins.","Máquinas que ainda não entraram escrevem aqui antes de pedir admissão, cada uma numa conversa própria com os administradores."
 lobby.errorBlocked,This network blocked this machine.,Esta rede bloqueou esta máquina.
 lobby.errorDisabled,This network cannot be reached for admission right now.,Esta rede não pode ser alcançada para admissão no momento.
 lobby.errorFull,The lobby is full. Try again later.,O lobby está cheio. Tente novamente mais tarde.
@@ -1421,7 +1421,7 @@ lobby.errorRejected,This network declined this machine recently. Try again later
 lobby.errorRole,This network is not accepting that role right now.,Esta rede não está aceitando esse papel no momento.
 lobby.errorText,The message is empty or too long (2 KB at most).,A mensagem está vazia ou longa demais (no máximo 2 KB).
 lobby.errorUnreachable,Could not reach the admin of this network. It may be offline or unreachable from here.,Não foi possível alcançar o administrador desta rede. Ele pode estar offline ou inalcançável daqui.
-lobby.hintMember,"Enter sends. Everyone in the lobby reads this, including machines that are not members.","Enter envia. Todos no lobby leem isto, inclusive máquinas que não são membros."
+"lobby.hintMember","Enter sends. Only this candidate and the network's admins read this conversation. It is erased when the candidate is approved, or after a day without messages.","Enter envia. Só este candidato e os administradores da rede leem esta conversa. Ela é apagada quando o candidato é aprovado, ou após um dia sem mensagens."
 lobby.joinDetail,"Joining replaces the network this machine is in now: its current network and deployments stop, and the node restarts as a member of the new one.","Entrar substitui a rede em que esta máquina está agora: a rede atual e as implantações param, e o nó reinicia como membro da nova."
 lobby.joinFailed,Could not join the network,Não foi possível entrar na rede
 lobby.joinNow,Join now,Entrar agora

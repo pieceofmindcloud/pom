@@ -34,6 +34,12 @@ links to other folders: `crates/`, `crates/node/`, and inside
 `utils/`; `crates/routing-contract/`, `crates/routing-base/`, `crates/types/`;
 `apps/frontend/` and `src/{components,lib,routes,i18n}/`; `docs/`; `scripts/`.
 
+**New plugins** start from the `creating-pom-plugins` skill
+(`.claude/skills/creating-pom-plugins/`): a scaffold script, a template that
+wires the whole plugin contract with its contract tests, the contract
+reference and recipes for the optional capabilities, gathered from the
+`pom-plugin-*` repositories.
+
 `docs/AGENTS.md` explains the specs and plans (`docs/superpowers/`);
 `docs/architecture/routing-plugin-contract.md` is the open-core boundary;
 `docs/reports/` keeps dated technical reports (investigations, benchmarks).

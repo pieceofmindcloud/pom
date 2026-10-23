@@ -83,6 +83,8 @@ mod devupdate;
 mod direct;
 #[path = "inference/direct_lab.rs"]
 mod direct_lab;
+#[path = "network/anon_tunnel.rs"]
+mod anon_tunnel;
 #[path = "network/discovery.rs"]
 mod discovery;
 #[path = "enterprise_p2p.rs"]

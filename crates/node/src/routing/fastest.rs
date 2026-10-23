@@ -771,6 +771,7 @@ mod tests {
             pom_build: String::new(),
             membership: None,
             relay: None,
+            anon_tunnel: None,
             addr: "10.0.0.1:42777".into(),
             addr_candidates: Vec::new(),
             model: "m".into(),

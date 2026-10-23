@@ -268,6 +268,7 @@ mod tests {
                 pom_build: String::new(),
                 membership: None,
                 relay: None,
+                anon_tunnel: None,
                 addr: format!("[::1]:{gateway_port}"),
                 addr_candidates: vec![format!("127.0.0.1:{gateway_port}")],
                 model: "model".into(),

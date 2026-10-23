@@ -750,6 +750,7 @@ mod ipv6_tests {
             pom_build: String::new(),
             membership: None,
             relay: None,
+            anon_tunnel: None,
             addr: addr.into(),
             addr_candidates: Vec::new(),
             model: "qwen35".into(),

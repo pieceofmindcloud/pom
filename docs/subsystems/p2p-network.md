@@ -644,6 +644,26 @@ and `discovery.rs` builds the endpoint and everything that rides on it.
   pass, in the answer to the membership token request (`relays`), and every
   admin and member keeps the last list (`Network::anonymous_relays`). Design:
   `docs/superpowers/specs/2026-10-23-anonymous-visitor-relays-design.md`.
+- **Anonymous tunnels** (`network/anon_tunnel.rs`). With that list, every
+  node keeps an **ephemeral endpoint**: a random key, a relay map holding only
+  those relays with their passes as the relay's auth token, and one protocol,
+  `/pom/anon-tunnel/1`. A relay that serves it sees ephemeral ids on both ends,
+  never a node key. The node announces where it answers (`anon_tunnel`: the
+  ephemeral id and the relay it is homed on) in its own signed announce only:
+  a `PeerList` never hands it to a visitor or a stranger, and an address read
+  from a `PeerList` is never believed. The first stream of a connection is a
+  **binding**: the caller's node key signs keying material exported from that
+  QUIC connection, inside the encrypted session; the answering node checks
+  the signature, that the node id is the key's and that the caller is a member
+  (`is_member_key`), then serves the inference tunnel (`InferTunnelCodec`)
+  stamped with the caller's real node (`TUNNEL_PEER_HEADER`), as the main
+  tunnel does. File chunks are refused on it. A tunnel call goes through it
+  first when the peer announces one and the main connection has no direct path
+  and no relay of the cluster (`Network::prefers_anon_tunnel`), and falls back
+  to the main endpoint when the request never left. The streamed tunnel and
+  every other protocol stay on the main endpoint. The endpoint is replaced
+  every hour once unused passes are at hand (a pass stays with the first
+  endpoint that used it), and the old one lives ten more minutes.
 - **Reachability (the NAT report).** Every policy round reads the endpoint's
   NAT report (`Endpoint::net_report`, the `unstable-net-report` feature). Its
   `global_v4` is the public address the relays saw: it becomes the observed

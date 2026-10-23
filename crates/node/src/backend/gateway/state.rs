@@ -1691,6 +1691,7 @@ impl GatewayState {
                 pom_build: crate::build_commit(),
                 membership: self.network.membership(),
                 relay: self.network.relay_gate().offer(),
+                anon_tunnel: None,
                 addr: format!("{}:{}", self_host, self.network.bind_addr.port()),
                 addr_candidates: self.network.self_addr_candidates(),
                 model: local.as_ref().map(|l| l.model.clone()).unwrap_or_default(),

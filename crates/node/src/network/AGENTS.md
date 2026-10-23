@@ -512,6 +512,19 @@ dedicated or member, with iroh's hole punching), are in
   published endpoint addresses, relays in use (`set_relays_in_use`) and the hole punch
   count; `/api/ui/cluster` publishes it in the `traversal` field, which also enters
   the cache's fingerprint.
+- `anon_tunnel.rs` - tunnels through a visitor's anonymous relay. `AnonTunnels`
+  keeps the ephemeral endpoint (random key, a relay map of the visitors'
+  anonymous relays with their passes as auth tokens, one ALPN
+  `/pom/anon-tunnel/1`) in step with `Network::anonymous_relays` (`sync`, every
+  policy round in `discovery.rs`), rotates it every `ROTATE_AFTER` on unused
+  passes, publishes its address (`AnonTunnelAddr`, in the announce's
+  `anon_tunnel`) and makes the calls (`call`). A connection starts with a
+  `Binding`: the node key signs the connection's exported keying material
+  (`sign_binding`/`check_binding`); the answering side (`AnonServe`) checks it
+  and membership, then serves `InferTunnelCodec` as the bound node
+  (`discovery::answer_anon_request`, no file chunks). `Network::prefers_anon_tunnel`
+  decides when a call tries it first; a `PeerList` neither hands out nor
+  adopts an `anon_tunnel`.
 - `network::RelayGate` - whom this node relays for, consulted by the relay server on
   every connecting endpoint (`allows`): everyone with `relay.everyone`/`--serve-relay`;
   the admitted members of its cluster when the internet reaches it and

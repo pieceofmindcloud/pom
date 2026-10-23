@@ -18,6 +18,7 @@
 //!   visitor, and no other network, ever sees it.
 
 use crate::cluster_logs::{self, ClusterLogs, ClusterLogsCodec, LogOutbound};
+use crate::anon_tunnel::{self, AnonTunnels};
 use crate::infer_tunnel::{self, InferTunnelCodec, TunnelOutbound};
 use crate::network::{Network, P2PMessage, P2pLink, PeerInfo};
 use crate::network_chat::{
@@ -351,6 +352,8 @@ pub struct Discovery {
     log_rx: mpsc::Receiver<LogOutbound>,
     chat_rx: mpsc::Receiver<ChatOutbound>,
     audit_rx: mpsc::Receiver<AuditOutbound>,
+    /// The ephemeral endpoint for tunnels through visitors' anonymous relays.
+    anon: Arc<AnonTunnels>,
 }
 
 impl Discovery {
@@ -482,9 +485,29 @@ impl Discovery {
             relay_map.len()
         );
 
+        let anon = {
+            let handler_ctx = ctx.clone();
+            let handler: anon_tunnel::AnonHandler = Arc::new(move |caller, request| {
+                let ctx = handler_ctx.clone();
+                Box::pin(async move { answer_anon_request(&ctx, caller, request).await })
+            });
+            let members = network.clone();
+            let is_member: anon_tunnel::MemberCheck = Arc::new(move |node_id, pubkey| {
+                let network = members.clone();
+                Box::pin(async move { network.is_member_key(&node_id, &pubkey).await })
+            });
+            Arc::new(AnonTunnels::new(
+                secret.clone(),
+                network.node_id.clone(),
+                handler,
+                is_member,
+            ))
+        };
+
         let (announce_tx, announce_rx) = mpsc::channel(64);
         let (dial_tx, dial_rx) = mpsc::channel(64);
         Ok(Discovery {
+            anon,
             announce_tx,
             dial_tx,
             ctx,
@@ -677,6 +700,7 @@ impl Discovery {
             mut log_rx,
             mut chat_rx,
             mut audit_rx,
+            anon,
         } = self;
         let endpoint = router.endpoint().clone();
         let mut mdns_events: std::pin::Pin<
@@ -763,6 +787,13 @@ impl Discovery {
                     }
                 }
                 _ = policy_tick.tick() => {
+                    if network.is_detached() {
+                        anon.sync(&[]).await;
+                        network.set_anon_tunnel(None);
+                    } else {
+                        anon.sync(&network.anonymous_relays()).await;
+                        network.set_anon_tunnel(anon.address().await);
+                    }
                     apply_policy(
                         &ctx,
                         &endpoint,
@@ -776,11 +807,42 @@ impl Discovery {
                 out = tunnel_rx.recv() => {
                     let Some(TunnelOutbound { peer_id, addr_candidates, request, reply }) = out else { break };
                     let transport = ctx.p2p.clone();
+                    let network = network.clone();
+                    let anon = anon.clone();
                     tokio::spawn(async move {
-                        let result = transport
-                            .call(InferTunnelCodec, peer_id, &addr_candidates, request)
-                            .await
-                            .map_err(infer_tunnel::TunnelDeliveryError::from);
+                        // Through a visitor's anonymous relay first when the
+                        // main connection would cross a public one; back to
+                        // the main endpoint only when the request never left.
+                        let target = if network.prefers_anon_tunnel(&peer_id).await {
+                            network.anon_tunnel_of(&peer_id).await
+                        } else {
+                            None
+                        };
+                        let anon_result = match &target {
+                            Some(target) => Some(anon.call(target, request.clone()).await),
+                            None => None,
+                        };
+                        let result = match anon_result {
+                            Some(Ok(response)) => Ok(response),
+                            Some(Err(p2p::CallError::AfterDispatch(error))) => {
+                                Err(p2p::CallError::AfterDispatch(error))
+                            }
+                            Some(Err(p2p::CallError::BeforeRequest(error))) => {
+                                debug!(
+                                    "anon-tunnel: no call to {} ({error}), using the main endpoint",
+                                    peer_id.fmt_short()
+                                );
+                                transport
+                                    .call(InferTunnelCodec, peer_id, &addr_candidates, request)
+                                    .await
+                            }
+                            None => {
+                                transport
+                                    .call(InferTunnelCodec, peer_id, &addr_candidates, request)
+                                    .await
+                            }
+                        }
+                        .map_err(infer_tunnel::TunnelDeliveryError::from);
                         if let Err(error) = &result {
                             debug!("infer-tunnel: outbound call to {} failed: {error}", peer_id.fmt_short());
                         }
@@ -1051,6 +1113,7 @@ async fn handle_announce(ctx: &Ctx, sealed: &[u8]) {
         pom_build,
         membership,
         relay,
+        anon_tunnel,
         ..
     } = message
     else {
@@ -1081,6 +1144,7 @@ async fn handle_announce(ctx: &Ctx, sealed: &[u8]) {
         pom_build,
         membership,
         relay,
+        anon_tunnel,
         // The gossip path has no source address to rewrite, and the announced
         // one is usually the literal `0.0.0.0`. With candidates there is
         // something to use: the first of them is a real address, and
@@ -1187,6 +1251,26 @@ async fn answer_tunnel_request(
     }
 }
 
+/// A tunnel request that arrived through a visitor's anonymous relay, from
+/// the node its binding proved (`crate::anon_tunnel`): the same destinations
+/// and checks as `answer_tunnel_request`, and never a file chunk.
+async fn answer_anon_request(
+    ctx: &Ctx,
+    caller: EndpointId,
+    request: infer_tunnel::TunnelRequest,
+) -> infer_tunnel::TunnelResponse {
+    match tunnel_destination_for(ctx, caller, None, &request).await {
+        Ok(port) => {
+            let request = stamp_tunnel_peer(request, caller);
+            infer_tunnel::serve_loopback(&ctx.http, port, request).await
+        }
+        Err((status, message)) => infer_tunnel::TunnelResponse {
+            status,
+            body: message.into_bytes(),
+        },
+    }
+}
+
 /// The loopback port an inbound tunnel request goes to, or the status and
 /// message that refuse it. Both tunnels, block and streamed, decide here.
 async fn tunnel_destination(
@@ -1194,8 +1278,18 @@ async fn tunnel_destination(
     connection: &Connection,
     request: &infer_tunnel::TunnelRequest,
 ) -> Result<u16, (u16, String)> {
+    tunnel_destination_for(ctx, connection.remote_id(), Some(connection), request).await
+}
+
+/// `tunnel_destination` for the node `peer`; without a `connection` (an
+/// anonymous tunnel, `crate::anon_tunnel`) file chunks are refused outright.
+async fn tunnel_destination_for(
+    ctx: &Ctx,
+    peer: EndpointId,
+    connection: Option<&Connection>,
+    request: &infer_tunnel::TunnelRequest,
+) -> Result<u16, (u16, String)> {
     let network = &ctx.network;
-    let peer = connection.remote_id();
     // The destination is chosen by the sender and **resolved here**: the
     // remote peer names one of this node's two servers, never a port. On the
     // gateway, the closed list of routes is checked before forwarding - see
@@ -1207,9 +1301,14 @@ async fn tunnel_destination(
             .ok_or((503u16, "no inference server on this node".to_string())),
         infer_tunnel::TunnelTarget::Gateway => {
             if infer_tunnel::is_transfer_data_path(&request.path)
-                && !network
-                    .path_carries_transfers(p2p::selected_path(connection).as_ref())
-                    .await
+                && match connection {
+                    Some(connection) => {
+                        !network
+                            .path_carries_transfers(p2p::selected_path(connection).as_ref())
+                            .await
+                    }
+                    None => true,
+                }
             {
                 // File bytes never cross a public relay. The relay only sees
                 // an encrypted stream, so the two ends are the ones that hold
@@ -1828,6 +1927,162 @@ mod tests {
 
     fn key(seed: u8) -> SecretKey {
         SecretKey::from_bytes(&[seed; 32])
+    }
+
+    /// Two members call each other through a visitor's anonymous relay on
+    /// loopback: the call arrives as the calling node, and the relay only
+    /// ever sees ephemeral endpoints, never a node key.
+    #[tokio::test]
+    async fn an_anonymous_tunnel_names_no_node_to_the_relay() {
+        let admin_key = ed25519_dalek::SigningKey::from_bytes(&[61; 32]);
+        let admin = crate::admin_trust::AuthorityPrincipal::from_signing_key(
+            "principal",
+            "peer-principal",
+            &admin_key,
+        );
+        let trust = Arc::new(
+            crate::admin_trust::AdminTrust::bootstrap_primary_in_memory(
+                "anon-lab",
+                admin.clone(),
+                &admin_key,
+            )
+            .unwrap(),
+        );
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let url = format!("http://127.0.0.1:{port}/");
+        let gate = Arc::new(
+            crate::network::RelayGate::new(false, false, false).with_anonymous(true, trust.clone()),
+        );
+        gate.set_url(Some(url.clone()));
+        gate.set_reachable(true);
+        let _relay = start_relay_server(port, gate.clone()).await.unwrap();
+
+        let relays = || {
+            let now = chrono::Utc::now().timestamp();
+            vec![crate::network::AnonymousRelay {
+                url: url.clone(),
+                pass: crate::relay_pass::issue(&admin_key, &admin, &trust.document(), &url, now)
+                    .unwrap(),
+            }]
+        };
+        let member = |seed: u8| {
+            let secret = key(seed);
+            let node_key = ed25519_dalek::VerifyingKey::from_bytes(secret.public().as_bytes()).unwrap();
+            let node_id = crate::identity::NodeId::from_pubkey(&node_key).0;
+            // The answer names whom the binding proved.
+            let handler: anon_tunnel::AnonHandler = Arc::new(|caller, _request| {
+                Box::pin(async move {
+                    infer_tunnel::TunnelResponse {
+                        status: 200,
+                        body: caller.to_string().into_bytes(),
+                    }
+                })
+            });
+            let is_member: anon_tunnel::MemberCheck =
+                Arc::new(|_node_id, _pubkey| Box::pin(async { true }));
+            (secret, AnonTunnels::new(key(seed), node_id, handler, is_member))
+        };
+        let (caller_secret, caller) = member(71);
+        let (callee_secret, callee) = member(72);
+        caller.sync(&relays()).await;
+        callee.sync(&relays()).await;
+
+        // The callee is reachable once it is homed on the relay.
+        let mut target = None;
+        for _ in 0..100 {
+            target = callee.address().await;
+            if target.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let target = target.expect("the callee homes on the visitor relay");
+        assert_eq!(target.relay_url, url);
+
+        let response = caller
+            .call(&target, infer_tunnel::TunnelRequest::get("/health"))
+            .await
+            .unwrap();
+        assert_eq!(response.status, 200);
+        assert_eq!(
+            String::from_utf8(response.body).unwrap(),
+            caller_secret.public().to_string()
+        );
+
+        let asked = gate.asked.lock().unwrap().clone();
+        assert!(!asked.is_empty());
+        for id in [caller_secret.public().to_string(), callee_secret.public().to_string()] {
+            assert!(!asked.contains(&id), "the relay saw a node key");
+        }
+    }
+
+    /// A caller whose binding names a node that is not a member gets no
+    /// tunnel: the answering node refuses the connection.
+    #[tokio::test]
+    async fn an_anonymous_tunnel_refuses_a_non_member() {
+        let admin_key = ed25519_dalek::SigningKey::from_bytes(&[62; 32]);
+        let admin = crate::admin_trust::AuthorityPrincipal::from_signing_key(
+            "principal",
+            "peer-principal",
+            &admin_key,
+        );
+        let trust = Arc::new(
+            crate::admin_trust::AdminTrust::bootstrap_primary_in_memory(
+                "anon-lab-2",
+                admin.clone(),
+                &admin_key,
+            )
+            .unwrap(),
+        );
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let url = format!("http://127.0.0.1:{port}/");
+        let gate = Arc::new(
+            crate::network::RelayGate::new(false, false, false).with_anonymous(true, trust.clone()),
+        );
+        gate.set_url(Some(url.clone()));
+        gate.set_reachable(true);
+        let _relay = start_relay_server(port, gate.clone()).await.unwrap();
+        let relays = || {
+            let now = chrono::Utc::now().timestamp();
+            vec![crate::network::AnonymousRelay {
+                url: url.clone(),
+                pass: crate::relay_pass::issue(&admin_key, &admin, &trust.document(), &url, now)
+                    .unwrap(),
+            }]
+        };
+        let handler: anon_tunnel::AnonHandler = Arc::new(|_caller, _request| {
+            Box::pin(async {
+                infer_tunnel::TunnelResponse {
+                    status: 200,
+                    body: Vec::new(),
+                }
+            })
+        });
+        let nobody: anon_tunnel::MemberCheck = Arc::new(|_node_id, _pubkey| Box::pin(async { false }));
+        let callee = AnonTunnels::new(key(82), "callee".into(), handler.clone(), nobody.clone());
+        let caller = AnonTunnels::new(key(81), "caller".into(), handler, nobody);
+        caller.sync(&relays()).await;
+        callee.sync(&relays()).await;
+        let mut target = None;
+        for _ in 0..100 {
+            target = callee.address().await;
+            if target.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let refused = caller
+            .call(&target.unwrap(), infer_tunnel::TunnelRequest::get("/health"))
+            .await;
+        assert!(matches!(refused, Err(p2p::CallError::BeforeRequest(_))));
     }
 
     /// The direct announce carries the sealed bytes unchanged, and refuses a

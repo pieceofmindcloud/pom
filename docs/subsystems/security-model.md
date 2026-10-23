@@ -33,6 +33,13 @@ are either workers or visitors.
   chain, else its announced profile. A visitor's own announce goes straight to
   its admins and workers, never on the gossip topic or the LAN broadcast
   (`p2p-network.md`, "Admission before the `peers` table").
+- A visitor may relay for its network anonymously (`relay.anonymous`, off by
+  default): it admits anyone with an admin-signed relay pass for its URL
+  (`crate::relay_pass`), and the tunnels through it run between ephemeral
+  endpoints whose caller proves its node inside the encrypted session
+  (`network/anon_tunnel.rs`). The relay learns the IP addresses of both ends
+  and that an admin let them in, never which nodes they are. Admins know who
+  received which pass.
 - A visitor node refuses to hold or serve a model even when an admin asks
   (`visitor_profile`): `apply`, `launch`, `deploy`, `reconfigure`, `slice` and
   every `/api/transfer` route are refused before any other check.

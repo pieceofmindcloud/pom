@@ -130,6 +130,10 @@ pub struct RelayGate {
     pass_ledger: std::sync::Mutex<crate::relay_pass::PassLedger>,
     /// The URL the relay server answers on, when this node has a public host.
     url: std::sync::RwLock<Option<String>>,
+    /// Every endpoint that asked to connect, for the tests to read what a
+    /// relay learns.
+    #[cfg(test)]
+    pub(crate) asked: std::sync::Mutex<Vec<String>>,
 }
 
 /// Relay options given on the command line or in the environment
@@ -173,6 +177,8 @@ impl RelayGate {
             anonymous: AtomicBool::new(false),
             passes: std::sync::RwLock::new(None),
             pass_ledger: std::sync::Mutex::new(Default::default()),
+            #[cfg(test)]
+            asked: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -292,6 +298,10 @@ impl RelayGate {
     /// A relay for pass holders also admits an endpoint whose `pass` holds
     /// (`pass_admits`), whoever it is.
     pub fn allows(&self, peer: &str, pass: Option<&str>) -> bool {
+        #[cfg(test)]
+        if let Ok(mut asked) = self.asked.lock() {
+            asked.push(peer.to_string());
+        }
         self.everyone()
             || (self.serving()
                 && self
@@ -781,6 +791,11 @@ pub enum P2PMessage {
         /// Present while this node relays for its cluster (or everyone).
         #[serde(default)]
         relay: Option<RelayOffer>,
+        /// Where this node answers anonymous tunnels through a visitor's
+        /// relay (`crate::anon_tunnel`): its ephemeral endpoint and relay.
+        /// The announce's signature is what ties that endpoint to the node.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        anon_tunnel: Option<crate::anon_tunnel::AnonTunnelAddr>,
         /// Ed25519 signature by `pubkey` over the rest of the announce
         /// (`announce_signing_bytes`). UDP carries no authentication of its
         /// own, so without it anyone could announce a member's identity at
@@ -832,6 +847,9 @@ pub struct PeerInfo {
     /// What the peer offers as a relay, when it does.
     #[serde(default)]
     pub relay: Option<RelayOffer>,
+    /// Where the peer answers anonymous tunnels (`crate::anon_tunnel`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anon_tunnel: Option<crate::anon_tunnel::AnonTunnelAddr>,
     pub addr: String,
     /// All the addresses at which this peer can be found.
     ///
@@ -1496,6 +1514,8 @@ pub struct Network {
     /// The visitor relays this node may use anonymously, each with its pass
     /// (`crate::relay_pass`), as the last admin handed them out.
     anonymous_relays: std::sync::RwLock<Vec<AnonymousRelay>>,
+    /// Where this node answers anonymous tunnels, set by `discovery.rs`.
+    anon_tunnel: std::sync::RwLock<Option<crate::anon_tunnel::AnonTunnelAddr>>,
     /// The node key, which signs every announce this node sends. Absent
     /// only in tests that build a `Network` without an identity.
     announce_key: std::sync::RwLock<Option<Arc<ed25519_dalek::SigningKey>>>,
@@ -1937,6 +1957,7 @@ impl Network {
             trust_version: std::sync::RwLock::new(None),
             membership: std::sync::RwLock::new(None),
             anonymous_relays: std::sync::RwLock::new(Vec::new()),
+            anon_tunnel: std::sync::RwLock::new(None),
             announce_key: std::sync::RwLock::new(None),
             readmission: std::sync::RwLock::new(None),
             firsthand: std::sync::Mutex::new(HashMap::new()),
@@ -2060,6 +2081,50 @@ impl Network {
         if let Ok(mut current) = self.membership.write() {
             *current = token;
         }
+    }
+
+    /// Where this node answers anonymous tunnels now, for its announce.
+    pub fn set_anon_tunnel(&self, addr: Option<crate::anon_tunnel::AnonTunnelAddr>) {
+        if let Ok(mut current) = self.anon_tunnel.write() {
+            *current = addr;
+        }
+    }
+
+    pub fn anon_tunnel(&self) -> Option<crate::anon_tunnel::AnonTunnelAddr> {
+        self.anon_tunnel.read().ok().and_then(|current| current.clone())
+    }
+
+    /// The anonymous tunnel address of the live peer whose endpoint is `id`.
+    pub async fn anon_tunnel_of(
+        &self,
+        id: &crate::p2p::EndpointId,
+    ) -> Option<crate::anon_tunnel::AnonTunnelAddr> {
+        let id = id.to_string();
+        self.peers
+            .read()
+            .await
+            .values()
+            .find(|peer| peer.is_alive() && peer.endpoint_id.as_deref() == Some(id.as_str()))
+            .and_then(|peer| peer.anon_tunnel.clone())
+    }
+
+    /// Whether a tunnel call to the live peer at `id` should try its
+    /// anonymous tunnel first: it announces one, and the main connection has
+    /// no direct path and no relay of the cluster, so it would cross a public
+    /// relay or has no path yet. Order: direct, member relay, visitor relay,
+    /// public relay.
+    pub async fn prefers_anon_tunnel(&self, id: &crate::p2p::EndpointId) -> bool {
+        if self.anon_tunnel_of(id).await.is_none() {
+            return false;
+        }
+        let links = self.p2p_links(&id.to_string());
+        !links.iter().any(|link| {
+            !link.relayed
+                || link
+                    .relay_url
+                    .as_deref()
+                    .is_some_and(|relay| !crate::p2p::is_default_relay(relay))
+        })
     }
 
     /// The visitor relays an admin handed this node, replacing the last ones.
@@ -2491,6 +2556,7 @@ impl Network {
             pom_build: crate::build_commit(),
             membership: self.membership(),
             relay: self.relay_gate.offer(),
+            anon_tunnel: self.anon_tunnel(),
             addr,
             addr_candidates,
             model: assignment.map(|a| a.model.clone()).unwrap_or_default(),
@@ -2998,11 +3064,19 @@ impl Network {
         let lists_visitors = peers
             .get(from)
             .is_some_and(|requester| !self.peer_is_visitor(requester));
+        // Nor where anyone answers anonymous tunnels: that only travels in
+        // each node's own signed announce.
         peers
             .values()
             .filter(|p| p.is_alive() && !self.hides(p))
             .filter(|p| lists_visitors || !self.peer_is_visitor(p))
             .cloned()
+            .map(|mut p| {
+                if !lists_visitors {
+                    p.anon_tunnel = None;
+                }
+                p
+            })
             .collect()
     }
 
@@ -3550,6 +3624,7 @@ impl Network {
                 pom_build,
                 membership,
                 relay,
+                anon_tunnel,
                 signature: _,
             } => {
                 if node_id == self.node_id {
@@ -3576,6 +3651,7 @@ impl Network {
                     pom_build,
                     membership,
                     relay,
+                    anon_tunnel,
                     addr: peer_addr.clone(),
                     addr_candidates,
                     model: model.clone(),
@@ -3719,6 +3795,12 @@ impl Network {
 
                     let mut known = self.peers.write().await;
 
+                    // Where a peer answers anonymous tunnels is only believed
+                    // from its own signed announce: an unsigned snapshot could
+                    // send this node's calls to someone else.
+                    peer.anon_tunnel = known
+                        .get(&peer.node_id)
+                        .and_then(|previous| previous.anon_tunnel.clone());
                     let Some(previous) = known.get(&peer.node_id) else {
                         info!(
                             "📋 Learned peer from gossip: {} layers={}-{}",
@@ -5234,6 +5316,7 @@ mod tests {
             pom_build: String::new(),
             membership: None,
             relay: None,
+            anon_tunnel: None,
             addr: "[2804:d55:5579:1000:89f3:3f94:7c07:e183]:42777".into(),
             addr_candidates: Vec::new(),
             model: "qwen35".into(),
@@ -5289,6 +5372,7 @@ mod tests {
             pom_build: String::new(),
             membership: None,
             relay: None,
+            anon_tunnel: None,
             addr: "[2804:d55:5579:1000:89f3:3f94:7c07:e183]:42777".into(),
             addr_candidates: Vec::new(),
             model: "qwen35".into(),
@@ -5384,6 +5468,7 @@ mod tests {
             pom_build: String::new(),
             membership: None,
             relay: None,
+            anon_tunnel: None,
             addr: "192.168.1.9:42777".into(),
             addr_candidates: candidates.into_iter().map(String::from).collect(),
             model: "qwen35".into(),
@@ -5521,6 +5606,7 @@ mod tests {
                 pom_build: String::new(),
                 membership: None,
                 relay: None,
+                anon_tunnel: None,
                 signature: None,
                 addr: stale.into(),
                 addr_candidates: vec![stale.into()],
@@ -5838,6 +5924,7 @@ mod tests {
             pom_build: String::new(),
             membership: None,
             relay: None,
+            anon_tunnel: None,
             addr: addr.into(),
             addr_candidates: Vec::new(),
             model: String::new(),
@@ -5945,6 +6032,7 @@ mod tests {
             pom_build: String::new(),
             membership: None,
             relay: None,
+            anon_tunnel: None,
             addr: "127.0.0.1:42777".into(),
             addr_candidates: vec!["127.0.0.1:42777".into()],
             model: String::new(),
@@ -6418,6 +6506,49 @@ mod tests {
         let fresh = crate::relay_pass::issue(&key, &principal, &trust.document(), url, now).unwrap();
         assert!(!gate.allows("ephemeral-e", Some(&fresh)));
         assert_eq!(gate.offer(), None);
+    }
+
+    /// Where a peer answers anonymous tunnels is never handed to a visitor
+    /// in a `PeerList`, and never believed from one.
+    #[tokio::test]
+    async fn a_peer_list_carries_no_anonymous_tunnel_address() {
+        use crate::profile::NodeProfile;
+        let addr = crate::anon_tunnel::AnonTunnelAddr {
+            endpoint_id: "ephemeral".into(),
+            relay_url: "http://198.51.100.7:52000/".into(),
+        };
+        let admin = Network::testkit("admin".into(), String::new(), vec![], None, None)
+            .await
+            .unwrap();
+        *admin.profile.write().unwrap() = NodeProfile::Admin;
+        let mut worker = dummy_peer("worker", "127.0.0.1:9");
+        worker.anon_tunnel = Some(addr.clone());
+        let mut visitor = dummy_peer("visitor", "127.0.0.1:9");
+        visitor.profile = NodeProfile::Visitor;
+        for peer in [&worker, &visitor] {
+            admin.peers.write().await.insert(peer.node_id.clone(), peer.clone());
+        }
+        let to_visitor = admin.peer_list_for("visitor").await;
+        assert_eq!(to_visitor.len(), 1);
+        assert_eq!(to_visitor[0].anon_tunnel, None);
+        let to_worker = admin.peer_list_for("worker").await;
+        assert!(to_worker.iter().any(|p| p.anon_tunnel == Some(addr.clone())));
+
+        // A snapshot naming one is not believed by whoever receives it.
+        let receiver = Network::testkit("receiver".into(), String::new(), vec![], None, None)
+            .await
+            .unwrap();
+        let mut forged = dummy_peer("someone", "127.0.0.1:9");
+        forged.anon_tunnel = Some(addr);
+        receiver
+            .handle_message(
+                P2PMessage::PeerList { peers: vec![forged] },
+                "127.0.0.1:9".parse().unwrap(),
+                &Arc::new(tokio::sync::RwLock::new(None)),
+            )
+            .await;
+        let learned = receiver.peers.read().await.get("someone").cloned();
+        assert_eq!(learned.map(|peer| peer.anon_tunnel), Some(None));
     }
 
     /// A visitor announces itself straight to the admins and workers it
@@ -7096,6 +7227,7 @@ mod tests {
             pom_build: String::new(),
             membership: None,
             relay: None,
+            anon_tunnel: None,
             signature: None,
             addr: "192.0.2.10:42777".into(),
             addr_candidates: vec!["192.0.2.10:42777".into()],

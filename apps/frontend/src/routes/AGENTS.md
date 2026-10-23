@@ -486,7 +486,10 @@ Per-file list:
   test in `About.test.tsx` covers the license, the notice and links, the two
   ecosystems, the filter and the on-demand check/application of the update.
 - `Dashboard.tsx` - Cluster overview: the admin sees cluster
-  coverage/machines/model/in-flight stats; node and infer see local model,
+  coverage/machines/model/in-flight stats (`ClusterStat`: two short lines, the
+  label over the value with its detail beside it and a hairline bar, so the
+  toolbar leaves the height to the map; one row that scrolls sideways, the
+  whole width on a phone with the actions below); node and infer see local model,
   slice and in-flight requests instead. Admins see the Add button only when
   `ClusterView.active_model` is nonempty. With no active model, Details is the
   initial view; with an active model, Flow remains the initial view. Manual

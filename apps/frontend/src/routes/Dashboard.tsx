@@ -89,14 +89,18 @@ function ClusterStat({
     iris: "text-iris",
   }[tone];
   return (
-    <div className="min-w-0 px-3 py-2">
-      <div className="eyebrow mb-1">{label}</div>
-      <div className={clsx("font-display text-lg font-bold tracking-tight", color)}>
-        {value}
+    // Two short lines - the label, then the value with its detail beside it -
+    // so the bar takes as little height as it can from the deployment map.
+    <div className="relative min-w-0 px-3 py-1">
+      <div className="eyebrow text-[0.6rem] leading-none">{label}</div>
+      <div className="mt-1 flex min-w-0 items-baseline gap-2">
+        <span className={clsx("max-w-full shrink-0 truncate font-display text-[0.95rem] font-bold leading-tight tracking-tight", color)} title={value}>
+          {value}
+        </span>
+        {detail && <span className="min-w-0 truncate text-[0.7rem] text-muted" title={detail}>{detail}</span>}
       </div>
-      {detail && <div className="mt-0.5 truncate text-xs text-muted">{detail}</div>}
       {progress != null && (
-        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-line" aria-label={`${label}: ${value}`}>
+        <div className="absolute inset-x-3 bottom-0.5 h-0.5 overflow-hidden rounded-full bg-line" aria-label={`${label}: ${value}`}>
           <div className={clsx("h-full rounded-full", tone === "amber" ? "bg-amber" : "bg-aqua")} style={{ width: `${Math.max(0, Math.min(100, progress))}%` }} />
         </div>
       )}
@@ -284,7 +288,9 @@ export function Dashboard() {
 
   return <div className="flex h-full min-h-0 flex-col bg-ink">
     <div data-testid="dashboard-toolbar" className="relative z-30 flex shrink-0 flex-wrap items-stretch justify-between gap-2 border-b border-line bg-surface/95 px-3 py-1 shadow-panel backdrop-blur-md">
-      <div className="grid min-w-0 flex-1 grid-cols-2 divide-x divide-y divide-line rounded-lg border border-line bg-raised/75 sm:flex sm:divide-y-0">
+      {/* One row of stats: the whole width on a phone, with the actions on the
+          next line, scrolling sideways rather than stacking into a grid. */}
+      <div data-testid="dashboard-stats" className="flex min-w-0 basis-full divide-x divide-line overflow-x-auto overscroll-x-contain rounded-lg border border-line bg-raised/75 md:basis-0 md:flex-1 [&>*]:min-w-[6.5rem] [&>*]:flex-auto">
         {isAdmin ? (
           <>
             {/*

@@ -1516,7 +1516,7 @@ answers to `Post`, `Fetch` and `Admission` carry `messages_closed: true`, on
 which the candidate's window shows no conversation at all.
 
 Who decides a request is `network.access_policy`. Under `authorized` an admin
-approves it from the bell. Under `auto_approve` the principal approves it on
+approves it from the candidate's lobby thread (the bell links there). Under `auto_approve` the principal approves it on
 arrival (`NetworkChat::auto_approves`, applied in the lobby handler of
 `discovery.rs`): the role still has to be one of `accepted_enrollments`, a
 blocked machine is still refused, and a machine an admin rejected still waits

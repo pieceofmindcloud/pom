@@ -414,9 +414,14 @@ Per-file list:
   `lobbyEnabled`, a tab pair switches between the `network` and `lobby` rooms
   (`useNetworkChat(room)`); only an admin gets the lobby (the snapshot's
   `lobbyEnabled`). The lobby tab lists the candidates (`LobbyThreadList`,
-  `LobbyHardwareCard` for one present) and shows one candidate's thread at a
-  time, sending with `room_id: "lobby/<candidate>"`; it offers neither files
-  nor typing, because the candidate reads that thread.
+  `LobbyHardwareCard` for one present, an "Asks to join" mark for a pending
+  request) and shows one candidate's thread at a time, sending with
+  `room_id: "lobby/<candidate>"`; it offers neither files nor typing, because
+  the candidate reads that thread. The selected candidate is outlined and
+  `aria-current`, and `LobbyThreadHeader` above the messages names it and
+  carries Approve / Decline for its pending request (`useAdmissions`,
+  `admissionsApi.decide`). `?lobby=<node_id>` (the bell's link) opens the lobby
+  on that thread and is then dropped from the address.
 ## Information screens
 - `Documentation.tsx` - Two audiences, one screen, switched by a tab pair at
   the top of the navigation column (`?tab=guides|referencia`).

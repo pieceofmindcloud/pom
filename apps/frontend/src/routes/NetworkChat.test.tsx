@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useCallback, useEffect, useState } from "react";
+import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LocaleProvider } from "../i18n/provider";
 import { NetworkChat } from "./NetworkChat";
@@ -8,7 +9,14 @@ import { NetworkChat } from "./NetworkChat";
 const mocks = vi.hoisted(() => ({
   get: vi.fn(),
   post: vi.fn(),
-  toast: { error: vi.fn(), fromError: vi.fn() },
+  toast: { error: vi.fn(), fromError: vi.fn(), success: vi.fn() },
+  admissions: { data: [] as unknown[], refetch: vi.fn() },
+  decide: vi.fn(),
+}));
+
+vi.mock("../lib/admissions", () => ({
+  useAdmissions: () => mocks.admissions,
+  admissionsApi: { decide: mocks.decide },
 }));
 
 vi.mock("../lib/api", () => ({
@@ -69,11 +77,13 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function mount() {
+function mount(path = "/network-chat") {
   return render(
-    <LocaleProvider initialLocale="pt-BR">
-      <NetworkChat />
-    </LocaleProvider>,
+    <MemoryRouter initialEntries={[path]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <LocaleProvider initialLocale="pt-BR">
+        <NetworkChat />
+      </LocaleProvider>
+    </MemoryRouter>,
   );
 }
 
@@ -223,6 +233,34 @@ describe("NetworkChat", () => {
     });
     // Typing is a signal of the members' room only.
     expect(mocks.post.mock.calls.every(([request]) => request.action.kind !== "typing")).toBe(true);
+  });
+
+  it("opens the thread the bell points at, marks it, and decides the admission inside it", async () => {
+    mocks.admissions.data = [{
+      node_id: "other-candidate", role: "worker", status: "pending", requested_at: "2026-10-05T12:00:00Z",
+      card: { hostname: "segundo", os: "", arch: "", cpu_count: 0, ram_total_mb: 0, gpus: [] },
+    }];
+    mocks.decide.mockResolvedValue([]);
+    mocks.get.mockResolvedValue({
+      ...enabledSnapshot,
+      messages: ["candidate-node-id", "other-candidate"].map((candidate) => ({
+        ...enabledSnapshot.messages[0], messageId: `m-${candidate}`, roomId: `lobby/${candidate}`, senderNodeId: candidate, text: `Oi de ${candidate}`,
+      })),
+      lobbyEnabled: true,
+      lobbyGuests: [],
+    });
+    mount("/network-chat?lobby=other-candidate");
+
+    expect(await screen.findByText("Oi de other-candidate")).toBeTruthy();
+    expect(screen.queryByText("Oi de candidate-node-id")).toBeNull();
+    expect(screen.getByTestId("lobby-thread-other-candidate").getAttribute("aria-current")).toBe("true");
+    expect(screen.getByTestId("lobby-thread-candidate-node-id").getAttribute("aria-current")).toBeNull();
+    const header = screen.getByTestId("lobby-thread-header");
+    expect(header.textContent).toContain("pede para entrar como");
+
+    fireEvent.click(screen.getByRole("button", { name: "Aprovar" }));
+    await waitFor(() => expect(mocks.decide).toHaveBeenCalledWith("other-candidate", "approve"));
+    mocks.admissions.data = [];
   });
 
   it("shows no room switch while the network has no lobby", async () => {

@@ -119,9 +119,12 @@ export function LobbyChat({ network, endpoint, onClose, layout = "modal", backLa
   }, [adopt, auth, endpoint, key]);
 
   const messages = exchange?.messages ?? [];
-  // The network Chat is off there: the window is only the request side, with
-  // no conversation to show.
-  const closed = exchange?.messages_closed === true;
+  // The network Chat is off there, or an admin already decided: the window is
+  // only the request side. An approval erases the thread on the admins' side
+  // and a decline ends the talk, so a conversation left on screen would be
+  // one nobody reads any more. Asking again brings it back.
+  const decided = exchange?.admission?.status === "approved" || exchange?.admission?.status === "rejected";
+  const closed = exchange?.messages_closed === true || decided;
   const latest = messages[messages.length - 1]?.message_id;
   useEffect(() => {
     if (page && !exchange && failure === "lobby.errorDisabled") onUnavailable?.();

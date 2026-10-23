@@ -399,7 +399,8 @@ Per-file list:
   (`POST /api/transfer/offers/:id/accept|reject`). It also lists admission
   (`lib/admissions.ts`): for the network's admin, each machine asking to join
   with its role, direct or relayed connection, latency and hardware, and
-  Approve / Decline; for a candidate, the answer to its own requests, with
+  "Open the conversation", which goes to `/network-chat?lobby=<node_id>`:
+  the decision is taken in that thread, not in the bell; for a candidate, the answer to its own requests, with
   "Join now" when approved. All state is read back from
   the node, so a reload in the middle of a transfer shows the same bar.
   It also renders principal-transfer offers from the same `useOffers()`
@@ -629,6 +630,9 @@ Per-file list:
   button switches at once, and the bell does not list it. A declined request
   shows how many minutes are left before asking again (`retryWaitMinutes`
   over `retry_at`), and the request form comes back when the wait is over.
+  Once the request is approved or declined the conversation is hidden and
+  only the request side stays: an approval erased the thread on the admins'
+  side. Asking again brings it back.
   `layout="page"` fills the hosting screen instead of a window; a back
   button is drawn only when `backLabel` is given (the Networks screen gives
   none: its tabs stay on top and are the way back); `headerActions` adds

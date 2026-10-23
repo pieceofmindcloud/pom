@@ -210,7 +210,8 @@ local-only notice. Routes:
   (`nav.ts`: `nav.chat` to `/chat`, `nav.networkChat` to `/network-chat`), and
   `NetworkChat.tsx` uses `Tabs` (`components/ui.tsx`) to switch between the
   network room and the lobby, which only an admin sees: one thread per
-  candidate, picked from the candidates list. A visitor sees the entry only
+  candidate, picked from the candidates list, with the selected one outlined
+  and named above its messages, next to Approve / Decline. A visitor sees the entry only
   when the network opens its Chat to visitors (`chat_visitors`). The
   `Network Chat` entry shows the
   number of messages received since the last read, and entering the screen
@@ -409,8 +410,9 @@ local-only notice. Routes:
   whose side panel has "Request admission" with the role to join as, shows the
   request's state, and offers "Join now" (behind a confirmation) once an admin
   approved. The bell lists machines asking to join this network, with role,
-  direct or relayed connection, latency and hardware, and Approve / Decline;
-  on the candidate it lists the answer, with "Join now" when approved.
+  direct or relayed connection, latency and hardware, and a link to that
+  candidate's thread, where an admin approves or declines after talking;
+  once decided, the candidate's window hides the conversation; on the candidate it lists the answer, with "Join now" when approved.
   After "Join now" the node restarts into the network and, until it holds a
   membership token, has no models to show. The interface says so instead of
   "the network serves no model": `GET /api/ui/connection` gives the phase

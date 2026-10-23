@@ -1439,6 +1439,10 @@ lobby.roomLobby,Lobby,Lobby
 lobby.roomNetwork,Network,Rede
 lobby.rooms,Rooms,Salas
 lobby.switchNow,Switch to this network,Trocar para esta rede
+lobby.threadAsks,Asks to join,Pede para entrar
+lobby.threadNoRequest,no admission request yet,ainda sem pedido de admissão
+lobby.threadRequest,asks to join as {role},pede para entrar como {role}
+lobby.threadWith,Conversation with {name},Conversa com {name}
 lobby.title,Lobby of {name},Lobby de {name}
 lobby.unifiedMemory,unified memory,memória unificada
 lobby.unknown,Not informed,Não informado
@@ -1917,7 +1921,7 @@ notifications.admissionApprove,Approve,Aprovar
 notifications.admissionApproved,Admission approved. The machine joins when its operator confirms.,Admissão aprovada. A máquina entra quando o operador dela confirmar.
 notifications.admissionReject,Decline,Recusar
 notifications.admissionRejected,Admission declined,Admissão recusada
-notifications.admissionTalk,Open lobby,Abrir lobby
+notifications.admissionTalk,Open the conversation,Abrir a conversa
 notifications.admissionTitle,{name} asks to join this network,{name} pede para entrar nesta rede
 notifications.allTransfers,View all transfers,Ver todas as transferências
 notifications.defaultPasswordTitle,Default administrative password,Senha administrativa padrão

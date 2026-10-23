@@ -197,21 +197,6 @@ export function Notifications() {
   // admitted before) answers nothing and is shown in the lobby instead.
   const answeredRequests = (admissionRequests.data ?? []).filter((request) => request.status !== "pending" && !request.standing);
   const [joinKey, setJoinKey] = useState<string | null>(null);
-  const [deciding, setDeciding] = useState<string | null>(null);
-
-  async function decideAdmission(record: AdmissionRecord, decision: "approve" | "reject") {
-    setDeciding(record.node_id);
-    try {
-      await admissionsApi.decide(record.node_id, decision);
-      toast.success(t(decision === "approve" ? "notifications.admissionApproved" : "notifications.admissionRejected"));
-      void admissions.refetch();
-    } catch (e) {
-      toast.fromError(t("notifications.offerFailed"), e);
-    } finally {
-      setDeciding(null);
-    }
-  }
-
   async function joinApproved(key: string) {
     setJoinKey(key);
     try {
@@ -401,13 +386,8 @@ export function Notifications() {
                     detail={admissionDetail(record, t)}
                     footer={
                       <>
-                        <Button size="sm" variant="primary" loading={deciding === record.node_id} onClick={() => void decideAdmission(record, "approve")}>
-                          {t("notifications.admissionApprove")}
-                        </Button>
-                        <Button size="sm" variant="ghost" disabled={deciding === record.node_id} onClick={() => void decideAdmission(record, "reject")}>
-                          {t("notifications.admissionReject")}
-                        </Button>
-                        <Button size="sm" variant="ghost" onClick={() => { setOpen(false); navigate("/network-chat"); }}>
+                        {/* The decision is taken inside the candidate's thread, after talking. */}
+                        <Button size="sm" variant="primary" onClick={() => { setOpen(false); navigate(`/network-chat?lobby=${encodeURIComponent(record.node_id)}`); }}>
                           {t("notifications.admissionTalk")}
                         </Button>
                       </>

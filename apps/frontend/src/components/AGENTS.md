@@ -354,7 +354,8 @@ Per-file list:
 - `Topbar.tsx` - Sticky header: `NodeChip` (the network this machine is in,
   from `NodeInfo.network_name` and linking to `/config/network`; then
   `ConnectionBadge` on a member; then hostname,
-  the `NatBadge`, peer count, coverage; below `md`, a phone or the macOS
+  the `NatBadge`, peer count, coverage; a machine alone in a network named
+  after it shows only the network badge; below `md`, a phone or the macOS
   menu-bar panel, those badges fold into one Info icon, `NodeChipButton`,
   that opens them in a popover like the bell's), the i18n badge of the node's
   persisted profile (not drawn for a visitor, and inside that popover below `md`), the macOS button of

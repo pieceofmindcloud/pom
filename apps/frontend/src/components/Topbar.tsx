@@ -39,6 +39,12 @@ function NodeChipItems() {
   const c = cluster.data;
   const serving = isServing(n.status.state);
   const complete = c?.complete ?? false;
+  // A machine alone in the network named after it: the network badge already
+  // says it all, so neither its name again nor "1 node" is drawn.
+  const alone =
+    Boolean(n.network_name) &&
+    n.network_name.trim() === n.hostname.trim() &&
+    (c?.peers.length ?? 0) <= 1;
 
   return (
     <>
@@ -61,12 +67,14 @@ function NodeChipItems() {
       )}
       {/* Still on its way into that network: why there is nothing to show yet. */}
       <ConnectionBadge className="min-w-0 shrink" />
-      <Badge tone={serving ? "aqua" : "neutral"}>
-        <Dot tone={serving ? "aqua" : "neutral"} pulse={serving} />
-        <span className="truncate">{n.hostname}</span>
-      </Badge>
+      {!alone && (
+        <Badge tone={serving ? "aqua" : "neutral"} data-testid="topbar-machine">
+          <Dot tone={serving ? "aqua" : "neutral"} pulse={serving} />
+          <span className="truncate">{n.hostname}</span>
+        </Badge>
+      )}
       <NatBadge />
-      {c && c.peers.length > 0 && (
+      {!alone && c && c.peers.length > 0 && (
         <Badge tone={complete ? "aqua" : "amber"}>
           {t("topbar.nodeCount", { count: c.peers.length })}
           {c.total_layers > 0 && (

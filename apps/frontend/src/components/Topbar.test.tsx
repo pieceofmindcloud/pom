@@ -115,6 +115,18 @@ describe("profile in the toolbar", () => {
     expect(network.getAttribute("href")).toBe("/config/network");
   });
 
+  it("drops the machine and node-count badges for a machine alone in a network of its name", () => {
+    nodeData = { ...fakeNode(), hostname: "lab", network_name: "lab" };
+    mountTopbar("admin");
+    expect(screen.getByTestId("topbar-network").textContent).toBe("lab");
+    expect(screen.queryByTestId("topbar-machine")).toBeNull();
+    cleanup();
+
+    nodeData = { ...fakeNode(), hostname: "lab", network_name: "home" };
+    mountTopbar("admin");
+    expect(screen.getByTestId("topbar-machine").textContent).toBe("lab");
+  });
+
   it("shows no network chip while the node reports no network name", () => {
     nodeData = { ...fakeNode(), network_name: "" };
     mountTopbar("admin");

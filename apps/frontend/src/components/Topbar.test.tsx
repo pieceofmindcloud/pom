@@ -121,11 +121,33 @@ describe("profile in the toolbar", () => {
     expect(screen.queryByTestId("topbar-network")).toBeNull();
   });
 
-  it("hides the This node button and keeps the official profile in the toolbar", () => {
+  it("labels a worker's profile and leaves a visitor's out", () => {
+    nodeData = fakeNode({ profile: "worker" });
+    mountTopbar("worker");
+    expect(screen.getByTestId("node-profile").textContent).toBe("worker");
+    cleanup();
+
+    nodeData = fakeNode({ profile: "visitor" });
+    mountTopbar("visitor");
+    expect(screen.queryByTestId("node-profile")).toBeNull();
+  });
+
+  it("folds the network and node badges into one popover on a narrow screen", () => {
+    nodeData = { ...fakeNode(), network_name: "POM-SALEM" };
+    mountTopbar("worker");
+    expect(screen.getAllByTestId("topbar-network")).toHaveLength(1);
+    expect(screen.queryByTestId("topbar-details-popover")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("topbar-details"));
+    const popover = screen.getByTestId("topbar-details-popover");
+    expect(popover.textContent).toContain("POM-SALEM");
+    expect(popover.textContent).toContain("worker");
+  });
+
+  it("hides the This node button", () => {
     nodeData = fakeNode({ profile: "visitor" });
     mountTopbar("visitor");
 
-    expect(screen.getByTestId("node-profile").textContent).toBe("visitor");
     expect(screen.queryByText(/perfil em visualização/i)).toBeNull();
     expect(screen.queryByRole("button", { name: "Este nó" })).toBeNull();
     expect(screen.queryByRole("button", { name: /administrador|node|infer/i })).toBeNull();

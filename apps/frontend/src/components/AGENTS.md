@@ -354,7 +354,10 @@ Per-file list:
 - `Topbar.tsx` - Sticky header: `NodeChip` (the network this machine is in,
   from `NodeInfo.network_name` and linking to `/config/network`; then
   `ConnectionBadge` on a member; then hostname,
-  the `NatBadge`, peer count, coverage), the i18n badge of the node's persisted profile, the macOS button of
+  the `NatBadge`, peer count, coverage; below `md`, a phone or the macOS
+  menu-bar panel, those badges fold into one Info icon, `NodeChipButton`,
+  that opens them in a popover like the bell's), the i18n badge of the node's
+  persisted profile (not drawn for a visitor, and inside that popover below `md`), the macOS button of
   the larger window, `UsageButton` (a gauge icon drawn only when
   `GET /api/ui/quota` says `configured: true`, i.e. this node has a budget set
   for it, with an amber/rose dot near or over a ceiling; a click opens a

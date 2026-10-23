@@ -1,10 +1,12 @@
-import { motion } from "framer-motion";
+import clsx from "clsx";
+import { AnimatePresence, motion } from "framer-motion";
 import {
   Globe2,
+  Info,
   Menu,
   X,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { isServing } from "../lib/format";
 import { useCluster, useNode } from "../lib/queries";
@@ -19,8 +21,8 @@ import { Badge, Dot, Skeleton } from "./ui";
 import { OpenNativeChatWindowButton, QuitNativeAppButton } from "./OpenNativeChatWindowButton";
 export { TlsChip } from "./TlsIndicator";
 
-/** One line saying what this node is and whether the pipeline is closed. */
-function NodeChip() {
+/** What this node is and whether the pipeline is closed: a line of badges. */
+function NodeChipItems() {
   const { t } = useI18n();
   const node = useNode();
   const cluster = useCluster();
@@ -39,7 +41,7 @@ function NodeChip() {
   const complete = c?.complete ?? false;
 
   return (
-    <div className="flex min-w-0 items-center gap-2">
+    <>
       {/* Which network this machine is in, on every screen: a node starts in
           a network of its own and may later join someone else's, and nothing
           else on the page says which one it is looking at. */}
@@ -65,7 +67,7 @@ function NodeChip() {
       </Badge>
       <NatBadge />
       {c && c.peers.length > 0 && (
-        <Badge tone={complete ? "aqua" : "amber"} className="hidden md:inline-flex">
+        <Badge tone={complete ? "aqua" : "amber"}>
           {t("topbar.nodeCount", { count: c.peers.length })}
           {c.total_layers > 0 && (
             <span className="font-mono">
@@ -74,13 +76,87 @@ function NodeChip() {
           )}
         </Badge>
       )}
+    </>
+  );
+}
+
+/** The badges in a line, from `md` up. */
+function NodeChip() {
+  return (
+    <div className="hidden min-w-0 items-center gap-2 md:flex">
+      <NodeChipItems />
     </div>
   );
 }
 
+/**
+ * Below `md` (a phone, the macOS menu-bar panel) the same badges fold into one
+ * icon that opens them in a popover like the bell's, so the bar keeps room
+ * for its actions.
+ */
+function NodeChipButton() {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onClick = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    document.addEventListener("mousedown", onClick);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onClick);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div className="relative md:hidden" ref={ref}>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        data-testid="topbar-details"
+        title={t("topbar.details")}
+        aria-label={t("topbar.details")}
+        aria-expanded={open}
+        className={clsx(
+          "flex h-9 w-9 items-center justify-center rounded-lg border transition-colors duration-150",
+          open
+            ? "border-iris/40 bg-iris/12 text-iris"
+            : "border-line bg-raised text-muted hover:border-line-strong hover:text-fg",
+        )}
+      >
+        <Info className="h-4 w-4" />
+      </button>
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ opacity: 0, y: -6, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -6, scale: 0.98 }}
+            transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
+            data-testid="topbar-details-popover"
+            className="absolute left-0 top-11 z-50 w-[min(18rem,calc(100vw-2rem))] origin-top-left overflow-hidden rounded-xl border border-line bg-surface shadow-lift"
+          >
+            <div className="border-b border-line px-4 py-3 font-display text-sm font-semibold text-fg">{t("topbar.details")}</div>
+            <div className="flex flex-col items-start gap-2 px-4 py-3 [&>*]:max-w-full">
+              <NodeChipItems />
+              <ProfileBadge />
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+/** The persisted profile, for an admin or a worker; a visitor's needs no label. */
 function ProfileBadge() {
   const { profile } = useProfile();
   const { t } = useI18n();
+  if (profile === "visitor") return null;
 
   return (
     <Badge
@@ -109,13 +185,16 @@ export function Topbar() {
           <Menu className="h-4 w-4" />
         </button>
 
+        <NodeChipButton />
         <div className="min-w-0 flex-1 overflow-hidden">
           <NodeChip />
         </div>
 
         <div className="flex shrink-0 items-center gap-2">
           <OpenNativeChatWindowButton />
-          <ProfileBadge />
+          <span className="hidden md:contents">
+            <ProfileBadge />
+          </span>
           <UsageButton />
           <Notifications />
           <QuitNativeAppButton />

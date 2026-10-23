@@ -2881,6 +2881,7 @@ topbar.apiTitle,OpenAI-compatible API served by this node,API compatível com Op
 topbar.behindNat,Behind NAT,Atrás de NAT
 topbar.behindNatHint,Some connections of this machine go through a relay. Click for what it means and how to fix it.,Algumas conexões desta máquina passam por um relé. Clique para ver o que isso significa e como resolver.
 topbar.closeMenu,Close menu,Fechar menu
+topbar.details,Network and node,Rede e nó
 topbar.layers,{covered}/{total} layers,{covered}/{total} camadas
 topbar.leaveDescription,"The node stops announcing, forgets known peers, and unloads the model. The interface remains available. Rejoin from Settings › Network.","O nó para de anunciar, esquece os peers que conhece e descarrega o modelo. A interface continua no ar. Para voltar, use Configurações › Rede."
 topbar.leaveDetail,"Unloads the model, stops announcing, and forgets peers.","Descarrega o modelo, para de anunciar e esquece os peers."

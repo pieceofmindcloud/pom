@@ -635,6 +635,15 @@ and `discovery.rs` builds the endpoint and everything that rides on it.
   once, and the pkarr record's `is_relay` follows `relay.everyone`. An option
   given on the command line wins over the saved one for that run
   (`RelayOverrides`), and the screen shows it locked.
+- **Anonymous relays for visitors.** With `relay.anonymous` (off by default,
+  offered on a visitor's screen), a node the internet reaches also admits any
+  endpoint that presents a relay pass of its network for its own URL
+  (`crate::relay_pass`, carried as the relay's bearer `auth_token`), without
+  knowing who holds it; a pass binds to the first endpoint that used it. Its
+  offer says `anonymous: true`. Admins hand those URLs out, each with a fresh
+  pass, in the answer to the membership token request (`relays`), and every
+  admin and member keeps the last list (`Network::anonymous_relays`). Design:
+  `docs/superpowers/specs/2026-10-23-anonymous-visitor-relays-design.md`.
 - **Reachability (the NAT report).** Every policy round reads the endpoint's
   NAT report (`Endpoint::net_report`, the `unstable-net-report` feature). Its
   `global_v4` is the public address the relays saw: it becomes the observed

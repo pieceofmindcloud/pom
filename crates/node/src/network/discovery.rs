@@ -204,7 +204,8 @@ impl iroh_relay::server::AccessControl for GateAccess {
         &self,
         request: &iroh_relay::server::ClientRequest,
     ) -> iroh_relay::server::Access {
-        if self.0.allows(&request.endpoint_id().to_string()) {
+        let pass = request.auth_token();
+        if self.0.allows(&request.endpoint_id().to_string(), pass.as_deref()) {
             iroh_relay::server::Access::Allow
         } else {
             iroh_relay::server::Access::Deny {

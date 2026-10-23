@@ -246,7 +246,10 @@ last):
   (on a legacy `open_admission` network, the announced one). The token is a
   compact JWT signed with EdDSA by the issuing admin's node key - `iss`,
   `iss_key`, `sub`, `sub_key`, `net` (the chain's cluster id), `role`, `iat`,
-  `exp`, `jti` - and lasts 10 minutes (`TOKEN_TTL_SECS`).
+  `exp`, `jti` - and lasts 10 minutes (`TOKEN_TTL_SECS`). The answer is
+  `{token, relays}`: `relays` lists the visitors' anonymous relays the admin
+  sees, `{url, pass}` each, with a relay pass (`crate::relay_pass`) for that
+  URL; the caller's own relay is left out.
   `webui::spawn_token_keeper` renews it two thirds in, and at once when it
   stops holding, and the node announces it (`membership` in the Announce and
   in `PeerInfo`). Any node checks it against its chain alone

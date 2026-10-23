@@ -76,6 +76,30 @@ pub struct RelayOffer {
     /// Members add it to their relay map; without it the offer is only a flag.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// It also relays for anyone holding a relay pass of its network
+    /// (`crate::relay_pass`), without knowing who: a visitor's anonymous
+    /// relay. Admins hand its URL out with passes; nobody adds it to a relay
+    /// map on sight.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub anonymous: bool,
+}
+
+/// A visitor's anonymous relay as an admin hands it out: its URL and a pass
+/// that opens it. Nothing names the visitor that runs it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AnonymousRelay {
+    pub url: String,
+    pub pass: String,
+}
+
+/// The chain a relay checks passes against; opaque in `Debug`.
+#[derive(Clone)]
+struct PassTrust(Arc<crate::admin_trust::AdminTrust>);
+
+impl std::fmt::Debug for PassTrust {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PassTrust")
+    }
 }
 
 /// Whom this node relays for, consulted by the embedded relay server on
@@ -99,6 +123,11 @@ pub struct RelayGate {
     available: AtomicBool,
     /// Endpoint ids of the admitted members, refreshed by the policy round.
     members: std::sync::RwLock<std::collections::HashSet<String>>,
+    /// The operator lets this node relay for pass holders (`anonymous`).
+    anonymous: AtomicBool,
+    /// The chain passes are checked against, and the passes seen.
+    passes: std::sync::RwLock<Option<PassTrust>>,
+    pass_ledger: std::sync::Mutex<crate::relay_pass::PassLedger>,
     /// The URL the relay server answers on, when this node has a public host.
     url: std::sync::RwLock<Option<String>>,
 }
@@ -124,6 +153,10 @@ pub struct RelayStatus {
     pub reachable: bool,
     /// It relays right now.
     pub serving: bool,
+    /// The operator lets it relay for pass holders (a visitor's anonymous relay).
+    pub anonymous: bool,
+    /// It relays for pass holders right now.
+    pub anonymous_serving: bool,
 }
 
 impl RelayGate {
@@ -137,7 +170,49 @@ impl RelayGate {
             available: AtomicBool::new(true),
             members: std::sync::RwLock::new(Default::default()),
             url: std::sync::RwLock::new(None),
+            anonymous: AtomicBool::new(false),
+            passes: std::sync::RwLock::new(None),
+            pass_ledger: std::sync::Mutex::new(Default::default()),
         }
+    }
+
+    /// Relays for pass holders too, checked against `trust`.
+    pub fn with_anonymous(self, anonymous: bool, trust: Arc<crate::admin_trust::AdminTrust>) -> Self {
+        self.anonymous.store(anonymous, Ordering::Relaxed);
+        if let Ok(mut passes) = self.passes.write() {
+            *passes = Some(PassTrust(trust));
+        }
+        self
+    }
+
+    pub fn set_anonymous(&self, anonymous: bool) {
+        self.anonymous.store(anonymous, Ordering::Relaxed);
+    }
+
+    /// Relaying for pass holders right now: asked for, the internet reaches
+    /// this node, the server is up and there is a URL to hand out.
+    pub fn anonymous_serving(&self) -> bool {
+        self.anonymous.load(Ordering::Relaxed)
+            && self.available.load(Ordering::Relaxed)
+            && self.reachable.load(Ordering::Relaxed)
+            && self.url.read().is_ok_and(|url| url.is_some())
+    }
+
+    /// Whether `pass` opens this relay for `endpoint` now.
+    fn pass_admits(&self, pass: &str, endpoint: &str) -> bool {
+        let Some(trust) = self.passes.read().ok().and_then(|passes| passes.clone()) else {
+            return false;
+        };
+        let Some(url) = self.url.read().ok().and_then(|url| url.clone()) else {
+            return false;
+        };
+        let now = chrono::Utc::now().timestamp();
+        let Ok(claims) = crate::relay_pass::verify(pass, &trust.0.document(), &url, now) else {
+            return false;
+        };
+        self.pass_ledger
+            .lock()
+            .is_ok_and(|mut ledger| ledger.admit(&claims, endpoint, now))
     }
 
     /// Applies what the command line fixed on top of the saved options.
@@ -199,9 +274,11 @@ impl RelayGate {
 
     /// What goes into the announce.
     pub fn offer(&self) -> Option<RelayOffer> {
-        self.serving().then(|| RelayOffer {
+        let anonymous = self.anonymous_serving();
+        (self.serving() || anonymous).then(|| RelayOffer {
             transfers: self.transfers.load(Ordering::Relaxed),
             url: self.url.read().ok().and_then(|url| url.clone()),
+            anonymous,
         })
     }
 
@@ -211,13 +288,17 @@ impl RelayGate {
     /// from one that only sends through it, so a member relay admits members
     /// alone: a candidate that is not a member yet reaches a member behind
     /// NAT through a public relay (n0's, or a dedicated one).
-    pub fn allows(&self, peer: &str) -> bool {
+    ///
+    /// A relay for pass holders also admits an endpoint whose `pass` holds
+    /// (`pass_admits`), whoever it is.
+    pub fn allows(&self, peer: &str, pass: Option<&str>) -> bool {
         self.everyone()
             || (self.serving()
                 && self
                     .members
                     .read()
                     .is_ok_and(|members| members.contains(peer)))
+            || (self.anonymous_serving() && pass.is_some_and(|pass| self.pass_admits(pass, peer)))
     }
 
     pub fn status(&self) -> RelayStatus {
@@ -228,6 +309,8 @@ impl RelayGate {
             fixed: self.overrides,
             reachable: self.reachable.load(Ordering::Relaxed),
             serving: self.serving(),
+            anonymous: self.anonymous.load(Ordering::Relaxed),
+            anonymous_serving: self.anonymous_serving(),
         }
     }
 }
@@ -1410,6 +1493,9 @@ pub struct Network {
     /// The version of the local trust chain, announced to the peers.
     trust_version: std::sync::RwLock<Option<String>>,
     membership: std::sync::RwLock<Option<String>>,
+    /// The visitor relays this node may use anonymously, each with its pass
+    /// (`crate::relay_pass`), as the last admin handed them out.
+    anonymous_relays: std::sync::RwLock<Vec<AnonymousRelay>>,
     /// The node key, which signs every announce this node sends. Absent
     /// only in tests that build a `Network` without an identity.
     announce_key: std::sync::RwLock<Option<Arc<ed25519_dalek::SigningKey>>>,
@@ -1850,6 +1936,7 @@ impl Network {
             policy_principal_pubkey: std::sync::RwLock::new(None),
             trust_version: std::sync::RwLock::new(None),
             membership: std::sync::RwLock::new(None),
+            anonymous_relays: std::sync::RwLock::new(Vec::new()),
             announce_key: std::sync::RwLock::new(None),
             readmission: std::sync::RwLock::new(None),
             firsthand: std::sync::Mutex::new(HashMap::new()),
@@ -1973,6 +2060,20 @@ impl Network {
         if let Ok(mut current) = self.membership.write() {
             *current = token;
         }
+    }
+
+    /// The visitor relays an admin handed this node, replacing the last ones.
+    pub fn set_anonymous_relays(&self, relays: Vec<AnonymousRelay>) {
+        if let Ok(mut current) = self.anonymous_relays.write() {
+            *current = relays;
+        }
+    }
+
+    pub fn anonymous_relays(&self) -> Vec<AnonymousRelay> {
+        self.anonymous_relays
+            .read()
+            .map(|current| current.clone())
+            .unwrap_or_default()
     }
 
     pub fn membership(&self) -> Option<String> {
@@ -6045,6 +6146,7 @@ mod tests {
         relay_peer.relay = Some(RelayOffer {
             transfers: true,
             url: Some(member_url.clone()),
+                anonymous: false,
         });
         network.insert_peer(relay_peer.clone()).await;
 
@@ -6064,6 +6166,7 @@ mod tests {
         relay_peer.relay = Some(RelayOffer {
             transfers: false,
             url: Some(member_url.clone()),
+                anonymous: false,
         });
         network.insert_peer(relay_peer.clone()).await;
         assert!(!network.path_carries_transfers(Some(&member)).await);
@@ -6072,6 +6175,7 @@ mod tests {
         relay_peer.relay = Some(RelayOffer {
             transfers: true,
             url: Some(member_url.clone()),
+                anonymous: false,
         });
         network.insert_peer(relay_peer).await;
         network.set_dedicated_relays([member_url]);
@@ -6094,7 +6198,7 @@ mod tests {
         gate.set_members([member.clone()]);
         assert!(!gate.serving());
         assert_eq!(gate.offer(), None);
-        assert!(!gate.allows(&member), "behind NAT");
+        assert!(!gate.allows(&member, None), "behind NAT");
 
         gate.set_reachable(true);
         gate.set_url(Some("http://203.0.113.9:52777".into()));
@@ -6102,37 +6206,39 @@ mod tests {
             gate.offer(),
             Some(RelayOffer {
                 transfers: true,
-                url: Some("http://203.0.113.9:52777".into())
+                url: Some("http://203.0.113.9:52777".into()),
+                anonymous: false
             })
         );
-        assert!(gate.allows(&member));
-        assert!(!gate.allows(&stranger));
+        assert!(gate.allows(&member, None));
+        assert!(!gate.allows(&stranger, None));
 
         // No relay server (its port was taken): nothing is offered.
         gate.set_available(false);
         assert_eq!(gate.offer(), None);
-        assert!(!gate.allows(&member));
+        assert!(!gate.allows(&member, None));
         gate.set_available(true);
 
         let off = RelayGate::new(false, false, true);
         off.set_reachable(true);
         off.set_members([member.clone()]);
-        assert!(!off.allows(&member), "cluster relay turned off");
+        assert!(!off.allows(&member, None), "cluster relay turned off");
 
         let public = RelayGate::new(true, true, false);
-        assert!(public.allows(&stranger));
+        assert!(public.allows(&stranger, None));
         assert_eq!(
             public.offer(),
             Some(RelayOffer {
                 transfers: false,
-                url: None
+                url: None,
+                anonymous: false
             })
         );
 
         // The screen changes the options live; what the command line fixed
         // stays whatever is saved.
         gate.set(false, false, true);
-        assert!(!gate.allows(&member));
+        assert!(!gate.allows(&member, None));
         let fixed = RelayGate::new(false, true, true).with_overrides(RelayOverrides {
             everyone: true,
             no_cluster: false,
@@ -6272,6 +6378,46 @@ mod tests {
         let mut to_worker = ids(admin.peer_list_for("worker").await);
         to_worker.sort();
         assert_eq!(to_worker, vec!["visitor-a", "visitor-b", "worker"]);
+    }
+
+    /// A visitor's anonymous relay admits whoever holds a pass of its network
+    /// for its URL, binds the pass to that endpoint, and offers itself as
+    /// anonymous; without the option, or behind NAT, it admits no pass.
+    #[test]
+    fn an_anonymous_relay_admits_by_pass_alone() {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[51; 32]);
+        let principal =
+            crate::admin_trust::AuthorityPrincipal::from_signing_key("principal", "peer-principal", &key);
+        let trust = Arc::new(
+            crate::admin_trust::AdminTrust::bootstrap_primary_in_memory(
+                "gate-lab",
+                principal.clone(),
+                &key,
+            )
+            .unwrap(),
+        );
+        let url = "http://198.51.100.7:52000/";
+        let now = chrono::Utc::now().timestamp();
+        let pass = crate::relay_pass::issue(&key, &principal, &trust.document(), url, now).unwrap();
+        let other = crate::relay_pass::issue(&key, &principal, &trust.document(), "http://x:1/", now)
+            .unwrap();
+
+        // A visitor relays for nobody of its own cluster by default here.
+        let gate = RelayGate::new(false, false, false).with_anonymous(true, trust.clone());
+        gate.set_url(Some(url.into()));
+        assert!(!gate.allows("ephemeral-a", Some(&pass)), "behind NAT");
+        gate.set_reachable(true);
+        assert!(gate.allows("ephemeral-a", Some(&pass)));
+        assert!(gate.allows("ephemeral-a", Some(&pass)), "the same endpoint again");
+        assert!(!gate.allows("ephemeral-b", Some(&pass)), "a pass is not shared");
+        assert!(!gate.allows("ephemeral-c", Some(&other)), "another relay's pass");
+        assert!(!gate.allows("ephemeral-d", None));
+        assert_eq!(gate.offer().map(|offer| offer.anonymous), Some(true));
+
+        gate.set_anonymous(false);
+        let fresh = crate::relay_pass::issue(&key, &principal, &trust.document(), url, now).unwrap();
+        assert!(!gate.allows("ephemeral-e", Some(&fresh)));
+        assert_eq!(gate.offer(), None);
     }
 
     /// A visitor announces itself straight to the admins and workers it

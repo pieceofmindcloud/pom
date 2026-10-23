@@ -1480,6 +1480,7 @@ pub(super) async fn save_relay(
     }
     let gate = state.network.relay_gate();
     gate.set(req.everyone, req.cluster, req.transfers);
+    gate.set_anonymous(req.anonymous);
     info!("relay options updated from the interface: {req:?}");
     Json(gate.status()).into_response()
 }

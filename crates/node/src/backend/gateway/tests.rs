@@ -1364,7 +1364,7 @@ mod tests {
         state.network.relay_gate().set_reachable(true);
         assert_eq!(
             state.network.relay_gate().offer(),
-            Some(crate::network::RelayOffer { transfers: true, url: None })
+            Some(crate::network::RelayOffer { transfers: true, url: None, anonymous: false })
         );
 
         let mut request = Request::post("/api/ui/network/relay")
@@ -1396,7 +1396,7 @@ mod tests {
         let wire = state.network.gossip_announce_bytes(None).unwrap();
         match serde_json::from_slice(&wire).unwrap() {
             crate::network::P2PMessage::Announce { relay, .. } => {
-                assert_eq!(relay, Some(crate::network::RelayOffer { transfers: false, url: None }));
+                assert_eq!(relay, Some(crate::network::RelayOffer { transfers: false, url: None, anonymous: false }));
             }
             other => panic!("expected Announce, got {other:?}"),
         }

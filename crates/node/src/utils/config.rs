@@ -589,6 +589,11 @@ pub struct RelayConfig {
     /// carry no transfers at all.
     #[serde(default = "default_true")]
     pub transfers: bool,
+    /// Relay for anyone holding a relay pass of this network, without
+    /// knowing who (`crate::relay_pass`). Off unless the operator asks; the
+    /// interface offers it on a visitor.
+    #[serde(default)]
+    pub anonymous: bool,
 }
 
 impl Default for RelayConfig {
@@ -597,6 +602,7 @@ impl Default for RelayConfig {
             everyone: false,
             cluster: true,
             transfers: true,
+            anonymous: false,
         }
     }
 }
@@ -1649,7 +1655,8 @@ mod tests {
             RelayConfig {
                 everyone: false,
                 cluster: true,
-                transfers: true
+                transfers: true,
+                anonymous: false
             }
         );
         assert!(serde_json::to_value(&cfg).unwrap().get("relay").is_none());

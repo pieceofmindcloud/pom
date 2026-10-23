@@ -521,7 +521,12 @@ dedicated or member, with iroh's hole punching), are in
   `offer()` is what goes into the `Announce` (`RelayOffer`, with whether transfers may
   cross it and the `url`). The options are atomics: `set` changes them live from the
   screen, `RelayOverrides` keeps what the command line fixed for the run, and
-  `status()` is what `/api/ui/network/relay` answers.
+  `status()` is what `/api/ui/network/relay` answers. With `anonymous`
+  (`with_anonymous`, `set_anonymous`) it also admits an endpoint whose relay
+  pass holds for its URL (`pass_admits`, bound to that endpoint by the
+  `PassLedger`), and its offer carries `anonymous: true`.
+  `Network::anonymous_relays` holds the `AnonymousRelay` list (`url`, `pass`)
+  an admin last handed this node.
 - `Network::relay_carries_transfers`/`path_carries_transfers`/`transfer_links` - the
   rule of files and relays: a direct path carries a file; a relay path only through a
   member relay (its URL is an admitted member's announced offer) that allows it; never

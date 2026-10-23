@@ -466,7 +466,10 @@ boundary.
   approved admission; `spawn_token_keeper` renews this node's (none on an
   admin) and sets it in the Announce. With no token it looks again every 2 s
   while no admin is in sight, and backs off from 2 s to the 30 s tick after a
-  refused request; it keeps the last refusal for the interface.
+  refused request; it keeps the last refusal for the interface. The token answer
+  also carries `relays` (`relay_passes`: each visitor's anonymous relay the
+  admin sees, with a fresh relay pass), which the keeper stores in
+  `Network::set_anonymous_relays`; an admin issues its own every tick.
   `GET /api/ui/connection` (`connection_status`, `LocalOnly`) reports this
   node's `ConnectionPhase` - `standalone` (an admin, or off the network),
   `discovering` (no admin heard yet), `authenticating` (an admin in sight, no

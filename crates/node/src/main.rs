@@ -1563,7 +1563,8 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
                 args.relay.cluster,
                 args.relay.transfers,
             )
-            .with_overrides(args.relay_overrides),
+            .with_overrides(args.relay_overrides)
+            .with_anonymous(args.relay.anonymous, args.admin_trust.clone()),
         )
         .with_admission(args.auth.clone(), args.admin_trust.clone()),
     );

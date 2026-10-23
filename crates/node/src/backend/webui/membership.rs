@@ -117,13 +117,53 @@ pub(crate) async fn internal_token(
         role,
         chrono::Utc::now().timestamp(),
     ) {
-        Ok(token) => Json(json!({ "token": token })).into_response(),
+        Ok(token) => Json(json!({
+            "token": token,
+            "relays": relay_passes(&state, &caller.node_id).await,
+        }))
+        .into_response(),
         Err(error) => (
             StatusCode::CONFLICT,
             Json(json!({ "error": format!("could not issue the token: {error:#}") })),
         )
             .into_response(),
     }
+}
+
+/// The visitors' anonymous relays this admin sees, each with a fresh pass,
+/// for `member` (its own relay left out). On an admin only: passes are
+/// signed with the admin's key.
+pub(crate) async fn relay_passes(
+    state: &GatewayState,
+    member: &str,
+) -> Vec<crate::network::AnonymousRelay> {
+    let now = chrono::Utc::now().timestamp();
+    let document = state.admin_trust.document();
+    let mut relays = Vec::new();
+    for peer in state.network.alive_peers().await {
+        if peer.node_id == member || !crate::gateway::peer_is_visitor(state, &peer) {
+            continue;
+        }
+        let Some(url) = peer
+            .relay
+            .as_ref()
+            .filter(|offer| offer.anonymous)
+            .and_then(|offer| offer.url.clone())
+        else {
+            continue;
+        };
+        match crate::relay_pass::issue(
+            &state.authority_signing_key,
+            &state.authority_principal,
+            &document,
+            &url,
+            now,
+        ) {
+            Ok(pass) => relays.push(crate::network::AnonymousRelay { url, pass }),
+            Err(error) => debug!("no relay pass for {url}: {error:#}"),
+        }
+    }
+    relays
 }
 
 /// `POST /api/internal/membership/roster` - on the principal: its admission
@@ -434,7 +474,9 @@ async fn principal_peer(state: &GatewayState) -> anyhow::Result<crate::network::
 }
 
 /// Asks the admins in turn for a new token, until one gives it.
-async fn request_token(state: &GatewayState) -> anyhow::Result<String> {
+async fn request_token(
+    state: &GatewayState,
+) -> anyhow::Result<(String, Vec<crate::network::AnonymousRelay>)> {
     let document = state.admin_trust.document();
     let mut admins: Vec<_> = state
         .network
@@ -461,9 +503,13 @@ async fn request_token(state: &GatewayState) -> anyhow::Result<String> {
         .await;
         match sent {
             Ok(response) if response.status().is_success() => {
-                let token = response
-                    .json::<Value>()
-                    .await?
+                let answer = response.json::<Value>().await?;
+                let relays = answer
+                    .get("relays")
+                    .cloned()
+                    .and_then(|relays| serde_json::from_value(relays).ok())
+                    .unwrap_or_default();
+                let token = answer
                     .get("token")
                     .and_then(Value::as_str)
                     .map(str::to_string)
@@ -477,7 +523,7 @@ async fn request_token(state: &GatewayState) -> anyhow::Result<String> {
                     &state.network.pubkey,
                 )
                 .ok_or_else(|| anyhow::anyhow!("the admin's token does not hold"))?;
-                return Ok(token);
+                return Ok((token, relays));
             }
             Ok(response) => last = anyhow::anyhow!("{} answered {}", peer.node_id, response.status()),
             Err(error) => last = error,
@@ -497,6 +543,11 @@ pub(crate) fn spawn_token_keeper(state: GatewayState) {
         loop {
             tokio::time::sleep(wait).await;
             wait = KEEPER_TICK;
+            if !state.network.is_detached() && is_admin(&state) {
+                // An admin signs its own passes, renewed every tick.
+                let relays = relay_passes(&state, &state.network.node_id).await;
+                state.network.set_anonymous_relays(relays);
+            }
             if state.network.is_detached() || is_admin(&state) {
                 state.network.set_membership(None);
                 note_token_error(None);
@@ -531,8 +582,9 @@ pub(crate) fn spawn_token_keeper(state: GatewayState) {
                 continue;
             }
             match request_token(&state).await {
-                Ok(token) => {
+                Ok((token, relays)) => {
                     state.network.set_membership(Some(token));
+                    state.network.set_anonymous_relays(relays);
                     note_token_error(None);
                     backoff = TOKEN_RETRY_MIN;
                     debug!("membership token renewed");
@@ -733,5 +785,65 @@ mod connection_tests {
         assert_eq!(status["phase"], "connected");
         assert_eq!(status["peers"], 1);
         assert_eq!(status["admin_in_sight"], true);
+    }
+}
+
+#[cfg(test)]
+mod relay_pass_tests {
+    use super::*;
+    use crate::admin_trust::AuthorityPrincipal;
+    use crate::profile::NodeProfile;
+
+    /// An admin hands out a pass for each visitor relay that takes passes,
+    /// and none for a worker's relay, one that does not, or the asker's own.
+    #[tokio::test]
+    async fn an_admin_hands_out_passes_for_visitor_relays_only() {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
+        let principal = AuthorityPrincipal::from_signing_key("principal", "peer-principal", &key);
+        let trust = crate::admin_trust::AdminTrust::bootstrap_primary_in_memory(
+            "pass-lab",
+            principal.clone(),
+            &key,
+        )
+        .unwrap();
+        let offer = |url: &str, anonymous: bool| {
+            Some(crate::network::RelayOffer {
+                transfers: false,
+                url: Some(url.to_string()),
+                anonymous,
+            })
+        };
+        let with = |id: &str, profile: NodeProfile, relay| {
+            let mut peer = crate::gateway::testkit::peer(id, id, 8090);
+            peer.profile = profile;
+            peer.relay = relay;
+            peer
+        };
+        let peers = vec![
+            with("visitor-relay", NodeProfile::Visitor, offer("http://198.51.100.1:52000/", true)),
+            with("visitor-plain", NodeProfile::Visitor, offer("http://198.51.100.2:52000/", false)),
+            with("worker-relay", NodeProfile::Worker, offer("http://198.51.100.3:52000/", true)),
+            with("asker", NodeProfile::Visitor, offer("http://198.51.100.4:52000/", true)),
+        ];
+        let mut admin = crate::gateway::testkit::state_with("peer-principal", peers).await;
+        admin.admin_trust = std::sync::Arc::new(
+            crate::admin_trust::AdminTrust::in_memory(trust.document()).unwrap(),
+        );
+        admin.authority_principal = principal;
+        admin.authority_signing_key = std::sync::Arc::new(key);
+
+        let relays = relay_passes(&admin, "asker").await;
+        assert_eq!(
+            relays.iter().map(|relay| relay.url.as_str()).collect::<Vec<_>>(),
+            vec!["http://198.51.100.1:52000/"]
+        );
+        let now = chrono::Utc::now().timestamp();
+        assert!(crate::relay_pass::verify(
+            &relays[0].pass,
+            &trust.document(),
+            "http://198.51.100.1:52000/",
+            now
+        )
+        .is_ok());
     }
 }

@@ -120,8 +120,12 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   when the source does not provide it, so the UI shows unavailable without
   inventing zero.
 - `polling.ts` - the fast 2s and idle 10s cadences used by jobs and offers.
+- `connection.ts` - `isConnecting` (the node is `discovering` or
+  `authenticating`) and `connectionStuck` (that step has lasted
+  `CONNECTION_STUCK_AFTER_SECS`, 60 s).
 - `queries.ts` - every read the panel does, as react-query hooks with polling
-  intervals. `useCluster`, `useJobs` and `useOffers` use conditional GETs;
+  intervals. `useConnection` reads `GET /api/ui/connection`, every 2 s while
+  connecting and every 15 s otherwise. `useCluster`, `useJobs` and `useOffers` use conditional GETs;
   jobs and offers slow to 10s when idle and return to 2s while active.
   `useModelDownloads` derives the `model_download` jobs from `/api/ui/jobs` and
   is shared by the remote-model and transfers screens.

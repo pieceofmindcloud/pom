@@ -6,6 +6,7 @@ use super::super::*;
 pub(super) fn routes() -> Router<GatewayState> {
     Router::new()
         .route("/api/ui/node", get(node_info))
+        .route("/api/ui/connection", get(connection_status))
         .route("/api/ui/plugins", get(crate::plugins::list_plugins))
         .route("/api/ui/quota", get(crate::quota::my_quota))
         .route("/api/ui/quota/reset", post(crate::quota::reset_my_session))

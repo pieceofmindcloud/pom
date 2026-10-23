@@ -464,7 +464,14 @@ boundary.
   member's node and key, its role, the network and a 10 min expiry, checked
   against the chain alone). `internal_token` issues one on any admin for an
   approved admission; `spawn_token_keeper` renews this node's (none on an
-  admin) and sets it in the Announce. On a secondary admin,
+  admin) and sets it in the Announce. With no token it looks again every 2 s
+  while no admin is in sight, and backs off from 2 s to the 30 s tick after a
+  refused request; it keeps the last refusal for the interface.
+  `GET /api/ui/connection` (`connection_status`, `LocalOnly`) reports this
+  node's `ConnectionPhase` - `standalone` (an admin, or off the network),
+  `discovering` (no admin heard yet), `authenticating` (an admin in sight, no
+  valid token yet), `connected` - with `since` (unix seconds, when the phase
+  started) and `last_error`. On a secondary admin,
   `spawn_roster_keeper` mirrors the principal's admission list
   (`internal_roster`), and `forward_decision` sends its admission decisions
   to the principal (`internal_decide`, applied by `apply_decision`, which

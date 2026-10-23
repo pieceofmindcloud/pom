@@ -406,6 +406,15 @@ local-only notice. Routes:
   approved. The bell lists machines asking to join this network, with role,
   direct or relayed connection, latency and hardware, and Approve / Decline;
   on the candidate it lists the answer, with "Join now" when approved.
+  After "Join now" the node restarts into the network and, until it holds a
+  membership token, has no models to show. The interface says so instead of
+  "the network serves no model": `GET /api/ui/connection` gives the phase
+  (`discovering`, `authenticating`, `connected`, or `standalone` for an admin),
+  a "Connecting…" badge sits in the top bar and on this machine's row here,
+  and the Chat shows "Connecting to <network>" with the steps (find the
+  network, get access, see the models). A step that lasts 60 s says why it may
+  be stuck, with the admin's last refusal. The same happens after a member
+  reboots.
   Network settings calls visibility "Discovery" and offers off or on (listed);
   the announced-but-not-listed value stays selectable only where already set.
   It no longer offers the open admission mode.

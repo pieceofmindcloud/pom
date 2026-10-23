@@ -34,7 +34,9 @@ import { modelDownloadJobs } from "./modelProvider";
 import { getTrendingModels } from "./publicModelDiscovery";
 import { fetchPublicPlugin, fetchPublicPluginCatalog, type PublicPluginCatalogQuery } from "./pluginCatalog";
 import { jobsPollInterval, offersPollInterval } from "./polling";
+import { isConnecting } from "./connection";
 import type {
+  ConnectionStatus,
   LocalCaStatus,
   SidecarLink,
   ChatCapabilities,
@@ -86,6 +88,7 @@ async function optional<T>(promise: Promise<T>, fallback: T): Promise<T> {
 
 export const keys = {
   node: ["node"] as const,
+  connection: ["connection"] as const,
   localCa: ["tls", "ca"] as const,
   adminAccess: ["admin-access"] as const,
   adminSurface: ["admin-surface"] as const,
@@ -354,6 +357,18 @@ export function useMyQuota<T extends { available: boolean; pending?: boolean }>(
     queryFn: () => api.get<T>("/api/ui/quota"),
     enabled,
     refetchInterval: (query) => (query.state.data?.pending ? 3_000 : 30_000),
+  });
+}
+
+/**
+ * This node's way into its network. Polled fast while it is still getting
+ * there, so the screens follow each step, and slowly once it arrived.
+ */
+export function useConnection() {
+  return useQuery({
+    queryKey: keys.connection,
+    queryFn: () => api.get<ConnectionStatus>("/api/ui/connection"),
+    refetchInterval: (query) => (isConnecting(query.state.data) ? 2_000 : 15_000),
   });
 }
 

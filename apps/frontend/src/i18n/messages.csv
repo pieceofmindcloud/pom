@@ -383,6 +383,21 @@ common.serverDetails,The node returned details in an unsupported language.,O nó
 common.viewWarningFor,View warning for {label},Ver aviso para {label}
 common.warningFor,Warning for {label},Aviso para {label}
 common.whatIs,What is {label},O que é {label}
+connection.badge,Connecting…,Conectando…
+connection.openNetworks,Open Networks,Abrir Redes
+connection.phase.authenticating,The network was found. An administrator's machine is confirming this machine's access.,A rede foi encontrada. A máquina de um administrador está confirmando o acesso desta máquina.
+connection.phase.discovering,Looking for the network's machines. The models show up as soon as this machine is in.,Procurando as máquinas da rede. Os modelos aparecem assim que esta máquina entrar.
+connection.step.authenticate,Get access,Obter acesso
+connection.step.authenticateDetail,An administrator confirms this machine's membership.,Um administrador confirma a participação desta máquina.
+connection.step.discover,Find the network,Encontrar a rede
+connection.step.discoverDetail,Reaching an administrator's machine.,Alcançando a máquina de um administrador.
+connection.step.models,See the models,Ver os modelos
+connection.step.modelsDetail,The network's models appear here.,Os modelos da rede aparecem aqui.
+connection.stuck.authenticating,"An administrator's machine was found, but it has not given this machine access yet. Its last answer:","A máquina de um administrador foi encontrada, mas ainda não deu acesso a esta máquina. A última resposta:"
+connection.stuck.discovering,"No administrator of the network answers yet. Their machines may be offline, or a firewall or NAT may be keeping this machine out.","Nenhum administrador da rede responde ainda. As máquinas deles podem estar desligadas, ou um firewall ou NAT pode estar barrando esta máquina."
+connection.stuckTitle,This is taking longer than usual,Está demorando mais que o normal
+connection.title,Connecting to {name},Conectando a {name}
+connection.titleUnnamed,Connecting to the network,Conectando à rede
 dashboard.activeModel,Network serving {model}.,Rede servindo {model}.
 dashboard.build,Build,Build
 dashboard.closedPipeline,pipeline complete,pipeline fechado

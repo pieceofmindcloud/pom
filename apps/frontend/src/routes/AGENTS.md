@@ -57,7 +57,8 @@ Per-file list:
   `docs/subsystems/web-ui.md`, "First-access wizard".
 
 ## Network, plugins and this machine
-- `PublicNetworks.tsx` - Full-bleed directory of public networks: a
+- `PublicNetworks.tsx` - Full-bleed directory of public networks (this
+  machine's row carries `ConnectionBadge` for a member still connecting): a
   scrolling table with name, organization, place, reach, nodes, latency, VRAM,
   models and the action. The list is a page of the node's table of known
   networks (`GET /api/ui/networks/known`, 25 per page, prev/next under the
@@ -322,7 +323,13 @@ Per-file list:
 ## Chat
 - `Chat.tsx` - The chat: `POST /v1/chat/completions` with `stream: true`,
   with no title bar on an empty conversation, `../components/MissingPiece`
-  and no composer or RAG while the network serves no model (with
+  and no composer or RAG while the network serves no model. While this node
+  is still on its way into its network (`useConnection`, `lib/connection.ts`)
+  that screen is "Connecting to <network>" instead (`MissingPiece`
+  `variant="loading"`, `ConnectingSteps` - find the network, get access, see
+  the models - and, past 60 s on one step, why it may be stuck with the last
+  refusal and a link to the Networks screen), so a visitor that just joined
+  is not told the network serves no model. Otherwise it shows the missing piece (with
   `NoModelSteps` - download, deploy, talk, current step from
   `useLocalCatalog` - for a profile that may deploy, and "See earlier
   conversations" only when one exists), capabilities

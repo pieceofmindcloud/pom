@@ -343,7 +343,8 @@ Per-file list:
   the principal; refusal states remain explicit. Inference nodes are left out
   of the promotion candidates (the node refuses them as well).
 - `Topbar.tsx` - Sticky header: `NodeChip` (the network this machine is in,
-  from `NodeInfo.network_name` and linking to `/config/network`; then hostname,
+  from `NodeInfo.network_name` and linking to `/config/network`; then
+  `ConnectionBadge` while this node is still on its way into it; then hostname,
   the `NatBadge`, peer count, coverage), the i18n badge of the node's persisted profile, the macOS button of
   the larger window and the bell (`Notifications`). The `Este nó` ("This node") button is not
   rendered.
@@ -357,6 +358,10 @@ Per-file list:
   token: pulsing dots and a message that rotates (`lib/chatWaiting.ts`), with
   the "starting our engines" set while the deployment wakes from idle. It is
   not drawn while the model is thinking, which has its own line.
+- `ConnectionStatus.tsx` - `ConnectionBadge`: an amber "Connecting…" with a
+  spinner while `useConnection` says `discovering` or `authenticating`, titled
+  with the phase; nothing otherwise. Shown in the `Topbar` and on this
+  machine's row of the Networks screen for a member.
 - `MissingPiece.tsx` - the puzzle screen (`compact` shrinks mark, puzzle and
   title for a card inside a screen, as on the Networks discovery-off card), `variant="paused"` for a stopped
   on-demand plugin (fourth piece grey, dashed, with a pause sign), `variant="loading"`

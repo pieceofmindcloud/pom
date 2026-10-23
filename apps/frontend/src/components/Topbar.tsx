@@ -10,6 +10,7 @@ import { isServing } from "../lib/format";
 import { useCluster, useNode } from "../lib/queries";
 import { useProfile } from "../lib/profile";
 import { useI18n } from "../i18n/provider";
+import { ConnectionBadge } from "./ConnectionStatus";
 import { NatBadge } from "./NatBadge";
 import { Notifications } from "./Notifications";
 import { SidebarContent } from "./Sidebar";
@@ -55,6 +56,8 @@ function NodeChip() {
           </Badge>
         </Link>
       )}
+      {/* Still on its way into that network: why there is nothing to show yet. */}
+      <ConnectionBadge className="min-w-0 shrink" />
       <Badge tone={serving ? "aqua" : "neutral"}>
         <Dot tone={serving ? "aqua" : "neutral"} pulse={serving} />
         <span className="truncate">{n.hostname}</span>

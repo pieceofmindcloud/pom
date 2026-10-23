@@ -75,6 +75,7 @@ async function getThroughFakeNode(path: string, options?: unknown) {
   };
 }
 vi.mock("../lib/queries", () => ({
+  useConnection: () => ({ data: { phase: "connected", since: 0, last_error: null } }),
   useCluster: () => ({ data: undefined }),
   useNode: () => mocks.node,
   useNetworkInfo: () => mocks.networkInfo,

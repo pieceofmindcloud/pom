@@ -1014,6 +1014,19 @@ export interface RelayedPeer {
   relay_kind: "public" | "dedicated" | "member" | null;
 }
 
+/**
+ * `GET /api/ui/connection`: where this node stands on its way into its network
+ * (`webui/membership.rs`, `ConnectionPhase`).
+ */
+export interface ConnectionStatus {
+  /** `standalone` needs no token (an admin, or off the network); `connected` holds one. */
+  phase: "standalone" | "discovering" | "authenticating" | "connected";
+  /** When the current phase started, in unix seconds. */
+  since: number;
+  /** The last refused token request, while the node holds no token. */
+  last_error: string | null;
+}
+
 /** `GET /api/ui/tls/ca`: this machine's local CA (`webui/https.rs`). */
 export interface LocalCaStatus {
   fingerprint: string;

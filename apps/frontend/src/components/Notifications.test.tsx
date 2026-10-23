@@ -112,7 +112,8 @@ describe("Notifications network offers", () => {
     // Opening the bell reads it: it stays listed and stops counting.
     fireEvent.click(bell());
     expect(screen.getByText("Senha administrativa padrão")).toBeTruthy();
-    expect(screen.getByText(/ainda é a padrão \(admin\)/)).toBeTruthy();
+    expect(screen.getByText(/ainda usa a senha padrão/)).toBeTruthy();
+    expect(screen.queryByText(/\(admin\)/)).toBeNull();
     expect(screen.getByRole("button", { name: "Trocar senha" })).toBeTruthy();
     fireEvent.click(bell());
     expect(bell().textContent).toBe("");

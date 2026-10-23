@@ -512,7 +512,14 @@ good; the rest of this section describes that dormant code. Do not link to it.
   Everything can be adjusted later, inside POM. While the password is the
   default one, the gate does not ask for it (`useAdminSurface` logs in with it
   when `/api/access` says `default_password`) and the bell
-  (`Notifications.tsx`) carries a notice asking to change it in Preferences.
+  (`Notifications.tsx`) carries a notice (which does not spell the default
+  out) leading to `/config/password`: `components/ChangePassword.tsx`, a
+  screen in the wizard's look that replaces the shell on every profile. With
+  the default in force it asks only the new password twice; afterwards the
+  current one too. The new one needs 10 characters and three of lowercase,
+  uppercase, digits and symbols, never the default, checked as it is typed
+  and again by the node. Preferences links to the same screen; the exposure
+  of the interface is a separate setting there.
   The notice is sent once per start of the node (`boot_id` of `/api/access`,
   state in `lib/defaultPasswordNotice.ts`): opening the bell reads it, it can
   be dismissed, and it comes back unread after a restart. Ignoring it blocks

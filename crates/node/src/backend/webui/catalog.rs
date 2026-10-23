@@ -308,31 +308,6 @@ pub(super) async fn admin_access_info(State(state): State<GatewayState>) -> Json
 pub struct SaveAdminAccessRequest {
     pub admin_exposure: AdminExposure,
     pub gateway_port: u32,
-    #[serde(default)]
-    pub current_password: String,
-    #[serde(default)]
-    pub new_password: String,
-}
-
-/// Return the hash that should be persisted after an administrative password
-/// change. Keeping this rule pure makes the first definition and the guarded
-/// rotation independently testable, while the handler remains responsible for
-/// exposure and persistence.
-pub(crate) fn next_admin_password_hash(
-    existing_hash: Option<&str>,
-    current_password: &str,
-    new_password: &str,
-) -> anyhow::Result<Option<String>> {
-    let existing_hash = existing_hash.filter(|hash| !hash.is_empty());
-    if new_password.is_empty() {
-        return Ok(existing_hash.map(str::to_owned));
-    }
-    if let Some(existing_hash) = existing_hash {
-        if !crate::auth::verify_admin_password(existing_hash, current_password) {
-            anyhow::bail!("the previous password is incorrect");
-        }
-    }
-    crate::auth::hash_admin_password(new_password).map(Some)
 }
 
 /// Persists the boundary of the administrative interface. The pipeline routes
@@ -359,37 +334,30 @@ pub(super) async fn save_admin_access(
             .into_response();
     }
 
-    let existing_hash = state.auth.read().await.admin_access_token.clone();
-    let next_password_hash = if req.admin_exposure.requires_password() {
-        let current_password = req.current_password.clone();
-        let new_password = req.new_password.clone();
-        let existing_hash_for_task = existing_hash.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            next_admin_password_hash(
-                existing_hash_for_task.as_deref(),
-                &current_password,
-                &new_password,
-            )
-        })
-        .await;
-        let next = match result {
-            Ok(Ok(next)) => next,
-            Ok(Err(error)) => return bad_request(error.to_string()),
-            Err(error) => return bad_request(format!("could not protect the password: {error}")),
-        };
-        if next.is_none() {
-            return bad_request(
-                "a password is required when the interface accepts connections from the network",
-            );
-        }
-        next
-    } else {
-        None
-    };
+    // The password is its own screen (`change_admin_password`): this route
+    // only moves the boundary, and keeps the hash either way, so going back
+    // to the network finds the password that was set.
+    let existing_hash = state
+        .auth
+        .read()
+        .await
+        .admin_access_token
+        .clone()
+        .filter(|hash| !hash.is_empty());
+    if req.admin_exposure.requires_password() && existing_hash.is_none() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "set a panel password before the interface accepts connections from the network",
+                "code": "password_required",
+            })),
+        )
+            .into_response();
+    }
 
     let (restart, password_configured, invalidate_sessions) = {
         let mut cfg = state.auth.write().await;
-        if cfg.admin_access_token != existing_hash {
+        if cfg.admin_access_token.clone().filter(|hash| !hash.is_empty()) != existing_hash {
             return (
                 StatusCode::CONFLICT,
                 Json(json!({ "error": "the password preference changed; try again" })),
@@ -399,16 +367,6 @@ pub(super) async fn save_admin_access(
         let mut next = cfg.clone();
         next.admin_exposure = req.admin_exposure;
         next.gateway_port = port;
-        // Localhost mode deliberately has no password. Network mode receives
-        // the existing hash or the newly derived one, never plaintext.
-        next.admin_access_token = next_password_hash;
-        // Changing the password back to the default is allowed, and then the warning returns.
-        next.admin_password_default = req.admin_exposure.requires_password()
-            && if req.new_password.is_empty() {
-                cfg.admin_password_default
-            } else {
-                req.new_password == crate::auth::DEFAULT_ADMIN_PASSWORD
-            };
 
         if let Err(error) = next.save() {
             return bad_request(format!(
@@ -418,8 +376,7 @@ pub(super) async fn save_admin_access(
         }
         let restart = port != state.gateway_port;
         let password_configured = next.admin_access_token.is_some();
-        let invalidate_sessions = cfg.admin_exposure != next.admin_exposure
-            || cfg.admin_access_token != next.admin_access_token;
+        let invalidate_sessions = cfg.admin_exposure != next.admin_exposure;
         *cfg = next;
         (restart, password_configured, invalidate_sessions)
     };
@@ -432,7 +389,6 @@ pub(super) async fn save_admin_access(
         exposure = ?req.admin_exposure,
         gateway_port = port,
         restart,
-        password_changed = !req.new_password.is_empty(),
         "administrative access preference updated from the interface"
     );
 
@@ -452,6 +408,115 @@ pub(super) async fn save_admin_access(
         "password_configured": password_configured,
     }))
     .into_response()
+}
+
+/// Shortest panel password accepted.
+pub(crate) const ADMIN_PASSWORD_MIN_CHARS: usize = 10;
+
+/// Why a new panel password is refused, as a stable code the screen
+/// translates: shorter than `ADMIN_PASSWORD_MIN_CHARS`, fewer than three of
+/// lowercase, uppercase, digits and symbols, or the default itself.
+pub(crate) fn admin_password_weakness(password: &str) -> Option<&'static str> {
+    if password == crate::auth::DEFAULT_ADMIN_PASSWORD {
+        return Some("default_password");
+    }
+    if password.chars().count() < ADMIN_PASSWORD_MIN_CHARS {
+        return Some("too_short");
+    }
+    let classes = [
+        password.chars().any(|c| c.is_lowercase()),
+        password.chars().any(|c| c.is_uppercase()),
+        password.chars().any(|c| c.is_ascii_digit()),
+        password.chars().any(|c| !c.is_alphanumeric()),
+    ];
+    if classes.iter().filter(|present| **present).count() < 3 {
+        return Some("too_simple");
+    }
+    None
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChangeAdminPasswordRequest {
+    /// Needed once the password is no longer the first-access default.
+    #[serde(default)]
+    pub current_password: String,
+    pub new_password: String,
+}
+
+/// `POST /api/ui/access/password`: the panel password, apart from the
+/// exposure. While the default is in force the current one is not asked (the
+/// default is no secret); afterwards it is. The new one must be strong
+/// (`admin_password_weakness`). Every session ends with the old hash; the
+/// browser goes on with the new password it just sent.
+pub(super) async fn change_admin_password(
+    State(state): State<GatewayState>,
+    Json(req): Json<ChangeAdminPasswordRequest>,
+) -> Response {
+    if let Some(code) = admin_password_weakness(&req.new_password) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "the new password is not strong enough",
+                "code": code,
+                "min_chars": ADMIN_PASSWORD_MIN_CHARS,
+            })),
+        )
+            .into_response();
+    }
+    let (existing_hash, is_default) = {
+        let cfg = state.auth.read().await;
+        (
+            cfg.admin_access_token.clone().filter(|hash| !hash.is_empty()),
+            cfg.admin_password_default,
+        )
+    };
+    let current = req.current_password.clone();
+    let new_password = req.new_password.clone();
+    let check_hash = existing_hash.clone().filter(|_| !is_default);
+    let result = tokio::task::spawn_blocking(move || {
+        if let Some(hash) = check_hash {
+            if !crate::auth::verify_admin_password(&hash, &current) {
+                return Err("current_password");
+            }
+        }
+        crate::auth::hash_admin_password(&new_password).map_err(|_| "hash_failed")
+    })
+    .await;
+    let hash = match result {
+        Ok(Ok(hash)) => hash,
+        Ok(Err("current_password")) => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({ "error": "the current password is incorrect", "code": "current_password" })),
+            )
+                .into_response();
+        }
+        _ => return bad_request("could not protect the password"),
+    };
+
+    {
+        let mut cfg = state.auth.write().await;
+        if cfg.admin_access_token.clone().filter(|hash| !hash.is_empty()) != existing_hash {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({ "error": "the password changed meanwhile; try again" })),
+            )
+                .into_response();
+        }
+        let mut next = cfg.clone();
+        next.admin_access_token = Some(hash);
+        next.admin_password_default = false;
+        if let Err(error) = next.save() {
+            return bad_request(format!(
+                "could not write {}: {error}",
+                crate::brand::config_filename()
+            ));
+        }
+        *cfg = next;
+    }
+    state.admin_sessions.lock().await.invalidate_all();
+    info!("administrative password changed from the interface");
+    Json(json!({ "saved": true })).into_response()
 }
 
 // ── Model catalog ────────────────────────────────────────────────────────────
@@ -1851,31 +1916,13 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn admin_password_can_be_defined_without_a_previous_password() {
-        let hash = next_admin_password_hash(None, "", "new password")
-            .expect("set the password")
-            .expect("hash of the set password");
-
-        assert!(crate::auth::verify_admin_password(&hash, "new password"));
-        assert!(!hash.contains("new password"));
-    }
-
-    #[test]
-    fn changing_admin_password_requires_the_previous_password() {
-        let old_hash = crate::auth::hash_admin_password("old password").expect("old password");
-        assert!(next_admin_password_hash(Some(&old_hash), "errada", "new password").is_err());
-
-        let new_hash = next_admin_password_hash(Some(&old_hash), "old password", "new password")
-            .expect("change the password")
-            .expect("hash of the new password");
-        assert!(crate::auth::verify_admin_password(
-            &new_hash,
-            "new password"
-        ));
-        assert!(!crate::auth::verify_admin_password(
-            &new_hash,
-            "old password"
-        ));
+    fn a_panel_password_must_be_long_and_mixed_and_never_the_default() {
+        assert_eq!(admin_password_weakness("admin"), Some("default_password"));
+        assert_eq!(admin_password_weakness("Ab1!short"), Some("too_short"));
+        assert_eq!(admin_password_weakness("alllowercase"), Some("too_simple"));
+        assert_eq!(admin_password_weakness("lowerUPPERonly"), Some("too_simple"));
+        assert_eq!(admin_password_weakness("lower1UPPER"), None);
+        assert_eq!(admin_password_weakness("only lower 42"), None);
     }
 
     #[test]

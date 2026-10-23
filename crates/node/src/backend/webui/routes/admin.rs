@@ -8,6 +8,7 @@ pub(super) fn routes() -> Router<GatewayState> {
             "/api/ui/access",
             get(admin_access_info).post(save_admin_access),
         )
+        .route("/api/ui/access/password", post(change_admin_password))
         .route("/api/ui/network/settings", post(save_network_settings))
         .route("/api/ui/network/trust-share", get(trust_share))
         .route("/api/ui/network/quic", post(save_quic))

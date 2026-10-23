@@ -845,6 +845,7 @@ where
         // request, while the chain authorizes the mutation itself.
         if parts.headers.get(ADMIN_ACCESS_TOKEN_HEADER).is_none()
             && parts.uri.path() != "/api/ui/access"
+            && !parts.uri.path().starts_with("/api/ui/access/")
             && is_authenticated_internal_node_request(&parts.headers, &connection_key)
         {
             return Ok(AdminAuth {

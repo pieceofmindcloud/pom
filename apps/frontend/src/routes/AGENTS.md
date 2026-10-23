@@ -820,9 +820,11 @@ Per-file list:
   instead of repeating the server's text. It lives outside the profile gate - see
   the file's header and `lib/access.ts`. Test: `TrustAnchor.test.tsx`.
 - `Preferences.tsx` - Local settings screen under Settings (`Configurações`): owns the
-  administrative exposure mode and gateway port, accepts a password only in
-  network mode, and saves its Argon2id hash to `pom.json` through
-  `POST /api/ui/access`. It also mounts `HttpsCertificatePanel` (the node's
+  administrative exposure mode and gateway port (`POST /api/ui/access`, the
+  principal's; the panel hides where the node refuses it), and refuses the
+  network mode until a password exists, linking to the password screen. The
+  "Panel password" card, on every profile, opens `/config/password`
+  (`components/ChangePassword.tsx`). It also mounts `HttpsCertificatePanel` (the node's
   local CA, for every profile), `ThermalPanel` and
   `HuggingFaceSettingsPanel`; there is no TLS panel, since TLS between nodes is
   always on. It also mounts the cluster logs switch,

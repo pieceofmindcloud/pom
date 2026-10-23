@@ -268,6 +268,12 @@ Per-file list:
   (`lib/randomName.ts`). The name screen saves it through the routes the two
   settings screens use, then reports the one `names` step. It reuses the
   `.pom-login*` / `.pom-setup*` shell. Tests in `FirstRunWizard.test.tsx`.
+- `ChangePassword.tsx` - The panel password screen (`/config/password`),
+  drawn like the wizard in place of the shell, on every profile: the new
+  password twice, plus the current one once the default is gone; live checks
+  (`passwordChecks`) mirror the node's rule. Saves with
+  `POST /api/ui/access/password` and the tab goes on with the new password.
+  Tests in `ChangePassword.test.tsx`.
 - `FirstRunGuide.tsx` - The hints of a machine's first run, mounted once in
   the shell (`App.tsx`, `admin` profile only), for the steps after the
   wizard. Shows one balloon for the

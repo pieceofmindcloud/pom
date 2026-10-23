@@ -357,7 +357,7 @@ export function Notifications() {
                           variant="ghost"
                           onClick={() => {
                             setOpen(false);
-                            navigate("/config/preferences");
+                            navigate("/config/password");
                           }}
                         >
                           {t("firstRun.defaultPasswordChange")}

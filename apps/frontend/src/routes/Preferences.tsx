@@ -2,8 +2,9 @@
  * Local preferences of this node: administrative boundary, TLS between nodes,
  * thermal protection and optional credential for the Hugging Face provider.
  */
-import { Ban, Lock, MessagesSquare, RadioTower, ScrollText, ShieldCheck, Thermometer, Zap } from "lucide-react";
+import { Ban, KeyRound, Lock, MessagesSquare, RadioTower, ScrollText, ShieldCheck, Thermometer, Zap } from "lucide-react";
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { HttpsCertificatePanel } from "../components/HttpsCertificatePanel";
 import { HuggingFaceSettingsPanel } from "../components/HuggingFaceSettingsPanel";
 import {
@@ -18,8 +19,8 @@ import {
   PanelHeader,
   Select,
 } from "../components/ui";
-import { api, clearAdminAccessToken, setAdminAccessToken } from "../lib/api";
-import { useAdminAccessInfo, useEnterpriseStatus, useInvalidate, useNode } from "../lib/queries";
+import { api, clearAdminAccessToken } from "../lib/api";
+import { useAdminAccess, useAdminAccessInfo, useEnterpriseStatus, useInvalidate, useNode } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import { useProfile } from "../lib/profile";
 import type { AdminAccessInfo, AdminExposure, ThermalPolicy } from "../lib/types";
@@ -253,8 +254,6 @@ function AdminAccessPanel() {
   const [exposure, setExposure] = useState<AdminExposure>("localhost");
   const [port, setPort] = useState("8080");
   const [passwordConfigured, setPasswordConfigured] = useState(false);
-  const [currentPassword, setCurrentPassword] = useState("");
-  const [newPassword, setNewPassword] = useState("");
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -272,7 +271,7 @@ function AdminAccessPanel() {
       toast.fromError(t("preferences.accessSaveFailed"), new Error(t("preferences.portInvalid")));
       return;
     }
-    if (exposure === "network" && !passwordConfigured && !newPassword) {
+    if (exposure === "network" && !passwordConfigured) {
       toast.fromError(t("preferences.accessSaveFailed"), new Error(t("preferences.accessPasswordRequired")));
       return;
     }
@@ -283,15 +282,10 @@ function AdminAccessPanel() {
         {
           admin_exposure: exposure,
           gateway_port: gatewayPort,
-          current_password: currentPassword,
-          new_password: newPassword,
         },
       );
       setPasswordConfigured(saved.password_configured);
-      if (exposure === "network" && newPassword) setAdminAccessToken(newPassword);
       if (exposure === "localhost") clearAdminAccessToken();
-      setCurrentPassword("");
-      setNewPassword("");
       toast.success(
         t("preferences.accessSaved"),
         saved.restart ? t("preferences.accessRestarting") : t("preferences.accessSavedDetail"),
@@ -306,6 +300,8 @@ function AdminAccessPanel() {
   }
 
   const networkExposed = exposure === "network";
+  // The exposure is the principal's setting: elsewhere the node refuses it.
+  if (access.isError) return null;
   return (
     <Panel>
       <PanelHeader
@@ -347,30 +343,14 @@ function AdminAccessPanel() {
           </Field>
         </div>
         {networkExposed ? (
-          <div className="space-y-3 rounded-lg border border-amber/25 bg-amber/6 p-3.5">
-            <div className="min-w-0">
-              <p className="text-sm font-medium text-fg">{t("preferences.accessPasswordTitle")}</p>
-              <p className="mt-1 text-xs leading-relaxed text-faint">{t("preferences.accessPasswordHint")}</p>
-            </div>
-            {passwordConfigured && (
-              <Field label={t("preferences.accessPasswordCurrentLabel")}>
-                <Input
-                  type="password"
-                  value={currentPassword}
-                  onChange={(event) => setCurrentPassword(event.target.value)}
-                  autoComplete="current-password"
-                />
-              </Field>
+          <Footnote icon={<Lock className="h-3.5 w-3.5" />}>
+            {passwordConfigured ? t("preferences.accessPasswordSet") : (
+              <>
+                {t("preferences.accessPasswordRequired")}{" "}
+                <Link to="/config/password" className="text-iris hover:underline">{t("password.change")}</Link>
+              </>
             )}
-            <Field label={t("preferences.accessPasswordNewLabel")}>
-              <Input
-                type="password"
-                value={newPassword}
-                onChange={(event) => setNewPassword(event.target.value)}
-                autoComplete="new-password"
-              />
-            </Field>
-          </div>
+          </Footnote>
         ) : (
           <Footnote icon={<Lock className="h-3.5 w-3.5" />}>
             {t("preferences.accessLocalNoToken")}
@@ -380,6 +360,32 @@ function AdminAccessPanel() {
           {t("preferences.accessConnectionKeyNote")}
         </Footnote>
       </div>
+    </Panel>
+  );
+}
+
+/**
+ * The panel password, for every profile: a link to its own screen
+ * (`/config/password`), which asks the current password, the new one and its
+ * confirmation. Separate from the exposure above.
+ */
+function PasswordPanel() {
+  const { t } = useI18n();
+  const access = useAdminAccess();
+  return (
+    <Panel>
+      <PanelHeader
+        eyebrow={t("preferences.accessEyebrow")}
+        title={t("preferences.accessPasswordTitle")}
+        subtitle={t(access.data?.default_password ? "preferences.passwordDefault" : "preferences.passwordSubtitle")}
+        actions={
+          <Link to="/config/password" data-testid="preferences-change-password">
+            <Button variant={access.data?.default_password ? "primary" : "outline"} icon={<KeyRound className="h-3.5 w-3.5" />}>
+              {t("password.change")}
+            </Button>
+          </Link>
+        }
+      />
     </Panel>
   );
 }
@@ -607,6 +613,7 @@ export function Preferences({ administrative = false }: { administrative?: boole
           <NetworkChatPanel enabled={node.data?.network_chat_enabled ?? false} authority={node.data?.network_chat_authority ?? false} busy={networkChatSaving} onToggle={(next) => void toggleNetworkChat(next)} />
           {autoDiscoveryLoaded && <AutoDiscoveryPanel status={autoDiscovery} authority={node.data?.quic_authority ?? false} busy={autoDiscoverySaving} onToggle={(next) => void toggleAutoDiscovery(next)} />}
         </> : <>
+          <PasswordPanel />
           <AdminAccessPanel />
           <HttpsCertificatePanel />
           {!inferOnly && <ThermalPanel policy={node.data?.thermal} busy={thermalSaving} onSave={(next) => void saveThermal(next)} />}

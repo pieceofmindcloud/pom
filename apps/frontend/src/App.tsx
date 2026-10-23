@@ -20,6 +20,7 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Sidebar } from "./components/Sidebar";
 import { Topbar } from "./components/Topbar";
 import { FirstRunGuide } from "./components/FirstRunGuide";
+import { ChangePassword } from "./components/ChangePassword";
 import { FirstRunWizard, useFirstRunWizard } from "./components/FirstRunWizard";
 import { EnterpriseFeatureShowcase } from "./components/EnterpriseFeatureShowcase";
 import { useI18n } from "./i18n/provider";
@@ -369,6 +370,14 @@ export default function App() {
     return (
       <ErrorBoundary>
         <FirstRunWizard step={wizard.step} />
+      </ErrorBoundary>
+    );
+  }
+  // The password screen replaces the shell, like the wizard, on every profile.
+  if (location.pathname === "/config/password") {
+    return (
+      <ErrorBoundary>
+        <ChangePassword />
       </ErrorBoundary>
     );
   }

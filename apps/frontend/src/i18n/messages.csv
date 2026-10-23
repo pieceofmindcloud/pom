@@ -1123,7 +1123,7 @@ firstRun.adminDetail,Creates a new network and invites other machines.,Cria uma 
 firstRun.advanced,Advanced,Avançado
 firstRun.copyTrust,Copy trust.json,Copiar trust.json
 firstRun.defaultPasswordChange,Change password,Trocar senha
-firstRun.defaultPasswordNotice,The administrative password is still the default (admin). Anyone who reaches this panel on the network can use it.,A senha administrativa ainda é a padrão (admin). Qualquer um que alcance este painel pela rede pode usá-la.
+firstRun.defaultPasswordNotice,The panel still uses the default password. Anyone who reaches it on the network can sign in: set a password of your own.,O painel ainda usa a senha padrão. Qualquer pessoa que o alcance pela rede consegue entrar: defina uma senha sua.
 firstRun.discoveryAdminOptional,Optional: open POM on another machine and choose Node or Inference. You can also add machines later.,Opcional: abra o POM em outra máquina e escolha Nó ou Inferência. Dá para adicionar máquinas depois.
 firstRun.discoveryAdminWaiting,Waiting for computers on the local network...,Esperando computadores na rede local...
 firstRun.discoveryPeers,"{count, plural, one {# computer found} other {# computers found}}","{count, plural, one {# computador encontrado} other {# computadores encontrados}}"
@@ -1965,6 +1965,27 @@ notifications.transferFrom,from {host},de {host}
 notifications.transferStarted,Transfer started,Transferência iniciada
 notifications.transferTo,to {host},para {host}
 notifications.viewAdministration,View administration,Ver administração
+password.change,Change password,Trocar senha
+password.confirm,Confirm the new password,Confirme a nova senha
+password.current,Current password,Senha atual
+password.currentWrong,The current password is not correct.,A senha atual não confere.
+password.detail,"Type the current password, then the new one twice.",Digite a senha atual e depois a nova duas vezes.
+password.detailDefault,"This panel still uses the default password, which anyone can guess. Choose a password of your own and type it twice.","Este painel ainda usa a senha padrão, que qualquer pessoa adivinha. Escolha uma senha sua e digite duas vezes."
+password.failed,Could not save: {error},Não foi possível salvar: {error}
+password.hide,Hide passwords,Ocultar senhas
+password.later,Later,Depois
+password.mismatch,The two passwords are not the same.,As duas senhas não são iguais.
+password.new,New password,Nova senha
+password.ruleLength,At least {count} characters,Pelo menos {count} caracteres
+password.ruleMixed,"Three of: lowercase, uppercase, numbers, symbols","Três entre: minúsculas, maiúsculas, números, símbolos"
+password.ruleNotDefault,Not the default password,Diferente da senha padrão
+password.save,Save password,Salvar senha
+password.saved,Password changed,Senha alterada
+password.savedDetail,Other open panels sign in again with the new password.,Os outros painéis abertos entram de novo com a nova senha.
+password.show,Show passwords,Mostrar senhas
+password.title,Change the panel password,Trocar a senha do painel
+password.titleDefault,Set a secure password,Defina uma senha segura
+password.weak,The node refused the password as not strong enough.,O nó recusou a senha por não ser forte o bastante.
 paths.addFolder,Add another folder,Mais uma pasta
 paths.addMissing,"{count, plural, =1 {Add the missing folder} other {Add missing folders}}","{count, plural, =1 {Adicionar a que falta} other {Adicionar as que faltam}}"
 paths.autoDetect,automatic detection,detecção automática
@@ -2209,7 +2230,8 @@ preferences.accessModePasswordHint,The administration surface accepts network co
 preferences.accessPasswordCurrentLabel,Current password,Senha anterior
 preferences.accessPasswordHint,"The password is stored only as a one-way Argon2id hash and can never be recovered. Leave the new password empty to keep the current one.","A senha é armazenada somente como hash Argon2id de mão única e nunca pode ser recuperada. Deixe a nova senha vazia para manter a atual."
 preferences.accessPasswordNewLabel,New password,Nova senha
-preferences.accessPasswordRequired,Set a password before exposing the interface to the network.,Defina uma senha antes de expor a interface à rede.
+preferences.accessPasswordRequired,Set a panel password before exposing the interface to the network.,Defina uma senha do painel antes de expor a interface à rede.
+preferences.accessPasswordSet,The panel asks for its password. Change it in the panel password above.,"O painel pede a senha. Troque-a em Senha do painel, acima."
 preferences.accessPasswordTitle,Administrative access password,Senha de acesso administrativo
 preferences.accessPortHint,The port must be between 1 and 65535 and available.,A porta precisa estar entre 1 e 65535 e disponível.
 preferences.accessPortLabel,Interface port,Porta da interface
@@ -2229,6 +2251,8 @@ preferences.accessTokenTitle,Administrative access token,Token de acesso adminis
 preferences.accessTokenUnavailable,Token unavailable,Token indisponível
 preferences.adminSubtitle,Cluster-wide controls reserved for the network authority.,Controles da rede reservados à autoridade administrativa.
 preferences.adminTitle,Administrative preferences,Preferências administrativas.
+preferences.passwordDefault,Still the default password: anyone on the network can sign in.,Ainda é a senha padrão: qualquer pessoa na rede consegue entrar.
+preferences.passwordSubtitle,The password that opens this machine's panel. Changing it asks for the current one.,"A senha que abre o painel desta máquina. Para trocar, a atual é pedida."
 preferences.portInvalid,Enter a port between 1 and 65535.,Informe uma porta entre 1 e 65535.
 preferences.subtitle,Local protection and model-provider credentials for this node.,Proteção local e credenciais de provedor deste nó.
 preferences.title,Preferences,Preferências

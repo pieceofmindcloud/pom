@@ -590,8 +590,15 @@ is how the interface repeats a notice once per start) and `default_password` - t
 is still the first access default (`admin`, `auth::DEFAULT_ADMIN_PASSWORD`). It
 is a flag written in `pom.json` (`admin_password_default`) next to the hash, so
 this public route never runs Argon2; creating the local network at first run
-sets it (in `network` mode with that password) and `POST /api/ui/access`
-updates it on every password change.
+sets it (in `network` mode with that password) and
+`POST /api/ui/access/password` clears it. That route (`LocalOnly`, every
+profile, no other node) takes `{current_password?, new_password}`: the current
+password is required unless the default is in force, a wrong one is 403
+`current_password`, a weak new one is 400 with `code` `too_short`,
+`too_simple` or `default_password` (`admin_password_weakness`: 10 characters,
+three of four classes); success ends every session. `POST /api/ui/access`
+(principal) moves only `{admin_exposure, gateway_port}`, keeps the hash in
+both modes and refuses the network mode without one (`password_required`).
 
 ### Setup routes are not served
 

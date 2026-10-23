@@ -2863,7 +2863,7 @@ impl Network {
     }
 
     /// Whether this node is a visitor: its profile, or its own token.
-    fn is_visitor(&self) -> bool {
+    pub(crate) fn is_visitor(&self) -> bool {
         if self
             .profile
             .read()
@@ -3012,14 +3012,17 @@ impl Network {
         // Announce to known peers
         let peers = self.peers.read().await;
         for peer in peers.values() {
-            if peer.is_alive() {
+            if peer.is_alive() && !self.hides(peer) {
                 let addresses = peer.dialable_addrs();
                 self.send_to_candidates(&msg, &addresses).await?;
             }
         }
 
-        // Broadcast locally
-        self.broadcast_local(&msg).await?;
+        // Broadcast locally, except on a visitor: the LAN may hold other
+        // visitors, and they never learn of each other.
+        if !self.is_visitor() {
+            self.broadcast_local(&msg).await?;
+        }
 
         Ok(())
     }
@@ -3072,7 +3075,7 @@ impl Network {
             let peers = self.peers.read().await;
             let mut v: Vec<(&String, &PeerInfo)> = peers
                 .iter()
-                .filter(|(_, p)| p.is_alive() && !p.dialable_addrs().is_empty())
+                .filter(|(_, p)| p.is_alive() && !self.hides(p) && !p.dialable_addrs().is_empty())
                 .collect();
             v.sort_by(|a, b| a.0.cmp(b.0));
             v.into_iter().map(|(_, p)| p.dialable_addrs()).collect()
@@ -6269,6 +6272,46 @@ mod tests {
         let mut to_worker = ids(admin.peer_list_for("worker").await);
         to_worker.sort();
         assert_eq!(to_worker, vec!["visitor-a", "visitor-b", "worker"]);
+    }
+
+    /// A visitor announces itself straight to the admins and workers it
+    /// knows and to the endpoints it dialed through pkarr, never to another
+    /// visitor or to itself.
+    #[tokio::test]
+    async fn a_visitor_announces_only_to_admins_and_workers() {
+        use crate::profile::NodeProfile;
+        let endpoint = |seed: u8| crate::p2p::SecretKey::from_bytes(&[seed; 32]).public();
+        let with = |id: &str, profile: NodeProfile, seed: u8| {
+            let mut peer = dummy_peer(id, "127.0.0.1:9");
+            peer.profile = profile;
+            peer.endpoint_id = Some(endpoint(seed).to_string());
+            peer
+        };
+        let visitor = Network::testkit("visitor-a".into(), String::new(), vec![], None, None)
+            .await
+            .unwrap();
+        *visitor.profile.write().unwrap() = NodeProfile::Visitor;
+        for peer in [
+            with("worker", NodeProfile::Worker, 1),
+            with("visitor-b", NodeProfile::Visitor, 2),
+            with("visitor-a", NodeProfile::Visitor, 9),
+        ] {
+            visitor.peers.write().await.insert(peer.node_id.clone(), peer);
+        }
+        let mut dialed = std::collections::HashMap::new();
+        dialed.insert(endpoint(4), vec!["198.51.100.4:4000".to_string()]);
+
+        let mut targets: Vec<_> =
+            crate::discovery::direct_announce_targets(&visitor, endpoint(9), &dialed)
+                .await
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect();
+        targets.sort();
+        let mut expected = vec![endpoint(1), endpoint(4)];
+        expected.sort();
+        assert_eq!(targets, expected);
+        assert!(visitor.is_visitor());
     }
 
     /// With no verdict in the cache the answer is `None`, with no probe: it is what the

@@ -80,6 +80,15 @@ the table after that point. On a visitor, another visitor is never admitted and
 is left out of `alive_peers`; a `PeerList` names visitors only to a requester
 known as an admin or a worker (`security-model.md`, roles).
 
+A visitor's own `Announce` never travels where another visitor could read it.
+The gossip topic is shared by every network, so a visitor does not publish on
+it: each announce round it sends the sealed announce straight to every admin
+and worker in its `alive_peers` and to the endpoints it dialed through pkarr
+(`discovery::direct_announce_targets`), over the `pom/announce-direct/1` ALPN
+(`AnnounceCodec`), and the receiver handles it exactly like a gossip announce.
+Over UDP it skips the LAN broadcast and announces only to the peers it keeps.
+It stays subscribed to the topic, which is how it hears the admins and workers.
+
 - On a private network, a non-empty `connection_key` selects the proof through
   `/handshake`. The key never leaves the node: it sends its identity and a
   fresh 32-byte challenge, and the target answers with an HMAC-SHA256 of the
@@ -1742,13 +1751,6 @@ with a live cluster endpoint.
 
 ## 7. Defects noted
 
-- **DEFECT NOTED: a visitor's gossip `Announce` reaches other visitors.** The
-  announce is broadcast on the network's gossip topic, which every member
-  joins, so another visitor receives its bytes - node id, addresses and
-  hardware - even though its admission refuses it and it never dials it
-  (`Network::hides`). Hiding it needs a visitor to send its announce only to
-  admins and workers instead of the shared topic, without losing the workers
-  that check a visitor's membership against their peers table.
 
 - **DEFECT NOTED: `Heartbeat` is unsigned.** A `Heartbeat` names a `node_id`
   and a `timestamp` and nothing proves either, so anyone on the LAN can keep

@@ -12,7 +12,10 @@
 //!   whom `RelayGate` admits: everyone on a public relay (`serve_relay`), the
 //!   admitted members on a node the internet reaches.
 //! - **Request/response protocols** (tunnel, cluster logs, chat, lobby,
-//!   audit), one ALPN each; see `p2p.rs`.
+//!   audit, direct announce), one ALPN each; see `p2p.rs`.
+//! - **A visitor never publishes on the topic**: its sealed `Announce` goes
+//!   to each admin and worker it knows over `AnnounceCodec`, so no other
+//!   visitor, and no other network, ever sees it.
 
 use crate::cluster_logs::{self, ClusterLogs, ClusterLogsCodec, LogOutbound};
 use crate::infer_tunnel::{self, InferTunnelCodec, TunnelOutbound};
@@ -54,6 +57,79 @@ const POLICY_INTERVAL: Duration = Duration::from_secs(5);
 
 /// How many member relays this node adds to its relay map at once.
 const MEMBER_RELAYS: usize = 2;
+
+/// One sealed `Announce` delivered to one endpoint, the way a visitor
+/// announces itself (`Discovery::run`). The answer is an empty
+/// acknowledgement: the receiver handles it like a gossip announce.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct AnnounceCodec;
+
+#[async_trait::async_trait]
+impl Codec for AnnounceCodec {
+    const PROTOCOL: &'static str = "pom/announce-direct/1";
+    type Request = Vec<u8>;
+    type Response = ();
+
+    async fn read_request<T>(&mut self, io: &mut T) -> std::io::Result<Vec<u8>>
+    where
+        T: futures::AsyncRead + Unpin + Send,
+    {
+        use futures::AsyncReadExt;
+        let mut len = [0_u8; 4];
+        io.read_exact(&mut len).await?;
+        let len = u32::from_be_bytes(len) as usize;
+        if len > GOSSIP_MAX_MESSAGE_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "announce exceeds the size bound",
+            ));
+        }
+        let mut sealed = vec![0_u8; len];
+        io.read_exact(&mut sealed).await?;
+        Ok(sealed)
+    }
+
+    async fn read_response<T>(&mut self, _io: &mut T) -> std::io::Result<()>
+    where
+        T: futures::AsyncRead + Unpin + Send,
+    {
+        Ok(())
+    }
+
+    async fn write_request<T>(&mut self, io: &mut T, sealed: Vec<u8>) -> std::io::Result<()>
+    where
+        T: futures::AsyncWrite + Unpin + Send,
+    {
+        use futures::AsyncWriteExt;
+        io.write_all(&(sealed.len() as u32).to_be_bytes()).await?;
+        io.write_all(&sealed).await
+    }
+
+    async fn write_response<T>(&mut self, _io: &mut T, _res: ()) -> std::io::Result<()>
+    where
+        T: futures::AsyncWrite + Unpin + Send,
+    {
+        Ok(())
+    }
+}
+
+/// Where a visitor sends its announce: the admins and workers it knows (its
+/// `alive_peers` never holds a visitor), and the endpoints it dialed through
+/// pkarr before it knew any, which is how it reaches the principal first.
+pub(crate) async fn direct_announce_targets(
+    network: &Network,
+    own: EndpointId,
+    dialed: &std::collections::HashMap<EndpointId, Vec<String>>,
+) -> Vec<(EndpointId, Vec<String>)> {
+    let mut targets: std::collections::HashMap<EndpointId, Vec<String>> = dialed.clone();
+    for peer in network.alive_peers().await {
+        if let Some(id) = peer.endpoint_id.as_deref().and_then(p2p::parse_endpoint_id) {
+            targets.insert(id, peer.endpoint_dialable_addrs());
+        }
+    }
+    targets.remove(&own);
+    targets.into_iter().collect()
+}
 
 fn topic_id() -> TopicId {
     TopicId::from_bytes(Sha256::digest(GOSSIP_TOPIC.as_bytes()).into())
@@ -508,6 +584,14 @@ impl Discovery {
             })
             .on_connection(tracker.clone())
         };
+        let direct_announce = {
+            let ctx = ctx.clone();
+            p2p::Serve::new(AnnounceCodec, move |_connection: Connection, sealed: Vec<u8>| {
+                let ctx = ctx.clone();
+                async move { handle_announce(&ctx, &sealed).await }
+            })
+            .on_connection(tracker.clone())
+        };
         let logs = {
             let ctx = ctx.clone();
             p2p::Serve::new(ClusterLogsCodec, move |connection: Connection, request| {
@@ -566,6 +650,7 @@ impl Discovery {
             .accept(crate::network_lobby::LobbyCodec::PROTOCOL.as_bytes(), lobby)
             .accept(NetworkChatCodec::PROTOCOL.as_bytes(), chat)
             .accept(ClusterLogsCodec::PROTOCOL.as_bytes(), logs)
+            .accept(AnnounceCodec::PROTOCOL.as_bytes(), direct_announce)
             .accept(AuditCodec::PROTOCOL.as_bytes(), audit)
             .spawn()
     }
@@ -628,7 +713,26 @@ impl Discovery {
                 msg = announce_rx.recv() => {
                     let Some(data) = msg else { break };
                     let sealed = seal_announce(&secret, &data);
-                    if let Err(error) = gossip_tx.broadcast(sealed.into()).await {
+                    if network.is_visitor() {
+                        // The topic is shared by every network: a visitor's
+                        // announce goes only to its admins and workers.
+                        for (peer_id, addrs) in
+                            direct_announce_targets(&network, endpoint.id(), &policy.dialed).await
+                        {
+                            if ctx.p2p.backing_off(&peer_id) && !ctx.p2p.is_connected(&peer_id) {
+                                continue;
+                            }
+                            let transport = ctx.p2p.clone();
+                            let sealed = sealed.clone();
+                            tokio::spawn(async move {
+                                if let Err(error) =
+                                    transport.call(AnnounceCodec, peer_id, &addrs, sealed).await
+                                {
+                                    debug!("announce to {}: {error}", peer_id.fmt_short());
+                                }
+                            });
+                        }
+                    } else if let Err(error) = gossip_tx.broadcast(sealed.into()).await {
                         debug!("gossip broadcast: {error}");
                     }
                 }
@@ -640,6 +744,7 @@ impl Discovery {
                     }
                     info!("pkarr: dialling {}", addr.id.fmt_short());
                     ctx.p2p.learn(addr.id, &p2p::addr_texts(&addr));
+                    policy.dialed.insert(addr.id, p2p::addr_texts(&addr));
                     join_gossip(&gossip_tx, &mut policy, addr.id).await;
                 }
                 event = mdns_events.next() => {
@@ -757,6 +862,9 @@ struct PolicyState {
     joined: HashSet<EndpointId>,
     /// The topic's active neighbors right now.
     neighbors: HashSet<EndpointId>,
+    /// Endpoints dialed through pkarr, with their addresses: where a visitor
+    /// sends its announce before it knows any member (`direct_announce_targets`).
+    dialed: std::collections::HashMap<EndpointId, Vec<String>>,
     /// When this node, with no neighbor at all, last asked every admitted
     /// peer again.
     isolated_rejoin: Option<std::time::Instant>,
@@ -1719,6 +1827,27 @@ mod tests {
 
     fn key(seed: u8) -> SecretKey {
         SecretKey::from_bytes(&[seed; 32])
+    }
+
+    /// The direct announce carries the sealed bytes unchanged, and refuses a
+    /// frame over the gossip bound.
+    #[tokio::test]
+    async fn a_direct_announce_round_trips_and_is_bounded() {
+        let sealed = seal_announce(&key(3), b"{\"announce\":1}");
+        let mut wire = Vec::new();
+        AnnounceCodec.write_request(&mut wire, sealed.clone()).await.unwrap();
+        let read = AnnounceCodec
+            .read_request(&mut futures::io::Cursor::new(wire))
+            .await
+            .unwrap();
+        assert_eq!(read, sealed);
+
+        let mut oversized = ((GOSSIP_MAX_MESSAGE_BYTES + 1) as u32).to_be_bytes().to_vec();
+        oversized.extend_from_slice(&[0; 8]);
+        assert!(AnnounceCodec
+            .read_request(&mut futures::io::Cursor::new(oversized))
+            .await
+            .is_err());
     }
 
     /// iroh-gossip authenticates only the neighbor that delivered a message.

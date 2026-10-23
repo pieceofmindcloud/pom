@@ -30,8 +30,9 @@ are either workers or visitors.
   gossips with or lists one. Every node answers a `PeerRequest` with visitors
   only to a requester it knows as an admin or a worker
   (`Network::peer_list_for`). The role is the peer's token checked against the
-  chain, else its announced profile. See `p2p-network.md`, section 7, for
-  what the gossip topic still shows.
+  chain, else its announced profile. A visitor's own announce goes straight to
+  its admins and workers, never on the gossip topic or the LAN broadcast
+  (`p2p-network.md`, "Admission before the `peers` table").
 - A visitor node refuses to hold or serve a model even when an admin asks
   (`visitor_profile`): `apply`, `launch`, `deploy`, `reconfigure`, `slice` and
   every `/api/transfer` route are refused before any other check.

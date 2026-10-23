@@ -130,7 +130,7 @@ dedicated or member, with iroh's hole punching), are in
   topic for every network, announces sealed with the node key's signature, since
   iroh-gossip only authenticates the delivering neighbor), the embedded relay server
   on TCP on the same port (`GateAccess` asks `RelayGate`), the `Router` serving the
-  tunnel, lobby, chat, logs and audit ALPNs, and `link_tracker`, which follows every
+  tunnel, lobby, chat, logs, audit and direct announce ALPNs, and `link_tracker`, which follows every
   connection's selected path into `Network::note_link`. It puts peers into the
   `Network` only after the admission ratchet, which on gossip never probes inline
   (`admission_without_probe`, and without a verdict `admit_in_background`). The
@@ -158,7 +158,9 @@ dedicated or member, with iroh's hole punching), are in
   connection key is checked against (`auth::caller_is_member`). On a visitor, `admit_peer`
   refuses another visitor and `alive_peers` leaves one out (`hides`, role from
   the verified token, else the announced profile): visitors never know each
-  other. On a public network the
+  other. A visitor's `announce` skips the LAN broadcast, and `discovery.rs`
+  sends its sealed announce to each admin and worker over `AnnounceCodec`
+  (`pom/announce-direct/1`) instead of the gossip topic. On a public network the
   rigor follows the `network.access_policy`: with `authorized` (the default) the
   `cluster_id` only selects the chain and the tuple `{node_id, peer_id, pubkey}`
   must be an active concession in `admin_trust.rs`; with `anyone_with_anchor` a

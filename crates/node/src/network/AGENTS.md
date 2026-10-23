@@ -497,7 +497,7 @@ dedicated or member, with iroh's hole punching), are in
   neither sends nor accepts one (`visitor_has_no_chat`). `answer_lobby_request` answers a non-member (see `network_lobby.rs`):
   each candidate posts and reads in its own thread (`lobby/<node_id>`), and
   lobby rooms reach the chain's admins only. On the policy tick the principal
-  relays `LobbyClosed` for the threads an approval erased, and every node purges
+  relays `LobbyClosed` for the threads a decision erased, and every node purges
   threads idle for a day.
   The logs and audit handlers ingest on the receiving admin and never retransmit.
 - `apply_policy` - every 5 s (`POLICY_INTERVAL`): the relay gate's member list and the

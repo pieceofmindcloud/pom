@@ -320,7 +320,7 @@ fn a_lobby_thread_names_its_candidate() {
 }
 
 #[tokio::test]
-async fn approving_a_candidate_erases_its_thread_and_queues_it_for_the_admins() {
+async fn deciding_a_candidate_erases_its_thread_and_queues_it_for_the_admins() {
     let path = std::env::temp_dir().join(format!(
         "pom-network-chat-threads-{}.db",
         uuid::Uuid::new_v4()
@@ -360,7 +360,7 @@ async fn approving_a_candidate_erases_its_thread_and_queues_it_for_the_admins() 
         crate::config::EnrollmentRole::Visitor,
     )
     .unwrap();
-    // A rejection keeps the thread; an approval erases it.
+    // Approved or declined, the thread goes, and the candidate leaves the lobby.
     chat.decide_admission(
         "cand-b",
         Some(crate::network_lobby::AdmissionStatus::Rejected),
@@ -369,15 +369,20 @@ async fn approving_a_candidate_erases_its_thread_and_queues_it_for_the_admins() 
         "cand-a",
         Some(crate::network_lobby::AdmissionStatus::Approved),
     );
-    assert!(database
-        .network_chat_messages("lobby/cand-a", 10)
-        .unwrap()
-        .is_empty());
-    assert_eq!(database.network_chat_messages("lobby/cand-b", 10).unwrap().len(), 1);
-    assert_eq!(chat.take_closed_threads(), vec!["lobby/cand-a".to_string()]);
+    for room in ["lobby/cand-a", "lobby/cand-b"] {
+        assert!(database.network_chat_messages(room, 10).unwrap().is_empty());
+    }
+    assert_eq!(
+        chat.take_closed_threads(),
+        vec!["lobby/cand-b".to_string(), "lobby/cand-a".to_string()]
+    );
+    let decided = chat.decided_candidates();
+    assert!(decided.contains("cand-a") && decided.contains("cand-b"));
     assert!(chat.take_closed_threads().is_empty());
 
     // The closure the principal relays erases the thread on another admin.
+    let other = ChatAction::text_message("lobby/cand-b", "cand-b", "still here");
+    assert!(database.append_network_chat(&other).unwrap());
     let closed = ChatAction::LobbyClosed {
         message_id: "closed-1".into(),
         room_id: "lobby/cand-b".into(),

@@ -1557,13 +1557,15 @@ credential does not apply. Its own request/response protocol is
   path with `room_id: "lobby/<candidate>"`; the principal refuses a lobby
   message from a non-admin (`lobby_admins_only`) and any text in the bare
   `lobby` room (`lobby_room_invalid`).
-- **Threads are temporary.** When the principal approves a candidate,
-  whoever decided, it erases the thread and relays `ChatAction::LobbyClosed`
+- **Threads are temporary.** When the principal approves or declines a
+  candidate, whoever decided, it erases the thread and relays `ChatAction::LobbyClosed`
   so every admin erases its copy (`NetworkChat::close_thread`, drained on the
   policy tick). A thread nobody wrote in for 24 h (`THREAD_TTL`) is purged on
-  every node, rejected candidates included, and so is anything left in the
+  every node (a candidate that never asked), and so is anything left in the
   old shared `lobby` room (`NetworkChat::purge_stale_threads`). Nothing a
-  candidate said reaches a later one.
+  candidate said reaches a later one. A decided candidate that keeps polling
+  is left out of the admins' `lobbyGuests` (`NetworkChat::decided_candidates`,
+  the own list and the principal's mirror) until it asks again.
 - `card` is the candidate's self-declared hardware (hostname, OS, CPU count,
   RAM, GPUs with VRAM), clamped on both ends. The principal relays it to the
   members as `ChatAction::LobbyPresence` when the candidate appears, when the

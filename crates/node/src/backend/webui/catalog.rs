@@ -2811,6 +2811,11 @@ pub(super) async fn network_chat_snapshot(
         .effective_authority(&state.authority_principal, profile)
         .is_some();
     let in_lobby = room == crate::network_lobby::LOBBY_ROOM;
+    let decided = if is_admin {
+        state.network_chat.decided_candidates()
+    } else {
+        Default::default()
+    };
     let history = if !in_lobby {
         state.network_chat.history(room, 100)
     } else if is_admin {
@@ -2868,13 +2873,16 @@ pub(super) async fn network_chat_snapshot(
         "lobbyEnabled": is_admin
             && state.network_chat.enabled()
             && state.network_chat.lobby_enabled().await,
-        // Candidates talking in the lobby, with the hardware they declared.
+        // Candidates talking in the lobby, with the hardware they declared. A
+        // decided one may still be polling, but it has nothing left to talk
+        // about until it asks again.
         "lobbyGuests": state
             .network_chat
             .lobby_guests()
             .snapshot()
             .into_iter()
             .filter(|_| is_admin)
+            .filter(|(node_id, _)| !decided.contains(node_id))
             .map(|(node_id, card)| json!({ "nodeId": node_id, "card": card }))
             .collect::<Vec<_>>(),
     }))

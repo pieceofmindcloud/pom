@@ -179,8 +179,8 @@ function LobbyThreadList({ candidates, guests, pending, selected, onSelect, node
 
 /**
  * What the admin is looking at in the lobby: whose thread, and the decision on
- * its admission request, taken here after talking. Approving erases the thread
- * for every admin; declining keeps it until it goes idle.
+ * its admission request, taken here after talking. Either decision erases the
+ * thread for every admin.
  */
 function LobbyThreadHeader({ candidate, request, nodeName, deciding, onDecide }: { candidate: string; request: AdmissionRecord | undefined; nodeName: (id: string) => string; deciding: boolean; onDecide: (decision: "approve" | "reject") => void }) {
   const { t } = useI18n();
@@ -235,8 +235,7 @@ export function NetworkChat() {
   const candidates = useMemo(() => {
     if (!inLobby) return [];
     const seen = new Set<string>();
-    // A candidate the bell points at has a thread even before its first word.
-    if (thread) seen.add(thread);
+    // A pending candidate has a thread even before its first word.
     for (const record of pending) seen.add(record.node_id);
     for (const guest of lobbyGuests) seen.add(guest.nodeId);
     for (const message of snapshot?.messages ?? []) {
@@ -244,7 +243,7 @@ export function NetworkChat() {
       if (candidate) seen.add(candidate);
     }
     return [...seen];
-  }, [inLobby, lobbyGuests, pending, snapshot?.messages, thread]);
+  }, [inLobby, lobbyGuests, pending, snapshot?.messages]);
   const selected = thread && candidates.includes(thread) ? thread : candidates[0] ?? null;
   const nodeName = useMemo(() => {
     const names = new Map<string, string>();
@@ -344,8 +343,8 @@ export function NetworkChat() {
     try {
       await admissionsApi.decide(candidate, decision);
       toast.success(t(decision === "approve" ? "notifications.admissionApproved" : "notifications.admissionRejected"));
-      // An approval erases the thread: the next one takes its place.
-      if (decision === "approve") setThread(null);
+      // Either decision erases the thread: the next one takes its place.
+      setThread(null);
       await Promise.all([admissions.refetch(), refresh()]);
     } catch (error) {
       toast.fromError(t("notifications.offerFailed"), error);

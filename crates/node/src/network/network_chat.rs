@@ -688,6 +688,18 @@ impl NetworkChat {
         self.roster_mirror.lock().expect("roster lock").clone()
     }
 
+    /// Candidates whose request an admin already approved or declined, on
+    /// this node's own list or the mirror of the principal's. The lobby
+    /// leaves them out until they ask again (which makes them pending).
+    pub fn decided_candidates(&self) -> std::collections::HashSet<String> {
+        self.admissions()
+            .into_iter()
+            .chain(self.roster_mirror())
+            .filter(|record| record.status != crate::network_lobby::AdmissionStatus::Pending)
+            .map(|record| record.node_id)
+            .collect()
+    }
+
     /// The role `node_id` was admitted with, when its admission is approved:
     /// on this node's own list (the principal's) or on the mirror of it. An
     /// approval decided at or before `revoked_at` (the node's last ban,
@@ -823,7 +835,9 @@ impl NetworkChat {
             Some(status) => {
                 records[index].status = status;
                 records[index].decided_at = Some(chrono::Utc::now().to_rfc3339());
-                if status == crate::network_lobby::AdmissionStatus::Approved {
+                // Approved or declined, the conversation was about a request
+                // that no longer waits: the thread goes for every admin.
+                if status != crate::network_lobby::AdmissionStatus::Pending {
                     self.close_thread(node_id);
                 }
             }
@@ -836,7 +850,7 @@ impl NetworkChat {
     }
 
     /// Erases `candidate`'s lobby thread here and queues it for the other
-    /// admins: once approved, what it said in the lobby is not kept.
+    /// admins: once decided, what it said in the lobby is not kept.
     fn close_thread(&self, candidate: &str) {
         let room = crate::network_lobby::thread_room(candidate);
         if let Err(error) = self.database.delete_network_chat_room(&room) {

@@ -65,6 +65,21 @@ pub(crate) const ADMISSION_MEMORY: Duration = Duration::from_secs(5 * 60);
 /// a probe that has not finished by then keeps running and refreshes the memory.
 pub(crate) const ADMISSION_BUDGET: Duration = Duration::from_millis(250);
 
+/// How long a request waits for a peer it has no remembered admission of. Right after a boot or
+/// a join every connection is cold (mutual TLS, iroh, maybe a relay), the first probe missed
+/// `ADMISSION_BUDGET`, the peer was left out and the first prompt failed with "No valid
+/// pipeline" while the second one worked. It covers a direct miss followed by the tunnel
+/// (`TUNNEL_HEALTH_TIMEOUT`); a peer that really is gone pays it once and then sits in
+/// quarantine.
+pub(crate) const FIRST_ADMISSION_BUDGET: Duration = Duration::from_millis(3_500);
+
+/// How often `spawn_admission_warmup` looks for peers with no fresh admission.
+const ADMISSION_WARMUP_INTERVAL: Duration = Duration::from_secs(5);
+
+/// The warm-up probes again a peer whose admission is older than this, so the memory a request
+/// falls back on never reaches `ADMISSION_MEMORY` while the peer keeps answering.
+const ADMISSION_WARMUP_REFRESH: Duration = Duration::from_secs(150);
+
 impl AdmissionHealth {
     fn remember(&self, peer: PeerInfo) {
         if let Ok(mut map) = self.admitted.write() {
@@ -1345,39 +1360,24 @@ pub(crate) async fn ready_for_pipeline(
     timeout: Duration,
 ) -> Vec<PeerInfo> {
     let started = Instant::now();
-    let deadline = started + ADMISSION_BUDGET;
     let mut probes = Vec::new();
     for peer in peers {
-        if !peer.idle && peer.model.is_empty() {
+        if !admission_candidate(&peer) {
             continue;
         }
-        // One client per peer: the probe has to speak the same language that the
-        // inference will speak with that node, otherwise it measures - or refuses - a
-        // path that the real request does not take.
-        let client = http.for_peer(&peer.node_id);
-        // All the inference addresses, the one that answered first. Only the
-        // first announced - an unreachable IPv6, for example - left the
-        // peer in quarantine and out of the plan ("Gap at layer 0") even though
-        // reachable through another address or through the tunnel.
-        let bases = bases_by_route_plan(&peer.node_id, network.inference_bases(&peer));
+        // A peer never admitted (a boot, a join, a new peer) gets the longer wait: with the
+        // short one its cold first probe always missed and the request had nobody to plan with.
+        let deadline = if health.remembered(&peer.node_id, ADMISSION_MEMORY).is_some() {
+            started + ADMISSION_BUDGET
+        } else {
+            started + FIRST_ADMISSION_BUDGET
+        };
         let node_id = peer.node_id.clone();
-        let (health_task, network_task) = (health.clone(), network.clone());
-        let task_node_id = node_id.clone();
-        let handle = tokio::spawn(async move {
-            let probe_started = Instant::now();
-            let (admitted, via) =
-                admit_peer(&health_task, &network_task, peer, client, bases, timeout).await;
-            match &admitted {
-                Some(peer) => health_task.remember(peer.clone()),
-                None => health_task.forget(&task_node_id),
-            }
-            (admitted, via, probe_started.elapsed())
-        });
-        probes.push((node_id, handle));
+        probes.push((node_id, deadline, spawn_admission_probe(http, health, network, peer, timeout)));
     }
     let probed = probes.len();
     let mut admitted = Vec::with_capacity(probed);
-    for (node_id, handle) in probes {
+    for (node_id, deadline, handle) in probes {
         let short = &node_id[..node_id.len().min(12)];
         let remaining = deadline.saturating_duration_since(Instant::now());
         match tokio::time::timeout(remaining, handle).await {
@@ -1413,6 +1413,85 @@ pub(crate) async fn ready_for_pipeline(
         started.elapsed().as_secs_f64() * 1000.0
     );
     admitted
+}
+
+/// Only the peers that announce a model, or are idle, can take part in a pipeline; a peer with
+/// nothing loaded is never probed.
+fn admission_candidate(peer: &PeerInfo) -> bool {
+    peer.idle || !peer.model.is_empty()
+}
+
+/// Runs one peer's admission on its own task and records the verdict in the memory, whether or
+/// not anybody is still waiting for it.
+fn spawn_admission_probe(
+    http: &crate::peer_client::PeerClients,
+    health: &Arc<AdmissionHealth>,
+    network: &Arc<crate::network::Network>,
+    peer: PeerInfo,
+    timeout: Duration,
+) -> tokio::task::JoinHandle<(Option<PeerInfo>, &'static str, Duration)> {
+    // One client per peer: the probe has to speak the same language that the
+    // inference will speak with that node, otherwise it measures - or refuses - a
+    // path that the real request does not take.
+    let client = http.for_peer(&peer.node_id);
+    // All the inference addresses, the one that answered first. Only the
+    // first announced - an unreachable IPv6, for example - left the
+    // peer in quarantine and out of the plan ("Gap at layer 0") even though
+    // reachable through another address or through the tunnel.
+    let bases = bases_by_route_plan(&peer.node_id, network.inference_bases(&peer));
+    let (health, network) = (health.clone(), network.clone());
+    tokio::spawn(async move {
+        let probe_started = Instant::now();
+        let node_id = peer.node_id.clone();
+        let (admitted, via) = admit_peer(&health, &network, peer, client, bases, timeout).await;
+        match &admitted {
+            Some(peer) => health.remember(peer.clone()),
+            None => health.forget(&node_id),
+        }
+        (admitted, via, probe_started.elapsed())
+    })
+}
+
+/// Keeps an admission in memory for every peer that can serve, so the first prompt after a
+/// boot, a join or a quiet stretch finds its peers already admitted instead of waiting for
+/// cold connections. Every `ADMISSION_WARMUP_INTERVAL` it probes the candidates with no
+/// admission younger than `ADMISSION_WARMUP_REFRESH`, and waits for those probes before
+/// looking again, so one peer never has two warm-up probes in flight. A peer in quarantine
+/// answers at once without a network call (`admit_peer`). `/health` is not inference
+/// activity, so the probes never keep an `unload_if_idle` peer loaded.
+pub(crate) fn spawn_admission_warmup(state: GatewayState) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(ADMISSION_WARMUP_INTERVAL);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            let stale: Vec<PeerInfo> = state
+                .all_peers()
+                .await
+                .into_iter()
+                .filter(|peer| {
+                    admission_candidate(peer)
+                        && state
+                            .admission_health
+                            .remembered(&peer.node_id, ADMISSION_WARMUP_REFRESH)
+                            .is_none()
+                })
+                .collect();
+            let probes: Vec<_> = stale
+                .into_iter()
+                .map(|peer| {
+                    spawn_admission_probe(
+                        &state.peer_http,
+                        &state.admission_health,
+                        &state.network,
+                        peer,
+                        ADMISSION_PROBE_TIMEOUT,
+                    )
+                })
+                .collect();
+            futures::future::join_all(probes).await;
+        }
+    });
 }
 
 /// One peer's admission. Returns the peer when it may take part, and the path that decided it,

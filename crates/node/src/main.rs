@@ -451,6 +451,7 @@ const ARG_ENV: &[(&str, &str)] = &[
     ("no_default_relays", "NO_DEFAULT_RELAYS"),
     ("no_discovery", "NO_DISCOVERY"),
     ("no_pkarr", "NO_PKARR"),
+    ("trust_ca_system_wide", "TRUST_CA_SYSTEM_WIDE"),
 ];
 
 /// The command line with the variables of `ARG_ENV`. The boolean flags read the
@@ -1740,6 +1741,7 @@ fn spawn_gateway_companions(gw_state: &GatewayState, database: &Arc<db::PomDb>, 
     crate::webui::spawn_key_reclaimer(gw_state.clone());
     crate::admin::spawn_trust_chain_keeper(gw_state.clone());
     crate::webui::spawn_departure_worker(gw_state.clone());
+    crate::gateway::spawn_admission_warmup(gw_state.clone());
 }
 
 /// Brings up the configured node: network, gateway with all the routes and, if

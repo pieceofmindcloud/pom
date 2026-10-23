@@ -694,7 +694,9 @@ change lands in the right place.
   http, runtime, gateway_port, auth, transfers, `reply_inbox`); `FromRef<GatewayState> for
   AuthState`; `peers_visible_to_cluster` filters blocked nodes; `all_peers` appends the local
   node with `self_dial_host` (advertised > local IP > loopback). Admission probing, the
-  pinned-route order (`bases_by_route_plan`), the quarantine and the perf feed
+  pinned-route order (`bases_by_route_plan`), the quarantine, the longer first wait
+  for a peer never admitted (`FIRST_ADMISSION_BUDGET`), the background warm-up
+  (`spawn_admission_warmup`, started by `main::spawn_gateway_companions`) and the perf feed
   (`AdmissionHealth::note_perf` -> `fastest::PeerPerf`, read by `generation::plan_by_delivery_time`
   and `catalog::model_peer_perf`) are `docs/subsystems/inference.md`, "Pipeline admission
   probe"; a direct success is remembered with `RouteTable::mark_success`. The capability list a

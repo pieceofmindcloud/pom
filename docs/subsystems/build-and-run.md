@@ -531,6 +531,12 @@ loses offload on the first click.
   build runs one compilation of the executable for every cluster machine, without
   switching features in the same cache nor recompiling `llama-engine`/MoE for
   the Vulkan-only and CPU variants that no longer exist as separate binaries.
+- **PID 1 is `tini`** (`ENTRYPOINT ["/usr/bin/tini", "--", ...]` in both
+  images): it forwards signals to `pom` and reaps every orphan. With `pom` as
+  PID 1, whatever a plugin detaches (an agent's gateway daemon, a terminal's
+  children) was reparented to it and stayed a zombie, since POM waits only on
+  its own children; reaping inside POM would steal the exit status tokio waits
+  for. `bash scripts/test-docker-entrypoint.sh` checks every `ENTRYPOINT`.
 - **`docker-entrypoint.sh`**: validates the binary selected by `POM_BIN` and
   `pom-plugin-host`, exports `POM_PLUGIN_HOST=/usr/local/bin/pom-plugin-host`
   and `exec`s the path in `POM_BIN` (default `/usr/local/bin/pom`) with the

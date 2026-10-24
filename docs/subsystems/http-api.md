@@ -764,7 +764,16 @@ both providers' shape: the client reads the terminal stop reason and repeats
 the request with a higher ceiling, without executing anything. The shared
 scanner recognizes the markers declared in `CALL_FORMATS`, keeps text before
 the call, turns every complete call into `tool_calls` and, in SSE, into
-indexed deltas. The canonical prompt/replay format remains
+indexed deltas. **Text after a complete call is dropped** (later calls still
+count): the tool has not run, so it can only be the model's guess at the
+result - Gemma 4 wrote "The script outputted `[0, 1, 1, ...]`" right after an
+`execute_code` call. The tools block already asks for no suffix, vLLM's Hermes
+parser drops it the same way, and a malformed call degraded to text is not a
+call. The generation itself still runs to the model's stop. With tools
+declared, `<NAME><param>value</param></NAME>` for a **declared** `NAME`
+followed by a parameter element is also a call (`CallKind::NamedElement`,
+written by Gemma 4 under Hermes Agent's long system prompt); a tool name in
+prose stays text. The canonical prompt/replay format remains
 `<tool_call><function=…><parameter=…>`, while recovery also accepts a sole
 object parameter named `arguments` and the older
 `<function_calls><invoke name="…"><parameter name="…">` dialect (including

@@ -884,6 +884,13 @@ change lands in the right place.
   A `<function=NAME>` call with no opener at all is `CallKind::BareXml`: it
   ends only on a `</function>` outside a parameter value and, with tools
   declared, only for a declared name, so prose quoting the tag stays text.
+  `<NAME><code>...</code></NAME>`, a declared tool's name as the element
+  followed by a parameter element, is `CallKind::NamedElement` (Gemma 4 under
+  Hermes Agent): its closer depends on the name, so it is outside
+  `CALL_FORMATS` and the scanner keeps the name (`element_opening`,
+  `named_element_call`). Text after a complete call is dropped by
+  `drop_text_after_calls` on every exit of the scanner, so streaming and
+  blocking agree; later calls still count.
   The invoke dialect's tags may carry an XML namespace prefix (the opener
   prefixed, the closer plain, as a Strata session wrote them): the prefixed
   `invoke` / `function_calls` openers and closers are registered, and

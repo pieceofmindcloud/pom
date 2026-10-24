@@ -234,7 +234,10 @@ ENV LD_LIBRARY_PATH=/usr/local/lib/pom/common:/usr/local/cuda/lib64:/usr/local/c
 # `iproute2` provides `ip`, which `addrs::local_addrs` runs to list this
 # node's own addresses; without it the node announces none, not even its
 # public IPv6, and remote peers end up dialing the LAN address relayed by
-# local peers.
+# local peers. `tini` is PID 1 (see ENTRYPOINT): without an init, `pom` is PID 1
+# and every orphan a plugin leaves (an agent's detached daemon, a terminal's
+# children) is reparented to it and stays a zombie, because POM waits only on
+# its own children.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     iproute2 \
@@ -243,6 +246,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl3t64 \
     libvulkan1 \
     mesa-vulkan-drivers \
+    tini \
     vulkan-tools \
     && rm -rf /var/lib/apt/lists/*
 
@@ -322,7 +326,7 @@ WORKDIR /app
 EXPOSE 42777/udp
 EXPOSE 8080/tcp
 EXPOSE 8181/tcp
-ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]
 
 # One universal POM executable serves NVIDIA, Radeon and CPU-only nodes. The
 # matching CPU, Vulkan and CUDA backend modules sit beside that executable.
@@ -383,7 +387,7 @@ WORKDIR /app
 EXPOSE 42777/udp
 EXPOSE 8080/tcp
 EXPOSE 8181/tcp
-ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]
 COPY --from=runtime /usr/local/lib/pom/ /usr/local/lib/pom/
 COPY --from=runtime /usr/local/bin/pom-plugin-host /usr/local/bin/docker-entrypoint.sh /usr/local/bin/
 RUN ln -s /usr/local/lib/pom/cuda-vulkan/pom /usr/local/bin/pom

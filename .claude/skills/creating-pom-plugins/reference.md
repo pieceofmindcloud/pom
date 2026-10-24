@@ -101,7 +101,7 @@ Valid menu icons (`apps/frontend/src/components/nav.ts`, `PLUGIN_ICONS`):
 `folder-tree`, `send`, `messages-square`, `cpu`, `activity`. Anything else
 falls back to `blocks`.
 
-## 4. Browser SDK (`globalThis.__POM_HOST__`, `PLUGIN_HOST_VERSION = 6`)
+## 4. Browser SDK (`globalThis.__POM_HOST__`, `PLUGIN_HOST_VERSION = 7`)
 
 `React`, `ReactDOM`, `jsxRuntime`, `reactQuery`, `ui` (the design kit:
 `Panel`, `PanelHeader`, `PageHeader`, `FullBleedHeader`, `FullBleedToolbar`,
@@ -111,8 +111,8 @@ falls back to `blocks`.
 `components{Modal, TelemetryLine, ExecutionTelemetry, Markdown}`,
 `hooks{useI18n, useTheme, useCluster}`, `api.get`, `storageKey`,
 `context()` (v2), `events{subscribe, last}` (v2), `protocol` (v2),
-`plugin(code)` -> `{events, notifications{notify, confirm}, rpc}` (v2, `rpc`
-v4), `ready()` (v6).
+`plugin(code)` -> `{events, notifications{notify, confirm}, rpc, loader}` (v2,
+`rpc` v4, `loader` v7), `ready()` (v6).
 
 Rules the existing plugins follow:
 
@@ -127,6 +127,15 @@ Rules the existing plugins follow:
 - `useScreenReady(ready)` calls `ready()` once per mount, when the first real
   content settled (or failed), never on the first render. Without it the POM
   opens the screen after 2 s.
+- Work before the screen is usable (installing a runtime, starting a process)
+  goes behind POM's loader, never a loading screen of the plugin's own:
+  `loader.show/progress/error/success/hide` and `onLoaderRetry` in
+  `ui/src/host/runtime.ts` (v7). While the plugin holds a loader state the
+  screen stays covered, `ready()` included; only `hide()` or the end of
+  `success()` opens it. `progress` is 0..100, `title` <= 200 and `message` <=
+  2048 characters; `error` shows "Try again" unless `retry: false`, which
+  sends `loader.retry` to the plugin. Contract: POM
+  `docs/subsystems/plugins-ui.md`, "POM's loader and installer".
 - Same-origin URLs: assets `/api/ui/plugins/<code>/assets/<path>`, RPC
   `/api/ui/plugins/<code>/rpc/<op>`, upstream `/api/ui/plugins/<code>/proxy/<path>`.
   `api.get` only does GET; POST to the proxy with `fetch` and
@@ -163,13 +172,14 @@ Envelope: `{protocol, id, type, target ("*" or code), source: "pom", at, payload
 | `notification.response` | `{request_id, kind, action, error?}` |
 | `deployment.started` | `{kind, deploy_id, job_id, model, nodes, deployment_name?, reused?, version?}` |
 | `model.serving` / `model.stopped` | `{model, deploy_ids, node_ids}` / `{model}` |
+| `loader.retry` | `{}` ("Try again" on this plugin's loader error) |
 
 Browser channels: SDK `plugin(code).events.subscribe(type|"*", h, {replay})`,
 DOM `pom:plugin-event` on `window`, `postMessage` to
 `iframe[data-pom-plugin="<code>"]`. Commands from the plugin:
 `notification.notify {title, body?, level?, scope: local|network}` and
 `notification.confirm {title, body?, acceptLabel?, cancelLabel?, tone?, display?}`
-through the SDK or `pom:plugin-request`.
+and the `loader.*` commands (section 4) through the SDK or `pom:plugin-request`.
 
 ## 7. Distribution
 

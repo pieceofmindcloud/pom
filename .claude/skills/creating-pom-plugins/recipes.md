@@ -66,7 +66,12 @@ Pin URL, size and SHA-256 at build time and verify on the node:
 `build.rs` (`CODE_SERVER_URL/SIZE/SHA256`) -> `supervisor.rs` (`download`,
 `install_runtime`, `unpack_archive_file`). GitHub assets: refuse an asset
 without the API's SHA-256 `digest` (`pom-plugin-qdrant/src/install.rs`).
-Offer `rpc.runtime.status` and `rpc.runtime.retry` for the screen.
+Offer `rpc.runtime.status` and `rpc.runtime.retry` for the screen, and show
+the install behind POM's loader: report `step` and `progress` in the status
+and map them to `loader.progress` (byte fraction for the downloads, a creep
+toward the step's end for the rest), `loader.error` with `onLoaderRetry` ->
+`rpc.runtime.retry`. Reference: `pom-plugin-hermes` (`supervisor::progress_at`,
+`ui/src/screens/Main.tsx`).
 
 ## D. A service the cluster sees (`host.services`)
 
@@ -150,7 +155,9 @@ Reference: `pom-plugin-logs/ui/src/telemetry/ChatTelemetry.tsx`.
 menu stays from the saved manifest, opening the menu starts it, the X badge
 stops it. Use for heavy apps an operator opens now and then (code-server,
 harness, jev). Keep `icon_image` and i18n small: they are served from the
-copy in `pom.db` while stopped.
+copy in `pom.db` while stopped. While the process starts, keep the screen
+behind `loader.show()` from its first render and open it with `loader.hide()`
+once the app answers (Hermes does it on its iframe's `load`).
 
 ## K. Extra steps in the POM development rebuild
 

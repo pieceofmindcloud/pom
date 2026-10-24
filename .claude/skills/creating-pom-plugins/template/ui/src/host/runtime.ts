@@ -47,7 +47,8 @@ export type PomEventType =
   | "notification.response"
   | "deployment.started"
   | "model.serving"
-  | "model.stopped";
+  | "model.stopped"
+  | "loader.retry";
 
 export type PomEvent<P = Record<string, unknown>> = {
   protocol: typeof EVENTS_PROTOCOL;
@@ -79,7 +80,7 @@ export type ConfirmRequest = {
 
 export type NotificationResponse = {
   request_id: string;
-  kind: "notify" | "confirm";
+  kind: "notify" | "confirm" | "loader";
   action: "delivered" | "failed" | "accepted" | "cancelled";
   error?: string;
 };
@@ -93,6 +94,18 @@ type ScopedApi = {
     confirm: (request: ConfirmRequest) => Promise<NotificationResponse>;
   };
   rpc?: <T = unknown>(op: string, params?: unknown) => Promise<T>;
+  loader?: HostLoader;
+};
+
+type LoaderText = { title?: string; message?: string };
+
+/** POM's loader and installer over this plugin's screen (host version 7). */
+type HostLoader = {
+  show: (request?: LoaderText) => Promise<NotificationResponse>;
+  progress: (request: LoaderText & { progress: number }) => Promise<NotificationResponse>;
+  error: (request: LoaderText & { message: string; retry?: boolean }) => Promise<NotificationResponse>;
+  success: (request?: LoaderText) => Promise<NotificationResponse>;
+  hide: () => Promise<NotificationResponse>;
 };
 
 type PomHost = {
@@ -115,7 +128,7 @@ function maybeHost(): PomHost | undefined {
   return (globalThis as typeof globalThis & { __POM_HOST__?: PomHost }).__POM_HOST__;
 }
 
-/** The host SDK version: 2 events, 4 RPC, 5 `ui.Tabs`, 6 `ready()`. */
+/** The host SDK version: 2 events, 4 RPC, 5 `ui.Tabs`, 6 `ready()`, 7 the loader. */
 export function hostVersion(): number {
   return maybeHost()?.version ?? 1;
 }
@@ -243,4 +256,26 @@ export function notify(request: NotifyRequest): Promise<NotificationResponse> {
 export function confirm(request: ConfirmRequest): Promise<NotificationResponse> {
   const api = scoped();
   return api ? api.notifications.confirm(request) : commandThroughDom("notification.confirm", request);
+}
+
+const noLoader = (): Promise<NotificationResponse> =>
+  Promise.resolve({ request_id: "", kind: "loader", action: "failed", error: "host_unavailable" });
+
+/**
+ * POM draws the loader and the installer; the plugin only says what is going
+ * on. While the plugin holds one of these states its screen stays covered,
+ * `ready()` included; `hide()` or the end of `success()` opens it. On a host
+ * older than version 7 every call resolves `failed`.
+ */
+export const loader: HostLoader = {
+  show: (request = {}) => scoped()?.loader?.show(request) ?? noLoader(),
+  progress: (request) => scoped()?.loader?.progress(request) ?? noLoader(),
+  error: (request) => scoped()?.loader?.error(request) ?? noLoader(),
+  success: (request = {}) => scoped()?.loader?.success(request) ?? noLoader(),
+  hide: () => scoped()?.loader?.hide() ?? noLoader(),
+};
+
+/** "Try again" on the loader's error. Returns the unsubscribe function. */
+export function onLoaderRetry(handler: () => void): () => void {
+  return onPomEvent("loader.retry", () => handler());
 }

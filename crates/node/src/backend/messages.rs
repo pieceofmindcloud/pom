@@ -562,6 +562,17 @@ async fn messages(
         ),
         None => conversation_cache_key(req.system.as_ref(), &req.messages, &req.tools),
     };
+    // The system part, which a new conversation of the same client shares. A
+    // task budget changes the key's opening on every request, so it has none.
+    let shared_prefix = match task_budget {
+        Some(_) => crate::gateway::SharedPrefix::None,
+        None => crate::gateway::SharedPrefix::offer(
+            &prompt,
+            &cache_key,
+            &render_prompt(req.system.as_ref(), &[], &req.tools),
+            &conversation_cache_key(req.system.as_ref(), &[], &req.tools),
+        ),
+    };
     let requested_max_tokens = req.requested_max_tokens();
     let stops = req.stop_sequences.clone();
     let input_tokens = approx_tokens(&prompt);
@@ -627,6 +638,7 @@ async fn messages(
         id,
         input_tokens,
         stops,
+        shared_prefix,
         cache_key: Some(cache_key),
         request_details,
         output_limit,
@@ -684,6 +696,8 @@ struct ResponseParams {
     input_tokens: u32,
     stops: Vec<String>,
     cache_key: Option<String>,
+    /// The system part a new conversation shares (`gateway::SharedPrefix`).
+    shared_prefix: crate::gateway::SharedPrefix,
     request_details: serde_json::Value,
     output_limit: OutputTokenLimit,
     /// `x_pom.task_budget`: the task budget the request brought, for the
@@ -707,6 +721,7 @@ async fn blocking_response(params: ResponseParams) -> Response {
         input_tokens,
         stops,
         cache_key,
+        shared_prefix,
         request_details,
         output_limit,
         // Without streaming there is no fragment to transmit: the blocking
@@ -719,6 +734,7 @@ async fn blocking_response(params: ResponseParams) -> Response {
         "/v1/messages",
         caller,
         GenerationInput {
+            shared_prefix,
             probe: None,
             trace_id: Some(id.clone()),
             state,
@@ -827,6 +843,7 @@ fn stream_response(params: ResponseParams) -> Response {
         input_tokens,
         stops,
         cache_key,
+        shared_prefix,
         request_details,
         output_limit,
         task_budget_report,
@@ -838,6 +855,7 @@ fn stream_response(params: ResponseParams) -> Response {
         "/v1/messages",
         caller,
         GenerationInput {
+            shared_prefix,
             probe: None,
             trace_id: Some(id.clone()),
             state,
@@ -1446,6 +1464,41 @@ mod tests {
 
         assert_ne!(first_key, second_key);
         assert_ne!(first_key, changed_remaining_key);
+    }
+
+    #[test]
+    fn two_conversations_of_one_client_share_their_system_part() {
+        let system: String = (0..800).map(|i| format!("rule {i}. ")).collect();
+        let offer = |question: &str| {
+            let req: MessagesRequest = serde_json::from_value(json!({
+                "system": system,
+                "tools": [{"name": "read", "input_schema": {"type": "object"}}],
+                "messages": [{"role": "user", "content": question}]
+            }))
+            .unwrap();
+            let prompt = render_prompt(req.system.as_ref(), &req.messages, &req.tools);
+            let key = conversation_cache_key(req.system.as_ref(), &req.messages, &req.tools);
+            let shared = crate::gateway::SharedPrefix::offer(
+                &prompt,
+                &key,
+                &render_prompt(req.system.as_ref(), &[], &req.tools),
+                &conversation_cache_key(req.system.as_ref(), &[], &req.tools),
+            );
+            let (root_prompt, root_key) = shared.root_of(&prompt, &key).expect("a system part");
+            (root_prompt.to_string(), root_key.to_string())
+        };
+        let (first_prompt, first_key) = offer("zebra first");
+        let (second_prompt, second_key) = offer("zebra again");
+        assert_eq!(first_prompt, second_prompt);
+        assert_eq!(first_key, second_key);
+        // The system prompt and the tools, and nothing of the conversation.
+        assert!(first_prompt.starts_with("rule 0.") && !first_prompt.contains("zebra"));
+        assert!(first_key.contains("tool\u{1f}read") && !first_key.contains("zebra"));
+        // A short system part is not worth pinning.
+        assert_eq!(
+            crate::gateway::SharedPrefix::offer("sys\n\nUser: q", "sys\u{1e}user", "sys", "sys\u{1e}"),
+            crate::gateway::SharedPrefix::None
+        );
     }
 
     #[test]

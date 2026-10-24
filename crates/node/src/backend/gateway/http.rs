@@ -1536,6 +1536,7 @@ pub(super) async fn handle_generate(
         "/api/generate",
         caller,
         GenerationInput {
+            shared_prefix: Default::default(),
             probe: None,
             trace_id: Some(Uuid::new_v4().simple().to_string()),
             state,

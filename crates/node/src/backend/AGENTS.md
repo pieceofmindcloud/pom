@@ -730,7 +730,10 @@ change lands in the right place.
   `/api/generate` are for. `conversation_cache_key` is the canonical rendered prompt the head
   tokenizes, travelling as `GenerationInput::cache_key`; the Anthropic version
   `conversation_cache_key_with_budget` prefixes the task budget's identity so an entry without
-  a budget or with a different marker is never reused. `usage.prompt_tokens_details.cached_tokens`
+  a budget or with a different marker is never reused. Both chat adapters also pass
+  `GenerationInput::shared_prefix` (`SharedPrefix::offer`): where the system part ends in the
+  prompt and the key, which the gateway reads alone and pins so a new conversation of the same
+  client starts warm (`inference.md` §3.1.1). `usage.prompt_tokens_details.cached_tokens`
   reports the prompt tokens the pipeline did not reprocess, read from the trace - the executed
   number, not the cache's choice. `approx_tokens` is chars/4. `model_ids` comes only from live
   peer announcements (never the stale CLI default) and keeps an `idle` deployment selectable

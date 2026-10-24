@@ -741,6 +741,9 @@ change lands in the right place.
   (tool_call deltas), `chunk_json` (+ the `x_pom` extension), `cors_headers` (allow `*`).
 - `messages.rs` - Anthropic `POST /v1/messages` (+ OPTIONS) and `POST /v1/messages/count_tokens`,
   with its own `render_prompt` and `conversation_cache_key` for the same reason as `openai.rs`;
+  `SystemPrompt::as_text` pins Claude Code's billing stamps (`pin_billing_stamp`: `cch=` and the
+  4th part of `cc_version=` become `f`s), which change per request and per session at the first
+  line of the prompt and would otherwise defeat every prefix reuse;
   `content_blocks` for tool_use/tool_result, `stop_reason` (end_turn / max_tokens / tool_use /
   stop_sequence), `usage.cache_read_input_tokens` carrying the honoured prefix reuse, and
   `blocking_response` / `stream_response` with Anthropic's SSE event names. `tool_choice` is

@@ -14,9 +14,12 @@ import {
   subscribePluginEvents,
   type PluginEvent,
 } from "./pluginEvents";
+import { loaderState, mountPluginLoader, resetPluginLoaderForTest } from "./pluginLoader";
+import { buildPluginHost } from "./pluginHost";
 
 afterEach(() => {
   resetPluginEventsForTest();
+  resetPluginLoaderForTest();
   document.body.innerHTML = "";
 });
 
@@ -145,5 +148,58 @@ describe("pom-plugin-events/v1", () => {
     expect(host.confirm.mock.calls.map(([, request]) => (request as { display?: string }).display)).toEqual(["notification", "dialog"]);
     await expect(api.notifications.confirm({ title: "Bad", display: "popup" as never }))
       .resolves.toMatchObject({ action: "failed", error: "request_invalid" });
+  });
+
+  describe("loader commands", () => {
+    const request = (type: string, payload: unknown, id = "req-l") =>
+      ({ protocol: PLUGIN_EVENTS_PROTOCOL, id, type, plugin_code: "base", payload });
+
+    it("drives the mounted screen's loader through the DOM request event", async () => {
+      executor();
+      mountPluginLoader("base");
+      const stop = listenForPluginCommands();
+      const answered = new Promise<PluginEvent>((resolve) => {
+        window.addEventListener(PLUGIN_EVENT_DOM, (event) => {
+          const detail = (event as CustomEvent).detail as PluginEvent;
+          if (detail.type === "notification.response") resolve(detail);
+        });
+      });
+      window.dispatchEvent(new CustomEvent(PLUGIN_REQUEST_DOM, { detail: request("loader.progress", { progress: 10 }) }));
+      expect((await answered).payload).toMatchObject({ request_id: "req-l", kind: "loader", action: "delivered" });
+      expect(loaderState("base")).toEqual({ kind: "progress", progress: 10 });
+      stop();
+    });
+
+    it("refuses a screen that is not mounted and an invalid payload", async () => {
+      executor();
+      await expect(runPluginCommand(request("loader.progress", { progress: 10 })))
+        .resolves.toMatchObject({ kind: "loader", action: "failed", error: "screen_not_mounted" });
+      mountPluginLoader("base");
+      await expect(runPluginCommand(request("loader.progress", { progress: "10" })))
+        .resolves.toMatchObject({ kind: "loader", action: "failed", error: "request_invalid" });
+    });
+
+    it("accepts loader commands over same-origin postMessage", async () => {
+      executor();
+      mountPluginLoader("base");
+      const stop = listenForPluginCommands();
+      window.dispatchEvent(new MessageEvent("message", { data: request("loader.show", {}), origin: window.location.origin }));
+      await vi.waitFor(() => expect(loaderState("base")).toEqual({ kind: "generic" }));
+      stop();
+    });
+
+    it("gives the SDK the same commands, and hide clears the state", async () => {
+      executor();
+      mountPluginLoader("base");
+      const api = scopedPluginApi("base");
+      await api.loader.progress({ progress: 50 });
+      expect(loaderState("base")).toMatchObject({ kind: "progress", progress: 50 });
+      await expect(api.loader.hide()).resolves.toMatchObject({ action: "delivered" });
+      expect(loaderState("base")).toBeNull();
+    });
+
+    it("is host version 7", () => {
+      expect(buildPluginHost().version).toBe(7);
+    });
   });
 });

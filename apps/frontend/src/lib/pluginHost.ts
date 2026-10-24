@@ -16,6 +16,9 @@
  * adds `ui.Tabs`, the panel's tab row (theme tokens `--tab-*`). Version 6 adds
  * `ready()`, the screen's "finished rendering" signal: until a plugin screen gives
  * it, POM keeps the pieces animation in place of the screen (`lib/pluginReady.ts`).
+ * Version 7 adds `plugin(code).loader`, POM's official loader and installer over
+ * the plugin's screen (`loader.*` commands and the `loader.retry` event; see
+ * `lib/pluginLoader.ts`).
  */
 import * as React from "react";
 import * as ReactDOM from "react-dom";
@@ -42,7 +45,7 @@ import {
 } from "./pluginEvents";
 import { signalPluginReady } from "./pluginReady";
 
-export const PLUGIN_HOST_VERSION = 6;
+export const PLUGIN_HOST_VERSION = 7;
 
 /**
  * Compatibility for plugins built against host version 2, which rendered the

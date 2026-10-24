@@ -87,7 +87,7 @@ function open(code: string) {
   for (const listener of [...(openers.get(code) ?? [])]) listener();
 }
 
-function settle(code: string, entry: Entry, state: LoaderState | null) {
+function settle(entry: Entry, state: LoaderState | null) {
   if (entry.timer !== undefined) clearTimeout(entry.timer);
   entry.timer = undefined;
   entry.state = state;
@@ -104,7 +104,7 @@ export function mountPluginLoader(code: string): () => void {
     armed = false;
     entry.mounts -= 1;
     if (entry.mounts > 0) return;
-    settle(code, entry, null);
+    settle(entry, null);
     entries.delete(code);
     changed();
   };
@@ -120,7 +120,7 @@ export function applyLoaderCommand(
   if (!entry || entry.mounts === 0) return "screen_not_mounted";
   const previous = entry.state;
   if (type === "loader.hide" || state === null) {
-    settle(code, entry, null);
+    settle(entry, null);
     changed();
     open(code);
     return "delivered";
@@ -129,7 +129,7 @@ export function applyLoaderCommand(
     // The bar never moves backwards on screen; the message still updates.
     state = { ...state, progress: Math.max(previous.progress, state.progress) };
   }
-  settle(code, entry, state);
+  settle(entry, state);
   if (state.kind === "success") {
     entry.timer = setTimeout(() => {
       entry.timer = undefined;

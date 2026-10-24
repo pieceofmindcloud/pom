@@ -230,11 +230,14 @@ ride the `pom-plugin-events/v1` command channel (below), as `CustomEvent`
   an error away; only `loader.hide` or the end of `loader.success` do. A
   `loader.*` command after the screen opened covers it again. A plugin that
   never sends one opens exactly as described above.
-- The loader belongs to the mounted screen: `PluginScreen` arms it for the
-  plugin from its first render, before the module arrives, and unmounting
-  forgets the state. A command for a plugin whose screen is not mounted is
-  answered `failed` with `screen_not_mounted`. Loader commands need no
-  `PluginBridge`: the mounted screen is what proves the plugin.
+- The loader belongs to the mounted screen: `PluginScreen` arms it in an effect
+  of its first commit (never while an on-demand plugin is stopped), which is
+  always before the screen module, imported asynchronously, can mount and
+  report; unmounting forgets the state. A command for a plugin whose screen is
+  not mounted is answered `failed` with `screen_not_mounted`. Loader commands
+  skip the bridge executor's catalog check: the mounted screen is what proves
+  the plugin. The SDK path needs no bridge at all; the DOM and `postMessage`
+  channels are the ones `PluginBridge` listens on, as for every command.
 - "Try again" puts the generic pieces back and publishes `loader.retry` to that
   plugin only; the plugin starts over and reports again.
 

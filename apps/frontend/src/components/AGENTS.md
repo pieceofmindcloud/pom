@@ -117,7 +117,8 @@ Per-file list:
   `__POM_HOST__.ready()`, `lib/pluginReady.ts` - or the short wait ends; the
   wrapper then becomes layout-neutral, so the screen is never remounted. A plugin
   without the signal is opened by the wait. While the plugin holds a state in
-  POM's loader (`lib/pluginLoader.ts`, armed from the first render) the screen
+  POM's loader (`lib/pluginLoader.ts`, armed in an effect of the first commit, before the
+  screen module can mount) the screen
   stays covered whatever the gate says, and `PluginLoader` draws that state.
   See `docs/subsystems/plugins-ui.md`.
 - `PluginLoader.tsx` - POM's loader and installer over a plugin screen, in the

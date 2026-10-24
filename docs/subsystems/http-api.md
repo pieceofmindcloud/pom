@@ -773,7 +773,11 @@ call. The generation itself still runs to the model's stop. With tools
 declared, `<NAME><param>value</param></NAME>` for a **declared** `NAME`
 followed by a parameter element is also a call (`CallKind::NamedElement`,
 written by Gemma 4 under Hermes Agent's long system prompt); a tool name in
-prose stays text. The canonical prompt/replay format remains
+prose stays text. Gemma 4's native format,
+`<|tool_call>call:NAME{key:<|"|>text<|"|>,n:3}<tool_call|>`, is a call as well
+(`CallKind::Native`, written by Gemma 4 for a Hermes Agent turn from
+Telegram): bare keys, strings between `<|"|>`, and JSON numbers, booleans,
+arrays and objects. The canonical prompt/replay format remains
 `<tool_call><function=…><parameter=…>`, while recovery also accepts a sole
 object parameter named `arguments` and the older
 `<function_calls><invoke name="…"><parameter name="…">` dialect (including

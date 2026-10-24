@@ -47,6 +47,8 @@
 //! Under Hermes Agent's long system prompt the same model dropped the wrapper
 //! and `function=` too, writing the tool as the element itself:
 //! `<execute_code><code>...</code></execute_code>` (`CallKind::NamedElement`).
+//! For a Hermes Agent turn from Telegram it fell back to its own native
+//! format, `<|tool_call>call:NAME{…}<tool_call|>` (`CallKind::Native`).
 //!
 //! Some Qwen turns also fall back to the older
 //! `<function_calls><invoke name="…"><parameter name="…">` dialect after a
@@ -192,6 +194,12 @@ const NS_INVOKE_OPEN: &str = "<antml:invoke ";
 const NS_INVOKE_CLOSE: &str = "</antml:invoke>";
 const NS_FUNCTION_CALLS_OPEN: &str = "<antml:function_calls>";
 const NS_FUNCTION_CALLS_CLOSE: &str = "</antml:function_calls>";
+/// Gemma 4's own call markers and string quote, verified against the
+/// `tokenizer.chat_template` of the Gemma 4 vocabulary GGUF:
+/// `<|tool_call>call:NAME{key:<|"|>text<|"|>,n:3}<tool_call|>`.
+const NATIVE_CALL_OPEN: &str = "<|tool_call>";
+const NATIVE_CALL_CLOSE: &str = "<tool_call|>";
+const NATIVE_QUOTE: &str = "<|\"|>";
 /// Closers that can trail a call that already ended; dropped, not shown.
 const STRAY_CLOSERS: &[&str] = &[
     TOOL_CALL_CLOSE,
@@ -230,6 +238,10 @@ enum CallKind {
     /// Its closer depends on the name, so it is not in [`CALL_FORMATS`]:
     /// [`TagScanner`] keeps the name and resolves this kind itself.
     NamedElement,
+    /// `<|tool_call>call:NAME{…}<tool_call|>`: Gemma 4's native format, which
+    /// it falls back to despite the `<tool_call>` instruction (a Hermes Agent
+    /// session over Telegram). See [`parse_native_call`].
+    Native,
 }
 
 impl CallKind {
@@ -279,6 +291,7 @@ impl CallKind {
             ],
             CallKind::BareXml => &[BARE_FUNCTION_CLOSE],
             CallKind::NamedElement => &[],
+            CallKind::Native => &[NATIVE_CALL_CLOSE],
         }
     }
 }
@@ -338,6 +351,11 @@ const CALL_FORMATS: &[CallFormat] = &[
         kind: CallKind::BareXml,
         open: BARE_XML_OPEN,
         close: BARE_FUNCTION_CLOSE,
+    },
+    CallFormat {
+        kind: CallKind::Native,
+        open: NATIVE_CALL_OPEN,
+        close: NATIVE_CALL_CLOSE,
     },
 ];
 
@@ -762,9 +780,13 @@ impl TagScanner {
                         .closers()
                         .iter()
                         .filter_map(|tag| {
-                            let own = *tag == kind.close() && *kind != CallKind::BareXml;
-                            closer_position(raw, &self.pending, tag, own)
-                                .map(|at| (at, tag.len()))
+                            let at = if *kind == CallKind::Native {
+                                native_closer_position(raw, &self.pending)
+                            } else {
+                                let own = *tag == kind.close() && *kind != CallKind::BareXml;
+                                closer_position(raw, &self.pending, tag, own)
+                            };
+                            at.map(|at| (at, tag.len()))
                         })
                         .min_by_key(|(at, _)| *at);
                     match closed {
@@ -937,6 +959,7 @@ fn parse_partial_call_body(raw: &str, kind: CallKind) -> Option<PartialCall> {
         CallKind::BareFunction | CallKind::FunctionCalls | CallKind::Invoke => None,
         // Resolved by `TagScanner::finish_truncated`, which knows the name.
         CallKind::NamedElement => None,
+        CallKind::Native => parse_partial_native_call(raw),
         CallKind::BareXml => parse_partial_function_call_xml(&format!("{BARE_XML_OPEN}{raw}")),
         CallKind::Wrapped => {
             let trimmed = raw.trim_start();
@@ -1140,6 +1163,194 @@ fn closer_position(raw: &str, pending: &str, tag: &str, own: bool) -> Option<usi
     None
 }
 
+/// Where `<tool_call|>` ends a [`CallKind::Native`] span: only outside a
+/// `<|"|>` string, so a value that mentions the closer is not cut there.
+fn native_closer_position(raw: &str, pending: &str) -> Option<usize> {
+    let mut from = 0;
+    while let Some(relative) = pending[from..].find(NATIVE_CALL_CLOSE) {
+        let at = from + relative;
+        let quotes = raw.matches(NATIVE_QUOTE).count() + pending[..at].matches(NATIVE_QUOTE).count();
+        if quotes.is_multiple_of(2) {
+            return Some(at);
+        }
+        from = at + NATIVE_CALL_CLOSE.len();
+    }
+    None
+}
+
+/// The body of a [`CallKind::Native`] call, `call:NAME{key:value,…}`, in the
+/// grammar of Gemma 4's `format_argument`: bare keys, strings between `<|"|>`
+/// (no escapes), and objects, arrays, numbers and booleans as JSON writes
+/// them. JSON-quoted keys and strings are read too. `None` on anything else,
+/// so the caller falls back to the literal text.
+fn parse_native_call(raw: &str) -> Option<(String, serde_json::Value)> {
+    let (name, mut args) = native_call_head(raw)?;
+    let arguments = args.object()?;
+    args.skip_whitespace();
+    args.0.is_empty().then_some((name, serde_json::Value::Object(arguments)))
+}
+
+/// The tool name and a cursor on what follows its `{`; `None` until the `{`
+/// arrives, since before it the name may be half written.
+fn native_call_head(raw: &str) -> Option<(String, NativeArgs<'_>)> {
+    let body = raw.trim_start();
+    let body = body.strip_prefix("call:").unwrap_or(body);
+    let (name, rest) = body.split_once('{')?;
+    let name = name.trim();
+    if name.is_empty() || name.contains(|c: char| c.is_whitespace() || "<>{}:\"".contains(c)) {
+        return None;
+    }
+    Some((name.to_string(), NativeArgs(rest)))
+}
+
+/// A cut [`CallKind::Native`] call: the top-level pairs that closed, plus a
+/// `<|"|>` string value the cap caught open.
+fn parse_partial_native_call(raw: &str) -> Option<PartialCall> {
+    let (name, mut args) = native_call_head(raw)?;
+    let mut complete: Vec<(String, serde_json::Value)> = Vec::new();
+    let mut partial: Option<(String, String)> = None;
+    loop {
+        args.skip_whitespace();
+        if args.0.starts_with('}') {
+            break;
+        }
+        let Some(key) = args.key() else { break };
+        args.skip_whitespace();
+        if !args.eat(":") {
+            break;
+        }
+        args.skip_whitespace();
+        if let Some(open) = args.0.strip_prefix(NATIVE_QUOTE) {
+            if !open.contains(NATIVE_QUOTE) {
+                partial = Some((key, open.to_string()));
+                break;
+            }
+        }
+        let Some(value) = args.value() else { break };
+        complete.push((key, value));
+        args.skip_whitespace();
+        if !args.eat(",") {
+            break;
+        }
+    }
+    let mut recovered: serde_json::Map<String, serde_json::Value> = complete.iter().cloned().collect();
+    if let Some((key, value)) = &partial {
+        recovered.insert(key.clone(), serde_json::Value::String(value.clone()));
+    }
+    Some(PartialCall {
+        name,
+        arguments: unterminated_arguments(
+            &complete,
+            partial.as_ref().map(|(k, v)| (k.as_str(), v.as_str())),
+        ),
+        recovered: serde_json::Value::Object(recovered),
+    })
+}
+
+/// A cursor over Gemma 4's argument grammar; see [`parse_native_call`].
+struct NativeArgs<'a>(&'a str);
+
+impl NativeArgs<'_> {
+    fn skip_whitespace(&mut self) {
+        self.0 = self.0.trim_start();
+    }
+
+    fn eat(&mut self, token: &str) -> bool {
+        match self.0.strip_prefix(token) {
+            Some(rest) => {
+                self.0 = rest;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The members after an object's `{`, through its `}`.
+    fn object(&mut self) -> Option<serde_json::Map<String, serde_json::Value>> {
+        let mut map = serde_json::Map::new();
+        self.skip_whitespace();
+        if self.eat("}") {
+            return Some(map);
+        }
+        loop {
+            self.skip_whitespace();
+            let key = self.key()?;
+            self.skip_whitespace();
+            if !self.eat(":") {
+                return None;
+            }
+            let value = self.value()?;
+            map.insert(key, value);
+            self.skip_whitespace();
+            if self.eat("}") {
+                return Some(map);
+            }
+            if !self.eat(",") {
+                return None;
+            }
+        }
+    }
+
+    fn key(&mut self) -> Option<String> {
+        if self.0.starts_with(NATIVE_QUOTE) || self.0.starts_with('"') {
+            return match self.value()? {
+                serde_json::Value::String(key) => Some(key),
+                _ => None,
+            };
+        }
+        let end = self.0.find(|c: char| c == ':' || c.is_whitespace())?;
+        let key = &self.0[..end];
+        if key.is_empty() || key.contains(|c: char| "{}[],<>\"".contains(c)) {
+            return None;
+        }
+        self.0 = &self.0[end..];
+        Some(key.to_string())
+    }
+
+    fn value(&mut self) -> Option<serde_json::Value> {
+        self.skip_whitespace();
+        if let Some(rest) = self.0.strip_prefix(NATIVE_QUOTE) {
+            let (text, after) = rest.split_once(NATIVE_QUOTE)?;
+            self.0 = after;
+            return Some(serde_json::Value::String(text.to_string()));
+        }
+        if self.eat("{") {
+            return self.object().map(serde_json::Value::Object);
+        }
+        if self.eat("[") {
+            let mut items = Vec::new();
+            self.skip_whitespace();
+            if self.eat("]") {
+                return Some(serde_json::Value::Array(items));
+            }
+            loop {
+                items.push(self.value()?);
+                self.skip_whitespace();
+                if self.eat("]") {
+                    return Some(serde_json::Value::Array(items));
+                }
+                if !self.eat(",") {
+                    return None;
+                }
+            }
+        }
+        if self.0.starts_with('"') {
+            let mut stream = serde_json::Deserializer::from_str(self.0).into_iter::<serde_json::Value>();
+            let value = stream.next()?.ok()?;
+            self.0 = &self.0[stream.byte_offset()..];
+            return Some(value);
+        }
+        // A number, a boolean or null: up to the delimiter that must follow.
+        let end = self.0.find([',', '}', ']'])?;
+        let literal = self.0[..end].trim();
+        if literal.is_empty() {
+            return None;
+        }
+        self.0 = &self.0[end..];
+        Some(decode_parameter_value(literal))
+    }
+}
+
 /// Parameter tags opened minus closed in `text`, in either spelling.
 fn open_parameters(text: &str) -> isize {
     let text = strip_namespace(text);
@@ -1170,7 +1381,7 @@ fn strip_namespace(text: &str) -> std::borrow::Cow<'_, str> {
 fn complete_call_events(raw: &str, kind: CallKind) -> Vec<ScanEvent> {
     let fallback = || format!("{}{raw}{}", kind.open(), kind.close());
     match kind {
-        CallKind::Wrapped | CallKind::BareFunction => {
+        CallKind::Wrapped | CallKind::BareFunction | CallKind::Native => {
             return vec![ScanEvent::ToolCallClose(parse_call_body(raw, kind))];
         }
         // `<function_calls>` around the `<function=NAME>` body of a
@@ -1233,6 +1444,7 @@ fn parse_call_body(raw: &str, kind: CallKind) -> Result<(String, serde_json::Val
             .ok_or_else(fallback),
         // Resolved by `TagScanner`, which knows the name its closer needs.
         CallKind::NamedElement => Err(raw.to_string()),
+        CallKind::Native => parse_native_call(raw).ok_or_else(fallback),
         CallKind::Wrapped => {
             let normalized = normalize_wrapped_body(raw);
             let raw = normalized.as_str();
@@ -3245,6 +3457,104 @@ mod tests {
             parse_output(NAMED_ELEMENT_CALL),
             vec![OutputPart::Text(NAMED_ELEMENT_CALL.to_string())]
         );
+    }
+
+    /// What Gemma 4 answered a Hermes Agent turn from Telegram with, the whole
+    /// output: its native call format instead of the instructed `<tool_call>`.
+    const NATIVE_CALL: &str = "<|tool_call>call:web_search{query:<|\"|>notícias principais globo.com hoje<|\"|>}<tool_call|>\n";
+
+    #[test]
+    fn a_gemma_native_call_is_a_call() {
+        assert_eq!(
+            parse_output(NATIVE_CALL),
+            vec![OutputPart::ToolCall {
+                name: "web_search".to_string(),
+                arguments: json!({"query": "notícias principais globo.com hoje"}),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_gemma_native_call_survives_any_chunking() {
+        let text = format!("Searching.\n{NATIVE_CALL}");
+        let whole = parse_output(&text);
+        for size in 1..14 {
+            let mut scanner = TagScanner::new();
+            let mut events = Vec::new();
+            let mut rest = text.as_str();
+            while !rest.is_empty() {
+                let mut end = size.min(rest.len());
+                while !rest.is_char_boundary(end) {
+                    end += 1;
+                }
+                events.extend(scanner.feed(&rest[..end]));
+                rest = &rest[end..];
+            }
+            events.extend(scanner.finish());
+            assert_eq!(merge_adjacent_text(events_to_parts(events)), whole, "chunk {size}");
+        }
+    }
+
+    #[test]
+    fn a_gemma_native_call_reads_every_argument_type() {
+        let text = "<|tool_call>call:write_file{path:<|\"|>a, b.txt<|\"|>,content:<|\"|>say <tool_call|> and }<|\"|>,count:3,ratio:0.5,force:true,tags:[<|\"|>x<|\"|>,2],opts:{mode:<|\"|>w<|\"|>,\"quoted\":\"j\"}}<tool_call|>";
+        assert_eq!(
+            parse_output(text),
+            vec![OutputPart::ToolCall {
+                name: "write_file".to_string(),
+                arguments: json!({
+                    "path": "a, b.txt",
+                    "content": "say <tool_call|> and }",
+                    "count": 3,
+                    "ratio": 0.5,
+                    "force": true,
+                    "tags": ["x", 2],
+                    "opts": {"mode": "w", "quoted": "j"},
+                }),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_gemma_native_call_with_no_arguments_or_left_unshut_is_still_a_call() {
+        for text in ["<|tool_call>call:list_tools{}<tool_call|>", "<|tool_call>call:list_tools{}"] {
+            assert_eq!(
+                parse_output(text),
+                vec![OutputPart::ToolCall { name: "list_tools".to_string(), arguments: json!({}) }],
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_malformed_gemma_native_call_stays_text() {
+        for text in [
+            "<|tool_call>call:web search{q:1}<tool_call|>",
+            "<|tool_call>call:web_search{query:<|\"|>open}<tool_call|><|\"|>",
+            "<|tool_call>call:web_search{query}<tool_call|>",
+            "<|tool_call>call:web_search{q:1} trailing<tool_call|>",
+        ] {
+            assert!(
+                parse_output(text).iter().all(|p| matches!(p, OutputPart::Text(_))),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_gemma_native_call_cut_by_the_cap_keeps_the_name_and_the_open_value() {
+        let (parts, cut) =
+            parse_output_truncated("<|tool_call>call:web_search{limit:5,query:<|\"|>notícias de");
+        assert!(cut);
+        let [OutputPart::ToolCallTruncated(partial)] = parts.as_slice() else {
+            panic!("expected one truncated call: {parts:?}");
+        };
+        assert_eq!(partial.name, "web_search");
+        assert_eq!(partial.arguments, "{\"limit\":5,\"query\":\"notícias de");
+        assert_eq!(partial.recovered, json!({"limit": 5, "query": "notícias de"}));
+        let (parts, cut) = parse_output_truncated("<|tool_call>call:web_se");
+        assert!(cut);
+        assert!(parts.is_empty(), "{parts:?}");
     }
 
     #[test]

@@ -888,7 +888,12 @@ change lands in the right place.
   followed by a parameter element, is `CallKind::NamedElement` (Gemma 4 under
   Hermes Agent): its closer depends on the name, so it is outside
   `CALL_FORMATS` and the scanner keeps the name (`element_opening`,
-  `named_element_call`). Text after a complete call is dropped by
+  `named_element_call`). Gemma 4's native
+  `<|tool_call>call:NAME{key:<|"|>text<|"|>}<tool_call|>` is `CallKind::Native`
+  in `CALL_FORMATS` (verified against the Gemma 4 vocabulary GGUF's template):
+  `parse_native_call` reads bare keys, `<|"|>` strings and JSON literals,
+  `native_closer_position` ignores a closer inside a string, and
+  `parse_partial_native_call` recovers a call cut by the cap. Text after a complete call is dropped by
   `drop_text_after_calls` on every exit of the scanner, so streaming and
   blocking agree; later calls still count.
   The invoke dialect's tags may carry an XML namespace prefix (the opener

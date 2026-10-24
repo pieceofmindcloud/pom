@@ -544,7 +544,9 @@ dedicated or member, with iroh's hole punching), are in
   `status()` is what `/api/ui/network/relay` answers. With `anonymous`
   (`with_anonymous`, `set_anonymous`) it also admits an endpoint whose relay
   pass holds for its URL (`pass_admits`, bound to that endpoint by the
-  `PassLedger`), and its offer carries `anonymous: true`.
+  `PassLedger`, which also caps the connections pass holders keep open;
+  `GateAccess::on_disconnect` gives a place back through `released`), and its
+  offer carries `anonymous: true`.
   `Network::anonymous_relays` holds the `AnonymousRelay` list (`url`, `pass`)
   an admin last handed this node.
 - `Network::relay_carries_transfers`/`path_carries_transfers`/`transfer_links` - the

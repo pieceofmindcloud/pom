@@ -52,6 +52,11 @@ are either workers or visitors.
   (`crate::relay_pass`). An admin signs passes only for a relay URL on a
   public host that is one of that visitor's own addresses
   (`relay_url_is_peers`), so a visitor cannot send members to another host.
+  The relay keeps at most 2 connections open per pass and 64 for all pass
+  holders together (`PassLedger`, freed as each connection closes), so pass
+  holders cannot take over the visitor's relay. The bytes a connection
+  carries are not capped: `iroh-relay` only offers one rate limit for the
+  whole server, which would also slow the member traffic of that relay.
   The tunnels through it run between ephemeral
   endpoints whose caller proves its node inside the encrypted session
   (`network/anon_tunnel.rs`). The relay learns the IP addresses of both ends

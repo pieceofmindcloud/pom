@@ -206,13 +206,22 @@ impl iroh_relay::server::AccessControl for GateAccess {
         request: &iroh_relay::server::ClientRequest,
     ) -> iroh_relay::server::Access {
         let pass = request.auth_token();
-        if self.0.allows(&request.endpoint_id().to_string(), pass.as_deref()) {
+        let connection = request.connection_id().to_string();
+        if self.0.allows(&request.endpoint_id().to_string(), pass.as_deref(), &connection) {
             iroh_relay::server::Access::Allow
         } else {
             iroh_relay::server::Access::Deny {
                 reason: Some("this relay serves the members of its own cluster".into()),
             }
         }
+    }
+
+    fn on_disconnect(
+        &self,
+        _endpoint_id: iroh::EndpointId,
+        connection_id: iroh_relay::server::ConnectionId,
+    ) {
+        self.0.released(&connection_id.to_string());
     }
 }
 

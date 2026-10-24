@@ -49,7 +49,10 @@ are either workers or visitors.
   (`p2p-network.md`, "Admission before the `peers` table").
 - A visitor may relay for its network anonymously (`relay.anonymous`, off by
   default): it admits anyone with an admin-signed relay pass for its URL
-  (`crate::relay_pass`), and the tunnels through it run between ephemeral
+  (`crate::relay_pass`). An admin signs passes only for a relay URL on a
+  public host that is one of that visitor's own addresses
+  (`relay_url_is_peers`), so a visitor cannot send members to another host.
+  The tunnels through it run between ephemeral
   endpoints whose caller proves its node inside the encrypted session
   (`network/anon_tunnel.rs`). The relay learns the IP addresses of both ends
   and that an admin let them in, never which nodes they are. Admins know who

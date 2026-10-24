@@ -468,7 +468,8 @@ boundary.
   while no admin is in sight, and backs off from 2 s to the 30 s tick after a
   refused request; it keeps the last refusal for the interface. The token answer
   also carries `relays` (`relay_passes`: each visitor's anonymous relay the
-  admin sees, with a fresh relay pass), which the keeper stores in
+  admin sees, with a fresh relay pass, only for a URL on a public host among
+  that visitor's own addresses, `relay_url_is_peers`), which the keeper stores in
   `Network::set_anonymous_relays`; an admin issues its own every tick.
   `GET /api/ui/connection` (`connection_status`, `LocalOnly`) reports this
   node's `ConnectionPhase` - `standalone` (an admin, or off the network),

@@ -129,6 +129,10 @@ export function applyLoaderCommand(
     // The bar never moves backwards on screen; the message still updates.
     state = { ...state, progress: Math.max(previous.progress, state.progress) };
   }
+  // Plugins repeat their state on every status poll: the same state is not a
+  // change, or each repetition would render the screen again (and a plugin that
+  // reports from a render effect would loop).
+  if (sameState(previous, state)) return "delivered";
   settle(entry, state);
   if (state.kind === "success") {
     entry.timer = setTimeout(() => {
@@ -142,19 +146,29 @@ export function applyLoaderCommand(
   return "delivered";
 }
 
+function sameState(a: LoaderState | null, b: LoaderState): boolean {
+  if (!a || a.kind !== b.kind) return false;
+  const left = a as Record<string, unknown>;
+  const right = b as Record<string, unknown>;
+  const keys = new Set([...Object.keys(left), ...Object.keys(right)]);
+  return [...keys].every((key) => left[key] === right[key]);
+}
+
+/** Subscribes to every loader change. Returns the unsubscribe function. */
+export function subscribePluginLoader(onChange: () => void): () => void {
+  subscribers.add(onChange);
+  return () => {
+    subscribers.delete(onChange);
+  };
+}
+
 /** The current state of `code`'s loader, `null` when the plugin asked for none. */
 export function loaderState(code: string): LoaderState | null {
   return entries.get(code)?.state ?? null;
 }
 
 export function usePluginLoader(code: string): LoaderState | null {
-  return useSyncExternalStore(
-    (onChange) => {
-      subscribers.add(onChange);
-      return () => subscribers.delete(onChange);
-    },
-    () => loaderState(code),
-  );
+  return useSyncExternalStore(subscribePluginLoader, () => loaderState(code));
 }
 
 /** Runs `listener` when the plugin opens its screen: `loader.hide`, or the end of `loader.success`. */

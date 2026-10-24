@@ -146,6 +146,14 @@ describe("PluginScreen with POM's loader", () => {
     expect(screen.queryByTestId("plugin-loader-done")).toBeNull();
   });
 
+  it("does not loop when a plugin repeats the same state on every render", async () => {
+    renderLoaderFixture("repeats");
+    await screen.findByText("Starting");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(screen.getByText("Starting")).toBeTruthy();
+    expect(document.querySelector(".pom-plugin-pending")?.textContent).toContain("plugin-screen:repeats");
+  });
+
   it("starts a remount with no installer state", async () => {
     const first = renderLoaderFixture("installing");
     await screen.findByRole("progressbar");

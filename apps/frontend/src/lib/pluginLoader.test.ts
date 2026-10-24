@@ -7,6 +7,7 @@ import {
   normalizeLoaderCommand,
   onLoaderOpen,
   resetPluginLoaderForTest,
+  subscribePluginLoader,
 } from "./pluginLoader";
 
 afterEach(() => {
@@ -100,6 +101,18 @@ describe("loader store", () => {
       applyLoaderCommand("hermes", "loader.hide", null);
       expect(loaderState("hermes")).toBeNull();
       expect(opened).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps the same state, unnotified, when a plugin repeats it", () => {
+      progress(40, "a");
+      const before = loaderState("hermes");
+      const changes = vi.fn();
+      const stop = subscribePluginLoader(changes);
+      progress(40, "a");
+      applyLoaderCommand("hermes", "loader.progress", { kind: "progress", progress: 30, message: "a" });
+      expect(loaderState("hermes")).toBe(before);
+      expect(changes).not.toHaveBeenCalled();
+      stop();
     });
 
     it("forgets the state when the screen goes away", () => {

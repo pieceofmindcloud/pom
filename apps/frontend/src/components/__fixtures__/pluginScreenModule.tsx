@@ -64,3 +64,12 @@ export function succeeds() {
   }, []);
   return <div>plugin-screen:succeeds</div>;
 }
+
+/** Reports from an effect on every render, as a screen mapping a polled status does. */
+export function repeats() {
+  useEffect(() => {
+    const { loader } = loaderHost();
+    void (loader as unknown as { show: (request: { message: string }) => Promise<unknown> } | undefined)?.show({ message: "Starting" });
+  });
+  return <div>plugin-screen:repeats</div>;
+}

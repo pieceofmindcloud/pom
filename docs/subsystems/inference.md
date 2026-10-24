@@ -1442,7 +1442,12 @@ The prompt the cache recognizes is the text of the canonical rendering
 matters because `system`, `developer` and tools are moved to the start; keying
 by the messages' original order could consider a prefix valid when the real
 prompt had changed at the start. `render_prompt` labels every turn, including
-the first, so new messages at the end keep the prefix. Requests with images
+the first, so new messages at the end keep the prefix. Claude Code opens its
+system prompt with an `x-anthropic-billing-header` line whose `cch=` changes on
+every request and whose `cc_version=` 4th part changes on every session; the
+Anthropic adapter pins both to `f`s (`messages::pin_billing_stamp`, as
+llama.cpp and Strata do), otherwise every turn diverged at the first line and
+ran cold. Requests with images
 neither reuse nor record an automatic prefix, because the marker's text does not
 identify the image content. Raw unlabeled text stays available in
 `/v1/completions` and `POST /api/generate`. On the Anthropic path, when there is

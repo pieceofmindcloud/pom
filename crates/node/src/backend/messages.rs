@@ -170,7 +170,7 @@ pub enum SystemPrompt {
 
 impl SystemPrompt {
     fn as_text(&self) -> String {
-        match self {
+        let text = match self {
             SystemPrompt::Text(s) => s.clone(),
             SystemPrompt::Blocks(blocks) => blocks
                 .iter()
@@ -178,8 +178,52 @@ impl SystemPrompt {
                 .filter(|s| !s.is_empty())
                 .collect::<Vec<_>>()
                 .join("\n\n"),
+        };
+        pin_billing_stamp(text)
+    }
+}
+
+const BILLING_HEADER: &str = "x-anthropic-billing-header:";
+
+/// Claude Code starts its system prompt with
+/// `x-anthropic-billing-header: cc_version=2.1.170.bf4; cc_entrypoint=cli; cch=b145e;`.
+/// `cch` changes on every request and the version's 4th part on every
+/// session, so the prompt diverged at its first line and no turn reused the
+/// prefix cache. Both stamps are pinned to `f`s, as llama.cpp and Strata do;
+/// only a header at the very start, within its first 160 bytes, is touched.
+fn pin_billing_stamp(system: String) -> String {
+    if !system.starts_with(BILLING_HEADER) {
+        return system;
+    }
+    let mut bytes = system.into_bytes();
+    let head = &bytes[..bytes.len().min(160)];
+    let field = |name: &[u8]| -> Option<(usize, usize)> {
+        let start = head.windows(name.len()).position(|window| window == name)? + name.len();
+        let end = start + bytes[start..].iter().position(|&byte| byte == b';')?;
+        Some((start, end))
+    };
+    let mut pins = Vec::new();
+    if let Some((start, end)) = field(b"cch=").filter(|(start, end)| end > start && end - start <= 16) {
+        pins.push((start, end));
+    }
+    if let Some((start, end)) = field(b"cc_version=").filter(|(start, end)| end - start <= 64) {
+        let tail = bytes[start..end]
+            .iter()
+            .enumerate()
+            .filter(|(_, &byte)| byte == b'.')
+            .nth(2)
+            .map(|(dot, _)| start + dot + 1);
+        if let Some(tail) = tail.filter(|tail| *tail < end) {
+            pins.push((tail, end));
         }
     }
+    for (start, end) in pins {
+        // Only ASCII stamps: replacing bytes one for one keeps the text UTF-8.
+        if bytes[start..end].is_ascii() {
+            bytes[start..end].fill(b'f');
+        }
+    }
+    String::from_utf8(bytes).unwrap_or_default()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1499,6 +1543,30 @@ mod tests {
             crate::gateway::SharedPrefix::offer("sys\n\nUser: q", "sys\u{1e}user", "sys", "sys\u{1e}"),
             crate::gateway::SharedPrefix::None
         );
+    }
+
+    #[test]
+    fn claude_codes_billing_stamps_do_not_break_the_prefix() {
+        let request = |version: &str, cch: &str| -> MessagesRequest {
+            serde_json::from_value(json!({
+                "system": [
+                    {"type":"text","text":format!("x-anthropic-billing-header: cc_version=2.1.170.{version}; cc_entrypoint=cli; cch={cch};")},
+                    {"type":"text","text":"You are Claude Code."}
+                ],
+                "messages": [{"role":"user","content":"hi"}]
+            }))
+            .unwrap()
+        };
+        let first = request("bf4", "b145e");
+        let second = request("a07", "9c2d1");
+        let render = |req: &MessagesRequest| render_prompt(req.system.as_ref(), &req.messages, &req.tools);
+        let key = |req: &MessagesRequest| conversation_cache_key(req.system.as_ref(), &req.messages, &req.tools);
+        assert_eq!(render(&first), render(&second));
+        assert_eq!(key(&first), key(&second));
+        assert!(render(&first).contains("cc_version=2.1.170.fff; cc_entrypoint=cli; cch=fffff;"));
+        // A system prompt that only mentions the header elsewhere is untouched.
+        let plain = "You are helpful. cch=12345;".to_string();
+        assert_eq!(pin_billing_stamp(plain.clone()), plain);
     }
 
     #[test]

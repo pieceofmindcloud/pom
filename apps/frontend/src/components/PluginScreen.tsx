@@ -16,8 +16,8 @@
  * A plugin may also take over that cover with POM's loader (`lib/pluginLoader.ts`,
  * host version 7): while it holds a loader state - installing, an error, the
  * generic pieces it asked for - the screen stays covered whatever the gate says,
- * and `PluginLoader` draws that state. The loader is armed for this plugin from
- * the first render, before the screen module even arrives.
+ * and `PluginLoader` draws that state. The loader is armed in an effect of the
+ * first commit, which always precedes the asynchronously imported screen.
  */
 import { Component, useEffect, useState, type ComponentType, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";

@@ -161,7 +161,9 @@ renders that basic line. Version 4 added `plugin(code).rpc`. Version 5 added
 one marked by a teal line on top, drawn from the theme's `--tab-*` tokens
 (`--tab-bar`, `--tab-ink`, `--tab-ink-on`, `--tab-line`, `--tab-card`,
 `--tab-accent`, `--tab-icon`, full colours in both themes). Version 6 added
-`ready()`, the screen's "finished rendering" signal described below. The plugin's CSS
+`ready()`, the screen's "finished rendering" signal described below. Version 7
+added `plugin(code).loader`, POM's loader and installer over the screen (below,
+"POM's loader and installer"). The plugin's CSS
 uses the same color tokens (CSS variables) as POM.
 
 ## Opening a plugin screen
@@ -198,6 +200,43 @@ know whether a plugin claims `/logs` or `/statistics`, so `App.tsx` draws the
 pieces instead of the advertising card of `EnterpriseFeatureShowcase` - the
 fallback would otherwise flash in front of the plugin that is about to take the
 screen.
+
+### POM's loader and installer
+
+A plugin that has work to do before its screen is usable - installing a
+runtime, starting a process - does not draw a loading screen of its own: it
+asks POM to keep the cover and says what is happening (host version 7,
+`lib/pluginLoader.ts`, drawn by `components/PluginLoader.tsx`). The commands
+ride the `pom-plugin-events/v1` command channel (below), as `CustomEvent`
+`pom:plugin-request`, same-origin `postMessage` or
+`__POM_HOST__.plugin(code).loader.*`:
+
+| Type | Payload | Effect |
+|---|---|---|
+| `loader.show` | `{title?, message?}` | the generic pieces, no bar |
+| `loader.progress` | `{title?, message?, progress}` | installer: bar, integer percentage, message |
+| `loader.error` | `{title?, message, retry?}` | the fourth piece rose, the message, "Try again" unless `retry: false` |
+| `loader.success` | `{title?, message?}` | the puzzle completes; the screen opens after `LOADER_SUCCESS_MS` (1 s) |
+| `loader.hide` | `{}` | the screen opens now |
+
+- `title` <= 200 and `message` <= 2048 characters, trimmed; `progress` must be a
+  finite number, clamped to 0..100 and rounded; anything else is answered
+  `request_invalid`. Without `title` POM writes its own ("Opening X",
+  "Installing X", "Could not install X", "X installed").
+- The bar never moves backwards on screen (a lower `progress` keeps the bar and
+  updates the message); a progress after an error starts afresh.
+- **While the plugin holds a loader state the screen stays covered** whatever
+  the ready gate says: `ready()` and the 2 s grace do not take an installer or
+  an error away; only `loader.hide` or the end of `loader.success` do. A
+  `loader.*` command after the screen opened covers it again. A plugin that
+  never sends one opens exactly as described above.
+- The loader belongs to the mounted screen: `PluginScreen` arms it for the
+  plugin from its first render, before the module arrives, and unmounting
+  forgets the state. A command for a plugin whose screen is not mounted is
+  answered `failed` with `screen_not_mounted`. Loader commands need no
+  `PluginBridge`: the mounted screen is what proves the plugin.
+- "Try again" puts the generic pieces back and publishes `loader.retry` to that
+  plugin only; the plugin starts over and reports again.
 
 ## On-demand processes
 
@@ -618,6 +657,7 @@ envelope, whatever the channel:
 | `deployment.started` | `{kind, deploy_id, job_id, model, nodes, deployment_name?, reused?, version?}` | a deployment (`kind: "deploy"`) or redeployment (`"redeploy"`) started on this node |
 | `model.serving` | `{model, deploy_ids, node_ids}` | a model starts being served by the network (enters `/v1/models`) |
 | `model.stopped` | `{model}` | a model stops being served |
+| `loader.retry` | `{}` | the person clicked "Try again" on the plugin's loader error (to that plugin only) |
 
 Browser channels (`lib/pluginEvents.ts`, fed by `components/PluginBridge.tsx`):
 

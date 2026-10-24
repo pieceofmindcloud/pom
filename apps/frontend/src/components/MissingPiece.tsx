@@ -66,9 +66,12 @@ export function piecePath(piece: Pick<Piece, "col" | "row" | "edges">): string {
  * `missing` (the Chat with no model served) leaves its slot empty with a "?";
  * `paused` (a plugin whose process is stopped) has the fourth piece in place
  * but grey, dashed and marked with a pause sign, breathing slowly; `loading`
- * (a plugin screen still opening) has the fourth piece hovering over its slot,
- * about to drop, and assembles faster because the host opens the screen after a
- * short wait. The words under it say what that piece is.
+ * (a plugin screen still opening, or a plugin installing) has the fourth piece
+ * hovering over its slot, about to drop, and assembles faster because the host
+ * opens the screen after a short wait; `failed` (the plugin's install or start
+ * failed) has it sitting in its slot, rose and still; `done` (the plugin
+ * finished installing) drops it into its slot. The words under it say what that
+ * piece is.
  */
 const TIMING = {
   /** The slow set: the piece is not coming, so there is no hurry. */
@@ -79,8 +82,8 @@ const TIMING = {
 
 export function MissingPiece({ title, detail, variant = "missing", compact = false, children }: {
   title: string;
-  detail: string;
-  variant?: "missing" | "paused" | "loading";
+  detail?: string;
+  variant?: "missing" | "paused" | "loading" | "failed" | "done";
   /** A smaller mark, puzzle and title, for a card inside a screen rather than a whole screen. */
   compact?: boolean;
   children?: React.ReactNode;
@@ -88,14 +91,18 @@ export function MissingPiece({ title, detail, variant = "missing", compact = fal
   const still = useReducedMotion() ?? false;
   const paused = variant === "paused";
   const loading = variant === "loading";
-  const timing = loading ? TIMING.arriving : TIMING.still_waiting;
+  const failed = variant === "failed";
+  const done = variant === "done";
+  const timing = loading || failed || done ? TIMING.arriving : TIMING.still_waiting;
   const centre = PAD + CELL * 1.5;
   const { theme } = useTheme();
   const glow = useId().replace(/:/g, "");
   return (
     <motion.div
       className="flex flex-col items-center text-center"
-      data-testid={paused ? "paused-piece" : loading ? "plugin-loading-piece" : "chat-missing-piece"}
+      data-testid={
+        paused ? "paused-piece" : loading ? "plugin-loading-piece" : failed ? "plugin-loader-failed" : done ? "plugin-loader-done" : "chat-missing-piece"
+      }
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       transition={{ duration: 0.4 }}
@@ -158,6 +165,22 @@ export function MissingPiece({ title, detail, variant = "missing", compact = fal
           >
             <path d={piecePath(MISSING)} />
           </motion.g>
+        ) : failed || done ? (
+          /* The fourth piece in its slot: rose and still when it failed, dropped in place when it is done. */
+          <motion.g
+            data-testid={failed ? "failed-piece" : "done-piece"}
+            fill={failed ? "rgb(var(--rose))" : "rgb(var(--iris))"}
+            fillOpacity={0.88}
+            stroke="rgb(var(--surface))"
+            strokeWidth={2}
+            filter={`url(#glow-${glow})`}
+            initial={still || failed ? false : { opacity: 0.6, y: -7, rotate: 4 }}
+            animate={{ opacity: 1, y: 0, rotate: 0 }}
+            transition={{ duration: 0.45, ease: [0.16, 1, 0.3, 1] }}
+            style={{ transformBox: "fill-box", transformOrigin: "center" }}
+          >
+            <path d={piecePath(MISSING)} />
+          </motion.g>
         ) : (
           <motion.text
             x={centre}
@@ -198,7 +221,9 @@ export function MissingPiece({ title, detail, variant = "missing", compact = fal
         className={compact ? "mt-2 max-w-md" : "mt-4 max-w-md"}
       >
         <p className={compact ? "font-display text-base font-semibold text-fg" : "font-display text-lg font-semibold text-fg"}>{title}</p>
-        <p className={compact ? "mt-1 text-[0.8rem] leading-relaxed text-muted" : "mt-1.5 text-sm leading-relaxed text-muted"}>{detail}</p>
+        {detail ? (
+          <p className={compact ? "mt-1 text-[0.8rem] leading-relaxed text-muted" : "mt-1.5 text-sm leading-relaxed text-muted"}>{detail}</p>
+        ) : null}
         {children}
       </motion.div>
     </motion.div>

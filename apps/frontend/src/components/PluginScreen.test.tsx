@@ -106,6 +106,56 @@ describe("PluginScreen opening", () => {
   });
 });
 
+describe("PluginScreen with POM's loader", () => {
+  const renderLoaderFixture = (exportName: string) => {
+    const client = new QueryClient();
+    return render(
+      <QueryClientProvider client={client}>
+        <LocaleProvider initialLocale="en">
+          <PluginScreen
+            resolved={{ code: "logs", route: { path: "/logs", full_bleed: true }, screen: { module: "pluginScreenModule.tsx", export: exportName }, version: null } as unknown as ResolvedPluginRoute}
+          />
+        </LocaleProvider>
+      </QueryClientProvider>,
+    );
+  };
+
+  it("keeps the installer up past the grace and past ready()", async () => {
+    renderLoaderFixture("installing");
+    const bar = await screen.findByRole("progressbar");
+    expect(bar.getAttribute("aria-valuenow")).toBe("30");
+    expect(screen.getByText("30%")).toBeTruthy();
+    expect(screen.getByText("Installing Python packages")).toBeTruthy();
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+    expect(screen.getByRole("progressbar")).toBeTruthy();
+    expect(document.querySelector(".pom-plugin-pending")).toBeTruthy();
+  }, 6000);
+
+  it("covers an open screen again when the plugin reports an error", async () => {
+    renderLoaderFixture("failsLater");
+    await waitFor(() => expect(document.querySelector(".pom-plugin-open")).toBeTruthy());
+    await screen.findByText("Hermes Agent stopped");
+    expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
+    expect(document.querySelector(".pom-plugin-pending")).toBeTruthy();
+  });
+
+  it("shows success, then opens the screen", async () => {
+    renderLoaderFixture("succeeds");
+    await screen.findByTestId("plugin-loader-done");
+    await waitFor(() => expect(document.querySelector(".pom-plugin-open")).toBeTruthy(), { timeout: 2500 });
+    expect(screen.queryByTestId("plugin-loader-done")).toBeNull();
+  });
+
+  it("starts a remount with no installer state", async () => {
+    const first = renderLoaderFixture("installing");
+    await screen.findByRole("progressbar");
+    first.unmount();
+    renderLoaderFixture("silent");
+    await screen.findByTestId("plugin-loading-piece");
+    expect(screen.queryByRole("progressbar")).toBeNull();
+  });
+});
+
 describe("PluginScreen for an on-demand plugin", () => {
   it("shows the paused puzzle piece, says why, and starts the process again", async () => {
     pluginState.plugins = [{ code: "harness", on_demand: true, running: false }];

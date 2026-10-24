@@ -267,15 +267,17 @@ export async function runPluginCommand(command: unknown): Promise<NotificationRe
   const kind = isLoader ? "loader" : value.type === "notification.confirm" ? "confirm" : "notify";
   const fail = (error: string) => respond(code || "*", { request_id: requestId, kind, action: "failed", error });
   if (value.protocol !== PLUGIN_EVENTS_PROTOCOL) return fail("protocol_unsupported");
-  if (!executor) return fail("host_unavailable");
-  if (!code || !executor.isPlugin(code)) return fail("plugin_unknown");
-  if (isLoader) {
+  // The loader answers to the plugin screen POM mounted from its manifest,
+  // which proves more than the executor's catalog check, and needs no bridge.
+  if (isLoader && code) {
     const command = normalizeLoaderCommand(value.type, value.payload);
     if (!command) return fail("request_invalid");
     const outcome = applyLoaderCommand(code, command.type, command.state);
     if (outcome !== "delivered") return fail(outcome);
     return respond(code, { request_id: requestId, kind, action: "delivered" });
   }
+  if (!executor) return fail("host_unavailable");
+  if (!code || !executor.isPlugin(code)) return fail("plugin_unknown");
   try {
     if (value.type === "notification.notify") {
       const request = normalizeNotify(value.payload);

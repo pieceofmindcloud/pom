@@ -15,6 +15,7 @@
  * screen, for example) resolves nothing.
  */
 import { useEffect, useState } from "react";
+import { onLoaderOpen } from "./pluginLoader";
 
 export const PLUGIN_READY_GRACE_MS = 2000;
 
@@ -47,19 +48,23 @@ export function pluginReadyIsArmed(): boolean {
  * The host side of the gate: `true` once the plugin screen may be shown.
  * Arming and the short wait live here so the mount only asks "may I open?".
  * `active` is false while there is nothing to wait for (a stopped on-demand
- * plugin), and a change of it re-arms the gate for the new mount.
+ * plugin), and a change of it re-arms the gate for the new mount. With `code`,
+ * the plugin opening its screen through its loader (`loader.hide`, or the end
+ * of `loader.success`) opens the gate too.
  */
-export function usePluginReady(active: boolean): boolean {
+export function usePluginReady(active: boolean, code?: string): boolean {
   const [open, setOpen] = useState(false);
   useEffect(() => {
     setOpen(false);
     if (!active) return;
     const disarm = armPluginReady(() => setOpen(true));
+    const opened = code ? onLoaderOpen(code, () => setOpen(true)) : () => {};
     const wait = window.setTimeout(() => setOpen(true), PLUGIN_READY_GRACE_MS);
     return () => {
       window.clearTimeout(wait);
       disarm();
+      opened();
     };
-  }, [active]);
+  }, [active, code]);
   return open;
 }

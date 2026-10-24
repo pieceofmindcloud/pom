@@ -701,10 +701,16 @@ The mechanism lives in `docs/subsystems/plugins-ui.md`; these are the files that
   history is in `plugins-ui.md`.
 - `pluginReady.ts` - the "finished rendering" signal of a plugin screen: `usePluginReady` arms the
   gate on the host mount and opens it on `__POM_HOST__.ready()` or after `PLUGIN_READY_GRACE_MS`,
-  whichever comes first. The signal is never required to use a plugin.
+  whichever comes first, or when the plugin opens its screen through its loader. The signal is never
+  required to use a plugin.
+- `pluginLoader.ts` - POM's loader and installer state per `plugin_code`: `normalizeLoaderCommand`
+  validates the `loader.*` commands (text limits `MAX_TITLE`/`MAX_BODY`, shared with the
+  notifications), `mountPluginLoader` arms it for the mounted screen, `applyLoaderCommand` keeps the
+  bar from moving backwards and times the success, `usePluginLoader` feeds `PluginScreen`.
 - `pluginEvents.ts` - the `pom-plugin-events/v1` protocol: envelope, bus, delivery to
-  `iframe[data-pom-plugin]`, the `notification.notify`/`confirm` commands, `forwardNodeEvent` for
-  the node's own envelopes, and `scopedPluginApi(code).rpc`. The one that executes is the
+  `iframe[data-pom-plugin]`, the `notification.notify`/`confirm` commands, the `loader.*` commands
+  (executed by `pluginLoader.ts` without the bridge) and `publishLoaderRetry`, `forwardNodeEvent`
+  for the node's own envelopes, and `scopedPluginApi(code).rpc`/`.loader`. The one that executes is the
   `PluginBridge` (`components/`).
 - `pluginInbox.ts` - the plugins' inbox in the bell: `notification.confirm` questions with
   Accept/Decline (this tab only) and `notification.notify` warnings without buttons, unread until

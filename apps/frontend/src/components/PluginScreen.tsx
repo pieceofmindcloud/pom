@@ -12,6 +12,12 @@
  * ends, whichever comes first. The screen is mounted under that animation from
  * the start, because only a mounted screen can give the signal. A plugin
  * without the signal is opened anyway.
+ *
+ * A plugin may also take over that cover with POM's loader (`lib/pluginLoader.ts`,
+ * host version 7): while it holds a loader state - installing, an error, the
+ * generic pieces it asked for - the screen stays covered whatever the gate says,
+ * and `PluginLoader` draws that state. The loader is armed for this plugin from
+ * the first render, before the screen module even arrives.
  */
 import { Component, useEffect, useState, type ComponentType, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -25,7 +31,9 @@ import { useI18n } from "../i18n/provider";
 import { Button, Panel, PanelHeader } from "./ui";
 import { MissingPiece } from "./MissingPiece";
 import { PluginLoading } from "./PluginLoading";
+import { PluginLoader } from "./PluginLoader";
 import { usePluginReady } from "../lib/pluginReady";
+import { mountPluginLoader, usePluginLoader } from "../lib/pluginLoader";
 import { formatMessage, getActiveLocale } from "../i18n/locales";
 
 const loaded = new Map<string, Promise<ComponentType>>();
@@ -133,7 +141,13 @@ export function PluginScreen({ resolved }: { resolved: ResolvedPluginRoute }) {
    * is on screen. A plugin that does not know the signal is opened at the end of
    * the short wait, so the animation is never a wall in front of a screen.
    */
-  const open = usePluginReady(!stopped);
+  const open = usePluginReady(!stopped, resolved.code);
+  const loader = usePluginLoader(resolved.code);
+  useEffect(() => {
+    if (stopped) return;
+    return mountPluginLoader(resolved.code);
+  }, [resolved.code, resolved.route.path, stopped]);
+  const covered = !open || loader !== null;
   useEffect(() => {
     let cancelled = false;
     setState({});
@@ -157,10 +171,10 @@ export function PluginScreen({ resolved }: { resolved: ResolvedPluginRoute }) {
    */
   return (
     <Boundary>
-      <div className={open ? "pom-plugin-open" : "pom-plugin-pending"} aria-hidden={open ? undefined : "true"}>
+      <div className={covered ? "pom-plugin-pending" : "pom-plugin-open"} aria-hidden={covered ? "true" : undefined}>
         <Screen />
       </div>
-      {open ? null : <PluginLoading code={resolved.code} />}
+      {covered ? <PluginLoader code={resolved.code} state={loader} /> : null}
     </Boundary>
   );
 }

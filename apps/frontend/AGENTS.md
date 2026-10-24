@@ -85,7 +85,9 @@ fallback. New menus enter at the root, in manifest order, right after the entrie
 the same plugin already holds (Quota after Statistics), else before
 Documentation; an item with `children` becomes an expandable section with
 submenus. `components/PluginBridge.tsx` connects the shell to the plugins through
-the `pom-plugin-events/v1` protocol (`lib/pluginEvents.ts`). POM shows and opens
+the `pom-plugin-events/v1` protocol (`lib/pluginEvents.ts`); over the same
+protocol a plugin drives POM's loader and installer over its own screen
+(`lib/pluginLoader.ts`, `components/PluginLoader.tsx`, host version 7). POM shows and opens
 the interfaces of all plugins in the `admin`, `worker` and `visitor` profiles; the
 manifest's `roles` and `profiles` are validated but do not restrict this UI. The
 native restrictions of the `visitor` profile still apply to the POM routes. The

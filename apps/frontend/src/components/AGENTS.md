@@ -116,7 +116,16 @@ Per-file list:
   (`.pom-plugin-pending`) until the plugin signals it finished rendering -
   `__POM_HOST__.ready()`, `lib/pluginReady.ts` - or the short wait ends; the
   wrapper then becomes layout-neutral, so the screen is never remounted. A plugin
-  without the signal is opened by the wait. See `docs/subsystems/plugins-ui.md`.
+  without the signal is opened by the wait. While the plugin holds a state in
+  POM's loader (`lib/pluginLoader.ts`, armed from the first render) the screen
+  stays covered whatever the gate says, and `PluginLoader` draws that state.
+  See `docs/subsystems/plugins-ui.md`.
+- `PluginLoader.tsx` - POM's loader and installer over a plugin screen, in the
+  state the plugin asked for: the generic pieces (`PluginLoading`, with the
+  plugin's title and message when it sent them), a `progressbar` with the
+  percentage and an `aria-live` message, the error (`MissingPiece
+  variant="failed"`) with "Try again" that publishes `loader.retry`, and the
+  success (`variant="done"`). Tests in `PluginLoader.test.tsx`.
 - `PluginUpdatesDialog.tsx` - the Plugins screen's "Check for updates"
   result: one row per update found (`UpdateItem`: POM, a licensed plugin or a
   GitHub install, with from/to versions, changelog, an unverified badge and,
@@ -394,7 +403,8 @@ Per-file list:
   on-demand plugin (fourth piece grey, dashed, with a pause sign), `variant="loading"`
   for a plugin screen still opening (fourth piece hovering over its slot, and the
   whole assembly faster because the host opens the screen within a couple of
-  seconds) and, by default, the Chat's screen while the network serves no model:
+  seconds), `variant="failed"` (fourth piece in its slot, rose and still) and
+  `variant="done"` (fourth piece dropped into its slot) for `PluginLoader`, and, by default, the Chat's screen while the network serves no model:
   an SVG 2x2 puzzle whose three pieces (`piecePath`, knobs that agree on
   shared edges) fly in and lock, leaving the bottom-right slot empty and
   pulsing, under the POM mark (art per theme), over a title, a

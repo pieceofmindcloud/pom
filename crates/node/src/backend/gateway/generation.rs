@@ -756,7 +756,7 @@ pub(super) async fn generate_stream_inner(
     let GenerationInput {
         trace_id,
         state,
-        inference_token: _inference_token,
+        inference_token,
         model,
         prompt,
         images,
@@ -768,6 +768,7 @@ pub(super) async fn generate_stream_inner(
         preferred_head,
         request_details,
         probe,
+        shared_prefix,
     } = input;
     // A prefill machine chosen as the head (the Chat shows it as the head of its prefill/decode split) never answers:
     // the planner picks the head that decodes, and the plugin engine reads the prompt on the chosen prefill machine.
@@ -839,6 +840,7 @@ pub(super) async fn generate_stream_inner(
 
     // `qwen3:8b@d-4f2a91c3` chooses **which** deployment serves; the bare name
     // leaves the choice to whoever builds the pipeline. See `deployment::split_selector`.
+    let model_selector = model.clone();
     let (model, deploy_id) = crate::deployment::split_selector(&model);
     let prefix_model = format!(
         "{}|deployment={}|chat_template={chat_template}|thinking_enabled={thinking_enabled}",
@@ -1180,6 +1182,36 @@ pub(super) async fn generate_stream_inner(
                         disk.forget(&entry.key_hash);
                     }
                 }
+            }
+        }
+    }
+    // Still a miss: a new conversation. When it opens with a long system
+    // part no snapshot holds yet, that part is read alone first and pinned
+    // (`SharedPrefix`), and this request continues its session.
+    if !reuse_prefix && images.is_empty() && probe.is_none() && state.prefix_disk.is_some() {
+        if let Some((root_prompt, root_key)) = shared_prefix.root_of(&prompt, &cache_prompt) {
+            let head = plan.steps.first().map(|step| step.node_id.clone());
+            if build_shared_prefix(
+                &state,
+                &model_selector,
+                &inference_token,
+                root_prompt,
+                root_key,
+                chat_template,
+                thinking_enabled,
+                head,
+                &cancellation,
+            )
+            .await
+            {
+                prefix_lease.discard();
+                prefix_lease = state.prefix_cache.acquire(
+                    prefix_key.clone(),
+                    &cache_prompt,
+                    Uuid::new_v4().to_string(),
+                );
+                session_id = prefix_lease.session_id().to_string();
+                reuse_prefix = prefix_lease.is_hit();
             }
         }
     }
@@ -2216,13 +2248,17 @@ pub(super) async fn generate_stream_inner(
                 let key = prefix_key.clone();
                 let prompt = cache_prompt.clone();
                 let sid = session_id.clone();
-                tokio::spawn(async move {
+                // A shared system part is pinned before the request it opens
+                // writes to the same session, so it is saved here, in line.
+                let pinned = shared_prefix == SharedPrefix::Build;
+                let spill = async move {
                     let hash = prefix_key_hash(&key, &prompt);
                     // Debounce: if the retained prefix grew little since the
                     // last snapshot of this lineage, it only renews the stamp and
                     // does not rewrite (each spill is a KV serialize + fan-out).
-                    if let Some(ancestor) =
-                        disk.longest_prefix_match(&key.model, &key.hops, &prompt)
+                    if let Some(ancestor) = disk
+                        .longest_prefix_match(&key.model, &key.hops, &prompt)
+                        .filter(|_| !pinned)
                     {
                         if retained_tokens.saturating_sub(ancestor.cached_tokens)
                             < crate::prefix_cache::SLOT_AUTO_MIN_GROWTH_TOKENS
@@ -2246,13 +2282,22 @@ pub(super) async fn generate_stream_inner(
                                 &prompt,
                                 retained_tokens,
                                 bytes,
+                                pinned,
                             ) {
                                 erase_snapshot(&plan, &auto_slot_name(&stale), &clients).await;
+                            }
+                            if pinned {
+                                info!("📌 shared system part pinned: {retained_tokens} tokens");
                             }
                         }
                         Err(error) => debug!("prefix spill to disk: {error}"),
                     }
-                });
+                };
+                if pinned {
+                    spill.await;
+                } else {
+                    tokio::spawn(spill);
+                }
             }
         } else {
             warn!(
@@ -2269,6 +2314,72 @@ pub(super) async fn generate_stream_inner(
     if let Some(event) = terminal {
         let _ = client_tx.send(event).await;
     }
+}
+
+/// Reads a request's shared system part on its own, as a one token turn on
+/// the head `head` chose for the request, and pins its KV on disk
+/// (`SharedPrefix::Build`). The turn leaves its session retained in the
+/// prefix cache, so the request that asked for it continues that session.
+/// Whether the turn ran; any failure leaves the request to read its prompt
+/// cold, as it would have.
+#[allow(clippy::too_many_arguments)]
+async fn build_shared_prefix(
+    state: &GatewayState,
+    model: &str,
+    inference_token: &str,
+    root_prompt: &str,
+    root_key: &str,
+    chat_template: bool,
+    thinking_enabled: bool,
+    head: Option<String>,
+    cancellation: &crate::prefill::Cancellation,
+) -> bool {
+    let (tx, mut rx) = mpsc::channel(16);
+    let input = GenerationInput {
+        trace_id: None,
+        state: state.clone(),
+        inference_token: inference_token.to_string(),
+        model: model.to_string(),
+        prompt: root_prompt.to_string(),
+        images: Vec::new(),
+        chat_template,
+        thinking_enabled,
+        budget: OutputBudget::single(1),
+        stops: Vec::new(),
+        cache_key: Some(root_key.to_string()),
+        preferred_head: head,
+        request_details: serde_json::Value::Null,
+        probe: None,
+        shared_prefix: SharedPrefix::Build,
+    };
+    let started = Instant::now();
+    // A task of its own: polled inside this request's future, the two
+    // generations' frames together outgrow a thread's stack.
+    let run = spawn_generation(input, tx, cancellation.clone());
+    let mut done = false;
+    while let Some(event) = rx.recv().await {
+        done |= matches!(event, GenEvent::Done(_));
+    }
+    // The pin happens after the last event: the turn is over only when the task is.
+    done &= run.await.is_ok();
+    info!(
+        "shared system part ({} bytes) read on its own in {} ms: {}",
+        root_prompt.len(),
+        started.elapsed().as_millis(),
+        if done { "ok" } else { "failed, the request reads it cold" }
+    );
+    done
+}
+
+/// Spawns a generation from a plain function: called from inside
+/// `generate_stream_inner`'s own future, the compiler could not prove the
+/// spawned future `Send` without this break in the cycle.
+fn spawn_generation(
+    input: GenerationInput,
+    tx: mpsc::Sender<GenEvent>,
+    cancellation: crate::prefill::Cancellation,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(generate_stream_inner(input, tx, cancellation))
 }
 
 /// Forwards the generation events to the HTTP adapter and turns the

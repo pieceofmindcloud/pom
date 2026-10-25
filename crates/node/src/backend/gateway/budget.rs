@@ -910,6 +910,67 @@ pub(crate) struct GenerationInput {
     /// Labels of a typed decision (`/v1/systemone`). The last peer returns the
     /// probability of each one in `GenSummary::trace.probe`.
     pub(crate) probe: Option<crate::prefill::DecisionProbe>,
+    /// The system part (system prompt and tools) that opens this prompt, so
+    /// a new conversation that shares it starts from its KV. See
+    /// [`SharedPrefix`].
+    pub(crate) shared_prefix: SharedPrefix,
+}
+
+/// The part of a prompt many conversations share: the system prompt and the
+/// tool list, which the adapters render first. A new conversation misses the
+/// prefix cache (its messages are new), but its system part is the same as
+/// the last conversation's of the same client; an agent's is often tens of
+/// thousands of tokens. On such a miss the gateway reads the system part
+/// alone first, as a turn of its own (`Build`), pins its KV on disk, and the
+/// request then continues that session. Every later conversation that opens
+/// with the same system part restores it instead of reading it again.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum SharedPrefix {
+    #[default]
+    None,
+    /// The system part ends `prompt_bytes` into the rendered prompt and
+    /// `key_bytes` into the prefix cache key.
+    Offer { prompt_bytes: usize, key_bytes: usize },
+    /// This request is a system part read on its own: its KV is pinned on
+    /// disk before the request it opens goes on.
+    Build,
+}
+
+impl SharedPrefix {
+    /// A system part shorter than this (about 2,048 tokens) is cheap to read
+    /// again: pinning it would cost more than it saves.
+    pub(crate) const MIN_BYTES: usize = 8 * 1024;
+
+    /// The system part of a request whose rendered prompt starts with
+    /// `root_prompt` and whose cache key starts with `root_key`, when it is
+    /// long enough to be worth pinning and something follows it.
+    pub(crate) fn offer(prompt: &str, key: &str, root_prompt: &str, root_key: &str) -> Self {
+        let root_prompt = root_prompt.trim_end();
+        if root_prompt.len() < Self::MIN_BYTES
+            || root_key.is_empty()
+            || prompt.len() <= root_prompt.len()
+            || key.len() <= root_key.len()
+            || !prompt.starts_with(root_prompt)
+            || !key.starts_with(root_key)
+        {
+            return Self::None;
+        }
+        Self::Offer {
+            prompt_bytes: root_prompt.len(),
+            key_bytes: root_key.len(),
+        }
+    }
+
+    /// `(root prompt, root key)` cut from this request's prompt and key.
+    pub(crate) fn root_of<'a>(&self, prompt: &'a str, key: &'a str) -> Option<(&'a str, &'a str)> {
+        match *self {
+            Self::Offer {
+                prompt_bytes,
+                key_bytes,
+            } => Some((prompt.get(..prompt_bytes)?, key.get(..key_bytes)?)),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]

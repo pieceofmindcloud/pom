@@ -659,6 +659,16 @@ async fn chat_completions(
     // Key the prefix cache by the messages, not by the rendered text -
     // see `conversation_cache_key`.
     let cache_key = conversation_cache_key(&req.messages, &tools);
+    // The system part, which a new conversation of the same client shares.
+    let system_only: Vec<ChatMessage> = req
+        .messages
+        .iter()
+        .filter(|message| matches!(message.role.as_str(), "system" | "developer"))
+        .cloned()
+        .collect();
+    let root = render_prompt(&system_only, &tools);
+    let shared_prefix =
+        crate::gateway::SharedPrefix::offer(&prompt, &cache_key, &root, root.trim_end());
     let inference_token = auth.token().to_string();
     let caller = auth.into_caller();
     // Retrieval comes before the generation: passages for the user's question
@@ -780,6 +790,7 @@ async fn chat_completions(
             stops,
             Some(cache_key),
             retain_prefix_bytes,
+            shared_prefix,
             preferred_head.clone(),
             thinking_enabled,
             request_details.clone(),
@@ -803,6 +814,7 @@ async fn chat_completions(
             stops,
             Some(cache_key),
             retain_prefix_bytes,
+            shared_prefix,
             preferred_head,
             thinking_enabled,
             request_details,
@@ -881,6 +893,7 @@ async fn completions(
             // A raw completion has no conversation: the prefix is the text itself.
             None,
             None,
+            Default::default(),
             None,
             true,
             request_details.clone(),
@@ -904,6 +917,7 @@ async fn completions(
             stops,
             None,
             None,
+            Default::default(),
             None,
             true,
             request_details,
@@ -976,6 +990,7 @@ async fn blocking_response(
     stops: Vec<String>,
     cache_key: Option<String>,
     retain_prefix_bytes: Option<usize>,
+    shared_prefix: crate::gateway::SharedPrefix,
     preferred_head: Option<String>,
     thinking_enabled: bool,
     request_details: serde_json::Value,
@@ -986,6 +1001,7 @@ async fn blocking_response(
         route,
         caller,
         GenerationInput {
+            shared_prefix,
             probe: retain_boundary(retain_prefix_bytes),
             trace_id: Some(id.clone()),
             state,
@@ -1195,6 +1211,7 @@ fn stream_response(
     stops: Vec<String>,
     cache_key: Option<String>,
     retain_prefix_bytes: Option<usize>,
+    shared_prefix: crate::gateway::SharedPrefix,
     preferred_head: Option<String>,
     thinking_enabled: bool,
     request_details: serde_json::Value,
@@ -1206,6 +1223,7 @@ fn stream_response(
         route,
         caller,
         GenerationInput {
+            shared_prefix,
             probe: retain_boundary(retain_prefix_bytes),
             trace_id: Some(id.clone()),
             state,

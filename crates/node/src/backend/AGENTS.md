@@ -731,7 +731,10 @@ change lands in the right place.
   `/api/generate` are for. `conversation_cache_key` is the canonical rendered prompt the head
   tokenizes, travelling as `GenerationInput::cache_key`; the Anthropic version
   `conversation_cache_key_with_budget` prefixes the task budget's identity so an entry without
-  a budget or with a different marker is never reused. `usage.prompt_tokens_details.cached_tokens`
+  a budget or with a different marker is never reused. Both chat adapters also pass
+  `GenerationInput::shared_prefix` (`SharedPrefix::offer`): where the system part ends in the
+  prompt and the key, which the gateway reads alone and pins so a new conversation of the same
+  client starts warm (`inference.md` §3.1.1). `usage.prompt_tokens_details.cached_tokens`
   reports the prompt tokens the pipeline did not reprocess, read from the trace - the executed
   number, not the cache's choice. `approx_tokens` is chars/4. `model_ids` comes only from live
   peer announcements (never the stale CLI default) and keeps an `idle` deployment selectable
@@ -742,6 +745,9 @@ change lands in the right place.
   (tool_call deltas), `chunk_json` (+ the `x_pom` extension), `cors_headers` (allow `*`).
 - `messages.rs` - Anthropic `POST /v1/messages` (+ OPTIONS) and `POST /v1/messages/count_tokens`,
   with its own `render_prompt` and `conversation_cache_key` for the same reason as `openai.rs`;
+  `SystemPrompt::as_text` pins Claude Code's billing stamps (`pin_billing_stamp`: `cch=` and the
+  4th part of `cc_version=` become `f`s), which change per request and per session at the first
+  line of the prompt and would otherwise defeat every prefix reuse;
   `content_blocks` for tool_use/tool_result, `stop_reason` (end_turn / max_tokens / tool_use /
   stop_sequence), `usage.cache_read_input_tokens` carrying the honoured prefix reuse, and
   `blocking_response` / `stream_response` with Anthropic's SSE event names. `tool_choice` is

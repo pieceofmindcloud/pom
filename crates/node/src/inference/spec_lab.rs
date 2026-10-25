@@ -535,6 +535,7 @@ async fn generate(direct: bool, max_tokens: u32, n_batch: u32) -> Seen {
     let (tx, mut rx) = tokio::sync::mpsc::channel(64);
     let bg = tokio::spawn(crate::gateway::generate_stream_with_stops(
         crate::gateway::GenerationInput {
+            shared_prefix: Default::default(),
             probe: None,
             state,
             inference_token: "test-api-key".into(),

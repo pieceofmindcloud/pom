@@ -345,6 +345,11 @@ pub struct DiskPrefixEntry {
     pub bytes: u64,
     /// Unix secs of the last use (write or restore).
     pub updated_at: i64,
+    /// A system part many conversations open with (`gateway::SharedPrefix`):
+    /// a conversation that grows from it never supersedes it. TTL and budget
+    /// still apply.
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 /// The gateway's local index of the automatic prefix snapshots. It persists in a
@@ -412,6 +417,7 @@ impl PrefixDiskIndex {
         prompt: &str,
         cached_tokens: u32,
         bytes: u64,
+        pinned: bool,
     ) -> Vec<String> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let now = now_secs();
@@ -424,6 +430,7 @@ impl PrefixDiskIndex {
             cached_tokens,
             bytes,
             updated_at: now,
+            pinned,
         });
 
         let mut dropped = Vec::new();
@@ -435,6 +442,7 @@ impl PrefixDiskIndex {
         // or to cold prefill - acceptable for a cache.
         state.retain(|entry| {
             let superseded = entry.key_hash != key_hash
+                && !entry.pinned
                 && entry.route_model == model
                 && entry.route_hops == hops
                 && prompt.len() > entry.prompt.len()
@@ -690,8 +698,9 @@ mod tests {
             "system\nuser1\nassist1\nuser2",
             8,
             1_000,
+            false,
         );
-        idx.record("m", &hops, "h_sys", "system", 2, 1_000);
+        idx.record("m", &hops, "h_sys", "system", 2, 1_000, false);
 
         // Two match; the longest wins.
         assert_eq!(
@@ -720,24 +729,41 @@ mod tests {
     fn disk_index_supersedes_prefix_ancestors_on_the_same_route() {
         let (dir, idx) = tmp_index("sup", DEFAULT_SLOT_AUTO_MAX_BYTES);
         let r1 = vec!["h".to_string()];
-        assert!(idx.record("m", &r1, "a", "sys", 1, 1_000).is_empty());
+        assert!(idx.record("m", &r1, "a", "sys", 1, 1_000, false).is_empty());
         // Next turn of the same lineage: drops the ancestor "a".
-        assert_eq!(idx.record("m", &r1, "b", "sys\nu1", 3, 1_000), vec!["a"]);
+        assert_eq!(idx.record("m", &r1, "b", "sys\nu1", 3, 1_000, false), vec!["a"]);
         assert_eq!(
-            idx.record("m", &r1, "c", "sys\nu1\nu2", 5, 1_000),
+            idx.record("m", &r1, "c", "sys\nu1\nu2", 5, 1_000, false),
             vec!["b"]
         );
         assert_eq!(idx.stats().0, 1, "one lineage, one snapshot");
 
         // Another route is not touched.
-        idx.record("m", &["outro".to_string()], "d", "sys\nu1", 3, 1_000);
+        idx.record("m", &["outro".to_string()], "d", "sys\nu1", 3, 1_000, false);
         assert_eq!(idx.stats().0, 2);
 
         // A branch (earlier turn edited) diverges from "c" and coexists with it.
         assert!(idx
-            .record("m", &r1, "e", "sys\nu1\nOUTRO", 5, 1_000)
+            .record("m", &r1, "e", "sys\nu1\nOUTRO", 5, 1_000, false)
             .is_empty());
         assert_eq!(idx.stats().0, 3);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_pinned_system_part_outlives_the_conversations_that_grow_from_it() {
+        let (dir, idx) = tmp_index("pinned", DEFAULT_SLOT_AUTO_MAX_BYTES);
+        let r1 = vec!["h".to_string()];
+        assert!(idx.record("m", &r1, "root", "sys", 1, 1_000, true).is_empty());
+        // A conversation that opens with it does not supersede it...
+        assert!(idx.record("m", &r1, "a", "sys\nu1", 3, 1_000, false).is_empty());
+        // ...and its own next turn supersedes only its own ancestor.
+        assert_eq!(idx.record("m", &r1, "a2", "sys\nu1\nu2", 5, 1_000, false), vec!["a"]);
+        // So a new conversation still starts from the system part.
+        assert_eq!(
+            idx.longest_prefix_match("m", &r1, "sys\nother").expect("the pinned root").key_hash,
+            "root"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -745,12 +771,12 @@ mod tests {
     fn disk_index_evicts_by_budget_and_reports_dropped_hashes() {
         let (dir, idx) = tmp_index("budget", 2_500);
         let hops = vec!["h".to_string()];
-        idx.record("m", &hops, "a", "p-a", 1, 1_000);
-        idx.record("m", &hops, "b", "p-b", 1, 1_000);
+        idx.record("m", &hops, "a", "p-a", 1, 1_000, false);
+        idx.record("m", &hops, "b", "p-b", 1, 1_000, false);
         // The third pushes the total to 3_000 > 2_500: the oldest ("a") leaves.
         // ("p-a"/"p-b"/"p-c" are not prefixes of each other, so supersession
         // does not fire and the test isolates the budget.)
-        let dropped = idx.record("m", &hops, "c", "p-c", 1, 1_000);
+        let dropped = idx.record("m", &hops, "c", "p-c", 1, 1_000, false);
         assert!(dropped.contains(&"a".to_string()), "dropped = {dropped:?}");
         let (count, bytes) = idx.stats();
         assert_eq!(count, 2);
@@ -763,13 +789,13 @@ mod tests {
         let (dir, _idx) = tmp_index("ttl", DEFAULT_SLOT_AUTO_MAX_BYTES);
         // TTL of 1 s via load below; here we use a new index with a short ttl.
         let short = PrefixDiskIndex::load(dir.join("short.json"), DEFAULT_SLOT_AUTO_MAX_BYTES, 1);
-        short.record("m", &["h".to_string()], "old", "p-old", 1, 10);
+        short.record("m", &["h".to_string()], "old", "p-old", 1, 10, false);
         // Forces the stamp into the past and rewrites another entry: "old" expires.
         {
             let mut st = short.state.lock().unwrap();
             st.iter_mut().for_each(|e| e.updated_at -= 10);
         }
-        let dropped = short.record("m", &["h".to_string()], "new", "p-new", 1, 10);
+        let dropped = short.record("m", &["h".to_string()], "new", "p-new", 1, 10, false);
         assert!(
             dropped.contains(&"old".to_string()),
             "dropped = {dropped:?}"

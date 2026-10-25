@@ -370,6 +370,7 @@ async fn rewrite_with_model(
         "/v1/rag-query",
         rewriter.caller.clone(),
         crate::gateway::GenerationInput {
+            shared_prefix: Default::default(),
             trace_id: Some(format!("rag-{}", uuid::Uuid::new_v4().simple())),
             state: state.clone(),
             inference_token: rewriter.inference_token.clone(),
@@ -453,6 +454,7 @@ async fn needs_documents(
         "/v1/rag-decision",
         rewriter.caller.clone(),
         crate::gateway::GenerationInput {
+            shared_prefix: Default::default(),
             trace_id: Some(format!("rag-{}", uuid::Uuid::new_v4().simple())),
             state: state.clone(),
             inference_token: rewriter.inference_token.clone(),

@@ -396,7 +396,8 @@ UI.
   (`slot_auto_ttl_secs` / `POM_SLOT_AUTO_TTL_SECS`, 7 days by default) and an LRU
   budget (`slot_auto_max_bytes`, 2 GiB by default), returning the `key_hash` to
   delete. The gateway still debounces by `SLOT_AUTO_MIN_GROWTH_TOKENS` before
-  rewriting. Wired by `slot_persist_prefix_cache`; see `inference.md` §3.1.1.
+  rewriting. A `pinned` entry (a shared system part, `gateway::SharedPrefix`) is
+  never superseded. Wired by `slot_persist_prefix_cache`; see `inference.md` §3.1.1.
 - `prefix_cache_lab.rs` - the differential self-test of the cache policy, that is
   of the **choice**. The reference follows lookup, insert, busy, release and
   eviction; the proxy deliberately breaks `cached_tokens` and the battery has to

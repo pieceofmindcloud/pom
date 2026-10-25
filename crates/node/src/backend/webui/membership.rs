@@ -152,6 +152,12 @@ pub(crate) async fn relay_passes(
         else {
             continue;
         };
+        // The URL is the visitor's own claim: a pass goes only to a relay on a
+        // public host the peer is reached at, never one it points elsewhere.
+        if !relay_url_is_peers(&url, &peer) {
+            debug!("no relay pass for {url}: not a public address of {}", peer.node_id);
+            continue;
+        }
         match crate::relay_pass::issue(
             &state.authority_signing_key,
             &state.authority_principal,
@@ -164,6 +170,55 @@ pub(crate) async fn relay_passes(
         }
     }
     relays
+}
+
+/// Host of `http(s)://host:port/`, without IPv6 brackets.
+fn url_host(url: &str) -> Option<&str> {
+    let rest = url.strip_prefix("http://").or_else(|| url.strip_prefix("https://"))?;
+    let authority = rest.split('/').next()?;
+    let host = match authority.strip_prefix('[') {
+        Some(v6) => v6.split(']').next()?,
+        None => authority.rsplit_once(':').map_or(authority, |(host, _)| host),
+    };
+    (!host.is_empty()).then_some(host)
+}
+
+/// Whether `url` names a relay on a public host that is one of `peer`'s own
+/// addresses (announced, or the source its packets came from).
+fn relay_url_is_peers(url: &str, peer: &crate::network::PeerInfo) -> bool {
+    let Some(host) = url_host(url) else {
+        return false;
+    };
+    if crate::addrs::is_private_or_local(host) {
+        return false;
+    }
+    std::iter::once(&peer.addr)
+        .chain(peer.addr_candidates.iter())
+        .filter_map(|addr| addr.parse::<std::net::SocketAddr>().ok())
+        .any(|addr| addr.ip().to_string() == host)
+}
+
+#[cfg(test)]
+mod relay_url_tests {
+    use super::*;
+
+    fn peer(addrs: &[&str]) -> crate::network::PeerInfo {
+        let mut peer = crate::gateway::testkit::peer("visitor", "visitor", 8080);
+        peer.addr = addrs[0].to_string();
+        peer.addr_candidates = addrs.iter().map(|a| a.to_string()).collect();
+        peer
+    }
+
+    #[test]
+    fn a_pass_goes_only_to_a_relay_on_the_peers_own_public_address() {
+        let visitor = peer(&["203.0.113.5:42777", "[2001:db8::5]:42777"]);
+        assert!(relay_url_is_peers("http://203.0.113.5:52000/", &visitor));
+        assert!(relay_url_is_peers("http://[2001:db8::5]:52000/", &visitor));
+        // Another host, a private one, or no URL at all.
+        assert!(!relay_url_is_peers("http://198.51.100.9:52000/", &visitor));
+        assert!(!relay_url_is_peers("http://10.0.0.5:52000/", &peer(&["10.0.0.5:42777"])));
+        assert!(!relay_url_is_peers("relay.example", &visitor));
+    }
 }
 
 /// `POST /api/internal/membership/roster` - on the principal: its admission
@@ -816,14 +871,19 @@ mod relay_pass_tests {
         let with = |id: &str, profile: NodeProfile, relay| {
             let mut peer = crate::gateway::testkit::peer(id, id, 8090);
             peer.profile = profile;
+            // Each relays from its own address, but "liar" points elsewhere.
+            let n = id.len() % 200;
+            peer.addr = format!("198.51.100.{n}:42777");
+            peer.addr_candidates = vec![peer.addr.clone()];
             peer.relay = relay;
             peer
         };
         let peers = vec![
-            with("visitor-relay", NodeProfile::Visitor, offer("http://198.51.100.1:52000/", true)),
-            with("visitor-plain", NodeProfile::Visitor, offer("http://198.51.100.2:52000/", false)),
-            with("worker-relay", NodeProfile::Worker, offer("http://198.51.100.3:52000/", true)),
-            with("asker", NodeProfile::Visitor, offer("http://198.51.100.4:52000/", true)),
+            with("visitor-relay", NodeProfile::Visitor, offer("http://198.51.100.13:52000/", true)),
+            with("visitor-plain", NodeProfile::Visitor, offer("http://198.51.100.13:52000/", false)),
+            with("worker-relay", NodeProfile::Worker, offer("http://198.51.100.12:52000/", true)),
+            with("asker", NodeProfile::Visitor, offer("http://198.51.100.5:52000/", true)),
+            with("liar", NodeProfile::Visitor, offer("http://203.0.113.9:52000/", true)),
         ];
         let mut admin = crate::gateway::testkit::state_with("peer-principal", peers).await;
         admin.admin_trust = std::sync::Arc::new(
@@ -835,13 +895,13 @@ mod relay_pass_tests {
         let relays = relay_passes(&admin, "asker").await;
         assert_eq!(
             relays.iter().map(|relay| relay.url.as_str()).collect::<Vec<_>>(),
-            vec!["http://198.51.100.1:52000/"]
+            vec!["http://198.51.100.13:52000/"]
         );
         let now = chrono::Utc::now().timestamp();
         assert!(crate::relay_pass::verify(
             &relays[0].pass,
             &trust.document(),
-            "http://198.51.100.1:52000/",
+            "http://198.51.100.13:52000/",
             now
         )
         .is_ok());

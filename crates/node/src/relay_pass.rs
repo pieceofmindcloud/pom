@@ -13,7 +13,10 @@
 //!
 //! A pass binds to the first endpoint that uses it (`PassLedger`): the relay
 //! connection reconnects with the same pass, so it may come back from that
-//! endpoint, but never from another one.
+//! endpoint, but never from another one. The ledger also caps the relay
+//! connections pass holders keep open (`MAX_LIVE_PER_PASS`, `MAX_LIVE`), so
+//! a pass, or the visitors of a network together, cannot take over the
+//! relay of a member's machine.
 
 use crate::admin_trust::{AdminTrustDocument, AuthorityPrincipal};
 use crate::membership::{open_compact, sign_compact, CLOCK_LEEWAY_SECS, TOKEN_TTL_SECS};
@@ -97,27 +100,57 @@ pub(crate) fn verify(
     Ok(claims)
 }
 
+/// Relay connections one pass keeps open at once: the live one and a
+/// reconnect racing the close of the old one.
+pub(crate) const MAX_LIVE_PER_PASS: usize = 2;
+
+/// Relay connections all pass holders keep open at once on one relay.
+pub(crate) const MAX_LIVE: usize = 64;
+
 /// The passes a relay has seen, each bound to the first endpoint that used
-/// it, kept until it expires.
+/// it, kept until it expires, and the connections they hold open.
 #[derive(Debug, Default)]
 pub(crate) struct PassLedger {
     seen: HashMap<String, (String, i64)>,
+    /// Open connection -> the `jti` of the pass that opened it.
+    live: HashMap<String, String>,
 }
 
 impl PassLedger {
-    /// Whether `endpoint` may use the pass `claims` at `now`: a pass seen
-    /// before is only good for the endpoint that used it first.
-    pub(crate) fn admit(&mut self, claims: &RelayPassClaims, endpoint: &str, now: i64) -> bool {
+    /// Whether `endpoint` may open `connection` with the pass `claims` at
+    /// `now`: a pass seen before is only good for the endpoint that used it
+    /// first, and only while it and the relay are under their caps of open
+    /// connections.
+    pub(crate) fn admit(
+        &mut self,
+        claims: &RelayPassClaims,
+        endpoint: &str,
+        connection: &str,
+        now: i64,
+    ) -> bool {
         self.seen
             .retain(|_, (_, exp)| now <= *exp + CLOCK_LEEWAY_SECS);
-        match self.seen.get(&claims.jti) {
-            Some((first, _)) => first == endpoint,
-            None => {
-                self.seen
-                    .insert(claims.jti.clone(), (endpoint.to_string(), claims.exp));
-                true
-            }
+        if self
+            .seen
+            .get(&claims.jti)
+            .is_some_and(|(first, _)| first != endpoint)
+        {
+            return false;
         }
+        let by_this_pass = self.live.values().filter(|jti| **jti == claims.jti).count();
+        if self.live.len() >= MAX_LIVE || by_this_pass >= MAX_LIVE_PER_PASS {
+            return false;
+        }
+        self.seen
+            .entry(claims.jti.clone())
+            .or_insert_with(|| (endpoint.to_string(), claims.exp));
+        self.live.insert(connection.to_string(), claims.jti.clone());
+        true
+    }
+
+    /// `connection` closed; a connection no pass opened is not in here.
+    pub(crate) fn release(&mut self, connection: &str) {
+        self.live.remove(connection);
     }
 }
 
@@ -193,9 +226,36 @@ mod tests {
         let pass = issue(&key, &principal, &trust.document(), RELAY, NOW).unwrap();
         let claims = verify(&pass, &trust.document(), RELAY, NOW).unwrap();
         let mut ledger = PassLedger::default();
-        assert!(ledger.admit(&claims, "ephemeral-a", NOW));
+        assert!(ledger.admit(&claims, "ephemeral-a", "c1", NOW));
         // The same endpoint reconnecting is fine; another one is not.
-        assert!(ledger.admit(&claims, "ephemeral-a", NOW + 5));
-        assert!(!ledger.admit(&claims, "ephemeral-b", NOW + 5));
+        assert!(ledger.admit(&claims, "ephemeral-a", "c2", NOW + 5));
+        assert!(!ledger.admit(&claims, "ephemeral-b", "c3", NOW + 5));
+    }
+
+    #[test]
+    fn a_pass_and_the_relay_hold_only_so_many_connections_open() {
+        let (trust, key, principal) = admin();
+        let mut ledger = PassLedger::default();
+        let pass = issue(&key, &principal, &trust.document(), RELAY, NOW).unwrap();
+        let claims = verify(&pass, &trust.document(), RELAY, NOW).unwrap();
+        for n in 0..MAX_LIVE_PER_PASS {
+            assert!(ledger.admit(&claims, "ephemeral-a", &format!("own-{n}"), NOW));
+        }
+        assert!(!ledger.admit(&claims, "ephemeral-a", "own-extra", NOW));
+        // A closed connection gives its place back.
+        ledger.release("own-0");
+        assert!(ledger.admit(&claims, "ephemeral-a", "own-again", NOW));
+
+        // Many passes together stop at the relay's cap.
+        for n in MAX_LIVE_PER_PASS..MAX_LIVE {
+            let pass = issue(&key, &principal, &trust.document(), RELAY, NOW).unwrap();
+            let claims = verify(&pass, &trust.document(), RELAY, NOW).unwrap();
+            assert!(ledger.admit(&claims, &format!("ephemeral-{n}"), &format!("c{n}"), NOW));
+        }
+        let pass = issue(&key, &principal, &trust.document(), RELAY, NOW).unwrap();
+        let claims = verify(&pass, &trust.document(), RELAY, NOW).unwrap();
+        assert!(!ledger.admit(&claims, "ephemeral-late", "late", NOW));
+        ledger.release("c10");
+        assert!(ledger.admit(&claims, "ephemeral-late", "late", NOW));
     }
 }

@@ -204,8 +204,8 @@ impl RelayGate {
             && self.url.read().is_ok_and(|url| url.is_some())
     }
 
-    /// Whether `pass` opens this relay for `endpoint` now.
-    fn pass_admits(&self, pass: &str, endpoint: &str) -> bool {
+    /// Whether `pass` opens this relay for `endpoint` now, as `connection`.
+    fn pass_admits(&self, pass: &str, endpoint: &str, connection: &str) -> bool {
         let Some(trust) = self.passes.read().ok().and_then(|passes| passes.clone()) else {
             return false;
         };
@@ -218,7 +218,14 @@ impl RelayGate {
         };
         self.pass_ledger
             .lock()
-            .is_ok_and(|mut ledger| ledger.admit(&claims, endpoint, now))
+            .is_ok_and(|mut ledger| ledger.admit(&claims, endpoint, connection, now))
+    }
+
+    /// A relay connection closed: a pass holder's frees its place.
+    pub fn released(&self, connection: &str) {
+        if let Ok(mut ledger) = self.pass_ledger.lock() {
+            ledger.release(connection);
+        }
     }
 
     /// Applies what the command line fixed on top of the saved options.
@@ -297,7 +304,10 @@ impl RelayGate {
     ///
     /// A relay for pass holders also admits an endpoint whose `pass` holds
     /// (`pass_admits`), whoever it is.
-    pub fn allows(&self, peer: &str, pass: Option<&str>) -> bool {
+    ///
+    /// `connection` names this connection, so `released` can give its place
+    /// back when it closes.
+    pub fn allows(&self, peer: &str, pass: Option<&str>, connection: &str) -> bool {
         #[cfg(test)]
         if let Ok(mut asked) = self.asked.lock() {
             asked.push(peer.to_string());
@@ -308,7 +318,7 @@ impl RelayGate {
                     .members
                     .read()
                     .is_ok_and(|members| members.contains(peer)))
-            || (self.anonymous_serving() && pass.is_some_and(|pass| self.pass_admits(pass, peer)))
+            || (self.anonymous_serving() && pass.is_some_and(|pass| self.pass_admits(pass, peer, connection)))
     }
 
     pub fn status(&self) -> RelayStatus {
@@ -6299,7 +6309,7 @@ mod tests {
         gate.set_members([member.clone()]);
         assert!(!gate.serving());
         assert_eq!(gate.offer(), None);
-        assert!(!gate.allows(&member, None), "behind NAT");
+        assert!(!gate.allows(&member, None, "conn-1"), "behind NAT");
 
         gate.set_reachable(true);
         gate.set_url(Some("http://203.0.113.9:52777".into()));
@@ -6311,22 +6321,22 @@ mod tests {
                 anonymous: false
             })
         );
-        assert!(gate.allows(&member, None));
-        assert!(!gate.allows(&stranger, None));
+        assert!(gate.allows(&member, None, "conn-2"));
+        assert!(!gate.allows(&stranger, None, "conn-3"));
 
         // No relay server (its port was taken): nothing is offered.
         gate.set_available(false);
         assert_eq!(gate.offer(), None);
-        assert!(!gate.allows(&member, None));
+        assert!(!gate.allows(&member, None, "conn-4"));
         gate.set_available(true);
 
         let off = RelayGate::new(false, false, true);
         off.set_reachable(true);
         off.set_members([member.clone()]);
-        assert!(!off.allows(&member, None), "cluster relay turned off");
+        assert!(!off.allows(&member, None, "conn-5"), "cluster relay turned off");
 
         let public = RelayGate::new(true, true, false);
-        assert!(public.allows(&stranger, None));
+        assert!(public.allows(&stranger, None, "conn-6"));
         assert_eq!(
             public.offer(),
             Some(RelayOffer {
@@ -6339,7 +6349,7 @@ mod tests {
         // The screen changes the options live; what the command line fixed
         // stays whatever is saved.
         gate.set(false, false, true);
-        assert!(!gate.allows(&member, None));
+        assert!(!gate.allows(&member, None, "conn-7"));
         let fixed = RelayGate::new(false, true, true).with_overrides(RelayOverrides {
             everyone: true,
             no_cluster: false,
@@ -6506,18 +6516,18 @@ mod tests {
         // A visitor relays for nobody of its own cluster by default here.
         let gate = RelayGate::new(false, false, false).with_anonymous(true, trust.clone());
         gate.set_url(Some(url.into()));
-        assert!(!gate.allows("ephemeral-a", Some(&pass)), "behind NAT");
+        assert!(!gate.allows("ephemeral-a", Some(&pass), "conn-8"), "behind NAT");
         gate.set_reachable(true);
-        assert!(gate.allows("ephemeral-a", Some(&pass)));
-        assert!(gate.allows("ephemeral-a", Some(&pass)), "the same endpoint again");
-        assert!(!gate.allows("ephemeral-b", Some(&pass)), "a pass is not shared");
-        assert!(!gate.allows("ephemeral-c", Some(&other)), "another relay's pass");
-        assert!(!gate.allows("ephemeral-d", None));
+        assert!(gate.allows("ephemeral-a", Some(&pass), "conn-9"));
+        assert!(gate.allows("ephemeral-a", Some(&pass), "conn-10"), "the same endpoint again");
+        assert!(!gate.allows("ephemeral-b", Some(&pass), "conn-11"), "a pass is not shared");
+        assert!(!gate.allows("ephemeral-c", Some(&other), "conn-12"), "another relay's pass");
+        assert!(!gate.allows("ephemeral-d", None, "conn-13"));
         assert_eq!(gate.offer().map(|offer| offer.anonymous), Some(true));
 
         gate.set_anonymous(false);
         let fresh = crate::relay_pass::issue(&key, &principal, &trust.document(), url, now).unwrap();
-        assert!(!gate.allows("ephemeral-e", Some(&fresh)));
+        assert!(!gate.allows("ephemeral-e", Some(&fresh), "conn-14"));
         assert_eq!(gate.offer(), None);
     }
 

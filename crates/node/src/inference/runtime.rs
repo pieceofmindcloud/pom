@@ -20,6 +20,11 @@ use tracing::{info, warn};
 /// Give up restarting a crash-looping inference server after this many tries.
 /// The same budget is persisted by `lastslice` so a process crash cannot reset it.
 const MAX_RESTARTS: u32 = crate::lastslice::MAX_AUTOMATIC_ATTEMPTS;
+/// Pause between a failed load and the next attempt. A failed load is most
+/// often memory: the dead process' VRAM, the driver's cleanup and the page
+/// cache take a while to come back, and the old five seconds retried before
+/// they had, failing again for the same reason.
+const RESTART_INTERVAL: Duration = Duration::from_secs(30);
 /// An old supervisor cannot block the first request indefinitely
 /// after an unload. The limit covers the transport's graceful shutdown and
 /// gives `spawn_blocking` a short window for native cleanup;
@@ -1574,7 +1579,12 @@ impl NodeRuntime {
                         "restarting the inference server (attempt {}/{})",
                         restarts, MAX_RESTARTS
                     );
-                    sleep(Duration::from_secs(5)).await;
+                    // A new deployment does not wait out the pause.
+                    let mut superseded = gen_rx.clone();
+                    tokio::select! {
+                        _ = sleep(RESTART_INTERVAL) => {}
+                        _ = superseded.changed() => {}
+                    }
                     if *gen_rx.borrow() != generation {
                         return;
                     }

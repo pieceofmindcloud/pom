@@ -605,6 +605,9 @@ add up. `Step.capacity` (`CapacityPreview`) is the step alone.
 ## 4. Execution (`deploy_endpoint` -> `run`)
 
 1. `deploy_endpoint` rescans (`survey`), replans, refuses `blocked`/empty,
+   refuses with 409 `transfers_not_authorized` (and the `copies`) a plan whose
+   `copies` (`planned_copies`: every slice, rank or sidecar that crosses
+   machines) is not empty unless the request carries `allow_transfers: true`,
    creates the job ("Deploy {deployment_name} on {n} nodes") and spawns the
    execution.
 2. `run` builds the list of `Pull`s - one unit of movement per slice that has
@@ -631,6 +634,14 @@ add up. `Step.capacity` (`CapacityPreview`) is the step alone.
    section 8).
 5. `done` = "the model is serving on the network"; an error becomes a `failed`
    job.
+
+The Deploy screen lists `Plan.copies` (file, range, from, to, size) in an
+"Authorize the copies" window, after the coverage and capacity confirms and
+before the in-service one, and only then sends `allow_transfers`. A 409 from a
+cluster that moved since the preview opens the same window with the node's
+list. The job carries `deploy_id`, and the deploy stays registered as in flight
+(`lifecycle::in_flight`: its task and the copies already asked of the targets)
+until `run` ends.
 
 ## 5. Deploy routes
 
@@ -716,6 +727,14 @@ different decision from this one.
   hold memory.
 - Release goes through the peer's own `/api/ui/unload` (the same route as the
   one-machine button), which still works for any node.
+- **A deploy still starting can be undeployed.** `abort_in_flight` runs first:
+  the matching in-flight deploy (by `deploy_id`, else by `group`) has its task
+  aborted, the copies it asked for cancelled on their targets
+  (`/api/transfer/jobs/:id/cancel`) and its job marked failed ("cancelled").
+  With a `deploy_id`, a machine announcing it counts even before it reports
+  layers (it may still be loading). Nothing announcing it yet answers 200 with
+  `cancelled: true` and no results. The Dashboard shows Undeploy to an admin
+  while a `deploy` job runs (`Job.deploy_id`), even with no model in service.
 
 ## 7.1 Redeploying the same model, and a deployment's versions
 
@@ -842,7 +861,9 @@ clear the journal, since a native crash can happen during that confirmation.
 When the idle monitor unloads the model, it records `idle` and keeps the
 deployment active so `reload_model` can restore it. The journal counts pending
 attempts across processes and blocks automatic resume at
-`MAX_AUTOMATIC_ATTEMPTS=10`. That state decides what a restart resumes
+`MAX_AUTOMATIC_ATTEMPTS=3`. The supervisor waits `RESTART_INTERVAL` (30 s)
+between a failed load and the next one, so the dead attempt's VRAM and RAM are
+back before it retries; a newer deployment cuts that wait short. That state decides what a restart resumes
 (`serving` or `idle`), not the `apply`. See `slicing.md` section 6 and the
 `AGENTS.md` of `inference/`.
 

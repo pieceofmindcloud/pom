@@ -119,7 +119,7 @@ export function ModelRow({ model }: { model: DiscoveredModel }) {
           </Link>
           {/\.gguf$/i.test(model.path) && (
             <Link
-              to={`/transfers/send?filename=${encodeURIComponent(model.path.split(/[\\/]/).pop() ?? "")}`}
+              to={`/transfers?filename=${encodeURIComponent(model.path.split(/[\\/]/).pop() ?? "")}`}
             >
               <Button
                 size="sm"

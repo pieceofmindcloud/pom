@@ -21,3 +21,55 @@ export function signalling() {
 export function silent() {
   return <div>plugin-screen:silent</div>;
 }
+type Loader = {
+  progress: (request: { progress: number; message?: string }) => Promise<unknown>;
+  error: (request: { message: string; retry?: boolean }) => Promise<unknown>;
+  success: () => Promise<unknown>;
+};
+type LoaderHost = { ready?: () => void; plugin?: (code: string) => { loader: Loader } } | undefined;
+
+function loaderHost() {
+  const host: LoaderHost = (globalThis as { __POM_HOST__?: LoaderHost }).__POM_HOST__;
+  return { ready: () => host?.ready?.(), loader: host?.plugin?.("logs").loader };
+}
+
+/** Installs something: reports progress, and calls `ready()` too, which must not open it. */
+export function installing() {
+  useEffect(() => {
+    const { ready, loader } = loaderHost();
+    void loader?.progress({ progress: 30, message: "Installing Python packages" });
+    ready();
+  }, []);
+  return <div>plugin-screen:installing</div>;
+}
+
+/** Opens at once, then its backend dies and it covers itself with an error. */
+export function failsLater() {
+  useEffect(() => {
+    const { ready, loader } = loaderHost();
+    ready();
+    const later = setTimeout(() => void loader?.error({ message: "Hermes Agent stopped" }), 300);
+    return () => clearTimeout(later);
+  }, []);
+  return <div>plugin-screen:failsLater</div>;
+}
+
+/** Installs, then reports success. */
+export function succeeds() {
+  useEffect(() => {
+    const { loader } = loaderHost();
+    void loader?.progress({ progress: 50 });
+    const later = setTimeout(() => void loader?.success(), 100);
+    return () => clearTimeout(later);
+  }, []);
+  return <div>plugin-screen:succeeds</div>;
+}
+
+/** Reports from an effect on every render, as a screen mapping a polled status does. */
+export function repeats() {
+  useEffect(() => {
+    const { loader } = loaderHost();
+    void (loader as unknown as { show: (request: { message: string }) => Promise<unknown> } | undefined)?.show({ message: "Starting" });
+  });
+  return <div>plugin-screen:repeats</div>;
+}

@@ -65,6 +65,7 @@ vi.mock("../lib/api", async (importOriginal) => {
 // Simulates react-query resolving *after* the stream has already finished and
 // the assistant bubble has already rendered once without network data.
 vi.mock("../lib/queries", () => ({
+  useConnection: () => ({ data: { phase: "connected", since: 0, last_error: null } }),
   useNode: () => ({
     data: { active_model: "qwen", config: { n_ctx: 4, max_new_tokens: 64 } },
     isLoading: false,

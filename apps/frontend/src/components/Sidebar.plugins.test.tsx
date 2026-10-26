@@ -38,6 +38,7 @@ vi.mock("../lib/pluginUi", async (importOriginal) => ({
 }));
 
 vi.mock("../lib/networkChatUnread", () => ({
+  useNetworkChatOpen: () => true,
   useNetworkChatUnread: () => ({ unreadCount: 0, snapshot: null }),
   useLobbyUnread: () => 0,
 }));

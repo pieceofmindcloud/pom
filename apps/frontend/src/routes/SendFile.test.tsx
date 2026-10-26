@@ -3,7 +3,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocaleProvider } from "../i18n/provider";
-import { SendFile } from "./SendFile";
+import { SendFilePanel } from "./SendFile";
 
 vi.mock("../lib/api", () => ({ api: { post: vi.fn() } }));
 vi.mock("../lib/toast", () => ({
@@ -39,20 +39,20 @@ vi.mock("../lib/queries", () => ({
 
 afterEach(cleanup);
 
-function renderScreen(initialEntry = "/transfers/send") {
+function renderScreen(initialEntry = "/transfers") {
   return render(
     <MemoryRouter
       initialEntries={[initialEntry]}
       future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
     >
       <LocaleProvider initialLocale="en">
-        <SendFile />
+        <SendFilePanel />
       </LocaleProvider>
     </MemoryRouter>,
   );
 }
 
-describe("SendFile", () => {
+describe("SendFilePanel", () => {
   it("lists the local catalog and known peers to build an offer", () => {
     renderScreen();
     expect(screen.getByText(/qwen\.gguf/)).toBeTruthy();
@@ -60,7 +60,7 @@ describe("SendFile", () => {
   });
 
   it("preselects the filename passed in the query string", () => {
-    renderScreen("/transfers/send?filename=qwen.gguf");
+    renderScreen("/transfers?filename=qwen.gguf");
     const select = screen.getAllByRole("combobox")[0] as HTMLSelectElement;
     expect(select.value).toBe("qwen.gguf");
   });

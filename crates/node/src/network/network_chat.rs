@@ -94,6 +94,16 @@ pub enum ChatAction {
         card: crate::network_lobby::LobbyCard,
         sent_at: DateTime<Utc>,
     },
+    /// The principal closed a candidate's lobby thread (`room_id`) because
+    /// the candidate was approved: every admin erases it. Only the principal
+    /// originates it.
+    LobbyClosed {
+        message_id: String,
+        room_id: String,
+        sender_node_id: String,
+        recipient_node_id: Option<String>,
+        sent_at: DateTime<Utc>,
+    },
 }
 
 impl ChatAction {
@@ -118,7 +128,8 @@ impl ChatAction {
             | Self::File { sender_node_id, .. }
             | Self::Typing { sender_node_id, .. }
             | Self::PluginNotice { sender_node_id, .. }
-            | Self::LobbyPresence { sender_node_id, .. } => sender_node_id,
+            | Self::LobbyPresence { sender_node_id, .. }
+            | Self::LobbyClosed { sender_node_id, .. } => sender_node_id,
         }
     }
 
@@ -128,7 +139,8 @@ impl ChatAction {
             | Self::File { room_id, .. }
             | Self::Typing { room_id, .. }
             | Self::PluginNotice { room_id, .. }
-            | Self::LobbyPresence { room_id, .. } => room_id,
+            | Self::LobbyPresence { room_id, .. }
+            | Self::LobbyClosed { room_id, .. } => room_id,
         }
     }
 
@@ -138,7 +150,8 @@ impl ChatAction {
             | Self::File { message_id, .. }
             | Self::Typing { message_id, .. }
             | Self::PluginNotice { message_id, .. }
-            | Self::LobbyPresence { message_id, .. } => message_id,
+            | Self::LobbyPresence { message_id, .. }
+            | Self::LobbyClosed { message_id, .. } => message_id,
         }
     }
 
@@ -158,6 +171,9 @@ impl ChatAction {
             }
             | Self::LobbyPresence {
                 recipient_node_id, ..
+            }
+            | Self::LobbyClosed {
+                recipient_node_id, ..
             } => recipient_node_id.as_deref(),
         }
     }
@@ -169,6 +185,7 @@ impl ChatAction {
             Self::Typing { .. } => "typing",
             Self::PluginNotice { .. } => "plugin_notice",
             Self::LobbyPresence { .. } => "lobby_presence",
+            Self::LobbyClosed { .. } => "lobby_closed",
         }
     }
 
@@ -176,7 +193,10 @@ impl ChatAction {
         match self {
             Self::Text { text, .. } => Some(text),
             Self::PluginNotice { body, .. } => Some(body),
-            Self::File { .. } | Self::Typing { .. } | Self::LobbyPresence { .. } => None,
+            Self::File { .. }
+            | Self::Typing { .. }
+            | Self::LobbyPresence { .. }
+            | Self::LobbyClosed { .. } => None,
         }
     }
 
@@ -245,10 +265,16 @@ impl ChatAction {
             Self::LobbyPresence { room_id, .. } if room_id != crate::network_lobby::LOBBY_ROOM => {
                 Err("lobby_room_invalid")
             }
+            Self::LobbyClosed { room_id, .. }
+                if crate::network_lobby::thread_candidate(room_id).is_none() =>
+            {
+                Err("lobby_room_invalid")
+            }
             Self::Text { .. }
             | Self::File { .. }
             | Self::Typing { .. }
-            | Self::LobbyPresence { .. } => Ok(()),
+            | Self::LobbyPresence { .. }
+            | Self::LobbyClosed { .. } => Ok(()),
         }
     }
 }
@@ -426,12 +452,19 @@ impl ChatEvent {
                 recipient_node_id,
                 sent_at,
                 ..
+            }
+            | ChatAction::LobbyClosed {
+                message_id,
+                room_id,
+                sender_node_id,
+                recipient_node_id,
+                sent_at,
             } => Self {
                 message_id: message_id.clone(),
                 room_id: room_id.clone(),
                 sender_node_id: sender_node_id.clone(),
                 recipient_node_id: recipient_node_id.clone(),
-                kind: "lobby_presence".into(),
+                kind: action.kind().into(),
                 text: None,
                 file_name: None,
                 mime_type: None,
@@ -513,6 +546,11 @@ pub struct NetworkChat {
     /// rotate the connection key (the transport task cannot push it itself).
     rotations: Mutex<Vec<String>>,
     rotation_wanted: tokio::sync::Notify,
+    /// Lobby threads this principal erased on an approval, waiting for the
+    /// transport task to tell the other admins (`ChatAction::LobbyClosed`).
+    closed_threads: Mutex<Vec<String>>,
+    /// When the threads nobody wrote in were last purged.
+    threads_purged: Mutex<Option<Instant>>,
 }
 
 impl NetworkChat {
@@ -555,6 +593,8 @@ impl NetworkChat {
                 departed: Mutex::new(HashMap::new()),
                 rotations: Mutex::new(Vec::new()),
                 rotation_wanted: tokio::sync::Notify::new(),
+                closed_threads: Mutex::new(Vec::new()),
+                threads_purged: Mutex::new(None),
             }),
             receiver,
         )
@@ -646,6 +686,18 @@ impl NetworkChat {
 
     pub fn roster_mirror(&self) -> Vec<crate::network_lobby::AdmissionRecord> {
         self.roster_mirror.lock().expect("roster lock").clone()
+    }
+
+    /// Candidates whose request an admin already approved or declined, on
+    /// this node's own list or the mirror of the principal's. The lobby
+    /// leaves them out until they ask again (which makes them pending).
+    pub fn decided_candidates(&self) -> std::collections::HashSet<String> {
+        self.admissions()
+            .into_iter()
+            .chain(self.roster_mirror())
+            .filter(|record| record.status != crate::network_lobby::AdmissionStatus::Pending)
+            .map(|record| record.node_id)
+            .collect()
     }
 
     /// The role `node_id` was admitted with, when its admission is approved:
@@ -783,6 +835,11 @@ impl NetworkChat {
             Some(status) => {
                 records[index].status = status;
                 records[index].decided_at = Some(chrono::Utc::now().to_rfc3339());
+                // Approved or declined, the conversation was about a request
+                // that no longer waits: the thread goes for every admin.
+                if status != crate::network_lobby::AdmissionStatus::Pending {
+                    self.close_thread(node_id);
+                }
             }
             None => {
                 records.remove(index);
@@ -790,6 +847,50 @@ impl NetworkChat {
         }
         self.store_admissions(&records);
         true
+    }
+
+    /// Erases `candidate`'s lobby thread here and queues it for the other
+    /// admins: once decided, what it said in the lobby is not kept.
+    fn close_thread(&self, candidate: &str) {
+        let room = crate::network_lobby::thread_room(candidate);
+        if let Err(error) = self.database.delete_network_chat_room(&room) {
+            tracing::warn!("could not erase the lobby thread of {candidate}: {error:#}");
+        }
+        self.closed_threads
+            .lock()
+            .expect("closed threads lock")
+            .push(room);
+    }
+
+    /// The lobby threads closed since the last call.
+    pub fn take_closed_threads(&self) -> Vec<String> {
+        std::mem::take(&mut *self.closed_threads.lock().expect("closed threads lock"))
+    }
+
+    /// Erases the lobby threads nobody wrote in for `THREAD_TTL`, at most
+    /// once every ten minutes.
+    pub fn purge_stale_threads(&self) {
+        {
+            let mut last = self.threads_purged.lock().expect("threads purged lock");
+            if last.is_some_and(|at| at.elapsed() < Duration::from_secs(600)) {
+                return;
+            }
+            *last = Some(Instant::now());
+        }
+        let ttl = crate::network_lobby::THREAD_TTL.as_secs();
+        if let Err(error) = self.database.purge_lobby_threads(ttl) {
+            tracing::warn!("could not purge the lobby threads: {error:#}");
+        }
+    }
+
+    /// Every lobby thread this node holds, oldest first.
+    pub fn lobby_threads(&self, limit: usize) -> Result<Vec<ChatEvent>> {
+        Ok(self
+            .database
+            .network_chat_lobby_threads(limit)?
+            .into_iter()
+            .map(ChatEvent::from)
+            .collect())
     }
 
     pub fn directory_board(&self) -> &crate::network_lobby::DirectoryBoard {
@@ -817,6 +918,12 @@ impl NetworkChat {
     /// requests, and only its conversation is closed (`enabled`).
     pub async fn lobby_enabled(&self) -> bool {
         self.auth.read().await.network.visibility != crate::config::NetworkVisibility::Local
+    }
+
+    /// Whether visitors take part in the network Chat
+    /// (`NetworkSettings::chat_visitors`).
+    pub async fn visitors_allowed(&self) -> bool {
+        self.auth.read().await.network.chat_visitors
     }
 
     /// Whether an admission request is approved on arrival, with no admin
@@ -885,6 +992,15 @@ impl NetworkChat {
         if matches!(action, ChatAction::LobbyPresence { .. }) {
             anyhow::bail!("lobby_presence_not_allowed")
         }
+        // Closing a thread is the principal's act on an approval.
+        if matches!(action, ChatAction::LobbyClosed { .. }) {
+            anyhow::bail!("lobby_closed_not_allowed")
+        }
+        // Members answer a candidate in its thread; the bare lobby room only
+        // carries presence.
+        if action.room_id() == crate::network_lobby::LOBBY_ROOM {
+            anyhow::bail!("lobby_room_invalid")
+        }
         if action.sender_node_id() != transport_node_id {
             anyhow::bail!("sender_node_id_mismatch")
         }
@@ -928,6 +1044,11 @@ impl NetworkChat {
         {
             self.lobby_guests
                 .remember(sender_node_id, card.clone().sanitized());
+            return Ok(true);
+        }
+        if let ChatAction::LobbyClosed { room_id, .. } = &action {
+            self.database.delete_network_chat_room(room_id)?;
+            let _ = self.live.send(ChatEvent::from_action(&action));
             return Ok(true);
         }
         if matches!(action, ChatAction::PluginNotice { .. }) {

@@ -85,6 +85,9 @@ impl FakeSession {
 #[derive(Default)]
 struct Engine {
     sessions: HashMap<String, FakeSession>,
+    /// `/v1/session/slot` snapshots, by slot name, and how many were restored.
+    slots: HashMap<String, FakeSession>,
+    restores: u32,
     /// One item per ingested prompt chunk, with how many tokens it cost.
     prompt_chunks: Vec<u32>,
     /// Requests that would require removing positions from the middle of the KV.
@@ -713,6 +716,38 @@ async fn fake_release(State(hop): State<Hop>, Json(req): Json<Value>) -> impl In
     Json(json!({"released": true}))
 }
 
+/// `/v1/session/slot`: a snapshot is a copy of the retained session.
+async fn fake_slot(State(hop): State<Hop>, Json(req): Json<Value>) -> Response {
+    let mut engine = hop.engine.lock().unwrap();
+    let name = req["slot_name"].as_str().unwrap_or_default().to_string();
+    match req["action"].as_str() {
+        Some("save") => {
+            let sid = req["session_id"].as_str().unwrap_or_default();
+            let Some(mut saved) = engine.sessions.get(sid).cloned() else {
+                return (StatusCode::NOT_FOUND, "unknown session").into_response();
+            };
+            saved.gen_len = 0;
+            let bytes = saved.prompt_kv.len() * 4;
+            engine.slots.insert(name, saved);
+            Json(json!({"bin_bytes": bytes})).into_response()
+        }
+        Some("restore") => {
+            let dest = req["dest_session_id"].as_str().unwrap_or_default().to_string();
+            let Some(saved) = engine.slots.get(&name).cloned() else {
+                return (StatusCode::NOT_FOUND, "unknown slot").into_response();
+            };
+            let tokens = saved.prompt_len;
+            engine.sessions.insert(dest, saved);
+            engine.restores += 1;
+            Json(json!({"restored_tokens": tokens})).into_response()
+        }
+        _ => {
+            engine.slots.remove(&name);
+            Json(json!({"erased": true})).into_response()
+        }
+    }
+}
+
 async fn spawn_hop(hop: Hop) -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -723,6 +758,7 @@ async fn spawn_hop(hop: Hop) -> String {
         .route("/v1/session/release", post(fake_release))
         .route("/v1/session/rewind", post(fake_rewind))
         .route("/v1/session/rollback", post(fake_rollback))
+        .route("/v1/session/slot", post(fake_slot))
         .with_state(hop);
     tokio::spawn(async move {
         let _ = axum::serve(listener, router).tcp_nodelay(true).await;
@@ -966,6 +1002,7 @@ async fn conversation_with_hops_fault_kind(
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         let bg = tokio::spawn(crate::gateway::generate_stream_with_stops(
             crate::gateway::GenerationInput {
+                shared_prefix: Default::default(),
                 probe: None,
                 state: state.clone(),
                 inference_token: "test-api-key".into(),
@@ -1470,4 +1507,118 @@ async fn single_node_long_follow_up_does_not_send_chunk_by_index() {
             .all(|frame| frame.start_pos == frame.n_past_before),
         "a chunk was sent by the logical position, not by the remote position: {follow_up_frames:?}"
     );
+}
+
+// ── A system part shared by new conversations ─────────────────────────────────
+
+/// Two conversations of the same client: the same long system message, a
+/// different first question. The first reads the system part on its own and
+/// pins it; the second restores it and reads only its own question.
+#[tokio::test]
+async fn a_new_conversation_starts_from_the_system_part_the_last_one_pinned() {
+    let _scheme_lock = crate::peer_client::GLOBAL_POLICY.lock();
+    crate::peer_client::set_tls_enabled(false);
+
+    let engines: Vec<Arc<Mutex<Engine>>> =
+        (0..2).map(|_| Arc::new(Mutex::new(Engine::default()))).collect();
+    let mut peers = Vec::new();
+    for (i, engine) in engines.iter().enumerate() {
+        let url = spawn_hop(Hop {
+            is_head: i == 0,
+            engine: engine.clone(),
+            local_prefill_order: crate::infer_server::DirectForwardOrder::default(),
+            direct_forward_order: crate::infer_server::DirectForwardOrder::default(),
+        })
+        .await;
+        let port: u16 = url.rsplit(':').next().unwrap().parse().unwrap();
+        let mut p = crate::gateway::testkit::peer(&format!("hop{i}"), &format!("m{i}"), 9000 + i as u16);
+        p.addr = "127.0.0.1:42777".into();
+        p.inference_port = Some(port);
+        p.model = "lab".into();
+        p.start_layer = i as u32;
+        p.end_layer = i as u32;
+        p.total_layers = 2;
+        p.inference_frame_capabilities = vec![crate::pipeline::CAP_SLOT_PERSIST.to_string()];
+        peers.push(p);
+    }
+    let mut state = crate::gateway::testkit::state_with("eu", peers).await;
+    let dir = std::env::temp_dir().join(format!("pom-shared-prefix-{}", uuid::Uuid::new_v4()));
+    state.prefix_disk = Some(crate::prefix_cache::PrefixDiskIndex::load(
+        dir.join("index.json"),
+        crate::prefix_cache::DEFAULT_SLOT_AUTO_MAX_BYTES,
+        3600,
+    ));
+    let mut config = crate::gateway::testkit::spec_config();
+    config.speculative_decoding_enabled = false;
+    config.prefill_chunk_tokens = 64;
+    state.runtime.seed_config_for_test(config).await;
+    let state = crate::gateway::testkit::with_self_reachable_gateway(state).await;
+
+    let system: String = (0..600).map(|i| format!("instruction{i:05} ")).collect();
+    let mut reprocessed = Vec::new();
+    let mut cached = Vec::new();
+    for question in ["first conversation asks this", "second conversation asks that"] {
+        let history = vec![msg("system", &system), msg("user", question)];
+        let prompt = crate::openai::render_prompt(&history, &[]);
+        let cache_key = crate::openai::conversation_cache_key(&history, &[]);
+        let root = crate::openai::render_prompt(&history[..1], &[]);
+        let shared_prefix =
+            crate::gateway::SharedPrefix::offer(&prompt, &cache_key, &root, root.trim_end());
+        assert_ne!(shared_prefix, crate::gateway::SharedPrefix::None);
+        {
+            let now = chrono::Utc::now();
+            for peer in state.network.peers.write().await.values_mut() {
+                peer.last_seen = now;
+            }
+        }
+        let before = engines[0].lock().unwrap().prompt_chunks.len();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        let bg = tokio::spawn(crate::gateway::generate_stream_with_stops(
+            crate::gateway::GenerationInput {
+                shared_prefix,
+                probe: None,
+                state: state.clone(),
+                inference_token: "test-api-key".into(),
+                model: "lab".into(),
+                prompt,
+                images: Vec::new(),
+                chat_template: true,
+                thinking_enabled: true,
+                budget: crate::gateway::OutputBudget::single(4),
+                stops: Vec::new(),
+                cache_key: Some(cache_key),
+                preferred_head: None,
+                request_details: json!({}),
+                trace_id: None,
+            },
+            tx,
+        ));
+        let mut turn_cached = 0;
+        while let Some(event) = rx.recv().await {
+            match event {
+                crate::gateway::GenEvent::Done(summary) => {
+                    turn_cached = summary.trace.map(|trace| trace.cached_tokens).unwrap_or(0);
+                }
+                crate::gateway::GenEvent::Failed(error)
+                | crate::gateway::GenEvent::FailedWithTelemetry { error, .. } => {
+                    panic!("{question}: {error}")
+                }
+                _ => {}
+            }
+        }
+        let _ = bg.await;
+        let engine = engines[0].lock().unwrap();
+        reprocessed.push(engine.prompt_chunks[before..].iter().sum::<u32>());
+        cached.push(turn_cached);
+    }
+    let system_tokens = tokenize(&system).len() as u32;
+    eprintln!("reprocessed={reprocessed:?} cached={cached:?} system={system_tokens}");
+    // The first conversation reads the system part once (alone, then its question on top).
+    assert!(reprocessed[0] >= system_tokens && reprocessed[0] < system_tokens * 2);
+    assert!(cached[0] >= system_tokens - 2, "the request continued the system part's session");
+    // The second restores it on every hop and reads only its question.
+    assert!(engines.iter().all(|engine| engine.lock().unwrap().restores == 1));
+    assert!(reprocessed[1] < 32, "reprocessed {}", reprocessed[1]);
+    assert!(cached[1] >= system_tokens - 2);
+    let _ = std::fs::remove_dir_all(&dir);
 }

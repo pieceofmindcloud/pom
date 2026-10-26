@@ -27,7 +27,7 @@ pub(crate) const TOKEN_TTL_SECS: i64 = 10 * 60;
 /// When a member asks for a new token: two thirds into the old one.
 pub(crate) const RENEW_AFTER_SECS: i64 = TOKEN_TTL_SECS * 2 / 3;
 /// Clock difference tolerated between the issuer and whoever checks.
-const CLOCK_LEEWAY_SECS: i64 = 30;
+pub(crate) const CLOCK_LEEWAY_SECS: i64 = 30;
 /// The only header a token may have: anything else is refused, so the
 /// algorithm is never the token's choice.
 const HEADER: &str = r#"{"alg":"EdDSA","typ":"JWT"}"#;
@@ -79,10 +79,21 @@ pub(crate) fn issue(
         exp: now + TOKEN_TTL_SECS,
         jti: uuid::Uuid::new_v4().simple().to_string(),
     };
+    sign_compact(HEADER, &claims, signing_key)
+}
+
+/// `header.claims.signature`, each part base64url without padding, signed by
+/// `signing_key` over the first two. Shared with `relay_pass`, whose header
+/// differs, so neither kind of token can pass for the other.
+pub(crate) fn sign_compact<T: Serialize>(
+    header: &str,
+    claims: &T,
+    signing_key: &SigningKey,
+) -> Result<String> {
     let signed = format!(
         "{}.{}",
-        URL_SAFE_NO_PAD.encode(HEADER),
-        URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims)?)
+        URL_SAFE_NO_PAD.encode(header),
+        URL_SAFE_NO_PAD.encode(serde_json::to_vec(claims)?)
     );
     let signature = signing_key.sign(signed.as_bytes());
     Ok(format!(
@@ -91,32 +102,27 @@ pub(crate) fn issue(
     ))
 }
 
-/// The claims of `token` when it holds against `document` at `now`: signed
-/// by an admin the chain names today, for this network, and in date.
-pub(crate) fn verify(
+/// The claims of a compact token with exactly `header`, and a check of its
+/// signature by the key `issuer_key` (hex) the claims name. The caller
+/// checks what the claims mean, after this.
+pub(crate) fn open_compact<T: serde::de::DeserializeOwned>(
     token: &str,
-    document: &AdminTrustDocument,
-    now: i64,
-) -> Result<MembershipClaims> {
+    header: &str,
+    issuer_key: impl FnOnce(&T) -> String,
+) -> Result<T> {
     let mut parts = token.split('.');
-    let (Some(header), Some(body), Some(signature), None) =
+    let (Some(head), Some(body), Some(signature), None) =
         (parts.next(), parts.next(), parts.next(), parts.next())
     else {
-        bail!("a membership token has three parts");
+        bail!("a token has three parts");
     };
-    if URL_SAFE_NO_PAD.decode(header).ok().as_deref() != Some(HEADER.as_bytes()) {
-        bail!("unsupported membership token header");
+    if URL_SAFE_NO_PAD.decode(head).ok().as_deref() != Some(header.as_bytes()) {
+        bail!("unsupported token header");
     }
-    let claims: MembershipClaims =
+    let claims: T =
         serde_json::from_slice(&URL_SAFE_NO_PAD.decode(body).context("invalid token body")?)
             .context("invalid token claims")?;
-    if claims.net != document.anchor.cluster_id {
-        bail!("the token belongs to another network");
-    }
-    if !crate::admin_trust::is_admin_key(document, &claims.iss, &claims.iss_key) {
-        bail!("the token was not signed by an admin of the trust chain");
-    }
-    let raw: [u8; 32] = hex::decode(&claims.iss_key)
+    let raw: [u8; 32] = hex::decode(issuer_key(&claims))
         .context("invalid issuer key")?
         .as_slice()
         .try_into()
@@ -128,8 +134,26 @@ pub(crate) fn verify(
             .context("invalid token signature")?,
     )
     .context("invalid token signature")?;
-    key.verify(format!("{header}.{body}").as_bytes(), &signature)
+    key.verify(format!("{head}.{body}").as_bytes(), &signature)
         .context("the token signature does not match")?;
+    Ok(claims)
+}
+
+/// The claims of `token` when it holds against `document` at `now`: signed
+/// by an admin the chain names today, for this network, and in date.
+pub(crate) fn verify(
+    token: &str,
+    document: &AdminTrustDocument,
+    now: i64,
+) -> Result<MembershipClaims> {
+    let claims: MembershipClaims =
+        open_compact(token, HEADER, |claims: &MembershipClaims| claims.iss_key.clone())?;
+    if claims.net != document.anchor.cluster_id {
+        bail!("the token belongs to another network");
+    }
+    if !crate::admin_trust::is_admin_key(document, &claims.iss, &claims.iss_key) {
+        bail!("the token was not signed by an admin of the trust chain");
+    }
     if claims.exp - claims.iat > TOKEN_TTL_SECS
         || claims.iat > now + CLOCK_LEEWAY_SECS
         || now > claims.exp + CLOCK_LEEWAY_SECS

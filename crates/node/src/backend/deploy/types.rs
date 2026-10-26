@@ -184,6 +184,11 @@ pub struct DeployRequest {
     /// because a node serves one model at a time.
     #[serde(default)]
     pub keep_existing: bool,
+    /// The operator authorized the copies this deploy makes (`Plan.copies`).
+    /// Without it a deploy that has to copy any file is refused with
+    /// `transfers_not_authorized` before anything moves.
+    #[serde(default)]
+    pub allow_transfers: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

@@ -197,21 +197,6 @@ export function Notifications() {
   // admitted before) answers nothing and is shown in the lobby instead.
   const answeredRequests = (admissionRequests.data ?? []).filter((request) => request.status !== "pending" && !request.standing);
   const [joinKey, setJoinKey] = useState<string | null>(null);
-  const [deciding, setDeciding] = useState<string | null>(null);
-
-  async function decideAdmission(record: AdmissionRecord, decision: "approve" | "reject") {
-    setDeciding(record.node_id);
-    try {
-      await admissionsApi.decide(record.node_id, decision);
-      toast.success(t(decision === "approve" ? "notifications.admissionApproved" : "notifications.admissionRejected"));
-      void admissions.refetch();
-    } catch (e) {
-      toast.fromError(t("notifications.offerFailed"), e);
-    } finally {
-      setDeciding(null);
-    }
-  }
-
   async function joinApproved(key: string) {
     setJoinKey(key);
     try {
@@ -340,7 +325,7 @@ export function Notifications() {
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -6, scale: 0.98 }}
             transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
-            className="absolute right-0 top-11 z-50 w-[min(24rem,calc(100vw-2rem))] origin-top-right overflow-hidden rounded-xl border border-line bg-surface shadow-lift"
+            className="fixed right-3 top-[3.75rem] z-50 w-[min(24rem,calc(100vw-1.5rem))] origin-top-right sm:absolute sm:right-0 sm:top-11 overflow-hidden rounded-xl border border-line bg-surface shadow-lift"
           >
             <div className="flex items-center justify-between border-b border-line px-4 py-3">
               <span className="font-display text-sm font-semibold text-fg">
@@ -372,7 +357,7 @@ export function Notifications() {
                           variant="ghost"
                           onClick={() => {
                             setOpen(false);
-                            navigate("/config/preferences");
+                            navigate("/config/password");
                           }}
                         >
                           {t("firstRun.defaultPasswordChange")}
@@ -401,13 +386,8 @@ export function Notifications() {
                     detail={admissionDetail(record, t)}
                     footer={
                       <>
-                        <Button size="sm" variant="primary" loading={deciding === record.node_id} onClick={() => void decideAdmission(record, "approve")}>
-                          {t("notifications.admissionApprove")}
-                        </Button>
-                        <Button size="sm" variant="ghost" disabled={deciding === record.node_id} onClick={() => void decideAdmission(record, "reject")}>
-                          {t("notifications.admissionReject")}
-                        </Button>
-                        <Button size="sm" variant="ghost" onClick={() => { setOpen(false); navigate("/network-chat"); }}>
+                        {/* The decision is taken inside the candidate's thread, after talking. */}
+                        <Button size="sm" variant="primary" onClick={() => { setOpen(false); navigate(`/network-chat?lobby=${encodeURIComponent(record.node_id)}`); }}>
                           {t("notifications.admissionTalk")}
                         </Button>
                       </>

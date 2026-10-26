@@ -1,0 +1,19 @@
+{
+  "main.title": "__NAME__",
+  "main.subtitle": "O motor de inferência __NAME__ nesta máquina.",
+  "main.loading": "Consultando o motor...",
+  "main.engine": "Motor",
+  "main.model": "Modelo",
+  "main.context": "Contexto",
+  "main.inFlight": "Requisições em andamento",
+  "main.runtime": "Runtime",
+  "main.installed": "instalado",
+  "main.missing": "não instalado",
+  "main.log": "Log do motor",
+  "main.none": "nenhum",
+  "state.idle": "ocioso",
+  "state.loading": "carregando",
+  "state.ready": "pronto",
+  "state.stopping": "parando",
+  "state.error": "erro"
+}

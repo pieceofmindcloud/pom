@@ -649,6 +649,29 @@ fn a_whole_model_on_two_machines_is_a_parallel_route() {
     assert_eq!(p.steps[1].target_node_id, "b");
 }
 
+/// What crosses the network is listed for the operator to authorize: the
+/// copy names the file, the range, who sends it and who receives it, and a
+/// machine that already has its file lists nothing.
+#[test]
+fn the_copies_a_deploy_makes_are_listed_for_authorization() {
+    let ms = vec![
+        whole_machine("tem", 900_000, true),
+        whole_machine("nao-tem", 900_000, false),
+    ];
+    let p = whole("qwen3.5-9b", &ms, Some(&[pick(0, 31, "nao-tem")]));
+    let copies = planned_copies(&p);
+    assert_eq!(copies.len(), 1);
+    let copy = &copies[0];
+    assert_eq!(copy.kind, "slice");
+    assert_eq!(copy.layers, Some([0, 31]));
+    assert_eq!(copy.size_bytes, 5 * GIB);
+    assert_eq!(copy.source_node_id, "tem");
+    assert_eq!(copy.target_node_id, "nao-tem");
+
+    let local = whole("qwen3.5-9b", &ms, Some(&[pick(0, 31, "tem")]));
+    assert!(planned_copies(&local).is_empty());
+}
+
 /// A machine that does not have the file receives a copy, exactly like a
 /// slice - and the plan names who sends it.
 #[test]

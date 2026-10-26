@@ -531,6 +531,12 @@ loses offload on the first click.
   build runs one compilation of the executable for every cluster machine, without
   switching features in the same cache nor recompiling `llama-engine`/MoE for
   the Vulkan-only and CPU variants that no longer exist as separate binaries.
+- **PID 1 is `tini`** (`ENTRYPOINT ["/usr/bin/tini", "--", ...]` in both
+  images): it forwards signals to `pom` and reaps every orphan. With `pom` as
+  PID 1, whatever a plugin detaches (an agent's gateway daemon, a terminal's
+  children) was reparented to it and stayed a zombie, since POM waits only on
+  its own children; reaping inside POM would steal the exit status tokio waits
+  for. `bash scripts/test-docker-entrypoint.sh` checks every `ENTRYPOINT`.
 - **`docker-entrypoint.sh`**: validates the binary selected by `POM_BIN` and
   `pom-plugin-host`, exports `POM_PLUGIN_HOST=/usr/local/bin/pom-plugin-host`
   and `exec`s the path in `POM_BIN` (default `/usr/local/bin/pom`) with the
@@ -698,7 +704,7 @@ repository (not even in git history).
 | Variable | Effect |
 |---|---|
 | `POM_HOME` | First step of `project_root()` resolution: config, `models/`, UI. Without it: a cwd that looks like the project, then walking up from the executable's directory, then the default home: `~/.pom` (created on the first database open), or on Windows the folder of `pom.exe`. Two nodes on the same machine need distinct homes (the `node_id` identity also lives in the project root). |
-| `POM_PORT`, `POM_BOOTSTRAP`, `POM_ADVERTISE_ADDR`, `POM_OLLAMA_URL`, `POM_GATEWAY_PORT`, `POM_PKARR_PEERS`, `POM_PUBLIC_ADDR`, `POM_RELAY_PEERS`, `POM_SERVE_RELAY`, `POM_NO_CLUSTER_RELAY`, `POM_NO_RELAY_TRANSFERS`, `POM_NO_DEFAULT_RELAYS`, `POM_NO_DISCOVERY`, `POM_NO_PKARR` | One per command line option (`--port`, `--bootstrap`, ...; the `ARG_ENV` table in `main.rs`). The flag beats the variable, which beats the default; the booleans accept `1/0`, `true/false`, `yes/no`, `on/off`. The variable beats `pom.json`: `POM_PORT` and `POM_GATEWAY_PORT` replace the stored port, unlike `--port`/`--gateway-port`, which only apply while there is no `pom.json` (a desktop build moves a busy saved port by itself and saves the new one; a server fails naming the port); `POM_BOOTSTRAP` and `POM_RELAY_PEERS` add to the config lists, like the flags. |
+| `POM_PORT`, `POM_BOOTSTRAP`, `POM_ADVERTISE_ADDR`, `POM_OLLAMA_URL`, `POM_GATEWAY_PORT`, `POM_PKARR_PEERS`, `POM_PUBLIC_ADDR`, `POM_RELAY_PEERS`, `POM_SERVE_RELAY`, `POM_NO_CLUSTER_RELAY`, `POM_NO_RELAY_TRANSFERS`, `POM_NO_DEFAULT_RELAYS`, `POM_NO_DISCOVERY`, `POM_NO_PKARR`, `POM_TRUST_CA_SYSTEM_WIDE` | One per command line option (`--port`, `--bootstrap`, ...; the `ARG_ENV` table in `main.rs`). The flag beats the variable, which beats the default; the booleans accept `1/0`, `true/false`, `yes/no`, `on/off`. The variable beats `pom.json`: `POM_PORT` and `POM_GATEWAY_PORT` replace the stored port, unlike `--port`/`--gateway-port`, which only apply while there is no `pom.json` (a desktop build moves a busy saved port by itself and saves the new one; a server fails naming the port); `POM_BOOTSTRAP` and `POM_RELAY_PEERS` add to the config lists, like the flags. |
 | `POM_RETURN_MODE` | `direct` or `ring` forces the gateway's reply return mode (planner and decision), to test a path the planner would not pick - for example direct delivery to a gateway behind NAT, which the ring would hide. Absent or `auto`, the planner picks. With `direct`, a missing return path becomes an inference failure. See `parallelism.md`. |
 | `POM_SLICE_BENCH` | `0` turns off the slice speed test when the model loads (`infer_server/perf.rs`). |
 | `POM_CONFIG` | Path of `pom.json` (default `<project_root>/pom.json`). |

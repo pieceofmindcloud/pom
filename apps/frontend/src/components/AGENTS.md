@@ -62,8 +62,8 @@ Per-file list:
   `DeploymentLogs` already used before these existed): a fixed edge-to-edge
   header bar and, optionally, a filter strip under it, above a body that
   scrolls on its own. `WholeModels`, `Shards`, `SliceModels`, `RemoteModels`,
-  `Transfers` and `SendFile` (`../routes/`) all build on these two instead of
-  repeating the bar's markup six times; `Deployments`/`PublicNetworks` keep
+  and `Transfers` (`../routes/`) all build on these two instead of
+  repeating the bar's markup; `Deployments`/`PublicNetworks` keep
   their own hand-written bar and were not touched, since refactoring a
   screen nobody asked to change is its own risk.
   `Tabs` is the one tab row (POM-JEV's folder tabs, theme tokens `--tab-*` in
@@ -116,7 +116,17 @@ Per-file list:
   (`.pom-plugin-pending`) until the plugin signals it finished rendering -
   `__POM_HOST__.ready()`, `lib/pluginReady.ts` - or the short wait ends; the
   wrapper then becomes layout-neutral, so the screen is never remounted. A plugin
-  without the signal is opened by the wait. See `docs/subsystems/plugins-ui.md`.
+  without the signal is opened by the wait. While the plugin holds a state in
+  POM's loader (`lib/pluginLoader.ts`, armed in an effect of the first commit, before the
+  screen module can mount) the screen
+  stays covered whatever the gate says, and `PluginLoader` draws that state.
+  See `docs/subsystems/plugins-ui.md`.
+- `PluginLoader.tsx` - POM's loader and installer over a plugin screen, in the
+  state the plugin asked for: the generic pieces (`PluginLoading`, with the
+  plugin's title and message when it sent them), a `progressbar` with the
+  percentage and an `aria-live` message, the error (`MissingPiece
+  variant="failed"`) with "Try again" that publishes `loader.retry`, and the
+  success (`variant="done"`). Tests in `PluginLoader.test.tsx`.
 - `PluginUpdatesDialog.tsx` - the Plugins screen's "Check for updates"
   result: one row per update found (`UpdateItem`: POM, a licensed plugin or a
   GitHub install, with from/to versions, changelog, an unverified badge and,
@@ -179,6 +189,8 @@ Per-file list:
   the same table (`../lib/access.ts`) that `App.tsx`'s route guard consults -
   a section with children disappears only when **no** child is left. It copies the section
   before filtering; rewriting `NAV` would leave the other profile with the pruned menu.
+  `networkChat: false` drops the Network Chat entry (a visitor the network
+  keeps out of its Chat, `useNetworkChatOpen`).
   Statistics is a first-level entry after Logs, keeping the operational
   sequence of consulting events before their aggregates. The same table marks the entries that go
   to the `visitor` footer and promotes the network to the main menu; `navForProfile` and
@@ -186,8 +198,10 @@ Per-file list:
   and node even without a license, for product discovery; the `visitor` profile sees them only
   once an active plugin serves them.
   Tests in `nav.test.ts`.
-  The main Network section contains Information, Participants, My Machine,
-  Administrators, Sharing and API Keys. Settings contains Preferences,
+  The main My Network section (`nav.network`, "My Network", so it does not read
+  as a twin of "Networks") contains Information, Participants, My Machine,
+  Administrators, Sharing and API Keys. Usage is not in the menu: it is
+  `UsageButton`, beside the bell. Settings contains Preferences,
   Storage, Administrative Preferences and About, always in this order; About
   is the last leaf and opens `/config/about`. Sharing is the single screen
   that reuses `TrustAnchor` for the trust root, this machine and the connection
@@ -257,13 +271,19 @@ Per-file list:
 - `FirstRunWizard.tsx` - The wizard of a machine's first run, rendered by
   `App.tsx` in place of the whole shell while the current guide step is one
   of `WIZARD_STEPS` (`useFirstRunWizard`, `admin` profile only): one screen
-  with the machine name (pre-filled with the hostname) and the network name
-  (with the warning that it is advertised if the network goes public), and a
-  last screen that hands over to the hints. Each name field has its own
-  "Random" button (`lib/randomName.ts`). The names screen saves each name
-  through the route its settings screen uses, then reports the one `names`
-  step; "Back" is local. It reuses the
+  with one name (pre-filled with the hostname) given to the machine and to its
+  network (with the warning that it is advertised if the network goes
+  public), then a "Welcome to POM" animation that reports `bootstrap` by
+  itself after `WELCOME_MS`. The field has a "Random" button
+  (`lib/randomName.ts`). The name screen saves it through the routes the two
+  settings screens use, then reports the one `names` step. It reuses the
   `.pom-login*` / `.pom-setup*` shell. Tests in `FirstRunWizard.test.tsx`.
+- `ChangePassword.tsx` - The panel password screen (`/config/password`),
+  drawn like the wizard in place of the shell, on every profile: the new
+  password twice, plus the current one once the default is gone; live checks
+  (`passwordChecks`) mirror the node's rule. Saves with
+  `POST /api/ui/access/password` and the tab goes on with the new password.
+  Tests in `ChangePassword.test.tsx`.
 - `FirstRunGuide.tsx` - The hints of a machine's first run, mounted once in
   the shell (`App.tsx`, `admin` profile only), for the steps after the
   wizard. Shows one balloon for the
@@ -313,7 +333,12 @@ Per-file list:
   does not relay for its network. `relayStateKey` turns the answer into one
   line (relaying for any network, for this network, not relaying, or not
   reachable from the internet). The panel stays out when the node does not
-  answer. Tests in `RelayOptions.test.tsx`.
+  answer. On a visitor a fourth card, "Relay anonymously for this network"
+  (`anonymous`, `anonymousOffered`), lets anyone with an admin's pass relay
+  through it without it learning who; every save posts all four options, so
+  one card never resets another. An admin sees how many visitors relay that
+  way (`anonymous_relays`, `relay-visitors`), even behind a NAT. Tests in
+  `RelayOptions.test.tsx`.
 - `NatBadge.tsx` - the top bar's amber "Behind NAT" badge, drawn only while
   `ClusterView.relayed_peers` is not empty: a peer reached through a relay that
   carries the traffic because the hole punch it coordinated did not close.
@@ -343,9 +368,19 @@ Per-file list:
   the principal; refusal states remain explicit. Inference nodes are left out
   of the promotion candidates (the node refuses them as well).
 - `Topbar.tsx` - Sticky header: `NodeChip` (the network this machine is in,
-  from `NodeInfo.network_name` and linking to `/config/network`; then hostname,
-  the `NatBadge`, peer count, coverage), the i18n badge of the node's persisted profile, the macOS button of
-  the larger window and the bell (`Notifications`). The `Este nó` ("This node") button is not
+  from `NodeInfo.network_name` and linking to `/config/network`; then
+  `ConnectionBadge` on a member; then hostname,
+  the `NatBadge`, peer count, coverage; a machine alone in a network named
+  after it shows only the network badge; below `md`, a phone or the macOS
+  menu-bar panel, those badges fold into one Info icon, `NodeChipButton`,
+  that opens them in a popover like the bell's), the i18n badge of the node's
+  persisted profile (not drawn for a visitor, and inside that popover below `md`), the macOS button of
+  the larger window, `UsageButton` (a gauge icon drawn only when
+  `GET /api/ui/quota` says `configured: true`, i.e. this node has a budget set
+  for it, with an amber/rose dot near or over a ceiling; a click opens a
+  popover like the bell's with each plan's spend and when it turns over, the
+  reset credits and a link to `/config/usage` to reset or ask for more; the
+  drawing is `QuotaParts.tsx`, shared with that screen) and the bell (`Notifications`). The `Este nó` ("This node") button is not
   rendered.
   Mobile drawer renders `SidebarContent` inside an animated
   panel whose fixed backdrop unmounts synchronously when navigation closes it,
@@ -357,12 +392,20 @@ Per-file list:
   token: pulsing dots and a message that rotates (`lib/chatWaiting.ts`), with
   the "starting our engines" set while the deployment wakes from idle. It is
   not drawn while the model is thinking, which has its own line.
+- `ConnectionStatus.tsx` - `ConnectionBadge`, on every member (worker or
+  visitor), never on an admin or a node off the network (`standalone`): an
+  amber "Connecting…" with a spinner while `useConnection` says `discovering`
+  or `authenticating`; once connected, how many machines of the network it
+  sees (lime, amber when no admin is among them) or an amber "Network out of
+  sight" when it sees none. Shown in the `Topbar` and on this machine's row of
+  the Networks screen. Tests in `ConnectionStatus.test.tsx`.
 - `MissingPiece.tsx` - the puzzle screen (`compact` shrinks mark, puzzle and
   title for a card inside a screen, as on the Networks discovery-off card), `variant="paused"` for a stopped
   on-demand plugin (fourth piece grey, dashed, with a pause sign), `variant="loading"`
   for a plugin screen still opening (fourth piece hovering over its slot, and the
   whole assembly faster because the host opens the screen within a couple of
-  seconds) and, by default, the Chat's screen while the network serves no model:
+  seconds), `variant="failed"` (fourth piece in its slot, rose and still) and
+  `variant="done"` (fourth piece dropped into its slot) for `PluginLoader`, and, by default, the Chat's screen while the network serves no model:
   an SVG 2x2 puzzle whose three pieces (`piecePath`, knobs that agree on
   shared edges) fly in and lock, leaving the bottom-right slot empty and
   pulsing, under the POM mark (art per theme), over a title, a
@@ -384,7 +427,8 @@ Per-file list:
   (`POST /api/transfer/offers/:id/accept|reject`). It also lists admission
   (`lib/admissions.ts`): for the network's admin, each machine asking to join
   with its role, direct or relayed connection, latency and hardware, and
-  Approve / Decline; for a candidate, the answer to its own requests, with
+  "Open the conversation", which goes to `/network-chat?lobby=<node_id>`:
+  the decision is taken in that thread, not in the bell; for a candidate, the answer to its own requests, with
   "Join now" when approved. All state is read back from
   the node, so a reload in the middle of a transfer shows the same bar.
   It also renders principal-transfer offers from the same `useOffers()`
@@ -598,6 +642,11 @@ Per-file list:
   silently point at another range.
 ## Joining, guards and destructive actions
 
+- `LeaveNetworkButton.tsx` - The visitor's "Leave network", an icon beside
+  the theme switch at the foot of the Sidebar. Same confirmation and act as
+  the Networks screen (`POST /api/ui/network/leave`): the node goes back to
+  its own network and the page reloads.
+
 - `LobbyChat.tsx` - Chat with a network this machine has **not** joined
   (`docs/subsystems/p2p-network.md`, 6.1). A modal that polls the node every
   3 s (`GET <endpoint>?key=<publisher_key>`) and posts through it; the browser
@@ -614,6 +663,9 @@ Per-file list:
   button switches at once, and the bell does not list it. A declined request
   shows how many minutes are left before asking again (`retryWaitMinutes`
   over `retry_at`), and the request form comes back when the wait is over.
+  Once the request is approved or declined the conversation is hidden and
+  only the request side stays: an approval erased the thread on the admins'
+  side. Asking again brings it back.
   `layout="page"` fills the hosting screen instead of a window; a back
   button is drawn only when `backLabel` is given (the Networks screen gives
   none: its tabs stay on top and are the way back); `headerActions` adds
@@ -697,7 +749,10 @@ Per-file list:
   "pronto!". Nothing is deleted from disk (`undeploy_endpoint` in `deploy/node.rs`).
   `Dashboard` renders it only for the `admin` profile, while the backend is the
   final authority and its refusal text is shown as it arrives.
-  Renders both a `Confirm` and a result `Modal` (no cancel). `RemoveNode` stays
+  Renders both a `Confirm` and a result `Modal` (no cancel). `inProgress`
+  (with `label` and no targets) is the deploy still starting: the Dashboard
+  draws it from a running `deploy` job's `deploy_id`, and the node stops that
+  deploy before releasing anything (`cancelled` in the report). `RemoveNode` stays
   separate and keeps the per-machine button available to every profile.
 - `ErrorBoundary.tsx` - Class boundary placed around the routed page in
   `App.tsx` (the chrome survives a broken screen). Clears on `resetKey` change

@@ -396,7 +396,8 @@ UI.
   (`slot_auto_ttl_secs` / `POM_SLOT_AUTO_TTL_SECS`, 7 days by default) and an LRU
   budget (`slot_auto_max_bytes`, 2 GiB by default), returning the `key_hash` to
   delete. The gateway still debounces by `SLOT_AUTO_MIN_GROWTH_TOKENS` before
-  rewriting. Wired by `slot_persist_prefix_cache`; see `inference.md` §3.1.1.
+  rewriting. A `pinned` entry (a shared system part, `gateway::SharedPrefix`) is
+  never superseded. Wired by `slot_persist_prefix_cache`; see `inference.md` §3.1.1.
 - `prefix_cache_lab.rs` - the differential self-test of the cache policy, that is
   of the **choice**. The reference follows lookup, insert, busy, release and
   eviction; the proxy deliberately breaks `cached_tokens` and the battery has to
@@ -1381,7 +1382,8 @@ reason that only shows up in the error of a tunnel that also failed.
   7.8-8.2 ms/token against 0.14-0.67 ms without it (measured
   2026-08-12); without the callback, `hidden_state` refuses with "residual capture
   did not fire".
-- `MAX_RESTARTS=10`, `MAX_CONTEXT_TOKENS=250_000`. The restart budget is persisted in the
+- `MAX_RESTARTS=3` with `RESTART_INTERVAL=30s` between attempts (a newer generation cuts the
+  wait short), `MAX_CONTEXT_TOKENS=250_000`. The restart budget is persisted in the
   journal `<config>.last-slice.json` and shared with the supervisor: if the slice does not fit
   in memory or falls during the confirmation, each new process increments `Pending.attempts`. On
   reaching `MAX_AUTOMATIC_ATTEMPTS`, the node comes up without a model and leaves the reason in

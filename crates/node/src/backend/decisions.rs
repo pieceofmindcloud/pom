@@ -451,6 +451,7 @@ pub(crate) async fn systemone(
             "/v1/systemone",
             caller.clone(),
             GenerationInput {
+                shared_prefix: Default::default(),
                 trace_id: Some(format!("dec-{}", uuid::Uuid::new_v4().simple())),
                 state: state.clone(),
                 inference_token: inference_token.clone(),

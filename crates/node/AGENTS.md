@@ -189,7 +189,7 @@ The native windows load the port the gateway reports through
      process and an immediate `429` when all are occupied.
    - Only with the gateway up does it inspect the slice's persistent journal
      (`lastslice::inspect()`) and restore only `Serving` or `Idle`. A `Pending`
-     slice counts attempts on disk and, after `MAX_AUTOMATIC_ATTEMPTS=10`, comes
+     slice counts attempts on disk and, after `MAX_AUTOMATIC_ATTEMPTS=3`, comes
      up empty with `note_unloadable_slice`. The deployment through the UI calls
      `NodeRuntime::apply` with its `NodeConfig` (it brings up the Rust inference
      server **in-process** and supervises it); the `NodeConfig` also carries the
@@ -255,6 +255,12 @@ troubled deployment.
 
 ## src/ subfolders
 
+- `relay_pass.rs` - relay passes: the admin-signed token a visitor's relay
+  admits by, naming the network, the relay URL and an expiry, never its
+  holder; its header differs from the membership token's (`membership.rs`
+  `sign_compact`/`open_compact`), so neither stands in for the other.
+  `PassLedger` binds a pass to the first endpoint that used it. Design:
+  `docs/superpowers/specs/2026-10-23-anonymous-visitor-relays-design.md`.
 - `initial_ports.rs` - selection of available gateway, inference, P2P, QUIC
   and endpoint/relay ports: on the first boot, and on every desktop boot whose
   saved ports are busy.

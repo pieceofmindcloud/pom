@@ -55,6 +55,7 @@ vi.mock("../lib/api", async (importOriginal) => {
 });
 
 vi.mock("../lib/queries", () => ({
+  useConnection: () => ({ data: { phase: "connected", since: 0, last_error: null } }),
   useNode: () => ({
     data: {
       active_model: "qwen",

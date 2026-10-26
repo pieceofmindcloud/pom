@@ -112,7 +112,8 @@ describe("Notifications network offers", () => {
     // Opening the bell reads it: it stays listed and stops counting.
     fireEvent.click(bell());
     expect(screen.getByText("Senha administrativa padrão")).toBeTruthy();
-    expect(screen.getByText(/ainda é a padrão \(admin\)/)).toBeTruthy();
+    expect(screen.getByText(/ainda usa a senha padrão/)).toBeTruthy();
+    expect(screen.queryByText(/\(admin\)/)).toBeNull();
     expect(screen.getByRole("button", { name: "Trocar senha" })).toBeTruthy();
     fireEvent.click(bell());
     expect(bell().textContent).toBe("");
@@ -208,7 +209,7 @@ describe("Notifications network offers", () => {
     expect(screen.queryByRole("button", { name: "Recusar" })).toBeNull();
   });
 
-  it("shows an admission request with what the admin needs to decide, and approves it", async () => {
+  it("shows an admission request with what the admin needs to decide, and opens its thread", async () => {
     admissionMocks.admissions.data = [{
       node_id: "candidate-node-id-0001",
       role: "worker",
@@ -237,8 +238,11 @@ describe("Notifications network offers", () => {
     // A request that was already decided is not asked again.
     expect(screen.queryByTestId("admission-already-decided")).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "Aprovar" }));
-    await waitFor(() => expect(admissionMocks.api.decide).toHaveBeenCalledWith("candidate-node-id-0001", "approve"));
+    // The decision is taken in the candidate's thread, not here.
+    expect(screen.queryByRole("button", { name: "Aprovar" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Abrir a conversa" }));
+    expect(window.location.search).toBe("?lobby=candidate-node-id-0001");
+    expect(admissionMocks.api.decide).not.toHaveBeenCalled();
     admissionMocks.admissions.data = [];
   });
 

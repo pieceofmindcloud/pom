@@ -8,6 +8,7 @@ const baseModel = "Qwen3.8-27B-Q3_K_S-0fc04107";
 const deploymentModel = `${baseModel}@d-80442220`;
 
 vi.mock("./queries", () => ({
+  useConnection: () => ({ data: { phase: "connected", since: 0, last_error: null } }),
   useCluster: () => ({ data: undefined }),
   useLocalCatalog: () => ({ data: undefined }),
   useChatCapabilities: () => ({ data: { vision: "unavailable", coverage: "unavailable", thinking: "unavailable" } }),

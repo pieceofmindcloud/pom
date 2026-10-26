@@ -123,6 +123,8 @@ describe("LobbyChat", () => {
     mount();
 
     fireEvent.click(await screen.findByRole("button", { name: "Entrar agora" }));
+    // The admins erased the thread on approval: no conversation is left to show.
+    expect(screen.queryByTestId("lobby-messages")).toBeNull();
     expect(await screen.findByRole("dialog", { name: "Entrar em Rede Curitiba?" })).toBeTruthy();
     expect(mocks.post).not.toHaveBeenCalled();
   });
@@ -137,6 +139,7 @@ describe("LobbyChat", () => {
     const first = mount();
     expect((await screen.findByTestId("lobby-admission-wait")).textContent).toContain("pedir de novo em 42 minutos");
     expect(screen.queryByRole("button", { name: "Pedir admissão" })).toBeNull();
+    expect(screen.queryByTestId("lobby-messages")).toBeNull();
     first.unmount();
 
     // The wait is over: the request form is back.

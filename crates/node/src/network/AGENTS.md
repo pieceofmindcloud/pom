@@ -130,7 +130,7 @@ dedicated or member, with iroh's hole punching), are in
   topic for every network, announces sealed with the node key's signature, since
   iroh-gossip only authenticates the delivering neighbor), the embedded relay server
   on TCP on the same port (`GateAccess` asks `RelayGate`), the `Router` serving the
-  tunnel, lobby, chat, logs and audit ALPNs, and `link_tracker`, which follows every
+  tunnel, lobby, chat, logs, audit and direct announce ALPNs, and `link_tracker`, which follows every
   connection's selected path into `Network::note_link`. It puts peers into the
   `Network` only after the admission ratchet, which on gossip never probes inline
   (`admission_without_probe`, and without a verdict `admit_in_background`). The
@@ -155,7 +155,12 @@ dedicated or member, with iroh's hole punching), are in
   own announce arrived in the last 30 s (`firsthand`, `insert_announced_peer`).
   `is_member_key` answers whether a node key is an admin of the chain or holds a
   valid, unrevoked membership token: what every node-to-node call authorized by the
-  connection key is checked against (`auth::caller_is_member`). On a public network the
+  connection key is checked against (`auth::caller_is_member`). On a visitor, `admit_peer`
+  refuses another visitor and `alive_peers` leaves one out (`hides`, role from
+  the verified token, else the announced profile): visitors never know each
+  other. A visitor's `announce` skips the LAN broadcast, and `discovery.rs`
+  sends its sealed announce to each admin and worker over `AnnounceCodec`
+  (`pom/announce-direct/1`) instead of the gossip topic. On a public network the
   rigor follows the `network.access_policy`: with `authorized` (the default) the
   `cluster_id` only selects the chain and the tuple `{node_id, peer_id, pubkey}`
   must be an active concession in `admin_trust.rs`; with `anyone_with_anchor` a
@@ -377,7 +382,8 @@ dedicated or member, with iroh's hole punching), are in
   warning and a rate limit so the log is not flooded if the panic repeats.
 - `Network::handle_message` - Announce (rewrites `0.0.0.0` with the source address
   and calls `merge_observed` only when there are no explicit candidates), PeerRequest
-  (answers an immediate Announce + a chunked `PeerList`), PeerList, Heartbeat,
+  (answers an immediate Announce + a chunked `PeerList` from `peer_list_for`,
+  which names visitors only to a known admin or worker), PeerList, Heartbeat,
   LocalDiscover. The `PeerList` also
   updates an already known peer when the snapshot is newer, preserving the local
   verification state and the address candidates **this node has not yet proven
@@ -485,7 +491,14 @@ dedicated or member, with iroh's hole punching), are in
 - `answer_chat_request`/`accept_original_chat`/`relay_chat` - the Chat star: the
   principal validates an original message and relays it to every member (each send on
   its own task, so a slow member holds up nobody); a member accepts only what the
-  principal relays. `answer_lobby_request` answers a non-member (see `network_lobby.rs`).
+  principal relays. Visitors are out of it unless the network opens it
+  (`NetworkSettings::chat_visitors`, `NetworkChat::visitors_allowed`): the
+  principal refuses their messages and relays to none, and a visitor node
+  neither sends nor accepts one (`visitor_has_no_chat`). `answer_lobby_request` answers a non-member (see `network_lobby.rs`):
+  each candidate posts and reads in its own thread (`lobby/<node_id>`), and
+  lobby rooms reach the chain's admins only. On the policy tick the principal
+  relays `LobbyClosed` for the threads a decision erased, and every node purges
+  threads idle for a day.
   The logs and audit handlers ingest on the receiving admin and never retransmit.
 - `apply_policy` - every 5 s (`POLICY_INTERVAL`): the relay gate's member list and the
   URL it offers (`http://<public host>:<p2p_port+10000>`), the member relays added to or
@@ -506,6 +519,19 @@ dedicated or member, with iroh's hole punching), are in
   published endpoint addresses, relays in use (`set_relays_in_use`) and the hole punch
   count; `/api/ui/cluster` publishes it in the `traversal` field, which also enters
   the cache's fingerprint.
+- `anon_tunnel.rs` - tunnels through a visitor's anonymous relay. `AnonTunnels`
+  keeps the ephemeral endpoint (random key, a relay map of the visitors'
+  anonymous relays with their passes as auth tokens, one ALPN
+  `/pom/anon-tunnel/1`) in step with `Network::anonymous_relays` (`sync`, every
+  policy round in `discovery.rs`), rotates it every `ROTATE_AFTER` on unused
+  passes, publishes its address (`AnonTunnelAddr`, in the announce's
+  `anon_tunnel`) and makes the calls (`call`). A connection starts with a
+  `Binding`: the node key signs the connection's exported keying material
+  (`sign_binding`/`check_binding`); the answering side (`AnonServe`) checks it
+  and membership, then serves `InferTunnelCodec` as the bound node
+  (`discovery::answer_anon_request`, no file chunks). `Network::prefers_anon_tunnel`
+  decides when a call tries it first; a `PeerList` neither hands out nor
+  adopts an `anon_tunnel`.
 - `network::RelayGate` - whom this node relays for, consulted by the relay server on
   every connecting endpoint (`allows`): everyone with `relay.everyone`/`--serve-relay`;
   the admitted members of its cluster when the internet reaches it and
@@ -515,7 +541,14 @@ dedicated or member, with iroh's hole punching), are in
   `offer()` is what goes into the `Announce` (`RelayOffer`, with whether transfers may
   cross it and the `url`). The options are atomics: `set` changes them live from the
   screen, `RelayOverrides` keeps what the command line fixed for the run, and
-  `status()` is what `/api/ui/network/relay` answers.
+  `status()` is what `/api/ui/network/relay` answers. With `anonymous`
+  (`with_anonymous`, `set_anonymous`) it also admits an endpoint whose relay
+  pass holds for its URL (`pass_admits`, bound to that endpoint by the
+  `PassLedger`, which also caps the connections pass holders keep open;
+  `GateAccess::on_disconnect` gives a place back through `released`), and its
+  offer carries `anonymous: true`.
+  `Network::anonymous_relays` holds the `AnonymousRelay` list (`url`, `pass`)
+  an admin last handed this node.
 - `Network::relay_carries_transfers`/`path_carries_transfers`/`transfer_links` - the
   rule of files and relays: a direct path carries a file; a relay path only through a
   member relay (its URL is an admitted member's announced offer) that allows it; never

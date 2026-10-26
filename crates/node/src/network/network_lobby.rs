@@ -72,6 +72,31 @@ impl LobbyLimits {
     pub const INFO_CALLERS: usize = 4096;
 }
 
+/// Each candidate talks in a thread of its own, `lobby/<candidate node_id>`:
+/// it reads only its own, and only the admins the chain proves receive any.
+/// A thread is erased when the candidate is approved, or once nobody wrote in
+/// it for [`THREAD_TTL`], so nothing said there reaches a later candidate.
+pub const LOBBY_THREAD_PREFIX: &str = "lobby/";
+/// How long a thread nobody writes in is kept.
+pub const THREAD_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// The room of `candidate`'s lobby thread.
+pub fn thread_room(candidate: &str) -> String {
+    format!("{LOBBY_THREAD_PREFIX}{candidate}")
+}
+
+/// The candidate whose thread `room` is, if it is one.
+pub fn thread_candidate(room: &str) -> Option<&str> {
+    room.strip_prefix(LOBBY_THREAD_PREFIX)
+        .filter(|candidate| !candidate.is_empty())
+}
+
+/// Whether `room` belongs to the lobby: the presence room or a thread. Only
+/// admins receive it.
+pub fn is_lobby_room(room: &str) -> bool {
+    room == LOBBY_ROOM || thread_candidate(room).is_some()
+}
+
 /// How long a candidate stays listed after its last request.
 pub const GUEST_TTL: Duration = Duration::from_secs(90);
 /// How often the principal re-announces a present candidate to the members.

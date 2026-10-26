@@ -1,0 +1,19 @@
+{
+  "main.title": "__NAME__",
+  "main.subtitle": "The __NAME__ inference engine on this machine.",
+  "main.loading": "Asking the engine...",
+  "main.engine": "Engine",
+  "main.model": "Model",
+  "main.context": "Context",
+  "main.inFlight": "Requests in flight",
+  "main.runtime": "Runtime",
+  "main.installed": "installed",
+  "main.missing": "not installed",
+  "main.log": "Engine log",
+  "main.none": "none",
+  "state.idle": "idle",
+  "state.loading": "loading",
+  "state.ready": "ready",
+  "state.stopping": "stopping",
+  "state.error": "error"
+}

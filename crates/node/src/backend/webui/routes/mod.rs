@@ -257,6 +257,12 @@ const ROUTE_RULES: &[RouteRule] = &[
         method: None,
         scope: RouteScope::LocalOnly,
     },
+    // This machine's own way into its network: its operator's, nobody else's.
+    RouteRule {
+        prefix: "/api/ui/connection",
+        method: None,
+        scope: RouteScope::LocalOnly,
+    },
     // A node's own token budget: reading it, spending a session reset,
     // asking the admins for more. A machine's own operator route.
     RouteRule {
@@ -459,6 +465,13 @@ const ROUTE_RULES: &[RouteRule] = &[
         prefix: "/api/ui/access",
         method: None,
         scope: RouteScope::PrincipalOnly,
+    },
+    // The panel password is this machine's own credential, on any profile,
+    // and no other node changes it.
+    RouteRule {
+        prefix: "/api/ui/access/password",
+        method: None,
+        scope: RouteScope::LocalOnly,
     },
     RouteRule {
         prefix: "/api/ui/network/tls",
@@ -675,6 +688,9 @@ mod policy_tests {
             RouteScope::PrincipalOnly
         );
         assert_eq!(scope_of("/api/ui/requests/stats"), RouteScope::LocalOnly);
+        // The panel password is the machine's own; the exposure stays the principal's.
+        assert_eq!(scope_of("/api/ui/access/password"), RouteScope::LocalOnly);
+        assert_eq!(scope_of("/api/ui/access"), RouteScope::PrincipalOnly);
         assert_eq!(scope_of("/api/ui/plugins"), RouteScope::LocalOnly);
         assert_eq!(scope_of("/api/ui/plugin-catalog"), RouteScope::LocalOnly);
         assert_eq!(
@@ -837,6 +853,7 @@ mod policy_tests {
             RouteScope::LocalOnly
         );
         assert_eq!(scope_of("/api/ui/chat-key"), RouteScope::LocalOnly);
+        assert_eq!(scope_of("/api/ui/connection"), RouteScope::LocalOnly);
         assert_eq!(scope_of("/api/ui/quota/reset"), RouteScope::LocalOnly);
         assert_eq!(
             scope_of("/api/internal/api-keys/validate"),

@@ -464,7 +464,19 @@ boundary.
   member's node and key, its role, the network and a 10 min expiry, checked
   against the chain alone). `internal_token` issues one on any admin for an
   approved admission; `spawn_token_keeper` renews this node's (none on an
-  admin) and sets it in the Announce. On a secondary admin,
+  admin) and sets it in the Announce. With no token it looks again every 2 s
+  while no admin is in sight, and backs off from 2 s to the 30 s tick after a
+  refused request; it keeps the last refusal for the interface. The token answer
+  also carries `relays` (`relay_passes`: each visitor's anonymous relay the
+  admin sees, with a fresh relay pass, only for a URL on a public host among
+  that visitor's own addresses, `relay_url_is_peers`), which the keeper stores in
+  `Network::set_anonymous_relays`; an admin issues its own every tick.
+  `GET /api/ui/connection` (`connection_status`, `LocalOnly`) reports this
+  node's `ConnectionPhase` - `standalone` (an admin, or off the network),
+  `discovering` (no admin heard yet), `authenticating` (an admin in sight, no
+  valid token yet), `connected` - with `since` (unix seconds, when the phase
+  started), `last_error`, `peers` (other live peers in sight) and
+  `admin_in_sight`. On a secondary admin,
   `spawn_roster_keeper` mirrors the principal's admission list
   (`internal_roster`), and `forward_decision` sends its admission decisions
   to the principal (`internal_decide`, applied by `apply_decision`, which
@@ -686,7 +698,9 @@ change lands in the right place.
   http, runtime, gateway_port, auth, transfers, `reply_inbox`); `FromRef<GatewayState> for
   AuthState`; `peers_visible_to_cluster` filters blocked nodes; `all_peers` appends the local
   node with `self_dial_host` (advertised > local IP > loopback). Admission probing, the
-  pinned-route order (`bases_by_route_plan`), the quarantine and the perf feed
+  pinned-route order (`bases_by_route_plan`), the quarantine, the longer first wait
+  for a peer never admitted (`FIRST_ADMISSION_BUDGET`), the background warm-up
+  (`spawn_admission_warmup`, started by `main::spawn_gateway_companions`) and the perf feed
   (`AdmissionHealth::note_perf` -> `fastest::PeerPerf`, read by `generation::plan_by_delivery_time`
   and `catalog::model_peer_perf`) are `docs/subsystems/inference.md`, "Pipeline admission
   probe"; a direct success is remembered with `RouteTable::mark_success`. The capability list a
@@ -717,7 +731,10 @@ change lands in the right place.
   `/api/generate` are for. `conversation_cache_key` is the canonical rendered prompt the head
   tokenizes, travelling as `GenerationInput::cache_key`; the Anthropic version
   `conversation_cache_key_with_budget` prefixes the task budget's identity so an entry without
-  a budget or with a different marker is never reused. `usage.prompt_tokens_details.cached_tokens`
+  a budget or with a different marker is never reused. Both chat adapters also pass
+  `GenerationInput::shared_prefix` (`SharedPrefix::offer`): where the system part ends in the
+  prompt and the key, which the gateway reads alone and pins so a new conversation of the same
+  client starts warm (`inference.md` §3.1.1). `usage.prompt_tokens_details.cached_tokens`
   reports the prompt tokens the pipeline did not reprocess, read from the trace - the executed
   number, not the cache's choice. `approx_tokens` is chars/4. `model_ids` comes only from live
   peer announcements (never the stale CLI default) and keeps an `idle` deployment selectable
@@ -728,6 +745,9 @@ change lands in the right place.
   (tool_call deltas), `chunk_json` (+ the `x_pom` extension), `cors_headers` (allow `*`).
 - `messages.rs` - Anthropic `POST /v1/messages` (+ OPTIONS) and `POST /v1/messages/count_tokens`,
   with its own `render_prompt` and `conversation_cache_key` for the same reason as `openai.rs`;
+  `SystemPrompt::as_text` pins Claude Code's billing stamps (`pin_billing_stamp`: `cch=` and the
+  4th part of `cc_version=` become `f`s), which change per request and per session at the first
+  line of the prompt and would otherwise defeat every prefix reuse;
   `content_blocks` for tool_use/tool_result, `stop_reason` (end_turn / max_tokens / tool_use /
   stop_sequence), `usage.cache_read_input_tokens` carrying the honoured prefix reuse, and
   `blocking_response` / `stream_response` with Anthropic's SSE event names. `tool_choice` is
@@ -860,7 +880,9 @@ change lands in the right place.
   (`closer_position`), so content that mentions those tags is not cut. A
   `<function_calls>` holding a `<function=...>` body is read as one call, a
   repeated `<tool_call>` opener and a doubled or foreign trailing closer are
-  normalized (`normalize_wrapped_body`), both `<parameter=P>` and
+  normalized (`normalize_wrapped_body`), a `<function_calls>` container
+  shut by a foreign closer (`</function>`) keeps the invokes already read
+  (`parse_function_calls_xml` skips `STRAY_CLOSERS` after the first one), both `<parameter=P>` and
   `<parameter name="P">` are read inside one call (`parameter_open`), as is
   a parameter written as its own element, `<path>a.html</path>`, and a
   `<function=NAME>` call shut by `</NAME>` (both seen from Gemma 4;
@@ -871,6 +893,18 @@ change lands in the right place.
   A `<function=NAME>` call with no opener at all is `CallKind::BareXml`: it
   ends only on a `</function>` outside a parameter value and, with tools
   declared, only for a declared name, so prose quoting the tag stays text.
+  `<NAME><code>...</code></NAME>`, a declared tool's name as the element
+  followed by a parameter element, is `CallKind::NamedElement` (Gemma 4 under
+  Hermes Agent): its closer depends on the name, so it is outside
+  `CALL_FORMATS` and the scanner keeps the name (`element_opening`,
+  `named_element_call`). Gemma 4's native
+  `<|tool_call>call:NAME{key:<|"|>text<|"|>}<tool_call|>` is `CallKind::Native`
+  in `CALL_FORMATS` (verified against the Gemma 4 vocabulary GGUF's template):
+  `parse_native_call` reads bare keys, `<|"|>` strings and JSON literals,
+  `native_closer_position` ignores a closer inside a string, and
+  `parse_partial_native_call` recovers a call cut by the cap. Text after a complete call is dropped by
+  `drop_text_after_calls` on every exit of the scanner, so streaming and
+  blocking agree; later calls still count.
   The invoke dialect's tags may carry an XML namespace prefix (the opener
   prefixed, the closer plain, as a Strata session wrote them): the prefixed
   `invoke` / `function_calls` openers and closers are registered, and

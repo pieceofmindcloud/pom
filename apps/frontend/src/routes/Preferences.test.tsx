@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   setAdminAccessToken: vi.fn(),
   clearAdminAccessToken: vi.fn(),
   logsPluginActive: true,
+  passwordConfigured: false,
   node: {
     thermal: { limit_c: 85, hysteresis_c: 8, cooldown_secs: 30 },
     quic_enabled: false,
@@ -35,9 +36,10 @@ vi.mock("../lib/api", () => ({
 vi.mock("../lib/queries", () => ({
   useEnterpriseStatus: () => ({ data: { active: mocks.logsPluginActive }, isLoading: false }),
   useAdminAccessInfo: () => ({
-    data: { admin_exposure: "localhost", gateway_port: 8080, password_configured: false },
+    data: { admin_exposure: "localhost", gateway_port: 8080, password_configured: mocks.passwordConfigured },
     refetch: mocks.invalidate,
   }),
+  useAdminAccess: () => ({ data: { default_password: false } }),
   useHuggingFaceTokenConfig: () => ({
     data: { configured: true, masked: "••••••••cret", source: "pom.json" },
     isLoading: false,
@@ -162,33 +164,30 @@ describe("Preferences", () => {
     expect(screen.queryByText("Criptografia entre nós")).toBeNull();
   });
 
-  it("sets and stores the password when the interface moves to the network", async () => {
-    mocks.post.mockResolvedValue({
-      saved: true,
-      restart: false,
-      admin_exposure: "network",
-      gateway_port: 8080,
-      password_configured: true,
-    });
+  it("moves the exposure alone and sends to the password screen when none is set", async () => {
     mount(<Preferences />);
+    expect(screen.getByTestId("preferences-change-password").getAttribute("href")).toBe("/config/password");
+    expect(screen.queryByLabelText(/nova senha/i)).toBeNull();
 
     fireEvent.change(screen.getByLabelText(/quem pode abrir a interface/i), {
       target: { value: "network" },
     });
-    fireEvent.change(screen.getByLabelText(/nova senha/i), {
-      target: { value: "new-admin-password" },
+    expect(screen.getByText(/defina uma senha do painel/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /salvar exposição/i }));
+    expect(mocks.post).not.toHaveBeenCalledWith("/api/ui/access", expect.anything());
+    cleanup();
+
+    mocks.passwordConfigured = true;
+    mocks.post.mockResolvedValue({ saved: true, restart: false, admin_exposure: "network", gateway_port: 8080, password_configured: true });
+    mount(<Preferences />);
+    fireEvent.change(screen.getByLabelText(/quem pode abrir a interface/i), {
+      target: { value: "network" },
     });
     fireEvent.click(screen.getByRole("button", { name: /salvar exposição/i }));
-
     await waitFor(() => {
-      expect(mocks.post).toHaveBeenCalledWith("/api/ui/access", {
-        admin_exposure: "network",
-        gateway_port: 8080,
-        current_password: "",
-        new_password: "new-admin-password",
-      });
-      expect(mocks.setAdminAccessToken).toHaveBeenCalledWith("new-admin-password");
+      expect(mocks.post).toHaveBeenCalledWith("/api/ui/access", { admin_exposure: "network", gateway_port: 8080 });
     });
+    mocks.passwordConfigured = false;
   });
 
   it("keeps the saving of the Hugging Face credential", async () => {

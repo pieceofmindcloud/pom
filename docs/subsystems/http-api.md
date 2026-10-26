@@ -246,7 +246,10 @@ last):
   (on a legacy `open_admission` network, the announced one). The token is a
   compact JWT signed with EdDSA by the issuing admin's node key - `iss`,
   `iss_key`, `sub`, `sub_key`, `net` (the chain's cluster id), `role`, `iat`,
-  `exp`, `jti` - and lasts 10 minutes (`TOKEN_TTL_SECS`).
+  `exp`, `jti` - and lasts 10 minutes (`TOKEN_TTL_SECS`). The answer is
+  `{token, relays}`: `relays` lists the visitors' anonymous relays the admin
+  sees, `{url, pass}` each, with a relay pass (`crate::relay_pass`) for that
+  URL; the caller's own relay is left out.
   `webui::spawn_token_keeper` renews it two thirds in, and at once when it
   stops holding, and the node announces it (`membership` in the Announce and
   in `PeerInfo`). Any node checks it against its chain alone
@@ -281,7 +284,15 @@ last):
 - **Leaving and the own network** (`p2p-network.md` 6.1). `POST
   /api/ui/network/leave` leaves a network this node joined and restores its
   own from standby (`restored_own_network` in the answer); on the node's own
-  network it answers `409` with `reason: "own_network"`. `GET /api/ui/node`
+  network it answers `409` with `reason: "own_network"`. `GET /api/ui/connection`
+  (local operator only) says where this node stands on its way into its network:
+  `{phase, since, last_error, peers, admin_in_sight}`, with `phase` one of `standalone` (an admin, or off
+  the network), `discovering` (no admin of the network heard yet),
+  `authenticating` (an admin in sight, no valid membership token yet) and
+  `connected`; `since` is when the phase started (unix seconds) and `last_error`
+  the last refused token request while the node holds none; `peers` counts the
+  other live peers it sees now and `admin_in_sight` says whether an admin of
+  the network is among them. `GET /api/ui/node`
   carries `own_network` (this node is the principal of the network it is in)
   and `standby_network` (the name of its own network while it is a member
   elsewhere). `POST /api/cluster/member-left` (`{node_id}`) is node-to-node:
@@ -361,7 +372,9 @@ source of the scope the gateway enforces:
   serves `/v1`, and every profile serves), correcting this machine's own
   advertised address (`POST /api/ui/network/advertise-addr`), its own name
   (`POST /api/ui/network/node-name`), its own relay
-  options (`GET`/`POST /api/ui/network/relay`), leaving/rejoining
+  options (`GET`/`POST /api/ui/network/relay`: `everyone`, `cluster`,
+  `transfers`, `anonymous`; the answer adds the state and `anonymous_relays`,
+  how many visitors' anonymous relays this node holds passes for), leaving/rejoining
   the network (`/api/ui/leave`, `/api/ui/rejoin`) and the node's local plugins
   (`/api/ui/plugins*`: activating licenses, GitHub repositories, installing,
   updating and the plugin UIs);
@@ -577,8 +590,15 @@ is how the interface repeats a notice once per start) and `default_password` - t
 is still the first access default (`admin`, `auth::DEFAULT_ADMIN_PASSWORD`). It
 is a flag written in `pom.json` (`admin_password_default`) next to the hash, so
 this public route never runs Argon2; creating the local network at first run
-sets it (in `network` mode with that password) and `POST /api/ui/access`
-updates it on every password change.
+sets it (in `network` mode with that password) and
+`POST /api/ui/access/password` clears it. That route (`LocalOnly`, every
+profile, no other node) takes `{current_password?, new_password}`: the current
+password is required unless the default is in force, a wrong one is 403
+`current_password`, a weak new one is 400 with `code` `too_short`,
+`too_simple` or `default_password` (`admin_password_weakness`: 10 characters,
+three of four classes); success ends every session. `POST /api/ui/access`
+(principal) moves only `{admin_exposure, gateway_port}`, keeps the hash in
+both modes and refuses the network mode without one (`password_required`).
 
 ### Setup routes are not served
 
@@ -744,7 +764,20 @@ both providers' shape: the client reads the terminal stop reason and repeats
 the request with a higher ceiling, without executing anything. The shared
 scanner recognizes the markers declared in `CALL_FORMATS`, keeps text before
 the call, turns every complete call into `tool_calls` and, in SSE, into
-indexed deltas. The canonical prompt/replay format remains
+indexed deltas. **Text after a complete call is dropped** (later calls still
+count): the tool has not run, so it can only be the model's guess at the
+result - Gemma 4 wrote "The script outputted `[0, 1, 1, ...]`" right after an
+`execute_code` call. The tools block already asks for no suffix, vLLM's Hermes
+parser drops it the same way, and a malformed call degraded to text is not a
+call. The generation itself still runs to the model's stop. With tools
+declared, `<NAME><param>value</param></NAME>` for a **declared** `NAME`
+followed by a parameter element is also a call (`CallKind::NamedElement`,
+written by Gemma 4 under Hermes Agent's long system prompt); a tool name in
+prose stays text. Gemma 4's native format,
+`<|tool_call>call:NAME{key:<|"|>text<|"|>,n:3}<tool_call|>`, is a call as well
+(`CallKind::Native`, written by Gemma 4 for a Hermes Agent turn from
+Telegram): bare keys, strings between `<|"|>`, and JSON numbers, booleans,
+arrays and objects. The canonical prompt/replay format remains
 `<tool_call><function=…><parameter=…>`, while recovery also accepts a sole
 object parameter named `arguments` and the older
 `<function_calls><invoke name="…"><parameter name="…">` dialect (including
@@ -1366,6 +1399,14 @@ Parallelism. The planner also returns `is_moe`, `inference_mode_supported` and
 never from the file name. For a dense model the UI hides the choice; when a
 combination is not supported yet, the reason stays visible and the deploy is
 refused so a preference that will not be honored is not presented.
+
+`DeployPlan.copies` lists every file the deploy would copy between machines
+(`kind` `slice`/`mmproj`/`mtp`, `name`, `size_bytes`, `layers`, source and
+target node and host). `POST /api/ui/deploy` with copies and without
+`allow_transfers: true` answers 409 `{error, code: "transfers_not_authorized",
+copies}` before touching any peer. The deploy job carries `deploy_id`, and
+`POST /api/ui/undeploy` stops a deploy of that id still in flight (task
+aborted, copies cancelled on the targets), answering `cancelled: true`.
 
 In deployments with vision, `DeployPlan.mmproj_candidates` lists the compatible
 local paths on the peer serving layer 0. The UI preselects one of them and can

@@ -88,6 +88,8 @@ const chatScenario = vi.hoisted(() => ({
   models: [{ id: "qwen" }] as { id: string }[],
   /** Models on this machine's disk, for the "what next" steps. */
   localModels: [] as { name: string; path: string; shard_range: null }[],
+  /** `GET /api/ui/connection`: this node is in its network unless a test says otherwise. */
+  connection: { phase: "connected", since: 0, last_error: null, peers: 2, admin_in_sight: true } as unknown,
 }));
 
 /**
@@ -104,7 +106,9 @@ vi.mock("../lib/queries", () => ({
   usePomCoreUpdateStatus: () => ({ data: { core_update: null } }),
   useNode: () => ({ data: nodeData, isLoading: false, isError: false }),
   useCluster: () => ({ data: chatScenario.cluster }),
+  useConnection: () => ({ data: chatScenario.connection }),
   useNetworkChat: () => ({ data: { messages: [] }, isSuccess: true }),
+  useNetworkInfo: () => ({ data: undefined }),
   useChatCapabilities: () => ({ data: chatScenario.capabilities }),
   useInvalidate: () => vi.fn(),
   useServableModels: () => ({ data: chatScenario.models }),
@@ -164,6 +168,7 @@ afterEach(() => {
   chatScenario.capabilities = null;
   chatScenario.models = [{ id: "qwen" }];
   chatScenario.localModels = [];
+  chatScenario.connection = { phase: "connected", since: 0, last_error: null, peers: 2, admin_in_sight: true };
 });
 
 describe("navigation after the chat", () => {
@@ -222,6 +227,42 @@ describe("navigation after the chat", () => {
     expect(screen.queryByTestId("no-model-steps")).toBeNull();
   });
 
+  it("says a visitor that just joined is still connecting, not that the network serves no model", async () => {
+    chatScenario.models = [];
+    chatScenario.connection = { phase: "authenticating", since: Date.now() / 1000, last_error: null, peers: 0, admin_in_sight: false };
+    mount("visitor");
+
+    const steps = await screen.findByTestId("connecting-steps");
+    expect(steps.querySelector('[data-step="discover"]')?.getAttribute("data-state")).toBe("done");
+    expect(steps.querySelector('[data-step="authenticate"]')?.getAttribute("data-state")).toBe("current");
+    expect(screen.queryByTestId("chat-missing-piece")).toBeNull();
+    expect(screen.queryByText(/Peça a um administrador/)).toBeNull();
+    expect(screen.getByText("Conectando à rede")).toBeTruthy();
+    // A fresh step is not stuck yet.
+    expect(screen.queryByTestId("connection-stuck")).toBeNull();
+  });
+
+  it("says why a connection looks stuck, with the admin's last answer", async () => {
+    chatScenario.models = [];
+    chatScenario.connection = { phase: "authenticating", since: Date.now() / 1000 - 120, last_error: "the admin refused: 403", peers: 1, admin_in_sight: true };
+    mount("visitor");
+
+    const stuck = await screen.findByTestId("connection-stuck");
+    expect(stuck.textContent).toContain("the admin refused: 403");
+    expect(stuck.querySelector("a")?.getAttribute("href")).toContain("/public-networks");
+  });
+
+  it("keeps the models step on screen while a member that just got in waits for them", async () => {
+    chatScenario.models = [];
+    chatScenario.connection = { phase: "connected", since: Date.now() / 1000 - 5, last_error: null, peers: 1, admin_in_sight: true };
+    mount("visitor");
+
+    const steps = await screen.findByTestId("connecting-steps");
+    expect(steps.querySelector('[data-step="authenticate"]')?.getAttribute("data-state")).toBe("done");
+    expect(steps.querySelector('[data-step="models"]')?.getAttribute("data-state")).toBe("current");
+    expect(screen.queryByTestId("chat-missing-piece")).toBeNull();
+  });
+
   it("switches screen when the menu is clicked after a response", async () => {
     mount();
 
@@ -260,7 +301,7 @@ describe("navigation after the chat", () => {
     await screen.findByRole("textbox");
     expect(screen.getAllByTestId("chat-session-list")).toHaveLength(1);
     expect(screen.getAllByRole("button", { name: "Conversa nova" })).toHaveLength(1);
-    expect(screen.getByRole("button", { name: "Rede" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Minha Rede" })).toBeTruthy();
   });
 
   it("shows the drop target, identifies the format and removes the attachment without erasing the draft", async () => {

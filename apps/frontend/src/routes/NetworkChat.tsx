@@ -1,7 +1,9 @@
-import { Download, FileUp, Send, Users, Wifi, WifiOff } from "lucide-react";
+import { Check, Download, FileUp, Send, UserPlus, Users, Wifi, WifiOff, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { LobbyHardwareCard } from "../components/LobbyHardwareCard";
 import { Button, Empty, Input, PageHeader, Tabs } from "../components/ui";
+import { admissionsApi, useAdmissions, type AdmissionRecord } from "../lib/admissions";
 import { downloadNetworkChatFile, postNetworkChat } from "../lib/api";
 import { isNearBottom } from "../lib/chatScroll";
 import { randomId } from "../lib/id";
@@ -19,6 +21,13 @@ import type {
 
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
 
+/** Each candidate talks to the admins in a thread of its own (`network_lobby.rs`). */
+const THREAD_PREFIX = "lobby/";
+
+function threadCandidate(roomId: string): string | null {
+  return roomId.startsWith(THREAD_PREFIX) ? roomId.slice(THREAD_PREFIX.length) || null : null;
+}
+
 function id(): string {
   return randomId();
 }
@@ -31,7 +40,7 @@ function now(): string {
   return new Date().toISOString();
 }
 
-function textAction(room: NetworkChatRoom, senderNodeId: string, text: string): NetworkChatRequest {
+function textAction(room: string, senderNodeId: string, text: string): NetworkChatRequest {
   return {
     action: {
       kind: "text",
@@ -129,8 +138,11 @@ function ParticipantList({ participants, nodeName }: { participants: NetworkChat
   );
 }
 
-/** Candidates in the lobby, each with the hardware it declared. */
-function LobbyGuestList({ guests }: { guests: LobbyGuest[] }) {
+/**
+ * The candidates with a thread or present in the lobby; picking one opens
+ * its thread. A present candidate shows the hardware it declared.
+ */
+function LobbyThreadList({ candidates, guests, pending, selected, onSelect, nodeName }: { candidates: string[]; guests: LobbyGuest[]; pending: AdmissionRecord[]; selected: string | null; onSelect: (candidate: string) => void; nodeName: (id: string) => string }) {
   const { t } = useI18n();
   return (
     <aside className="border-b border-line px-4 py-4 lg:border-b-0 lg:border-l lg:py-5">
@@ -139,11 +151,60 @@ function LobbyGuestList({ guests }: { guests: LobbyGuest[] }) {
         {t("lobby.candidates", { count: guests.length })}
       </div>
       <div className="space-y-3">
-        {guests.map((guest) => <LobbyHardwareCard key={guest.nodeId} nodeId={guest.nodeId} card={guest.card} />)}
-        {!guests.length && <p className="text-sm text-faint">{t("lobby.noCandidates")}</p>}
+        {candidates.map((candidate) => {
+          const guest = guests.find((item) => item.nodeId === candidate);
+          const active = candidate === selected;
+          const request = pending.find((record) => record.node_id === candidate);
+          return (
+            <button
+              key={candidate}
+              type="button"
+              data-testid={`lobby-thread-${candidate}`}
+              aria-pressed={active}
+              aria-current={active ? "true" : undefined}
+              onClick={() => onSelect(candidate)}
+              className={`relative block w-full rounded-lg border-2 text-left transition-colors ${active ? "border-iris bg-iris/10 shadow-[0_0_0_3px_rgb(var(--iris)/0.15)]" : "border-transparent opacity-75 hover:border-line-strong hover:opacity-100"}`}
+            >
+              {guest ? <LobbyHardwareCard nodeId={candidate} card={guest.card} /> : <span className="block px-3 py-2 text-sm text-muted">{nodeName(candidate)}</span>}
+              {request && <span className="mx-3 mb-2 inline-flex items-center gap-1 rounded-full bg-amber/15 px-2 py-0.5 text-[0.62rem] text-amber"><UserPlus className="h-3 w-3" />{t("lobby.threadAsks")}</span>}
+            </button>
+          );
+        })}
+        {!candidates.length && <p className="text-sm text-faint">{t("lobby.noCandidates")}</p>}
       </div>
       <p className="mt-3 text-[0.68rem] leading-relaxed text-faint">{t("lobby.declaredNote")}</p>
     </aside>
+  );
+}
+
+/**
+ * What the admin is looking at in the lobby: whose thread, and the decision on
+ * its admission request, taken here after talking. Either decision erases the
+ * thread for every admin.
+ */
+function LobbyThreadHeader({ candidate, request, nodeName, deciding, onDecide }: { candidate: string; request: AdmissionRecord | undefined; nodeName: (id: string) => string; deciding: boolean; onDecide: (decision: "approve" | "reject") => void }) {
+  const { t } = useI18n();
+  return (
+    <div data-testid="lobby-thread-header" className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line bg-iris/[0.06] px-4 py-2.5 sm:px-6">
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-semibold text-fg">{t("lobby.threadWith", { name: nodeName(candidate) })}</p>
+        <p className="truncate text-[0.68rem] text-faint">
+          <span className="font-mono">{shortNodeId(candidate)}</span>
+          {" · "}
+          {request ? t("lobby.threadRequest", { role: t(`network.enrollment.${request.role}`) }) : t("lobby.threadNoRequest")}
+        </p>
+      </div>
+      {request && (
+        <div className="flex shrink-0 items-center gap-2">
+          <Button size="sm" variant="primary" icon={<Check className="h-3.5 w-3.5" />} loading={deciding} onClick={() => onDecide("approve")}>
+            {t("notifications.admissionApprove")}
+          </Button>
+          <Button size="sm" variant="ghost" icon={<X className="h-3.5 w-3.5" />} disabled={deciding} onClick={() => onDecide("reject")}>
+            {t("notifications.admissionReject")}
+          </Button>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -158,6 +219,32 @@ export function NetworkChat() {
   const snapshot = networkChat.data ?? null;
   const inLobby = room === "lobby";
   const lobbyGuests = snapshot?.lobbyGuests ?? [];
+  const [thread, setThread] = useState<string | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const askedThread = searchParams.get("lobby");
+  // The bell sends the admin here, to the candidate's thread, to decide.
+  useEffect(() => {
+    if (!askedThread) return;
+    setRoom("lobby");
+    setThread(askedThread);
+    setSearchParams((params) => { params.delete("lobby"); return params; }, { replace: true });
+  }, [askedThread, setSearchParams]);
+  const admissions = useAdmissions(inLobby);
+  const pending = useMemo(() => (admissions.data ?? []).filter((record) => record.status === "pending"), [admissions.data]);
+  const [deciding, setDeciding] = useState(false);
+  const candidates = useMemo(() => {
+    if (!inLobby) return [];
+    const seen = new Set<string>();
+    // A pending candidate has a thread even before its first word.
+    for (const record of pending) seen.add(record.node_id);
+    for (const guest of lobbyGuests) seen.add(guest.nodeId);
+    for (const message of snapshot?.messages ?? []) {
+      const candidate = threadCandidate(message.roomId);
+      if (candidate) seen.add(candidate);
+    }
+    return [...seen];
+  }, [inLobby, lobbyGuests, pending, snapshot?.messages]);
+  const selected = thread && candidates.includes(thread) ? thread : candidates[0] ?? null;
   const nodeName = useMemo(() => {
     const names = new Map<string, string>();
     for (const peer of cluster.data?.peers ?? []) {
@@ -247,7 +334,23 @@ export function NetworkChat() {
     if (!text || !localNodeId) return;
     setDraft("");
     notifyTyping(false);
-    await send(textAction(room, localNodeId, text));
+    if (inLobby && !selected) return;
+    await send(textAction(inLobby ? `${THREAD_PREFIX}${selected}` : room, localNodeId, text));
+  }
+
+  async function decide(candidate: string, decision: "approve" | "reject") {
+    setDeciding(true);
+    try {
+      await admissionsApi.decide(candidate, decision);
+      toast.success(t(decision === "approve" ? "notifications.admissionApproved" : "notifications.admissionRejected"));
+      // Either decision erases the thread: the next one takes its place.
+      setThread(null);
+      await Promise.all([admissions.refetch(), refresh()]);
+    } catch (error) {
+      toast.fromError(t("notifications.offerFailed"), error);
+    } finally {
+      setDeciding(false);
+    }
   }
 
   async function onFile(file: File | undefined) {
@@ -279,7 +382,11 @@ export function NetworkChat() {
     () => inLobby ? [] : snapshot?.typing.filter((event) => event.senderNodeId !== localNodeId) ?? [],
     [inLobby, localNodeId, snapshot?.typing],
   );
-  const messages = snapshot?.messages ?? [];
+  const allMessages = snapshot?.messages ?? [];
+  const messages = useMemo(
+    () => inLobby ? allMessages.filter((message) => threadCandidate(message.roomId) === selected) : allMessages,
+    [allMessages, inLobby, selected],
+  );
   const latestMessageId = messages[messages.length - 1]?.messageId;
 
   useEffect(() => {
@@ -360,6 +467,15 @@ export function NetworkChat() {
       )}
       <div className={`grid min-h-0 flex-1 ${inLobby ? "lg:grid-cols-[minmax(0,1fr)_18rem]" : "lg:grid-cols-[minmax(0,1fr)_15rem]"}`}>
         <div className="flex min-h-0 flex-col">
+          {inLobby && selected && (
+            <LobbyThreadHeader
+              candidate={selected}
+              request={pending.find((record) => record.node_id === selected)}
+              nodeName={nodeName}
+              deciding={deciding}
+              onDecide={(decision) => void decide(selected, decision)}
+            />
+          )}
           <div
             ref={messagesRef}
             data-testid="network-chat-messages"
@@ -385,7 +501,7 @@ export function NetworkChat() {
                 onChange={(event) => { setDraft(event.target.value); notifyTyping(event.target.value.trim().length > 0); }}
                 onBlur={() => notifyTyping(false)}
                 onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submit(); } }}
-                disabled={sending || !localNodeId}
+                disabled={sending || !localNodeId || (inLobby && !selected)}
               />
               <Button variant="primary" className="h-9 w-9 shrink-0 px-0" aria-label={t("networkChat.send")} disabled={!draft.trim() || sending} loading={sending} onClick={() => void submit()}>
                 <Send className="h-4 w-4" />
@@ -395,7 +511,7 @@ export function NetworkChat() {
           </div>
         </div>
         <div className={showParticipants ? "block lg:block" : "hidden lg:block"}>
-          {inLobby ? <LobbyGuestList guests={lobbyGuests} /> : <ParticipantList participants={snapshot?.participants ?? []} nodeName={nodeName} />}
+          {inLobby ? <LobbyThreadList candidates={candidates} guests={lobbyGuests} pending={pending} selected={selected} onSelect={setThread} nodeName={nodeName} /> : <ParticipantList participants={snapshot?.participants ?? []} nodeName={nodeName} />}
         </div>
       </div>
     </div>

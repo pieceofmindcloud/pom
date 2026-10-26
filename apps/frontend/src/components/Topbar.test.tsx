@@ -19,10 +19,12 @@ import type { NodeInfo } from "../lib/types";
 let nodeData: NodeInfo | undefined;
 let natStatus: "unknown" | "public" | "private" | undefined;
 let relayedPeers: { node_id: string; hostname: string; relay_kind: "public" | "dedicated" | "member" | null }[] = [];
+let quotaData: { available: boolean; configured?: boolean; pending?: boolean } | undefined;
 
 vi.mock("../lib/queries", async (original) => ({
   ...(await original<typeof import("../lib/queries")>()),
   useNode: () => ({ data: nodeData }),
+  useMyQuota: () => ({ data: quotaData }),
   useCluster: () => ({
     data: {
       peers: [],
@@ -113,17 +115,51 @@ describe("profile in the toolbar", () => {
     expect(network.getAttribute("href")).toBe("/config/network");
   });
 
+  it("drops the machine and node-count badges for a machine alone in a network of its name", () => {
+    nodeData = { ...fakeNode(), hostname: "lab", network_name: "lab" };
+    mountTopbar("admin");
+    expect(screen.getByTestId("topbar-network").textContent).toBe("lab");
+    expect(screen.queryByTestId("topbar-machine")).toBeNull();
+    cleanup();
+
+    nodeData = { ...fakeNode(), hostname: "lab", network_name: "home" };
+    mountTopbar("admin");
+    expect(screen.getByTestId("topbar-machine").textContent).toBe("lab");
+  });
+
   it("shows no network chip while the node reports no network name", () => {
     nodeData = { ...fakeNode(), network_name: "" };
     mountTopbar("admin");
     expect(screen.queryByTestId("topbar-network")).toBeNull();
   });
 
-  it("hides the This node button and keeps the official profile in the toolbar", () => {
+  it("labels a worker's profile and leaves a visitor's out", () => {
+    nodeData = fakeNode({ profile: "worker" });
+    mountTopbar("worker");
+    expect(screen.getByTestId("node-profile").textContent).toBe("worker");
+    cleanup();
+
+    nodeData = fakeNode({ profile: "visitor" });
+    mountTopbar("visitor");
+    expect(screen.queryByTestId("node-profile")).toBeNull();
+  });
+
+  it("folds the network and node badges into one popover on a narrow screen", () => {
+    nodeData = { ...fakeNode(), network_name: "POM-SALEM" };
+    mountTopbar("worker");
+    expect(screen.getAllByTestId("topbar-network")).toHaveLength(1);
+    expect(screen.queryByTestId("topbar-details-popover")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("topbar-details"));
+    const popover = screen.getByTestId("topbar-details-popover");
+    expect(popover.textContent).toContain("POM-SALEM");
+    expect(popover.textContent).toContain("worker");
+  });
+
+  it("hides the This node button", () => {
     nodeData = fakeNode({ profile: "visitor" });
     mountTopbar("visitor");
 
-    expect(screen.getByTestId("node-profile").textContent).toBe("visitor");
     expect(screen.queryByText(/perfil em visualização/i)).toBeNull();
     expect(screen.queryByRole("button", { name: "Este nó" })).toBeNull();
     expect(screen.queryByRole("button", { name: /administrador|node|infer/i })).toBeNull();
@@ -207,5 +243,31 @@ describe("NAT badge in the toolbar", () => {
     expect(dialog.textContent).toContain("UDP 52777");
     expect(screen.getByTestId("nat-relayed-peers").textContent).toContain("machine-b");
     expect(screen.getByTestId("nat-relayed-peers").textContent).toContain("relé público");
+  });
+});
+
+describe("Usage beside the bell", () => {
+  afterEach(() => {
+    cleanup();
+    quotaData = undefined;
+  });
+
+  it("shows only when this node has a budget set for it", () => {
+    nodeData = fakeNode();
+    quotaData = { available: true, configured: false };
+    mountTopbar("visitor");
+    expect(screen.queryByTestId("topbar-usage")).toBeNull();
+    cleanup();
+
+    quotaData = { available: true, configured: true };
+    mountTopbar("visitor");
+    const usage = screen.getByTestId("topbar-usage");
+    expect(usage.getAttribute("aria-label")).toBe("Uso");
+    expect(usage.textContent).toBe("");
+    expect(screen.queryByTestId("usage-popover")).toBeNull();
+
+    fireEvent.click(usage);
+    expect(screen.getByTestId("usage-popover").textContent).toContain("Dentro do budget");
+    expect(screen.getByTestId("usage-open-screen").getAttribute("href")).toBe("/config/usage");
   });
 });

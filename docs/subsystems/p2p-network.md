@@ -76,7 +76,18 @@ through UDP, mDNS, pkarr or a gossip link, but none of those
 sources registers a `PeerInfo` without local proof of admission. The same rule
 applies to UDP `Announce`, gossip `Announce`, `PeerList` and direct entry
 through `insert_peer`; policies, tunnels, routes, UI and pipeline only consume
-the table after that point.
+the table after that point. On a visitor, another visitor is never admitted and
+is left out of `alive_peers`; a `PeerList` names visitors only to a requester
+known as an admin or a worker (`security-model.md`, roles).
+
+A visitor's own `Announce` never travels where another visitor could read it.
+The gossip topic is shared by every network, so a visitor does not publish on
+it: each announce round it sends the sealed announce straight to every admin
+and worker in its `alive_peers` and to the endpoints it dialed through pkarr
+(`discovery::direct_announce_targets`), over the `pom/announce-direct/1` ALPN
+(`AnnounceCodec`), and the receiver handles it exactly like a gossip announce.
+Over UDP it skips the LAN broadcast and announces only to the peers it keeps.
+It stays subscribed to the topic, which is how it hears the admins and workers.
 
 - On a private network, a non-empty `connection_key` selects the proof through
   `/handshake`. The key never leaves the node: it sends its identity and a
@@ -624,6 +635,37 @@ and `discovery.rs` builds the endpoint and everything that rides on it.
   once, and the pkarr record's `is_relay` follows `relay.everyone`. An option
   given on the command line wins over the saved one for that run
   (`RelayOverrides`), and the screen shows it locked.
+- **Anonymous relays for visitors.** With `relay.anonymous` (off by default,
+  offered on a visitor's screen), a node the internet reaches also admits any
+  endpoint that presents a relay pass of its network for its own URL
+  (`crate::relay_pass`, carried as the relay's bearer `auth_token`), without
+  knowing who holds it; a pass binds to the first endpoint that used it, and
+  holds at most 2 relay connections open at once, with 64 for all passes
+  together (`relay_pass::MAX_LIVE_PER_PASS`, `MAX_LIVE`). Its
+  offer says `anonymous: true`. Admins hand those URLs out, each with a fresh
+  pass, in the answer to the membership token request (`relays`), and every
+  admin and member keeps the last list (`Network::anonymous_relays`). Design:
+  `docs/superpowers/specs/2026-10-23-anonymous-visitor-relays-design.md`.
+- **Anonymous tunnels** (`network/anon_tunnel.rs`). With that list, every
+  node keeps an **ephemeral endpoint**: a random key, a relay map holding only
+  those relays with their passes as the relay's auth token, and one protocol,
+  `/pom/anon-tunnel/1`. A relay that serves it sees ephemeral ids on both ends,
+  never a node key. The node announces where it answers (`anon_tunnel`: the
+  ephemeral id and the relay it is homed on) in its own signed announce only:
+  a `PeerList` never hands it to a visitor or a stranger, and an address read
+  from a `PeerList` is never believed. The first stream of a connection is a
+  **binding**: the caller's node key signs keying material exported from that
+  QUIC connection, inside the encrypted session; the answering node checks
+  the signature, that the node id is the key's and that the caller is a member
+  (`is_member_key`), then serves the inference tunnel (`InferTunnelCodec`)
+  stamped with the caller's real node (`TUNNEL_PEER_HEADER`), as the main
+  tunnel does. File chunks are refused on it. A tunnel call goes through it
+  first when the peer announces one and the main connection has no direct path
+  and no relay of the cluster (`Network::prefers_anon_tunnel`), and falls back
+  to the main endpoint when the request never left. The streamed tunnel and
+  every other protocol stay on the main endpoint. The endpoint is replaced
+  every hour once unused passes are at hand (a pass stays with the first
+  endpoint that used it), and the old one lives ten more minutes.
 - **Reachability (the NAT report).** Every policy round reads the endpoint's
   NAT report (`Endpoint::net_report`, the `unstable-net-report` feature). Its
   `global_v4` is the public address the relays saw: it becomes the observed
@@ -1476,7 +1518,7 @@ answers to `Post`, `Fetch` and `Admission` carry `messages_closed: true`, on
 which the candidate's window shows no conversation at all.
 
 Who decides a request is `network.access_policy`. Under `authorized` an admin
-approves it from the bell. Under `auto_approve` the principal approves it on
+approves it from the candidate's lobby thread (the bell links there). Under `auto_approve` the principal approves it on
 arrival (`NetworkChat::auto_approves`, applied in the lobby handler of
 `discovery.rs`): the role still has to be one of `accepted_enrollments`, a
 blocked machine is still refused, and a machine an admin rejected still waits
@@ -1491,8 +1533,8 @@ credential does not apply. Its own request/response protocol is
 `/pom/network-lobby/1.0.0`, and it is **pull only**:
 
 - `Post { card, message_id, text }` says something; `Fetch { card }` reads.
-  Both are answered with the last 50 text messages of the lobby room, each
-  flagged `member` or not. The principal never opens a stream to a candidate
+  Both are answered with the last 50 text messages of the candidate's own
+  thread, each flagged `member` (an admin) or not. The principal never opens a stream to a candidate
   and keeps no session, only a presence entry that expires 90 s after the last
   request - the candidate's poll is what keeps it listed.
 - The lobby connection runs under a **transport key derived from the node
@@ -1507,10 +1549,25 @@ credential does not apply. Its own request/response protocol is
   the node key, and two endpoints under one key confuse the relays, which hold
   one connection per key - the second would knock the first off its home
   relay.
-- A candidate's text becomes an ordinary `ChatAction::Text` in room `lobby`,
-  stamped with the principal's clock and with a `message_id` namespaced by the
-  sender, persisted and relayed to the members by the existing star. Members
-  answer through the normal authenticated path with `room_id: "lobby"`.
+- **Each candidate has a thread of its own**, room `lobby/<candidate
+  node_id>` (`network_lobby::thread_room`). A candidate's text becomes an
+  ordinary `ChatAction::Text` in its thread, stamped with the principal's clock
+  and with a `message_id` namespaced by the sender, persisted and relayed by
+  the star **to the admins the chain proves only** (`Network::peer_is_admin`):
+  workers and visitors never receive lobby traffic, presence included. Any
+  admin, principal or secondary, answers through the normal authenticated
+  path with `room_id: "lobby/<candidate>"`; the principal refuses a lobby
+  message from a non-admin (`lobby_admins_only`) and any text in the bare
+  `lobby` room (`lobby_room_invalid`).
+- **Threads are temporary.** When the principal approves or declines a
+  candidate, whoever decided, it erases the thread and relays `ChatAction::LobbyClosed`
+  so every admin erases its copy (`NetworkChat::close_thread`, drained on the
+  policy tick). A thread nobody wrote in for 24 h (`THREAD_TTL`) is purged on
+  every node (a candidate that never asked), and so is anything left in the
+  old shared `lobby` room (`NetworkChat::purge_stale_threads`). Nothing a
+  candidate said reaches a later one. A decided candidate that keeps polling
+  is left out of the admins' `lobbyGuests` (`NetworkChat::decided_candidates`,
+  the own list and the principal's mirror) until it asks again.
 - `card` is the candidate's self-declared hardware (hostname, OS, CPU count,
   RAM, GPUs with VRAM), clamped on both ends. The principal relays it to the
   members as `ChatAction::LobbyPresence` when the candidate appears, when the
@@ -1522,8 +1579,9 @@ separate from the Chat's: 64 KiB per frame, 2 KiB of text, text only, 4
 requests per second and 6 texts per 30 s per candidate, and at most 64
 candidates tracked. A blocked `node_id` and a current member are refused
 (`node_blocked`, `already_member`); with the lobby off every request answers
-`lobby_disabled`. What a candidate reads is the lobby room only - the
-`network` room, files and direct messages never leave the members.
+`lobby_disabled`. What a candidate reads is its own thread only - other
+candidates' threads, the `network` room, files and direct messages never reach
+it.
 
 **Admission.** A machine joins a network by asking, and an admin decides
 later. `Admission { identity, card, role }` on the lobby protocol records the

@@ -299,6 +299,23 @@ probe is not a refusal: one that ends refused erases the memory at once. With a
 of the plan on the first request after a quiet minute, and a deployment still
 being served failed with "No valid pipeline".
 
+A peer with **no** remembered admission gets `FIRST_ADMISSION_BUDGET` (3.5 s)
+instead, enough for a direct miss followed by the tunnel. That is every peer
+right after the gateway boots or joins a network, and a peer that just appeared:
+the memory lives only in the process, every connection is cold (mutual TLS,
+iroh, maybe a relay), and with the short budget the first prompt always failed
+with "No valid pipeline" while the second one, finding the memory the late probe
+left, worked. A peer that really is gone pays that wait once and then sits in
+quarantine.
+
+`spawn_admission_warmup` keeps that wait off the request path. Every 5 s it
+probes the candidates (a model announced, or idle) whose admission is missing or
+older than 150 s (`ADMISSION_WARMUP_REFRESH`), and waits for those probes before
+looking again. So a boot, a join or a new peer is admitted within seconds,
+before any prompt, and the memory a request falls back on never ages out while
+the peer keeps answering. `/health` is not inference activity
+(`RequestActivity`), so the warm-up never keeps an `unload_if_idle` peer loaded.
+
 The probe follows the pinned route (`bases_by_route_plan`): a tunnel route goes
 straight to the tunnel, an HTTP/QUIC route puts the measured address first. It
 tries every inference address in `Network::inference_bases` order (the host that
@@ -1425,7 +1442,12 @@ The prompt the cache recognizes is the text of the canonical rendering
 matters because `system`, `developer` and tools are moved to the start; keying
 by the messages' original order could consider a prefix valid when the real
 prompt had changed at the start. `render_prompt` labels every turn, including
-the first, so new messages at the end keep the prefix. Requests with images
+the first, so new messages at the end keep the prefix. Claude Code opens its
+system prompt with an `x-anthropic-billing-header` line whose `cch=` changes on
+every request and whose `cc_version=` 4th part changes on every session; the
+Anthropic adapter pins both to `f`s (`messages::pin_billing_stamp`, as
+llama.cpp and Strata do), otherwise every turn diverged at the first line and
+ran cold. Requests with images
 neither reuse nor record an automatic prefix, because the marker's text does not
 identify the image content. Raw unlabeled text stays available in
 `/v1/completions` and `POST /api/generate`. On the Anthropic path, when there is
@@ -1646,6 +1668,21 @@ with no manual call:
   fails (a file vanished on a hop, incompatible geometry) forgets the entry and
   proceeds cold - reuse is an optimization, never a reason for the request to
   fail.
+- **Shared system part.** A new conversation misses all of the above (its
+  messages are new), yet its system prompt and tool list are usually those of
+  the client's last conversation - tens of thousands of tokens for a coding
+  agent. The chat adapters mark where that part ends in the rendered prompt and
+  in the key (`gateway::SharedPrefix::offer`, from 8 KiB). On a miss that the
+  disk index cannot serve either, with no typed decision, retrieval or image,
+  the gateway first runs the system part alone as a one token turn on the
+  head it chose (`build_shared_prefix`, its own task) and spills it **in line
+  and pinned** (`DiskPrefixEntry::pinned`) before the request goes on: the
+  request is then a hit on that session and reads only its messages, so the
+  first conversation pays nothing extra but a save. A pinned entry is never
+  superseded by the conversations that grow from it (TTL and budget still
+  apply), so every later conversation with the same system part on the same
+  route restores it through the ordinary reload on miss. Bench:
+  `prefix_reuse_lab::a_new_conversation_starts_from_the_system_part_the_last_one_pinned`.
 
 ### 3.1.2 Host-memory KV cache (`cache_ram_mib`)
 

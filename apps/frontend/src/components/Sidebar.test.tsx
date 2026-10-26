@@ -31,6 +31,7 @@ vi.mock("@tanstack/react-query", async (importOriginal) => ({
 const lobby = vi.hoisted(() => ({ enabledOnNetwork: true, unread: 3 }));
 
 vi.mock("../lib/networkChatUnread", () => ({
+  useNetworkChatOpen: () => true,
   useNetworkChatUnread: () => ({ unreadCount: 2, snapshot: { lobbyEnabled: lobby.enabledOnNetwork } }),
   // The real hook asks the lobby only when enabled; so does the fake.
   useLobbyUnread: (enabled: boolean) => (enabled ? lobby.unread : 0),
@@ -354,7 +355,7 @@ describe("Sidebar", () => {
     const activeButton = screen.getAllByRole("button", { name: /Conversa ativa/ })
       .find((button) => button.getAttribute("aria-pressed") === "true");
     expect(activeButton).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Rede" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Minha Rede" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Documentação" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Configurações" })).toBeTruthy();
     expect(screen.queryByText("Painel")).toBeNull();
@@ -426,7 +427,28 @@ describe("Sidebar", () => {
     expect(screen.queryByTestId("chat-session-list")).toBeNull();
     expect(screen.queryByRole("button", { name: "Conversa nova" })).toBeNull();
     // The rest of the menu stays.
-    expect(screen.getByText("Rede")).toBeTruthy();
+    expect(screen.getByText("Minha Rede")).toBeTruthy();
+  });
+
+  it("puts Leave network beside the theme switch for a visitor only, behind a confirmation", () => {
+    const view = (profile: "visitor" | "admin") => render(
+      <MemoryRouter initialEntries={["/documentation"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <LocaleProvider initialLocale="pt-BR">
+          <ProfileProvider initialProfile={profile}>
+            <ChatSessionProvider>
+              <Sidebar />
+            </ChatSessionProvider>
+          </ProfileProvider>
+        </LocaleProvider>
+      </MemoryRouter>,
+    );
+    const admin = view("admin");
+    expect(screen.queryByTestId("sidebar-leave-network")).toBeNull();
+    admin.unmount();
+
+    view("visitor");
+    fireEvent.click(screen.getByTestId("sidebar-leave-network"));
+    expect(screen.getByRole("dialog", { name: "Sair desta rede?" })).toBeTruthy();
   });
 
   it("keeps New chat in the infer menu outside the chat when there is no conversation", () => {

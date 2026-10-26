@@ -20,6 +20,10 @@
 import { randomId as newId } from "./id";
 import { api } from "./api";
 
+import { applyLoaderCommand, MAX_BODY, MAX_TITLE, normalizeLoaderCommand, type LoaderCommandType } from "./pluginLoader";
+
+type LoaderText = { title?: string; message?: string };
+
 export const PLUGIN_EVENTS_PROTOCOL = "pom-plugin-events/v1";
 export const PLUGIN_EVENT_DOM = "pom:plugin-event";
 export const PLUGIN_REQUEST_DOM = "pom:plugin-request";
@@ -32,7 +36,9 @@ export type PluginEventType =
   | "notification.response"
   | "deployment.started"
   | "model.serving"
-  | "model.stopped";
+  | "model.stopped"
+  /** The person clicked "Try again" on the plugin's loader error (`lib/pluginLoader.ts`). */
+  | "loader.retry";
 
 /** Types the node publishes in `GET /api/ui/plugins/events` and the bridge relays. */
 const NODE_EVENT_TYPES: readonly PluginEventType[] = [
@@ -81,7 +87,7 @@ export type NotificationAction = "delivered" | "failed" | "accepted" | "cancelle
 
 export interface NotificationResponse {
   request_id: string;
-  kind: "notify" | "confirm";
+  kind: "notify" | "confirm" | "loader";
   action: NotificationAction;
   error?: string;
 }
@@ -89,9 +95,9 @@ export interface NotificationResponse {
 export interface PluginCommand {
   protocol: typeof PLUGIN_EVENTS_PROTOCOL;
   id: string;
-  type: "notification.notify" | "notification.confirm";
+  type: "notification.notify" | "notification.confirm" | LoaderCommandType;
   plugin_code: string;
-  payload: NotifyRequest | ConfirmRequest;
+  payload: NotifyRequest | ConfirmRequest | Record<string, unknown>;
 }
 
 type Handler = (event: PluginEvent) => void;
@@ -108,8 +114,6 @@ const lastByType = new Map<PluginEventType, PluginEvent>();
 let executor: PluginCommandExecutor | null = null;
 
 const LEVELS: readonly NotificationLevel[] = ["info", "success", "warning", "error"];
-const MAX_TITLE = 200;
-const MAX_BODY = 2048;
 
 function envelope<P>(type: PluginEventType, payload: P, target: string): PluginEvent<P> {
   return {
@@ -259,9 +263,19 @@ export async function runPluginCommand(command: unknown): Promise<NotificationRe
   const value = (typeof command === "object" && command !== null ? command : {}) as Partial<PluginCommand>;
   const requestId = typeof value.id === "string" && value.id ? value.id : newId();
   const code = typeof value.plugin_code === "string" ? value.plugin_code : "";
-  const kind = value.type === "notification.confirm" ? "confirm" : "notify";
+  const isLoader = typeof value.type === "string" && value.type.startsWith("loader.");
+  const kind = isLoader ? "loader" : value.type === "notification.confirm" ? "confirm" : "notify";
   const fail = (error: string) => respond(code || "*", { request_id: requestId, kind, action: "failed", error });
   if (value.protocol !== PLUGIN_EVENTS_PROTOCOL) return fail("protocol_unsupported");
+  // The loader answers to the plugin screen POM mounted from its manifest,
+  // which proves more than the executor's catalog check, and needs no bridge.
+  if (isLoader && code) {
+    const command = normalizeLoaderCommand(value.type, value.payload);
+    if (!command) return fail("request_invalid");
+    const outcome = applyLoaderCommand(code, command.type, command.state);
+    if (outcome !== "delivered") return fail(outcome);
+    return respond(code, { request_id: requestId, kind, action: "delivered" });
+  }
   if (!executor) return fail("host_unavailable");
   if (!code || !executor.isPlugin(code)) return fail("plugin_unknown");
   try {
@@ -290,7 +304,8 @@ export function listenForPluginCommands(): () => void {
     if (event.origin !== window.location.origin) return;
     const data = event.data as { protocol?: unknown; type?: unknown } | null;
     if (data?.protocol !== PLUGIN_EVENTS_PROTOCOL) return;
-    if (data.type !== "notification.notify" && data.type !== "notification.confirm") return;
+    const type = typeof data.type === "string" ? data.type : "";
+    if (type !== "notification.notify" && type !== "notification.confirm" && !type.startsWith("loader.")) return;
     void runPluginCommand(data);
   };
   window.addEventListener(PLUGIN_REQUEST_DOM, onDom);
@@ -303,7 +318,7 @@ export function listenForPluginCommands(): () => void {
 
 /** A plugin-scoped API, delivered by the SDK (`host.plugin(code)`). */
 export function scopedPluginApi(code: string) {
-  const command = (type: PluginCommand["type"], payload: NotifyRequest | ConfirmRequest) =>
+  const command = (type: PluginCommand["type"], payload: PluginCommand["payload"]) =>
     runPluginCommand({ protocol: PLUGIN_EVENTS_PROTOCOL, id: newId(), type, plugin_code: code, payload });
   return {
     code,
@@ -315,6 +330,14 @@ export function scopedPluginApi(code: string) {
     notifications: {
       notify: (request: NotifyRequest) => command("notification.notify", request),
       confirm: (request: ConfirmRequest) => command("notification.confirm", request),
+    },
+    /** POM's loader and installer over this plugin's mounted screen (host version 7). */
+    loader: {
+      show: (request: LoaderText = {}) => command("loader.show", { ...request }),
+      progress: (request: LoaderText & { progress: number }) => command("loader.progress", { ...request }),
+      error: (request: LoaderText & { message: string; retry?: boolean }) => command("loader.error", { ...request }),
+      success: (request: LoaderText = {}) => command("loader.success", { ...request }),
+      hide: () => command("loader.hide", {}),
     },
     /**
      * The plugin's own API: `POST /api/ui/plugins/<code>/rpc/<op>`, answered
@@ -330,4 +353,9 @@ export function resetPluginEventsForTest() {
   handlers.clear();
   lastByType.clear();
   executor = null;
+}
+
+/** "Try again" on a loader error: tells only that plugin. */
+export function publishLoaderRetry(code: string): void {
+  publishPluginEvent("loader.retry", {}, code);
 }

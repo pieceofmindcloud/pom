@@ -120,8 +120,16 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   when the source does not provide it, so the UI shows unavailable without
   inventing zero.
 - `polling.ts` - the fast 2s and idle 10s cadences used by jobs and offers.
+- `connection.ts` - `isConnecting` (the node is `discovering` or
+  `authenticating`), `connectionStuck` (that step has lasted
+  `CONNECTION_STUCK_AFTER_SECS`, 60 s), `awaitingModels` (the token arrived
+  less than `MODELS_GRACE_SECS`, 90 s, ago, so the models may still be on
+  their way) and `clusterOutOfSight` (connected, but no other peer in sight).
 - `queries.ts` - every read the panel does, as react-query hooks with polling
-  intervals. `useCluster`, `useJobs` and `useOffers` use conditional GETs;
+  intervals. `useConnection` reads `GET /api/ui/connection`, every 2 s while
+  connecting and every 15 s otherwise. `useServableModels(fast)` reads
+  `/v1/models` every 3 s instead of 30 s while `fast` (the Chat passes it
+  while connecting or awaiting the first models). `useCluster`, `useJobs` and `useOffers` use conditional GETs;
   jobs and offers slow to 10s when idle and return to 2s while active.
   `useModelDownloads` derives the `model_download` jobs from `/api/ui/jobs` and
   is shared by the remote-model and transfers screens.
@@ -164,8 +172,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   (`authority_level === "secondary"`): it deploys models and otherwise sees
   what a node sees, so principal-only controls check `!secondary`.
 - `access.ts` - which route each profile opens. `RESTRICTED` maps a route
-  prefix to the list of profiles; for `visitor`, `/chat`, `/network-chat`,
-  `/documentation`, `/config/keys/api` and `/config/network` are visible. The
+  prefix to the list of profiles; for `visitor`, `/chat`, `/network-chat` (its
+  menu entry only when `useNetworkChatOpen` says the network opens the Chat to
+  visitors), `/documentation`, `/config/keys/api` and `/config/network` are visible. The
   network participant list and the administrative preferences stay closed to
   infer. In Chat, that profile also hides the summaries and the telemetry panel.
   `canAccessRoute(path, profile)` is
@@ -692,10 +701,16 @@ The mechanism lives in `docs/subsystems/plugins-ui.md`; these are the files that
   history is in `plugins-ui.md`.
 - `pluginReady.ts` - the "finished rendering" signal of a plugin screen: `usePluginReady` arms the
   gate on the host mount and opens it on `__POM_HOST__.ready()` or after `PLUGIN_READY_GRACE_MS`,
-  whichever comes first. The signal is never required to use a plugin.
+  whichever comes first, or when the plugin opens its screen through its loader. The signal is never
+  required to use a plugin.
+- `pluginLoader.ts` - POM's loader and installer state per `plugin_code`: `normalizeLoaderCommand`
+  validates the `loader.*` commands (text limits `MAX_TITLE`/`MAX_BODY`, shared with the
+  notifications), `mountPluginLoader` arms it for the mounted screen, `applyLoaderCommand` keeps the
+  bar from moving backwards and times the success, `usePluginLoader` feeds `PluginScreen`.
 - `pluginEvents.ts` - the `pom-plugin-events/v1` protocol: envelope, bus, delivery to
-  `iframe[data-pom-plugin]`, the `notification.notify`/`confirm` commands, `forwardNodeEvent` for
-  the node's own envelopes, and `scopedPluginApi(code).rpc`. The one that executes is the
+  `iframe[data-pom-plugin]`, the `notification.notify`/`confirm` commands, the `loader.*` commands
+  (executed by `pluginLoader.ts` without the bridge) and `publishLoaderRetry`, `forwardNodeEvent`
+  for the node's own envelopes, and `scopedPluginApi(code).rpc`/`.loader`. The one that executes is the
   `PluginBridge` (`components/`).
 - `pluginInbox.ts` - the plugins' inbox in the bell: `notification.confirm` questions with
   Accept/Decline (this tab only) and `notification.notify` warnings without buttons, unread until

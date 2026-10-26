@@ -56,7 +56,7 @@ remain local until the deploy preflight.
 
   A machine on its first run gets the first run wizard
   (`components/FirstRunWizard.tsx`) in place of the shell, past the gate:
-  machine name, network name, then the hints. The older first access wizard
+  one name for the machine and its network, a welcome animation, then the hints. The older first access wizard
   is a different thing, deprecated and unreachable: `routes/Setup.tsx`,
   `routes/SetupWizard.tsx` and `components/setup-wizard/*` are kept in the
   source but `App.tsx` neither imports nor routes them (see
@@ -85,7 +85,9 @@ fallback. New menus enter at the root, in manifest order, right after the entrie
 the same plugin already holds (Quota after Statistics), else before
 Documentation; an item with `children` becomes an expandable section with
 submenus. `components/PluginBridge.tsx` connects the shell to the plugins through
-the `pom-plugin-events/v1` protocol (`lib/pluginEvents.ts`). POM shows and opens
+the `pom-plugin-events/v1` protocol (`lib/pluginEvents.ts`); over the same
+protocol a plugin drives POM's loader and installer over its own screen
+(`lib/pluginLoader.ts`, `components/PluginLoader.tsx`, host version 7). POM shows and opens
 the interfaces of all plugins in the `admin`, `worker` and `visitor` profiles; the
 manifest's `roles` and `profiles` are validated but do not restrict this UI. The
 native restrictions of the `visitor` profile still apply to the POM routes. The
@@ -93,8 +95,10 @@ Logs/Statistics code does not live here: it lives in `pom-plugin-logs`. The API
 (`/api/ui/requests`, `/api/ui/requests/stats`) remains the authority and refuses
 the data without an entitlement.
 
-The `visitor` profile is a reduced view of the interface: conversations, Network
-Chat, documentation, API key, Plugins (catalog, installation and local
+The `visitor` profile is a reduced view of the interface: conversations,
+Network Chat only when the network opens it (`NetworkSettings.chat_visitors`,
+read through `useNetworkChatOpen`; otherwise the entry is hidden and the Sidebar
+and `PluginBridge` do not poll the snapshot), documentation, API key, Plugins (catalog, installation and local
 development builds on this machine) and the local network screen (read-only: the
 role is decided at admission, and the interface does not offer becoming `worker`
 in its place). Plugins and the menus of installed plugins sit below the
@@ -111,7 +115,8 @@ limits the network answer and the promotions.
 In that profile's Sidebar, the history and `New chat` are the main menu;
 the sessions share state with the Chat, the list scrolls within the available
 space, and the network always stays below it. Documentation and Settings sit in
-the footer next to the flags. Administrator and node keep the screen navigation
+the footer next to the flags, and "Leave network" (`LeaveNetworkButton`) sits
+beside the theme switch. Administrator and node keep the screen navigation
 menu.
 
 On the Dashboard, the add-machine and undeploy controls appear only for
@@ -137,7 +142,7 @@ a choice.
   shows the slicing jobs and their progress bars
 - `/shards` -> Shards; `/shards/deploy` -> redirects to `/deploy` (kept for old links)
 - `/models`, `/models/remote`, `/models/slice`, `/shards`,
-  `/transfers` and `/transfers/send` are full-bleed, in the same
+  and `/transfers` are full-bleed, in the same
   pattern as `/deployments`/`/deployments/logs`: fixed header
   (`FullBleedHeader`, `components/ui.tsx`) and a table or content scrolling
   inside. Whole models and Slices show the `mmproj` file name when the
@@ -154,7 +159,8 @@ a choice.
 - `/deployments/logs` -> DeploymentLogs, the terminal console of the cluster's
   process logs, in arrival order on the principal and filterable by `deploy_id`
 - `/setup` is not a route: the deprecated wizard has no path.
-- `/transfers` -> Transfers; `/transfers/send` -> SendFile
+- `/transfers` -> Transfers, with the send panel first (one menu entry);
+  `/transfers/send` redirects there keeping `?filename=`
 - Plugin routes -> `PluginScreen` under `/<plugin_code>/<manifest route>`,
   outside `<Routes>` and before the native table. The basename turns, for
   example, `base` + `/plugin-de-base` into `/admin-ui/base/plugin-de-base`.
@@ -163,7 +169,7 @@ a choice.
   `/statistics` remain native fallback routes when no plugin claims them; the
   alias `/logs/statistics` still redirects to `/statistics`.
 - `/documentation` -> Documentation (full-bleed, two tabs: human guides from `src/guides/` and the repository's living markdown embedded by `scripts/build-docs.mjs`; see `src/routes/AGENTS.md` and `src/guides/AGENTS.md`). On mobile the sidebar takes the whole screen and the reader disappears until an explicit selection or a deep link; selecting opens the reader with a Back button at the top, which only closes the mobile view (the selection in `?doc=`/`?guia=` remains).
-- `/config/network` -> NetworkSettings; the main Network section also gathers
+- `/config/network` -> NetworkSettings; the main My Network section also gathers
   `/config/network/participants`, `/config/administration` (Administrators),
   `/config/sharing` (TrustAnchor with machine, root and connection key)
   and `/config/keys/api`. The old route `/config/trust` remains as a compatible

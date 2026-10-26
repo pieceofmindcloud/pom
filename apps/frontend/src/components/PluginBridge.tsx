@@ -23,6 +23,7 @@ import {
 } from "../lib/pluginEvents";
 import { pluginDisplayName, pluginUiSnapshot } from "../lib/pluginUi";
 import { useNetworkChat, useNode } from "../lib/queries";
+import { useNetworkChatOpen } from "../lib/networkChatUnread";
 import { randomId } from "../lib/id";
 import { useTheme } from "../lib/theme";
 import { useToast } from "../lib/toast";
@@ -44,7 +45,8 @@ export function PluginBridge() {
   const { theme } = useTheme();
   const toast = useToast();
   const node = useNode();
-  const chat = useNetworkChat();
+  // A visitor the network keeps out of its Chat gets no plugin notices there.
+  const chat = useNetworkChat("network", useNetworkChatOpen());
   const [pending, setPending] = useState<PendingConfirm[]>([]);
   const seenNotices = useRef<Set<string> | null>(null);
   const nodeId = node.data?.node_id ?? null;

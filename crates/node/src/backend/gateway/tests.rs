@@ -1364,7 +1364,7 @@ mod tests {
         state.network.relay_gate().set_reachable(true);
         assert_eq!(
             state.network.relay_gate().offer(),
-            Some(crate::network::RelayOffer { transfers: true, url: None })
+            Some(crate::network::RelayOffer { transfers: true, url: None, anonymous: false })
         );
 
         let mut request = Request::post("/api/ui/network/relay")
@@ -1396,7 +1396,7 @@ mod tests {
         let wire = state.network.gossip_announce_bytes(None).unwrap();
         match serde_json::from_slice(&wire).unwrap() {
             crate::network::P2PMessage::Announce { relay, .. } => {
-                assert_eq!(relay, Some(crate::network::RelayOffer { transfers: false, url: None }));
+                assert_eq!(relay, Some(crate::network::RelayOffer { transfers: false, url: None, anonymous: false }));
             }
             other => panic!("expected Announce, got {other:?}"),
         }
@@ -2116,6 +2116,7 @@ mod tests {
             "/api/generate",
             crate::reqlog::Caller::operator(),
             crate::gateway::GenerationInput {
+                shared_prefix: Default::default(),
                 probe: None,
                 state,
                 inference_token: "test-api-key".into(),
@@ -2881,6 +2882,7 @@ mod peer_visibility_tests {
             pom_build: String::new(),
             membership: None,
             relay: None,
+            anon_tunnel: None,
             addr: "127.0.0.1:42777".into(),
             addr_candidates: Vec::new(),
             model: "qwen35".into(),
@@ -3023,6 +3025,58 @@ mod peer_visibility_tests {
             .routes
             .last_success("head")
             .is_some_and(|url| url.contains("127.0.0.1")));
+    }
+
+    /// The first prompt after a boot or a join: the peer was never admitted, and its cold
+    /// `/health` takes longer than `ADMISSION_BUDGET`. It must still enter the plan, which
+    /// waits up to `FIRST_ADMISSION_BUDGET` for it. Once remembered, the next request is back
+    /// to the short budget and plans with the memory while the probe finishes.
+    #[tokio::test]
+    async fn a_peer_never_admitted_gets_the_longer_first_wait() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let app = axum::Router::new().route(
+                "/health",
+                axum::routing::get(|| async {
+                    tokio::time::sleep(Duration::from_millis(600)).await;
+                    axum::Json(serde_json::json!({ "status": "ok", "model_loaded": true }))
+                }),
+            );
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let mut cold = peer("cold");
+        cold.inference_port = Some(port);
+
+        let health = std::sync::Arc::new(super::AdmissionHealth::default());
+        let clients = crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600));
+        let state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        let first = ready_for_pipeline(
+            &clients,
+            &health,
+            &state.network,
+            vec![cold.clone()],
+            Duration::from_secs(2),
+        )
+        .await;
+        assert_eq!(first.len(), 1, "a cold first probe left the peer out");
+
+        let start = std::time::Instant::now();
+        let second = ready_for_pipeline(
+            &clients,
+            &health,
+            &state.network,
+            vec![cold],
+            Duration::from_secs(2),
+        )
+        .await;
+        let waited = start.elapsed();
+        assert_eq!(second.len(), 1);
+        assert!(
+            waited < Duration::from_millis(500),
+            "a remembered peer waited past the short budget: {waited:?}"
+        );
     }
 
     #[tokio::test]
@@ -3570,6 +3624,7 @@ pub(crate) mod testkit {
             pom_build: String::new(),
             membership: None,
             relay: None,
+            anon_tunnel: None,
             addr: format!("127.0.0.1:{gateway_port}"),
             addr_candidates: Vec::new(),
             model: String::new(),

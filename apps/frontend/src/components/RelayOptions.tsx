@@ -1,20 +1,24 @@
 /**
- * Whom this machine relays for. Three switches applied live by the node
+ * Whom this machine relays for. Switches applied live by the node
  * (`/api/ui/network/relay`); an option the command line fixed for this run is
  * shown but cannot be changed here. The choices are drawn as the quick setup
  * draws its questions: the same cards in the wizard, which saves them at the
  * end, and in Network settings, which saves each change at once. Both draw
  * nothing while the internet does not reach this machine (`reachable`, from
  * the NAT report or a configured public address): behind a NAT it cannot relay for
- * anyone, so there is nothing to choose.
+ * anyone, so there is nothing to choose. A visitor gets a fourth choice:
+ * relaying anonymously for its network (`anonymous`), where the relay admits
+ * anyone holding an admin's pass and never learns who. An admin sees how
+ * many visitors relay that way.
  */
-import { ArrowLeftRight, Check, Globe2, Network } from "lucide-react";
+import { ArrowLeftRight, Check, EyeOff, Globe2, Network } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { KeyValue, Panel, PanelHeader } from "./ui";
 import { api } from "../lib/api";
 import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
+import { useProfile } from "../lib/profile";
 
 export interface RelayStatus {
   everyone: boolean;
@@ -23,9 +27,14 @@ export interface RelayStatus {
   fixed: { everyone: boolean; no_cluster: boolean; no_transfers: boolean };
   reachable: boolean;
   serving: boolean;
+  /** Relays for anyone holding a pass of its network, without knowing who. */
+  anonymous: boolean;
+  anonymous_serving: boolean;
+  /** The visitors' anonymous relays this node holds passes for. */
+  anonymous_relays: number;
 }
 
-export type RelayOption = "everyone" | "cluster" | "transfers";
+export type RelayOption = "everyone" | "cluster" | "transfers" | "anonymous";
 export type RelayChoice = Pick<RelayStatus, RelayOption>;
 
 type Translate = (key: string, values?: Record<string, string | number>) => string;
@@ -67,8 +76,10 @@ export function useRelayStatus(enabled = true) {
  * "Recommended" badge: the more machines relay, the better networks behind
  * routers reach each other.
  */
-export function RelayChoices({ value, status, onChange, disabled = false, t }: {
+export function RelayChoices({ value, status, onChange, disabled = false, anonymousOffered = false, t }: {
   value: RelayChoice;
+  /** Offer the anonymous relay (a visitor's choice). */
+  anonymousOffered?: boolean;
   /** The node's report: fixed options and whether the internet reaches it. */
   status: RelayStatus;
   onChange: (option: RelayOption, checked: boolean) => void;
@@ -80,6 +91,9 @@ export function RelayChoices({ value, status, onChange, disabled = false, t }: {
     { option: "cluster", icon: <Network className="h-5 w-5" />, label: t("network.relayCluster"), hint: t("network.relayClusterHint"), fixed: status.fixed.no_cluster, off: false },
     // Nothing to allow when the machine relays for nobody of its network.
     { option: "transfers", icon: <ArrowLeftRight className="h-5 w-5" />, label: t("network.relayTransfers"), hint: t("network.relayTransfersHint"), fixed: status.fixed.no_transfers, off: !value.cluster },
+    ...(anonymousOffered
+      ? [{ option: "anonymous" as const, icon: <EyeOff className="h-5 w-5" />, label: t("network.relayAnonymous"), hint: t("network.relayAnonymousHint"), fixed: false, off: false }]
+      : []),
   ];
   return (
     <div className="space-y-2" data-testid="relay-choices">
@@ -113,10 +127,22 @@ export function RelayChoices({ value, status, onChange, disabled = false, t }: {
 export function RelayOptions({ section }: { section?: (content: ReactNode) => ReactNode }) {
   const { t } = useI18n();
   const toast = useToast();
+  const { profile } = useProfile();
   const [status, setStatus] = useRelayStatus();
   const [saving, setSaving] = useState(false);
 
-  if (!canRelay(status)) return null;
+  // An admin behind a NAT relays for nobody, but still learns how many
+  // visitors relay anonymously for its network.
+  const visitorRelayCount = status?.anonymous_relays ?? 0;
+  const visitorRelays = profile === "admin" && status ? (
+    <KeyValue label={t("network.relayVisitors")}>
+      <span data-testid="relay-visitors">{t("network.relayVisitorsCount", { count: visitorRelayCount })}</span>
+    </KeyValue>
+  ) : null;
+  if (!canRelay(status)) {
+    if (!visitorRelays || visitorRelayCount === 0) return null;
+    return section ? section(visitorRelays) : <Panel><PanelHeader title={t("network.relayTitle")} subtitle={t("network.relaySubtitle")} /><div className="px-5 py-4">{visitorRelays}</div></Panel>;
+  }
 
   async function save(option: RelayOption, value: boolean) {
     if (!status) return;
@@ -126,6 +152,7 @@ export function RelayOptions({ section }: { section?: (content: ReactNode) => Re
         everyone: status.everyone,
         cluster: status.cluster,
         transfers: status.transfers,
+        anonymous: status.anonymous ?? false,
         [option]: value,
       });
       setStatus(saved);
@@ -137,7 +164,12 @@ export function RelayOptions({ section }: { section?: (content: ReactNode) => Re
     }
   }
 
-  const choices = <RelayChoices value={status} status={status} disabled={saving} onChange={(option, checked) => void save(option, checked)} t={t} />;
+  const choices = (
+    <>
+      <RelayChoices value={status} status={status} disabled={saving} anonymousOffered={profile === "visitor"} onChange={(option, checked) => void save(option, checked)} t={t} />
+      {visitorRelays}
+    </>
+  );
   if (section) {
     return section(
       <div className="space-y-2">

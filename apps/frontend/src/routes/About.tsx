@@ -84,7 +84,7 @@ export function About() {
             <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 font-mono text-sm font-medium text-aqua hover:text-aqua/80">
               {t("about.placeholderLicenseValue")} <ExternalLink className="h-3.5 w-3.5" />
             </a>
-            <a href="https://github.com/pereirajair/rdma-p2p/blob/feat/enterprise/LICENSE" target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 text-sm text-iris hover:text-iris/80">
+            <a href="https://github.com/pieceofmindcloud/pom/blob/main/LICENSE" target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 text-sm text-iris hover:text-iris/80">
               {t("about.repositoryLicenseLink")} <ExternalLink className="h-3.5 w-3.5" />
             </a>
             <span className="text-sm text-muted">{t("about.placeholderLicenseText")}</span>
@@ -99,8 +99,8 @@ export function About() {
             <div className="flex flex-wrap gap-x-5 gap-y-2 border-t border-line pt-3">
               <a href="https://pieceofmind.cloud" target="_blank" rel="noreferrer" className="text-iris hover:text-iris/80">{t("about.websiteLink")}</a>
               <a href="https://pieceofmind.cloud/contato/" target="_blank" rel="noreferrer" className="text-iris hover:text-iris/80">{t("about.contactLink")}</a>
-              <a href="https://github.com/pereirajair/rdma-p2p" target="_blank" rel="noreferrer" className="text-iris hover:text-iris/80">{t("about.repositoryLink")}</a>
-              <a href="https://github.com/pereirajair/pom-plugin-base" target="_blank" rel="noreferrer" className="text-iris hover:text-iris/80">{t("about.pluginBaseLink")}</a>
+              <a href="https://github.com/pieceofmindcloud/pom" target="_blank" rel="noreferrer" className="text-iris hover:text-iris/80">{t("about.repositoryLink")}</a>
+              <a href="https://github.com/pieceofmindcloud/pom-plugin-base" target="_blank" rel="noreferrer" className="text-iris hover:text-iris/80">{t("about.pluginBaseLink")}</a>
             </div>
             <p>{t("about.pluginBaseDescription")}</p>
           </div>

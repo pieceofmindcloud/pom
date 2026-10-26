@@ -1106,6 +1106,9 @@ impl PomDb {
             crate::network_chat::ChatAction::LobbyPresence { .. } => {
                 anyhow::bail!("lobby presence is not persistent")
             }
+            crate::network_chat::ChatAction::LobbyClosed { .. } => {
+                anyhow::bail!("a lobby closure is not persistent")
+            }
         };
         self.with_write("save network Chat message", |connection| {
             let changed = connection.execute(
@@ -1127,6 +1130,79 @@ impl PomDb {
                 ],
             )?;
             Ok(changed > 0)
+        })
+    }
+
+    /// Erases every message of `room_id`.
+    pub fn delete_network_chat_room(&self, room_id: &str) -> Result<()> {
+        self.with_write("erase a network Chat room", |connection| {
+            connection.execute(
+                "DELETE FROM network_chat_messages WHERE room_id = ?",
+                params![room_id],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Erases the lobby threads whose last message is older than `ttl_secs`,
+    /// and what is left of the shared lobby room.
+    pub fn purge_lobby_threads(&self, ttl_secs: u64) -> Result<()> {
+        let cutoff = (chrono::Utc::now() - chrono::Duration::seconds(ttl_secs as i64))
+            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+            .to_string();
+        let pattern = format!("{}%", crate::network_lobby::LOBBY_THREAD_PREFIX);
+        self.with_write("purge the lobby threads", |connection| {
+            connection.execute(
+                "DELETE FROM network_chat_messages
+                 WHERE room_id = ?1
+                    OR room_id IN (
+                        SELECT room_id FROM network_chat_messages
+                        WHERE room_id LIKE ?2
+                        GROUP BY room_id
+                        HAVING MAX(received_at) < ?3
+                    )",
+                params![crate::network_lobby::LOBBY_ROOM, pattern, cutoff],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// The latest `limit` messages of every lobby thread, oldest first.
+    pub fn network_chat_lobby_threads(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<NetworkChatMessageRecord>> {
+        let limit = limit.clamp(1, 500) as i64;
+        let pattern = format!("{}%", crate::network_lobby::LOBBY_THREAD_PREFIX);
+        self.with_read("read the lobby threads", |connection| {
+            let mut statement = connection.prepare(
+                "SELECT received_seq, message_id, room_id, sender_node_id,
+                        recipient_node_id, kind, text, file_name, mime_type,
+                        file_data, sent_at, received_at
+                 FROM network_chat_messages
+                 WHERE room_id LIKE ?
+                 ORDER BY received_seq DESC
+                 LIMIT ?",
+            )?;
+            let rows = statement.query_map(params![pattern, limit], |row| {
+                Ok(NetworkChatMessageRecord {
+                    received_seq: row.get::<_, i64>(0)? as u64,
+                    message_id: row.get(1)?,
+                    room_id: row.get(2)?,
+                    sender_node_id: row.get(3)?,
+                    recipient_node_id: row.get(4)?,
+                    kind: row.get(5)?,
+                    text: row.get(6)?,
+                    file_name: row.get(7)?,
+                    mime_type: row.get(8)?,
+                    file_data: row.get::<_, Option<Vec<u8>>>(9)?.unwrap_or_default(),
+                    sent_at: row.get(10)?,
+                    received_at: row.get(11)?,
+                })
+            })?;
+            let mut messages = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            messages.reverse();
+            Ok(messages)
         })
     }
 

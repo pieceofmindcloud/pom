@@ -332,50 +332,59 @@ function Setup() {
 /** What each profile reaches: the network, its own machine, the chat. */
 function Profiles() {
   return (
-    <svg viewBox="0 0 520 210" role="img" className="h-auto w-full">
+    <svg viewBox="0 0 520 230" role="img" className="h-auto w-full">
       {/* admin: the whole network */}
-      <rect x="12" y="14" width="496" height="182" rx="14" className="fill-iris/[0.04] stroke-iris/40" strokeDasharray="5 4" strokeWidth="1" />
+      <rect x="12" y="14" width="496" height="202" rx="14" className="fill-iris/[0.04] stroke-iris/40" strokeDasharray="5 4" strokeWidth="1" />
       <text x="26" y="34" className={LABEL}>
         admin
       </text>
       <text x="70" y="34" className={SUB}>
-        deploy · add machines · policies
+        settings · keys · promotes admins
       </text>
 
-      {/* node: one machine */}
-      <rect x="32" y="52" width="210" height="124" rx="12" className={`${BOX_AQUA} guide-pulse`} style={delayStyle(0)} strokeWidth="1" />
-      <text x="46" y="74" className={LABEL}>
-        node
+      {/* secondary admin: deploys and admits */}
+      <rect x="32" y="46" width="456" height="34" rx="10" className="fill-iris/[0.06] stroke-iris/40" strokeWidth="1" />
+      <text x="46" y="68" className={LABEL}>
+        secondary admin
       </text>
-      <text x="46" y="90" className={SUB}>
-        its own machine
+      <text x="168" y="68" className={SUB}>
+        deploy · admissions · remove members
       </text>
-      <rect x="46" y="104" width="182" height="20" rx="5" className={BOX} strokeWidth="1" />
-      <text x="56" y="118" className={FAINT}>
+
+      {/* worker: one machine */}
+      <rect x="32" y="92" width="210" height="108" rx="12" className={`${BOX_AQUA} guide-pulse`} style={delayStyle(0)} strokeWidth="1" />
+      <text x="46" y="114" className={LABEL}>
+        worker
+      </text>
+      <text x="46" y="130" className={SUB}>
+        serves its layers
+      </text>
+      <rect x="46" y="140" width="182" height="20" rx="5" className={BOX} strokeWidth="1" />
+      <text x="56" y="154" className={FAINT}>
         slice · layers 16–31
       </text>
-      <rect x="46" y="132" width="182" height="20" rx="5" className={BOX} strokeWidth="1" />
-      <text x="56" y="146" className={FAINT}>
+      <rect x="46" y="166" width="182" height="20" rx="5" className={BOX} strokeWidth="1" />
+      <text x="56" y="180" className={FAINT}>
         plugins · API key · leave
       </text>
 
-      {/* infer: chat */}
-      <rect x="276" y="52" width="210" height="124" rx="12" className={`${BOX_AMBER} guide-pulse`} style={delayStyle(1.2)} strokeWidth="1" />
-      <text x="290" y="74" className={LABEL}>
-        infer
+      {/* visitor: chat */}
+      <rect x="276" y="92" width="210" height="108" rx="12" className={`${BOX_AMBER} guide-pulse`} style={delayStyle(1.2)} strokeWidth="1" />
+      <text x="290" y="114" className={LABEL}>
+        visitor
       </text>
-      <text x="290" y="90" className={SUB}>
-        talk to the models
+      <text x="290" y="130" className={SUB}>
+        talks to the models
       </text>
-      <rect x="290" y="104" width="120" height="20" rx="10" className={BOX} strokeWidth="1" />
-      <text x="300" y="118" className={FAINT}>
+      <rect x="290" y="140" width="120" height="20" rx="10" className={BOX} strokeWidth="1" />
+      <text x="300" y="154" className={FAINT}>
         prompt
       </text>
-      <rect x="350" y="132" width="122" height="20" rx="10" className={BOX_LIVE} strokeWidth="1" />
-      <text x="360" y="146" className={FAINT}>
+      <rect x="350" y="166" width="122" height="20" rx="10" className={BOX_LIVE} strokeWidth="1" />
+      <text x="360" y="180" className={FAINT}>
         answer
       </text>
-      <Packet x={410} y={114} dx={0} dy={22} delay={0.6} dur={2} r={3} tone="amber" />
+      <Packet x={410} y={150} dx={0} dy={22} delay={0.6} dur={2} r={3} tone="amber" />
     </svg>
   );
 }

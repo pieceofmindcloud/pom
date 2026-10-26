@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { ChevronLeft, ChevronRight, CircleCheck, CircleHelp, CircleX, Gauge, Globe2, House, LoaderCircle, LocateFixed, Lock, LogIn, LogOut, Maximize2, MessageCircle, Plus, RefreshCw, Search, Share2, SlidersHorizontal, Trash2, WandSparkles, Laptop, Waypoints, X } from "lucide-react";
+import { ConnectionBadge } from "../components/ConnectionStatus";
 import { Confirm, Modal } from "../components/Confirm";
 import { LobbyChat } from "../components/LobbyChat";
 import { Markdown } from "../components/Markdown";
@@ -684,7 +685,7 @@ function NetworkRow({ layout = "row", network, kind, visibility, selected, cache
     : kind === "own"
       ? "bg-aqua/[0.05] shadow-[inset_3px_0_0_rgb(var(--aqua)/0.7)] hover:bg-aqua/[0.09]"
       : "hover:bg-raised/45";
-  const name = <>{kind !== "public" && <div className="mb-1.5">{kind === "own" ? <Badge tone="aqua"><House className="h-3 w-3" />{t("publicNetworks.kindOwn")}</Badge> : <Badge tone="amber"><Lock className="h-3 w-3" />{t("publicNetworks.kindCustom")}</Badge>}</div>}<button type="button" className="group text-left" onClick={(event) => { event.stopPropagation(); onSelect(); }} aria-label={t("publicNetworks.openDetails", { name: network.name || network.cluster_id })}><VisibilityIcon visibility={visibility} t={t} /><span className="font-medium text-fg group-hover:text-iris">{network.name || network.cluster_id}</span>{cachedSince !== undefined && <p className="mt-1 text-[0.62rem] text-faint" data-testid={`network-cached-${network.fingerprint}`} title={t("publicNetworks.cachedDetail")}>{t("publicNetworks.cached", { when: since(new Date(cachedSince * 1000).toISOString()) })}</p>}</button></>;
+  const name = <>{kind !== "public" && <div className="mb-1.5">{kind === "own" ? <Badge tone="aqua"><House className="h-3 w-3" />{t("publicNetworks.kindOwn")}</Badge> : <Badge tone="amber"><Lock className="h-3 w-3" />{t("publicNetworks.kindCustom")}</Badge>}{membership === "member" && <ConnectionBadge className="ml-1.5 inline-flex" />}</div>}<button type="button" className="group text-left" onClick={(event) => { event.stopPropagation(); onSelect(); }} aria-label={t("publicNetworks.openDetails", { name: network.name || network.cluster_id })}><VisibilityIcon visibility={visibility} t={t} /><span className="font-medium text-fg group-hover:text-iris">{network.name || network.cluster_id}</span>{cachedSince !== undefined && <p className="mt-1 text-[0.62rem] text-faint" data-testid={`network-cached-${network.fingerprint}`} title={t("publicNetworks.cachedDetail")}>{t("publicNetworks.cached", { when: since(new Date(cachedSince * 1000).toISOString()) })}</p>}</button></>;
   // Who the network accepts sits beside what you can do about it.
   const enrollment = closed
     ? <span className="whitespace-nowrap text-[0.65rem] text-rose">{t("publicNetworks.closedShort")}</span>

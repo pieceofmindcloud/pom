@@ -25,6 +25,8 @@ vi.mock("../lib/queries", () => ({
   useModelDownloads: vi.fn(() => queryResult([])),
   useOffers: vi.fn(() => queryResult({ offers: [] })),
   useTransfers: vi.fn(() => queryResult(transfersState.value)),
+  useCluster: vi.fn(() => queryResult({ peers: [{ node_id: "atena", is_self: false, short_id: "b2c3", addr: "10.0.0.2:8080", node: { hostname: "atena" } }] })),
+  useLocalCatalog: vi.fn(() => queryResult({ models: [], shard_sets: [] })),
 }));
 vi.mock("../lib/toast", () => ({
   useToast: () => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), fromError: vi.fn() }),
@@ -50,6 +52,13 @@ describe("Transfers", () => {
   it("shows remote model downloads in the in-progress screen", () => {
     renderScreen();
     expect(screen.getByTestId("model-downloads-panel")).toBeTruthy();
+  });
+
+  it("sends a file from the same screen, above what is under way", () => {
+    renderScreen();
+    const send = screen.getByTestId("send-file");
+    expect(send.textContent).toContain("atena");
+    expect(send.compareDocumentPosition(screen.getByTestId("model-downloads-panel")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("shows an active transfer as a full-width table row with its progress", () => {

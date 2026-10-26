@@ -484,6 +484,8 @@ export interface NetworkSettings {
   /** Opens the lobby room of the network Chat to machines that are not members. */
   /** Publishes served models, node count and total VRAM to non-members. */
   public_stats: boolean;
+  /** Opens the network Chat to visitors; off, it is the admins' and workers' only. */
+  chat_visitors?: boolean;
   location: NetworkLocation | null;
 }
 
@@ -1014,6 +1016,23 @@ export interface RelayedPeer {
   relay_kind: "public" | "dedicated" | "member" | null;
 }
 
+/**
+ * `GET /api/ui/connection`: where this node stands on its way into its network
+ * (`webui/membership.rs`, `ConnectionPhase`).
+ */
+export interface ConnectionStatus {
+  /** `standalone` needs no token (an admin, or off the network); `connected` holds one. */
+  phase: "standalone" | "discovering" | "authenticating" | "connected";
+  /** When the current phase started, in unix seconds. */
+  since: number;
+  /** The last refused token request, while the node holds no token. */
+  last_error: string | null;
+  /** The other live peers this node sees now. */
+  peers: number;
+  /** Whether an admin of the network is among them. */
+  admin_in_sight: boolean;
+}
+
 /** `GET /api/ui/tls/ca`: this machine's local CA (`webui/https.rs`). */
 export interface LocalCaStatus {
   fingerprint: string;
@@ -1412,6 +1431,8 @@ export interface Job {
   kind?: string;
   /** Human label for the notification list. */
   title?: string;
+  /** The deployment a running `deploy` job brings up (`Job.deploy_id`). */
+  deploy_id?: string;
   /** Fields present when `kind === "model_download"`. */
   repo_id?: string;
   revision?: string | null;
@@ -2308,4 +2329,23 @@ export interface DeployPlan {
   load_distribution: DeployLoadDistribution[];
   /** Vision projector for the head and MTP draft for the tail. */
   sidecars?: SidecarsPlan;
+  /**
+   * Every file this deploy copies between machines. Not empty, the deploy
+   * needs `allow_transfers: true`, which the screen sends only after the
+   * operator authorized the list; the node refuses it otherwise.
+   */
+  copies?: PlannedCopy[];
+}
+
+/** One file a deploy copies between machines (`deploy/planning.rs` - `PlannedCopy`). */
+export interface PlannedCopy {
+  kind: "slice" | "mmproj" | "mtp";
+  name: string;
+  size_bytes: number;
+  /** The layer range, for a slice. */
+  layers?: [number, number];
+  source_node_id: string;
+  source_host: string;
+  target_node_id: string;
+  target_host: string;
 }

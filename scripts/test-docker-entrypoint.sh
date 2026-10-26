@@ -28,4 +28,8 @@ POM_ENTRYPOINT_CAPTURE="$work_dir/capture" \
 
 test "$(sed -n '1p' "$work_dir/capture")" = "$work_dir/bin/pom-plugin-host"
 test "$(sed -n '2p' "$work_dir/capture")" = "--gateway-port 8080"
+# Without an init as PID 1, orphans left by plugins become zombies of `pom`.
+entrypoints=$(grep -c '^ENTRYPOINT ' "$repo_root/Dockerfile")
+with_tini=$(grep -c '^ENTRYPOINT \["/usr/bin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"\]$' "$repo_root/Dockerfile")
+test "$entrypoints" -gt 0 && test "$entrypoints" = "$with_tini"
 printf 'docker entrypoint test passed\n'

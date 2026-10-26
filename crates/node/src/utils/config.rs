@@ -186,6 +186,11 @@ pub struct NetworkSettings {
     /// (`network_lobby::PublicStats`). Only takes effect on a public network.
     #[serde(default)]
     pub public_stats: bool,
+    /// Opens the network Chat to visitors. Off, the Chat is the admins' and
+    /// workers' only: it names its members, and visitors never learn of each
+    /// other. The principal enforces it, as the hub every message crosses.
+    #[serde(default)]
+    pub chat_visitors: bool,
     /// How much of `location` is published; applied before it is stored.
     #[serde(default)]
     pub location_precision: LocationPrecision,
@@ -589,6 +594,11 @@ pub struct RelayConfig {
     /// carry no transfers at all.
     #[serde(default = "default_true")]
     pub transfers: bool,
+    /// Relay for anyone holding a relay pass of this network, without
+    /// knowing who (`crate::relay_pass`). Off unless the operator asks; the
+    /// interface offers it on a visitor.
+    #[serde(default)]
+    pub anonymous: bool,
 }
 
 impl Default for RelayConfig {
@@ -597,6 +607,7 @@ impl Default for RelayConfig {
             everyone: false,
             cluster: true,
             transfers: true,
+            anonymous: false,
         }
     }
 }
@@ -1649,7 +1660,8 @@ mod tests {
             RelayConfig {
                 everyone: false,
                 cluster: true,
-                transfers: true
+                transfers: true,
+                anonymous: false
             }
         );
         assert!(serde_json::to_value(&cfg).unwrap().get("relay").is_none());

@@ -25,7 +25,6 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Terminal,
-  Upload,
   type LucideIcon,
 } from "lucide-react";
 import { canAccessRoute } from "../lib/access";
@@ -101,14 +100,8 @@ export const NAV: NavSection[] = [
       { labelKey: "nav.history", to: "/deployments", icon: History },
     ],
   },
-  {
-    labelKey: "nav.transfers",
-    icon: Send,
-    children: [
-      { labelKey: "nav.sendFile", to: "/transfers/send", icon: Upload },
-      { labelKey: "nav.inProgress", to: "/transfers", icon: Send, end: true },
-    ],
-  },
+  // One screen: send a file, and everything under way or just finished.
+  { labelKey: "nav.transfers", icon: Send, to: "/transfers" },
   {
     labelKey: "nav.logs",
     icon: ListTree,
@@ -140,7 +133,6 @@ export const NAV: NavSection[] = [
       { labelKey: "nav.administrators", to: "/config/administration", icon: ShieldCheck },
       { labelKey: "nav.sharing", to: "/config/sharing", icon: ShieldCheck },
       { labelKey: "nav.apiKeys", to: "/config/keys/api", icon: KeyRound },
-      { labelKey: "nav.budget", to: USAGE_ROUTE, icon: Gauge },
     ],
   },
   {
@@ -283,16 +275,15 @@ function withPluginMenu(sections: NavSection[], profile: Profile): NavSection[] 
  */
 export interface NavOptions {
   /**
-   * Whether some reachable machine runs the logs plugin that keeps the token
-   * budgets (`GET /api/ui/quota`). `false` drops Usage: without it the screen
-   * has nothing to show. Left out, Usage stays.
+   * Whether this node takes part in the network Chat. A visitor does only
+   * when the network opens it (`NetworkSettings.chat_visitors`); `false`
+   * drops the entry. Left out, it stays.
    */
-  usage?: boolean;
+  networkChat?: boolean;
 }
 
 export function navForProfile(profile: Profile, _enterpriseActive = true, options: NavOptions = {}): NavSection[] {
   const filterLeaf = (leaf: NavLeaf): NavLeaf | null => {
-    if (options.usage === false && leaf.to === USAGE_ROUTE) return null;
     const children = (leaf.children ?? [])
       .map(filterLeaf)
       .filter((child): child is NavLeaf => child !== null);
@@ -317,6 +308,7 @@ export function navForProfile(profile: Profile, _enterpriseActive = true, option
       continue;
     }
     if (section.to) {
+      if (options.networkChat === false && section.to === "/network-chat") continue;
       if (canAccessRoute(section.to, profile)) visible.push(section);
       continue;
     }

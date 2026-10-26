@@ -57,7 +57,8 @@ Per-file list:
   `docs/subsystems/web-ui.md`, "First-access wizard".
 
 ## Network, plugins and this machine
-- `PublicNetworks.tsx` - Full-bleed directory of public networks: a
+- `PublicNetworks.tsx` - Full-bleed directory of public networks (this
+  machine's row carries `ConnectionBadge` for a member still connecting): a
   scrolling table with name, organization, place, reach, nodes, latency, VRAM,
   models and the action. The list is a page of the node's table of known
   networks (`GET /api/ui/networks/known`, 25 per page, prev/next under the
@@ -174,7 +175,8 @@ Per-file list:
   block, under the same condition. It
   includes "Accepting new members", one card per `EnrollmentRole`
   (`ENROLLMENT_ROLES` in `lib/types.ts`) with its icon; unchecking all of them
-  advertises the network as closed.
+  advertises the network as closed. "Visitors can use the network Chat"
+  (`chat_visitors`, off by default) sits beside it.
   There is no lobby option: the lobby follows discovery. "Who can join"
   (`access_policy`) and "Accepting new members" are shown only with discovery
   on or hidden, and the published stats only on a public network; with
@@ -308,21 +310,29 @@ Per-file list:
   the other erases the local configuration and restarts in the setup.
 
 - `MyBudget.tsx` - "Usage" ("Uso", route `/config/usage`; `/config/budget`
-  redirects there; Network menu, every
-  profile): this machine's token budgets from `GET /api/ui/quota` - one panel per
+  redirects there; reached from the Usage popover beside the bell, every
+  profile, drawn only while this node has a budget configured; the meters and
+  the quota shape live in `components/QuotaParts.tsx`): this machine's token budgets from `GET /api/ui/quota` - one panel per
   plan with input/output bars and the window's turnover, the session-reset
   credits (`POST /api/ui/quota/reset`) and the request for more budget
   (`POST /api/ui/quota/request`). Without an admin's logs plugin answering it
   says so instead of showing zero; while a machine that runs the plugin has
   not answered (`pending`) it keeps loading instead of "no budget". The query
-  is `useMyQuota` (`lib/queries.ts`), shared with the Sidebar, which leaves the
-  Usage entry out while `available` is false. The admins' side is the logs plugin's Quota
+  is `useMyQuota` (`lib/queries.ts`), shared with `components/UsageButton.tsx`. The admins' side is the logs plugin's Quota
   screen.
 
 ## Chat
 - `Chat.tsx` - The chat: `POST /v1/chat/completions` with `stream: true`,
   with no title bar on an empty conversation, `../components/MissingPiece`
-  and no composer or RAG while the network serves no model (with
+  and no composer or RAG while the network serves no model. While this node
+  is still on its way into its network (`useConnection`, `lib/connection.ts`)
+  that screen is "Connecting to <network>" instead (`MissingPiece`
+  `variant="loading"`, `ConnectingSteps` - find the network, get access, see
+  the models - and, past 60 s on one step, why it may be stuck with the last
+  refusal and a link to the Networks screen), so a visitor that just joined
+  is not told the network serves no model. Once the token arrives the screen
+  stays on "see the models" for 90 s (`awaitingModels`) while `/v1/models` is
+  polled every 3 s, and only then falls back to the missing piece. Otherwise it shows the missing piece (with
   `NoModelSteps` - download, deploy, talk, current step from
   `useLocalCatalog` - for a profile that may deploy, and "See earlier
   conversations" only when one exists), capabilities
@@ -402,9 +412,16 @@ Per-file list:
   the Sidebar entry receives the counter of unread messages and opening
   the route marks the current snapshot as read. When the snapshot says
   `lobbyEnabled`, a tab pair switches between the `network` and `lobby` rooms
-  (`useNetworkChat(room)`). The lobby tab lists the candidates with
-  `LobbyHardwareCard`, sends text with `room_id: "lobby"`, and offers neither
-  files nor typing, because machines that are not members read that room.
+  (`useNetworkChat(room)`); only an admin gets the lobby (the snapshot's
+  `lobbyEnabled`). The lobby tab lists the candidates (`LobbyThreadList`,
+  `LobbyHardwareCard` for one present, an "Asks to join" mark for a pending
+  request) and shows one candidate's thread at a time, sending with
+  `room_id: "lobby/<candidate>"`; it offers neither files nor typing, because
+  the candidate reads that thread. The selected candidate is outlined and
+  `aria-current`, and `LobbyThreadHeader` above the messages names it and
+  carries Approve / Decline for its pending request (`useAdmissions`,
+  `admissionsApi.decide`). `?lobby=<node_id>` (the bell's link) opens the lobby
+  on that thread and is then dropped from the address.
 ## Information screens
 - `Documentation.tsx` - Two audiences, one screen, switched by a tab pair at
   the top of the navigation column (`?tab=guides|referencia`).
@@ -469,7 +486,10 @@ Per-file list:
   test in `About.test.tsx` covers the license, the notice and links, the two
   ecosystems, the filter and the on-demand check/application of the update.
 - `Dashboard.tsx` - Cluster overview: the admin sees cluster
-  coverage/machines/model/in-flight stats; node and infer see local model,
+  coverage/machines/model/in-flight stats (`ClusterStat`: two short lines, the
+  label over the value with its detail beside it and a hairline bar, so the
+  toolbar leaves the height to the map; one row that scrolls sideways, the
+  whole width on a phone with the actions below); node and infer see local model,
   slice and in-flight requests instead. Admins see the Add button only when
   `ClusterView.active_model` is nonempty. With no active model, Details is the
   initial view; with an active model, Flow remains the initial view. Manual
@@ -642,7 +662,11 @@ Per-file list:
   serve any model are listed as taken over ("Replace and deploy"), and the
   machines outside the plan that serve this same model get the choice between
   "Undeploy and deploy" and "Keep in parallel", which sends
-  `keep_existing: true`. The three confirms chain through `attemptDeploy`.
+  `keep_existing: true`. Before it, when `DeployPlan.copies` is not empty,
+  "Authorize the copies" lists each file, range, source and target; only its
+  confirmation sends `allow_transfers: true`, and a 409
+  `transfers_not_authorized` reopens it with the node's list. The confirms
+  chain through `attemptDeploy`.
   Topology edits are debounced 260 ms and validated by
   `POST /api/ui/deploy/plan`. Runtime parameters, per-machine GPU/KV overrides
   and the operational name stay local while editing: their changes do not
@@ -796,9 +820,11 @@ Per-file list:
   instead of repeating the server's text. It lives outside the profile gate - see
   the file's header and `lib/access.ts`. Test: `TrustAnchor.test.tsx`.
 - `Preferences.tsx` - Local settings screen under Settings (`Configurações`): owns the
-  administrative exposure mode and gateway port, accepts a password only in
-  network mode, and saves its Argon2id hash to `pom.json` through
-  `POST /api/ui/access`. It also mounts `HttpsCertificatePanel` (the node's
+  administrative exposure mode and gateway port (`POST /api/ui/access`, the
+  principal's; the panel hides where the node refuses it), and refuses the
+  network mode until a password exists, linking to the password screen. The
+  "Panel password" card, on every profile, opens `/config/password`
+  (`components/ChangePassword.tsx`). It also mounts `HttpsCertificatePanel` (the node's
   local CA, for every profile), `ThermalPanel` and
   `HuggingFaceSettingsPanel`; there is no TLS panel, since TLS between nodes is
   always on. It also mounts the cluster logs switch,
@@ -818,9 +844,10 @@ Per-file list:
 - `SendFile.tsx` - offers a `.gguf` from the local catalog via
   `POST /api/transfer/send` (`{to_node_id, filename}`). The UI displays the
   friendly name and full path, but sends only the basename; the backend resolves
-  it again and the receiver sees only an opaque grant. Full-bleed shell
-  (`FullBleedHeader` + scrolling body), same contract as `Deployments`/
-  `PublicNetworks`.
+  it again and the receiver sees only an opaque grant. It is `SendFilePanel`,
+  the first panel of `Transfers.tsx`, not a screen of its own; `?filename=`
+  preselects the file, and `/transfers/send` redirects to `/transfers` keeping
+  the query.
 - `Shards.tsx` - "Fatias": every local slice always listed (the Nodes screen
   only shows the difference), with who is missing it. Pipeline `parts` and TP
   `tp_parts` are separate sections; TP groups are ordered by group size and
@@ -855,7 +882,8 @@ Per-file list:
   declared part and an explicit instruction to keep the set together before
   POM slicing; incomplete sets surface the backend reason and leave the start
   action disabled.
-- `Transfers.tsx` - Shows remote model downloads from `useModelDownloads` in
+- `Transfers.tsx` - The one Transfers screen (a single menu entry): the send
+  panel (`SendFilePanel`, from `SendFile.tsx`) first, then remote model downloads from `useModelDownloads` in
   the same in-progress screen as pending offers (accept/reject via
   `POST /api/transfer/offers/:id/accept|reject`), active transfers (bytes +
   speed + ETA + cancel via `POST /api/transfer/jobs/:id/cancel`), and finished
@@ -869,7 +897,7 @@ Per-file list:
   list of cards, with a fixed header and actions in the last column.
 - `WholeModels.tsx` - Full-model catalog from `useLocalCatalog`, one full-width
   table row (`ModelRow`) per model with actions: slice (links to
-  `/models/slice?path=`), send (`/transfers/send?path=`), delete
+  `/models/slice?path=`), send (`/transfers?filename=`), delete
   (`../lib/deleteModel`). A dedicated "Vision (mmproj)" column shows the
   projector's basename (`../lib/format::optionalBasename`) when
   `DiscoveredModel.mmproj_path` is set, or "no projector" otherwise - the

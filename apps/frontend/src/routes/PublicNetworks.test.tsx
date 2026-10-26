@@ -75,6 +75,7 @@ async function getThroughFakeNode(path: string, options?: unknown) {
   };
 }
 vi.mock("../lib/queries", () => ({
+  useConnection: () => ({ data: { phase: "connected", since: 0, last_error: null } }),
   useCluster: () => ({ data: undefined }),
   useNode: () => mocks.node,
   useNetworkInfo: () => mocks.networkInfo,
@@ -504,7 +505,7 @@ describe("PublicNetworks", () => {
     expect(within(wizard).getByTestId("quick-setup-review").textContent).toContain("Servindo de relé para qualquer rede");
     fireEvent.click(screen.getByRole("button", { name: "Salvar" }));
 
-    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/api/ui/network/relay", { everyone: true, cluster: true, transfers: true }));
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/api/ui/network/relay", { everyone: true, cluster: true, transfers: true, anonymous: false }));
     const order = mocks.post.mock.calls.map(([path]) => path);
     expect(order.indexOf("/api/ui/network/settings")).toBeLessThan(order.indexOf("/api/ui/network/relay"));
   });

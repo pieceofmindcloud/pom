@@ -13,6 +13,9 @@ import {
   BookOpen,
   Boxes,
   Check,
+  Cpu,
+  KeyRound,
+  Radar,
   ChevronDown,
   Copy,
   Database,
@@ -72,6 +75,7 @@ import type { GenerationTimings, RequestTrace } from "../lib/chatStream";
 import {
   useChatTelemetryNetwork,
   useChatCapabilities,
+  useConnection,
   useLocalCatalog,
   useCluster,
   useNode,
@@ -80,6 +84,8 @@ import {
   useServableModels,
 } from "../lib/queries";
 import { useStableRecord } from "../lib/stableRecord";
+import { awaitingModels, connectionStuck, isConnecting } from "../lib/connection";
+import type { ConnectionStatus } from "../lib/types";
 import { chatModelOptions } from "../lib/chatModels";
 import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
@@ -396,6 +402,65 @@ function NoModelSteps({ hasLocalModel }: { hasLocalModel: boolean }) {
   );
 }
 
+/**
+ * The way into a network, step by step, while this node is still on it: right
+ * after a join or a boot there are no models yet, and the screen used to say
+ * the network serves none. A step that lasts past `CONNECTION_STUCK_AFTER_SECS`
+ * says why it may be stuck.
+ */
+function ConnectingSteps({ status }: { status: ConnectionStatus }) {
+  const { t } = useI18n();
+  const current = status.phase === "discovering" ? 0 : status.phase === "authenticating" ? 1 : 2;
+  const steps = [
+    { key: "discover", icon: Radar },
+    { key: "authenticate", icon: KeyRound },
+    { key: "models", icon: Cpu },
+  ] as const;
+  const stuck = connectionStuck(status);
+  return (
+    <>
+      <ol className="mx-auto mt-5 grid w-full max-w-md gap-2 text-left" data-testid="connecting-steps">
+        {steps.map((step, index) => {
+          const done = index < current;
+          const active = index === current;
+          const Icon = step.icon;
+          return (
+            <li key={step.key} data-step={step.key} data-state={done ? "done" : active ? "current" : "next"}>
+              <div className={clsx(
+                "flex items-center gap-3 rounded-xl border px-3 py-2.5",
+                active ? "border-iris/50 bg-iris/[0.08]" : "border-line",
+              )}>
+                <span className={clsx(
+                  "flex h-7 w-7 shrink-0 items-center justify-center rounded-full border text-xs font-semibold",
+                  done ? "border-lime/50 bg-lime/10 text-lime" : active ? "border-iris bg-iris text-white" : "border-line text-faint",
+                )}>
+                  {done ? <Check className="h-3.5 w-3.5" /> : index + 1}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className={clsx("block text-sm font-medium", active ? "text-fg" : "text-muted")}>{t(`connection.step.${step.key}`)}</span>
+                  <span className="block text-xs text-faint">{t(`connection.step.${step.key}Detail`)}</span>
+                </span>
+                <Icon className={clsx("h-4 w-4 shrink-0", active ? "animate-pulse text-iris" : "text-faint")} />
+              </div>
+            </li>
+          );
+        })}
+      </ol>
+      {stuck && (
+        <div className="mx-auto mt-4 w-full max-w-md rounded-xl border border-amber/40 bg-amber/[0.07] px-3 py-2.5 text-left text-xs text-muted" data-testid="connection-stuck">
+          <p className="flex items-center gap-1.5 font-medium text-amber">
+            <TriangleAlert className="h-3.5 w-3.5 shrink-0" />
+            {t("connection.stuckTitle")}
+          </p>
+          <p className="mt-1">{t(`connection.stuck.${status.phase}`)}</p>
+          {status.last_error && <p className="mt-1 break-words font-mono text-[0.7rem] text-faint">{status.last_error}</p>}
+          <Link to="/public-networks" className="mt-2 inline-block font-medium text-iris hover:underline">{t("connection.openNetworks")}</Link>
+        </div>
+      )}
+    </>
+  );
+}
+
 /** How many invitations `chat.prompt.<n>` has in `messages.csv`. */
 const PROMPT_PLACEHOLDERS = 6;
 
@@ -680,7 +745,9 @@ function ChatScreen() {
     startStream,
     stopStream,
   } = useChatSessionController();
-  const models = useServableModels();
+  const connection = useConnection();
+  // Right after the token, the network's models are seconds away: ask often.
+  const models = useServableModels(isConnecting(connection.data) || awaitingModels(connection.data));
   const cluster = useCluster();
   const node = useNode();
   const toast = useToast();
@@ -1168,6 +1235,9 @@ function ChatScreen() {
   }
 
   const noModel = available.length === 0 && !node.data?.active_model && !cluster.data?.active_model;
+  // No models yet because this node is still on its way into its network, or
+  // just got in, not because the network serves none.
+  const connecting = noModel && (isConnecting(connection.data) || awaitingModels(connection.data));
   const canDeploy = canAccessRoute("/deploy", profile);
   // Who may deploy is told the next step: download a model first if this
   // machine has none, deploy it otherwise. Asked only on that screen.
@@ -1435,7 +1505,15 @@ function ChatScreen() {
 
         {empty ? (
           <div className="flex min-h-0 flex-1 flex-col items-center justify-center overflow-y-auto px-4 py-8 sm:px-6" data-testid="chat-empty">
-            {noModel ? (
+            {connecting ? (
+              <MissingPiece
+                variant="loading"
+                title={node.data?.network_name ? t("connection.title", { name: node.data.network_name }) : t("connection.titleUnnamed")}
+                detail={t(`connection.phase.${connection.data!.phase}`)}
+              >
+                <ConnectingSteps status={connection.data!} />
+              </MissingPiece>
+            ) : noModel ? (
               // Nothing to talk to: no composer, no RAG, only what is missing.
               <MissingPiece
                 title={t("chat.noModel")}
@@ -1500,7 +1578,7 @@ function ChatScreen() {
 
         <div className="shrink-0 border-t border-line bg-surface/80 px-4 py-3 backdrop-blur-md sm:px-6">
           {noModel ? (
-            <p className="mx-auto w-full max-w-3xl text-center text-sm text-muted" data-testid="chat-no-model-bar">{t("chat.noModel")}</p>
+            <p className="mx-auto w-full max-w-3xl text-center text-sm text-muted" data-testid="chat-no-model-bar">{t(connecting ? "connection.badge" : "chat.noModel")}</p>
           ) : composerBox}
         </div>
           </>

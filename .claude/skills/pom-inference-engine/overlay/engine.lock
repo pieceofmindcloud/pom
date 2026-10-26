@@ -1,0 +1,8 @@
+# The engine source this plugin builds: the fork, its integration branch and
+# the exact commit. scripts/build-runtime.sh checks out this commit and records
+# it in build/runtime/RUNTIME.json; move the commit forward on purpose, in a
+# commit of its own ("engine.lock: <what the new engine commit brings>").
+ENGINE_REPOSITORY=__ENGINE_REPOSITORY__
+ENGINE_UPSTREAM=__ENGINE_UPSTREAM__
+ENGINE_BRANCH=pom
+ENGINE_COMMIT=__ENGINE_COMMIT__

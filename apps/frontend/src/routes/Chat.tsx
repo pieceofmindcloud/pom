@@ -881,11 +881,12 @@ function ChatScreen() {
   const chatCapabilities = useChatCapabilities(model);
   const streaming = streamingSessionId === session.id;
   const headQuery = useInferenceHeads(model, Boolean(model));
+  // the machine the person pinned; none (Auto, the default) leaves the gateway to balance the heads
   const selectedInferenceHead = headQuery.data?.candidates.some(
     (candidate) => candidate.node_id === headChoice.nodeId && headChoice.model === model,
   )
     ? headChoice.nodeId
-    : headQuery.data?.selected_node_id ?? null;
+    : null;
 
   useEffect(() => {
     const element = thread.current;

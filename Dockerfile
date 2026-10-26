@@ -304,6 +304,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl-dev \
     nodejs \
     npm \
+    openssh-client \
     pkg-config \
     && rm -rf /var/lib/apt/lists/*
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \

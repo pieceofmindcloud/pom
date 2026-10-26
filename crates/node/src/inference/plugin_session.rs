@@ -502,6 +502,57 @@ pub(crate) fn holder_of(model: &str, key: &str) -> Option<String> {
     (since.elapsed() < HOLDER_TTL).then(|| node.clone())
 }
 
+/// A prompt this short has no start worth following to another head: reading it again is cheap.
+const PROMPT_START_MIN_BYTES: usize = 16 * 1024;
+/// The prompt starts remembered, the oldest dropped first.
+const PROMPT_STARTS_MAX: usize = 256;
+
+/// The start of each recent turn's prompt (three quarters of it: a shared system prompt alone does not match) and
+/// the head that read it: `(model, start length, digest of the start, node id, when)`. A new conversation whose
+/// prompt begins the same way goes to that head, which reuses what it read (`gateway::generation::auto_head`).
+type PromptStart = (String, usize, u64, String, Instant);
+static PROMPT_STARTS: StdMutex<Vec<PromptStart>> = StdMutex::new(Vec::new());
+
+fn digest_of(bytes: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Records that `node_id` read `prompt` of `model` (when it is long enough to be worth following).
+pub(crate) fn note_prompt_start(model: &str, prompt: &str, node_id: &str) {
+    if prompt.len() < PROMPT_START_MIN_BYTES {
+        return;
+    }
+    let len = (prompt.len() * 3 / 4).max(PROMPT_START_MIN_BYTES);
+    let digest = digest_of(&prompt.as_bytes()[..len]);
+    let mut starts = PROMPT_STARTS.lock().unwrap_or_else(|e| e.into_inner());
+    starts.retain(|(m, l, d, ..)| !(m == model && *l == len && *d == digest));
+    starts.push((model.to_owned(), len, digest, node_id.to_owned(), Instant::now()));
+    if starts.len() > PROMPT_STARTS_MAX {
+        starts.remove(0);
+    }
+}
+
+/// The head that read most recently a prompt of `model` that `prompt` begins with (its recorded start), if any.
+pub(crate) fn holder_of_prompt_start(model: &str, prompt: &str) -> Option<String> {
+    if prompt.len() < PROMPT_START_MIN_BYTES {
+        return None;
+    }
+    let starts = PROMPT_STARTS.lock().unwrap_or_else(|e| e.into_inner());
+    starts
+        .iter()
+        .rev()
+        .find(|(m, len, digest, _, since)| {
+            m == model
+                && since.elapsed() < HOLDER_TTL
+                && prompt.len() >= *len
+                && digest_of(&prompt.as_bytes()[..*len]) == *digest
+        })
+        .map(|(.., node, _)| node.clone())
+}
+
 /// Whether a turn is still pushed to the peers (`spawn_sync`). Off: the peers pull the session when they need it
 /// (`prepare_for_body`), so nothing is sent unless no one asks. Kept, not deleted, until the pull is proven on the cluster.
 pub(crate) const PUSH_SYNC: bool = false;
@@ -1163,6 +1214,22 @@ pub(crate) async fn engine_session_file_route(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_new_conversation_follows_the_head_that_read_most_of_its_prompt() {
+        let model = "start-test-model";
+        let document = "a long shared document. ".repeat(4000);
+        let first = format!("{document}first question");
+        note_prompt_start(model, &first, "reader");
+        // the same document with another question goes to the head that read it
+        assert_eq!(holder_of_prompt_start(model, &format!("{document}another question")).as_deref(), Some("reader"));
+        // only a shared quarter of it (a common system prompt) does not
+        let shared = &document[..document.len() / 4];
+        assert_eq!(holder_of_prompt_start(model, &format!("{shared}{}", "x".repeat(document.len()))), None);
+        // nor a short prompt, nor another model
+        assert_eq!(holder_of_prompt_start(model, "short"), None);
+        assert_eq!(holder_of_prompt_start("other-model", &first), None);
+    }
 
     #[test]
     fn a_session_is_asked_only_of_the_heads_of_this_deployment() {

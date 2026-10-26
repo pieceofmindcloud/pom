@@ -214,6 +214,7 @@ pub(super) async fn run(
     for slot in [&plan.sidecars.vision, &plan.sidecars.mtp]
         .into_iter()
         .flatten()
+        .chain(&plan.sidecars.vision_heads)
     {
         if !slot.needs_copy() {
             continue;
@@ -451,6 +452,29 @@ pub(super) async fn run(
                     file,
                 );
                 head.mmproj_file = Some(file.clone());
+            }
+        }
+        // a whole model on several machines: each other head reads images with its own copy of the projector
+        for slot in &plan.sidecars.vision_heads {
+            let Some(file) = slot
+                .file
+                .as_ref()
+                .filter(|_| slot.mode == crate::catalog::SidecarMode::File)
+            else {
+                continue;
+            };
+            if let Some(target) = targets
+                .iter_mut()
+                .find(|target| target.start_layer == 0 && target.node_id == slot.target_node_id)
+            {
+                target.use_mmproj = true;
+                target.mmproj_path = local_sidecar_path(
+                    &fresh.sidecars,
+                    &slot.target_node_id,
+                    crate::catalog::SidecarKind::Mmproj,
+                    file,
+                );
+                target.mmproj_file = Some(file.clone());
             }
         }
     }

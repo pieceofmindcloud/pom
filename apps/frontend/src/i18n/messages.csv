@@ -250,6 +250,7 @@ chat.errorCopied,Copied,Copiado
 chat.filePrompt,"File {name}:\n{content}","Arquivo {name}:\n{content}"
 chat.fileRejected,File rejected,Ficheiro recusado
 chat.headAlternatives,Other heads,Outras cabeças
+chat.headAuto,"Auto · balanced by queue","Auto · balanceado pela fila"
 chat.headCandidateCount,"{count} candidate{count, plural, =1 {} other {s}}","{count} candidata{count, plural, =1 {} other {s}}"
 chat.headCapacity,"context {context} · leg {leg} tokens","contexto {context} · perna {leg} tokens"
 chat.headChoice,Inference entry,Entrada da inferência

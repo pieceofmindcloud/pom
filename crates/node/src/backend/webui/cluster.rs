@@ -884,6 +884,7 @@ pub(super) async fn chat_capabilities(
                     "model_label": config.model_label,
                     "mmproj_path": config.mmproj_path,
                     "no_thinking": config.no_thinking,
+                    "inference_service": config.inference_service,
                 })
             })
         } else {
@@ -939,9 +940,16 @@ pub(super) async fn chat_capabilities(
             vision_unknown = true;
             continue;
         }
+        // a plugin engine turns the thinking on and off per request (the turn's `thinking`): `no_thinking` is the
+        // llama.cpp runtime's switch, which a plugin deployment never sets
+        let plugin_engine = config
+            .get("inference_service")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|code| !code.is_empty());
         match config
             .get("no_thinking")
             .and_then(serde_json::Value::as_bool)
+            .map(|off| off && !plugin_engine)
         {
             Some(true) => thinking_disabled = true,
             Some(false) => thinking_enabled = true,

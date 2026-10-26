@@ -668,10 +668,14 @@ UI.
   Prefill/decode split: a whole-model machine deployed with
   `RuntimeParams::inference_role` = `prefill` announces
   `engine/plugin-role-v1:prefill` (`Network::set_external_engine_role`,
-  `role_capability`), which `generation.rs` drops from planning
-  (`is_prefill_only`), so it is never a head. `prefill_on_peer` sends a named
-  turn to such a machine first (`prefill_only`, `max_tokens` 1, `decode_holds`
-  from the head's session offer); when it saved the session, the head's turn
+  `role_capability`). Every machine of the split is a head too; `prefill_peer`
+  picks, per turn, an idle `prefill` machine for a free head that is not one
+  (a busy head reads its own prompt), and `prefill_on_peer` sends it the named
+  turn (`prefill_only`, `max_tokens` 1, `decode_holds` from the head's session
+  offer, `pieces`). `plugin_session::note_holder` and `note_prompt_start` record,
+  when a turn ends, the head that holds a conversation and the start of the
+  prompt it read; `generation.rs::auto_head` sends a conversation, or a new one
+  that begins with most of that prompt, back there. When it saved the session, the head's turn
   carries `session_source` and `plugin_session::pull_from` fetches that session
   (waiting for its save) before the turn reads its prompt. `engine.load` gets
   `role` for a non-default role.

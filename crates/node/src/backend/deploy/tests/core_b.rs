@@ -1431,6 +1431,48 @@ fn vision_goes_to_the_head_and_mtp_to_the_tail_copied_when_missing() {
 }
 
 #[test]
+fn every_head_of_a_whole_model_on_several_machines_gets_the_projector() {
+    use crate::catalog::{SidecarKind, SidecarMode};
+    // a prefill/decode split: both machines hold the whole model and both answer requests, so both read images
+    let machines = build(vec![m("a", 20_000, &[(0, 31)]), m("b", 20_000, &[(0, 31)])]);
+    let mut deploy_plan = super::plan(
+        "qwen",
+        &machines,
+        Some(&[pick(0, 31, "a"), pick(0, 31, "b")]),
+        &RuntimeParams::default(),
+        false,
+        DeployKind::Whole,
+        None,
+    );
+    assert_eq!(deploy_plan.steps.iter().filter(|step| step.start_layer == 0).count(), 2);
+    let mut inventory = HashMap::new();
+    inventory.insert(
+        "a".to_string(),
+        vec![sidecar(SidecarKind::Mmproj, "mmproj.gguf", 7, "/library/mmproj.gguf")],
+    );
+    let shape = ModelShape {
+        model_key: "qwen.gguf".into(),
+        architecture: Some("llama".into()),
+        embedding_length: Some(3072),
+        embedded_mtp: false,
+    };
+    let vision = SidecarChoice {
+        mode: Some(SidecarMode::File),
+        file: Some(SidecarRef { file_name: "mmproj.gguf".into(), size_bytes: 7 }),
+    };
+    let bytes_before = deploy_plan.transfer_bytes;
+    attach_sidecars(&mut deploy_plan, &machines, &inventory, Some(&shape), &[], false, true, Some(&vision), false, None);
+
+    let first = deploy_plan.sidecars.vision.as_ref().unwrap();
+    assert!(!first.needs_copy(), "the first head holds the projector");
+    assert_eq!(deploy_plan.sidecars.vision_heads.len(), 1);
+    let other = &deploy_plan.sidecars.vision_heads[0];
+    assert_ne!(other.target_node_id, first.target_node_id);
+    assert!(other.needs_copy(), "the other head gets a copy");
+    assert_eq!(deploy_plan.transfer_bytes, bytes_before + 7);
+}
+
+#[test]
 fn an_external_draft_makes_mtp_available_for_a_model_without_nextn() {
     let machines = build(vec![
         m("head", 20_000, &[(0, 15)]),

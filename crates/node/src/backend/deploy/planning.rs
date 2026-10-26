@@ -331,7 +331,11 @@ pub(super) fn planned_copies(plan: &Plan) -> Vec<PlannedCopy> {
             }
         }
     }
-    for slot in [&plan.sidecars.vision, &plan.sidecars.mtp].into_iter().flatten() {
+    for slot in [&plan.sidecars.vision, &plan.sidecars.mtp]
+        .into_iter()
+        .flatten()
+        .chain(&plan.sidecars.vision_heads)
+    {
         let (Some(file), Some(source)) = (&slot.file, &slot.source_node_id) else {
             continue;
         };

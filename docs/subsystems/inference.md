@@ -1856,7 +1856,14 @@ metadata. The head, the only owner of the tokenizer, applies the GGUF's
 only get the hidden state and do not reformat the prompt. OpenAI Chat also sends
 `thinking_enabled` per inference in that same metadata. The gateway normalizes
 its absence to `true`; on the head, the request only turns thinking on when
-`thinking_enabled` is true and `NodeConfig.no_thinking` is false. The field is
+`thinking_enabled` is true and `NodeConfig.no_thinking` is false. A plugin
+engine decides per request instead (`no_thinking` is the llama.cpp runtime's
+switch, which a plugin deployment never sets, so the Chat's capabilities offer
+the switch for a plugin head): its `/pom/generate` body carries `thinking`, and
+`thinking_default: true` when the client chose no level itself (none of
+`thinking_enabled`, `reasoning_effort`, `reasoning`, `thinking` or
+`chat_template_kwargs.enable_thinking`, `plugin_engine::thinking_asked`), so the
+engine's own default level (Strata's `reasoning_effort`) decides. The field is
 copied into the metadata of the existing relays, so hub, ring and direct reply
 keep the decision without creating another channel. For Gemma4, the renderer
 reads the template from the GGUF and applies `enable_thinking` and
@@ -2753,18 +2760,22 @@ the plugin in `engine.load` (`role`) and is announced as
 `capabilities` carry it too). A stage of a split model has no role.
 
 - **Planning.** Every machine of the split is a head like any other: a
-  conversation goes back to the head that holds it (`auto_head`), and a new one
-  takes the rotation by queue, so the machines share the conversations.
+  conversation goes back to the head that holds it (`auto_head`); a new one
+  whose prompt begins with three quarters of a prompt a head read recently
+  (`plugin_session::note_prompt_start`, recorded when the turn ends, from
+  16 KiB of prompt) goes to that head, which reuses what it read; any other
+  takes the rotation by queue, so the machines share the conversations. Both
+  affinities give way when that head has more than two requests in flight
+  beyond the least busy one (`SESSION_MOVE_LOAD_GAP`).
 - **The balance** (`plugin_engine::prefill_peer`), per turn, by queue: the
   load of a machine is the larger of this gateway's in-flight count and the
   `active_generations` its `/health` reports, and the head's count includes
-  the turn itself. A target is another machine of the split (a `prefill` or
-  `decode` role, the same plugin and model, the whole model) with nothing in
-  flight. A busy head (another request on it) hands the prompt to an idle
-  target, a `prefill` machine first, then the fastest measured
-  `prefill_ms_per_token`. A free head reads its own prompt, except a head
-  that is not a `prefill` machine while a `prefill` machine is idle: that one
-  reads it. No idle target: the head reads it.
+  the turn itself. A head that is not a `prefill` machine and has nothing else
+  in flight hands its prompt to an idle `prefill` machine of the same plugin and
+  model with the whole model, the fastest measured `prefill_ms_per_token`
+  first. Every other head reads its own prompt: a busy head applies a piece
+  only while none of its batch slots decodes, so it would refuse what another
+  machine read (the free machines take new requests as heads instead).
 - **The prefill step** (`plugin_engine::prefill_on_peer`). Before a turn that
   names its conversation (`session`, or the `auto-` name) runs on a one-step
   plan without images or a typed decision, the gateway asks the balance above

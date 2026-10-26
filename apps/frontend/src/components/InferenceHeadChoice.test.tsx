@@ -45,10 +45,10 @@ const selected: InferenceHeadsResponse = {
   ],
 };
 
-function mount(response: InferenceHeadsResponse) {
+function mount(response: InferenceHeadsResponse, selectedNodeId?: string | null) {
   return render(
     <LocaleProvider initialLocale="pt-BR">
-      <InferenceHeadChoice model="qwen35" response={response} />
+      <InferenceHeadChoice model="qwen35" response={response} selectedNodeId={selectedNodeId} />
     </LocaleProvider>,
   );
 }
@@ -66,8 +66,15 @@ describe("InferenceHeadChoice", () => {
   });
 
   it("shows a combo with the full diagnostic when there are several candidates", () => {
-    mount(selected);
+    // Auto by default: nothing pinned, the gateway balances the heads
+    const { unmount } = mount(selected);
+    expect((screen.getByRole("combobox", { name: "Cabeça de inferência" }) as HTMLSelectElement).value)
+      .toBe("__head-auto");
+    expect(screen.getByRole("option", { name: /Auto · balanceado pela fila/i })).toBeTruthy();
+    expect(screen.queryByRole("option", { name: /Entrada selecionada/i })).toBeNull();
+    unmount();
 
+    mount(selected, "fast");
     const combo = screen.getByRole("combobox", { name: "Cabeça de inferência" });
     expect((combo as HTMLSelectElement).value).toBe("fast");
     expect(screen.getByRole("option", {

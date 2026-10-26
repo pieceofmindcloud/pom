@@ -583,6 +583,7 @@ async fn auto_head(
     pinned: Option<&str>,
     prefix: (&str, &str, bool),
     conversation: Option<(&str, &str)>,
+    prompt: &str,
 ) -> Option<String> {
     if let Some(pinned) = pinned {
         return Some(pinned.to_owned());
@@ -597,25 +598,38 @@ async fn auto_head(
     }
     // A conversation of a plugin engine goes back to the head that ran its last turn: its KV session is in that head's
     // batch slot. Only a conversation that is new here, or whose head is gone, takes the rotation below.
+    let perf = state.admission_health.perf_snapshot();
+    let mut queue = std::collections::HashMap::new();
+    for head in &heads {
+        let live = state.loads.load(head).await;
+        let reported = perf.get(head).map(|p| p.active_generations).unwrap_or(0);
+        queue.insert(head.clone(), live.max(reported));
+    }
+    let least = queue.values().copied().min().unwrap_or(0);
+    // a head that holds what this request continues keeps it unless it is clearly busier than the least busy one;
+    // then the rotation below picks a free head, and that head fetches the session only when the transfer pays
+    let keeps = |holder: &str, what: &str| {
+        let load = queue.get(holder).copied().unwrap_or(0);
+        if load <= least + SESSION_MOVE_LOAD_GAP {
+            info!("first stage: {what} is already on {holder}");
+            return true;
+        }
+        info!("first stage: {holder} has {what} but {load} in flight against {least} on the least busy head; it may move");
+        false
+    };
     if let Some((model, key)) = conversation {
         if let Some(holder) = crate::plugin_session::holder_of(model, key).filter(|head| heads.contains(head)) {
-            let perf = state.admission_health.perf_snapshot();
-            let mut busy = Vec::with_capacity(heads.len());
-            for head in &heads {
-                let live = state.loads.load(head).await;
-                let reported = perf.get(head).map(|p| p.active_generations).unwrap_or(0);
-                busy.push((head.clone(), live.max(reported)));
-            }
-            let least = busy.iter().map(|(_, load)| *load).min().unwrap_or(0);
-            let holder_load = busy.iter().find(|(head, _)| *head == holder).map(|(_, load)| *load).unwrap_or(0);
-            // the conversation stays on its head unless that head is clearly busier than the least busy one; then the
-            // rotation below picks a free head, and that head fetches the session only when the transfer pays
-            if holder_load <= least + SESSION_MOVE_LOAD_GAP {
-                info!("first stage: the conversation {key} is already on {holder}");
+            if keeps(&holder, &format!("the conversation {key}")) {
                 return Some(holder);
             }
-            info!("first stage: {holder} has {holder_load} in flight against {least} on the least busy head; \
-                   the conversation may move");
+        }
+        // a new conversation that begins with most of a prompt a head read recently: that head reuses what it read
+        if let Some(holder) =
+            crate::plugin_session::holder_of_prompt_start(model, prompt).filter(|head| heads.contains(head))
+        {
+            if keeps(&holder, "the start of this prompt") {
+                return Some(holder);
+            }
         }
     }
     // A session already in service for this prompt goes back to the head that holds it: its cache is reused there.
@@ -637,13 +651,6 @@ async fn auto_head(
             info!("first stage: the session is already on {head}");
             return Some(head);
         }
-    }
-    let perf = state.admission_health.perf_snapshot();
-    let mut queue = std::collections::HashMap::new();
-    for head in &heads {
-        let live = state.loads.load(head).await;
-        let reported = perf.get(head).map(|p| p.active_generations).unwrap_or(0);
-        queue.insert(head.clone(), live.max(reported));
     }
     let turn = crate::pipeline::next_head_turn(model);
     let chosen = crate::fastest::rotate_head(&heads, turn, |head| queue.get(head).copied().unwrap_or(0))?;
@@ -894,6 +901,7 @@ pub(super) async fn generate_stream_inner(
             preferred_head.as_deref(),
             (&prefix_model, &cache_prompt, images.is_empty()),
             conversation.as_ref().map(|key| (model, key.as_str())),
+            &prompt,
         )
         .await;
         // Planning by delivery time (`fastest`): measured speed of each

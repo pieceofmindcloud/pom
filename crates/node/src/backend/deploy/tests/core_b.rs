@@ -1482,3 +1482,122 @@ fn an_external_draft_makes_mtp_available_for_a_model_without_nextn() {
         crate::capabilities::CapabilityState::Supported
     );
 }
+
+// ── A sliced deployment with a prefill machine ──────────────────────────
+//
+// The whole GGUF of the model is offered beside the slices: the operator may
+// put it on a machine with the prefill role, which reads prompts for the
+// pipeline and stands outside its layer order.
+
+fn sliced_with_whole() -> Vec<Machine> {
+    let mut machines = build(vec![
+        m("a", 100_000, &[(0, 15)]),
+        m("b", 100_000, &[(16, 31)]),
+    ]);
+    machines.push(whole_machine("p", 100_000, true));
+    machines
+}
+
+fn plan_shards_with(
+    machines: &[Machine],
+    selection: Option<&[SelectedSlice]>,
+    service: Option<&str>,
+) -> Plan {
+    let params = RuntimeParams {
+        inference_service: service.map(str::to_string),
+        ..RuntimeParams::default()
+    };
+    super::plan(
+        "m",
+        machines,
+        selection,
+        &params,
+        false,
+        DeployKind::Shards,
+        None,
+    )
+}
+
+fn role(mut slice: SelectedSlice, role: crate::webui::InferenceRole) -> SelectedSlice {
+    slice.inference_role = Some(role);
+    slice
+}
+
+#[test]
+fn a_prefill_machine_runs_the_whole_model_beside_the_slices() {
+    use crate::webui::InferenceRole;
+    let machines = sliced_with_whole();
+    let p = plan_shards_with(
+        &machines,
+        Some(&[
+            role(pick(0, 15, "a"), InferenceRole::Decode),
+            role(pick(16, 31, "b"), InferenceRole::Decode),
+            role(pick(0, 31, "p"), InferenceRole::Prefill),
+        ]),
+        Some("strata"),
+    );
+    assert_eq!(p.blocked, None, "{:?}", p.blocked);
+    assert!(p.complete);
+    assert_eq!(p.steps.len(), 3);
+    let prefill = p.steps.iter().find(|s| s.target_node_id == "p").unwrap();
+    assert_eq!((prefill.start_layer, prefill.end_layer), (0, 31));
+    assert_eq!(prefill.inference_role, Some(InferenceRole::Prefill));
+    // the entry point of the pipeline is the slice at layer 0, not the prefill machine
+    assert_eq!(p.steps.iter().find(|s| s.primary).unwrap().target_node_id, "a");
+}
+
+#[test]
+fn a_prefill_machine_on_a_slice_is_refused() {
+    use crate::webui::InferenceRole;
+    let machines = sliced_with_whole();
+    let p = plan_shards_with(
+        &machines,
+        Some(&[
+            role(pick(0, 15, "a"), InferenceRole::Prefill),
+            role(pick(16, 31, "b"), InferenceRole::Decode),
+            role(pick(0, 31, "p"), InferenceRole::Decode),
+        ]),
+        Some("strata"),
+    );
+    assert!(
+        p.blocked.as_deref().is_some_and(|b| b.contains("prefill machine runs the whole model")),
+        "{:?}",
+        p.blocked
+    );
+}
+
+#[test]
+fn the_whole_model_decoding_beside_the_slices_overlaps_them() {
+    let machines = sliced_with_whole();
+    let p = plan_shards_with(
+        &machines,
+        Some(&[pick(0, 15, "a"), pick(16, 31, "b"), pick(0, 31, "p")]),
+        Some("strata"),
+    );
+    assert!(p.blocked.as_deref().is_some_and(|b| b.contains("two chosen slices")), "{:?}", p.blocked);
+}
+
+#[test]
+fn a_prefill_machine_needs_an_inference_service() {
+    use crate::webui::InferenceRole;
+    let machines = sliced_with_whole();
+    let p = plan_shards_with(
+        &machines,
+        Some(&[
+            pick(0, 15, "a"),
+            pick(16, 31, "b"),
+            role(pick(0, 31, "p"), InferenceRole::Prefill),
+        ]),
+        None,
+    );
+    assert!(p.blocked.as_deref().is_some_and(|b| b.contains("inference service")), "{:?}", p.blocked);
+}
+
+#[test]
+fn the_automatic_sliced_plan_leaves_the_whole_model_out() {
+    let machines = sliced_with_whole();
+    let p = plan_shards_with(&machines, None, None);
+    assert!(p.available.iter().any(|c| c.start_layer == 0 && c.end_layer == 31), "offered");
+    let ranges: Vec<(u32, u32)> = p.steps.iter().map(|s| (s.start_layer, s.end_layer)).collect();
+    assert_eq!(ranges, vec![(0, 15), (16, 31)]);
+}

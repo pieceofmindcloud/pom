@@ -646,10 +646,15 @@ export function DeploymentInspector({
   if (inferenceService) {
     // The POM carries the hidden state between the plugin's stages, so its own
     // settings only exist when the slices cross machines. The prefill/decode
-    // role is the opposite: it belongs to a machine that runs the whole model.
+    // role belongs to a machine that runs the whole model: a deployment on one
+    // machine, a whole model split into prefill and decode, or the prefill
+    // machine a sliced deployment holds beside its stages (`machineRoles`).
     const declared = inferenceService.pomSettings ?? [];
+    const perMachineRoles = (machineRoles?.length ?? 0) > 1;
     const pomSettings = declared.filter((setting) =>
-      setting === "inference_role" || setting === "prefill_min_tokens" ? !showHiddenStateDtype : showHiddenStateDtype,
+      setting === "inference_role" || setting === "prefill_min_tokens"
+        ? !showHiddenStateDtype || perMachineRoles
+        : showHiddenStateDtype,
     );
     // The engine's own settings, and the ones the service places in the POM card (whatever the slices).
     const engineSettings = (inferenceService.settings ?? []).filter((setting) => setting.placement !== "pom");

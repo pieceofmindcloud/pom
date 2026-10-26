@@ -2712,14 +2712,25 @@ with an error.
 inference service may be deployed with `RuntimeParams::inference_role`
 (`both`, the default, `prefill` or `decode`; the POM settings card of the
 deploy inspector draws it when the service declares `inference_role` in
-`pom_settings` and the model is not split across machines). One deployment
+`pom_settings` and the model is not split across machines, or per machine when
+two or more machines are on the map). One deployment
 may also put the whole model on several machines, each with its own role
 (`SelectedSlice::inference_role`, carried by `PeerOverrides`, the plan's
 `Step`, `LaunchTarget` and `params_for`): `plugin_engine::deploy_block`
 accepts several machines for a whole model only when their roles hold at
 least one `prefill` and one that decodes, and refuses a deployment whose
 machines are all `prefill`: a prefill machine is never a head, so no machine
-would answer. The deploy screen keeps a per-machine role only while two or
+would answer. A sliced deployment may hold a prefill machine too: the survey
+of a `shards` deployment also lists the whole GGUF of the same model
+(`parse_whole`, matched by `model_stem`), the automatic plan chains the slices
+only, and a row of the whole model with the `prefill` role stands outside the
+layer coverage (`planning.rs`, "Prefill machines of a sliced deployment"). The
+planner refuses a `prefill` row on a slice and a prefill machine without an
+inference service, and `deploy_block` does not ask a prefill machine for the
+service's `stages`. The deploy screen gives the whole model put on a machine of
+a sliced deployment the `prefill` role. The gateway's prefill step below runs
+only for a one-step plan today, so a sliced pipeline still reads its own
+prompts beside such a machine. The deploy screen keeps a per-machine role only while two or
 more machines are on the map; with a single machine the row's role is dropped
 and the deployment's role (the one the inspector shows) applies. A gateway
 whose only peers for the model are prefill machines answers "only prefill

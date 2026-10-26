@@ -559,15 +559,16 @@ pub(crate) fn take_own_wait(code: &str, phase: LinkPhase) -> u64 {
 }
 
 /// The phase and the token count of a request a later stage sends, from the engine's stage protocol: `P` is a prompt
-/// piece of n tokens (prefill), `W` a verify window of T tokens (decode). The frame is the envelope's kind byte, the
-/// tag, an i64 position, then the u32 count (native byte order, little-endian on the machines the engine runs on).
+/// piece of n tokens (prefill), `W` a verify window of T tokens (decode) and `V` the same window carrying the last
+/// one's commit. The frame is the envelope's kind byte, the tag, an i64 position, then the u32 count (native byte
+/// order, little-endian on the machines the engine runs on).
 pub(crate) fn frame_phase_and_tokens(frame: &[u8]) -> Option<(LinkPhase, u32)> {
     if frame.len() < 14 || frame[0] != KIND_BYTES {
         return None;
     }
     let phase = match frame[1] {
         b'P' => LinkPhase::Prefill,
-        b'W' => LinkPhase::Decode,
+        b'W' | b'V' => LinkPhase::Decode,
         _ => return None,
     };
     let n = u32::from_le_bytes([frame[10], frame[11], frame[12], frame[13]]);
@@ -1102,7 +1103,6 @@ async fn link_frame(
     seq: Option<u64>,
     body: Bytes,
 ) -> Response {
-    let started = Instant::now();
     let caller = match authorize(&state, &auth, &code, &deploy).await {
         Ok(caller) => caller,
         Err(refusal) => return refusal,
@@ -1184,6 +1184,9 @@ async fn link_frame(
             }
         },
     };
+    // This frame's own time starts at its turn: the wait for the frames before it is theirs, and counting it again
+    // in each of several frames in flight would add up to many times the prompt's wall clock.
+    let started = Instant::now();
     let frame = match from_network(&body) {
         Ok(frame) => frame,
         Err(error) => {
@@ -1496,6 +1499,12 @@ mod link_stats_tests {
         window.extend_from_slice(&7i64.to_le_bytes());
         window.extend_from_slice(&3u32.to_le_bytes());
         assert_eq!(frame_phase_and_tokens(&window), Some((LinkPhase::Decode, 3)));
+        // a window that carries the last one's commit (its n_keep after the tokens)
+        let mut folded = vec![KIND_BYTES, b'V'];
+        folded.extend_from_slice(&7i64.to_le_bytes());
+        folded.extend_from_slice(&2u32.to_le_bytes());
+        folded.extend_from_slice(&[0u8; 12]);
+        assert_eq!(frame_phase_and_tokens(&folded), Some((LinkPhase::Decode, 2)));
         let mut commit = vec![KIND_BYTES, b'C'];
         commit.extend_from_slice(&2u32.to_le_bytes());
         assert_eq!(frame_phase_and_tokens(&commit), None, "a commit carries no tokens of its own");

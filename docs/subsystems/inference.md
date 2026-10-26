@@ -2693,6 +2693,14 @@ engines exchange their own hidden states, never POM's hop protocol of section
   through the same `wire` encoding as the pipeline hops (f16, f8, groupwise
   int4) and hands it back to the other engine as `f32`; a tensor that f8
   cannot carry crosses that once as `f32`. Neither engine knows the precision.
+- **Trace.** The node reads a request frame's tag for the trace: `P` is a
+  prompt piece, `W` a verify window and `V` a verify window that carries the
+  last window's commit (one round trip per decode step instead of a `W` and a
+  `C`); its position and count sit at the same offsets in all three. The
+  earlier machine reports a frame's served time from the moment the frame's
+  turn comes, so the frames in flight together are not counted over each
+  other. The hops that carried hidden states report the deployment's
+  `hidden_state_dtype`.
 - Both routes take only a signed call from the live peer that serves the next
   slice of the same deployment. The node reads nothing of a frame but its
   envelope, and no engine listens beyond loopback.

@@ -1350,6 +1350,16 @@ pub(crate) async fn deploy_block(
             "the inference service {service} runs one slice per machine: choose different machines"
         ));
     }
+    // A sliced deployment's prefill machine runs the whole model beside the stages (the planner checks it is the
+    // whole model): it needs the service, not its stages.
+    let prefill_only = |target: &String| {
+        targets
+            .iter()
+            .zip(roles)
+            .filter(|(id, _)| *id == target)
+            .all(|(_, role)| *role == InferenceRole::Prefill)
+            && roles.len() == targets.len()
+    };
     for target in unique {
         let Some(services) = services_of(state, target).await else {
             return Some(format!(
@@ -1371,7 +1381,7 @@ pub(crate) async fn deploy_block(
                     entry["detail"].as_str().unwrap_or("no detail")
                 ))
             }
-            Some(entry) if !whole && entry["stages"] != true => {
+            Some(entry) if !whole && !prefill_only(target) && entry["stages"] != true => {
                 return Some(format!(
                     "the inference service {service} serves the whole model: choose \"whole model\""
                 ))

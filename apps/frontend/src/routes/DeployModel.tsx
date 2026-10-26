@@ -757,6 +757,17 @@ export function DeployModel() {
       return single;
     });
   }, [selection, p]);
+  /** One row per machine for the per-machine role: a whole model has one row per machine already; slices may put
+   *  several ranges on one machine, which share its role. A sliced deployment may also hold a prefill machine that
+   *  runs the whole model beside the slices. */
+  const roleMachines = useMemo(() => {
+    const seen = new Set<string>();
+    return rows.filter((row) => {
+      if (!row.target_node_id || seen.has(row.target_node_id)) return false;
+      seen.add(row.target_node_id);
+      return true;
+    });
+  }, [rows]);
   /** The canvas, TP selectors and card actions all use this same membership.
    *  Complete strategy puts every live machine on the map except in whole mode,
    *  where the operator adds each machine. */
@@ -1014,6 +1025,12 @@ export function DeployModel() {
           row.end_layer === candidate.end_layer,
       );
       if (alreadyAssigned) return base;
+      // The whole model put on a machine of a sliced deployment joins as its
+      // prefill machine: it reads the prompts beside the stages instead of
+      // running their layers a second time.
+      const wholeBesideSlices = !isWhole && service && splitRoles && candidate.start_layer === 0
+        && p?.total_layers != null && candidate.end_layer + 1 === p.total_layers;
+      const inferenceRole = wholeBesideSlices ? "prefill" as const : existing?.inference_role;
       // Assigning a range to another peer creates an explicit replica. Never
       // silently remove the ranges the peer already serves.
       return [
@@ -1024,7 +1041,7 @@ export function DeployModel() {
           target_node_id: nodeId,
           n_gpu_layers: existing?.n_gpu_layers ?? null,
           offload_kqv: existing?.offload_kqv ?? null,
-          ...(existing?.inference_role ? { inference_role: existing.inference_role } : {}),
+          ...(inferenceRole ? { inference_role: inferenceRole } : {}),
         },
       ].sort(byLayer);
     });
@@ -1592,8 +1609,8 @@ export function DeployModel() {
                   : (inferenceModeReason ?? t("deployStudio.engineUnsupported"))
               }
               showHiddenStateDtype={crossesPeerBoundary}
-              machineRoles={isWhole && service && splitRoles && rows.length > 1
-                ? rows.map((row) => ({
+              machineRoles={service && splitRoles && roleMachines.length > 1
+                ? roleMachines.map((row) => ({
                     nodeId: row.target_node_id,
                     label: labelOf(row.target_node_id),
                     role: row.inference_role ?? eff.inference_role ?? "both",

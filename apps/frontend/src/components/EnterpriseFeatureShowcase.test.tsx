@@ -75,6 +75,47 @@ describe("EnterpriseFeatureShowcase", () => {
     open.mockRestore();
   });
 
+  it("shows no price for a plugin the site sells by contact and opens the contact form about it", () => {
+    mocks.catalog.data = { plugins: [{ ...enterprise, sales_mode: "contact" }] };
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    renderPage();
+
+    expect(screen.getByText("Preço sob consulta")).toBeTruthy();
+    expect(screen.queryByText(/R\$\s?14,99/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Comprar agora" })).toBeNull();
+    expect(screen.getByText(/com preço sob medida/)).toBeTruthy();
+    fireEvent.click(screen.getAllByRole("button", { name: "Falar com vendas" })[0]);
+    expect(open).toHaveBeenCalledWith("https://pieceofmind.cloud/contato/?plugin=logs&lang=pt", "_blank", "noopener,noreferrer");
+    expect(screen.getByRole("link", { name: /Mais na loja de plugins/ }).getAttribute("href")).toBe("https://pieceofmind.cloud/plugins/?plugin=logs&lang=pt");
+    expect(screen.getByRole("heading", { name: "Fale com a nossa equipe" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Compre com Paddle" })).toBeNull();
+    open.mockRestore();
+  });
+
+  it("shows a running promotion as the full price struck through, the discounted one and its terms", () => {
+    mocks.catalog.data = { plugins: [{
+      ...enterprise,
+      pricing: { monthly: { amount: 2998, currency: "brl", interval: "month" }, annual: null },
+      promotion: { percent: 50, intervals: ["month"], applies_to: "payments", payments: 3, ends_at: "2099-11-30T12:00:00.000Z" },
+    }] };
+    renderPage();
+
+    expect(screen.getByText("Promoção -50%")).toBeTruthy();
+    expect(screen.getByText(/R\$\s?29,98/).tagName).toBe("S");
+    expect(screen.getAllByText(/R\$\s?14,99/).length).toBeGreaterThan(0);
+    expect(screen.getByText("Por tempo limitado, até 30 de novembro: 50% de desconto nos 3 primeiros pagamentos.")).toBeTruthy();
+  });
+
+  it("ignores a promotion that is already over by this machine's clock", () => {
+    mocks.catalog.data = { plugins: [{
+      ...enterprise,
+      promotion: { percent: 50, intervals: ["month"], applies_to: "first", payments: null, ends_at: "2000-01-01T00:00:00.000Z" },
+    }] };
+    renderPage();
+    // The query mock skips the normalizer; an expired promotion must still not discount.
+    expect(screen.queryByText(/Promoção/)).toBeNull();
+  });
+
   it("keeps working without the catalog and sells Logs, Statistics and Quota as one plugin", () => {
     renderPage();
 

@@ -85,7 +85,10 @@ describe("plugin UI registry", () => {
     expect(canAccessRoute("/acme", "visitor")).toBe(true);
     expect(canAccessRoute("/logs", "worker")).toBe(true);
     expect(canAccessRoute("/logs", "admin")).toBe(true);
-    expect(canAccessRoute("/logs", "visitor")).toBe(false, "the POM still denies native logs to infer");
+    // A visitor sees the requests that entered through its own node once a plugin serves them;
+    // deployment logs stay closed to it even where a plugin claims the route.
+    expect(canAccessRoute("/logs", "visitor")).toBe(true);
+    expect(canAccessRoute("/deployments", "visitor")).toBe(false);
   });
 
   it("accepts route roles without requiring legacy profiles", () => {
@@ -226,7 +229,7 @@ describe("plugin UI registry", () => {
     expect(resolvePluginRoute("/base/plugin-de-base")).toBeNull();
   });
 
-  it("exposes plugin menus across profiles while retaining native infer restrictions", () => {
+  it("exposes plugin menus across profiles, the logs plugin's included", () => {
     setPluginUi([plugin]);
     expect(pluginMenuItems("worker").map((i) => i.id)).toEqual(["logs", "extra"]);
     expect(pluginMenuItems("visitor").map((i) => i.id)).toEqual(["logs", "extra"]);
@@ -235,7 +238,7 @@ describe("plugin UI registry", () => {
       ...(section.children ?? []).map((child) => child.labelKey),
     ]);
     expect(inferNavigation).toContain("plugin:acme:extra");
-    expect(inferNavigation).not.toContain("plugin:acme:logs");
+    expect(inferNavigation).toContain("plugin:acme:logs");
     expect(pluginLabel("plugin:acme:logs", "pt-BR")).toBe("Auditoria");
     expect(pluginLabel("plugin:acme:extra", "pt-BR")).toBe("Extra");
     expect(pluginLabel("plugin:acme:nope", "en")).toBeNull();

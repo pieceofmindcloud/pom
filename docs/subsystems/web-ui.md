@@ -253,8 +253,10 @@ local-only notice. Routes:
   `/transfers/send` redirects there, keeping `?filename=`
 - `/logs` and `/statistics` -> `EnterpriseFeatureShowcase`, the sales page
   of the logs plugin (Request Logs, Statistics and Quota, one purchase; public
-  catalog, purchase on the site in a new tab), when no active plugin declares
-  the target. While neither is declared the menu shows one "Business Pack"
+  catalog, purchase on the site in a new tab; a running promotion shows the
+  full price struck through beside the discounted one, and a plugin the
+  console sells by contact shows no price and "Talk to sales"), when no active
+  plugin declares the target. While neither is declared the menu shows one "Business Pack"
   entry (to `/logs`) in place of the whole Logs section and Statistics, since
   the deployment logs are kept by the same plugin. The desktop shells
   (WebView2, WebKitGTK, the macOS panel) open any link to another host and any
@@ -290,7 +292,10 @@ local-only notice. Routes:
   state published by the node, never from the public catalog. Plugins active on
   the node stay listed even when missing from the public catalog, with local
   actions preserved. When the required license is not active, Buy redirects to
-  the public store with the `plugin_code` encoded by `lib/pluginPurchase.ts`.
+  the public store with the `plugin_code` encoded by `lib/pluginPurchase.ts`;
+  for a plugin sold by contact the card reads "Pricing on request" and the
+  button, "Talk to sales", opens the site's contact form about it. A running
+  promotion tags the card and strikes the full price beside the discounted one.
   Active plugins show license expiry, last install/application and last update
   check as distinct dates; the screen reads those times from the state
   persisted by the node. The activation key shows up when any public entry that

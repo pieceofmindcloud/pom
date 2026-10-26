@@ -1,4 +1,4 @@
-import { AlertTriangle, BookOpen, ChevronLeft, ChevronRight, Download, ExternalLink, GitBranch, Hammer, KeyRound, Package, RefreshCw, Save, Search, Settings, ShieldCheck, Sparkles, Trash2, Upload, X, XCircle } from "lucide-react";
+import { AlertTriangle, BookOpen, ChevronLeft, ChevronRight, Download, ExternalLink, GitBranch, Hammer, KeyRound, MessageSquare, Package, RefreshCw, Save, Search, Settings, ShieldCheck, Sparkles, Trash2, Upload, X, XCircle } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { Tone } from "../components/ui";
@@ -9,8 +9,9 @@ import { PluginUpdatesDialog, type UpdateItem } from "../components/PluginUpdate
 import { ApiError, api } from "../lib/api";
 import { keys, useDevelopmentPluginSources, useGithubRepositories, useNode, usePlugins, usePublicPlugin, usePublicPluginCatalog } from "../lib/queries";
 import type { DevelopmentPluginError, DevelopmentPluginRebuildResult, DevelopmentPluginSource, GithubRepository, GithubRepositoryRelease, PluginPreferences, PluginPreferencesSchema, PluginStatus, PomCoreUpdateStatus } from "../lib/types";
-import { releaseForTarget, supportedPlatforms, type PublicPluginCatalogEntry, type PublicPluginPrice } from "../lib/pluginCatalog";
-import { navigateToPluginPurchase } from "../lib/pluginPurchase";
+import { releaseForTarget, supportedPlatforms, type PublicPluginCatalogEntry } from "../lib/pluginCatalog";
+import { navigateToPluginContact, navigateToPluginPurchase } from "../lib/pluginPurchase";
+import { promotionEnd, promotionFor, salesByContact, termPrice, type PlanInterval } from "../lib/pluginPricing";
 import { pluginAssetUrl, pluginUiSnapshot } from "../lib/pluginUi";
 import { useI18n } from "../i18n/provider";
 
@@ -34,18 +35,6 @@ const PAGE_SIZE = 10;
 const EXAMPLE_PLUGIN_CODE = "base";
 const EXAMPLE_PLUGIN_REPOSITORY = "https://github.com/pieceofmindcloud/pom-plugin-base";
 const PUBLISH_PLUGIN_URL = "https://pieceofmind.cloud/plugins/publicar/";
-
-function formatPrice(price: PublicPluginPrice | null, locale: string): string | null {
-  if (price?.amount === null || price?.amount === undefined || !price.currency) return null;
-  try {
-    return new Intl.NumberFormat(locale, {
-      style: "currency",
-      currency: price.currency,
-    }).format(price.amount / 100);
-  } catch {
-    return null;
-  }
-}
 
 function formatDateTime(value: string | null | undefined, locale: string, time = true): string | null {
   if (!value) return null;
@@ -424,8 +413,12 @@ function PluginCard({
     licenseStatus?.license_expires_at ?? status?.license_expires_at,
     locale,
   );
-  const monthlyPrice = formatPrice(entry?.pricing.monthly ?? null, locale);
-  const annualPrice = formatPrice(entry?.pricing.annual ?? null, locale);
+  // As the site sells it: no price for a "talk to sales" plugin, the full price struck beside the discounted one in a promotion.
+  const contactSales = salesByContact(entry);
+  const terms = contactSales ? [] : (["month", "year"] as PlanInterval[])
+    .map((interval) => ({ interval, ...termPrice(entry, interval, locale) }))
+    .filter((term) => term.full !== null);
+  const promotion = terms.some((term) => term.sale) ? terms.map((term) => promotionFor(entry?.promotion, term.interval)).find(Boolean) ?? null : null;
   const screenshots = (entry?.screenshot_urls.length ? entry.screenshot_urls : repository?.screenshot_urls ?? []).slice(0, 4);
   const isLicenseEnded = status?.state === "expired" || status?.state === "revoked";
   const hasLicense = entry?.requires_license !== false
@@ -629,10 +622,26 @@ function PluginCard({
           )}
         </dl>
 
-        {(monthlyPrice || annualPrice) && (
+        {contactSales ? (
           <div className="flex flex-wrap gap-1.5" aria-label={t("plugins.pricing")}>
-            {monthlyPrice && <Badge tone="neutral">{t("plugins.monthlyPrice", { price: monthlyPrice })}</Badge>}
-            {annualPrice && <Badge tone="neutral">{t("plugins.annualPrice", { price: annualPrice })}</Badge>}
+            <Badge tone="neutral">{t("plugins.priceOnRequest")}</Badge>
+          </div>
+        ) : terms.length > 0 && (
+          <div className="space-y-1.5">
+            <div className="flex flex-wrap gap-1.5" aria-label={t("plugins.pricing")}>
+              {promotion && <Badge tone="aqua">{t("plugins.promotion.badge", { percent: promotion.percent })}</Badge>}
+              {terms.map((term) => (
+                <Badge key={term.interval} tone={term.sale ? "aqua" : "neutral"}>
+                  {term.sale && <s className="mr-1 opacity-60">{term.full}</s>}
+                  {t(term.interval === "year" ? "plugins.annualPrice" : "plugins.monthlyPrice", { price: term.sale ?? term.full ?? "" })}
+                </Badge>
+              ))}
+            </div>
+            {promotion && (
+              <p className="text-xs text-aqua">
+                {t("plugins.promotion.note", { date: promotionEnd(promotion, locale), percent: promotion.percent, appliesTo: promotion.applies_to, payments: promotion.payments ?? 0 })}
+              </p>
+            )}
           </div>
         )}
 
@@ -741,11 +750,11 @@ function PluginCard({
             <Button
               variant="ghost"
               type="button"
-              icon={<ExternalLink className="h-4 w-4" />}
+              icon={contactSales ? <MessageSquare className="h-4 w-4" /> : <ExternalLink className="h-4 w-4" />}
               className="plugin-buy-button focus-visible:ring-2 focus-visible:ring-iris focus-visible:ring-offset-2 focus-visible:ring-offset-surface"
               onClick={() => onBuy(entry)}
             >
-              {t("plugins.buy")}
+              {t(contactSales ? "plugins.contactSales" : "plugins.buy")}
             </Button>
           )}
         </div>
@@ -1244,7 +1253,9 @@ export function Plugins() {
           setPreferencesError(null);
           setPreferencesCode(target);
         }}
-        onBuy={(target) => navigateToPluginPurchase(target.code)}
+        onBuy={(target) => salesByContact(target)
+          ? navigateToPluginContact(target.code, { locale })
+          : navigateToPluginPurchase(target.code, { locale })}
         onGithubRefresh={(id) => void runGithubAction(id, () => api.post(`/api/ui/plugins/github-repositories/${encodeURIComponent(id)}/refresh`))}
         onGithubRemove={(id) => void runGithubAction(id, () => api.del(`/api/ui/plugins/github-repositories/${encodeURIComponent(id)}`))}
         // Only the POM team's own plugins skip the unverified-code warning.

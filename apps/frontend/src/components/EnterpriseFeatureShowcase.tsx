@@ -6,20 +6,24 @@
  * gradient, numbered mono eyebrows, round cards, pill buttons) and reads what
  * the license server publishes in its public catalog: name, description,
  * icon, the official screenshots and the price, formatted in the interface's
- * language. "Buy" opens the site's purchase wizard (`/comprar/`, Paddle) in a
- * new browser tab with the plugin, the billing period and the language, so a
- * desktop shell hands it to the system browser and POM keeps running. One
+ * language, as the site sells it: with a running promotion, the full price
+ * struck through beside the discounted one and its terms; for a plugin the
+ * console set to "talk to sales", no price and a "Talk to sales" button that
+ * opens the site's contact form about it. "Buy" opens the site's purchase
+ * wizard (`/comprar/`, Paddle) in a new browser tab with the plugin, the
+ * billing period and the language, so a desktop shell hands it to the system
+ * browser and POM keeps running. One
  * purchase brings Request Logs, Statistics and Quota, and the plugin matters
  * most to the network's admins. Without the catalog, the page keeps working
  * from its own copy and drawn previews.
  */
-import { ArrowRight, BarChart3, Check, ChevronLeft, ChevronRight, CreditCard, Gauge, KeyRound, ListTree, Lock, ShieldCheck, UserCog, X, Zap } from "lucide-react";
+import { ArrowRight, BarChart3, Check, ChevronLeft, ChevronRight, CreditCard, Gauge, KeyRound, ListTree, Lock, MessageSquare, ShieldCheck, UserCog, X, Zap } from "lucide-react";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { Link } from "react-router-dom";
 import { usePublicPluginCatalog } from "../lib/queries";
-import type { PublicPluginPrice } from "../lib/pluginCatalog";
 import { useI18n } from "../i18n/provider";
-import { navigateToPluginPurchase, publicPluginPurchaseUrl } from "../lib/pluginPurchase";
+import { navigateToPluginContact, navigateToPluginPurchase, publicPluginPurchaseUrl, publicPluginStoreUrl } from "../lib/pluginPurchase";
+import { promotionEnd, promotionFor, salesByContact, termPrice } from "../lib/pluginPricing";
 
 const PLUGIN_CODE = "logs";
 
@@ -71,15 +75,6 @@ function StatisticsPreview() {
   );
 }
 
-function formatPrice(price: PublicPluginPrice | null | undefined, locale: string): string | null {
-  if (!price || price.amount === null || price.amount === undefined || !price.currency) return null;
-  try {
-    return new Intl.NumberFormat(locale, { style: "currency", currency: price.currency.toUpperCase() }).format(price.amount / 100);
-  } catch {
-    return null;
-  }
-}
-
 const stagger = (index: number) => ({ "--i": index }) as CSSProperties;
 
 export function EnterpriseFeatureShowcase({ kind }: { kind: ShowcaseKind }) {
@@ -93,16 +88,19 @@ export function EnterpriseFeatureShowcase({ kind }: { kind: ShowcaseKind }) {
   useEffect(() => {
     if (intervals.length > 0 && !intervals.includes(interval)) setInterval(intervals[0]);
   }, [intervals.join(","), interval]);
-  const price = interval === "year" ? annual : monthly;
-  const priceLabel = formatPrice(price, locale);
+  const contact = salesByContact(entry);
+  const { full: priceLabel, sale: saleLabel } = termPrice(entry, interval, locale);
+  const promotion = saleLabel ? promotionFor(entry?.promotion, interval) : null;
+  // What the buyer pays now: the promotional price while one runs.
+  const payLabel = saleLabel ?? priceLabel;
   const name = entry?.display_name || t("enterprise.store.name");
   const description = locale === "pt-BR"
     ? entry?.description_pt_br || t("enterprise.store.description")
     : entry?.description || t("enterprise.store.description");
   const screenshots = entry?.screenshot_urls ?? [];
 
-  const storeUrl = publicPluginPurchaseUrl(PLUGIN_CODE, { interval, locale });
-  const buy = () => navigateToPluginPurchase(PLUGIN_CODE, { interval, locale });
+  const storeUrl = contact ? publicPluginStoreUrl(PLUGIN_CODE, { locale }) : publicPluginPurchaseUrl(PLUGIN_CODE, { interval, locale });
+  const buy = () => contact ? navigateToPluginContact(PLUGIN_CODE, { locale }) : navigateToPluginPurchase(PLUGIN_CODE, { interval, locale });
 
   const [shot, setShot] = useState<number | null>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -122,8 +120,8 @@ export function EnterpriseFeatureShowcase({ kind }: { kind: ShowcaseKind }) {
   const focus = kind === "logs" ? ["logs", "statistics", "quota"] as const : ["statistics", "logs", "quota"] as const;
   const buyButton = (className = "") => (
     <button type="button" className={`pom-store-buy ${className}`} onClick={buy}>
-      <CreditCard className="h-4 w-4" aria-hidden="true" />
-      {t("enterprise.store.buy")}
+      {contact ? <MessageSquare className="h-4 w-4" aria-hidden="true" /> : <CreditCard className="h-4 w-4" aria-hidden="true" />}
+      {t(contact ? "enterprise.store.contactSales" : "enterprise.store.buy")}
     </button>
   );
 
@@ -157,7 +155,7 @@ export function EnterpriseFeatureShowcase({ kind }: { kind: ShowcaseKind }) {
               <p className="pom-store-product-code">plugin · {PLUGIN_CODE}</p>
             </div>
           </div>
-          {intervals.length > 1 && (
+          {!contact && intervals.length > 1 && (
             <div className="pom-store-intervals" role="group" aria-label={t("enterprise.store.interval")}>
               {intervals.map((value) => (
                 <button key={value} type="button" aria-pressed={interval === value} onClick={() => setInterval(value)}>
@@ -166,12 +164,32 @@ export function EnterpriseFeatureShowcase({ kind }: { kind: ShowcaseKind }) {
               ))}
             </div>
           )}
-          <p className="pom-store-amount">
-            {priceLabel ?? t("enterprise.store.priceAtCheckout")}
-            {priceLabel && <span>{t(`enterprise.store.per.${interval}`)}</span>}
-          </p>
+          {contact ? (
+            <>
+              <p className="pom-store-amount pom-store-amount-text">{t("plugins.priceOnRequest")}</p>
+              <p className="pom-store-contact">{t("enterprise.store.contactBody")}</p>
+            </>
+          ) : (
+            <>
+              {promotion && <p className="pom-store-promo-badge">{t("plugins.promotion.badge", { percent: promotion.percent })}</p>}
+              <div className="pom-store-pay">
+                {saleLabel && <p className="pom-store-was"><s>{priceLabel}</s></p>}
+                <p className="pom-store-amount">
+                  {payLabel ?? t("enterprise.store.priceAtCheckout")}
+                  {payLabel && <span>{t(`enterprise.store.per.${interval}`)}</span>}
+                </p>
+              </div>
+              {promotion && (
+                <p className="pom-store-promo">
+                  {t("plugins.promotion.note", {
+                    date: promotionEnd(promotion, locale), percent: promotion.percent, appliesTo: promotion.applies_to, payments: promotion.payments ?? 0,
+                  })}
+                </p>
+              )}
+            </>
+          )}
           {buyButton("pom-store-buy-wide")}
-          <p className="pom-store-opens">{t("enterprise.store.opensInBrowser")}</p>
+          <p className="pom-store-opens">{t(contact ? "enterprise.store.opensContact" : "enterprise.store.opensInBrowser")}</p>
           <ul className="pom-store-included">
             {["included1", "included5", "included2", "included3", "included4"].map((key) => (
               <li key={key}><Check className="h-3.5 w-3.5" aria-hidden="true" />{t(`enterprise.store.${key}`)}</li>
@@ -237,8 +255,9 @@ export function EnterpriseFeatureShowcase({ kind }: { kind: ShowcaseKind }) {
             <li key={index} className="pom-store-step" style={stagger(index)}>
               <span className="pom-store-step-num" aria-hidden="true">{index}</span>
               <div>
-                <h3 className="pom-store-h3">{t(`enterprise.store.step${index}.title`)}</h3>
-                <p>{t(`enterprise.store.step${index}.body`)}</p>
+                {/* Sold by contact, the first step is the conversation that ends in an offer link. */}
+                <h3 className="pom-store-h3">{t(contact && index === 1 ? "enterprise.store.contactStep1.title" : `enterprise.store.step${index}.title`)}</h3>
+                <p>{t(contact && index === 1 ? "enterprise.store.contactStep1.body" : `enterprise.store.step${index}.body`)}</p>
               </div>
             </li>
           ))}
@@ -261,7 +280,9 @@ export function EnterpriseFeatureShowcase({ kind }: { kind: ShowcaseKind }) {
       <section className="pom-store-cta">
         <div>
           <h2 className="pom-store-h2">{t("enterprise.store.ctaTitle")}</h2>
-          <p>{priceLabel ? t("enterprise.store.ctaPrice", { price: `${priceLabel}${t(`enterprise.store.per.${interval}`)}` }) : t("enterprise.store.ctaBody")}</p>
+          <p>{contact
+            ? t("enterprise.store.ctaContact")
+            : payLabel ? t("enterprise.store.ctaPrice", { price: `${payLabel}${t(`enterprise.store.per.${interval}`)}` }) : t("enterprise.store.ctaBody")}</p>
         </div>
         {buyButton()}
         <a className="pom-store-site" href={storeUrl} target="_blank" rel="noopener noreferrer">

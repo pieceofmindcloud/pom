@@ -852,6 +852,17 @@ body {
 .pom-store-intervals button[aria-pressed="true"] { background: rgba(79, 155, 255, .2); color: #fff; }
 .pom-store-amount { font-size: clamp(30px, 3.4vw, 40px); font-weight: 900; letter-spacing: -.05em; line-height: 1; }
 .pom-store-amount span { margin-left: 4px; color: rgba(255, 255, 255, .55); font-size: 15px; font-weight: 600; letter-spacing: 0; }
+/* "Talk to sales" sets words where the amount goes; a promotion strikes the full price above the one paid now. */
+.pom-store-amount-text { font-size: clamp(24px, 2.6vw, 30px); letter-spacing: -.03em; }
+.pom-store-contact { color: rgba(255, 255, 255, .7); font-size: 13.5px; line-height: 1.55; }
+.pom-store-pay { display: grid; gap: 4px; }
+.pom-store-was { color: rgba(255, 255, 255, .5); font-size: 15px; font-weight: 600; }
+.pom-store-was s { text-decoration-thickness: 1.5px; }
+.pom-store-promo-badge {
+  justify-self: start; padding: 3px 10px; border-radius: 999px;
+  background: rgba(47, 220, 200, .14); color: #2fdcc8; font-size: 11px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase;
+}
+.pom-store-promo { color: #2fdcc8; font-size: 13px; font-weight: 600; line-height: 1.5; }
 .pom-store-buy {
   position: relative; overflow: hidden;
   display: inline-flex; align-items: center; justify-content: center; gap: 9px;

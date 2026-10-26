@@ -940,6 +940,8 @@ pub(crate) async fn generate(
                 if let Some(key) = &session_key {
                     super::plugin_session::note_holder(model, key, node_id);
                 }
+                // and what it read: a new conversation that begins with most of this prompt goes there too
+                super::plugin_session::note_prompt_start(model, &request.prompt, node_id);
                 if super::plugin_session::PUSH_SYNC && node_id == state.network.node_id {
                     if let Some(key) = super::plugin_session::saved_session(done) {
                         super::plugin_session::spawn_sync(state.clone(), code.to_owned(), key);
@@ -1146,40 +1148,36 @@ async fn prefill_peer(
         .find(|peer| peer.node_id == head)
         .map(|peer| role_of_capabilities(&peer.inference_frame_capabilities))
         .unwrap_or(InferenceRole::Both);
-    // the head's load counts this turn (`generate` holds it in flight): more than one is another request on it
-    let head_busy = load_of.get(head).copied().unwrap_or(0) > 1;
-    let mut best: Option<(bool, f64, crate::network::PeerInfo)> = None;
+    // the head's load counts this turn (`generate` holds it in flight): more than one is another request on it. A busy
+    // head reads its own prompt: it applies a piece only while none of its batch slots decodes, so it would refuse
+    // what another machine read (a free machine takes new requests as their head instead, `auto_head`)
+    if load_of.get(head).copied().unwrap_or(0) > 1 || head_role == InferenceRole::Prefill {
+        return None;
+    }
+    let mut best: Option<(f64, crate::network::PeerInfo)> = None;
     for peer in peers {
         let whole = peer.total_layers > 0 && peer.start_layer == 0 && peer.end_layer + 1 == peer.total_layers;
         let role = role_of_capabilities(&peer.inference_frame_capabilities);
-        // a machine of the split (a role keeps its sessions on), idle, with the same plugin and the whole model
+        // an idle prefill machine with the same plugin and the whole model
         if peer.node_id == head
             || peer.model != model
             || !whole
             || engine_of_peer(&peer).as_deref() != Some(code)
-            || role == InferenceRole::Both
+            || role != InferenceRole::Prefill
             || load_of.get(&peer.node_id).copied().unwrap_or(0) > 0
         {
             continue;
         }
-        let prefill = role == InferenceRole::Prefill;
-        // a free head reads its own prompt, unless an idle prefill machine is there and the head is not one
-        if !head_busy && !(prefill && head_role != InferenceRole::Prefill) {
-            continue;
-        }
-        // a prefill machine first, then the fastest at reading prompts (unmeasured last)
+        // the fastest at reading prompts (unmeasured last)
         let speed = perf
             .get(&peer.node_id)
             .and_then(|p| p.prefill_ms_per_token)
             .unwrap_or(f64::INFINITY);
-        let better = best
-            .as_ref()
-            .is_none_or(|(best_prefill, best_speed, _)| (prefill, -speed) > (*best_prefill, -*best_speed));
-        if better {
-            best = Some((prefill, speed, peer));
+        if best.as_ref().is_none_or(|(best_speed, _)| speed < *best_speed) {
+            best = Some((speed, peer));
         }
     }
-    best.map(|(_, _, peer)| peer)
+    best.map(|(_, peer)| peer)
 }
 
 /// What a prefill machine did for a turn: who it is (its step, for the trace), the tokens it read and how long its
@@ -1680,15 +1678,14 @@ mod tests {
             let _fast = state.loads.acquire("fast").await;
             let _pre2 = state.loads.acquire("pre2").await;
             assert_eq!(picked("head").await, None, "no idle prefill machine: the free head reads it");
-            // a busy head hands it to any idle machine of the split
+            drop((_fast, _pre2));
+            // a busy head reads its own prompt: it would refuse the pieces while a slot decodes
             let _another = state.loads.acquire("head").await;
-            assert_eq!(picked("head").await.as_deref(), Some("other"));
+            assert_eq!(picked("head").await, None);
         }
-        // a free prefill head reads its own prompt; a busy one hands it over, to a prefill machine first
+        // a prefill head reads its own prompt, free or busy
         let _turn = state.loads.acquire("pre2").await;
         assert_eq!(picked("pre2").await, None);
-        let _another = state.loads.acquire("pre2").await;
-        assert_eq!(picked("pre2").await.as_deref(), Some("fast"));
     }
 
     #[test]

@@ -2753,18 +2753,22 @@ the plugin in `engine.load` (`role`) and is announced as
 `capabilities` carry it too). A stage of a split model has no role.
 
 - **Planning.** Every machine of the split is a head like any other: a
-  conversation goes back to the head that holds it (`auto_head`), and a new one
-  takes the rotation by queue, so the machines share the conversations.
+  conversation goes back to the head that holds it (`auto_head`); a new one
+  whose prompt begins with three quarters of a prompt a head read recently
+  (`plugin_session::note_prompt_start`, recorded when the turn ends, from
+  16 KiB of prompt) goes to that head, which reuses what it read; any other
+  takes the rotation by queue, so the machines share the conversations. Both
+  affinities give way when that head has more than two requests in flight
+  beyond the least busy one (`SESSION_MOVE_LOAD_GAP`).
 - **The balance** (`plugin_engine::prefill_peer`), per turn, by queue: the
   load of a machine is the larger of this gateway's in-flight count and the
   `active_generations` its `/health` reports, and the head's count includes
-  the turn itself. A target is another machine of the split (a `prefill` or
-  `decode` role, the same plugin and model, the whole model) with nothing in
-  flight. A busy head (another request on it) hands the prompt to an idle
-  target, a `prefill` machine first, then the fastest measured
-  `prefill_ms_per_token`. A free head reads its own prompt, except a head
-  that is not a `prefill` machine while a `prefill` machine is idle: that one
-  reads it. No idle target: the head reads it.
+  the turn itself. A head that is not a `prefill` machine and has nothing else
+  in flight hands its prompt to an idle `prefill` machine of the same plugin and
+  model with the whole model, the fastest measured `prefill_ms_per_token`
+  first. Every other head reads its own prompt: a busy head applies a piece
+  only while none of its batch slots decodes, so it would refuse what another
+  machine read (the free machines take new requests as heads instead).
 - **The prefill step** (`plugin_engine::prefill_on_peer`). Before a turn that
   names its conversation (`session`, or the `auto-` name) runs on a one-step
   plan without images or a typed decision, the gateway asks the balance above

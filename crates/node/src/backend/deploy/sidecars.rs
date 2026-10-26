@@ -66,6 +66,10 @@ pub struct SidecarsPlan {
     /// Compatible files anywhere in the network, both kinds.
     pub(super) options: Vec<SidecarOption>,
     pub(super) vision: Option<SidecarSlot>,
+    /// The projector for every other head of a whole model on several machines (a prefill/decode split, where each
+    /// machine answers requests and so reads their images): the same file, resolved and copied per machine.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(super) vision_heads: Vec<SidecarSlot>,
     pub(super) mtp: Option<SidecarSlot>,
     /// The principal could not be read; the links shown are the local copy.
     pub(super) links_stale: bool,
@@ -250,6 +254,7 @@ pub(super) fn attach_sidecars(
         embedded_mtp: shape.embedded_mtp,
         options,
         vision: None,
+        vision_heads: Vec::new(),
         mtp: None,
         links_stale,
     };
@@ -296,6 +301,22 @@ pub(super) fn attach_sidecars(
                     plan.mmproj_path = Some(path.clone());
                     plan.mmproj_reason = None;
                 }
+                // the other machines that hold the whole model answer too: each gets the projector
+                let whole = |step: &Step| plan.total_layers.is_some_and(|total| step.end_layer + 1 == total);
+                if whole(head) {
+                    for other in plan.steps.iter().filter(|step| {
+                        step.start_layer == 0 && whole(step) && step.target_node_id != head.target_node_id
+                    }) {
+                        out.vision_heads.push(resolve_slot(
+                            SidecarKind::Mmproj,
+                            mode,
+                            slot.file.clone(),
+                            from_link,
+                            other,
+                            &out.options,
+                        ));
+                    }
+                }
                 out.vision = Some(slot);
             }
         }
@@ -317,7 +338,7 @@ pub(super) fn attach_sidecars(
         }
     }
 
-    for slot in [&out.vision, &out.mtp].into_iter().flatten() {
+    for slot in [&out.vision, &out.mtp].into_iter().flatten().chain(&out.vision_heads) {
         if let Some(problem) = &slot.problem {
             plan.blocked.get_or_insert(problem.clone());
         }

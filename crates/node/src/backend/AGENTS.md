@@ -448,7 +448,10 @@ boundary.
   preview and launch read.
 - `deploy/sidecars.rs` - `attach_sidecars` fills `Plan.sidecars`: the
   compatible files of the network with every holder, the head's projector and
-  the tail's MTP draft (screen choice, else the link), whether each is already
+  the tail's MTP draft (screen choice, else the link), and `vision_heads`: the same
+  projector for every other head of a whole model on several machines (a
+  prefill/decode split, where each machine answers and reads images), resolved
+  and copied per machine and set on each launch target, whether each is already
   on its target or copied from a holder, and the refusal when nobody has it. A
   compatible external draft turns `capabilities.mtp` supported for a model
   without `nextn`. `lifecycle::run` adds the copies to its `pulls` and sends

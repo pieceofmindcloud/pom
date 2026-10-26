@@ -2680,8 +2680,9 @@ engines exchange their own hidden states, never POM's hop protocol of section
   answers to the earlier ones (a prompt's pieces): the relay keeps up to the
   deployment's `prefill_max_inflight_chunks` frames of a connection posted at
   once and writes the answers back in order, and `link.max_inflight` tells the
-  engine that depth. The earlier machine passes frame `seq` to its engine only
-  after frame `seq - 1`, so that engine reads the next piece while the answer
+  engine that depth (the request's trace reports it as
+  `prefill_max_inflight_chunks` when the plan has more than one stage). The
+  earlier machine passes frame `seq` to its engine only after frame `seq - 1`, so that engine reads the next piece while the answer
   to the last one crosses. A frame number already passed on, or one past the
   first on a connection that was reset, is refused with `410` and not sent
   again.

@@ -2682,8 +2682,12 @@ engines exchange their own hidden states, never POM's hop protocol of section
   once and writes the answers back in order, and `link.max_inflight` tells the
   engine that depth (the request's trace reports it as
   `prefill_max_inflight_chunks` when the plan has more than one stage). The
-  earlier machine passes frame `seq` to its engine only after frame `seq - 1`, so that engine reads the next piece while the answer
-  to the last one crosses. A frame number already passed on, or one past the
+  earlier machine writes frame `seq` to its engine right after frame `seq - 1`,
+  without waiting for that one's answer, and a reader task of the connection
+  hands each answer to the frame that asked, in the order they were written:
+  the engine finds the next pieces already in its socket (Strata's first stage
+  reads the pieces waiting behind one in a single pass, so it brings the
+  experts in from RAM once for all of them). A frame number already passed on, or one past the
   first on a connection that was reset, is refused with `410` and not sent
   again.
 - **Hidden-state precision.** Every frame between an engine and its node
@@ -2697,9 +2701,9 @@ engines exchange their own hidden states, never POM's hop protocol of section
   prompt piece, `W` a verify window and `V` a verify window that carries the
   last window's commit (one round trip per decode step instead of a `W` and a
   `C`); its position and count sit at the same offsets in all three. The
-  earlier machine reports a frame's served time from the moment the frame's
-  turn comes, so the frames in flight together are not counted over each
-  other. The hops that carried hidden states report the deployment's
+  earlier machine reports a frame's served time from its writing to the
+  engine, or from the answer before it when it waited behind that one, so the
+  frames in flight together are not counted over each other. The hops that carried hidden states report the deployment's
   `hidden_state_dtype`.
 - Both routes take only a signed call from the live peer that serves the next
   slice of the same deployment. The node reads nothing of a frame but its

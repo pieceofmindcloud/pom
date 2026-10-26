@@ -25,8 +25,9 @@
 //!   `prefill_max_inflight_chunks` frames of a connection posted at once
 //!   (`link.max_inflight` tells the engine) and writes their answers back in
 //!   the order of the frames; `seq` numbers them from 0, and the earlier
-//!   machine passes a frame to its engine only after the frame before it, so
-//!   its engine reads the next piece while the answer to the last one travels.
+//!   machine writes a frame to its engine right after the frame before it,
+//!   without waiting for that one's answer ([`Link`]), so its engine finds the
+//!   next pieces waiting while it reads one and the answers travel.
 //! - **The envelope** of every frame between an engine and its node: a kind
 //!   byte, then `1` the bytes as they are, or `2` a tensor - `u32` meta
 //!   length, the meta, then `f32` values. Between the machines a tensor
@@ -975,14 +976,63 @@ pub(crate) async fn link_secret_route(
 /// A loopback connection to this machine's engine: the stream and the number
 /// of the next frame it takes (`seq`); `broken` once the engine closed it.
 struct LinkIo {
-    stream: TcpStream,
+    writer: tokio::net::tcp::OwnedWriteHalf,
     next: u64,
     broken: bool,
 }
 
+/// A frame written to the engine whose answer has not come yet.
+struct Waiter {
+    written: Instant,
+    answer: tokio::sync::oneshot::Sender<(Vec<u8>, u64)>,
+}
+
+/// One loopback connection to the earlier stage's engine. The frames are written in `seq` order as their turn comes,
+/// without waiting for the answers to the ones before: the engine finds the next prompt pieces already in its socket
+/// and may read them together (Strata's first stage reads the pieces waiting behind one in a single pass, so it
+/// brings the experts in from RAM once for all of them). A reader task hands each answer to the frame that asked,
+/// in the order they were written.
 struct Link {
     io: tokio::sync::Mutex<LinkIo>,
     turn: tokio::sync::Notify,
+    waiting: Mutex<std::collections::VecDeque<Waiter>>,
+}
+
+/// The connection's reader: each answer goes to the oldest frame still waiting, with the time the engine spent on
+/// it - from its writing, or from the answer before it when it waited behind that one. It holds the link weakly: the
+/// link dropped (the connection closed or evicted) closes the writer, the engine closes its side, and this ends.
+fn spawn_reader(link: &Arc<Link>, mut reader: tokio::net::tcp::OwnedReadHalf, key: (String, String)) {
+    let weak = Arc::downgrade(link);
+    tokio::spawn(async move {
+        let mut last = Instant::now();
+        loop {
+            let answer = match read_frame(&mut reader).await {
+                Ok(Some(answer)) => answer,
+                Ok(None) | Err(_) => break,
+            };
+            let Some(link) = weak.upgrade() else { break };
+            let waiter = link
+                .waiting
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .pop_front();
+            let Some(waiter) = waiter else { break };
+            let now = Instant::now();
+            let served = now.duration_since(waiter.written.max(last)).as_millis() as u64;
+            last = now;
+            let _ = waiter.answer.send((answer, served));
+        }
+        if let Some(link) = weak.upgrade() {
+            link.io.lock().await.broken = true;
+            // the frames still waiting see their sender dropped: the link is gone
+            link.waiting
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clear();
+            link.turn.notify_waiters();
+        }
+        drop_connection_if(&key, &weak);
+    });
 }
 
 type Connection = Arc<Link>;
@@ -1050,6 +1100,19 @@ fn drop_connection(key: &(String, String)) {
         .remove(key);
 }
 
+/// Drops `key` only while it is still this link: a new connection under the same key stays.
+fn drop_connection_if(key: &(String, String), link: &std::sync::Weak<Link>) {
+    let mut map = connections()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if map
+        .get(key)
+        .is_some_and(|(_, current)| std::ptr::eq(Arc::as_ptr(current), link.as_ptr()))
+    {
+        map.remove(key);
+    }
+}
+
 /// `POST /api/internal/plugins/:code/engine/link/:deploy/:conn`: one frame of
 /// the next stage's engine for this machine's earlier stage, from a node that
 /// numbers none; the answer frame is the body. An empty body closes the
@@ -1075,9 +1138,9 @@ pub(crate) async fn link_frame_seq_route(
 }
 
 /// The answer to a frame: this machine's time on it and the links below it, in the envelope header.
-fn stage_answer(code: &str, body: Vec<u8>, started: Instant) -> Response {
+fn stage_answer(code: &str, body: Vec<u8>, served_ms: u64) -> Response {
     let envelope = StageEnvelope {
-        served_ms: started.elapsed().as_millis() as u64,
+        served_ms,
         links: take_downstream_links(code),
     };
     let mut response = (
@@ -1159,14 +1222,17 @@ async fn link_frame(
                 }
             };
             let _ = stream.set_nodelay(true);
+            let (reader, writer) = stream.into_split();
             let connection = Arc::new(Link {
                 io: tokio::sync::Mutex::new(LinkIo {
-                    stream,
+                    writer,
                     next: 0,
                     broken: false,
                 }),
                 turn: tokio::sync::Notify::new(),
+                waiting: Mutex::new(std::collections::VecDeque::new()),
             });
+            spawn_reader(&connection, reader, key.clone());
             keep_connection(key.clone(), Arc::clone(&connection));
             connection
         }
@@ -1184,9 +1250,11 @@ async fn link_frame(
             }
         },
     };
-    // This frame's own time starts at its turn: the wait for the frames before it is theirs, and counting it again
-    // in each of several frames in flight would add up to many times the prompt's wall clock.
-    let started = Instant::now();
+    if io.broken {
+        drop(io);
+        drop_connection(&key);
+        return refuse(StatusCode::BAD_GATEWAY, "the earlier stage closed the link");
+    }
     let frame = match from_network(&body) {
         Ok(frame) => frame,
         Err(error) => {
@@ -1208,36 +1276,47 @@ async fn link_frame(
         set_phase(&code, phase);
     }
     let waits_before = tokens.map_or(0, |(phase, _)| peek_own_wait(&code, phase));
-    let exchanged = tokio::time::timeout(FRAME_TIMEOUT, async {
-        write_frame(&mut io.stream, &frame).await?;
-        read_frame(&mut io.stream).await
-    })
-    .await;
-    let response = match exchanged {
-        Ok(Ok(Some(answer))) => {
-            io.next += 1;
-            match to_network(answer, dtype) {
-                Ok(answer) => {
-                    if let Some((phase, count)) = tokens {
-                        // This machine's own work on the frame: its time here minus the waits its relays made.
-                        let waited = peek_own_wait(&code, phase).saturating_sub(waits_before);
-                        let own_ms = started.elapsed().as_millis() as f64 - waited as f64;
-                        super::engine_telemetry::record_frame(&code, phase, own_ms, count);
-                    }
-                    stage_answer(&code, answer, started)
-                }
-                Err(error) => refuse(StatusCode::BAD_GATEWAY, &error),
-            }
-        }
-        Ok(Ok(None)) | Ok(Err(_)) | Err(_) => {
-            io.broken = true;
-            drop_connection(&key);
-            refuse(StatusCode::BAD_GATEWAY, "the earlier stage closed the link")
-        }
-    };
+    // The frame goes to the engine now, and its turn passes to the next frame before the answer comes.
+    let (sender, answered) = tokio::sync::oneshot::channel();
+    connection
+        .waiting
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .push_back(Waiter {
+            written: Instant::now(),
+            answer: sender,
+        });
+    let written = tokio::time::timeout(FRAME_TIMEOUT, write_frame(&mut io.writer, &frame)).await;
+    if !matches!(written, Ok(Ok(()))) {
+        io.broken = true;
+        drop(io);
+        drop_connection(&key);
+        connection.turn.notify_waiters();
+        return refuse(StatusCode::BAD_GATEWAY, "the earlier stage closed the link");
+    }
+    io.next += 1;
     drop(io);
     connection.turn.notify_waiters();
-    response
+    match tokio::time::timeout(FRAME_TIMEOUT, answered).await {
+        Ok(Ok((answer, served_ms))) => match to_network(answer, dtype) {
+            Ok(answer) => {
+                if let Some((phase, count)) = tokens {
+                    // This machine's own work on the frame: its time here minus the waits its relays made.
+                    let waited = peek_own_wait(&code, phase).saturating_sub(waits_before);
+                    let own_ms = served_ms as f64 - waited as f64;
+                    super::engine_telemetry::record_frame(&code, phase, own_ms, count);
+                }
+                stage_answer(&code, answer, served_ms)
+            }
+            Err(error) => refuse(StatusCode::BAD_GATEWAY, &error),
+        },
+        Ok(Err(_)) | Err(_) => {
+            connection.io.lock().await.broken = true;
+            drop_connection(&key);
+            connection.turn.notify_waiters();
+            refuse(StatusCode::BAD_GATEWAY, "the earlier stage closed the link")
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1363,19 +1442,78 @@ mod tests {
         .is_err());
     }
 
+    fn test_link(stream: TcpStream) -> Arc<Link> {
+        let (_, writer) = stream.into_split();
+        Arc::new(Link {
+            io: tokio::sync::Mutex::new(LinkIo {
+                writer,
+                next: 0,
+                broken: false,
+            }),
+            turn: tokio::sync::Notify::new(),
+            waiting: Mutex::new(std::collections::VecDeque::new()),
+        })
+    }
+
+    /// The engine receives the next frames before it answers the first one, and each answer goes back to the frame
+    /// that asked, in order.
+    #[tokio::test]
+    async fn frames_reach_the_engine_before_the_answers_come_back() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let engine = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            // both frames arrive before the first answer leaves
+            let first = read_frame(&mut socket).await.unwrap().unwrap();
+            let second = read_frame(&mut socket).await.unwrap().unwrap();
+            write_frame(&mut socket, &[first, b"!".to_vec()].concat()).await.unwrap();
+            write_frame(&mut socket, &[second, b"!".to_vec()].concat()).await.unwrap();
+            socket
+        });
+        let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let (reader, writer) = stream.into_split();
+        let link = Arc::new(Link {
+            io: tokio::sync::Mutex::new(LinkIo {
+                writer,
+                next: 0,
+                broken: false,
+            }),
+            turn: tokio::sync::Notify::new(),
+            waiting: Mutex::new(std::collections::VecDeque::new()),
+        });
+        spawn_reader(&link, reader, ("caller".into(), "conn-pipelined".into()));
+        let mut answers = Vec::new();
+        for frame in [b"a".to_vec(), b"b".to_vec()] {
+            let (sender, answer) = tokio::sync::oneshot::channel();
+            link.waiting.lock().unwrap().push_back(Waiter {
+                written: Instant::now(),
+                answer: sender,
+            });
+            write_frame(&mut link.io.lock().await.writer, &frame).await.unwrap();
+            answers.push(answer);
+        }
+        let mut got = Vec::new();
+        for answer in answers {
+            got.push(tokio::time::timeout(Duration::from_secs(5), answer).await.unwrap().unwrap().0);
+        }
+        assert_eq!(got, vec![b"a!".to_vec(), b"b!".to_vec()]);
+        drop(engine.await.unwrap());
+        // the engine gone, the link is marked broken and takes no more frames
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !link.io.lock().await.broken {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
     #[tokio::test]
     async fn numbered_frames_take_their_turn() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-        let link = Arc::new(Link {
-            io: tokio::sync::Mutex::new(LinkIo {
-                stream,
-                next: 0,
-                broken: false,
-            }),
-            turn: tokio::sync::Notify::new(),
-        });
+        let link = test_link(stream);
         let second = {
             let link = Arc::clone(&link);
             tokio::spawn(async move { turn(&link, 1).await.map(|io| io.next) })

@@ -770,20 +770,6 @@ pub(super) async fn generate_stream_inner(
         probe,
         shared_prefix,
     } = input;
-    // A prefill machine chosen as the head (the Chat shows it as the head of its prefill/decode split) never answers:
-    // the planner picks the head that decodes, and the plugin engine reads the prompt on the chosen prefill machine.
-    let (preferred_head, pinned_prefill) = match preferred_head {
-        Some(head)
-            if state
-                .all_peers()
-                .await
-                .iter()
-                .any(|peer| peer.node_id == head && crate::plugin_engine::is_prefill_only(peer)) =>
-        {
-            (None, Some(head))
-        }
-        other => (other, None),
-    };
     let mut budget = budget.normalized();
     if cancellation.is_cancelled() {
         log_early_outcome("cancelado", "the client gave up before the start");
@@ -871,29 +857,8 @@ pub(super) async fn generate_stream_inner(
             ADMISSION_PROBE_TIMEOUT,
         )
         .await;
-        // A machine of a prefill/decode split that only reads prompts never answers a request: it is no head and no
-        // hop. The plugin engine sends it the prompts itself (`plugin_engine::prefill_on_peer`).
-        let (prefill_only, peers): (Vec<_>, Vec<_>) = peers
-            .into_iter()
-            .partition(|peer| crate::plugin_engine::is_prefill_only(peer));
-        if !prefill_only.is_empty()
-            && !peers.iter().any(|p| match deploy_id {
-                Some(id) => p.deploy_id == id,
-                None => p.model == model,
-            })
-            && prefill_only.iter().any(|p| match deploy_id {
-                Some(id) => p.deploy_id == id,
-                None => p.model == model,
-            })
-        {
-            let error = format!(
-                "No valid pipeline for model '{model}': only prefill machines serve it, and a prefill machine \
-                 never answers a request (deploy a machine with the decode or both role)"
-            );
-            log_early_outcome("refused", &error);
-            let _ = tx.send(GenEvent::Failed(error)).await;
-            return;
-        }
+        // Every machine of a prefill/decode split answers too: its role only says which one reads prompts for the
+        // others when the balance calls for it (`plugin_engine::prefill_peer`).
         record_gateway_span(
             &mut gateway_spans,
             request_started,
@@ -1071,7 +1036,6 @@ pub(super) async fn generate_stream_inner(
                     .iter()
                     .map(|bytes| crate::plugin_engine::image_data_url(bytes))
                     .collect(),
-                prefill_node: pinned_prefill.clone(),
             },
             &tx,
             &cancellation,

@@ -97,9 +97,16 @@ Per-file list:
   `.pom-store*` styles in `index.css`): the name, description,
   icon, official screenshots and price come from the license-server's public catalog
   (`usePublicPluginCatalog`), with local SVG text and previews when it does not
-  answer; the price is formatted in the interface's language. "Buy now" and
-  the footer link open the site's purchase wizard (`/comprar/`, Paddle) in a
-  new tab with the plugin, the billing period and `lang`. While no plugin
+  answer; the price is formatted in the interface's language
+  (`lib/pluginPricing.ts`) and follows how the site sells the plugin: with a
+  running promotion, the full price struck through above the discounted one,
+  a "Sale -N%" tag and the promotion's terms; with `sales_mode: "contact"`
+  ("talk to sales", set in the license server's console), no price, the
+  first step reads "Talk to our team", and the button opens the site's
+  contact form about the plugin (`/contato/?plugin=`) instead of the wizard.
+  "Buy now" and the footer link open the site's purchase wizard (`/comprar/`,
+  Paddle) in a new tab with the plugin, the billing period and `lang`; sold by
+  contact, the footer link goes to the plugin's card in the site's store. While no plugin
   serves `/logs` or `/statistics`, `nav.ts` folds the Logs section and
   Statistics into one "Business Pack" entry. Tests in `EnterpriseFeatureShowcase.test.tsx`.
 - `PluginBridge.tsx` - mounted once in the shell (`App.tsx`). It publishes

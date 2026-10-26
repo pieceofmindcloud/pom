@@ -640,8 +640,9 @@ fn run_main() -> Result<()> {
         );
     }
 
+    // Without a display (a container, an SSH session) the AppImage runs as a server.
     #[cfg(all(target_os = "linux", feature = "desktop"))]
-    {
+    if linux_window::available() {
         let (gateway_ready, gateway_ready_rx) = std::sync::mpsc::sync_channel(1);
         return linux_window::run(
             move || service(Some(gateway_ready)),
@@ -649,7 +650,7 @@ fn run_main() -> Result<()> {
         );
     }
 
-    #[cfg(not(any(target_os = "macos", target_os = "windows", all(target_os = "linux", feature = "desktop"))))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     service(None)
 }
 
@@ -837,7 +838,7 @@ fn is_windows_supervisor() -> bool {
 fn already_running(gateway_port: Option<u16>) -> Result<()> {
     let root = config::project_root();
     #[cfg(all(target_os = "linux", feature = "desktop"))]
-    if let Some(port) = gateway_port {
+    if let Some(port) = gateway_port.filter(|_| linux_window::available()) {
         info!(
             "POM is already running from {}; opening its interface on port {port}",
             root.display()

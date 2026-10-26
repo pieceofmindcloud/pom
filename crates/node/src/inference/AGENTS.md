@@ -695,8 +695,9 @@ UI.
   frame of the engine to it, up to `prefill_max_inflight_chunks` at once,
   numbered, answers written back in order), `link_secret_route` and
   `link_frame_seq_route` (the earlier machine's side, which keeps one loopback
-  connection per relay connection to the port of `engine.link` and passes the
-  frames on in number order). A tensor frame (kind `2`) crosses between the
+  connection per relay connection to the port of `engine.link`, writes the
+  frames to it in number order without waiting for the answers, and a reader
+  task per connection hands each answer to its frame). A tensor frame (kind `2`) crosses between the
   machines in the deployment's `hidden_state_dtype` through `wire` and reaches
   the engine as `f32` (`to_network`, `from_network`). Both routes take only the
   signed live peer that serves the next slice of the same deployment.

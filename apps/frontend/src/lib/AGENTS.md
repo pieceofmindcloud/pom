@@ -256,7 +256,14 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   installs its newest release for this node), much as pasting it in the
   repository box. Nothing is registered or installed from
   the catalog on its own; other repository fields stay ignored. `featured` and
-  `pom_team` are display badges. Missing optional fields remain unknown; images are accepted only
+  `pom_team` are display badges. `sales_mode` (`"contact"`: no price is
+  announced, the team sells by offer; anything else reads as `"checkout"`, so
+  an older license server keeps working) and `promotion` (percent, terms,
+  reach, end; dropped when malformed or already over) say how the site sells
+  the plugin. `pluginPricing.ts` turns them into what a card shows:
+  `formatPluginPrice`, `salesByContact`, `promotionFor` (also false once the
+  promotion ends on a page left open) and `termPrice` (the full and the
+  discounted price, rounded like Paddle's percentage). Missing optional fields remain unknown; images are accepted only
   from the expected public host and URLs may not embed credentials. Published
   `description_pt_br` values are validated too. License state, activation
   candidates and usage by `plugin_code` come from the node's authenticated API
@@ -264,7 +271,10 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `pluginPurchase.ts` builds the site's purchase-wizard URL
   (`pieceofmind.cloud/comprar/?plugin=<code>[&interval=][&lang=pt|en]`:
   account, billing details, Paddle, then the license key), opens it in a new
-  tab (`navigateToPluginPurchase`) and sends no credentials. `usePublicPluginCatalog` in `queries.ts` manages
+  tab (`navigateToPluginPurchase`) and sends no credentials; for a plugin sold
+  by contact, `navigateToPluginContact` opens the site's contact form about it
+  (`/contato/?plugin=<code>`), and `publicPluginStoreUrl` points at its card in
+  the site's store. `usePublicPluginCatalog` in `queries.ts` manages
   loading, errors and periodic refreshes. `useGithubRepositories` reads
   `/api/ui/plugins/github-repositories`, an authenticated local list that does
   not depend on the commercial catalog. Each source reports `manifest_path`

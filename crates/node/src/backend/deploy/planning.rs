@@ -1215,12 +1215,28 @@ pub(super) fn plan_with_rtt_options(
         blocked = Some(reason.clone());
     }
 
+    // A sliced deployment lists the whole GGUF of the model too (survey), for a prefill machine the operator places
+    // by hand; the automatic plan chains the slices only.
+    let whole_only = |c: &Candidate| {
+        kind == DeployKind::Shards
+            && machines.iter().all(|m| {
+                m.holds(c.start_layer, c.end_layer)
+                    .is_none_or(|shard| shard.kind == HeldKind::Whole)
+            })
+    };
     match selection {
         None => {
-            let chain = match strategy {
-                DeployStrategy::Simple => auto_chain(&available, total_layers),
-                DeployStrategy::Complete => auto_chain_complete(&available, total_layers),
-            };
+            let pool: Vec<usize> = (0..available.len())
+                .filter(|&i| !whole_only(&available[i]))
+                .collect();
+            let slices: Vec<Candidate> = pool.iter().map(|&i| available[i].clone()).collect();
+            let chain: Vec<usize> = match strategy {
+                DeployStrategy::Simple => auto_chain(&slices, total_layers),
+                DeployStrategy::Complete => auto_chain_complete(&slices, total_layers),
+            }
+            .into_iter()
+            .map(|i| pool[i])
+            .collect();
             let targets = auto_assign(&chain, &available, machines, strategy, preferred_node_ids);
             chosen = chain
                 .into_iter()
@@ -1409,12 +1425,45 @@ pub(super) fn plan_with_rtt_options(
         );
     }
 
+    // ── Prefill machines of a sliced deployment ─────────────────────────────
+    //
+    // A machine with the prefill role runs the whole model beside the slices: it reads prompts for the pipeline and
+    // answers requests on its own, so it stands outside their layer order, and the coverage below counts the slices.
+    let prefill_entry = |overrides: &PeerOverrides| {
+        kind == DeployKind::Shards
+            && overrides.inference_role.unwrap_or(params.inference_role)
+                == crate::webui::InferenceRole::Prefill
+    };
+    for (i, target, overrides) in &chosen {
+        let c = &available[*i];
+        let whole = c.start_layer == 0 && total_layers.is_some_and(|total| c.end_layer + 1 == total);
+        if prefill_entry(overrides) && !whole {
+            let on = if target.is_empty() { String::new() } else { format!(" on {target}") };
+            blocked.get_or_insert(format!(
+                "a prefill machine runs the whole model: {}{on} is a slice; choose the whole model for it, or give \
+                 it the decode role",
+                kind.unit(group, c.start_layer, c.end_layer)
+            ));
+        }
+    }
+    if kind == DeployKind::Shards
+        && chosen.iter().any(|(_, _, overrides)| prefill_entry(overrides))
+        && params.inference_service.is_none()
+    {
+        blocked.get_or_insert(
+            "a prefill machine needs an inference service that splits prefill and decode".to_string(),
+        );
+    }
+
     // ── Coverage: gaps and overlap refuse ───────────────────────────────────
     let mut missing: Vec<[u32; 2]> = Vec::new();
     let mut overlap: Vec<[u32; 2]> = Vec::new();
     let mut next = 0u32;
     let mut covered_exact: Option<(u32, u32)> = None;
-    for (i, ..) in &chosen {
+    for (i, _, overrides) in &chosen {
+        if prefill_entry(overrides) {
+            continue;
+        }
         let c = &available[*i];
         if covered_exact == Some((c.start_layer, c.end_layer)) {
             continue;

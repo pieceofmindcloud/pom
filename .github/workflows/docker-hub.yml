@@ -1,0 +1,139 @@
+name: Docker Hub image
+
+# Publishes the POM image on Docker Hub from the Linux AppImage of a GitHub release:
+# nothing is compiled, the AppImage is unpacked onto a clean Ubuntu with the tools the
+# plugins use (see `packaging/docker/`). It runs after each Linux release workflow and on
+# demand. Without a release named, it takes the newest release that has a Linux
+# AppImage - not every release has one.
+#
+# It runs on a GitHub-hosted runner: the self-hosted runner's user has no access to
+# Docker on purpose. The job downloads one file and builds no code, so it takes minutes.
+#
+# Needs the repository secrets DOCKERHUB_USERNAME and DOCKERHUB_TOKEN (an access token
+# with Read & Write, created at hub.docker.com > Account settings > Personal access
+# tokens). The variable DOCKERHUB_REPOSITORY overrides the image name.
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Release tag to package (empty = newest with a Linux AppImage)'
+        required: false
+        type: string
+      tag:
+        description: 'Docker tag (empty = the release tag)'
+        required: false
+        type: string
+      latest:
+        description: 'Also tag as latest'
+        required: false
+        default: true
+        type: boolean
+  workflow_run:
+    workflows: ['Release · Linux', 'Release · ksia (Linux + CUDA, Windows)']
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-hub
+  cancel-in-progress: false
+
+env:
+  IMAGE: ${{ vars.DOCKERHUB_REPOSITORY || 'pereirajair/pom' }}
+
+jobs:
+  image:
+    name: Build and push
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: packaging/docker
+
+      - name: Pick the release and its AppImage
+        id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WANTED: ${{ inputs.release }}
+          WANTED_TAG: ${{ inputs.tag }}
+        run: |
+          # In a release, the CUDA + Vulkan AppImage first: with the libcuda stub it also
+          # runs on a machine without a GPU. The CPU one only when it is the only one.
+          pick_asset() {
+            gh release view "$1" -R "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' |
+              awk '/^pom-.*-x86_64\.AppImage$/ {print 1, $0}
+                   /-unknown-linux-gnu-cuda\.AppImage$/ {print 2, $0}
+                   /-unknown-linux-gnu-cpu\.AppImage$/ {print 3, $0}' |
+              sort -n | head -1 | cut -d' ' -f2
+          }
+          if [ -n "$WANTED" ]; then
+            release="$WANTED"
+            asset="$(pick_asset "$release")"
+          else
+            release=""; asset=""
+            for tag in $(gh release list -R "$GITHUB_REPOSITORY" --exclude-drafts -L 40 \
+                           --json tagName -q '.[].tagName'); do
+              asset="$(pick_asset "$tag")"
+              if [ -n "$asset" ]; then release="$tag"; break; fi
+            done
+          fi
+          if [ -z "$asset" ]; then
+            echo "::error::no Linux AppImage in ${release:-the recent releases}"
+            exit 1
+          fi
+          tag="$WANTED_TAG"
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+          echo "asset=$asset" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag:-$release}" >> "$GITHUB_OUTPUT"
+          echo "### $release -> $IMAGE:${tag:-$release} ($asset)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Download the AppImage
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "${{ steps.pick.outputs.release }}" -R "$GITHUB_REPOSITORY" \
+            -p "${{ steps.pick.outputs.asset }}" -O packaging/docker/pom.AppImage
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Loaded into the runner's Docker first, so the smoke test runs the exact image
+      # that is pushed.
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: packaging/docker
+          load: true
+          tags: pom:smoke
+          build-args: POM_RELEASE_VERSION=${{ steps.pick.outputs.release }}
+
+      - name: Smoke test (no GPU)
+        run: |
+          docker run -d --name smoke pom:smoke
+          for _ in $(seq 1 60); do
+            code="$(docker exec smoke curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/ || true)"
+            case "$code" in 2??|3??) echo "gateway answered $code"; break ;; esac
+            if [ "$(docker inspect -f '{{.State.Running}}' smoke)" != true ]; then break; fi
+            sleep 2
+          done
+          docker logs smoke 2>&1 | tail -40
+          case "$code" in 2??|3??) ;; *) echo "::error::the gateway did not answer"; exit 1 ;; esac
+          docker rm -f smoke
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Push
+        env:
+          TAG: ${{ steps.pick.outputs.tag }}
+          LATEST: ${{ github.event_name != 'workflow_dispatch' || inputs.latest }}
+        run: |
+          docker tag pom:smoke "$IMAGE:$TAG"
+          docker push "$IMAGE:$TAG"
+          if [ "$LATEST" = true ]; then
+            docker tag pom:smoke "$IMAGE:latest"
+            docker push "$IMAGE:latest"
+          fi

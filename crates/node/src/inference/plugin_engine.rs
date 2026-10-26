@@ -114,12 +114,6 @@ pub(crate) fn role_of_capabilities(capabilities: &[String]) -> crate::webui::Inf
     }
 }
 
-/// A peer whose plugin engine only reads prompts: it is never the head of a plan.
-pub(crate) fn is_prefill_only(peer: &crate::network::PeerInfo) -> bool {
-    engine_of_peer(peer).is_some()
-        && role_of_capabilities(&peer.inference_frame_capabilities) == crate::webui::InferenceRole::Prefill
-}
-
 /// The plugin whose engine serves a peer, from its announced capabilities.
 pub(crate) fn plugin_of_capabilities(capabilities: &[String]) -> Option<&str> {
     capabilities
@@ -162,11 +156,7 @@ mod engine_group_tests {
         let prefill = role_capability(InferenceRole::Prefill);
         let decode = role_capability(InferenceRole::Decode);
         assert_eq!(prefill, "engine/plugin-role-v1:prefill");
-        assert!(is_prefill_only(&peer("p", "m", &[plugin.as_str(), prefill.as_str()])));
-        assert!(!is_prefill_only(&peer("d", "m", &[plugin.as_str(), decode.as_str()])));
-        assert!(!is_prefill_only(&peer("b", "m", &[plugin.as_str()])));
-        // a role without a plugin engine means nothing
-        assert!(!is_prefill_only(&peer("l", "m", &[prefill.as_str()])));
+        assert_eq!(role_of_capabilities(&[plugin, prefill]), InferenceRole::Prefill);
         assert_eq!(role_of_capabilities(&[decode]), InferenceRole::Decode);
         assert_eq!(role_of_capabilities(&[]), InferenceRole::Both);
     }
@@ -556,8 +546,6 @@ pub(crate) struct EngineRequest {
     pub probe_prefix_bytes: Option<usize>,
     /// The turn's images, as `data:image/...;base64,` URLs (see `image_data_url`).
     pub images: Vec<String>,
-    /// The prefill machine the client chose as the head of a prefill/decode split, when it chose one.
-    pub prefill_node: Option<String>,
 }
 
 /// An image as a `data:` URL, its type read from the first bytes (JPEG when none is recognized).
@@ -848,14 +836,18 @@ pub(crate) async fn generate(
                 code,
                 model,
                 node_id,
-                request.prefill_node.as_deref(),
                 key,
                 &body,
                 cancellation,
             )
             .await
             {
-                body["session_source"] = json!(source.node_id);
+                // its pieces are in the head's slot already; else the head fetches the session it saved
+                if source.fetch.is_some() {
+                    body["session_pieces"] = json!(true);
+                } else {
+                    body["session_source"] = json!(source.node_id);
+                }
                 prefill_leg = Some(source);
             }
             if cancellation.is_cancelled() || tx.is_closed() {
@@ -969,6 +961,7 @@ pub(crate) async fn generate(
                 // the session the head fetched before it read the rest: here, or in a remote head's done line
                 let fetched = fetched_here
                     .clone()
+                    .or_else(|| prefill_leg.as_ref().and_then(|leg| leg.fetch.clone()))
                     .or_else(|| super::plugin_session::SessionFetch::from_json(&done["session_fetch"]));
                 let fetch_ms = fetched.as_ref().map_or(0, |fetch| fetch.transfer_ms + fetch.save_wait_ms);
                 let (prefill_ms, prompt_read) = match &prefill_leg {
@@ -1069,6 +1062,24 @@ pub(crate) async fn generate(
                 trace.complete = true;
                 // a typed decision's label probabilities, from the engine's done line (`probe`), as a llama.cpp peer reports
                 trace.probe = done.get("probe").filter(|value| !value.is_null()).cloned();
+                // A split engine's link keeps up to the deployment's in-flight frames posted (plugin_stage_link),
+                // not the llama.cpp prefill's window this field otherwise reports; its tensors cross in the
+                // deployment's hidden-state precision.
+                if plan.steps.len() > 1 {
+                    if let Some(cfg) = state.runtime.config().await {
+                        trace.prefill_max_inflight_chunks =
+                            super::plugin_stage_link::max_in_flight(&cfg) as u32;
+                        for hop in &mut trace.hops {
+                            for part in [&mut hop.prefill, &mut hop.decode] {
+                                let crossed =
+                                    part.hidden_state_bytes_sent + part.hidden_state_bytes_received;
+                                if crossed > 0 {
+                                    part.hidden_state_dtype = Some(cfg.hidden_state_dtype);
+                                }
+                            }
+                        }
+                    }
+                }
                 trace.refresh_telemetry(total_ms);
                 info!(
                     plugin = %code,
@@ -1120,28 +1131,55 @@ async fn prefill_peer(
     code: &str,
     model: &str,
     head: &str,
-    preferred: Option<&str>,
 ) -> Option<crate::network::PeerInfo> {
-    let mut best: Option<(u32, crate::network::PeerInfo)> = None;
-    for peer in state.all_peers().await {
+    use crate::webui::InferenceRole;
+    let peers = state.all_peers().await;
+    let perf = state.admission_health.perf_snapshot();
+    let mut load_of = std::collections::HashMap::new();
+    for peer in &peers {
+        let live = state.loads.load(&peer.node_id).await;
+        let reported = perf.get(&peer.node_id).map(|p| p.active_generations).unwrap_or(0);
+        load_of.insert(peer.node_id.clone(), live.max(reported));
+    }
+    let head_role = peers
+        .iter()
+        .find(|peer| peer.node_id == head)
+        .map(|peer| role_of_capabilities(&peer.inference_frame_capabilities))
+        .unwrap_or(InferenceRole::Both);
+    // the head's load counts this turn (`generate` holds it in flight): more than one is another request on it
+    let head_busy = load_of.get(head).copied().unwrap_or(0) > 1;
+    let mut best: Option<(bool, f64, crate::network::PeerInfo)> = None;
+    for peer in peers {
         let whole = peer.total_layers > 0 && peer.start_layer == 0 && peer.end_layer + 1 == peer.total_layers;
+        let role = role_of_capabilities(&peer.inference_frame_capabilities);
+        // a machine of the split (a role keeps its sessions on), idle, with the same plugin and the whole model
         if peer.node_id == head
             || peer.model != model
             || !whole
             || engine_of_peer(&peer).as_deref() != Some(code)
-            || !is_prefill_only(&peer)
+            || role == InferenceRole::Both
+            || load_of.get(&peer.node_id).copied().unwrap_or(0) > 0
         {
             continue;
         }
-        if preferred == Some(peer.node_id.as_str()) {
-            return Some(peer);
+        let prefill = role == InferenceRole::Prefill;
+        // a free head reads its own prompt, unless an idle prefill machine is there and the head is not one
+        if !head_busy && !(prefill && head_role != InferenceRole::Prefill) {
+            continue;
         }
-        let load = state.loads.load(&peer.node_id).await;
-        if best.as_ref().is_none_or(|(least, _)| load < *least) {
-            best = Some((load, peer));
+        // a prefill machine first, then the fastest at reading prompts (unmeasured last)
+        let speed = perf
+            .get(&peer.node_id)
+            .and_then(|p| p.prefill_ms_per_token)
+            .unwrap_or(f64::INFINITY);
+        let better = best
+            .as_ref()
+            .is_none_or(|(best_prefill, best_speed, _)| (prefill, -speed) > (*best_prefill, -*best_speed));
+        if better {
+            best = Some((prefill, speed, peer));
         }
     }
-    best.map(|(_, peer)| peer)
+    best.map(|(_, _, peer)| peer)
 }
 
 /// What a prefill machine did for a turn: who it is (its step, for the trace), the tokens it read and how long its
@@ -1152,6 +1190,10 @@ pub(crate) struct PrefillLeg {
     pub tokens: u64,
     pub engine_ms: u64,
     pub elapsed_ms: u64,
+    /// The prompt read in pieces, each applied to the head while the next was read: what the head copied, with only
+    /// the wait after the prompt's end as its transfer time (the rest overlapped the read). `None`: one session, which
+    /// the head fetches before its turn (`session_source`).
+    pub fetch: Option<super::plugin_session::SessionFetch>,
 }
 
 /// Runs the prompt of a turn on a prefill machine (`prefill_only`), which saves the conversation's session there.
@@ -1163,12 +1205,11 @@ async fn prefill_on_peer(
     code: &str,
     model: &str,
     head: &str,
-    preferred: Option<&str>,
     key: &str,
     body: &Value,
     cancellation: &crate::prefill::Cancellation,
 ) -> Option<PrefillLeg> {
-    let peer = prefill_peer(state, code, model, head, preferred).await?;
+    let peer = prefill_peer(state, code, model, head).await?;
     // what the head already holds of the conversation: the prefill machine reads the prompt only when the part the
     // head lacks is long enough
     let head_offer = super::plugin_session::offer_of(state, code, key, head).await;
@@ -1206,6 +1247,24 @@ async fn prefill_on_peer(
     prefill["max_tokens"] = json!(1);
     prefill["prefill_only"] = json!(true);
     prefill["decode_holds"] = json!(holds);
+    // read in pieces: the head applies each one while the next is read (a bridge without pieces ignores the flag and
+    // answers with one session, which the head fetches as before)
+    prefill["pieces"] = json!(true);
+    let (piece_tx, mut piece_rx) = mpsc::unbounded_channel::<(String, String)>();
+    let pieces = {
+        let (state, code, head, source, key) =
+            (state.clone(), code.to_owned(), head.to_owned(), peer.node_id.clone(), key.to_owned());
+        tokio::spawn(async move {
+            let (mut bytes, mut applied) = (0u64, 0u64);
+            while let Some((piece, kind)) = piece_rx.recv().await {
+                bytes += super::plugin_session::apply_piece_on(&state, &code, &head, &source, &key, &piece, &kind)
+                    .await
+                    .map_err(|error| format!("{piece}: {error}"))?;
+                applied += 1;
+            }
+            Ok::<(u64, u64), String>((bytes, applied))
+        })
+    };
     let _busy = state.loads.acquire(&peer.node_id).await;
     let started = Instant::now();
     let response = match open_stream(state, &peer.node_id, code, &prefill).await {
@@ -1244,10 +1303,62 @@ async fn prefill_on_peer(
                 warn!(plugin = %code, session = %key, prefill = %peer.node_id, "prefill split: the prefill machine failed: {error}");
                 return None;
             }
+            if let Some(piece) = event.get("piece") {
+                if let (Some(name), Some(kind)) = (piece["key"].as_str(), piece["kind"].as_str()) {
+                    let _ = piece_tx.send((name.to_owned(), kind.to_owned()));
+                }
+                continue;
+            }
             let Some(done) = event.get("done") else {
                 continue;
             };
             let read = done["prefill"]["tokens"].as_u64().unwrap_or(0);
+            let announced = done["prefill"]["pieces"].as_u64().unwrap_or(0);
+            if announced > 0 {
+                // the prompt is read: the head applies the pieces still in flight, and only that wait is the turn's
+                let engine_ms = super::engine_telemetry::EngineReport::from_done(done, 0)
+                    .prefill_ms
+                    .map(|ms| ms.round() as u64)
+                    .unwrap_or(0);
+                let elapsed_ms = started.elapsed().as_millis() as u64;
+                drop(piece_tx);
+                let tail = Instant::now();
+                let bytes = match pieces.await {
+                    Ok(Ok((bytes, applied))) if applied == announced => bytes,
+                    Ok(Ok((_, applied))) => {
+                        warn!(plugin = %code, session = %key, prefill = %peer.node_id, applied, announced, "prefill split: the head did not get every piece; the head reads the prompt");
+                        return None;
+                    }
+                    Ok(Err(error)) => {
+                        warn!(plugin = %code, session = %key, prefill = %peer.node_id, head = %head, "prefill split: a piece was not applied on the head: {error}; the head reads the prompt");
+                        return None;
+                    }
+                    Err(error) => {
+                        warn!(plugin = %code, session = %key, "prefill split: the pieces' task failed: {error}");
+                        return None;
+                    }
+                };
+                let tail_ms = tail.elapsed().as_millis() as u64;
+                info!(
+                    plugin = %code, session = %key, prefill = %peer.node_id, head = %head, tokens = read, holds,
+                    pieces = announced, bytes, ms = elapsed_ms, engine_ms, tail_ms,
+                    "prefill split: the prompt was read in pieces on the prefill machine; the head holds them"
+                );
+                return Some(PrefillLeg {
+                    node_id: peer.node_id.clone(),
+                    step: crate::pipeline::step_for(&peer, 0),
+                    tokens: read,
+                    engine_ms,
+                    elapsed_ms,
+                    fetch: Some(super::plugin_session::SessionFetch {
+                        source: peer.node_id.clone(),
+                        tokens: done["prompt_tokens"].as_u64().unwrap_or(0).saturating_sub(1),
+                        bytes,
+                        transfer_ms: tail_ms,
+                        save_wait_ms: 0,
+                    }),
+                });
+            }
             if let Some(reason) = done["prefill"]["skipped"].as_str() {
                 info!(plugin = %code, session = %key, prefill = %peer.node_id, holds, "prefill split: skipped ({reason}); the head reads the prompt");
                 return None;
@@ -1270,6 +1381,7 @@ async fn prefill_on_peer(
                 tokens: read,
                 engine_ms,
                 elapsed_ms,
+                fetch: None,
             });
         }
     }
@@ -1306,7 +1418,7 @@ pub(crate) async fn services_of(state: &GatewayState, node_id: &str) -> Option<V
 /// Why a deployment on a plugin's inference service cannot go ahead, if it
 /// cannot. A whole model goes to one machine - or to several in a
 /// prefill/decode split, where `roles` (each target's role, in the order of
-/// `targets`) has at least one prefill machine and one that decodes; layer
+/// `targets`) gives at least one machine a prefill or decode role; layer
 /// slices go one per machine, to a service that publishes `stages`. Every
 /// machine runs the plugin with an inference service that is not in error.
 pub(crate) async fn deploy_block(
@@ -1326,18 +1438,13 @@ pub(crate) async fn deploy_block(
     if unique.is_empty() {
         return Some("choose the machine that runs the inference service".into());
     }
-    use crate::webui::InferenceRole;
-    if !roles.is_empty() && roles.iter().all(|role| *role == InferenceRole::Prefill) {
-        return Some(format!(
-            "the inference service {service} has no machine that answers: a prefill machine only reads prompts, so \
-             give one machine the decode role, or the role both"
-        ));
-    }
-    let split = roles.contains(&InferenceRole::Prefill) && roles.iter().any(|role| *role != InferenceRole::Prefill);
+    // several machines with the whole model share the conversations as sessions, which a prefill or decode role
+    // keeps on: every one of them answers, and the gateway balances the prompts between them
+    let split = roles.iter().any(|role| *role != crate::webui::InferenceRole::Both);
     if whole && unique.len() != 1 && !split {
         return Some(format!(
             "the inference service {service} runs the whole model on a single machine: choose one machine, or give \
-             the machines a prefill/decode split (one prefill machine and one that decodes)"
+             the machines a prefill/decode role (prefill first or decode first)"
         ));
     }
     if whole && unique.len() != named.len() {
@@ -1350,6 +1457,16 @@ pub(crate) async fn deploy_block(
             "the inference service {service} runs one slice per machine: choose different machines"
         ));
     }
+    // A sliced deployment's prefill machine runs the whole model beside the stages (the planner checks it is the
+    // whole model): it needs the service, not its stages.
+    let prefill_only = |target: &String| {
+        targets
+            .iter()
+            .zip(roles)
+            .filter(|(id, _)| *id == target)
+            .all(|(_, role)| *role == crate::webui::InferenceRole::Prefill)
+            && roles.len() == targets.len()
+    };
     for target in unique {
         let Some(services) = services_of(state, target).await else {
             return Some(format!(
@@ -1371,7 +1488,7 @@ pub(crate) async fn deploy_block(
                     entry["detail"].as_str().unwrap_or("no detail")
                 ))
             }
-            Some(entry) if !whole && entry["stages"] != true => {
+            Some(entry) if !whole && !prefill_only(target) && entry["stages"] != true => {
                 return Some(format!(
                     "the inference service {service} serves the whole model: choose \"whole model\""
                 ))
@@ -1508,23 +1625,70 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_deployment_of_prefill_machines_only_is_refused() {
+    async fn prefill_machines_answer_too_and_several_need_a_role() {
         use crate::webui::InferenceRole;
         let state = crate::gateway::testkit::state_with("me", vec![]).await;
-        let reason = deploy_block(&state, "strata", true, &["a".into()], &[InferenceRole::Prefill])
-            .await
-            .expect("a lone prefill machine answers no request");
-        assert!(reason.contains("no machine that answers"), "{reason}");
+        // every machine of the split answers: prefill machines alone are a deployment (the machines unknown here are
+        // the only refusal left)
+        for roles in [vec![InferenceRole::Prefill], vec![InferenceRole::Prefill, InferenceRole::Prefill]] {
+            let targets: Vec<String> = ["a", "b"][..roles.len()].iter().map(|id| id.to_string()).collect();
+            let reason = deploy_block(&state, "strata", true, &targets, &roles).await.expect("unknown machines");
+            assert!(reason.contains("did not answer which services"), "{reason}");
+        }
+        // two machines with the whole model and no role share no sessions: refused
         let reason = deploy_block(
             &state,
             "strata",
             true,
             &["a".into(), "b".into()],
-            &[InferenceRole::Prefill, InferenceRole::Prefill],
+            &[InferenceRole::Both, InferenceRole::Both],
         )
         .await
-        .expect("two prefill machines answer no request either");
-        assert!(reason.contains("no machine that answers"), "{reason}");
+        .expect("no role, no split");
+        assert!(reason.contains("on a single machine"), "{reason}");
+    }
+
+    #[tokio::test]
+    async fn a_prompt_goes_to_an_idle_machine_only_when_the_balance_calls_for_it() {
+        use crate::webui::InferenceRole;
+        let whole = |id: &str, role: InferenceRole| {
+            let mut p = crate::gateway::testkit::peer(id, id, 8080);
+            p.model = "m".into();
+            p.inference_frame_capabilities = vec![capability("strata"), role_capability(role)];
+            (p.start_layer, p.end_layer, p.total_layers) = (0, 31, 32);
+            p
+        };
+        let state = crate::gateway::testkit::state_with(
+            "me",
+            vec![
+                whole("head", InferenceRole::Decode),
+                whole("fast", InferenceRole::Prefill),
+                whole("other", InferenceRole::Decode),
+                whole("pre2", InferenceRole::Prefill),
+            ],
+        )
+        .await;
+        let picked = |head: &'static str| {
+            let state = state.clone();
+            async move { prefill_peer(&state, "strata", "m", head).await.map(|p| p.node_id) }
+        };
+        {
+            // this turn is in flight on its head (`generate` holds it)
+            let _turn = state.loads.acquire("head").await;
+            // a free decode head hands its prompt to an idle prefill machine, never to another decode machine
+            assert!(matches!(picked("head").await.as_deref(), Some("fast" | "pre2")));
+            let _fast = state.loads.acquire("fast").await;
+            let _pre2 = state.loads.acquire("pre2").await;
+            assert_eq!(picked("head").await, None, "no idle prefill machine: the free head reads it");
+            // a busy head hands it to any idle machine of the split
+            let _another = state.loads.acquire("head").await;
+            assert_eq!(picked("head").await.as_deref(), Some("other"));
+        }
+        // a free prefill head reads its own prompt; a busy one hands it over, to a prefill machine first
+        let _turn = state.loads.acquire("pre2").await;
+        assert_eq!(picked("pre2").await, None);
+        let _another = state.loads.acquire("pre2").await;
+        assert_eq!(picked("pre2").await.as_deref(), Some("fast"));
     }
 
     #[test]
@@ -1750,7 +1914,6 @@ mod tests {
             probe_labels: vec!["Yes".into(), "No".into()],
             probe_prefix_bytes: Some(12),
             images: vec!["data:image/png;base64,AAAA".into()],
-            prefill_node: None,
         });
         assert_eq!(body["prompt"], "User: oi");
         assert_eq!(body["probe"]["labels"], json!(["Yes", "No"]));

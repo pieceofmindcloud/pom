@@ -67,6 +67,10 @@ pub(super) fn routes() -> Router<GatewayState> {
             post(crate::plugin_session::engine_session_apply_route),
         )
         .route(
+            "/api/internal/plugins/:code/engine/session/piece",
+            post(crate::plugin_session::engine_session_piece_route),
+        )
+        .route(
             "/api/internal/plugins/:code/engine/session/offer",
             get(crate::plugin_session::engine_session_offer_route),
         )

@@ -675,9 +675,9 @@ deploy.knob.idle_minutes,Idle time (minutes),Tempo ocioso (minutos)
 deploy.knob.idle_minutesHint,"Minutes without a request before this peer unloads its model.","Minutos sem requisição antes de este peer descarregar o modelo."
 deploy.knob.inference_role,Inference role,Papel na inferência
 deploy.knob.inference_roleBoth,Prefill and decode,Prefill e decode
-deploy.knob.inference_roleDecode,Decode only,Só decode
-deploy.knob.inference_roleHint,"What this machine does with a request when it runs the whole model. Prefill: it only reads long prompts and hands their state to a decode machine of the same model, which writes the answer. Decode: it answers, fetching the state a prefill machine read. Both: it does everything (the default).","O que esta máquina faz com uma requisição quando roda o modelo inteiro. Prefill: só lê prompts longos e entrega o estado deles a uma máquina de decode do mesmo modelo, que escreve a resposta. Decode: responde, buscando o estado que uma máquina de prefill leu. Ambos: faz tudo (o padrão)."
-deploy.knob.inference_rolePrefill,Prefill only,Só prefill
+deploy.knob.inference_roleDecode,Decode first,Decode primeiro
+deploy.knob.inference_roleHint,"How this machine shares the work when several machines run the whole model. Every machine answers requests and reads prompts; the gateway spreads new conversations over them by queue. Prefill first: the machine best at reading prompts - when it is idle, a long prompt of another busy or decode machine is read here and handed over. Decode first: it reads a prompt itself only when no prefill machine is free. Both: no preference (the default).","Como esta máquina divide o trabalho quando várias máquinas rodam o modelo inteiro. Toda máquina responde requisições e lê prompts; o gateway distribui as conversas novas entre elas pela fila. Prefill primeiro: a máquina melhor em ler prompts - quando está livre, o prompt longo de outra máquina ocupada ou de decode é lido aqui e entregue a ela. Decode primeiro: lê um prompt ela mesma só quando nenhuma máquina de prefill está livre. Ambos: sem preferência (o padrão)."
+deploy.knob.inference_rolePrefill,Prefill first (also decodes),Prefill primeiro (também decodifica)
 deploy.knob.max_new_tokens,Max new tokens,Máx. tokens novos
 deploy.knob.max_new_tokensHint,"Ceiling for one leg of the gateway''s continuation loop, not for the request. The client''s max_tokens is what actually bounds a response and produces finish_reason length.","Teto de uma perna do laço de continuação do gateway, não da requisição. Quem limita a resposta e produz finish_reason length é o max_tokens do cliente."
 deploy.knob.max_sessions,Concurrent requests,Requisições simultâneas
@@ -1045,7 +1045,12 @@ enterprise.store.badgeInstant,Installs in seconds,Instala em segundos
 enterprise.store.badgeLocal,Your data stays on your nodes,Seus dados ficam nos seus nós
 "enterprise.store.badgePaddle","Secure payment with Paddle","Pagamento seguro com Paddle"
 enterprise.store.buy,Buy now,Comprar agora
+"enterprise.store.contactBody","Every company needs something different: tell us how many computers and what support you need, and we send you an offer with the price and a link to subscribe.","Cada empresa tem uma necessidade: conte quantos computadores e que suporte você precisa, e enviamos uma proposta com o preço e um link para assinar."
+"enterprise.store.contactSales","Talk to sales","Falar com vendas"
+"enterprise.store.contactStep1.body","Tell us how many computers and what support you need. We send you an offer with the price and a link to subscribe with Paddle; card details never pass through your node.","Conte quantos computadores e que suporte você precisa. Enviamos uma proposta com o preço e um link para assinar com o Paddle; os dados do cartão nunca passam pelo seu nó."
+"enterprise.store.contactStep1.title","Talk to our team","Fale com a nossa equipe"
 "enterprise.store.ctaBody","One purchase brings Request Logs, Deployment Logs, Statistics and Quota. The price is shown at checkout. Cancel anytime.","Uma compra traz Logs de Requisições, Logs de Implantação, Estatísticas e Quota. O preço aparece no checkout. Cancele quando quiser."
+"enterprise.store.ctaContact","Business Pack (logs, statistics and quota) for your company, priced to what it needs. Talk to our team.","Business Pack (logs, estatísticas e quota) para a sua empresa, com preço sob medida. Fale com a nossa equipe."
 "enterprise.store.ctaPrice","Business Pack (logs, statistics and quota) for {price}. Cancel anytime.","Business Pack (logs, estatísticas e quota) por {price}. Cancele quando quiser."
 enterprise.store.ctaTitle,Ready to see inside your cluster?,Pronto para enxergar dentro do seu cluster?
 enterprise.store.description,"Advanced observability for POM inference workloads: searchable request logs with a complete, redacted request inspector, and an operational statistics dashboard for tokens, latency, cache, nodes and network.","Observabilidade avançada para a inferência no POM: logs de requisições pesquisáveis com um inspetor completo e com segredos redigidos, e um painel de estatísticas operacionais de tokens, latência, cache, nós e rede."
@@ -1083,6 +1088,7 @@ enterprise.store.logs.titleA,See every request.,Veja cada requisição.
 enterprise.store.logs.titleB,Fix issues in minutes.,Resolva problemas em minutos.
 enterprise.store.moreOnSite,More on the plugin store,Mais na loja de plugins
 "enterprise.store.name","Business Pack","Business Pack"
+"enterprise.store.opensContact","Opens the contact form in your browser.","Abre o formulário de contato no navegador."
 "enterprise.store.opensInBrowser","Opens the purchase in your browser; POM keeps running here.","Abre a compra no seu navegador; o POM continua rodando aqui."
 "enterprise.store.quota.feature1","Plans of input and output tokens per day, week, month or a rolling session","Planos de tokens de entrada e saída por dia, semana, mês ou sessão contínua"
 "enterprise.store.quota.feature2","Assign them to a machine, a team, a project or the whole network","Atribua a uma máquina, a uma equipe, a um projeto ou à rede inteira"
@@ -2074,6 +2080,7 @@ plugins.catalogError,Could not load the public plugin catalog.,Não foi possíve
 plugins.catalogLoading,Loading the public plugin catalog,Carregando o catálogo público de plugins
 plugins.closeFailed,The plugin process did not stop,O processo do plugin não parou
 plugins.community,Community,Comunidade
+"plugins.contactSales","Talk to sales","Falar com vendas"
 plugins.deactivate,Deactivate,Desativar
 plugins.deactivateConfirmDescription,This will deactivate the plugin on this node. You can activate it again later with a license key.,Isso desativará o plugin neste nó. Você poderá ativá-lo novamente com uma chave de licença.
 plugins.deactivateConfirmTitle,Deactivate {name}?,Desativar {name}?
@@ -2173,7 +2180,10 @@ plugins.preferencesOpen,Open {name} preferences,Abrir preferências de {name}
 plugins.preferencesSave,Save preferences,Salvar preferências
 plugins.preferencesSaveFailed,Could not save these preferences locally.,Não foi possível salvar estas preferências localmente.
 plugins.preferencesTitle,Plugin preferences,Preferências do plugin
+"plugins.priceOnRequest","Pricing on request","Preço sob consulta"
 plugins.pricing,Pricing,Preços
+"plugins.promotion.badge","Sale -{percent}%","Promoção -{percent}%"
+"plugins.promotion.note","Limited time, until {date}: {percent}% off {appliesTo, select, first {the first payment} payments {the first {payments} payments} other {every payment while you stay subscribed}}.","Por tempo limitado, até {date}: {percent}% de desconto {appliesTo, select, first {no primeiro pagamento} payments {nos {payments} primeiros pagamentos} other {em todos os pagamentos, enquanto a assinatura durar}}."
 plugins.publishDescription,Submit your plugin's public GitHub repository on the POM website.,Envie o repositório público do seu plugin pelo site do POM.
 plugins.publishEyebrow,Publish,Publicar
 plugins.publishLink,Submit my plugin,Enviar meu plugin

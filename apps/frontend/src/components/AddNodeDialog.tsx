@@ -270,7 +270,8 @@ export function AddNodeDialog({
                     ? { name: engine.name, settings: engine.settings, pomSettings: engine.pomSettings }
                     : undefined
                 }
-                showHiddenStateDtype
+                // a slice carries the hidden state; a whole model takes the prefill/decode role instead
+                showHiddenStateDtype={option?.kind !== "whole"}
                 cacheTypes={
                   cacheTypes
                     ? {

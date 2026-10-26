@@ -2680,9 +2680,14 @@ engines exchange their own hidden states, never POM's hop protocol of section
   answers to the earlier ones (a prompt's pieces): the relay keeps up to the
   deployment's `prefill_max_inflight_chunks` frames of a connection posted at
   once and writes the answers back in order, and `link.max_inflight` tells the
-  engine that depth. The earlier machine passes frame `seq` to its engine only
-  after frame `seq - 1`, so that engine reads the next piece while the answer
-  to the last one crosses. A frame number already passed on, or one past the
+  engine that depth (the request's trace reports it as
+  `prefill_max_inflight_chunks` when the plan has more than one stage). The
+  earlier machine writes frame `seq` to its engine right after frame `seq - 1`,
+  without waiting for that one's answer, and a reader task of the connection
+  hands each answer to the frame that asked, in the order they were written:
+  the engine finds the next pieces already in its socket (Strata's first stage
+  reads the pieces waiting behind one in a single pass, so it brings the
+  experts in from RAM once for all of them). A frame number already passed on, or one past the
   first on a connection that was reset, is refused with `410` and not sent
   again.
 - **Hidden-state precision.** Every frame between an engine and its node
@@ -2692,6 +2697,14 @@ engines exchange their own hidden states, never POM's hop protocol of section
   through the same `wire` encoding as the pipeline hops (f16, f8, groupwise
   int4) and hands it back to the other engine as `f32`; a tensor that f8
   cannot carry crosses that once as `f32`. Neither engine knows the precision.
+- **Trace.** The node reads a request frame's tag for the trace: `P` is a
+  prompt piece, `W` a verify window and `V` a verify window that carries the
+  last window's commit (one round trip per decode step instead of a `W` and a
+  `C`); its position and count sit at the same offsets in all three. The
+  earlier machine reports a frame's served time from its writing to the
+  engine, or from the answer before it when it waited behind that one, so the
+  frames in flight together are not counted over each other. The hops that carried hidden states report the deployment's
+  `hidden_state_dtype`.
 - Both routes take only a signed call from the live peer that serves the next
   slice of the same deployment. The node reads nothing of a frame but its
   envelope, and no engine listens beyond loopback.
@@ -2703,24 +2716,35 @@ with an error.
 inference service may be deployed with `RuntimeParams::inference_role`
 (`both`, the default, `prefill` or `decode`; the POM settings card of the
 deploy inspector draws it when the service declares `inference_role` in
-`pom_settings` and the model is not split across machines). One deployment
+`pom_settings` and the model is not split across machines, or per machine when
+two or more machines are on the map; the Dashboard's "Add node" dialog draws it
+for a machine added with the whole model). Every role answers requests and reads
+prompts: the role only says which machine the balance prefers for reading the
+prompts of the others (`prefill`, "prefill first") and which one reads its own
+only when no prefill machine is free (`decode`, "decode first"). One deployment
 may also put the whole model on several machines, each with its own role
 (`SelectedSlice::inference_role`, carried by `PeerOverrides`, the plan's
 `Step`, `LaunchTarget` and `params_for`): `plugin_engine::deploy_block`
-accepts several machines for a whole model only when their roles hold at
-least one `prefill` and one that decodes, and refuses a deployment whose
-machines are all `prefill`: a prefill machine is never a head, so no machine
-would answer. The deploy screen keeps a per-machine role only while two or
+accepts several machines for a whole model when at least one has a `prefill`
+or `decode` role (a role keeps the sessions on, which is how the machines hand
+conversations to each other); machines that are all `prefill` are a valid
+deployment. A sliced deployment may hold a prefill machine too: the survey
+of a `shards` deployment also lists the whole GGUF of the same model
+(`parse_whole`, matched by `model_stem`), the automatic plan chains the slices
+only, and a row of the whole model with the `prefill` role stands outside the
+layer coverage (`planning.rs`, "Prefill machines of a sliced deployment"). The
+planner refuses a `prefill` row on a slice and a prefill machine without an
+inference service, and `deploy_block` does not ask a prefill machine for the
+service's `stages`. The deploy screen gives the whole model put on a machine of
+a sliced deployment the `prefill` role. The gateway's prefill step below runs
+only for a one-step plan today, so a sliced pipeline still reads its own
+prompts beside such a machine. The deploy screen keeps a per-machine role only while two or
 more machines are on the map; with a single machine the row's role is dropped
-and the deployment's role (the one the inspector shows) applies. A gateway
-whose only peers for the model are prefill machines answers "only prefill
-machines serve it" instead of the layer-coverage refusal. The Flow draws the split as
+and the deployment's role (the one the inspector shows) applies. The Flow draws the split as
 Prefill -> Decode: the cluster view's `PeerView.role` and a candidate edge
 from each prefill machine to each decode machine of the same layers. The
-Chat's head list (`/api/ui/infer/heads`) offers the split as one head, its
-prefill machine; a request pinned to a prefill machine is planned on a head
-that decodes and reads its prompt on that prefill machine
-(`EngineRequest::prefill_node`). The trace of a split turn has the prefill
+Chat's head list (`/api/ui/infer/heads`) offers every machine of the split as
+a head of its own. The trace of a split turn has the prefill
 machine as its first hop (its engine's prompt time, the call's round trip),
 and the prompt phase of the timings covers both machines and the session's
 transfer. The role reaches
@@ -2728,14 +2752,23 @@ the plugin in `engine.load` (`role`) and is announced as
 `engine/plugin-role-v1:<role>` beside the engine capability (the `/health`
 `capabilities` carry it too). A stage of a split model has no role.
 
-- **Planning.** The gateway drops every `prefill` machine from the peers it
-  plans with (`plugin_engine::is_prefill_only`), so such a machine is never the
-  head of a plan; `decode` and `both` machines are planned as before.
+- **Planning.** Every machine of the split is a head like any other: a
+  conversation goes back to the head that holds it (`auto_head`), and a new one
+  takes the rotation by queue, so the machines share the conversations.
+- **The balance** (`plugin_engine::prefill_peer`), per turn, by queue: the
+  load of a machine is the larger of this gateway's in-flight count and the
+  `active_generations` its `/health` reports, and the head's count includes
+  the turn itself. A target is another machine of the split (a `prefill` or
+  `decode` role, the same plugin and model, the whole model) with nothing in
+  flight. A busy head (another request on it) hands the prompt to an idle
+  target, a `prefill` machine first, then the fastest measured
+  `prefill_ms_per_token`. A free head reads its own prompt, except a head
+  that is not a `prefill` machine while a `prefill` machine is idle: that one
+  reads it. No idle target: the head reads it.
 - **The prefill step** (`plugin_engine::prefill_on_peer`). Before a turn that
   names its conversation (`session`, or the `auto-` name) runs on a one-step
-  plan without images or a typed decision, the gateway looks for a live
-  `prefill` machine of the same plugin and model that serves the whole model
-  (the least busy). It asks the head what it holds of the conversation
+  plan without images or a typed decision, the gateway asks the balance above
+  for a machine to read it. It asks the head what it holds of the conversation
   (`engine/session/offer`, the larger of `tokens` and `ram_tokens`) and sends
   the turn to the prefill machine with `prefill_only: true`, `max_tokens: 1`
   and `decode_holds`. That machine reads the prompt into a batch slot and keeps
@@ -2754,10 +2787,32 @@ the plugin in `engine.load` (`role`) and is announced as
   it and reads only the rest of the prompt. Any failure of either step is
   logged and leaves the head to read the prompt itself: the split is never a
   reason for a turn to fail.
+- **Pieces** (the default with a bridge that knows them). The prefill turn also
+  carries `pieces: true`: the prefill machine reads the prompt
+  `POM_STRATA_PIECE_TOKENS` (4096) tokens at a time, one request of one token
+  each, and saves each piece as soon as it is read under `<session>.p1`, `.p2`,
+  ... - the first whole, the next ones as deltas of the one before - writing
+  `{"piece": {"key", "kind": "full" | "delta", "tokens", "bytes"}}` once its
+  files are written. The last piece stops one token short of the prompt. The
+  gateway hands each piece to the head as it comes
+  (`plugin_session::apply_piece_on`, the head's
+  `POST engine/session/piece {source, session, piece, kind}`): the head copies
+  its files from the prefill machine and its bridge applies it to one batch
+  slot (the whole piece restored, each delta on top of it; the files are then
+  removed). At `done` (`done.prefill.pieces`) the gateway waits only for the
+  pieces still in flight, and the head's turn carries `session_pieces: true`
+  instead of `session_source`, so it fetches nothing and reads only the last
+  token. In the trace, `session_transfer.transfer_ms` is that wait after the
+  prompt was read (the rest overlapped the read) and `bytes` everything copied.
+  A bridge without pieces ignores the flag and answers with one session, which
+  the head fetches as described above; a piece that fails leaves the head to
+  read the prompt itself.
 - **What crosses.** One session file per split turn: the recurrent state of the
   GDN layers (about 118 MB on the qwen4exp geometry, whatever the prompt) plus
   the K/V of the attention layers (about 7.5 KB per token in q4_0), once, after
-  the prompt is read. Nothing crosses per generated token. Both machines need
+  the prompt is read. With pieces, every piece carries the recurrent state
+  again (about 150 MB a piece of 4096 tokens), so more bytes cross, but only
+  the last piece after the prompt is read. Nothing crosses per generated token. Both machines need
   the same model files and KV type: the engine refuses a session of another
   identity, and the head then reads the prompt again.
 

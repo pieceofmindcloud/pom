@@ -24,6 +24,22 @@ export interface PublicPluginPrice {
   interval: string | null;
 }
 
+/** How the site sells a plugin: its price in the wizard, or "talk to sales" and an offer made per customer. */
+export type PluginSalesMode = "checkout" | "contact";
+
+/**
+ * A limited-time discount the license server runs on a plugin's prices (a
+ * Paddle discount): a percentage off the terms it covers, on the first
+ * payment, the first `payments` payments or every payment, until `ends_at`.
+ */
+export interface PublicPluginPromotion {
+  percent: number;
+  intervals: ("month" | "year")[];
+  applies_to: "first" | "payments" | "forever";
+  payments: number | null;
+  ends_at: string;
+}
+
 export interface PublicPluginCatalogEntry {
   code: string;
   display_name: string | null;
@@ -43,6 +59,10 @@ export interface PublicPluginCatalogEntry {
   pom_team: boolean | null;
   /** Free plugin installed from this public GitHub repository instead of the license server. */
   github_url: string | null;
+  /** "contact": no price is announced, the plugin is bought through the team ("checkout" from an older license server). */
+  sales_mode: PluginSalesMode;
+  /** The promotion running on its prices, if any. */
+  promotion: PublicPluginPromotion | null;
 }
 
 export interface PublicPluginCatalog {
@@ -140,6 +160,22 @@ function publicPrice(value: unknown): PublicPluginPrice | null {
   return { amount, currency: currency.toUpperCase(), interval };
 }
 
+/** A running promotion, or null for anything malformed or already over by this machine's clock. */
+function publicPromotion(value: unknown): PublicPluginPromotion | null {
+  if (!isRecord(value)) return null;
+  const percent = value.percent;
+  const intervals = Array.isArray(value.intervals)
+    ? value.intervals.filter((interval): interval is "month" | "year" => interval === "month" || interval === "year")
+    : [];
+  const appliesTo = value.applies_to;
+  const payments = typeof value.payments === "number" && Number.isInteger(value.payments) && value.payments > 1 ? value.payments : null;
+  const endsAt = nonEmptyString(value.ends_at);
+  if (typeof percent !== "number" || !Number.isInteger(percent) || percent < 1 || percent > 99) return null;
+  if (!intervals.length || !endsAt || !(Date.parse(endsAt) > Date.now())) return null;
+  if (appliesTo !== "first" && appliesTo !== "forever" && !(appliesTo === "payments" && payments !== null)) return null;
+  return { percent, intervals: [...new Set(intervals)], applies_to: appliesTo, payments: appliesTo === "payments" ? payments : null, ends_at: endsAt };
+}
+
 function githubUrl(value: unknown): string | null {
   const candidate = nonEmptyString(value);
   if (!candidate) return null;
@@ -185,6 +221,8 @@ function catalogEntry(value: unknown): PublicPluginCatalogEntry | null {
     featured: value.featured === true,
     pom_team: typeof value.pom_team === "boolean" ? value.pom_team : null,
     github_url: githubUrl(value.github_url),
+    sales_mode: value.sales_mode === "contact" ? "contact" : "checkout",
+    promotion: publicPromotion(value.promotion),
   };
 }
 

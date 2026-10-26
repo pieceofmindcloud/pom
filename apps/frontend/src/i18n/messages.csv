@@ -1045,7 +1045,12 @@ enterprise.store.badgeInstant,Installs in seconds,Instala em segundos
 enterprise.store.badgeLocal,Your data stays on your nodes,Seus dados ficam nos seus nós
 "enterprise.store.badgePaddle","Secure payment with Paddle","Pagamento seguro com Paddle"
 enterprise.store.buy,Buy now,Comprar agora
+"enterprise.store.contactBody","Every company needs something different: tell us how many computers and what support you need, and we send you an offer with the price and a link to subscribe.","Cada empresa tem uma necessidade: conte quantos computadores e que suporte você precisa, e enviamos uma proposta com o preço e um link para assinar."
+"enterprise.store.contactSales","Talk to sales","Falar com vendas"
+"enterprise.store.contactStep1.body","Tell us how many computers and what support you need. We send you an offer with the price and a link to subscribe with Paddle; card details never pass through your node.","Conte quantos computadores e que suporte você precisa. Enviamos uma proposta com o preço e um link para assinar com o Paddle; os dados do cartão nunca passam pelo seu nó."
+"enterprise.store.contactStep1.title","Talk to our team","Fale com a nossa equipe"
 "enterprise.store.ctaBody","One purchase brings Request Logs, Deployment Logs, Statistics and Quota. The price is shown at checkout. Cancel anytime.","Uma compra traz Logs de Requisições, Logs de Implantação, Estatísticas e Quota. O preço aparece no checkout. Cancele quando quiser."
+"enterprise.store.ctaContact","Business Pack (logs, statistics and quota) for your company, priced to what it needs. Talk to our team.","Business Pack (logs, estatísticas e quota) para a sua empresa, com preço sob medida. Fale com a nossa equipe."
 "enterprise.store.ctaPrice","Business Pack (logs, statistics and quota) for {price}. Cancel anytime.","Business Pack (logs, estatísticas e quota) por {price}. Cancele quando quiser."
 enterprise.store.ctaTitle,Ready to see inside your cluster?,Pronto para enxergar dentro do seu cluster?
 enterprise.store.description,"Advanced observability for POM inference workloads: searchable request logs with a complete, redacted request inspector, and an operational statistics dashboard for tokens, latency, cache, nodes and network.","Observabilidade avançada para a inferência no POM: logs de requisições pesquisáveis com um inspetor completo e com segredos redigidos, e um painel de estatísticas operacionais de tokens, latência, cache, nós e rede."
@@ -1083,6 +1088,7 @@ enterprise.store.logs.titleA,See every request.,Veja cada requisição.
 enterprise.store.logs.titleB,Fix issues in minutes.,Resolva problemas em minutos.
 enterprise.store.moreOnSite,More on the plugin store,Mais na loja de plugins
 "enterprise.store.name","Business Pack","Business Pack"
+"enterprise.store.opensContact","Opens the contact form in your browser.","Abre o formulário de contato no navegador."
 "enterprise.store.opensInBrowser","Opens the purchase in your browser; POM keeps running here.","Abre a compra no seu navegador; o POM continua rodando aqui."
 "enterprise.store.quota.feature1","Plans of input and output tokens per day, week, month or a rolling session","Planos de tokens de entrada e saída por dia, semana, mês ou sessão contínua"
 "enterprise.store.quota.feature2","Assign them to a machine, a team, a project or the whole network","Atribua a uma máquina, a uma equipe, a um projeto ou à rede inteira"
@@ -2074,6 +2080,7 @@ plugins.catalogError,Could not load the public plugin catalog.,Não foi possíve
 plugins.catalogLoading,Loading the public plugin catalog,Carregando o catálogo público de plugins
 plugins.closeFailed,The plugin process did not stop,O processo do plugin não parou
 plugins.community,Community,Comunidade
+"plugins.contactSales","Talk to sales","Falar com vendas"
 plugins.deactivate,Deactivate,Desativar
 plugins.deactivateConfirmDescription,This will deactivate the plugin on this node. You can activate it again later with a license key.,Isso desativará o plugin neste nó. Você poderá ativá-lo novamente com uma chave de licença.
 plugins.deactivateConfirmTitle,Deactivate {name}?,Desativar {name}?
@@ -2173,7 +2180,10 @@ plugins.preferencesOpen,Open {name} preferences,Abrir preferências de {name}
 plugins.preferencesSave,Save preferences,Salvar preferências
 plugins.preferencesSaveFailed,Could not save these preferences locally.,Não foi possível salvar estas preferências localmente.
 plugins.preferencesTitle,Plugin preferences,Preferências do plugin
+"plugins.priceOnRequest","Pricing on request","Preço sob consulta"
 plugins.pricing,Pricing,Preços
+"plugins.promotion.badge","Sale -{percent}%","Promoção -{percent}%"
+"plugins.promotion.note","Limited time, until {date}: {percent}% off {appliesTo, select, first {the first payment} payments {the first {payments} payments} other {every payment while you stay subscribed}}.","Por tempo limitado, até {date}: {percent}% de desconto {appliesTo, select, first {no primeiro pagamento} payments {nos {payments} primeiros pagamentos} other {em todos os pagamentos, enquanto a assinatura durar}}."
 plugins.publishDescription,Submit your plugin's public GitHub repository on the POM website.,Envie o repositório público do seu plugin pelo site do POM.
 plugins.publishEyebrow,Publish,Publicar
 plugins.publishLink,Submit my plugin,Enviar meu plugin

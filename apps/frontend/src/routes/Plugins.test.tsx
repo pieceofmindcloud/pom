@@ -71,6 +71,7 @@ const mocks = vi.hoisted(() => ({
   post: vi.fn(),
   del: vi.fn(),
   navigateToPluginPurchase: vi.fn(),
+  navigateToPluginContact: vi.fn(),
   queryClient: { invalidateQueries: vi.fn() },
   githubRepositories: {
     data: [] as Array<Record<string, unknown>>,
@@ -145,7 +146,7 @@ vi.mock("../lib/queries", () => ({
   usePublicPlugin: () => ({ data: null, isLoading: false }),
   useNode: () => mocks.node,
 }));
-vi.mock("../lib/pluginPurchase", () => ({ navigateToPluginPurchase: mocks.navigateToPluginPurchase }));
+vi.mock("../lib/pluginPurchase", () => ({ navigateToPluginPurchase: mocks.navigateToPluginPurchase, navigateToPluginContact: mocks.navigateToPluginContact }));
 
 function renderPage(initialLocale: "en" | "pt-BR" = "pt-BR") {
   return render(
@@ -184,6 +185,7 @@ describe("Plugins", () => {
     mocks.catalogQueries.length = 0;
     mocks.node.data = { system: { os: "linux", arch: "x86_64" } };
     mocks.navigateToPluginPurchase.mockReset();
+    mocks.navigateToPluginContact.mockReset();
     mocks.queryClient.invalidateQueries.mockReset();
     localStorage.clear();
   });
@@ -378,7 +380,40 @@ describe("Plugins", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Buy" }));
 
-    expect(mocks.navigateToPluginPurchase).toHaveBeenCalledWith(pluginCode);
+    expect(mocks.navigateToPluginPurchase).toHaveBeenCalledWith(pluginCode, { locale: "en" });
+  });
+
+  it("announces no price for a plugin sold by contact and opens the site's contact form about it", () => {
+    const entry = publicPlugin("business", {
+      display_name: "Business Pack", sales_mode: "contact",
+      pricing: { monthly: { amount: 1999, currency: "usd", interval: "month" }, annual: null },
+    });
+    mocks.catalog.data = { plugins: [entry] };
+    mocks.plugins.data = [pluginStatus("business")];
+    renderPage("en");
+
+    expect(screen.getByText("Pricing on request")).toBeTruthy();
+    expect(screen.queryByText(/\$19\.99/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Talk to sales" }));
+    expect(mocks.navigateToPluginContact).toHaveBeenCalledWith("business", { locale: "en" });
+    expect(mocks.navigateToPluginPurchase).not.toHaveBeenCalled();
+  });
+
+  it("shows a running promotion's full price struck beside the discounted one, with its terms", () => {
+    const entry = publicPlugin("qdrant", {
+      display_name: "Qdrant",
+      pricing: { monthly: { amount: 1998, currency: "usd", interval: "month" }, annual: { amount: 9998, currency: "usd", interval: "year" } },
+      promotion: { percent: 50, intervals: ["month"], applies_to: "forever", payments: null, ends_at: "2099-11-30T12:00:00.000Z" },
+    });
+    mocks.catalog.data = { plugins: [entry] };
+    mocks.plugins.data = [pluginStatus("qdrant")];
+    renderPage("en");
+
+    expect(screen.getByText("Sale -50%")).toBeTruthy();
+    const monthly = screen.getByText("$19.98").closest("span") as HTMLElement;
+    expect(monthly.textContent).toBe("$19.98$9.99/month");
+    expect(screen.getByText("$99.98/year")).toBeTruthy();
+    expect(screen.getByText("Limited time, until November 30: 50% off every payment while you stay subscribed.")).toBeTruthy();
   });
 
   it("keeps local plugins active even if they do not come in the public catalog", () => {
@@ -719,7 +754,7 @@ describe("Plugins", () => {
     expect(buy.className).toContain("focus-visible:ring-2");
     fireEvent.click(buy);
 
-    expect(mocks.navigateToPluginPurchase).toHaveBeenCalledWith("alpha");
+    expect(mocks.navigateToPluginPurchase).toHaveBeenCalledWith("alpha", { locale: "pt-BR" });
   });
 
   it("reloads the catalog after an error", () => {

@@ -20,6 +20,31 @@ use webkit2gtk::gio::prelude::TlsCertificateExt;
 use webkit2gtk::{WebContextExt, WebViewExt};
 use wry::{WebViewBuilder, WebViewBuilderExtUnix, WebViewExtUnix};
 
+/// Can this process open the window?
+///
+/// No when `POM_HEADLESS` is on (`1`/`true`/`yes`/`on`), or when neither `DISPLAY` nor
+/// `WAYLAND_DISPLAY` is set: GTK cannot start without a display and the process would end
+/// in a panic. The AppImage then runs as a server, like a build without `desktop` - which
+/// is how the Docker image built from the release runs it.
+pub fn available() -> bool {
+    let set = |name: &str| std::env::var_os(name).is_some_and(|value| !value.is_empty());
+    available_from(
+        crate::brand::env("HEADLESS").ok().as_deref(),
+        set("DISPLAY"),
+        set("WAYLAND_DISPLAY"),
+    )
+}
+
+fn available_from(headless: Option<&str>, display: bool, wayland: bool) -> bool {
+    let headless = headless.is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    });
+    !headless && (display || wayland)
+}
+
 /// The same size as the macOS and Windows windows.
 pub const WINDOW_SIZE: (f64, f64) = (1120.0, 880.0);
 
@@ -150,4 +175,19 @@ pub fn show_running(port: u16) -> Result<()> {
         },
         gateway_ready,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::available_from;
+
+    #[test]
+    fn window_needs_a_display_and_no_headless_flag() {
+        assert!(available_from(None, true, false));
+        assert!(available_from(None, false, true));
+        assert!(available_from(Some("0"), true, false));
+        assert!(!available_from(None, false, false));
+        assert!(!available_from(Some("1"), true, true));
+        assert!(!available_from(Some(" On "), true, false));
+    }
 }

@@ -324,7 +324,9 @@ troubled deployment.
   AppImage). The view is built into the window's GTK box (`build_gtk`), not as
   an X11 child window, which painted nothing - and does not exist under
   Wayland. Closing the window ends the process; `show_running` opens a window
-  on a POM already running from the same root.
+  on a POM already running from the same root. `available` is false with
+  `POM_HEADLESS` on or with neither `DISPLAY` nor `WAYLAND_DISPLAY`: then
+  `main` runs the service with no window, as a server build does.
 
 `profile.rs` is the single source of the node's persisted profile (`admin`,
 `worker` or `visitor`) and of the visibility/promotion capabilities and deployment

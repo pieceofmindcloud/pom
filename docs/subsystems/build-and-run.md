@@ -671,6 +671,29 @@ loses offload on the first click.
   (harness). The image replaces that call with `groups 2>/dev/null`; nothing
   else depends on the group name.
 
+### Published image (Docker Hub)
+
+`packaging/docker/` builds a second, unrelated image: the Linux AppImage of a
+GitHub release unpacked onto a clean Ubuntu 24.04, with no POM build at all.
+`.github/workflows/docker-hub.yml` builds it on a GitHub-hosted runner (the
+self-hosted runner's user has no Docker access), after each Linux release
+workflow or on demand, smoke-tests it without a GPU and pushes
+`<repository>:<release tag>` and `:latest`. Without a release named it takes the
+newest release that has a Linux AppImage, preferring the CUDA + Vulkan one.
+Secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`; the variable
+`DOCKERHUB_REPOSITORY` overrides the image name. Details and how to run it are
+in `packaging/docker/README.md`. What the image has to work around:
+
+- **The AppImage is the desktop build.** Without a display the node runs as a
+  server (`linux_window::available`, also forced by `POM_HEADLESS=1`, which the
+  image sets). A release from before that fallback dies in GTK init; the
+  Dockerfile probes the binary once and, only then, installs Xvfb and the
+  entrypoint runs the node under a virtual display.
+- **The CUDA AppImage links `libcuda.so.1`.** The image carries NVIDIA's stub
+  in `/opt/pom/cuda-stub`, which the entrypoint puts on `LD_LIBRARY_PATH` only
+  when the linker cache has no real driver (a container without `--gpus`); CUDA
+  then finds no device and the node runs on the CPU.
+
 ## No Python runtime
 
 The supported runtime is **Rust** (`crates/node/src/inference/infer_server/`
@@ -719,6 +742,7 @@ repository (not even in git history).
 | `POM_RAG` | `0` turns transparent retrieval off on this gateway. `POM_RAG_TIMEOUT_MS` (default 300), `POM_RAG_PASSAGES` (default 1), `POM_RAG_MIN_SCORE` (default 0.8), `POM_RAG_REWRITE` (`0` keeps long messages away from the model), `POM_RAG_REWRITE_MIN_CHARS` (default 400), `POM_RAG_DECISION` (`1` first asks the model whether the message needs documents; off by default) and `POM_RAG_DECISION_MIN` (default 0.3) tune it. See `plugins-ui.md`, "Transparent retrieval (RAG)". |
 | `POM_CACHE_RAM` | Host-memory KV cache in MiB (llama-server's `--cache-ram`): a positive ceiling, `0` for off, `-1` or unset for as much as the machine allows. Beats `cache_ram_mib` in `pom.json`. Half of the host RAM always stays available to the user and a host with less than 12 GiB caches nothing. See `inference.md` §3.1.2. |
 | `POM_SLOT_AUTO_TTL_SECS` | TTL of an unused automatic prefix snapshot, in seconds (default 7 days). Beats `slot_auto_ttl_secs` in `pom.json`. Read at gateway startup. |
+| `POM_HEADLESS` | Linux `desktop` build (the AppImage): `=1` (`true`/`yes`/`on`) never opens the window and runs the node as a server, as happens anyway when neither `DISPLAY` nor `WAYLAND_DISPLAY` is set. |
 | `POM_INSECURE_ADMIN_UI` | `=1` serves the admin UI in plain HTTP to remote browsers too, instead of redirecting them to https. Development only, for machines reached by IP with no trusted certificate; read once at startup. Peer-only routes stay refused in plain text and plain node-to-node calls still prove no membership. Loopback never needs it. |
 | `POM_TLS_NAMES` | Comma-separated DNS names this node is reached by besides its host name (`localhost` is always in), for a node in a container whose host name is not the one browsers use. They go into the local CA's name constraints when the CA is created and into the web certificate. A name added after the CA exists stays out of the certificate until the CA files (`.pom-ca.key`, `.pom-ca.crt`) are deleted and the new CA trusted again. |
 | `POM_DEV_AUTO_ACCEPT_TRANSFERS` | `=1` makes the **receiving** node accept every transfer offer without a click. Development only; read once at startup. The sender cannot ask for it. |

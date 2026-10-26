@@ -1756,6 +1756,15 @@ fn parse_function_calls_xml(raw: &str) -> Option<Vec<(String, serde_json::Value)
         if trimmed.is_empty() {
             break;
         }
+        // A foreign closer after the last invoke (`</function>` where
+        // `</function_calls>` belongs) ends the container; it is not a reason
+        // to throw away the calls already read.
+        if !calls.is_empty() {
+            if let Some(closer) = STRAY_CLOSERS.iter().find(|c| trimmed.starts_with(**c)) {
+                cursor = &trimmed[closer.len()..];
+                continue;
+            }
+        }
         if !trimmed.starts_with("<invoke") {
             return None;
         }
@@ -2497,6 +2506,26 @@ mod tests {
             ]
         );
         assert_eq!(feed_in_chunks(raw, 1), parse_output(raw));
+    }
+
+    #[test]
+    fn function_calls_shut_by_a_bare_function_closer_keeps_its_invokes() {
+        // Seen in a real session: two complete invokes, the container shut
+        // with `</function>`; the whole block leaked to the client as text.
+        let raw = "<function_calls>\n<invoke name=\"Bash\">\n<parameter name=\"command\">grep -n a b.yml</parameter>\n<parameter name=\"description\">Check compose</parameter>\n</invoke>\n<invoke name=\"Bash\">\n<parameter name=\"command\">grep -n c d.rs</parameter>\n<parameter name=\"description\">Check hashing</parameter>\n</invoke>\n</function>";
+        let expected = vec![
+            OutputPart::ToolCall {
+                name: "Bash".into(),
+                arguments: json!({"command": "grep -n a b.yml", "description": "Check compose"}),
+            },
+            OutputPart::ToolCall {
+                name: "Bash".into(),
+                arguments: json!({"command": "grep -n c d.rs", "description": "Check hashing"}),
+            },
+        ];
+        assert_eq!(parse_output(raw), expected);
+        assert_eq!(feed_in_chunks(raw, 1), expected);
+        assert_eq!(feed_in_chunks(raw, 7), expected);
     }
 
     #[test]

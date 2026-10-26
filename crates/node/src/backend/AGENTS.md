@@ -880,7 +880,9 @@ change lands in the right place.
   (`closer_position`), so content that mentions those tags is not cut. A
   `<function_calls>` holding a `<function=...>` body is read as one call, a
   repeated `<tool_call>` opener and a doubled or foreign trailing closer are
-  normalized (`normalize_wrapped_body`), both `<parameter=P>` and
+  normalized (`normalize_wrapped_body`), a `<function_calls>` container
+  shut by a foreign closer (`</function>`) keeps the invokes already read
+  (`parse_function_calls_xml` skips `STRAY_CLOSERS` after the first one), both `<parameter=P>` and
   `<parameter name="P">` are read inside one call (`parameter_open`), as is
   a parameter written as its own element, `<path>a.html</path>`, and a
   `<function=NAME>` call shut by `</NAME>` (both seen from Gemma 4;

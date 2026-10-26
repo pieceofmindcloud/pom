@@ -692,6 +692,10 @@ impl SessionFetch {
 /// fetched, if anything.
 pub(crate) async fn prepare_for_body(state: &GatewayState, code: &str, body: &Value) -> Option<SessionFetch> {
     let key = body["session"].as_str().filter(|key| valid_key(key))?;
+    // the prefill machine's pieces are in this machine's slot already (apply_piece_on): nothing to fetch
+    if body["session_pieces"] == true {
+        return None;
+    }
     // a prefill/decode split: the prefill machine read this prompt just now, and its session is the one to take
     if let Some(source) = body["session_source"]
         .as_str()
@@ -886,8 +890,23 @@ async fn fetch_session(
     peer: &crate::network::PeerInfo,
     port: u16,
     token: &str,
-) -> Result<(), String> {
-    for kind in ["full_ids", "full"] {
+) -> Result<u64, String> {
+    fetch_files(state, code, key, peer, port, token, &["full_ids", "full"]).await
+}
+
+/// Copies the peer's files of `kinds` for `key` into this machine's session folder, in that order (the token list
+/// before its K/V). Returns the bytes copied.
+async fn fetch_files(
+    state: &GatewayState,
+    code: &str,
+    key: &str,
+    peer: &crate::network::PeerInfo,
+    port: u16,
+    token: &str,
+    kinds: &[&str],
+) -> Result<u64, String> {
+    let mut copied = 0u64;
+    for &kind in kinds {
         let mut offset = 0u64;
         let mut total: Option<u64> = None;
         loop {
@@ -938,9 +957,118 @@ async fn fetch_session(
                 return Err(format!("{kind}: this machine refused the piece: {}", put.status()));
             }
             offset += piece.len() as u64;
+            copied += piece.len() as u64;
         }
     }
-    Ok(())
+    Ok(copied)
+}
+
+// ---- the prefill/decode split's pieces ---------------------------------------------------------------------------
+//
+// A prefill machine asked for pieces (`prefill_on_peer`) saves the prompt's state every few thousand tokens as it reads
+// it: the first piece whole, the next ones as deltas, under `<session>.p1`, `.p2`, ... The gateway hands each piece
+// to the head as soon as it is announced (`apply_piece_on`), and the head copies its files from the prefill machine
+// and applies it to one batch slot of its engine, so only the last piece is transferred after the prompt is read.
+
+/// A piece announced by a prefill machine, applied to the engine of the head `head`: here, or through the head's
+/// `engine/session/piece` route. Returns the bytes the head copied.
+pub(crate) async fn apply_piece_on(
+    state: &GatewayState,
+    code: &str,
+    head: &str,
+    source: &str,
+    session: &str,
+    piece: &str,
+    kind: &str,
+) -> Result<u64, String> {
+    if head == state.network.node_id {
+        return apply_piece_here(state, code, source, session, piece, kind).await;
+    }
+    let peer = state
+        .all_peers()
+        .await
+        .into_iter()
+        .find(|peer| peer.node_id == head)
+        .ok_or_else(|| format!("{head} left the network"))?;
+    let response = state
+        .control_post_json(
+            &peer,
+            &format!("/api/internal/plugins/{code}/engine/session/piece"),
+            &json!({"source": source, "session": session, "piece": piece, "kind": kind}),
+            FETCH_TIMEOUT,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        return Err(format!("the head refused the piece: {status} {text}"));
+    }
+    let value: Value = response.json().await.map_err(|error| error.to_string())?;
+    Ok(value["bytes"].as_u64().unwrap_or(0))
+}
+
+/// The head's side of a piece: its files copied from the prefill machine `source`, then applied by this machine's
+/// bridge (`{"action": "piece"}`), which removes them once its slot holds the piece.
+async fn apply_piece_here(
+    state: &GatewayState,
+    code: &str,
+    source: &str,
+    session: &str,
+    piece: &str,
+    kind: &str,
+) -> Result<u64, String> {
+    if !valid_key(session) || !valid_key(piece) || !piece.starts_with(&format!("{session}.p")) {
+        return Err("the piece is not one of the session's".to_owned());
+    }
+    let kinds: &[&str] = match kind {
+        "full" => &["full_ids", "full"],
+        "delta" => &["delta_meta", "delta"],
+        _ => return Err("a piece is full or delta".to_owned()),
+    };
+    let peer = state
+        .all_peers()
+        .await
+        .into_iter()
+        .find(|peer| peer.node_id == source)
+        .ok_or_else(|| format!("{source} left the network"))?;
+    let (port, token) = local_upstream(&state.plugins, code).await?;
+    let bytes = fetch_files(state, code, piece, &peer, port, &token, kinds).await?;
+    let response = loopback_client()
+        .post(format!("http://127.0.0.1:{port}/pom/session"))
+        .bearer_auth(&token)
+        .json(&json!({"key": session, "action": "piece", "piece": piece, "kind": kind}))
+        .timeout(FETCH_TIMEOUT)
+        .send()
+        .await
+        .map_err(|error| format!("the plugin did not answer: {error}"))?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        return Err(format!("the plugin refused the piece: {status} {text}"));
+    }
+    Ok(bytes)
+}
+
+/// `POST /api/internal/plugins/:code/engine/session/piece` `{source, session, piece, kind}`: a piece of a prefill
+/// machine's turn applied to this head's engine (`apply_piece_here`). -> `{"bytes"}`.
+pub(crate) async fn engine_session_piece_route(
+    auth: InternalNodeAuth,
+    State(state): State<GatewayState>,
+    Path(code): Path<String>,
+    body: Bytes,
+) -> Response {
+    if let Err(response) = check_peer_call(&auth, &state, &code).await {
+        return response;
+    }
+    let Ok(value) = serde_json::from_slice::<Value>(&body) else {
+        return refuse(StatusCode::BAD_REQUEST, "send a JSON object");
+    };
+    let field = |name: &str| value[name].as_str().unwrap_or_default().to_owned();
+    match apply_piece_here(&state, &code, &field("source"), &field("session"), &field("piece"), &field("kind")).await {
+        Ok(bytes) => axum::Json(json!({ "bytes": bytes })).into_response(),
+        Err(error) => refuse(StatusCode::BAD_GATEWAY, &error),
+    }
 }
 
 #[derive(Deserialize)]

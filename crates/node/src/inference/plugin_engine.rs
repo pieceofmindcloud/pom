@@ -855,7 +855,12 @@ pub(crate) async fn generate(
             )
             .await
             {
-                body["session_source"] = json!(source.node_id);
+                // its pieces are in the head's slot already; else the head fetches the session it saved
+                if source.fetch.is_some() {
+                    body["session_pieces"] = json!(true);
+                } else {
+                    body["session_source"] = json!(source.node_id);
+                }
                 prefill_leg = Some(source);
             }
             if cancellation.is_cancelled() || tx.is_closed() {
@@ -969,6 +974,7 @@ pub(crate) async fn generate(
                 // the session the head fetched before it read the rest: here, or in a remote head's done line
                 let fetched = fetched_here
                     .clone()
+                    .or_else(|| prefill_leg.as_ref().and_then(|leg| leg.fetch.clone()))
                     .or_else(|| super::plugin_session::SessionFetch::from_json(&done["session_fetch"]));
                 let fetch_ms = fetched.as_ref().map_or(0, |fetch| fetch.transfer_ms + fetch.save_wait_ms);
                 let (prefill_ms, prompt_read) = match &prefill_leg {
@@ -1170,6 +1176,10 @@ pub(crate) struct PrefillLeg {
     pub tokens: u64,
     pub engine_ms: u64,
     pub elapsed_ms: u64,
+    /// The prompt read in pieces, each applied to the head while the next was read: what the head copied, with only
+    /// the wait after the prompt's end as its transfer time (the rest overlapped the read). `None`: one session, which
+    /// the head fetches before its turn (`session_source`).
+    pub fetch: Option<super::plugin_session::SessionFetch>,
 }
 
 /// Runs the prompt of a turn on a prefill machine (`prefill_only`), which saves the conversation's session there.
@@ -1224,6 +1234,24 @@ async fn prefill_on_peer(
     prefill["max_tokens"] = json!(1);
     prefill["prefill_only"] = json!(true);
     prefill["decode_holds"] = json!(holds);
+    // read in pieces: the head applies each one while the next is read (a bridge without pieces ignores the flag and
+    // answers with one session, which the head fetches as before)
+    prefill["pieces"] = json!(true);
+    let (piece_tx, mut piece_rx) = mpsc::unbounded_channel::<(String, String)>();
+    let pieces = {
+        let (state, code, head, source, key) =
+            (state.clone(), code.to_owned(), head.to_owned(), peer.node_id.clone(), key.to_owned());
+        tokio::spawn(async move {
+            let (mut bytes, mut applied) = (0u64, 0u64);
+            while let Some((piece, kind)) = piece_rx.recv().await {
+                bytes += super::plugin_session::apply_piece_on(&state, &code, &head, &source, &key, &piece, &kind)
+                    .await
+                    .map_err(|error| format!("{piece}: {error}"))?;
+                applied += 1;
+            }
+            Ok::<(u64, u64), String>((bytes, applied))
+        })
+    };
     let _busy = state.loads.acquire(&peer.node_id).await;
     let started = Instant::now();
     let response = match open_stream(state, &peer.node_id, code, &prefill).await {
@@ -1262,10 +1290,62 @@ async fn prefill_on_peer(
                 warn!(plugin = %code, session = %key, prefill = %peer.node_id, "prefill split: the prefill machine failed: {error}");
                 return None;
             }
+            if let Some(piece) = event.get("piece") {
+                if let (Some(name), Some(kind)) = (piece["key"].as_str(), piece["kind"].as_str()) {
+                    let _ = piece_tx.send((name.to_owned(), kind.to_owned()));
+                }
+                continue;
+            }
             let Some(done) = event.get("done") else {
                 continue;
             };
             let read = done["prefill"]["tokens"].as_u64().unwrap_or(0);
+            let announced = done["prefill"]["pieces"].as_u64().unwrap_or(0);
+            if announced > 0 {
+                // the prompt is read: the head applies the pieces still in flight, and only that wait is the turn's
+                let engine_ms = super::engine_telemetry::EngineReport::from_done(done, 0)
+                    .prefill_ms
+                    .map(|ms| ms.round() as u64)
+                    .unwrap_or(0);
+                let elapsed_ms = started.elapsed().as_millis() as u64;
+                drop(piece_tx);
+                let tail = Instant::now();
+                let bytes = match pieces.await {
+                    Ok(Ok((bytes, applied))) if applied == announced => bytes,
+                    Ok(Ok((_, applied))) => {
+                        warn!(plugin = %code, session = %key, prefill = %peer.node_id, applied, announced, "prefill split: the head did not get every piece; the head reads the prompt");
+                        return None;
+                    }
+                    Ok(Err(error)) => {
+                        warn!(plugin = %code, session = %key, prefill = %peer.node_id, head = %head, "prefill split: a piece was not applied on the head: {error}; the head reads the prompt");
+                        return None;
+                    }
+                    Err(error) => {
+                        warn!(plugin = %code, session = %key, "prefill split: the pieces' task failed: {error}");
+                        return None;
+                    }
+                };
+                let tail_ms = tail.elapsed().as_millis() as u64;
+                info!(
+                    plugin = %code, session = %key, prefill = %peer.node_id, head = %head, tokens = read, holds,
+                    pieces = announced, bytes, ms = elapsed_ms, engine_ms, tail_ms,
+                    "prefill split: the prompt was read in pieces on the prefill machine; the head holds them"
+                );
+                return Some(PrefillLeg {
+                    node_id: peer.node_id.clone(),
+                    step: crate::pipeline::step_for(&peer, 0),
+                    tokens: read,
+                    engine_ms,
+                    elapsed_ms,
+                    fetch: Some(super::plugin_session::SessionFetch {
+                        source: peer.node_id.clone(),
+                        tokens: done["prompt_tokens"].as_u64().unwrap_or(0).saturating_sub(1),
+                        bytes,
+                        transfer_ms: tail_ms,
+                        save_wait_ms: 0,
+                    }),
+                });
+            }
             if let Some(reason) = done["prefill"]["skipped"].as_str() {
                 info!(plugin = %code, session = %key, prefill = %peer.node_id, holds, "prefill split: skipped ({reason}); the head reads the prompt");
                 return None;
@@ -1288,6 +1368,7 @@ async fn prefill_on_peer(
                 tokens: read,
                 engine_ms,
                 elapsed_ms,
+                fetch: None,
             });
         }
     }

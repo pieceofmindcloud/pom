@@ -2778,10 +2778,32 @@ the plugin in `engine.load` (`role`) and is announced as
   it and reads only the rest of the prompt. Any failure of either step is
   logged and leaves the head to read the prompt itself: the split is never a
   reason for a turn to fail.
+- **Pieces** (the default with a bridge that knows them). The prefill turn also
+  carries `pieces: true`: the prefill machine reads the prompt
+  `POM_STRATA_PIECE_TOKENS` (4096) tokens at a time, one request of one token
+  each, and saves each piece as soon as it is read under `<session>.p1`, `.p2`,
+  ... - the first whole, the next ones as deltas of the one before - writing
+  `{"piece": {"key", "kind": "full" | "delta", "tokens", "bytes"}}` once its
+  files are written. The last piece stops one token short of the prompt. The
+  gateway hands each piece to the head as it comes
+  (`plugin_session::apply_piece_on`, the head's
+  `POST engine/session/piece {source, session, piece, kind}`): the head copies
+  its files from the prefill machine and its bridge applies it to one batch
+  slot (the whole piece restored, each delta on top of it; the files are then
+  removed). At `done` (`done.prefill.pieces`) the gateway waits only for the
+  pieces still in flight, and the head's turn carries `session_pieces: true`
+  instead of `session_source`, so it fetches nothing and reads only the last
+  token. In the trace, `session_transfer.transfer_ms` is that wait after the
+  prompt was read (the rest overlapped the read) and `bytes` everything copied.
+  A bridge without pieces ignores the flag and answers with one session, which
+  the head fetches as described above; a piece that fails leaves the head to
+  read the prompt itself.
 - **What crosses.** One session file per split turn: the recurrent state of the
   GDN layers (about 118 MB on the qwen4exp geometry, whatever the prompt) plus
   the K/V of the attention layers (about 7.5 KB per token in q4_0), once, after
-  the prompt is read. Nothing crosses per generated token. Both machines need
+  the prompt is read. With pieces, every piece carries the recurrent state
+  again (about 150 MB a piece of 4096 tokens), so more bytes cross, but only
+  the last piece after the prompt is read. Nothing crosses per generated token. Both machines need
   the same model files and KV type: the engine refuses a session of another
   identity, and the head then reads the prompt again.
 

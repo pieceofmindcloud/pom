@@ -68,7 +68,7 @@ const RETRY: Duration = Duration::from_secs(3);
 const MAX_CONNECTIONS: usize = 16;
 /// Frames of one engine connection posted to the earlier machine at once: the
 /// deployment's `prefill_max_inflight_chunks`, within the prefill's own range.
-fn max_in_flight(cfg: &crate::runtime::NodeConfig) -> usize {
+pub(crate) fn max_in_flight(cfg: &crate::runtime::NodeConfig) -> usize {
     (cfg.prefill_max_inflight_chunks as usize)
         .clamp(1, crate::prefill::PrefillOverlapWindow::MAX_INFLIGHT_CHUNKS)
 }

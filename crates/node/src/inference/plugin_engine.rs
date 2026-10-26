@@ -1069,6 +1069,14 @@ pub(crate) async fn generate(
                 trace.complete = true;
                 // a typed decision's label probabilities, from the engine's done line (`probe`), as a llama.cpp peer reports
                 trace.probe = done.get("probe").filter(|value| !value.is_null()).cloned();
+                // A split engine's link keeps up to the deployment's in-flight frames posted (plugin_stage_link),
+                // not the llama.cpp prefill's window this field otherwise reports.
+                if plan.steps.len() > 1 {
+                    if let Some(cfg) = state.runtime.config().await {
+                        trace.prefill_max_inflight_chunks =
+                            super::plugin_stage_link::max_in_flight(&cfg) as u32;
+                    }
+                }
                 trace.refresh_telemetry(total_ms);
                 info!(
                     plugin = %code,

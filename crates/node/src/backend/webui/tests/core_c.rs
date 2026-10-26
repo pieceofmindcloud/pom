@@ -430,6 +430,42 @@ mod profile_network_tests {
     }
 
     #[tokio::test]
+    async fn chat_capabilities_offer_thinking_on_a_plugin_engine_head() {
+        // a plugin engine (Strata) turns the thinking on and off per request: the llama.cpp `no_thinking` its deployment
+        // keeps at the default does not hide the switch; vision still needs a projector
+        let app = Router::new().route(
+            "/api/ui/node",
+            get(|| async {
+                Json(json!({
+                    "config": {
+                        "start_layer": 0,
+                        "model_label": "qwen",
+                        "mmproj_path": null,
+                        "no_thinking": true,
+                        "inference_service": "strata"
+                    },
+                    "active_model": "qwen"
+                }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let mut head = peer("head", "salem", port);
+        head.model = "qwen".into();
+        (head.start_layer, head.end_layer, head.total_layers) = (0, 31, 32);
+        head.inference_port = Some(8181);
+        let mut state = state_with("eu", vec![head]).await;
+        state.default_model = "qwen".into();
+
+        let body = body_of(chat_capabilities(State(state), Query(Default::default())).await.into_response()).await;
+        assert_eq!(body["thinking"], "supported");
+        assert_eq!(body["vision"], "unsupported");
+    }
+
+    #[tokio::test]
     async fn infer_head_response_selects_the_fastest_fresh_candidate() {
         let mut slow = peer("slow", "salem", 8091);
         slow.model = "qwen35".into();

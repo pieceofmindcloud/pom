@@ -1856,7 +1856,14 @@ metadata. The head, the only owner of the tokenizer, applies the GGUF's
 only get the hidden state and do not reformat the prompt. OpenAI Chat also sends
 `thinking_enabled` per inference in that same metadata. The gateway normalizes
 its absence to `true`; on the head, the request only turns thinking on when
-`thinking_enabled` is true and `NodeConfig.no_thinking` is false. The field is
+`thinking_enabled` is true and `NodeConfig.no_thinking` is false. A plugin
+engine decides per request instead (`no_thinking` is the llama.cpp runtime's
+switch, which a plugin deployment never sets, so the Chat's capabilities offer
+the switch for a plugin head): its `/pom/generate` body carries `thinking`, and
+`thinking_default: true` when the client chose no level itself (none of
+`thinking_enabled`, `reasoning_effort`, `reasoning`, `thinking` or
+`chat_template_kwargs.enable_thinking`, `plugin_engine::thinking_asked`), so the
+engine's own default level (Strata's `reasoning_effort`) decides. The field is
 copied into the metadata of the existing relays, so hub, ring and direct reply
 keep the decision without creating another channel. For Gemma4, the renderer
 reads the template from the GGUF and applies `enable_thinking` and

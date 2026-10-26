@@ -81,4 +81,27 @@ describe("DeploymentInspector with a plugin's inference service", () => {
     expect(screen.queryByRole("combobox", { name: "Hidden-state precision" })).toBeNull();
     expect(document.querySelector('input[name="prefill_max_inflight_chunks"]')).toBeNull();
   });
+
+  it("offers the vision projector to a plugin engine that reads images", () => {
+    const onVision = vi.fn();
+    render(
+      <LocaleProvider initialLocale="en">
+        <DeploymentInspector
+          value={params}
+          onChange={vi.fn()}
+          inferenceService={{ name: "Strata", settings: [], pomSettings: [] }}
+          vision={{
+            available: true,
+            enabled: false,
+            path: "/models/mmproj-qwen.gguf",
+            candidates: ["/models/mmproj-qwen.gguf"],
+            onChange: onVision,
+            onPathChange: vi.fn(),
+          }}
+        />
+      </LocaleProvider>,
+    );
+    fireEvent.click(screen.getByRole("checkbox", { name: "Enable vision" }));
+    expect(onVision).toHaveBeenCalledWith(true);
+  });
 });

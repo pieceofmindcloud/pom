@@ -60,6 +60,11 @@ pub(crate) struct PluginService {
     /// (`plugin_engine`, the stage link).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub stages: bool,
+    /// For a service of kind `inference`: its engine reads images through the
+    /// deployment's vision projector (`mmproj_path`), so the deploy screen
+    /// offers the projector for it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub vision: bool,
     /// For a service of kind `inference`: the POM deployment settings that
     /// apply to its engine (`POM_SETTINGS`), which the deploy inspector draws
     /// in their own card, apart from the engine's settings.
@@ -259,6 +264,7 @@ pub(crate) fn parse_services(plugin_code: &str, answer: &Value) -> Vec<PluginSer
             continue;
         }
         let stages = kind == "inference" && entry["stages"] == true;
+        let vision = kind == "inference" && entry["vision"] == true;
         let pom_settings = parse_pom_settings(&kind, &entry["pom_settings"]);
         services.push(PluginService {
             plugin_code: plugin_code.to_owned(),
@@ -279,6 +285,7 @@ pub(crate) fn parse_services(plugin_code: &str, answer: &Value) -> Vec<PluginSer
                 .unwrap_or_default(),
             settings: parse_settings(&entry["settings"]),
             stages,
+            vision,
             pom_settings,
         });
     }
@@ -518,6 +525,14 @@ mod tests {
         );
         assert!(staged[0].stages && !staged[1].stages);
         assert_eq!(serde_json::to_value(&staged[0]).unwrap()["stages"], true);
+        // vision, too, only for an inference service
+        let seeing = parse_services(
+            "strata",
+            &json!({"services": [{"id": "s", "kind": "inference", "name": "S", "status": "ready", "vision": true},
+                                 {"id": "r", "kind": "rag", "name": "R", "status": "ready", "vision": true}]}),
+        );
+        assert!(seeing[0].vision && !seeing[1].vision);
+        assert_eq!(serde_json::to_value(&seeing[0]).unwrap()["vision"], true);
 
         // Only known POM settings, once each, and only for an inference service.
         let declared = parse_services(

@@ -565,6 +565,15 @@ pub(crate) fn image_data_url(bytes: &[u8]) -> String {
     format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes))
 }
 
+/// Whether the client chose its thinking itself: the POM's `thinking_enabled`, OpenAI's `reasoning_effort`, `reasoning`
+/// or `chat_template_kwargs.enable_thinking`, Anthropic's `thinking`.
+fn thinking_asked(details: &Value) -> bool {
+    ["thinking_enabled", "reasoning_effort", "reasoning", "thinking"]
+        .iter()
+        .any(|key| !details[*key].is_null())
+        || !details["chat_template_kwargs"]["enable_thinking"].is_null()
+}
+
 pub(crate) fn generation_body(request: &EngineRequest) -> Value {
     let mut body = json!({
         "prompt": request.prompt,
@@ -575,6 +584,10 @@ pub(crate) fn generation_body(request: &EngineRequest) -> Value {
     });
     if let Some(session) = &request.session {
         body["session"] = json!(session);
+    }
+    // a client that chose no thinking level leaves it to the engine's own default (its `reasoning_effort`)
+    if !thinking_asked(&request.request_details) {
+        body["thinking_default"] = json!(true);
     }
     if !request.images.is_empty() {
         body["images"] = json!(request.images);
@@ -1923,6 +1936,16 @@ mod tests {
         assert_eq!(body["top_k"], 20);
         assert!(body.get("seed").is_none());
         assert!(body.get("messages").is_none());
+        // the client chose no thinking level: the engine's own default decides
+        assert_eq!(body["thinking_default"], true);
+        for asked in [
+            json!({"thinking_enabled": true}),
+            json!({"reasoning_effort": "low"}),
+            json!({"thinking": {"type": "disabled"}}),
+            json!({"chat_template_kwargs": {"enable_thinking": false}}),
+        ] {
+            assert!(thinking_asked(&asked), "{asked}");
+        }
     }
 }
 

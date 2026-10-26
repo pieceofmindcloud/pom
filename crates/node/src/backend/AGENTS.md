@@ -975,7 +975,10 @@ refusing with the file named, `webui::ApplyRequest.use_mmproj` persisting the ch
 `NodeConfig`) is `docs/subsystems/http-api.md` and `docs/subsystems/deployment.md`. The Chat side
 (`GET /api/ui/chat/capabilities?model=<label>` aggregating coverage, `mmproj_path` and `no_thinking`
 of the deployment's head without exposing the topology to the `visitor` profile; `supported` /
-`unsupported` / `unavailable`, never an invented empty value; `openai::ChatRequest.thinking_enabled`
+`unsupported` / `unavailable`, never an invented empty value; a head with a plugin inference service
+(`config.inference_service`) offers the thinking switch whatever `no_thinking` says, because the plugin
+decides it per request; a plugin service's `vision` (`plugin_services::PluginService.vision`) is what lets
+the deploy screen offer it a projector; `openai::ChatRequest.thinking_enabled`
 travelling in `GenerationInput` and the prefill metadata, with the head applying the global
 kill-switch before rendering the template) is `docs/subsystems/web-ui.md` and
 `docs/subsystems/inference.md`.

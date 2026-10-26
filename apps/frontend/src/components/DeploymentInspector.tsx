@@ -643,6 +643,63 @@ export function DeploymentInspector({
     </InspectorRow>
   );
 
+  // the projector's choice: a llama.cpp head and a plugin engine's (whose bridge takes the deployment's mmproj_path)
+  const visionSection = vision ? (
+    <Section title={t("deploy.vision")} tone="aqua">
+      {vision.available ? (
+        <>
+          <InspectorRow label={t("deploy.visionToggle")} tip={t("deploy.visionHint")}>
+            <Tick
+              on={vision.enabled}
+              label={t("deploy.visionToggle")}
+              disabled={readOnly}
+              onToggle={() => vision.onChange(!vision.enabled)}
+            />
+          </InspectorRow>
+          {vision.enabled && sidecars && !readOnly ? (
+            <div className="px-0.5 py-1.5">
+              <p className="mb-1 text-[0.6rem] text-muted">{t("sidecars.vision")}</p>
+              <SidecarPicker
+                kind="mmproj"
+                label={t("sidecars.vision")}
+                options={sidecars.options.filter((option) => option.kind === "mmproj")}
+                value={sidecars.vision.value}
+                onChange={sidecars.vision.onChange}
+                slot={sidecars.vision.slot}
+                linkLabel={sidecars.vision.linkLabel}
+                compact
+              />
+            </div>
+          ) : vision.candidates.length > 1 ? (
+            <InspectorRow label={t("deployStudio.visionModel")} tip={t("deployStudio.visionModelTip")}>
+              <Select
+                aria-label={t("deployStudio.visionProjector")}
+                value={vision.path ?? ""}
+                disabled={readOnly}
+                onChange={(event) => vision.onPathChange(event.target.value)}
+                className="h-7 min-w-0 w-full text-[0.58rem]"
+              >
+                {vision.candidates.map((candidate) => (
+                  <option key={candidate} value={candidate}>
+                    {candidate.split("/").pop() ?? candidate}
+                  </option>
+                ))}
+              </Select>
+            </InspectorRow>
+          ) : vision.path ? (
+            <p className="break-all px-0.5 text-[0.6rem] leading-relaxed text-faint">
+              {vision.path}
+            </p>
+          ) : null}
+        </>
+      ) : (
+        <p role="alert" className="px-0.5 text-[0.6rem] leading-relaxed text-amber">
+          {vision.reason || t("deploy.visionUnavailable")}
+        </p>
+      )}
+    </Section>
+  ) : null;
+
   if (inferenceService) {
     // The POM carries the hidden state between the plugin's stages, so its own
     // settings only exist when the slices cross machines. The prefill/decode
@@ -685,6 +742,7 @@ export function DeploymentInspector({
             />
           )}
         </Section>
+        {visionSection}
         {(pomSettings.length > 0 || pomCardSettings.length > 0) && (
           <Section title={t("inspector.sectionPom")} tone="aqua" guide={DEPLOY_SETTINGS_GUIDES.pom}>
             {pomSettings.includes("prefill_max_inflight_chunks") && numeric("prefill_max_inflight_chunks")}
@@ -855,61 +913,7 @@ export function DeploymentInspector({
         )}
       </Section>
 
-      {vision && (
-        <Section title={t("deploy.vision")} tone="aqua">
-          {vision.available ? (
-            <>
-              <InspectorRow label={t("deploy.visionToggle")} tip={t("deploy.visionHint")}>
-                <Tick
-                  on={vision.enabled}
-                  label={t("deploy.visionToggle")}
-                  disabled={readOnly}
-                  onToggle={() => vision.onChange(!vision.enabled)}
-                />
-              </InspectorRow>
-              {vision.enabled && sidecars && !readOnly ? (
-                <div className="px-0.5 py-1.5">
-                  <p className="mb-1 text-[0.6rem] text-muted">{t("sidecars.vision")}</p>
-                  <SidecarPicker
-                    kind="mmproj"
-                    label={t("sidecars.vision")}
-                    options={sidecars.options.filter((option) => option.kind === "mmproj")}
-                    value={sidecars.vision.value}
-                    onChange={sidecars.vision.onChange}
-                    slot={sidecars.vision.slot}
-                    linkLabel={sidecars.vision.linkLabel}
-                    compact
-                  />
-                </div>
-              ) : vision.candidates.length > 1 ? (
-                <InspectorRow label={t("deployStudio.visionModel")} tip={t("deployStudio.visionModelTip")}>
-                  <Select
-                    aria-label={t("deployStudio.visionProjector")}
-                    value={vision.path ?? ""}
-                    disabled={readOnly}
-                    onChange={(event) => vision.onPathChange(event.target.value)}
-                    className="h-7 min-w-0 w-full text-[0.58rem]"
-                  >
-                    {vision.candidates.map((candidate) => (
-                      <option key={candidate} value={candidate}>
-                        {candidate.split("/").pop() ?? candidate}
-                      </option>
-                    ))}
-                  </Select>
-                </InspectorRow>
-              ) : vision.path ? (
-                <p className="break-all px-0.5 text-[0.6rem] leading-relaxed text-faint">
-                  {vision.path}
-                </p>
-              ) : null}
-            </>
-          ) : (
-            <p role="alert" className="px-0.5 text-[0.6rem] leading-relaxed text-amber">
-              {vision.reason || t("deploy.visionUnavailable")}
-            </p>
-          )}
-        </Section>
-      )}
+      {visionSection}
 
       <Section title={t("inspector.sectionPom")} tone="aqua" guide={DEPLOY_SETTINGS_GUIDES.pom}>
         {toggle({

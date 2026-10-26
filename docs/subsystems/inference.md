@@ -2717,14 +2717,18 @@ inference service may be deployed with `RuntimeParams::inference_role`
 (`both`, the default, `prefill` or `decode`; the POM settings card of the
 deploy inspector draws it when the service declares `inference_role` in
 `pom_settings` and the model is not split across machines, or per machine when
-two or more machines are on the map). One deployment
+two or more machines are on the map; the Dashboard's "Add node" dialog draws it
+for a machine added with the whole model). Every role answers requests and reads
+prompts: the role only says which machine the balance prefers for reading the
+prompts of the others (`prefill`, "prefill first") and which one reads its own
+only when no prefill machine is free (`decode`, "decode first"). One deployment
 may also put the whole model on several machines, each with its own role
 (`SelectedSlice::inference_role`, carried by `PeerOverrides`, the plan's
 `Step`, `LaunchTarget` and `params_for`): `plugin_engine::deploy_block`
-accepts several machines for a whole model only when their roles hold at
-least one `prefill` and one that decodes, and refuses a deployment whose
-machines are all `prefill`: a prefill machine is never a head, so no machine
-would answer. A sliced deployment may hold a prefill machine too: the survey
+accepts several machines for a whole model when at least one has a `prefill`
+or `decode` role (a role keeps the sessions on, which is how the machines hand
+conversations to each other); machines that are all `prefill` are a valid
+deployment. A sliced deployment may hold a prefill machine too: the survey
 of a `shards` deployment also lists the whole GGUF of the same model
 (`parse_whole`, matched by `model_stem`), the automatic plan chains the slices
 only, and a row of the whole model with the `prefill` role stands outside the
@@ -2736,15 +2740,11 @@ a sliced deployment the `prefill` role. The gateway's prefill step below runs
 only for a one-step plan today, so a sliced pipeline still reads its own
 prompts beside such a machine. The deploy screen keeps a per-machine role only while two or
 more machines are on the map; with a single machine the row's role is dropped
-and the deployment's role (the one the inspector shows) applies. A gateway
-whose only peers for the model are prefill machines answers "only prefill
-machines serve it" instead of the layer-coverage refusal. The Flow draws the split as
+and the deployment's role (the one the inspector shows) applies. The Flow draws the split as
 Prefill -> Decode: the cluster view's `PeerView.role` and a candidate edge
 from each prefill machine to each decode machine of the same layers. The
-Chat's head list (`/api/ui/infer/heads`) offers the split as one head, its
-prefill machine; a request pinned to a prefill machine is planned on a head
-that decodes and reads its prompt on that prefill machine
-(`EngineRequest::prefill_node`). The trace of a split turn has the prefill
+Chat's head list (`/api/ui/infer/heads`) offers every machine of the split as
+a head of its own. The trace of a split turn has the prefill
 machine as its first hop (its engine's prompt time, the call's round trip),
 and the prompt phase of the timings covers both machines and the session's
 transfer. The role reaches
@@ -2752,14 +2752,23 @@ the plugin in `engine.load` (`role`) and is announced as
 `engine/plugin-role-v1:<role>` beside the engine capability (the `/health`
 `capabilities` carry it too). A stage of a split model has no role.
 
-- **Planning.** The gateway drops every `prefill` machine from the peers it
-  plans with (`plugin_engine::is_prefill_only`), so such a machine is never the
-  head of a plan; `decode` and `both` machines are planned as before.
+- **Planning.** Every machine of the split is a head like any other: a
+  conversation goes back to the head that holds it (`auto_head`), and a new one
+  takes the rotation by queue, so the machines share the conversations.
+- **The balance** (`plugin_engine::prefill_peer`), per turn, by queue: the
+  load of a machine is the larger of this gateway's in-flight count and the
+  `active_generations` its `/health` reports, and the head's count includes
+  the turn itself. A target is another machine of the split (a `prefill` or
+  `decode` role, the same plugin and model, the whole model) with nothing in
+  flight. A busy head (another request on it) hands the prompt to an idle
+  target, a `prefill` machine first, then the fastest measured
+  `prefill_ms_per_token`. A free head reads its own prompt, except a head
+  that is not a `prefill` machine while a `prefill` machine is idle: that one
+  reads it. No idle target: the head reads it.
 - **The prefill step** (`plugin_engine::prefill_on_peer`). Before a turn that
   names its conversation (`session`, or the `auto-` name) runs on a one-step
-  plan without images or a typed decision, the gateway looks for a live
-  `prefill` machine of the same plugin and model that serves the whole model
-  (the least busy). It asks the head what it holds of the conversation
+  plan without images or a typed decision, the gateway asks the balance above
+  for a machine to read it. It asks the head what it holds of the conversation
   (`engine/session/offer`, the larger of `tokens` and `ram_tokens`) and sends
   the turn to the prefill machine with `prefill_only: true`, `max_tokens: 1`
   and `decode_holds`. That machine reads the prompt into a batch slot and keeps

@@ -1427,9 +1427,8 @@ pub(super) fn plan_with_rtt_options(
 
     // ── Prefill machines of a sliced deployment ─────────────────────────────
     //
-    // A machine with the prefill role reads prompts for the pipeline and never answers: it runs the whole model, so
-    // it stands beside the slices instead of in their layer order, and the coverage below counts the machines that
-    // decode.
+    // A machine with the prefill role runs the whole model beside the slices: it reads prompts for the pipeline and
+    // answers requests on its own, so it stands outside their layer order, and the coverage below counts the slices.
     let prefill_entry = |overrides: &PeerOverrides| {
         kind == DeployKind::Shards
             && overrides.inference_role.unwrap_or(params.inference_role)

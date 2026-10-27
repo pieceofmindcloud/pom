@@ -699,6 +699,21 @@ pub(super) async fn remove_node_endpoint(
         .find(|(id, _, _)| id == &req.target_node_id)
         .cloned()
     else {
+        // The record can still list a machine that left the model (it was given another
+        // one, or its slot failed): dropping it from the record is all there is to undo,
+        // and nothing is unloaded, since what it serves now is another deployment's.
+        if let Some(mut record) = record.filter(|record| record.node(&req.target_node_id).is_some())
+        {
+            let version = drop_from_record(&state, &mut record, &req.target_node_id).await;
+            return Json(json!({
+                "removed": true,
+                "uncovered_layers": [],
+                "deploy_id": record.deploy_id,
+                "version": version,
+                "serving": !live.is_empty(),
+            }))
+            .into_response();
+        }
         return bad(json!({ "error": "this machine is not serving this model" }));
     };
     let remaining: Vec<(u32, u32)> = live
@@ -735,19 +750,8 @@ pub(super) async fn remove_node_endpoint(
 
     let (deploy_id, version, serving) = if let Some(mut record) = record {
         if record.node(&req.target_node_id).is_some() {
-            let params = record
-                .active()
-                .map(|active| active.params.clone())
-                .unwrap_or_default();
-            let nodes = record
-                .nodes
-                .iter()
-                .filter(|node| node.node_id != req.target_node_id)
-                .cloned()
-                .collect();
-            let version = record.append_version(params, nodes, state.network.node_id.as_str());
+            let version = drop_from_record(&state, &mut record, &req.target_node_id).await;
             let serving = !record.nodes.is_empty();
-            publish_record(&state, &record).await;
             (Some(record.deploy_id), Some(version), serving)
         } else {
             (None, None, !live.is_empty())
@@ -764,6 +768,27 @@ pub(super) async fn remove_node_endpoint(
         "serving": serving,
     }))
     .into_response()
+}
+
+/// Appends the record's version without `node_id` and publishes it.
+async fn drop_from_record(
+    state: &GatewayState,
+    record: &mut crate::deployment::Deployment,
+    node_id: &str,
+) -> u32 {
+    let params = record
+        .active()
+        .map(|active| active.params.clone())
+        .unwrap_or_default();
+    let nodes = record
+        .nodes
+        .iter()
+        .filter(|node| node.node_id != node_id)
+        .cloned()
+        .collect();
+    let version = record.append_version(params, nodes, state.network.node_id.as_str());
+    publish_record(state, record).await;
+    version
 }
 
 // ── Taking the whole pipeline off the air ───────────────────────────────────

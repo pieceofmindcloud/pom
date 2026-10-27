@@ -420,18 +420,29 @@ impl PluginUiManifest {
     }
 
     /// What the shell loads for an installed plugin even while its process is
-    /// stopped: the i18n catalogs and the menu icon. The node keeps a copy
+    /// stopped: the i18n catalogs, the menu icon and the documentation (every
+    /// declared asset under `docs/`: the pages, their `.pt-BR.md` variants and
+    /// the images they show). An on-demand plugin is installed even when
+    /// closed, so its guides must still open. The node keeps a copy
     /// (`PluginRuntime::shell_asset`).
     pub(crate) fn shell_assets(&self) -> Vec<String> {
         let mut assets: Vec<String> = self.i18n.values().cloned().collect();
         assets.extend(self.icon_image.clone());
+        assets.extend(
+            self.assets
+                .iter()
+                .filter(|a| a.starts_with("docs/"))
+                .cloned(),
+        );
         assets.sort();
         assets.dedup();
         assets
     }
 
     pub(crate) fn is_shell_asset(&self, asset: &str) -> bool {
-        self.is_icon_image(asset) || self.i18n.values().any(|path| path == asset)
+        self.is_icon_image(asset)
+            || self.i18n.values().any(|path| path == asset)
+            || (asset.starts_with("docs/") && self.serves(asset))
     }
 
     pub(crate) fn is_documentation(&self, asset: &str) -> bool {
@@ -732,13 +743,35 @@ mod tests {
     }
 
     #[test]
-    fn the_shell_assets_are_the_catalogs_and_the_menu_icon() {
+    fn the_shell_assets_are_the_catalogs_the_menu_icon_and_the_documentation() {
         let mut value = manifest();
         value["icon_image"] = json!("ui/icon.png");
-        value["assets"].as_array_mut().unwrap().push(json!("ui/icon.png"));
+        value["documentation"] = json!({"guides": [
+            {"id": "logs", "title": {"en": "Logs"}, "asset": "docs/guides/logs.md"}
+        ]});
+        for asset in [
+            "ui/icon.png",
+            "docs/guides/logs.md",
+            "docs/guides/logs.pt-BR.md",
+            "docs/images/en/logs.png",
+        ] {
+            value["assets"].as_array_mut().unwrap().push(json!(asset));
+        }
         let parsed = PluginUiManifest::parse("logs", value).expect("valid");
-        assert_eq!(parsed.shell_assets(), ["i18n/en.json", "i18n/pt-BR.json", "ui/icon.png"]);
+        assert_eq!(
+            parsed.shell_assets(),
+            [
+                "docs/guides/logs.md",
+                "docs/guides/logs.pt-BR.md",
+                "docs/images/en/logs.png",
+                "i18n/en.json",
+                "i18n/pt-BR.json",
+                "ui/icon.png"
+            ]
+        );
         assert!(parsed.is_shell_asset("i18n/pt-BR.json"));
+        assert!(parsed.is_shell_asset("docs/guides/logs.pt-BR.md"));
+        assert!(!parsed.is_shell_asset("docs/guides/absent.md"));
         assert!(!parsed.is_shell_asset("ui/logs.js"));
     }
 

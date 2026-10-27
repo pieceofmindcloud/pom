@@ -687,7 +687,7 @@ export function Documentation() {
                         }}
                         aria-pressed={active}
                         className={clsx(
-                          "flex min-w-0 flex-col items-start rounded-md px-2.5 py-2 text-left transition-colors duration-150",
+                          "flex w-full min-w-0 flex-col items-start rounded-md px-2.5 py-2 text-left transition-colors duration-150",
                           active
                             ? "bg-iris/12 text-fg ring-1 ring-inset ring-iris/25"
                             : "text-muted hover:bg-line/40 hover:text-fg",

@@ -4,6 +4,17 @@ Design, plan and reference documentation. Everything in this folder is written
 in English. The operator manual is the root `AGENTS.md` (maintained
 separately). Layout:
 
+- `guides/` - the guides for people shown in the panel's Documentation screen:
+  `concepts/` (how POM works), `screens/` (one guide per screen, with the
+  screenshots in `images/<locale>/`), `settings/` (the deployment inspector's
+  categories). One file per language, `<name>.md` and `<name>.pt-BR.md`; the
+  format is in `apps/frontend/scripts/guides-md.mjs` and
+  `apps/frontend/src/guides/AGENTS.md`.
+- `human/` - `HUMAN.md` beside the path of a source folder
+  (`human/crates/node/src/network/HUMAN.md` explains `crates/node/src/network/`):
+  the logic of that folder for people, in the same guide format, linked from
+  the folder's `AGENTS.md` page in the reference. Only folders whose logic is
+  hard to follow from the `AGENTS.md` alone have one.
 - `subsystems/` - the permanent runtime guides ("how it works and why").
 - `architecture/` - permanent notes about repository boundaries.
 - `reports/` - dated technical reports (investigations, benchmarks, delivery
@@ -97,11 +108,6 @@ The permanent runtime guides. Beyond what their titles say:
   every profile, that the federated public directory only accepts signed
   records, that the UI fallback does not intercept methods of concrete
   administrative routes, and the HTTP contract of the chat history.
-- `freetoken-moe.md` - method, measurements and invariants of the goal that
-  adds the own MoE path beside the dense path: the four-model milestone on
-  the CUDA test server, the dtype safeguard, the KV reservation multiplied by `max_sessions`,
-  the later CUDA goal and, with `build-and-run.md`, the NCCL investigation in
-  the final CUDA link.
 - `enterprise-licensing.md` - the license contract per independent
   `plugin_code` (no static catalog of installable plugins), entitlement of the
   audit screens, the `pom`/`pom-plugin-host` boundary, the `enterprise.db`

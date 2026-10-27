@@ -1323,14 +1323,18 @@ pipeline, it explains that there are no edges between peers.
 
 `apps/frontend/src/routes/Documentation.tsx`, with the tabs in `?tab=`.
 
-- **Guides** (`src/guides/`) - the half written for humans: ordered pages with
-  animated SVG diagrams, timelines, headline numbers, checklists and expandable
-  questions, generated from data (`Block[]`, `content.ts`) by `GuideView`, in
-  English and Portuguese. The animations are CSS (`guide-*` in `index.css`), so
+- **Guides** - the half written for humans: markdown files under
+  `docs/guides/` (how it works, one guide per screen with screenshots and
+  videos, the deployment settings) and `docs/human/` (the logic of a source
+  folder, beside its `AGENTS.md`), one file per language. The build parses them
+  into block data that `GuideView` renders: animated SVG diagrams, timelines,
+  headline numbers, checklists, expandable questions, screenshots and embedded
+  videos. The animations are CSS (`guide-*` in `index.css`), so
   `prefers-reduced-motion` freezes them and each drawing still reads static. It is the default tab: a human must not land on
   `AGENTS.md - crates/routing-base/`. No number shows up there unless it is in
-  the markdown - when they diverge, the markdown wins. The list of guides is in
-  `apps/frontend/src/guides/AGENTS.md`.
+  the reference - when they diverge, the reference wins. The format and the list
+  of guides are in `apps/frontend/src/guides/AGENTS.md`. Both tabs carry a
+  search box, and a reference page with a `HUMAN.md` links to it.
 - **Reference** - the repository's living markdown, written for agents,
   embedded in the bundle by `apps/frontend/scripts/build-docs.mjs` (there is no
   route on the node; the screen reads `manifest.json` + `import.meta.glob`).
@@ -1524,8 +1528,9 @@ machine restarted. Today the fingerprint is only model + set of ranges.
   to everyone) and *POM settings (DEV)* (inference engine and per-peer idle
   unloading). Default settings, POM settings and the Beta group each carry a
   help button by their title that opens their guide from Documentation in a
-  dialog (`components/GuideDialog.tsx`, guides `config-padrao`, `config-pom`
-  and `config-beta` in `guides/deploySettings.ts`). The DEV section only
+  dialog (`components/GuideDialog.tsx`, guides `default-settings`,
+  `pom-settings` and `beta-settings`, written in `docs/guides/settings/` and
+  named in `guides/deploySettings.ts`). The DEV section only
   shows up when `NodeInfo.pom_dev_mode` is on; without the flag the UI removes
   its controls from the DOM. The `[i]` comes **before** the name, not after:
   with names of different widths, icons to the right of the text came out

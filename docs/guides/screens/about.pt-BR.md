@@ -1,0 +1,29 @@
+---
+id: screen-about
+label: Sobre
+summary: A licença, o aviso de privacidade, as bibliotecas e as atualizações do POM
+title: Sobre
+route: /config/about
+order: 300
+---
+
+:::lead
+Sobre diz do que o POM é feito e em que termos: a licença, o aviso de privacidade e segurança, as bibliotecas de que depende e a verificação de um POM mais novo.
+:::
+
+![Sobre: a licença do POM, o aviso de privacidade e segurança e os links para o site e o repositório.](../images/pt-BR/about.webp)
+
+:::cards
+### Licença
+O POM é licenciado sob a GNU Affero General Public License, versão 3 (AGPL-3.0).
+### Privacidade e segurança (LGPD)
+O POM move prompts e dados de modelos entre máquinas e não garante privacidade em redes públicas ou com computadores desconhecidos. Você decide que dados enviar e em quais computadores confiar.
+### Bibliotecas
+As dependências diretas da interface e do workspace Rust, agrupadas por licença.
+### Atualização do POM
+Consulta as versões do POM no GitHub (o site como alternativa) e aplica uma só depois que você autoriza; o nó reinicia na versão nova. Não precisa de licença.
+:::
+
+:::deep docs/subsystems/enterprise-licensing.md
+Como o POM se atualiza
+:::

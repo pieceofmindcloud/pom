@@ -20,7 +20,6 @@ place is there, not here.
 | `parallelism.md` | pipeline parallelism, tensor parallelism, choice by topology and telemetry |
 | `slicing.md` | GGUF split/merge, ggml type table, size-based planning |
 | `deployment.md` | putting slices in service, merge, pipeline order, slice lifecycle |
-| `freetoken-moe.md` | FreeToken goal measurements, KV budget and the in-house MoE path |
 | `file-transfer.md` | pulling/offering files between machines, resumption, MD5, concessions |
 | `http-api.md` | every route, authentication, `x_pom.source`, `gateway::testkit` |
 | `web-ui.md` | how the UI comes up, menu, modals, Panel, Chat, slicing/deploy screens |
@@ -42,6 +41,11 @@ reference and recipes for the optional capabilities, gathered from the
 `pom-inference-engine` skill (`.claude/skills/pom-inference-engine/`): engine
 fork intake, an engine plugin overlay, the `engine.*` contract, feature
 levels, fork branch rules and the analysis of the llama.cpp and Strata forks.
+
+**Guides for people** live in `docs/guides/` (concepts, one guide per screen
+with screenshots, deployment settings) and `docs/human/` (`HUMAN.md`, the
+logic of a source folder in plain words, beside the folder's path); the panel's
+Documentation screen renders them. Whoever changes a screen updates its guide.
 
 `docs/AGENTS.md` explains the specs and plans (`docs/superpowers/`);
 `docs/architecture/routing-plugin-contract.md` is the open-core boundary;

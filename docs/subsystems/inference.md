@@ -668,8 +668,7 @@ replaces correct synchronization.
 Cache warm-up is opportunistic and cooperative. When the first real route
 arrives, the runtime cancels it without removing entries already admitted; so
 the warm-up thread cannot evict the request's working set nor turn a second call
-into another sequence of misses and uploads. The detail of the confirmed cause
-and the fix is in `docs/subsystems/freetoken-moe.md`, section "Phase 5.7".
+into another sequence of misses and uploads.
 
 The guard is also the degradation boundary for the defect observed on
 2026-09-01: the Vulkan/CUDA combination keeps llama.cpp's default order and does

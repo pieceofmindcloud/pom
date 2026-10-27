@@ -1014,6 +1014,11 @@ docs.deeper,Full detail in the reference,"O detalhe completo, na referência"
 docs.empty,Documentation is not available,Documentação indisponível
 docs.emptyDetail,The docs folder is generated at build time by scripts/build-docs.mjs. Run npm run build (or npm run dev) in apps/frontend and reload.,A pasta de docs é gerada no build por scripts/build-docs.mjs. Rode npm run build (ou npm run dev) em apps/frontend e recarregue.
 docs.expand,Expand {section},Expandir {section}
+docs.group.concepts,How it works,Como funciona
+docs.group.human,Inside the code,Por dentro do código
+docs.group.screens,Screens,Telas
+docs.group.settings,Deployment settings,Configurações da implantação
+docs.humanGuide,Read the explanation for people,Ler a explicação para pessoas
 docs.noDoc,This document is not in the embedded set,Este documento não está no conjunto embutido
 docs.noDocDetail,Pick one from the tree on the left.,Escolha um na árvore à esquerda.
 docs.noResults,No documentation matches,Nenhuma documentação encontrada

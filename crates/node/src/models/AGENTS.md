@@ -266,6 +266,12 @@ graph (`qwen4exp.cpp` gained that in `pieceofmindcloud/llama.cpp`,
 `pom-tensor-parallel`, without regressing the early cut of the last layer's rows
 when MTP was not requested).
 
+## Defects noted
+
+- `ModelSource::Folder` is labelled `"Pasta"` (`catalog.rs`, the source label
+  the catalog sends), so the Full models screen shows a Portuguese word in the
+  English interface. The label should be a code the UI translates.
+
 ## Maintaining this file
 
 This file is a short map of the folder. When adding model metadata or changing

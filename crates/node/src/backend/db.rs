@@ -2,8 +2,7 @@
 //!
 //! `pom.db` is the only database used by the runtime. This module deliberately
 //! creates a fresh schema and contains no compatibility path for the old audit
-//! database or deployment JSON files. Optional preservation of those files is
-//! an explicit operation provided by `scripts/migrate_pom_db.py`.
+//! database or deployment JSON files.
 
 use crate::catalog::{Catalog, DiscoveredModel};
 use crate::config::{ApiKey, NetworkSettings};

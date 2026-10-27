@@ -194,11 +194,10 @@ only the generic boundary, reusable by any future `plugin_code`:
 - `plugin_code` is `"logs"` and its `feature_set` is
   (`logs.request_logs`, `logs.statistics`); the wire contract with the
   license server did not change, only the code value.
-- `pom-release.sh` no longer releases anything with that plugin_code: it now
-  only releases `pom_core`. The release of the `logs` plugin (build,
-  reproducible packaging for macOS/Linux/Windows, GitHub Actions and publishing
-  the version already built on GitHub to the license server) lives entirely in
-  `pom-plugin-logs` - see that repository's `AGENTS.md`.
+- The release of the `logs` plugin (build, reproducible packaging for
+  macOS/Linux/Windows, GitHub Actions and publishing the version already built
+  on GitHub to the license server) lives entirely in `pom-plugin-logs` - see
+  that repository's `AGENTS.md`.
 - In the frontend, POM **no longer** contains the Request Logs and Statistics
   screens: they live in `pom-plugin-logs` (`ui/`) and arrive through the
   generic plugin UI mechanism (manifest, screens and i18n installed together
@@ -447,24 +446,13 @@ and, on every save, the node also sends `host.event` with
 - **Phase 5 - frontend:** delivered `/enterprise`, activation, refresh and the
   active state. `/logs` and `/statistics` stay visible and clickable without
   a license, showing the Enterprise invitation instead of empty data.
-- **Phase 6 - release/hardening:** delivered `build-enterprise-plugin.sh`,
-  `pom-release.sh`, atomic install and Ed25519/hash/ABI verification.
-  `pom-release.sh` queries `/internal/releases?plugin=<plugin>&status=all` with
-  the `POM_RELEASE_TOKEN` token before uploading, considers releases of every
-  platform and picks the next `+build.N`; `--version` is still a manual
-  override. The POM binary catalog uses exactly `pom_core`, as defined in
-  `license-server/AGENTS.md`; the node no longer reads it (it updates from
-  GitHub releases, see `## POM updates`). As defined in
-  `license-server/AGENTS.md`. For `pom_core`, the script builds the `node`
-  package with the default features `cuda,vulkan` on Linux, `metal` on macOS
-  and none on Windows CPU; `--features` replaces that set and `--feature-set`
-  only changes the upload metadata. The artifact is `pom` on Linux/macOS and
-  `pom.exe` on Windows. The server accepts `plugin_abi=1` as a generic required
-  field for `pom_core`, not representing a cdylib ABI, and `feature_set=core`
-  is still only metadata, with no entitlement. `--dry-run` stays offline and
-  uses `+build.1` as a preview when there is no override. Still missing: native
-  code signing/notarization, pointer-based rollback, a full circuit breaker and
-  a real three-platform matrix.
+- **Phase 6 - release/hardening:** delivered atomic install and
+  Ed25519/hash/ABI verification. The release scripts of that phase
+  (`build-enterprise-plugin.sh`, `pom-release.sh`) were removed: POM itself
+  ships through the GitHub release workflows (see `## POM updates`) and each
+  plugin publishes from its own repository. Still missing: native code
+  signing/notarization, pointer-based rollback, a full circuit breaker and a
+  real three-platform matrix.
 - **Phase 7 - N independent plugins (2026-09-18):** delivered the product
   pivot. `crates/node/src/enterprise.rs` (a global `EnterpriseState`) became
   `crates/node/src/plugins.rs` (`PluginManager` with one `PluginRuntime` per
@@ -541,11 +529,6 @@ cargo test -p node plugins
 cargo test -p node pom_core_update
 cargo test -p pom-plugin-host update
 cd apps/frontend && npm test -- src/lib/access.test.ts src/components/nav.test.ts src/App.test.tsx src/routes/Plugins.test.tsx src/routes/About.test.tsx
-./scripts/build-enterprise-plugin.sh --platform macos-aarch64 --debug
-./scripts/test_pom_release.sh
-./pom-release.sh --platform linux-x86_64 --dry-run
-./pom-release.sh --platform macos-aarch64 --dry-run
-./pom-release.sh --platform windows-x86_64 --dry-run
 ```
 
 ## Maintaining this file

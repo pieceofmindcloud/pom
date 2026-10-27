@@ -61,8 +61,8 @@ in `../routing-contract`, empty for the runtime).
   resolves the GGUF name in `llama-arch.cpp`. It generates
   `OUT_DIR/mtp_graph_architectures.rs`; a missing fork, an empty extraction, fewer
   than thirteen entries or an inconsistent mapping stops the build. The extractor's
-  rules have unit tests in the file itself; the extraction's operational
-  dependency is in `TODO.md`, item 10.
+  rules have unit tests in the file itself; the build therefore depends on a
+  complete checkout of the fork.
 - With the `cuda` feature, `build.rs` compiles the MoE kernels with `CUDACXX`; in a
   validation on the CUDA server, `CUDAARCHS=120` pins the architecture and
   `CCACHE=ccache` wraps the `nvcc`. The procedure and the separate target are in

@@ -38,4 +38,4 @@ can swap in a different provider without touching the contract.
 ## Open items
 
 The open provider is neither called by the binary nor compared against the
-served planner; see `TODO.md`, item 5.
+served planner.

@@ -76,10 +76,8 @@ content so far; `types` is a placeholder awaiting migration.
 
 ## Open items
 
-- The open-core planner is not wired into the production path yet; see
-  `TODO.md`, item 5.
-- The extraction of `config` and shared types does not match the current graph
-  yet; see `TODO.md`, item 6.
+- The open-core planner (`routing-base`) is not wired into the production path
+  yet, and no test compares it with the node's planner.
 
 The crates `enterprise-protocol`, `enterprise-plugin-fixture` and `plugin-host`
 form the licensing boundary: the first defines the DTOs and the C ABI v1, the

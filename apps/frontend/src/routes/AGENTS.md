@@ -25,7 +25,7 @@ Per-file list:
 - `SetupWizard.tsx` - a navigable prototype of the first access. It uses `setupWizardTypes.ts` for
   the central state and `setupWizardMocks.ts` for simulated hardware, nodes, models,
   capabilities, public networks and health; the six paths end
-  in the same summary and make no calls to the backend; see `TODO.md`, item 22.
+  in the same summary and make no calls to the backend.
 
 - `Setup.tsx` - the real first-access wizard, in the identity of the access
   gate (a dark panel with the mark and the animated step trail like the site's

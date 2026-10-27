@@ -138,12 +138,11 @@ def check_config(
 
 CUDA_BIN = "/usr/local/bin/pom"
 
-SALEM_BINS = {name: CUDA_BIN for name in EXPECTED_SERVICES}
-SALEM_GPUS = {"node-gpu": ["0"], "node-gpu2": ["0"]}
-SALEM_RADEON = {"node-gpu", "node-gpu-3"}
+LOCAL_BINS = {name: CUDA_BIN for name in EXPECTED_SERVICES}
+LOCAL_GPUS = {"node-gpu": ["0"], "node-gpu2": ["0"]}
+LOCAL_RADEON = {"node-gpu", "node-gpu-3"}
 
-check_config("docker-compose.yml", SALEM_BINS, SALEM_GPUS, SALEM_RADEON)
-check_config("docker-compose.salem.yml", SALEM_BINS, SALEM_GPUS, SALEM_RADEON)
+check_config("docker-compose.yml", LOCAL_BINS, LOCAL_GPUS, LOCAL_RADEON)
 
 for filename, service_name in (("docker-compose.yml", "node-gpu"),):
     build = compose_config(

@@ -372,9 +372,8 @@ there. `config::bundled_ui_dist()` resolves `Contents/Resources/apps/frontend/di
 before trying the project root; the release script copies `dist` there.
 
 To rename the product again: edit `brand.json`, change the `[[bin]]`, produce
-the new images in `assets/brand/` and run `scripts/migrate-to-pom.sh` (or the
-equivalent) on each machine, because config and keys already written to disk
-still carry the previous name.
+the new images in `assets/brand/` and rename the config and keys already
+written to disk on each machine, because they still carry the previous name.
 
 ## Commit stamp (crates/node/build.rs)
 
@@ -596,8 +595,6 @@ loses offload on the first click.
   id exists to avoid. Build the image through this script; a manual
   `docker compose build` stamps "desconhecido" (unknown) on every container, on
   purpose.
-- **`scripts/run-docker.sh`**: `docker compose down` + `docker compose up -d`
-  (does not rebuild the image).
 - **`docker-compose.yml`**: four services shared between the cluster machines:
   `node-gpu`, `node-gpu2`, `node-gpu-3` and `node-cpu`. All inherit the same
   common definition in `docker-compose.common.yml`, which centralizes build,
@@ -606,8 +603,7 @@ loses offload on the first click.
   `POM_DOCKER_TARGET=runtime` selects the image without the toolchain. The
   default is a mixed-GPU topology, with NVIDIA 0 and Radeon on `node-gpu`,
   NVIDIA 0 on `node-gpu2`, Radeon on `node-gpu-3` and no reservation on
-  `node-cpu`. The mixed-GPU machine uses `docker-compose.yml` by default;
-  `docker-compose.salem.yml` can also be selected directly. The CUDA server's
+  `node-cpu`. The CUDA server's
   compose left this repository and lives in `pom-cluster-config`; device IDs, volumes
   and data are runtime configuration, not distinct build requirements. That
   external repository also generates the remote Compose with GPU reservations
@@ -709,18 +705,6 @@ scripts that remain in `scripts/` are operational tools (for example
 
 The bring-up procedure is in `operations.md`; the node takes no model or layer
 flags on the command line.
-
-- `scripts/bench-routes.sh` - generation measurement battery that compares four
-  origins and five prompts, writes a stable CSV with the counters and the
-  per-request MTP acceptance rate at the end of the existing columns and
-  prints medians per cell. `POM_BENCH_API_KEY` must hold the active inference
-  API key and is sent on each call, without being printed or written to the
-  CSV. The model is omitted by default to use the network's active model;
-  `POM_BENCH_MODEL` pins a model only when wanted. For the origin reached over SSH,
-  export the password variable without writing the password to a file.
-
-The local build script cited in that step's plan is not versioned in this
-repository (not even in git history).
 
 ## Important environment variables
 
@@ -907,12 +891,9 @@ places:
   forces `CUDAARCHS: ''` - **this is not an oversight**. The job runs on a
   self-hosted runner, and a development machine may have `CUDAARCHS` in its
   environment to shorten the local build; inheriting that value would silently
-  produce a release that only works on the builder's GPU. `pom-release.sh`
-  applies the same rule to the `pom_core` build: it also removes an inherited
-  `CMAKE_CUDA_ARCHITECTURES` and runs Cargo with `CUDAARCHS=''`. CMake treats
-  the empty value as unset, so the vendored `CMakeLists.txt` takes the wide
-  list path. The Enterprise cdylib build does not get this cleanup because it
-  does not compile CUDA.
+  produce a release that only works on the builder's GPU. CMake treats the
+  empty value as unset, so the vendored `CMakeLists.txt` takes the wide list
+  path.
 - **Development** (the operator's local build script, outside the repository): only the machine's
   architecture, through `CUDAARCHS`. CMake >= 3.20 initializes
   `CMAKE_CUDA_ARCHITECTURES` from that environment variable, so `build.rs` does

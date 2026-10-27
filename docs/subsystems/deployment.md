@@ -14,8 +14,7 @@ The durable record of each deployment lives in `pom.db`, in `POM_DB_DIR` when
 set or in the project root by default. The validated JSON stays complete so the
 operator's intent can be listed and recovered; undeploying marks the record
 inactive and keeps a tombstone. The legacy `deployments/` folder is neither
-deleted nor written by the runtime. The optional copy is only done by the
-throwaway script `scripts/migrate_pom_db.py`.
+deleted nor written by the runtime.
 
 ## 1. Overview: the plan, the merge and the order
 

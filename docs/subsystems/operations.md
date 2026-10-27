@@ -112,30 +112,7 @@ The `/v1/` routes only accept an active API key (created in the UI). A
 that inference was joint. A single hop, or `"source": "none"`, means the
 planner did not close the `0..total_layers` coverage.
 
-## Route battery and output shape
-
-To separate the effect of output shape from the effect of network origin, run
-`POM_BENCH_API_KEY=sk-... ./scripts/bench-routes.sh <label>`. The variable is
-required, used only as the inference header and never appears in the CSV or
-the summary. The script runs one warm-up call per origin, then three
-repetitions of each combination of the four origins defined in the script
-(local and remote origins against the target gateway) with the prompts `p-curto-repetitivo`, `p-curto-variado`,
-`p-longo-repetitivo`, `p-longo-variado` and `p-prefill-aleatorio` (short/long,
-repetitive/varied and random prefill). It omits `model` by default, so the
-gateway uses whatever model the network is serving at that moment. Use
-`POM_BENCH_MODEL=...` only for a comparison that needs an explicit model.
-
-The CSV has one line per warm-up, measurement or failure. `phase=warmup` is
-left out of the medians; `status=unavailable` in the warm-up stops further
-attempts from that origin and keeps the rest of the matrix.
-`fichas_por_chamada` (tokens per call) is computed on each line as
-`trace.output_tokens / trace.hops[0].decode.calls`. For the origin reached over SSH,
-set the password variable the script reads in the environment at run time; the
-password does not belong in the script. The long prompts are filled with deterministic text and the final
-table shows the medians of tokens/call, `generation_tok/s`,
-`mtp_acceptance_rate`, `ttft_ms`, `node_p50_ms` and `total_ms`. The
-`p-prefill-aleatorio` prompt uses 1200 new hexadecimal words per call and caps
-output at 8 tokens, like the reference benchmark.
+## GPU offload
 
 The deployment's `n_gpu_layers` decides how many layers go to VRAM; without
 the right build feature (`metal`/`cuda`) the model runs entirely on CPU. To
@@ -325,53 +302,3 @@ rule drops `/boot/efi`, `/boot` and `/efi`, which are infrastructure mounts on
 POSIX systems too; Windows has no `df` and only reports the project volume. It
 is `-k`, not `-m`: `-P` forces 512-byte blocks on macOS and ignores `-m`,
 which would make every volume look 2048 times larger.
-
-## Comparing POM with plain llama.cpp
-
-The operational benchmark is `scripts/bench-llamacpp.sh`. It takes the
-`pom-bench` `*.config.json` snapshot, selects by default the `serving`/
-`is_default` deployment of the active model and only accepts `kind=whole`,
-because a plain `llama-server` does not reproduce the RPC of `shards` or
-`tensor_parallel`. Before starting any process on the target server it queries `nvidia-smi`
-and requires, by default, 14,000 MiB free on each GPU; when POM holds the
-memory, it ends with `status=blocked_vram` without touching the POM process.
-The server uses the dedicated port 8090 on `127.0.0.1`, and cleanup is limited
-to the PID the harness created.
-
-When a CUDA build is needed, the harness passes `nvcc` to CMake explicitly. It
-tries the default CUDA install paths on the target server first; `--cuda-compiler` or
-`LLAMACPP_CUDA_COMPILER` pins an alternative path.
-
-Minimal usage, from the repository root:
-
-```bash
-scripts/bench-llamacpp.sh <reports-dir>/<date>-<model>.config.json \
-  --deploy-id <deploy-id> --output-dir ./bench-llamacpp-results
-```
-
-The result is a CSV with one line per warm-up, measurement or error, plus a
-`summary.md` with the medians of the five `bench-routes.sh` prompts. The
-`generation_tok_s` field comes from `timings.predicted_per_second`;
-`prefill_ms` and `prefill_tok_s` come from `timings.prompt_ms` and
-`timings.prompt_per_second`; `ttft_ms` is the observed time to the first SSE
-event and `total_ms` is the wall time of the local call on the target server. See
-`scripts/bench-llamacpp.sh --help` for the overrides of `n_ctx`, remote paths
-and VRAM policy. Without `--output-dir`, CSV, summary, metadata and the
-Markdown report are written to the default reports directory;
-`--report` pins the path of the individual report.
-
-In the POM runtime, `n_ctx` is the window of each session and the sequence
-budget is `2 * max_sessions`. That is why the harness passes `-c n_ctx`,
-`-np 2 * max_sessions` and `--kv-unified`; the capacity is not multiplied per
-session. `offload_kqv=true` stays at the llama.cpp default and only `false`
-passes `-nkvo`. A pre-existing `llama-server` is only reused when
-`CMakeCache.txt` confirms the fork tree with CUDA and `LLAMA_BUILD_SERVER=ON`;
-required builds use an external directory so the source tree is not changed.
-
-When the snapshot has `mtp_enabled=true`, the local reference also turns on the
-MTP head of the same GGUF with `--spec-type draft-mtp`,
-`--spec-draft-n-max=mtp_draft_tokens` and
-`--spec-draft-p-min=mtp_min_probability`. With both MTP and lookup on in POM,
-POM picks MTP first, so the harness maps the effective MTP path and records
-`speculative_k` and `speculative_lookup_window` as configuration not executed
-at the same time.

@@ -35,7 +35,7 @@ import { useSearchParams } from "react-router-dom";
 import { Markdown } from "../components/Markdown";
 import { Empty, Input, Panel, Tabs } from "../components/ui";
 import { GuideView } from "../guides/Guide";
-import { guidesFor } from "../guides/content";
+import { GUIDE_GROUPS, guidesFor, type Guide } from "../guides/content";
 import { useI18n } from "../i18n/provider";
 import manifest from "../docs/manifest.json";
 import { api } from "../lib/api";
@@ -74,8 +74,38 @@ function pluginDocsFor(locale: string): PluginDocEntry[] {
       code: plugin.code,
       kind,
       title: localizedPluginTitle(entry, locale),
-      asset: entry.asset,
+      asset: localizedPluginAsset(entry.asset, locale, plugin.manifest.assets),
     }));
+  });
+}
+
+/**
+ * A plugin page is one Markdown asset; `docs/x.md` may come with a
+ * `docs/x.pt-BR.md` beside it, declared in the manifest's assets, which the
+ * Portuguese interface reads instead.
+ */
+/** The loaded Markdown is cached per file, so a language switch loads the other one. */
+const pluginDocCacheKey = (document: PluginDocEntry) => `${document.code}:${document.asset}`;
+
+function localizedPluginAsset(asset: string, locale: string, assets: string[]): string {
+  if (locale === "en" || !asset.endsWith(".md")) return asset;
+  const variant = asset.replace(/\.md$/, `.${locale}.md`);
+  return assets.includes(variant) ? variant : asset;
+}
+
+/**
+ * A plugin's Markdown links its images relative to its own file; the page is
+ * served from elsewhere, so each relative image becomes the plugin's asset URL.
+ */
+function withPluginImages(content: string, code: string, asset: string): string {
+  const dir = asset.includes("/") ? asset.slice(0, asset.lastIndexOf("/") + 1) : "";
+  return content.replace(/!\[([^\]]*)\]\((?![a-z]+:|\/)([^)\s]+)\)/gi, (_match, alt: string, path: string) => {
+    const parts: string[] = [];
+    for (const part of (dir + path).split("/")) {
+      if (part === "..") parts.pop();
+      else if (part !== "." && part !== "") parts.push(part);
+    }
+    return `![${alt}](${pluginAssetUrl(code, parts.join("/"))})`;
   });
 }
 
@@ -114,7 +144,7 @@ function PluginDocument({
           {noDocDetail}
         </Empty>
       ) : (
-        <Markdown>{withoutLeadingH1(content)}</Markdown>
+        <Markdown>{withPluginImages(withoutLeadingH1(content), document.code, document.asset)}</Markdown>
       )}
     </article>
   );
@@ -359,6 +389,46 @@ function TabSwitch({ tab, onChange }: { tab: Tab; onChange: (t: Tab) => void }) 
 
 type Tab = "guides" | "reference";
 
+/** Everything a guide shows, lowercased, for the search box. */
+function guideText(g: Guide): string {
+  const parts: string[] = [g.label, g.summary, g.title];
+  for (const b of g.blocks) {
+    switch (b.kind) {
+      case "steps":
+      case "cards":
+        for (const i of b.items) parts.push(i.title, i.text);
+        break;
+      case "faq":
+        for (const i of b.items) parts.push(i.q, i.a);
+        break;
+      case "stats":
+        for (const i of b.items) parts.push(i.value, i.label);
+        break;
+      case "checklist":
+        parts.push(b.title, ...b.items);
+        break;
+      case "table":
+        parts.push(...b.head, ...b.rows.flat());
+        break;
+      case "note":
+      case "warn":
+        parts.push(b.title, b.text);
+        break;
+      case "code":
+        parts.push(b.code);
+        break;
+      case "diagram":
+      case "image":
+      case "video":
+        parts.push(b.caption);
+        break;
+      default:
+        parts.push(b.text);
+    }
+  }
+  return parts.join(" ").toLowerCase();
+}
+
 export function Documentation() {
   const { t, locale } = useI18n();
   const [params, setParams] = useSearchParams();
@@ -387,6 +457,8 @@ export function Documentation() {
     : entries[0]?.id ?? "";
   const selected = selectedId ? byId.get(selectedId) : undefined;
   const selectedContent = selected ? CONTENT[`../docs/${selected.id}`] : undefined;
+  // The explanation for people of the folder this AGENTS.md covers, if any.
+  const humanFor = selected ? guides.find((g) => g.reference === selected.path) : undefined;
   const selectedPluginGuide = pluginGuides.find((document) => document.key === params.get("guide"));
   const guideId = guides.some((g) => g.id === params.get("guide"))
     ? (params.get("guide") as string)
@@ -398,18 +470,18 @@ export function Documentation() {
   const [pluginContentLoading, setPluginContentLoading] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!activePluginDocument || pluginContent[activePluginDocument.key] !== undefined) return;
+    if (!activePluginDocument || pluginContent[pluginDocCacheKey(activePluginDocument)] !== undefined) return;
     let cancelled = false;
-    setPluginContentLoading(activePluginDocument.key);
+    setPluginContentLoading(pluginDocCacheKey(activePluginDocument));
     void api
       .getText(pluginAssetUrl(activePluginDocument.code, activePluginDocument.asset), { auth: false })
       .then((content) => {
         if (cancelled) return;
-        setPluginContent((current) => ({ ...current, [activePluginDocument.key]: content }));
+        setPluginContent((current) => ({ ...current, [pluginDocCacheKey(activePluginDocument)]: content }));
       })
       .catch(() => {
         if (cancelled) return;
-        setPluginContentError((current) => ({ ...current, [activePluginDocument.key]: true }));
+        setPluginContentError((current) => ({ ...current, [pluginDocCacheKey(activePluginDocument)]: true }));
       })
       .finally(() => {
         if (!cancelled) setPluginContentLoading(null);
@@ -473,6 +545,12 @@ export function Documentation() {
         (CONTENT[`../docs/${e.id}`] ?? "").toLowerCase().includes(q),
     );
   }, [q, entries]);
+  // Guides are searched by everything a reader sees: titles, summaries and the
+  // text of every block, folded the same way as the reference search.
+  const guideResults = useMemo(() => {
+    if (!q) return null;
+    return guides.filter((g) => guideText(g).includes(q));
+  }, [q, guides]);
   const pluginResults = useMemo(
     () => (q ? pluginDocs.filter((document) => document.title.toLowerCase().includes(q) || document.asset.toLowerCase().includes(q)) : []),
     [q, pluginDocs],
@@ -520,30 +598,28 @@ export function Documentation() {
             around them left the tabs floating apart from the content. */}
         <TabSwitch tab={tab} onChange={switchTab} />
 
-        {tab === "reference" && (
-          <div className="shrink-0 border-b border-line p-3">
-            <label className="relative block">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-faint" />
-              <Input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder={t("docs.search")}
-                aria-label={t("docs.searchAria")}
-                className="pl-8 pr-8"
-              />
-              {query && (
-                <button
-                  type="button"
-                  onClick={() => setQuery("")}
-                  aria-label={t("docs.clearSearch")}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-faint hover:text-fg"
-                >
-                  <X className="h-3.5 w-3.5" />
-                </button>
-              )}
-            </label>
-          </div>
-        )}
+        <div className="shrink-0 border-b border-line p-3">
+          <label className="relative block">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-faint" />
+            <Input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder={t("docs.search")}
+              aria-label={t("docs.searchAria")}
+              className="pl-8 pr-8"
+            />
+            {query && (
+              <button
+                type="button"
+                onClick={() => setQuery("")}
+                aria-label={t("docs.clearSearch")}
+                className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-faint hover:text-fg"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </label>
+        </div>
 
         {/*
           `min-h-0` is what makes this scroll: without it the flex child grows
@@ -554,7 +630,21 @@ export function Documentation() {
         <div className="min-h-0 flex-1 overflow-y-auto p-2">
           {tab === "guides" ? (
             <div className="flex flex-col gap-0.5">
-              {guides.map((g) => {
+              {guideResults && guideResults.length === 0 && (
+                <div className="px-2 py-4">
+                  <p className="text-sm font-medium text-fg">{t("docs.noResults")}</p>
+                  <p className="mt-1 text-xs leading-relaxed text-muted">{t("docs.noResultsDetail")}</p>
+                </div>
+              )}
+              {GUIDE_GROUPS.map((group, groupIndex) => {
+                const list = (guideResults ?? guides).filter((g) => g.group === group);
+                if (list.length === 0) return null;
+                return (
+                  <div key={group} className={clsx("flex flex-col gap-0.5", groupIndex > 0 && "mt-3 border-t border-line pt-3")}>
+                    <p className="px-2.5 pb-1 text-[0.68rem] font-medium uppercase tracking-wide text-faint">
+                      {t(`docs.group.${group}`)}
+                    </p>
+                    {list.map((g) => {
                 const active = g.id === guideId;
                 return (
                   <button
@@ -574,6 +664,9 @@ export function Documentation() {
                     </span>
                     <span className="w-full text-[0.68rem] leading-snug text-faint">{g.summary}</span>
                   </button>
+                );
+              })}
+                  </div>
                 );
               })}
               {pluginGuides.length > 0 && (
@@ -740,9 +833,9 @@ export function Documentation() {
             selectedPluginGuide ? (
               <PluginDocument
                 document={selectedPluginGuide}
-                content={pluginContent[selectedPluginGuide.key]}
-                loading={pluginContentLoading === selectedPluginGuide.key}
-                error={pluginContentError[selectedPluginGuide.key] === true}
+                content={pluginContent[pluginDocCacheKey(selectedPluginGuide)]}
+                loading={pluginContentLoading === pluginDocCacheKey(selectedPluginGuide)}
+                error={pluginContentError[pluginDocCacheKey(selectedPluginGuide)] === true}
                 loadingText={t("docs.pluginLoading")}
                 noDocTitle={t("docs.noDoc")}
                 noDocDetail={t("docs.noDocDetail")}
@@ -757,9 +850,9 @@ export function Documentation() {
           ) : selectedPluginReference ? (
             <PluginDocument
               document={selectedPluginReference}
-              content={pluginContent[selectedPluginReference.key]}
-              loading={pluginContentLoading === selectedPluginReference.key}
-              error={pluginContentError[selectedPluginReference.key] === true}
+              content={pluginContent[pluginDocCacheKey(selectedPluginReference)]}
+              loading={pluginContentLoading === pluginDocCacheKey(selectedPluginReference)}
+              error={pluginContentError[pluginDocCacheKey(selectedPluginReference)] === true}
               loadingText={t("docs.pluginLoading")}
               noDocTitle={t("docs.noDoc")}
               noDocDetail={t("docs.noDocDetail")}
@@ -774,6 +867,16 @@ export function Documentation() {
                   <FileText className="h-3 w-3 shrink-0" />
                   <span className="truncate">{selected.path}</span>
                 </p>
+                {humanFor && (
+                  <button
+                    type="button"
+                    onClick={() => openGuide(humanFor.id)}
+                    className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-iris/30 bg-iris/10 px-3 py-1.5 text-[0.8rem] font-medium text-fg transition-colors hover:border-iris/50 hover:bg-iris/15"
+                  >
+                    <BookOpen className="h-3.5 w-3.5 text-iris" />
+                    {t("docs.humanGuide")}
+                  </button>
+                )}
               </header>
               <Markdown>{withoutLeadingH1(selectedContent)}</Markdown>
             </article>

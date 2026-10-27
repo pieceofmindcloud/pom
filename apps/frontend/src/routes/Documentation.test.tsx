@@ -168,6 +168,25 @@ describe("Documentation", () => {
     expect(screen.getByText("No documentation matches")).toBeTruthy();
   });
 
+  it("the guides tab searches every guide's text and groups the results", () => {
+    renderDoc();
+    const search = screen.getByLabelText("Search documentation");
+    // "Lobby" is only in the body of the Networks and Network Chat screen guides.
+    fireEvent.change(search, { target: { value: "lobby" } });
+    expect(screen.getByRole("button", { name: /^Network Chat/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^What this platform is/ })).toBeNull();
+    expect(screen.getByText("Screens")).toBeTruthy();
+
+    fireEvent.change(search, { target: { value: "zzz-não-existe" } });
+    expect(screen.getByText("No documentation matches")).toBeTruthy();
+  });
+
+  it("an AGENTS.md with an explanation for people links to it", () => {
+    renderDoc("/documentation?tab=reference&doc=crates/node/src/network/AGENTS.md");
+    fireEvent.click(screen.getByRole("button", { name: "Read the explanation for people" }));
+    expect(screen.getByRole("heading", { name: "Inside the network", level: 2 })).toBeTruthy();
+  });
+
   it("displays the guides of an installed plugin and loads the Markdown on demand", async () => {
     setPluginUi([documentedPlugin]);
     vi.spyOn(api, "getText").mockResolvedValue("# Plugin guide\n\nPlugin content");
@@ -181,6 +200,37 @@ describe("Documentation", () => {
     });
     expect(api.getText).toHaveBeenCalledWith(
       "/api/ui/plugins/docs-plugin/assets/docs/guides/start.md",
+      { auth: false },
+    );
+  });
+
+  it("a plugin page reads its Portuguese file and resolves its images", async () => {
+    setPluginUi([{
+      ...documentedPlugin,
+      manifest: {
+        ...documentedPlugin.manifest,
+        assets: [...documentedPlugin.manifest.assets, "docs/guides/start.pt-BR.md", "docs/images/shot.png"],
+      },
+    }]);
+    vi.spyOn(api, "getText").mockResolvedValue("# Guia\n\n![A tela](../images/shot.png)");
+    render(
+      <MemoryRouter
+        initialEntries={["/documentation?tab=guides&guide=plugin:docs-plugin:guide:start"]}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
+        <LocaleProvider initialLocale="pt-BR">
+          <Documentation />
+        </LocaleProvider>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("img", { name: "A tela" }).getAttribute("src")).toBe(
+        "/api/ui/plugins/docs-plugin/assets/docs/images/shot.png",
+      );
+    });
+    expect(api.getText).toHaveBeenCalledWith(
+      "/api/ui/plugins/docs-plugin/assets/docs/guides/start.pt-BR.md",
       { auth: false },
     );
   });

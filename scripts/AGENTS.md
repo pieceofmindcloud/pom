@@ -129,13 +129,10 @@ runtime is Rust (`crates/node/src/inference/infer_server/`,
   same executable, and the backend is detected from visible devices. The UI is
   found at `POM_UI_DIST=/app/apps/frontend/dist` because `POM_HOME=/data` is
   not the image's `/app` directory.
-- `.github/workflows/release.yml` - manual-only release (`workflow_dispatch` with
-  `version` and `prerelease`). Job `ui` builds the interface once; a matrix of 4
-  targets (macOS arm64 Metal, Linux x86_64 CPU, Linux x86_64 CUDA 12.6, Windows
-  x86_64 CPU experimental) with `continue-on-error` and `fail-fast: false`; the
-  `release` job (`if: always()`) publishes with whatever compiled. Package =
-  binary + `apps/frontend/dist` + README, so `config::project_root` finds the UI
-  from the executable's directory. Windows packages with 7z.
+- `.github/workflows/release-{linux,macos,macos-self-hosted,windows}.yml` and
+  `docker-hub.yml` - manual-only releases (`workflow_dispatch`); the table of
+  what each one builds, where and with which inputs is in
+  `docs/subsystems/build-and-run.md`, and `.github/AGENTS.md` is their map.
 - `.github/workflows/release-ksia.yml` - manual release compiled only on the
   self-hosted Linux runner (label `ksia`) (no GitHub quota): jobs `linux-cpu`,
   `linux-cuda`, `windows-cpu` chained by input, each calling
@@ -148,8 +145,8 @@ runtime is Rust (`crates/node/src/inference/infer_server/`,
   enters on Linux via `[target.'cfg(target_os = "linux")']`.
 - `.devcontainer/` - Ubuntu 24.04 dev container with Rust, node, docker CLI +
   buildx and sshd (`root:123`, local sandbox, not the internet).
-  `devcontainer.json` mounts the docker.sock and the host's ssh key;
-  `install-buildkit.sh` downloads the `linux-amd64` buildx binary (arm64 needs
+  `devcontainer.json` mounts the docker.sock and the host's ssh key; the
+  `Dockerfile` downloads the `linux-amd64` buildx binary (arm64 needs
   `docker-buildx-plugin`).
 - `.dockerignore` - cuts `target/`, `target-*/`, `.fm-secondmate/`, `.git/`,
   `venv/`, `models/`, `*.gguf`, `*.key`, `pom.json` and `docs/superpowers/` from

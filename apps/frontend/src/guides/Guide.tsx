@@ -15,6 +15,35 @@ import { useI18n } from "../i18n/provider";
 import type { Block, Guide as GuideType } from "./content";
 import { Diagram } from "./diagrams";
 import { ScrollX } from "../components/ui";
+import type { ReactNode } from "react";
+
+/**
+ * The only inline markup a guide's text carries: `code` and **bold**. The text
+ * is written in markdown files, and a raw backtick on screen read as a typo.
+ */
+function Inline({ text }: { text: string }) {
+  const parts: ReactNode[] = [];
+  const re = /`([^`]+)`|\*\*([^*]+)\*\*/g;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    if (m.index > last) parts.push(text.slice(last, m.index));
+    parts.push(
+      m[1] !== undefined ? (
+        <code key={m.index} className="rounded bg-line/50 px-1 py-px font-mono text-[0.85em] text-fg">
+          {m[1]}
+        </code>
+      ) : (
+        <strong key={m.index} className="font-semibold text-fg">
+          {m[2]}
+        </strong>
+      ),
+    );
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) parts.push(text.slice(last));
+  return <>{parts}</>;
+}
 
 function Callout({
   tone,
@@ -38,7 +67,7 @@ function Callout({
       <Icon className={warn ? "mt-0.5 h-4 w-4 shrink-0 text-amber" : "mt-0.5 h-4 w-4 shrink-0 text-iris"} />
       <div className="min-w-0">
         <p className="text-[0.86rem] font-semibold text-fg">{title}</p>
-        <p className="mt-1 text-[0.86rem] leading-relaxed text-muted">{text}</p>
+        <p className="mt-1 text-[0.86rem] leading-relaxed text-muted"><Inline text={text} /></p>
       </div>
     </div>
   );
@@ -54,10 +83,10 @@ function BlockView({
   switch (block.kind) {
     case "lead":
       return (
-        <p className="mb-6 max-w-[68ch] text-[1.02rem] leading-relaxed text-fg">{block.text}</p>
+        <p className="mb-6 max-w-[68ch] text-[1.02rem] leading-relaxed text-fg"><Inline text={block.text} /></p>
       );
     case "p":
-      return <p className="my-4 max-w-[68ch] text-[0.92rem] leading-[1.75] text-muted">{block.text}</p>;
+      return <p className="my-4 max-w-[68ch] text-[0.92rem] leading-[1.75] text-muted"><Inline text={block.text} /></p>;
     case "h":
       return (
         <h3 className="mb-3 mt-9 font-display text-[1.05rem] font-semibold tracking-tight text-fg">
@@ -76,7 +105,7 @@ function BlockView({
               </span>
               <div className="min-w-0 max-w-[64ch] rounded-lg pb-1">
                 <p className="text-[0.9rem] font-semibold text-fg">{item.title}</p>
-                <p className="mt-0.5 text-[0.86rem] leading-relaxed text-muted">{item.text}</p>
+                <p className="mt-0.5 text-[0.86rem] leading-relaxed text-muted"><Inline text={item.text} /></p>
               </div>
             </li>
           ))}
@@ -92,7 +121,7 @@ function BlockView({
             >
               <span className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-iris/50 to-transparent opacity-0 transition-opacity duration-200 group-hover:opacity-100" />
               <p className="text-[0.88rem] font-semibold text-fg">{item.title}</p>
-              <p className="mt-1.5 text-[0.83rem] leading-relaxed text-muted">{item.text}</p>
+              <p className="mt-1.5 text-[0.83rem] leading-relaxed text-muted"><Inline text={item.text} /></p>
             </div>
           ))}
         </div>
@@ -116,7 +145,7 @@ function BlockView({
             {block.items.map((item) => (
               <li key={item} className="flex gap-2.5 text-[0.85rem] leading-relaxed text-muted">
                 <CircleCheck className="mt-0.5 h-4 w-4 shrink-0 text-aqua" />
-                <span className="min-w-0">{item}</span>
+                <span className="min-w-0"><Inline text={item} /></span>
               </li>
             ))}
           </ul>
@@ -131,7 +160,7 @@ function BlockView({
                 <ChevronRight className="h-4 w-4 shrink-0 text-faint transition-transform duration-200 group-open:rotate-90 group-open:text-iris" />
                 {item.q}
               </summary>
-              <p className="guide-enter px-4 pb-4 pl-11 text-[0.85rem] leading-relaxed text-muted">{item.a}</p>
+              <p className="guide-enter px-4 pb-4 pl-11 text-[0.85rem] leading-relaxed text-muted"><Inline text={item.a} /></p>
             </details>
           ))}
         </div>
@@ -164,7 +193,7 @@ function BlockView({
                           : "px-3 py-2.5 align-top leading-relaxed text-muted"
                       }
                     >
-                      {cell}
+                      <Inline text={cell} />
                     </td>
                   ))}
                 </tr>
@@ -186,6 +215,43 @@ function BlockView({
           <figcaption className="mt-3 border-t border-line pt-3 text-[0.78rem] leading-relaxed text-faint">
             {block.caption}
           </figcaption>
+        </figure>
+      );
+    case "video":
+      // youtube-nocookie: no cookie is set until the reader presses play.
+      return (
+        <figure className="my-6 overflow-hidden rounded-xl border border-line bg-raised">
+          <div className="relative aspect-video w-full bg-ink">
+            <iframe
+              src={`https://www.youtube-nocookie.com/embed/${block.youtube}`}
+              title={block.caption || "Video"}
+              loading="lazy"
+              allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"
+              allowFullScreen
+              referrerPolicy="strict-origin-when-cross-origin"
+              className="absolute inset-0 h-full w-full border-0"
+            />
+          </div>
+          {block.caption && (
+            <figcaption className="border-t border-line px-4 py-3 text-[0.78rem] leading-relaxed text-faint">
+              <Inline text={block.caption} />
+            </figcaption>
+          )}
+        </figure>
+      );
+    case "image":
+      // A screenshot opens full size in a new tab: at the column's width the
+      // small print of a busy screen is not readable.
+      return (
+        <figure className="my-6 overflow-hidden rounded-xl border border-line bg-raised">
+          <a href={block.src} target="_blank" rel="noreferrer" className="block">
+            <img src={block.src} alt={block.caption} loading="lazy" className="block h-auto w-full" />
+          </a>
+          {block.caption && (
+            <figcaption className="border-t border-line px-4 py-3 text-[0.78rem] leading-relaxed text-faint">
+              <Inline text={block.caption} />
+            </figcaption>
+          )}
         </figure>
       );
     case "deep":

@@ -85,7 +85,15 @@ them into the workspace.
 The `/admin-ui/documentation` screen adds the guides and reference of active
 plugins to the system documentation. It downloads each Markdown file through
 the assets route only when the person opens it; an inactive plugin or an
-invalid manifest publishes no pages.
+invalid manifest publishes no pages. A page may come in Portuguese too: when
+the manifest's `assets` also lists `docs/guides/x.pt-BR.md` beside the declared
+`docs/guides/x.md`, the Portuguese interface reads that file instead. An image
+the Markdown links by a relative path (`![...](../images/en/screen.png)`) is
+resolved against the page's own folder and fetched through the same assets
+route, so it must be declared in `assets` and served as `image/png` or
+`image/svg+xml`. The pages are plain Markdown: the `:::` blocks of POM's own
+guides (`apps/frontend/scripts/guides-md.mjs`) are not available to plugins.
+The `logs` plugin (`pom-plugin-logs`) documents its screens this way.
 
 The host normalizes each `menu[].to` and `routes[].path` under
 `/<plugin_code>/...` and keeps both in the same registry. So

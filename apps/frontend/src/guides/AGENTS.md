@@ -8,47 +8,72 @@ pages, with diagrams, for someone who opened the panel and wants to understand
 what the cluster does.
 
 The `routes/Documentation.tsx` screen serves both on the same route, in tabs
-(`?tab=guides|referencia`). Guides is the default tab - a human must not land on
-`AGENTS.md - crates/routing-base/`.
+(`?tab=guides|reference`), each with the search box. Guides is the default tab -
+a human must not land on `AGENTS.md - crates/routing-base/`. A reference page
+whose folder has a `HUMAN.md` offers a button to it.
+
+## Where the text lives
+
+The guides are **markdown in the repository**, one file per language
+(`<name>.md` is English, `<name>.pt-BR.md` Brazilian Portuguese), and this
+folder only renders them:
+
+- `docs/guides/concepts/` - how POM works (`overview`, `getting-started`,
+  `profiles`, `request`, `slice-and-deploy`, `using-the-api`,
+  `network-and-internet`, `plugins`, `operating`, `access`).
+- `docs/guides/screens/` - one guide per screen of the panel, with screenshots
+  (`docs/guides/images/<locale>/`) and, where a video exists, the embedded
+  YouTube video. Their front matter carries the `route` they explain.
+- `docs/guides/settings/` - the deployment inspector's category guides
+  (`default-settings`, `pom-settings`, `beta-settings`), which also open in
+  `components/GuideDialog.tsx` from each inspector category.
+- `docs/human/<folder>/HUMAN.md` - "Inside the code": the logic of a source
+  folder explained for people, beside the folder's `AGENTS.md` (the front
+  matter's `reference`). Only the folders that need it have one.
+
+The folder under `docs/guides/` is the sidebar group; `order` sorts inside it.
+The format (front matter plus `:::lead`, `:::note`, `:::warn`, `:::steps`,
+`:::cards`, `:::faq`, `:::stats`, `:::checklist`, `:::diagram <id>`,
+`:::video <youtube url>`, `:::deep <doc>`, `## ` headings, tables, code and
+standalone `![caption](path)` images) is documented at the top of
+`apps/frontend/scripts/guides-md.mjs`, which parses it. `scripts/build-docs.mjs`
+turns every file into `src/docs/guides.json` and publishes each image under
+`public/guide-images/` with a content hash in the name; a `:::deep` link that
+does not land on an embedded reference document fails the build. A guide
+written only in English shows in Portuguese, in English.
 
 ## Files
 
-- `content.ts` - **the texts**, in both languages (`guidesFor(locale)`). A guide
-  is `{ id, label, summary, title, blocks }` and a block is data, not JSX:
-  `lead`, `p`, `h`, `steps`, `cards`, `note`, `warn`, `table`, `code`,
-  `diagram`, `stats` (highlight numbers), `checklist`, `faq` (questions that
-  open on demand, `<details>`) and `deep`. Guides today, in this order:
-  `overview`, `getting-started`, `profiles`, `request`,
-  `slice-and-deploy`, `using-the-api`, `network-and-internet`, `plugins`, `operating`,
-  `access`, followed by the deployment inspector's category guides from
-  `deploySettings.ts`. The `id`s are the `?guide=` address and do not change
-  with the language.
-- `deploySettings.ts` - the guides behind the help button of each deployment
-  inspector category: `default-settings` (Default settings), `pom-settings` (POM
-  settings) and `beta-settings` (the Beta group: MoE experts in RAM, the GPU
-  expert cache and the automatic prefill chunk, and how to combine them). Each
-  describes every property of its category and how to change it, from the
-  field hints and `docs/subsystems/deployment.md`. They open in
-  `components/GuideDialog.tsx` and also list in Documentation.
+- `content.ts` - the types (`Block`, `Guide`, `GuideGroup`, `DiagramId`) and the
+  loader: `guidesFor(locale)` reads the generated `guides.json` and prefixes the
+  images with the app's base; `GUIDE_GROUPS` is the sidebar order (`concepts`,
+  `screens`, `settings`, `human`).
+- `deploySettings.ts` - only the `?guide=` ids of the three inspector
+  categories (`DEPLOY_SETTINGS_GUIDES`).
 - `Guide.tsx` - `GuideView`, the renderer. Each block type has **one** visual,
   decided here and nowhere else: that is why guides are data. Whoever writes a
   new page chooses among the existing blocks and gets spacing, color and dark
-  theme for free, without being able to invent a fourth kind of notice. The
-  `deep` blocks are separated from the body and grouped at the end, under
-  `docs.deeper`.
+  theme for free. The text of a block renders `code` and **bold** inline
+  (`Inline`); an image opens full size in a new tab; a video is the
+  privacy-enhanced YouTube embed. The `deep` blocks are separated from the body
+  and grouped at the end, under `docs.deeper`.
 - `diagrams.tsx` - inline SVG (`topology`, `request`, `slicing`, `lifecycle`,
   `setup`, `profiles`, `network`, `api`, `plugins`). Color uses the same tokens
   as the panel (`fill-iris`, `stroke-line`), so switching themes redraws without
-  effort and no screenshot ages. The motion (packets crossing a hop, running
-  dashes, discovery rings) is pure CSS, `guide-*` classes in `src/index.css`:
-  the global `prefers-reduced-motion` rule freezes it, and every animated packet
-  sits on a static arrow, so the drawing stays readable when stopped.
+  effort. The motion (packets crossing a hop, running dashes, discovery rings)
+  is pure CSS, `guide-*` classes in `src/index.css`: the global
+  `prefers-reduced-motion` rule freezes it, and every animated packet sits on a
+  static arrow, so the drawing stays readable when stopped. A new diagram is
+  added here and named in `DiagramId`; a markdown guide then uses it by id.
+- `guidesMd.test.ts` - the markdown format, block by block, and its refusals.
 
 ## Two rules that keep this honest
 
-1. **No number or behavior may appear here without being in the markdown.**
-   When the two diverge, the markdown (which tracks the code) wins and this
-   content is corrected. Every guide ends in `deep` links to the reference,
+1. **No number or behavior may appear in a guide without being in the
+   reference** (`AGENTS.md`, `docs/subsystems/`). When the two diverge, the
+   reference (which tracks the code) wins and the guide is corrected; a screen
+   guide is also checked against the screen's own labels in
+   `i18n/messages.csv`. Every guide ends in `deep` links to the reference,
    instead of duplicating the detail.
    The slicing-and-deploy guide's table follows `docs/subsystems/deployment.md`:
    valid ranges may share a machine, but a global gap and an overlap remain
@@ -63,9 +88,10 @@ The `routes/Documentation.tsx` screen serves both on the same route, in tabs
 - Rendered by `routes/Documentation.tsx`; the `deep` button calls `onOpenDoc`,
   which switches to the reference tab with `?doc=`.
 - Uses `components/ui` (`ScrollX`) and `i18n/provider` (`docs.deeper`).
-- The tab and tree labels live in `i18n/locales.ts` (`docs.*`); the guide text
-  does **not** - it is too large for the message table and lives in
-  `content.ts`, per locale.
+- The tab, tree and group labels live in `i18n/messages.csv` (`docs.*`); the
+  guide text does **not** - it lives in the markdown files, per locale.
+- The website (`pom-website`, `site/documentacao/atualizar-guias.mjs`) renders
+  the same guides from a POM checkout.
 
 ## Defects noted
 

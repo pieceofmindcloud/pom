@@ -5,3 +5,5 @@ dist-release/
 # Generated at build time from brand.json and the repo's AGENTS.md.
 src/brand/
 public/brand/
+# Published by scripts/build-docs.mjs from docs/guides and docs/human.
+public/guide-images/

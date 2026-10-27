@@ -70,7 +70,7 @@ Nothing here talks to peers; everything is used by `main.rs` and
 ## Key functions
 
 `config.rs`:
-- `brand.rs` - the product identity, read from `brand.json` at the repository
+- `brand` (the `crates/brand` crate, re-exported as `crate::brand`) - the product identity, read from `brand.json` at the repository
   root at compile time (`include_str!`). It is the single source of the name, the
   slogan and the logo files, and **every derived name comes from here**:
   `config_filename()` (`pom.json`), `env_var("HOME")` (`POM_HOME`),

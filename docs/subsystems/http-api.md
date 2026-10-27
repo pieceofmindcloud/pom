@@ -354,8 +354,8 @@ last):
 
 The registration of the UI control routes is organized in
 `crates/node/src/backend/webui/routes/`: `common.rs` for generic routes,
-`infer.rs` for inference profile actions, `node.rs` for machine and model
-operations, and `admin.rs` for administration and lifecycle. `mod.rs` composes
+`visitor.rs` for inference actions and the request to join, `worker.rs` for
+machine and model operations, and `admin.rs` for administration and lifecycle. `mod.rs` composes
 them; profile authorization stays in the gateway's central middleware, so the
 file organization is not a security barrier.
 

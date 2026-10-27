@@ -333,8 +333,9 @@ breaks the whole product.
 - **Route tests use `gateway::testkit`**, never real UDP - the suite transmits on
   the LAN and could inject messages into a live cluster. → `http-api.md`
 
-The engineering pending items that accompany these invariants live in `TODO.md`;
-this file does not duplicate the work list.
+The engineering pending items live where the code is: each folder's
+`AGENTS.md`, under `## Open items` and `## Defects noted`; this file does not
+duplicate the work list.
 
 ## Maintaining this file
 

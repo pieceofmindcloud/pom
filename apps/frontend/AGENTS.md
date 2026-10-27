@@ -247,8 +247,8 @@ session per process.
 
 ## Open items
 
-The product and fixture open items of this tree are consolidated in `TODO.md`,
-items 22 and 23.
+Test fixtures: a hand-written partial peer can still crash a component (see
+`src/components/AGENTS.md`).
 
 ## Maintaining this file
 

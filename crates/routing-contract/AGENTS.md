@@ -60,4 +60,4 @@ touching node internals.
 ## Open items
 
 The v1 contract still uses an inclusive range end; the future move to an
-exclusive end is in `TODO.md`, item 24.
+exclusive end needs a new wire version.

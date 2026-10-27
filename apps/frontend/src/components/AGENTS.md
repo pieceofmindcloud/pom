@@ -14,8 +14,9 @@ present: `AddNodeDialog.test.tsx`, `Confirm.test.tsx`, `DeploymentInspector.idle
 `ModelNetworkCanvas.test.tsx`,
 `PeerDetailCard.test.tsx`. Fake peers for these tests come from
 `../test/fixtures.ts` and must have the *full* shape the node serves. A partial
-`node` can slip past one component's `?.` and crash the next; the maintenance
-debt lives in `TODO.md`, item 23.
+`node` can slip past one component's `?.` and crash the next:
+`PeerDetailCard.tsx` still reads `n?.status.state`, which guards `n` but not
+`status`.
 
 ## Chat head choice
 

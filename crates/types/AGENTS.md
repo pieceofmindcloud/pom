@@ -26,5 +26,5 @@ that the workspace exposes a library crate; it carries no behavior.
 
 ## Open items
 
-The extraction of shared domain types has not been completed yet; see
-`TODO.md`, item 25.
+The extraction of shared domain types has not been completed yet: `PeerInfo`
+and `NodeConfig` still live in `node`.

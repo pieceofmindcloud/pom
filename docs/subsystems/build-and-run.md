@@ -1108,4 +1108,4 @@ use `scripts/release-ksia.sh --variant windows-cpu --debug-symbols` (see
 - DEFECT NOTED: `routing-base::plan` (its only real logic) is called by nobody -
   the node's planner (`crates/node/src/routing/pipeline.rs::plan_pipeline`)
   makes its own greedy plan. `routing-base` is dead code kept alive only by its
-  own tests. Postponed until the open-core decision (see `TODO.md`).
+  own tests. Postponed until the open-core decision.

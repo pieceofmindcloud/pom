@@ -503,7 +503,7 @@ UI.
   end of the block), and the proofs of eight experts with hidden 2048 cover the
   `gate_up` K-quant and the heterogeneous path without accepting a non-finite output.
   The differential CUDA proof of the MoE demands a full GGUF and real CUDA GPUs,
-  therefore it stays out of the local validation; see `TODO.md`, item 17.
+  therefore it stays out of the local validation and has not been run yet.
   `bandwidth.rs` and `coexecution.rs` are compiled on the CUDA path or in the tests;
   they turn concurrent CPU/transfer measurements into a deterministic fraction of the
   misses, split per expert, run the two lanes in parallel and sum outputs with a
@@ -551,11 +551,8 @@ UI.
   metadata and the dtypes assumed by the callback's arguments. It also records the same
   sample after the Rust normalization. Without the variable the instrument stays off and
   does not alter the execution path. The normalization validates and preserves that
-  order; it must not transpose the route again. The ignored test
-  `llm::moe_route_tests::callback_entry_emits_the_default_warn_and_the_moe_target_on_the_same_sink`
-  runs the real callback with the process's same `EnvFilter` and must be run with
-  `POM_MOE_ROUTE_DIAGNOSTICS=1 RUST_LOG=info`; the opt-in coverage is in `TODO.md`, item
-  18.
+  order; it must not transpose the route again. `POM_MOE_ROUTE_DIAGNOSTICS=1`
+  only turns on the callback's diagnostic logs.
   The runtime always records the entry of layer 0 in `moe.layer_input_diagnostic`, with
   the count/first non-finite index, the finite range, hidden and route samples, before
   choosing CPU or CUDA. That separates upstream contamination from a failure in one
@@ -824,8 +821,8 @@ UI.
   from changing the global decode while the collective still waits for all ranks. The internal
   children of a batch skip the lock through `BATCH_CHILD_HEADER`.
 
-  `/v1/session/rollback` is still not forwarded to TP replicas; the pending item is in
-  `TODO.md`, item 13. It is only used by speculative decoding, today off in the TP
+  `/v1/session/rollback` is still not forwarded to TP replicas (an open item: with
+  TP speculation on, the ranks' KV caches would drift apart). It is only used by speculative decoding, today off in the TP
   configurations.
 
   A collective failure **cannot be silent**: it does not degrade the answer, it makes it
@@ -1034,8 +1031,7 @@ UI.
   mistake.
   `LlmEngine::pool` (N contexts over a single model, `pool_tests` covers how the total is
   split between single-session contexts) still **has no caller**: the server loads one context
-  with `load`, and the `#[allow(dead_code)]` on the `pool` is the mark of that; see `TODO.md`,
-  item 14. `LlmEngine::load_with_cache` uses the runtime's `ModelCache` to create only a new
+  with `load`, and the `#[allow(dead_code)]` on the `pool` is the mark of that. `LlmEngine::load_with_cache` uses the runtime's `ModelCache` to create only a new
   context when the identity of the slice and of the weight loading did not change; KV,
   context, session, batch and sampling parameters do not force a re-read of the GGUF. The
   `moe_external_executor` flag is part of that identity: when on, the fork keeps the metadata
@@ -1335,8 +1331,8 @@ reason that only shows up in the error of a tunnel that also failed.
   first), including with prefix reuse.
 - It inherits from the 2026-08-14 investigation (`labsse.rs`), which proved the asymmetry and
   refuted the SSE hypothesis through a counterfactual.
-- The relay's four failure modes still have no E2E scenario; see `TODO.md`,
-  item 16.
+- The relay's four failure modes (dead middle hop, dead tail, lost direct reply,
+  timeout) still have no four-peer E2E scenario.
 
 `runtime.rs`:
 - `NodeConfig` - everything that defines the slice served: model_path/label,

@@ -13,7 +13,7 @@ the Python code. Authoritative: read the files; this is a map.
 - `build-docker.sh` - builds the cluster image: it reads the commit **on the
   host** (`git rev-parse --short HEAD`, with a `-dirty` suffix when the tree has
   changes) and exports `POM_BUILD_COMMIT` only for the runtime. By default it
-  resolves the tag of the remote `pom-tensor-parallel` branch (the same algorithm
+  resolves the tag of the remote `pom` branch (the same algorithm
   as the release action, completing the history of a shallow clone without
   downloading blobs) and uses `POM_LLAMA_CPP_MODE=release`; the
   `LLAMA_CPP_CACHE_KEY` then includes that tag. `POM_LLAMA_CPP_RELEASE_TAG` pins

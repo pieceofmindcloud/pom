@@ -5,9 +5,13 @@ inputs:
     description: Directory where the shallow llama.cpp checkout is kept
     required: false
     default: .ci-cache/llama.cpp
+  ref:
+    description: Branch of the pieceofmindcloud/llama.cpp fork to build against
+    required: false
+    default: pom
 outputs:
   sha:
-    description: Resolved commit of the pom-tensor-parallel branch
+    description: Resolved commit of the fork branch
     value: ${{ steps.llama-ref.outputs.sha }}
 runs:
   using: composite
@@ -15,9 +19,11 @@ runs:
     - name: Resolve llama.cpp revision
       id: llama-ref
       shell: bash
+      env:
+        LLAMA_REF: ${{ inputs.ref }}
       run: |
         set -euo pipefail
-        sha="$(git ls-remote https://github.com/pieceofmindcloud/llama.cpp.git refs/heads/pom-tensor-parallel | cut -f1)"
+        sha="$(git ls-remote https://github.com/pieceofmindcloud/llama.cpp.git "refs/heads/$LLAMA_REF" | cut -f1)"
         test -n "$sha"
         echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
@@ -30,6 +36,7 @@ runs:
     - name: Prepare llama.cpp checkout
       shell: bash
       env:
+        LLAMA_REF: ${{ inputs.ref }}
         LLAMA_SHA: ${{ steps.llama-ref.outputs.sha }}
         LLAMA_SOURCE_DIR: ${{ inputs.source-dir }}
       run: |
@@ -42,7 +49,7 @@ runs:
         if [ "$current_sha" != "$LLAMA_SHA" ]; then
           rm -rf "$source_dir"
           mkdir -p "$(dirname "$source_dir")"
-          git clone --depth 1 --branch pom-tensor-parallel \
+          git clone --depth 1 --branch "$LLAMA_REF" \
             https://github.com/pieceofmindcloud/llama.cpp.git "$source_dir"
           test "$(git -C "$source_dir" rev-parse HEAD)" = "$LLAMA_SHA"
         fi

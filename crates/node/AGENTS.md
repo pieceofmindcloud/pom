@@ -50,7 +50,7 @@ in `../routing-contract`, empty for the runtime).
   not change the licensing policy nor the `RuntimeParams` received over the
   network; the absent mode uses `dense` (`llama.cpp`) as the default.
 - The native build automatically prepares the `llama.cpp` fork in a new worktree,
-  cloning the `pom-tensor-parallel` branch when the versioned symlink points at a
+  cloning the fork's `pom` branch when the versioned symlink points at a
   missing tree. `LLAMA_SOURCE` allows reusing a local checkout that contains
   `ggml`; preparation failures show the recovery command. The full procedure is in
   `docs/subsystems/build-and-run.md`, section "Preparing a local worktree".

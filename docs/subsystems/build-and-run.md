@@ -125,7 +125,8 @@ the shared server/socket.
 ### Cache in GitHub Actions
 
 The Linux and both macOS release workflows resolve the current SHA of the
-`pom-tensor-parallel` branch before the build. The Windows workflow instead uses
+fork's `pom` branch before the build (the `ref` input of
+`.github/actions/llama-cache`). The Windows workflow instead uses
 a published fork tag, as described below. For the source builds, the fork
 checkout lives in `.ci-cache/llama.cpp`, outside the versioned symlink, and is
 stored by `actions/cache` with the key:
@@ -180,13 +181,13 @@ was validated offline by inspecting the workflows,
 
 The Compose files build with `POM_LLAMA_CPP_MODE=release` by default;
 `scripts/build-docker.sh` called without the variable builds in `source`.
-`build-docker.sh` queries the remote `pom-tensor-parallel` branch, derives the
+`build-docker.sh` queries the remote `pom` branch, derives the
 same tag as `get-tag-name` in the workflow and passes the exact tag to Docker.
 It also accepts `POM_LLAMA_CPP_RELEASE_TAG` to pin an already chosen release.
 The fork's workflow must finish and publish the assets before this build: a
 tag without the CPU x64, CUDA 13.4 x64, Vulkan x64 packages and the source
 archive fails with no fallback. The manual dispatch must use the
-`pom-tensor-parallel` branch; a push to that branch does not trigger the
+`pom` branch; a push to that branch does not trigger the
 automatic rule, which is restricted to `master`.
 
 The tag's source archive provides the headers and sources used by bindgen, MTP
@@ -736,7 +737,7 @@ flags on the command line.
 | `POM_BUILD_COMMIT` | Commit shown in `/api/ui/node`; in Docker it is passed by `build-docker.sh` as a runtime variable, outside the Cargo/npm cache. Without it, uses the fallback compiled by `build.rs`. |
 | `POM_RELEASE_VERSION` | At build time, the release `build.rs` compiles in (else the newest `v*` tag of the checkout, else `v` + the crate version). At run time it overrides the compiled one (`pom_core_update::release_version`): the release the footer, `/api/ui/node`, the announce and the update check use. A Docker build has no `.git`, so `build-docker.sh` fetches the tags, reads the newest on the host and passes it to the runtime stages, like `POM_BUILD_COMMIT`; without it a container reported `v0.1.0`. |
 | `LLAMA_SOURCE` | An already prepared local `llama.cpp` checkout; must contain `ggml`, is normalized to an absolute path and avoids copying the fork into the worktree. |
-| `POM_LLAMA_CPP_REPOSITORY` / `POM_LLAMA_CPP_REF` | Remote and branch used by the automatic preparation when the fork is missing. The defaults are the public fork and `pom-tensor-parallel`. |
+| `POM_LLAMA_CPP_REPOSITORY` / `POM_LLAMA_CPP_REF` | Remote and branch used by the automatic preparation when the fork is missing. The defaults are the public fork and `pom`. |
 | `POM_LLAMA_CPP_AUTOCLONE` | Use `=0` to block the automatic download and only get the message with the manual procedure. |
 | `VITE_API_TARGET` | Proxy target of the UI dev server (default `http://127.0.0.1:8080`). |
 
@@ -785,7 +786,7 @@ relative to the POM root (`[env]`, `force = false`). So the fork is the root's
 `llama.cpp` (a checkout or a symlink, ignored by git), and a `LLAMA_SOURCE` set
 by the environment (CI, Docker) wins. If the source is missing or has no `ggml`,
 the build stops with the manual clone command. The branch is
-`pom-tensor-parallel` of the fork. The project does not version the fork's
+`pom` of the fork. The project does not version the fork's
 content, so updating it is part of updating the dependency.
 
 The binding's build also applies a local fix to `common_fit_params`: free
@@ -992,7 +993,7 @@ the dry run of each variant.
 
 **State that survives between runs** lives in `POM_RELEASE_CACHE` (default
 `~/.cache/pom-release` of the `github-runner` user): a shallow clone of the
-llama.cpp fork (redone when the remote sha of `pom-tensor-parallel` changes), a
+llama.cpp fork (redone when the remote sha of the `pom` branch changes), a
 `target-<variant>` per variant, the Windows tools (`cargo-xwin`, `ninja`,
 shims), the `xwin` cache and the `ccache` cache (`CCACHE_DIR` is forced to
 `ccache/` in there: a `cache_dir` in `ccache.conf` the user cannot write made

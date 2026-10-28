@@ -25,7 +25,7 @@ out="${1:-$root/dist-release/pom-local-$arch-apple-darwin.dmg}"
 command -v create-dmg >/dev/null || { echo "create-dmg not found (brew install create-dmg)" >&2; exit 1; }
 if [ -z "${LLAMA_SOURCE:-}" ] && [ ! -d "$root/llama.cpp/ggml" ]; then
     echo "llama.cpp fork not found at $root/llama.cpp; clone it with:" >&2
-    echo "  git clone --depth 1 --branch pom-tensor-parallel https://github.com/pieceofmindcloud/llama.cpp.git llama.cpp" >&2
+    echo "  git clone --depth 1 --branch pom https://github.com/pieceofmindcloud/llama.cpp.git llama.cpp" >&2
     exit 1
 fi
 

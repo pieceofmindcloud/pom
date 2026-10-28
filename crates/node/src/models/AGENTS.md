@@ -99,7 +99,9 @@ Models, GGUF reading, planning and slice files. The module is used by
  - The cut options for a whole model come from
   `GgufLayout::valid_prefix_end_layers`: in a dense layout, any whole-layer end
   is valid; in a hybrid layout, only the ends derived from `arch_boundaries` are
-  valid. `prefix_cut_granularity` only reports a step when every cut has the same
+  valid. A kind change at the index of a start-relative count (the dense prefix
+  of a MoE, `leading_dense_block_count`) is not a boundary, because the slicer
+  rebases that count. `prefix_cut_granularity` only reports a step when every cut has the same
   distance; the consumer uses the cut list when the boundaries are irregular.
 - `splitter.rs` - maps the source to read the header and the weights without
   keeping a GGUF fd open. The logical table is not a storage order: the selected

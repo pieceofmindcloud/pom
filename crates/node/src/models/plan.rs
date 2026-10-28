@@ -857,6 +857,7 @@ mod tests {
             source_file_bytes: 0,
             // Homogeneous stack: period 1, so cuts are unconstrained.
             layer_kinds: vec![vec!["attn.weight".to_string()]; n as usize],
+            start_relative_layer_counts: Vec::new(),
             nextn_predict_layers: 0,
             has_nextn_tensors: false,
             serialized: None,

@@ -126,7 +126,8 @@ prerequisite for the deployment.
 `{source_node_id, target_node_id, end_layer}`. The source must announce the
 selected whole model. `model-layer-options` reads the GGUF on that source and
 returns the accepted prefix ends: any whole-layer end in a dense layout, or
-only the architectural boundaries of `arch_boundaries` in a hybrid layout. The
+only the architectural boundaries of `arch_boundaries` in a hybrid layout (a
+dense prefix declared by `leading_dense_block_count` is not a boundary). The
 frontend uses these points as the slider positions; it never turns the slider
 into a fixed step.
 

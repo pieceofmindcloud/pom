@@ -146,7 +146,14 @@ boundary before and still is).
   or for the processes it starts), and goes into its own kill-on-close Job
   Object (`process_tree.rs`): stopping the host, or POM exiting, ends the host
   and everything it started. Inherited pipes in those children used to keep
-  the host from ever seeing its input close.
+  the host from ever seeing its input close. On Linux and macOS the host ends
+  its own tree (`crates/plugin-host/src/tree.rs`): on Linux it is a child
+  subreaper, so even processes that detached into their own session (herdr,
+  agent panes, headless browsers) stay below it, and when it leaves, after the
+  plugin's `shutdown`, it sends SIGTERM to every descendant, SIGKILLs what is
+  left after 2 s and reaps them. `stop` waits 10 s for that before killing the
+  host. Closing an on-demand plugin from the menu therefore leaves nothing of
+  it running.
 - The Docker image copies `pom-plugin-host` to `/usr/local/bin` next to `pom`.
   The entrypoint validates both, and `pom` only starts the host after
   activation, with the absolute path of the downloaded plugin and stdin/stdout

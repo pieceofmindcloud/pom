@@ -1,10 +1,12 @@
 //! The process tree a plugin host starts, tied to the host's lifetime.
 //!
 //! A plugin runs inside `pom-plugin-host`, and some plugins start processes of
-//! their own (node, npm, code-server). On Unix those die with the host's
-//! process group; on Windows nothing ties them together, so closing POM left
-//! the host and its children running, each holding an inherited pipe that kept
-//! the host from ever seeing its input close.
+//! their own (node, npm, code-server). On Linux and macOS the host itself ends
+//! them when it leaves (`crates/plugin-host/src/tree.rs`: a child subreaper on
+//! Linux, then SIGTERM and SIGKILL to every descendant); on Windows nothing
+//! tied them together, so closing POM left the host and its children running,
+//! each holding an inherited pipe that kept the host from ever seeing its
+//! input close.
 //!
 //! On Windows each host goes into its own Job Object marked "kill on close":
 //! everything the host starts afterwards joins the same job, and dropping the
@@ -63,6 +65,6 @@ mod imp {
 #[cfg(windows)]
 pub use imp::ProcessTree;
 
-/// Outside Windows the host's children already die with it; nothing to hold.
+/// Outside Windows the host ends its own tree (`crates/plugin-host/src/tree.rs`); nothing to hold.
 #[cfg(not(windows))]
 pub struct ProcessTree;

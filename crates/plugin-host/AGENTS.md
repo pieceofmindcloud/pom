@@ -17,6 +17,19 @@ concurrent instance per active `plugin_code`, each with its own
 process is the `plugin_code` validated in the manifest; it resolves the symbol
 `pom_<plugin_code>_plugin_v1`, without coupling the host to a specific product.
 
+Everything a plugin starts ends with its host (`src/tree.rs`). On Linux the
+host is a child subreaper, so an orphan anywhere below it (a daemon that
+called `setsid` and double-forked, an agent pane, a headless browser) is
+reparented to the host instead of init. When the host leaves, after the
+plugin's `shutdown` (or a failed load), it sends SIGTERM to every live
+descendant, waits 2 s, SIGKILLs the rest and reaps them; macOS runs the same
+walk without a subreaper, so a process that detached there escapes. POM waits
+10 s for that exit (`SHUTDOWN_TIMEOUT` in `crates/node/src/plugin_host.rs`).
+While the host runs, an orphan that exits stays a zombie under it until the
+host leaves: a reaper during the run would steal the exit status of the
+plugin's own children. Windows uses POM's kill-on-close Job Object instead.
+Only the plugin mode does any of this.
+
 `pom-plugin-host --apply-update <plan.json>` is a second, unrelated mode
 (`src/update.rs`): the node's POM update (`crates/node/src/pom_core_update.rs`)
 stages a release, writes the plan (the node's pid, each staged entry and what

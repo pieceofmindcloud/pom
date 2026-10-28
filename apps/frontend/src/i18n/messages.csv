@@ -579,6 +579,7 @@ deploy.addNodeMachineOptions,Machine options,Opções da máquina
 deploy.addNodeSlice,Slice,Fatia
 deploy.addNodeTitle,Add a machine to this model,Somar uma máquina a este modelo
 deploy.addNodeWhole,Whole model,Modelo inteiro
+deploy.addNodeVisionMissing,"This machine has no vision projector for this model: copy one there to read images.","Esta máquina não tem projetor de visão para este modelo: copie um para lá para ler imagens."
 deploy.adminOnlyAdd,Only the administrator can add a machine to a deployment.,Somente o administrador pode adicionar uma máquina à implantação.
 deploy.advancedDetail,"Each request accepts up to {prompt} prompt tokens, in chunks of {chunk}. More is rejected before reaching llama.cpp.","Cada requisição aceita até {prompt} tokens de prompt, em pedaços de {chunk}. Passar disso é recusado antes de chegar ao llama.cpp."
 deploy.allRanges,"All ranges available in the cluster, including ones from different slicing runs. Select the ones to launch and choose each destination.","Todas as faixas que existem no cluster, inclusive as de fatiamentos diferentes. Marque as que devem subir e escolha o destino de cada uma."

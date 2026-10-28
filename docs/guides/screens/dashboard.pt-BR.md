@@ -42,7 +42,7 @@ A visão **Detalhes** lista a rede inteira, não só o pipeline: primeiro as má
 ### Escolher o modelo na tela
 O chip do modelo no topo do mapa escolhe qual implantação é desenhada. Adicionar, Desimplantar e o painel de propriedades seguem esse modelo.
 ### Adicionar uma máquina
-**Adicionar** coloca mais uma máquina na implantação; o diálogo lista o que a máquina escolhida já tem no disco.
+**Adicionar** coloca mais uma máquina na implantação; o diálogo lista o que a máquina escolhida já tem no disco. Quando a máquina tem um projetor de visão para o modelo, uma chave permite que ela leia imagens; ela já vem ligada quando a implantação já lê.
 ### Desimplantar
 **Desimplantar** tira o modelo de serviço em todas as máquinas da lista que ele mostra antes.
 ### Acompanhar o console

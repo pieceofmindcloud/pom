@@ -447,7 +447,9 @@ boundary.
   (`stale`), and forwards a save there. `load_sidecar_links` is what the deploy
   preview and launch read.
 - `deploy/sidecars.rs` - `attach_sidecars` fills `Plan.sidecars`: the
-  compatible files of the network with every holder, the head's projector and
+  compatible files of the network with every holder, the projector of the step
+  that reads the prompt (`vision_reader`: the head under llama.cpp, the last stage
+  under a plugin's inference service, `vision_on_tail`) and
   the tail's MTP draft (screen choice, else the link), and `vision_heads`: the same
   projector for every other head of a whole model on several machines (a
   prefill/decode split, where each machine answers and reads images), resolved

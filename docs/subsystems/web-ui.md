@@ -977,7 +977,10 @@ restarting a machine meant scrolling to the end of everything it reports.
 The `AddNodeDialog` queries `POST /api/ui/deploy/node/options` after each
 machine change. So the selector shows the slices and the whole model the target
 really has, plus the controls for layers on the GPU, the KV-on-GPU-versus-RAM
-boolean and that machine's K/V types. POM does not expose an exclusive GPU
+boolean and that machine's K/V types. The vision switch appears when the
+machine holds a compatible projector or the deployment runs with one; it starts
+on when the deployment reads images and is disabled, with a notice to copy a
+projector there, when the machine has none. POM does not expose an exclusive GPU
 selection for the KV: when on, it follows the device of the weights' layer.
 Confirming calls `POST /api/ui/deploy/node` only on the target and keeps the
 other peers' inference. With an active `deploy_id`, the change creates a new

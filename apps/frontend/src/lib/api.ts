@@ -452,6 +452,7 @@ export function addNode(req: {
   offload_kqv?: boolean;
   cache_type_k?: KvCacheType;
   cache_type_v?: KvCacheType;
+  vision?: boolean;
 }) {
   return api.post<{
     applied: boolean;

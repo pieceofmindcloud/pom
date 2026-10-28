@@ -429,11 +429,17 @@ pub(super) async fn run(
         &plan.tp_targets,
     )?;
     if use_mmproj {
+        let plugin = params.inference_service.is_some();
+        let total = plan.total_layers.unwrap_or(0);
         let head = targets
             .iter_mut()
-            .find(|target| target.start_layer == 0)
+            .find(|target| vision_reader(target.start_layer, target.end_layer, total, plugin))
             .ok_or_else(|| {
-                "a deployment with vision needs a target that starts at layer 0".to_string()
+                if plugin {
+                    "a deployment with vision needs a target that ends at the last layer".to_string()
+                } else {
+                    "a deployment with vision needs a target that starts at layer 0".to_string()
+                }
             })?;
         head.use_mmproj = true;
         head.mmproj_path = plan.mmproj_path.clone();

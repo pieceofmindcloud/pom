@@ -42,7 +42,7 @@ It is the read-only view of the deployment's active version: the same inspector 
 ### Pick the model on screen
 The model chip at the top of the map chooses which deployment is drawn. Add, Undeploy and the properties panel follow that model.
 ### Add a machine
-**Add** puts one more machine into the deployment; the dialog lists what the chosen machine already has on disk.
+**Add** puts one more machine into the deployment; the dialog lists what the chosen machine already has on disk. When the machine has a vision projector for the model, a switch lets it read images; it starts on when the deployment already does.
 ### Undeploy
 **Undeploy** takes the model out of service on every machine of the list it shows first.
 ### Follow the console

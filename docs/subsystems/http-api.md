@@ -1412,7 +1412,8 @@ In deployments with vision, `DeployPlan.mmproj_candidates` lists the compatible
 local paths on the peer serving layer 0. The UI preselects one of them and can
 send `DeployRequest.mmproj_path` to choose another format;
 `POST /api/ui/deploy/plan` ignores that field. `DeployRequest.vision` still
-enables the projector only on the head, and `mmproj_path` is only considered
+enables the projector only on the step that reads the prompt (the head under
+llama.cpp, the last stage under a plugin's inference service), and `mmproj_path` is only considered
 with `vision: true` - without vision, a path that was sent does not refuse the
 deployment. The path is resolved against the head
 (`planning::resolve_head_projector`): the same path, or the head's only

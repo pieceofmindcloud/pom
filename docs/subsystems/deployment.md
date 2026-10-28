@@ -665,7 +665,10 @@ table; reading `GET /api/ui/deployments` is also open to `node`.
 
 `add_node_options_endpoint` rescans only the real catalog of the selected
 machine and returns the materialized slices it has, the matching whole model
-when there is one and the local GPU/KV defaults. When the machine is changed
+when there is one, the local GPU/KV defaults and `vision`: `available` (the
+machine holds a projector compatible with the model) and `deployed` (a machine
+of the deployment runs with a projector now, read from the live `mmproj_path` of
+its machines, since the record does not keep it). When the machine is changed
 in the Dashboard, the screen redoes that query and does not reuse another
 peer's options or the old plan while the inventory is still being read.
 
@@ -683,6 +686,12 @@ call:
 - **`primary_node_id`** - the pipeline's entry does not change by adding a
   node: only whoever holds layer 0 receives the prompt. `primary` is only set
   when `start_layer == 0`.
+- **`vision`** - only the machine that reads the prompt loads the projector
+  (`sidecars::vision_reader`: layer 0 under llama.cpp, the last stage under a
+  plugin's inference service; a whole model is both). Absent, it follows the
+  deployment: on when its machines run with a projector. The file is the one the
+  deployment runs with when the machine holds it, otherwise a compatible one it
+  holds; a machine with none is refused with a message, it is never copied here.
 - Answer `{applied, overlapping_layers, peer_index, peer_count}` - overlap is
   reported, not refused (the machine joins and the screen shows what
   collides).

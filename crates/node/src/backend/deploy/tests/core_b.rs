@@ -1370,6 +1370,7 @@ fn vision_goes_to_the_head_and_mtp_to_the_tail_copied_when_missing() {
         false,
         true,
         Some(&vision),
+        false,
         true,
         None,
     );
@@ -1390,6 +1391,41 @@ fn vision_goes_to_the_head_and_mtp_to_the_tail_copied_when_missing() {
     assert!(mtp.from_link);
     assert_eq!(mtp.source_node_id.as_deref(), Some("head"));
     assert_eq!(deploy_plan.transfer_bytes, bytes_before + 7 + 34);
+
+    // A plugin's staged split serves the requests from its last stage: the projector goes there, where the file
+    // already is.
+    let mut staged = super::plan(
+        "qwen",
+        &machines,
+        Some(&[pick(0, 15, "head"), pick(16, 31, "tail")]),
+        &params,
+        false,
+        DeployKind::Shards,
+        None,
+    );
+    attach_sidecars(
+        &mut staged,
+        &machines,
+        &inventory,
+        Some(&shape),
+        &[],
+        false,
+        true,
+        Some(&SidecarChoice {
+            mode: Some(SidecarMode::File),
+            file: Some(SidecarRef {
+                file_name: "mmproj.gguf".into(),
+                size_bytes: 7,
+            }),
+        }),
+        true,
+        false,
+        None,
+    );
+    let vision = staged.sidecars.vision.as_ref().unwrap();
+    assert_eq!(vision.target_node_id, "tail");
+    assert!(!vision.needs_copy());
+    assert_eq!(staged.mmproj_path.as_deref(), Some("/library/mmproj.gguf"));
 
     // A file nobody has refuses the plan and names it.
     let gone = SidecarChoice {
@@ -1417,6 +1453,7 @@ fn vision_goes_to_the_head_and_mtp_to_the_tail_copied_when_missing() {
         false,
         false,
         None,
+        false,
         true,
         Some(&gone),
     );
@@ -1461,7 +1498,7 @@ fn every_head_of_a_whole_model_on_several_machines_gets_the_projector() {
         file: Some(SidecarRef { file_name: "mmproj.gguf".into(), size_bytes: 7 }),
     };
     let bytes_before = deploy_plan.transfer_bytes;
-    attach_sidecars(&mut deploy_plan, &machines, &inventory, Some(&shape), &[], false, true, Some(&vision), false, None);
+    attach_sidecars(&mut deploy_plan, &machines, &inventory, Some(&shape), &[], false, true, Some(&vision), false, false, None);
 
     let first = deploy_plan.sidecars.vision.as_ref().unwrap();
     assert!(!first.needs_copy(), "the first head holds the projector");
@@ -1516,6 +1553,7 @@ fn an_external_draft_makes_mtp_available_for_a_model_without_nextn() {
         false,
         false,
         None,
+        false,
         false,
         None,
     );
@@ -1642,4 +1680,14 @@ fn the_automatic_sliced_plan_leaves_the_whole_model_out() {
     assert!(p.available.iter().any(|c| c.start_layer == 0 && c.end_layer == 31), "offered");
     let ranges: Vec<(u32, u32)> = p.steps.iter().map(|s| (s.start_layer, s.end_layer)).collect();
     assert_eq!(ranges, vec![(0, 15), (16, 31)]);
+}
+
+#[test]
+fn the_prompt_reader_is_layer_zero_under_llama_and_the_last_stage_under_a_plugin() {
+    assert!(vision_reader(0, 15, 32, false));
+    assert!(!vision_reader(16, 31, 32, false));
+    assert!(!vision_reader(0, 15, 32, true));
+    assert!(vision_reader(16, 31, 32, true));
+    // a whole model is both
+    assert!(vision_reader(0, 31, 32, false) && vision_reader(0, 31, 32, true));
 }

@@ -1410,6 +1410,11 @@ export interface AddNodeOptionsResponse {
     n_gpu_layers: number;
     offload_kqv: boolean;
   };
+  /** The vision switch: the machine holds a compatible projector; the deployment runs with one now. */
+  vision?: {
+    available: boolean;
+    deployed: boolean;
+  };
 }
 
 /** A slicing or apply run. `src/backend/webui/jobs_apply.rs` - `Job`. */

@@ -16,17 +16,18 @@
  *
  * * *Default settings* - what llama.cpp already has: context, batch,
  *   sampling (temperature, top-p/top-k/min-p, penalties, DRY and seed),
- *   KV cache, and the feature switches of the engine itself, with where the MTP
- *   sits right below the MTP numbers.
+ *   KV cache, MoE experts in RAM and the GPU expert cache, and the feature
+ *   switches of the engine itself, with where the MTP sits right below the MTP
+ *   numbers.
  * * *POM settings* - what exists because inference is distributed:
- *   disabling embeddings, memory adjustment, in-flight prefill chunks, fusion
- *   of slices and the precision of the hidden state between peers. Inside it, the group
- *   *Beta* gathers what works but is still being measured: MoE experts in
- *   RAM, expert cache on the GPU and automatic prefill chunk.
+ *   disabling embeddings, memory adjustment, in-flight prefill chunks, the
+ *   automatic prefill chunk, fusion of slices and the precision of the hidden
+ *   state between peers. A *Beta* group for settings still being measured lives
+ *   inside it, commented out while it has none.
  * * *POM settings (DEV)* - the inference engine and idle
  *   unloading, which are still being measured.
  *
- * Each category (and the Beta group) has a help button that opens, in a dialog,
+ * Each category has a help button that opens, in a dialog,
  * its guide in the Documentation (`guides/deploySettings.ts`): what each
  * property does and how to change it.
  *
@@ -265,37 +266,41 @@ function Section({
   );
 }
 
-/**
- * A group inside a category, for settings that work but are still being
- * measured. It carries its own short explanation and a help button, because
- * these are the settings that only pay off in combination.
- */
-function BetaGroup({ children }: { children: ReactNode }) {
-  const { t } = useI18n();
-  const [helpOpen, setHelpOpen] = useState(false);
-  const title = t("inspector.sectionBeta");
-  return (
-    <div className="mt-2 rounded-md border border-amber/25 bg-amber/[0.05]">
-      <div className="flex items-center justify-between gap-2 border-b border-amber/20 px-2 py-1 text-amber">
-        <p className="text-[0.6rem] font-semibold uppercase tracking-[0.12em]">{title}</p>
-        <GuideHelpButton
-          label={t("inspector.guideHelp", { section: title })}
-          onClick={() => setHelpOpen(true)}
-        />
-      </div>
-      <button
-        type="button"
-        onClick={() => setHelpOpen(true)}
-        className="block w-full px-2 pt-1.5 text-left text-[0.6rem] leading-relaxed text-muted hover:text-fg"
-      >
-        {t("inspector.betaInfo")}{" "}
-        <span className="text-amber underline-offset-2 hover:underline">{t("inspector.betaInfoLink")}</span>
-      </button>
-      <div className="space-y-1 px-2 py-2">{children}</div>
-      <GuideDialog guideId={DEPLOY_SETTINGS_GUIDES.beta} open={helpOpen} onClose={() => setHelpOpen(false)} />
-    </div>
-  );
-}
+// The Beta group is off while it has no setting. It comes back for the next one
+// still being measured, together with its guide (`beta-settings`, removed from
+// `docs/guides/settings/` and `DEPLOY_SETTINGS_GUIDES` until then: restore both
+// from git history).
+// /**
+//  * A group inside a category, for settings that work but are still being
+//  * measured. It carries its own short explanation and a help button, because
+//  * their value depends on what each route measures.
+//  */
+// function BetaGroup({ children }: { children: ReactNode }) {
+//   const { t } = useI18n();
+//   const [helpOpen, setHelpOpen] = useState(false);
+//   const title = t("inspector.sectionBeta");
+//   return (
+//     <div className="mt-2 rounded-md border border-amber/25 bg-amber/[0.05]">
+//       <div className="flex items-center justify-between gap-2 border-b border-amber/20 px-2 py-1 text-amber">
+//         <p className="text-[0.6rem] font-semibold uppercase tracking-[0.12em]">{title}</p>
+//         <GuideHelpButton
+//           label={t("inspector.guideHelp", { section: title })}
+//           onClick={() => setHelpOpen(true)}
+//         />
+//       </div>
+//       <button
+//         type="button"
+//         onClick={() => setHelpOpen(true)}
+//         className="block w-full px-2 pt-1.5 text-left text-[0.6rem] leading-relaxed text-muted hover:text-fg"
+//       >
+//         {t("inspector.betaInfo")}{" "}
+//         <span className="text-amber underline-offset-2 hover:underline">{t("inspector.betaInfoLink")}</span>
+//       </button>
+//       <div className="space-y-1 px-2 py-2">{children}</div>
+//       <GuideDialog guideId={DEPLOY_SETTINGS_GUIDES.beta} open={helpOpen} onClose={() => setHelpOpen(false)} />
+//     </div>
+//   );
+// }
 
 /**
  * One property: the `[i]` in the left column, the name, and the control.
@@ -815,6 +820,17 @@ export function DeploymentInspector({
             );
           })}
 
+        {/* llama.cpp's --cpu-moe and --moe-cache-mib, for a MoE larger than VRAM */}
+        {toggle({
+          key: "moe_experts_in_ram",
+          label: t("inspector.moeExpertsInRam"),
+          alwaysVisible: true,
+          checked: value.moe_experts_in_ram ?? false,
+          onToggle: (next) => set({ moe_experts_in_ram: next }),
+          tip: t("deploy.moeExpertsInRamHint"),
+        })}
+        {numeric("moe_cache_mib")}
+
         {toggle({
           key: "no_thinking",
           label: t("inspector.noThinking"),
@@ -934,6 +950,14 @@ export function DeploymentInspector({
           tip: t("deploy.fitMemoryHint"),
         })}
         {numeric("prefill_max_inflight_chunks")}
+        {toggle({
+          key: "adaptive_prefill_chunks",
+          label: t("inspector.adaptivePrefillChunks"),
+          alwaysVisible: true,
+          checked: value.adaptive_prefill_chunks ?? true,
+          onToggle: (next) => set({ adaptive_prefill_chunks: next }),
+          tip: t("deploy.adaptivePrefillChunksHint"),
+        })}
         {merge && (
           <InspectorRow label={t("deploy.merge")} tip={t("deploy.mergeHint")}>
             <Tick
@@ -945,25 +969,7 @@ export function DeploymentInspector({
           </InspectorRow>
         )}
         {showHiddenStateDtype && hiddenStateField()}
-        <BetaGroup>
-          {toggle({
-            key: "moe_experts_in_ram",
-            label: t("inspector.moeExpertsInRam"),
-            alwaysVisible: true,
-            checked: value.moe_experts_in_ram ?? false,
-            onToggle: (next) => set({ moe_experts_in_ram: next }),
-            tip: t("deploy.moeExpertsInRamHint"),
-          })}
-          {numeric("moe_cache_mib")}
-          {toggle({
-            key: "adaptive_prefill_chunks",
-            label: t("inspector.adaptivePrefillChunks"),
-            alwaysVisible: true,
-            checked: value.adaptive_prefill_chunks ?? true,
-            onToggle: (next) => set({ adaptive_prefill_chunks: next }),
-            tip: t("deploy.adaptivePrefillChunksHint"),
-          })}
-        </BetaGroup>
+        {/* <BetaGroup>{...settings still being measured}</BetaGroup> */}
       </Section>
 
       {pomDevMode && <Section title={t("inspector.sectionPomDev")} tone="amber">

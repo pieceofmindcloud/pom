@@ -1521,15 +1521,15 @@ machine restarted. Today the fingerprint is only model + set of ranges.
   first new field. It has three categories, and the boundary between them is
   whose parameter it is - *Default settings* (what llama.cpp already has:
   context, sessions, max tokens, batch, prefill chunk, sampling, the
-  installation's K/V cache, disabling thinking/embeddings and the speculation
-  choice), *POM settings* (fit to memory, chunks in flight, merging neighboring
-  slices and hidden-state precision, plus a *Beta* group inside it with MoE
-  experts in RAM, the GPU expert cache and the automatic prefill chunk, shown
-  to everyone) and *POM settings (DEV)* (inference engine and per-peer idle
-  unloading). Default settings, POM settings and the Beta group each carry a
-  help button by their title that opens their guide from Documentation in a
-  dialog (`components/GuideDialog.tsx`, guides `default-settings`,
-  `pom-settings` and `beta-settings`, written in `docs/guides/settings/` and
+  installation's K/V cache, MoE experts in RAM and the GPU expert cache,
+  disabling thinking/embeddings and the speculation choice), *POM settings*
+  (fit to memory, chunks in flight, the automatic prefill chunk, merging
+  neighboring slices and hidden-state precision; its *Beta* group for settings
+  still being measured is commented out while it has none) and *POM settings
+  (DEV)* (inference engine and per-peer idle unloading). Default settings and
+  POM settings each carry a help button by their title that opens their guide
+  from Documentation in a dialog (`components/GuideDialog.tsx`, guides
+  `default-settings` and `pom-settings`, written in `docs/guides/settings/` and
   named in `guides/deploySettings.ts`). The DEV section only
   shows up when `NodeInfo.pom_dev_mode` is on; without the flag the UI removes
   its controls from the DOM. The `[i]` comes **before** the name, not after:

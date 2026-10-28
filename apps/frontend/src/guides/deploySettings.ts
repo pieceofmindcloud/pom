@@ -1,6 +1,8 @@
 /**
  * The guides behind the help button of each category of the deployment
- * inspector: Default settings, POM settings and the Beta group inside it.
+ * inspector: Default settings and POM settings. The Beta group and its
+ * `beta-settings` guide are off while it has no setting (see
+ * `components/DeploymentInspector.tsx`).
  *
  * Their text lives in `docs/guides/settings/`; this module only names their
  * `?guide=` ids for the inspector. Same rule as the other guides: every number
@@ -12,5 +14,4 @@
 export const DEPLOY_SETTINGS_GUIDES = {
   defaults: "default-settings",
   pom: "pom-settings",
-  beta: "beta-settings",
 } as const;

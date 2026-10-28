@@ -921,15 +921,16 @@ Key logic carriers:
   temperature, top-p, top-k, min-p, repetition penalties,
   presence and frequency, DRY - followed by the seed; base, allowed size and
   the DRY window only appear with the multiplier above 0, which is what turns DRY on;
-  the installation's KV cache combos; the switches; and the
+  the installation's KV cache combos; MoE experts in RAM and the GPU expert
+  cache (`--cpu-moe`, `--moe-cache-mib`); the switches; and the
   **Speculation**, one choice only - None, MTP or lookup -, because the gateway
   never runs both in the same round (`lib/speculation.ts`); the MTP's numbers
   and where it sits only appear with the MTP chosen, and the lookup's only with it), *POM settings* (disable embeddings, memory fitting,
-  chunks in flight, slice merging, the hidden-state precision, and a *Beta*
-  group inside it, shown to everyone: MoE experts in RAM, the GPU expert cache
-  and the automatic prefill chunk) and *POM settings (DEV)* (the inference
-  engine and the idle unloading per peer). Default settings, POM
-  settings and the Beta group each have a help button by the title that opens
+  chunks in flight, the automatic prefill chunk, slice merging and the
+  hidden-state precision; its *Beta* group is commented out while it has no
+  setting) and *POM settings (DEV)* (the inference
+  engine and the idle unloading per peer). Default settings and POM
+  settings each have a help button by the title that opens
   their guide in a `GuideDialog`. The `[i]` comes **before** the name,
   in a straight column: after names of different widths it came out jagged.
   The engine combo does not offer "Automatic" and assumes `dense` when it mounts - that is

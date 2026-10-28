@@ -4608,6 +4608,7 @@ version = "0.1.0"
 dependencies = [
  "enterprise-protocol",
  "hex",
+ "libc",
  "libloading",
  "serde",
  "serde_json",

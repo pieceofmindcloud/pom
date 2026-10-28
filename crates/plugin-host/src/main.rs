@@ -11,6 +11,7 @@ use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
+mod tree;
 mod update;
 
 pub const MAX_FRAME_BYTES: usize = MAX_IPC_FRAME_BYTES;
@@ -380,17 +381,29 @@ fn run() -> io::Result<()> {
     let mut args = std::env::args_os().skip(1);
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--apply-update")) {
         let plan = std::env::args_os().nth(2).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "usage: pom-plugin-host --apply-update <plan.json>")
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "usage: pom-plugin-host --apply-update <plan.json>",
+            )
         })?;
         return update::run(Path::new(&plan));
     }
+    // Before the plugin starts anything: its orphans come back to this host.
+    tree::adopt_orphans();
     let loaded = match (args.next(), args.next(), args.next()) {
         (None, None, None) => None,
         (Some(path), Some(plugin_code), None) => {
             let plugin_code = plugin_code.into_string().map_err(|_| {
                 io::Error::new(io::ErrorKind::InvalidInput, "plugin_code is not UTF-8")
             })?;
-            Some(unsafe { LoadedPlugin::load(&PathBuf::from(path), &plugin_code, b"{}") }?)
+            match unsafe { LoadedPlugin::load(&PathBuf::from(path), &plugin_code, b"{}") } {
+                Ok(plugin) => Some(plugin),
+                Err(error) => {
+                    // `create` may have started processes before it refused.
+                    tree::end_descendants(DESCENDANTS_GRACE);
+                    return Err(error);
+                }
+            }
         }
         _ => {
             return Err(io::Error::new(
@@ -399,6 +412,23 @@ fn run() -> io::Result<()> {
             ))
         }
     };
+    let served = serve(loaded.as_ref());
+    // The plugin's own `shutdown` first, then whatever it left running.
+    drop(loaded);
+    let ended = tree::end_descendants(DESCENDANTS_GRACE);
+    if ended > 0 {
+        eprintln!("pom-plugin-host: ended {ended} process(es) the plugin left running");
+    }
+    served
+}
+
+/// How long the processes a plugin left behind get to exit after SIGTERM.
+/// POM waits `SHUTDOWN_TIMEOUT` (`crates/node/src/plugin_host.rs`) for the
+/// whole exit, which covers the plugin's `shutdown` plus this grace.
+const DESCENDANTS_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Answers IPC requests until `shutdown` or the end of stdin.
+fn serve(plugin: Option<&LoadedPlugin>) -> io::Result<()> {
     let mut stdin = io::stdin().lock();
     let mut stdout = io::stdout().lock();
     loop {
@@ -408,7 +438,7 @@ fn run() -> io::Result<()> {
             Err(error) => return Err(error),
         };
         let should_stop = request.method == "shutdown";
-        write_frame(&mut stdout, &handle_request(&request, loaded.as_ref()))?;
+        write_frame(&mut stdout, &handle_request(&request, plugin))?;
         if should_stop {
             break;
         }

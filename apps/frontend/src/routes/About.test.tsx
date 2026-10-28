@@ -64,14 +64,14 @@ afterEach(() => {
 });
 
 describe("About", () => {
-  it("shows the AGPL license, the LGPD notice and the project links", () => {
+  it("shows the MIT license, the LGPD notice and the project links", () => {
     mount();
 
     expect(screen.getByRole("heading", { name: "Sobre" })).toBeTruthy();
-    expect(screen.getAllByText("AGPL-3.0").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText("MIT").length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText("Aviso de privacidade e segurança (LGPD)")).toBeTruthy();
     expect(screen.getByText(/não pode garantir segurança ou privacidade em redes públicas/i)).toBeTruthy();
-    expect(screen.getByRole("link", { name: /AGPL-3.0/i }).getAttribute("href")).toBe("https://www.gnu.org/licenses/agpl-3.0.html");
+    expect(screen.getByRole("link", { name: /^MIT/ }).getAttribute("href")).toBe("https://opensource.org/license/mit");
     expect(screen.getByRole("link", { name: "Arquivo LICENSE do repositório" }).getAttribute("href")).toBe(
       "https://github.com/pieceofmindcloud/pom/blob/main/LICENSE",
     );
@@ -83,6 +83,8 @@ describe("About", () => {
     expect(screen.getByText("tokio")).toBeTruthy();
     expect(screen.getAllByText("Frontend").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Rust").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Nativa").length).toBeGreaterThan(0);
+    expect(screen.getByText("llama.cpp / ggml")).toBeTruthy();
     expect(screen.getByRole("link", { name: /@tanstack\/react-query/i }).getAttribute("href")).toBe(
       "https://github.com/TanStack/query",
     );

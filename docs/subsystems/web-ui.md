@@ -440,13 +440,13 @@ local-only notice. Routes:
   participant list for `admin` and `worker`; `/config/preferences` ->
   Preferences; `/config/preferences/admin` -> administrative preferences;
   `/config/about` -> About, the last item of Settings, with links to the
-  repository's AGPL-3.0 `LICENSE` and the official GNU page, an LGPD
+  repository's MIT `LICENSE` and the Open Source Initiative page, an LGPD
   privacy/security notice and site links, a contact form
   (`https://pieceofmind.cloud/contact.html`) and official repositories; it also
   shows the running POM release and the on-demand check of POM's GitHub
   releases (the site as fallback). When an update is available, the screen
   itself offers to apply and restart, or says why this node cannot (a
-  container, a download that still needs an invitation); it also shows the catalog of direct dependencies grouped by license;
+  container, a download that still needs an invitation); it also shows the catalog of everything a build ships (frontend packages and Rust crates, transitive ones included, plus the native libraries in `NATIVE` of `scripts/build-licenses.mjs`) grouped by license;
   `/config/trust` gathers this machine, sharing and connection keys;
   `/config/keys/api` -> TokenKeys; `/config/storage` -> ModelPaths
   (`/config/folders` remains an alias). When `POM_MODEL_DIRS` or `POM_SHARD_DIR`

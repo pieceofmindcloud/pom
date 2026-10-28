@@ -426,7 +426,11 @@ UI.
   for the cleanup during the overlap window.
   The scenario of a cut in the middle of a prefill also confirms that no hop receives
   a partial removal and that the remaining sessions are released.
-- `moe/` - the in-house experts executor. `cache.rs` keeps a global LRU per
+- `moe/` - the in-house experts executor, an **experimental, opt-in** path:
+  the default `inference_mode` is `dense` (llama.cpp), and this executor only
+  runs for a MoE GGUF when a deployment asks for `moe` or `auto`. Its old
+  measurement journal (`freetoken-moe.md`) was removed; git history keeps it.
+  `cache.rs` keeps a global LRU per
   model/layer/expert/format key, with active leases and eviction only of idle ones;
   `admission.rs` computes the budget from the measured free memory; on the CUDA path
   the admission also keeps a reserve derived from the CUDA compute buffer measured by
@@ -605,8 +609,7 @@ UI.
   and `runtime.rs` passes that profile to the NVFP4. On a CUDA NVFP4 route,
   resident experts stay on the GPU, misses are divided by the measured fraction and the
   CPU and GPU lanes run in parallel; the telemetry publishes each lane's calls and the
-  chosen fraction. The CUDA validation and the observed numbers live in
-  `docs/subsystems/freetoken-moe.md`.
+  chosen fraction.
   The wire uses f16 by default (f32 is a deployment option) and no weight travels; the
   seam still does not replace attention, the other layers or the `LlmEngine`'s sampling.
   When the CUDA bridge exists, `MoeRuntime::start_device_warmup` may walk the canonical
@@ -616,7 +619,7 @@ UI.
   free memory and the reserve of the measured compute buffer; when it runs out, the warmup
   ends with `budget-exhausted`, since it is not possible to keep every expert of a large
   model in VRAM. If the model has a `<model>.cuda-profile.json` sidecar with `bandwidth`,
-  the heterogeneous block reuses the same measured FreeToken fraction to run misses on
+  the heterogeneous block reuses the same measured fraction to run misses on
   overlapping CPU and GPU lanes; without a sidecar it keeps the policy exclusively CUDA and
   does not invent a hardware constant.
   `warmup_status`, bytes, candidates and errors arrive in

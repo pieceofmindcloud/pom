@@ -30,9 +30,9 @@ generation pipeline, the two output budgets and the KV session rules are
 `docs/subsystems/inference.md`.
 
 The `webui` route registry is organized under `webui/routes/`: `common.rs` holds the
-routes shared by every profile, `infer.rs` the inference-profile actions, `node.rs`
-the local node/model operations and `admin.rs` the administrative and lifecycle
-routes; `routes/mod.rs` is the only composition point. That organization is for
+routes shared by every profile, `visitor.rs` the inference actions and the request
+to join, `worker.rs` the operation of the local machine and its models (for
+`worker` and `admin`) and `admin.rs` the administrative and lifecycle routes; `routes/mod.rs` is the only composition point. That organization is for
 legibility - the gateway's central profile policy remains the effective authorization
 boundary.
 

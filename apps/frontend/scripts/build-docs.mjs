@@ -15,8 +15,10 @@
  * `apps/frontend/README.md`. `docs/superpowers/` (historical design specs) is
  * deliberately left out.
  */
-import { mkdirSync, readFileSync, writeFileSync, readdirSync, statSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { mkdirSync, readFileSync, rmSync, writeFileSync, readdirSync, statSync } from "node:fs";
+import { localeOf, parseGuide } from "./guides-md.mjs";
+import { createHash } from "node:crypto";
+import { basename, dirname, extname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url)); // apps/frontend/scripts
@@ -204,4 +206,91 @@ const manifest = {
 };
 writeFileSync(join(out, "manifest.json"), JSON.stringify(manifest, null, 2));
 
-console.log(`build-docs: ${entries.length} docs embutidas em src/docs/`);
+// ── The guides written for humans ───────────────────────────────────────────
+//
+// `docs/guides/<group>/<id>[.pt-BR].md` and `docs/human/<folder>/HUMAN[.pt-BR].md`
+// become `src/docs/guides.json` (the block lists `src/guides/Guide.tsx` renders,
+// per locale) and the images they show are copied to `public/guide-images/`
+// with a content hash in the name: the node serves every asset but
+// `index.html` as immutable for a year, and a fixed name would pin an old
+// screenshot. A public file also reaches a `vite build --watch` started before
+// the image existed, which an `import.meta.glob` does not. The group is the
+// folder under `docs/guides/`; every `HUMAN.md` belongs to "human".
+const GROUPS = ["concepts", "screens", "settings", "human"];
+
+function collectMd(dir, acc) {
+  let list;
+  try {
+    list = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return acc;
+  }
+  for (const e of list) {
+    const full = join(dir, e.name);
+    if (e.isDirectory()) collectMd(full, acc);
+    else if (e.isFile() && e.name.endsWith(".md")) acc.push(relative(repo, full));
+  }
+  return acc;
+}
+
+const guideFiles = [
+  ...collectMd(join(repo, "docs", "guides"), []),
+  ...collectMd(join(repo, "docs", "human"), []).filter((p) => /\/HUMAN(\.pt-BR)?\.md$/.test(p)),
+].sort();
+
+const parsed = { en: new Map(), "pt-BR": new Map() };
+const imageOut = join(here, "..", "public", "guide-images");
+rmSync(imageOut, { recursive: true, force: true });
+rmSync(join(out, "guide-images"), { recursive: true, force: true });
+const published = new Map();
+function publish(image) {
+  if (published.has(image)) return published.get(image);
+  const bytes = readFileSync(join(repo, image));
+  const hash = createHash("sha256").update(bytes).digest("hex").slice(0, 8);
+  const ext = extname(image);
+  const rel = image.replace(/^docs\/(guides|human)\//, "$1/");
+  const name = join(dirname(rel), `${basename(rel, ext)}.${hash}${ext}`).replace(/\\/g, "/");
+  mkdirSync(dirname(join(imageOut, name)), { recursive: true });
+  writeFileSync(join(imageOut, name), bytes);
+  published.set(image, `guide-images/${name}`);
+  return published.get(image);
+}
+for (const file of guideFiles) {
+  const locale = localeOf(file);
+  const human = file.startsWith("docs/human/");
+  const group = human ? "human" : file.split("/")[2];
+  if (!GROUPS.includes(group)) throw new Error(`${file}: unknown guide group "${group}" (one of ${GROUPS.join(", ")})`);
+  const { guide, order, images } = parseGuide(readFileSync(join(repo, file), "utf8"), file);
+  if (parsed[locale].has(guide.id)) throw new Error(`${file}: duplicate guide id "${guide.id}"`);
+  for (const block of guide.blocks) {
+    if (block.kind === "image") block.src = publish(block.src);
+  }
+  parsed[locale].set(guide.id, { ...guide, group, order, source: file });
+}
+
+// A "go deeper" link must land on a document the reference tab embeds.
+const embedded = new Set(entries.map((e) => e.id));
+for (const map of Object.values(parsed)) {
+  for (const guide of map.values()) {
+    for (const block of guide.blocks) {
+      if (block.kind === "deep" && !embedded.has(destId(block.doc))) {
+        throw new Error(`${guide.source}: :::deep ${block.doc} is not an embedded reference document`);
+      }
+    }
+  }
+}
+
+// A guide written only in English still shows in Portuguese, in English.
+for (const [id, guide] of parsed.en) if (!parsed["pt-BR"].has(id)) parsed["pt-BR"].set(id, guide);
+const byOrder = (a, b) => GROUPS.indexOf(a.group) - GROUPS.indexOf(b.group) || a.order - b.order || a.id.localeCompare(b.id);
+const guides = {
+  groups: GROUPS,
+  locales: Object.fromEntries(
+    Object.entries(parsed).map(([locale, map]) => [locale, [...map.values()].sort(byOrder)]),
+  ),
+};
+writeFileSync(join(out, "guides.json"), JSON.stringify(guides, null, 2));
+
+console.log(
+  `build-docs: ${entries.length} docs embutidas em src/docs/, ${parsed.en.size} guias (${guideFiles.length} arquivos)`,
+);

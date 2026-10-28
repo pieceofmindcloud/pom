@@ -508,6 +508,25 @@ pub(super) async fn run(
         }
     }
 
+    // The KV cache type is an installation setting of each machine, but the
+    // deploy screen and the planner use this node's. Push it to the targets so
+    // they load with the cache the plan was sized for.
+    let (cache_type_k, cache_type_v) = {
+        let cfg = state.auth.read().await;
+        (cfg.cache_type_k, cfg.cache_type_v)
+    };
+    let mut cache_targets: Vec<&str> = targets.iter().map(|t| t.node_id.as_str()).collect();
+    cache_targets.sort_unstable();
+    cache_targets.dedup();
+    for node_id in cache_targets {
+        if node_id == state.network.node_id {
+            continue;
+        }
+        apply_target_cache_types(&state, node_id, Some(cache_type_k), Some(cache_type_v))
+            .await
+            .map_err(|e| format!("KV cache type on {node_id}: {e}"))?;
+    }
+
     // The pipeline is the layer order, so the entry point is whoever holds
     // layer 0 — the same machine the screen marks "processa o prompt".
     let primary = plan

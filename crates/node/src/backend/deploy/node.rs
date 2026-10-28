@@ -164,7 +164,7 @@ async fn target_json(
         .map_err(|e| format!("invalid peer response: {e}"))
 }
 
-async fn apply_target_cache_types(
+pub(super) async fn apply_target_cache_types(
     state: &GatewayState,
     target_node_id: &str,
     requested_k: Option<crate::config::KvCacheType>,

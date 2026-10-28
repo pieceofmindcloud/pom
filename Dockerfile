@@ -175,9 +175,12 @@ ENV XDG_CACHE_HOME=/build/target
 # keys; `--no-service` because a build container has no service manager.
 # The engine repository is private and fetched over SSH: the build forwards the
 # host's agent (`docker compose build` with `ssh: [default]`, see
-# docker-compose.common.yml). github.com's host key is pinned here.
+# docker-compose.common.yml). github.com's host key is pinned here. With the
+# `pom_gh_token` secret, git fetches it over HTTPS with that token instead; the
+# token lives only in this RUN's environment, never in a layer.
 RUN mkdir -p -m 0700 /root/.ssh && ssh-keyscan github.com >> /root/.ssh/known_hosts
 RUN --mount=type=ssh \
+    --mount=type=secret,id=pom_gh_token,required=false \
     --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.cargo/git \
     --mount=type=cache,target=/build/target,id=pom-target-v2-${LLAMA_CPP_CACHE_KEY}-${CUDA_VERSION}-${POM_CUDA_ARCH_CACHE_KEY}-${RUST_TOOLCHAIN},sharing=locked \
@@ -190,6 +193,11 @@ RUN --mount=type=ssh \
       unset POM_LLAMA_CPP_PREBUILT_LIB_DIR LLAMA_BUILD_SHARED_LIBS; \
     fi; \
     export CUDAARCHS="$POM_CUDA_ARCHITECTURES"; \
+    if [ -s /run/secrets/pom_gh_token ]; then \
+      export GIT_CONFIG_COUNT=1 \
+        GIT_CONFIG_KEY_0="url.https://x-access-token:$(cat /run/secrets/pom_gh_token)@github.com/.insteadOf" \
+        GIT_CONFIG_VALUE_0="ssh://git@github.com/"; \
+    fi; \
     kache init --no-service --yes && \
     CARGO_TARGET_DIR=/build/target/cuda-vulkan cargo build --release --features cuda,vulkan && \
     cp /build/target/cuda-vulkan/release/pom /build/pom && \

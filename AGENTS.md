@@ -112,7 +112,8 @@ the local rebuild; Cargo writes into `.pom-dev-plugin-builds/` at the POM
 project root, outside the sources that may be mounted read-only. The cluster's
 plugin profile uses the same target and keeps the Cargo cache in
 `.pom-dev-cargo`, inside the project volume and writable by the node's user. The
-release `runtime` image does not include a toolchain. The development Docker
+release `runtime` image does not include a toolchain. The `dev-os` image includes `file` and `xxd` for agents in the plugin terminals;
+the published image includes them too. The development Docker
 builds use libraries from the exact fork release by default; to compile local
 sources, use `POM_LLAMA_CPP_MODE=source` and, optionally,
 `POM_LLAMA_CPP_SOURCE_DIR=/path/to/llama.cpp` with the build scripts.

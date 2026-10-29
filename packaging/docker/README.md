@@ -3,7 +3,7 @@
 The image `.github/workflows/docker-hub.yml` pushes to Docker Hub: the Linux
 AppImage of a GitHub release, unpacked onto Ubuntu 24.04 with the tools plugins
 and the agents in plugin terminals use (git, ssh client, curl, jq, python3,
-ripgrep, tmux...). See `docs/subsystems/build-and-run.md`, "Published image".
+ripgrep, file, xxd, tmux...). See `docs/subsystems/build-and-run.md`, "Published image".
 
 ## Run
 

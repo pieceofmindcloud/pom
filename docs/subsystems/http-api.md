@@ -1546,9 +1546,11 @@ relays), `dedicated` or `member`. It enters the fingerprint too. The top bar's
 "Behind NAT" badge shows only when it is not empty.
 
 In the `/api/ui/cluster` payload, `PeerView.load` is the in-flight request
-reading published by the peer itself. For the local peer the gateway queries
-its `LoadTracker`; for remote peers it uses the `load` field of the respective
-`/api/ui/node`. If the remote read does not arrive or has no valid number, the
+reading published by the peer itself. For the local peer this combines the
+`LoadTracker` (requests coordinated by this gateway) with the active plugin
+engine's serving-stream counter (requests forwarded by other gateways). The
+node publishes this combined count as `/api/ui/node.load`; remote peers are
+read from their own `/api/ui/node`. If the remote read does not arrive or has no valid number, the
 field is `null`, not zero. The deployment planner keeps the same distinction in
 `DeployMachine.load` and in the load distribution.
 

@@ -160,6 +160,8 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         kv_cache_disk(dir.as_deref())
     };
     let plugin_services = crate::plugin_services::node_services(&state.plugins).await;
+    let load = state.loads.load(&state.network.node_id).await
+        .saturating_add(plugin_serving_load(config.as_ref()));
     Json(NodeInfo {
         short_id: state.network.node_id[..state.network.node_id.len().min(12)].to_string(),
         node_id: state.network.node_id.clone(),
@@ -221,7 +223,7 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         } else {
             0
         },
-        load: state.loads.load(&state.network.node_id).await,
+        load,
         active_model: state.active_model().await,
         active_deployment,
         detached: state.network.is_detached(),
@@ -1896,7 +1898,7 @@ fn reported_peer_load(node: &serde_json::Value) -> Option<u32> {
 
 async fn live_peer_load(state: &GatewayState, peer: &PeerInfo) -> Option<u32> {
     if peer.node_id == state.network.node_id {
-        return Some(state.loads.load(&peer.node_id).await);
+        return Some(local_inference_load(state).await);
     }
 
     let response = state

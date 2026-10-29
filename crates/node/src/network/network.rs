@@ -2762,6 +2762,11 @@ impl Network {
     pub fn plugin_engine_capabilities(&self) -> Option<Vec<String>> {
         let code = self.external_engine()?;
         let mut caps = vec![crate::plugin_engine::capability(&code)];
+        caps.extend(
+            crate::plugin_engine::STAGE_LINK_DTYPES
+                .iter()
+                .map(|cap| cap.to_string()),
+        );
         if let Some(role) = self.external_engine_role() {
             caps.push(crate::plugin_engine::role_capability(role));
         }

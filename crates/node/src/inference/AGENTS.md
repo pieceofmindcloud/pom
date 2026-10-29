@@ -708,6 +708,14 @@ UI.
   machines in the deployment's `hidden_state_dtype` through `wire` and reaches
   the engine as `f32` (`to_network`, `from_network`). Both routes take only the
   signed live peer that serves the next slice of the same deployment.
+  Because the link encodes with the node's own `wire`, a plugin engine's
+  machine announces the lossy formats (`plugin_engine::STAGE_LINK_DTYPES`, in
+  `/health` and in `Network::plugin_engine_capabilities`), so a sliced plugin
+  deployment can choose f8 or int4.
+  `watch_secret` checks the earlier stage's secret every 10 s. If the secret
+  changed (the earlier engine restarted), `Relay::stale` makes
+  `plugin_engine::run` end the generation, so the restart links with the new
+  secret.
 - `relay.rs` - `BatchCoordinator` schedules the flush immediately and still groups
   concurrent calls to the same next hop in the same executor cycle; it sends a single
   frame and distributes the answers by `item_id`. QUIC also publishes, in microseconds,

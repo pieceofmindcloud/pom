@@ -321,6 +321,7 @@ describe("AddNodeDialog", () => {
       pomSettings: ["inference_role"],
       nodeIds: ["n2"],
       stages: false,
+      stageArchitectures: [],
       vision: false,
     };
     try {

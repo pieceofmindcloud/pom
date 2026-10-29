@@ -174,15 +174,53 @@ async fn earlier_peer(
     })
 }
 
-/// The loopback relay of a later stage; it ends when dropped.
+/// How often a later stage checks that the earlier stage's link secret is still the one its engine holds.
+const WATCH_SECRET: Duration = Duration::from_secs(10);
+
+/// The loopback relay of a later stage; it ends when dropped. `stale` fires once
+/// the earlier stage's link secret is no longer the one this stage's engine was
+/// loaded with (the earlier engine restarted, or the secret was taken while it
+/// was still restarting): the engine's handshake can never pass, so the caller
+/// ends this generation and the restart takes the current secret.
 pub(crate) struct Relay {
     task: tokio::task::JoinHandle<()>,
+    watch: tokio::task::JoinHandle<()>,
+    pub(crate) stale: Option<tokio::sync::oneshot::Receiver<String>>,
 }
 
 impl Drop for Relay {
     fn drop(&mut self) {
         self.task.abort();
+        self.watch.abort();
     }
+}
+
+/// Watches the earlier stage's link secret every [`WATCH_SECRET`] and reports, once, when it differs from `token`.
+/// A refusal or an unreachable peer is not a change: the earlier stage may be loading, and the relay already
+/// retries its frames.
+fn watch_secret(
+    state: GatewayState,
+    cfg: crate::runtime::NodeConfig,
+    code: String,
+    token: String,
+    stale: tokio::sync::oneshot::Sender<String>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(WATCH_SECRET).await;
+            let Some(peer) = earlier_peer(&state, &cfg, &code).await else {
+                continue;
+            };
+            match link_secret(&state, &peer, &code, &cfg.deploy_id).await {
+                Ok(current) if current != token => {
+                    warn!(plugin = %code, peer = %peer.node_id, "stage link: the earlier stage's link secret changed; restarting this stage");
+                    let _ = stale.send("the earlier stage restarted: its link secret changed".to_owned());
+                    return;
+                }
+                _ => {}
+            }
+        }
+    })
 }
 
 /// The `link` that `engine.load` receives, and for a later stage the relay
@@ -232,6 +270,14 @@ pub(crate) async fn prepare(
     };
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
     let port = listener.local_addr()?.port();
+    let (stale_tx, stale) = tokio::sync::oneshot::channel();
+    let watch = watch_secret(
+        state.clone(),
+        cfg.clone(),
+        code.to_owned(),
+        token.clone(),
+        stale_tx,
+    );
     let relay_cfg = cfg.clone();
     let relay_code = code.to_owned();
     let task = tokio::spawn(async move {
@@ -250,7 +296,11 @@ pub(crate) async fn prepare(
     });
     Ok((
         json!({ "token": token, "prev_port": port, "max_inflight": max_in_flight(cfg) }),
-        Some(Relay { task }),
+        Some(Relay {
+            task,
+            watch,
+            stale: Some(stale),
+        }),
     ))
 }
 

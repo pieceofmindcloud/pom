@@ -505,6 +505,11 @@ pub(super) async fn add_node_endpoint(
     // The machine's engine: an inference service of a plugin (its own `inference_service`), or llama.cpp when none.
     // The same rules as a deployment (`deploy_block`): the machine offers it and it is ready; a service that does not
     // run layer slices takes the whole model on this machine.
+    let mut survey_now = survey(&state, &req.group, req.kind, None, None).await;
+    let architecture = survey_now
+        .model_shape
+        .as_ref()
+        .and_then(|shape| shape.architecture.clone());
     if let Some(service) = node_params.inference_service.as_deref() {
         let whole = req.kind == DeployKind::Whole;
         if let Some(reason) = crate::plugin_engine::deploy_block(
@@ -513,6 +518,7 @@ pub(super) async fn add_node_endpoint(
             whole,
             std::slice::from_ref(&req.target_node_id),
             &[node_params.inference_role],
+            architecture.as_deref(),
         )
         .await
         {
@@ -526,8 +532,7 @@ pub(super) async fn add_node_endpoint(
                         .into_iter()
                         .find(|entry| entry["plugin_code"] == service && entry["kind"] == "inference")
                 })
-                .and_then(|entry| entry["stages"].as_bool())
-                .unwrap_or(false);
+                .is_some_and(|entry| crate::plugin_engine::runs_slices(&entry, architecture.as_deref()));
             if !stages {
                 return bad(json!({
                     "error": format!("the inference service {service} runs the whole model on one machine: add the whole model here"),
@@ -562,7 +567,6 @@ pub(super) async fn add_node_endpoint(
     if target_label.is_empty() {
         return bad(json!({ "error": "the chosen machine is not in the cluster" }));
     }
-    let mut survey_now = survey(&state, &req.group, req.kind, None, None).await;
     let machines = std::mem::take(&mut survey_now.machines);
     let Some(shard) = held_shard else {
         return bad(json!({

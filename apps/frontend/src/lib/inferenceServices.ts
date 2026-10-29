@@ -24,6 +24,8 @@ export interface InferenceServiceEntry {
   nodeIds: string[];
   /** Its engine also runs layer slices across machines. */
   stages: boolean;
+  /** The architectures it runs in slices, when the service names them (empty: every one it runs). */
+  stageArchitectures: string[];
   /** Its engine reads images through the deployment's vision projector, as the plugin declares. */
   vision: boolean;
 }
@@ -52,10 +54,14 @@ export function inferenceServiceCatalog(peers: PeerView[] | undefined): Inferenc
         pomSettings: [],
         nodeIds: [],
         stages: false,
+        stageArchitectures: [],
         vision: false,
       };
       if (service.stages) entry.stages = true;
       if (service.vision) entry.vision = true;
+      for (const architecture of service.stage_architectures ?? []) {
+        if (!entry.stageArchitectures.includes(architecture)) entry.stageArchitectures.push(architecture);
+      }
       if (entry.settings.length === 0 && service.settings?.length) entry.settings = service.settings;
       for (const setting of service.pom_settings ?? []) {
         if (!entry.pomSettings.includes(setting)) entry.pomSettings.push(setting);
@@ -76,6 +82,13 @@ export function inferenceServiceCatalog(peers: PeerView[] | undefined): Inferenc
  *  engine declares. A model whose header gave no architecture is not offered. */
 export function serviceRunsModel(service: InferenceServiceEntry, architecture: string | null): boolean {
   return architecture != null && service.architectures.includes(architecture);
+}
+
+/** Whether a slice set of `architecture` can run on the service as layer slices: it runs stages, and its
+ *  `stageArchitectures`, when it names any, include that architecture (Strata runs Qwen3.6 whole only). */
+export function serviceRunsSlices(service: InferenceServiceEntry, architecture: string | null): boolean {
+  if (!service.stages || !serviceRunsModel(service, architecture)) return false;
+  return service.stageArchitectures.length === 0 || (architecture != null && service.stageArchitectures.includes(architecture));
 }
 
 /** The engine a deployment's parameters name, for showing it: the plugin's

@@ -2684,6 +2684,12 @@ engines exchange their own hidden states, never POM's hop protocol of section
   loopback. Its `engine.load` gets `link: {token, prev_port, max_inflight}`; the first
   stage's gets `link: {}` and its plugin makes the secret, which
   `engine.link` (`{status, port?, token?}`) returns to the local node only.
+  While the later stage runs, the relay asks for the secret again every 10 s
+  (`watch_secret`). A different secret means that the earlier engine restarted,
+  or that the secret came from it while it was still restarting, and the later
+  engine's handshake can never pass. The relay's `stale` then ends the
+  generation (`plugin_engine::run`), and the supervisor's restart takes the
+  current secret.
 - The relay reads the engine's frames (a little-endian `u32` length, then the
   bytes, both ways) and posts each one, signed and along the measured route,
   to `POST /api/internal/plugins/:code/engine/link/:deploy/:conn/:seq` on the

@@ -353,8 +353,19 @@ pub(crate) fn health_body(cfg: &crate::runtime::NodeConfig, code: &str, status: 
     body
 }
 
+/// The lossy hidden-state formats a plugin engine's machines can exchange: the stage link
+/// (`plugin_stage_link`) encodes the engines' tensors with the node's own `wire`, so any of its
+/// formats crosses between two slices whatever the plugin is. A whole-model plugin sends no hidden
+/// state, and announcing them changes nothing there.
+pub(crate) const STAGE_LINK_DTYPES: [&str; 3] = [
+    crate::pipeline::CAP_FRAME_DTYPE_F8,
+    crate::pipeline::CAP_FRAME_DTYPE_I4G64,
+    crate::pipeline::CAP_FRAME_DTYPE_I4G128,
+];
+
 fn health_capabilities(cfg: &crate::runtime::NodeConfig, code: &str) -> Vec<String> {
     let mut caps = vec![capability(code)];
+    caps.extend(STAGE_LINK_DTYPES.iter().map(|cap| cap.to_string()));
     if !cfg.inference_role.is_both() && !crate::plugin_stage_link::is_stage(cfg) {
         caps.push(role_capability(cfg.inference_role));
     }
@@ -390,7 +401,7 @@ pub(crate) async fn run(
     let (gpus, gpu_devices) = node_gpus().await;
     // One stage of a split model: a later stage waits here for the earlier
     // stage's machine and keeps the relay to it while it serves.
-    let (link, _relay) = if crate::plugin_stage_link::is_stage(&cfg) {
+    let (link, mut relay) = if crate::plugin_stage_link::is_stage(&cfg) {
         let stop_check = stop_rx.clone();
         let (link, relay) = crate::plugin_stage_link::prepare(&cfg, &code, move || {
             *stop_check.borrow() != generation
@@ -494,9 +505,18 @@ pub(crate) async fn run(
 
     let failure = Arc::new(Mutex::new(None::<String>));
     let failure_seen = Arc::clone(&failure);
+    // a later stage whose earlier stage's link secret changed can never link: this generation ends and restarts
+    let mut stale_rx = relay.as_mut().and_then(|relay| relay.stale.take());
     let served = crate::serve::serve_with_quic(listener, router, tls, quic, quic_port, async move {
         loop {
             tokio::select! {
+                stale = async { stale_rx.as_mut().expect("guarded by is_some").await }, if stale_rx.is_some() => {
+                    stale_rx = None;
+                    if let Ok(detail) = stale {
+                        *failure_seen.lock().unwrap_or_else(|error| error.into_inner()) = Some(detail);
+                        break;
+                    }
+                }
                 changed = stop_rx.changed() => {
                     if changed.is_err() || *stop_rx.borrow() != generation {
                         break;
@@ -1431,14 +1451,16 @@ pub(crate) async fn services_of(state: &GatewayState, node_id: &str) -> Option<V
 /// cannot. A whole model goes to one machine - or to several in a
 /// prefill/decode split, where `roles` (each target's role, in the order of
 /// `targets`) gives at least one machine a prefill or decode role; layer
-/// slices go one per machine, to a service that publishes `stages`. Every
-/// machine runs the plugin with an inference service that is not in error.
+/// slices go one per machine, to a service that publishes `stages` for the
+/// model's `architecture` (its `stage_architectures`, see [`runs_slices`]).
+/// Every machine runs the plugin with an inference service that is not in error.
 pub(crate) async fn deploy_block(
     state: &GatewayState,
     service: &str,
     whole: bool,
     targets: &[String],
     roles: &[crate::webui::InferenceRole],
+    architecture: Option<&str>,
 ) -> Option<String> {
     if !valid_code(service) {
         return Some(format!("invalid inference service: {service}"));
@@ -1500,15 +1522,33 @@ pub(crate) async fn deploy_block(
                     entry["detail"].as_str().unwrap_or("no detail")
                 ))
             }
-            Some(entry) if !whole && !prefill_only(target) && entry["stages"] != true => {
-                return Some(format!(
-                    "the inference service {service} serves the whole model: choose \"whole model\""
-                ))
+            Some(entry) if !whole && !prefill_only(target) && !runs_slices(entry, architecture) => {
+                return Some(match architecture {
+                    Some(architecture) if entry["stages"] == true => format!(
+                        "the inference service {service} runs {architecture} models as the whole model only: choose \"whole model\""
+                    ),
+                    _ => format!("the inference service {service} serves the whole model: choose \"whole model\""),
+                })
             }
             Some(_) => {}
         }
     }
     None
+}
+
+/// Whether a machine's inference service (an entry of its `plugin_services`) runs a model of `architecture` as
+/// layer slices: it publishes `stages`, and its `stage_architectures`, when it lists any, name that architecture. An
+/// architecture the catalog could not read is left to the engine, which refuses a model it cannot run.
+pub(crate) fn runs_slices(entry: &Value, architecture: Option<&str>) -> bool {
+    if entry["stages"] != true {
+        return false;
+    }
+    match (entry["stage_architectures"].as_array(), architecture) {
+        (Some(list), Some(architecture)) if !list.is_empty() => {
+            list.iter().any(|candidate| candidate.as_str() == Some(architecture))
+        }
+        _ => true,
+    }
 }
 
 // ── Route between nodes ──────────────────────────────────────────────────────
@@ -1636,6 +1676,19 @@ mod tests {
         assert!(generated_text_event(&json!({"r": ""})).is_none());
     }
 
+    #[test]
+    fn a_service_runs_slices_only_of_its_stage_architectures() {
+        let strata = json!({"stages": true, "stage_architectures": ["qwen4exp"]});
+        assert!(runs_slices(&strata, Some("qwen4exp")));
+        // Qwen3.6 runs on Strata as the whole model only
+        assert!(!runs_slices(&strata, Some("qwen35moe")));
+        // an architecture the catalog could not read is left to the engine
+        assert!(runs_slices(&strata, None));
+        // no list: every architecture the service runs also runs in slices
+        assert!(runs_slices(&json!({"stages": true}), Some("qwen35moe")));
+        assert!(!runs_slices(&json!({"stages": false, "stage_architectures": ["qwen4exp"]}), Some("qwen4exp")));
+    }
+
     #[tokio::test]
     async fn prefill_machines_answer_too_and_several_need_a_role() {
         use crate::webui::InferenceRole;
@@ -1644,7 +1697,7 @@ mod tests {
         // the only refusal left)
         for roles in [vec![InferenceRole::Prefill], vec![InferenceRole::Prefill, InferenceRole::Prefill]] {
             let targets: Vec<String> = ["a", "b"][..roles.len()].iter().map(|id| id.to_string()).collect();
-            let reason = deploy_block(&state, "strata", true, &targets, &roles).await.expect("unknown machines");
+            let reason = deploy_block(&state, "strata", true, &targets, &roles, None).await.expect("unknown machines");
             assert!(reason.contains("did not answer which services"), "{reason}");
         }
         // two machines with the whole model and no role share no sessions: refused
@@ -1654,6 +1707,7 @@ mod tests {
             true,
             &["a".into(), "b".into()],
             &[InferenceRole::Both, InferenceRole::Both],
+            None,
         )
         .await
         .expect("no role, no split");
@@ -1896,7 +1950,11 @@ mod tests {
         assert_eq!(ready["n_ctx_per_session"], 32768);
         assert_eq!(ready["end_layer"], 47);
         assert_eq!(ready["total_layers"], 48);
-        assert_eq!(ready["capabilities"], json!(["engine/plugin-v1:strata"]));
+        // the stage link carries the node's own wire formats, so a slice offers the lossy ones too
+        assert_eq!(
+            ready["capabilities"],
+            json!(["engine/plugin-v1:strata", "inference/frame-v1-dtype-f8", "inference/frame-v1-dtype-i4g64", "inference/frame-v1-dtype-i4g128"])
+        );
         // a whole-model prefill machine says its role; the plugin hears it in engine.load
         let prefill = crate::runtime::NodeConfig {
             inference_role: crate::webui::InferenceRole::Prefill,
@@ -1905,7 +1963,7 @@ mod tests {
         };
         assert_eq!(
             health_body(&prefill, "strata", &json!({"state": "ready"}))["capabilities"],
-            json!(["engine/plugin-v1:strata", "engine/plugin-role-v1:prefill"])
+            json!(["engine/plugin-v1:strata", "inference/frame-v1-dtype-f8", "inference/frame-v1-dtype-i4g64", "inference/frame-v1-dtype-i4g128", "engine/plugin-role-v1:prefill"])
         );
         assert_eq!(load_params(&prefill, &[0], &[], None)["role"], "prefill");
         assert_eq!(load_params(&prefill, &[0], &[], None)["prefill_min_tokens"], 2048);

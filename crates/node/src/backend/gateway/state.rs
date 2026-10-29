@@ -993,9 +993,22 @@ pub(crate) async fn require_admin_for_surface(
     let path = request.uri().path().to_owned();
     let method = request.method().clone();
     let (mut parts, body) = request.into_parts();
-    let internal_node = crate::auth::InternalNodeAuth::from_request_parts(&mut parts, &state)
-        .await
-        .ok();
+    // Only a request that says it comes from a node is judged as one. The
+    // browser sends the connection key with no marker, and probing it logged
+    // a refused node-to-node call on every poll of the interface.
+    let claims_node = parts
+        .headers
+        .contains_key(crate::auth::CONTROL_SIGNATURE_HEADER)
+        || parts
+            .headers
+            .contains_key(crate::auth::INTERNAL_NODE_REQUEST_HEADER);
+    let internal_node = if claims_node {
+        crate::auth::InternalNodeAuth::from_request_parts(&mut parts, &state)
+            .await
+            .ok()
+    } else {
+        None
+    };
     let internal_node_request = internal_node.is_some();
     let request = Request::from_parts(parts, body);
     let profile = state.auth.read().await.profile;

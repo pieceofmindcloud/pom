@@ -214,6 +214,63 @@ mod tests {
         assert_eq!(pipeline_response.status(), StatusCode::OK);
     }
 
+    /// The interface polls `/api/ui/network-chat` and its neighbours with the
+    /// connection key as a bearer and no internal marker. Probing each of those
+    /// calls as a node-to-node one logged "the connection key does not match"
+    /// about two hundred times a minute on a machine nobody had misconfigured.
+    #[tokio::test]
+    async fn a_browser_call_with_the_connection_key_is_not_logged_as_a_refused_node_call() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tracing_subscriber::prelude::*;
+
+        struct WarnCounter(Arc<AtomicUsize>);
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for WarnCounter {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _ctx: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                if *event.metadata().level() <= tracing::Level::WARN {
+                    self.0.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+
+        let warnings = Arc::new(AtomicUsize::new(0));
+        let _guard = tracing::subscriber::set_default(
+            tracing_subscriber::registry().with(WarnCounter(warnings.clone())),
+        );
+        let state = testkit::state_with("eu", vec![]).await;
+        {
+            let mut cfg = state.auth.write().await;
+            cfg.profile = crate::profile::NodeProfile::Worker;
+            cfg.connection_key = "cluster-secret".into();
+        }
+        let app: Router = Router::new()
+            .route(
+                "/api/ui/network-chat",
+                get(|_: crate::auth::ConnectionAuth| async { "snapshot" }),
+            )
+            .with_state(state.clone())
+            .layer(middleware::from_fn_with_state(
+                state,
+                require_admin_for_surface,
+            ));
+
+        let mut request = Request::builder()
+            .uri("/api/ui/network-chat")
+            .header("authorization", "Bearer cluster-secret")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(crate::serve::PeerAddr("[::1]:60332".parse().unwrap()));
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(warnings.load(Ordering::Relaxed), 0);
+    }
+
     #[tokio::test]
     async fn exposed_admin_boundary_requires_and_accepts_the_human_token() {
         let state = testkit::state_with("cluster-secret", vec![]).await;
@@ -1243,7 +1300,6 @@ mod tests {
         }
         struct ConfigPathGuard {
             previous: Option<std::ffi::OsString>,
-            path: std::path::PathBuf,
         }
         impl Drop for ConfigPathGuard {
             fn drop(&mut self) {
@@ -1251,16 +1307,14 @@ mod tests {
                     Some(previous) => std::env::set_var("POM_CONFIG", previous),
                     None => std::env::remove_var("POM_CONFIG"),
                 }
-                std::fs::remove_file(&self.path).ok();
             }
         }
-        let config_path = std::env::current_dir()
-            .unwrap()
-            .join(format!(".pom-test-node-name-{}.json", std::process::id()));
-        std::fs::remove_file(&config_path).ok();
+        // A temporary folder, never the working directory: the rename saves
+        // the configuration and a late save left the file in the repository.
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let config_path = config_dir.path().join("pom.json");
         let _config_path_guard = ConfigPathGuard {
             previous: std::env::var_os("POM_CONFIG"),
-            path: config_path.clone(),
         };
         std::env::set_var("POM_CONFIG", &config_path);
         let app = Router::new()
@@ -3754,8 +3808,15 @@ pub(crate) mod testkit {
             &authority_signing_key,
         )
         .expect("test root grant");
+        // The bench's own files: what a route saves or a stop forgets never
+        // lands in the configuration `POM_CONFIG` names, another test's or
+        // the working directory's `pom.json`.
+        let bench_dir =
+            std::env::temp_dir().join(format!("pom-testkit-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&bench_dir).expect("testkit folder");
         let auth = Arc::new(RwLock::new(Config {
             retired_tls_required: (),
+            saved_at: Some(bench_dir.join("pom.json")),
             gpus: None,
             thermal: Default::default(),
             cache_type_k: crate::config::KvCacheType::F16,
@@ -3813,7 +3874,11 @@ pub(crate) mod testkit {
                 std::time::Duration::from_secs(600),
             )),
             admission_health: Default::default(),
-            runtime: NodeRuntime::new(net, assignment),
+            runtime: NodeRuntime::new_with_last_slice_path(
+                net,
+                assignment,
+                bench_dir.join("pom.json.last-slice.json"),
+            ),
             audit: crate::reqlog::AuditLog::new(database.clone()),
             plugins,
             pom_core_update,

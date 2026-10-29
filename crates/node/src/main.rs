@@ -1140,6 +1140,7 @@ fn blank_config(gateway_port: u16, p2p_port: u16) -> config::Config {
     use crate::config::Config;
     Config {
         retired_tls_required: (),
+        saved_at: None,
         profile: crate::profile::NodeProfile::Admin,
         setup_pending: true,
         local_auto_discovery: false,

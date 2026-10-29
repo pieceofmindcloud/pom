@@ -1177,8 +1177,10 @@ certificate as its client certificate (`tls::set_client_identity`,
 (`serve::TransportPeer`, from the certificate's key). A call authorized only
 by the connection key also needs that identity to be a member today
 (`auth::caller_is_member`, `Network::is_member_key`): an admin of the trust
-chain, or a peer whose announced membership token holds and is not revoked.
-Every member holds the connection key and a banned one keeps it, so the key
+chain, a peer whose announced membership token holds and is not revoked,
+or this node's own key: a worker that is the gateway of its own request dials
+its own advertised address over TLS, and the peers table never holds this
+node. Every member holds the connection key and a banned one keeps it, so the key
 alone, from a network address, opens nothing. The libp2p tunnel carries the
 same identity: the forwarder names the PeerId Noise authenticated
 (`infer_tunnel::TUNNEL_PEER_HEADER`, believed only beside the process mark),

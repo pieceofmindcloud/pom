@@ -183,7 +183,10 @@ last):
   key. An admin is not removed this way (`409 admin_target`).
 - **Roles between nodes** (`gateway/state.rs::require_admin_for_surface`).
   The profile table in `webui/routes/mod.rs` gates what a **browser** may
-  reach on a node. A node-to-node request passes that table, and is checked
+  reach on a node. A node-to-node request (one carrying the control
+  signature or the `x-pom-internal-node` marker; a browser call with the
+  connection key as a bearer is never probed as one, which logged a refused
+  node call on every poll of the interface) passes that table, and is checked
   for two other things instead:
   - **The receiver is an inference node.** It answers `403` with `reason:
     "visitor_profile"` to every route in `VISITOR_REFUSES` - `/api/ui/apply`,

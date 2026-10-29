@@ -727,7 +727,9 @@ change lands in the right place.
   client API-key auth - the per-frame `Ticket` is the credential) beside `POST /v1/link`, and
   serves with `tcp_nodelay(true)` because Nagle delayed the small SSE writes. `#[cfg(test)] mod
   testkit` is the shared scaffold for route tests - a whole `GatewayState` with the peer table
-  seeded by hand, loopback-only socket, nothing touches the LAN: `peer(node_id, hostname,
+  seeded by hand, loopback-only socket, nothing touches the LAN, and nothing touches the
+  real configuration either (its own folder holds the `Config::saved_at` file and the
+  runtime's `last-slice` annotation): `peer(node_id, hostname,
   gateway_port)`, `state_with(node_id, peers)`, `state_with_secondary_admin(node_id, peers)`,
   `body_of(response)`.
 - `openai.rs` - `render_prompt` flattens the conversation into one user message and labels

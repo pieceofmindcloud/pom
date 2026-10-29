@@ -154,7 +154,9 @@ dedicated or member, with iroh's hole punching), are in
   (`verify_udp_announce`); a `PeerList` never moves the addresses of a peer whose
   own announce arrived in the last 30 s (`firsthand`, `insert_announced_peer`).
   `is_member_key` answers whether a node key is an admin of the chain or holds a
-  valid, unrevoked membership token: what every node-to-node call authorized by the
+  valid, unrevoked membership token, or is this node's own key (the peers table never
+  holds this node, and a worker that is the gateway of its own request dials its
+  own address over TLS): what every node-to-node call authorized by the
   connection key is checked against (`auth::caller_is_member`). On a visitor, `admit_peer`
   refuses another visitor and `alive_peers` leaves one out (`hides`, role from
   the verified token, else the announced profile): visitors never know each

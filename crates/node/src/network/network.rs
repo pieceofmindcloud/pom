@@ -3120,6 +3120,13 @@ impl Network {
         let Some(admission) = self.admission.as_ref() else {
             return true;
         };
+        // This node's own key: the transport proved the caller holds it, so
+        // the caller is this node. The peers table never holds this node, and
+        // a worker is not in the chain: a worker that is the gateway of its
+        // own request refused its own inference server.
+        if node_id == self.node_id && pubkey == self.pubkey {
+            return true;
+        }
         if crate::admin_trust::is_admin_key(&admission.trust.document(), node_id, pubkey) {
             return true;
         }
@@ -5983,6 +5990,7 @@ mod tests {
         use crate::config::Config;
         Arc::new(RwLock::new(Config {
             retired_tls_required: (),
+            saved_at: None,
             profile: crate::profile::NodeProfile::Worker,
             setup_pending: false,
             local_auto_discovery: false,
@@ -7383,6 +7391,41 @@ mod tests {
         assert_eq!(stored.addr, real);
         assert_eq!(stored.addr_candidates, vec![real.to_string()]);
         assert_eq!(stored.end_layer, 9, "the rest of the snapshot still applies");
+    }
+
+    /// A worker that is the gateway of its own request dials its own
+    /// advertised address over TLS, so its inference server sees the
+    /// worker's own certificate. The peers table never holds this node, and
+    /// the worker is not in the chain: it refused itself, and the generation
+    /// stopped after two tokens.
+    #[tokio::test]
+    async fn a_worker_is_a_member_to_itself() {
+        let primary_key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+        let primary = crate::admin_trust::AuthorityPrincipal::from_signing_key(
+            "primary",
+            crate::identity::trust_peer_id(primary_key.verifying_key().as_bytes()),
+            &primary_key,
+        );
+        let trust = Arc::new(
+            crate::admin_trust::AdminTrust::bootstrap_primary_in_memory(
+                "test-cluster",
+                primary,
+                &primary_key,
+            )
+            .unwrap(),
+        );
+        let net = Network::testkit("worker".into(), "worker-key".into(), vec![], None, None)
+            .await
+            .unwrap()
+            .with_admission(
+                admission_config("key", crate::config::NetworkVisibility::Public),
+                trust,
+            );
+        assert!(net.is_member_key("worker", "worker-key").await);
+        assert!(
+            !net.is_member_key("worker", "another-key").await,
+            "only this node's own key is this node"
+        );
     }
 
     /// Who passes the transport check of a node-to-node call: an admin of

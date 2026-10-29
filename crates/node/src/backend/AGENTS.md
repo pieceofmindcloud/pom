@@ -536,7 +536,9 @@ boundary.
   **inside** a call, it comes back structured and incomplete (`x_pom.truncated_tool_call: true`),
   which is what the two providers return - never raw markup, never a discard. The audit line of
   that result is `incomplete`,
-  while a transport failure stays `partial`. `/v1/models` exposes
+  while a transport failure stays `partial`, keeps the salvaged text and ends the
+  stream in an error event carrying `GenSummary.error` (also `x_pom.error` and
+  the audit's `error`). `/v1/models` exposes
   `context_length` and the `top_provider.max_completion_tokens` compatible with
   OpenRouter, which is the **request's** capacity derived from the `n_ctx`, not the
   size of one leg. The available context shrinks the budget when the prompt already occupies
@@ -627,7 +629,9 @@ boundary.
   before the SQL query, preserving the broad search when the field was not filled in. The routes
   `/api/ui/requests` and `/api/ui/requests/stats` are Enterprise and fail closed with
   `enterprise_required` without an entitlement. With an active entitlement, the handlers forward
-  the listing and the statistics to the `pom-plugin-host` process.
+  the listing and the statistics (filters, `kind` included) to the
+  `pom-plugin-host` process; while that plugin runs, a query it does not answer
+  is 503 `logs_plugin_unavailable`, never the stale legacy store.
 - **Every call to a peer leaves through `GatewayState.peer_http`** (`PeerClients`), which
   pins the destination's certificate by node_id. There is no longer a shared client without
   pinning in the state: with TLS on it verified no one,
@@ -911,7 +915,11 @@ change lands in the right place.
   followed by a parameter element, is `CallKind::NamedElement` (Gemma 4 under
   Hermes Agent): its closer depends on the name, so it is outside
   `CALL_FORMATS` and the scanner keeps the name (`element_opening`,
-  `named_element_call`). Gemma 4's native
+  `named_element_call`). Flint's
+  `<tool_call>NAME<arg_key>K</arg_key><arg_value>V</arg_value></tool_call>`
+  (verified against its GGUF template) is a `Wrapped` body read by
+  `parse_arg_key_call`: a string value raw, any other JSON; a bare name is a
+  call without arguments. Gemma 4's native
   `<|tool_call>call:NAME{key:<|"|>text<|"|>}<tool_call|>` is `CallKind::Native`
   in `CALL_FORMATS` (verified against the Gemma 4 vocabulary GGUF's template):
   `parse_native_call` reads bare keys, `<|"|>` strings and JSON literals,

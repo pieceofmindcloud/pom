@@ -859,6 +859,9 @@ pub(crate) struct InferState {
     pub(super) sampling: SamplingConfig,
     /// The model's template opens the thinking block in the prompt.
     pub(super) thinking_forced_open: bool,
+    /// Control tokens rendered as text anyway: the thinking and tool call
+    /// markers the gateway and the Chat parse. See `preserved_marker_tokens`.
+    pub(super) preserved_specials: std::collections::HashSet<i32>,
     /// Per session, whether its current request started inside a thinking
     /// block: what the reasoning budget needs and the generated tokens alone
     /// do not say.

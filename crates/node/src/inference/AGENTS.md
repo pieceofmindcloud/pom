@@ -198,7 +198,10 @@ UI.
   Os handlers decodificam o frame e entregam
   commands to a bounded local queue; the worker selects one entry per session and
   may call the multi-sequence decode. Each `Session` keeps its own
-  `Utf8Assembler`: `token_to_piece_bytes` keeps the raw bytes, only the accepted
+  `Utf8Assembler`: `InferState::visible_piece` keeps the raw bytes (control
+  tokens hidden, except the thinking and tool call markers in
+  `preserved_specials`, which Flint's vocabulary marks as control and which
+  otherwise reached the client as nothing), only the accepted
   positions feed the accumulator, and the `flush` happens on EOS or on the cleanup
   of an error/cancellation. `/v1/step-stream` starts a producer on the remote peer
   and a separate emitter: each one uses the same existing decoding, but the tokens
@@ -705,6 +708,14 @@ UI.
   machines in the deployment's `hidden_state_dtype` through `wire` and reaches
   the engine as `f32` (`to_network`, `from_network`). Both routes take only the
   signed live peer that serves the next slice of the same deployment.
+  Because the link encodes with the node's own `wire`, a plugin engine's
+  machine announces the lossy formats (`plugin_engine::STAGE_LINK_DTYPES`, in
+  `/health` and in `Network::plugin_engine_capabilities`), so a sliced plugin
+  deployment can choose f8 or int4.
+  `watch_secret` checks the earlier stage's secret every 10 s. If the secret
+  changed (the earlier engine restarted), `Relay::stale` makes
+  `plugin_engine::run` end the generation, so the restart links with the new
+  secret.
 - `relay.rs` - `BatchCoordinator` schedules the flush immediately and still groups
   concurrent calls to the same next hop in the same executor cycle; it sends a single
   frame and distributes the answers by `item_id`. QUIC also publishes, in microseconds,
@@ -1287,8 +1298,9 @@ reason that only shows up in the error of a tunnel that also failed.
   normal case), the head's ack (it only matters when it fails, or when an old peer bubbled
   the whole answer - a present `token_id` counts as a result), and the frame's deadline the
   caller passes (`relay::frame_deadline`
-  with the round's tokens and every hop of the plan; a hop died after
-  accepting). In prefill the deadline is a liveness one,
+  with the round's tokens and every hop of the plan, raised by the
+  generation's `step_budget_ms` when the engine is slow - `relay::StepBudget`;
+  a hop died after accepting). In prefill the deadline is a liveness one,
   `relay::prefill_frame_deadline` (10 min per hop): the chunk may wait in the
   peer's queue behind another session, and the work-based deadline brought both
   down. `RemoteDecodeStream::next` uses the same calculation between two

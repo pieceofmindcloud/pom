@@ -520,7 +520,14 @@ may carry `placement: "pom"`: the deploy inspector then draws it in the POM
 settings card, whatever the slices (whole model or slices), not in the engine's
 card; the node passes the field on unchanged. A service
 that also runs POM layer slices, one stage per machine, publishes
-`stages: true`, and lists in `pom_settings` the POM deployment settings that
+`stages: true`. When it runs only some of its `architectures` in slices, it
+names those in `stage_architectures`: a model of another of its architectures
+is offered and deployed on that service as the whole model only
+(`plugin_engine::runs_slices`, checked by `deploy_block` at plan, deploy and
+add-machine time, and `serviceRunsSlices` on the Deploy screen). Strata
+publishes `["qwen4exp"]`, so Qwen3.6 (`qwen35moe`) runs whole on it, while
+llama.cpp still slices that architecture. The service lists in `pom_settings`
+the POM deployment settings that
 apply to it, by their `RuntimeParams` name: `prefill_max_inflight_chunks`,
 `hidden_state_dtype` and `inference_role` are the known ones, any other name is
 dropped. The deploy inspector draws only the declared ones, in their own card

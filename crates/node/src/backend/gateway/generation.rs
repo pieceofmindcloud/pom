@@ -758,6 +758,23 @@ pub(super) async fn generate_stream_inner(
     tx: mpsc::Sender<GenEvent>,
     cancellation: crate::prefill::Cancellation,
 ) {
+    // Every decode frame of this generation reads its step budget from here
+    // (`relay::StepBudget`). The generation goes to the heap before the scope:
+    // its future is large, and a copy on the stack overflowed the test threads.
+    let step_budget = crate::relay::StepBudget::default();
+    crate::relay::with_step_budget(
+        step_budget.clone(),
+        Box::pin(generate_measured_stream(input, tx, cancellation, step_budget)),
+    )
+    .await
+}
+
+async fn generate_measured_stream(
+    input: GenerationInput,
+    tx: mpsc::Sender<GenEvent>,
+    cancellation: crate::prefill::Cancellation,
+    step_budget: crate::relay::StepBudget,
+) {
     let request_started = Instant::now();
     let mut gateway_spans = Vec::new();
     let GenerationInput {
@@ -1591,6 +1608,11 @@ pub(super) async fn generate_stream_inner(
         let mut next_token = first.token_id;
         let mut trace = first.trace;
         trace.first_token.gateway_stream_at_ms = Some(wall_clock_ms());
+        // The first token measured the engine: a decode step of a slow but live
+        // engine gets the time it needs (`relay::StepBudget`).
+        if let Some(engine_ttft_ms) = trace.engine_ttft_ms {
+            step_budget.observe(Duration::from_millis(engine_ttft_ms));
+        }
         if crate::telemetry::Profile::current().collects_spans() {
             if let Some(return_ms) = trace.first_token.node_to_gateway_ms {
                 let end_offset_ms = request_started.elapsed().as_millis() as u64;
@@ -1741,7 +1763,7 @@ pub(super) async fn generate_stream_inner(
                 }
                 Err(error) => {
                     warn!("batched remote transport failed: {error}");
-                    let summary = summary_for(
+                    let mut summary = summary_for(
                         &plan,
                         request_started,
                         first_token_at,
@@ -1752,6 +1774,8 @@ pub(super) async fn generate_stream_inner(
                         None,
                         None,
                     );
+                    summary.error =
+                        Some(format!("batched remote transport failed: {error}"));
                     let _ = tx.send(GenEvent::Done(summary)).await;
                     return;
                 }
@@ -1783,6 +1807,7 @@ pub(super) async fn generate_stream_inner(
                 if cancellation.is_cancelled() {
                     return;
                 }
+                let round_started = Instant::now();
                 let remote_stream_mode = remote_stream.is_some();
                 let draft_sent = speculating
                     && sliced_mtp
@@ -1846,7 +1871,10 @@ pub(super) async fn generate_stream_inner(
                 };
 
                 let step = match res {
-                    Ok(step) => step,
+                    Ok(step) => {
+                        step_budget.observe(round_started.elapsed());
+                        step
+                    }
                     Err(e) => {
                         let round = if speculating {
                             "speculative round"
@@ -1856,7 +1884,7 @@ pub(super) async fn generate_stream_inner(
                         warn!("Error in the {round} (token {tokens_generated}): {e}");
                         if tokens_generated > 0 {
                             info!("returning {tokens_generated} partial tokens");
-                            let summary = summary_for(
+                            let mut summary = summary_for(
                                 &plan,
                                 request_started,
                                 first_token_at,
@@ -1867,6 +1895,9 @@ pub(super) async fn generate_stream_inner(
                                 None,
                                 None,
                             );
+                            summary.error = Some(format!(
+                                "pipeline failed in the {round} at token {tokens_generated}: {e}"
+                            ));
                             let _ = tx.send(GenEvent::Done(summary)).await;
                         } else {
                             let _ = tx
@@ -2040,7 +2071,7 @@ pub(super) async fn generate_stream_inner(
                             "partial rollback refused by some hop after {tokens_generated} tokens: ending the generation instead of risking a contaminated cache"
                         );
                         if tokens_generated > 0 {
-                            let summary = summary_for(
+                            let mut summary = summary_for(
                                 &plan,
                                 request_started,
                                 first_token_at,
@@ -2050,6 +2081,10 @@ pub(super) async fn generate_stream_inner(
                                 true,
                                 None,
                                 None,
+                            );
+                            summary.error = Some(
+                                "speculative rollback refused by a hop: the generation ended to keep its cache clean"
+                                    .to_string(),
                             );
                             let _ = tx.send(GenEvent::Done(summary)).await;
                         } else {
@@ -2089,6 +2124,7 @@ pub(super) async fn generate_stream_inner(
 
             match res {
                 Ok(step) => {
+                    step_budget.observe(cycle_started.elapsed());
                     trace.merge(&step.trace);
                     if remote_stream.is_none() {
                         trace.note_decode_round();
@@ -2173,7 +2209,7 @@ pub(super) async fn generate_stream_inner(
                     if tokens_generated > 0 {
                         // Some output is better than none — the original behaviour.
                         info!("returning {tokens_generated} partial tokens");
-                        let summary = summary_for(
+                        let mut summary = summary_for(
                             &plan,
                             request_started,
                             first_token_at,
@@ -2184,6 +2220,8 @@ pub(super) async fn generate_stream_inner(
                             None,
                             None,
                         );
+                        summary.error =
+                            Some(format!("pipeline failed at step {tokens_generated}: {e}"));
                         let _ = tx.send(GenEvent::Done(summary)).await;
                     } else {
                         let _ = tx
@@ -3367,7 +3405,7 @@ pub fn spawn_logged_generation_with_stops(
                 Some(s.tokens_generated),
                 Some(s.duration_ms),
                 audit_status_for_summary(&s),
-                None,
+                s.error.clone(),
             ),
             Some(Err(e)) => (
                 "none".to_string(),

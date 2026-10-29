@@ -63,7 +63,7 @@ import { DeploymentInspector, InspectorRow } from "../components/DeploymentInspe
 import { DeployNetworkCanvas } from "../components/DeployNetworkCanvas";
 import { trackOf } from "../components/PipelineRail";
 import { tensorParallelModelsOf, wholeModelsOf } from "../lib/wholeModels";
-import { inferenceServicesOf, serviceRunsModel } from "../lib/inferenceServices";
+import { inferenceServicesOf, serviceRunsModel, serviceRunsSlices } from "../lib/inferenceServices";
 import {
   Badge,
   Button,
@@ -438,9 +438,9 @@ export function DeployModel() {
     [allWholes, service],
   );
   /** The slicing rounds on offer - with an inference service, only those of
-   *  the architectures its engine runs. */
+   *  the architectures its engine runs in slices. */
   const groups = useMemo(
-    () => (service ? allGroups.filter((entry) => serviceRunsModel(service, entry.architecture)) : allGroups),
+    () => (service ? allGroups.filter((entry) => serviceRunsSlices(service, entry.architecture)) : allGroups),
     [allGroups, service],
   );
   const tensorGroups = useMemo(

@@ -90,6 +90,10 @@ pub(super) async fn plan_endpoint(
                 req.kind == DeployKind::Whole,
                 &targets,
                 &roles,
+                survey
+                    .model_shape
+                    .as_ref()
+                    .and_then(|shape| shape.architecture.as_deref()),
             )
             .await;
         }

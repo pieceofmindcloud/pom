@@ -1998,6 +1998,7 @@ mod tests {
             duration_ms: 1,
             timings: timing_metrics(1, 1, 1, 1, 4000),
             partial,
+            error: None,
             finish_reason: finish_reason.map(str::to_owned),
             stop_sequence: None,
             legs: 1,

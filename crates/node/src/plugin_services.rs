@@ -60,6 +60,12 @@ pub(crate) struct PluginService {
     /// (`plugin_engine`, the stage link).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub stages: bool,
+    /// For a service with `stages`: the architectures whose models it runs as
+    /// layer slices, when not all of them. A model of another architecture of
+    /// `architectures` runs on that engine as the whole model only. Empty: every
+    /// architecture it runs also runs in slices.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub stage_architectures: Vec<String>,
     /// For a service of kind `inference`: its engine reads images through the
     /// deployment's vision projector (`mmproj_path`), so the deploy screen
     /// offers the projector for it.
@@ -284,6 +290,19 @@ pub(crate) fn parse_services(plugin_code: &str, answer: &Value) -> Vec<PluginSer
                 })
                 .unwrap_or_default(),
             settings: parse_settings(&entry["settings"]),
+            stage_architectures: if stages {
+                entry["stage_architectures"]
+                    .as_array()
+                    .map(|list| {
+                        list.iter()
+                            .filter_map(slug)
+                            .take(MAX_ARCHITECTURES)
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            },
             stages,
             vision,
             pom_settings,

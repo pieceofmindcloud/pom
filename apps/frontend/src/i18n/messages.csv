@@ -1138,7 +1138,7 @@ firstRun.advanced,Advanced,Avançado
 firstRun.copyTrust,Copy trust.json,Copiar trust.json
 firstRun.defaultPasswordChange,Change password,Trocar senha
 firstRun.defaultPasswordNotice,The panel still uses the default password. Anyone who reaches it on the network can sign in: set a password of your own.,O painel ainda usa a senha padrão. Qualquer pessoa que o alcance pela rede consegue entrar: defina uma senha sua.
-firstRun.discoveryAdminOptional,Optional: open POM on another machine and choose Node or Inference. You can also add machines later.,Opcional: abra o POM em outra máquina e escolha Nó ou Inferência. Dá para adicionar máquinas depois.
+firstRun.discoveryAdminOptional,Optional: open POM on another machine and choose Node or Visitor. You can also add machines later.,Opcional: abra o POM em outra máquina e escolha Nó ou Visitante. Dá para adicionar máquinas depois.
 firstRun.discoveryAdminWaiting,Waiting for computers on the local network...,Esperando computadores na rede local...
 firstRun.discoveryPeers,"{count, plural, one {# computer found} other {# computers found}}","{count, plural, one {# computador encontrado} other {# computadores encontrados}}"
 firstRun.downloadTrust,Download {filename},Baixar {filename}
@@ -1680,8 +1680,8 @@ network.countryRequired,Required for a public network,Obrigatório para uma rede
 network.description,Description,Descrição
 network.detached,Disconnected from network,Fora da rede
 network.download,Download,Baixar
-network.enrollment.visitor,Inference nodes,Nós de inferência
-network.enrollment.worker,Network nodes,Nós da rede
+network.enrollment.visitor,Visitor,Visitante
+network.enrollment.worker,Worker,Worker
 network.enrollmentClosed,Not accepting new members,Não aceita novos membros
 network.enrollmentOpen,Any role,Qualquer papel
 network.firewallEyebrow,Windows Firewall,Firewall do Windows
@@ -1826,11 +1826,11 @@ network.relayTransfers,Let file transfers of this network pass,Deixar transferê
 network.relayTransfersHint,"Files are large: turn this off to keep the relay for control and inference only.","Arquivos são grandes: desligue para manter o relé só para controle e inferência."
 network.relayVisitors,Visitor relays,Relés de visitantes
 network.relayVisitorsCount,"{count, plural, =0 {No visitor relays anonymously} one {# visitor relays anonymously for this network} other {# visitors relay anonymously for this network}}","{count, plural, =0 {Nenhum visitante serve de relé anônimo} one {# visitante serve de relé anônimo para esta rede} other {# visitantes servem de relé anônimo para esta rede}}"
-network.relinquishNode,Become an infer node,Virar um nó infer
-network.relinquishNodeDescription,"New inference is routed away first. In-flight inference finishes. Then this node becomes infer and releases its slice. If no other node can serve that same slice, the range becomes uncovered and generations that need it fail clearly.","A inferência nova será encaminhada para outro nó primeiro. A inferência em curso termina. Depois este nó vira infer e libera sua fatia. Se nenhum outro nó puder servir essa mesma fatia, a faixa ficará descoberta e as gerações que precisarem dela falharão claramente."
+network.relinquishNode,Become a visitor,Virar visitante
+network.relinquishNodeDescription,"New inference is routed away first. In-flight inference finishes. Then this node becomes a visitor and releases its slice. If no other node can serve that same slice, the range becomes uncovered and generations that need it fail clearly.","A inferência nova será encaminhada para outro nó primeiro. A inferência em curso termina. Depois este nó vira visitante e libera sua fatia. Se nenhum outro nó puder servir essa mesma fatia, a faixa ficará descoberta e as gerações que precisarem dela falharão claramente."
 network.relinquishNodeFailed,The node could not leave the node role,O nó não conseguiu deixar o papel de node
-network.relinquishNodeStarted,This node is draining before becoming infer,Este nó está drenando antes de virar infer
-network.relinquishNodeTitle,Become an infer node?,Virar um nó infer?
+network.relinquishNodeStarted,This node is draining before becoming a visitor,Este nó está drenando antes de virar visitante
+network.relinquishNodeTitle,Become a visitor?,Virar visitante?
 network.requestNode,Request to become a node,Pedir para virar node
 network.requestNodeFailed,The node request was not sent,O pedido para virar node não foi enviado
 network.requestNodePending,Request pending,Pedido pendente
@@ -1949,7 +1949,7 @@ notifications.nodePromotionAccepted,Node request approved,Pedido de node aprovad
 notifications.nodePromotionAcceptedDetail,{host} is now a node after administrator approval.,{host} agora é node após a aprovação do administrador.
 notifications.nodePromotionDetail,{host} requests permission to become a node.,{host} pede permissão para virar node.
 notifications.nodePromotionRejected,Node request rejected,Pedido de node recusado
-notifications.nodePromotionRejectedDetail,{host} remains infer because the administrators rejected the request.,{host} continua infer porque os administradores recusaram o pedido.
+notifications.nodePromotionRejectedDetail,{host} remains a visitor because the administrators rejected the request.,{host} continua visitante porque os administradores recusaram o pedido.
 notifications.nodePromotionTitle,Node promotion request,Pedido para virar node
 notifications.nodeRelinquishDetail,"{host} is leaving the node role. New inference is routed elsewhere, current inference drains, and the slice is released afterward.","{host} está deixando o papel de node. A inferência nova vai para outro lugar, a atual drena e a fatia é liberada depois."
 notifications.nodeRelinquishTitle,Node leaving the network role,Nó deixando o papel de node
@@ -2679,7 +2679,7 @@ setupWizard.healthFailed,The general checks could not run,Não foi possível exe
 setupWizard.healthModelLater,The model check happens after setup so a missing model never blocks first access.,A verificação do modelo acontece depois da configuração para que um modelo ausente nunca bloqueie o primeiro acesso.
 setupWizard.healthTitle,A quick check before restart,Uma verificação rápida antes de reiniciar
 setupWizard.hideContents,Hide contents,Ocultar conteúdo
-setupWizard.infer,Inference node,Nó de inferência
+setupWizard.infer,Visitor,Visitante
 setupWizard.inferDetail,Use this machine to send prompts through a trusted network.,Use esta máquina para enviar prompts por uma rede confiável.
 setupWizard.installedHere,Already on this machine,Já está nesta máquina
 setupWizard.inviteDetail,Save the trust document and connection secret for the people you will invite.,Salve o documento de confiança e o segredo de conexão para as pessoas que você vai convidar.

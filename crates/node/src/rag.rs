@@ -1130,6 +1130,7 @@ mod tests {
             architectures: Vec::new(),
             settings: Vec::new(),
             stages: false,
+            stage_architectures: Vec::new(),
             vision: false,
             pom_settings: Vec::new(),
         };

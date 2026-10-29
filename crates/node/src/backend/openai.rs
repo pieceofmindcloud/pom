@@ -1096,6 +1096,7 @@ async fn blocking_response(
                         // the model would have given: transport loss, or the
                         // ceiling cutting a tool call in half.
                         "partial": summary.partial || truncated_tool_call,
+                        "error": summary.error,
                         "finish_reason": summary.finish_reason,
                         "stop_sequence": summary.stop_sequence,
                         "trace": summary.trace,
@@ -1581,6 +1582,14 @@ fn sse_stream(
                             s.truncated_tool_call,
                         );
                         s.queue.push_back(Event::default().data(chunk));
+                        // A peer failed after some text went out: the text stays, and
+                        // the client still learns that the model did not end there.
+                        if let Some(err) = &summary.error {
+                            let payload =
+                                json!({ "error": { "message": err, "type": "server_error" } });
+                            s.queue
+                                .push_back(Event::default().data(payload.to_string()));
+                        }
                         s.queue.push_back(Event::default().data("[DONE]"));
                         s.phase = Phase::Ended;
                         continue;
@@ -1687,6 +1696,7 @@ fn chunk_json_final(
             // See the same field on the non-streaming path: a call
             // cut in half is also a partial response.
             "partial": summary.partial || truncated_tool_call,
+            "error": summary.error,
             "finish_reason": summary.finish_reason,
             "stop_sequence": summary.stop_sequence,
             "trace": summary.trace,
@@ -2794,6 +2804,7 @@ mod tests {
             duration_ms: 10,
             timings: crate::gateway::timing_metrics(10, 10, 10, 0, n),
             partial: false,
+            error: None,
             finish_reason: None,
             stop_sequence: None,
             legs: 1,
@@ -3037,6 +3048,49 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_partial_stream_ends_in_an_error_after_the_salvaged_text() {
+        let mut summary = crate::gateway::GenSummary {
+            source: "pipeline:a (partial)".into(),
+            tokens_generated: 1,
+            reasoning_tokens: 0,
+            tokens_per_sec: 1.0,
+            duration_ms: 10,
+            timings: crate::gateway::timing_metrics(10, 10, 10, 1, 1),
+            partial: true,
+            error: None,
+            finish_reason: None,
+            stop_sequence: None,
+            legs: 1,
+            trace: None,
+        };
+        summary.error = Some("pipeline failed at step 1: deadline expired".into());
+        let (tx, rx) = mpsc::channel(4);
+        tx.send(GenEvent::Token("Oi".into())).await.unwrap();
+        tx.send(GenEvent::Done(summary)).await.unwrap();
+        drop(tx);
+        let stream = sse_stream(
+            rx,
+            "chatcmpl-test".into(),
+            1,
+            "flint".into(),
+            Mode::Chat,
+            100,
+            OutputTokenLimit::default(),
+            ToolSignatures::default(),
+        );
+        let body = axum::body::to_bytes(Sse::new(stream).into_response().into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+
+        // The text that went out stays, and the cut is an error, not the model's end.
+        let text_at = body.find("Oi").expect("salvaged text");
+        let error_at = body.find("deadline expired").expect("error event");
+        let done_at = body.find("[DONE]").expect("end of stream");
+        assert!(text_at < error_at && error_at < done_at, "{body}");
+    }
+
     #[test]
     fn final_stream_chunk_carries_generation_summary() {
         let summary = crate::gateway::GenSummary {
@@ -3047,6 +3101,7 @@ mod tests {
             duration_ms: 2666,
             timings: crate::gateway::timing_metrics(2666, 900, 900, 12, 12),
             partial: true,
+            error: None,
             finish_reason: Some("length".into()),
             stop_sequence: None,
             legs: 1,

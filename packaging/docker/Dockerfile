@@ -79,6 +79,7 @@ ARG POM_RELEASE_VERSION=""
 ENV POM_RELEASE_VERSION=${POM_RELEASE_VERSION} \
     POM_HOME=/data \
     POM_HEADLESS=1 \
+    POM_NO_TLS=1 \
     POM_PLUGIN_HOST=/usr/local/bin/pom-plugin-host \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility
 LABEL org.opencontainers.image.title="POM" \

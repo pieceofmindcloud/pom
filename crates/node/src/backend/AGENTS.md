@@ -652,7 +652,10 @@ boundary.
   later request on it reads zero. The TLS configuration is picked per connection
   from the ClientHello (`LazyConfigAcceptor`, `tls::wants_peer`): a peer is asked for its node
   certificate, a browser for nothing. A plain connection from outside is redirected to https, or, with
-  `POM_INSECURE_ADMIN_UI=1` (`insecure_admin_ui`), served as is except the peer-only routes.
+  `--no-tls` / `POM_NO_TLS=1` on the gateway (or the development-only
+  `POM_INSECURE_ADMIN_UI=1`), served as HTTP for browser/client routes. Peer-only
+  paths and signed control headers are refused on that clear-text path;
+  `TlsServer::peers_only` leaves the inference listener unchanged.
   `TransportPeer` is the caller's node as the transport
   proved it - the client certificate, or the tunnel's PeerId beside the mark - and goes into the
   request's extensions. See

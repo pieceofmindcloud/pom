@@ -352,6 +352,11 @@ struct Args {
     #[arg(long, default_value_t = initial_ports::DEFAULT_GATEWAY_PORT)]
     gateway_port: u16,
 
+    /// Allow remote HTTP for the browser UI and client API behind an HTTPS proxy.
+    /// Does not disable TLS or mutual authentication between nodes.
+    #[arg(long)]
+    no_tls: bool,
+
     /// Pkarr public keys of known peers to dial on startup (comma-separated, format: pk:zbase32...).
     #[arg(long, default_value = "")]
     pkarr_peers: String,
@@ -445,6 +450,7 @@ const ARG_ENV: &[(&str, &str)] = &[
     ("advertise_addr", "ADVERTISE_ADDR"),
     ("ollama_url", "OLLAMA_URL"),
     ("gateway_port", "GATEWAY_PORT"),
+    ("no_tls", "NO_TLS"),
     ("pkarr_peers", "PKARR_PEERS"),
     ("public_addr", "PUBLIC_ADDR"),
     ("relay_peers", "RELAY_PEERS"),
@@ -1018,6 +1024,7 @@ async fn async_main(
         database.clone(),
         app_config.clone(),
         args.ollama_url,
+        args.no_tls,
         args.no_discovery,
         args.no_pkarr,
         args.no_default_relays,
@@ -1758,6 +1765,7 @@ async fn start_node(
     database: Arc<db::PomDb>,
     app_config: config::Config,
     ollama_url: String,
+    no_tls: bool,
     no_discovery: bool,
     no_pkarr: bool,
     no_default_relays: bool,
@@ -1915,11 +1923,9 @@ async fn start_node(
     audit.set_admin_receiver(local_is_admin);
 
     // ── TLS between peers ────────────────────────────────────────────────────
-    // The certificate is derived from the identity that was just loaded and
-    // never goes to disk (see `tls.rs`). It exists from startup even with the
-    // flag off, because it is what allows turning TLS on without restarting: the
-    // server already speaks both languages, and the flag only decides whether
-    // remote clear text is still accepted.
+    // The node certificate is always derived from its identity. `--no-tls`
+    // permits HTTP only for the browser/client surface behind a proxy; peers
+    // still require their own TLS client certificate on the shared port.
     // Addresses that go into the browser certificate: this machine's local
     // ones, the one the operator pinned, and the hostname. Without them the
     // browser would complain about the host, and not about the issuer.
@@ -1936,9 +1942,12 @@ async fn start_node(
             None
         }
     };
+    if no_tls {
+        warn!("--no-tls/POM_NO_TLS: remote HTTP enabled for the UI and client API; keep the gateway behind an HTTPS proxy on a private network (peer mTLS stays enabled)");
+    }
     let tls_server =
         match serve::TlsServer::from_identity(&identity, true, &tls_sans) {
-            Ok(t) => Some(t),
+            Ok(t) => Some(t.with_plain_ui(no_tls)),
             Err(e) => {
                 warn!("could not derive the certificate of this node, TLS unavailable: {e}");
                 WEB_TLS.store(false, std::sync::atomic::Ordering::Relaxed);
@@ -2204,6 +2213,16 @@ mod main_tests {
     fn persisted_gateway_port_wins_over_cli_fallback() {
         assert_eq!(select_gateway_port(Some(9123), 8080), 9123);
         assert_eq!(select_gateway_port(None, 8080), 8080);
+    }
+
+    #[test]
+    fn proxy_http_flag_is_explicit_and_defaults_off() {
+        let parse = |args: &[&str]| {
+            let matches = cli_command().try_get_matches_from(args).unwrap();
+            <Args as clap::FromArgMatches>::from_arg_matches(&matches).unwrap()
+        };
+        assert!(!parse(&["pom"]).no_tls);
+        assert!(parse(&["pom", "--no-tls"]).no_tls);
     }
 
     /// `--bootstrap` alone must reach the node: a start path that read only

@@ -325,9 +325,11 @@ breaks the whole product.
   `brand::dns_record()`). The only exception cargo forces is the `[[bin]]` in
   `crates/node/Cargo.toml`. → `build-and-run.md`
 - **Between nodes it is always mutual TLS, and the key alone opens nothing.**
-  There is no TLS switch; plain HTTP is served only to loopback (or, in development,
-  to remote browsers with `POM_INSECURE_ADMIN_UI=1`), which keeps
-  `http://localhost` working for the operator. Each node's certificate is
+  There is no switch for peer TLS. Plain HTTP is served only to loopback by
+  default; `--no-tls` / `POM_NO_TLS=1` enables remote browser/client HTTP
+  behind an HTTPS proxy without changing peer mTLS (the published Docker
+  image enables it). `POM_INSECURE_ADMIN_UI=1` is the development switch.
+  `http://localhost` keeps working for the operator. Each node's certificate is
   derived from its `.pom-node.key`, verified by `SHA256(pubkey) == node_id`, and
   presented on both ends, so a call authorized by the connection key also needs
   the caller to be a member today: an admin of the chain, or a node with a valid

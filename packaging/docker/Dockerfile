@@ -37,7 +37,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       iproute2 tini \
       bash bzip2 ca-certificates curl dnsutils file git git-lfs gnupg htop iputils-ping jq \
       less lsof nano netcat-openbsd openssh-client procps python3 python3-pip python3-venv \
-      ripgrep rsync sudo tar tmux unzip vim-tiny wget xz-utils zip zstd \
+      ripgrep rsync sudo tar tmux unzip vim-tiny wget xxd xz-utils zip zstd \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=appimage /out/ /usr/local/bin/

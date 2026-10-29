@@ -487,7 +487,10 @@ loses offload on the first click.
   and give non-root nodes a writable `CARGO_HOME` in the project data volume;
   plugin build output stays in
   `<project_root>/.pom-dev-plugin-builds`, not in
-  the mounted source. The release `runtime` target still has no toolchain.
+  the mounted source. The `dev-os` stage also installs `file` and `xxd` for
+  agents running inside plugin terminals; a missing shell command there is a
+  container package issue, not a tool-call parser failure. The release
+  `runtime` target still has no toolchain.
 - **Image context and content**: the main context ignores the local
   `llama.cpp/` copy; the fork only enters as a named context, and the build
   script removes `.git`, builds, models, credentials and dotenv files from that
@@ -679,7 +682,8 @@ workflow or on demand, smoke-tests it without a GPU and pushes
 newest release that has a Linux AppImage, preferring the CUDA + Vulkan one.
 Secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`; the variable
 `DOCKERHUB_REPOSITORY` overrides the image name. Details and how to run it are
-in `packaging/docker/README.md`. The image sets `POM_NO_TLS=1` for Coolify's
+in `packaging/docker/README.md`. The published image includes `file` and
+`xxd` for agent terminals too. The image sets `POM_NO_TLS=1` for Coolify's
 HTTPS-terminating proxy: its upstream is plain HTTP on private port 8080,
 while the node-to-node connections remain mTLS. Do not publish the unencrypted
 UI port to the internet. What the image has to work around:

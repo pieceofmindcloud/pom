@@ -11,8 +11,6 @@ order: 300
 About says what POM is made of and under which terms: its license, the privacy and security notice, the libraries it depends on, and the check for a newer POM.
 :::
 
-![About: the POM software license, the privacy and security notice and the links to the website and the repository.](../images/en/about.webp)
-
 :::cards
 ### License
 POM is licensed under the MIT License.

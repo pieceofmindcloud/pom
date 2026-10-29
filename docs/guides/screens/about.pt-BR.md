@@ -11,8 +11,6 @@ order: 300
 Sobre diz do que o POM é feito e em que termos: a licença, o aviso de privacidade e segurança, as bibliotecas de que depende e a verificação de um POM mais novo.
 :::
 
-![Sobre: a licença do POM, o aviso de privacidade e segurança e os links para o site e o repositório.](../images/pt-BR/about.webp)
-
 :::cards
 ### Licença
 O POM é licenciado sob a Licença MIT.

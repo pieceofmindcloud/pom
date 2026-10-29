@@ -281,7 +281,11 @@ pub(super) async fn cluster_fingerprint(state: &GatewayState, peers: &[PeerInfo]
     for peer in peers {
         loads.push(json!({
             "node_id": peer.node_id,
-            "load": state.loads.load(&peer.node_id).await,
+            "load": if peer.node_id == state.network.node_id {
+                local_inference_load(state).await
+            } else {
+                state.loads.load(&peer.node_id).await
+            },
         }));
     }
     let mut routes = state
@@ -510,7 +514,7 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
             node
         };
         let load = if is_self {
-            Some(state.loads.load(&p.node_id).await)
+            Some(local_inference_load(&state).await)
         } else {
             node.as_ref().and_then(reported_peer_load)
         };

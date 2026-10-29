@@ -45,6 +45,22 @@ const CATALOG_TTL: Duration = Duration::from_secs(20);
 /// A cluster snapshot is cheap to reuse briefly, but never allowed to hide a
 /// peer/runtime mutation for more than this window.
 const CLUSTER_CACHE_TTL: Duration = Duration::from_secs(2);
+
+/// A local gateway tracks turns it sends to the engine, but requests sent by
+/// another node's gateway enter through the plugin's internal generation route
+/// and only its serving-stream counter sees them here. The two paths do not
+/// overlap; reading both reports the actual load of a whole-model plugin head.
+fn plugin_serving_load(config: Option<&NodeConfig>) -> u32 {
+    config
+        .and_then(|cfg| cfg.inference_service.as_deref())
+        .map(crate::engine_telemetry::in_flight)
+        .unwrap_or(0)
+}
+
+async fn local_inference_load(state: &GatewayState) -> u32 {
+    let tracked = state.loads.load(&state.network.node_id).await;
+    tracked.saturating_add(plugin_serving_load(state.runtime.config().await.as_ref()))
+}
 /// Timeout for one peer-to-peer control call.
 pub(crate) const PEER_TIMEOUT: Duration = Duration::from_secs(4);
 

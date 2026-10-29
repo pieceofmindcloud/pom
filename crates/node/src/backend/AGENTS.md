@@ -232,11 +232,12 @@ boundary.
   candidate it calls `Network::request_peer_addresses` and returns
   `rediscovering: true` instead of `unreachable`, and `model_inventory[]` names in
   `unreadable_nodes` the peers whose coverage it depends on without being able to read them.
-  `PeerView.load` is the in-flight load reported by the peer itself: for the local node it comes
-  from the local `LoadTracker`, and for remote peers it comes from the JSON of
-  `/api/ui/node`. A missing or invalid remote read stays `null`, because
-  the local tracker's zero only means no request went through
-  this gateway.
+  `PeerView.load` is the in-flight load reported by the peer itself: for the local node it combines
+  the local `LoadTracker` (this gateway's turns) with the plugin engine's serving-stream
+  counter (turns sent by other gateways to this node); remote peers report their
+  own combined count in `/api/ui/node`. A missing or invalid remote read stays `null`,
+  because the local tracker's zero only means no request went through this gateway.
+  The local `NodeInfo.load` and the cluster fingerprint must use the same combined count.
   `model_inventory[].complete` and `/api/ui/chat/capabilities` only confirm a
   pipeline when every contributing peer has `runtime_capacity` confirmed
   by `/health` or is `idle`; gossip capacities during the boot stay

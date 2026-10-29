@@ -386,6 +386,32 @@ mod profile_network_tests {
     }
 
     #[tokio::test]
+    async fn plugin_head_reports_inbound_generation_load_as_well_as_local_gateway_turns() {
+        let state = crate::gateway::testkit::state_with("head", vec![]).await;
+        let mut cfg = crate::gateway::testkit::spec_config();
+        cfg.inference_service = Some("strata".into());
+        state.runtime.seed_config_for_test(cfg).await;
+
+        // The remote gateway does not acquire this node's LoadTracker. The
+        // serving route tracks its stream independently until it is dropped.
+        let remote = crate::engine_telemetry::track(
+            "strata",
+            futures::stream::empty::<Result<bytes::Bytes, reqwest::Error>>(),
+        );
+        assert_eq!(local_inference_load(&state).await, 1);
+        assert_eq!(node_info(State(state.clone())).await.0.load, 1);
+        let before = cluster_fingerprint(&state, &state.all_peers().await).await;
+        let local = state.loads.acquire(&state.network.node_id).await;
+        assert_eq!(local_inference_load(&state).await, 2);
+        drop(remote);
+        assert_eq!(local_inference_load(&state).await, 1);
+        drop(local);
+        assert_eq!(local_inference_load(&state).await, 0);
+        let after = cluster_fingerprint(&state, &state.all_peers().await).await;
+        assert_ne!(before, after, "a change in load invalidates the cluster snapshot");
+    }
+
+    #[tokio::test]
     async fn chat_capabilities_reads_mmproj_from_a_remote_sliced_head_config() {
         let app = Router::new().route(
             "/api/ui/node",

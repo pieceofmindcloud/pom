@@ -10,9 +10,12 @@ in `../routing-contract`, empty for the runtime).
 
 - Single binary: `pom` in `src/main.rs`.
 - `cuda`/`metal` features passed on to `llama-cpp-sys-2` (GGML compiled with GPU).
-  Used by `scripts/build-docker.sh`/`POM_BUILD_FEATURES` in the devupdate. The CUDA
-  build keeps CUDA Graphs off by default; enabling it with `POM_CUDA_GRAPHS=1`
-  requires rebuilding the binary and additional free VRAM.
+  `cuda-no-vmm` enables CUDA while omitting the VMM calls that otherwise link
+  `libcuda.so.1` at startup; release Linux CUDA builds use it so the binary can
+  start without a host NVIDIA driver. Used by `scripts/build-docker.sh`/
+  `POM_BUILD_FEATURES` in the devupdate. The CUDA build keeps CUDA Graphs off by
+  default; enabling it with `POM_CUDA_GRAPHS=1` requires rebuilding the binary
+  and additional free VRAM.
 - Heavy dependencies: `iroh` 1.3 (`unstable-net-report` for the NAT report),
   `iroh-gossip` 0.101, `iroh-mdns-address-lookup` 0.6, `iroh-relay` 1.3 (`server`,
   the embedded relay), `pkarr` 8.1 (8.x is what shares `ed25519-dalek` 3 with iroh),

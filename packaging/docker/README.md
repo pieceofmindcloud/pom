@@ -19,8 +19,44 @@ ssh -L 8080:127.0.0.1:8080 <user>@<server>   # then open http://localhost:8080/
 ```
 
 With published ports instead: `-p 8080:8080 -p 8181:8181 -p 42777:42777/udp
--p 52777:52777/udp`. With an NVIDIA GPU add `--gpus all` (the host needs the
-NVIDIA Container Toolkit); without it the node runs on the CPU.
+-p 52777:52777/udp`.
+
+### NVIDIA GPU
+
+The image carries no NVIDIA library: the CUDA driver library (`libcuda.so.1`)
+belongs to the host's driver and is mounted into the container when it starts.
+On the host, install the NVIDIA driver and the
+[NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
+(`nvidia-ctk runtime configure --runtime=docker`, then restart Docker), and
+start the container with `--gpus all`:
+
+```sh
+docker run -d --name pom --restart unless-stopped --network host --gpus all \
+  -v pom-data:/data <repository>:latest
+```
+
+With Compose:
+
+```yaml
+services:
+  pom:
+    image: <repository>:latest
+    network_mode: host
+    volumes: [pom-data:/data]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+volumes:
+  pom-data:
+```
+
+Without `--gpus` (or on a machine without NVIDIA) the node runs on the CPU, or
+on another GPU through Vulkan. Check with `docker exec pom nvidia-smi`, which
+the toolkit also mounts.
 
 Command line options go after the image name (`pom --help`), or as `POM_*`
 variables (`POM_GATEWAY_PORT`, `POM_PUBLIC_ADDR`, ...). `/data` is the POM home:

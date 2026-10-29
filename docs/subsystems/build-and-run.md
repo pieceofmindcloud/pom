@@ -689,10 +689,14 @@ in `packaging/docker/README.md`. What the image has to work around:
 - **The notices come from the AppImage.** The image copies the AppImage's
   `usr/share/doc/pom/` (`LICENSE`, `THIRD-PARTY-NOTICES.txt`) and refuses to
   build from an AppImage that has none (releases before the notices existed).
-- **The CUDA AppImage links `libcuda.so.1`.** The image carries NVIDIA's stub
-  in `/opt/pom/cuda-stub`, which the entrypoint puts on `LD_LIBRARY_PATH` only
-  when the linker cache has no real driver (a container without `--gpus`); CUDA
-  then finds no device and the node runs on the CPU.
+- **No NVIDIA library in the image.** The Linux release builds CUDA with the
+  `cuda-no-vmm` feature (`crates/node/Cargo.toml`: ggml's legacy memory pool
+  instead of the driver's VMM), so `pom` links no `libcuda.so.1` and starts
+  without the driver; the image carries no NVIDIA stub (the CUDA Toolkit's stub
+  is not a redistributable file) and refuses an AppImage that still links
+  libcuda. With `--gpus all` the NVIDIA Container Toolkit mounts the host
+  driver's libcuda (`NVIDIA_DRIVER_CAPABILITIES=compute,utility`) and the node
+  uses CUDA; without it the node runs on the CPU or Vulkan.
 
 ## No Python runtime
 

@@ -179,7 +179,7 @@ case "$variant" in
     export CUDA_PATH="$cuda_home"
     export CUDACXX="${cuda_home}/bin/nvcc"
     export PATH="${cuda_home}/bin:${PATH}"
-    run cargo build --release --locked -p node -p pom-plugin-host --features "cuda,${linux_features}"
+    run cargo build --release --locked -p node -p pom-plugin-host --features "cuda-no-vmm,${linux_features}"
     binary="${target_dir}/release/pom"
     ;;
   windows-cpu)

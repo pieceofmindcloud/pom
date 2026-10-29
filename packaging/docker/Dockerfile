@@ -19,21 +19,6 @@ RUN cd /tmp && chmod 755 pom.AppImage && ./pom.AppImage --appimage-extract >/dev
          || { echo "this AppImage carries no THIRD-PARTY-NOTICES.txt: build the image from a release made after it was added" >&2; exit 1; }; } \
     && install -D -m 644 -t /doc squashfs-root/usr/share/doc/pom/LICENSE squashfs-root/usr/share/doc/pom/THIRD-PARTY-NOTICES.txt
 
-# ── libcuda stub ──────────────────────────────────────────────────────────────
-# The CUDA AppImage links `libcuda.so.1`, which belongs to the host's driver and only
-# exists in a container started with `--gpus`. On a machine without a GPU (a VPS) the
-# NVIDIA stub lets the binary load; CUDA then finds no device and POM runs on the CPU.
-# The entrypoint puts the stub on the library path only when no real driver is mounted.
-FROM ubuntu:${UBUNTU} AS cuda-stub
-ARG CUDA_STUB_PACKAGE=cuda-driver-dev-12-9
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
-    && curl -fsSL -o /tmp/keyring.deb \
-       https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb \
-    && dpkg -i /tmp/keyring.deb && apt-get update \
-    && apt-get install -y --no-install-recommends "$CUDA_STUB_PACKAGE" \
-    && stub="$(find /usr/local/cuda*/ -path '*/stubs/libcuda.so' | head -1)" \
-    && test -n "$stub" && install -D -m 644 "$stub" /out/libcuda.so.1
-
 # ── Runtime ───────────────────────────────────────────────────────────────────
 FROM ubuntu:${UBUNTU}
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -59,8 +44,17 @@ COPY --from=appimage /out/ /usr/local/bin/
 # POM's license and the third-party notices of this very build (NVIDIA's terms for
 # the CUDA libraries linked into pom included), from the AppImage.
 COPY --from=appimage /doc/ /usr/share/doc/pom/
-COPY --from=cuda-stub /out/libcuda.so.1 /opt/pom/cuda-stub/libcuda.so.1
 COPY entrypoint.sh /usr/local/bin/pom-entrypoint
+
+# The image carries no NVIDIA library (no stub either), so the executable must not need
+# one to start: the Linux release builds CUDA with `cuda-no-vmm`, which links no libcuda.
+# With `--gpus all` the NVIDIA Container Toolkit mounts the host driver's libcuda and POM
+# uses CUDA; without it POM runs on the CPU or Vulkan. An AppImage that still links
+# libcuda (a release before that) would not start without a GPU: refuse it here.
+RUN if ldd /usr/local/bin/pom | grep -q 'libcuda'; then \
+      echo "this AppImage links libcuda.so.1 and would not start without an NVIDIA GPU: build the image from a release made with cuda-no-vmm" >&2; \
+      exit 1; \
+    fi
 
 # A release before the headless mode always opens its GTK window and dies without a
 # display. Probe the binary once here: if it still needs a display, install Xvfb and mark
@@ -69,7 +63,7 @@ COPY entrypoint.sh /usr/local/bin/pom-entrypoint
 RUN set -eu; \
     probe="$(mktemp -d)"; \
     out="$(cd "$probe" && env -u DISPLAY -u WAYLAND_DISPLAY POM_HOME="$probe" POM_HEADLESS=1 \
-      LD_LIBRARY_PATH=/opt/pom/cuda-stub timeout 20 /usr/local/bin/pom \
+      timeout 20 /usr/local/bin/pom \
       --no-discovery --no-pkarr --gateway-port 18080 --port 43777 2>&1 || true)"; \
     rm -rf "$probe"; \
     if printf '%s' "$out" | grep -q 'Failed to initialize gtk'; then \

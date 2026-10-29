@@ -481,6 +481,7 @@ fn model_object(
     created: i64,
     context_length: Option<u32>,
     max_completion_tokens: Option<u32>,
+    vision: bool,
 ) -> ModelObject {
     ModelObject {
         display_name: id.clone(),
@@ -490,7 +491,7 @@ fn model_object(
         owned_by: "pom",
         model_type: "model",
         created_at: "1970-01-01T00:00:00Z",
-        capabilities: None,
+        capabilities: Some(json!({ "vision": vision })),
         max_input_tokens: context_length,
         max_tokens: max_completion_tokens,
         context_length,
@@ -574,12 +575,8 @@ async fn list_models(_auth: ApiKeyAuth, State(state): State<GatewayState>) -> im
         let (context_length, max_completion_tokens) = state
             .advertised_output_limits_from_peers(&peers, Some(&id))
             .await;
-        data.push(model_object(
-            id,
-            created,
-            context_length,
-            max_completion_tokens,
-        ));
+        let vision = crate::webui::model_vision_supported(&state, &id).await;
+        data.push(model_object(id, created, context_length, max_completion_tokens, vision));
     }
 
     let first_id = data.first().map(|model| model.id.clone());
@@ -606,6 +603,7 @@ async fn get_model(
         let (context_length, max_completion_tokens) = state
             .advertised_output_limits_from_peers(&peers, Some(&id))
             .await;
+        let vision = crate::webui::model_vision_supported(&state, &id).await;
         (
             cors_headers(),
             Json(model_object(
@@ -613,6 +611,7 @@ async fn get_model(
                 chrono::Utc::now().timestamp(),
                 context_length,
                 max_completion_tokens,
+                vision,
             )),
         )
             .into_response()
@@ -2746,6 +2745,7 @@ mod tests {
             0,
             context_length,
             max_completion_tokens,
+            false,
         ))
         .unwrap();
 
@@ -2769,6 +2769,7 @@ mod tests {
             0,
             context_length,
             max_completion_tokens,
+            true,
         ))
         .unwrap();
 
@@ -2778,7 +2779,7 @@ mod tests {
         assert_eq!(value["created_at"], "1970-01-01T00:00:00Z");
         assert_eq!(value["max_input_tokens"], 100_000);
         assert_eq!(value["max_tokens"], 100_000);
-        assert!(value["capabilities"].is_null());
+        assert_eq!(value["capabilities"]["vision"], true);
         assert_eq!(value["context_length"], 100_000);
         assert_eq!(value["top_provider"]["max_completion_tokens"], 100_000);
     }

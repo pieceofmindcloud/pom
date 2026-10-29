@@ -18,6 +18,14 @@ impl InferState {
         self.thinking_open.get(sid_key).copied().unwrap_or(false)
     }
 
+    /// Text of a generated token as the client must see it: plain pieces, plus
+    /// the markers in `preserved_specials`, which llama.cpp would otherwise
+    /// render as nothing because the vocabulary marks them as control tokens.
+    pub(super) fn visible_piece(&self, token: i32) -> Vec<u8> {
+        let special = self.preserved_specials.contains(&token);
+        self.engine.token_to_piece_bytes(token, special)
+    }
+
     pub(super) fn new(
         engine: LlmEngine,
         cfg: &NodeConfig,
@@ -38,6 +46,7 @@ impl InferState {
         let thinking_forced_open = engine
             .apply_chat_template(&[("user", "x")], true, false)
             .is_ok_and(|prompt| prompt.trim_end().ends_with(crate::llm::THINKING_START_TAG));
+        let preserved_specials = preserved_marker_tokens(&engine);
         // llama.cpp's default DRY sequence breakers, as the tokens this
         // model has for them: a repeated run does not reach across one.
         let dry_breakers: Vec<i32> = crate::llm::DRY_SEQUENCE_BREAKERS
@@ -79,6 +88,7 @@ impl InferState {
                 },
             },
             thinking_forced_open,
+            preserved_specials,
             thinking_open: HashMap::new(),
             no_thinking: cfg.no_thinking,
             // Keeps the behavior of old callers that do not send the
@@ -2280,4 +2290,33 @@ mod tests {
         stop_tx.send(()).unwrap();
         server.await.unwrap().unwrap();
     }
+}
+
+/// Markers that must reach the text whatever the vocabulary calls them: the
+/// thinking block, which the Chat and the reasoning split read, and the tool
+/// call tags `tool_call::TagScanner` reads. A model whose vocabulary marks one
+/// of them as a control token (Flint's `<think>`) had it rendered as nothing,
+/// and its reasoning reached the client as plain answer text.
+const PRESERVED_MARKERS: &[&str] = &[
+    crate::llm::THINKING_START_TAG,
+    crate::llm::THINKING_END_TAG,
+    "<tool_call>",
+    "</tool_call>",
+    "<arg_key>",
+    "</arg_key>",
+    "<arg_value>",
+    "</arg_value>",
+];
+
+/// The marker tokens of this vocabulary that llama.cpp hides without
+/// `special`: a marker is one token and renders empty as plain text. Any other
+/// control token (turn and end-of-generation markers) stays hidden.
+fn preserved_marker_tokens(engine: &LlmEngine) -> std::collections::HashSet<i32> {
+    PRESERVED_MARKERS
+        .iter()
+        .filter_map(|marker| match engine.tokenize(marker, false, true).as_slice() {
+            [token] if engine.token_to_piece_bytes(*token, false).is_empty() => Some(*token),
+            _ => None,
+        })
+        .collect()
 }

@@ -1054,7 +1054,16 @@ measured by the QUIC connection, without the remote handler's processing. The
 regardless of the TCP switch. Each complete attempt, from the handshake to the
 answer body, has a single deadline, the frame's: (1 s + 50 ms per token + 2 s
 per image) x remaining hops (`relay::frame_deadline`), the same on QUIC,
-HTTP/HTTPS, the persistent channel and the tunnel. A peer that went down is
+HTTP/HTTPS, the persistent channel and the tunnel. A decode frame of a
+measured generation also carries `step_budget_ms` (`relay::StepBudget`): the
+gateway raises it to 4x the slowest step it measured (the first token, then
+each completed step), every hop forwards it unchanged, and the deadline is the
+larger of the fixed one and that budget, capped at 120 s. Without it, a live but
+slow engine (a model larger than its GPU, half of it left in host memory by the
+memory fit) took over a second per step and its generation ended after the
+first token. A generation still cut by a peer failure after some text keeps
+the text and ends in an error event (`GenSummary.error`, `x_pom.error`), never
+in a clean stop. A peer that went down is
 detected earlier by the connection's lifetime (`QUIC_MAX_IDLE`, TCP keep-alive).
 A prefill chunk (`/v1/prefill`, `relay::frame_deadline_for_path`) is the
 exception: its deadline is a liveness one, 10 min per hop

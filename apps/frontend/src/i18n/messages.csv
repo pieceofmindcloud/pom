@@ -9,18 +9,19 @@ about.dataMap,"the map images of the network location dialog, loaded from its se
 about.dataSubtitle,"Data that ships with POM or is shown by it, and its terms.","Dados que acompanham o POM ou são exibidos por ele, e seus termos."
 about.dataTitle,Third-party data,Dados de terceiros
 about.dependenciesCount,"Showing {visible} of {total} dependencies","Mostrando {visible} de {total} dependências"
-about.dependenciesSubtitle,"Direct frontend and Rust dependencies, grouped by their declared license.","Dependências diretas do frontend e do Rust, agrupadas pela licença declarada."
+about.dependenciesSubtitle,"Everything a POM build ships: the interface packages, the Rust crates (transitive ones included) and the native libraries compiled in, grouped by their declared license.","Tudo o que um build do POM distribui: os pacotes da interface, os crates Rust (inclusive os transitivos) e as bibliotecas nativas compiladas junto, agrupados pela licença declarada."
 about.dependenciesTitle,Third-party dependencies,Dependências de terceiros
 about.ecosystem.frontend,Frontend,Frontend
+about.ecosystem.native,Native,Nativa
 about.ecosystem.rust,Rust,Rust
 about.empty,No dependencies match this search.,Nenhuma dependência corresponde a esta busca.
 about.enterpriseCheckFailed,Could not check for POM updates.,Não foi possível verificar atualizações do POM.
 about.enterpriseCheckUpdates,Check for updates,Verificar atualizações
 about.licenseCount,"{count, plural, =1 {1 dependency} other {# dependencies}}","{count, plural, =1 {1 dependência} other {# dependências}}"
-about.placeholderBody,"POM is licensed under the GNU Affero General Public License, version 3 (AGPL-3.0). The complete license is available in this repository and from the Free Software Foundation.","O POM é licenciado sob a GNU Affero General Public License, versão 3 (AGPL-3.0). A licença completa está disponível neste repositório e na Free Software Foundation."
-about.placeholderLicense,AGPL-3.0,AGPL-3.0
-about.placeholderLicenseText,"GNU Affero General Public License, Version 3 (19 November 2007).","GNU Affero General Public License, versão 3 (19 de novembro de 2007)."
-about.placeholderLicenseValue,AGPL-3.0,AGPL-3.0
+about.placeholderBody,"POM is licensed under the MIT License. The complete license is in this repository and on the Open Source Initiative site.","O POM é licenciado sob a Licença MIT. A licença completa está neste repositório e no site da Open Source Initiative."
+about.placeholderLicense,MIT,MIT
+about.placeholderLicenseText,"MIT License: use, copy, modify and distribute, keeping the copyright and permission notice.","Licença MIT: use, copie, modifique e distribua, mantendo o aviso de copyright e de permissão."
+about.placeholderLicenseValue,MIT,MIT
 about.placeholderTitle,POM software license,Licença do software POM
 about.pluginBaseDescription,"POM plugins are built from the Plugin Base template and SDK. Follow its README to create a repository, implement the plugin manifest and UI, then build and publish releases for POM to install.","Plugins POM podem ser criados a partir do template e SDK do Plugin Base. Siga o README para criar um repositório, implementar o manifesto e a interface do plugin, e então compilar e publicar releases para instalação no POM."
 about.pluginBaseLink,POM Plugin Base,POM Plugin Base

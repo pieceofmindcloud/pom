@@ -78,10 +78,10 @@ export function About() {
             eyebrow="POM"
             title={t("about.placeholderTitle")}
             subtitle={t("about.placeholderBody")}
-            actions={<Badge tone="amber"><Info className="h-3.5 w-3.5" />AGPL-3.0</Badge>}
+            actions={<Badge tone="aqua"><Info className="h-3.5 w-3.5" />MIT</Badge>}
           />
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-l-2 border-aqua px-5 py-4">
-            <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 font-mono text-sm font-medium text-aqua hover:text-aqua/80">
+            <a href="https://opensource.org/license/mit" target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 font-mono text-sm font-medium text-aqua hover:text-aqua/80">
               {t("about.placeholderLicenseValue")} <ExternalLink className="h-3.5 w-3.5" />
             </a>
             <a href="https://github.com/pieceofmindcloud/pom/blob/main/LICENSE" target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 text-sm text-iris hover:text-iris/80">
@@ -238,7 +238,7 @@ export function About() {
                         <ExternalLink className="h-3.5 w-3.5 shrink-0 text-faint transition-colors group-hover:text-iris" />
                       </a>
                       <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-faint">
-                        <Badge tone={entry.ecosystem === "frontend" ? "sky" : "aqua"}>
+                        <Badge tone={entry.ecosystem === "frontend" ? "sky" : entry.ecosystem === "native" ? "amber" : "aqua"}>
                           {t(`about.ecosystem.${entry.ecosystem}`)}
                         </Badge>
                         <span>{t("about.version")} {entry.version}</span>

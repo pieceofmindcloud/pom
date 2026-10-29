@@ -15,11 +15,11 @@ About says what POM is made of and under which terms: its license, the privacy a
 
 :::cards
 ### License
-POM is licensed under the GNU Affero General Public License, version 3 (AGPL-3.0).
+POM is licensed under the MIT License.
 ### Privacy and security (LGPD)
 POM moves prompts and model data between machines and cannot guarantee privacy on public networks or with unknown computers. You decide what data to send and which computers to trust.
 ### Libraries
-The direct dependencies of the interface and of the Rust workspace, grouped by license.
+Everything a POM build ships - the interface packages, the Rust crates (transitive ones included) and the native libraries compiled in - grouped by license.
 ### POM update
 Checks the POM releases on GitHub (the website as fallback) and applies one only after you authorize it; the node restarts on the new version. It needs no license.
 :::

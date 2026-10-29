@@ -1177,8 +1177,10 @@ certificate as its client certificate (`tls::set_client_identity`,
 (`serve::TransportPeer`, from the certificate's key). A call authorized only
 by the connection key also needs that identity to be a member today
 (`auth::caller_is_member`, `Network::is_member_key`): an admin of the trust
-chain, or a peer whose announced membership token holds and is not revoked.
-Every member holds the connection key and a banned one keeps it, so the key
+chain, a peer whose announced membership token holds and is not revoked,
+or this node's own key: a worker that is the gateway of its own request dials
+its own advertised address over TLS, and the peers table never holds this
+node. Every member holds the connection key and a banned one keeps it, so the key
 alone, from a network address, opens nothing. The libp2p tunnel carries the
 same identity: the forwarder names the PeerId Noise authenticated
 (`infer_tunnel::TUNNEL_PEER_HEADER`, believed only beside the process mark),
@@ -1319,12 +1321,17 @@ Two exceptions, both for a concrete reason:
 - **The inference port (`serve::PlainPolicy::Refuse`)** closes the connection,
   as before. There is no browser there to accommodate.
 
-For development, `POM_INSECURE_ADMIN_UI=1` turns the 307 off: the gateway port
-serves the admin UI in clear text to a remote browser as well, so a machine
-reached by IP works without trusting its self signed certificate. The two
-exceptions still hold (peer-only routes answer 403, the inference port closes),
-and a clear-text node-to-node call carries no `TransportPeer`, so the key alone
-still opens nothing. Loopback is clear text with or without it.
+`--no-tls` (`POM_NO_TLS=1`) turns the 307 off for remote browser and client
+API requests, so an HTTPS-terminating proxy such as Coolify/Traefik can use an
+HTTP upstream without trusting POM's browser certificate. The published Docker
+image sets this variable by default. Only expose the gateway HTTP port on a
+private proxy network: anyone reaching it directly can send credentials in
+clear text. The legacy `POM_INSECURE_ADMIN_UI=1` has the same clear-text
+behaviour for development. Peer-only paths and signed control envelopes answer
+403 in clear text; the inference port still refuses remote plain HTTP.
+A peer's TLS client certificate is still required for node-to-node traffic:
+`--no-tls` does not disable the TLS listener or change the peer client.
+Loopback is clear text with or without it.
 
 ### 5.1 Optional QUIC for inference
 

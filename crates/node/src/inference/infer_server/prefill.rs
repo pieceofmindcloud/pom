@@ -2020,7 +2020,7 @@ pub(super) fn prefill_batch_blocking(
                     .get_mut(&item.sid_key)
                     .unwrap()
                     .feed_token_piece(&piece);
-                let done = next_id == s.engine.eos_token();
+                let done = s.engine.is_generation_stop(&recent, next_id);
                 if done {
                     finish_terminal_stream(&mut s.sessions, &item.sid_key, &mut text)?;
                 }
@@ -2522,7 +2522,7 @@ pub(super) fn step_batch_blocking(
                     .unwrap()
                     .feed_token_piece(&piece);
                 let token_text_us = token_text_started.elapsed().as_micros() as u64;
-                let done = next_id == s.engine.eos_token();
+                let done = s.engine.is_generation_stop(&recent, next_id);
                 if done {
                     finish_terminal_stream(&mut s.sessions, &item.sid_key, &mut text)?;
                 }

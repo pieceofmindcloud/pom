@@ -29,6 +29,11 @@ const IPC_TIMEOUT: Duration = Duration::from_secs(3);
 /// pointing at it: audit events silently fell into the legacy fallback while
 /// the process stayed alive in the OS.
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long `stop` waits for the host to exit after `shutdown`: the plugin's
+/// own shutdown, then the host ending what the plugin left running (SIGTERM
+/// and a 2 s grace, `crates/plugin-host/src/tree.rs`). Past it the host is
+/// killed, and on Linux and macOS whatever it had not ended yet stays behind.
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct IpcRequest {
@@ -331,7 +336,7 @@ impl PluginHost {
             .request("shutdown", Value::Null, IPC_TIMEOUT)
             .await;
         let mut child = self.process.child.lock().await;
-        let _ = timeout(IPC_TIMEOUT, child.wait()).await;
+        let _ = timeout(SHUTDOWN_TIMEOUT, child.wait()).await;
         if child.try_wait()?.is_none() {
             child.kill().await.context("shut down the plugin host")?;
         }

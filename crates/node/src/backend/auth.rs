@@ -534,8 +534,10 @@ pub(crate) async fn validate_internal_node_headers(
     if !key_holds {
         // A member with the wrong key missed a rotation, which an operator
         // needs to see. A non-member is routine wherever several networks
-        // share a LAN, and logging each of its calls floods the log.
-        if is_member {
+        // share a LAN, and a call without the internal marker is no node's
+        // call at all (a browser on loopback counts as a member): logging
+        // either on every call floods the log.
+        if is_member && is_internal {
             tracing::warn!(
                 internal = is_internal,
                 caller,
@@ -1407,6 +1409,7 @@ mod tests {
     fn inference_accepts_only_an_active_api_key() {
         let cfg = crate::config::Config {
             retired_tls_required: (),
+            saved_at: None,
             gpus: None,
             thermal: Default::default(),
             cache_type_k: crate::config::KvCacheType::F16,
@@ -1479,6 +1482,7 @@ mod tests {
     fn internal_inference_token_uses_shared_connection_key() {
         let mut cfg = crate::config::Config {
             retired_tls_required: (),
+            saved_at: None,
             gpus: None,
             thermal: Default::default(),
             cache_type_k: crate::config::KvCacheType::F16,

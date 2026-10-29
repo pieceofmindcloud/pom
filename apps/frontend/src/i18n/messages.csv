@@ -9,18 +9,19 @@ about.dataMap,"the map images of the network location dialog, loaded from its se
 about.dataSubtitle,"Data that ships with POM or is shown by it, and its terms.","Dados que acompanham o POM ou são exibidos por ele, e seus termos."
 about.dataTitle,Third-party data,Dados de terceiros
 about.dependenciesCount,"Showing {visible} of {total} dependencies","Mostrando {visible} de {total} dependências"
-about.dependenciesSubtitle,"Direct frontend and Rust dependencies, grouped by their declared license.","Dependências diretas do frontend e do Rust, agrupadas pela licença declarada."
+about.dependenciesSubtitle,"Everything a POM build ships: the interface packages, the Rust crates (transitive ones included) and the native libraries compiled in, grouped by their declared license.","Tudo o que um build do POM distribui: os pacotes da interface, os crates Rust (inclusive os transitivos) e as bibliotecas nativas compiladas junto, agrupados pela licença declarada."
 about.dependenciesTitle,Third-party dependencies,Dependências de terceiros
 about.ecosystem.frontend,Frontend,Frontend
+about.ecosystem.native,Native,Nativa
 about.ecosystem.rust,Rust,Rust
 about.empty,No dependencies match this search.,Nenhuma dependência corresponde a esta busca.
 about.enterpriseCheckFailed,Could not check for POM updates.,Não foi possível verificar atualizações do POM.
 about.enterpriseCheckUpdates,Check for updates,Verificar atualizações
 about.licenseCount,"{count, plural, =1 {1 dependency} other {# dependencies}}","{count, plural, =1 {1 dependência} other {# dependências}}"
-about.placeholderBody,"POM is licensed under the GNU Affero General Public License, version 3 (AGPL-3.0). The complete license is available in this repository and from the Free Software Foundation.","O POM é licenciado sob a GNU Affero General Public License, versão 3 (AGPL-3.0). A licença completa está disponível neste repositório e na Free Software Foundation."
-about.placeholderLicense,AGPL-3.0,AGPL-3.0
-about.placeholderLicenseText,"GNU Affero General Public License, Version 3 (19 November 2007).","GNU Affero General Public License, versão 3 (19 de novembro de 2007)."
-about.placeholderLicenseValue,AGPL-3.0,AGPL-3.0
+about.placeholderBody,"POM is licensed under the MIT License. The complete license is in this repository and on the Open Source Initiative site.","O POM é licenciado sob a Licença MIT. A licença completa está neste repositório e no site da Open Source Initiative."
+about.placeholderLicense,MIT,MIT
+about.placeholderLicenseText,"MIT License: use, copy, modify and distribute, keeping the copyright and permission notice.","Licença MIT: use, copie, modifique e distribua, mantendo o aviso de copyright e de permissão."
+about.placeholderLicenseValue,MIT,MIT
 about.placeholderTitle,POM software license,Licença do software POM
 about.pluginBaseDescription,"POM plugins are built from the Plugin Base template and SDK. Follow its README to create a repository, implement the plugin manifest and UI, then build and publish releases for POM to install.","Plugins POM podem ser criados a partir do template e SDK do Plugin Base. Siga o README para criar um repositório, implementar o manifesto e a interface do plugin, e então compilar e publicar releases para instalação no POM."
 about.pluginBaseLink,POM Plugin Base,POM Plugin Base
@@ -579,6 +580,7 @@ deploy.addNodeMachineOptions,Machine options,Opções da máquina
 deploy.addNodeSlice,Slice,Fatia
 deploy.addNodeTitle,Add a machine to this model,Somar uma máquina a este modelo
 deploy.addNodeWhole,Whole model,Modelo inteiro
+deploy.addNodeVisionMissing,"This machine has no vision projector for this model: copy one there to read images.","Esta máquina não tem projetor de visão para este modelo: copie um para lá para ler imagens."
 deploy.adminOnlyAdd,Only the administrator can add a machine to a deployment.,Somente o administrador pode adicionar uma máquina à implantação.
 deploy.advancedDetail,"Each request accepts up to {prompt} prompt tokens, in chunks of {chunk}. More is rejected before reaching llama.cpp.","Cada requisição aceita até {prompt} tokens de prompt, em pedaços de {chunk}. Passar disso é recusado antes de chegar ao llama.cpp."
 deploy.allRanges,"All ranges available in the cluster, including ones from different slicing runs. Select the ones to launch and choose each destination.","Todas as faixas que existem no cluster, inclusive as de fatiamentos diferentes. Marque as que devem subir e escolha o destino de cada uma."
@@ -685,7 +687,7 @@ deploy.knob.max_sessions,Concurrent requests,Requisições simultâneas
 deploy.knob.max_sessionsHint,"Generations served at once. Each one reserves its own full context, so this multiplies the KV-cache VRAM: two sessions at 32k cost the same as one at 64k.","Gerações atendidas ao mesmo tempo. Cada uma reserva o contexto inteiro, então isto multiplica a VRAM do cache KV: duas sessões a 32k custam o mesmo que uma a 64k."
 deploy.knob.min_p,Min-p,Min-p
 deploy.knob.min_pHint,"Drops every candidate token whose probability is below this fraction of the most likely one, after top-k and top-p. 0 is off; 0.05 is a common value.","Descarta todo token candidato cuja probabilidade fica abaixo desta fração do mais provável, depois do top-k e do top-p. 0 desliga; 0,05 é um valor comum."
-deploy.knob.moe_cache_mibHint,"VRAM, in MiB, that keeps the recently used experts held in RAM: only the misses cross PCIe, for batches of up to 32 tokens (generation). 0 turns it off. With the memory fit on, the fit counts it and keeps fewer whole expert layers on the GPU. Per GPU: with two cards, each one caches the experts of its own layers.","VRAM, em MiB, que guarda os experts da RAM usados há pouco: só as faltas atravessam o PCIe, em lotes de até 32 tokens (a geração). 0 desliga. Com o ajuste de memória ligado, o ajuste conta esse espaço e deixa menos camadas de experts inteiras na GPU. Por GPU: com duas placas, cada uma guarda os experts das próprias camadas."
+deploy.knob.moe_cache_mibHint,"VRAM, in MiB, that keeps the recently used experts held in RAM: only the misses cross PCIe, for batches of up to 32 tokens (generation). 0 turns it off. With the memory fit on, the fit counts it and keeps fewer whole expert layers on the GPU. It is the node's total: with two cards it is split between them like the layers, and it turns off llama.cpp''s pipeline parallelism between them.","VRAM, em MiB, que guarda os experts da RAM usados há pouco: só as faltas atravessam o PCIe, em lotes de até 32 tokens (a geração). 0 desliga. Com o ajuste de memória ligado, o ajuste conta esse espaço e deixa menos camadas de experts inteiras na GPU. É o total do nó: com duas placas ele é dividido entre elas como as camadas, e desliga o pipeline parallelism do llama.cpp entre elas."
 deploy.knob.mtp_draft_tokens,MTP draft tokens,Tokens rascunhados pelo MTP
 deploy.knob.mtp_draft_tokensHint,How many tokens the nextn head guesses per round. More widens the batch on every hop; fewer wastes less when a guess is rejected.,Quantos tokens a cabeça nextn adivinha por rodada. Mais alarga o lote em todos os hops; menos desperdiça menos quando o palpite é recusado.
 deploy.knob.mtp_min_probability,MTP minimum probability,Probabilidade mínima do MTP
@@ -1263,8 +1265,8 @@ huggingFace.tokenHint,The token is saved in this node''s pom.json with owner-onl
 huggingFace.tokenLabel,Access token,Token de acesso
 huggingFace.tokenPlaceholder,••••••••last four characters,••••••••últimos quatro caracteres
 inspector.adaptivePrefillChunks,Automatic prefill chunk,Pedaço de prefill automático
-inspector.betaInfo,"Settings that work but are still being measured, for MoE models larger than VRAM. They pay off in combination:","Configurações que funcionam mas ainda estão sendo medidas, para modelos MoE maiores que a VRAM. Elas rendem em combinação:"
-inspector.betaInfoLink,see how to combine them,veja como combinar
+inspector.betaInfo,"Settings that work but are still being measured: the best value changes from route to route.","Configurações que funcionam mas ainda estão sendo medidas: o melhor valor muda de rota para rota."
+inspector.betaInfoLink,see when to change it,veja quando mudar
 inspector.cacheHint,"KV cache type llama.cpp allocates on this installation. It applies to every context this node loads next, not only to this deployment.","Tipo do cache KV que o llama.cpp aloca nesta instalação. Vale para todo contexto que este nó carregar em seguida, não só para esta implantação."
 inspector.cacheK,K cache,Cache K
 inspector.cacheV,V cache,Cache V

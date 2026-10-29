@@ -46,7 +46,7 @@ If a machine does not have the file it needs, the deploy is refused unless you a
 :::
 
 :::note Settings help
-Each category of the inspector has a help button that opens its guide: Default settings, POM settings and the Beta settings.
+Each category of the inspector has a help button that opens its guide: Default settings and POM settings.
 :::
 
 :::deep docs/subsystems/deployment.md

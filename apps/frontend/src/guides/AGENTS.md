@@ -25,7 +25,8 @@ folder only renders them:
   (`docs/guides/images/<locale>/`) and, where a video exists, the embedded
   YouTube video. Their front matter carries the `route` they explain.
 - `docs/guides/settings/` - the deployment inspector's category guides
-  (`default-settings`, `pom-settings`, `beta-settings`), which also open in
+  (`default-settings`, `pom-settings`; the `beta-settings` guide is out while
+  the inspector's Beta group is commented out), which also open in
   `components/GuideDialog.tsx` from each inspector category.
 - `docs/human/<folder>/HUMAN.md` - "Inside the code": the logic of a source
   folder explained for people, beside the folder's `AGENTS.md` (the front

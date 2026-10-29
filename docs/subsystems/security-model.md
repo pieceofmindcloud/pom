@@ -159,9 +159,12 @@ principal is away.
   on every connection; the receiving side hands that identity to the request
   the same way. Announces over gossip are signed by the node key and dropped
   when the signature does not verify.
-- **Plain HTTP** is served only to loopback, so the operator opens
-  `http://localhost` without a certificate warning. `POM_INSECURE_ADMIN_UI=1`
-  extends it to remote browsers, for development only.
+- **Plain HTTP** is served only to loopback by default, so the operator opens
+  `http://localhost` without a certificate warning. `--no-tls` / `POM_NO_TLS=1`
+  allows remote HTTP for the browser/client surface behind an HTTPS reverse
+  proxy; it never changes the peer mTLS policy. The published Docker image sets
+  it by default and requires a private network between the proxy and port 8080.
+  `POM_INSECURE_ADMIN_UI=1` is the older development-only switch.
 
 ## Request authorization
 

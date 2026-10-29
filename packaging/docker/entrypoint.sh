@@ -2,11 +2,9 @@
 # Entrypoint of the published image (packaging/docker/Dockerfile).
 set -eu
 
-# A container started with `--gpus` has the host's libcuda in the linker cache; without
-# it, the stub lets the CUDA build load and run on the CPU.
-if ! ldconfig -p | grep -q 'libcuda\.so\.1 '; then
-    export LD_LIBRARY_PATH="/opt/pom/cuda-stub${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-fi
+# The image carries no NVIDIA library and the executable links none: with `--gpus all`
+# the NVIDIA Container Toolkit mounts the host driver's libcuda and POM uses CUDA;
+# without it POM runs on the CPU (or Vulkan).
 
 if [ -e /opt/pom/needs-xvfb ]; then
     # A release without the headless mode: give its window a virtual display.

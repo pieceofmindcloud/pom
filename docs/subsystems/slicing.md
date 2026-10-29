@@ -130,6 +130,12 @@ The engine's `gguf` module reads the GGUF without loading weights:
   not a stack of equal blocks; the cut only happens at a type boundary,
   otherwise the block renumbers to the wrong type (`missing tensor` or a
   silently wrong answer).
+  A kind change exactly at the index of a start-relative count
+  (`LayerCountSemantics::FromStart`, such as the dense prefix of a MoE with
+  `leading_dense_block_count = 2`) is not a boundary: llama.cpp picks the
+  block's kind by comparing its local index with that count, and the slicer
+  rebases it, so any cut keeps each block on its kind. The layout keeps those
+  values in `start_relative_layer_counts`.
 - `nextn_predict_layers` - MTP/Qwen3.5+: the nextn block only lives in the
   last layer; a slice that does not end at the model's end must zero the
   hyperparameter or llama.cpp aborts the load looking for

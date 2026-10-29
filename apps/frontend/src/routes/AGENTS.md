@@ -474,8 +474,8 @@ Per-file list:
   contract. Loading the embedded set requires
   `src/docs/` to exist, which `npm test`'s `pretest` hook guarantees.
 - `About.tsx` - an information screen at `/config/about`, the last leaf of
-  Settings. It shows the repository's AGPL-3.0 `LICENSE` and the official GNU
-  page, the risk/LGPD notice and links to the site (`pieceofmind.cloud`), contact
+  Settings. It shows the repository's MIT `LICENSE` and the Open Source
+  Initiative page, the risk/LGPD notice and links to the site (`pieceofmind.cloud`), contact
   (`contact.html`) and the official repositories. It shows the running POM release
   (`current_version`) and checks POM's releases on demand through
   `/api/ui/pom-update/check` (`usePomCoreUpdateStatus`; GitHub first, the site

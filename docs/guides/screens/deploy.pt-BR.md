@@ -46,7 +46,7 @@ Se uma máquina não tem o arquivo de que precisa, a implantação é recusada a
 :::
 
 :::note Ajuda das configurações
-Cada categoria do inspetor tem um botão de ajuda que abre o guia dela: Configurações padrões, Configurações do POM e as Configurações beta.
+Cada categoria do inspetor tem um botão de ajuda que abre o guia dela: Configurações padrões e Configurações do POM.
 :::
 
 :::deep docs/subsystems/deployment.md

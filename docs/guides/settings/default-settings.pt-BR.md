@@ -1,7 +1,7 @@
 ---
 id: default-settings
 label: Configurações padrões
-summary: Contexto, lote, amostragem, cache KV e especulação
+summary: Contexto, lote, experts do MoE, amostragem, cache KV e especulação
 title: Configurações padrões da implantação
 order: 110
 ---
@@ -24,6 +24,35 @@ Estas são as configurações que o próprio llama.cpp já oferece. O POM só as
 
 :::note A conta da memória
 Cada máquina precisa de: os pesos da fatia, o cache KV (Contexto × Sessões, no tipo do Cache K/V) e os buffers de cálculo (que crescem com o Microlote). Duas sessões de 32k custam o mesmo que uma de 64k.
+:::
+
+## Modelos MoE maiores que a VRAM
+
+Num modelo MoE (mixture of experts), cada camada tem muitos experts e cada token usa só alguns. Os experts são a maior parte dos pesos, então dá para deixá-los na RAM e manter na VRAM o resto do modelo e os experts usados há pouco. As duas configurações são do próprio llama.cpp.
+
+| Propriedade | O que faz |
+|---|---|
+| Experts do MoE na RAM | Mantém todos os experts roteados na RAM, calculados pela CPU (o --cpu-moe do llama.cpp), e deixa a VRAM para o resto do modelo. Desliga o ajuste de camadas. |
+| Cache de experts na GPU (MiB) | VRAM que guarda os experts da RAM usados há pouco (o --moe-cache-mib do llama.cpp): só as faltas atravessam o PCIe, em lotes de até 32 tokens (a geração; o prefill usa o descarregamento normal). 0 desliga. É o total do nó: com duas GPUs ele é dividido entre elas como as camadas, e o llama.cpp então desliga o pipeline parallelism entre elas. |
+
+:::stats
+- **14,95 tok/s** Qwen3.8-Flash-Next UD-IQ3_XXS (78 GB), uma GPU de 16 GB, todos os experts na RAM
+- **19,26 tok/s** O mesmo, com 8000 MiB de cache de experts
+:::
+
+| Combinação | Experts na RAM | Cache (MiB) | Ajustar à memória | Quando usar |
+|---|---|---|---|---|
+| Tudo na VRAM | desligado | 0 | ligado | O modelo cabe na VRAM. É a mais rápida. |
+| O ajuste decide, com cache | desligado | 4000 a 8000 | ligado | O modelo quase cabe. O ajuste manda para a RAM só o que não couber, e o cache serve os experts usados há pouco. Se tudo couber, o nó desliga o cache sozinho. |
+| Todos os experts na RAM, com cache | ligado | o maior que couber | (desligado pelos experts na RAM) | O modelo é muito maior que a VRAM. A VRAM fica para atenção, KV, MTP e o cache. |
+| Todos os experts na RAM, sem cache | ligado | 0 | (desligado pelos experts na RAM) | Pouca VRAM. A CPU calcula todos os experts; é a mais lenta. |
+
+:::note Quanto de cache?
+Dê ao cache a VRAM que sobra depois dos pesos, do cache KV, dos buffers de cálculo e do MTP. Se o contexto não couber, o nó corta o cache pela metade e tenta de novo, até desligá-lo abaixo de 512 MiB. No log de carga, a linha MoE cache size = X for Y of host experts diz quanto dos experts da RAM o cache cobre; ao descarregar, as linhas llama_moe_cache mostram a taxa de acerto.
+:::
+
+:::warn O cache só guarda experts que estão na RAM
+Sem experts na RAM (nem pelo ajuste, nem por Experts do MoE na RAM), o cache não tem o que guardar e não muda nada. Comece pelo padrão (ajuste ligado, experts na RAM desligado, cache 0), veja na prévia e no log se o ajuste mandou experts para a RAM, e só então defina o cache. Baixar o Microlote para 256 libera VRAM para ele.
 :::
 
 ## Amostragem
@@ -89,6 +118,10 @@ Os valores vão com a implantação, então a mudança entra numa nova versão (
 
 :::deep docs/subsystems/deployment.md
 Implantação, ajuste de memória e ciclo de vida da fatia
+:::
+
+:::deep docs/subsystems/deployment.md
+Experts do MoE na RAM e cache de experts na GPU
 :::
 
 :::deep docs/subsystems/inference.md

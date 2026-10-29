@@ -341,7 +341,7 @@ mkdir -p "$ctx/apps/frontend/src/docs" "$ctx/llama.cpp/.git"
 seed crates/node/infer_server_4242.log 'runtime log'
 seed apps/frontend/tsconfig.app.tsbuildinfo '{"stale":true}'
 seed apps/frontend/src/docs/AGENTS.md '# generated'
-seed llama.cpp/.git/HEAD 'ref: refs/heads/pom-tensor-parallel'
+seed llama.cpp/.git/HEAD 'ref: refs/heads/pom'
 seed crates/node/local.gguf 'not a build input'
 seed crates/node/identity.key 'not a build input'
 seed crates/node/.env.local 'not a build input'

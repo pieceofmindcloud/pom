@@ -1,7 +1,7 @@
 ---
 id: default-settings
 label: Default settings
-summary: Context, batch, sampling, KV cache and speculation
+summary: Context, batch, MoE experts, sampling, KV cache and speculation
 title: Default deployment settings
 order: 110
 ---
@@ -24,6 +24,35 @@ These are the settings llama.cpp already has. POM only carries them to every mac
 
 :::note The memory math
 Each machine needs: the slice's weights, the KV cache (Context × Sessions, in the K/V cache type) and the compute buffers (which grow with the Micro-batch). Two 32k sessions cost the same as one 64k session.
+:::
+
+## MoE models larger than VRAM
+
+In a MoE (mixture of experts) model, each layer has many experts and each token uses only a few. The experts are most of the weights, so they can stay in RAM while VRAM keeps the rest of the model and the experts used recently. Both settings are llama.cpp's own.
+
+| Property | What it does |
+|---|---|
+| MoE experts in RAM | Keeps every routed expert in RAM, computed by the CPU (llama.cpp's --cpu-moe), and gives VRAM to the rest of the model. Turns the layer fit off. |
+| Expert cache on GPU (MiB) | VRAM that keeps the recently used experts held in RAM (llama.cpp's --moe-cache-mib): only misses cross PCIe, for batches of up to 32 tokens (generation; prefill keeps the regular offload). 0 turns it off. It is the node's total: with two GPUs it is split between them like the layers, and llama.cpp then turns its pipeline parallelism between them off. |
+
+:::stats
+- **14.95 tok/s** Qwen3.8-Flash-Next UD-IQ3_XXS (78 GB), one 16 GB GPU, all experts in RAM
+- **19.26 tok/s** The same, with an 8000 MiB expert cache
+:::
+
+| Combination | Experts in RAM | Cache (MiB) | Fit to memory | When |
+|---|---|---|---|---|
+| Everything in VRAM | off | 0 | on | The model fits in VRAM. The fastest. |
+| The fit decides, with a cache | off | 4000 to 8000 | on | The model almost fits. The fit sends to RAM only what does not fit, and the cache serves the recently used experts. If everything fits, the node turns the cache off itself. |
+| All experts in RAM, with a cache | on | the largest that fits | (off because of experts in RAM) | The model is much larger than VRAM. VRAM goes to attention, KV, MTP and the cache. |
+| All experts in RAM, no cache | on | 0 | (off because of experts in RAM) | Little VRAM. The CPU computes every expert; the slowest. |
+
+:::note How much cache?
+Give the cache the VRAM left after the weights, the KV cache, the compute buffers and MTP. If the context does not fit, the node halves the cache and retries, turning it off below 512 MiB. In the load log, the line MoE cache size = X for Y of host experts tells how much of the experts in RAM the cache covers; on unload, the llama_moe_cache lines show the hit rate.
+:::
+
+:::warn The cache only holds experts that are in RAM
+With no experts in RAM (neither from the fit nor from MoE experts in RAM), the cache has nothing to hold and changes nothing. Start from the default (fit on, experts in RAM off, cache 0), check in the preview and the log whether the fit sent experts to RAM, and only then set the cache. Dropping the Micro-batch to 256 frees VRAM for it.
 :::
 
 ## Sampling
@@ -89,6 +118,10 @@ The values travel with the deployment, so the change goes into a new version (Re
 
 :::deep docs/subsystems/deployment.md
 Deployment, memory fit and slice lifecycle
+:::
+
+:::deep docs/subsystems/deployment.md
+MoE experts in RAM and the GPU expert cache
 :::
 
 :::deep docs/subsystems/inference.md

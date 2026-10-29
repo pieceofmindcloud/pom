@@ -1388,7 +1388,9 @@ reason that only shows up in the error of a tunnel that also failed.
   did not fire".
 - `MAX_RESTARTS=3` with `RESTART_INTERVAL=30s` between attempts (a newer generation cuts the
   wait short), `MAX_CONTEXT_TOKENS=250_000`. The restart budget is persisted in the
-  journal `<config>.last-slice.json` and shared with the supervisor: if the slice does not fit
+  journal `<config>.last-slice.json` (the path `NodeRuntime` fixes when it is built, never
+  read again from `POM_CONFIG`; the test benches give each runtime its own) and shared
+  with the supervisor: if the slice does not fit
   in memory or falls during the confirmation, each new process increments `Pending.attempts`. On
   reaching `MAX_AUTOMATIC_ATTEMPTS`, the node comes up without a model and leaves the reason in
   `status.detail`; `pom undeploy` also records a persistent block.

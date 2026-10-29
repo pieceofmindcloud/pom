@@ -13,7 +13,7 @@ the Python code. Authoritative: read the files; this is a map.
 - `build-docker.sh` - builds the cluster image: it reads the commit **on the
   host** (`git rev-parse --short HEAD`, with a `-dirty` suffix when the tree has
   changes) and exports `POM_BUILD_COMMIT` only for the runtime. By default it
-  resolves the tag of the remote `pom-tensor-parallel` branch (the same algorithm
+  resolves the tag of the remote `pom` branch (the same algorithm
   as the release action, completing the history of a shallow clone without
   downloading blobs) and uses `POM_LLAMA_CPP_MODE=release`; the
   `LLAMA_CPP_CACHE_KEY` then includes that tag. `POM_LLAMA_CPP_RELEASE_TAG` pins
@@ -84,7 +84,8 @@ the Python code. Authoritative: read the files; this is a map.
   `make-linux-appimage.sh`, with appimagetool kept in the cache's `tools/`;
   Windows stays a zip. Called by `.github/workflows/release-ksia.yml`.
 - `make-linux-appimage.sh` - packs `pom` + `pom-plugin-host` into an AppImage
-  (AppRun, desktop entry, icons). The optional fifth argument names the file;
+  (AppRun, desktop entry, icons, and `LICENSE` + `THIRD-PARTY-NOTICES.txt` in
+  `usr/share/doc/pom/`). The optional fifth argument names the file;
   the default `pom-<v>-x86_64` is the CUDA + Vulkan package of
   `release-linux.yml`.
 - `test-release-ksia.sh` - dry-run of each variant (including the

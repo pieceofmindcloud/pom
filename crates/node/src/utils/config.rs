@@ -385,6 +385,12 @@ pub struct Config {
         deserialize_with = "discard_retired_setting"
     )]
     pub retired_tls_required: (),
+    /// Where `save` writes. `None` follows `config_path()`, the process's
+    /// configuration; a test bench pins its own file, so a state saved by one
+    /// test never lands in the file another test named in `POM_CONFIG`, nor in
+    /// the `pom.json` of the working directory.
+    #[serde(skip)]
+    pub saved_at: Option<PathBuf>,
     /// HTTP/3 over QUIC for inference hops, decided by the principal. On
     /// unless the config says otherwise.
     #[serde(default = "default_true")]
@@ -838,7 +844,7 @@ impl Config {
     }
 
     pub fn save(&self) -> Result<()> {
-        let path = Self::config_path();
+        let path = self.saved_at.clone().unwrap_or_else(Self::config_path);
         self.write_to(&path)
     }
 
@@ -1460,6 +1466,7 @@ mod tests {
     fn test_roundtrip_principal_config() {
         let cfg = Config {
             retired_tls_required: (),
+            saved_at: None,
             gpus: None,
             thermal: Default::default(),
             cache_type_k: KvCacheType::F16,
@@ -1568,6 +1575,7 @@ mod tests {
     fn test_roundtrip_node_config() {
         let cfg = Config {
             retired_tls_required: (),
+            saved_at: None,
             gpus: None,
             thermal: Default::default(),
             cache_type_k: KvCacheType::F16,
@@ -1781,6 +1789,7 @@ mod tests {
         ));
         let mut cfg = Config {
             retired_tls_required: (),
+            saved_at: None,
             profile: crate::profile::NodeProfile::Worker,
             setup_pending: false,
             local_auto_discovery: false,
@@ -1983,6 +1992,7 @@ mod tests {
     fn test_active_api_key() {
         let cfg = Config {
             retired_tls_required: (),
+            saved_at: None,
             gpus: None,
             thermal: Default::default(),
             cache_type_k: KvCacheType::F16,

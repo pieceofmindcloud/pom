@@ -216,6 +216,7 @@ mod tests {
     fn make_state(key: &str, blocked: Vec<String>) -> AuthState {
         Arc::new(RwLock::new(Config {
             retired_tls_required: (),
+            saved_at: None,
             gpus: None,
             thermal: Default::default(),
             cache_type_k: crate::config::KvCacheType::F16,

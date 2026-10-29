@@ -142,7 +142,7 @@ pub fn clear() {
     clear_at(&path());
 }
 
-fn clear_at(p: &Path) {
+pub(crate) fn clear_at(p: &Path) {
     let _ = std::fs::remove_file(p);
     let _ = std::fs::remove_file(disable_path(p));
 }
@@ -164,7 +164,11 @@ fn force_disable_at(p: &Path) -> Result<()> {
 }
 
 pub fn auto_resume_disabled() -> bool {
-    disable_path(&path()).exists()
+    auto_resume_disabled_at(&path())
+}
+
+pub(crate) fn auto_resume_disabled_at(p: &Path) -> bool {
+    disable_path(p).exists()
 }
 
 /// Starts an explicit deployment and records the first attempt before any
@@ -173,7 +177,7 @@ pub fn begin_new_attempt(cfg: &NodeConfig) -> Result<u32> {
     begin_new_attempt_at(&path(), cfg)
 }
 
-fn begin_new_attempt_at(p: &Path, cfg: &NodeConfig) -> Result<u32> {
+pub(crate) fn begin_new_attempt_at(p: &Path, cfg: &NodeConfig) -> Result<u32> {
     let _ = std::fs::remove_file(disable_path(p));
     let annotation = Annotation {
         state: SliceState::Pending,
@@ -189,7 +193,7 @@ pub fn resume_attempt(cfg: &NodeConfig) -> Result<u32> {
     resume_attempt_at(&path(), cfg)
 }
 
-fn resume_attempt_at(p: &Path, cfg: &NodeConfig) -> Result<u32> {
+pub(crate) fn resume_attempt_at(p: &Path, cfg: &NodeConfig) -> Result<u32> {
     let attempts = match read_annotation(p) {
         Some(annotation) if annotation.state == SliceState::Pending => {
             annotation.attempts.max(1).saturating_add(1)

@@ -10,9 +10,12 @@ in `../routing-contract`, empty for the runtime).
 
 - Single binary: `pom` in `src/main.rs`.
 - `cuda`/`metal` features passed on to `llama-cpp-sys-2` (GGML compiled with GPU).
-  Used by `scripts/build-docker.sh`/`POM_BUILD_FEATURES` in the devupdate. The CUDA
-  build keeps CUDA Graphs off by default; enabling it with `POM_CUDA_GRAPHS=1`
-  requires rebuilding the binary and additional free VRAM.
+  `cuda-no-vmm` enables CUDA while omitting the VMM calls that otherwise link
+  `libcuda.so.1` at startup; release Linux CUDA builds use it so the binary can
+  start without a host NVIDIA driver. Used by `scripts/build-docker.sh`/
+  `POM_BUILD_FEATURES` in the devupdate. The CUDA build keeps CUDA Graphs off by
+  default; enabling it with `POM_CUDA_GRAPHS=1` requires rebuilding the binary
+  and additional free VRAM.
 - Heavy dependencies: `iroh` 1.3 (`unstable-net-report` for the NAT report),
   `iroh-gossip` 0.101, `iroh-mdns-address-lookup` 0.6, `iroh-relay` 1.3 (`server`,
   the embedded relay), `pkarr` 8.1 (8.x is what shares `ed25519-dalek` 3 with iroh),
@@ -50,7 +53,7 @@ in `../routing-contract`, empty for the runtime).
   not change the licensing policy nor the `RuntimeParams` received over the
   network; the absent mode uses `dense` (`llama.cpp`) as the default.
 - The native build automatically prepares the `llama.cpp` fork in a new worktree,
-  cloning the `pom-tensor-parallel` branch when the versioned symlink points at a
+  cloning the fork's `pom` branch when the versioned symlink points at a
   missing tree. `LLAMA_SOURCE` allows reusing a local checkout that contains
   `ggml`; preparation failures show the recovery command. The full procedure is in
   `docs/subsystems/build-and-run.md`, section "Preparing a local worktree".
@@ -86,7 +89,8 @@ public relay), `--no-cluster-relay`, `--no-relay-transfers` (the three are the
 `relay` section of the config file, see `p2p-network.md`),
 `--no-default-relays`,
 `--no-discovery`, `--no-pkarr` (no pkarr client: a network without internet
-access).
+access), `--no-tls` (remote HTTP for browser/client requests behind an HTTPS
+proxy; peer mTLS remains on).
 `--relay-peers` (relay URLs) adds to the `pom.json`'s `relay_peers` (`merged_relay_peers`,
 config first); `--no-default-relays` drops n0's public relays, as `--bootstrap` does to `bootstrap_nodes`. There is no flag for
 model, memory, layer range, sampling or inference port: that comes from the

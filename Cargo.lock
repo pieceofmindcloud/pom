@@ -1549,7 +1549,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3191,7 +3191,7 @@ checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 [[package]]
 name = "llama-cpp-sys-2"
 version = "0.1.154"
-source = "git+ssh://git@github.com/pieceofmindcloud/pom-plugin-llama.cpp.git?rev=6320f002bbb2c593de5299fae1b74d4fa63c23cc#6320f002bbb2c593de5299fae1b74d4fa63c23cc"
+source = "git+ssh://git@github.com/pieceofmindcloud/pom-plugin-llama.cpp.git?rev=b86d3d0433c0ce168b46e0e1332f70996e0b6116#b86d3d0433c0ce168b46e0e1332f70996e0b6116"
 dependencies = [
  "bindgen",
  "cc",
@@ -3204,7 +3204,7 @@ dependencies = [
 [[package]]
 name = "llama-engine"
 version = "0.1.0"
-source = "git+ssh://git@github.com/pieceofmindcloud/pom-plugin-llama.cpp.git?rev=6320f002bbb2c593de5299fae1b74d4fa63c23cc#6320f002bbb2c593de5299fae1b74d4fa63c23cc"
+source = "git+ssh://git@github.com/pieceofmindcloud/pom-plugin-llama.cpp.git?rev=b86d3d0433c0ce168b46e0e1332f70996e0b6116#b86d3d0433c0ce168b46e0e1332f70996e0b6116"
 dependencies = [
  "anyhow",
  "cc",
@@ -4608,6 +4608,7 @@ version = "0.1.0"
 dependencies = [
  "enterprise-protocol",
  "hex",
+ "libc",
  "libloading",
  "serde",
  "serde_json",
@@ -5220,7 +5221,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5313,7 +5314,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6050,7 +6051,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6967,7 +6968,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

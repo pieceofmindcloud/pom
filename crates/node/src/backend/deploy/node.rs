@@ -28,6 +28,79 @@ pub struct AddNodeOptions {
     pub options: Vec<AddNodeOption>,
     pub cache_types: serde_json::Value,
     pub defaults: AddNodeDefaults,
+    pub vision: AddNodeVision,
+}
+
+/// The dialog's vision switch for the new machine.
+#[derive(Debug, Serialize)]
+pub struct AddNodeVision {
+    /// The machine holds a projector compatible with the model.
+    pub available: bool,
+    /// The deployment runs with a projector now: the switch starts on.
+    pub deployed: bool,
+}
+
+/// The projector the deployment runs with now. The record does not keep it, so it is read from the live
+/// configuration of its machines (as the redeploy does) and named by the survey's sidecars. `None`: no machine
+/// reads images; `Some(None)`: one does, with a file the survey cannot name.
+async fn deployment_projector(
+    state: &GatewayState,
+    record: Option<&crate::deployment::Deployment>,
+    sidecars: &HashMap<String, Vec<crate::catalog::Sidecar>>,
+) -> Option<Option<crate::catalog::SidecarFile>> {
+    let record = record?;
+    let peers = state.all_peers().await;
+    for node in &record.nodes {
+        let Some(peer) = peers.iter().find(|peer| peer.node_id == node.node_id) else {
+            continue;
+        };
+        let Ok(snapshot) = peer_node_snapshot(state, peer).await else {
+            continue;
+        };
+        let Some(path) = snapshot
+            .get("config")
+            .and_then(|config| config.get("mmproj_path"))
+            .and_then(|value| value.as_str())
+            .filter(|path| !path.is_empty())
+        else {
+            continue;
+        };
+        let file = sidecars.get(&node.node_id).and_then(|held| {
+            held.iter()
+                .find(|sidecar| sidecar.kind == crate::catalog::SidecarKind::Mmproj && sidecar.path == path)
+                .map(|sidecar| crate::catalog::SidecarFile {
+                    file_name: sidecar.file_name.clone(),
+                    size_bytes: sidecar.size_bytes,
+                })
+        });
+        return Some(file);
+    }
+    None
+}
+
+/// The projectors compatible with the model that `node_id` holds, the deployment's own first.
+fn machine_projectors(
+    survey: &Survey,
+    machines: &[Machine],
+    node_id: &str,
+    deployed: Option<&crate::catalog::SidecarFile>,
+) -> Vec<crate::catalog::SidecarFile> {
+    let Some(shape) = survey.model_shape.as_ref() else {
+        return Vec::new();
+    };
+    let mut files: Vec<crate::catalog::SidecarFile> = compatible_options(&survey.sidecars, machines, shape)
+        .into_iter()
+        .filter(|option| {
+            option.kind == crate::catalog::SidecarKind::Mmproj
+                && option.holders.iter().any(|holder| holder.node_id == node_id)
+        })
+        .map(|option| crate::catalog::SidecarFile {
+            file_name: option.file_name,
+            size_bytes: option.size_bytes,
+        })
+        .collect();
+    files.sort_by_key(|file| Some(file) != deployed);
+    files
 }
 
 #[derive(Debug, Serialize)]
@@ -81,6 +154,10 @@ pub struct AddNodeRequest {
     pub cache_type_k: Option<crate::config::KvCacheType>,
     #[serde(default)]
     pub cache_type_v: Option<crate::config::KvCacheType>,
+    /// The vision projector on the new machine, when it is the one that reads the prompt (`vision_reader`). `None`
+    /// follows the deployment: on when its machines run with a projector.
+    #[serde(default)]
+    pub vision: Option<bool>,
 }
 #[derive(Debug, Deserialize)]
 pub struct RemoveNodeRequest {
@@ -164,7 +241,7 @@ async fn target_json(
         .map_err(|e| format!("invalid peer response: {e}"))
 }
 
-async fn apply_target_cache_types(
+pub(super) async fn apply_target_cache_types(
     state: &GatewayState,
     target_node_id: &str,
     requested_k: Option<crate::config::KvCacheType>,
@@ -299,12 +376,20 @@ pub(super) async fn add_node_options_endpoint(
         Ok(value) => value,
         Err(error) => return bad(json!({ "error": error })),
     };
+    let survey_now = survey(&state, &req.group, req.kind, None, None).await;
+    let record = record_for_group(&state, &req.group).await;
+    let deployed = deployment_projector(&state, record.as_ref(), &survey_now.sidecars).await;
+    let vision = AddNodeVision {
+        available: !machine_projectors(&survey_now, &survey_now.machines, &req.target_node_id, None).is_empty(),
+        deployed: deployed.is_some(),
+    };
 
     Json(AddNodeOptions {
         node_id: req.target_node_id,
         options,
         cache_types,
         defaults,
+        vision,
     })
     .into_response()
 }
@@ -477,9 +562,8 @@ pub(super) async fn add_node_endpoint(
     if target_label.is_empty() {
         return bad(json!({ "error": "the chosen machine is not in the cluster" }));
     }
-    let machines = survey(&state, &req.group, req.kind, None, None)
-        .await
-        .machines;
+    let mut survey_now = survey(&state, &req.group, req.kind, None, None).await;
+    let machines = std::mem::take(&mut survey_now.machines);
     let Some(shard) = held_shard else {
         return bad(json!({
             "error": format!(
@@ -537,6 +621,33 @@ pub(super) async fn add_node_endpoint(
         return bad(json!({ "error": error }));
     }
 
+    // Vision: only the machine that reads the prompt loads the projector, the one the deployment runs with when this
+    // machine has it, otherwise a compatible one it holds.
+    let deployed = deployment_projector(&state, existing_record.as_ref(), &survey_now.sidecars).await;
+    let reads_prompt = vision_reader(
+        req.start_layer,
+        req.end_layer,
+        total_layers,
+        node_params.inference_service.is_some(),
+    );
+    let use_mmproj = req.vision.unwrap_or(deployed.is_some()) && reads_prompt;
+    let mmproj_file = if use_mmproj {
+        let projectors = machine_projectors(&survey_now, &machines, &req.target_node_id, deployed.flatten().as_ref());
+        match projectors.into_iter().next() {
+            Some(file) => Some(file),
+            None => {
+                return bad(json!({
+                    "error": format!(
+                        "{target_label} has no vision projector for {}: copy one there, or add the machine without vision",
+                        req.group
+                    ),
+                }))
+            }
+        }
+    } else {
+        None
+    };
+
     // `peer_index`/`peer_count` feed only two decisions: whether this node exports
     // the residual state and whether it skips the embeddings. Both ask "am I the
     // last?", and the answer comes from the layer order in the cluster - not from the
@@ -558,7 +669,7 @@ pub(super) async fn add_node_endpoint(
             model_label: Some(req.group.clone()),
             deployment_name: req.group.clone(),
             total_layers,
-            use_mmproj: false,
+            use_mmproj,
             // A single target: `launch` stops the inference of the targets it receives, and
             // this list has exactly the machine that is joining.
             targets: vec![LaunchTarget {
@@ -581,8 +692,8 @@ pub(super) async fn add_node_endpoint(
                 mmproj_path: None,
                 mtp_draft_path: None,
                 mtp_draft_file: None,
-                mmproj_file: None,
-                use_mmproj: false,
+                mmproj_file: mmproj_file.clone(),
+                use_mmproj,
             }],
             // Who is the pipeline's entry does not change because of this: only whoever holds
             // layer 0 receives the prompt, and `launch` only marks `primary` on the
@@ -627,8 +738,8 @@ pub(super) async fn add_node_endpoint(
             mmproj_path: None,
             mtp_draft_path: None,
             mtp_draft_file: None,
-            mmproj_file: None,
-            use_mmproj: false,
+            mmproj_file,
+            use_mmproj,
         };
         let machines = survey(&state, &req.group, req.kind, None, None)
             .await
@@ -699,6 +810,21 @@ pub(super) async fn remove_node_endpoint(
         .find(|(id, _, _)| id == &req.target_node_id)
         .cloned()
     else {
+        // The record can still list a machine that left the model (it was given another
+        // one, or its slot failed): dropping it from the record is all there is to undo,
+        // and nothing is unloaded, since what it serves now is another deployment's.
+        if let Some(mut record) = record.filter(|record| record.node(&req.target_node_id).is_some())
+        {
+            let version = drop_from_record(&state, &mut record, &req.target_node_id).await;
+            return Json(json!({
+                "removed": true,
+                "uncovered_layers": [],
+                "deploy_id": record.deploy_id,
+                "version": version,
+                "serving": !live.is_empty(),
+            }))
+            .into_response();
+        }
         return bad(json!({ "error": "this machine is not serving this model" }));
     };
     let remaining: Vec<(u32, u32)> = live
@@ -735,19 +861,8 @@ pub(super) async fn remove_node_endpoint(
 
     let (deploy_id, version, serving) = if let Some(mut record) = record {
         if record.node(&req.target_node_id).is_some() {
-            let params = record
-                .active()
-                .map(|active| active.params.clone())
-                .unwrap_or_default();
-            let nodes = record
-                .nodes
-                .iter()
-                .filter(|node| node.node_id != req.target_node_id)
-                .cloned()
-                .collect();
-            let version = record.append_version(params, nodes, state.network.node_id.as_str());
+            let version = drop_from_record(&state, &mut record, &req.target_node_id).await;
             let serving = !record.nodes.is_empty();
-            publish_record(&state, &record).await;
             (Some(record.deploy_id), Some(version), serving)
         } else {
             (None, None, !live.is_empty())
@@ -764,6 +879,27 @@ pub(super) async fn remove_node_endpoint(
         "serving": serving,
     }))
     .into_response()
+}
+
+/// Appends the record's version without `node_id` and publishes it.
+async fn drop_from_record(
+    state: &GatewayState,
+    record: &mut crate::deployment::Deployment,
+    node_id: &str,
+) -> u32 {
+    let params = record
+        .active()
+        .map(|active| active.params.clone())
+        .unwrap_or_default();
+    let nodes = record
+        .nodes
+        .iter()
+        .filter(|node| node.node_id != node_id)
+        .cloned()
+        .collect();
+    let version = record.append_version(params, nodes, state.network.node_id.as_str());
+    publish_record(state, record).await;
+    version
 }
 
 // ── Taking the whole pipeline off the air ───────────────────────────────────

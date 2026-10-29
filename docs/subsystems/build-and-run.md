@@ -125,7 +125,8 @@ the shared server/socket.
 ### Cache in GitHub Actions
 
 The Linux and both macOS release workflows resolve the current SHA of the
-`pom-tensor-parallel` branch before the build. The Windows workflow instead uses
+fork's `pom` branch before the build (the `ref` input of
+`.github/actions/llama-cache`). The Windows workflow instead uses
 a published fork tag, as described below. For the source builds, the fork
 checkout lives in `.ci-cache/llama.cpp`, outside the versioned symlink, and is
 stored by `actions/cache` with the key:
@@ -180,13 +181,13 @@ was validated offline by inspecting the workflows,
 
 The Compose files build with `POM_LLAMA_CPP_MODE=release` by default;
 `scripts/build-docker.sh` called without the variable builds in `source`.
-`build-docker.sh` queries the remote `pom-tensor-parallel` branch, derives the
+`build-docker.sh` queries the remote `pom` branch, derives the
 same tag as `get-tag-name` in the workflow and passes the exact tag to Docker.
 It also accepts `POM_LLAMA_CPP_RELEASE_TAG` to pin an already chosen release.
 The fork's workflow must finish and publish the assets before this build: a
 tag without the CPU x64, CUDA 13.4 x64, Vulkan x64 packages and the source
 archive fails with no fallback. The manual dispatch must use the
-`pom-tensor-parallel` branch; a push to that branch does not trigger the
+`pom` branch; a push to that branch does not trigger the
 automatic rule, which is restricted to `master`.
 
 The tag's source archive provides the headers and sources used by bindgen, MTP
@@ -486,7 +487,10 @@ loses offload on the first click.
   and give non-root nodes a writable `CARGO_HOME` in the project data volume;
   plugin build output stays in
   `<project_root>/.pom-dev-plugin-builds`, not in
-  the mounted source. The release `runtime` target still has no toolchain.
+  the mounted source. The `dev-os` stage also installs `file` and `xxd` for
+  agents running inside plugin terminals; a missing shell command there is a
+  container package issue, not a tool-call parser failure. The release
+  `runtime` target still has no toolchain.
 - **Image context and content**: the main context ignores the local
   `llama.cpp/` copy; the fork only enters as a named context, and the build
   script removes `.git`, builds, models, credentials and dotenv files from that
@@ -678,17 +682,28 @@ workflow or on demand, smoke-tests it without a GPU and pushes
 newest release that has a Linux AppImage, preferring the CUDA + Vulkan one.
 Secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`; the variable
 `DOCKERHUB_REPOSITORY` overrides the image name. Details and how to run it are
-in `packaging/docker/README.md`. What the image has to work around:
+in `packaging/docker/README.md`. The published image includes `file` and
+`xxd` for agent terminals too. The image sets `POM_NO_TLS=1` for Coolify's
+HTTPS-terminating proxy: its upstream is plain HTTP on private port 8080,
+while the node-to-node connections remain mTLS. Do not publish the unencrypted
+UI port to the internet. What the image has to work around:
 
 - **The AppImage is the desktop build.** Without a display the node runs as a
   server (`linux_window::available`, also forced by `POM_HEADLESS=1`, which the
   image sets). A release from before that fallback dies in GTK init; the
   Dockerfile probes the binary once and, only then, installs Xvfb and the
   entrypoint runs the node under a virtual display.
-- **The CUDA AppImage links `libcuda.so.1`.** The image carries NVIDIA's stub
-  in `/opt/pom/cuda-stub`, which the entrypoint puts on `LD_LIBRARY_PATH` only
-  when the linker cache has no real driver (a container without `--gpus`); CUDA
-  then finds no device and the node runs on the CPU.
+- **The notices come from the AppImage.** The image copies the AppImage's
+  `usr/share/doc/pom/` (`LICENSE`, `THIRD-PARTY-NOTICES.txt`) and refuses to
+  build from an AppImage that has none (releases before the notices existed).
+- **No NVIDIA library in the image.** The Linux release builds CUDA with the
+  `cuda-no-vmm` feature (`crates/node/Cargo.toml`: ggml's legacy memory pool
+  instead of the driver's VMM), so `pom` links no `libcuda.so.1` and starts
+  without the driver; the image carries no NVIDIA stub (the CUDA Toolkit's stub
+  is not a redistributable file) and refuses an AppImage that still links
+  libcuda. With `--gpus all` the NVIDIA Container Toolkit mounts the host
+  driver's libcuda (`NVIDIA_DRIVER_CAPABILITIES=compute,utility`) and the node
+  uses CUDA; without it the node runs on the CPU or Vulkan.
 
 ## No Python runtime
 
@@ -727,6 +742,7 @@ flags on the command line.
 | `POM_CACHE_RAM` | Host-memory KV cache in MiB (llama-server's `--cache-ram`): a positive ceiling, `0` for off, `-1` or unset for as much as the machine allows. Beats `cache_ram_mib` in `pom.json`. Half of the host RAM always stays available to the user and a host with less than 12 GiB caches nothing. See `inference.md` §3.1.2. |
 | `POM_SLOT_AUTO_TTL_SECS` | TTL of an unused automatic prefix snapshot, in seconds (default 7 days). Beats `slot_auto_ttl_secs` in `pom.json`. Read at gateway startup. |
 | `POM_HEADLESS` | Linux `desktop` build (the AppImage): `=1` (`true`/`yes`/`on`) never opens the window and runs the node as a server, as happens anyway when neither `DISPLAY` nor `WAYLAND_DISPLAY` is set. |
+| `POM_NO_TLS` | Boolean equivalent of `--no-tls`: allows HTTP for remote browser UI and client API behind an HTTPS reverse proxy; peer-only requests stay refused and mutual TLS between nodes is unchanged. Off by default in the binary, on by default in the published Docker image. Never publish the plain HTTP port directly to the internet. |
 | `POM_INSECURE_ADMIN_UI` | `=1` serves the admin UI in plain HTTP to remote browsers too, instead of redirecting them to https. Development only, for machines reached by IP with no trusted certificate; read once at startup. Peer-only routes stay refused in plain text and plain node-to-node calls still prove no membership. Loopback never needs it. |
 | `POM_TLS_NAMES` | Comma-separated DNS names this node is reached by besides its host name (`localhost` is always in), for a node in a container whose host name is not the one browsers use. They go into the local CA's name constraints when the CA is created and into the web certificate. A name added after the CA exists stays out of the certificate until the CA files (`.pom-ca.key`, `.pom-ca.crt`) are deleted and the new CA trusted again. |
 | `POM_DEV_AUTO_ACCEPT_TRANSFERS` | `=1` makes the **receiving** node accept every transfer offer without a click. Development only; read once at startup. The sender cannot ask for it. |
@@ -736,7 +752,7 @@ flags on the command line.
 | `POM_BUILD_COMMIT` | Commit shown in `/api/ui/node`; in Docker it is passed by `build-docker.sh` as a runtime variable, outside the Cargo/npm cache. Without it, uses the fallback compiled by `build.rs`. |
 | `POM_RELEASE_VERSION` | At build time, the release `build.rs` compiles in (else the newest `v*` tag of the checkout, else `v` + the crate version). At run time it overrides the compiled one (`pom_core_update::release_version`): the release the footer, `/api/ui/node`, the announce and the update check use. A Docker build has no `.git`, so `build-docker.sh` fetches the tags, reads the newest on the host and passes it to the runtime stages, like `POM_BUILD_COMMIT`; without it a container reported `v0.1.0`. |
 | `LLAMA_SOURCE` | An already prepared local `llama.cpp` checkout; must contain `ggml`, is normalized to an absolute path and avoids copying the fork into the worktree. |
-| `POM_LLAMA_CPP_REPOSITORY` / `POM_LLAMA_CPP_REF` | Remote and branch used by the automatic preparation when the fork is missing. The defaults are the public fork and `pom-tensor-parallel`. |
+| `POM_LLAMA_CPP_REPOSITORY` / `POM_LLAMA_CPP_REF` | Remote and branch used by the automatic preparation when the fork is missing. The defaults are the public fork and `pom`. |
 | `POM_LLAMA_CPP_AUTOCLONE` | Use `=0` to block the automatic download and only get the message with the manual procedure. |
 | `VITE_API_TARGET` | Proxy target of the UI dev server (default `http://127.0.0.1:8080`). |
 
@@ -752,6 +768,14 @@ the local self-hosted runner.
 | `.github/workflows/release-macos.yml` | macOS universal (arm64 + x86_64), Metal | hosted (`macos-14`) | `version`, `prerelease` |
 | `.github/workflows/release-macos-self-hosted.yml` | Same macOS package | self-hosted macOS runner (label `macbook`) | `version`, `prerelease` |
 | `.github/workflows/release-windows.yml` | Windows x86_64, CUDA + Vulkan and/or CPU | hosted (`windows-2022`) | `version`, `variantes` (`gpu`/`cpu`/`ambos` - "both"), `prerelease` |
+
+Every package carries POM's `LICENSE` and `THIRD-PARTY-NOTICES.txt` (generated
+and versioned by `apps/frontend/scripts/build-licenses.mjs`, see
+`apps/frontend/AGENTS.md`): beside `pom.exe` in the Windows zip, in
+`Contents/Resources/` of the macOS app, in `usr/share/doc/pom/` of the AppImage
+and of both Docker images. The notices hold NVIDIA's terms for the CUDA
+runtime the CUDA packages include; the development image built on
+`nvidia/cuda` also keeps NVIDIA's own `/NGC-DL-CONTAINER-LICENSE`.
 
 The packages are uploaded as artifacts only to pass between jobs of the same
 run, with a `retention-days` of 1 or 2 days; the final ones are attached to
@@ -785,7 +809,7 @@ relative to the POM root (`[env]`, `force = false`). So the fork is the root's
 `llama.cpp` (a checkout or a symlink, ignored by git), and a `LLAMA_SOURCE` set
 by the environment (CI, Docker) wins. If the source is missing or has no `ggml`,
 the build stops with the manual clone command. The branch is
-`pom-tensor-parallel` of the fork. The project does not version the fork's
+`pom` of the fork. The project does not version the fork's
 content, so updating it is part of updating the dependency.
 
 The binding's build also applies a local fix to `common_fit_params`: free
@@ -992,7 +1016,7 @@ the dry run of each variant.
 
 **State that survives between runs** lives in `POM_RELEASE_CACHE` (default
 `~/.cache/pom-release` of the `github-runner` user): a shallow clone of the
-llama.cpp fork (redone when the remote sha of `pom-tensor-parallel` changes), a
+llama.cpp fork (redone when the remote sha of the `pom` branch changes), a
 `target-<variant>` per variant, the Windows tools (`cargo-xwin`, `ninja`,
 shims), the `xwin` cache and the `ccache` cache (`CCACHE_DIR` is forced to
 `ccache/` in there: a `cache_dir` in `ccache.conf` the user cannot write made

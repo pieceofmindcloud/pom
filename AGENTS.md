@@ -112,7 +112,8 @@ the local rebuild; Cargo writes into `.pom-dev-plugin-builds/` at the POM
 project root, outside the sources that may be mounted read-only. The cluster's
 plugin profile uses the same target and keeps the Cargo cache in
 `.pom-dev-cargo`, inside the project volume and writable by the node's user. The
-release `runtime` image does not include a toolchain. The development Docker
+release `runtime` image does not include a toolchain. The `dev-os` image includes `file` and `xxd` for agents in the plugin terminals;
+the published image includes them too. The development Docker
 builds use libraries from the exact fork release by default; to compile local
 sources, use `POM_LLAMA_CPP_MODE=source` and, optionally,
 `POM_LLAMA_CPP_SOURCE_DIR=/path/to/llama.cpp` with the build scripts.
@@ -325,9 +326,11 @@ breaks the whole product.
   `brand::dns_record()`). The only exception cargo forces is the `[[bin]]` in
   `crates/node/Cargo.toml`. → `build-and-run.md`
 - **Between nodes it is always mutual TLS, and the key alone opens nothing.**
-  There is no TLS switch; plain HTTP is served only to loopback (or, in development,
-  to remote browsers with `POM_INSECURE_ADMIN_UI=1`), which keeps
-  `http://localhost` working for the operator. Each node's certificate is
+  There is no switch for peer TLS. Plain HTTP is served only to loopback by
+  default; `--no-tls` / `POM_NO_TLS=1` enables remote browser/client HTTP
+  behind an HTTPS proxy without changing peer mTLS (the published Docker
+  image enables it). `POM_INSECURE_ADMIN_UI=1` is the development switch.
+  `http://localhost` keeps working for the operator. Each node's certificate is
   derived from its `.pom-node.key`, verified by `SHA256(pubkey) == node_id`, and
   presented on both ends, so a call authorized by the connection key also needs
   the caller to be a member today: an admin of the chain, or a node with a valid

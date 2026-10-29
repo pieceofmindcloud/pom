@@ -61,6 +61,8 @@ export function AddNodeDialog({
   const [options, setOptions] = useState<AddNodeOption[]>(group ? [] : toShardOptions(slices));
   const [optionKey, setOptionKey] = useState(() => keyOf(options[0]));
   const [cacheTypes, setCacheTypes] = useState<CacheTypesResponse | null>(null);
+  const [visionInfo, setVisionInfo] = useState<AddNodeOptionsResponse["vision"] | null>(null);
+  const [vision, setVision] = useState(false);
   // This machine's whole configuration, edited with the deployment inspector. It starts as the deployment's
   // active version, and it is sent to the node as this machine's own override (the version keeps its parameters).
   const [draft, setDraft] = useState<RuntimeParams | null>(null);
@@ -81,6 +83,8 @@ export function AddNodeDialog({
       setOptions(fallback);
       setOptionKey(keyOf(fallback[0]));
       setCacheTypes(null);
+      setVisionInfo(null);
+      setVision(false);
       setDraft(null);
       setEngineCode("");
       setError(null);
@@ -127,11 +131,14 @@ export function AddNodeDialog({
     setOptions([]);
     setOptionKey("");
     setCacheTypes(null);
+    setVisionInfo(null);
     setError(null);
     void addNodeOptions(group, nodeId, controller.signal)
       .then((result) => {
         setOptions(result.options);
         setCacheTypes(result.cache_types);
+        setVisionInfo(result.vision ?? null);
+        setVision(Boolean(result.vision?.deployed && result.vision.available));
       })
       .catch((reason) => {
         if (!controller.signal.aborted) {
@@ -183,6 +190,7 @@ export function AddNodeDialog({
         start_layer: option.start_layer,
         end_layer: option.end_layer,
         ...(machine ? { overrides: { params: machine } } : {}),
+        ...(visionInfo ? { vision } : {}),
         ...(cacheTypes
           ? {
               cache_type_k: cacheTypes.cache_type_k,
@@ -259,6 +267,24 @@ export function AddNodeDialog({
             </select>
             {loadingOptions && <span className="text-xs text-muted">{t("deploy.addNodeLoading")}</span>}
           </label>
+
+          {visionInfo && (visionInfo.available || visionInfo.deployed) && (
+            <label className="flex items-start gap-2" title={t("deploy.visionHint")}>
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={vision}
+                disabled={!visionInfo.available}
+                onChange={(event) => setVision(event.target.checked)}
+              />
+              <span className="flex flex-col gap-0.5">
+                <span>{t("deploy.visionToggle")}</span>
+                {!visionInfo.available && (
+                  <span className="text-xs text-amber">{t("deploy.addNodeVisionMissing")}</span>
+                )}
+              </span>
+            </label>
+          )}
 
           {machine && (
             <div className="max-h-[55vh] overflow-y-auto pr-1">

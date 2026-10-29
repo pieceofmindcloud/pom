@@ -122,6 +122,8 @@ jobs:
           ./scripts/make-macos-app.sh target/universal/release/pom "pacote/POM.app"
           mkdir -p "pacote/POM.app/Contents/Resources/apps/frontend"
           cp -R apps/frontend/dist "pacote/POM.app/Contents/Resources/apps/frontend/"
+          # POM's license and the third-party notices travel inside the app.
+          cp LICENSE THIRD-PARTY-NOTICES.txt "pacote/POM.app/Contents/Resources/"
 
           # The ad-hoc signature must be made last: the copies above change the sealed
           # resources. Signed before them, Gatekeeper reports the app as "damaged".

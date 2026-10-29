@@ -183,7 +183,10 @@ last):
   key. An admin is not removed this way (`409 admin_target`).
 - **Roles between nodes** (`gateway/state.rs::require_admin_for_surface`).
   The profile table in `webui/routes/mod.rs` gates what a **browser** may
-  reach on a node. A node-to-node request passes that table, and is checked
+  reach on a node. A node-to-node request (one carrying the control
+  signature or the `x-pom-internal-node` marker; a browser call with the
+  connection key as a bearer is never probed as one, which logged a refused
+  node call on every poll of the interface) passes that table, and is checked
   for two other things instead:
   - **The receiver is an inference node.** It answers `403` with `reason:
     "visitor_profile"` to every route in `VISITOR_REFUSES` - `/api/ui/apply`,
@@ -825,8 +828,12 @@ list carries Anthropic's pagination envelope (`first_id`, `last_id`,
 `has_more`) and fields compatible with both clients: `type: "model"`,
 `created_at`, `display_name`, `capabilities`, `max_input_tokens`,
 `max_tokens`, plus `context_length` and `top_provider.max_completion_tokens`
-for OpenAI. The `created_at` field uses the RFC 3339 epoch when the local
-release date is unknown.
+for OpenAI. `capabilities.vision` is true only when the serving head reports a
+loaded vision projector (also for a selected `@<deploy_id>`); a missing or
+unreachable head does not claim image support. Agent harnesses use this value
+to declare `input: ["text", "image"]` only for actual vision deployments.
+The `created_at` field uses the RFC 3339 epoch when the local release date is
+unknown.
 
 The limits come from the effective runtime and the network: `context_length`,
 `max_input_tokens`, `max_tokens` and `top_provider.max_completion_tokens` are
@@ -1412,7 +1419,8 @@ In deployments with vision, `DeployPlan.mmproj_candidates` lists the compatible
 local paths on the peer serving layer 0. The UI preselects one of them and can
 send `DeployRequest.mmproj_path` to choose another format;
 `POST /api/ui/deploy/plan` ignores that field. `DeployRequest.vision` still
-enables the projector only on the head, and `mmproj_path` is only considered
+enables the projector only on the step that reads the prompt (the head under
+llama.cpp, the last stage under a plugin's inference service), and `mmproj_path` is only considered
 with `vision: true` - without vision, a path that was sent does not refuse the
 deployment. The path is resolved against the head
 (`planning::resolve_head_projector`): the same path, or the head's only
@@ -1538,9 +1546,11 @@ relays), `dedicated` or `member`. It enters the fingerprint too. The top bar's
 "Behind NAT" badge shows only when it is not empty.
 
 In the `/api/ui/cluster` payload, `PeerView.load` is the in-flight request
-reading published by the peer itself. For the local peer the gateway queries
-its `LoadTracker`; for remote peers it uses the `load` field of the respective
-`/api/ui/node`. If the remote read does not arrive or has no valid number, the
+reading published by the peer itself. For the local peer this combines the
+`LoadTracker` (requests coordinated by this gateway) with the active plugin
+engine's serving-stream counter (requests forwarded by other gateways). The
+node publishes this combined count as `/api/ui/node.load`; remote peers are
+read from their own `/api/ui/node`. If the remote read does not arrive or has no valid number, the
 field is `null`, not zero. The deployment planner keeps the same distinction in
 `DeployMachine.load` and in the load distribution.
 

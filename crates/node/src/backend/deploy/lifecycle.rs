@@ -429,11 +429,17 @@ pub(super) async fn run(
         &plan.tp_targets,
     )?;
     if use_mmproj {
+        let plugin = params.inference_service.is_some();
+        let total = plan.total_layers.unwrap_or(0);
         let head = targets
             .iter_mut()
-            .find(|target| target.start_layer == 0)
+            .find(|target| vision_reader(target.start_layer, target.end_layer, total, plugin))
             .ok_or_else(|| {
-                "a deployment with vision needs a target that starts at layer 0".to_string()
+                if plugin {
+                    "a deployment with vision needs a target that ends at the last layer".to_string()
+                } else {
+                    "a deployment with vision needs a target that starts at layer 0".to_string()
+                }
             })?;
         head.use_mmproj = true;
         head.mmproj_path = plan.mmproj_path.clone();
@@ -506,6 +512,25 @@ pub(super) async fn run(
         for target in &mut targets {
             target.no_embeddings = Some(true);
         }
+    }
+
+    // The KV cache type is an installation setting of each machine, but the
+    // deploy screen and the planner use this node's. Push it to the targets so
+    // they load with the cache the plan was sized for.
+    let (cache_type_k, cache_type_v) = {
+        let cfg = state.auth.read().await;
+        (cfg.cache_type_k, cfg.cache_type_v)
+    };
+    let mut cache_targets: Vec<&str> = targets.iter().map(|t| t.node_id.as_str()).collect();
+    cache_targets.sort_unstable();
+    cache_targets.dedup();
+    for node_id in cache_targets {
+        if node_id == state.network.node_id {
+            continue;
+        }
+        apply_target_cache_types(&state, node_id, Some(cache_type_k), Some(cache_type_v))
+            .await
+            .map_err(|e| format!("KV cache type on {node_id}: {e}"))?;
     }
 
     // The pipeline is the layer order, so the entry point is whoever holds

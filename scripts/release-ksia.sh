@@ -28,7 +28,7 @@ cache="${POM_RELEASE_CACHE:-${HOME}/.cache/pom-release}"
 cuda_home="${POM_RELEASE_CUDA_HOME:-/usr/local/cuda-12.9}"
 llvm_bin="${POM_RELEASE_LLVM_BIN:-/usr/lib/llvm-20/bin}"
 llama_repo="${POM_LLAMA_CPP_REPOSITORY:-https://github.com/pieceofmindcloud/llama.cpp.git}"
-llama_ref="${POM_LLAMA_CPP_REF:-pom-tensor-parallel}"
+llama_ref="${POM_LLAMA_CPP_REF:-pom}"
 ninja_version="1.12.1"
 appimagetool_version="1.9.1"
 windows_target="x86_64-pc-windows-msvc"
@@ -179,7 +179,7 @@ case "$variant" in
     export CUDA_PATH="$cuda_home"
     export CUDACXX="${cuda_home}/bin/nvcc"
     export PATH="${cuda_home}/bin:${PATH}"
-    run cargo build --release --locked -p node -p pom-plugin-host --features "cuda,${linux_features}"
+    run cargo build --release --locked -p node -p pom-plugin-host --features "cuda-no-vmm,${linux_features}"
     binary="${target_dir}/release/pom"
     ;;
   windows-cpu)

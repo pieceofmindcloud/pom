@@ -99,7 +99,9 @@ Models, GGUF reading, planning and slice files. The module is used by
  - The cut options for a whole model come from
   `GgufLayout::valid_prefix_end_layers`: in a dense layout, any whole-layer end
   is valid; in a hybrid layout, only the ends derived from `arch_boundaries` are
-  valid. `prefix_cut_granularity` only reports a step when every cut has the same
+  valid. A kind change at the index of a start-relative count (the dense prefix
+  of a MoE, `leading_dense_block_count`) is not a boundary, because the slicer
+  rebases that count. `prefix_cut_granularity` only reports a step when every cut has the same
   distance; the consumer uses the cut list when the boundaries are irregular.
 - `splitter.rs` - maps the source to read the header and the weights without
   keeping a GGUF fd open. The logical table is not a storage order: the selected
@@ -271,6 +273,12 @@ when MTP was not requested).
 - `ModelSource::Folder` is labelled `"Pasta"` (`catalog.rs`, the source label
   the catalog sends), so the Full models screen shows a Portuguese word in the
   English interface. The label should be a code the UI translates.
+- The engine's `gguf::read_layout` (pom-plugin-llama.cpp, pinned `rev`) refuses
+  in Portuguese ("dtype GGML 99 desconhecido no tensor ...", "tem comprimento
+  3"), so `splitter::tests::preview_refuses_an_unknown_dtype_by_name` and
+  `unknown_architecture_array_length_is_refused_by_name`, which expect the
+  English text, fail. The fix belongs to the engine repository, then a `rev`
+  bump here.
 
 ## Maintaining this file
 

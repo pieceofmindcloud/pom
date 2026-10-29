@@ -156,7 +156,7 @@ jobs:
           # ran out of memory on ksia (exit 137) and killed a process of the running node.
           # cargo passes this count to the CMake build as well.
           export CARGO_BUILD_JOBS=4
-          cargo build --release --locked -p node -p pom-plugin-host --features cuda,vulkan,embed-ui,desktop
+          cargo build --release --locked -p node -p pom-plugin-host --features cuda-no-vmm,vulkan,embed-ui,desktop
 
       - name: Get appimagetool
         shell: bash

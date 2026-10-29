@@ -64,6 +64,7 @@ pub(super) async fn plan_endpoint(
         links_stale,
         req.vision,
         req.vision_choice.as_ref(),
+        req.params.inference_service.is_some(),
         true,
         req.mtp_choice.as_ref(),
     );

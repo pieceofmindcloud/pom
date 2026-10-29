@@ -440,13 +440,13 @@ local-only notice. Routes:
   participant list for `admin` and `worker`; `/config/preferences` ->
   Preferences; `/config/preferences/admin` -> administrative preferences;
   `/config/about` -> About, the last item of Settings, with links to the
-  repository's AGPL-3.0 `LICENSE` and the official GNU page, an LGPD
+  repository's MIT `LICENSE` and the Open Source Initiative page, an LGPD
   privacy/security notice and site links, a contact form
   (`https://pieceofmind.cloud/contact.html`) and official repositories; it also
   shows the running POM release and the on-demand check of POM's GitHub
   releases (the site as fallback). When an update is available, the screen
   itself offers to apply and restart, or says why this node cannot (a
-  container, a download that still needs an invitation); it also shows the catalog of direct dependencies grouped by license;
+  container, a download that still needs an invitation); it also shows the catalog of everything a build ships (frontend packages and Rust crates, transitive ones included, plus the native libraries in `NATIVE` of `scripts/build-licenses.mjs`) grouped by license;
   `/config/trust` gathers this machine, sharing and connection keys;
   `/config/keys/api` -> TokenKeys; `/config/storage` -> ModelPaths
   (`/config/folders` remains an alias). When `POM_MODEL_DIRS` or `POM_SHARD_DIR`
@@ -977,7 +977,10 @@ restarting a machine meant scrolling to the end of everything it reports.
 The `AddNodeDialog` queries `POST /api/ui/deploy/node/options` after each
 machine change. So the selector shows the slices and the whole model the target
 really has, plus the controls for layers on the GPU, the KV-on-GPU-versus-RAM
-boolean and that machine's K/V types. POM does not expose an exclusive GPU
+boolean and that machine's K/V types. The vision switch appears when the
+machine holds a compatible projector or the deployment runs with one; it starts
+on when the deployment reads images and is disabled, with a notice to copy a
+projector there, when the machine has none. POM does not expose an exclusive GPU
 selection for the KV: when on, it follows the device of the weights' layer.
 Confirming calls `POST /api/ui/deploy/node` only on the target and keeps the
 other peers' inference. With an active `deploy_id`, the change creates a new
@@ -1521,15 +1524,15 @@ machine restarted. Today the fingerprint is only model + set of ranges.
   first new field. It has three categories, and the boundary between them is
   whose parameter it is - *Default settings* (what llama.cpp already has:
   context, sessions, max tokens, batch, prefill chunk, sampling, the
-  installation's K/V cache, disabling thinking/embeddings and the speculation
-  choice), *POM settings* (fit to memory, chunks in flight, merging neighboring
-  slices and hidden-state precision, plus a *Beta* group inside it with MoE
-  experts in RAM, the GPU expert cache and the automatic prefill chunk, shown
-  to everyone) and *POM settings (DEV)* (inference engine and per-peer idle
-  unloading). Default settings, POM settings and the Beta group each carry a
-  help button by their title that opens their guide from Documentation in a
-  dialog (`components/GuideDialog.tsx`, guides `default-settings`,
-  `pom-settings` and `beta-settings`, written in `docs/guides/settings/` and
+  installation's K/V cache, MoE experts in RAM and the GPU expert cache,
+  disabling thinking/embeddings and the speculation choice), *POM settings*
+  (fit to memory, chunks in flight, the automatic prefill chunk, merging
+  neighboring slices and hidden-state precision; its *Beta* group for settings
+  still being measured is commented out while it has none) and *POM settings
+  (DEV)* (inference engine and per-peer idle unloading). Default settings and
+  POM settings each carry a help button by their title that opens their guide
+  from Documentation in a dialog (`components/GuideDialog.tsx`, guides
+  `default-settings` and `pom-settings`, written in `docs/guides/settings/` and
   named in `guides/deploySettings.ts`). The DEV section only
   shows up when `NodeInfo.pom_dev_mode` is on; without the flag the UI removes
   its controls from the DOM. The `[i]` comes **before** the name, not after:

@@ -232,11 +232,12 @@ boundary.
   candidate it calls `Network::request_peer_addresses` and returns
   `rediscovering: true` instead of `unreachable`, and `model_inventory[]` names in
   `unreadable_nodes` the peers whose coverage it depends on without being able to read them.
-  `PeerView.load` is the in-flight load reported by the peer itself: for the local node it comes
-  from the local `LoadTracker`, and for remote peers it comes from the JSON of
-  `/api/ui/node`. A missing or invalid remote read stays `null`, because
-  the local tracker's zero only means no request went through
-  this gateway.
+  `PeerView.load` is the in-flight load reported by the peer itself: for the local node it combines
+  the local `LoadTracker` (this gateway's turns) with the plugin engine's serving-stream
+  counter (turns sent by other gateways to this node); remote peers report their
+  own combined count in `/api/ui/node`. A missing or invalid remote read stays `null`,
+  because the local tracker's zero only means no request went through this gateway.
+  The local `NodeInfo.load` and the cluster fingerprint must use the same combined count.
   `model_inventory[].complete` and `/api/ui/chat/capabilities` only confirm a
   pipeline when every contributing peer has `runtime_capacity` confirmed
   by `/health` or is `idle`; gossip capacities during the boot stay
@@ -447,7 +448,9 @@ boundary.
   (`stale`), and forwards a save there. `load_sidecar_links` is what the deploy
   preview and launch read.
 - `deploy/sidecars.rs` - `attach_sidecars` fills `Plan.sidecars`: the
-  compatible files of the network with every holder, the head's projector and
+  compatible files of the network with every holder, the projector of the step
+  that reads the prompt (`vision_reader`: the head under llama.cpp, the last stage
+  under a plugin's inference service, `vision_on_tail`) and
   the tail's MTP draft (screen choice, else the link), and `vision_heads`: the same
   projector for every other head of a whole model on several machines (a
   prefill/decode split, where each machine answers and reads images), resolved
@@ -557,7 +560,10 @@ boundary.
   otherwise the heads take turns round robin (`routing::fastest::rotate_head`, per-model turn in
   `pipeline::next_head_turn`), and a head with generations in flight is passed over for the next
   free one, or the least loaded when all are busy.
-  The capacity published in `/v1/models` and used by
+  `/v1/models` and `/v1/models/{id}` also publish `capabilities.vision` from
+  the serving head's projector configuration; the harness uses it to mark
+  image input only for deployed vision models. The capacity published in
+  `/v1/models` and used by
   `request_output_limit_for_model` is the smallest `RuntimeCapacity` among the peers
   of the pipeline chosen for the model/deployment. An idle peer in that
   pipeline is woken by the `reload_model` event in parallel to the other idle
@@ -650,7 +656,10 @@ boundary.
   later request on it reads zero. The TLS configuration is picked per connection
   from the ClientHello (`LazyConfigAcceptor`, `tls::wants_peer`): a peer is asked for its node
   certificate, a browser for nothing. A plain connection from outside is redirected to https, or, with
-  `POM_INSECURE_ADMIN_UI=1` (`insecure_admin_ui`), served as is except the peer-only routes.
+  `--no-tls` / `POM_NO_TLS=1` on the gateway (or the development-only
+  `POM_INSECURE_ADMIN_UI=1`), served as HTTP for browser/client routes. Peer-only
+  paths and signed control headers are refused on that clear-text path;
+  `TlsServer::peers_only` leaves the inference listener unchanged.
   `TransportPeer` is the caller's node as the transport
   proved it - the client certificate, or the tunnel's PeerId beside the mark - and goes into the
   request's extensions. See
@@ -725,7 +734,9 @@ change lands in the right place.
   client API-key auth - the per-frame `Ticket` is the credential) beside `POST /v1/link`, and
   serves with `tcp_nodelay(true)` because Nagle delayed the small SSE writes. `#[cfg(test)] mod
   testkit` is the shared scaffold for route tests - a whole `GatewayState` with the peer table
-  seeded by hand, loopback-only socket, nothing touches the LAN: `peer(node_id, hostname,
+  seeded by hand, loopback-only socket, nothing touches the LAN, and nothing touches the
+  real configuration either (its own folder holds the `Config::saved_at` file and the
+  runtime's `last-slice` annotation): `peer(node_id, hostname,
   gateway_port)`, `state_with(node_id, peers)`, `state_with_secondary_admin(node_id, peers)`,
   `body_of(response)`.
 - `openai.rs` - `render_prompt` flattens the conversation into one user message and labels

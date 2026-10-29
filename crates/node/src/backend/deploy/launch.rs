@@ -68,6 +68,7 @@ pub(super) async fn deploy_endpoint(
         links_stale,
         req.vision,
         req.vision_choice.as_ref(),
+        params.inference_service.is_some(),
         params.mtp_enabled,
         req.mtp_choice.as_ref(),
     );

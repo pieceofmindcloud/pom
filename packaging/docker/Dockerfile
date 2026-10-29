@@ -14,22 +14,10 @@ COPY pom.AppImage /tmp/pom.AppImage
 # `--appimage-extract` needs no FUSE, which a build container does not have.
 RUN cd /tmp && chmod 755 pom.AppImage && ./pom.AppImage --appimage-extract >/dev/null \
     && install -D -m 755 squashfs-root/usr/bin/pom /out/pom \
-    && install -D -m 755 squashfs-root/usr/bin/pom-plugin-host /out/pom-plugin-host
-
-# ── libcuda stub ──────────────────────────────────────────────────────────────
-# The CUDA AppImage links `libcuda.so.1`, which belongs to the host's driver and only
-# exists in a container started with `--gpus`. On a machine without a GPU (a VPS) the
-# NVIDIA stub lets the binary load; CUDA then finds no device and POM runs on the CPU.
-# The entrypoint puts the stub on the library path only when no real driver is mounted.
-FROM ubuntu:${UBUNTU} AS cuda-stub
-ARG CUDA_STUB_PACKAGE=cuda-driver-dev-12-9
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
-    && curl -fsSL -o /tmp/keyring.deb \
-       https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb \
-    && dpkg -i /tmp/keyring.deb && apt-get update \
-    && apt-get install -y --no-install-recommends "$CUDA_STUB_PACKAGE" \
-    && stub="$(find /usr/local/cuda*/ -path '*/stubs/libcuda.so' | head -1)" \
-    && test -n "$stub" && install -D -m 644 "$stub" /out/libcuda.so.1
+    && install -D -m 755 squashfs-root/usr/bin/pom-plugin-host /out/pom-plugin-host \
+    && { test -f squashfs-root/usr/share/doc/pom/THIRD-PARTY-NOTICES.txt \
+         || { echo "this AppImage carries no THIRD-PARTY-NOTICES.txt: build the image from a release made after it was added" >&2; exit 1; }; } \
+    && install -D -m 644 -t /doc squashfs-root/usr/share/doc/pom/LICENSE squashfs-root/usr/share/doc/pom/THIRD-PARTY-NOTICES.txt
 
 # ── Runtime ───────────────────────────────────────────────────────────────────
 FROM ubuntu:${UBUNTU}
@@ -49,12 +37,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       iproute2 tini \
       bash bzip2 ca-certificates curl dnsutils file git git-lfs gnupg htop iputils-ping jq \
       less lsof nano netcat-openbsd openssh-client procps python3 python3-pip python3-venv \
-      ripgrep rsync sudo tar tmux unzip vim-tiny wget xz-utils zip zstd \
+      ripgrep rsync sudo tar tmux unzip vim-tiny wget xxd xz-utils zip zstd \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=appimage /out/ /usr/local/bin/
-COPY --from=cuda-stub /out/libcuda.so.1 /opt/pom/cuda-stub/libcuda.so.1
+# POM's license and the third-party notices of this very build (NVIDIA's terms for
+# the CUDA libraries linked into pom included), from the AppImage.
+COPY --from=appimage /doc/ /usr/share/doc/pom/
 COPY entrypoint.sh /usr/local/bin/pom-entrypoint
+
+# The image carries no NVIDIA library (no stub either), so the executable must not need
+# one to start: the Linux release builds CUDA with `cuda-no-vmm`, which links no libcuda.
+# With `--gpus all` the NVIDIA Container Toolkit mounts the host driver's libcuda and POM
+# uses CUDA; without it POM runs on the CPU or Vulkan. An AppImage that still links
+# libcuda (a release before that) would not start without a GPU: refuse it here.
+RUN if ldd /usr/local/bin/pom | grep -q 'libcuda'; then \
+      echo "this AppImage links libcuda.so.1 and would not start without an NVIDIA GPU: build the image from a release made with cuda-no-vmm" >&2; \
+      exit 1; \
+    fi
 
 # A release before the headless mode always opens its GTK window and dies without a
 # display. Probe the binary once here: if it still needs a display, install Xvfb and mark
@@ -63,7 +63,7 @@ COPY entrypoint.sh /usr/local/bin/pom-entrypoint
 RUN set -eu; \
     probe="$(mktemp -d)"; \
     out="$(cd "$probe" && env -u DISPLAY -u WAYLAND_DISPLAY POM_HOME="$probe" POM_HEADLESS=1 \
-      LD_LIBRARY_PATH=/opt/pom/cuda-stub timeout 20 /usr/local/bin/pom \
+      timeout 20 /usr/local/bin/pom \
       --no-discovery --no-pkarr --gateway-port 18080 --port 43777 2>&1 || true)"; \
     rm -rf "$probe"; \
     if printf '%s' "$out" | grep -q 'Failed to initialize gtk'; then \
@@ -79,6 +79,7 @@ ARG POM_RELEASE_VERSION=""
 ENV POM_RELEASE_VERSION=${POM_RELEASE_VERSION} \
     POM_HOME=/data \
     POM_HEADLESS=1 \
+    POM_NO_TLS=1 \
     POM_PLUGIN_HOST=/usr/local/bin/pom-plugin-host \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility
 LABEL org.opencontainers.image.title="POM" \

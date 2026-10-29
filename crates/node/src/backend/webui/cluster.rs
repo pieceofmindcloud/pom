@@ -281,7 +281,11 @@ pub(super) async fn cluster_fingerprint(state: &GatewayState, peers: &[PeerInfo]
     for peer in peers {
         loads.push(json!({
             "node_id": peer.node_id,
-            "load": state.loads.load(&peer.node_id).await,
+            "load": if peer.node_id == state.network.node_id {
+                local_inference_load(state).await
+            } else {
+                state.loads.load(&peer.node_id).await
+            },
         }));
     }
     let mut routes = state
@@ -510,7 +514,7 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
             node
         };
         let load = if is_self {
-            Some(state.loads.load(&p.node_id).await)
+            Some(local_inference_load(&state).await)
         } else {
             node.as_ref().and_then(reported_peer_load)
         };
@@ -772,9 +776,27 @@ pub(super) async fn chat_capabilities(
     State(state): State<GatewayState>,
     Query(query): Query<ChatCapabilitiesQuery>,
 ) -> impl IntoResponse {
-    let requested = crate::deployment::split_selector(query.model.trim())
-        .0
-        .to_string();
+    Json(chat_capabilities_value(&state, &query.model, None, false).await)
+}
+
+/// The OpenAI model catalog uses the same head/projector check as the Chat.
+/// An explicit deployment alias must not inherit another deployment's vision.
+pub(crate) async fn model_vision_supported(state: &GatewayState, model: &str) -> bool {
+    let (_, deploy_id) = crate::deployment::split_selector(model);
+    chat_capabilities_value(state, model, deploy_id, true)
+        .await
+        .get("vision")
+        .and_then(serde_json::Value::as_str)
+        == Some("supported")
+}
+
+async fn chat_capabilities_value(
+    state: &GatewayState,
+    model: &str,
+    deploy_id: Option<&str>,
+    vision_only: bool,
+) -> serde_json::Value {
+    let requested = crate::deployment::split_selector(model.trim()).0.to_string();
     let active_model = if requested.is_empty() {
         state.displayed_model().await
     } else {
@@ -788,6 +810,7 @@ pub(super) async fn chat_capabilities(
         .filter(|peer| {
             peer.is_alive()
                 && (peer.runtime_capacity.is_some() || peer.idle)
+                && deploy_id.is_none_or(|id| peer.deploy_id == id)
                 && ((peer.node_id == local_id
                     && local_config.as_ref().is_some_and(|config| {
                         config.start_layer == 0 && config.model_label == active_model
@@ -971,6 +994,9 @@ pub(super) async fn chat_capabilities(
     } else {
         "unsupported"
     };
+    if vision_only {
+        return json!({ "vision": vision_state });
+    }
     let thinking_state = if thinking_unknown || (!thinking_enabled && !thinking_disabled) {
         "unavailable"
     } else if thinking_disabled {
@@ -990,7 +1016,7 @@ pub(super) async fn chat_capabilities(
     // says so instead of looking stuck.
     let asleep = matching.iter().any(|peer| peer.idle);
 
-    Json(json!({
+    json!({
         "active_model": active_model,
         "vision": vision_state,
         "coverage": coverage_state,
@@ -1000,7 +1026,7 @@ pub(super) async fn chat_capabilities(
         "rag": rag_state,
         // What a request may keep its retrieval to (`rag_collection`).
         "rag_collections": rag_collections,
-    }))
+    })
 }
 
 /// How a machine loaded the model: the `/health` of its inference server,

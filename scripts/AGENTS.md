@@ -84,7 +84,8 @@ the Python code. Authoritative: read the files; this is a map.
   `make-linux-appimage.sh`, with appimagetool kept in the cache's `tools/`;
   Windows stays a zip. Called by `.github/workflows/release-ksia.yml`.
 - `make-linux-appimage.sh` - packs `pom` + `pom-plugin-host` into an AppImage
-  (AppRun, desktop entry, icons). The optional fifth argument names the file;
+  (AppRun, desktop entry, icons, and `LICENSE` + `THIRD-PARTY-NOTICES.txt` in
+  `usr/share/doc/pom/`). The optional fifth argument names the file;
   the default `pom-<v>-x86_64` is the CUDA + Vulkan package of
   `release-linux.yml`.
 - `test-release-ksia.sh` - dry-run of each variant (including the

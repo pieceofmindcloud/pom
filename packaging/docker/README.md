@@ -26,6 +26,12 @@ Command line options go after the image name (`pom --help`), or as `POM_*`
 variables (`POM_GATEWAY_PORT`, `POM_PUBLIC_ADDR`, ...). `/data` is the POM home:
 configuration, identity key, models and plugins.
 
+## Licenses
+
+The image carries POM's `LICENSE` and `THIRD-PARTY-NOTICES.txt` in
+`/usr/share/doc/pom/`, taken from the AppImage it is built from; an AppImage
+without them (a release from before they existed) stops the build.
+
 ## Build locally
 
 ```sh

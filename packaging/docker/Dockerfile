@@ -14,7 +14,10 @@ COPY pom.AppImage /tmp/pom.AppImage
 # `--appimage-extract` needs no FUSE, which a build container does not have.
 RUN cd /tmp && chmod 755 pom.AppImage && ./pom.AppImage --appimage-extract >/dev/null \
     && install -D -m 755 squashfs-root/usr/bin/pom /out/pom \
-    && install -D -m 755 squashfs-root/usr/bin/pom-plugin-host /out/pom-plugin-host
+    && install -D -m 755 squashfs-root/usr/bin/pom-plugin-host /out/pom-plugin-host \
+    && { test -f squashfs-root/usr/share/doc/pom/THIRD-PARTY-NOTICES.txt \
+         || { echo "this AppImage carries no THIRD-PARTY-NOTICES.txt: build the image from a release made after it was added" >&2; exit 1; }; } \
+    && install -D -m 644 -t /doc squashfs-root/usr/share/doc/pom/LICENSE squashfs-root/usr/share/doc/pom/THIRD-PARTY-NOTICES.txt
 
 # ── libcuda stub ──────────────────────────────────────────────────────────────
 # The CUDA AppImage links `libcuda.so.1`, which belongs to the host's driver and only
@@ -53,6 +56,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=appimage /out/ /usr/local/bin/
+# POM's license and the third-party notices of this very build (NVIDIA's terms for
+# the CUDA libraries linked into pom included), from the AppImage.
+COPY --from=appimage /doc/ /usr/share/doc/pom/
 COPY --from=cuda-stub /out/libcuda.so.1 /opt/pom/cuda-stub/libcuda.so.1
 COPY entrypoint.sh /usr/local/bin/pom-entrypoint
 

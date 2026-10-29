@@ -302,6 +302,8 @@ jobs:
           cp target/release/pom-plugin-host.exe pacote/
           # The install guide for this package (SmartScreen, firewall, data folder).
           cp packaging/windows/README.md pacote/README.md
+          # POM's license and the third-party notices (NVIDIA's terms for the CUDA DLLs included).
+          cp LICENSE THIRD-PARTY-NOTICES.txt pacote/
           mv pacote "$nome"
           7z a -tzip "$nome.zip" "$nome"
 

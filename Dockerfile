@@ -342,6 +342,9 @@ FROM runtime-base AS runtime
 COPY --from=builder /build/llama-runtime/ /usr/local/lib/pom/
 COPY --from=builder /build/pom /usr/local/bin/pom
 COPY --from=builder /build/pom-plugin-host /usr/local/bin/pom-plugin-host
+# POM's license and the third-party notices. NVIDIA's own license stays where the
+# CUDA base image put it, /NGC-DL-CONTAINER-LICENSE: never remove it.
+COPY LICENSE THIRD-PARTY-NOTICES.txt /usr/share/doc/pom/
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN if [ "$POM_LLAMA_CPP_MODE" != release ]; then \
       rm -rf /usr/local/lib/pom; \
@@ -397,6 +400,7 @@ EXPOSE 8080/tcp
 EXPOSE 8181/tcp
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]
 COPY --from=runtime /usr/local/lib/pom/ /usr/local/lib/pom/
+COPY --from=runtime /usr/share/doc/pom/ /usr/share/doc/pom/
 COPY --from=runtime /usr/local/bin/pom-plugin-host /usr/local/bin/docker-entrypoint.sh /usr/local/bin/
 RUN ln -s /usr/local/lib/pom/cuda-vulkan/pom /usr/local/bin/pom
 COPY --from=runtime /app/apps/frontend/dist /app/apps/frontend/dist

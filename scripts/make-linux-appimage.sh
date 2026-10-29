@@ -39,6 +39,9 @@ mkdir -p "$appdir/usr/bin" "$appdir/usr/share/applications" "$appdir/usr/share/i
 
 install -m 755 "$bin" "$appdir/usr/bin/pom"
 install -m 755 "$host" "$appdir/usr/bin/pom-plugin-host"
+# POM's license and the third-party notices (NVIDIA's terms for the CUDA libraries linked in).
+mkdir -p "$appdir/usr/share/doc/pom"
+install -m 644 "$root/LICENSE" "$root/THIRD-PARTY-NOTICES.txt" "$appdir/usr/share/doc/pom/"
 
 # AppRun puts the program's folder on PATH, so the desktop entry's `Exec=pom` works.
 cat > "$appdir/AppRun" <<'EOF'

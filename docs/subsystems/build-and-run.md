@@ -686,6 +686,9 @@ in `packaging/docker/README.md`. What the image has to work around:
   image sets). A release from before that fallback dies in GTK init; the
   Dockerfile probes the binary once and, only then, installs Xvfb and the
   entrypoint runs the node under a virtual display.
+- **The notices come from the AppImage.** The image copies the AppImage's
+  `usr/share/doc/pom/` (`LICENSE`, `THIRD-PARTY-NOTICES.txt`) and refuses to
+  build from an AppImage that has none (releases before the notices existed).
 - **The CUDA AppImage links `libcuda.so.1`.** The image carries NVIDIA's stub
   in `/opt/pom/cuda-stub`, which the entrypoint puts on `LD_LIBRARY_PATH` only
   when the linker cache has no real driver (a container without `--gpus`); CUDA
@@ -753,6 +756,14 @@ the local self-hosted runner.
 | `.github/workflows/release-macos.yml` | macOS universal (arm64 + x86_64), Metal | hosted (`macos-14`) | `version`, `prerelease` |
 | `.github/workflows/release-macos-self-hosted.yml` | Same macOS package | self-hosted macOS runner (label `macbook`) | `version`, `prerelease` |
 | `.github/workflows/release-windows.yml` | Windows x86_64, CUDA + Vulkan and/or CPU | hosted (`windows-2022`) | `version`, `variantes` (`gpu`/`cpu`/`ambos` - "both"), `prerelease` |
+
+Every package carries POM's `LICENSE` and `THIRD-PARTY-NOTICES.txt` (generated
+and versioned by `apps/frontend/scripts/build-licenses.mjs`, see
+`apps/frontend/AGENTS.md`): beside `pom.exe` in the Windows zip, in
+`Contents/Resources/` of the macOS app, in `usr/share/doc/pom/` of the AppImage
+and of both Docker images. The notices hold NVIDIA's terms for the CUDA
+runtime the CUDA packages include; the development image built on
+`nvidia/cuda` also keeps NVIDIA's own `/NGC-DL-CONTAINER-LICENSE`.
 
 The packages are uploaded as artifacts only to pass between jobs of the same
 run, with a `retention-days` of 1 or 2 days; the final ones are attached to

@@ -375,9 +375,9 @@ describe("PublicNetworks", () => {
     expect(within(panel).getByText("Aceitando novos membros")).toBeTruthy();
     // Each role keeps its name beside an icon and its own state.
     const roles = within(panel).getByTestId("network-enrollment-roles");
-    expect(roles.querySelector('[data-role="worker"]')?.textContent).toContain("Nós da rede");
+    expect(roles.querySelector('[data-role="worker"]')?.textContent).toContain("Worker");
     expect(roles.querySelector('[data-role="worker"] svg')).toBeTruthy();
-    expect(roles.querySelector('[data-role="visitor"]')?.textContent).toContain("Nós de inferência");
+    expect(roles.querySelector('[data-role="visitor"]')?.textContent).toContain("Visitante");
     expect(within(panel).getByRole("link", { name: "Discord" })).toBeTruthy();
     expect(within(panel).getByText("Respeite os peers")).toBeTruthy();
     // The organization left the table and lives here; the place stays in the row.
@@ -565,7 +565,7 @@ describe("PublicNetworks", () => {
     expect(next.disabled).toBe(false);
     fireEvent.click(next);
     // The role kept from before stays the only one.
-    expect((within(wizard).getByRole("checkbox", { name: /Nós de inferência/ }) as HTMLInputElement).checked).toBe(false);
+    expect((within(wizard).getByRole("checkbox", { name: /^Visitante\s*Usam/ }) as HTMLInputElement).checked).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "Próxima" }));
     expect(within(wizard).getByTestId("location-editor")).toBeTruthy();
     expect((screen.getByRole("button", { name: "Próxima" }) as HTMLButtonElement).disabled).toBe(true);
@@ -817,7 +817,7 @@ describe("PublicNetworks", () => {
     // Only the role the network accepts is offered, and the request goes
     // through this node with the network's name to label it.
     const role = await within(dialog).findByRole("combobox", { name: "Entrar como" });
-    expect(within(role).getAllByRole("option").map((option) => option.textContent)).toEqual(["Nós de inferência"]);
+    expect(within(role).getAllByRole("option").map((option) => option.textContent)).toEqual(["Visitante"]);
     fireEvent.click(within(dialog).getByRole("button", { name: "Pedir admissão" }));
     await waitFor(() => expect(mocks.post).toHaveBeenCalledWith(
       "/api/ui/network-chat/lobby/admission",
@@ -880,7 +880,7 @@ describe("PublicNetworks", () => {
     const icons = within(row).getByTestId("network-enrollment-icons");
     // Its own cell, apart from the action buttons.
     expect(icons.closest("td")).not.toBe(within(row).getByRole("button", { name: "Talk" }).closest("td"));
-    const infer = within(icons).getByRole("button", { name: "Accepting Inference nodes" });
+    const infer = within(icons).getByRole("button", { name: "Accepting Visitor" });
     fireEvent.mouseEnter(infer);
     expect(screen.getByRole("tooltip").textContent).toContain("only use its models");
     fireEvent.click(infer);

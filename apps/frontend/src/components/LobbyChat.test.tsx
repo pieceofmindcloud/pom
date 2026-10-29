@@ -104,7 +104,7 @@ describe("LobbyChat", () => {
     mocks.post.mockResolvedValue({ joined: true });
     mount();
 
-    expect(await screen.findByText(/já foi admitida nesta rede como Nós da rede/)).toBeTruthy();
+    expect(await screen.findByText(/já foi admitida nesta rede como Worker/)).toBeTruthy();
     // No request to make and nothing to wait for.
     expect(screen.queryByRole("button", { name: "Pedir admissão" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Entrar agora" })).toBeNull();

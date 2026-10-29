@@ -230,7 +230,7 @@ describe("Notifications network offers", () => {
     const item = screen.getByTestId("admission-candidate-node-id-0001");
     expect(item.textContent).toContain("forasteiro pede para entrar nesta rede");
     // Role, how it connects, latency and hardware, in one line.
-    expect(item.textContent).toContain("Nós da rede");
+    expect(item.textContent).toContain("Worker");
     expect(item.textContent).toContain("por um relé");
     expect(item.textContent).toContain("42 ms");
     expect(item.textContent).toContain("64 GB de RAM");

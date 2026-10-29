@@ -1680,8 +1680,8 @@ network.countryRequired,Required for a public network,Obrigatório para uma rede
 network.description,Description,Descrição
 network.detached,Disconnected from network,Fora da rede
 network.download,Download,Baixar
-network.enrollment.visitor,Visitors,Visitantes
-network.enrollment.worker,Network nodes,Nós da rede
+network.enrollment.visitor,Visitor,Visitante
+network.enrollment.worker,Worker,Worker
 network.enrollmentClosed,Not accepting new members,Não aceita novos membros
 network.enrollmentOpen,Any role,Qualquer papel
 network.firewallEyebrow,Windows Firewall,Firewall do Windows

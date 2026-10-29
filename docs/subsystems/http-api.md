@@ -828,8 +828,12 @@ list carries Anthropic's pagination envelope (`first_id`, `last_id`,
 `has_more`) and fields compatible with both clients: `type: "model"`,
 `created_at`, `display_name`, `capabilities`, `max_input_tokens`,
 `max_tokens`, plus `context_length` and `top_provider.max_completion_tokens`
-for OpenAI. The `created_at` field uses the RFC 3339 epoch when the local
-release date is unknown.
+for OpenAI. `capabilities.vision` is true only when the serving head reports a
+loaded vision projector (also for a selected `@<deploy_id>`); a missing or
+unreachable head does not claim image support. Agent harnesses use this value
+to declare `input: ["text", "image"]` only for actual vision deployments.
+The `created_at` field uses the RFC 3339 epoch when the local release date is
+unknown.
 
 The limits come from the effective runtime and the network: `context_length`,
 `max_input_tokens`, `max_tokens` and `top_provider.max_completion_tokens` are

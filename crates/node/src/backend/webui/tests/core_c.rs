@@ -409,6 +409,7 @@ mod profile_network_tests {
 
         let mut head = peer("head", "salem", port);
         head.model = "qwen".into();
+        head.deploy_id = "d-7cf36d23".into();
         head.start_layer = 0;
         head.end_layer = 15;
         head.total_layers = 32;
@@ -423,10 +424,12 @@ mod profile_network_tests {
         let mut state = state_with("eu", vec![head, tail]).await;
         state.default_model = "qwen".into();
 
-        let body = body_of(chat_capabilities(State(state), Query(Default::default())).await.into_response()).await;
+        let body = body_of(chat_capabilities(State(state.clone()), Query(Default::default())).await.into_response()).await;
         assert_eq!(body["vision"], "supported");
         assert_eq!(body["coverage"], "complete");
         assert_eq!(body["thinking"], "supported");
+        assert!(model_vision_supported(&state, "qwen@d-7cf36d23").await);
+        assert!(!model_vision_supported(&state, "qwen@d-87654321").await);
     }
 
     #[tokio::test]

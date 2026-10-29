@@ -559,7 +559,10 @@ boundary.
   otherwise the heads take turns round robin (`routing::fastest::rotate_head`, per-model turn in
   `pipeline::next_head_turn`), and a head with generations in flight is passed over for the next
   free one, or the least loaded when all are busy.
-  The capacity published in `/v1/models` and used by
+  `/v1/models` and `/v1/models/{id}` also publish `capabilities.vision` from
+  the serving head's projector configuration; the harness uses it to mark
+  image input only for deployed vision models. The capacity published in
+  `/v1/models` and used by
   `request_output_limit_for_model` is the smallest `RuntimeCapacity` among the peers
   of the pipeline chosen for the model/deployment. An idle peer in that
   pipeline is woken by the `reload_model` event in parallel to the other idle

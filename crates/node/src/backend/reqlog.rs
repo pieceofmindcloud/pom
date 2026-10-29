@@ -185,6 +185,10 @@ pub struct AuditQuery {
     pub received_from: Option<String>,
     #[serde(rename = "to")]
     pub received_to: Option<String>,
+    /// `normal` or `jev`, classified by the logs plugin; the legacy store
+    /// ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
     pub limit: Option<usize>,
     pub offset: Option<usize>,
 }
@@ -1366,6 +1370,8 @@ pub struct LogQuery {
     #[serde(rename = "to", default)]
     pub received_to: Option<String>,
     #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
     pub limit: Option<usize>,
     #[serde(default)]
     pub offset: Option<usize>,
@@ -1390,6 +1396,20 @@ async fn readable_node(
     }
 }
 
+/// The plugin runs but did not answer (its query timed out). The legacy
+/// `pom.db` store only holds what was written before the plugin took over, so
+/// answering from it would show hours-old requests as the newest ones.
+fn logs_plugin_unavailable() -> axum::response::Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(json!({
+            "code": "logs_plugin_unavailable",
+            "error": "The logs plugin did not answer in time; try again.",
+        })),
+    )
+        .into_response()
+}
+
 /// Authenticated because every response contains user prompts and request
 /// bodies, not merely operational counters.
 pub async fn list_requests(
@@ -1398,6 +1418,9 @@ pub async fn list_requests(
     Query(query): Query<LogQuery>,
 ) -> impl IntoResponse {
     let plugin_status = state.plugins.status(crate::plugins::LOGS_PLUGIN_CODE).await;
+    let plugin_running = plugin_status
+        .as_ref()
+        .is_some_and(|status| status.active && status.running);
     if !plugin_status.is_some_and(|status| status.has_feature("request_logs")) {
         return (
             StatusCode::FORBIDDEN,
@@ -1417,6 +1440,7 @@ pub async fn list_requests(
         prompt: query.prompt,
         received_from: query.received_from,
         received_to: query.received_to,
+        kind: query.kind,
         limit: query.limit,
         offset: query.offset,
     };
@@ -1430,6 +1454,9 @@ pub async fn list_requests(
         .await
     {
         return (StatusCode::OK, Json(response)).into_response();
+    }
+    if plugin_running {
+        return logs_plugin_unavailable();
     }
     match state.audit.list(query).await {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
@@ -1452,6 +1479,9 @@ pub async fn stats_requests(
     Query(query): Query<LogQuery>,
 ) -> impl IntoResponse {
     let plugin_status = state.plugins.status(crate::plugins::LOGS_PLUGIN_CODE).await;
+    let plugin_running = plugin_status
+        .as_ref()
+        .is_some_and(|status| status.active && status.running);
     if !plugin_status.is_some_and(|status| status.has_feature("statistics")) {
         return (
             StatusCode::FORBIDDEN,
@@ -1471,6 +1501,7 @@ pub async fn stats_requests(
         prompt: query.prompt,
         received_from: query.received_from,
         received_to: query.received_to,
+        kind: query.kind,
         limit: None,
         offset: None,
     };
@@ -1484,6 +1515,9 @@ pub async fn stats_requests(
         .await
     {
         return (StatusCode::OK, Json(response)).into_response();
+    }
+    if plugin_running {
+        return logs_plugin_unavailable();
     }
     match state.audit.stats(query).await {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
@@ -1501,6 +1535,23 @@ pub async fn stats_requests(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_kind_filter_reaches_the_logs_plugin() {
+        let query: LogQuery =
+            serde_json::from_value(json!({"kind": "jev", "from": "2026-01-01T00:00:00Z"}))
+                .expect("log query");
+        let forwarded = serde_json::to_value(AuditQuery {
+            received_from: query.received_from,
+            kind: query.kind,
+            ..Default::default()
+        })
+        .expect("audit query");
+        assert_eq!(forwarded["kind"], "jev");
+        assert_eq!(forwarded["from"], "2026-01-01T00:00:00Z");
+        let unfiltered = serde_json::to_value(AuditQuery::default()).expect("audit query");
+        assert!(unfiltered.get("kind").is_none());
+    }
 
     /// An admin of the chain, principal or secondary, reads the network's
     /// audit; any other node, an inference node included, only its own.

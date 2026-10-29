@@ -536,7 +536,9 @@ boundary.
   **inside** a call, it comes back structured and incomplete (`x_pom.truncated_tool_call: true`),
   which is what the two providers return - never raw markup, never a discard. The audit line of
   that result is `incomplete`,
-  while a transport failure stays `partial`. `/v1/models` exposes
+  while a transport failure stays `partial`, keeps the salvaged text and ends the
+  stream in an error event carrying `GenSummary.error` (also `x_pom.error` and
+  the audit's `error`). `/v1/models` exposes
   `context_length` and the `top_provider.max_completion_tokens` compatible with
   OpenRouter, which is the **request's** capacity derived from the `n_ctx`, not the
   size of one leg. The available context shrinks the budget when the prompt already occupies
@@ -911,7 +913,11 @@ change lands in the right place.
   followed by a parameter element, is `CallKind::NamedElement` (Gemma 4 under
   Hermes Agent): its closer depends on the name, so it is outside
   `CALL_FORMATS` and the scanner keeps the name (`element_opening`,
-  `named_element_call`). Gemma 4's native
+  `named_element_call`). Flint's
+  `<tool_call>NAME<arg_key>K</arg_key><arg_value>V</arg_value></tool_call>`
+  (verified against its GGUF template) is a `Wrapped` body read by
+  `parse_arg_key_call`: a string value raw, any other JSON; a bare name is a
+  call without arguments. Gemma 4's native
   `<|tool_call>call:NAME{key:<|"|>text<|"|>}<tool_call|>` is `CallKind::Native`
   in `CALL_FORMATS` (verified against the Gemma 4 vocabulary GGUF's template):
   `parse_native_call` reads bare keys, `<|"|>` strings and JSON literals,

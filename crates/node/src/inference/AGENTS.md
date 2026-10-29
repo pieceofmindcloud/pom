@@ -198,7 +198,10 @@ UI.
   Os handlers decodificam o frame e entregam
   commands to a bounded local queue; the worker selects one entry per session and
   may call the multi-sequence decode. Each `Session` keeps its own
-  `Utf8Assembler`: `token_to_piece_bytes` keeps the raw bytes, only the accepted
+  `Utf8Assembler`: `InferState::visible_piece` keeps the raw bytes (control
+  tokens hidden, except the thinking and tool call markers in
+  `preserved_specials`, which Flint's vocabulary marks as control and which
+  otherwise reached the client as nothing), only the accepted
   positions feed the accumulator, and the `flush` happens on EOS or on the cleanup
   of an error/cancellation. `/v1/step-stream` starts a producer on the remote peer
   and a separate emitter: each one uses the same existing decoding, but the tokens
@@ -1287,8 +1290,9 @@ reason that only shows up in the error of a tunnel that also failed.
   normal case), the head's ack (it only matters when it fails, or when an old peer bubbled
   the whole answer - a present `token_id` counts as a result), and the frame's deadline the
   caller passes (`relay::frame_deadline`
-  with the round's tokens and every hop of the plan; a hop died after
-  accepting). In prefill the deadline is a liveness one,
+  with the round's tokens and every hop of the plan, raised by the
+  generation's `step_budget_ms` when the engine is slow - `relay::StepBudget`;
+  a hop died after accepting). In prefill the deadline is a liveness one,
   `relay::prefill_frame_deadline` (10 min per hop): the chunk may wait in the
   peer's queue behind another session, and the work-based deadline brought both
   down. `RemoteDecodeStream::next` uses the same calculation between two

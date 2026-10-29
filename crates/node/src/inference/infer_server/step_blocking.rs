@@ -324,7 +324,7 @@ pub(crate) fn step_blocking(
                 pieces.push(if is_stop {
                     Vec::new()
                 } else {
-                    s.engine.token_to_piece_bytes(id, false)
+                    s.visible_piece(id)
                 });
                 sampled.push(id);
                 if is_stop {
@@ -530,7 +530,7 @@ pub(crate) fn step_blocking(
         let mut text = if done {
             String::new()
         } else {
-            let piece = s.engine.token_to_piece_bytes(next_id, false);
+            let piece = s.visible_piece(next_id);
             s.sessions
                 .get_mut(&sid_key)
                 .unwrap()

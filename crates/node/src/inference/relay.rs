@@ -182,6 +182,76 @@ const DIRECT_FRAME_TIMEOUT: Duration = Duration::from_millis(250);
 
 tokio::task_local! {
     static FRAME_DEADLINE: Instant;
+    static DECODE_STEP_BUDGET: StepBudget;
+}
+
+// ── Decode step budget ───────────────────────────────────────────────────────
+//
+// The fixed decode deadline (1 s + 50 ms per token, per hop) assumes an engine
+// that decodes in tens of milliseconds. An engine that is alive but slow - a
+// model larger than the GPU, with tensors left in host memory by the memory
+// fit - takes over a second per step, and the fixed deadline ended its
+// generation after the first token, as if the model had stopped. The gateway
+// measures the engine (first token, then each completed step) and declares in
+// the frame how long one step of this pipeline may take (`step_budget_ms`,
+// already for the whole chain). Every hop reads it from the meta it receives
+// and forwards it unchanged, so the deadline grows with the engine, never past
+// `STEP_BUDGET_CEILING`, and never below the fixed one.
+
+/// Meta key of the step budget, in milliseconds, for the whole chain.
+pub(crate) const STEP_BUDGET_KEY: &str = "step_budget_ms";
+/// A step is allowed this many times the slowest step measured.
+const STEP_BUDGET_FACTOR: u64 = 4;
+/// The budget still bounds a live process that hung.
+const STEP_BUDGET_CEILING: Duration = Duration::from_secs(120);
+
+/// Step budget of one generation, shared by its decode loop and read by the
+/// frames it sends. Zero until the gateway measured the engine.
+#[derive(Clone, Default)]
+pub(crate) struct StepBudget(Arc<std::sync::atomic::AtomicU64>);
+
+impl StepBudget {
+    /// Records how long the engine took for one step (or for the first token)
+    /// and raises the budget to `STEP_BUDGET_FACTOR` times it.
+    pub(crate) fn observe(&self, elapsed: Duration) {
+        let ms = (elapsed.as_millis() as u64)
+            .saturating_mul(STEP_BUDGET_FACTOR)
+            .min(STEP_BUDGET_CEILING.as_millis() as u64);
+        self.0.fetch_max(ms, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn current(&self) -> Option<Duration> {
+        let ms = self.0.load(std::sync::atomic::Ordering::Relaxed);
+        (ms > 0).then(|| Duration::from_millis(ms))
+    }
+}
+
+/// Runs a generation with `budget` as the step budget of every decode frame
+/// sent inside it.
+pub(crate) async fn with_step_budget<F: std::future::Future>(
+    budget: StepBudget,
+    work: F,
+) -> F::Output {
+    DECODE_STEP_BUDGET.scope(budget, work).await
+}
+
+fn scoped_step_budget() -> Option<Duration> {
+    DECODE_STEP_BUDGET
+        .try_with(StepBudget::current)
+        .ok()
+        .flatten()
+}
+
+/// The meta with the step budget of the current generation, when there is one
+/// and the frame does not carry its own.
+fn with_scoped_step_budget(meta: &Value) -> Option<Value> {
+    let budget = scoped_step_budget()?;
+    if meta.get(STEP_BUDGET_KEY).is_some() || !meta.is_object() {
+        return None;
+    }
+    let mut stamped = meta.clone();
+    stamped[STEP_BUDGET_KEY] = json!(budget.as_millis() as u64);
+    Some(stamped)
 }
 
 /// Deadline of a prefill chunk, per hop. It is not a work estimate: a chunk may
@@ -258,7 +328,16 @@ pub(crate) fn frame_deadline_for(meta: &Value, tensor_rows: Option<usize>) -> Du
         });
     let images = as_len("images").unwrap_or(0);
     let hops = 1 + as_len("next_hops").unwrap_or(0);
-    frame_deadline(tokens, images, hops)
+    let fixed = frame_deadline(tokens, images, hops);
+    let declared = meta
+        .get(STEP_BUDGET_KEY)
+        .and_then(Value::as_u64)
+        .map(Duration::from_millis)
+        .or_else(scoped_step_budget);
+    match declared {
+        Some(budget) => fixed.max(budget.min(STEP_BUDGET_CEILING)),
+        None => fixed,
+    }
 }
 
 /// How much of the current frame's deadline remains; outside a declared frame, the
@@ -2643,6 +2722,12 @@ pub async fn send_frame_or_tunnel(
     let rows = tensor
         .as_ref()
         .and_then(|(_, shape)| shape.first().copied());
+    // A decode frame of a measured generation carries its step budget, so the
+    // hops that forward it hold the same deadline (see `StepBudget`).
+    let stamped = (path != PREFILL_PATH)
+        .then(|| with_scoped_step_budget(meta))
+        .flatten();
+    let meta = stamped.as_ref().unwrap_or(meta);
     let own = Instant::now() + frame_deadline_for_path(path, meta, rows);
     let deadline = FRAME_DEADLINE
         .try_with(|outer| (*outer).min(own))
@@ -3261,6 +3346,46 @@ mod tests {
         );
         // Zero tokens never become a base-only deadline: every frame decodes something.
         assert_eq!(frame_deadline(0, 0, 0), one);
+    }
+
+    #[test]
+    fn a_declared_step_budget_raises_the_decode_deadline_up_to_its_ceiling() {
+        let fixed = frame_deadline(1, 0, 1);
+        let slow = json!({"token_id": 7, STEP_BUDGET_KEY: 40_000});
+        assert_eq!(
+            frame_deadline_for(&slow, None),
+            Duration::from_secs(40)
+        );
+        // Never below the fixed deadline, never past the ceiling.
+        let fast = json!({"token_id": 7, STEP_BUDGET_KEY: 1});
+        assert_eq!(frame_deadline_for(&fast, None), fixed);
+        let hung = json!({"token_id": 7, STEP_BUDGET_KEY: 10_000_000});
+        assert_eq!(frame_deadline_for(&hung, None), STEP_BUDGET_CEILING);
+    }
+
+    #[test]
+    fn the_step_budget_follows_the_slowest_step_and_reaches_the_frames() {
+        let budget = StepBudget::default();
+        assert_eq!(budget.current(), None);
+        budget.observe(Duration::from_secs(3));
+        budget.observe(Duration::from_millis(10));
+        assert_eq!(budget.current(), Some(Duration::from_secs(12)));
+
+        let decode = json!({"token_id": 7});
+        assert!(with_scoped_step_budget(&decode).is_none());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let (stamped, deadline) = runtime.block_on(with_step_budget(budget, async {
+            (
+                with_scoped_step_budget(&decode),
+                frame_deadline_for(&decode, None),
+            )
+        }));
+        // The frame that leaves carries the budget, so the hops that forward it
+        // hold the same deadline.
+        assert_eq!(stamped.unwrap()[STEP_BUDGET_KEY], 12_000);
+        assert_eq!(deadline, Duration::from_secs(12));
     }
 
     #[test]

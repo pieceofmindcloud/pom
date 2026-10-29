@@ -515,7 +515,7 @@ impl OutputBudget {
 
 /// The output budget visible to a protocol adapter after applying the selected
 /// deployment and the remaining context window.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub struct OutputTokenLimit {
     #[serde(rename = "requested_max_tokens")]
     pub requested: u32,
@@ -986,6 +986,10 @@ pub struct GenSummary {
     pub timings: GenerationTimings,
     /// True when a peer failed mid-generation but some text was salvaged.
     pub partial: bool,
+    /// Why a partial generation stopped (the peer or transport failure). The
+    /// adapters send it to the client as an error after the salvaged text, so a
+    /// cut is never read as the model's own end. `None` on every normal end.
+    pub error: Option<String>,
     /// "stop" when a server-side stop sequence ended the generation.
     pub finish_reason: Option<String>,
     /// The exact stop sequence that was matched, when one ended the stream.
@@ -1261,6 +1265,7 @@ pub(super) fn summary_for(
         duration_ms: timings.total_ms,
         timings,
         partial,
+        error: None,
         finish_reason,
         stop_sequence,
         legs,

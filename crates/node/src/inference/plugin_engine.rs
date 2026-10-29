@@ -1114,6 +1114,7 @@ pub(crate) async fn generate(
                     duration_ms: total_ms,
                     timings,
                     partial: false,
+                    error: None,
                     finish_reason: Some(finish_reason(&finish).to_owned()),
                     stop_sequence: report.stop_sequence.clone(),
                     legs: 1,

@@ -171,6 +171,10 @@ pub(crate) fn render_tool_call(name: &str, arguments: &serde_json::Value) -> Str
 
 const TOOL_CALL_OPEN: &str = "<tool_call>";
 const TOOL_CALL_CLOSE: &str = "</tool_call>";
+const ARG_KEY_OPEN: &str = "<arg_key>";
+const ARG_KEY_CLOSE: &str = "</arg_key>";
+const ARG_VALUE_OPEN: &str = "<arg_value>";
+const ARG_VALUE_CLOSE: &str = "</arg_value>";
 const FUNCTION_CALLS_OPEN: &str = "<function_calls>";
 const FUNCTION_CALLS_CLOSE: &str = "</function_calls>";
 /// No `=`: this is the name-only `<function>NAME</function>` shape. An
@@ -1462,6 +1466,9 @@ fn parse_call_body(raw: &str, kind: CallKind) -> Result<(String, serde_json::Val
                     return parse_function_call_xml(&repaired).ok_or_else(fallback);
                 }
             }
+            if let Some(call) = parse_arg_key_call(raw) {
+                return Ok(call);
+            }
             match serde_json::from_str::<serde_json::Value>(raw.trim()) {
                 Ok(v) => match v.get("name").and_then(|n| n.as_str()) {
                     Some(name) if !name.is_empty() => Ok((
@@ -1476,6 +1483,41 @@ fn parse_call_body(raw: &str, kind: CallKind) -> Result<(String, serde_json::Val
             }
         }
     }
+}
+
+/// The `<tool_call>NAME<arg_key>K</arg_key><arg_value>V</arg_value>…</tool_call>`
+/// body (verified against Flint's GGUF chat template): the name comes bare,
+/// then one key/value pair per argument. The template writes a string value
+/// raw and any other value as JSON, so a value is read the way
+/// `<parameter=…>` values are (`decode_parameter_value`). A call without
+/// arguments is the bare name. Anything else is not this dialect.
+fn parse_arg_key_call(raw: &str) -> Option<(String, serde_json::Value)> {
+    let raw = raw.trim();
+    let (name, mut rest) = match raw.find(ARG_KEY_OPEN) {
+        Some(at) => (raw[..at].trim(), &raw[at..]),
+        None => (raw, ""),
+    };
+    let named = !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ':'));
+    if !named {
+        return None;
+    }
+    let mut args = serde_json::Map::new();
+    while !rest.trim().is_empty() {
+        let after_open = rest.trim_start().strip_prefix(ARG_KEY_OPEN)?;
+        let (key, after_key) = after_open.split_once(ARG_KEY_CLOSE)?;
+        let after_value_open = after_key.trim_start().strip_prefix(ARG_VALUE_OPEN)?;
+        let (value, after_value) = after_value_open.split_once(ARG_VALUE_CLOSE)?;
+        let key = key.trim();
+        if key.is_empty() {
+            return None;
+        }
+        args.insert(key.to_string(), decode_parameter_value(value));
+        rest = after_value;
+    }
+    Some((name.to_string(), serde_json::Value::Object(args)))
 }
 
 /// The text between a wrapper's tags with the slips of the quantized models
@@ -3501,6 +3543,42 @@ mod tests {
                 arguments: json!({"query": "notícias principais globo.com hoje"}),
             }]
         );
+    }
+
+    /// Flint's dialect, as its GGUF chat template writes it: the bare name,
+    /// then `<arg_key>`/`<arg_value>` pairs, a string raw and anything else JSON.
+    const ARG_KEY_CALL: &str = "<tool_call>write_file<arg_key>path</arg_key><arg_value>a.html</arg_value><arg_key>lines</arg_key><arg_value>3</arg_value><arg_key>content</arg_key><arg_value><p>oi</p>\nfim</arg_value></tool_call>";
+
+    #[test]
+    fn a_flint_arg_key_call_reads_name_and_typed_arguments() {
+        let parts = parse_output(&format!("Writing.\n{ARG_KEY_CALL}"));
+        assert_eq!(parts.len(), 2, "{parts:?}");
+        match &parts[1] {
+            OutputPart::ToolCall { name, arguments } => {
+                assert_eq!(name, "write_file");
+                assert_eq!(arguments["path"], "a.html");
+                assert_eq!(arguments["lines"], 3);
+                assert_eq!(arguments["content"], "<p>oi</p>\nfim");
+            }
+            other => panic!("expected a tool call, got {other:?}"),
+        }
+        // A call without arguments is the bare name; prose is not a call.
+        assert!(matches!(
+            parse_output("<tool_call>get_time</tool_call>").as_slice(),
+            [OutputPart::ToolCall { name, arguments }] if name == "get_time" && arguments == &json!({})
+        ));
+        assert!(!parse_output("<tool_call>not a call</tool_call>")
+            .iter()
+            .any(|part| matches!(part, OutputPart::ToolCall { .. })));
+    }
+
+    #[test]
+    fn a_flint_arg_key_call_survives_any_chunking() {
+        let text = format!("Writing.\n{ARG_KEY_CALL}");
+        let whole = parse_output(&text);
+        for size in 1..14 {
+            assert_eq!(feed_in_chunks(&text, size), whole, "chunk {size}");
+        }
     }
 
     #[test]

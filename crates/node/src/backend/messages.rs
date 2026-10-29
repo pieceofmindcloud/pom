@@ -852,6 +852,7 @@ async fn blocking_response(params: ResponseParams) -> Response {
                         // A call cut in the middle is also a partial
                         // response - see `openai::blocking_response`.
                         "partial": summary.partial || truncated_tool_call,
+                        "error": summary.error,
                         "finish_reason": summary.finish_reason,
                         "stop_sequence": summary.stop_sequence,
                         "trace": summary.trace,
@@ -1386,6 +1387,7 @@ fn sse_stream(
                                     "duration_ms": summary.duration_ms,
                                     "timings": summary.timings,
                                     "partial": summary.partial || truncated_tool_call,
+                                    "error": summary.error,
                                     "finish_reason": summary.finish_reason,
                                     "stop_sequence": summary.stop_sequence,
                                     "trace": summary.trace,
@@ -1398,8 +1400,20 @@ fn sse_stream(
                                 },
                             }),
                         ));
-                        s.queue
-                            .push_back(ev("message_stop", json!({ "type": "message_stop" })));
+                        // A peer failed after some text went out: the stream ends in an
+                        // error, as Anthropic's does, so the cut is not read as end_turn.
+                        if let Some(err) = &summary.error {
+                            s.queue.push_back(ev(
+                                "error",
+                                json!({
+                                    "type": "error",
+                                    "error": { "type": "api_error", "message": err },
+                                }),
+                            ));
+                        } else {
+                            s.queue
+                                .push_back(ev("message_stop", json!({ "type": "message_stop" })));
+                        }
                         s.phase = Phase::Ended;
                         continue;
                     }
@@ -1726,6 +1740,7 @@ mod tests {
             duration_ms: 10,
             timings: crate::gateway::timing_metrics(10, 10, 10, 0, n),
             partial: false,
+            error: None,
             finish_reason: None,
             stop_sequence: None,
             legs: 1,

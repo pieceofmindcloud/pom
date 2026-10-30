@@ -1075,8 +1075,17 @@ pub(crate) async fn generate(
                 let admission_ms = bridge["first_token_ms"]
                     .as_f64()
                     .map(|first| (first - report.prefill_ms.unwrap_or(0.0)).max(0.0));
+                // A session fetched from a peer is the lookup's last part: the source's save waited for, then the
+                // files copied. Each gets its own span, so a few hundred MB between two machines shows where it went.
+                let (save_wait_ms, transfer_ms) =
+                    fetched.as_ref().map_or((0, 0), |fetch| (fetch.save_wait_ms, fetch.transfer_ms));
                 for (name, ms) in [
-                    ("session_lookup", lookup_ms.map(|ms| ms as f64)),
+                    (
+                        "session_lookup",
+                        lookup_ms.map(|ms| ms.saturating_sub(save_wait_ms + transfer_ms) as f64),
+                    ),
+                    ("session_save_wait", (save_wait_ms > 0).then_some(save_wait_ms as f64)),
+                    ("session_transfer", fetched.as_ref().map(|_| transfer_ms as f64)),
                     ("bridge_prepare", bridge["prepare_ms"].as_f64()),
                     ("session_restore", bridge["restore_ms"].as_f64()),
                     ("engine_admission", admission_ms),

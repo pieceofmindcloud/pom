@@ -2826,7 +2826,12 @@ the plugin in `engine.load` (`role`) and is announced as
   to its first answer piece), shown as the `bridge_prepare`,
   `session_restore` and `engine_admission` spans. The admission is
   `first_token_ms` less the engine's `prompt_ms`: the parked conversation
-  copied into its slot, which the engine's prompt time leaves out.
+  copied into its slot, which the engine's prompt time leaves out. A session
+  fetched from a peer is the lookup's last part, so the trace splits it out:
+  `session_lookup` keeps the asking, `session_save_wait` the wait for the
+  source's save (a prefill/decode split), and `session_transfer` the copy of
+  the files, with `trace.session_transfer` naming the source, the target,
+  the bytes and the rate for the pipeline view.
 - **Pieces** (the default with a bridge that knows them). The prefill turn also
   carries `pieces: true`: the prefill machine reads the prompt
   `POM_STRATA_PIECE_TOKENS` (4096) tokens at a time, one request of one token

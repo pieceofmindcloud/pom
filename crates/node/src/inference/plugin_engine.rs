@@ -1063,22 +1063,35 @@ pub(crate) async fn generate(
                 }
                 // Looking for the conversation's session on the head happens before its engine reads the prompt; without
                 // its own span the gap between the request and the prefill reads as nothing.
-                if let Some(lookup_ms) = lookup_here.or_else(|| done["session_lookup_ms"].as_u64()) {
-                    let offset_ms = leg_started.saturating_duration_since(request_started).as_millis() as u64;
-                    let started_at_ms = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map_or(0, |now| now.as_millis() as u64)
-                        .saturating_sub(request_started.elapsed().as_millis() as u64)
-                        + offset_ms;
+                // Then the engine's bridge, before the engine reads the prompt: the template, a saved session restored, and
+                // the admission (a parked conversation copied into its slot), which the engine's own prompt time leaves out.
+                let request_epoch_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |now| now.as_millis() as u64)
+                    .saturating_sub(request_started.elapsed().as_millis() as u64);
+                let mut offset_ms = leg_started.saturating_duration_since(request_started).as_millis() as u64;
+                let lookup_ms = lookup_here.or_else(|| done["session_lookup_ms"].as_u64());
+                let bridge = &done["pom_timings"];
+                let admission_ms = bridge["first_token_ms"]
+                    .as_f64()
+                    .map(|first| (first - report.prefill_ms.unwrap_or(0.0)).max(0.0));
+                for (name, ms) in [
+                    ("session_lookup", lookup_ms.map(|ms| ms as f64)),
+                    ("bridge_prepare", bridge["prepare_ms"].as_f64()),
+                    ("session_restore", bridge["restore_ms"].as_f64()),
+                    ("engine_admission", admission_ms),
+                ] {
+                    let Some(ms) = ms.map(|ms| ms.round() as u64) else { continue };
                     trace.spans.push(crate::prefill::TraceSpan::new(
-                        "session_lookup",
+                        name,
                         node_id.get(..8).unwrap_or(node_id),
                         None,
-                        started_at_ms,
+                        request_epoch_ms + offset_ms,
                         offset_ms,
-                        lookup_ms,
+                        ms,
                         None,
                     ));
+                    offset_ms += ms;
                 }
                 super::engine_telemetry::merge_reported_links(code, done);
                 super::engine_telemetry::apply_stage_links(&mut trace, code, engine_prefill_ms.unwrap_or(prefill_ms));

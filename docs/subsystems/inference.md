@@ -2819,7 +2819,14 @@ the plugin in `engine.load` (`role`) and is announced as
   head that served the last one, so no peer holds a newer copy, and the round
   trip (about a second over a relay) is skipped. The time spent here is the
   `done.session_lookup_ms` a remote head reports, and the gateway's trace shows
-  it as the `session_lookup` span before the prefill.
+  it as the `session_lookup` span before the prefill. The bridge's own part
+  follows in `done.pom_timings` (`prepare_ms`: template and tokens;
+  `restore_ms`: a saved session restored, skipped when the turn's own
+  conversation is parked in a slot; `first_token_ms`: from the engine's start
+  to its first answer piece), shown as the `bridge_prepare`,
+  `session_restore` and `engine_admission` spans. The admission is
+  `first_token_ms` less the engine's `prompt_ms`: the parked conversation
+  copied into its slot, which the engine's prompt time leaves out.
 - **Pieces** (the default with a bridge that knows them). The prefill turn also
   carries `pieces: true`: the prefill machine reads the prompt
   `POM_STRATA_PIECE_TOKENS` (4096) tokens at a time, one request of one token

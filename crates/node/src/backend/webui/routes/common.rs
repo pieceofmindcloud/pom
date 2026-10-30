@@ -54,7 +54,9 @@ pub(super) fn routes() -> Router<GatewayState> {
         .route("/api/plugin-host/sign", post(crate::plugin_host_api::sign))
         .route(
             "/api/internal/plugins/:code/engine/generate",
-            post(crate::plugin_engine::engine_generate_route),
+            post(crate::plugin_engine::engine_generate_route).layer(
+                axum::extract::DefaultBodyLimit::max(crate::plugin_engine::MAX_GENERATION_BODY),
+            ),
         )
         .route(
             "/api/internal/plugins/:code/engine/session/chunk",

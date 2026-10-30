@@ -2812,6 +2812,14 @@ the plugin in `engine.load` (`role`) and is announced as
   it and reads only the rest of the prompt. Any failure of either step is
   logged and leaves the head to read the prompt itself: the split is never a
   reason for a turn to fail.
+- **Asking the peers.** Without a `session_source`, a head
+  (`plugin_session::pull`) asks the other heads of its deployment for their
+  offers before its turn, unless the conversation is parked in its own RAM
+  (`ram_tokens > 0`): the gateway sends a conversation's turns back to the
+  head that served the last one, so no peer holds a newer copy, and the round
+  trip (about a second over a relay) is skipped. The time spent here is the
+  `done.session_lookup_ms` a remote head reports, and the gateway's trace shows
+  it as the `session_lookup` span before the prefill.
 - **Pieces** (the default with a bridge that knows them). The prefill turn also
   carries `pieces: true`: the prefill machine reads the prompt
   `POM_STRATA_PIECE_TOKENS` (4096) tokens at a time, one request of one token

@@ -58,6 +58,11 @@ const ADMISSION_TUNNEL_TIMEOUT: Duration = Duration::from_millis(500);
 
 const ADMISSION_CACHE_TTL: Duration = Duration::from_secs(30);
 const REJECTED_ADMISSION_CACHE_TTL: Duration = Duration::from_secs(5);
+/// A peer that never proved membership and does not answer: probed again at most this often. Every `PeerList`
+/// names it again, and each probe costs seconds of timeouts.
+const UNREACHABLE_ADMISSION_CACHE_TTL: Duration = Duration::from_secs(60);
+/// UDP messages handled at once (`receive_loop`).
+const UDP_HANDLERS: usize = 64;
 
 /// How long a peer that already proved membership stays admitted while
 /// the following probes do not reach it. A peer that only the relay reaches loses the
@@ -608,7 +613,10 @@ fn admission_verdict(
                 expires_at: now + REJECTED_ADMISSION_CACHE_TTL,
                 proven_at: Some(proven),
             },
-            None => rejected,
+            None => AdmissionCacheEntry {
+                expires_at: now + UNREACHABLE_ADMISSION_CACHE_TTL,
+                ..rejected
+            },
         },
     }
 }
@@ -3566,9 +3574,15 @@ impl Network {
         Ok(())
     }
 
-    async fn receive_loop(&self, assignment: Arc<RwLock<Option<LayerAssignment>>>) {
+    /// Reads the UDP socket and hands every message to a task of its own. A message can wait seconds on an
+    /// admission probe (`admit_peer`: 2 s per address, then the tunnel); handled in line, the probes of a `PeerList`
+    /// full of unreachable or foreign nodes held the socket, members' announces queued behind them and their peers
+    /// left the table (`Removed timed-out peers`). At most `UDP_HANDLERS` run at once; past that a message is dropped,
+    /// as UDP would, and the sender's next announce comes in 5 s.
+    async fn receive_loop(self: &Arc<Self>, assignment: Arc<RwLock<Option<LayerAssignment>>>) {
         let mut buf = vec![0u8; 65535];
-        let mut panic_log = PanicLogLimiter::default();
+        let panic_log = Arc::new(std::sync::Mutex::new(PanicLogLimiter::default()));
+        let handlers = Arc::new(tokio::sync::Semaphore::new(UDP_HANDLERS));
         loop {
             match self.socket.recv_from(&mut buf).await {
                 Ok((len, src)) => {
@@ -3578,22 +3592,34 @@ impl Network {
                             debug!("UDP announce from {src} dropped: {reason}");
                             continue;
                         }
+                        let Ok(permit) = handlers.clone().try_acquire_owned() else {
+                            debug!("UDP message from {src} dropped: {UDP_HANDLERS} handlers busy");
+                            continue;
+                        };
                         let context = message_context(&msg);
-                        if let Err(payload) =
-                            AssertUnwindSafe(self.handle_message(msg, src, &assignment))
-                                .catch_unwind()
-                                .await
-                        {
-                            if let Some(suppressed) = panic_log.record(Instant::now()) {
-                                warn!(
-                                    source = %src,
-                                    message = %context,
-                                    panic = %panic_context(payload.as_ref()),
-                                    suppressed,
-                                    "UDP message handler panicked; receive loop continues"
-                                );
+                        let net = Arc::clone(self);
+                        let assignment = assignment.clone();
+                        let panic_log = panic_log.clone();
+                        tokio::spawn(async move {
+                            let _permit = permit;
+                            if let Err(payload) =
+                                AssertUnwindSafe(net.handle_message(msg, src, &assignment))
+                                    .catch_unwind()
+                                    .await
+                            {
+                                let suppressed =
+                                    panic_log.lock().ok().and_then(|mut log| log.record(Instant::now()));
+                                if let Some(suppressed) = suppressed {
+                                    warn!(
+                                        source = %src,
+                                        message = %context,
+                                        panic = %panic_context(payload.as_ref()),
+                                        suppressed,
+                                        "UDP message handler panicked; receive loop continues"
+                                    );
+                                }
                             }
-                        }
+                        });
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -6706,7 +6732,9 @@ mod tests {
         assert_eq!(kept.expires_at, now + REJECTED_ADMISSION_CACHE_TTL);
 
         assert!(!admission_verdict(AdmissionProbe::Unreachable, Some(stale), now).allowed);
-        assert!(!admission_verdict(AdmissionProbe::Unreachable, None, now).allowed);
+        let unknown = admission_verdict(AdmissionProbe::Unreachable, None, now);
+        assert!(!unknown.allowed);
+        assert_eq!(unknown.expires_at, now + UNREACHABLE_ADMISSION_CACHE_TTL);
         assert!(!admission_verdict(AdmissionProbe::Refused, Some(recent), now).allowed);
 
         let approved = admission_verdict(AdmissionProbe::Approved, None, now);

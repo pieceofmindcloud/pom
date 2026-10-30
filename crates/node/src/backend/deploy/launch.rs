@@ -100,6 +100,7 @@ pub(super) async fn deploy_endpoint(
 
     if plan.blocked.is_none() {
         if let Some(service) = params.inference_service.as_deref() {
+            super::planning::share_whole_model_roles(req.kind, &mut plan.steps, params.inference_role);
             let targets: Vec<String> = plan
                 .steps
                 .iter()

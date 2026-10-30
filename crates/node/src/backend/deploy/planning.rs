@@ -1445,7 +1445,7 @@ pub(super) fn plan_with_rtt_options(
             let on = if target.is_empty() { String::new() } else { format!(" on {target}") };
             blocked.get_or_insert(format!(
                 "a prefill machine runs the whole model: {}{on} is a slice; choose the whole model for it, or give \
-                 it the decode role",
+                 it the prefill and decode role",
                 kind.unit(group, c.start_layer, c.end_layer)
             ));
         }
@@ -2220,5 +2220,24 @@ pub(super) fn tp_check_verdict(body: &serde_json::Value, label: &str) -> Option<
             Some(err) => format!("{label} refused the shard check: {err}"),
             None => format!("{label} does not have the shard check (old binary?)"),
         }),
+    }
+}
+
+/// A whole model on several machines: each machine left at `Both` (its own role, else the deployment's) runs as
+/// `Shared`, which keeps its plugin's sessions on, so the machines can hand conversations to each other and take a
+/// prompt a prefill machine read. Nothing to do for one machine or for slices.
+pub(super) fn share_whole_model_roles(
+    kind: DeployKind,
+    steps: &mut [Step],
+    default: crate::webui::InferenceRole,
+) {
+    let mut machines: Vec<&str> = steps.iter().map(|step| step.target_node_id.as_str()).collect();
+    machines.sort();
+    machines.dedup();
+    if kind != DeployKind::Whole || machines.len() < 2 {
+        return;
+    }
+    for step in steps {
+        step.inference_role = Some(step.inference_role.unwrap_or(default).shared());
     }
 }

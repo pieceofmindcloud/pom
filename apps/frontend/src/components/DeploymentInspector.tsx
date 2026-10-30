@@ -595,18 +595,17 @@ export function DeploymentInspector({
   const roleRow = (key: string, label: string, role: InferenceRole, onRole: (role: InferenceRole) => void) => (
     <InspectorRow key={key} label={label} tip={t("deploy.knob.inference_roleHint")}>
       {readOnly ? (
-        <ReadValue>{role}</ReadValue>
+        <ReadValue>{t(role === "prefill" ? "deploy.knob.inference_rolePrefill" : "deploy.knob.inference_roleBoth")}</ReadValue>
       ) : (
         <Select
           aria-label={label}
           name={key}
-          value={role}
+          value={role === "shared" ? "both" : role}
           onChange={(event) => onRole(event.target.value as InferenceRole)}
           compact
         >
           <option value="both">{t("deploy.knob.inference_roleBoth")}</option>
           <option value="prefill">{t("deploy.knob.inference_rolePrefill")}</option>
-          <option value="decode">{t("deploy.knob.inference_roleDecode")}</option>
         </Select>
       )}
     </InspectorRow>

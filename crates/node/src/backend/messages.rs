@@ -52,6 +52,7 @@ use axum::{
 use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use axum::extract::DefaultBodyLimit;
 use std::collections::VecDeque;
 use std::convert::Infallible;
 use tokio::sync::mpsc;
@@ -62,8 +63,14 @@ use tracing::info;
 /// nothing and keeps a hand-rolled test request from 400ing.
 pub fn routes() -> Router<GatewayState> {
     Router::new()
-        .route("/v1/messages", post(messages))
-        .route("/v1/messages/count_tokens", post(count_tokens))
+        .route(
+            "/v1/messages",
+            post(messages).layer(DefaultBodyLimit::max(crate::openai::PROMPT_BODY_LIMIT)),
+        )
+        .route(
+            "/v1/messages/count_tokens",
+            post(count_tokens).layer(DefaultBodyLimit::max(crate::openai::PROMPT_BODY_LIMIT)),
+        )
         .route("/v1/messages", axum::routing::options(preflight))
         .route(
             "/v1/messages/count_tokens",

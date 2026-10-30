@@ -2735,21 +2735,26 @@ with an error.
 
 **Prefill/decode split.** A machine that runs the whole model on a plugin
 inference service may be deployed with `RuntimeParams::inference_role`
-(`both`, the default, `prefill` or `decode`; the POM settings card of the
+(`both`, "prefill and decode", the default, or `prefill`, "prefill first"; the
+POM settings card of the
 deploy inspector draws it when the service declares `inference_role` in
 `pom_settings` and the model is not split across machines, or per machine when
 two or more machines are on the map; the Dashboard's "Add node" dialog draws it
 for a machine added with the whole model). Every role answers requests and reads
-prompts: the role only says which machine the balance prefers for reading the
-prompts of the others (`prefill`, "prefill first") and which one reads its own
-only when no prefill machine is free (`decode`, "decode first"). One deployment
-may also put the whole model on several machines, each with its own role
-(`SelectedSlice::inference_role`, carried by `PeerOverrides`, the plan's
-`Step`, `LaunchTarget` and `params_for`): `plugin_engine::deploy_block`
-accepts several machines for a whole model when at least one has a `prefill`
-or `decode` role (a role keeps the sessions on, which is how the machines hand
-conversations to each other); machines that are all `prefill` are a valid
-deployment. A sliced deployment may hold a prefill machine too: the survey
+its own prompts; a `prefill` machine also reads, while it is free, the prompts
+of the other machines' turns (`prefill_peer`). A third value, `shared`, is
+never chosen on screen: the deploy gives it to every machine left at `both`
+when the whole model goes on several machines (`InferenceRole::shared`,
+`planning::share_whole_model_roles` in the plan and the launch, and the "Add
+node" route for a whole model). It keeps the plugin's sessions on, which is how
+the machines hand conversations to each other, and it is the only head
+`prefill_peer` sends to a prefill machine: a `both` head alone has its sessions
+off and could not restore what another machine read. The role per machine is
+`SelectedSlice::inference_role`, carried by `PeerOverrides`, the plan's `Step`,
+`LaunchTarget` and `params_for`. `plugin_engine::deploy_block` accepts several
+machines for a whole model whenever their service declares `inference_role`
+among its `pom_settings` (whatever their roles; all `prefill` too), and
+refuses a second machine for a service that does not. A sliced deployment may hold a prefill machine too: the survey
 of a `shards` deployment also lists the whole GGUF of the same model
 (`parse_whole`, matched by `model_stem`), the automatic plan chains the slices
 only, and a row of the whole model with the `prefill` role stands outside the
@@ -2763,7 +2768,7 @@ prompts beside such a machine. The deploy screen keeps a per-machine role only w
 more machines are on the map; with a single machine the row's role is dropped
 and the deployment's role (the one the inspector shows) applies. The Flow draws the split as
 Prefill -> Decode: the cluster view's `PeerView.role` and a candidate edge
-from each prefill machine to each decode machine of the same layers. The
+from each prefill machine to each other machine of the same layers. The
 Chat's head list (`/api/ui/infer/heads`) offers every machine of the split as
 a head of its own. The trace of a split turn has the prefill
 machine as its first hop (its engine's prompt time, the call's round trip),
@@ -2812,6 +2817,26 @@ the plugin in `engine.load` (`role`) and is announced as
   it and reads only the rest of the prompt. Any failure of either step is
   logged and leaves the head to read the prompt itself: the split is never a
   reason for a turn to fail.
+- **Asking the peers.** Without a `session_source`, a head
+  (`plugin_session::pull`) asks the other heads of its deployment for their
+  offers before its turn, unless the conversation is parked in its own RAM
+  (`ram_tokens > 0`): the gateway sends a conversation's turns back to the
+  head that served the last one, so no peer holds a newer copy, and the round
+  trip (about a second over a relay) is skipped. The time spent here is the
+  `done.session_lookup_ms` a remote head reports, and the gateway's trace shows
+  it as the `session_lookup` span before the prefill. The bridge's own part
+  follows in `done.pom_timings` (`prepare_ms`: template and tokens;
+  `restore_ms`: a saved session restored, skipped when the turn's own
+  conversation is parked in a slot; `first_token_ms`: from the engine's start
+  to its first answer piece), shown as the `bridge_prepare`,
+  `session_restore` and `engine_admission` spans. The admission is
+  `first_token_ms` less the engine's `prompt_ms`: the parked conversation
+  copied into its slot, which the engine's prompt time leaves out. A session
+  fetched from a peer is the lookup's last part, so the trace splits it out:
+  `session_lookup` keeps the asking, `session_save_wait` the wait for the
+  source's save (a prefill/decode split), and `session_transfer` the copy of
+  the files, with `trace.session_transfer` naming the source, the target,
+  the bytes and the rate for the pipeline view.
 - **Pieces** (the default with a bridge that knows them). The prefill turn also
   carries `pieces: true`: the prefill machine reads the prompt
   `POM_STRATA_PIECE_TOKENS` (4096) tokens at a time, one request of one token

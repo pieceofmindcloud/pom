@@ -738,6 +738,13 @@ impl SessionFetch {
     }
 }
 
+/// [`prepare_for_body`] and how long it took, in milliseconds: the trace shows it as the turn's `session_lookup`.
+pub(crate) async fn prepare_timed(state: &GatewayState, code: &str, body: &Value) -> (Option<SessionFetch>, u64) {
+    let started = std::time::Instant::now();
+    let fetched = prepare_for_body(state, code, body).await;
+    (fetched, started.elapsed().as_millis() as u64)
+}
+
 /// Before a turn runs on this machine: fetches the conversation's session from a peer when that is faster than
 /// reading the prompt again. Never fails the turn: any problem leaves the turn to read its prompt. Returns what it
 /// fetched, if anything.
@@ -766,6 +773,13 @@ pub(crate) async fn prepare_for_body(state: &GatewayState, code: &str, body: &Va
 async fn pull(state: &GatewayState, code: &str, key: &str) -> Result<Option<SessionFetch>, String> {
     let (port, token) = local_upstream(&state.plugins, code).await?;
     let local = offer_here(port, &token, key).await?;
+    // parked in this machine's RAM: the gateway sends a conversation's turns to the head that served the last one, so
+    // no peer can hold a newer copy, and asking them costs a round trip on every turn (over a relay, about a second)
+    if local.ram_tokens > 0 {
+        info!(plugin = %code, session = %key, local_ram_tokens = local.ram_tokens,
+              "session pull: the conversation is parked here; the peers are not asked");
+        return Ok(None);
+    }
     // only the heads of this machine's own deployment can hold the conversation, and they are asked all at once: the
     // turn waits for the slowest answer, not for their sum
     let peers = state.all_peers().await;

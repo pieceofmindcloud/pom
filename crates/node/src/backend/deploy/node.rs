@@ -500,7 +500,11 @@ pub(super) async fn add_node_endpoint(
         return bad(json!({ "error": message }));
     }
     // The new machine launches with its own parameters; the deployment's version keeps the base ones.
-    let node_params = overrides.apply(&params);
+    let mut node_params = overrides.apply(&params);
+    // a whole model added beside the machines that already serve it: the sessions on, as in a deployment of several
+    if req.kind == DeployKind::Whole {
+        node_params.inference_role = node_params.inference_role.shared();
+    }
 
     // The machine's engine: an inference service of a plugin (its own `inference_service`), or llama.cpp when none.
     // The same rules as a deployment (`deploy_block`): the machine offers it and it is ready; a service that does not

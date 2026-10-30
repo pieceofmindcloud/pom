@@ -785,7 +785,8 @@ export type PomSetting =
   | "prefill_min_tokens";
 
 /** A whole-model machine's part in a prefill/decode split of a plugin inference service. */
-export type InferenceRole = "both" | "prefill" | "decode";
+/** `shared` is not chosen on screen: the deploy gives it to a `both` machine that runs the whole model beside others. */
+export type InferenceRole = "both" | "prefill" | "shared";
 
 /** One setting an inference service's engine publishes (`host.services`). */
 export interface EngineSetting {

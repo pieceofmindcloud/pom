@@ -35,8 +35,9 @@
 //! `{"error": message}`.
 //!
 //! **Prefill/decode split** ([`prefill_on_peer`]): a whole-model machine may be deployed with the role `prefill`
-//! (`RuntimeParams::inference_role`), which it announces as `engine/plugin-role-v1:prefill`. The planner never
-//! makes it the head. Before a named conversation's turn runs on a head, the gateway sends the turn to a prefill
+//! (`RuntimeParams::inference_role`), which it announces as `engine/plugin-role-v1:prefill`; it answers its own
+//! requests as any head. Before a named conversation's turn runs on a head with the sessions on (the `shared` role
+//! the deploy gives the other machines of the model), the gateway sends the turn to a free prefill
 //! machine of the same model with `prefill_only: true`: that machine reads the prompt into a batch slot and saves
 //! the conversation's session (or answers that the new part of the prompt is too short to be worth it). The head's
 //! turn then names it as `session_source`, and the head fetches that session before it reads its prompt
@@ -62,7 +63,7 @@ pub(crate) const ROLE_CAPABILITY_PREFIX: &str = "engine/plugin-role-v1:";
 const PREFILL_TIMEOUT: Duration = Duration::from_secs(3600);
 /// A prompt is the whole conversation; the generation route is not the
 /// small-JSON peer route.
-const MAX_GENERATION_BODY: usize = 32 * 1024 * 1024;
+pub(crate) const MAX_GENERATION_BODY: usize = crate::openai::PROMPT_BODY_LIMIT;
 /// How often the target node reads the plugin's engine state.
 const STATUS_POLL: Duration = Duration::from_secs(2);
 /// One generation may run for a long time (a long prompt, a long answer).
@@ -109,7 +110,7 @@ pub(crate) fn role_of_capabilities(capabilities: &[String]) -> crate::webui::Inf
         .find_map(|cap| cap.strip_prefix(ROLE_CAPABILITY_PREFIX))
     {
         Some("prefill") => InferenceRole::Prefill,
-        Some("decode") => InferenceRole::Decode,
+        Some("shared") => InferenceRole::Shared,
         _ => InferenceRole::Both,
     }
 }
@@ -154,10 +155,10 @@ mod engine_group_tests {
         use crate::webui::InferenceRole;
         let plugin = capability("strata");
         let prefill = role_capability(InferenceRole::Prefill);
-        let decode = role_capability(InferenceRole::Decode);
+        let shared = role_capability(InferenceRole::Shared);
         assert_eq!(prefill, "engine/plugin-role-v1:prefill");
         assert_eq!(role_of_capabilities(&[plugin, prefill]), InferenceRole::Prefill);
-        assert_eq!(role_of_capabilities(&[decode]), InferenceRole::Decode);
+        assert_eq!(role_of_capabilities(&[shared]), InferenceRole::Shared);
         assert_eq!(role_of_capabilities(&[]), InferenceRole::Both);
     }
 }
@@ -691,11 +692,15 @@ async fn open_stream(
     node_id: &str,
     code: &str,
     body: &Value,
-) -> Result<(reqwest::Response, Option<super::plugin_session::SessionFetch>), String> {
-    // the session this machine fetched for a turn it heads (a remote head reports its own in the done line)
+) -> Result<(reqwest::Response, Option<super::plugin_session::SessionFetch>, Option<u64>), String> {
+    // the session this machine fetched for a turn it heads, and how long looking for it took (a remote head reports
+    // both in the done line)
     let mut fetched = None;
+    let mut lookup_ms = None;
     let response = if node_id == state.network.node_id {
-        fetched = super::plugin_session::prepare_for_body(state, code, body).await;
+        let (fetch, ms) = super::plugin_session::prepare_timed(state, code, body).await;
+        fetched = fetch;
+        lookup_ms = Some(ms);
         let bytes = serde_json::to_vec(body).map_err(|error| error.to_string())?;
         post_local(&state.plugins, code, bytes).await?
     } else {
@@ -718,7 +723,7 @@ async fn open_stream(
             .map_err(|error| format!("the machine serving this model did not answer: {error}"))?
     };
     if response.status().is_success() {
-        return Ok((response, fetched));
+        return Ok((response, fetched, lookup_ms));
     }
     let status = response.status();
     let text = response.text().await.unwrap_or_default();
@@ -742,12 +747,14 @@ async fn open_stream(
 fn relay_with_links(
     code: String,
     fetched: Option<Value>,
+    lookup_ms: u64,
     upstream: impl futures::Stream<Item = Result<Bytes, reqwest::Error>> + Unpin + Send + 'static,
 ) -> impl futures::Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static {
     struct Relay<S> {
         upstream: S,
         code: String,
         fetched: Option<Value>,
+        lookup_ms: u64,
         pending: Vec<u8>,
         first_token: bool,
         ended: bool,
@@ -757,6 +764,7 @@ fn relay_with_links(
             upstream,
             code,
             fetched,
+            lookup_ms,
             pending: Vec::new(),
             first_token: false,
             ended: false,
@@ -765,7 +773,7 @@ fn relay_with_links(
             loop {
                 if let Some(end) = relay.pending.iter().position(|byte| *byte == b'\n') {
                     let line: Vec<u8> = relay.pending.drain(..=end).collect();
-                    let out = rewrite_line(&relay.code, &line, &mut relay.first_token, relay.fetched.as_ref());
+                    let out = rewrite_line(&relay.code, &line, &mut relay.first_token, relay.fetched.as_ref(), relay.lookup_ms);
                     return Some((Ok(Bytes::from(out)), relay));
                 }
                 if relay.ended {
@@ -786,8 +794,8 @@ fn relay_with_links(
 }
 
 /// One NDJSON line of the engine's answer, with the stage links (and the session this machine fetched for the turn,
-/// `session_fetch`) added to its `done` event.
-fn rewrite_line(code: &str, line: &[u8], first_token: &mut bool, fetched: Option<&Value>) -> Vec<u8> {
+/// `session_fetch`, and how long looking for it took, `session_lookup_ms`) added to its `done` event.
+fn rewrite_line(code: &str, line: &[u8], first_token: &mut bool, fetched: Option<&Value>, lookup_ms: u64) -> Vec<u8> {
     let text = line.strip_suffix(b"\n").unwrap_or(line);
     let Ok(mut value) = serde_json::from_slice::<Value>(text) else {
         return line.to_vec();
@@ -808,6 +816,7 @@ fn rewrite_line(code: &str, line: &[u8], first_token: &mut bool, fetched: Option
     if let Some(fetched) = fetched {
         done["session_fetch"] = fetched.clone();
     }
+    done["session_lookup_ms"] = json!(lookup_ms);
     let mut out = serde_json::to_vec(&value).unwrap_or_else(|_| text.to_vec());
     if line.ends_with(b"\n") {
         out.push(b'\n');
@@ -897,7 +906,7 @@ pub(crate) async fn generate(
     super::plugin_stage_link::set_phase(code, super::plugin_stage_link::LinkPhase::Prefill);
     let channel = super::plugin_stage_link::channel_of(node_id, &state.network.node_id);
     let leg_started = Instant::now();
-    let (response, fetched_here) = match open_stream(state, node_id, code, &body).await {
+    let (response, fetched_here, lookup_here) = match open_stream(state, node_id, code, &body).await {
         Ok(opened) => opened,
         Err(error) => {
             let _ = tx.send(GenEvent::Failed(error)).await;
@@ -1053,6 +1062,47 @@ pub(crate) async fn generate(
                         channel,
                     );
                 }
+                // Looking for the conversation's session on the head happens before its engine reads the prompt; without
+                // its own span the gap between the request and the prefill reads as nothing.
+                // Then the engine's bridge, before the engine reads the prompt: the template, a saved session restored, and
+                // the admission (a parked conversation copied into its slot), which the engine's own prompt time leaves out.
+                let request_epoch_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |now| now.as_millis() as u64)
+                    .saturating_sub(request_started.elapsed().as_millis() as u64);
+                let mut offset_ms = leg_started.saturating_duration_since(request_started).as_millis() as u64;
+                let lookup_ms = lookup_here.or_else(|| done["session_lookup_ms"].as_u64());
+                let bridge = &done["pom_timings"];
+                let admission_ms = bridge["first_token_ms"]
+                    .as_f64()
+                    .map(|first| (first - report.prefill_ms.unwrap_or(0.0)).max(0.0));
+                // A session fetched from a peer is the lookup's last part: the source's save waited for, then the
+                // files copied. Each gets its own span, so a few hundred MB between two machines shows where it went.
+                let (save_wait_ms, transfer_ms) =
+                    fetched.as_ref().map_or((0, 0), |fetch| (fetch.save_wait_ms, fetch.transfer_ms));
+                for (name, ms) in [
+                    (
+                        "session_lookup",
+                        lookup_ms.map(|ms| ms.saturating_sub(save_wait_ms + transfer_ms) as f64),
+                    ),
+                    ("session_save_wait", (save_wait_ms > 0).then_some(save_wait_ms as f64)),
+                    ("session_transfer", fetched.as_ref().map(|_| transfer_ms as f64)),
+                    ("bridge_prepare", bridge["prepare_ms"].as_f64()),
+                    ("session_restore", bridge["restore_ms"].as_f64()),
+                    ("engine_admission", admission_ms),
+                ] {
+                    let Some(ms) = ms.map(|ms| ms.round() as u64) else { continue };
+                    trace.spans.push(crate::prefill::TraceSpan::new(
+                        name,
+                        node_id.get(..8).unwrap_or(node_id),
+                        None,
+                        request_epoch_ms + offset_ms,
+                        offset_ms,
+                        ms,
+                        None,
+                    ));
+                    offset_ms += ms;
+                }
                 super::engine_telemetry::merge_reported_links(code, done);
                 super::engine_telemetry::apply_stage_links(&mut trace, code, engine_prefill_ms.unwrap_or(prefill_ms));
                 if let Some(leg) = &prefill_leg {
@@ -1184,8 +1234,9 @@ async fn prefill_peer(
         .unwrap_or(InferenceRole::Both);
     // the head's load counts this turn (`generate` holds it in flight): more than one is another request on it. A busy
     // head reads its own prompt: it applies a piece only while none of its batch slots decodes, so it would refuse
-    // what another machine read (a free machine takes new requests as their head instead, `auto_head`)
-    if load_of.get(head).copied().unwrap_or(0) > 1 || head_role == InferenceRole::Prefill {
+    // what another machine read (a free machine takes new requests as their head instead, `auto_head`). Only a head
+    // with the sessions on (`Shared`) can restore what a prefill machine read; a prefill head reads its own prompt.
+    if load_of.get(head).copied().unwrap_or(0) > 1 || head_role != InferenceRole::Shared {
         return None;
     }
     let mut best: Option<(f64, crate::network::PeerInfo)> = None;
@@ -1300,7 +1351,7 @@ async fn prefill_on_peer(
     let _busy = state.loads.acquire(&peer.node_id).await;
     let started = Instant::now();
     let response = match open_stream(state, &peer.node_id, code, &prefill).await {
-        Ok((response, _)) => response,
+        Ok((response, _, _)) => response,
         Err(error) => {
             warn!(plugin = %code, session = %key, prefill = %peer.node_id, "prefill split: the prefill machine refused: {error}");
             return None;
@@ -1448,9 +1499,9 @@ pub(crate) async fn services_of(state: &GatewayState, node_id: &str) -> Option<V
 }
 
 /// Why a deployment on a plugin's inference service cannot go ahead, if it
-/// cannot. A whole model goes to one machine - or to several in a
-/// prefill/decode split, where `roles` (each target's role, in the order of
-/// `targets`) gives at least one machine a prefill or decode role; layer
+/// cannot. A whole model goes to one machine or to several, each with its role
+/// (`roles`, in the order of `targets`; the deploy gives `Shared` to the ones
+/// left at `Both`, see `InferenceRole::shared`); layer
 /// slices go one per machine, to a service that publishes `stages` for the
 /// model's `architecture` (its `stage_architectures`, see [`runs_slices`]).
 /// Every machine runs the plugin with an inference service that is not in error.
@@ -1472,15 +1523,9 @@ pub(crate) async fn deploy_block(
     if unique.is_empty() {
         return Some("choose the machine that runs the inference service".into());
     }
-    // several machines with the whole model share the conversations as sessions, which a prefill or decode role
-    // keeps on: every one of them answers, and the gateway balances the prompts between them
-    let split = roles.iter().any(|role| *role != crate::webui::InferenceRole::Both);
-    if whole && unique.len() != 1 && !split {
-        return Some(format!(
-            "the inference service {service} runs the whole model on a single machine: choose one machine, or give \
-             the machines a prefill/decode role (prefill first or decode first)"
-        ));
-    }
+    // several machines with the whole model share the conversations as sessions: the deploy gives them a role that
+    // keeps the sessions on (`InferenceRole::shared`), every one of them answers, and the gateway balances the
+    // prompts between them
     if whole && unique.len() != named.len() {
         return Some(format!(
             "the inference service {service} runs the whole model once per machine: choose different machines"
@@ -1501,6 +1546,7 @@ pub(crate) async fn deploy_block(
             .all(|(_, role)| *role == crate::webui::InferenceRole::Prefill)
             && roles.len() == targets.len()
     };
+    let several = unique.len() > 1;
     for target in unique {
         let Some(services) = services_of(state, target).await else {
             return Some(format!(
@@ -1520,6 +1566,19 @@ pub(crate) async fn deploy_block(
                 return Some(format!(
                     "the inference service {service} of machine {target} is not ready: {}",
                     entry["detail"].as_str().unwrap_or("no detail")
+                ))
+            }
+            // several machines with the whole model hand conversations over as sessions, which the service turns on
+            // through the role it declares among its POM settings
+            Some(entry)
+                if whole
+                    && several
+                    && !entry["pom_settings"]
+                        .as_array()
+                        .is_some_and(|settings| settings.iter().any(|setting| setting == "inference_role")) =>
+            {
+                return Some(format!(
+                    "the inference service {service} runs the whole model on a single machine: choose one machine"
                 ))
             }
             Some(entry) if !whole && !prefill_only(target) && !runs_slices(entry, architecture) => {
@@ -1609,6 +1668,9 @@ pub(crate) async fn engine_generate_route(
     if body.len() > MAX_GENERATION_BODY {
         return refuse(StatusCode::PAYLOAD_TOO_LARGE, "body too large");
     }
+    // The gateway that took the request marked only its own runtime; without
+    // this the serving node counts none of its work and unloads mid-session.
+    state.runtime.note_request();
     // This machine's stage links of the generation start from nothing; its prompt phase begins now.
     let _ = super::plugin_stage_link::take_link_stats(&code);
     let _ = super::plugin_stage_link::take_channel_stats(&code);
@@ -1617,9 +1679,8 @@ pub(crate) async fn engine_generate_route(
     super::plugin_stage_link::set_phase(&code, super::plugin_stage_link::LinkPhase::Prefill);
     // a remote head's turn: the session it lacks is fetched from a peer here, before the turn reads its prompt
     let turn = serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null);
-    let fetched = super::plugin_session::prepare_for_body(&state, &code, &turn)
-        .await
-        .map(|fetch| fetch.to_json());
+    let (fetched, lookup_ms) = super::plugin_session::prepare_timed(&state, &code, &turn).await;
+    let fetched = fetched.map(|fetch| fetch.to_json());
     let response = match post_local(&state.plugins, &code, body.to_vec()).await {
         Ok(response) => response,
         Err(error) => return refuse(StatusCode::SERVICE_UNAVAILABLE, &error),
@@ -1629,6 +1690,7 @@ pub(crate) async fn engine_generate_route(
     let stream = relay_with_links(
         code.clone(),
         fetched,
+        lookup_ms,
         Box::pin(super::engine_telemetry::track(&code, response.bytes_stream())),
     );
     // This machine ran the turn: when its bridge reports the conversation saved, the turn goes on to the peers.
@@ -1690,7 +1752,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prefill_machines_answer_too_and_several_need_a_role() {
+    async fn prefill_machines_answer_too_and_several_need_no_role() {
         use crate::webui::InferenceRole;
         let state = crate::gateway::testkit::state_with("me", vec![]).await;
         // every machine of the split answers: prefill machines alone are a deployment (the machines unknown here are
@@ -1700,7 +1762,7 @@ mod tests {
             let reason = deploy_block(&state, "strata", true, &targets, &roles, None).await.expect("unknown machines");
             assert!(reason.contains("did not answer which services"), "{reason}");
         }
-        // two machines with the whole model and no role share no sessions: refused
+        // two machines with the whole model and no role are a deployment too (the deploy gives them `Shared`)
         let reason = deploy_block(
             &state,
             "strata",
@@ -1710,8 +1772,8 @@ mod tests {
             None,
         )
         .await
-        .expect("no role, no split");
-        assert!(reason.contains("on a single machine"), "{reason}");
+        .expect("unknown machines");
+        assert!(reason.contains("did not answer which services"), "{reason}");
     }
 
     #[tokio::test]
@@ -1727,10 +1789,11 @@ mod tests {
         let state = crate::gateway::testkit::state_with(
             "me",
             vec![
-                whole("head", InferenceRole::Decode),
+                whole("head", InferenceRole::Shared),
                 whole("fast", InferenceRole::Prefill),
-                whole("other", InferenceRole::Decode),
+                whole("other", InferenceRole::Shared),
                 whole("pre2", InferenceRole::Prefill),
+                whole("plain", InferenceRole::Both),
             ],
         )
         .await;
@@ -1754,6 +1817,10 @@ mod tests {
         // a prefill head reads its own prompt, free or busy
         let _turn = state.loads.acquire("pre2").await;
         assert_eq!(picked("pre2").await, None);
+        drop(_turn);
+        // a head without the sessions on could not restore what a prefill machine read: it reads its own prompt
+        let _plain = state.loads.acquire("plain").await;
+        assert_eq!(picked("plain").await, None);
     }
 
     #[test]
@@ -2028,6 +2095,7 @@ mod relay_tests {
             b"{\"done\":{\"finish\":\"stop\"}}\n",
             &mut first,
             Some(&fetch.to_json()),
+            0,
         );
         let value: Value = serde_json::from_slice(&done).unwrap();
         let carried = super::super::plugin_session::SessionFetch::from_json(&value["done"]["session_fetch"]);
@@ -2057,10 +2125,10 @@ mod relay_tests {
             },
         );
         let mut first = false;
-        let token = rewrite_line("strata-relay-test", b"{\"t\":\"hi\"}\n", &mut first, None);
+        let token = rewrite_line("strata-relay-test", b"{\"t\":\"hi\"}\n", &mut first, None, 0);
         assert!(first, "a text line is the first token");
         assert_eq!(token, b"{\"t\":\"hi\"}\n", "text lines pass through unchanged");
-        let done = rewrite_line("strata-relay-test", b"{\"done\":{\"finish\":\"stop\"}}\n", &mut first, None);
+        let done = rewrite_line("strata-relay-test", b"{\"done\":{\"finish\":\"stop\"}}\n", &mut first, None, 0);
         let value: Value = serde_json::from_slice(&done[..done.len() - 1]).unwrap();
         assert_eq!(value["done"]["links"][0]["node"], "node-9");
         assert_eq!(value["done"]["links"][0]["phase"], "prefill");

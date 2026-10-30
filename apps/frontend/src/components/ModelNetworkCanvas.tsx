@@ -253,7 +253,7 @@ function NetworkNode({ range, position, dragging, perf, speed = UNRATED, compact
           <h3 className="truncate text-[13px] font-semibold leading-tight text-fg">{hostname}</h3>
           <p className="flex items-center gap-1.5 text-[10px] leading-tight">
             <span data-testid="machine-layers" className={clsx("font-mono font-semibold", placement && placement.cpu > 0 ? "text-amber" : "text-iris")} title={placement && placement.cpu > 0 ? t("canvas.layersOnCpu", { cpu: placement.cpu }) : undefined}>L{range.start_layer} - L{range.end_layer}</span>
-            {range.role && <span data-testid="machine-role" className="rounded border border-aqua/40 px-1 font-semibold uppercase tracking-[0.08em] text-aqua">{t(range.role === "prefill" ? "canvas.rolePrefill" : "canvas.roleDecode")}</span>}
+            {range.role && <span data-testid="machine-role" className="rounded border border-aqua/40 px-1 font-semibold uppercase tracking-[0.08em] text-aqua">{t(range.role === "prefill" ? "canvas.rolePrefill" : "canvas.roleShared")}</span>}
           </p>
         </div>
         <span data-testid="machine-status" title={statusLabel} aria-label={statusLabel} className="flex shrink-0 items-center"><Dot tone={statusTone} pulse={rediscovering || (serving && !unread)} /></span>
@@ -287,7 +287,7 @@ function NetworkNode({ range, position, dragging, perf, speed = UNRATED, compact
       <div className="flex shrink-0 flex-col items-end gap-0.5">
         <span data-testid="machine-status" className="flex items-center gap-1.5 text-[11px] text-muted"><Dot tone={statusTone} pulse={rediscovering || (serving && !unread)} />{statusLabel}</span>
         <span data-testid="machine-layers" className="font-mono text-[9px] font-semibold text-iris">L{range.start_layer} - L{range.end_layer}</span>
-        {range.role && <span data-testid="machine-role" className="text-[9px] font-semibold uppercase tracking-[0.08em] text-aqua">{t(range.role === "prefill" ? "canvas.rolePrefill" : "canvas.roleDecode")}</span>}
+        {range.role && <span data-testid="machine-role" className="text-[9px] font-semibold uppercase tracking-[0.08em] text-aqua">{t(range.role === "prefill" ? "canvas.rolePrefill" : "canvas.roleShared")}</span>}
       </div>
       {onToggleCompact && <div className="-mr-1.5 -mt-1"><CompactToggle compact={false} onToggle={onToggleCompact} /></div>}
     </div>

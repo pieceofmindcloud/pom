@@ -503,10 +503,11 @@ Per-file list:
   outline when the ring avoids the return relay) and the icon opens the
   `pipeline-relay-popup` card (it closes with Esc, an outside click or the X) with the legs by
   relay, whether POM bypasses it through the ring and how to improve it.
-- `ModelNetworkCanvas.tsx` - a machine whose peer announces a prefill/decode
-  `role` gets a Prefill/Decode badge; the prefill machine heads the layout,
-  the backend's candidate edge prefill -> decode is drawn, and the gateway
-  sits after the decode machines (a prefill machine never answers).
+- `ModelNetworkCanvas.tsx` - a machine whose peer announces a role gets a
+  badge: "Prefill first" (`prefill`) or "Prefill/Decode" (`shared`, the
+  other machines of a whole model on several); the prefill machine heads the
+  layout, the backend's candidate edge prefill -> the others is drawn, and
+  the gateway sits after the other machines.
 - `ModelNetworkCanvas.tsx` - the main operational view: an SVG graph with
   pan/zoom of nodes (range cards with grouped RAM/load/VRAM meters,
   followed by the compact temperatures when there is a GPU) and curved edges, guided by
@@ -836,9 +837,9 @@ Key logic carriers:
   several machines, each row with its `inference_role`), the prefill
   machines are a stage of their own before the decode ones (`stagesOf`,
   `roleOf`), so the principal edge goes Prefill -> Decode and the gateway sits
-  after the decode machines. `DeployModel` lets a service that declares
-  `inference_role` take a second machine for a whole model (the first becomes
-  `prefill`, the new one `decode`); the role of each machine is edited in
+  after the others. `DeployModel` lets a service that declares
+  `inference_role` take a second machine for a whole model, with the default
+  role (the node turns it into `shared`); the role of each machine is edited in
   the POM settings card (`DeploymentInspector` `machineRoles`, one row per
   machine), never in the machine card. Back to one machine, `DeployModel`'s
   `rows` drops the row's role, so the deployment's role the inspector shows
@@ -907,7 +908,7 @@ Key logic carriers:
   the inspector draws them in a separate "POM settings" card below it, like
   under llama.cpp, when the slices cross machines (`showHiddenStateDtype`).
   `inference_role` (the prefill/decode split of a whole-model machine:
-  both, prefill or decode, `RuntimeParams.inference_role`) is the opposite:
+  prefill and decode, or prefill first, `RuntimeParams.inference_role`) is the opposite:
   that card draws it only when the model is not split across machines. A
   setting the service publishes with `placement: "pom"` (the Strata's
   `session_save`) goes to that same card in both modes, whole model and slices,

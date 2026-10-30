@@ -537,7 +537,8 @@ plugin implements four operations the node calls through its own local host,
 never from another machine or a browser: `engine.load` (`params`:
 `model_path`, `model_label`, `n_ctx`, `max_sessions`, `kv`, `gpus`,
 `settings`, for a slice `link`, and for a whole-model machine with a
-prefill/decode role other than both, `role`: `prefill` or `decode`),
+prefill/decode role other than both, `role`: `prefill`, or `shared` for a
+machine that shares the whole model with others),
 `engine.unload`, `engine.status` (`state` among `idle`, `installing`,
 `preparing`, `loading`, `ready`, `stopping`, `error`, with `detail`, `n_ctx`,
 `busy`) and `engine.upstream` (`{status: "ready", port, token}` of a loopback

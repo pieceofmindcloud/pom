@@ -35,8 +35,9 @@
 //! `{"error": message}`.
 //!
 //! **Prefill/decode split** ([`prefill_on_peer`]): a whole-model machine may be deployed with the role `prefill`
-//! (`RuntimeParams::inference_role`), which it announces as `engine/plugin-role-v1:prefill`. The planner never
-//! makes it the head. Before a named conversation's turn runs on a head, the gateway sends the turn to a prefill
+//! (`RuntimeParams::inference_role`), which it announces as `engine/plugin-role-v1:prefill`; it answers its own
+//! requests as any head. Before a named conversation's turn runs on a head with the sessions on (the `shared` role
+//! the deploy gives the other machines of the model), the gateway sends the turn to a free prefill
 //! machine of the same model with `prefill_only: true`: that machine reads the prompt into a batch slot and saves
 //! the conversation's session (or answers that the new part of the prompt is too short to be worth it). The head's
 //! turn then names it as `session_source`, and the head fetches that session before it reads its prompt
@@ -109,7 +110,7 @@ pub(crate) fn role_of_capabilities(capabilities: &[String]) -> crate::webui::Inf
         .find_map(|cap| cap.strip_prefix(ROLE_CAPABILITY_PREFIX))
     {
         Some("prefill") => InferenceRole::Prefill,
-        Some("decode") => InferenceRole::Decode,
+        Some("shared") => InferenceRole::Shared,
         _ => InferenceRole::Both,
     }
 }
@@ -154,10 +155,10 @@ mod engine_group_tests {
         use crate::webui::InferenceRole;
         let plugin = capability("strata");
         let prefill = role_capability(InferenceRole::Prefill);
-        let decode = role_capability(InferenceRole::Decode);
+        let shared = role_capability(InferenceRole::Shared);
         assert_eq!(prefill, "engine/plugin-role-v1:prefill");
         assert_eq!(role_of_capabilities(&[plugin, prefill]), InferenceRole::Prefill);
-        assert_eq!(role_of_capabilities(&[decode]), InferenceRole::Decode);
+        assert_eq!(role_of_capabilities(&[shared]), InferenceRole::Shared);
         assert_eq!(role_of_capabilities(&[]), InferenceRole::Both);
     }
 }
@@ -1233,8 +1234,9 @@ async fn prefill_peer(
         .unwrap_or(InferenceRole::Both);
     // the head's load counts this turn (`generate` holds it in flight): more than one is another request on it. A busy
     // head reads its own prompt: it applies a piece only while none of its batch slots decodes, so it would refuse
-    // what another machine read (a free machine takes new requests as their head instead, `auto_head`)
-    if load_of.get(head).copied().unwrap_or(0) > 1 || head_role == InferenceRole::Prefill {
+    // what another machine read (a free machine takes new requests as their head instead, `auto_head`). Only a head
+    // with the sessions on (`Shared`) can restore what a prefill machine read; a prefill head reads its own prompt.
+    if load_of.get(head).copied().unwrap_or(0) > 1 || head_role != InferenceRole::Shared {
         return None;
     }
     let mut best: Option<(f64, crate::network::PeerInfo)> = None;
@@ -1497,9 +1499,9 @@ pub(crate) async fn services_of(state: &GatewayState, node_id: &str) -> Option<V
 }
 
 /// Why a deployment on a plugin's inference service cannot go ahead, if it
-/// cannot. A whole model goes to one machine - or to several in a
-/// prefill/decode split, where `roles` (each target's role, in the order of
-/// `targets`) gives at least one machine a prefill or decode role; layer
+/// cannot. A whole model goes to one machine or to several, each with its role
+/// (`roles`, in the order of `targets`; the deploy gives `Shared` to the ones
+/// left at `Both`, see `InferenceRole::shared`); layer
 /// slices go one per machine, to a service that publishes `stages` for the
 /// model's `architecture` (its `stage_architectures`, see [`runs_slices`]).
 /// Every machine runs the plugin with an inference service that is not in error.
@@ -1521,15 +1523,9 @@ pub(crate) async fn deploy_block(
     if unique.is_empty() {
         return Some("choose the machine that runs the inference service".into());
     }
-    // several machines with the whole model share the conversations as sessions, which a prefill or decode role
-    // keeps on: every one of them answers, and the gateway balances the prompts between them
-    let split = roles.iter().any(|role| *role != crate::webui::InferenceRole::Both);
-    if whole && unique.len() != 1 && !split {
-        return Some(format!(
-            "the inference service {service} runs the whole model on a single machine: choose one machine, or give \
-             the machines a prefill/decode role (prefill first or decode first)"
-        ));
-    }
+    // several machines with the whole model share the conversations as sessions: the deploy gives them a role that
+    // keeps the sessions on (`InferenceRole::shared`), every one of them answers, and the gateway balances the
+    // prompts between them
     if whole && unique.len() != named.len() {
         return Some(format!(
             "the inference service {service} runs the whole model once per machine: choose different machines"
@@ -1550,6 +1546,7 @@ pub(crate) async fn deploy_block(
             .all(|(_, role)| *role == crate::webui::InferenceRole::Prefill)
             && roles.len() == targets.len()
     };
+    let several = unique.len() > 1;
     for target in unique {
         let Some(services) = services_of(state, target).await else {
             return Some(format!(
@@ -1569,6 +1566,19 @@ pub(crate) async fn deploy_block(
                 return Some(format!(
                     "the inference service {service} of machine {target} is not ready: {}",
                     entry["detail"].as_str().unwrap_or("no detail")
+                ))
+            }
+            // several machines with the whole model hand conversations over as sessions, which the service turns on
+            // through the role it declares among its POM settings
+            Some(entry)
+                if whole
+                    && several
+                    && !entry["pom_settings"]
+                        .as_array()
+                        .is_some_and(|settings| settings.iter().any(|setting| setting == "inference_role")) =>
+            {
+                return Some(format!(
+                    "the inference service {service} runs the whole model on a single machine: choose one machine"
                 ))
             }
             Some(entry) if !whole && !prefill_only(target) && !runs_slices(entry, architecture) => {
@@ -1742,7 +1752,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prefill_machines_answer_too_and_several_need_a_role() {
+    async fn prefill_machines_answer_too_and_several_need_no_role() {
         use crate::webui::InferenceRole;
         let state = crate::gateway::testkit::state_with("me", vec![]).await;
         // every machine of the split answers: prefill machines alone are a deployment (the machines unknown here are
@@ -1752,7 +1762,7 @@ mod tests {
             let reason = deploy_block(&state, "strata", true, &targets, &roles, None).await.expect("unknown machines");
             assert!(reason.contains("did not answer which services"), "{reason}");
         }
-        // two machines with the whole model and no role share no sessions: refused
+        // two machines with the whole model and no role are a deployment too (the deploy gives them `Shared`)
         let reason = deploy_block(
             &state,
             "strata",
@@ -1762,8 +1772,8 @@ mod tests {
             None,
         )
         .await
-        .expect("no role, no split");
-        assert!(reason.contains("on a single machine"), "{reason}");
+        .expect("unknown machines");
+        assert!(reason.contains("did not answer which services"), "{reason}");
     }
 
     #[tokio::test]
@@ -1779,10 +1789,11 @@ mod tests {
         let state = crate::gateway::testkit::state_with(
             "me",
             vec![
-                whole("head", InferenceRole::Decode),
+                whole("head", InferenceRole::Shared),
                 whole("fast", InferenceRole::Prefill),
-                whole("other", InferenceRole::Decode),
+                whole("other", InferenceRole::Shared),
                 whole("pre2", InferenceRole::Prefill),
+                whole("plain", InferenceRole::Both),
             ],
         )
         .await;
@@ -1806,6 +1817,10 @@ mod tests {
         // a prefill head reads its own prompt, free or busy
         let _turn = state.loads.acquire("pre2").await;
         assert_eq!(picked("pre2").await, None);
+        drop(_turn);
+        // a head without the sessions on could not restore what a prefill machine read: it reads its own prompt
+        let _plain = state.loads.acquire("plain").await;
+        assert_eq!(picked("plain").await, None);
     }
 
     #[test]

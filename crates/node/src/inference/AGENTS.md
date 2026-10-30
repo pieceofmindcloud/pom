@@ -678,11 +678,13 @@ UI.
   offer, `pieces`). `plugin_session::note_holder` and `note_prompt_start` record,
   when a turn ends, the head that holds a conversation and the start of the
   prompt it read; `generation.rs::auto_head` sends a conversation, or a new one
-  that begins with most of that prompt, back there. When it saved the session, the head's turn
+  that begins with most of that prompt, back there. Only a `shared` head (the role the deploy gives the
+  machines left at `both` when the whole model is on several) gets a prefill machine. When it saved the session, the head's turn
   carries `session_source` and `plugin_session::pull_from` fetches that session
   (waiting for its save) before the turn reads its prompt. `engine.load` gets
   `role` for a non-default role.
-  `deploy_block` is the deployment check: a whole model on one machine, or
+  `deploy_block` is the deployment check: a whole model on one machine (on
+  several when the service declares `inference_role`), or
   slices on distinct machines for a service that publishes `stages`, each
   running the plugin's `inference` service. A slice's `engine.load` also gets
   the `link` from `plugin_stage_link::prepare`. See

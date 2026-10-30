@@ -1179,11 +1179,10 @@ export function DeployModel() {
   }
 
   function addPeerToDeployment(nodeId: string) {
-    // An inference service runs a whole model on a single machine; the node
-    // refuses a second one, so the map does not take it - unless the service
-    // splits prefill and decode across machines: then the next machine joins
-    // as a decode machine of the same whole model, and the first one becomes
-    // its prefill machine (the head) when it had no role yet.
+    // An inference service runs a whole model on several machines only when it
+    // declares the prefill/decode role (the machines hand conversations over as
+    // sessions): the next machine then joins with the whole model and the
+    // default role, and the node keeps the sessions on for all of them.
     if (isWhole && service && mapMachineIds.length > 0 && !mapMachineIds.includes(nodeId)) {
       if (!splitRoles) {
         toast.warning(
@@ -1195,17 +1194,14 @@ export function DeployModel() {
       const whole = rows[0];
       if (whole) {
         setSelection([
-          ...rows.map((row) => ({
-            ...row,
-            inference_role: row.inference_role ?? (rows.length === 1 ? "prefill" as const : null),
-          })),
+          ...rows,
           {
             start_layer: whole.start_layer,
             end_layer: whole.end_layer,
             target_node_id: nodeId,
             n_gpu_layers: null,
             offload_kqv: null,
-            inference_role: "decode" as const,
+            inference_role: null,
           },
         ].sort(byLayer));
       }

@@ -1610,8 +1610,8 @@ fn a_prefill_machine_runs_the_whole_model_beside_the_slices() {
     let p = plan_shards_with(
         &machines,
         Some(&[
-            role(pick(0, 15, "a"), InferenceRole::Decode),
-            role(pick(16, 31, "b"), InferenceRole::Decode),
+            role(pick(0, 15, "a"), InferenceRole::Both),
+            role(pick(16, 31, "b"), InferenceRole::Both),
             role(pick(0, 31, "p"), InferenceRole::Prefill),
         ]),
         Some("strata"),
@@ -1634,8 +1634,8 @@ fn a_prefill_machine_on_a_slice_is_refused() {
         &machines,
         Some(&[
             role(pick(0, 15, "a"), InferenceRole::Prefill),
-            role(pick(16, 31, "b"), InferenceRole::Decode),
-            role(pick(0, 31, "p"), InferenceRole::Decode),
+            role(pick(16, 31, "b"), InferenceRole::Both),
+            role(pick(0, 31, "p"), InferenceRole::Both),
         ]),
         Some("strata"),
     );

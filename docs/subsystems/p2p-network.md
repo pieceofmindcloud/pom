@@ -115,8 +115,14 @@ It stays subscribed to the topic, which is how it hears the admins and workers.
   `Network::admission_without_probe` (public network, empty key or cache);
   without a verdict, `Network::admit_in_background` runs the probe in another
   task, one per peer, and the current announcement is dropped - the next one,
-  within 5 s, finds the cache. UDP announcements still probe inline, in the UDP
-  receive loop, which is not the tunnel's.
+  within 5 s, finds the cache. UDP announcements still probe in their handler,
+  but the UDP receive loop (`Network::receive_loop`) hands every message to a
+  task of its own, at most 64 at once (past that a message is dropped, as UDP
+  would). Handled in line, the probes of a `PeerList` naming unreachable or
+  foreign nodes held the socket for seconds each, the members' announces queued
+  behind them, and members left the table (`Removed timed-out peers`) while
+  the network was fine. A peer with no proof of membership that does not
+  answer is probed again at most every 60 s, a refusal every 5 s.
 - On a public network, the local anchor must be valid, and the strictness
   depends on `network.access_policy`. In both cases the announced `pubkey` must
   derive the `node_id` and be the announced `endpoint_id` (it is a single key,

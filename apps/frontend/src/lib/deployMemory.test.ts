@@ -67,3 +67,11 @@ describe("usableSelection", () => {
     expect(usableSelection([], ranges, ["a"])).toBeNull();
   });
 });
+
+describe("usableSelection roles", () => {
+  it("drops a role the node no longer takes", () => {
+    const row = { start_layer: 0, end_layer: 10, target_node_id: "a", inference_role: "decode" } as never;
+    const kept = usableSelection([row], [{ start_layer: 0, end_layer: 10 }], ["a"]);
+    expect(kept?.[0].inference_role).toBeNull();
+  });
+});

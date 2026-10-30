@@ -27,6 +27,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use axum::extract::DefaultBodyLimit;
 use base64::Engine as _;
 use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
@@ -36,12 +37,22 @@ use std::convert::Infallible;
 use tokio::sync::mpsc;
 use tracing::info;
 
+/// Images arrive inline as base64, so axum's 2 MiB default turns a single
+/// photo into a 413 before the handler sees it.
+pub(crate) const PROMPT_BODY_LIMIT: usize = 64 * 1024 * 1024;
+
 pub fn routes() -> Router<GatewayState> {
     Router::new()
         .route("/v1/models", get(list_models))
         .route("/v1/models/:id", get(get_model))
-        .route("/v1/chat/completions", post(chat_completions))
-        .route("/v1/completions", post(completions))
+        .route(
+            "/v1/chat/completions",
+            post(chat_completions).layer(DefaultBodyLimit::max(PROMPT_BODY_LIMIT)),
+        )
+        .route(
+            "/v1/completions",
+            post(completions).layer(DefaultBodyLimit::max(PROMPT_BODY_LIMIT)),
+        )
         // Typed decisions in the TypeSafe Jev shape (see `crate::decisions`).
         .route("/v1/systemone", post(crate::decisions::systemone))
         .route("/v1/decisions", post(crate::decisions::systemone))

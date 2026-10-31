@@ -911,17 +911,37 @@ The two situations want opposite things, so they are configured in different
 places:
 
 - **Release** (these workflows): the wide list, because the binary will run on
-  machines other than the one that built it. The Linux workflow's build step
-  forces `CUDAARCHS: ''` - **this is not an oversight**. The job runs on a
+  machines other than the one that built it. The Linux workflow and
+  `scripts/release-ksia.sh` **write the list out** in `CUDAARCHS`. The job runs on a
   self-hosted runner, and a development machine may have `CUDAARCHS` in its
   environment to shorten the local build; inheriting that value would silently
-  produce a release that only works on the builder's GPU. CMake treats the
-  empty value as unset, so the vendored `CMakeLists.txt` takes the wide list
-  path.
+  produce a release that only works on the builder's GPU.
 - **Development** (the operator's local build script, outside the repository): only the machine's
   architecture, through `CUDAARCHS`. CMake >= 3.20 initializes
   `CMAKE_CUDA_ARCHITECTURES` from that environment variable, so `build.rs` does
   not need to be touched.
+
+**An empty `CUDAARCHS` is not the wide list.** Two builds read the variable.
+llama.cpp's CMake takes empty as unset and picks its wide list, but POM's MoE
+kernels (`crates/llama-engine/build.rs`, in `pom-plugin-llama.cpp`) call `nvcc`
+directly and turn each entry into a `--generate-code`, so with no entries they get
+only `nvcc`'s default: `sm_52` plus its PTX under CUDA 12.9, `sm_75` plus its PTX
+under CUDA 13. The list a release writes is the one llama.cpp's `CMakeLists.txt`
+derives for that toolkit, so both builds cover the same cards. Checked on
+2026-10-31 by compiling `cuda_kernels.cu` (85 s for the CUDA 13 list, 94 s for the
+12.9 one, against about 20 s for the default) and by configuring llama.cpp under CMake
+3.28, which resolves the written list and the empty value to the same result.
+
+| Toolkit | Release list |
+|---|---|
+| CUDA 12.9 (Linux) | `50-virtual;61-virtual;70-virtual;75-virtual;80-virtual;86-real;89-real;90-virtual;120a-real;121a-real` |
+| CUDA 13.x (Windows) | `75-virtual;80-virtual;86-real;89-real;90-virtual;120a-real;121a-real` |
+
+CUDA 13 dropped the three oldest. A `-virtual` entry ships PTX, which the driver
+compiles on first use, so a card of that generation pays for it once, and a card
+newer than the list can still run. A `-real` entry is ready machine code. Moving
+a release to another toolkit means updating its list. The local Docker build's
+`86;120` is a development value; the published image comes from the Linux AppImage.
 
 Note the `a` suffix of `120a`/`121a` in llama.cpp's list: it enables
 architecture-specific instructions. CMake only accepts that suffix from 3.30
@@ -998,8 +1018,8 @@ the dry run of each variant.
   packages for the desktop window; the script checks them with `pkg-config`.
 - **linux-cuda** builds with CUDA 12.9 (`POM_RELEASE_CUDA_HOME`, default
   `/usr/local/cuda-12.9`), which is the installed toolkit with the widest list
-  of architectures, and with `CUDAARCHS=''` and `CMAKE_CUDA_ARCHITECTURES`
-  removed - llama.cpp's full list (see "GPU architectures"). Hence the 24 h
+  of architectures, with llama.cpp's full list written in `CUDAARCHS` and
+  `CMAKE_CUDA_ARCHITECTURES` removed (see "GPU architectures"). Hence the 24 h
   timeout.
 - **windows-cpu** is a **cross-compilation** from Linux: `cargo xwin` downloads
   the Windows SDK and the MSVC CRT (`XWIN_ACCEPT_LICENSE=1`), and llama.cpp's
@@ -1111,11 +1131,9 @@ affecting the other two. `release-windows.yml` has two variants (input
   NVIDIA's "redist" archives through the version manifest (`CUDA_VERSION`), and
   LunarG's Vulkan SDK (`VULKAN_VERSION`). It builds with Ninja inside the MSVC
   environment (`ilammy/msvc-dev-cmd`), because CUDA with the Visual Studio
-  generator requires the MSBuild integration. Architectures: a **reduced list**
-  `75;80;86;89;120` (`POM_WINDOWS_CUDAARCHS`) while the repository is private -
-  a Windows minute counts 2x and a hosted job dies at 6 h. It includes 86
-  (RTX 3060) and 120 (RTX 5060 Ti), the cluster's cards; when the project goes public,
-  switch to `''` for the full list. On Windows CUDA is linked **dynamically**
+  generator requires the MSBuild integration. Architectures: `ggml-cuda.dll` arrives
+  ready from the fork with llama.cpp's wide list, and `POM_WINDOWS_CUDAARCHS`, which
+  only reaches POM's MoE kernels, repeats that list (see "GPU architectures"). On Windows CUDA is linked **dynamically**
   (`llama-cpp-sys-2/build.rs`), so the package ships `cudart64_*.dll`,
   `cublas64_*.dll` and `cublasLt64_*.dll` from the fork release's cudart
   package next to `pom.exe` (redistributable under NVIDIA's license); `vulkan-1.dll` comes with the video driver. The own

@@ -214,6 +214,9 @@ updating the manual art to keep every platform aligned.
 
 ## Defects noted
 
+- `test-release-ksia.sh` fails at its `linux-cuda` check: it still expects
+  `--features cuda,embed-ui,desktop`, and `release-ksia.sh` builds with
+  `cuda-no-vmm` since `d0a01c1a`. Every check after that line does not run.
 - `test-docker-build-cache.sh`, scenario "Rust toolchain changed": it also fails
   with no change in the Dockerfile. The `RUN` that downloads the fork's release
   comes after the rustup, rebuilds when the toolchain changes, and falls in the

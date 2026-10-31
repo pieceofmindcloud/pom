@@ -38,12 +38,12 @@ permissions:
   contents: write
 
 env:
-  # A reduced list while the repository is private (Windows minute 2x, a job of
-  # at most 6 h). 75 Turing, 80 A100, 86 Ampere (an RTX 3060 on a development
-  # machine), 89 Ada, 120 Blackwell (the RTX 5060 Ti of the self-hosted runner). The RX 7800 XT is AMD and runs
-  # through Vulkan. When the project becomes public, replace this with '' (the full
-  # llama.cpp list, see "GPU architectures").
-  POM_WINDOWS_CUDAARCHS: '75;80;86;89;120'
+  # Where POM's own MoE kernels run; ggml-cuda.dll arrives ready from the fork. The same
+  # list llama.cpp gives that DLL under CUDA 13, so the two cover the same cards. It has to
+  # be written out: without it nvcc takes its one default target (see "GPU architectures").
+  # 75 Turing, 80 A100, 86 Ampere, 89 Ada, 90 Hopper, 120/121 Blackwell; "virtual" is PTX,
+  # compiled by the driver on first use, which also reaches later cards.
+  POM_WINDOWS_CUDAARCHS: '75-virtual;80-virtual;86-real;89-real;90-virtual;120a-real;121a-real'
   # The same one as the fork's package (cuda-13.4) and the Docker image: the CUDA here
   # only compiles POM's own MoE kernels, and they have to match the
   # ggml-cuda.dll that arrives ready.

@@ -25,8 +25,8 @@ out="$("$script" --variant linux-cuda --version v1.2.3 --dry-run)"
 has "$out" "+ cargo build --release --locked -p node -p pom-plugin-host --features cuda,embed-ui,desktop"
 has "$out" "make-linux-appimage.sh"
 has "$out" "package=$root/dist-release-ksia/pom-v1.2.3-x86_64-unknown-linux-gnu-cuda.AppImage"
-# The full architecture list comes from an empty CUDAARCHS in the child env.
-grep -q "export CUDAARCHS=''" "$script" || fail "CUDAARCHS must be emptied for the CUDA variant"
+# The full architecture list is written out: an empty CUDAARCHS narrows the MoE kernels.
+grep -q "export CUDAARCHS='50-virtual;.*;121a-real'" "$script" || fail "CUDAARCHS must name the full list for the CUDA variant"
 grep -q "unset CMAKE_CUDA_ARCHITECTURES" "$script" || fail "CMAKE_CUDA_ARCHITECTURES must be unset"
 
 out="$(POM_RELEASE_SKIP_UI=1 "$script" --variant windows-cpu --version v1.2.3 --dry-run)"

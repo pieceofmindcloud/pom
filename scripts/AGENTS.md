@@ -206,6 +206,8 @@ dark art exists, overwrite the PNG and delete this script.
 
 Regenerates the square derivatives of `assets/brand/pom-icon-src.png`: web
 sizes, `pom-mark.png`, Linux icons, `favicon.ico`, `pom.ico` and `pom.icns`.
+Only `pom.icns` is not square: `macos_icon` puts the art on an opaque rounded
+824 tile, centered on a 1024 canvas with fully transparent margins.
 `pom-logo-light.png` and `pom-logo-dark.png` are source lockups and are not
 resized by this script. Run `python3 scripts/generate-brand-assets.py` after
 updating the manual art to keep every platform aligned.

@@ -921,6 +921,11 @@ places:
   `CMAKE_CUDA_ARCHITECTURES` from that environment variable, so `build.rs` does
   not need to be touched.
 
+**The wide list does not go through `sccache`**, which fails on it with `Missing
+"cubin" file output`. The Linux build step clears both wrappers of `nvcc`:
+`CMAKE_CUDA_COMPILER_LAUNCHER` for llama.cpp and `CCACHE` for the MoE kernels. C, C++
+and Rust keep the cache.
+
 **An empty `CUDAARCHS` is not the wide list.** Two builds read the variable.
 llama.cpp's CMake takes empty as unset and picks its wide list, but POM's MoE
 kernels (`crates/llama-engine/build.rs`, in `pom-plugin-llama.cpp`) call `nvcc`
@@ -1118,8 +1123,9 @@ affecting the other two. `release-windows.yml` has two variants (input
 - **llama.cpp comes from the fork's release**, not from a source build: the
   job takes `llama-<tag>-bin-win-cuda-13.4-vulkan-x64.zip` (gpu) or
   `llama-<tag>-bin-win-cpu-x64.zip` (cpu) from `pieceofmindcloud/llama.cpp`
-  (input `llama_tag`; empty picks the newest release that has the combined
-  CUDA 13.4 + Vulkan package), links the `.lib` import libraries in it
+  (input `llama_tag`; empty picks the newest release of the fork's `pom` branch,
+  the one the engine compiles against, that has the combined CUDA 13.4 + Vulkan
+  package), links the `.lib` import libraries in it
   (`POM_LLAMA_CPP_PREBUILT_LIB_DIR`) and ships its DLLs next to `pom.exe`,
   except the llama.cpp tools' `*-impl.dll`. The tag's source archive is
   `LLAMA_SOURCE`, for the headers.

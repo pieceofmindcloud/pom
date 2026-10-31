@@ -149,9 +149,10 @@ jobs:
           CUDAARCHS: '50-virtual;61-virtual;70-virtual;75-virtual;80-virtual;86-real;89-real;90-virtual;120a-real;121a-real'
         run: |
           # sccache cannot wrap nvcc for the wide list of architectures (it fails with
-          # "Missing cubin file output" on every CUDA compile test); nvcc runs directly.
-          # C and C++ keep the cache.
-          unset CMAKE_CUDA_COMPILER_LAUNCHER
+          # "Missing cubin file output"); nvcc runs directly. The first variable is the wrapper
+          # of llama.cpp's CMake, the second the one of POM's MoE kernels (`llama-engine`'s
+          # build.rs). C and C++ keep the cache.
+          unset CMAKE_CUDA_COMPILER_LAUNCHER CCACHE
           # Every nvcc of the llama.cpp build takes gigabytes; with all 16 cores the kernel
           # ran out of memory on ksia (exit 137) and killed a process of the running node.
           # cargo passes this count to the CMake build as well.

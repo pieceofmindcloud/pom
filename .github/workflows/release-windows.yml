@@ -29,7 +29,7 @@ on:
         default: true
         type: boolean
       llama_tag:
-        description: 'Release of the fork pieceofmindcloud/llama.cpp (empty = the newest one with the CUDA 13.4 + Vulkan package)'
+        description: 'Release of the fork pieceofmindcloud/llama.cpp (empty = the newest one of its pom branch with the CUDA 13.4 + Vulkan package)'
         required: false
         default: ''
         type: string
@@ -111,7 +111,9 @@ jobs:
           set -euo pipefail
           tag="$LLAMA_TAG"
           if [ -z "$tag" ]; then
-            for candidate in $(gh release list -R "$LLAMA_REPOSITORY" -L 20 --json tagName -q '.[].tagName'); do
+            # Only the fork's pom branch, the one the engine compiles against: the headers of a
+            # release from another branch fail much later, inside the engine's wrapper.
+            for candidate in $(gh release list -R "$LLAMA_REPOSITORY" -L 20 --json tagName -q '.[].tagName' | grep -E '^pom-b[0-9]+-' || true); do
               if gh release view "$candidate" -R "$LLAMA_REPOSITORY" --json assets -q '.assets[].name' \
                   | grep -qx "llama-${candidate}-bin-win-cuda-13.4-vulkan-x64.zip"; then
                 tag="$candidate"
@@ -119,7 +121,7 @@ jobs:
               fi
             done
           fi
-          test -n "$tag" || { echo "no release of the fork has the CUDA 13.4 + Vulkan package" >&2; exit 1; }
+          test -n "$tag" || { echo "no release of the fork's pom branch has the CUDA 13.4 + Vulkan package" >&2; exit 1; }
           echo "fork release: $tag"
           if [ "${{ matrix.variante }}" = gpu ]; then
             package="llama-${tag}-bin-win-cuda-13.4-vulkan-x64.zip"

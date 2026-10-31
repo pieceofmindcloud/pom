@@ -176,6 +176,8 @@ case "$variant" in
     # leaves POM's MoE kernels with nvcc's one default target. Never inherit a
     # narrow development value here.
     unset CMAKE_CUDA_ARCHITECTURES
+    # POM's MoE kernels would run nvcc through it, and sccache refuses this list.
+    unset CCACHE
     export CUDAARCHS='50-virtual;61-virtual;70-virtual;75-virtual;80-virtual;86-real;89-real;90-virtual;120a-real;121a-real'
     export CUDA_PATH="$cuda_home"
     export CUDACXX="${cuda_home}/bin/nvcc"

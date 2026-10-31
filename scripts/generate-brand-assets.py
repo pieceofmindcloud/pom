@@ -3,14 +3,16 @@
 
 The three art files are manual sources. This script derives only the formats
 and sizes consumed by the web, Linux, Windows and macOS packagers, keeping the
-same art on every platform.
+same art on every platform. Only the macOS icon changes shape: the art goes in a
+rounded tile, the outline that system expects.
 """
 
 from pathlib import Path
 from io import BytesIO
+import math
 import struct
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -19,6 +21,12 @@ SOURCE = BRAND / "pom-icon-src.png"
 PNG_SIZES = (16, 24, 32, 48, 64, 128, 180, 256, 512)
 LINUX_SIZES = (16, 24, 32, 48, 64, 128, 256, 512)
 ICO_SIZES = (16, 24, 32, 48, 64, 128, 256)
+# Apple's icon grid: an 824 tile centered on a 1024 canvas.
+MACOS_CANVAS = 1024
+MACOS_TILE = 824
+# The rounded outline of a macOS tile, drawn as a superellipse.
+MACOS_TILE_EXPONENT = 5
+MASK_SUPERSAMPLING = 4
 
 
 def resized(source: Image.Image, size: int) -> Image.Image:
@@ -34,6 +42,35 @@ def write_ico(source: Image.Image, destination: Path, sizes: tuple[int, ...]) ->
     destination.parent.mkdir(parents=True, exist_ok=True)
     largest = resized(source, max(sizes))
     largest.save(destination, format="ICO", sizes=[(size, size) for size in sizes])
+
+
+def tile_mask(size: int) -> Image.Image:
+    large = size * MASK_SUPERSAMPLING
+    half = large / 2
+    points = []
+    for step in range(3600):
+        angle = 2 * math.pi * step / 3600
+        cos, sin = math.cos(angle), math.sin(angle)
+        points.append((
+            half + half * math.copysign(abs(cos) ** (2 / MACOS_TILE_EXPONENT), cos),
+            half + half * math.copysign(abs(sin) ** (2 / MACOS_TILE_EXPONENT), sin),
+        ))
+    mask = Image.new("L", (large, large), 0)
+    ImageDraw.Draw(mask).polygon(points, fill=255)
+    return mask.resize((size, size), Image.Resampling.LANCZOS)
+
+
+def macos_icon(source: Image.Image) -> Image.Image:
+    # macOS does not round an app icon: the outline has to be in the art. The
+    # tile is opaque because the square art has transparent seams and corners,
+    # and macOS 26 boxes an icon in gray when it does not read as a solid tile.
+    tile = Image.new("RGBA", (MACOS_TILE, MACOS_TILE), "white")
+    tile.alpha_composite(resized(source, MACOS_TILE))
+    tile.putalpha(tile_mask(MACOS_TILE))
+    canvas = Image.new("RGBA", (MACOS_CANVAS, MACOS_CANVAS), (255, 255, 255, 0))
+    margin = (MACOS_CANVAS - MACOS_TILE) // 2
+    canvas.paste(tile, (margin, margin))
+    return canvas
 
 
 def write_icns(source: Image.Image, destination: Path) -> None:
@@ -82,7 +119,7 @@ def main() -> None:
 
     write_ico(source, BRAND / "favicon.ico", (16, 32, 48))
     write_ico(source, BRAND / "pom.ico", ICO_SIZES)
-    write_icns(source, BRAND / "pom.icns")
+    write_icns(macos_icon(source), BRAND / "pom.icns")
     print("generate-brand-assets: derivados regenerados a partir de pom-icon-src.png")
 
 

@@ -171,11 +171,12 @@ case "$variant" in
     binary="${target_dir}/release/pom"
     ;;
   linux-cuda)
-    # An empty CUDAARCHS makes the vendored CMake pick the toolkit's whole
-    # architecture list instead of this machine's GPU (build-and-run.md,
-    # "Arquiteturas de GPU"). Never inherit a narrow development value here.
+    # llama.cpp's whole list under CUDA 12.9 instead of this machine's GPU
+    # (build-and-run.md, "GPU architectures"). Written out because an empty value
+    # leaves POM's MoE kernels with nvcc's one default target. Never inherit a
+    # narrow development value here.
     unset CMAKE_CUDA_ARCHITECTURES
-    export CUDAARCHS=''
+    export CUDAARCHS='50-virtual;61-virtual;70-virtual;75-virtual;80-virtual;86-real;89-real;90-virtual;120a-real;121a-real'
     export CUDA_PATH="$cuda_home"
     export CUDACXX="${cuda_home}/bin/nvcc"
     export PATH="${cuda_home}/bin:${PATH}"

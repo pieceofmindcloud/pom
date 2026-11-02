@@ -500,7 +500,7 @@ fn want_tensor(
     start: u32,
     end: u32,
     is_last: bool,
-    qwen4exp_ple_layers: &[u32],
+    ple_layers: &[u32],
 ) -> bool {
     if let Some(rest) = name.strip_prefix("blk.") {
         let idx: u32 = rest
@@ -513,8 +513,8 @@ fn want_tensor(
     match name {
         "token_embd.weight" => true,
         "per_layer_token_embd.weight"
-            if architecture == "qwen4exp"
-                && qwen4exp_ple_layers
+            if matches!(architecture, "qwen4exp" | "deepseek41")
+                && ple_layers
                     .iter()
                     .any(|&layer| (start..=end).contains(&layer)) =>
         {
@@ -713,10 +713,11 @@ pub fn split(
         .iter()
         .find(|entry| entry.key.ends_with(".block_count"))
         .and_then(|entry| source_scalar_u32(mm, entry));
-    let qwen4exp_ple_layers = if arch == "qwen4exp" {
+    let ple_key = format!("{arch}.ple.layers");
+    let ple_layers = if crate::gguf::is_layer_selector_array(&ple_key, &arch) {
         entries
             .iter()
-            .find(|entry| entry.key == "qwen4exp.ple.layers")
+            .find(|entry| entry.key == ple_key)
             .map(|entry| source_u32_array(mm, entry))
             .transpose()?
             .unwrap_or_default()
@@ -724,10 +725,8 @@ pub fn split(
         Vec::new()
     };
     if let Some(original) = original_block_count {
-        if let Some(&layer) = qwen4exp_ple_layers.iter().find(|&&layer| layer >= original) {
-            bail!(
-                "qwen4exp.ple.layers contains layer {layer}, but the source declares only {original} blocks"
-            );
+        if let Some(&layer) = ple_layers.iter().find(|&&layer| layer >= original) {
+            bail!("{ple_key} contains layer {layer}, but the source declares only {original} blocks");
         }
     }
 
@@ -737,11 +736,8 @@ pub fn split(
         .map(|tensor| tensor.name.as_str())
         .collect();
     crate::gguf::validate_slice_tensors(&arch, &tensor_names, is_last)?;
-    if arch == "qwen4exp"
-        && !qwen4exp_ple_layers.is_empty()
-        && !tensor_names.contains("per_layer_token_embd.weight")
-    {
-        bail!("the qwen4exp source declares PLE, but does not contain per_layer_token_embd.weight");
+    if !ple_layers.is_empty() && !tensor_names.contains("per_layer_token_embd.weight") {
+        bail!("the {arch} source declares PLE, but does not contain per_layer_token_embd.weight");
     }
 
     let mut kv_out: Vec<KvOut> = Vec::with_capacity(n_kv + 4);
@@ -785,11 +781,21 @@ pub fn split(
             // Recomputed below from the actual ssm_conv1d tensors.
             continue;
         }
-        if arch == "qwen4exp" && key == "qwen4exp.ple.layers" {
+        if arch == "deepseek41" && key == crate::gguf::DEEPSEEK41_CANDIDATE_SOURCE_KEY {
+            // llama.cpp reads an absent key as "no candidate selection", which
+            // is what a slice ending before this layer has.
+            if let Some(layer) = source_scalar_u32(mm, entry) {
+                if (start_layer..=end_layer).contains(&layer) {
+                    kv_out.push(KvOut::Encoded(encode_kv_u32(key, layer - start_layer)));
+                }
+                continue;
+            }
+        }
+        if crate::gguf::is_layer_selector_array(key, &arch) {
             let element_type = entry.array.map(|array| array.element_type).unwrap_or(T_U32);
-            let local_layers: Vec<u32> = qwen4exp_ple_layers
-                .iter()
-                .filter_map(|&layer| {
+            let local_layers: Vec<u32> = source_u32_array(mm, entry)?
+                .into_iter()
+                .filter_map(|layer| {
                     (start_layer..=end_layer)
                         .contains(&layer)
                         .then(|| layer - start_layer)
@@ -907,7 +913,7 @@ pub fn split(
                 start_layer,
                 end_layer,
                 is_last,
-                &qwen4exp_ple_layers,
+                &ple_layers,
             )
         })
         .collect();
@@ -1211,6 +1217,13 @@ pub fn validate_tensor_parallel(src: &Path, tp_size: u32) -> Result<()> {
     for _ in 0..n_kv {
         let key = r.string()?;
         let vtype = r.u32()?;
+        if key == "general.architecture" && vtype == T_STR {
+            let architecture = r.string()?;
+            if architecture == "deepseek41" {
+                bail!("tensor parallel is not supported for {architecture}: the Engram table and the KV source layers have no rank split");
+            }
+            continue;
+        }
         let scaled = key.ends_with(".attention.head_count")
             || key.ends_with(".attention.head_count_kv")
             || key.ends_with(".feed_forward_length");
@@ -2069,6 +2082,12 @@ pub fn merge(parts: &[MergePart], dst: &Path, on_progress: impl Fn(f64)) -> Resu
         .iter()
         .flat_map(|part| part.tensors.iter().map(|tensor| tensor.name.as_str()))
         .collect();
+    if arch == "deepseek41" {
+        // The merged header inherits the first slice's structural lists, which
+        // only name the sources of its own range, so the join would load and
+        // answer with the wrong KV sources. The source GGUF is the whole model.
+        bail!("merging {arch} slices is not supported: use the source GGUF");
+    }
     crate::gguf::validate_slice_tensors(&arch, &tensor_names, true)?;
 
     let start_first = parts[0].start_layer;
@@ -4298,6 +4317,234 @@ mod tests {
             "qwen4exp slices must never carry a fake output_norm.weight: \
              the loader would leave it unclaimed and refuse to load"
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Eight blocks shaped like the real DeepSeek-V4.1. Its only valid cut is at
+    /// layer 4: KV source, index source and candidate source, after both Engram
+    /// layers. `head_offsets`, `head_vocab_sizes` and `token_map` are longer than
+    /// the block count on purpose: the generic rule would cut them by layer.
+    fn deepseek41_test_gguf_bytes() -> Vec<u8> {
+        let n_blocks = 8u32;
+        let string = |value: &str| {
+            let mut bytes = (value.len() as u64).to_le_bytes().to_vec();
+            bytes.extend_from_slice(value.as_bytes());
+            bytes
+        };
+        let string_kv = |key: &str, value: &str| {
+            let mut bytes = string(key);
+            bytes.extend_from_slice(&T_STR.to_le_bytes());
+            bytes.extend_from_slice(&string(value));
+            bytes
+        };
+        let u32_kv = |key: &str, value: u32| {
+            let mut bytes = string(key);
+            bytes.extend_from_slice(&T_U32.to_le_bytes());
+            bytes.extend_from_slice(&value.to_le_bytes());
+            bytes
+        };
+        let u32_array_kv = |key: &str, values: &[u32]| {
+            let mut bytes = string(key);
+            bytes.extend_from_slice(&T_ARR.to_le_bytes());
+            bytes.extend_from_slice(&T_U32.to_le_bytes());
+            bytes.extend_from_slice(&(values.len() as u64).to_le_bytes());
+            for value in values {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+            bytes
+        };
+        let f32s = |count: usize| {
+            std::iter::repeat(0.5f32.to_le_bytes())
+                .take(count)
+                .flatten()
+                .collect::<Vec<u8>>()
+        };
+        let mut tensors: Vec<(String, Vec<u64>, Vec<u8>)> = vec![
+            ("token_embd.weight".into(), vec![4, 4], f32s(16)),
+            ("per_layer_token_embd.weight".into(), vec![4, 64], f32s(256)),
+            ("output_norm.weight".into(), vec![4], f32s(4)),
+            ("output.weight".into(), vec![4, 4], f32s(16)),
+        ];
+        for layer in 0..n_blocks {
+            tensors.push((format!("blk.{layer}.attn_norm.weight"), vec![4], f32s(4)));
+        }
+        let head_offsets: Vec<u32> = (0..12).map(|head| head * 20).collect();
+        let token_map: Vec<u32> = (0..16).collect();
+        let kv = vec![
+            string_kv("general.architecture", "deepseek41"),
+            u32_kv("deepseek41.embedding_length", 4),
+            u32_kv("deepseek41.block_count", n_blocks),
+            u32_array_kv(
+                "deepseek41.attention.compress_ratios",
+                &[0, 2, 2, 2, 1, 1, 1, 1, 0, 0, 0],
+            ),
+            u32_array_kv("deepseek41.attention.kv_source_layers", &[1, 4]),
+            u32_array_kv("deepseek41.attention.indexer.source_layers", &[1, 4, 6]),
+            u32_kv("deepseek41.attention.indexer.candidate_source_layer", 4),
+            u32_array_kv("deepseek41.ple.layers", &[1, 3]),
+            u32_array_kv("deepseek41.ple.layer_multipliers", &[11, 13, 17, 19]),
+            u32_array_kv("deepseek41.ple.head_offsets", &head_offsets),
+            u32_array_kv("deepseek41.ple.head_vocab_sizes", &[20; 12]),
+            u32_array_kv("deepseek41.engram.token_map", &token_map),
+        ];
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&GGUF_MAGIC.to_le_bytes());
+        bytes.extend_from_slice(&3u32.to_le_bytes());
+        bytes.extend_from_slice(&(tensors.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(&(kv.len() as u64).to_le_bytes());
+        for entry in &kv {
+            bytes.extend_from_slice(entry);
+        }
+        let mut offset = 0u64;
+        for (name, dims, data) in &tensors {
+            bytes.extend_from_slice(&string(name));
+            bytes.extend_from_slice(&(dims.len() as u32).to_le_bytes());
+            for dim in dims {
+                bytes.extend_from_slice(&dim.to_le_bytes());
+            }
+            bytes.extend_from_slice(&T_F32.to_le_bytes());
+            bytes.extend_from_slice(&offset.to_le_bytes());
+            offset = align_up(offset + data.len() as u64);
+        }
+        bytes.resize(align_up(bytes.len() as u64) as usize, 0);
+        for (_, _, data) in tensors {
+            bytes.extend_from_slice(&data);
+            bytes.resize(align_up(bytes.len() as u64) as usize, 0);
+        }
+        bytes
+    }
+
+    fn deepseek41_split_at_valid_cut(dir: &Path) -> (Vec<u8>, Vec<u8>) {
+        std::fs::create_dir_all(dir).unwrap();
+        let whole = dir.join("whole.gguf");
+        let first = dir.join("first.gguf");
+        let second = dir.join("second.gguf");
+        std::fs::write(&whole, deepseek41_test_gguf_bytes()).unwrap();
+        let layout = crate::gguf::read_layout(&whole).unwrap();
+
+        let first_written = split(&whole, &first, 0, 3, true, false, |_| {}).unwrap();
+        let second_written = split(&whole, &second, 4, 7, false, true, |_| {}).unwrap();
+
+        assert_eq!(layout.slice_bytes(0, 3, false), first_written.bytes);
+        assert_eq!(layout.slice_bytes(4, 7, true), second_written.bytes);
+        (std::fs::read(&first).unwrap(), std::fs::read(&second).unwrap())
+    }
+
+    #[test]
+    fn deepseek41_first_slice_keeps_engram_and_only_the_sources_in_range() {
+        let dir = std::env::temp_dir().join(format!("pom-ds41-first-{}", std::process::id()));
+        let (first, _) = deepseek41_split_at_valid_cut(&dir);
+
+        assert_eq!(
+            kv_u32_array(&first, "deepseek41.attention.kv_source_layers"),
+            Some(vec![1])
+        );
+        assert_eq!(
+            kv_u32_array(&first, "deepseek41.attention.indexer.source_layers"),
+            Some(vec![1])
+        );
+        assert_eq!(kv_u32_array(&first, "deepseek41.ple.layers"), Some(vec![1, 3]));
+        assert_eq!(
+            kv_u32(&first, "deepseek41.attention.indexer.candidate_source_layer"),
+            None,
+            "llama.cpp reads an absent key as no candidate selection"
+        );
+        assert_eq!(
+            kv_u32_array(&first, "deepseek41.ple.head_offsets").map(|values| values.len()),
+            Some(12),
+            "the Engram hash tables do not follow the block count"
+        );
+        assert_eq!(
+            kv_u32_array(&first, "deepseek41.engram.token_map").map(|values| values.len()),
+            Some(16)
+        );
+        assert_eq!(
+            kv_u32_array(&first, "deepseek41.attention.compress_ratios"),
+            Some(vec![0, 2, 2, 2])
+        );
+        let path = dir.join("first.gguf");
+        let names: Vec<String> = crate::multipart::GgufSource::open(&path)
+            .unwrap()
+            .tensors()
+            .iter()
+            .map(|tensor| tensor.name.clone())
+            .collect();
+        assert!(names.iter().any(|name| name == "per_layer_token_embd.weight"));
+        assert!(names.iter().any(|name| name == "output.weight"), "the loader requires it");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn deepseek41_tail_slice_renumbers_its_sources_and_drops_the_engram_table() {
+        let dir = std::env::temp_dir().join(format!("pom-ds41-tail-{}", std::process::id()));
+        let (_, second) = deepseek41_split_at_valid_cut(&dir);
+
+        assert_eq!(
+            kv_u32_array(&second, "deepseek41.attention.kv_source_layers"),
+            Some(vec![0])
+        );
+        assert_eq!(
+            kv_u32_array(&second, "deepseek41.attention.indexer.source_layers"),
+            Some(vec![0, 2])
+        );
+        assert_eq!(
+            kv_u32(&second, "deepseek41.attention.indexer.candidate_source_layer"),
+            Some(0)
+        );
+        assert_eq!(kv_u32_array(&second, "deepseek41.ple.layers"), Some(Vec::new()));
+        assert_eq!(
+            kv_u32_array(&second, "deepseek41.attention.compress_ratios"),
+            Some(vec![1, 1, 1, 1]),
+            "per-layer values follow the local blocks"
+        );
+        let path = dir.join("second.gguf");
+        assert!(!crate::multipart::GgufSource::open(&path)
+            .unwrap()
+            .tensors()
+            .iter()
+            .any(|tensor| tensor.name == "per_layer_token_embd.weight"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn deepseek41_merge_is_refused_instead_of_keeping_the_first_slice_lists() {
+        let dir = std::env::temp_dir().join(format!("pom-ds41-merge-{}", std::process::id()));
+        deepseek41_split_at_valid_cut(&dir);
+
+        let error = merge(
+            &[
+                MergePart {
+                    path: dir.join("first.gguf"),
+                    start_layer: 0,
+                    end_layer: 3,
+                },
+                MergePart {
+                    path: dir.join("second.gguf"),
+                    start_layer: 4,
+                    end_layer: 7,
+                },
+            ],
+            &dir.join("merged.gguf"),
+            |_| {},
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("deepseek41"), "{error}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn deepseek41_tensor_parallel_is_refused_by_name() {
+        let dir = std::env::temp_dir().join(format!("pom-ds41-tp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let whole = dir.join("whole.gguf");
+        std::fs::write(&whole, deepseek41_test_gguf_bytes()).unwrap();
+
+        let error = validate_tensor_parallel(&whole, 2).unwrap_err().to_string();
+
+        assert!(error.contains("deepseek41"), "{error}");
         let _ = std::fs::remove_dir_all(dir);
     }
 

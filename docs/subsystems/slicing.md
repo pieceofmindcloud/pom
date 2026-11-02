@@ -126,6 +126,17 @@ The engine's `gguf` module reads the GGUF without loading weights:
   tensors that are not synthesized, and is refused before writing the file if
   any of them is missing. The final one is only accepted when all six tensors
   exist.
+- `restricted_slice_starts` - `deepseek41` decides the cut from its
+  cross-layer dependencies, not from `layer_kinds`. `deepseek41.cpp` resolves
+  them inside one graph: a compressed layer reads the KV and the top-k of the
+  latest source layer at or before it, Engram hashes token ids that only the
+  first slice has (the residual carries none, and an embedding input skips
+  Engram without an error), and the layers after the candidate source consume
+  its pin. So a slice can only start at a layer listed as both a KV and an index
+  source, after every Engram layer and not after the candidate source. The
+  published DeepSeek-V4.1 Flash has one such layer, 20. An empty list means the
+  model stays whole. `validate_slice_ranges` refuses any other start and
+  `snap_end_layer` never returns a cut outside the list.
 - `arch_boundaries`/`snap_end_layer` - hybrid models (Mamba + Attention) are
   not a stack of equal blocks; the cut only happens at a type boundary,
   otherwise the block renumbers to the wrong type (`missing tensor` or a
@@ -377,7 +388,18 @@ Python `split_model.py`:
    slice, from which **absolute** layers really have the tensor - never
    reimplementing llama.cpp's formula. A plain model does not get the key.
    `merge` does the same over the 0-based numbering of the joined file.
-6. First it decides whether the array is per layer: it must be under the
+6. In `deepseek41`, `attention.kv_source_layers`,
+   `attention.indexer.source_layers` and `ple.layers` are filtered to the range
+   and rebased, and `attention.indexer.candidate_source_layer` is rebased or
+   left out when its layer is outside the range. `ple.layer_multipliers`,
+   `ple.head_offsets`, `ple.head_vocab_sizes` and `engram.token_map` are copied
+   whole: the last three can be longer than the block count, which the generic
+   rule would cut by layer without any error. `per_layer_token_embd.weight` only
+   enters the slice with Engram layers. `merge` refuses `deepseek41`, because
+   the merged header would inherit the first slice's source lists, and
+   `validate_tensor_parallel` refuses it by name.
+
+   For every other array, it first decides whether the array is per layer: it must be under the
    architecture's namespace and not be a structural rope array. There is an
    explicit exception for the `qwen4exp` PLE metadata: `layer_multipliers`,
    `head_offsets` and `head_vocab_sizes` describe the shared lookup table, not
@@ -615,6 +637,15 @@ from `GGML_TRUTH` in the same file (the engine's `gguf` module) - numbers writte
 llama.cpp, not from memory.
 
 ## 10. Defects noted
+
+- `deepseek41` slices are written, but a pipeline across them does not run yet.
+  `deepseek41.cpp` keeps `pre_prev`, the pre-mix of the previous layer's FFN,
+  which is not part of the residual, so a slice starting mid-model would
+  collapse its first attention input with the identity instead. The same graph
+  has no expanded `hc` input and sets `n_embd_out = n_embd`, so
+  `validate_hidden_tensor` refuses the wide residual on the receiving peer
+  instead of computing a wrong answer. Serving needs the fork to accept an
+  expanded input and carry `pre_prev` across the boundary.
 
 - **DEFECT NOTED: the `plan.rs` module doc talks about `split_model.py`**
   (`crates/node/src/models/plan.rs:9-12`) - the doc says slicing "stays in

@@ -233,7 +233,12 @@ named semantics: `layer_multipliers`, `head_offsets` and `head_vocab_sizes`
 represent shared table structure and are copied whole into every slice;
 `ple.layers` is the list of PLE layers, filtered to the range and rebased to the
 local index. The tensor `per_layer_token_embd.weight` accompanies only the slices
-that contain one of those layers.
+that contain one of those layers. `deepseek41` follows the same model: its
+`attention.kv_source_layers`, `attention.indexer.source_layers` and `ple.layers`
+are filtered and rebased, `attention.indexer.candidate_source_layer` is rebased
+or left out, and the other Engram arrays are copied whole. Its valid cuts come
+from `GgufLayout::restricted_slice_starts`; `merge` and tensor parallel refuse
+the architecture by name.
 
 ### Multimodal projector
 
@@ -269,6 +274,15 @@ graph (`qwen4exp.cpp` gained that in `pieceofmindcloud/llama.cpp`,
 when MTP was not requested).
 
 ## Defects noted
+
+- `deepseek41` slices are written, but a pipeline across them does not run yet.
+  `deepseek41.cpp` keeps `pre_prev`, the pre-mix of the previous layer's FFN,
+  which is not part of the residual, so a slice starting mid-model would
+  collapse its first attention input with the identity instead. The same graph
+  has no expanded `hc` input and sets `n_embd_out = n_embd`, so
+  `validate_hidden_tensor` refuses the wide residual on the receiving peer
+  instead of computing a wrong answer. Serving needs the fork to accept an
+  expanded input and carry `pre_prev` across the boundary.
 
 - `ModelSource::Folder` is labelled `"Pasta"` (`catalog.rs`, the source label
   the catalog sends), so the Full models screen shows a Portuguese word in the

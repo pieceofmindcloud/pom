@@ -11,7 +11,8 @@ Models, GGUF reading, planning and slice files. The module is used by
 - `catalog.rs` sidecars - `Catalog.sidecars` lists vision projectors and
   external MTP drafts found under the shard folder and the GGUF libraries
   (`discover_sidecars`, filled by `enrich`); `sidecar_kind` recognizes them
-  from the header (clip, or `nextn` with few tensors and no split), so they are
+  from the header (clip, `nextn` with few tensors and no split, or a `dflash`
+  DSpark drafter, which is DeepSeek-V4.1's draft), so they are
   dropped from `models`. A file with the splitter's `pom.start_layer` /
   `pom.end_layer` is a slice and never a draft: a short tail range of a model
   with `nextn` has a draft's tensor count. `find_gguf` takes a file by its `.gguf` extension or,

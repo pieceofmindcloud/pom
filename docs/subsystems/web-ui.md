@@ -236,7 +236,9 @@ local-only notice. Routes:
   the principal. `WholeModels` keeps the catalog's projector column and opens
   the same editor in a window. The deploy inspector offers the same pickers
   (head projector, tail MTP draft) prefilled from the link, and says whether
-  the target already has the file or will copy it.
+  the target already has the file or will copy it. With a plugin's inference
+  service, the draft picker only shows for a model of its
+  `draft_architectures`: another engine would ignore the choice.
 - `/deploy` -> DeployModel (a top-level entry to put slices into service)
 - `/deployments` -> Deployments (the record of deployments, activating the
   default one, versions per `deploy_id`, redeploying by version or by new

@@ -28,7 +28,8 @@ function keyOf(pick: SidecarPick): string {
  * Compatible sidecars of one kind across every machine of the network, merged
  * by name + size (the identity that crosses machines) with every holder and
  * the path on each. Mirrors the backend's `Sidecar::compatible_with`: a
- * projector matches the model's width; an MTP draft also its architecture.
+ * projector matches the model's width; an MTP draft also its architecture
+ * (a DSpark drafter, `dflash`, is DeepSeek-V4.1's).
  */
 export function sidecarOptions(
   peers: PeerCatalog[] | undefined,
@@ -41,7 +42,8 @@ export function sidecarOptions(
   for (const peer of peers ?? []) {
     for (const sidecar of peer.sidecars ?? []) {
       if (sidecar.kind !== kind || sidecar.dim !== width) continue;
-      if (kind === "mtp" && (!model?.architecture || sidecar.architecture !== model.architecture)) continue;
+      const draftFor = sidecar.architecture === "dflash" ? "deepseek41" : sidecar.architecture;
+      if (kind === "mtp" && (!model?.architecture || draftFor !== model.architecture)) continue;
       const holder = {
         node_id: peer.node_id,
         hostname: peer.hostname || peer.node_id.slice(0, 8),

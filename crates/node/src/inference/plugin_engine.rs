@@ -292,6 +292,10 @@ pub(crate) fn load_params(
     if let Some(link) = link {
         params["link"] = link.clone();
     }
+    // The drafter the deployment chose, on the stage that runs it (`draft_architectures`).
+    if let Some(draft) = cfg.mtp_draft_path.as_deref().filter(|path| !path.trim().is_empty()) {
+        params["mtp_draft_path"] = json!(draft);
+    }
     // The vision projector the deployment chose: the engine reads images with it.
     if let Some(mmproj) = cfg.mmproj_path.as_deref().filter(|path| !path.trim().is_empty()) {
         params["mmproj_path"] = json!(mmproj);
@@ -1992,6 +1996,10 @@ mod tests {
         let cfg =
             crate::runtime::NodeConfig::from_params(&crate::webui::RuntimeParams::default(), true);
         assert!(load_params(&cfg, &[0], &[], None).get("link").is_none());
+        assert!(load_params(&cfg, &[0], &[], None).get("mtp_draft_path").is_none());
+        let mut drafted = cfg.clone();
+        drafted.mtp_draft_path = Some("/m/dspark.gguf".into());
+        assert_eq!(load_params(&drafted, &[0], &[], None)["mtp_draft_path"], "/m/dspark.gguf");
         let link = json!({"token": "t", "prev_port": 4100});
         assert_eq!(
             load_params(&cfg, &[0], &[], Some(&link))["link"]["prev_port"],

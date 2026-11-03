@@ -404,7 +404,13 @@ export function DeploymentInspector({
    *  unloading and the engine's own settings. The llama.cpp knobs do not
    *  reach it. The POM settings the service declares (`pomSettings`) get their
    *  own card, shown when its slices cross machines. */
-  inferenceService?: { name: string; settings?: EngineSetting[]; pomSettings?: PomSetting[] };
+  inferenceService?: {
+    name: string;
+    settings?: EngineSetting[];
+    pomSettings?: PomSetting[];
+    /** Its engine takes a drafter file for this model (`draft_architectures`). */
+    takesDraft?: boolean;
+  };
 }) {
   const { t } = useI18n();
   /*
@@ -744,6 +750,22 @@ export function DeploymentInspector({
               onChange={(next) => set({ engine_settings: next })}
               readOnly={readOnly}
             />
+          )}
+          {inferenceService.takesDraft && sidecars && !readOnly && (
+            <div className="px-0.5 py-1.5">
+              <p className="mb-1 text-[0.6rem] text-muted">{t("sidecars.mtp")}</p>
+              <SidecarPicker
+                kind="mtp"
+                label={t("sidecars.mtp")}
+                options={sidecars.options.filter((option) => option.kind === "mtp")}
+                value={sidecars.mtp.value}
+                onChange={sidecars.mtp.onChange}
+                slot={sidecars.mtp.slot}
+                linkLabel={sidecars.mtp.linkLabel}
+                allowEmbedded={sidecars.mtp.allowEmbedded}
+                compact
+              />
+            </div>
           )}
         </Section>
         {visionSection}

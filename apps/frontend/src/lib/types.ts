@@ -771,6 +771,8 @@ export interface PluginService {
   stages?: boolean;
   /** Kind `inference` with `stages`: the architectures it runs in slices, when not all of them. */
   stage_architectures?: string[];
+  /** Kind `inference`: the model architectures whose drafter file its engine takes from the deployment. */
+  draft_architectures?: string[];
   /** Kind `inference`: the POM deployment settings that apply to its engine. */
   pom_settings?: PomSetting[];
   /** Kind `inference`: its engine reads images through the deployment's vision projector (`mmproj`). */

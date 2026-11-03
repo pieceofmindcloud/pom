@@ -26,6 +26,8 @@ export interface InferenceServiceEntry {
   stages: boolean;
   /** The architectures it runs in slices, when the service names them (empty: every one it runs). */
   stageArchitectures: string[];
+  /** The model architectures whose drafter file its engine takes from the deployment. */
+  draftArchitectures: string[];
   /** Its engine reads images through the deployment's vision projector, as the plugin declares. */
   vision: boolean;
 }
@@ -55,12 +57,16 @@ export function inferenceServiceCatalog(peers: PeerView[] | undefined): Inferenc
         nodeIds: [],
         stages: false,
         stageArchitectures: [],
+        draftArchitectures: [],
         vision: false,
       };
       if (service.stages) entry.stages = true;
       if (service.vision) entry.vision = true;
       for (const architecture of service.stage_architectures ?? []) {
         if (!entry.stageArchitectures.includes(architecture)) entry.stageArchitectures.push(architecture);
+      }
+      for (const architecture of service.draft_architectures ?? []) {
+        if (!entry.draftArchitectures.includes(architecture)) entry.draftArchitectures.push(architecture);
       }
       if (entry.settings.length === 0 && service.settings?.length) entry.settings = service.settings;
       for (const setting of service.pom_settings ?? []) {
@@ -89,6 +95,12 @@ export function serviceRunsModel(service: InferenceServiceEntry, architecture: s
 export function serviceRunsSlices(service: InferenceServiceEntry, architecture: string | null): boolean {
   if (!service.stages || !serviceRunsModel(service, architecture)) return false;
   return service.stageArchitectures.length === 0 || (architecture != null && service.stageArchitectures.includes(architecture));
+}
+
+/** Whether the deploy screen offers a drafter file for a model of `architecture` on the service. Another
+ *  service's engine, or another family on this one, would ignore the choice. */
+export function serviceTakesDraft(service: InferenceServiceEntry, architecture: string | null): boolean {
+  return architecture != null && service.draftArchitectures.includes(architecture);
 }
 
 /** The engine a deployment's parameters name, for showing it: the plugin's

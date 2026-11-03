@@ -87,7 +87,7 @@ A especulação rascunha os próximos tokens e confere todos num lote só. Quand
 | Tokens rascunhados pelo MTP | Quantos tokens a cabeça nextn adivinha por rodada. Mais alarga o lote em todos os hops; menos desperdiça menos quando o palpite erra. |
 | Probabilidade mínima do MTP | Piso de confiança para continuar o rascunho. Menor aceita mais palpites, inclusive os fracos; 0 aceita todos. |
 | Onde o MTP fica | Automático: VRAM só se o modelo inteiro ainda couber junto. VRAM: o MTP reserva a dele primeiro e o modelo usa o resto. RAM: o MTP roda na CPU e não gasta VRAM. |
-| MTP (cauda) | Aparece quando o modelo não traz a cabeça nextn: escolha o rascunho externo (mtp-*.gguf) que a última máquina carrega. |
+| MTP (cauda) | Aparece quando o modelo não traz a cabeça nextn: escolha o rascunho externo (mtp-*.gguf, ou um drafter DSpark do DeepSeek-V4.1, dspark-*.gguf) que a última máquina carrega. |
 | Largura do rascunho / Janela de busca | Só no lookup: quantos palpites por lote, e o maior n-grama procurado numa repetição anterior. |
 
 :::warn Meça o MTP num modelo MoE com experts na RAM

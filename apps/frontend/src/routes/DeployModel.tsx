@@ -63,7 +63,7 @@ import { DeploymentInspector, InspectorRow } from "../components/DeploymentInspe
 import { DeployNetworkCanvas } from "../components/DeployNetworkCanvas";
 import { trackOf } from "../components/PipelineRail";
 import { tensorParallelModelsOf, wholeModelsOf } from "../lib/wholeModels";
-import { inferenceServicesOf, serviceRunsModel, serviceRunsSlices } from "../lib/inferenceServices";
+import { inferenceServicesOf, serviceRunsModel, serviceRunsSlices, serviceTakesDraft } from "../lib/inferenceServices";
 import {
   Badge,
   Button,
@@ -922,7 +922,15 @@ export function DeployModel() {
   const eff: RuntimeParams = params ?? p?.params ?? ({} as RuntimeParams);
   /** What a deploy sends: the settings, with the inference service chosen
    *  above (never one remembered from another deploy). */
-  const sentParams: RuntimeParams = { ...eff, inference_service: service?.code ?? null };
+  const chosenArchitecture =
+    (isWhole ? wholes.find((whole) => whole.name === chosen)?.architecture : slicedGroup?.architecture) ?? null;
+  const takesDraft = !!service && serviceTakesDraft(service, chosenArchitecture);
+  // The plan only resolves a chosen draft with `mtp_enabled`, which this service's screen has no switch for.
+  const sentParams: RuntimeParams = {
+    ...eff,
+    inference_service: service?.code ?? null,
+    ...(takesDraft ? { mtp_enabled: true } : {}),
+  };
   /** The server's GGUF metadata is the only source of truth for MoE. */
   const isMoePlan = p?.is_moe === true;
   /**
@@ -1587,7 +1595,7 @@ export function DeployModel() {
             <DeploymentInspector
               value={eff}
               onChange={setParams}
-              inferenceService={service ? { name: service.name, settings: service.settings, pomSettings: service.pomSettings } : undefined}
+              inferenceService={service ? { name: service.name, settings: service.settings, pomSettings: service.pomSettings, takesDraft } : undefined}
               capabilities={p?.capabilities}
               cacheTypes={{
                 k: cacheTypeK,

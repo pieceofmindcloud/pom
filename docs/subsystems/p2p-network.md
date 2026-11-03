@@ -891,7 +891,9 @@ compares the exact path, with no prefix or wildcard, on the receiving side.
 The one shape matched by segment is a plugin call between nodes
 (`plugin_path_is_allowed`): `/api/internal/plugins/services`,
 `/api/internal/plugins/<code>/peer/<op>` and
-`/api/internal/plugins/<code>/engine/generate`, each segment a plain name. The
+`/api/internal/plugins/<code>/engine/generate`, each segment a plain name
+except `<op>`, which follows the handler's own `valid_peer_op` (dots allowed,
+as in `quota.status`). The
 engine's session files and stage links stay off the tunnel. The
 sender picks the `target` variant; the receiver resolves the port, with the two
 ports it chose itself.

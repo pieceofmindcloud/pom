@@ -177,7 +177,9 @@ fn plugin_path_is_allowed(path: &str) -> bool {
         !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     };
     match rest.split('/').collect::<Vec<_>>().as_slice() {
-        [code, "peer", op] => segment(code) && segment(op),
+        // The operation follows the handler's own rule, dots included
+        // (`quota.status`), so the tunnel carries every op a direct call does.
+        [code, "peer", op] => segment(code) && crate::plugin_services::valid_peer_op(op),
         [code, "engine", "generate"] => segment(code),
         _ => false,
     }
@@ -798,6 +800,8 @@ mod tests {
         assert!(gateway_path_is_allowed("/api/internal/plugins/services"));
         assert!(gateway_path_is_allowed("/api/internal/plugins/rag/peer/search"));
         assert!(gateway_path_is_allowed("/api/internal/plugins/moe_x/engine/generate"));
+        assert!(gateway_path_is_allowed("/api/internal/plugins/logs/peer/quota.status"));
+        assert!(!gateway_path_is_allowed("/api/internal/plugins/logs/peer/.status"));
         assert!(!gateway_path_is_allowed("/api/internal/plugins/rag/peer/search/x"));
         assert!(!gateway_path_is_allowed("/api/internal/plugins/rag/peer/"));
         assert!(!gateway_path_is_allowed("/api/internal/plugins/../peer/x"));

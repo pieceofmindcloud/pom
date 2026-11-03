@@ -3134,6 +3134,47 @@ mod peer_visibility_tests {
         );
     }
 
+    /// The gateway's own entry is read on loopback, never through its public
+    /// addresses: on a head busy with a long prompt that dial missed the budget
+    /// and its layers fell out of the plan ("Gap at layer 0").
+    #[tokio::test]
+    async fn the_gateway_admits_itself_on_loopback() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let app = axum::Router::new().route(
+                "/health",
+                axum::routing::get(|| async {
+                    axum::Json(serde_json::json!({
+                        "status": "ok",
+                        "model_loaded": true,
+                        "start_layer": 0,
+                        "end_layer": 15,
+                        "total_layers": 41,
+                    }))
+                }),
+            );
+            axum::serve(listener, app).await.unwrap();
+        });
+        let network = std::sync::Arc::new(
+            crate::network::Network::testkit("me".into(), "pk".into(), vec![], Some(port), None)
+                .await
+                .unwrap(),
+        );
+        // No dialable address at all: only the loopback can admit it.
+        let mut me = peer("me");
+        me.inference_port = Some(port);
+        me.addr = String::new();
+        me.addr_candidates.clear();
+
+        let health = std::sync::Arc::new(super::AdmissionHealth::default());
+        let clients = crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600));
+        let admitted =
+            ready_for_pipeline(&clients, &health, &network, vec![me], Duration::from_secs(2)).await;
+        assert_eq!(admitted.len(), 1, "the gateway left itself out");
+        assert_eq!((admitted[0].start_layer, admitted[0].end_layer), (0, 15));
+    }
+
     /// A probe that misses the budget falls back to the remembered admission,
     /// which can be minutes old. Its liveness must come from the announcement
     /// this request holds, or the planner drops it as dead and reports a gap

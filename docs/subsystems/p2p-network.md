@@ -1482,7 +1482,9 @@ in the original frame. The principal node checks the key in the database, binds
 the key to `sender_node_id`, refuses `blocked_nodes`, applies a rate limit and
 only then relays the already validated frame to the participants. The relay
 strips the secret and carries `relayed: true`; a node that is not the principal
-does not accept that frame as an origin. A file stays within the protocol's
+does not accept that frame as an origin. The relay skips the sender, so the
+sender stores its own action locally once the principal answers `accepted`
+(the insert ignores a repeated `message_id`). A file stays within the protocol's
 frame limit and is not stored outside each node's local database.
 
 `network_chat_enabled` is on by default, like `quic_enabled`: a new network

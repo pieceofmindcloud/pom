@@ -912,7 +912,9 @@ impl Discovery {
                         continue;
                     };
                     let transport = ctx.p2p.clone();
+                    let chat = ctx.chat.clone();
                     tokio::spawn(async move {
+                        let action = request.action.clone();
                         let response = match transport
                             .call(NetworkChatCodec, peer_id, &addr_candidates, request)
                             .await
@@ -920,6 +922,16 @@ impl Discovery {
                             Ok(response) => response,
                             Err(error) => ChatResponse::rejected(error.to_string()),
                         };
+                        // The principal relays to everyone but the sender
+                        // (`relay_chat`), so the sender keeps its own copy
+                        // once the principal accepted it. Without this a
+                        // member's message reached the others and never
+                        // its own screen.
+                        if response.accepted {
+                            if let Err(error) = chat.accept(action) {
+                                debug!("network-chat: could not keep the sent action: {error}");
+                            }
+                        }
                         let _ = reply.send(response);
                     });
                 }

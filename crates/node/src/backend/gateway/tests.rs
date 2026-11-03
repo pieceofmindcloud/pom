@@ -3134,6 +3134,55 @@ mod peer_visibility_tests {
         );
     }
 
+    /// A probe that misses the budget falls back to the remembered admission,
+    /// which can be minutes old. Its liveness must come from the announcement
+    /// this request holds, or the planner drops it as dead and reports a gap
+    /// at its layers ("Gap at layer 0").
+    #[tokio::test]
+    async fn a_remembered_admission_takes_the_liveness_of_the_current_announcement() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let app = axum::Router::new().route(
+                "/health",
+                axum::routing::get(|| async {
+                    tokio::time::sleep(Duration::from_millis(600)).await;
+                    axum::Json(serde_json::json!({ "status": "ok", "model_loaded": true }))
+                }),
+            );
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let mut head = peer("head");
+        head.inference_port = Some(port);
+        head.last_seen = chrono::Utc::now() - chrono::Duration::seconds(120);
+
+        let health = std::sync::Arc::new(super::AdmissionHealth::default());
+        let clients = crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600));
+        let state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        let first = ready_for_pipeline(
+            &clients,
+            &health,
+            &state.network,
+            vec![head.clone()],
+            Duration::from_secs(2),
+        )
+        .await;
+        assert_eq!(first.len(), 1);
+
+        head.last_seen = chrono::Utc::now();
+        let second = ready_for_pipeline(
+            &clients,
+            &health,
+            &state.network,
+            vec![head],
+            Duration::from_secs(2),
+        )
+        .await;
+        assert_eq!(second.len(), 1);
+        assert!(second[0].is_alive(), "the remembered admission kept a stale last_seen");
+    }
+
     #[tokio::test]
     async fn a_health_probe_refreshes_stale_layer_coverage_before_planning() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

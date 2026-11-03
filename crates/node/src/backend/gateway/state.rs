@@ -1386,11 +1386,17 @@ pub(crate) async fn ready_for_pipeline(
             started + FIRST_ADMISSION_BUDGET
         };
         let node_id = peer.node_id.clone();
-        probes.push((node_id, deadline, spawn_admission_probe(http, health, network, peer, timeout)));
+        let last_seen = peer.last_seen;
+        probes.push((
+            node_id,
+            last_seen,
+            deadline,
+            spawn_admission_probe(http, health, network, peer, timeout),
+        ));
     }
     let probed = probes.len();
     let mut admitted = Vec::with_capacity(probed);
-    for (node_id, deadline, handle) in probes {
+    for (node_id, last_seen, deadline, handle) in probes {
         let short = &node_id[..node_id.len().min(12)];
         let remaining = deadline.saturating_duration_since(Instant::now());
         match tokio::time::timeout(remaining, handle).await {
@@ -1411,7 +1417,13 @@ pub(crate) async fn ready_for_pipeline(
                 tracing::warn!("admission: peer {short} probe ended in a panic");
             }
             Err(_) => match health.remembered(&node_id, ADMISSION_MEMORY) {
-                Some(peer) => {
+                Some(mut peer) => {
+                    // The memory is the last `/health` verdict, up to
+                    // `ADMISSION_MEMORY` old; liveness is the announcement
+                    // this request was handed. Keeping the stored
+                    // `last_seen` made the planner drop the peer as dead
+                    // (`PEER_TIMEOUT_SECS`) and report a gap at its layers.
+                    peer.last_seen = last_seen;
                     tracing::info!("admission: peer {short} still probing; using its last admission");
                     admitted.push(peer);
                 }

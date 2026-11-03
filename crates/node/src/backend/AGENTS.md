@@ -641,7 +641,12 @@ boundary.
   once, tries each announced address - in `gateway_bases` order, the host that already answered
   first - and falls back to the p2p tunnel
   (`peer_client::send_to_gateway_over`), which is the path to a peer behind symmetric
-  NAT. A signed command that changes state is sent to **one** delivered address: after a timeout on an established connection it is not repeated elsewhere, because the same envelope would be refused as a replay (409) while the peer still runs the first copy. Calls that stop a server (`/api/ui/unload`, `/api/ui/stop-inference`, `/api/ui/leave`) use `webui::PEER_STOP_TIMEOUT` (60 s), not `PEER_TIMEOUT`. `control_get_via_tunnel` is the last resort of whoever already
+  NAT. A control call to this node itself goes only to
+  `http://127.0.0.1:<gateway_port>` (`GatewayState::control_bases`), where a plain
+  loopback call counts as a member (`auth::from_local_plain`): through its own LAN
+  or public IP it failed on a Mac without the Local Network permission, and the
+  deployment survey left the node off its own screen. `gateway_bases` is left
+  alone because its first entry is handed to other machines. A signed command that changes state is sent to **one** delivered address: after a timeout on an established connection it is not repeated elsewhere, because the same envelope would be refused as a replay (409) while the peer still runs the first copy. Calls that stop a server (`/api/ui/unload`, `/api/ui/stop-inference`, `/api/ui/leave`) use `webui::PEER_STOP_TIMEOUT` (60 s), not `PEER_TIMEOUT`. `control_get_via_tunnel` is the last resort of whoever already
   traversed the addresses with the `RouteTable`'s failure memory (the read of
   `/api/ui/cluster`). `admin.rs` calls to the principal (`post_internal_json`)
   use the same `send_to_gateway_over`: direct addresses and, last, the

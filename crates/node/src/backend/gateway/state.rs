@@ -759,8 +759,25 @@ impl GatewayState {
         body: Option<Vec<u8>>,
         timeout: std::time::Duration,
     ) -> anyhow::Result<reqwest::Response> {
-        self.control_call_over(peer, &self.gateway_bases(peer), method, path, body, timeout)
+        let bases = self.control_bases(peer);
+        self.control_call_over(peer, &bases, method, path, body, timeout)
             .await
+    }
+
+    /// Where a control call to `peer` goes. This node's own entry is reached on
+    /// loopback, in cleartext (`serve::plain_allowed`), the way the tunnel
+    /// reaches it: through its announced addresses the call depended on the
+    /// machine reaching itself on its LAN or public IP, which macOS refuses
+    /// without the Local Network permission, and the deployment survey then
+    /// left the node out of its own deployment screen. Only here, never in
+    /// `gateway_bases`, whose first entry is handed to other machines.
+    fn control_bases(&self, peer: &crate::network::PeerInfo) -> Vec<String> {
+        match self.network.gateway_port {
+            Some(port) if peer.node_id == self.network.node_id => {
+                vec![format!("http://127.0.0.1:{port}")]
+            }
+            _ => self.gateway_bases(peer),
+        }
     }
 
     async fn control_call_over(

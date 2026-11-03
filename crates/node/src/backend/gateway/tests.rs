@@ -3134,6 +3134,40 @@ mod peer_visibility_tests {
         );
     }
 
+    /// A control call to this node itself goes to loopback, never to its
+    /// announced addresses: on a Mac without the Local Network permission the
+    /// machine cannot reach its own LAN IP, and the deployment survey left it
+    /// off its own deployment screen.
+    #[tokio::test]
+    async fn a_control_call_to_this_node_goes_to_loopback() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let app = axum::Router::new().route(
+                "/api/ui/node",
+                axum::routing::get(|| async { axum::Json(serde_json::json!({ "ok": true })) }),
+            );
+            axum::serve(listener, app).await.unwrap();
+        });
+        let mut state = crate::gateway::testkit::state_with("me", vec![]).await;
+        state.network = std::sync::Arc::new(
+            crate::network::Network::testkit("me".into(), "pk".into(), vec![], None, Some(port))
+                .await
+                .unwrap(),
+        );
+        // Announced only on an address nobody answers (TEST-NET-3).
+        let mut me = peer("me");
+        me.addr = "203.0.113.7:9".into();
+        me.addr_candidates = vec!["203.0.113.7:9".into()];
+        me.gateway_port = Some(9);
+
+        let response = state
+            .control_get(&me, "/api/ui/node", Duration::from_secs(2))
+            .await
+            .expect("the call to itself reached loopback");
+        assert!(response.status().is_success());
+    }
+
     /// The gateway's own entry is read on loopback, never through its public
     /// addresses: on a head busy with a long prompt that dial missed the budget
     /// and its layers fell out of the plan ("Gap at layer 0").

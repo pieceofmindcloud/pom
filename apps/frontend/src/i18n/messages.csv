@@ -187,6 +187,7 @@ canvas.layers,layers,camadas
 canvas.layersAllGpu,{count} on GPU,{count} na GPU
 canvas.layersOnCpu,"{cpu} layer{cpu, plural, =1 {} other {s}} did not fit on the GPU","{cpu} camada{cpu, plural, =1 {} other {s}} não coube{cpu, plural, =1 {} other {ram}} na GPU"
 canvas.layersSplit,{gpu} GPU · {cpu} CPU,{gpu} GPU · {cpu} CPU
+canvas.layersOnCpuWarning,"{cpu} of {served} layers on this machine run on the CPU: its VRAM did not fit the whole slice, so inference here is much slower. Free VRAM, lower the context or the sessions, or give this machine fewer layers.","{cpu} de {served} camadas desta máquina rodam na CPU: a VRAM dela não coube a fatia inteira, então a inferência aqui fica bem mais lenta. Libere VRAM, reduza o contexto ou as sessões, ou dê menos camadas a esta máquina."
 canvas.legendInactive,Possible traffic,Tráfego possível
 canvas.legendParallel,Parallel route,Rota paralela
 canvas.legendPrimary,Live route,Rota em uso

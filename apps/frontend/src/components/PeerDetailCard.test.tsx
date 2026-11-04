@@ -580,3 +580,34 @@ describe("another member's system, as its node shares it", () => {
     expect(screen.queryByText("#0")).toBeNull();
   });
 });
+
+describe("layers llama.cpp left on the CPU", () => {
+  afterEach(cleanup);
+
+  const withLayers = (gpu_kind: "nvidia" | "unified", engine: string | null = null) =>
+    fakeSlicePeer("g", 0, 15, {
+      engine,
+      node: fakeNode({
+        node_id: "g",
+        short_id: "g",
+        hostname: "gpu-box",
+        status: { ...fakeNode().status, reported_gpu_layers: 10 },
+        system: fakeSystem({ gpu_kind }),
+      }),
+    });
+
+  it("warns on a machine with GPUs, saying how many layers run on the CPU", () => {
+    mount(withLayers("nvidia"));
+    const warning = screen.getByTestId("peer-cpu-warning");
+    fireEvent.click(warning.querySelector("button")!);
+    expect(document.body.textContent).toMatch(/6 de 16 camadas desta máquina rodam na CPU/);
+  });
+
+  it("says nothing on a Mac or under a plugin engine", () => {
+    mount(withLayers("unified"));
+    expect(screen.queryByTestId("peer-cpu-warning")).toBeNull();
+    cleanup();
+    mount(withLayers("nvidia", "strata"));
+    expect(screen.queryByTestId("peer-cpu-warning")).toBeNull();
+  });
+});

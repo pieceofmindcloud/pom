@@ -554,6 +554,11 @@ Per-file list:
   compact icon button inside the map's upper-right control area, next to the
   zoom and Fit controls; the dashboard toolbar remains reserved for cluster
   status and actions.
+- `ModelNetworkCanvas.tsx` / `PeerDetailCard.tsx` - a machine whose llama.cpp left layers on the
+  CPU while it has real GPUs (`warnsLayersOnCpu` in `../lib/layerPlacement.ts`: `engine` null,
+  `gpu_kind` nvidia/amd/mixed, `reported_gpu_layers` below the slice) gets an amber `AlertTooltip`
+  beside its layer range (`machine-cpu-warning`, `peer-cpu-warning`) saying how many layers spilled
+  and what to do. Never on `unified` (a Mac) or `none`, nor under a plugin engine, which reports no placement.
 - `RouteRttLabel.tsx` - the shared directional RTT visual badge used by the
   Dashboard map and by the deployment map. On the Dashboard it also identifies the
   effective transport (`HTTP`, `HTTPS` or `QUIC`) observed in the execution; when

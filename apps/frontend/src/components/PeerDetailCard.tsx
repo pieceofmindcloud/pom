@@ -26,7 +26,8 @@ import { KvCache } from "./KvCache";
 import { PluginServiceBadge } from "./PluginServices";
 import { isCpuBuffer, ModelPlacementSection } from "./ModelPlacement";
 import { SpeedBadges, type PeerSpeed } from "./SpeedBadge";
-import { Badge, Button, Dot, InfoTip, KeyValue, Meter } from "./ui";
+import { AlertTooltip, Badge, Button, Dot, InfoTip, KeyValue, Meter } from "./ui";
+import { layerPlacement, warnsLayersOnCpu } from "../lib/layerPlacement";
 import {
   isServing,
   layerRange,
@@ -394,6 +395,10 @@ export function PeerDetailCard({
   // which measures something else (wired), and a bar without a value would become a
   // "loading" animation forever.
   const range = cardRange(peer);
+  // Layers llama.cpp left on the CPU of a machine with real GPUs: the usual
+  // reason a node is slow after a deploy (`warnsLayersOnCpu`).
+  const placement = layerPlacement(range?.[0], range?.[1], n?.status.reported_gpu_layers, hasGpu);
+  const cpuWarning = warnsLayersOnCpu(placement, system?.gpu_kind, peer.engine) && placement;
   /*
    * `/health` is requested once per card, here, and not inside the placement
    * section: the MTP badge went up to the toolbar and the
@@ -441,6 +446,15 @@ export function PeerDetailCard({
                 <Badge tone="neutral" className="px-1.5 py-0 text-[0.58rem]">
                   {t("dashboard.here")}
                 </Badge>
+              )}
+              {cpuWarning && (
+                <span data-testid="peer-cpu-warning" className="inline-flex">
+                  <AlertTooltip
+                    compact
+                    label={n?.hostname || peer.short_id}
+                    message={t("canvas.layersOnCpuWarning", { cpu: cpuWarning.cpu, served: cpuWarning.served })}
+                  />
+                </span>
               )}
             </div>
             <p className={clsx("truncate text-muted", dialog ? "text-[0.75rem]" : "text-[0.66rem]")}>{kind.label}</p>

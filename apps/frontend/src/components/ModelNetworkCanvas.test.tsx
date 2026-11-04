@@ -707,6 +707,32 @@ describe("ModelNetworkCanvas: layout of the smaller card", () => {
   });
 });
 
+describe("ModelNetworkCanvas: layers left on the CPU", () => {
+  afterEach(cleanup);
+
+  const peerWith = (gpu_kind: "nvidia" | "unified") => fakeCluster([
+    fakeSlicePeer("slow", 0, 15, {
+      node: fakeNode({
+        node_id: "slow",
+        short_id: "slow",
+        hostname: "slow-node",
+        status: { ...fakeNode().status, reported_gpu_layers: 12 },
+        system: fakeSystem({ gpu_kind }),
+      }),
+    }),
+  ]);
+
+  it("attaches a warning to a machine with GPUs whose layers spilled to the CPU", () => {
+    mount(peerWith("nvidia"));
+    expect(screen.getByTestId("machine-cpu-warning")).toBeTruthy();
+  });
+
+  it("draws no warning on a Mac, whose memory is unified", () => {
+    mount(peerWith("unified"));
+    expect(screen.queryByTestId("machine-cpu-warning")).toBeNull();
+  });
+});
+
 /**
  * What the Dashboard must let you see on a large network: who holds the token
  * (speed color), a smaller view of the cards and the gateway wherever the operator

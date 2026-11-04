@@ -592,7 +592,7 @@ Per-file list:
   (usage, temperature and optional watts in one row per GPU), RAM, load and disks. The disks are
   **one meter per mounted partition**
   (`system.disks`), with a fallback to `system.disk` on a node that does not publish
-  the list yet. Another member's sample arrives trimmed by its node: one volume with an empty
+  the list yet. Every machine's sample arrives trimmed by its node, this one's included: one volume with an empty
   `mount_point` (labelled `dashboard.modelStorage`) and a `pid` 0 GPU process with no name, the
   total of every non-POM process (labelled `dashboard.otherGpuProcesses`). `PeerPlacement` (internal) is the only part of the card that
   makes an extra call: it mounts only with the machine serving, and the `enabled` of

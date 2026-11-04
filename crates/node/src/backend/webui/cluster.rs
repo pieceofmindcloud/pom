@@ -509,7 +509,7 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
         let is_self = p.node_id == self_id;
         let node = if is_self {
             // Serialise our own view through the same shape as a remote one.
-            serde_json::to_value(node_info(HeaderMap::new(), State(state.clone())).await.0).ok()
+            serde_json::to_value(node_info(State(state.clone())).await.0).ok()
         } else {
             node
         };
@@ -723,7 +723,7 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
     };
     let candidate_edges = candidate_edges(&views);
 
-    let self_node = serde_json::to_value(node_info(HeaderMap::new(), State(state.clone())).await.0).ok();
+    let self_node = serde_json::to_value(node_info(State(state.clone())).await.0).ok();
 
     let body = json!({
         "self_id": self_id,

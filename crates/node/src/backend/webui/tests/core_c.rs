@@ -399,7 +399,7 @@ mod profile_network_tests {
             futures::stream::empty::<Result<bytes::Bytes, reqwest::Error>>(),
         );
         assert_eq!(local_inference_load(&state).await, 1);
-        assert_eq!(node_info(HeaderMap::new(), State(state.clone())).await.0.load, 1);
+        assert_eq!(node_info(State(state.clone())).await.0.load, 1);
         let before = cluster_fingerprint(&state, &state.all_peers().await).await;
         let local = state.loads.acquire(&state.network.node_id).await;
         assert_eq!(local_inference_load(&state).await, 2);

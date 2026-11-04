@@ -515,7 +515,7 @@ describe("cardRange", () => {
   });
 });
 
-describe("another member's system, as the node shares it", () => {
+describe("a machine's system, as its node shares it", () => {
   afterEach(cleanup);
 
   const shared = fakePeer({

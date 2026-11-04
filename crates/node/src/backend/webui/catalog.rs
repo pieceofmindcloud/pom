@@ -91,23 +91,15 @@ pub struct NodeInfo {
     pub thermal: ThermalPolicy,
 }
 
-/// Whether `/api/ui/node` was asked by another node (a signed control call or
-/// one marked internal), not by this machine's own operator.
-fn asked_by_another_node(headers: &HeaderMap) -> bool {
-    headers.contains_key(crate::auth::CONTROL_SIGNATURE_HEADER)
-        || headers
-            .get(crate::auth::INTERNAL_NODE_REQUEST_HEADER)
-            .and_then(|value| value.to_str().ok())
-            == Some("1")
-}
-
-/// What another member may see of this machine's system sample. Its volumes
+/// What `/api/ui/node` shares of this machine's system sample, to every
+/// caller alike: the machine's own operator sees exactly what the other
+/// members see. Its volumes
 /// come out as one: the space of the distinct volumes that can receive model
 /// slices (the model folders and the slice folder), with no mount point or
 /// device. Its GPU processes keep only POM's own, by binary name and with no
 /// path; every other process is one entry (`pid` 0, no name) with their total
-/// memory. The machine's own operator still sees everything.
-pub(crate) fn system_for_members(
+/// memory.
+pub(crate) fn shared_system(
     mut system: SystemLoad,
     slice_dirs: &[std::path::PathBuf],
 ) -> SystemLoad {
@@ -179,16 +171,10 @@ pub(crate) fn system_for_members(
     system
 }
 
-pub(super) async fn node_info(
-    headers: HeaderMap,
-    State(state): State<GatewayState>,
-) -> Json<NodeInfo> {
-    let mut system = sysmon::sample().await;
-    if asked_by_another_node(&headers) {
-        let mut slice_dirs = state.model_dirs().await;
-        slice_dirs.push(state.shard_dir().await);
-        system = system_for_members(system, &slice_dirs);
-    }
+pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInfo> {
+    let mut slice_dirs = state.model_dirs().await;
+    slice_dirs.push(state.shard_dir().await);
+    let system = shared_system(sysmon::sample().await, &slice_dirs);
     let config = state.runtime.config().await;
     let active_deployment = config
         .as_ref()
@@ -2047,7 +2033,7 @@ mod tests {
             disk("/private-data", "/dev/secret", 50, 10),
         ];
 
-        let shared = system_for_members(system, &[models, shards]);
+        let shared = shared_system(system, &[models, shards]);
 
         // Both folders sit on one volume, counted once; `/` and the private
         // volume hold no slice folder and stay out.
@@ -2062,6 +2048,21 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// `/api/ui/node` itself shares the trimmed view, whoever asks: the
+    /// operator sees what the other members see.
+    #[tokio::test]
+    async fn node_info_shares_one_volume_with_no_mount_point_to_everyone() {
+        let state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        let system = node_info(State(state)).await.0.system;
+        assert_eq!(system.disks.len(), 1);
+        assert!(system.disk.mount_point.is_empty() && system.disk.device.is_empty());
+        assert!(system.disks[0].mount_point.is_empty() && system.disks[0].device.is_empty());
+        assert!(system
+            .gpu_processes
+            .iter()
+            .all(|process| process.pid == 0 || !process.name.contains(['/', '\\'])));
+    }
+
     /// Only POM's processes are named, without their path; the rest is one
     /// anonymous total.
     #[tokio::test]
@@ -2074,7 +2075,7 @@ mod tests {
             process(14, "python3", 50.0),
         ];
 
-        let shared = system_for_members(system, &[]);
+        let shared = shared_system(system, &[]);
 
         let named: Vec<(&str, f64)> = shared
             .gpu_processes
@@ -2093,16 +2094,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn only_a_node_to_node_call_gets_the_shared_view() {
-        let mut headers = HeaderMap::new();
-        assert!(!asked_by_another_node(&headers));
-        headers.insert(crate::auth::INTERNAL_NODE_REQUEST_HEADER, "1".parse().unwrap());
-        assert!(asked_by_another_node(&headers));
-        let mut signed = HeaderMap::new();
-        signed.insert(crate::auth::CONTROL_SIGNATURE_HEADER, "x".parse().unwrap());
-        assert!(asked_by_another_node(&signed));
-    }
 
     #[test]
     fn a_panel_password_must_be_long_and_mixed_and_never_the_default() {

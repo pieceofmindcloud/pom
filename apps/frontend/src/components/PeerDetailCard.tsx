@@ -616,8 +616,8 @@ export function PeerDetailCard({
                 <DiskMeter
                   key={disk.mount_point + disk.device}
                   disk={disk}
-                  // Another member's volumes arrive as one, the space where slices can go,
-                  // with no mount point (`system_for_members` on the node).
+                  // Every machine's volumes arrive as one, the space where slices can go,
+                  // with no mount point (`shared_system` on the node).
                   label={disk.mount_point ? t("dashboard.disk", { path: disk.mount_point }) : t("dashboard.modelStorage")}
                 />
               ))}

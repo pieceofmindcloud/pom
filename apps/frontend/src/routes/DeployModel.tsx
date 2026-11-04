@@ -50,8 +50,10 @@ import {
   Check,
   ChevronLeft,
   Rocket,
+  Server,
   ServerCog,
 } from "lucide-react";
+import { machineKind } from "../components/MachineIcon";
 import { api, ApiError } from "../lib/api";
 import { useCacheTypes, useCluster, useClusterCatalog, useInvalidate, useJobs, useNode, useSidecarLinks } from "../lib/queries";
 import type { SidecarPick } from "../components/SidecarPicker";
@@ -69,6 +71,7 @@ import {
   Button,
   ErrorState,
   Input,
+  MarqueeText,
   Select,
   Skeleton,
   Tabs,
@@ -680,6 +683,10 @@ export function DeployModel() {
       };
     });
   }, [liveCluster.data, p]);
+  // The inspector tab's icon: the kind of the inspected machine (a GPU box, a Mac, a Windows PC), as the canvas draws it;
+  // a machine that has not reported its system yet is drawn as a server, not as a question mark.
+  const inspectedSystem = liveCluster.data?.peers.find((peer) => peer.node_id === inspectedNodeId)?.node?.system;
+  const InspectedMachineIcon = inspectedSystem ? machineKind(inspectedSystem).icon : Server;
   // Capacity is the only part of the plan that depends on RuntimeParams. It
   // cannot be reused after a launch setting changes, but that setting also
   // does not justify a new topology survey. Hide the old projection until the
@@ -1585,7 +1592,13 @@ export function DeployModel() {
                 { value: "global", label: t("deployStudio.tabGlobal") },
                 {
                   value: "machine",
-                  label: t("deployStudio.tabMachine", { name: liveMachines.find((machine) => machine.node_id === inspectedNodeId)?.label ?? "-" }),
+                  // the machine's kind as an icon (the canvas's), its name alone; "Machine" stays for screen readers
+                  icon: <InspectedMachineIcon className="h-3.5 w-3.5" />,
+                  // a long machine name scrolls inside the tab instead of widening the row
+                  label: <>
+                    <span className="sr-only">{t("deployStudio.tabMachine")}: </span>
+                    <MarqueeText>{liveMachines.find((machine) => machine.node_id === inspectedNodeId)?.label ?? "-"}</MarqueeText>
+                  </>,
                   disabled: !inspectedNodeId,
                 },
               ]}

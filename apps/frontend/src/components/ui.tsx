@@ -10,7 +10,7 @@ import { motion } from "framer-motion";
 import { AlertTriangle, Info, Loader2, X } from "lucide-react";
 import { createPortal } from "react-dom";
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { useI18n } from "../i18n/provider";
 
 // ── Surfaces ─────────────────────────────────────────────────────────────────
@@ -676,6 +676,62 @@ export function Tabs<T extends string>({
         );
       })}
     </div>
+  );
+}
+
+/** Space between the end of the text and its next lap, in px. */
+const MARQUEE_GAP = 32;
+/** Part of each lap the text rests at the start, so it can be read before it moves (keep in step with `@keyframes pom-marquee`). */
+const MARQUEE_REST = 0.15;
+
+/**
+ * One line of text that never widens its container: when it does not fit, it is
+ * clipped and scrolls from right to left in a loop (a second copy follows the
+ * first, so the lap closes without a jump), resting a moment at the start of each
+ * lap and pausing under the pointer. Text that fits stays still. With reduced
+ * motion it stays still too, cut with an ellipsis. `speed` is in px per second.
+ */
+export function MarqueeText({ children, className, speed = 40 }: { children: ReactNode; className?: string; speed?: number }) {
+  const outer = useRef<HTMLSpanElement>(null);
+  const copy = useRef<HTMLSpanElement>(null);
+  const [width, setWidth] = useState(0);
+  useLayoutEffect(() => {
+    const box = outer.current;
+    const text = copy.current;
+    if (!box || !text) return;
+    const measure = () => setWidth(text.offsetWidth > box.clientWidth + 1 ? text.offsetWidth : 0);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(box);
+    observer.observe(text);
+    return () => observer.disconnect();
+  }, [children]);
+  const moving = width > 0;
+  const lap = width + MARQUEE_GAP;
+  const style = moving
+    ? ({ "--marquee-shift": `-${lap}px`, "--marquee-duration": `${(lap / speed / (1 - MARQUEE_REST)).toFixed(2)}s` } as CSSProperties)
+    : undefined;
+  return (
+    <span
+      ref={outer}
+      className={clsx("pom-marquee", moving && "pom-marquee-on", className)}
+      title={moving && typeof children === "string" ? children : undefined}
+    >
+      <span className="pom-marquee-track" style={style}>
+        <span ref={copy} className="pom-marquee-copy">
+          {children}
+        </span>
+        {moving && (
+          <>
+            <span className="pom-marquee-gap" style={{ width: MARQUEE_GAP }} aria-hidden="true" />
+            <span className="pom-marquee-copy" aria-hidden="true">
+              {children}
+            </span>
+          </>
+        )}
+      </span>
+    </span>
   );
 }
 

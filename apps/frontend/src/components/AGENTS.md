@@ -73,7 +73,12 @@ Per-file list:
   `actions` puts controls at the right end of the row (the tabs scroll, the
   controls stay). An
   item with `onClose` gets a close button beside the tab (`pom-tab-closable`,
-  siblings, never a button inside a button).
+  siblings, never a button inside a button). A label that can be longer than a
+  `fill` tab (the machine name in the Deploy inspector's tab) goes in `MarqueeText`:
+  clipped to the tab, it scrolls right to left in a loop only when it does not
+  fit, rests at the start of each lap, pauses under the pointer and stays still
+  with an ellipsis under reduced motion (`pom-marquee*`; the rest is
+  `MARQUEE_REST`, in step with `@keyframes pom-marquee`).
 - `AlertTooltip` (ui.tsx) - `compact` makes the icon the size of the `[i]`, without
   a frame, so it fits in the `DeploymentInspector`'s icon column; `Meter` and
   `KeyValue` gained `compact` for the same reason in the machine card. It is the compact

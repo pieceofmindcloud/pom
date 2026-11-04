@@ -913,7 +913,7 @@ deployStudio.selectMachine,Select a machine on the canvas.,Selecione uma máquin
 deployStudio.showInspector,Show inspector,Mostrar inspetor
 deployStudio.size,Size,Tamanho
 deployStudio.tabGlobal,Global,Globais
-deployStudio.tabMachine,Machine: {name},Máquina: {name}
+deployStudio.tabMachine,Machine,Máquina
 deployStudio.technicalModel,Technical model,Modelo técnico
 deployStudio.tensorParallel,Tensor parallel,Tensor paralelo
 deployStudio.tpGroup,Tensor Parallelism group,Grupo Tensor Parallelism

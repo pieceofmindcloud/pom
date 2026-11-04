@@ -240,6 +240,10 @@ pub(crate) fn routes() -> Router<GatewayState> {
             "/api/ui/model-provider/downloads/:id/retry",
             post(retry_download),
         )
+        .route(
+            "/api/ui/model-provider/downloads/:id/dismiss",
+            post(dismiss_download),
+        )
 }
 
 async fn search_models(
@@ -656,6 +660,28 @@ async fn retry_download(
         webui::jobs().write().await.remove(&id);
     }
     response
+}
+
+/// Takes a download that ended without completing (failed or cancelled) off
+/// the list. A running one is refused: that is what Cancel is for.
+async fn dismiss_download(
+    _auth: ConnectionAuth,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Response {
+    let mut jobs = webui::jobs().write().await;
+    match jobs.get(&id) {
+        Some(job) if job.kind == MODEL_DOWNLOAD_KIND => {
+            if job.state == "running" {
+                return conflict(
+                    "download_in_progress",
+                    "download is still in progress; cancel it instead".into(),
+                );
+            }
+            jobs.remove(&id);
+            Json(json!({ "download_id": id, "dismissed": true })).into_response()
+        }
+        _ => not_found("download not found"),
+    }
 }
 
 async fn run_download(
@@ -1507,6 +1533,35 @@ mod tests {
         assert!(jobs.contains_key(&new_id));
         drop(jobs);
         let _ = tokio::fs::remove_dir_all(destination).await;
+    }
+
+    /// Dismiss takes a failed download off the list, and refuses one still
+    /// running.
+    #[tokio::test]
+    async fn dismiss_removes_a_failed_download_and_refuses_a_running_one() {
+        let failed_id = uuid::Uuid::new_v4().simple().to_string();
+        let mut failed = webui::new_job(&failed_id, MODEL_DOWNLOAD_KIND, "failed", "failed");
+        failed.state = "failed";
+        failed.download_status = Some("failed");
+        let running_id = uuid::Uuid::new_v4().simple().to_string();
+        let mut running = webui::new_job(&running_id, MODEL_DOWNLOAD_KIND, "running", "downloading");
+        running.download_status = Some("downloading");
+        {
+            let mut jobs = webui::jobs().write().await;
+            jobs.insert(failed_id.clone(), failed);
+            jobs.insert(running_id.clone(), running);
+        }
+
+        let response = dismiss_download(ConnectionAuth, axum::extract::Path(failed_id.clone())).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!webui::jobs().read().await.contains_key(&failed_id));
+
+        let response = dismiss_download(ConnectionAuth, axum::extract::Path(running_id.clone())).await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(webui::jobs().write().await.remove(&running_id).is_some());
+
+        let response = dismiss_download(ConnectionAuth, axum::extract::Path("no-such-download".into())).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     /// Cancelling a download that has not finished takes it off the list.

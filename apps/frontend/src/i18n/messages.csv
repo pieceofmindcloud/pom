@@ -2541,6 +2541,8 @@ remoteModels.remaining,{time} remaining,{time} restantes
 remoteModels.requiredSpace,Space required,Espaço necessário
 remoteModels.results,"{count}{count, plural, =1 { result} other { results}}","{count}{count, plural, =1 { resultado} other { resultados}}"
 remoteModels.retry,Try again,Tentar de novo
+remoteModels.dismiss,Dismiss,Descartar
+remoteModels.dismissFailed,Could not dismiss the download,Não foi possível descartar o download
 remoteModels.revision,Revision,Revisão
 remoteModels.savedTo,Saved to,Salvo em
 remoteModels.searchAria,Search remote models,Buscar modelos remotos

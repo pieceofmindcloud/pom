@@ -115,7 +115,9 @@ boundary.
   Cancelling a download that has not finished takes its job off the list at once (the task
   winding down updates nothing: progress only touches a listed job), and `retry` replaces the
   failed or cancelled job with the new attempt instead of listing both - the failed row had no
-  other button and could never be dismissed. The
+  other button and could never be dismissed. `POST .../downloads/:id/dismiss` takes a failed or
+  cancelled job off the list without a new attempt, and refuses a running one (409; Cancel is for
+  that). The
   storage response exposes the eligible folders. The structured status in
   `GET /api/ui/model-provider/status` lets the UI tell an absent CLI, a required login and an
   authenticated session apart.

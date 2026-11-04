@@ -46,6 +46,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
 import {
   Check,
   ChevronLeft,
@@ -63,6 +64,7 @@ import { bytes, deployModelDisplayName, layerRange, megabytes } from "../lib/for
 import { Confirm, Modal } from "../components/Confirm";
 import { DeploymentInspector, InspectorRow } from "../components/DeploymentInspector";
 import { DeployNetworkCanvas } from "../components/DeployNetworkCanvas";
+import { DeployProgressModal } from "../components/DeployProgressModal";
 import { trackOf } from "../components/PipelineRail";
 import { tensorParallelModelsOf, wholeModelsOf } from "../lib/wholeModels";
 import { inferenceServicesOf, serviceRunsModel, serviceRunsSlices, serviceTakesDraft } from "../lib/inferenceServices";
@@ -360,6 +362,9 @@ export function DeployModel() {
   const [mtpPick, setMtpPick] = useState<SidecarPick>({ mode: "link" });
   const sidecarLinks = useSidecarLinks();
   const [jobId, setJobId] = useState<string | null>(null);
+  // The progress window of the deploy just started (`DeployProgressModal`).
+  const [progressOpen, setProgressOpen] = useState(false);
+  const navigate = useNavigate();
   const toast = useToast();
   const invalidate = useInvalidate();
   const jobs = useJobs();
@@ -1122,6 +1127,7 @@ export function DeployModel() {
         ...(transfersAllowed.current ? { allow_transfers: true } : {}),
       });
       setJobId(started.job_id);
+      setProgressOpen(true);
       // Written from `rows` and `eff`, not from the possibly-null edit state:
       // what comes back next time has to be what was actually deployed,
       // including the parts the operator left on the node's suggestion.
@@ -1132,10 +1138,6 @@ export function DeployModel() {
         deployment_name: deploymentName || chosen,
         strategy,
       });
-      toast.success(
-        t("deploy.started"),
-        t("deploy.startedDetail"),
-      );
       invalidate();
     } catch (e) {
       // The node found copies the screen did not ask about (the cluster moved
@@ -1143,7 +1145,16 @@ export function DeployModel() {
       const refused = e instanceof ApiError && e.status === 409
         ? (e.body as { code?: string; copies?: PlannedCopy[] } | undefined)
         : undefined;
-      if (refused?.code === "transfers_not_authorized" && refused.copies?.length) {
+      const inProgress = e instanceof ApiError && e.status === 409
+        ? (e.body as { code?: string; job_id?: string } | undefined)
+        : undefined;
+      if (inProgress?.code === "deploy_in_progress" && inProgress.job_id) {
+        // This deployment is already coming up (another click, tab or
+        // machine): follow that deploy instead of reporting an error.
+        setJobId(inProgress.job_id);
+        setProgressOpen(true);
+        invalidate();
+      } else if (refused?.code === "transfers_not_authorized" && refused.copies?.length) {
         setInServiceAsked(false);
         transfersAllowed.current = false;
         setCopiesAsked(refused.copies);
@@ -1551,6 +1562,13 @@ export function DeployModel() {
             )}
           </div>
         )}
+
+        <DeployProgressModal
+          open={progressOpen && jobId != null}
+          job={job}
+          onClose={() => setProgressOpen(false)}
+          onDashboard={() => { setProgressOpen(false); navigate("/"); }}
+        />
 
         <div className={`relative grid min-h-0 flex-1 ${inspectorOpen ? "lg:grid-cols-[minmax(0,1fr)_19rem]" : "lg:grid-cols-[minmax(0,1fr)_2rem]"}`}>
           <div className="flex min-h-[24rem] min-w-0 p-3 sm:p-4 lg:min-h-0">

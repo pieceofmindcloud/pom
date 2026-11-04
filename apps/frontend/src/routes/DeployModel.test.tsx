@@ -13,6 +13,7 @@
  * Both sides come in here: the comparison stopped depending on the order, and
  * the explanation stopped depending on the comparison.
  */
+import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -45,10 +46,15 @@ vi.mock("../lib/api", () => ({
   },
   getConnectionKey: () => "",
   setConnectionKey: () => {},
-  ApiError: class extends Error {},
+  ApiError: class extends Error {
+    constructor(public status = 0, message = "", public body: unknown = undefined) {
+      super(message);
+    }
+  },
 }));
 
 import { DeployModel } from "./DeployModel";
+import { ApiError } from "../lib/api";
 import { LocaleProvider } from "../i18n/provider";
 import { keys } from "../lib/queries";
 
@@ -208,7 +214,7 @@ function mount(metadata_complete: boolean | undefined = true, dev = false) {
   return render(
     <QueryClientProvider client={client}>
       <LocaleProvider initialLocale="pt-BR">
-        <DeployModel />
+        <MemoryRouter><DeployModel /></MemoryRouter>
       </LocaleProvider>
     </QueryClientProvider>,
   );
@@ -582,7 +588,69 @@ describe("DeployModel", () => {
     const deployButton = await screen.findByRole("button", { name: /^Implantar$/ });
     await waitFor(() => expect((deployButton as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(deployButton);
-    expect((await screen.findByRole("alert")).textContent).toMatch(/ksia não ficou ociosa/);
+    // The progress strip and the progress window both carry the reason.
+    const alerts = await screen.findAllByRole("alert");
+    expect(alerts).toHaveLength(2);
+    for (const alert of alerts) expect(alert.textContent).toMatch(/ksia não ficou ociosa/);
+    expect(screen.getByText("A implantação falhou")).toBeTruthy();
+  });
+
+  it("follows the deploy already running when the node refuses a second one", async () => {
+    const ok = planOutOfLayerOrder();
+    ok.blocked = null;
+    post.mockImplementation((url: string) =>
+      url === "/api/ui/deploy"
+        ? Promise.reject(new ApiError(409, "already being deployed", { code: "deploy_in_progress", job_id: "job-running" }))
+        : Promise.resolve(ok),
+    );
+    jobsResponse = {
+      jobs: [{
+        id: "job-running",
+        state: "running",
+        step: "carregando as fatias",
+        message: "",
+        progress: 40,
+        outputs: [],
+        started_at: new Date().toISOString(),
+        finished_at: null,
+      }],
+    };
+    mount();
+
+    const deployButton = await screen.findByRole("button", { name: /^Implantar$/ });
+    await waitFor(() => expect((deployButton as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(deployButton);
+    expect((await screen.findByTestId("deploy-progress")).textContent).toMatch(/carregando as fatias/);
+  });
+
+  it("follows the deploy it started in a window, with Close and Switch to dashboard", async () => {
+    const ok = planOutOfLayerOrder();
+    ok.blocked = null;
+    post.mockImplementation((url: string) =>
+      url === "/api/ui/deploy" ? Promise.resolve({ job_id: "job-running" }) : Promise.resolve(ok),
+    );
+    jobsResponse = {
+      jobs: [{
+        id: "job-running",
+        state: "running",
+        step: "carregando as fatias",
+        message: "",
+        progress: 40,
+        outputs: [],
+        started_at: new Date().toISOString(),
+        finished_at: null,
+      }],
+    };
+    mount();
+
+    const deployButton = await screen.findByRole("button", { name: /^Implantar$/ });
+    await waitFor(() => expect((deployButton as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(deployButton);
+    const progress = await screen.findByTestId("deploy-progress");
+    expect(progress.textContent).toMatch(/carregando as fatias/);
+    expect(screen.getByRole("button", { name: "Ir para o painel" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Fechar" }));
+    await waitFor(() => expect(screen.queryByTestId("deploy-progress")).toBeNull());
   });
 
   it("allows all ranges when a single machine covers the model", async () => {

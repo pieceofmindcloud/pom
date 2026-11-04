@@ -827,6 +827,14 @@ deploy.speculative,Speculative decoding,Decodificação especulativa
 deploy.speculativeHint,"Guesses the next tokens from repetitions already in the text and checks them in a single pass through the pipeline, so one internet round trip can yield several tokens. A wrong guess is discarded, never emitted - the answer is the same either way.","Adivinha os próximos tokens a partir de repetições que já estão no texto e confere todos numa passagem só pelo pipeline, então uma ida e volta pela internet pode render vários tokens. Palpite errado é descartado, nunca sai na resposta - o texto gerado é o mesmo."
 deploy.startFailed,Deployment did not start,A implantação não começou
 deploy.started,Deployment started,Implantação começou
+deployProgress.runningTitle,Deploying,Implantando
+deployProgress.doneTitle,Deployment ready,Implantação pronta
+deployProgress.failedTitle,Deployment failed,A implantação falhou
+deployProgress.starting,Starting the deployment…,Iniciando a implantação…
+deployProgress.doneDetail,The model is in service on the network.,O modelo está em serviço na rede.
+deployProgress.failedDetail,The deployment did not complete.,A implantação não terminou.
+deployProgress.closeHint,"Closing this window does not stop the deployment; its result also stays in the bell.","Fechar esta janela não interrompe a implantação; o resultado também fica no sino."
+deployProgress.dashboard,Switch to dashboard,Ir para o painel
 deploy.startedDetail,"Follow it below or from the bell. Progress comes from the nodes, so reloading does not lose anything.","Acompanhe abaixo ou no sino. O progresso vem dos nós, então recarregar não perde nada."
 deploy.subtitle,"Take a model a cluster machine already has and put it into service on the network — a set of shards across machines, or one whole file on one machine.","Pegue um modelo que alguma máquina do cluster já tem e coloque-o para atender na rede - um conjunto de fatias espalhado pelas máquinas, ou um arquivo inteiro numa máquina só."
 deploy.thisDeployment,This deployment,Nesta implantação
@@ -1989,6 +1997,9 @@ notifications.reject,Reject,Recusar
 notifications.requestApproved,{name} approved this machine,{name} aprovou esta máquina
 notifications.requestRejected,{name} declined this machine,{name} recusou esta máquina
 notifications.started,started,começou
+notifications.jobDone,finished,terminou
+notifications.jobFailed,failed,falhou
+notifications.jobDismiss,Remove from the bell,Remover do sino
 notifications.state.cancelled,cancelled,cancelada
 notifications.state.done,completed · {size},concluída · {size}
 notifications.state.failed,failed,falhou

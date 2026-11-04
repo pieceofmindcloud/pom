@@ -1111,6 +1111,7 @@ async fn installed_download(state: &GatewayState, identity: &DownloadIdentity) -
         local_path: None,
         error: None,
         deploy_id: None,
+        deployment_name: None,
     })
 }
 

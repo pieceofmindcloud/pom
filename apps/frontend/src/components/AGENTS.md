@@ -452,6 +452,15 @@ Per-file list:
   until the bell opens, then get marked read and can be removed. Node-to-infer changes are amber notices without
   action buttons. Authority offers keep their pending state in the bell and
   link to `/config/administration` for the roster.
+  Finished jobs (a deploy, a slicing run; not a model download, whose panel
+  has its own outcome) stay with their outcome for `RECENTLY_FINISHED_MS`
+  (`lib/finishedJobs.ts`): unread until the bell opens, removable with an X,
+  both remembered in `localStorage`. Before, a deploy that ended between two
+  polls left the badge at (1) and the tray empty.
+  `DeployProgressModal.tsx` - the window the Deploy screen opens on the job it
+  started (or on the running one the node names in a 409 `deploy_in_progress`):
+  its steps and progress, then ready or failed with the reason; Close leaves the
+  deploy running, Switch to dashboard goes to `/`.
   It lists **both directions** - an upload icon for `sending`, a download icon for
   `receiving` - and also the **recent outcome**: completed, failed and refused
   stay in the bell for `RECENTLY_FINISHED_MS`. Before, it only showed what was

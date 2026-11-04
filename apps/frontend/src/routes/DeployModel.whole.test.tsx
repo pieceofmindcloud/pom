@@ -15,6 +15,7 @@
  *   and the "Entra" column, which on a whole model are a solid bar and a
  *   checkbox that never unchecks. Noise dressed up as choice.
  */
+import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -309,7 +310,7 @@ function mount(
     <QueryClientProvider client={client}>
       <LocaleProvider initialLocale="pt-BR">
         <ToastProvider>
-          <DeployModel />
+          <MemoryRouter><DeployModel /></MemoryRouter>
         </ToastProvider>
       </LocaleProvider>
     </QueryClientProvider>,
@@ -927,7 +928,7 @@ describe("DeployModel · MTP", () => {
     return render(
       <QueryClientProvider client={client}>
         <LocaleProvider initialLocale="pt-BR">
-          <DeployModel />
+          <MemoryRouter><DeployModel /></MemoryRouter>
         </LocaleProvider>
       </QueryClientProvider>,
     );
@@ -1076,7 +1077,7 @@ describe("DeployModel · MTP", () => {
     render(
       <QueryClientProvider client={client}>
         <LocaleProvider initialLocale="pt-BR">
-          <DeployModel />
+          <MemoryRouter><DeployModel /></MemoryRouter>
         </LocaleProvider>
       </QueryClientProvider>,
     );
@@ -1120,7 +1121,7 @@ describe("DeployModel · MTP", () => {
     render(
       <QueryClientProvider client={client}>
         <LocaleProvider initialLocale="pt-BR">
-          <DeployModel />
+          <MemoryRouter><DeployModel /></MemoryRouter>
         </LocaleProvider>
       </QueryClientProvider>,
     );

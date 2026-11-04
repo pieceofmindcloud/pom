@@ -111,7 +111,11 @@ boundary.
   `webui::Job` as persistent state, a `CancellationToken` per download and
   a two-process semaphore; it assembles no commands and exposes no token or stderr.
   Each download picks the first non-empty models folder resolved from the
-  configuration, passes that folder to the provider and records the destination in the job. The
+  configuration, passes that folder to the provider and records the destination in the job.
+  Cancelling a download that has not finished takes its job off the list at once (the task
+  winding down updates nothing: progress only touches a listed job), and `retry` replaces the
+  failed or cancelled job with the new attempt instead of listing both - the failed row had no
+  other button and could never be dismissed. The
   storage response exposes the eligible folders. The structured status in
   `GET /api/ui/model-provider/status` lets the UI tell an absent CLI, a required login and an
   authenticated session apart.

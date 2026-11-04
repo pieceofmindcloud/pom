@@ -509,6 +509,17 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 
 ### Attachments
 
+`pdfDocument.ts` (`readPdfAsText`) turns a PDF into text with one `--- Page N ---`
+header per page, running OCR only on pages with fewer than 16 letters and digits,
+and refuses whole what passes its limits (`PdfReadError.code`). Its two libraries load
+on the first PDF, from `scripts/build-document-reader.mjs`'s folder; the `engine`
+option is the test seam, and the legacy pdf.js build is what the macOS 12 WebKit can parse.
+
+`nativeDictation.ts` (`NativeDictation`) has the shape of Web Speech and talks to
+the macOS app's `pomDictation` bridge; the app answers through
+`window.__pomDictationEvent`, and after `stop()` nothing more is delivered, so a
+late word cannot refill a draft already sent.
+
 `imageResize.ts` reduces images to at most 2048 px on the longest side and
 preserves the proportion before assembling the multimodal request. When a
 context is known, the budget is 90% of `context_length * 4` bytes, minus the

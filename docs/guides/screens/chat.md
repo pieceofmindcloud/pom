@@ -23,7 +23,7 @@ When more than one machine holds the first layer, this picker chooses through wh
 ### Think
 Shows up only for a model that can think before answering. The choice stays with the conversation until you change it.
 ### Attachments
-The clip adds files to the message; images go to models that have vision.
+The clip adds one or more files to the message; images go to models that have vision. A PDF is turned into text before it is sent, and scanned pages are read by OCR, which takes a few seconds per page and can misread a word, so that attachment shows an OCR mark. A PDF can have up to 100 MB, 1000 pages and 100 scanned pages.
 :::
 
 ## After an answer

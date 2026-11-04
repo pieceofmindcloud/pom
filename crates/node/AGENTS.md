@@ -71,7 +71,13 @@ in `../routing-contract`, empty for the runtime).
   `CCACHE=ccache` wraps the `nvcc`. The procedure and the separate target are in
   `docs/subsystems/build-and-run.md`.
 - On the macOS target, `build.rs` compiles `src/macos_status.m` and links only the
-  system's AppKit, WebKit and Security frameworks. Linux and Windows do not get that bridge.
+  system's AppKit, WebKit, Security, AVFoundation and Speech frameworks. Linux and Windows do not get that bridge.
+- `macos_status.m` opens the file panel for `<input type="file">`, which WebKit
+  does not do alone, holding the transient popover open meanwhile. The `pomDictation`
+  bridge dictates with `SFSpeechRecognizer`, on the device whenever the system
+  supports that language there and on Apple's servers otherwise. It is registered
+  only when `Info.plist` declares both permissions, because asking without them
+  kills the process.
 
 ## src/main.rs - startup flow and CLI
 

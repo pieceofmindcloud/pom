@@ -66,6 +66,90 @@ export const THIRD_PARTY_LICENSES: readonly LicenseEntry[] = [
     "ecosystem": "frontend"
   },
   {
+    "name": "@napi-rs/canvas",
+    "version": "1.1.0",
+    "license": "MIT",
+    "repository": "https://github.com/Brooooooklyn/canvas",
+    "ecosystem": "frontend"
+  },
+  {
+    "name": "@napi-rs/canvas-android-arm64",
+    "version": "1.1.0",
+    "license": "MIT",
+    "repository": "https://www.npmjs.com/package/@napi-rs/canvas-android-arm64",
+    "ecosystem": "frontend"
+  },
+  {
+    "name": "@napi-rs/canvas-darwin-arm64",
+    "version": "1.1.0",
+    "license": "MIT",
+    "repository": "https://www.npmjs.com/package/@napi-rs/canvas-darwin-arm64",
+    "ecosystem": "frontend"
+  },
+  {
+    "name": "@napi-rs/canvas-darwin-x64",
+    "version": "1.1.0",
+    "license": "MIT",
+    "repository": "https://www.npmjs.com/package/@napi-rs/canvas-darwin-x64",
+    "ecosystem": "frontend"
+  },
+  {
+    "name": "@napi-rs/canvas-linux-arm-gnueabihf",
+    "version": "1.1.0",
+    "license": "MIT",
+    "repository": "https://www.npmjs.com/package/@napi-rs/canvas-linux-arm-gnueabihf",
+    "ecosystem": "frontend"
+  },
+  {
+    "name": "@napi-rs/canvas-linux-arm64-gnu",
+    "version": "1.1.0",
+    "license": "MIT",
+    "repository": "https://www.npmjs.com/package/@napi-rs/canvas-linux-arm64-gnu",
+    "ecosystem": "frontend"
+  },
+  {
+    "name": "@napi-rs/canvas-linux-arm64-musl",
+    "version": "1.1.0",
+    "license": "MIT",
+    "repository": "https://www.npmjs.com/package/@napi-rs/canvas-linux-arm64-musl",
+    "ecosystem": "frontend"
+  },
+  {
+    "name": "@napi-rs/canvas-linux-riscv64-gnu",
+    "version": "1.1.0",
+    "license": "MIT",
+    "repository": "https://www.npmjs.com/package/@napi-rs/canvas-linux-riscv64-gnu",
+    "ecosystem": "frontend"
+  },
+  {
+    "name": "@napi-rs/canvas-linux-x64-gnu",
+    "version": "1.1.0",
+    "license": "MIT",
+    "repository": "https://github.com/Brooooooklyn/canvas",
+    "ecosystem": "frontend"
+  },
+  {
+    "name": "@napi-rs/canvas-linux-x64-musl",
+    "version": "1.1.0",
+    "license": "MIT",
+    "repository": "https://www.npmjs.com/package/@napi-rs/canvas-linux-x64-musl",
+    "ecosystem": "frontend"
+  },
+  {
+    "name": "@napi-rs/canvas-win32-arm64-msvc",
+    "version": "1.1.0",
+    "license": "MIT",
+    "repository": "https://www.npmjs.com/package/@napi-rs/canvas-win32-arm64-msvc",
+    "ecosystem": "frontend"
+  },
+  {
+    "name": "@napi-rs/canvas-win32-x64-msvc",
+    "version": "1.1.0",
+    "license": "MIT",
+    "repository": "https://www.npmjs.com/package/@napi-rs/canvas-win32-x64-msvc",
+    "ecosystem": "frontend"
+  },
+  {
     "name": "@remix-run/router",
     "version": "1.23.3",
     "license": "MIT",
@@ -84,6 +168,20 @@ export const THIRD_PARTY_LICENSES: readonly LicenseEntry[] = [
     "version": "5.101.4",
     "license": "MIT",
     "repository": "https://github.com/TanStack/query",
+    "ecosystem": "frontend"
+  },
+  {
+    "name": "@tesseract.js-data/eng",
+    "version": "1.0.0",
+    "license": "MIT",
+    "repository": "https://github.com/naptha/tessdata",
+    "ecosystem": "frontend"
+  },
+  {
+    "name": "@tesseract.js-data/por",
+    "version": "1.0.0",
+    "license": "MIT",
+    "repository": "https://github.com/naptha/tessdata",
     "ecosystem": "frontend"
   },
   {
@@ -266,6 +364,13 @@ export const THIRD_PARTY_LICENSES: readonly LicenseEntry[] = [
     "version": "2.0.3",
     "license": "MIT",
     "repository": "https://github.com/wooorm/bcp-47-match",
+    "ecosystem": "frontend"
+  },
+  {
+    "name": "bmp-js",
+    "version": "0.1.0",
+    "license": "MIT",
+    "repository": "https://github.com/shaozilee/bmp-js",
     "ecosystem": "frontend"
   },
   {
@@ -654,6 +759,13 @@ export const THIRD_PARTY_LICENSES: readonly LicenseEntry[] = [
     "ecosystem": "frontend"
   },
   {
+    "name": "idb-keyval",
+    "version": "6.3.0",
+    "license": "Apache-2.0",
+    "repository": "https://github.com/jakearchibald/idb-keyval",
+    "ecosystem": "frontend"
+  },
+  {
     "name": "inline-style-parser",
     "version": "0.2.7",
     "license": "MIT",
@@ -707,6 +819,13 @@ export const THIRD_PARTY_LICENSES: readonly LicenseEntry[] = [
     "version": "4.1.0",
     "license": "MIT",
     "repository": "https://github.com/sindresorhus/is-plain-obj",
+    "ecosystem": "frontend"
+  },
+  {
+    "name": "is-url",
+    "version": "1.2.4",
+    "license": "MIT",
+    "repository": "https://github.com/segmentio/is-url",
     "ecosystem": "frontend"
   },
   {
@@ -1088,6 +1207,13 @@ export const THIRD_PARTY_LICENSES: readonly LicenseEntry[] = [
     "ecosystem": "frontend"
   },
   {
+    "name": "node-fetch",
+    "version": "2.7.0",
+    "license": "MIT",
+    "repository": "https://github.com/bitinn/node-fetch",
+    "ecosystem": "frontend"
+  },
+  {
     "name": "nth-check",
     "version": "2.1.1",
     "license": "BSD-2-Clause",
@@ -1099,6 +1225,13 @@ export const THIRD_PARTY_LICENSES: readonly LicenseEntry[] = [
     "version": "4.1.1",
     "license": "MIT",
     "repository": "https://github.com/sindresorhus/object-assign",
+    "ecosystem": "frontend"
+  },
+  {
+    "name": "opencollective-postinstall",
+    "version": "2.0.3",
+    "license": "MIT",
+    "repository": "https://github.com/opencollective/opencollective-postinstall",
     "ecosystem": "frontend"
   },
   {
@@ -1120,6 +1253,13 @@ export const THIRD_PARTY_LICENSES: readonly LicenseEntry[] = [
     "version": "7.3.0",
     "license": "MIT",
     "repository": "https://github.com/inikulin/parse5",
+    "ecosystem": "frontend"
+  },
+  {
+    "name": "pdfjs-dist",
+    "version": "6.4.299",
+    "license": "Apache-2.0",
+    "repository": "https://github.com/mozilla/pdf.js",
     "ecosystem": "frontend"
   },
   {
@@ -1225,6 +1365,13 @@ export const THIRD_PARTY_LICENSES: readonly LicenseEntry[] = [
     "version": "5.0.0",
     "license": "MIT",
     "repository": "https://github.com/wooorm/refractor",
+    "ecosystem": "frontend"
+  },
+  {
+    "name": "regenerator-runtime",
+    "version": "0.13.11",
+    "license": "MIT",
+    "repository": "https://github.com/facebook/regenerator/tree/main/packages/runtime",
     "ecosystem": "frontend"
   },
   {
@@ -1382,10 +1529,31 @@ export const THIRD_PARTY_LICENSES: readonly LicenseEntry[] = [
     "ecosystem": "frontend"
   },
   {
+    "name": "tesseract.js",
+    "version": "7.0.0",
+    "license": "Apache-2.0",
+    "repository": "https://github.com/naptha/tesseract.js",
+    "ecosystem": "frontend"
+  },
+  {
+    "name": "tesseract.js-core",
+    "version": "7.0.0",
+    "license": "Apache-2.0",
+    "repository": "https://github.com/naptha/tesseract.js-core",
+    "ecosystem": "frontend"
+  },
+  {
     "name": "tiny-invariant",
     "version": "1.3.3",
     "license": "MIT",
     "repository": "https://github.com/alexreardon/tiny-invariant",
+    "ecosystem": "frontend"
+  },
+  {
+    "name": "tr46",
+    "version": "0.0.3",
+    "license": "MIT",
+    "repository": "https://github.com/Sebmaster/tr46.js",
     "ecosystem": "frontend"
   },
   {
@@ -1501,10 +1669,38 @@ export const THIRD_PARTY_LICENSES: readonly LicenseEntry[] = [
     "ecosystem": "frontend"
   },
   {
+    "name": "wasm-feature-detect",
+    "version": "1.9.0",
+    "license": "Apache-2.0",
+    "repository": "https://github.com/GoogleChromeLabs/wasm-feature-detect",
+    "ecosystem": "frontend"
+  },
+  {
     "name": "web-namespaces",
     "version": "2.0.1",
     "license": "MIT",
     "repository": "https://github.com/wooorm/web-namespaces",
+    "ecosystem": "frontend"
+  },
+  {
+    "name": "webidl-conversions",
+    "version": "3.0.1",
+    "license": "BSD-2-Clause",
+    "repository": "https://github.com/jsdom/webidl-conversions",
+    "ecosystem": "frontend"
+  },
+  {
+    "name": "whatwg-url",
+    "version": "5.0.0",
+    "license": "MIT",
+    "repository": "https://github.com/jsdom/whatwg-url",
+    "ecosystem": "frontend"
+  },
+  {
+    "name": "zlibjs",
+    "version": "0.3.1",
+    "license": "MIT",
+    "repository": "https://github.com/imaya/zlib.js",
     "ecosystem": "frontend"
   },
   {
@@ -3507,6 +3703,13 @@ export const THIRD_PARTY_LICENSES: readonly LicenseEntry[] = [
     "version": "0.1.154",
     "license": "MIT OR Apache-2.0",
     "repository": "https://github.com/utilityai/llama-cpp-rs",
+    "ecosystem": "rust"
+  },
+  {
+    "name": "llama-engine",
+    "version": "0.1.0",
+    "license": "MIT",
+    "repository": "https://crates.io/crates/llama-engine",
     "ecosystem": "rust"
   },
   {

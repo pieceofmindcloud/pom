@@ -242,8 +242,11 @@ chat.composerHint,"Enter sends, Shift+Enter adds a line.","Enter envia, Shift+En
 chat.copyError,Copy error,Copiar erro
 chat.coverageUnavailable,coverage unavailable,cobertura indisponível
 chat.delete,Delete {title},Apagar {title}
+chat.dictationDenied,"Allow the microphone and speech recognition for POM in System Settings, under Privacy & Security.","Permita o microfone e o reconhecimento de fala para o POM em Ajustes do Sistema, em Privacidade e Segurança."
+chat.dictationFailed,Dictation failed,O ditado falhou
 chat.dictationStart,Start dictation,Iniciar ditado
 chat.dictationStop,Stop dictation,Parar ditado
+chat.dictationUnavailable,Speech recognition is not available right now.,O reconhecimento de fala não está disponível agora.
 chat.dropHint,Drop a file,Solte um ficheiro
 chat.dropRejectedDetail,No file was found in the drop.,Nenhum ficheiro foi encontrado no descarte.
 chat.emptyResponse,The network replied without any tokens. Check the Dashboard to make sure layer coverage is complete.,A rede respondeu sem nenhum token. Confira no Painel se a cobertura de camadas está fechada.
@@ -311,6 +314,18 @@ chat.noModelStep.talk,Talk to the network,Conversar com a rede
 chat.noModelStep.talkDetail,Come back here and ask anything.,Volte aqui e pergunte o que quiser.
 chat.openLargerWindow,Open the chat in a larger window,Abrir o chat em uma janela maior
 chat.openLargerWindowShort,Larger window,Janela maior
+chat.pdfBusy,"Wait for the PDF being read to finish, or cancel it.","Espere terminar a leitura do PDF em andamento, ou cancele."
+chat.pdfCancel,Cancel,Cancelar
+chat.pdfEmpty,No text could be read from this PDF.,Não foi possível ler nenhum texto deste PDF.
+chat.pdfInvalid,This file is not a valid PDF.,Este arquivo não é um PDF válido.
+chat.pdfOcrBadge,OCR,OCR
+chat.pdfOcrBadgeTitle,"{pages, plural, one {# page was read} other {# pages were read}} from an image, and may hold misread words.","{pages, plural, one {# página foi lida} other {# páginas foram lidas}} de uma imagem e podem ter palavras trocadas."
+chat.pdfPassword,This PDF is protected by a password. Remove the protection and attach it again.,Este PDF é protegido por senha. Remova a proteção e anexe de novo.
+chat.pdfReading,Reading {name}...,Lendo {name}...
+chat.pdfReadingOcr,Reading {name} from images: page {page} of {pages},Lendo {name} a partir de imagens: página {page} de {pages}
+chat.pdfTooLarge,The limit for a PDF is {megabytes} MB.,O limite para um PDF é de {megabytes} MB.
+chat.pdfTooManyPages,"This PDF has {pages} pages, and the limit is {limit}.","Este PDF tem {pages} páginas, e o limite é {limit}."
+chat.pdfTooManyScanned,"This PDF has {pages} scanned pages, and the limit is {limit}.","Este PDF tem {pages} páginas escaneadas, e o limite é {limit}."
 chat.placeholder,Write to the network…,Escreva para a rede…
 chat.prompt.1,Ask any piece of the mind...,Pergunte a qualquer pedaço da mente...
 chat.prompt.2,Every piece is listening. What do you want to know?,Todas as peças estão ouvindo. O que você quer saber?

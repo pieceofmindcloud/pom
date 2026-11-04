@@ -575,8 +575,21 @@ fn content_blocks(parts: &[OutputPart]) -> (Vec<serde_json::Value>, bool) {
 async fn messages(
     auth: ApiKeyAuth,
     State(state): State<GatewayState>,
-    Json(req): Json<MessagesRequest>,
+    Json(body): Json<serde_json::Value>,
 ) -> Response {
+    // The body as the client sent it is the request's details: a plugin engine renders a request with tools from it
+    // (`plugin_engine::chat_api`), and the typed request below drops what the flattened prompt does not use - the
+    // tool_use ids, the tool_result tool_use_ids - and writes the blocks' absent fields as null.
+    let req: MessagesRequest = match serde_json::from_value(body.clone()) {
+        Ok(req) => req,
+        Err(error) => {
+            return error_response(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "invalid_request_error",
+                &format!("Failed to deserialize the JSON body into the target type: {error}"),
+            )
+        }
+    };
     if req.messages.is_empty() {
         return error_response(
             StatusCode::BAD_REQUEST,
@@ -584,7 +597,7 @@ async fn messages(
             "`messages` cannot be empty",
         );
     }
-    let request_details = serde_json::to_value(&req).unwrap_or_else(|_| json!({}));
+    let request_details = body;
 
     let model = match req.model.clone() {
         Some(m) if !m.is_empty() => match resolve_model(&state, m).await {

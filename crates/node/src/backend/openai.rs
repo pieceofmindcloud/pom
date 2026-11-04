@@ -639,12 +639,24 @@ async fn get_model(
 async fn chat_completions(
     auth: ApiKeyAuth,
     State(state): State<GatewayState>,
-    Json(req): Json<ChatRequest>,
+    Json(body): Json<serde_json::Value>,
 ) -> Response {
+    // The body as the client sent it is the request's details: a plugin engine renders a request with tools from it
+    // (`plugin_engine::chat_api`), and the typed request below drops what the flattened prompt does not use - a
+    // tool's `"type": "function"`, the calls' ids, the results' `tool_call_id`s - which Strata's reader needs.
+    let req: ChatRequest = match serde_json::from_value(body.clone()) {
+        Ok(req) => req,
+        Err(error) => {
+            return error_response(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("Failed to deserialize the JSON body into the target type: {error}"),
+            )
+        }
+    };
     if req.messages.is_empty() {
         return error_response(StatusCode::BAD_REQUEST, "'messages' cannot be empty");
     }
-    let request_details = serde_json::to_value(&req).unwrap_or_else(|_| json!({}));
+    let request_details = body;
 
     let model = match req.model.clone() {
         Some(m) if !m.is_empty() => match resolve_model(&state, m).await {
@@ -1810,6 +1822,11 @@ mod tests {
 
     use super::*;
 
+    /// A typed request as the body a client sends (the handler takes the body as it came: see `chat_completions`).
+    fn body(req: ChatRequest) -> Json<serde_json::Value> {
+        Json(serde_json::to_value(req).expect("a chat request serializes"))
+    }
+
     fn msg(role: &str, text: &str) -> ChatMessage {
         ChatMessage {
             role: role.into(),
@@ -2087,7 +2104,7 @@ mod tests {
         let response = chat_completions(
             ApiKeyAuth::for_test(crate::reqlog::Caller::anonymous()),
             State(state),
-            Json(ChatRequest {
+            body(ChatRequest {
                 session: None,
                 // Retrieval is not what this test is about.
                 rag: Some(false),
@@ -2227,7 +2244,7 @@ mod tests {
         let response = chat_completions(
             ApiKeyAuth::for_test(crate::reqlog::Caller::anonymous()),
             State(state),
-            Json(ChatRequest {
+            body(ChatRequest {
                 session: None,
                 // Retrieval is not what this test is about.
                 rag: Some(false),
@@ -2383,7 +2400,7 @@ mod tests {
         let first = chat_completions(
             ApiKeyAuth::for_test(crate::reqlog::Caller::anonymous()),
             State(state.clone()),
-            Json(ChatRequest {
+            body(ChatRequest {
                 session: None,
                 // Retrieval is not what this test is about.
                 rag: Some(false),
@@ -2408,7 +2425,7 @@ mod tests {
         let second = chat_completions(
             ApiKeyAuth::for_test(crate::reqlog::Caller::anonymous()),
             State(state),
-            Json(ChatRequest {
+            body(ChatRequest {
                 session: None,
                 // Retrieval is not what this test is about.
                 rag: Some(false),
@@ -2460,7 +2477,7 @@ mod tests {
         chat_completions(
             ApiKeyAuth::for_test(crate::reqlog::Caller::anonymous()),
             State(state),
-            Json(ChatRequest {
+            body(ChatRequest {
                 session: None,
                 // Retrieval is not what this test is about.
                 rag: Some(false),

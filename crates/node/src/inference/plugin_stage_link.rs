@@ -1258,6 +1258,21 @@ fn drop_connection(key: &(String, String)) {
         .remove(key);
 }
 
+/// Drops every connection but `key`'s: dropping a link closes its writer, and the engine, seeing that connection end,
+/// goes back to accepting. How many were dropped.
+fn drop_other_connections(key: &(String, String)) -> usize {
+    let mut map = connections()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let before = map.len();
+    map.retain(|other, _| other == key);
+    let dropped = before - map.len();
+    if dropped > 0 {
+        info!(dropped, "stage link: a new connection closes the ones before it");
+    }
+    dropped
+}
+
 /// Drops `key` only while it is still this link: a new connection under the same key stays.
 fn drop_connection_if(key: &(String, String), link: &std::sync::Weak<Link>) {
     let mut map = connections()
@@ -1367,6 +1382,12 @@ async fn link_frame(
             return refuse(StatusCode::GONE, "the earlier stage's link was reset")
         }
         None => {
+            // A stage engine serves one connection at a time (both of Strata's: accept, then that connection until
+            // it closes), so a new one is a later stage that started again - or a new machine after a redeploy - and
+            // the ones before it will never be read: their engine is gone without closing them. Left open, the stage
+            // kept serving the dead connection and never read the new one's hello (ksia-gpu1 restarted by an update
+            // waited on salem-gpus for good). Closing them lets the engine take the new one.
+            drop_other_connections(&key);
             let link = match engine_link(&state, &code).await {
                 Ok(link) => link,
                 Err(refusal) => return refusal,
@@ -1714,6 +1735,65 @@ mod tests {
             turn(&link, 1).await.is_err(),
             "a broken link takes no frame"
         );
+    }
+}
+
+#[cfg(test)]
+mod stale_connection_tests {
+    use super::*;
+    use tokio::io::AsyncReadExt;
+
+    fn link_on(stream: TcpStream) -> (Connection, tokio::net::tcp::OwnedReadHalf) {
+        let (reader, writer) = stream.into_split();
+        let link = Arc::new(Link {
+            io: tokio::sync::Mutex::new(LinkIo {
+                writer,
+                next: 0,
+                broken: false,
+            }),
+            turn: tokio::sync::Notify::new(),
+            waiting: Mutex::new(std::collections::VecDeque::new()),
+        });
+        (link, reader)
+    }
+
+    /// A stage engine serves one connection at a time: a connection left by a later stage that died without closing
+    /// it held the engine, and the new one's hello waited unread. Closing the others when a new one opens lets the
+    /// engine take it.
+    #[tokio::test]
+    async fn a_new_connection_closes_the_stale_one_the_engine_was_held_by() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // the engine: one connection at a time, until it ends; it reports the first bytes of each
+        let (seen_tx, mut seen) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        let engine = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut bytes = Vec::new();
+                let _ = socket.read_to_end(&mut bytes).await;
+                seen_tx.send(bytes).unwrap();
+            }
+        });
+        let stale_key = ("node-old".to_string(), "conn-old".to_string());
+        let (stale, _stale_reader) = link_on(TcpStream::connect(("127.0.0.1", port)).await.unwrap());
+        keep_connection(stale_key.clone(), stale);
+        // the new connection's hello: queued behind the stale one, unread
+        let new_key = ("node-new".to_string(), "conn-new".to_string());
+        let mut fresh = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        fresh.write_all(b"hello").await.unwrap();
+        fresh.shutdown().await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), seen.recv()).await.is_err(),
+            "the engine is held by the stale connection"
+        );
+
+        assert_eq!(drop_other_connections(&new_key), 1);
+        let first = tokio::time::timeout(Duration::from_secs(2), seen.recv()).await.unwrap().unwrap();
+        assert!(first.is_empty(), "the stale connection ends");
+        let second = tokio::time::timeout(Duration::from_secs(2), seen.recv()).await.unwrap().unwrap();
+        assert_eq!(second, b"hello", "and the engine reads the new one's hello");
+        assert!(take_connection(&stale_key).is_none());
+        engine.await.unwrap();
     }
 }
 

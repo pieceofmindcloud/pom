@@ -386,7 +386,7 @@ async fn query(code: &str, operation: &str, payload: Value) -> Option<Value> {
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run(
     cfg: crate::runtime::NodeConfig,
-    mut stop_rx: tokio::sync::watch::Receiver<u64>,
+    stop_rx: tokio::sync::watch::Receiver<u64>,
     generation: u64,
     tls: Option<crate::serve::TlsServer>,
     quic: Option<crate::serve::QuicServerConfig>,
@@ -436,7 +436,7 @@ pub(crate) async fn run(
     }
 
     let status = Arc::new(Mutex::new(json!({"state": "loading"})));
-    let (failed_tx, mut failed_rx) = tokio::sync::oneshot::channel::<String>();
+    let (failed_tx, failed_rx) = tokio::sync::oneshot::channel::<String>();
     let poll_status = Arc::clone(&status);
     let poll_code = code.clone();
     let mut poll_stop = stop_rx.clone();
@@ -511,30 +511,10 @@ pub(crate) async fn run(
     let failure = Arc::new(Mutex::new(None::<String>));
     let failure_seen = Arc::clone(&failure);
     // a later stage whose earlier stage's link secret changed can never link: this generation ends and restarts
-    let mut stale_rx = relay.as_mut().and_then(|relay| relay.stale.take());
+    let stale_rx = relay.as_mut().and_then(|relay| relay.stale.take());
     let served = crate::serve::serve_with_quic(listener, router, tls, quic, quic_port, async move {
-        loop {
-            tokio::select! {
-                stale = async { stale_rx.as_mut().expect("guarded by is_some").await }, if stale_rx.is_some() => {
-                    stale_rx = None;
-                    if let Ok(detail) = stale {
-                        *failure_seen.lock().unwrap_or_else(|error| error.into_inner()) = Some(detail);
-                        break;
-                    }
-                }
-                changed = stop_rx.changed() => {
-                    if changed.is_err() || *stop_rx.borrow() != generation {
-                        break;
-                    }
-                }
-                detail = &mut failed_rx => {
-                    if let Ok(detail) = detail {
-                        *failure_seen.lock().unwrap_or_else(|error| error.into_inner()) = Some(detail);
-                        break;
-                    }
-                }
-            }
-        }
+        let ended = wait_for_end(generation, stop_rx, Some(failed_rx), stale_rx).await;
+        *failure_seen.lock().unwrap_or_else(|error| error.into_inner()) = ended;
     })
     .await;
     poller.abort();
@@ -549,6 +529,42 @@ pub(crate) async fn run(
     match failure {
         Some(detail) => Err(anyhow::anyhow!("{code}: {detail}")),
         None => Ok(()),
+    }
+}
+
+/// Waits for the end of a generation's serving: the runtime moved to another generation (`None`), or the
+/// engine failed / the earlier stage went stale (`Some(why)`).
+///
+/// Each oneshot is dropped once it completed, sent or not: the status poller drops its sender without a word
+/// when the generation changes, and polling that finished receiver again panics ("called after complete").
+/// The panic ended the supervisor before `engine.unload`, and the plugin kept the engine running on the GPU
+/// after an undeploy.
+async fn wait_for_end(
+    generation: u64,
+    mut stop_rx: tokio::sync::watch::Receiver<u64>,
+    mut failed_rx: Option<tokio::sync::oneshot::Receiver<String>>,
+    mut stale_rx: Option<tokio::sync::oneshot::Receiver<String>>,
+) -> Option<String> {
+    loop {
+        tokio::select! {
+            stale = async { stale_rx.as_mut().expect("guarded by is_some").await }, if stale_rx.is_some() => {
+                stale_rx = None;
+                if let Ok(detail) = stale {
+                    return Some(detail);
+                }
+            }
+            changed = stop_rx.changed() => {
+                if changed.is_err() || *stop_rx.borrow() != generation {
+                    return None;
+                }
+            }
+            detail = async { failed_rx.as_mut().expect("guarded by is_some").await }, if failed_rx.is_some() => {
+                failed_rx = None;
+                if let Ok(detail) = detail {
+                    return Some(detail);
+                }
+            }
+        }
     }
 }
 
@@ -1728,6 +1744,34 @@ pub(crate) async fn engine_generate_route(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The undeploy that left the engine running: the poller drops its sender as the generation changes, and the
+    /// wait must end on the new generation instead of polling the finished receiver again (a panic before unload).
+    #[tokio::test]
+    async fn wait_for_end_survives_a_dropped_failure_sender_and_ends_on_the_new_generation() {
+        let (stop_tx, stop_rx) = tokio::sync::watch::channel(1u64);
+        let (failed_tx, failed_rx) = tokio::sync::oneshot::channel::<String>();
+        let (stale_tx, stale_rx) = tokio::sync::oneshot::channel::<String>();
+        drop(failed_tx);
+        drop(stale_tx);
+        let wait = tokio::spawn(wait_for_end(1, stop_rx, Some(failed_rx), Some(stale_rx)));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        stop_tx.send_replace(2);
+        let ended = tokio::time::timeout(Duration::from_secs(2), wait)
+            .await
+            .expect("the wait ends")
+            .expect("no panic");
+        assert_eq!(ended, None);
+    }
+
+    #[tokio::test]
+    async fn wait_for_end_reports_the_engine_failure() {
+        let (_stop_tx, stop_rx) = tokio::sync::watch::channel(1u64);
+        let (failed_tx, failed_rx) = tokio::sync::oneshot::channel::<String>();
+        failed_tx.send("Strata stopped".into()).unwrap();
+        let ended = wait_for_end(1, stop_rx, Some(failed_rx), None).await;
+        assert_eq!(ended.as_deref(), Some("Strata stopped"));
+    }
 
     #[test]
     fn plugin_reasoning_ndjson_stays_distinct_from_answer_text() {

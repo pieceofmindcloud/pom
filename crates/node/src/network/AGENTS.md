@@ -454,7 +454,8 @@ dedicated or member, with iroh's hole punching), are in
   after `/health` confirms the model is loaded and carries `n_ctx` and
   `max_new_tokens` (a leg); apply, error, stop and thermal unload clear the field
   before announcing. There is no announcement or fallback
-  for earlier frame formats, because the product has not shipped yet.
+  for the frame formats from before the launch, which never shipped; a capability
+  released nodes announce or read is kept (root `AGENTS.md`, compatibility policy).
   `cluster_logs_enabled` is also announced, but only as a trigger of the ratchet:
   the effective policy comes from an authenticated read on the principal.
 - `TpIdentity` (`{role, group_id, size, rank}`) - the tensor

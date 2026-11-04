@@ -1415,8 +1415,9 @@ reason that only shows up in the error of a tunnel that also failed.
   outside the payload, an overlap, a duplicated item and a payload above 64 MiB.
 - `encode_batch_items`/`decode_batch_items` is the distributed path; a single-session request
   uses the same protocol through
-  `encode_batch_single`/`decode_batch_single`. There is no fallback to the earlier v1/v2
-  frames, since the product has not shipped.
+  `encode_batch_single`/`decode_batch_single`. There is no fallback to the v1/v2 frames
+  from before the launch, which never shipped; released nodes speak `frame/v1-batch`, so a
+  change to it must stay readable by them (root `AGENTS.md`, compatibility policy).
 - **The hot path does not copy the tensor for nothing.** `encode_batch_items` writes the tensor
   once, straight into the buffer that goes to the wire (the positions come from
   `tensor_payload_len`, which computes them without allocating; `frame_prefix` already sizes the

@@ -21,9 +21,6 @@ Good AI does not have to live in the cloud. Or you can be your own cloud.
 - Community: <https://discord.gg/d6Yjkk8ej>
 - Windows, macOS and Linux - open source (MIT, see `LICENSE`)
 
-> POM is in pre-launch: the packaged downloads on the website are open to invited
-> people only. Building from source (below) is open to everyone.
-
 ---
 
 ## Why POM

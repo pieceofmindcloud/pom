@@ -615,6 +615,42 @@ fn thinking_asked(details: &Value) -> bool {
         || !details["chat_template_kwargs"]["enable_thinking"].is_null()
 }
 
+/// The API a client's request with tools came in (`"openai"` or `"anthropic"`), when the engine should render the
+/// conversation itself; `None` keeps the flattened prompt alone.
+///
+/// The prompt the gateway flattens describes the tools, and replays the calls, in Qwen3.6's `<tool_call><function=…>`
+/// form (`tool_call::render_tools_block`). An engine with a family of its own was then asked to answer in a form it was
+/// not trained on: DeepSeek-V4.1 (DSML) got its first call right and then looped on broken copies of the example
+/// (`<tool_call> <parameter> PLACEHOLDER </parameter> </function>`, 9,587 tokens of them). With the conversation as the
+/// client sent it, the engine renders the tools and the calls with its own chat template; its answer comes back in the
+/// form the gateway reads, as before. A request whose prompt carries the RAG context the gateway added keeps the
+/// flattened prompt, which holds that context.
+fn chat_api(details: &Value) -> Option<&'static str> {
+    let has_tools = details["tools"].as_array().is_some_and(|tools| !tools.is_empty());
+    if !has_tools || !details["messages"].is_array() || !details["rag"].is_null() {
+        return None;
+    }
+    // Anthropic's tools carry `input_schema` and its conversation a top-level `system` or tool_use/tool_result blocks;
+    // OpenAI's tools are `{type: "function", function: {…}}`
+    let anthropic_tool = details["tools"]
+        .as_array()
+        .is_some_and(|tools| tools.iter().any(|tool| tool.get("input_schema").is_some()));
+    let anthropic_block = details["messages"].as_array().is_some_and(|messages| {
+        messages.iter().any(|message| {
+            message["content"].as_array().is_some_and(|blocks| {
+                blocks
+                    .iter()
+                    .any(|block| matches!(block["type"].as_str(), Some("tool_use" | "tool_result")))
+            })
+        })
+    });
+    Some(if anthropic_tool || anthropic_block || details.get("system").is_some_and(|s| !s.is_null()) {
+        "anthropic"
+    } else {
+        "openai"
+    })
+}
+
 pub(crate) fn generation_body(request: &EngineRequest) -> Value {
     let mut body = json!({
         "prompt": request.prompt,
@@ -623,6 +659,13 @@ pub(crate) fn generation_body(request: &EngineRequest) -> Value {
         "max_tokens": request.max_tokens,
         "stop": request.stops,
     });
+    // The conversation as the client sent it, beside the flattened prompt (see `chat_api`): an engine that reads it
+    // renders the tools with its own template; an older plugin ignores it and reads the prompt
+    if request.chat_template {
+        if let Some(api) = chat_api(&request.request_details) {
+            body["chat"] = json!({ "api": api, "request": request.request_details });
+        }
+    }
     if let Some(session) = &request.session {
         body["session"] = json!(session);
     }
@@ -2121,6 +2164,48 @@ mod tests {
         assert_eq!(load_params(&prefill, &[0], &[], None)["role"], "prefill");
         assert_eq!(load_params(&prefill, &[0], &[], None)["prefill_min_tokens"], 2048);
         assert!(load_params(&cfg, &[0], &[], None).get("role").is_none());
+    }
+
+    /// A request with tools also carries the conversation as the client sent it, so the engine renders the tools with
+    /// its own template (DeepSeek-V4.1 looped on the Qwen form the flattened prompt teaches); one without tools, or
+    /// whose prompt holds the gateway's RAG context, carries the prompt alone.
+    #[test]
+    fn a_request_with_tools_carries_the_client_s_conversation() {
+        let body_of = |details: Value| {
+            generation_body(&EngineRequest {
+                prompt: "User: oi".into(),
+                chat_template: true,
+                thinking_enabled: false,
+                max_tokens: 128,
+                stops: vec![],
+                session: None,
+                request_details: details,
+                probe_labels: vec![],
+                probe_prefix_bytes: None,
+                images: vec![],
+            })
+        };
+        let openai = json!({
+            "messages": [{"role": "user", "content": "oi"}],
+            "tools": [{"type": "function", "function": {"name": "write", "parameters": {"type": "object"}}}],
+        });
+        let body = body_of(openai.clone());
+        assert_eq!(body["chat"]["api"], "openai");
+        assert_eq!(body["chat"]["request"], openai);
+        assert_eq!(body["prompt"], "User: oi", "the flattened prompt stays, for an older plugin");
+
+        let anthropic = json!({
+            "system": "be brief",
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "oi"}]}],
+            "tools": [{"name": "write", "input_schema": {"type": "object"}}],
+        });
+        assert_eq!(body_of(anthropic)["chat"]["api"], "anthropic");
+
+        assert!(body_of(json!({"messages": [{"role": "user", "content": "oi"}]})).get("chat").is_none());
+        assert!(body_of(json!({"messages": [], "tools": []})).get("chat").is_none());
+        let mut with_rag = openai;
+        with_rag["rag"] = json!({"chunks": 2});
+        assert!(body_of(with_rag).get("chat").is_none(), "the prompt holds the RAG context");
     }
 
     #[test]

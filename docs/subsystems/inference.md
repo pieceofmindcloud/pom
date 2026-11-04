@@ -792,7 +792,13 @@ traditional modes:
    `reply_to` URLs are the gateway's local interfaces; when none answers - the
    normal case with the gateway behind NAT/CGNAT - delivery falls to the p2p
    tunnel, using the `endpoint_id` and `endpoint_addrs` that `reply_to` also
-   carries. See `docs/subsystems/p2p-network.md`, "NAT traversal".
+   carries. See `docs/subsystems/p2p-network.md`, "NAT traversal". When the
+   tail is the gateway itself, it delivers on `http://127.0.0.1:<gateway_port>`
+   first (`direct::deliver_on_loopback`, port registered in
+   `infer_tunnel::set_local_gateway_port`): its own addresses may not reach it
+   (macOS without the Local Network permission, a hairpin NAT) and the tunnel
+   refuses a call to its own node, so the result went nowhere and the request
+   hung.
 3. **Bubbled ring** (`relay/v1-chain`, `run_ring`/`step_ring`) - when
    `supports_relay_chain()`: the gateway makes **one** call (to the head) and
    each hop forwards to its next one through `next_hops`; the result bubbles back

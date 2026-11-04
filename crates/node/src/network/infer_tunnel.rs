@@ -502,6 +502,19 @@ pub fn local_node_id() -> Option<&'static str> {
     LOCAL_NODE_ID.get().map(String::as_str)
 }
 
+static LOCAL_GATEWAY_PORT: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
+
+/// Registers this process's gateway port, so a result whose gateway is this
+/// very node is delivered on loopback (`direct::deliver_meta_at`).
+pub fn set_local_gateway_port(port: u16) {
+    let _ = LOCAL_GATEWAY_PORT.set(port);
+}
+
+/// This process's gateway port, once recorded.
+pub fn local_gateway_port() -> Option<u16> {
+    LOCAL_GATEWAY_PORT.get().copied()
+}
+
 /// True when the destination is this process, not a remote peer.
 pub fn is_local_node(node_id: &str) -> bool {
     LOCAL_NODE_ID.get().is_some_and(|local| local == node_id)

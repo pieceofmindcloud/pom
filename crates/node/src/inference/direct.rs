@@ -981,6 +981,22 @@ async fn deliver_meta_at(
     let mut base_meta = meta;
     base_meta["ticket"] = json!(ticket);
 
+    // The gateway is this very node (a tail that is also the gateway): its
+    // own LAN and public addresses may not reach it (macOS refuses them
+    // without the Local Network permission, a hairpin NAT drops them) and the
+    // tunnel refuses a call to itself, so the result went nowhere and the
+    // request hung. Loopback in cleartext always reaches it.
+    if let Some(port) = reply_to
+        .get("node_id")
+        .and_then(Value::as_str)
+        .filter(|node_id| crate::infer_tunnel::is_local_node(node_id))
+        .and(crate::infer_tunnel::local_gateway_port())
+    {
+        if let Some(delivery) = deliver_on_loopback(http, port, path, &base_meta).await {
+            return delivery;
+        }
+    }
+
     let urls = reply_to
         .get("urls")
         .and_then(|v| v.as_array())
@@ -1148,6 +1164,44 @@ async fn deliver_meta_at(
     }
     warn!("direct result did not reach the gateway ({last})");
     Delivery::Failed
+}
+
+/// Delivers to this node's own gateway on `127.0.0.1`. `None` hands the
+/// delivery back to the ladder of `reply_to`.
+async fn deliver_on_loopback(
+    http: &crate::peer_client::PeerClients,
+    port: u16,
+    path: &str,
+    base_meta: &Value,
+) -> Option<Delivery> {
+    let meta = delivery_meta(base_meta, path, "http", false, None, None);
+    let body = match encode_delivery_body(&meta) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            warn!("direct result could not be encoded: {error}");
+            return Some(Delivery::Failed);
+        }
+    };
+    let response = http
+        .plain()
+        .post(format!("http://127.0.0.1:{port}{path}"))
+        .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+        .body(body)
+        .timeout(LAST_DELIVERY_TIMEOUT)
+        .send()
+        .await;
+    match response {
+        Ok(response) if response.status().is_success() => Some(Delivery::Accepted),
+        Ok(response) if response.status() == StatusCode::GONE => Some(Delivery::GatewayGone),
+        Ok(response) => {
+            debug!("this node's gateway answered {} on loopback", response.status());
+            None
+        }
+        Err(error) => {
+            debug!("this node's gateway did not answer on loopback: {error}");
+            None
+        }
+    }
 }
 
 /// How many pinned routes a delivery goes through before the full ladder.
@@ -1484,6 +1538,46 @@ pub fn attach_transport(hops: &mut [Value], destination: usize, sent: &crate::re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A tail that is also the gateway delivers its result to itself on
+    /// loopback: its announced addresses may not reach it, and the tunnel
+    /// refuses a call to its own node, so the request hung.
+    #[tokio::test]
+    async fn a_result_for_this_node_is_delivered_on_loopback() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = hits.clone();
+        let router = axum::Router::new().route(
+            RELAY_RESULT_PATH,
+            axum::routing::post(move || {
+                let counter = counter.clone();
+                async move {
+                    counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    axum::http::StatusCode::OK
+                }
+            }),
+        );
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        crate::infer_tunnel::set_local_node_id("in-process-local".into());
+        crate::infer_tunnel::set_local_gateway_port(port);
+        if crate::infer_tunnel::local_gateway_port() != Some(port) {
+            // Another test of this process already recorded the port.
+            return;
+        }
+        let reply_to = json!({
+            "ticket": "loopback-ticket",
+            "node_id": crate::infer_tunnel::local_node_id().unwrap(),
+            // Only an address nobody answers (TEST-NET-3).
+            "urls": ["https://203.0.113.9:9"],
+        });
+        let clients = crate::peer_client::PeerClients::new(Duration::from_secs(5));
+        let delivery = deliver_meta_at(&clients, &reply_to, RELAY_RESULT_PATH, json!({})).await;
+        assert!(delivery.accepted(), "the result did not reach this node's gateway");
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
 
     #[tokio::test]
     async fn a_410_ack_from_the_callback_stops_the_stream_without_fallback() {

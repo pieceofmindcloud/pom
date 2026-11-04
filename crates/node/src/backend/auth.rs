@@ -933,7 +933,11 @@ where
         let token = authorization_token(header).ok_or(AuthRejection::MissingHeader)?;
 
         let cfg = gateway.auth.read().await;
-        if token == cfg.connection_key {
+        // The old key too while a rotation's grace lasts: the panel holds the
+        // key in the browser and picks up the new one from `/api/ui/node`
+        // only on its next poll, so every screen that polled in between (the
+        // network Chat, after a member left) answered 401.
+        if connection_key_accepted(&cfg, token) {
             Ok(ConnectionAuth)
         } else {
             Err(AuthRejection::InvalidKey)
@@ -1018,6 +1022,16 @@ where
 mod tests {
     use super::*;
     use axum::http::Request;
+
+    /// The key transition is one process-wide slot: tests that set it take
+    /// this lock, or one overwrites the other's transition mid-test.
+    static TRANSITION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn transition_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        TRANSITION_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     async fn admin_auth_with(
         exposure: crate::config::AdminExposure,
@@ -1593,12 +1607,54 @@ mod tests {
         ));
     }
 
+    /// The panel keeps the connection key in the browser and picks up a new
+    /// one only on its next `/api/ui/node` poll. While a rotation's grace
+    /// lasts (a member just left) the old key still opens the screens, or the
+    /// network Chat answered 401 on every poll in between.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn the_panel_keeps_working_with_the_old_key_during_a_rotation() {
+        let _lock = transition_test_lock();
+        let state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        state.auth.write().await.connection_key = "panel-rotation-new".into();
+        let now = chrono::Utc::now().timestamp();
+        begin_key_transition("panel-rotation-old", "panel-rotation-new", now);
+
+        let with = |token: &str| {
+            let request = Request::builder()
+                .header("authorization", format!("Bearer {token}"))
+                .body(())
+                .expect("request");
+            request.into_parts().0
+        };
+        for token in ["panel-rotation-new", "panel-rotation-old"] {
+            let mut parts = with(token);
+            assert!(
+                <ConnectionAuth as FromRequestParts<crate::gateway::GatewayState>>::from_request_parts(
+                    &mut parts, &state,
+                )
+                .await
+                .is_ok(),
+                "{token} was refused during the rotation"
+            );
+        }
+        let mut parts = with("some-other-key");
+        assert!(matches!(
+            <ConnectionAuth as FromRequestParts<crate::gateway::GatewayState>>::from_request_parts(
+                &mut parts, &state,
+            )
+            .await,
+            Err(AuthRejection::InvalidKey)
+        ));
+    }
+
     #[test]
     fn a_rotated_connection_key_overlaps_the_old_one_instead_of_cutting_it() {
         let config = |key: &str| -> Config {
             serde_json::from_value(serde_json::json!({ "profile": "worker", "connection_key": key }))
                 .unwrap()
         };
+        let _lock = transition_test_lock();
         let rotated = config("transition-new-key");
         begin_key_transition("transition-old-key", "transition-new-key", 1_000);
 

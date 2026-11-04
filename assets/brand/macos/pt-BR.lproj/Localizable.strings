@@ -15,3 +15,4 @@
 "status.copy" = "Copiar";
 "status.paste" = "Colar";
 "status.selectAll" = "Selecionar Tudo";
+"dictation.noMicrophone" = "Nenhum microfone foi encontrado.";

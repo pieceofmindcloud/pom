@@ -291,9 +291,17 @@ with an announcer that swallows SYN: 2005 ms before, 301 ms on the first request
 and 0 ms on the following ones. Coming back is automatic: once the deadline
 passes, the next request pays one probe and the peer re-enters if it answers.
 
+The gateway's own entry is admitted on loopback (`local_health`, cleartext
+`http://127.0.0.1:<inference_port>/health`, the same way the tunnel reaches
+the node), never through its public addresses: dialing itself went through
+QUIC and the NAT, and on a head busy with a long prompt it missed the budget.
+
 The request waits at most `ADMISSION_BUDGET` (250 ms) for all the probes. A probe
 that misses it keeps running and refreshes the memory; meanwhile the peer's last
-successful admission stands in for it for `ADMISSION_MEMORY` (5 min). A late
+successful admission stands in for it for `ADMISSION_MEMORY` (5 min), with the
+`last_seen` of the announcement the request holds: the stored copy's own
+`last_seen` is older than the planner's 30 s liveness window, and keeping it
+dropped the peer as dead ("Gap at layer 0" on a deployment still served). A late
 probe is not a refusal: one that ends refused erases the memory at once. With a
 15 s memory, a peer whose `/health` was sometimes slower than the budget fell out
 of the plan on the first request after a quiet minute, and a deployment still
@@ -784,7 +792,13 @@ traditional modes:
    `reply_to` URLs are the gateway's local interfaces; when none answers - the
    normal case with the gateway behind NAT/CGNAT - delivery falls to the p2p
    tunnel, using the `endpoint_id` and `endpoint_addrs` that `reply_to` also
-   carries. See `docs/subsystems/p2p-network.md`, "NAT traversal".
+   carries. See `docs/subsystems/p2p-network.md`, "NAT traversal". When the
+   tail is the gateway itself, it delivers on `http://127.0.0.1:<gateway_port>`
+   first (`direct::deliver_on_loopback`, port registered in
+   `infer_tunnel::set_local_gateway_port`): its own addresses may not reach it
+   (macOS without the Local Network permission, a hairpin NAT) and the tunnel
+   refuses a call to its own node, so the result went nowhere and the request
+   hung.
 3. **Bubbled ring** (`relay/v1-chain`, `run_ring`/`step_ring`) - when
    `supports_relay_chain()`: the gateway makes **one** call (to the head) and
    each hop forwards to its next one through `next_hops`; the result bubbles back

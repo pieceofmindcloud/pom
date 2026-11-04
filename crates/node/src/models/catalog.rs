@@ -282,7 +282,11 @@ impl Sidecar {
         match self.kind {
             SidecarKind::Mmproj => true,
             SidecarKind::Mtp => {
-                architecture.is_some() && self.architecture.as_deref() == architecture
+                let drafts_for = match self.architecture.as_deref() {
+                    Some(DSPARK_ARCHITECTURE) => Some("deepseek41"),
+                    other => other,
+                };
+                architecture.is_some() && drafts_for == architecture
             }
         }
     }
@@ -373,6 +377,8 @@ pub(crate) fn find_local_sidecar(
 /// embedded `nextn` carries every block. The observed draft has 34 tensors and
 /// the smallest dense model with `nextn` has hundreds.
 const MTP_DRAFT_MAX_TENSORS: u64 = 256;
+/// The architecture of DeepSeek-V4.1's DSpark drafter.
+const DSPARK_ARCHITECTURE: &str = "dflash";
 
 /// What a GGUF is, when it is a sidecar. Read from the header, with the name
 /// only as a hint: the observed MTP draft calls itself `Ckpt_Q38`.
@@ -392,7 +398,9 @@ pub(crate) fn sidecar_kind(filename: &str, info: &GgufInfo) -> Option<SidecarKin
         && info.split_count.unwrap_or(1) <= 1
         && info.tensor_count > 0
         && info.tensor_count <= MTP_DRAFT_MAX_TENSORS;
-    (lower.starts_with("mtp-") || draft_shaped).then_some(SidecarKind::Mtp)
+    // A DSpark drafter (`dflash`) is a draft whatever its name says: it runs nothing on its own.
+    let dspark = info.architecture.as_deref() == Some(DSPARK_ARCHITECTURE);
+    (lower.starts_with("mtp-") || draft_shaped || dspark).then_some(SidecarKind::Mtp)
 }
 
 /// Every sidecar under these roots. Header reads go through the same cache as
@@ -2246,6 +2254,32 @@ pub(crate) mod tests {
         assert!(compatible.contains(&"mmproj-Model-BF16.gguf"));
         assert!(!compatible.contains(&"mmproj-other.gguf"));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_dspark_drafter_is_a_draft_of_deepseek41_only() {
+        let info = GgufInfo {
+            architecture: Some("dflash".into()),
+            tensor_count: 78,
+            ..Default::default()
+        };
+        assert_eq!(
+            sidecar_kind("dspark-DeepSeek-V4.1-Flash-1017-Q8_0.gguf", &info),
+            Some(SidecarKind::Mtp)
+        );
+        let drafter = Sidecar {
+            kind: SidecarKind::Mtp,
+            path: "/m/dspark.gguf".into(),
+            file_name: "dspark.gguf".into(),
+            size_bytes: 1,
+            quant: None,
+            architecture: Some("dflash".into()),
+            dim: Some(5120),
+            general_name: None,
+        };
+        assert!(drafter.compatible_with(Some("deepseek41"), Some(5120)));
+        assert!(!drafter.compatible_with(Some("deepseek41"), Some(4096)));
+        assert!(!drafter.compatible_with(Some("qwen4exp"), Some(5120)));
     }
 
     #[test]

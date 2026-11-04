@@ -34,7 +34,7 @@ Arraste máquinas da faixa de baixo para o mapa. O planejador distribui as faixa
 ### Ler o veredito
 Quando a escolha não pode ser implantada, uma linha vermelha no topo diz o porquê - por exemplo, quais camadas não estão em nenhuma fatia escolhida. O botão Implantar fica desligado até o plano fechar.
 ### Implantar
-Cada máquina extrai ou carrega a própria faixa. A implantação aparece no Painel assim que as máquinas confirmam que estão servindo.
+Cada máquina extrai ou carrega a própria faixa. Uma janela acompanha a implantação passo a passo até ela ficar pronta ou falhar, com o motivo; **Ir para o painel** leva ao Painel, e **Fechar** deixa a implantação seguindo, com o resultado no sino. A implantação aparece no Painel assim que as máquinas confirmam que estão servindo. Uma implantação é feita uma vez por vez: apertar Implantar de novo enquanto ela sobe só reabre essa janela.
 :::
 
 :::diagram lifecycle

@@ -179,6 +179,29 @@ body {
   .pom-tab-close { display: inline-flex; padding: 3px; border-radius: 4px; color: var(--tab-ink); opacity: .7; }
   .pom-tab-close:hover { opacity: 1; color: rgb(var(--rose)); }
 
+  /* ui.MarqueeText: a line clipped to its box that scrolls right to left when it does not fit. */
+  .pom-marquee { display: block; flex: 0 1 auto; min-width: 0; max-width: 100%; overflow: hidden; white-space: nowrap; }
+  .pom-marquee-track { display: inline-flex; }
+  .pom-marquee-copy, .pom-marquee-gap { display: inline-block; flex: none; }
+  .pom-marquee-on {
+    -webkit-mask-image: linear-gradient(to right, transparent, #000 6px, #000 calc(100% - 10px), transparent);
+    mask-image: linear-gradient(to right, transparent, #000 6px, #000 calc(100% - 10px), transparent);
+  }
+  .pom-marquee-on .pom-marquee-track { animation: pom-marquee var(--marquee-duration, 8s) linear infinite; }
+  .pom-marquee-on:hover .pom-marquee-track,
+  :focus-visible > .pom-marquee-on .pom-marquee-track { animation-play-state: paused; }
+  /* The rest at the start is MARQUEE_REST in ui.tsx. */
+  @keyframes pom-marquee {
+    0%, 15% { transform: translateX(0); }
+    100% { transform: translateX(var(--marquee-shift, 0)); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .pom-marquee-on { -webkit-mask-image: none; mask-image: none; }
+    .pom-marquee-on .pom-marquee-track { display: block; overflow: hidden; text-overflow: ellipsis; animation: none; }
+    .pom-marquee-on .pom-marquee-copy { display: inline; }
+    .pom-marquee-on .pom-marquee-copy[aria-hidden], .pom-marquee-on .pom-marquee-gap { display: none; }
+  }
+
   /* The trust file travelling from one machine to the other (TrustTransferGuide). */
   .trust-travel { animation: trust-travel 2.8s ease-in-out infinite; }
   @keyframes trust-travel {

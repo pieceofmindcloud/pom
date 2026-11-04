@@ -861,6 +861,7 @@ mod tests {
             nextn_predict_layers: 0,
             has_nextn_tensors: false,
             serialized: None,
+            restricted_slice_starts: None,
         }
     }
 

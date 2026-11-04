@@ -1508,6 +1508,7 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
         .filter(|addr| !addr.is_empty())
         .collect();
     infer_tunnel::set_local_node_id(args.node_id.clone());
+    infer_tunnel::set_local_gateway_port(args.gateway_port);
     let cluster_logs = args.cluster_logs.clone();
     let primary_authority_pubkey = args.primary_authority_pubkey.clone();
     let plugins = args.plugins.clone();

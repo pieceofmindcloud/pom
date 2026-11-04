@@ -87,7 +87,7 @@ Speculation drafts the next tokens and checks them all in one batch. When the dr
 | MTP draft tokens | How many tokens the nextn head guesses per round. More widens the batch on every hop; fewer wastes less when a guess is rejected. |
 | MTP minimum probability | Confidence floor for continuing the draft. Lower accepts more guesses, weak ones included; 0 accepts all. |
 | Where MTP runs | Automatic: VRAM only if the whole model still fits with it. VRAM: MTP takes its share first and the model uses the rest. RAM: MTP runs on the CPU and spends no VRAM. |
-| MTP draft (tail) | Shown when the model has no nextn head: pick the external draft (mtp-*.gguf) the last machine loads. |
+| MTP draft (tail) | Shown when the model has no nextn head: pick the external draft (mtp-*.gguf, or a DeepSeek-V4.1 DSpark drafter, dspark-*.gguf) the last machine loads. |
 | Draft width / Lookup window | Lookup only: how many guesses per batch, and the longest n-gram searched for a prior repeat. |
 
 :::warn Measure MTP on a MoE model with experts in RAM

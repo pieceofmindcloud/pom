@@ -1201,22 +1201,37 @@ impl NodeRuntime {
 
         let (pending_supervisor, wait_result) =
             Self::wait_for_supervisor(previous_supervisor).await;
+        // A native load (llama.cpp reading the weights) does not look at the generation while it runs and can
+        // take minutes: the supervisor cannot end in the deadline. The stop still happens - giving up here left
+        // the configuration, the announcement and the pending journal in place, so an undeploy during a load did
+        // nothing, and a load that then crashed the process came back on the next start as a "pending
+        // deployment". The supervisor is kept so the next apply waits for it, and it releases the model the
+        // moment the load returns (`infer_server::run` checks the generation right after loading).
+        let still_loading = pending_supervisor.is_some();
         if let Some(supervisor) = pending_supervisor {
             *self
                 .supervisor
                 .lock()
                 .unwrap_or_else(|error| error.into_inner()) = Some(supervisor);
-            if let Err(error) = wait_result {
-                warn!("could not stop the inference server: {error}");
-                return;
-            }
+        }
+        if let Err(error) = wait_result {
+            warn!(
+                "the inference server is still loading ({error}); this node leaves the deployment now and \
+                 releases the model when the load returns"
+            );
         }
 
         *self.config.write().await = None;
         *self.assignment.write().await = None;
         self.model_cache.clear();
-        *self.status.write().await =
-            RuntimeStatus::new(ServerState::Disabled, "stopped for reconfiguration");
+        *self.status.write().await = RuntimeStatus::new(
+            ServerState::Disabled,
+            if still_loading {
+                "stopped; the model being loaded is released when its load returns"
+            } else {
+                "stopped for reconfiguration"
+            },
+        );
         self.status_changed.notify_waiters();
         self.net.set_idle(false);
         self.net.set_batching_ready(false);
@@ -2593,6 +2608,41 @@ mod tests {
             "and say why it did not come back, and it says: {}",
             s.detail
         );
+    }
+
+    /// The undeploy during a native load: the load does not look at the generation, so the supervisor outlives
+    /// the deadline. The stop must still take effect - the configuration gone, the status saying so and the
+    /// pending journal cleared (it brought the deployment back after the load crashed the process) - and keep the
+    /// supervisor, which releases the model when the load returns.
+    #[tokio::test]
+    async fn a_stop_during_a_load_leaves_the_deployment_and_keeps_the_supervisor_to_finish() {
+        let net = Arc::new(
+            Network::testkit("no".into(), "pk".into(), vec![], None, None)
+                .await
+                .expect("UDP socket on an ephemeral port"),
+        );
+        let dir = tempfile::tempdir().expect("tempdir");
+        let journal = dir.path().join("pom.json.last-slice.json");
+        let rt = NodeRuntime::new_with_last_slice_path(net, Arc::new(RwLock::new(None)), journal.clone());
+        rt.seed_config_for_test(cfg()).await;
+        crate::lastslice::begin_new_attempt_at(&journal, &cfg()).expect("pending journal");
+        assert!(journal.exists());
+        // a load that ignores the generation until it returns
+        let (release, loading) = tokio::sync::oneshot::channel::<()>();
+        *rt.supervisor.lock().unwrap() = Some(tokio::spawn(async move {
+            let _ = loading.await;
+        }));
+
+        rt.stop().await;
+
+        assert!(rt.config().await.is_none(), "the node no longer has the deployment");
+        let status = rt.status().await;
+        assert_eq!(status.state, ServerState::Disabled);
+        assert!(status.detail.contains("released when its load returns"), "{}", status.detail);
+        assert!(!journal.exists(), "a crash of the load must not bring the deployment back");
+        let supervisor = rt.take_supervisor().expect("the loading supervisor is kept for the next apply to wait on");
+        release.send(()).unwrap();
+        supervisor.await.unwrap();
     }
 
     #[tokio::test]

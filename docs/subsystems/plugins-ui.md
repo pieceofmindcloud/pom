@@ -526,7 +526,13 @@ is offered and deployed on that service as the whole model only
 (`plugin_engine::runs_slices`, checked by `deploy_block` at plan, deploy and
 add-machine time, and `serviceRunsSlices` on the Deploy screen). Strata
 publishes `["qwen4exp"]`, so Qwen3.6 (`qwen35moe`) runs whole on it, while
-llama.cpp still slices that architecture. The service lists in `pom_settings`
+llama.cpp still slices that architecture. A service whose engine takes a
+drafter file from the deployment names the model architectures in
+`draft_architectures`: the Deploy screen then offers the compatible files
+(`serviceTakesDraft`), the plan resolves the choice on the stage with the last
+layer, and `engine.load` receives it as `mtp_draft_path`. Strata names
+`deepseek41`, runs no drafter when none is chosen, and on its other families
+uses the drafts it finds itself. The service lists in `pom_settings`
 the POM deployment settings that
 apply to it, by their `RuntimeParams` name: `prefill_max_inflight_chunks`,
 `hidden_state_dtype` and `inference_role` are the known ones, any other name is

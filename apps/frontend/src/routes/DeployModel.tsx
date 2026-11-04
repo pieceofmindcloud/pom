@@ -46,12 +46,15 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
 import {
   Check,
   ChevronLeft,
   Rocket,
+  Server,
   ServerCog,
 } from "lucide-react";
+import { machineKind } from "../components/MachineIcon";
 import { api, ApiError } from "../lib/api";
 import { useCacheTypes, useCluster, useClusterCatalog, useInvalidate, useJobs, useNode, useSidecarLinks } from "../lib/queries";
 import type { SidecarPick } from "../components/SidecarPicker";
@@ -61,14 +64,16 @@ import { bytes, deployModelDisplayName, layerRange, megabytes } from "../lib/for
 import { Confirm, Modal } from "../components/Confirm";
 import { DeploymentInspector, InspectorRow } from "../components/DeploymentInspector";
 import { DeployNetworkCanvas } from "../components/DeployNetworkCanvas";
+import { DeployProgressModal } from "../components/DeployProgressModal";
 import { trackOf } from "../components/PipelineRail";
 import { tensorParallelModelsOf, wholeModelsOf } from "../lib/wholeModels";
-import { inferenceServicesOf, serviceRunsModel, serviceRunsSlices } from "../lib/inferenceServices";
+import { inferenceServicesOf, serviceRunsModel, serviceRunsSlices, serviceTakesDraft } from "../lib/inferenceServices";
 import {
   Badge,
   Button,
   ErrorState,
   Input,
+  MarqueeText,
   Select,
   Skeleton,
   Tabs,
@@ -357,6 +362,9 @@ export function DeployModel() {
   const [mtpPick, setMtpPick] = useState<SidecarPick>({ mode: "link" });
   const sidecarLinks = useSidecarLinks();
   const [jobId, setJobId] = useState<string | null>(null);
+  // The progress window of the deploy just started (`DeployProgressModal`).
+  const [progressOpen, setProgressOpen] = useState(false);
+  const navigate = useNavigate();
   const toast = useToast();
   const invalidate = useInvalidate();
   const jobs = useJobs();
@@ -680,6 +688,10 @@ export function DeployModel() {
       };
     });
   }, [liveCluster.data, p]);
+  // The inspector tab's icon: the kind of the inspected machine (a GPU box, a Mac, a Windows PC), as the canvas draws it;
+  // a machine that has not reported its system yet is drawn as a server, not as a question mark.
+  const inspectedSystem = liveCluster.data?.peers.find((peer) => peer.node_id === inspectedNodeId)?.node?.system;
+  const InspectedMachineIcon = inspectedSystem ? machineKind(inspectedSystem).icon : Server;
   // Capacity is the only part of the plan that depends on RuntimeParams. It
   // cannot be reused after a launch setting changes, but that setting also
   // does not justify a new topology survey. Hide the old projection until the
@@ -922,7 +934,15 @@ export function DeployModel() {
   const eff: RuntimeParams = params ?? p?.params ?? ({} as RuntimeParams);
   /** What a deploy sends: the settings, with the inference service chosen
    *  above (never one remembered from another deploy). */
-  const sentParams: RuntimeParams = { ...eff, inference_service: service?.code ?? null };
+  const chosenArchitecture =
+    (isWhole ? wholes.find((whole) => whole.name === chosen)?.architecture : slicedGroup?.architecture) ?? null;
+  const takesDraft = !!service && serviceTakesDraft(service, chosenArchitecture);
+  // The plan only resolves a chosen draft with `mtp_enabled`, which this service's screen has no switch for.
+  const sentParams: RuntimeParams = {
+    ...eff,
+    inference_service: service?.code ?? null,
+    ...(takesDraft ? { mtp_enabled: true } : {}),
+  };
   /** The server's GGUF metadata is the only source of truth for MoE. */
   const isMoePlan = p?.is_moe === true;
   /**
@@ -1107,6 +1127,7 @@ export function DeployModel() {
         ...(transfersAllowed.current ? { allow_transfers: true } : {}),
       });
       setJobId(started.job_id);
+      setProgressOpen(true);
       // Written from `rows` and `eff`, not from the possibly-null edit state:
       // what comes back next time has to be what was actually deployed,
       // including the parts the operator left on the node's suggestion.
@@ -1117,10 +1138,6 @@ export function DeployModel() {
         deployment_name: deploymentName || chosen,
         strategy,
       });
-      toast.success(
-        t("deploy.started"),
-        t("deploy.startedDetail"),
-      );
       invalidate();
     } catch (e) {
       // The node found copies the screen did not ask about (the cluster moved
@@ -1128,7 +1145,16 @@ export function DeployModel() {
       const refused = e instanceof ApiError && e.status === 409
         ? (e.body as { code?: string; copies?: PlannedCopy[] } | undefined)
         : undefined;
-      if (refused?.code === "transfers_not_authorized" && refused.copies?.length) {
+      const inProgress = e instanceof ApiError && e.status === 409
+        ? (e.body as { code?: string; job_id?: string } | undefined)
+        : undefined;
+      if (inProgress?.code === "deploy_in_progress" && inProgress.job_id) {
+        // This deployment is already coming up (another click, tab or
+        // machine): follow that deploy instead of reporting an error.
+        setJobId(inProgress.job_id);
+        setProgressOpen(true);
+        invalidate();
+      } else if (refused?.code === "transfers_not_authorized" && refused.copies?.length) {
         setInServiceAsked(false);
         transfersAllowed.current = false;
         setCopiesAsked(refused.copies);
@@ -1537,6 +1563,13 @@ export function DeployModel() {
           </div>
         )}
 
+        <DeployProgressModal
+          open={progressOpen && jobId != null}
+          job={job}
+          onClose={() => setProgressOpen(false)}
+          onDashboard={() => { setProgressOpen(false); navigate("/"); }}
+        />
+
         <div className={`relative grid min-h-0 flex-1 ${inspectorOpen ? "lg:grid-cols-[minmax(0,1fr)_19rem]" : "lg:grid-cols-[minmax(0,1fr)_2rem]"}`}>
           <div className="flex min-h-[24rem] min-w-0 p-3 sm:p-4 lg:min-h-0">
             {plan.isError ? (
@@ -1577,7 +1610,13 @@ export function DeployModel() {
                 { value: "global", label: t("deployStudio.tabGlobal") },
                 {
                   value: "machine",
-                  label: t("deployStudio.tabMachine", { name: liveMachines.find((machine) => machine.node_id === inspectedNodeId)?.label ?? "-" }),
+                  // the machine's kind as an icon (the canvas's), its name alone; "Machine" stays for screen readers
+                  icon: <InspectedMachineIcon className="h-3.5 w-3.5" />,
+                  // a long machine name scrolls inside the tab instead of widening the row
+                  label: <>
+                    <span className="sr-only">{t("deployStudio.tabMachine")}: </span>
+                    <MarqueeText>{liveMachines.find((machine) => machine.node_id === inspectedNodeId)?.label ?? "-"}</MarqueeText>
+                  </>,
                   disabled: !inspectedNodeId,
                 },
               ]}
@@ -1587,7 +1626,7 @@ export function DeployModel() {
             <DeploymentInspector
               value={eff}
               onChange={setParams}
-              inferenceService={service ? { name: service.name, settings: service.settings, pomSettings: service.pomSettings } : undefined}
+              inferenceService={service ? { name: service.name, settings: service.settings, pomSettings: service.pomSettings, takesDraft } : undefined}
               capabilities={p?.capabilities}
               cacheTypes={{
                 k: cacheTypeK,

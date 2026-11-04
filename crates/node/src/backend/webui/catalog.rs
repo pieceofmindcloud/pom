@@ -91,8 +91,105 @@ pub struct NodeInfo {
     pub thermal: ThermalPolicy,
 }
 
-pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInfo> {
-    let system = sysmon::sample().await;
+/// Whether `/api/ui/node` was asked by another node (a signed control call or
+/// one marked internal), not by this machine's own operator.
+fn asked_by_another_node(headers: &HeaderMap) -> bool {
+    headers.contains_key(crate::auth::CONTROL_SIGNATURE_HEADER)
+        || headers
+            .get(crate::auth::INTERNAL_NODE_REQUEST_HEADER)
+            .and_then(|value| value.to_str().ok())
+            == Some("1")
+}
+
+/// What another member may see of this machine's system sample. Its volumes
+/// come out as one: the space of the distinct volumes that can receive model
+/// slices (the model folders and the slice folder), with no mount point or
+/// device. Its GPU processes keep only POM's own, by binary name and with no
+/// path; every other process is one entry (`pid` 0, no name) with their total
+/// memory. The machine's own operator sees the sample as is, with a note on
+/// its card saying that only this summary leaves the machine.
+pub(crate) fn shared_system(
+    mut system: SystemLoad,
+    slice_dirs: &[std::path::PathBuf],
+) -> SystemLoad {
+    let disks = if system.disks.is_empty() {
+        vec![system.disk.clone()]
+    } else {
+        system.disks.clone()
+    };
+    let mut volumes: Vec<&sysmon::DiskStat> = Vec::new();
+    for dir in slice_dirs {
+        let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.clone());
+        let holder = disks
+            .iter()
+            .filter(|disk| !disk.mount_point.is_empty() && dir.starts_with(&disk.mount_point))
+            .max_by_key(|disk| disk.mount_point.len());
+        if let Some(disk) = holder {
+            if !volumes
+                .iter()
+                .any(|known| known.mount_point == disk.mount_point && known.device == disk.device)
+            {
+                volumes.push(disk);
+            }
+        }
+    }
+    let consolidated = if volumes.is_empty() {
+        sysmon::DiskStat {
+            total_mb: system.disk.total_mb,
+            free_mb: system.disk.free_mb,
+            ..Default::default()
+        }
+    } else {
+        sysmon::DiskStat {
+            total_mb: volumes.iter().map(|disk| disk.total_mb).sum(),
+            free_mb: volumes.iter().map(|disk| disk.free_mb).sum(),
+            ..Default::default()
+        }
+    };
+    system.disk = consolidated.clone();
+    system.disks = vec![consolidated];
+
+    let slug = crate::brand::slug();
+    let mut others_mb = 0.0;
+    let mut kept = Vec::new();
+    for process in std::mem::take(&mut system.gpu_processes) {
+        let name = process
+            .name
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or_default()
+            .trim_end_matches(".exe")
+            .to_string();
+        let ours = process.pid == std::process::id()
+            || name == slug
+            || name.starts_with(&format!("{slug}-"));
+        if ours {
+            kept.push(sysmon::GpuProcess { name, ..process });
+        } else {
+            others_mb += process.used_mb;
+        }
+    }
+    if others_mb > 0.0 {
+        kept.push(sysmon::GpuProcess {
+            pid: 0,
+            name: String::new(),
+            used_mb: others_mb,
+        });
+    }
+    system.gpu_processes = kept;
+    system
+}
+
+pub(super) async fn node_info(
+    headers: HeaderMap,
+    State(state): State<GatewayState>,
+) -> Json<NodeInfo> {
+    let mut system = sysmon::sample().await;
+    if asked_by_another_node(&headers) {
+        let mut slice_dirs = state.model_dirs().await;
+        slice_dirs.push(state.shard_dir().await);
+        system = shared_system(system, &slice_dirs);
+    }
     let config = state.runtime.config().await;
     let active_deployment = config
         .as_ref()
@@ -1916,6 +2013,114 @@ async fn live_peer_load(state: &GatewayState, peer: &PeerInfo) -> Option<u32> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn disk(mount: &str, device: &str, total_mb: u64, free_mb: u64) -> sysmon::DiskStat {
+        sysmon::DiskStat {
+            total_mb,
+            free_mb,
+            mount_point: mount.into(),
+            device: device.into(),
+        }
+    }
+
+    fn process(pid: u32, name: &str, used_mb: f64) -> sysmon::GpuProcess {
+        sysmon::GpuProcess {
+            pid,
+            name: name.into(),
+            used_mb,
+        }
+    }
+
+    /// Another member sees one volume, the space where slices can go, and
+    /// never the machine's mount points or devices.
+    #[tokio::test]
+    async fn members_see_one_volume_made_of_the_slice_volumes() {
+        let root = std::env::temp_dir().join(format!("pom-volumes-{}", uuid::Uuid::new_v4().simple()));
+        let models = root.join("models");
+        let shards = root.join("shards");
+        std::fs::create_dir_all(&models).unwrap();
+        std::fs::create_dir_all(&shards).unwrap();
+        let root = std::fs::canonicalize(&root).unwrap();
+        let mut system = sysmon::sample().await;
+        system.disks = vec![
+            disk("/", "/dev/root", 1_000, 500),
+            disk(root.to_str().unwrap(), "/dev/models", 100, 30),
+            disk("/private-data", "/dev/secret", 50, 10),
+        ];
+
+        let shared = shared_system(system, &[models, shards]);
+
+        // Both folders sit on one volume, counted once; `/` and the private
+        // volume hold no slice folder and stay out.
+        assert_eq!(shared.disks.len(), 1);
+        assert_eq!((shared.disk.total_mb, shared.disk.free_mb), (100, 30));
+        assert_eq!((shared.disks[0].total_mb, shared.disks[0].free_mb), (100, 30));
+        assert!(shared.disk.mount_point.is_empty() && shared.disk.device.is_empty());
+        let json = serde_json::to_string(&shared).unwrap();
+        for leaked in ["/private-data", "/dev/secret", "/dev/models", "/dev/root"] {
+            assert!(!json.contains(leaked), "{leaked} left the machine");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The operator reading its own node gets the sample as is; another node
+    /// gets the summary.
+    #[tokio::test]
+    async fn only_another_node_gets_the_summary() {
+        let state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        let own = node_info(HeaderMap::new(), State(state.clone())).await.0.system;
+        let raw = sysmon::sample().await;
+        assert_eq!(own.disks.len(), raw.disks.len());
+
+        let mut headers = HeaderMap::new();
+        headers.insert(crate::auth::INTERNAL_NODE_REQUEST_HEADER, "1".parse().unwrap());
+        let shared = node_info(headers, State(state)).await.0.system;
+        assert_eq!(shared.disks.len(), 1);
+        assert!(shared.disk.mount_point.is_empty() && shared.disk.device.is_empty());
+    }
+
+    #[test]
+    fn only_a_node_to_node_call_gets_the_shared_view() {
+        let mut headers = HeaderMap::new();
+        assert!(!asked_by_another_node(&headers));
+        headers.insert(crate::auth::INTERNAL_NODE_REQUEST_HEADER, "1".parse().unwrap());
+        assert!(asked_by_another_node(&headers));
+        let mut signed = HeaderMap::new();
+        signed.insert(crate::auth::CONTROL_SIGNATURE_HEADER, "x".parse().unwrap());
+        assert!(asked_by_another_node(&signed));
+    }
+
+    /// Only POM's processes are named, without their path; the rest is one
+    /// anonymous total.
+    #[tokio::test]
+    async fn members_see_only_pom_gpu_processes_and_one_total_for_the_rest() {
+        let mut system = sysmon::sample().await;
+        system.gpu_processes = vec![
+            process(11, "/home/someone/bin/secret-app", 500.0),
+            process(12, "/opt/pom/pom-plugin-host", 100.0),
+            process(13, "C:\\Users\\someone\\pom.exe", 200.0),
+            process(14, "python3", 50.0),
+        ];
+
+        let shared = shared_system(system, &[]);
+
+        let named: Vec<(&str, f64)> = shared
+            .gpu_processes
+            .iter()
+            .filter(|process| process.pid != 0)
+            .map(|process| (process.name.as_str(), process.used_mb))
+            .collect();
+        assert_eq!(named, vec![("pom-plugin-host", 100.0), ("pom", 200.0)]);
+        let others: Vec<_> = shared.gpu_processes.iter().filter(|p| p.pid == 0).collect();
+        assert_eq!(others.len(), 1);
+        assert!(others[0].name.is_empty());
+        assert_eq!(others[0].used_mb, 550.0);
+        let json = serde_json::to_string(&shared.gpu_processes).unwrap();
+        for leaked in ["secret-app", "someone", "python3", "/opt/pom"] {
+            assert!(!json.contains(leaked), "{leaked} left the machine");
+        }
+    }
+
 
     #[test]
     fn a_panel_password_must_be_long_and_mixed_and_never_the_default() {

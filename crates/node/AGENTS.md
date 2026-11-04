@@ -71,7 +71,13 @@ in `../routing-contract`, empty for the runtime).
   `CCACHE=ccache` wraps the `nvcc`. The procedure and the separate target are in
   `docs/subsystems/build-and-run.md`.
 - On the macOS target, `build.rs` compiles `src/macos_status.m` and links only the
-  system's AppKit, WebKit and Security frameworks. Linux and Windows do not get that bridge.
+  system's AppKit, WebKit, Security, AVFoundation and Speech frameworks. Linux and Windows do not get that bridge.
+- `macos_status.m` opens the file panel for `<input type="file">`, which WebKit
+  does not do alone, holding the transient popover open meanwhile. The `pomDictation`
+  bridge dictates with `SFSpeechRecognizer`, on the device whenever the system
+  supports that language there and on Apple's servers otherwise. It is registered
+  only when `Info.plist` declares both permissions, because asking without them
+  kills the process.
 
 ## src/main.rs - startup flow and CLI
 
@@ -339,9 +345,11 @@ undeploying to the `admin` profile; removing one's own machine stays a local
 action of the other profiles. The profile does not replace `Role`, which keeps
 describing authentication and topology.
 
-The inference protocol has not shipped yet. `frame/v1-batch` is the first and only
-official contract: do not keep a fallback, adapter or compatibility code for
-earlier v1/v2 formats. Future changes must evolve this contract explicitly.
+`frame/v1-batch` is the official inference contract, and released nodes speak it:
+change it only in ways they still read (an optional field, a new capability
+announced beside it), never by breaking it (root `AGENTS.md`, compatibility
+policy). The v1/v2 formats from before the launch never shipped and get no
+fallback or adapter.
 
 The startup creates the `NetworkChat` next to the `Discovery`, using its own
 endpoint protocol (ALPN) separate from the inference tunnel. The `GatewayState` shares the service

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { inferenceServicesOf, serviceRunsModel, serviceRunsSlices } from "./inferenceServices";
+import { inferenceServicesOf, serviceRunsModel, serviceRunsSlices, serviceTakesDraft } from "./inferenceServices";
 import type { PeerView } from "./types";
 
 const peer = (node_id: string, services: unknown[]) =>
@@ -17,7 +17,7 @@ describe("inferenceServicesOf", () => {
       peer("d", []),
     ]);
     expect(services).toEqual([
-      { code: "strata", name: "Strata", architectures: ["qwen4exp"], settings: [], pomSettings: [], nodeIds: ["a", "c"], stages: false, stageArchitectures: [], vision: false },
+      { code: "strata", name: "Strata", architectures: ["qwen4exp"], settings: [], pomSettings: [], nodeIds: ["a", "c"], stages: false, stageArchitectures: [], draftArchitectures: [], vision: false },
     ]);
     expect(serviceRunsModel(services[0], "qwen4exp")).toBe(true);
     expect(serviceRunsModel(services[0], "llama")).toBe(false);
@@ -32,6 +32,16 @@ describe("inferenceServicesOf", () => {
     expect(services[0].stages).toBe(true);
     expect(services[0].pomSettings).toEqual(["hidden_state_dtype"]);
     expect(services[0].nodeIds).toEqual(["a", "b"]);
+  });
+
+  it("takes a drafter file only for the architectures the service names", () => {
+    const [strata] = inferenceServicesOf([
+      peer("a", [{ plugin_code: "strata", id: "strata", kind: "inference", name: "Strata", status: "ready",
+        architectures: ["qwen4exp", "deepseek41"], draft_architectures: ["deepseek41"] }]),
+    ]);
+    expect(serviceTakesDraft(strata, "deepseek41")).toBe(true);
+    expect(serviceTakesDraft(strata, "qwen4exp")).toBe(false);
+    expect(serviceTakesDraft(strata, null)).toBe(false);
   });
 
   it("runs slices only of the architectures the service names for them", () => {

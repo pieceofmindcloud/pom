@@ -36,6 +36,49 @@ function mount(
 }
 
 describe("DeploymentInspector with a plugin's inference service", () => {
+  const draftSidecars = {
+    options: [
+      {
+        kind: "mtp" as const,
+        file_name: "dspark-DeepSeek-V4.1-Flash-1017-Q8_0.gguf",
+        size_bytes: 7976914240,
+        general_name: null,
+        quant: "Q8_0",
+        holders: [{ node_id: "n1", hostname: "salem", path: "/m/dspark.gguf" }],
+      },
+    ],
+    vision: { value: { mode: "link" as const }, onChange: vi.fn(), slot: null, linkLabel: null },
+    mtp: { value: { mode: "link" as const }, onChange: vi.fn(), slot: null, linkLabel: null, allowEmbedded: false },
+  };
+
+  it("offers the draft files when the service takes one for this model", () => {
+    render(
+      <LocaleProvider initialLocale="en">
+        <DeploymentInspector
+          value={params}
+          onChange={vi.fn()}
+          sidecars={draftSidecars}
+          inferenceService={{ name: "Strata", settings: [], pomSettings: [], takesDraft: true }}
+        />
+      </LocaleProvider>,
+    );
+    expect(document.body.textContent).toContain("dspark-DeepSeek-V4.1-Flash-1017-Q8_0.gguf");
+  });
+
+  it("hides the draft files when the service would ignore the choice", () => {
+    render(
+      <LocaleProvider initialLocale="en">
+        <DeploymentInspector
+          value={params}
+          onChange={vi.fn()}
+          sidecars={draftSidecars}
+          inferenceService={{ name: "Strata", settings: [], pomSettings: [] }}
+        />
+      </LocaleProvider>,
+    );
+    expect(document.body.textContent).not.toContain("dspark-DeepSeek-V4.1-Flash-1017-Q8_0.gguf");
+  });
+
   it("offers the POM's transfer between the slices when they cross machines", () => {
     const onChange = mount(true);
     const precision = screen.getByRole("combobox", { name: "Hidden-state precision" });

@@ -40,3 +40,26 @@ export function layerPlacement(
   const gpu = reportedGpuLayers < 0 ? served : Math.min(reportedGpuLayers, served);
   return { served, gpu, cpu: served - gpu };
 }
+
+/**
+ * Whether to warn that this machine runs part of its slice on the CPU.
+ *
+ * Only for llama.cpp (`engine` null) on a machine with real GPUs. A Mac's
+ * unified memory makes "on the CPU" a non-event, a machine with no GPU has no
+ * other place, and a plugin engine reports no placement. There, a layer the
+ * engine left on the CPU is the usual reason a node is slow after a deploy
+ * with no apparent cause: its VRAM did not fit the whole slice and llama.cpp's
+ * `fit` moved the rest to RAM.
+ */
+export function warnsLayersOnCpu(
+  placement: LayerPlacement | null,
+  gpuKind: string | null | undefined,
+  engine: string | null | undefined,
+): boolean {
+  return Boolean(
+    placement
+      && placement.cpu > 0
+      && (gpuKind === "nvidia" || gpuKind === "amd" || gpuKind === "mixed")
+      && engine == null,
+  );
+}

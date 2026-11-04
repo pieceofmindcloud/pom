@@ -7,3 +7,5 @@ src/brand/
 public/brand/
 # Published by scripts/build-docs.mjs from docs/guides and docs/human.
 public/guide-images/
+# Published by scripts/build-document-reader.mjs from the PDF and OCR packages.
+public/document-reader/

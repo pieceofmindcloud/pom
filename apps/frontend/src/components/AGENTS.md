@@ -73,7 +73,12 @@ Per-file list:
   `actions` puts controls at the right end of the row (the tabs scroll, the
   controls stay). An
   item with `onClose` gets a close button beside the tab (`pom-tab-closable`,
-  siblings, never a button inside a button).
+  siblings, never a button inside a button). A label that can be longer than a
+  `fill` tab (the machine name in the Deploy inspector's tab) goes in `MarqueeText`:
+  clipped to the tab, it scrolls right to left in a loop only when it does not
+  fit, rests at the start of each lap, pauses under the pointer and stays still
+  with an ellipsis under reduced motion (`pom-marquee*`; the rest is
+  `MARQUEE_REST`, in step with `@keyframes pom-marquee`).
 - `AlertTooltip` (ui.tsx) - `compact` makes the icon the size of the `[i]`, without
   a frame, so it fits in the `DeploymentInspector`'s icon column; `Meter` and
   `KeyValue` gained `compact` for the same reason in the machine card. It is the compact
@@ -447,6 +452,15 @@ Per-file list:
   until the bell opens, then get marked read and can be removed. Node-to-infer changes are amber notices without
   action buttons. Authority offers keep their pending state in the bell and
   link to `/config/administration` for the roster.
+  Finished jobs (a deploy, a slicing run; not a model download, whose panel
+  has its own outcome) stay with their outcome for `RECENTLY_FINISHED_MS`
+  (`lib/finishedJobs.ts`): unread until the bell opens, removable with an X,
+  both remembered in `localStorage`. Before, a deploy that ended between two
+  polls left the badge at (1) and the tray empty.
+  `DeployProgressModal.tsx` - the window the Deploy screen opens on the job it
+  started (or on the running one the node names in a 409 `deploy_in_progress`):
+  its steps and progress, then ready or failed with the reason; Close leaves the
+  deploy running, Switch to dashboard goes to `/`.
   It lists **both directions** - an upload icon for `sending`, a download icon for
   `receiving` - and also the **recent outcome**: completed, failed and refused
   stay in the bell for `RECENTLY_FINISHED_MS`. Before, it only showed what was
@@ -540,6 +554,11 @@ Per-file list:
   compact icon button inside the map's upper-right control area, next to the
   zoom and Fit controls; the dashboard toolbar remains reserved for cluster
   status and actions.
+- `ModelNetworkCanvas.tsx` / `PeerDetailCard.tsx` - a machine whose llama.cpp left layers on the
+  CPU while it has real GPUs (`warnsLayersOnCpu` in `../lib/layerPlacement.ts`: `engine` null,
+  `gpu_kind` nvidia/amd/mixed, `reported_gpu_layers` below the slice) gets an amber `AlertTooltip`
+  beside its layer range (`machine-cpu-warning`, `peer-cpu-warning`) saying how many layers spilled
+  and what to do. Never on `unified` (a Mac) or `none`, nor under a plugin engine, which reports no placement.
 - `RouteRttLabel.tsx` - the shared directional RTT visual badge used by the
   Dashboard map and by the deployment map. On the Dashboard it also identifies the
   effective transport (`HTTP`, `HTTPS` or `QUIC`) observed in the execution; when
@@ -587,7 +606,10 @@ Per-file list:
   (usage, temperature and optional watts in one row per GPU), RAM, load and disks. The disks are
   **one meter per mounted partition**
   (`system.disks`), with a fallback to `system.disk` on a node that does not publish
-  the list yet. `PeerPlacement` (internal) is the only part of the card that
+  the list yet. Another member's sample arrives trimmed by its node (this machine's own card is untrimmed and shows
+  `SharedSummaryNote`, a lock note under the disks and in the GPU processes, saying only the summary is shared): one volume with an empty
+  `mount_point` (labelled `dashboard.modelStorage`) and a `pid` 0 GPU process with no name, the
+  total of every non-POM process (labelled `dashboard.otherGpuProcesses`). `PeerPlacement` (internal) is the only part of the card that
   makes an extra call: it mounts only with the machine serving, and the `enabled` of
   `usePeerRuntime` is what prevents one `/health` per card on every Dashboard cycle.
   When the configuration asked for MTP, the same card also shows

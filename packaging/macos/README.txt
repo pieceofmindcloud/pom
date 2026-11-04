@@ -13,35 +13,35 @@ Applications folder, not from the disk image or Downloads.
 2. Authorize the application in Gatekeeper
 -------------------------------------------
 
-POM is not notarized by Apple yet. The first time you open it, macOS may say
-that Apple could not verify that POM is free of malware. Click OK or Done.
+POM is not notarized by Apple yet, so macOS blocks it the first time it opens.
+Do this once:
 
-Then:
+1. Open Terminal (press Command + Space and type Terminal).
+2. Paste these two lines and press Return:
 
-1. Open System Settings > Privacy & Security.
-2. Scroll to the security section.
-3. Find the message about POM and click Open Anyway.
-4. Confirm with your Mac password.
-5. Open POM again from Applications and click Open.
+xattr -dr com.apple.quarantine "/Applications/POM.app"
+open "/Applications/POM.app"
+
+The first command removes the macOS quarantine from POM.app (recursively),
+which is the Gatekeeper check that blocks it. Run it only on POM downloaded
+from pieceofmind.cloud, from its official release, or built yourself. Never
+use it on an app from an untrusted source.
+
+If you would rather not use Terminal:
+
+1. Open POM once from Applications. When macOS says that Apple could not
+   verify that POM is free of malware, click OK or Done.
+2. Open System Settings > Privacy & Security.
+3. Scroll to the security section.
+4. Find the message about POM and click Open Anyway.
+5. Confirm with your Mac password.
+6. Open POM again from Applications and click Open.
 
 On older macOS versions, you can Control-click POM.app in Applications, choose
 Open, and confirm Open again.
 
 If a POM process appears in Activity Monitor but no window appears during the
-first launch, quit that process before completing the Open Anyway steps above.
-
-Advanced recovery for a verified POM build
-------------------------------------------
-
-If Open Anyway still leaves the app stuck, and you downloaded POM from its
-official release or built it yourself, quit the stuck process and run this in
-Terminal:
-
-xattr -dr com.apple.quarantine "/Applications/POM.app"
-open "/Applications/POM.app"
-
-The first command removes macOS quarantine recursively and therefore bypasses
-that Gatekeeper check. Never use it on an app from an untrusted source.
+first launch, quit that process and run the Terminal commands above.
 
 3. Allow network access
 -----------------------
@@ -73,7 +73,7 @@ Common problems
 POM does not open and nothing appears:
 - Confirm that POM.app is in Applications.
 - Quit any stuck POM process in Activity Monitor.
-- Complete the Gatekeeper authorization in step 2 and open POM again.
+- Run the Terminal commands in step 2 and open POM again.
 
 POM opens but does not find other nodes:
 - Confirm that POM is enabled under Privacy & Security > Local Network.

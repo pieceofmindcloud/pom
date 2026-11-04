@@ -21,9 +21,6 @@ Good AI does not have to live in the cloud. Or you can be your own cloud.
 - Community: <https://discord.gg/d6Yjkk8ej>
 - Windows, macOS and Linux - open source (MIT, see `LICENSE`)
 
-> POM is in pre-launch: the packaged downloads on the website are open to invited
-> people only. Building from source (below) is open to everyone.
-
 ---
 
 ## Why POM
@@ -200,3 +197,18 @@ docs/subsystems/          how each subsystem works and why
 `AGENTS.md` at the root is the map for contributors (and agents); each folder
 has its own `AGENTS.md`. This README is a presentation, not the architecture
 reference.
+
+---
+
+> **Privacy in distributed inference.** When a model is split across machines,
+> each one computes its layers on the hidden states of the conversation, and to
+> do that it has to read them. Traffic between nodes is always encrypted with
+> mutual TLS, so nobody outside the pipeline sees it; a machine that is part of
+> the pipeline, though, sees the hidden states that pass through it, and a
+> malicious one could record them and recover part of the conversation from them.
+> This comes with distributing inference itself - any system in which other
+> people's machines run part of a model shares it - and is not something a
+> network layer can prevent. Choose the machines accordingly: keep sensitive
+> conversations on your own machines or on a network of people you trust, where
+> the admins admit every member, and use public networks for content you would be
+> comfortable sharing.

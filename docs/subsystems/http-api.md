@@ -180,7 +180,11 @@ last):
   decides it signs a revocation (`webui::ban`, below) before anything else, so
   it holds even when forwarding to the principal fails (the answer is then the
   mirror). The principal also takes the member off its list and rotates the
-  key. An admin is not removed this way (`409 admin_target`).
+  key. An admin is not removed this way (`409 admin_target`). A browser's
+  `Bearer` connection key (`ConnectionAuth`) is checked with
+  `connection_key_accepted`, so the old key still opens the screens during a
+  rotation's grace: the panel picks up the new key only on its next
+  `/api/ui/node` poll, and every poll in between used to answer 401.
 - **Roles between nodes** (`gateway/state.rs::require_admin_for_surface`).
   The profile table in `webui/routes/mod.rs` gates what a **browser** may
   reach on a node. A node-to-node request (one carrying the control

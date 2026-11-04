@@ -879,6 +879,16 @@ pub async fn run(
     .await
     .map_err(|e| anyhow::anyhow!("spawn_blocking: {e}"))??;
 
+    // The load does not look at the generation and can take minutes: an undeploy or a new deployment that came
+    // meanwhile has already moved on (`InferenceRuntime::stop` no longer waits for it). Give the VRAM back now
+    // instead of starting to serve a deployment that no longer exists.
+    if *stop_rx.borrow() != generation {
+        info!("the deployment ended while the model was loading; releasing it");
+        run_native_cleanup(move || engine.unload()).await?;
+        info!("model memory returned on port {port}");
+        return Ok(());
+    }
+
     // Only now do we know whether the `nextn` head exists: it depends on the
     // GGUF, not on the configuration. See `Network::mtp_ready`.
     mtp_ready.store(engine.mtp_ready(), std::sync::atomic::Ordering::Relaxed);

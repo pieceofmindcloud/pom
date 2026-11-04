@@ -75,6 +75,8 @@ cat > "$destination/Contents/Info.plist" <<PLIST
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>LSMinimumSystemVersion</key><string>11.0</string>
     <key>NSHighResolutionCapable</key><true/>
+    <key>NSMicrophoneUsageDescription</key><string>POM uses the microphone to dictate your messages in the chat.</string>
+    <key>NSSpeechRecognitionUsageDescription</key><string>POM turns what you dictate into the text of your message.</string>
     <key>NSLocalNetworkUsageDescription</key><string>O POM usa a rede local para encontrar outros nós e a internet para se conectar a nós remotos e relays.</string>
 </dict>
 </plist>

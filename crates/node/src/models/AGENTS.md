@@ -11,7 +11,8 @@ Models, GGUF reading, planning and slice files. The module is used by
 - `catalog.rs` sidecars - `Catalog.sidecars` lists vision projectors and
   external MTP drafts found under the shard folder and the GGUF libraries
   (`discover_sidecars`, filled by `enrich`); `sidecar_kind` recognizes them
-  from the header (clip, or `nextn` with few tensors and no split), so they are
+  from the header (clip, `nextn` with few tensors and no split, or a `dflash`
+  DSpark drafter, which is DeepSeek-V4.1's draft), so they are
   dropped from `models`. A file with the splitter's `pom.start_layer` /
   `pom.end_layer` is a slice and never a draft: a short tail range of a model
   with `nextn` has a draft's tensor count. `find_gguf` takes a file by its `.gguf` extension or,
@@ -233,7 +234,12 @@ named semantics: `layer_multipliers`, `head_offsets` and `head_vocab_sizes`
 represent shared table structure and are copied whole into every slice;
 `ple.layers` is the list of PLE layers, filtered to the range and rebased to the
 local index. The tensor `per_layer_token_embd.weight` accompanies only the slices
-that contain one of those layers.
+that contain one of those layers. `deepseek41` follows the same model: its
+`attention.kv_source_layers`, `attention.indexer.source_layers` and `ple.layers`
+are filtered and rebased, `attention.indexer.candidate_source_layer` is rebased
+or left out, and the other Engram arrays are copied whole. Its valid cuts come
+from `GgufLayout::restricted_slice_starts`; `merge` and tensor parallel refuse
+the architecture by name.
 
 ### Multimodal projector
 
@@ -269,6 +275,15 @@ graph (`qwen4exp.cpp` gained that in `pieceofmindcloud/llama.cpp`,
 when MTP was not requested).
 
 ## Defects noted
+
+- `deepseek41` slices are written, but a pipeline across them does not run yet.
+  `deepseek41.cpp` keeps `pre_prev`, the pre-mix of the previous layer's FFN,
+  which is not part of the residual, so a slice starting mid-model would
+  collapse its first attention input with the identity instead. The same graph
+  has no expanded `hc` input and sets `n_embd_out = n_embd`, so
+  `validate_hidden_tensor` refuses the wide residual on the receiving peer
+  instead of computing a wrong answer. Serving needs the fork to accept an
+  expanded input and carry `pre_prev` across the boundary.
 
 - `ModelSource::Folder` is labelled `"Pasta"` (`catalog.rs`, the source label
   the catalog sends), so the Full models screen shows a Portuguese word in the

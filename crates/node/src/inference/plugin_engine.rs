@@ -292,6 +292,10 @@ pub(crate) fn load_params(
     if let Some(link) = link {
         params["link"] = link.clone();
     }
+    // The drafter the deployment chose, on the stage that runs it (`draft_architectures`).
+    if let Some(draft) = cfg.mtp_draft_path.as_deref().filter(|path| !path.trim().is_empty()) {
+        params["mtp_draft_path"] = json!(draft);
+    }
     // The vision projector the deployment chose: the engine reads images with it.
     if let Some(mmproj) = cfg.mmproj_path.as_deref().filter(|path| !path.trim().is_empty()) {
         params["mmproj_path"] = json!(mmproj);
@@ -382,7 +386,7 @@ async fn query(code: &str, operation: &str, payload: Value) -> Option<Value> {
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run(
     cfg: crate::runtime::NodeConfig,
-    mut stop_rx: tokio::sync::watch::Receiver<u64>,
+    stop_rx: tokio::sync::watch::Receiver<u64>,
     generation: u64,
     tls: Option<crate::serve::TlsServer>,
     quic: Option<crate::serve::QuicServerConfig>,
@@ -432,7 +436,7 @@ pub(crate) async fn run(
     }
 
     let status = Arc::new(Mutex::new(json!({"state": "loading"})));
-    let (failed_tx, mut failed_rx) = tokio::sync::oneshot::channel::<String>();
+    let (failed_tx, failed_rx) = tokio::sync::oneshot::channel::<String>();
     let poll_status = Arc::clone(&status);
     let poll_code = code.clone();
     let mut poll_stop = stop_rx.clone();
@@ -507,30 +511,10 @@ pub(crate) async fn run(
     let failure = Arc::new(Mutex::new(None::<String>));
     let failure_seen = Arc::clone(&failure);
     // a later stage whose earlier stage's link secret changed can never link: this generation ends and restarts
-    let mut stale_rx = relay.as_mut().and_then(|relay| relay.stale.take());
+    let stale_rx = relay.as_mut().and_then(|relay| relay.stale.take());
     let served = crate::serve::serve_with_quic(listener, router, tls, quic, quic_port, async move {
-        loop {
-            tokio::select! {
-                stale = async { stale_rx.as_mut().expect("guarded by is_some").await }, if stale_rx.is_some() => {
-                    stale_rx = None;
-                    if let Ok(detail) = stale {
-                        *failure_seen.lock().unwrap_or_else(|error| error.into_inner()) = Some(detail);
-                        break;
-                    }
-                }
-                changed = stop_rx.changed() => {
-                    if changed.is_err() || *stop_rx.borrow() != generation {
-                        break;
-                    }
-                }
-                detail = &mut failed_rx => {
-                    if let Ok(detail) = detail {
-                        *failure_seen.lock().unwrap_or_else(|error| error.into_inner()) = Some(detail);
-                        break;
-                    }
-                }
-            }
-        }
+        let ended = wait_for_end(generation, stop_rx, Some(failed_rx), stale_rx).await;
+        *failure_seen.lock().unwrap_or_else(|error| error.into_inner()) = ended;
     })
     .await;
     poller.abort();
@@ -545,6 +529,42 @@ pub(crate) async fn run(
     match failure {
         Some(detail) => Err(anyhow::anyhow!("{code}: {detail}")),
         None => Ok(()),
+    }
+}
+
+/// Waits for the end of a generation's serving: the runtime moved to another generation (`None`), or the
+/// engine failed / the earlier stage went stale (`Some(why)`).
+///
+/// Each oneshot is dropped once it completed, sent or not: the status poller drops its sender without a word
+/// when the generation changes, and polling that finished receiver again panics ("called after complete").
+/// The panic ended the supervisor before `engine.unload`, and the plugin kept the engine running on the GPU
+/// after an undeploy.
+async fn wait_for_end(
+    generation: u64,
+    mut stop_rx: tokio::sync::watch::Receiver<u64>,
+    mut failed_rx: Option<tokio::sync::oneshot::Receiver<String>>,
+    mut stale_rx: Option<tokio::sync::oneshot::Receiver<String>>,
+) -> Option<String> {
+    loop {
+        tokio::select! {
+            stale = async { stale_rx.as_mut().expect("guarded by is_some").await }, if stale_rx.is_some() => {
+                stale_rx = None;
+                if let Ok(detail) = stale {
+                    return Some(detail);
+                }
+            }
+            changed = stop_rx.changed() => {
+                if changed.is_err() || *stop_rx.borrow() != generation {
+                    return None;
+                }
+            }
+            detail = async { failed_rx.as_mut().expect("guarded by is_some").await }, if failed_rx.is_some() => {
+                failed_rx = None;
+                if let Ok(detail) = detail {
+                    return Some(detail);
+                }
+            }
+        }
     }
 }
 
@@ -595,6 +615,42 @@ fn thinking_asked(details: &Value) -> bool {
         || !details["chat_template_kwargs"]["enable_thinking"].is_null()
 }
 
+/// The API a client's request with tools came in (`"openai"` or `"anthropic"`), when the engine should render the
+/// conversation itself; `None` keeps the flattened prompt alone.
+///
+/// The prompt the gateway flattens describes the tools, and replays the calls, in Qwen3.6's `<tool_call><function=…>`
+/// form (`tool_call::render_tools_block`). An engine with a family of its own was then asked to answer in a form it was
+/// not trained on: DeepSeek-V4.1 (DSML) got its first call right and then looped on broken copies of the example
+/// (`<tool_call> <parameter> PLACEHOLDER </parameter> </function>`, 9,587 tokens of them). With the conversation as the
+/// client sent it, the engine renders the tools and the calls with its own chat template; its answer comes back in the
+/// form the gateway reads, as before. A request whose prompt carries the RAG context the gateway added keeps the
+/// flattened prompt, which holds that context.
+fn chat_api(details: &Value) -> Option<&'static str> {
+    let has_tools = details["tools"].as_array().is_some_and(|tools| !tools.is_empty());
+    if !has_tools || !details["messages"].is_array() || !details["rag"].is_null() {
+        return None;
+    }
+    // Anthropic's tools carry `input_schema` and its conversation a top-level `system` or tool_use/tool_result blocks;
+    // OpenAI's tools are `{type: "function", function: {…}}`
+    let anthropic_tool = details["tools"]
+        .as_array()
+        .is_some_and(|tools| tools.iter().any(|tool| tool.get("input_schema").is_some()));
+    let anthropic_block = details["messages"].as_array().is_some_and(|messages| {
+        messages.iter().any(|message| {
+            message["content"].as_array().is_some_and(|blocks| {
+                blocks
+                    .iter()
+                    .any(|block| matches!(block["type"].as_str(), Some("tool_use" | "tool_result")))
+            })
+        })
+    });
+    Some(if anthropic_tool || anthropic_block || details.get("system").is_some_and(|s| !s.is_null()) {
+        "anthropic"
+    } else {
+        "openai"
+    })
+}
+
 pub(crate) fn generation_body(request: &EngineRequest) -> Value {
     let mut body = json!({
         "prompt": request.prompt,
@@ -603,6 +659,13 @@ pub(crate) fn generation_body(request: &EngineRequest) -> Value {
         "max_tokens": request.max_tokens,
         "stop": request.stops,
     });
+    // The conversation as the client sent it, beside the flattened prompt (see `chat_api`): an engine that reads it
+    // renders the tools with its own template; an older plugin ignores it and reads the prompt
+    if request.chat_template {
+        if let Some(api) = chat_api(&request.request_details) {
+            body["chat"] = json!({ "api": api, "request": request.request_details });
+        }
+    }
     if let Some(session) = &request.session {
         body["session"] = json!(session);
     }
@@ -1725,6 +1788,34 @@ pub(crate) async fn engine_generate_route(
 mod tests {
     use super::*;
 
+    /// The undeploy that left the engine running: the poller drops its sender as the generation changes, and the
+    /// wait must end on the new generation instead of polling the finished receiver again (a panic before unload).
+    #[tokio::test]
+    async fn wait_for_end_survives_a_dropped_failure_sender_and_ends_on_the_new_generation() {
+        let (stop_tx, stop_rx) = tokio::sync::watch::channel(1u64);
+        let (failed_tx, failed_rx) = tokio::sync::oneshot::channel::<String>();
+        let (stale_tx, stale_rx) = tokio::sync::oneshot::channel::<String>();
+        drop(failed_tx);
+        drop(stale_tx);
+        let wait = tokio::spawn(wait_for_end(1, stop_rx, Some(failed_rx), Some(stale_rx)));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        stop_tx.send_replace(2);
+        let ended = tokio::time::timeout(Duration::from_secs(2), wait)
+            .await
+            .expect("the wait ends")
+            .expect("no panic");
+        assert_eq!(ended, None);
+    }
+
+    #[tokio::test]
+    async fn wait_for_end_reports_the_engine_failure() {
+        let (_stop_tx, stop_rx) = tokio::sync::watch::channel(1u64);
+        let (failed_tx, failed_rx) = tokio::sync::oneshot::channel::<String>();
+        failed_tx.send("Strata stopped".into()).unwrap();
+        let ended = wait_for_end(1, stop_rx, Some(failed_rx), None).await;
+        assert_eq!(ended.as_deref(), Some("Strata stopped"));
+    }
+
     #[test]
     fn plugin_reasoning_ndjson_stays_distinct_from_answer_text() {
         assert!(matches!(
@@ -1924,6 +2015,40 @@ mod tests {
         assert_eq!(trace.hops[2].prefill.processing_ms, 200, "the head's 500 ms prompt, less the 300 ms to b");
     }
 
+    /// Frames sent ahead (the micro-pipelining): their round trips overlap and outgrow the request. The hop's round
+    /// trip is the link's wall time, the wait behind the earlier frames is the earlier machine's queue and not the
+    /// network, and the head keeps the time of its own (a summed round trip left it with 0).
+    #[test]
+    fn overlapping_frames_count_the_link_s_wall_time_not_their_sum() {
+        use super::super::plugin_stage_link::{record_leg_queued, record_wall, LinkPhase};
+        let caps = vec![capability("strata")];
+        let plan = crate::pipeline::plan_from_steps(vec![step("a", 0, 19, &caps), step("b", 20, 39, &caps)]);
+        let code = "strata-overlap-test";
+        // 4 prompt pieces to a, sent together: a serves each in 200 ms, one after another, so they wait 0, 200, 400
+        // and 600 ms behind the ones before; the crossings take 50, 100, 100 and 100 ms. The link was busy 900 ms.
+        for k in 0..4u64 {
+            let queued = 200 * k;
+            let crossing = 50 * (k + 1).min(2);
+            let elapsed = std::time::Duration::from_millis(200 + queued + crossing);
+            record_leg_queued(code, "a", LinkPhase::Prefill, elapsed, 10, 1_000, 200, queued, "quic");
+        }
+        record_wall(code, "a", LinkPhase::Prefill, std::time::Duration::from_millis(900));
+        let mut trace = super::super::engine_telemetry::build_trace(
+            "t".into(),
+            "m",
+            &plan,
+            code,
+            &super::super::engine_telemetry::EngineReport::default(),
+        );
+        super::super::engine_telemetry::apply_stage_links(&mut trace, code, 1_000);
+        let earlier = &trace.hops[0].prefill;
+        assert_eq!(earlier.round_trip_ms, 900, "the link's wall time, not the 2,150 ms of summed round trips");
+        assert_eq!(earlier.node_queue_ms, 1_200.0, "0 + 200 + 400 + 600 behind the earlier pieces");
+        assert_eq!(earlier.network_ms, 350, "the crossings alone: 50 + 100 + 100 + 100");
+        assert_eq!(earlier.processing_ms, 800, "a's own work on the 4 pieces");
+        assert_eq!(trace.hops[1].prefill.processing_ms, 100, "the head's 1,000 ms prompt, less the 900 ms it waited on a");
+    }
+
     #[test]
     fn a_plan_runs_on_a_plugin_engine_when_every_step_is_one_of_its_slices() {
         let caps = vec![capability("strata")];
@@ -1992,6 +2117,10 @@ mod tests {
         let cfg =
             crate::runtime::NodeConfig::from_params(&crate::webui::RuntimeParams::default(), true);
         assert!(load_params(&cfg, &[0], &[], None).get("link").is_none());
+        assert!(load_params(&cfg, &[0], &[], None).get("mtp_draft_path").is_none());
+        let mut drafted = cfg.clone();
+        drafted.mtp_draft_path = Some("/m/dspark.gguf".into());
+        assert_eq!(load_params(&drafted, &[0], &[], None)["mtp_draft_path"], "/m/dspark.gguf");
         let link = json!({"token": "t", "prev_port": 4100});
         assert_eq!(
             load_params(&cfg, &[0], &[], Some(&link))["link"]["prev_port"],
@@ -2035,6 +2164,48 @@ mod tests {
         assert_eq!(load_params(&prefill, &[0], &[], None)["role"], "prefill");
         assert_eq!(load_params(&prefill, &[0], &[], None)["prefill_min_tokens"], 2048);
         assert!(load_params(&cfg, &[0], &[], None).get("role").is_none());
+    }
+
+    /// A request with tools also carries the conversation as the client sent it, so the engine renders the tools with
+    /// its own template (DeepSeek-V4.1 looped on the Qwen form the flattened prompt teaches); one without tools, or
+    /// whose prompt holds the gateway's RAG context, carries the prompt alone.
+    #[test]
+    fn a_request_with_tools_carries_the_client_s_conversation() {
+        let body_of = |details: Value| {
+            generation_body(&EngineRequest {
+                prompt: "User: oi".into(),
+                chat_template: true,
+                thinking_enabled: false,
+                max_tokens: 128,
+                stops: vec![],
+                session: None,
+                request_details: details,
+                probe_labels: vec![],
+                probe_prefix_bytes: None,
+                images: vec![],
+            })
+        };
+        let openai = json!({
+            "messages": [{"role": "user", "content": "oi"}],
+            "tools": [{"type": "function", "function": {"name": "write", "parameters": {"type": "object"}}}],
+        });
+        let body = body_of(openai.clone());
+        assert_eq!(body["chat"]["api"], "openai");
+        assert_eq!(body["chat"]["request"], openai);
+        assert_eq!(body["prompt"], "User: oi", "the flattened prompt stays, for an older plugin");
+
+        let anthropic = json!({
+            "system": "be brief",
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "oi"}]}],
+            "tools": [{"name": "write", "input_schema": {"type": "object"}}],
+        });
+        assert_eq!(body_of(anthropic)["chat"]["api"], "anthropic");
+
+        assert!(body_of(json!({"messages": [{"role": "user", "content": "oi"}]})).get("chat").is_none());
+        assert!(body_of(json!({"messages": [], "tools": []})).get("chat").is_none());
+        let mut with_rag = openai;
+        with_rag["rag"] = json!({"chunks": 2});
+        assert!(body_of(with_rag).get("chat").is_none(), "the prompt holds the RAG context");
     }
 
     #[test]

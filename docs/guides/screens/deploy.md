@@ -34,7 +34,7 @@ Drag machines from the strip at the bottom to the map. The planner places the ra
 ### Read the verdict
 When the selection cannot be deployed, a red line at the top says why - for example, which layers are in no chosen slice. The Deploy button stays off until the plan closes.
 ### Deploy
-Each machine extracts or loads its own range. The deployment shows up in the Dashboard as soon as the machines confirm they are serving.
+Each machine extracts or loads its own range. A window follows the deploy step by step until it is ready or fails, with the reason; **Switch to dashboard** takes you to the Dashboard, and **Close** leaves the deploy running, its result staying in the bell. The deployment shows up in the Dashboard as soon as the machines confirm they are serving. A deployment is deployed once at a time: pressing Deploy again while it comes up only reopens that window.
 :::
 
 :::diagram lifecycle

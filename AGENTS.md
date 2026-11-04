@@ -259,12 +259,21 @@ breaks the whole product.
   files and restarts POM; the Plugins screen lists it in the same updates
   dialog but only through its own routes. →
   `docs/subsystems/enterprise-licensing.md`
-- **First-version policy.** The product has not shipped yet. Therefore, do not
-  keep in the runtime compatibility code, adapters or fallbacks for old protocol
-  versions - especially the inference v1/v2 formats. The `v1` of
-  `frame/v1-batch` identifies the first current official contract, not an
-  obligation to support a legacy protocol; future changes must evolve that
-  contract explicitly. → `inference.md`
+- **Compatibility policy: POM has launched, avoid breaking changes.** Released
+  nodes, plugins and the state they saved are in people's hands, and a network
+  mixes versions while its machines update one at a time. A change to a contract
+  between machines or programs (the inference frames and the capabilities a node
+  announces, the gossip and peer APIs, the plugin C ABI and the IPC of
+  `crates/enterprise-protocol`, the HTTP and OpenAI-compatible routes) or to what
+  is persisted (`pom.json`, the databases, slice manifests, the last-slice
+  journal) must keep working with what was already released: add optional fields
+  and new capabilities instead of changing or removing existing ones, keep reading
+  the earlier form of a file and migrate it on load, and announce a new version of
+  a contract beside the old one until the old one is retired on purpose. A break
+  that cannot be avoided is a decision written in the release notes, never a side
+  effect. `frame/v1-batch` is the official inference contract; the v1/v2 frames
+  from before the launch never shipped and still get no compatibility code.
+  → `inference.md`
 - **The deployment's `max_new_tokens` bounds one generation, not the request.**
   It was never a backend cap - the `infer_server` does not know it. It caps one
   **leg** of the gateway's continuation loop, which crosses the leg in the same KV

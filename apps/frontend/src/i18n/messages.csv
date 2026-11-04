@@ -187,6 +187,7 @@ canvas.layers,layers,camadas
 canvas.layersAllGpu,{count} on GPU,{count} na GPU
 canvas.layersOnCpu,"{cpu} layer{cpu, plural, =1 {} other {s}} did not fit on the GPU","{cpu} camada{cpu, plural, =1 {} other {s}} não coube{cpu, plural, =1 {} other {ram}} na GPU"
 canvas.layersSplit,{gpu} GPU · {cpu} CPU,{gpu} GPU · {cpu} CPU
+canvas.layersOnCpuWarning,"{cpu} of {served} layers on this machine run on the CPU: its VRAM did not fit the whole slice, so inference here is much slower. Free VRAM, lower the context or the sessions, or give this machine fewer layers.","{cpu} de {served} camadas desta máquina rodam na CPU: a VRAM dela não coube a fatia inteira, então a inferência aqui fica bem mais lenta. Libere VRAM, reduza o contexto ou as sessões, ou dê menos camadas a esta máquina."
 canvas.legendInactive,Possible traffic,Tráfego possível
 canvas.legendParallel,Parallel route,Rota paralela
 canvas.legendPrimary,Live route,Rota em uso
@@ -242,8 +243,11 @@ chat.composerHint,"Enter sends, Shift+Enter adds a line.","Enter envia, Shift+En
 chat.copyError,Copy error,Copiar erro
 chat.coverageUnavailable,coverage unavailable,cobertura indisponível
 chat.delete,Delete {title},Apagar {title}
+chat.dictationDenied,"Allow the microphone and speech recognition for POM in System Settings, under Privacy & Security.","Permita o microfone e o reconhecimento de fala para o POM em Ajustes do Sistema, em Privacidade e Segurança."
+chat.dictationFailed,Dictation failed,O ditado falhou
 chat.dictationStart,Start dictation,Iniciar ditado
 chat.dictationStop,Stop dictation,Parar ditado
+chat.dictationUnavailable,Speech recognition is not available right now.,O reconhecimento de fala não está disponível agora.
 chat.dropHint,Drop a file,Solte um ficheiro
 chat.dropRejectedDetail,No file was found in the drop.,Nenhum ficheiro foi encontrado no descarte.
 chat.emptyResponse,The network replied without any tokens. Check the Dashboard to make sure layer coverage is complete.,A rede respondeu sem nenhum token. Confira no Painel se a cobertura de camadas está fechada.
@@ -311,6 +315,18 @@ chat.noModelStep.talk,Talk to the network,Conversar com a rede
 chat.noModelStep.talkDetail,Come back here and ask anything.,Volte aqui e pergunte o que quiser.
 chat.openLargerWindow,Open the chat in a larger window,Abrir o chat em uma janela maior
 chat.openLargerWindowShort,Larger window,Janela maior
+chat.pdfBusy,"Wait for the PDF being read to finish, or cancel it.","Espere terminar a leitura do PDF em andamento, ou cancele."
+chat.pdfCancel,Cancel,Cancelar
+chat.pdfEmpty,No text could be read from this PDF.,Não foi possível ler nenhum texto deste PDF.
+chat.pdfInvalid,This file is not a valid PDF.,Este arquivo não é um PDF válido.
+chat.pdfOcrBadge,OCR,OCR
+chat.pdfOcrBadgeTitle,"{pages, plural, one {# page was read} other {# pages were read}} from an image, and may hold misread words.","{pages, plural, one {# página foi lida} other {# páginas foram lidas}} de uma imagem e podem ter palavras trocadas."
+chat.pdfPassword,This PDF is protected by a password. Remove the protection and attach it again.,Este PDF é protegido por senha. Remova a proteção e anexe de novo.
+chat.pdfReading,Reading {name}...,Lendo {name}...
+chat.pdfReadingOcr,Reading {name} from images: page {page} of {pages},Lendo {name} a partir de imagens: página {page} de {pages}
+chat.pdfTooLarge,The limit for a PDF is {megabytes} MB.,O limite para um PDF é de {megabytes} MB.
+chat.pdfTooManyPages,"This PDF has {pages} pages, and the limit is {limit}.","Este PDF tem {pages} páginas, e o limite é {limit}."
+chat.pdfTooManyScanned,"This PDF has {pages} scanned pages, and the limit is {limit}.","Este PDF tem {pages} páginas escaneadas, e o limite é {limit}."
 chat.placeholder,Write to the network…,Escreva para a rede…
 chat.prompt.1,Ask any piece of the mind...,Pergunte a qualquer pedaço da mente...
 chat.prompt.2,Every piece is listening. What do you want to know?,Todas as peças estão ouvindo. O que você quer saber?
@@ -431,6 +447,10 @@ dashboard.flow,Flow,Fluxo
 dashboard.free,free,livres
 dashboard.gpuPower,Power,Potência
 dashboard.gpuProcesses,GPU processes,Processos na GPU
+dashboard.otherGpuProcesses,Other processes,Outros processos
+dashboard.modelStorage,Model storage,Armazenamento de modelos
+dashboard.sharedDisksNote,"Other machines see only one Model storage total: the free space of the volumes that can receive model slices, without their names.","As outras máquinas veem só um total de Armazenamento de modelos: o espaço livre dos volumes que podem receber fatias de modelo, sem os nomes deles."
+dashboard.sharedProcessesNote,"Other machines see only POM's processes, by name; every other process is shown to them as one Other processes total.","As outras máquinas veem só os processos do POM, pelo nome; todos os outros aparecem para elas como um único total de Outros processos."
 dashboard.gpuTemperature,"GPU temperature{__truthy_label, select, false {} other { · {label}}}","Temperatura da GPU{__truthy_label, select, false {} other { · {label}}}"
 dashboard.gpuUsage,Usage,Uso
 dashboard.gpus,GPUs,GPUs
@@ -808,6 +828,14 @@ deploy.speculative,Speculative decoding,Decodificação especulativa
 deploy.speculativeHint,"Guesses the next tokens from repetitions already in the text and checks them in a single pass through the pipeline, so one internet round trip can yield several tokens. A wrong guess is discarded, never emitted - the answer is the same either way.","Adivinha os próximos tokens a partir de repetições que já estão no texto e confere todos numa passagem só pelo pipeline, então uma ida e volta pela internet pode render vários tokens. Palpite errado é descartado, nunca sai na resposta - o texto gerado é o mesmo."
 deploy.startFailed,Deployment did not start,A implantação não começou
 deploy.started,Deployment started,Implantação começou
+deployProgress.runningTitle,Deploying,Implantando
+deployProgress.doneTitle,Deployment ready,Implantação pronta
+deployProgress.failedTitle,Deployment failed,A implantação falhou
+deployProgress.starting,Starting the deployment…,Iniciando a implantação…
+deployProgress.doneDetail,The model is in service on the network.,O modelo está em serviço na rede.
+deployProgress.failedDetail,The deployment did not complete.,A implantação não terminou.
+deployProgress.closeHint,"Closing this window does not stop the deployment; its result also stays in the bell.","Fechar esta janela não interrompe a implantação; o resultado também fica no sino."
+deployProgress.dashboard,Switch to dashboard,Ir para o painel
 deploy.startedDetail,"Follow it below or from the bell. Progress comes from the nodes, so reloading does not lose anything.","Acompanhe abaixo ou no sino. O progresso vem dos nós, então recarregar não perde nada."
 deploy.subtitle,"Take a model a cluster machine already has and put it into service on the network — a set of shards across machines, or one whole file on one machine.","Pegue um modelo que alguma máquina do cluster já tem e coloque-o para atender na rede - um conjunto de fatias espalhado pelas máquinas, ou um arquivo inteiro numa máquina só."
 deploy.thisDeployment,This deployment,Nesta implantação
@@ -898,7 +926,7 @@ deployStudio.selectMachine,Select a machine on the canvas.,Selecione uma máquin
 deployStudio.showInspector,Show inspector,Mostrar inspetor
 deployStudio.size,Size,Tamanho
 deployStudio.tabGlobal,Global,Globais
-deployStudio.tabMachine,Machine: {name},Máquina: {name}
+deployStudio.tabMachine,Machine,Máquina
 deployStudio.technicalModel,Technical model,Modelo técnico
 deployStudio.tensorParallel,Tensor parallel,Tensor paralelo
 deployStudio.tpGroup,Tensor Parallelism group,Grupo Tensor Parallelism
@@ -1970,6 +1998,9 @@ notifications.reject,Reject,Recusar
 notifications.requestApproved,{name} approved this machine,{name} aprovou esta máquina
 notifications.requestRejected,{name} declined this machine,{name} recusou esta máquina
 notifications.started,started,começou
+notifications.jobDone,finished,terminou
+notifications.jobFailed,failed,falhou
+notifications.jobDismiss,Remove from the bell,Remover do sino
 notifications.state.cancelled,cancelled,cancelada
 notifications.state.done,completed · {size},concluída · {size}
 notifications.state.failed,failed,falhou
@@ -2522,6 +2553,8 @@ remoteModels.remaining,{time} remaining,{time} restantes
 remoteModels.requiredSpace,Space required,Espaço necessário
 remoteModels.results,"{count}{count, plural, =1 { result} other { results}}","{count}{count, plural, =1 { resultado} other { resultados}}"
 remoteModels.retry,Try again,Tentar de novo
+remoteModels.dismiss,Dismiss,Descartar
+remoteModels.dismissFailed,Could not dismiss the download,Não foi possível descartar o download
 remoteModels.revision,Revision,Revisão
 remoteModels.savedTo,Saved to,Salvo em
 remoteModels.searchAria,Search remote models,Buscar modelos remotos

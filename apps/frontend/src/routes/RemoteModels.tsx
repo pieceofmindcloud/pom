@@ -335,6 +335,10 @@ export function RemoteModels() {
         onClose={() => setDownload(null)}
         onStarted={() => {
           void queryClient.invalidateQueries({ queryKey: keys.jobs });
+          // The download dialog opens over the model's details; closing only
+          // itself left the details on screen, as if nothing had started.
+          // The progress shows in the downloads panel behind them.
+          setDetailsRepo(null);
         }}
       />
     </div>

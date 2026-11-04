@@ -236,7 +236,9 @@ local-only notice. Routes:
   the principal. `WholeModels` keeps the catalog's projector column and opens
   the same editor in a window. The deploy inspector offers the same pickers
   (head projector, tail MTP draft) prefilled from the link, and says whether
-  the target already has the file or will copy it.
+  the target already has the file or will copy it. With a plugin's inference
+  service, the draft picker only shows for a model of its
+  `draft_architectures`: another engine would ignore the choice.
 - `/deploy` -> DeployModel (a top-level entry to put slices into service)
 - `/deployments` -> Deployments (the record of deployments, activating the
   default one, versions per `deploy_id`, redeploying by version or by new
@@ -1000,7 +1002,7 @@ open. Disks are **one gauge per mounted partition** (`disks` from
 `/api/ui/cluster`), because a machine with NVMe and HDD, or with separate `/`
 and `/data`, showed up as a single volume - and whoever decides where a 40 GB
 GGUF fits did not see the disk where it would fit. A node that does not publish
-the list yet falls back to the project volume. Next to "Add node" there is
+the list yet falls back to the project volume. Another member arrives already trimmed (`webui::catalog::shared_system`, applied when `/api/ui/node` is asked by a node, signed or marked internal): one volume with no mount point, the space of the volumes holding its model and slice folders, labelled "Model storage", and only POM's GPU processes by binary name, the rest as one `pid` 0 entry labelled "Other processes". This node's own card keeps every volume and process, with a lock note (`SharedSummaryNote`) under the disks and in the GPU processes saying the other machines see only the summary. Next to "Add node" there is
 `UndeployPipeline` when a model is live, but both controls are only mounted
 when `/api/ui/node` reports the `admin` profile. The server also refuses
 `POST /api/ui/deploy/node`, `POST /api/ui/deploy/node/remove` and
@@ -1199,8 +1201,18 @@ besides the turns:
   normal images. The aspect ratio is kept, and the bubble and the pending
   attachment show "Resized automatically" when the image was changed. Sent images
   stay whole in the bubble, with a caption and alternative text.
-- The dictation button only renders when the browser exposes Web Speech, and it
-  dictates in the interface's locale.
+- A PDF becomes text in the browser before it is attached (`lib/pdfDocument.ts`):
+  text pages are read as they are, and a page with almost no text goes through
+  OCR, in Portuguese and English, only that page. The attachment is that text,
+  so the context check measures the text and not the file. Limits: 100 MB, 1000
+  pages and 100 scanned pages; above them, or for a protected or unreadable PDF,
+  the file is refused whole with the reason. The composer shows the reading with
+  a Cancel and does not send meanwhile, and an attachment with pages read from
+  images carries an `OCR` mark because it can hold misread words. Other binary
+  formats are not converted.
+- The dictation button only renders when the browser exposes Web Speech or the
+  macOS app offers its native bridge, and it dictates in the interface's locale.
+  A failure shows the reason in a toast; silence does not.
 - The `Think` button uses the `thinking` field of the same capabilities read
   and only shows up when the head's global `no_thinking` is off. The choice is
   sent as `thinking_enabled` on each Chat call and stays in the `ChatSession`
@@ -1245,9 +1257,10 @@ besides the turns:
   textual content and the multimodal parts stay in `requestContent`, so the
   history resends the same structured request. Each pending attachment can be
   removed without erasing the draft.
-- The microphone button only shows up when `SpeechRecognition` or
-  `webkitSpeechRecognition` exists; the transcription uses the UI locale when
-  possible and goes straight into the text field.
+- The microphone button only shows up when `SpeechRecognition`,
+  `webkitSpeechRecognition` or the app's `pomDictation` bridge exists; the bridge
+  comes first (`lib/nativeDictation.ts`). The transcription uses the UI locale
+  when possible and goes straight into the text field.
 
 `ChatSessionProvider` shares the active session and the actions between the
 Chat and the Sidebar. On `visitor`, the Sidebar uses `ChatSessionList` as the main

@@ -23,7 +23,7 @@ Quando mais de uma máquina tem a primeira camada, este seletor escolhe por qual
 ### Think
 Aparece só para um modelo que sabe pensar antes de responder. A escolha fica com a conversa até você mudar.
 ### Anexos
-O clipe adiciona arquivos à mensagem; imagens vão para modelos que têm visão.
+O clipe adiciona um ou mais arquivos à mensagem; imagens vão para modelos que têm visão. Um PDF vira texto antes do envio, e páginas escaneadas são lidas por OCR, que leva alguns segundos por página e pode trocar uma palavra, por isso esse anexo mostra uma marca OCR. Um PDF pode ter até 100 MB, 1000 páginas e 100 páginas escaneadas.
 :::
 
 ## Depois de uma resposta

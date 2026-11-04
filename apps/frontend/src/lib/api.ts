@@ -413,6 +413,12 @@ export function cancelRemoteModelDownload(downloadId: string) {
   );
 }
 
+export function dismissRemoteModelDownload(downloadId: string) {
+  return api.post<{ download_id: string; dismissed: boolean }>(
+    `/api/ui/model-provider/downloads/${encodeURIComponent(downloadId)}/dismiss`,
+  );
+}
+
 export function retryRemoteModelDownload(downloadId: string) {
   return api.post<{ download_id: string }>(
     `/api/ui/model-provider/downloads/${encodeURIComponent(downloadId)}/retry`,

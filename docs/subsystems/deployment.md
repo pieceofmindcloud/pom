@@ -612,7 +612,11 @@ add up. `Step.capacity` (`CapacityPreview`) is the step alone.
    `copies` (`planned_copies`: every slice, rank or sidecar that crosses
    machines) is not empty unless the request carries `allow_transfers: true`,
    creates the job ("Deploy {deployment_name} on {n} nodes") and spawns the
-   execution.
+   execution. The job is claimed by `claim_deploy_job`, which records its
+   `deployment_name` and refuses with 409 `deploy_in_progress` (and the running
+   `job_id`) while a `deploy` job of the same name is still running, checked and
+   recorded under the jobs lock; the screen then follows that job in its
+   progress window (`DeployProgressModal`) instead of reporting an error.
 2. `run` builds the list of `Pull`s - one unit of movement per slice that has
    to reach a target. For pre-sliced TP, the unit is each `TpTarget` that does
    not have the rank on the target yet. For a merged step, it is one `Pull`

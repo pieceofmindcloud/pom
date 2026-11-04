@@ -446,6 +446,8 @@ dashboard.flow,Flow,Fluxo
 dashboard.free,free,livres
 dashboard.gpuPower,Power,Potência
 dashboard.gpuProcesses,GPU processes,Processos na GPU
+dashboard.otherGpuProcesses,Other processes,Outros processos
+dashboard.modelStorage,Model storage,Armazenamento de modelos
 dashboard.gpuTemperature,"GPU temperature{__truthy_label, select, false {} other { · {label}}}","Temperatura da GPU{__truthy_label, select, false {} other { · {label}}}"
 dashboard.gpuUsage,Usage,Uso
 dashboard.gpus,GPUs,GPUs

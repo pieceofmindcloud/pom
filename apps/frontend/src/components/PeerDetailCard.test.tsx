@@ -514,3 +514,38 @@ describe("cardRange", () => {
     expect(cardRange(fakeSlicePeer("a", 4, 9))).toEqual([4, 9]);
   });
 });
+
+describe("another member's system, as the node shares it", () => {
+  afterEach(cleanup);
+
+  const shared = fakePeer({
+    node_id: "m",
+    node: fakeNode({
+      node_id: "m",
+      short_id: "m",
+      hostname: "membro",
+      system: fakeSystem({
+        disk: { total_mb: 1000, free_mb: 400, mount_point: "", device: "" },
+        disks: [{ total_mb: 1000, free_mb: 400, mount_point: "", device: "" }],
+        gpu_processes: [
+          { pid: 7, name: "pom", used_mb: 2048 },
+          { pid: 0, name: "", used_mb: 512 },
+        ],
+      }),
+    }),
+  });
+
+  it("names the one volume as model storage, with no mount point", () => {
+    mount(shared);
+    expect(screen.getByText("Armazenamento de modelos")).toBeTruthy();
+    expect(screen.queryByText(/Disco ·/)).toBeNull();
+  });
+
+  it("shows the other processes as one total, with no pid", () => {
+    mount(shared);
+    fireEvent.click(screen.getByText("Processos na GPU"));
+    expect(screen.getByText("Outros processos")).toBeTruthy();
+    expect(screen.getByText("#7")).toBeTruthy();
+    expect(screen.queryByText("#0")).toBeNull();
+  });
+});

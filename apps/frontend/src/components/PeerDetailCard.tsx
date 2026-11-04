@@ -616,7 +616,9 @@ export function PeerDetailCard({
                 <DiskMeter
                   key={disk.mount_point + disk.device}
                   disk={disk}
-                  label={t("dashboard.disk", { path: disk.mount_point || "—" })}
+                  // Another member's volumes arrive as one, the space where slices can go,
+                  // with no mount point (`system_for_members` on the node).
+                  label={disk.mount_point ? t("dashboard.disk", { path: disk.mount_point }) : t("dashboard.modelStorage")}
                 />
               ))}
             </div>
@@ -753,7 +755,8 @@ export function PeerDetailCard({
                     className="flex items-baseline justify-between gap-3 font-mono text-[0.7rem]"
                   >
                     <span className="truncate text-muted">
-                      {p.name} <span className="text-faint">#{p.pid}</span>
+                      {/* `pid` 0 is every process that is not POM's, added up, with no name. */}
+                      {p.pid === 0 ? t("dashboard.otherGpuProcesses") : <>{p.name} <span className="text-faint">#{p.pid}</span></>}
                     </span>
                     <span className="shrink-0 text-fg">{megabytes(p.used_mb)}</span>
                   </li>

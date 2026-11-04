@@ -1002,7 +1002,7 @@ open. Disks are **one gauge per mounted partition** (`disks` from
 `/api/ui/cluster`), because a machine with NVMe and HDD, or with separate `/`
 and `/data`, showed up as a single volume - and whoever decides where a 40 GB
 GGUF fits did not see the disk where it would fit. A node that does not publish
-the list yet falls back to the project volume. Next to "Add node" there is
+the list yet falls back to the project volume. Another member arrives already trimmed (`webui::catalog::system_for_members`, applied when `/api/ui/node` is asked by a node): one volume with no mount point, the space of the volumes holding its model and slice folders, labelled "Model storage", and only POM's GPU processes by binary name, the rest as one `pid` 0 entry labelled "Other processes". This node's own card keeps every volume and process. Next to "Add node" there is
 `UndeployPipeline` when a model is live, but both controls are only mounted
 when `/api/ui/node` reports the `admin` profile. The server also refuses
 `POST /api/ui/deploy/node`, `POST /api/ui/deploy/node/remove` and

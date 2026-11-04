@@ -32,6 +32,8 @@ The **Flow** view draws the path of a question: each machine is a card with its 
 
 The **Details** view lists the whole network, not only the pipeline: the machines of the deployment first, in layer order, and then the machines connected without a slice, which are exactly the ones that disappear when only the pipeline is looked at. With no model in service, Details is where the screen opens.
 
+For privacy, another machine shares less about itself than you see of your own: its disks come as one **Model storage** gauge, the free space of the volumes that can receive model slices, and its GPU processes list only POM's, with everything else added up as **Other processes**.
+
 :::note The panel on the right
 It is the read-only view of the deployment's active version: the same inspector the Deploy screen edits, with the context, sessions, sampling and the POM settings it came up with.
 :::

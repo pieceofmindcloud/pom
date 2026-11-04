@@ -301,4 +301,8 @@ without repeating mount points and without macOS infrastructure volumes
 rule drops `/boot/efi`, `/boot` and `/efi`, which are infrastructure mounts on
 POSIX systems too; Windows has no `df` and only reports the project volume. It
 is `-k`, not `-m`: `-P` forces 512-byte blocks on macOS and ignores `-m`,
-which would make every volume look 2048 times larger.
+which would make every volume look 2048 times larger. Another node that
+reads `/api/ui/node` gets neither list as is: `system_for_members` gives it one
+volume (the volumes of the model and slice folders, summed once each, with no
+mount point or device) and only POM's GPU processes, the rest summed as one
+`pid` 0 entry with no name.

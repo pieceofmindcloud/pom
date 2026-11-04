@@ -1972,6 +1972,40 @@ mod tests {
         assert_eq!(trace.hops[2].prefill.processing_ms, 200, "the head's 500 ms prompt, less the 300 ms to b");
     }
 
+    /// Frames sent ahead (the micro-pipelining): their round trips overlap and outgrow the request. The hop's round
+    /// trip is the link's wall time, the wait behind the earlier frames is the earlier machine's queue and not the
+    /// network, and the head keeps the time of its own (a summed round trip left it with 0).
+    #[test]
+    fn overlapping_frames_count_the_link_s_wall_time_not_their_sum() {
+        use super::super::plugin_stage_link::{record_leg_queued, record_wall, LinkPhase};
+        let caps = vec![capability("strata")];
+        let plan = crate::pipeline::plan_from_steps(vec![step("a", 0, 19, &caps), step("b", 20, 39, &caps)]);
+        let code = "strata-overlap-test";
+        // 4 prompt pieces to a, sent together: a serves each in 200 ms, one after another, so they wait 0, 200, 400
+        // and 600 ms behind the ones before; the crossings take 50, 100, 100 and 100 ms. The link was busy 900 ms.
+        for k in 0..4u64 {
+            let queued = 200 * k;
+            let crossing = 50 * (k + 1).min(2);
+            let elapsed = std::time::Duration::from_millis(200 + queued + crossing);
+            record_leg_queued(code, "a", LinkPhase::Prefill, elapsed, 10, 1_000, 200, queued, "quic");
+        }
+        record_wall(code, "a", LinkPhase::Prefill, std::time::Duration::from_millis(900));
+        let mut trace = super::super::engine_telemetry::build_trace(
+            "t".into(),
+            "m",
+            &plan,
+            code,
+            &super::super::engine_telemetry::EngineReport::default(),
+        );
+        super::super::engine_telemetry::apply_stage_links(&mut trace, code, 1_000);
+        let earlier = &trace.hops[0].prefill;
+        assert_eq!(earlier.round_trip_ms, 900, "the link's wall time, not the 2,150 ms of summed round trips");
+        assert_eq!(earlier.node_queue_ms, 1_200.0, "0 + 200 + 400 + 600 behind the earlier pieces");
+        assert_eq!(earlier.network_ms, 350, "the crossings alone: 50 + 100 + 100 + 100");
+        assert_eq!(earlier.processing_ms, 800, "a's own work on the 4 pieces");
+        assert_eq!(trace.hops[1].prefill.processing_ms, 100, "the head's 1,000 ms prompt, less the 900 ms it waited on a");
+    }
+
     #[test]
     fn a_plan_runs_on_a_plugin_engine_when_every_step_is_one_of_its_slices() {
         let caps = vec![capability("strata")];

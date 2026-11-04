@@ -19,7 +19,7 @@ Type a model, an author or a related term. **Only GGUF** keeps the list to files
 ### Open the details
 Each repository lists its GGUF files with their sizes, and the license. A gated model is marked before any download.
 ### Download
-The dialog shows the folder the file goes to. The download keeps running if you leave the screen or reload it, and it shows up in Transfers too.
+The dialog shows the folder the file goes to. Once the download starts, the dialog and the model details close and its progress shows in the downloads panel. The download keeps running if you leave the screen or reload it, and it shows up in Transfers too.
 :::
 
 :::note Signing in is optional

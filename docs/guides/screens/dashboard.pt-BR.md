@@ -32,7 +32,7 @@ A visão **Fluxo** desenha o caminho de uma pergunta: cada máquina é um cartã
 
 A visão **Detalhes** lista a rede inteira, não só o pipeline: primeiro as máquinas da implantação, na ordem das camadas, e depois as máquinas conectadas sem fatia, que são justamente as que somem quando se olha só o pipeline. Sem modelo em serviço, a tela abre em Detalhes.
 
-Por privacidade, toda máquina compartilha a mesma visão resumida de si, e a sua mostra exatamente o que as outras veem dela: seus discos aparecem como um único medidor de **Armazenamento de modelos**, o espaço livre dos volumes que podem receber fatias de modelo, e seus processos na GPU listam só os do POM, com o resto somado em **Outros processos**.
+Por privacidade, outra máquina compartilha só um resumo de si: seus discos aparecem como um único medidor de **Armazenamento de modelos**, o espaço livre dos volumes que podem receber fatias de modelo, e seus processos na GPU listam só os do POM, com o resto somado em **Outros processos**. O cartão da sua própria máquina mostra tudo, com um aviso embaixo dos discos e nos processos da GPU dizendo que as outras máquinas veem só esse resumo.
 
 :::note O painel da direita
 É a leitura da versão ativa da implantação: o mesmo inspetor que a tela Implantar edita, com o contexto, as sessões, a amostragem e as configurações do POM com que ela subiu.

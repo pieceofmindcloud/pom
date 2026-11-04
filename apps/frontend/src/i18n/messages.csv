@@ -448,6 +448,8 @@ dashboard.gpuPower,Power,Potência
 dashboard.gpuProcesses,GPU processes,Processos na GPU
 dashboard.otherGpuProcesses,Other processes,Outros processos
 dashboard.modelStorage,Model storage,Armazenamento de modelos
+dashboard.sharedDisksNote,"Other machines see only one Model storage total: the free space of the volumes that can receive model slices, without their names.","As outras máquinas veem só um total de Armazenamento de modelos: o espaço livre dos volumes que podem receber fatias de modelo, sem os nomes deles."
+dashboard.sharedProcessesNote,"Other machines see only POM's processes, by name; every other process is shown to them as one Other processes total.","As outras máquinas veem só os processos do POM, pelo nome; todos os outros aparecem para elas como um único total de Outros processos."
 dashboard.gpuTemperature,"GPU temperature{__truthy_label, select, false {} other { · {label}}}","Temperatura da GPU{__truthy_label, select, false {} other { · {label}}}"
 dashboard.gpuUsage,Usage,Uso
 dashboard.gpus,GPUs,GPUs

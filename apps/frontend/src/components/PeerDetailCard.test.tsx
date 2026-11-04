@@ -515,7 +515,7 @@ describe("cardRange", () => {
   });
 });
 
-describe("a machine's system, as its node shares it", () => {
+describe("another member's system, as its node shares it", () => {
   afterEach(cleanup);
 
   const shared = fakePeer({
@@ -539,6 +539,37 @@ describe("a machine's system, as its node shares it", () => {
     mount(shared);
     expect(screen.getByText("Armazenamento de modelos")).toBeTruthy();
     expect(screen.queryByText(/Disco ·/)).toBeNull();
+  });
+
+  it("says nothing about sharing on another member's card", () => {
+    mount(shared);
+    expect(screen.queryByTestId("shared-summary-note")).toBeNull();
+  });
+
+  it("tells the operator, on this machine's own card, that only a summary is shared", () => {
+    const own = fakePeer({
+      ...shared,
+      is_self: true,
+      node: fakeNode({
+        node_id: "m",
+        short_id: "m",
+        hostname: "aqui",
+        system: fakeSystem({
+          disks: [{ total_mb: 1000, free_mb: 400, mount_point: "/dados", device: "/dev/sdb1" }],
+          gpu_processes: [{ pid: 9, name: "/usr/bin/blender", used_mb: 900 }],
+        }),
+      }),
+    });
+    mount(own);
+    // The operator sees its own machine as is...
+    expect(screen.getByText("Disco · /dados")).toBeTruthy();
+    fireEvent.click(screen.getByText("Processos na GPU"));
+    expect(screen.getByText("/usr/bin/blender")).toBeTruthy();
+    // ...and is told, next to the disks and the processes, what the others see.
+    const notes = screen.getAllByTestId("shared-summary-note").map((note) => note.textContent);
+    expect(notes).toHaveLength(2);
+    expect(notes[0]).toMatch(/Armazenamento de modelos/);
+    expect(notes[1]).toMatch(/Outros processos/);
   });
 
   it("shows the other processes as one total, with no pid", () => {

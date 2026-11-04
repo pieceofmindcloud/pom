@@ -14,7 +14,7 @@
  */
 import clsx from "clsx";
 import { motion } from "framer-motion";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, Lock } from "lucide-react";
 import { type ReactNode } from "react";
 import { Modal } from "./Confirm";
 import { GpuTemperature } from "./GpuTemperature";
@@ -341,6 +341,20 @@ const FALLBACK_THERMAL_POLICY: ThermalPolicy = {
   cooldown_secs: 30,
 };
 
+/**
+ * On this machine's own card: what is shown here in full leaves the machine only
+ * as a summary (`shared_system` on the node), so the operator is not led to think
+ * the other members see the same detail.
+ */
+function SharedSummaryNote({ text }: { text: string }) {
+  return (
+    <p data-testid="shared-summary-note" className="flex items-start gap-1.5 text-[0.66rem] text-faint sm:col-span-2">
+      <Lock className="mt-px h-3 w-3 shrink-0" aria-hidden />
+      <span>{text}</span>
+    </p>
+  );
+}
+
 export function PeerDetailCard({
   peer,
   index,
@@ -616,11 +630,12 @@ export function PeerDetailCard({
                 <DiskMeter
                   key={disk.mount_point + disk.device}
                   disk={disk}
-                  // Every machine's volumes arrive as one, the space where slices can go,
-                  // with no mount point (`shared_system` on the node).
+                  // Another member's volumes arrive as one, the space where slices can go,
+                  // with no mount point (`shared_system` on its node).
                   label={disk.mount_point ? t("dashboard.disk", { path: disk.mount_point }) : t("dashboard.modelStorage")}
                 />
               ))}
+              {peer.is_self && <SharedSummaryNote text={t("dashboard.sharedDisksNote")} />}
             </div>
           </div>
 
@@ -748,6 +763,11 @@ export function PeerDetailCard({
 
           {system && system.gpu_processes.length > 0 && (
             <Accordion title={t("dashboard.gpuProcesses")}>
+              {peer.is_self && (
+                <div className="px-3 pb-1.5">
+                  <SharedSummaryNote text={t("dashboard.sharedProcessesNote")} />
+                </div>
+              )}
               <ul className="space-y-0.5 px-3 pb-2">
                 {system.gpu_processes.map((p) => (
                   <li

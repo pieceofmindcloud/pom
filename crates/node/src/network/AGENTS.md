@@ -137,7 +137,12 @@ dedicated or member, with iroh's hole punching), are in
   announce signature binds the announce to its endpoint, but does not replace the
   membership proof. Every 5 s `apply_policy` refreshes the relay gate's members and
   URL, the member relays in use, the gossip membership, the published endpoint
-  addresses and the reachability from the NAT report.
+  addresses and the reachability from the NAT report. A gossip join is asked
+  once per peer (`PolicyState::joined`), and a node with no neighbor asks its
+  known peers again every 30 s; a peer pkarr finds again while it is neither
+  connected nor an active neighbor is asked to join again, at most once per
+  30 s (`PolicyState::forget_failed_join`), so a first join that failed while
+  that peer was starting does not leave the node out until a restart.
 - `identity.rs` - the node's **only** Ed25519 key and the `node_id` (SHA256 of
   the pubkey). It lives in `<project_root>/.pom-node.key` (or `$POM_NODE_KEY`).
   The endpoint id (`secret_key`, the hex of the pubkey), the trust chain's

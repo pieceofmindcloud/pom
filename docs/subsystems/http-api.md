@@ -1015,7 +1015,10 @@ cluster measurement.
 component on this node. `POST /api/ui/image-deploy`, `GET /api/ui/image-deployments`
 and `POST /api/ui/image-undeploy` (`AnyAdmin`) deploy, list and undeploy an
 image model by component from the node the admin uses. The contracts are
-`deployment.md`, section 1.7.
+`deployment.md`, section 1.7. A plugin reaches the same list, survey, deploy
+and undeploy through its loopback host API (`/api/plugin-host/image-*`,
+`plugins-ui.md`) only when its node is a principal or admin: the plugin acts
+with that node's own authority, and any other role answers 403.
 
 ### Token budgets, checked before the pipeline
 

@@ -65,6 +65,22 @@ pub(super) fn routes() -> Router<GatewayState> {
             get(crate::plugin_host_api::components),
         )
         .route(
+            "/api/plugin-host/image-deployments",
+            get(crate::plugin_host_api::image_deployments),
+        )
+        .route(
+            "/api/plugin-host/image-files",
+            get(crate::plugin_host_api::image_files),
+        )
+        .route(
+            "/api/plugin-host/image-deploy",
+            post(crate::plugin_host_api::image_deploy),
+        )
+        .route(
+            "/api/plugin-host/image-undeploy",
+            post(crate::plugin_host_api::image_undeploy),
+        )
+        .route(
             "/api/plugin-host/image-job/begin",
             post(crate::plugin_host_api::image_job_begin),
         )

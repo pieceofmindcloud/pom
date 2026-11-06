@@ -343,7 +343,7 @@ pub(crate) async fn deploy_image(
     request: ImageDeployRequest,
 ) -> Result<String, String> {
     validate(&request, machines)?;
-    let deploy_id = format!("img-{}", &hex::encode(rand::random::<[u8; 6]>()));
+    let deploy_id = format!("img-{}", hex::encode(rand::random::<[u8; 6]>()));
     let name = request.name.trim().to_owned();
     let mut applied: Vec<String> = Vec::new();
     for choice in &request.components {
@@ -491,8 +491,17 @@ pub(crate) async fn image_deploy_route(
     axum::extract::State(state): axum::extract::State<GatewayState>,
     axum::Json(request): axum::Json<ImageDeployRequest>,
 ) -> axum::response::Response {
+    deploy_response(&state, request).await
+}
+
+/// Deploy `request` with this node's authority and answer as the deploy
+/// screen's route does (the plugin host API answers the same).
+pub(crate) async fn deploy_response(
+    state: &GatewayState,
+    request: ImageDeployRequest,
+) -> axum::response::Response {
     use axum::response::IntoResponse;
-    let machines = survey_machines(&state).await;
+    let machines = survey_machines(state).await;
     let call = live_targets(state.clone());
     match deploy_image(&state.database, &machines, &call, request).await {
         Ok(deploy_id) => axum::Json(serde_json::json!({ "deploy_id": deploy_id })).into_response(),
@@ -562,9 +571,42 @@ pub(crate) async fn image_undeploy_route(
     axum::extract::State(state): axum::extract::State<GatewayState>,
     axum::Json(request): axum::Json<ReleaseRequest>,
 ) -> axum::Json<Value> {
+    axum::Json(undeploy_view(&state, &request.deploy_id).await)
+}
+
+/// Release a deployment everywhere: `{released: [...]}`.
+pub(crate) async fn undeploy_view(state: &GatewayState, deploy_id: &str) -> Value {
     let call = live_targets(state.clone());
-    let released = undeploy_image(&state.database, &call, &request.deploy_id).await;
-    axum::Json(serde_json::json!({ "released": released }))
+    let released = undeploy_image(&state.database, &call, deploy_id).await;
+    serde_json::json!({ "released": released })
+}
+
+/// The network's image files per machine, for a deploy dialog that offers
+/// only the machines holding a file: `{machines: [{node_id, hostname,
+/// image_files: [{path, name, category}], has_image_service}]}`.
+pub(crate) async fn image_files_view(state: &GatewayState) -> Value {
+    let machines: Vec<Value> = survey_machines(state)
+        .await
+        .into_iter()
+        .map(|machine| {
+            let files: Vec<Value> = machine
+                .image_files
+                .iter()
+                .map(|(path, category)| {
+                    let name = std::path::Path::new(path)
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| path.clone());
+                    serde_json::json!({ "path": path, "name": name, "category": category })
+                })
+                .collect();
+            serde_json::json!({
+                "node_id": machine.node_id, "hostname": machine.hostname,
+                "image_files": files, "has_image_service": machine.has_image_service,
+            })
+        })
+        .collect();
+    serde_json::json!({ "machines": machines })
 }
 
 // ── Calls to a component ─────────────────────────────────────────────────────

@@ -79,6 +79,52 @@ pub(crate) struct PluginService {
     /// in their own card, apart from the engine's settings.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub pom_settings: Vec<String>,
+    /// For a service of kind `image`: the image model components it serves
+    /// now (`components.rs`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub components: Vec<ServedComponent>,
+}
+
+/// One image model component a plugin serves: a part of an image deployment.
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
+pub(crate) struct ServedComponent {
+    pub deploy_id: String,
+    pub name: String,
+    /// `diffusion`, `text_encoder` or `vae`.
+    pub component: String,
+    /// File names (never paths).
+    pub files: Vec<String>,
+    /// `ready`, `loading` or `error`.
+    pub status: String,
+}
+
+const MAX_COMPONENTS: usize = 64;
+
+fn parse_components(kind: &str, value: &Value) -> Vec<ServedComponent> {
+    if kind != "image" {
+        return Vec::new();
+    }
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take(MAX_COMPONENTS)
+        .filter_map(|entry| {
+            Some(ServedComponent {
+                deploy_id: slug(&entry["deploy_id"])?,
+                name: text(&entry["name"])?,
+                component: slug(&entry["component"])?,
+                files: entry["files"]
+                    .as_array()
+                    .map(|files| files.iter().filter_map(text).take(8).collect())
+                    .unwrap_or_default(),
+                status: entry["status"]
+                    .as_str()
+                    .filter(|s| ["ready", "loading", "error"].contains(s))?
+                    .to_owned(),
+            })
+        })
+        .collect()
 }
 
 /// The POM deployment settings an inference service may declare, by their
@@ -275,6 +321,7 @@ pub(crate) fn parse_services(plugin_code: &str, answer: &Value) -> Vec<PluginSer
         let stages = kind == "inference" && entry["stages"] == true;
         let vision = kind == "inference" && entry["vision"] == true;
         let pom_settings = parse_pom_settings(&kind, &entry["pom_settings"]);
+        let components = parse_components(&kind, &entry["components"]);
         services.push(PluginService {
             plugin_code: plugin_code.to_owned(),
             id,
@@ -313,6 +360,7 @@ pub(crate) fn parse_services(plugin_code: &str, answer: &Value) -> Vec<PluginSer
             stages,
             vision,
             pom_settings,
+            components,
         });
     }
     services
@@ -476,6 +524,26 @@ pub(crate) async fn plugin_peer_call(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn components_are_parsed_from_an_image_service() {
+        let answer = json!({"services": [
+            {"id": "comfyui-image", "kind": "image", "name": "ComfyUI", "status": "ready",
+             "components": [
+                {"deploy_id": "img-1", "name": "Z-Image", "component": "vae",
+                 "files": ["ae.safetensors"], "status": "ready"},
+                {"deploy_id": "img-1", "name": "Z-Image", "component": "diffusion",
+                 "files": ["z.safetensors"], "status": "loading"},
+                {"deploy_id": "", "component": "vae"}
+             ]},
+            {"id": "comfyui", "kind": "app", "name": "ComfyUI", "status": "ready"}
+        ]});
+        let services = parse_services("comfyui", &answer);
+        assert_eq!(services[0].components.len(), 2);
+        assert_eq!(services[0].components[0].component, "vae");
+        assert_eq!(services[0].components[1].status, "loading");
+        assert!(services[1].components.is_empty());
+    }
 
     /// A plugin learns the caller's proven role, and an inference node is
     /// never a head even when it announces layer 0.

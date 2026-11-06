@@ -480,6 +480,14 @@ under the machine's card with a connecting line, and in the machine's detail
 card (`components/PluginServices.tsx`). A plugin that does not know the
 operation answers with an error, which is ignored.
 
+A service of kind `image` (the ComfyUI plugin's) also lists the image model
+components it serves now, `components: [{deploy_id, name, component, files,
+status}]`: `component` is `diffusion`, `text_encoder` or `vae`, `files` holds
+file names only (never paths), `status` is `ready`, `loading` or `error`; at
+most 64 are read. `components::network_components` gathers them from this node
+and every live peer (`plugin_engine::services_of`) to find who serves what;
+LLM planning, `/v1/models` and retrieval never read services of this kind.
+
 **Peer calls.** `POST /api/internal/plugins/:code/peer/:op` lets a peer call
 the plugin's `peer.<op>` operation on another machine. The call must carry the
 signed control envelope (the shared connection key alone is refused, because it

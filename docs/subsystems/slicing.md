@@ -21,6 +21,22 @@ order matters: `shard_dir` first (the reading that decides whether a peer can
 pull the slice is the slice one, `ModelSource::Local`), then `model_dirs`
 deduplicated by resolved path - a symlink is not scanned twice.
 
+Image model files (diffusion models, text encoders, VAEs and the rest of what
+ComfyUI loads) are read by `image_catalog.rs`, not by the GGUF walk. For a
+`.safetensors` or `.sft` file it reads only the header (an 8-byte length and a
+JSON table of tensor names and dtypes, refused above `MAX_SAFETENSORS_HEADER`,
+100 MiB, or when it is cut short) and classifies the file by its tensor names,
+in a fixed order: `checkpoint` (a denoiser and a VAE in one file), `lora`,
+`controlnet`, `vae`, `diffusion`, `clip_vision`, `text_encoder`, `upscale`,
+else `other`. `family` is a display hint from distinctive tensor names
+(`flux`, `qwen_image`, `z_image`, `sdxl`, `sd15`), else from
+`__metadata__["modelspec.architecture"]`; `dtype` is the dtype most tensors
+use. Pickle formats (`.ckpt`, `.pt`, `.pth`, `.bin`) are never opened: they
+are listed by `stat` as `other`. Hidden files, `.part` downloads and the
+slicer's working folders are skipped, a folder reached twice is read once, and
+the classification is cached by path, size and mtime. The rules are tested
+against the real headers in `models/fixtures/safetensors/`.
+
 What holds everything up is the **manifest**, not the file name. A part is
 named by its own sha256 (`<sha256>.gguf`), and the `.pom` next to it says which
 model it belongs to and which range it covers. See `models/pom.rs`.

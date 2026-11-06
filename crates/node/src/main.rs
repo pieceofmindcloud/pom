@@ -58,6 +58,8 @@ mod relay_pass;
 mod capabilities;
 #[path = "models/catalog.rs"]
 mod catalog;
+#[path = "models/image_catalog.rs"]
+mod image_catalog;
 #[path = "network/cluster_logs.rs"]
 mod cluster_logs;
 #[path = "network/cluster_logs_policy.rs"]

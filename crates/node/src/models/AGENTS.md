@@ -59,6 +59,13 @@ Models, GGUF reading, planning and slice files. The module is used by
   declaration stays visible with a concrete error and an unknown size. The whole
   model's identity uses the hash of the complete part sequence only at the
   slicing or transfer boundary.
+- `image_catalog.rs` - image model files (`ImageModelFile`, `ImageCategory`):
+  reads only the safetensors header (`read_safetensors_header`, capped at
+  `MAX_SAFETENSORS_HEADER`), `classify` by tensor names, and
+  `discover_image_files` over the model folders. Pickle formats are listed,
+  never opened. The rules and their order are in `docs/subsystems/slicing.md`
+  section 1; the test fixtures are real headers in `fixtures/safetensors/`
+  (their sources in its `README.md`).
 - `plan.rs` - computes ranges by budget or by real layer size and calls the GGUF
   extractor. The budget endpoint uses `GgufInfo` and `kv_budget.rs` to sum weight
   and KV in bytes before accepting a range. The plan validates the architecture's

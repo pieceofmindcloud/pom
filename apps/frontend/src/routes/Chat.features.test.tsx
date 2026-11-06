@@ -101,6 +101,12 @@ vi.mock("../lib/imageResize", () => {
   };
 });
 
+const pdfMock = vi.hoisted(() => ({ read: vi.fn() }));
+vi.mock("../lib/pdfDocument", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/pdfDocument")>()),
+  readPdfAsText: pdfMock.read,
+}));
+
 vi.mock("../components/Logo", () => ({
   LogoFull: () => <div aria-hidden="true" />,
   LogoMark: () => <div aria-hidden="true" />,
@@ -515,6 +521,78 @@ describe("Chat", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Parar ditado" }));
     expect(instance?.stop).toHaveBeenCalled();
+  });
+
+  function stubFailingRecognition() {
+    const instance = {
+      onerror: null as ((event: { error?: string }) => void) | null,
+      onend: null,
+      onresult: null,
+      start: vi.fn(),
+      stop: vi.fn(),
+    };
+    vi.stubGlobal("SpeechRecognition", function Recognition() {
+      return instance;
+    });
+    return instance;
+  }
+
+  it("says why dictation stopped instead of only turning the button off", () => {
+    const instance = stubFailingRecognition();
+    mountChat();
+    fireEvent.click(screen.getByRole("button", { name: "Iniciar ditado" }));
+    act(() => instance.onerror?.({ error: "not-allowed" }));
+    expect(screen.getByRole("button", { name: "Iniciar ditado" })).toBeTruthy();
+    expect(screen.getByText("O ditado falhou")).toBeTruthy();
+    expect(screen.getByText(/Privacidade e Segurança/)).toBeTruthy();
+  });
+
+  it("does not report silence as a dictation failure", () => {
+    const instance = stubFailingRecognition();
+    mountChat();
+    fireEvent.click(screen.getByRole("button", { name: "Iniciar ditado" }));
+    act(() => instance.onerror?.({ error: "no-speech" }));
+    expect(screen.queryByText("O ditado falhou")).toBeNull();
+  });
+
+  it("attaches a PDF as its text, sized by the text and not by the file", async () => {
+    pdfMock.read.mockResolvedValueOnce({ text: "curto", pages: 3, ocrPages: 2 });
+    const { container } = mountChat();
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+    const file = new File([new Uint8Array(1_000_000)], "contrato.pdf", { type: "application/pdf" });
+
+    fireEvent.change(input, { target: { files: [file] } });
+    expect(await screen.findByText("contrato.pdf")).toBeTruthy();
+    expect(screen.getByText("OCR")).toBeTruthy();
+    expect(screen.queryByText("Anexo grande demais")).toBeNull();
+  });
+
+  it("refuses a PDF whose text does not fit the context", async () => {
+    pdfMock.read.mockResolvedValueOnce({ text: "x".repeat(1_000_000), pages: 1, ocrPages: 0 });
+    const { container } = mountChat();
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+    fireEvent.change(input, { target: { files: [new File(["x"], "longo.pdf", { type: "application/pdf" })] } });
+    expect(await screen.findByText("Anexo grande demais")).toBeTruthy();
+    expect(screen.queryByText("longo.pdf")).toBeNull();
+  });
+
+  it("explains a refused PDF and shows the reading while it lasts", async () => {
+    let refuse: (error: unknown) => void = () => undefined;
+    pdfMock.read.mockImplementationOnce(async (_file, options) => {
+      options.onProgress({ phase: "ocr", page: 2, pages: 5, name: "x" });
+      return new Promise((_resolve, reject) => {
+        refuse = reject;
+      });
+    });
+    const { container } = mountChat();
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+    fireEvent.change(input, { target: { files: [new File(["x"], "scan.pdf", { type: "application/pdf" })] } });
+    expect(await screen.findByText(/scan\.pdf a partir de imagens: página 2 de 5/)).toBeTruthy();
+
+    const { PdfReadError } = await vi.importActual<typeof import("../lib/pdfDocument")>("../lib/pdfDocument");
+    await act(async () => refuse(new PdfReadError("password")));
+    expect(await screen.findByText(/scan\.pdf: Este PDF é protegido por senha/)).toBeTruthy();
+    expect(screen.queryByRole("status")).toBeNull();
   });
 
   it("hides the microphone when Web Speech does not exist", () => {

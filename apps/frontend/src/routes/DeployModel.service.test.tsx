@@ -6,6 +6,7 @@
  * whole model, the models offered are those of the architecture the engine runs
  * and the deployment carries `params.inference_service` - in the plan and in the deploy.
  */
+import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -200,7 +201,7 @@ function mount(shardSets: unknown[] = []) {
     <QueryClientProvider client={client}>
       <LocaleProvider initialLocale="pt-BR">
         <ToastProvider>
-          <DeployModel />
+          <MemoryRouter><DeployModel /></MemoryRouter>
         </ToastProvider>
       </LocaleProvider>
     </QueryClientProvider>,

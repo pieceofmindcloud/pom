@@ -16,17 +16,18 @@
  *
  * * *Default settings* - what llama.cpp already has: context, batch,
  *   sampling (temperature, top-p/top-k/min-p, penalties, DRY and seed),
- *   KV cache, and the feature switches of the engine itself, with where the MTP
- *   sits right below the MTP numbers.
+ *   KV cache, MoE experts in RAM and the GPU expert cache, and the feature
+ *   switches of the engine itself, with where the MTP sits right below the MTP
+ *   numbers.
  * * *POM settings* - what exists because inference is distributed:
- *   disabling embeddings, memory adjustment, in-flight prefill chunks, fusion
- *   of slices and the precision of the hidden state between peers. Inside it, the group
- *   *Beta* gathers what works but is still being measured: MoE experts in
- *   RAM, expert cache on the GPU and automatic prefill chunk.
+ *   disabling embeddings, memory adjustment, in-flight prefill chunks, the
+ *   automatic prefill chunk, fusion of slices and the precision of the hidden
+ *   state between peers. A *Beta* group for settings still being measured lives
+ *   inside it, commented out while it has none.
  * * *POM settings (DEV)* - the inference engine and idle
  *   unloading, which are still being measured.
  *
- * Each category (and the Beta group) has a help button that opens, in a dialog,
+ * Each category has a help button that opens, in a dialog,
  * its guide in the Documentation (`guides/deploySettings.ts`): what each
  * property does and how to change it.
  *
@@ -265,37 +266,41 @@ function Section({
   );
 }
 
-/**
- * A group inside a category, for settings that work but are still being
- * measured. It carries its own short explanation and a help button, because
- * these are the settings that only pay off in combination.
- */
-function BetaGroup({ children }: { children: ReactNode }) {
-  const { t } = useI18n();
-  const [helpOpen, setHelpOpen] = useState(false);
-  const title = t("inspector.sectionBeta");
-  return (
-    <div className="mt-2 rounded-md border border-amber/25 bg-amber/[0.05]">
-      <div className="flex items-center justify-between gap-2 border-b border-amber/20 px-2 py-1 text-amber">
-        <p className="text-[0.6rem] font-semibold uppercase tracking-[0.12em]">{title}</p>
-        <GuideHelpButton
-          label={t("inspector.guideHelp", { section: title })}
-          onClick={() => setHelpOpen(true)}
-        />
-      </div>
-      <button
-        type="button"
-        onClick={() => setHelpOpen(true)}
-        className="block w-full px-2 pt-1.5 text-left text-[0.6rem] leading-relaxed text-muted hover:text-fg"
-      >
-        {t("inspector.betaInfo")}{" "}
-        <span className="text-amber underline-offset-2 hover:underline">{t("inspector.betaInfoLink")}</span>
-      </button>
-      <div className="space-y-1 px-2 py-2">{children}</div>
-      <GuideDialog guideId={DEPLOY_SETTINGS_GUIDES.beta} open={helpOpen} onClose={() => setHelpOpen(false)} />
-    </div>
-  );
-}
+// The Beta group is off while it has no setting. It comes back for the next one
+// still being measured, together with its guide (`beta-settings`, removed from
+// `docs/guides/settings/` and `DEPLOY_SETTINGS_GUIDES` until then: restore both
+// from git history).
+// /**
+//  * A group inside a category, for settings that work but are still being
+//  * measured. It carries its own short explanation and a help button, because
+//  * their value depends on what each route measures.
+//  */
+// function BetaGroup({ children }: { children: ReactNode }) {
+//   const { t } = useI18n();
+//   const [helpOpen, setHelpOpen] = useState(false);
+//   const title = t("inspector.sectionBeta");
+//   return (
+//     <div className="mt-2 rounded-md border border-amber/25 bg-amber/[0.05]">
+//       <div className="flex items-center justify-between gap-2 border-b border-amber/20 px-2 py-1 text-amber">
+//         <p className="text-[0.6rem] font-semibold uppercase tracking-[0.12em]">{title}</p>
+//         <GuideHelpButton
+//           label={t("inspector.guideHelp", { section: title })}
+//           onClick={() => setHelpOpen(true)}
+//         />
+//       </div>
+//       <button
+//         type="button"
+//         onClick={() => setHelpOpen(true)}
+//         className="block w-full px-2 pt-1.5 text-left text-[0.6rem] leading-relaxed text-muted hover:text-fg"
+//       >
+//         {t("inspector.betaInfo")}{" "}
+//         <span className="text-amber underline-offset-2 hover:underline">{t("inspector.betaInfoLink")}</span>
+//       </button>
+//       <div className="space-y-1 px-2 py-2">{children}</div>
+//       <GuideDialog guideId={DEPLOY_SETTINGS_GUIDES.beta} open={helpOpen} onClose={() => setHelpOpen(false)} />
+//     </div>
+//   );
+// }
 
 /**
  * One property: the `[i]` in the left column, the name, and the control.
@@ -399,7 +404,13 @@ export function DeploymentInspector({
    *  unloading and the engine's own settings. The llama.cpp knobs do not
    *  reach it. The POM settings the service declares (`pomSettings`) get their
    *  own card, shown when its slices cross machines. */
-  inferenceService?: { name: string; settings?: EngineSetting[]; pomSettings?: PomSetting[] };
+  inferenceService?: {
+    name: string;
+    settings?: EngineSetting[];
+    pomSettings?: PomSetting[];
+    /** Its engine takes a drafter file for this model (`draft_architectures`). */
+    takesDraft?: boolean;
+  };
 }) {
   const { t } = useI18n();
   /*
@@ -590,18 +601,17 @@ export function DeploymentInspector({
   const roleRow = (key: string, label: string, role: InferenceRole, onRole: (role: InferenceRole) => void) => (
     <InspectorRow key={key} label={label} tip={t("deploy.knob.inference_roleHint")}>
       {readOnly ? (
-        <ReadValue>{role}</ReadValue>
+        <ReadValue>{t(role === "prefill" ? "deploy.knob.inference_rolePrefill" : "deploy.knob.inference_roleBoth")}</ReadValue>
       ) : (
         <Select
           aria-label={label}
           name={key}
-          value={role}
+          value={role === "shared" ? "both" : role}
           onChange={(event) => onRole(event.target.value as InferenceRole)}
           compact
         >
           <option value="both">{t("deploy.knob.inference_roleBoth")}</option>
           <option value="prefill">{t("deploy.knob.inference_rolePrefill")}</option>
-          <option value="decode">{t("deploy.knob.inference_roleDecode")}</option>
         </Select>
       )}
     </InspectorRow>
@@ -643,13 +653,75 @@ export function DeploymentInspector({
     </InspectorRow>
   );
 
+  // the projector's choice: a llama.cpp head and a plugin engine's (whose bridge takes the deployment's mmproj_path)
+  const visionSection = vision ? (
+    <Section title={t("deploy.vision")} tone="aqua">
+      {vision.available ? (
+        <>
+          <InspectorRow label={t("deploy.visionToggle")} tip={t("deploy.visionHint")}>
+            <Tick
+              on={vision.enabled}
+              label={t("deploy.visionToggle")}
+              disabled={readOnly}
+              onToggle={() => vision.onChange(!vision.enabled)}
+            />
+          </InspectorRow>
+          {vision.enabled && sidecars && !readOnly ? (
+            <div className="px-0.5 py-1.5">
+              <p className="mb-1 text-[0.6rem] text-muted">{t("sidecars.vision")}</p>
+              <SidecarPicker
+                kind="mmproj"
+                label={t("sidecars.vision")}
+                options={sidecars.options.filter((option) => option.kind === "mmproj")}
+                value={sidecars.vision.value}
+                onChange={sidecars.vision.onChange}
+                slot={sidecars.vision.slot}
+                linkLabel={sidecars.vision.linkLabel}
+                compact
+              />
+            </div>
+          ) : vision.candidates.length > 1 ? (
+            <InspectorRow label={t("deployStudio.visionModel")} tip={t("deployStudio.visionModelTip")}>
+              <Select
+                aria-label={t("deployStudio.visionProjector")}
+                value={vision.path ?? ""}
+                disabled={readOnly}
+                onChange={(event) => vision.onPathChange(event.target.value)}
+                className="h-7 min-w-0 w-full text-[0.58rem]"
+              >
+                {vision.candidates.map((candidate) => (
+                  <option key={candidate} value={candidate}>
+                    {candidate.split("/").pop() ?? candidate}
+                  </option>
+                ))}
+              </Select>
+            </InspectorRow>
+          ) : vision.path ? (
+            <p className="break-all px-0.5 text-[0.6rem] leading-relaxed text-faint">
+              {vision.path}
+            </p>
+          ) : null}
+        </>
+      ) : (
+        <p role="alert" className="px-0.5 text-[0.6rem] leading-relaxed text-amber">
+          {vision.reason || t("deploy.visionUnavailable")}
+        </p>
+      )}
+    </Section>
+  ) : null;
+
   if (inferenceService) {
     // The POM carries the hidden state between the plugin's stages, so its own
     // settings only exist when the slices cross machines. The prefill/decode
-    // role is the opposite: it belongs to a machine that runs the whole model.
+    // role belongs to a machine that runs the whole model: a deployment on one
+    // machine, a whole model split into prefill and decode, or the prefill
+    // machine a sliced deployment holds beside its stages (`machineRoles`).
     const declared = inferenceService.pomSettings ?? [];
+    const perMachineRoles = (machineRoles?.length ?? 0) > 1;
     const pomSettings = declared.filter((setting) =>
-      setting === "inference_role" || setting === "prefill_min_tokens" ? !showHiddenStateDtype : showHiddenStateDtype,
+      setting === "inference_role" || setting === "prefill_min_tokens"
+        ? !showHiddenStateDtype || perMachineRoles
+        : showHiddenStateDtype,
     );
     // The engine's own settings, and the ones the service places in the POM card (whatever the slices).
     const engineSettings = (inferenceService.settings ?? []).filter((setting) => setting.placement !== "pom");
@@ -679,7 +751,24 @@ export function DeploymentInspector({
               readOnly={readOnly}
             />
           )}
+          {inferenceService.takesDraft && sidecars && !readOnly && (
+            <div className="px-0.5 py-1.5">
+              <p className="mb-1 text-[0.6rem] text-muted">{t("sidecars.mtp")}</p>
+              <SidecarPicker
+                kind="mtp"
+                label={t("sidecars.mtp")}
+                options={sidecars.options.filter((option) => option.kind === "mtp")}
+                value={sidecars.mtp.value}
+                onChange={sidecars.mtp.onChange}
+                slot={sidecars.mtp.slot}
+                linkLabel={sidecars.mtp.linkLabel}
+                allowEmbedded={sidecars.mtp.allowEmbedded}
+                compact
+              />
+            </div>
+          )}
         </Section>
+        {visionSection}
         {(pomSettings.length > 0 || pomCardSettings.length > 0) && (
           <Section title={t("inspector.sectionPom")} tone="aqua" guide={DEPLOY_SETTINGS_GUIDES.pom}>
             {pomSettings.includes("prefill_max_inflight_chunks") && numeric("prefill_max_inflight_chunks")}
@@ -751,6 +840,17 @@ export function DeploymentInspector({
               </InspectorRow>
             );
           })}
+
+        {/* llama.cpp's --cpu-moe and --moe-cache-mib, for a MoE larger than VRAM */}
+        {toggle({
+          key: "moe_experts_in_ram",
+          label: t("inspector.moeExpertsInRam"),
+          alwaysVisible: true,
+          checked: value.moe_experts_in_ram ?? false,
+          onToggle: (next) => set({ moe_experts_in_ram: next }),
+          tip: t("deploy.moeExpertsInRamHint"),
+        })}
+        {numeric("moe_cache_mib")}
 
         {toggle({
           key: "no_thinking",
@@ -850,61 +950,7 @@ export function DeploymentInspector({
         )}
       </Section>
 
-      {vision && (
-        <Section title={t("deploy.vision")} tone="aqua">
-          {vision.available ? (
-            <>
-              <InspectorRow label={t("deploy.visionToggle")} tip={t("deploy.visionHint")}>
-                <Tick
-                  on={vision.enabled}
-                  label={t("deploy.visionToggle")}
-                  disabled={readOnly}
-                  onToggle={() => vision.onChange(!vision.enabled)}
-                />
-              </InspectorRow>
-              {vision.enabled && sidecars && !readOnly ? (
-                <div className="px-0.5 py-1.5">
-                  <p className="mb-1 text-[0.6rem] text-muted">{t("sidecars.vision")}</p>
-                  <SidecarPicker
-                    kind="mmproj"
-                    label={t("sidecars.vision")}
-                    options={sidecars.options.filter((option) => option.kind === "mmproj")}
-                    value={sidecars.vision.value}
-                    onChange={sidecars.vision.onChange}
-                    slot={sidecars.vision.slot}
-                    linkLabel={sidecars.vision.linkLabel}
-                    compact
-                  />
-                </div>
-              ) : vision.candidates.length > 1 ? (
-                <InspectorRow label={t("deployStudio.visionModel")} tip={t("deployStudio.visionModelTip")}>
-                  <Select
-                    aria-label={t("deployStudio.visionProjector")}
-                    value={vision.path ?? ""}
-                    disabled={readOnly}
-                    onChange={(event) => vision.onPathChange(event.target.value)}
-                    className="h-7 min-w-0 w-full text-[0.58rem]"
-                  >
-                    {vision.candidates.map((candidate) => (
-                      <option key={candidate} value={candidate}>
-                        {candidate.split("/").pop() ?? candidate}
-                      </option>
-                    ))}
-                  </Select>
-                </InspectorRow>
-              ) : vision.path ? (
-                <p className="break-all px-0.5 text-[0.6rem] leading-relaxed text-faint">
-                  {vision.path}
-                </p>
-              ) : null}
-            </>
-          ) : (
-            <p role="alert" className="px-0.5 text-[0.6rem] leading-relaxed text-amber">
-              {vision.reason || t("deploy.visionUnavailable")}
-            </p>
-          )}
-        </Section>
-      )}
+      {visionSection}
 
       <Section title={t("inspector.sectionPom")} tone="aqua" guide={DEPLOY_SETTINGS_GUIDES.pom}>
         {toggle({
@@ -925,6 +971,14 @@ export function DeploymentInspector({
           tip: t("deploy.fitMemoryHint"),
         })}
         {numeric("prefill_max_inflight_chunks")}
+        {toggle({
+          key: "adaptive_prefill_chunks",
+          label: t("inspector.adaptivePrefillChunks"),
+          alwaysVisible: true,
+          checked: value.adaptive_prefill_chunks ?? true,
+          onToggle: (next) => set({ adaptive_prefill_chunks: next }),
+          tip: t("deploy.adaptivePrefillChunksHint"),
+        })}
         {merge && (
           <InspectorRow label={t("deploy.merge")} tip={t("deploy.mergeHint")}>
             <Tick
@@ -936,25 +990,7 @@ export function DeploymentInspector({
           </InspectorRow>
         )}
         {showHiddenStateDtype && hiddenStateField()}
-        <BetaGroup>
-          {toggle({
-            key: "moe_experts_in_ram",
-            label: t("inspector.moeExpertsInRam"),
-            alwaysVisible: true,
-            checked: value.moe_experts_in_ram ?? false,
-            onToggle: (next) => set({ moe_experts_in_ram: next }),
-            tip: t("deploy.moeExpertsInRamHint"),
-          })}
-          {numeric("moe_cache_mib")}
-          {toggle({
-            key: "adaptive_prefill_chunks",
-            label: t("inspector.adaptivePrefillChunks"),
-            alwaysVisible: true,
-            checked: value.adaptive_prefill_chunks ?? true,
-            onToggle: (next) => set({ adaptive_prefill_chunks: next }),
-            tip: t("deploy.adaptivePrefillChunksHint"),
-          })}
-        </BetaGroup>
+        {/* <BetaGroup>{...settings still being measured}</BetaGroup> */}
       </Section>
 
       {pomDevMode && <Section title={t("inspector.sectionPomDev")} tone="amber">

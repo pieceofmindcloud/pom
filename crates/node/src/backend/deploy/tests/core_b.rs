@@ -1370,6 +1370,7 @@ fn vision_goes_to_the_head_and_mtp_to_the_tail_copied_when_missing() {
         false,
         true,
         Some(&vision),
+        false,
         true,
         None,
     );
@@ -1390,6 +1391,41 @@ fn vision_goes_to_the_head_and_mtp_to_the_tail_copied_when_missing() {
     assert!(mtp.from_link);
     assert_eq!(mtp.source_node_id.as_deref(), Some("head"));
     assert_eq!(deploy_plan.transfer_bytes, bytes_before + 7 + 34);
+
+    // A plugin's staged split serves the requests from its last stage: the projector goes there, where the file
+    // already is.
+    let mut staged = super::plan(
+        "qwen",
+        &machines,
+        Some(&[pick(0, 15, "head"), pick(16, 31, "tail")]),
+        &params,
+        false,
+        DeployKind::Shards,
+        None,
+    );
+    attach_sidecars(
+        &mut staged,
+        &machines,
+        &inventory,
+        Some(&shape),
+        &[],
+        false,
+        true,
+        Some(&SidecarChoice {
+            mode: Some(SidecarMode::File),
+            file: Some(SidecarRef {
+                file_name: "mmproj.gguf".into(),
+                size_bytes: 7,
+            }),
+        }),
+        true,
+        false,
+        None,
+    );
+    let vision = staged.sidecars.vision.as_ref().unwrap();
+    assert_eq!(vision.target_node_id, "tail");
+    assert!(!vision.needs_copy());
+    assert_eq!(staged.mmproj_path.as_deref(), Some("/library/mmproj.gguf"));
 
     // A file nobody has refuses the plan and names it.
     let gone = SidecarChoice {
@@ -1417,6 +1453,7 @@ fn vision_goes_to_the_head_and_mtp_to_the_tail_copied_when_missing() {
         false,
         false,
         None,
+        false,
         true,
         Some(&gone),
     );
@@ -1428,6 +1465,48 @@ fn vision_goes_to_the_head_and_mtp_to_the_tail_copied_when_missing() {
         again.sidecars.vision.is_none(),
         "vision off resolves no projector"
     );
+}
+
+#[test]
+fn every_head_of_a_whole_model_on_several_machines_gets_the_projector() {
+    use crate::catalog::{SidecarKind, SidecarMode};
+    // a prefill/decode split: both machines hold the whole model and both answer requests, so both read images
+    let machines = build(vec![m("a", 20_000, &[(0, 31)]), m("b", 20_000, &[(0, 31)])]);
+    let mut deploy_plan = super::plan(
+        "qwen",
+        &machines,
+        Some(&[pick(0, 31, "a"), pick(0, 31, "b")]),
+        &RuntimeParams::default(),
+        false,
+        DeployKind::Whole,
+        None,
+    );
+    assert_eq!(deploy_plan.steps.iter().filter(|step| step.start_layer == 0).count(), 2);
+    let mut inventory = HashMap::new();
+    inventory.insert(
+        "a".to_string(),
+        vec![sidecar(SidecarKind::Mmproj, "mmproj.gguf", 7, "/library/mmproj.gguf")],
+    );
+    let shape = ModelShape {
+        model_key: "qwen.gguf".into(),
+        architecture: Some("llama".into()),
+        embedding_length: Some(3072),
+        embedded_mtp: false,
+    };
+    let vision = SidecarChoice {
+        mode: Some(SidecarMode::File),
+        file: Some(SidecarRef { file_name: "mmproj.gguf".into(), size_bytes: 7 }),
+    };
+    let bytes_before = deploy_plan.transfer_bytes;
+    attach_sidecars(&mut deploy_plan, &machines, &inventory, Some(&shape), &[], false, true, Some(&vision), false, false, None);
+
+    let first = deploy_plan.sidecars.vision.as_ref().unwrap();
+    assert!(!first.needs_copy(), "the first head holds the projector");
+    assert_eq!(deploy_plan.sidecars.vision_heads.len(), 1);
+    let other = &deploy_plan.sidecars.vision_heads[0];
+    assert_ne!(other.target_node_id, first.target_node_id);
+    assert!(other.needs_copy(), "the other head gets a copy");
+    assert_eq!(deploy_plan.transfer_bytes, bytes_before + 7);
 }
 
 #[test]
@@ -1475,10 +1554,140 @@ fn an_external_draft_makes_mtp_available_for_a_model_without_nextn() {
         false,
         None,
         false,
+        false,
         None,
     );
     assert_eq!(
         deploy_plan.capabilities.mtp.state,
         crate::capabilities::CapabilityState::Supported
     );
+}
+
+// ── A sliced deployment with a prefill machine ──────────────────────────
+//
+// The whole GGUF of the model is offered beside the slices: the operator may
+// put it on a machine with the prefill role, which reads prompts for the
+// pipeline and stands outside its layer order.
+
+fn sliced_with_whole() -> Vec<Machine> {
+    let mut machines = build(vec![
+        m("a", 100_000, &[(0, 15)]),
+        m("b", 100_000, &[(16, 31)]),
+    ]);
+    machines.push(whole_machine("p", 100_000, true));
+    machines
+}
+
+fn plan_shards_with(
+    machines: &[Machine],
+    selection: Option<&[SelectedSlice]>,
+    service: Option<&str>,
+) -> Plan {
+    let params = RuntimeParams {
+        inference_service: service.map(str::to_string),
+        ..RuntimeParams::default()
+    };
+    super::plan(
+        "m",
+        machines,
+        selection,
+        &params,
+        false,
+        DeployKind::Shards,
+        None,
+    )
+}
+
+fn role(mut slice: SelectedSlice, role: crate::webui::InferenceRole) -> SelectedSlice {
+    slice.inference_role = Some(role);
+    slice
+}
+
+#[test]
+fn a_prefill_machine_runs_the_whole_model_beside_the_slices() {
+    use crate::webui::InferenceRole;
+    let machines = sliced_with_whole();
+    let p = plan_shards_with(
+        &machines,
+        Some(&[
+            role(pick(0, 15, "a"), InferenceRole::Both),
+            role(pick(16, 31, "b"), InferenceRole::Both),
+            role(pick(0, 31, "p"), InferenceRole::Prefill),
+        ]),
+        Some("strata"),
+    );
+    assert_eq!(p.blocked, None, "{:?}", p.blocked);
+    assert!(p.complete);
+    assert_eq!(p.steps.len(), 3);
+    let prefill = p.steps.iter().find(|s| s.target_node_id == "p").unwrap();
+    assert_eq!((prefill.start_layer, prefill.end_layer), (0, 31));
+    assert_eq!(prefill.inference_role, Some(InferenceRole::Prefill));
+    // the entry point of the pipeline is the slice at layer 0, not the prefill machine
+    assert_eq!(p.steps.iter().find(|s| s.primary).unwrap().target_node_id, "a");
+}
+
+#[test]
+fn a_prefill_machine_on_a_slice_is_refused() {
+    use crate::webui::InferenceRole;
+    let machines = sliced_with_whole();
+    let p = plan_shards_with(
+        &machines,
+        Some(&[
+            role(pick(0, 15, "a"), InferenceRole::Prefill),
+            role(pick(16, 31, "b"), InferenceRole::Both),
+            role(pick(0, 31, "p"), InferenceRole::Both),
+        ]),
+        Some("strata"),
+    );
+    assert!(
+        p.blocked.as_deref().is_some_and(|b| b.contains("prefill machine runs the whole model")),
+        "{:?}",
+        p.blocked
+    );
+}
+
+#[test]
+fn the_whole_model_decoding_beside_the_slices_overlaps_them() {
+    let machines = sliced_with_whole();
+    let p = plan_shards_with(
+        &machines,
+        Some(&[pick(0, 15, "a"), pick(16, 31, "b"), pick(0, 31, "p")]),
+        Some("strata"),
+    );
+    assert!(p.blocked.as_deref().is_some_and(|b| b.contains("two chosen slices")), "{:?}", p.blocked);
+}
+
+#[test]
+fn a_prefill_machine_needs_an_inference_service() {
+    use crate::webui::InferenceRole;
+    let machines = sliced_with_whole();
+    let p = plan_shards_with(
+        &machines,
+        Some(&[
+            pick(0, 15, "a"),
+            pick(16, 31, "b"),
+            role(pick(0, 31, "p"), InferenceRole::Prefill),
+        ]),
+        None,
+    );
+    assert!(p.blocked.as_deref().is_some_and(|b| b.contains("inference service")), "{:?}", p.blocked);
+}
+
+#[test]
+fn the_automatic_sliced_plan_leaves_the_whole_model_out() {
+    let machines = sliced_with_whole();
+    let p = plan_shards_with(&machines, None, None);
+    assert!(p.available.iter().any(|c| c.start_layer == 0 && c.end_layer == 31), "offered");
+    let ranges: Vec<(u32, u32)> = p.steps.iter().map(|s| (s.start_layer, s.end_layer)).collect();
+    assert_eq!(ranges, vec![(0, 15), (16, 31)]);
+}
+
+#[test]
+fn the_prompt_reader_is_layer_zero_under_llama_and_the_last_stage_under_a_plugin() {
+    assert!(vision_reader(0, 15, 32, false));
+    assert!(!vision_reader(16, 31, 32, false));
+    assert!(!vision_reader(0, 15, 32, true));
+    assert!(vision_reader(16, 31, 32, true));
+    // a whole model is both
+    assert!(vision_reader(0, 31, 32, false) && vision_reader(0, 31, 32, true));
 }

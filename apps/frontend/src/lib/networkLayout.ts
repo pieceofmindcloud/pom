@@ -154,7 +154,7 @@ export interface LayoutNode {
   start_layer: number;
   end_layer: number;
   /** A plugin engine's part in a prefill/decode split: a prefill machine heads its range, the others follow it. */
-  role?: "prefill" | "decode" | null;
+  role?: "prefill" | "shared" | null;
 }
 
 /**

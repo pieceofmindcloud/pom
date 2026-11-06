@@ -583,6 +583,7 @@ async fn auto_head(
     pinned: Option<&str>,
     prefix: (&str, &str, bool),
     conversation: Option<(&str, &str)>,
+    prompt: &str,
 ) -> Option<String> {
     if let Some(pinned) = pinned {
         return Some(pinned.to_owned());
@@ -597,25 +598,38 @@ async fn auto_head(
     }
     // A conversation of a plugin engine goes back to the head that ran its last turn: its KV session is in that head's
     // batch slot. Only a conversation that is new here, or whose head is gone, takes the rotation below.
+    let perf = state.admission_health.perf_snapshot();
+    let mut queue = std::collections::HashMap::new();
+    for head in &heads {
+        let live = state.loads.load(head).await;
+        let reported = perf.get(head).map(|p| p.active_generations).unwrap_or(0);
+        queue.insert(head.clone(), live.max(reported));
+    }
+    let least = queue.values().copied().min().unwrap_or(0);
+    // a head that holds what this request continues keeps it unless it is clearly busier than the least busy one;
+    // then the rotation below picks a free head, and that head fetches the session only when the transfer pays
+    let keeps = |holder: &str, what: &str| {
+        let load = queue.get(holder).copied().unwrap_or(0);
+        if load <= least + SESSION_MOVE_LOAD_GAP {
+            info!("first stage: {what} is already on {holder}");
+            return true;
+        }
+        info!("first stage: {holder} has {what} but {load} in flight against {least} on the least busy head; it may move");
+        false
+    };
     if let Some((model, key)) = conversation {
         if let Some(holder) = crate::plugin_session::holder_of(model, key).filter(|head| heads.contains(head)) {
-            let perf = state.admission_health.perf_snapshot();
-            let mut busy = Vec::with_capacity(heads.len());
-            for head in &heads {
-                let live = state.loads.load(head).await;
-                let reported = perf.get(head).map(|p| p.active_generations).unwrap_or(0);
-                busy.push((head.clone(), live.max(reported)));
-            }
-            let least = busy.iter().map(|(_, load)| *load).min().unwrap_or(0);
-            let holder_load = busy.iter().find(|(head, _)| *head == holder).map(|(_, load)| *load).unwrap_or(0);
-            // the conversation stays on its head unless that head is clearly busier than the least busy one; then the
-            // rotation below picks a free head, and that head fetches the session only when the transfer pays
-            if holder_load <= least + SESSION_MOVE_LOAD_GAP {
-                info!("first stage: the conversation {key} is already on {holder}");
+            if keeps(&holder, &format!("the conversation {key}")) {
                 return Some(holder);
             }
-            info!("first stage: {holder} has {holder_load} in flight against {least} on the least busy head; \
-                   the conversation may move");
+        }
+        // a new conversation that begins with most of a prompt a head read recently: that head reuses what it read
+        if let Some(holder) =
+            crate::plugin_session::holder_of_prompt_start(model, prompt).filter(|head| heads.contains(head))
+        {
+            if keeps(&holder, "the start of this prompt") {
+                return Some(holder);
+            }
         }
     }
     // A session already in service for this prompt goes back to the head that holds it: its cache is reused there.
@@ -637,13 +651,6 @@ async fn auto_head(
             info!("first stage: the session is already on {head}");
             return Some(head);
         }
-    }
-    let perf = state.admission_health.perf_snapshot();
-    let mut queue = std::collections::HashMap::new();
-    for head in &heads {
-        let live = state.loads.load(head).await;
-        let reported = perf.get(head).map(|p| p.active_generations).unwrap_or(0);
-        queue.insert(head.clone(), live.max(reported));
     }
     let turn = crate::pipeline::next_head_turn(model);
     let chosen = crate::fastest::rotate_head(&heads, turn, |head| queue.get(head).copied().unwrap_or(0))?;
@@ -751,6 +758,23 @@ pub(super) async fn generate_stream_inner(
     tx: mpsc::Sender<GenEvent>,
     cancellation: crate::prefill::Cancellation,
 ) {
+    // Every decode frame of this generation reads its step budget from here
+    // (`relay::StepBudget`). The generation goes to the heap before the scope:
+    // its future is large, and a copy on the stack overflowed the test threads.
+    let step_budget = crate::relay::StepBudget::default();
+    crate::relay::with_step_budget(
+        step_budget.clone(),
+        Box::pin(generate_measured_stream(input, tx, cancellation, step_budget)),
+    )
+    .await
+}
+
+async fn generate_measured_stream(
+    input: GenerationInput,
+    tx: mpsc::Sender<GenEvent>,
+    cancellation: crate::prefill::Cancellation,
+    step_budget: crate::relay::StepBudget,
+) {
     let request_started = Instant::now();
     let mut gateway_spans = Vec::new();
     let GenerationInput {
@@ -770,20 +794,6 @@ pub(super) async fn generate_stream_inner(
         probe,
         shared_prefix,
     } = input;
-    // A prefill machine chosen as the head (the Chat shows it as the head of its prefill/decode split) never answers:
-    // the planner picks the head that decodes, and the plugin engine reads the prompt on the chosen prefill machine.
-    let (preferred_head, pinned_prefill) = match preferred_head {
-        Some(head)
-            if state
-                .all_peers()
-                .await
-                .iter()
-                .any(|peer| peer.node_id == head && crate::plugin_engine::is_prefill_only(peer)) =>
-        {
-            (None, Some(head))
-        }
-        other => (other, None),
-    };
     let mut budget = budget.normalized();
     if cancellation.is_cancelled() {
         log_early_outcome("cancelado", "the client gave up before the start");
@@ -871,29 +881,8 @@ pub(super) async fn generate_stream_inner(
             ADMISSION_PROBE_TIMEOUT,
         )
         .await;
-        // A machine of a prefill/decode split that only reads prompts never answers a request: it is no head and no
-        // hop. The plugin engine sends it the prompts itself (`plugin_engine::prefill_on_peer`).
-        let (prefill_only, peers): (Vec<_>, Vec<_>) = peers
-            .into_iter()
-            .partition(|peer| crate::plugin_engine::is_prefill_only(peer));
-        if !prefill_only.is_empty()
-            && !peers.iter().any(|p| match deploy_id {
-                Some(id) => p.deploy_id == id,
-                None => p.model == model,
-            })
-            && prefill_only.iter().any(|p| match deploy_id {
-                Some(id) => p.deploy_id == id,
-                None => p.model == model,
-            })
-        {
-            let error = format!(
-                "No valid pipeline for model '{model}': only prefill machines serve it, and a prefill machine \
-                 never answers a request (deploy a machine with the decode or both role)"
-            );
-            log_early_outcome("refused", &error);
-            let _ = tx.send(GenEvent::Failed(error)).await;
-            return;
-        }
+        // Every machine of a prefill/decode split answers too: its role only says which one reads prompts for the
+        // others when the balance calls for it (`plugin_engine::prefill_peer`).
         record_gateway_span(
             &mut gateway_spans,
             request_started,
@@ -929,6 +918,7 @@ pub(super) async fn generate_stream_inner(
             preferred_head.as_deref(),
             (&prefix_model, &cache_prompt, images.is_empty()),
             conversation.as_ref().map(|key| (model, key.as_str())),
+            &prompt,
         )
         .await;
         // Planning by delivery time (`fastest`): measured speed of each
@@ -1071,7 +1061,6 @@ pub(super) async fn generate_stream_inner(
                     .iter()
                     .map(|bytes| crate::plugin_engine::image_data_url(bytes))
                     .collect(),
-                prefill_node: pinned_prefill.clone(),
             },
             &tx,
             &cancellation,
@@ -1619,6 +1608,11 @@ pub(super) async fn generate_stream_inner(
         let mut next_token = first.token_id;
         let mut trace = first.trace;
         trace.first_token.gateway_stream_at_ms = Some(wall_clock_ms());
+        // The first token measured the engine: a decode step of a slow but live
+        // engine gets the time it needs (`relay::StepBudget`).
+        if let Some(engine_ttft_ms) = trace.engine_ttft_ms {
+            step_budget.observe(Duration::from_millis(engine_ttft_ms));
+        }
         if crate::telemetry::Profile::current().collects_spans() {
             if let Some(return_ms) = trace.first_token.node_to_gateway_ms {
                 let end_offset_ms = request_started.elapsed().as_millis() as u64;
@@ -1769,7 +1763,7 @@ pub(super) async fn generate_stream_inner(
                 }
                 Err(error) => {
                     warn!("batched remote transport failed: {error}");
-                    let summary = summary_for(
+                    let mut summary = summary_for(
                         &plan,
                         request_started,
                         first_token_at,
@@ -1780,6 +1774,8 @@ pub(super) async fn generate_stream_inner(
                         None,
                         None,
                     );
+                    summary.error =
+                        Some(format!("batched remote transport failed: {error}"));
                     let _ = tx.send(GenEvent::Done(summary)).await;
                     return;
                 }
@@ -1811,6 +1807,7 @@ pub(super) async fn generate_stream_inner(
                 if cancellation.is_cancelled() {
                     return;
                 }
+                let round_started = Instant::now();
                 let remote_stream_mode = remote_stream.is_some();
                 let draft_sent = speculating
                     && sliced_mtp
@@ -1874,7 +1871,10 @@ pub(super) async fn generate_stream_inner(
                 };
 
                 let step = match res {
-                    Ok(step) => step,
+                    Ok(step) => {
+                        step_budget.observe(round_started.elapsed());
+                        step
+                    }
                     Err(e) => {
                         let round = if speculating {
                             "speculative round"
@@ -1884,7 +1884,7 @@ pub(super) async fn generate_stream_inner(
                         warn!("Error in the {round} (token {tokens_generated}): {e}");
                         if tokens_generated > 0 {
                             info!("returning {tokens_generated} partial tokens");
-                            let summary = summary_for(
+                            let mut summary = summary_for(
                                 &plan,
                                 request_started,
                                 first_token_at,
@@ -1895,6 +1895,9 @@ pub(super) async fn generate_stream_inner(
                                 None,
                                 None,
                             );
+                            summary.error = Some(format!(
+                                "pipeline failed in the {round} at token {tokens_generated}: {e}"
+                            ));
                             let _ = tx.send(GenEvent::Done(summary)).await;
                         } else {
                             let _ = tx
@@ -2068,7 +2071,7 @@ pub(super) async fn generate_stream_inner(
                             "partial rollback refused by some hop after {tokens_generated} tokens: ending the generation instead of risking a contaminated cache"
                         );
                         if tokens_generated > 0 {
-                            let summary = summary_for(
+                            let mut summary = summary_for(
                                 &plan,
                                 request_started,
                                 first_token_at,
@@ -2078,6 +2081,10 @@ pub(super) async fn generate_stream_inner(
                                 true,
                                 None,
                                 None,
+                            );
+                            summary.error = Some(
+                                "speculative rollback refused by a hop: the generation ended to keep its cache clean"
+                                    .to_string(),
                             );
                             let _ = tx.send(GenEvent::Done(summary)).await;
                         } else {
@@ -2117,6 +2124,7 @@ pub(super) async fn generate_stream_inner(
 
             match res {
                 Ok(step) => {
+                    step_budget.observe(cycle_started.elapsed());
                     trace.merge(&step.trace);
                     if remote_stream.is_none() {
                         trace.note_decode_round();
@@ -2201,7 +2209,7 @@ pub(super) async fn generate_stream_inner(
                     if tokens_generated > 0 {
                         // Some output is better than none — the original behaviour.
                         info!("returning {tokens_generated} partial tokens");
-                        let summary = summary_for(
+                        let mut summary = summary_for(
                             &plan,
                             request_started,
                             first_token_at,
@@ -2212,6 +2220,8 @@ pub(super) async fn generate_stream_inner(
                             None,
                             None,
                         );
+                        summary.error =
+                            Some(format!("pipeline failed at step {tokens_generated}: {e}"));
                         let _ = tx.send(GenEvent::Done(summary)).await;
                     } else {
                         let _ = tx
@@ -3395,7 +3405,7 @@ pub fn spawn_logged_generation_with_stops(
                 Some(s.tokens_generated),
                 Some(s.duration_ms),
                 audit_status_for_summary(&s),
-                None,
+                s.error.clone(),
             ),
             Some(Err(e)) => (
                 "none".to_string(),

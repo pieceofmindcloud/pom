@@ -14,7 +14,7 @@
  */
 import clsx from "clsx";
 import { motion } from "framer-motion";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, Lock } from "lucide-react";
 import { type ReactNode } from "react";
 import { Modal } from "./Confirm";
 import { GpuTemperature } from "./GpuTemperature";
@@ -26,7 +26,8 @@ import { KvCache } from "./KvCache";
 import { PluginServiceBadge } from "./PluginServices";
 import { isCpuBuffer, ModelPlacementSection } from "./ModelPlacement";
 import { SpeedBadges, type PeerSpeed } from "./SpeedBadge";
-import { Badge, Button, Dot, InfoTip, KeyValue, Meter } from "./ui";
+import { AlertTooltip, Badge, Button, Dot, InfoTip, KeyValue, Meter } from "./ui";
+import { layerPlacement, warnsLayersOnCpu } from "../lib/layerPlacement";
 import {
   isServing,
   layerRange,
@@ -341,6 +342,20 @@ const FALLBACK_THERMAL_POLICY: ThermalPolicy = {
   cooldown_secs: 30,
 };
 
+/**
+ * On this machine's own card: what is shown here in full leaves the machine only
+ * as a summary (`shared_system` on the node), so the operator is not led to think
+ * the other members see the same detail.
+ */
+function SharedSummaryNote({ text }: { text: string }) {
+  return (
+    <p data-testid="shared-summary-note" className="flex items-start gap-1.5 text-[0.66rem] text-faint sm:col-span-2">
+      <Lock className="mt-px h-3 w-3 shrink-0" aria-hidden />
+      <span>{text}</span>
+    </p>
+  );
+}
+
 export function PeerDetailCard({
   peer,
   index,
@@ -380,6 +395,10 @@ export function PeerDetailCard({
   // which measures something else (wired), and a bar without a value would become a
   // "loading" animation forever.
   const range = cardRange(peer);
+  // Layers llama.cpp left on the CPU of a machine with real GPUs: the usual
+  // reason a node is slow after a deploy (`warnsLayersOnCpu`).
+  const placement = layerPlacement(range?.[0], range?.[1], n?.status.reported_gpu_layers, hasGpu);
+  const cpuWarning = warnsLayersOnCpu(placement, system?.gpu_kind, peer.engine) && placement;
   /*
    * `/health` is requested once per card, here, and not inside the placement
    * section: the MTP badge went up to the toolbar and the
@@ -427,6 +446,15 @@ export function PeerDetailCard({
                 <Badge tone="neutral" className="px-1.5 py-0 text-[0.58rem]">
                   {t("dashboard.here")}
                 </Badge>
+              )}
+              {cpuWarning && (
+                <span data-testid="peer-cpu-warning" className="inline-flex">
+                  <AlertTooltip
+                    compact
+                    label={n?.hostname || peer.short_id}
+                    message={t("canvas.layersOnCpuWarning", { cpu: cpuWarning.cpu, served: cpuWarning.served })}
+                  />
+                </span>
               )}
             </div>
             <p className={clsx("truncate text-muted", dialog ? "text-[0.75rem]" : "text-[0.66rem]")}>{kind.label}</p>
@@ -616,9 +644,12 @@ export function PeerDetailCard({
                 <DiskMeter
                   key={disk.mount_point + disk.device}
                   disk={disk}
-                  label={t("dashboard.disk", { path: disk.mount_point || "—" })}
+                  // Another member's volumes arrive as one, the space where slices can go,
+                  // with no mount point (`shared_system` on its node).
+                  label={disk.mount_point ? t("dashboard.disk", { path: disk.mount_point }) : t("dashboard.modelStorage")}
                 />
               ))}
+              {peer.is_self && <SharedSummaryNote text={t("dashboard.sharedDisksNote")} />}
             </div>
           </div>
 
@@ -746,6 +777,11 @@ export function PeerDetailCard({
 
           {system && system.gpu_processes.length > 0 && (
             <Accordion title={t("dashboard.gpuProcesses")}>
+              {peer.is_self && (
+                <div className="px-3 pb-1.5">
+                  <SharedSummaryNote text={t("dashboard.sharedProcessesNote")} />
+                </div>
+              )}
               <ul className="space-y-0.5 px-3 pb-2">
                 {system.gpu_processes.map((p) => (
                   <li
@@ -753,7 +789,8 @@ export function PeerDetailCard({
                     className="flex items-baseline justify-between gap-3 font-mono text-[0.7rem]"
                   >
                     <span className="truncate text-muted">
-                      {p.name} <span className="text-faint">#{p.pid}</span>
+                      {/* `pid` 0 is every process that is not POM's, added up, with no name. */}
+                      {p.pid === 0 ? t("dashboard.otherGpuProcesses") : <>{p.name} <span className="text-faint">#{p.pid}</span></>}
                     </span>
                     <span className="shrink-0 text-fg">{megabytes(p.used_mb)}</span>
                   </li>

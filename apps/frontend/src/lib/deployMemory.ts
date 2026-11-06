@@ -16,6 +16,8 @@ import type { DeploySelection, DeployStrategy, RuntimeParams } from "./types";
 import { storageKey } from "./brand";
 
 const STORAGE = storageKey("deploy.last");
+/** Roles the operator picks; `shared` is the deploy's own. */
+const OFFERED_ROLES: string[] = ["both", "prefill"];
 /** Models remembered before the oldest is dropped. */
 const MAX_MODELS = 20;
 
@@ -58,7 +60,11 @@ export function rememberDeploy(group: string, memory: Omit<DeployMemory, "at">) 
 
 export function recallDeploy(group: string): DeployMemory | null {
   const found = read()[group];
-  return found && Array.isArray(found.selection) ? found : null;
+  if (!found || !Array.isArray(found.selection)) return null;
+  const role = found.params?.inference_role;
+  return role && !OFFERED_ROLES.includes(role)
+    ? { ...found, params: { ...found.params!, inference_role: "both" } }
+    : found;
 }
 
 /**
@@ -87,6 +93,9 @@ export function usableSelection(
       r.target_node_id && !machineIds.includes(r.target_node_id)
         ? { ...r, target_node_id: "" }
         : r,
-    );
+    )
+    // A role the node no longer takes would fail the whole request, so the
+    // row goes back to the default role.
+    .map((r) => (r.inference_role && !OFFERED_ROLES.includes(r.inference_role) ? { ...r, inference_role: null } : r));
   return kept.length > 0 ? kept : null;
 }

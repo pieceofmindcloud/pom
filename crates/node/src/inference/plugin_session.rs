@@ -17,6 +17,7 @@
 
 use crate::auth::InternalNodeAuth;
 use crate::gateway::GatewayState;
+use crate::network::PeerInfo;
 use crate::plugin_engine::{check_peer_call, local_upstream, loopback_client, services_of};
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
@@ -501,6 +502,57 @@ pub(crate) fn holder_of(model: &str, key: &str) -> Option<String> {
     (since.elapsed() < HOLDER_TTL).then(|| node.clone())
 }
 
+/// A prompt this short has no start worth following to another head: reading it again is cheap.
+const PROMPT_START_MIN_BYTES: usize = 16 * 1024;
+/// The prompt starts remembered, the oldest dropped first.
+const PROMPT_STARTS_MAX: usize = 256;
+
+/// The start of each recent turn's prompt (three quarters of it: a shared system prompt alone does not match) and
+/// the head that read it: `(model, start length, digest of the start, node id, when)`. A new conversation whose
+/// prompt begins the same way goes to that head, which reuses what it read (`gateway::generation::auto_head`).
+type PromptStart = (String, usize, u64, String, Instant);
+static PROMPT_STARTS: StdMutex<Vec<PromptStart>> = StdMutex::new(Vec::new());
+
+fn digest_of(bytes: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Records that `node_id` read `prompt` of `model` (when it is long enough to be worth following).
+pub(crate) fn note_prompt_start(model: &str, prompt: &str, node_id: &str) {
+    if prompt.len() < PROMPT_START_MIN_BYTES {
+        return;
+    }
+    let len = (prompt.len() * 3 / 4).max(PROMPT_START_MIN_BYTES);
+    let digest = digest_of(&prompt.as_bytes()[..len]);
+    let mut starts = PROMPT_STARTS.lock().unwrap_or_else(|e| e.into_inner());
+    starts.retain(|(m, l, d, ..)| !(m == model && *l == len && *d == digest));
+    starts.push((model.to_owned(), len, digest, node_id.to_owned(), Instant::now()));
+    if starts.len() > PROMPT_STARTS_MAX {
+        starts.remove(0);
+    }
+}
+
+/// The head that read most recently a prompt of `model` that `prompt` begins with (its recorded start), if any.
+pub(crate) fn holder_of_prompt_start(model: &str, prompt: &str) -> Option<String> {
+    if prompt.len() < PROMPT_START_MIN_BYTES {
+        return None;
+    }
+    let starts = PROMPT_STARTS.lock().unwrap_or_else(|e| e.into_inner());
+    starts
+        .iter()
+        .rev()
+        .find(|(m, len, digest, _, since)| {
+            m == model
+                && since.elapsed() < HOLDER_TTL
+                && prompt.len() >= *len
+                && digest_of(&prompt.as_bytes()[..*len]) == *digest
+        })
+        .map(|(.., node, _)| node.clone())
+}
+
 /// Whether a turn is still pushed to the peers (`spawn_sync`). Off: the peers pull the session when they need it
 /// (`prepare_for_body`), so nothing is sent unless no one asks. Kept, not deleted, until the pull is proven on the cluster.
 pub(crate) const PUSH_SYNC: bool = false;
@@ -628,6 +680,26 @@ pub(crate) fn best_source<'a>(local: &Offer, peers: &'a [(String, Offer)]) -> Op
         })
 }
 
+/// The peers that may hold a conversation of this machine (`me`, its own entry in `peers`): alive, with the weights
+/// loaded, serving the same deployment of the same model, and its head (layer 0), where a turn's session is kept.
+pub(crate) fn session_heads<'a>(peers: &'a [PeerInfo], me: &str) -> Vec<&'a PeerInfo> {
+    let Some(own) = peers.iter().find(|peer| peer.node_id == me) else {
+        return Vec::new();
+    };
+    peers
+        .iter()
+        .filter(|peer| {
+            peer.node_id != me
+                && peer.is_alive()
+                && !peer.idle
+                && !peer.model.is_empty()
+                && peer.model == own.model
+                && peer.deploy_id == own.deploy_id
+                && peer.start_layer == 0
+        })
+        .collect()
+}
+
 /// Whether fetching `bytes` to gain `gained` tokens is faster than reading those tokens again on this machine.
 pub(crate) fn fetch_pays(bytes: u64, gained: u64, link_bytes_per_s: f64, prefill_tokens_per_s: f64) -> bool {
     if gained == 0 || link_bytes_per_s <= 0.0 || prefill_tokens_per_s <= 0.0 {
@@ -666,11 +738,22 @@ impl SessionFetch {
     }
 }
 
+/// [`prepare_for_body`] and how long it took, in milliseconds: the trace shows it as the turn's `session_lookup`.
+pub(crate) async fn prepare_timed(state: &GatewayState, code: &str, body: &Value) -> (Option<SessionFetch>, u64) {
+    let started = std::time::Instant::now();
+    let fetched = prepare_for_body(state, code, body).await;
+    (fetched, started.elapsed().as_millis() as u64)
+}
+
 /// Before a turn runs on this machine: fetches the conversation's session from a peer when that is faster than
 /// reading the prompt again. Never fails the turn: any problem leaves the turn to read its prompt. Returns what it
 /// fetched, if anything.
 pub(crate) async fn prepare_for_body(state: &GatewayState, code: &str, body: &Value) -> Option<SessionFetch> {
     let key = body["session"].as_str().filter(|key| valid_key(key))?;
+    // the prefill machine's pieces are in this machine's slot already (apply_piece_on): nothing to fetch
+    if body["session_pieces"] == true {
+        return None;
+    }
     // a prefill/decode split: the prefill machine read this prompt just now, and its session is the one to take
     if let Some(source) = body["session_source"]
         .as_str()
@@ -690,18 +773,21 @@ pub(crate) async fn prepare_for_body(state: &GatewayState, code: &str, body: &Va
 async fn pull(state: &GatewayState, code: &str, key: &str) -> Result<Option<SessionFetch>, String> {
     let (port, token) = local_upstream(&state.plugins, code).await?;
     let local = offer_here(port, &token, key).await?;
+    // parked in this machine's RAM: the gateway sends a conversation's turns to the head that served the last one, so
+    // no peer can hold a newer copy, and asking them costs a round trip on every turn (over a relay, about a second)
+    if local.ram_tokens > 0 {
+        info!(plugin = %code, session = %key, local_ram_tokens = local.ram_tokens,
+              "session pull: the conversation is parked here; the peers are not asked");
+        return Ok(None);
+    }
+    // only the heads of this machine's own deployment can hold the conversation, and they are asked all at once: the
+    // turn waits for the slowest answer, not for their sum
+    let peers = state.all_peers().await;
+    let heads = session_heads(&peers, &state.network.node_id);
+    let answers = futures::future::join_all(heads.iter().map(|peer| offer_of_peer(state, code, key, peer))).await;
     let mut offers = Vec::new();
-    for peer in state.all_peers().await {
-        if peer.node_id == state.network.node_id {
-            continue;
-        }
-        let Some(services) = services_of(state, &peer.node_id).await else {
-            continue;
-        };
-        if !offers_model(&services, code) {
-            continue;
-        }
-        match offer_of_peer(state, code, key, &peer).await {
+    for (peer, answer) in heads.iter().zip(answers) {
+        match answer {
             Ok(offer) => offers.push((peer.node_id.clone(), offer)),
             Err(error) => info!(plugin = %code, session = %key, peer = %peer.node_id, "no offer: {error}"),
         }
@@ -869,8 +955,23 @@ async fn fetch_session(
     peer: &crate::network::PeerInfo,
     port: u16,
     token: &str,
-) -> Result<(), String> {
-    for kind in ["full_ids", "full"] {
+) -> Result<u64, String> {
+    fetch_files(state, code, key, peer, port, token, &["full_ids", "full"]).await
+}
+
+/// Copies the peer's files of `kinds` for `key` into this machine's session folder, in that order (the token list
+/// before its K/V). Returns the bytes copied.
+async fn fetch_files(
+    state: &GatewayState,
+    code: &str,
+    key: &str,
+    peer: &crate::network::PeerInfo,
+    port: u16,
+    token: &str,
+    kinds: &[&str],
+) -> Result<u64, String> {
+    let mut copied = 0u64;
+    for &kind in kinds {
         let mut offset = 0u64;
         let mut total: Option<u64> = None;
         loop {
@@ -921,9 +1022,118 @@ async fn fetch_session(
                 return Err(format!("{kind}: this machine refused the piece: {}", put.status()));
             }
             offset += piece.len() as u64;
+            copied += piece.len() as u64;
         }
     }
-    Ok(())
+    Ok(copied)
+}
+
+// ---- the prefill/decode split's pieces ---------------------------------------------------------------------------
+//
+// A prefill machine asked for pieces (`prefill_on_peer`) saves the prompt's state every few thousand tokens as it reads
+// it: the first piece whole, the next ones as deltas, under `<session>.p1`, `.p2`, ... The gateway hands each piece
+// to the head as soon as it is announced (`apply_piece_on`), and the head copies its files from the prefill machine
+// and applies it to one batch slot of its engine, so only the last piece is transferred after the prompt is read.
+
+/// A piece announced by a prefill machine, applied to the engine of the head `head`: here, or through the head's
+/// `engine/session/piece` route. Returns the bytes the head copied.
+pub(crate) async fn apply_piece_on(
+    state: &GatewayState,
+    code: &str,
+    head: &str,
+    source: &str,
+    session: &str,
+    piece: &str,
+    kind: &str,
+) -> Result<u64, String> {
+    if head == state.network.node_id {
+        return apply_piece_here(state, code, source, session, piece, kind).await;
+    }
+    let peer = state
+        .all_peers()
+        .await
+        .into_iter()
+        .find(|peer| peer.node_id == head)
+        .ok_or_else(|| format!("{head} left the network"))?;
+    let response = state
+        .control_post_json(
+            &peer,
+            &format!("/api/internal/plugins/{code}/engine/session/piece"),
+            &json!({"source": source, "session": session, "piece": piece, "kind": kind}),
+            FETCH_TIMEOUT,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        return Err(format!("the head refused the piece: {status} {text}"));
+    }
+    let value: Value = response.json().await.map_err(|error| error.to_string())?;
+    Ok(value["bytes"].as_u64().unwrap_or(0))
+}
+
+/// The head's side of a piece: its files copied from the prefill machine `source`, then applied by this machine's
+/// bridge (`{"action": "piece"}`), which removes them once its slot holds the piece.
+async fn apply_piece_here(
+    state: &GatewayState,
+    code: &str,
+    source: &str,
+    session: &str,
+    piece: &str,
+    kind: &str,
+) -> Result<u64, String> {
+    if !valid_key(session) || !valid_key(piece) || !piece.starts_with(&format!("{session}.p")) {
+        return Err("the piece is not one of the session's".to_owned());
+    }
+    let kinds: &[&str] = match kind {
+        "full" => &["full_ids", "full"],
+        "delta" => &["delta_meta", "delta"],
+        _ => return Err("a piece is full or delta".to_owned()),
+    };
+    let peer = state
+        .all_peers()
+        .await
+        .into_iter()
+        .find(|peer| peer.node_id == source)
+        .ok_or_else(|| format!("{source} left the network"))?;
+    let (port, token) = local_upstream(&state.plugins, code).await?;
+    let bytes = fetch_files(state, code, piece, &peer, port, &token, kinds).await?;
+    let response = loopback_client()
+        .post(format!("http://127.0.0.1:{port}/pom/session"))
+        .bearer_auth(&token)
+        .json(&json!({"key": session, "action": "piece", "piece": piece, "kind": kind}))
+        .timeout(FETCH_TIMEOUT)
+        .send()
+        .await
+        .map_err(|error| format!("the plugin did not answer: {error}"))?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        return Err(format!("the plugin refused the piece: {status} {text}"));
+    }
+    Ok(bytes)
+}
+
+/// `POST /api/internal/plugins/:code/engine/session/piece` `{source, session, piece, kind}`: a piece of a prefill
+/// machine's turn applied to this head's engine (`apply_piece_here`). -> `{"bytes"}`.
+pub(crate) async fn engine_session_piece_route(
+    auth: InternalNodeAuth,
+    State(state): State<GatewayState>,
+    Path(code): Path<String>,
+    body: Bytes,
+) -> Response {
+    if let Err(response) = check_peer_call(&auth, &state, &code).await {
+        return response;
+    }
+    let Ok(value) = serde_json::from_slice::<Value>(&body) else {
+        return refuse(StatusCode::BAD_REQUEST, "send a JSON object");
+    };
+    let field = |name: &str| value[name].as_str().unwrap_or_default().to_owned();
+    match apply_piece_here(&state, &code, &field("source"), &field("session"), &field("piece"), &field("kind")).await {
+        Ok(bytes) => axum::Json(json!({ "bytes": bytes })).into_response(),
+        Err(error) => refuse(StatusCode::BAD_GATEWAY, &error),
+    }
 }
 
 #[derive(Deserialize)]
@@ -1018,6 +1228,48 @@ pub(crate) async fn engine_session_file_route(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_new_conversation_follows_the_head_that_read_most_of_its_prompt() {
+        let model = "start-test-model";
+        let document = "a long shared document. ".repeat(4000);
+        let first = format!("{document}first question");
+        note_prompt_start(model, &first, "reader");
+        // the same document with another question goes to the head that read it
+        assert_eq!(holder_of_prompt_start(model, &format!("{document}another question")).as_deref(), Some("reader"));
+        // only a shared quarter of it (a common system prompt) does not
+        let shared = &document[..document.len() / 4];
+        assert_eq!(holder_of_prompt_start(model, &format!("{shared}{}", "x".repeat(document.len()))), None);
+        // nor a short prompt, nor another model
+        assert_eq!(holder_of_prompt_start(model, "short"), None);
+        assert_eq!(holder_of_prompt_start("other-model", &first), None);
+    }
+
+    #[test]
+    fn a_session_is_asked_only_of_the_heads_of_this_deployment() {
+        let peer = |id: &str, model: &str, deploy: &str, start: u32| {
+            let mut p = crate::gateway::testkit::peer(id, id, 8080);
+            p.model = model.into();
+            p.deploy_id = deploy.into();
+            p.start_layer = start;
+            p.end_layer = 47;
+            p
+        };
+        let mut idle = peer("idle", "m", "d1", 0);
+        idle.idle = true;
+        let peers = vec![
+            peer("me", "m", "d1", 0),
+            peer("head", "m", "d1", 0),
+            peer("tail", "m", "d1", 24),
+            peer("other-deploy", "m", "d2", 0),
+            peer("other-model", "x", "d1", 0),
+            peer("nothing", "", "", 0),
+            idle,
+        ];
+        let heads: Vec<&str> = session_heads(&peers, "me").iter().map(|p| p.node_id.as_str()).collect();
+        assert_eq!(heads, ["head"]);
+        assert!(session_heads(&peers, "unknown").is_empty());
+    }
 
     #[test]
     fn keys_are_file_name_stems() {

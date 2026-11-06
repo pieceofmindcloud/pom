@@ -240,6 +240,10 @@ pub(crate) fn routes() -> Router<GatewayState> {
             "/api/ui/model-provider/downloads/:id/retry",
             post(retry_download),
         )
+        .route(
+            "/api/ui/model-provider/downloads/:id/dismiss",
+            post(dismiss_download),
+        )
 }
 
 async fn search_models(
@@ -617,6 +621,11 @@ async fn cancel_download(
         return conflict("download_not_active", "download is not in progress".into());
     };
     token.cancel();
+    // A download cancelled before it finished leaves the list at once: a
+    // cancelled row had only "Try again", so it could never be dismissed. The
+    // task still winding down updates nothing, since progress only touches a
+    // listed job (`webui::set_model_download_progress`).
+    webui::jobs().write().await.remove(&id);
     Json(json!({ "download_id": id, "status": "cancelling" })).into_response()
 }
 
@@ -644,8 +653,35 @@ async fn retry_download(
         filename: job.filename.unwrap_or_default(),
         quantization: job.quantization,
     };
-    let body = start_download(ConnectionAuth, State(state), Json(request)).await;
-    body
+    let response = start_download(ConnectionAuth, State(state), Json(request)).await;
+    // The new attempt replaces the old row: "Try again" used to add a second
+    // entry and leave the failed one behind, with no way to dismiss it.
+    if response.status().is_success() {
+        webui::jobs().write().await.remove(&id);
+    }
+    response
+}
+
+/// Takes a download that ended without completing (failed or cancelled) off
+/// the list. A running one is refused: that is what Cancel is for.
+async fn dismiss_download(
+    _auth: ConnectionAuth,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Response {
+    let mut jobs = webui::jobs().write().await;
+    match jobs.get(&id) {
+        Some(job) if job.kind == MODEL_DOWNLOAD_KIND => {
+            if job.state == "running" {
+                return conflict(
+                    "download_in_progress",
+                    "download is still in progress; cancel it instead".into(),
+                );
+            }
+            jobs.remove(&id);
+            Json(json!({ "download_id": id, "dismissed": true })).into_response()
+        }
+        _ => not_found("download not found"),
+    }
 }
 
 async fn run_download(
@@ -1075,6 +1111,7 @@ async fn installed_download(state: &GatewayState, identity: &DownloadIdentity) -
         local_path: None,
         error: None,
         deploy_id: None,
+        deployment_name: None,
     })
 }
 
@@ -1461,6 +1498,93 @@ mod tests {
 
         assert_eq!(license.id.as_deref(), Some("apache-2.0"));
         assert_eq!(license_calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// "Try again" replaces the failed row instead of adding a second one
+    /// beside it: the failed row had no other button and stayed for good.
+    #[tokio::test]
+    async fn retrying_a_failed_download_replaces_its_row() {
+        let destination = std::env::temp_dir().join(format!(
+            "pom-model-retry-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        tokio::fs::create_dir_all(&destination).await.unwrap();
+        let mut state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        state.auth.write().await.model_dirs =
+            Some(vec![destination.to_string_lossy().into_owned()]);
+        state.model_service = Arc::new(ModelService::new(Arc::new(DestinationProvider)));
+        let repo = format!("owner/retry-{}", uuid::Uuid::new_v4().simple());
+        let old_id = uuid::Uuid::new_v4().simple().to_string();
+        let mut failed = webui::new_job(&old_id, MODEL_DOWNLOAD_KIND, "failed", "failed");
+        failed.state = "failed";
+        failed.download_status = Some("failed");
+        failed.repo_id = Some(repo.clone());
+        failed.filename = Some("model.gguf".into());
+        webui::jobs().write().await.insert(old_id.clone(), failed);
+
+        let response = retry_download(ConnectionAuth, State(state), axum::extract::Path(old_id.clone())).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let new_id = crate::gateway::testkit::body_of(response).await["download_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let jobs = webui::jobs().read().await;
+        assert!(!jobs.contains_key(&old_id), "the failed row stayed beside the new one");
+        assert!(jobs.contains_key(&new_id));
+        drop(jobs);
+        let _ = tokio::fs::remove_dir_all(destination).await;
+    }
+
+    /// Dismiss takes a failed download off the list, and refuses one still
+    /// running.
+    #[tokio::test]
+    async fn dismiss_removes_a_failed_download_and_refuses_a_running_one() {
+        let failed_id = uuid::Uuid::new_v4().simple().to_string();
+        let mut failed = webui::new_job(&failed_id, MODEL_DOWNLOAD_KIND, "failed", "failed");
+        failed.state = "failed";
+        failed.download_status = Some("failed");
+        let running_id = uuid::Uuid::new_v4().simple().to_string();
+        let mut running = webui::new_job(&running_id, MODEL_DOWNLOAD_KIND, "running", "downloading");
+        running.download_status = Some("downloading");
+        {
+            let mut jobs = webui::jobs().write().await;
+            jobs.insert(failed_id.clone(), failed);
+            jobs.insert(running_id.clone(), running);
+        }
+
+        let response = dismiss_download(ConnectionAuth, axum::extract::Path(failed_id.clone())).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!webui::jobs().read().await.contains_key(&failed_id));
+
+        let response = dismiss_download(ConnectionAuth, axum::extract::Path(running_id.clone())).await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(webui::jobs().write().await.remove(&running_id).is_some());
+
+        let response = dismiss_download(ConnectionAuth, axum::extract::Path("no-such-download".into())).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// Cancelling a download that has not finished takes it off the list.
+    #[tokio::test]
+    async fn cancelling_an_active_download_removes_its_row() {
+        let state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        let mut job = webui::new_job(&id, MODEL_DOWNLOAD_KIND, "downloading", "downloading");
+        job.download_status = Some("downloading");
+        webui::jobs().write().await.insert(id.clone(), job);
+        let token = CancellationToken::new();
+        state
+            .model_service
+            .cancellations
+            .write()
+            .await
+            .insert(id.clone(), token.clone());
+
+        let response = cancel_download(ConnectionAuth, State(state), axum::extract::Path(id.clone())).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(token.is_cancelled());
+        assert!(!webui::jobs().read().await.contains_key(&id));
     }
 
     #[tokio::test]

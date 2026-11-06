@@ -185,7 +185,7 @@ describe("deployLayout", () => {
   it("puts the decode machines of a whole model after its prefill machine, not under it", () => {
     const positions = deployLayout(
       [
-        { id: "decode", start_layer: 0, end_layer: 47, role: "decode" },
+        { id: "decode", start_layer: 0, end_layer: 47, role: "shared" },
         { id: "prefill", start_layer: 0, end_layer: 47, role: "prefill" },
       ],
       [],

@@ -514,3 +514,100 @@ describe("cardRange", () => {
     expect(cardRange(fakeSlicePeer("a", 4, 9))).toEqual([4, 9]);
   });
 });
+
+describe("another member's system, as its node shares it", () => {
+  afterEach(cleanup);
+
+  const shared = fakePeer({
+    node_id: "m",
+    node: fakeNode({
+      node_id: "m",
+      short_id: "m",
+      hostname: "membro",
+      system: fakeSystem({
+        disk: { total_mb: 1000, free_mb: 400, mount_point: "", device: "" },
+        disks: [{ total_mb: 1000, free_mb: 400, mount_point: "", device: "" }],
+        gpu_processes: [
+          { pid: 7, name: "pom", used_mb: 2048 },
+          { pid: 0, name: "", used_mb: 512 },
+        ],
+      }),
+    }),
+  });
+
+  it("names the one volume as model storage, with no mount point", () => {
+    mount(shared);
+    expect(screen.getByText("Armazenamento de modelos")).toBeTruthy();
+    expect(screen.queryByText(/Disco ·/)).toBeNull();
+  });
+
+  it("says nothing about sharing on another member's card", () => {
+    mount(shared);
+    expect(screen.queryByTestId("shared-summary-note")).toBeNull();
+  });
+
+  it("tells the operator, on this machine's own card, that only a summary is shared", () => {
+    const own = fakePeer({
+      ...shared,
+      is_self: true,
+      node: fakeNode({
+        node_id: "m",
+        short_id: "m",
+        hostname: "aqui",
+        system: fakeSystem({
+          disks: [{ total_mb: 1000, free_mb: 400, mount_point: "/dados", device: "/dev/sdb1" }],
+          gpu_processes: [{ pid: 9, name: "/usr/bin/blender", used_mb: 900 }],
+        }),
+      }),
+    });
+    mount(own);
+    // The operator sees its own machine as is...
+    expect(screen.getByText("Disco · /dados")).toBeTruthy();
+    fireEvent.click(screen.getByText("Processos na GPU"));
+    expect(screen.getByText("/usr/bin/blender")).toBeTruthy();
+    // ...and is told, next to the disks and the processes, what the others see.
+    const notes = screen.getAllByTestId("shared-summary-note").map((note) => note.textContent);
+    expect(notes).toHaveLength(2);
+    expect(notes[0]).toMatch(/Armazenamento de modelos/);
+    expect(notes[1]).toMatch(/Outros processos/);
+  });
+
+  it("shows the other processes as one total, with no pid", () => {
+    mount(shared);
+    fireEvent.click(screen.getByText("Processos na GPU"));
+    expect(screen.getByText("Outros processos")).toBeTruthy();
+    expect(screen.getByText("#7")).toBeTruthy();
+    expect(screen.queryByText("#0")).toBeNull();
+  });
+});
+
+describe("layers llama.cpp left on the CPU", () => {
+  afterEach(cleanup);
+
+  const withLayers = (gpu_kind: "nvidia" | "unified", engine: string | null = null) =>
+    fakeSlicePeer("g", 0, 15, {
+      engine,
+      node: fakeNode({
+        node_id: "g",
+        short_id: "g",
+        hostname: "gpu-box",
+        status: { ...fakeNode().status, reported_gpu_layers: 10 },
+        system: fakeSystem({ gpu_kind }),
+      }),
+    });
+
+  it("warns on a machine with GPUs, saying how many layers run on the CPU", () => {
+    mount(withLayers("nvidia"));
+    const warning = screen.getByTestId("peer-cpu-warning");
+    fireEvent.click(warning.querySelector("button")!);
+    expect(document.body.textContent).toMatch(/6 de 16 camadas desta máquina rodam na CPU/);
+  });
+
+  it("says nothing on a Mac or under a plugin engine", () => {
+    mount(withLayers("unified"));
+    expect(screen.queryByTestId("peer-cpu-warning")).toBeNull();
+    cleanup();
+    mount(withLayers("nvidia", "strata"));
+    expect(screen.queryByTestId("peer-cpu-warning")).toBeNull();
+  });
+});

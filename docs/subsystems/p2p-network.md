@@ -115,8 +115,14 @@ It stays subscribed to the topic, which is how it hears the admins and workers.
   `Network::admission_without_probe` (public network, empty key or cache);
   without a verdict, `Network::admit_in_background` runs the probe in another
   task, one per peer, and the current announcement is dropped - the next one,
-  within 5 s, finds the cache. UDP announcements still probe inline, in the UDP
-  receive loop, which is not the tunnel's.
+  within 5 s, finds the cache. UDP announcements still probe in their handler,
+  but the UDP receive loop (`Network::receive_loop`) hands every message to a
+  task of its own, at most 64 at once (past that a message is dropped, as UDP
+  would). Handled in line, the probes of a `PeerList` naming unreachable or
+  foreign nodes held the socket for seconds each, the members' announces queued
+  behind them, and members left the table (`Removed timed-out peers`) while
+  the network was fine. A peer with no proof of membership that does not
+  answer is probed again at most every 60 s, a refusal every 5 s.
 - On a public network, the local anchor must be valid, and the strictness
   depends on `network.access_policy`. In both cases the announced `pubkey` must
   derive the `node_id` and be the announced `endpoint_id` (it is a single key,
@@ -772,7 +778,13 @@ one record in the DHT, so the two would overwrite each other.
   to join the gossip topic. It replaces the IP the trust document used to
   carry: a node that only has the document finds the principal by its key.
   `Discovery` does not redial a target that is already connected or backing
-  off. A key that stays out of the table backs off on its own
+  off. A gossip join counts as done once it is queued, but its connection can
+  still fail, for example when both machines start together and the record
+  still carries the previous run's addresses. So when the dial finds a peer
+  that was already asked but is not an active gossip neighbor, it asks again,
+  at most once per 30 s (`PolicyState::forget_failed_join`). Without this, a
+  node that never heard an announce stayed out until it restarted: the
+  isolated rejoin only asks the peers already in its table. A key that stays out of the table backs off on its own
   (`main::pkarr_bootstrap_wait`): 30 s after the first miss, doubling up to
   10 min, and back to every tick once it is alive.
 - **No internet** (`--no-pkarr` / `POM_NO_PKARR=1`): no pkarr client is
@@ -885,7 +897,9 @@ compares the exact path, with no prefix or wildcard, on the receiving side.
 The one shape matched by segment is a plugin call between nodes
 (`plugin_path_is_allowed`): `/api/internal/plugins/services`,
 `/api/internal/plugins/<code>/peer/<op>` and
-`/api/internal/plugins/<code>/engine/generate`, each segment a plain name. The
+`/api/internal/plugins/<code>/engine/generate`, each segment a plain name
+except `<op>`, which follows the handler's own `valid_peer_op` (dots allowed,
+as in `quota.status`). The
 engine's session files and stage links stay off the tunnel. The
 sender picks the `target` variant; the receiver resolves the port, with the two
 ports it chose itself.
@@ -1177,8 +1191,10 @@ certificate as its client certificate (`tls::set_client_identity`,
 (`serve::TransportPeer`, from the certificate's key). A call authorized only
 by the connection key also needs that identity to be a member today
 (`auth::caller_is_member`, `Network::is_member_key`): an admin of the trust
-chain, or a peer whose announced membership token holds and is not revoked.
-Every member holds the connection key and a banned one keeps it, so the key
+chain, a peer whose announced membership token holds and is not revoked,
+or this node's own key: a worker that is the gateway of its own request dials
+its own advertised address over TLS, and the peers table never holds this
+node. Every member holds the connection key and a banned one keeps it, so the key
 alone, from a network address, opens nothing. The libp2p tunnel carries the
 same identity: the forwarder names the PeerId Noise authenticated
 (`infer_tunnel::TUNNEL_PEER_HEADER`, believed only beside the process mark),
@@ -1319,12 +1335,17 @@ Two exceptions, both for a concrete reason:
 - **The inference port (`serve::PlainPolicy::Refuse`)** closes the connection,
   as before. There is no browser there to accommodate.
 
-For development, `POM_INSECURE_ADMIN_UI=1` turns the 307 off: the gateway port
-serves the admin UI in clear text to a remote browser as well, so a machine
-reached by IP works without trusting its self signed certificate. The two
-exceptions still hold (peer-only routes answer 403, the inference port closes),
-and a clear-text node-to-node call carries no `TransportPeer`, so the key alone
-still opens nothing. Loopback is clear text with or without it.
+`--no-tls` (`POM_NO_TLS=1`) turns the 307 off for remote browser and client
+API requests, so an HTTPS-terminating proxy such as Coolify/Traefik can use an
+HTTP upstream without trusting POM's browser certificate. The published Docker
+image sets this variable by default. Only expose the gateway HTTP port on a
+private proxy network: anyone reaching it directly can send credentials in
+clear text. The legacy `POM_INSECURE_ADMIN_UI=1` has the same clear-text
+behaviour for development. Peer-only paths and signed control envelopes answer
+403 in clear text; the inference port still refuses remote plain HTTP.
+A peer's TLS client certificate is still required for node-to-node traffic:
+`--no-tls` does not disable the TLS listener or change the peer client.
+Loopback is clear text with or without it.
 
 ### 5.1 Optional QUIC for inference
 
@@ -1377,7 +1398,8 @@ path too. Each complete transport attempt, including handshake, send, headers
 and body, has a single deadline: the frame's, (1 s + 50 ms per token + 2 s per
 image) x remaining hops (`relay::frame_deadline`), the same on QUIC,
 HTTP/HTTPS, the persistent channel and the tunnel. Decoding one token over 2
-hops = 2.1 s. A prefill chunk does not use that formula: it has a liveness
+hops = 2.1 s; a measured generation's `step_budget_ms` can raise it for a slow
+engine (`inference.md`, "Each complete attempt"). A prefill chunk does not use that formula: it has a liveness
 deadline of 10 min per hop (`relay::prefill_frame_deadline`), because it waits
 in the peer's queue behind another session. The deadline is born
 in `send_frame_or_tunnel` and never exceeds its caller's. A peer that went down
@@ -1466,7 +1488,9 @@ in the original frame. The principal node checks the key in the database, binds
 the key to `sender_node_id`, refuses `blocked_nodes`, applies a rate limit and
 only then relays the already validated frame to the participants. The relay
 strips the secret and carries `relayed: true`; a node that is not the principal
-does not accept that frame as an origin. A file stays within the protocol's
+does not accept that frame as an origin. The relay skips the sender, so the
+sender stores its own action locally once the principal answers `accepted`
+(the insert ignores a repeated `message_id`). A file stays within the protocol's
 frame limit and is not stored outside each node's local database.
 
 `network_chat_enabled` is on by default, like `quic_enabled`: a new network

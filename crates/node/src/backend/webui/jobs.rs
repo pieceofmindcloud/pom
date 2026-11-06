@@ -16,18 +16,19 @@ pub enum InferenceMode {
     Moe,
 }
 
-/// What a whole-model machine of a plugin inference service does with a request
-/// (`RuntimeParams::inference_role`). `Prefill` machines only read prompts: the
-/// gateway never plans them as the machine that answers, and hands the state of
-/// a long prompt they read to a `Decode` or `Both` machine, which generates the
-/// answer (`plugin_engine`, prefill/decode split).
+/// What a whole-model machine of a plugin inference service does besides answering its own requests
+/// (`RuntimeParams::inference_role`). Every role answers requests and reads its own prompts. `Prefill` ("prefill
+/// first") also reads, while it is free, the long prompts of the other machines and hands them over as a session
+/// (`plugin_engine`, prefill/decode split). `Shared` is not chosen by the operator: the deploy gives it to a `Both`
+/// machine that runs the whole model beside other machines, so its plugin keeps the sessions on and it can take a
+/// prompt a prefill machine read. `Both` alone keeps the sessions off.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InferenceRole {
     #[default]
     Both,
     Prefill,
-    Decode,
+    Shared,
 }
 
 impl InferenceRole {
@@ -35,11 +36,21 @@ impl InferenceRole {
         *self == Self::Both
     }
 
+    /// The role a machine runs with when the deployment puts the whole model on several machines: `Both` becomes
+    /// `Shared`, which keeps the sessions on so the machines can hand conversations to each other.
+    pub fn shared(self) -> Self {
+        if self == Self::Both {
+            Self::Shared
+        } else {
+            self
+        }
+    }
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Both => "both",
             Self::Prefill => "prefill",
-            Self::Decode => "decode",
+            Self::Shared => "shared",
         }
     }
 }

@@ -70,6 +70,8 @@ import {
   ImageResizeLimitError,
   resizeImageForVision,
 } from "../lib/imageResize";
+import { NativeDictation, nativeDictationAvailable } from "../lib/nativeDictation";
+import { MAX_OCR_PAGES, MAX_PDF_BYTES, MAX_PDF_PAGES, PdfReadError, isPdfFile, readPdfAsText, type PdfProgress } from "../lib/pdfDocument";
 import { ms, num } from "../lib/format";
 import type { GenerationTimings, RequestTrace } from "../lib/chatStream";
 import {
@@ -123,7 +125,7 @@ type SpeechRecognitionLike = {
   continuous: boolean;
   interimResults: boolean;
   onresult: ((event: SpeechRecognitionEventLike) => void) | null;
-  onerror: (() => void) | null;
+  onerror: ((event: { error?: string; message?: string }) => void) | null;
   onend: (() => void) | null;
   start: () => void;
   stop: () => void;
@@ -138,6 +140,7 @@ type SpeechWindow = Window & {
 
 function speechRecognitionConstructor(): SpeechRecognitionConstructor | undefined {
   if (typeof window === "undefined") return undefined;
+  if (nativeDictationAvailable()) return NativeDictation;
   // Browsers only hand the microphone to a secure page (HTTPS or localhost):
   // on plain HTTP the recognizer exists and every attempt fails, so the
   // button would be there and never work.
@@ -779,6 +782,8 @@ function ChatScreen() {
   const speechBaseDraft = useRef("");
   const speechTranscript = useRef("");
   const [listening, setListening] = useState(false);
+  const pdfReading = useRef<AbortController | null>(null);
+  const [pdfProgress, setPdfProgress] = useState<(PdfProgress & { name: string }) | null>(null);
 
   useEffect(
     () => registerBeforeChange((kind) => {
@@ -881,11 +886,12 @@ function ChatScreen() {
   const chatCapabilities = useChatCapabilities(model);
   const streaming = streamingSessionId === session.id;
   const headQuery = useInferenceHeads(model, Boolean(model));
+  // the machine the person pinned; none (Auto, the default) leaves the gateway to balance the heads
   const selectedInferenceHead = headQuery.data?.candidates.some(
     (candidate) => candidate.node_id === headChoice.nodeId && headChoice.model === model,
   )
     ? headChoice.nodeId
-    : headQuery.data?.selected_node_id ?? null;
+    : null;
 
   useEffect(() => {
     const element = thread.current;
@@ -895,6 +901,7 @@ function ChatScreen() {
   useEffect(() => () => {
     recognition.current?.stop();
     recognition.current = null;
+    pdfReading.current?.abort();
   }, []);
 
   const grow = useCallback(() => {
@@ -922,12 +929,68 @@ function ChatScreen() {
     ?? servedModel?.max_input_tokens
     ?? (node.data?.active_model === model ? node.data?.config?.n_ctx : undefined);
 
+  function pdfRefusal(error: unknown): string {
+    if (!(error instanceof PdfReadError)) return error instanceof Error ? error.message : String(error);
+    switch (error.code) {
+      case "too_large":
+        return t("chat.pdfTooLarge", { megabytes: MAX_PDF_BYTES / (1024 * 1024) });
+      case "too_many_pages":
+        return t("chat.pdfTooManyPages", { pages: error.count ?? 0, limit: MAX_PDF_PAGES });
+      case "too_many_scanned_pages":
+        return t("chat.pdfTooManyScanned", { pages: error.count ?? 0, limit: MAX_OCR_PAGES });
+      case "password":
+        return t("chat.pdfPassword");
+      case "invalid":
+        return t("chat.pdfInvalid");
+      case "empty":
+        return t("chat.pdfEmpty");
+    }
+  }
+
   async function addFiles(files: FileList | File[]) {
     const selectedFiles = Array.from(files);
+    const hasPdf = selectedFiles.some(isPdfFile);
+    if (hasPdf && pdfReading.current) {
+      toast.error(t("chat.fileRejected"), t("chat.pdfBusy"));
+      return;
+    }
+    const pdfController = hasPdf ? new AbortController() : null;
+    if (pdfController) pdfReading.current = pdfController;
     const currentBytes = attachments.reduce((total, attachment) => total + estimatedAttachmentBytes(attachment), 0);
     const added: ChatAttachment[] = [];
     for (const [index, file] of selectedFiles.entries()) {
       const usedBytes = currentBytes + added.reduce((total, attachment) => total + estimatedAttachmentBytes(attachment), 0);
+      // Before the size check below: what reaches the model is the text, not the file.
+      if (isPdfFile(file)) {
+        try {
+          const pdf = await readPdfAsText(file, {
+            signal: pdfController?.signal,
+            onProgress: (progress) => setPdfProgress({ ...progress, name: file.name }),
+          });
+          const size = new TextEncoder().encode(pdf.text).byteLength;
+          if (contextLength != null && usedBytes + size > imageBudgetBytes(contextLength)) {
+            toast.error(
+              t("chat.attachmentTooLarge"),
+              t("chat.attachmentTooLargeDetail", { bytes: usedBytes + size, context: contextLength }),
+            );
+            continue;
+          }
+          added.push({
+            id: newId(),
+            name: file.name,
+            kind: "text",
+            data: pdf.text,
+            mediaType: "text/plain",
+            size,
+            ocrPages: pdf.ocrPages,
+          });
+        } catch (error) {
+          if ((error as { name?: string } | null)?.name !== "AbortError") {
+            toast.error(t("chat.fileRejected"), `${file.name}: ${pdfRefusal(error)}`);
+          }
+        }
+        continue;
+      }
       if (file.type.startsWith("image/")) {
         if (!visionAvailable) {
           toast.error(t("chat.imageRejected"), t("chat.imageVisionUnavailable"));
@@ -999,6 +1062,10 @@ function ChatScreen() {
         toast.error(t("chat.fileRejected"), error instanceof Error ? error.message : String(error));
       }
     }
+    if (pdfController) {
+      if (pdfReading.current === pdfController) pdfReading.current = null;
+      setPdfProgress(null);
+    }
     if (added.length > 0) setAttachments((current) => [...current, ...added]);
   }
 
@@ -1036,9 +1103,13 @@ function ChatScreen() {
       setDraft(next);
       window.requestAnimationFrame(grow);
     };
-    instance.onerror = () => {
+    instance.onerror = (event) => {
       recognition.current = null;
       setListening(false);
+      // Silence, or the person stopping it, is not a failure to report.
+      if (event?.error === "no-speech" || event?.error === "aborted") return;
+      const denied = event?.error === "denied" || event?.error === "not-allowed" || event?.error === "service-not-allowed";
+      toast.error(t("chat.dictationFailed"), denied ? t("chat.dictationDenied") : event?.message || event?.error || t("chat.dictationUnavailable"));
     };
     instance.onend = () => {
       recognition.current = null;
@@ -1086,7 +1157,7 @@ function ChatScreen() {
 
   async function send(options?: { visibleText?: string; requestContent?: string }) {
     const text = options?.visibleText ?? draft.trim();
-    if ((!text && attachments.length === 0) || streaming || !model) return;
+    if ((!text && attachments.length === 0) || streaming || !model || pdfProgress) return;
     if (listening) stopDictation();
     if (attachments.some((attachment) => attachment.kind === "image") && !visionAvailable) {
       toast.error(t("chat.imageRejected"), t("chat.imageVisionUnavailable"));
@@ -1255,6 +1326,22 @@ function ChatScreen() {
    */
   const composerBox = (
     <motion.div layoutId="chat-composer" transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1] }} className="mx-auto w-full max-w-3xl">
+            {pdfProgress && (
+              <div role="status" className="mb-2 flex items-center gap-2 text-xs text-muted">
+                <span className="min-w-0 truncate">
+                  {pdfProgress.phase === "ocr"
+                    ? t("chat.pdfReadingOcr", { name: pdfProgress.name, page: pdfProgress.page, pages: pdfProgress.pages })
+                    : t("chat.pdfReading", { name: pdfProgress.name })}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => pdfReading.current?.abort()}
+                  className="shrink-0 rounded px-1 text-faint underline hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iris"
+                >
+                  {t("chat.pdfCancel")}
+                </button>
+              </div>
+            )}
             {attachments.length > 0 && (
               <div className="mb-2 flex flex-wrap gap-1.5">
                 {attachments.map((attachment) => (
@@ -1277,6 +1364,11 @@ function ChatScreen() {
                       </span>
                     )}
                     <span className="max-w-[16rem] truncate" title={attachment.name}>{attachment.name}</span>
+                    {(attachment.ocrPages ?? 0) > 0 && (
+                      <span className="shrink-0 rounded border border-amber/25 bg-amber/[0.08] px-1 py-0.5 text-[0.62rem] text-amber" title={t("chat.pdfOcrBadgeTitle", { pages: attachment.ocrPages ?? 0 })}>
+                        {t("chat.pdfOcrBadge")}
+                      </span>
+                    )}
                     {attachment.resized && (
                       <span className="shrink-0 rounded border border-amber/25 bg-amber/[0.08] px-1 py-0.5 text-[0.62rem] text-amber" title={t("chat.attachmentResized")}>
                         {t("chat.attachmentResized")}
@@ -1406,7 +1498,7 @@ function ChatScreen() {
                   )}
                   <Button
                     variant="primary"
-                    disabled={!draft.trim() && attachments.length === 0}
+                    disabled={(!draft.trim() && attachments.length === 0) || pdfProgress != null}
                     onClick={() => void send()}
                     aria-label={t("chat.send")}
                     className="w-9 px-0"

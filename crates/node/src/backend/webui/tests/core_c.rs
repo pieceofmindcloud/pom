@@ -386,6 +386,32 @@ mod profile_network_tests {
     }
 
     #[tokio::test]
+    async fn plugin_head_reports_inbound_generation_load_as_well_as_local_gateway_turns() {
+        let state = crate::gateway::testkit::state_with("head", vec![]).await;
+        let mut cfg = crate::gateway::testkit::spec_config();
+        cfg.inference_service = Some("strata".into());
+        state.runtime.seed_config_for_test(cfg).await;
+
+        // The remote gateway does not acquire this node's LoadTracker. The
+        // serving route tracks its stream independently until it is dropped.
+        let remote = crate::engine_telemetry::track(
+            "strata",
+            futures::stream::empty::<Result<bytes::Bytes, reqwest::Error>>(),
+        );
+        assert_eq!(local_inference_load(&state).await, 1);
+        assert_eq!(node_info(HeaderMap::new(), State(state.clone())).await.0.load, 1);
+        let before = cluster_fingerprint(&state, &state.all_peers().await).await;
+        let local = state.loads.acquire(&state.network.node_id).await;
+        assert_eq!(local_inference_load(&state).await, 2);
+        drop(remote);
+        assert_eq!(local_inference_load(&state).await, 1);
+        drop(local);
+        assert_eq!(local_inference_load(&state).await, 0);
+        let after = cluster_fingerprint(&state, &state.all_peers().await).await;
+        assert_ne!(before, after, "a change in load invalidates the cluster snapshot");
+    }
+
+    #[tokio::test]
     async fn chat_capabilities_reads_mmproj_from_a_remote_sliced_head_config() {
         let app = Router::new().route(
             "/api/ui/node",
@@ -409,6 +435,7 @@ mod profile_network_tests {
 
         let mut head = peer("head", "salem", port);
         head.model = "qwen".into();
+        head.deploy_id = "d-7cf36d23".into();
         head.start_layer = 0;
         head.end_layer = 15;
         head.total_layers = 32;
@@ -423,10 +450,48 @@ mod profile_network_tests {
         let mut state = state_with("eu", vec![head, tail]).await;
         state.default_model = "qwen".into();
 
-        let body = body_of(chat_capabilities(State(state), Query(Default::default())).await.into_response()).await;
+        let body = body_of(chat_capabilities(State(state.clone()), Query(Default::default())).await.into_response()).await;
         assert_eq!(body["vision"], "supported");
         assert_eq!(body["coverage"], "complete");
         assert_eq!(body["thinking"], "supported");
+        assert!(model_vision_supported(&state, "qwen@d-7cf36d23").await);
+        assert!(!model_vision_supported(&state, "qwen@d-87654321").await);
+    }
+
+    #[tokio::test]
+    async fn chat_capabilities_offer_thinking_on_a_plugin_engine_head() {
+        // a plugin engine (Strata) turns the thinking on and off per request: the llama.cpp `no_thinking` its deployment
+        // keeps at the default does not hide the switch; vision still needs a projector
+        let app = Router::new().route(
+            "/api/ui/node",
+            get(|| async {
+                Json(json!({
+                    "config": {
+                        "start_layer": 0,
+                        "model_label": "qwen",
+                        "mmproj_path": null,
+                        "no_thinking": true,
+                        "inference_service": "strata"
+                    },
+                    "active_model": "qwen"
+                }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let mut head = peer("head", "salem", port);
+        head.model = "qwen".into();
+        (head.start_layer, head.end_layer, head.total_layers) = (0, 31, 32);
+        head.inference_port = Some(8181);
+        let mut state = state_with("eu", vec![head]).await;
+        state.default_model = "qwen".into();
+
+        let body = body_of(chat_capabilities(State(state), Query(Default::default())).await.into_response()).await;
+        assert_eq!(body["thinking"], "supported");
+        assert_eq!(body["vision"], "unsupported");
     }
 
     #[tokio::test]

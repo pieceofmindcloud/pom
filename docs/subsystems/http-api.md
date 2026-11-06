@@ -180,10 +180,17 @@ last):
   decides it signs a revocation (`webui::ban`, below) before anything else, so
   it holds even when forwarding to the principal fails (the answer is then the
   mirror). The principal also takes the member off its list and rotates the
-  key. An admin is not removed this way (`409 admin_target`).
+  key. An admin is not removed this way (`409 admin_target`). A browser's
+  `Bearer` connection key (`ConnectionAuth`) is checked with
+  `connection_key_accepted`, so the old key still opens the screens during a
+  rotation's grace: the panel picks up the new key only on its next
+  `/api/ui/node` poll, and every poll in between used to answer 401.
 - **Roles between nodes** (`gateway/state.rs::require_admin_for_surface`).
   The profile table in `webui/routes/mod.rs` gates what a **browser** may
-  reach on a node. A node-to-node request passes that table, and is checked
+  reach on a node. A node-to-node request (one carrying the control
+  signature or the `x-pom-internal-node` marker; a browser call with the
+  connection key as a bearer is never probed as one, which logged a refused
+  node call on every poll of the interface) passes that table, and is checked
   for two other things instead:
   - **The receiver is an inference node.** It answers `403` with `reason:
     "visitor_profile"` to every route in `VISITOR_REFUSES` - `/api/ui/apply`,
@@ -354,8 +361,8 @@ last):
 
 The registration of the UI control routes is organized in
 `crates/node/src/backend/webui/routes/`: `common.rs` for generic routes,
-`infer.rs` for inference profile actions, `node.rs` for machine and model
-operations, and `admin.rs` for administration and lifecycle. `mod.rs` composes
+`visitor.rs` for inference actions and the request to join, `worker.rs` for
+machine and model operations, and `admin.rs` for administration and lifecycle. `mod.rs` composes
 them; profile authorization stays in the gateway's central middleware, so the
 file organization is not a security barrier.
 
@@ -825,8 +832,12 @@ list carries Anthropic's pagination envelope (`first_id`, `last_id`,
 `has_more`) and fields compatible with both clients: `type: "model"`,
 `created_at`, `display_name`, `capabilities`, `max_input_tokens`,
 `max_tokens`, plus `context_length` and `top_provider.max_completion_tokens`
-for OpenAI. The `created_at` field uses the RFC 3339 epoch when the local
-release date is unknown.
+for OpenAI. `capabilities.vision` is true only when the serving head reports a
+loaded vision projector (also for a selected `@<deploy_id>`); a missing or
+unreachable head does not claim image support. Agent harnesses use this value
+to declare `input: ["text", "image"]` only for actual vision deployments.
+The `created_at` field uses the RFC 3339 epoch when the local release date is
+unknown.
 
 The limits come from the effective runtime and the network: `context_length`,
 `max_input_tokens`, `max_tokens` and `top_provider.max_completion_tokens` are
@@ -1357,8 +1368,12 @@ reach only the admins the chain proves (`Network::admin_peers`): announcing
 `profile: admin` is not enough, and an inference node never receives them.
 The filters are `node_id`, `user` (the API
 key's human label), `api_key` (id, label or associated node), `model`, `prompt`
-(FTS5 search), `from`, `to`, `limit` and `offset`; sorting is by most recent
-`received_at`. The UI uses `limit` and `offset` for infinite scroll, without
+(FTS5 search), `from`, `to`, `kind` (`normal` or `jev`, classified by the
+logs plugin), `limit` and `offset`; sorting is by most recent `received_at`.
+With the logs plugin running, both routes answer only from it: when its query
+does not come back within the plugin host's IPC timeout, the route answers 503
+`logs_plugin_unavailable` instead of falling back to the legacy `pom.db`
+store, which only holds requests from before the plugin took over. The UI uses `limit` and `offset` for infinite scroll, without
 loading the whole history on the first request. The database lives in
 `pom.db`, in `POM_DB_DIR` when set or in `config::project_root()` by default, is
 created idempotently at startup and keeps indexes on the prompt and on the
@@ -1374,7 +1389,7 @@ or enqueue failure is logged on the server with the operation and the lost
 request id, and is not propagated to the inference request.
 
 `GET /api/ui/requests/stats` requires the same `ConnectionAuth` and accepts the
-filters `node_id`, `user`, `api_key`, `model`, `prompt`, `from` and `to`, but
+filters `node_id`, `user`, `api_key`, `model`, `prompt`, `from`, `to` and `kind`, but
 does not paginate. The server makes a single aggregation over the filtered rows
 and returns totals per token, node, day and model, consumption per peer
 (`bytes_sent`, `bytes_received`, `network_ms`), average inference, average
@@ -1412,7 +1427,8 @@ In deployments with vision, `DeployPlan.mmproj_candidates` lists the compatible
 local paths on the peer serving layer 0. The UI preselects one of them and can
 send `DeployRequest.mmproj_path` to choose another format;
 `POST /api/ui/deploy/plan` ignores that field. `DeployRequest.vision` still
-enables the projector only on the head, and `mmproj_path` is only considered
+enables the projector only on the step that reads the prompt (the head under
+llama.cpp, the last stage under a plugin's inference service), and `mmproj_path` is only considered
 with `vision: true` - without vision, a path that was sent does not refuse the
 deployment. The path is resolved against the head
 (`planning::resolve_head_projector`): the same path, or the head's only
@@ -1538,9 +1554,11 @@ relays), `dedicated` or `member`. It enters the fingerprint too. The top bar's
 "Behind NAT" badge shows only when it is not empty.
 
 In the `/api/ui/cluster` payload, `PeerView.load` is the in-flight request
-reading published by the peer itself. For the local peer the gateway queries
-its `LoadTracker`; for remote peers it uses the `load` field of the respective
-`/api/ui/node`. If the remote read does not arrive or has no valid number, the
+reading published by the peer itself. For the local peer this combines the
+`LoadTracker` (requests coordinated by this gateway) with the active plugin
+engine's serving-stream counter (requests forwarded by other gateways). The
+node publishes this combined count as `/api/ui/node.load`; remote peers are
+read from their own `/api/ui/node`. If the remote read does not arrive or has no valid number, the
 field is `null`, not zero. The deployment planner keeps the same distinction in
 `DeployMachine.load` and in the load distribution.
 

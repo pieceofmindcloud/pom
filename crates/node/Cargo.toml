@@ -19,6 +19,11 @@ default = []
 # The native backend features live in `llama-engine` (the pom-plugin-llama.cpp repository),
 # which is the one declaring `llama-cpp-sys-2`. Here they only forward.
 cuda = ["llama-engine/cuda"]
+# CUDA that links no libcuda (ggml without the driver's VMM pool): the executable
+# starts on machines without the NVIDIA driver, which use CPU/Vulkan, and takes
+# CUDA when the driver is there. The Linux release (AppImage, and the Docker Hub
+# image made from it) uses it, so the image needs no NVIDIA stub library.
+cuda-no-vmm = ["cuda", "llama-engine/cuda-no-vmm"]
 metal = ["llama-engine/metal"]
 # Portable backend: it is the path for AMD cards, and it also runs on NVIDIA and
 # Intel. It can be combined with `cuda` - ggml loads both backends and the
@@ -38,7 +43,7 @@ desktop = ["dep:tao", "dep:wry", "dep:webkit2gtk"]
 [dependencies]
 # All the llama.cpp code (FFI, MTP, MoE, GGUF, sysmon) lives here, so that
 # editing the backend/network/routing of `node` does not rebuild it.
-llama-engine = { git = "ssh://git@github.com/pieceofmindcloud/pom-plugin-llama.cpp.git", rev = "0d9bdbffd6c405150e7c41cd002ceba9858a32ca" }
+llama-engine = { git = "ssh://git@github.com/pieceofmindcloud/pom-plugin-llama.cpp.git", rev = "5ae10b41fd12ca904605a4debe2c7455a8185b97" }
 brand = { path = "../brand" }
 enterprise-protocol = { path = "../enterprise-protocol" }
 arc-swap = "1"

@@ -25,7 +25,7 @@ Per-file list:
 - `SetupWizard.tsx` - a navigable prototype of the first access. It uses `setupWizardTypes.ts` for
   the central state and `setupWizardMocks.ts` for simulated hardware, nodes, models,
   capabilities, public networks and health; the six paths end
-  in the same summary and make no calls to the backend; see `TODO.md`, item 22.
+  in the same summary and make no calls to the backend.
 
 - `Setup.tsx` - the real first-access wizard, in the identity of the access
   gate (a dark panel with the mark and the animated step trail like the site's
@@ -424,9 +424,12 @@ Per-file list:
   on that thread and is then dropped from the address.
 ## Information screens
 - `Documentation.tsx` - Two audiences, one screen, switched by a tab pair at
-  the top of the navigation column (`?tab=guides|referencia`).
-  **Guides** (`../guides/`) are written for people: ordered pages with SVG
-  diagrams, rendered by `GuideView` from `Block[]` data. **Reference** is the
+  the top of the navigation column (`?tab=guides|reference`).
+  **Guides** are written for people: markdown under `docs/guides/` and
+  `docs/human/` (see `../guides/AGENTS.md`), listed in groups (`GUIDE_GROUPS`:
+  how it works, screens, deployment settings, inside the code) and rendered by
+  `GuideView`. A reference page whose `path` is a guide's `reference` shows a
+  "Read the explanation for people" button to it (`humanFor`). **Reference** is the
   repository's living markdown, written for agents, self-contained and
   build-time embedded: `scripts/build-docs.mjs` copies the folder `AGENTS.md`
   files, the `docs/subsystems/*.md` READMEs and the root README into `../docs/`
@@ -459,8 +462,10 @@ Per-file list:
     (`?doc=`/`?guide=` already in the URL) counts as that same selection and
     opens straight into the reader. From `sm:` up both columns render side by
     side regardless of the flag, exactly like before.
-  Search filters label, path *and* body, and replaces the tree with a flat
-  result list whose hint is the section name, not the file. Test file
+  The search box serves both tabs. In Reference it filters label, path *and*
+  body, and replaces the tree with a flat result list whose hint is the section
+  name, not the file; in Guides it filters every guide by everything it shows
+  (`guideText`) and keeps the groups. Test file
   `Documentation.test.tsx` covers the contract: guides first (a person must not
   land on agent markdown), the guide->reference deep link, no `.md` or
   `AGENTS.md` in the list, section header opens the overview, collapse works
@@ -469,8 +474,8 @@ Per-file list:
   contract. Loading the embedded set requires
   `src/docs/` to exist, which `npm test`'s `pretest` hook guarantees.
 - `About.tsx` - an information screen at `/config/about`, the last leaf of
-  Settings. It shows the repository's AGPL-3.0 `LICENSE` and the official GNU
-  page, the risk/LGPD notice and links to the site (`pieceofmind.cloud`), contact
+  Settings. It shows the repository's MIT `LICENSE` and the Open Source
+  Initiative page, the risk/LGPD notice and links to the site (`pieceofmind.cloud`), contact
   (`contact.html`) and the official repositories. It shows the running POM release
   (`current_version`) and checks POM's releases on demand through
   `/api/ui/pom-update/check` (`usePomCoreUpdateStatus`; GitHub first, the site

@@ -85,7 +85,15 @@ them into the workspace.
 The `/admin-ui/documentation` screen adds the guides and reference of active
 plugins to the system documentation. It downloads each Markdown file through
 the assets route only when the person opens it; an inactive plugin or an
-invalid manifest publishes no pages.
+invalid manifest publishes no pages. A page may come in Portuguese too: when
+the manifest's `assets` also lists `docs/guides/x.pt-BR.md` beside the declared
+`docs/guides/x.md`, the Portuguese interface reads that file instead. An image
+the Markdown links by a relative path (`![...](../images/en/screen.png)`) is
+resolved against the page's own folder and fetched through the same assets
+route, so it must be declared in `assets` and served as `image/png` or
+`image/svg+xml`. The pages are plain Markdown: the `:::` blocks of POM's own
+guides (`apps/frontend/scripts/guides-md.mjs`) are not available to plugins.
+The `logs` plugin (`pom-plugin-logs`) documents its screens this way.
 
 The host normalizes each `menu[].to` and `routes[].path` under
 `/<plugin_code>/...` and keeps both in the same registry. So
@@ -252,11 +260,14 @@ A resident plugin behaves as before.
 
 - The menu keeps listing the plugin with its saved manifest while the process
   is stopped (`GET /api/ui/plugins/ui` returns `on_demand` and `running`).
-  Its labels and icon load too: `GET /api/ui/plugins/<code>/assets/<path>`
-  serves the i18n catalogs and the `icon_image` from the copy the node keeps in
-  `pom.db` (`plugin_ui_asset:<code>:<path>`), written from every live
+  Its labels, icon and documentation load too: `GET
+  /api/ui/plugins/<code>/assets/<path>` serves the i18n catalogs, the
+  `icon_image` and every declared asset under `docs/` (the guide and reference
+  pages, their `.pt-BR.md` variants and their images) from the copy the node
+  keeps in `pom.db` (`plugin_ui_asset:<code>:<path>`), written from every live
   `ui.asset` answer and copied from the running host once per manifest, and
-  checked like a live answer. Any other asset still needs the process.
+  checked like a live answer. A plugin must run once after it is installed or
+  updated for that copy to exist. Any other asset still needs the process.
 - Clicking the menu item calls `POST /api/ui/plugins/<code>/open`, which starts
   the process, and then opens the screen. Reached by address while stopped, the
   screen shows the puzzle of `components/MissingPiece.tsx` with its fourth
@@ -509,7 +520,20 @@ may carry `placement: "pom"`: the deploy inspector then draws it in the POM
 settings card, whatever the slices (whole model or slices), not in the engine's
 card; the node passes the field on unchanged. A service
 that also runs POM layer slices, one stage per machine, publishes
-`stages: true`, and lists in `pom_settings` the POM deployment settings that
+`stages: true`. When it runs only some of its `architectures` in slices, it
+names those in `stage_architectures`: a model of another of its architectures
+is offered and deployed on that service as the whole model only
+(`plugin_engine::runs_slices`, checked by `deploy_block` at plan, deploy and
+add-machine time, and `serviceRunsSlices` on the Deploy screen). Strata
+publishes `["qwen4exp"]`, so Qwen3.6 (`qwen35moe`) runs whole on it, while
+llama.cpp still slices that architecture. A service whose engine takes a
+drafter file from the deployment names the model architectures in
+`draft_architectures`: the Deploy screen then offers the compatible files
+(`serviceTakesDraft`), the plan resolves the choice on the stage with the last
+layer, and `engine.load` receives it as `mtp_draft_path`. Strata names
+`deepseek41`, runs no drafter when none is chosen, and on its other families
+uses the drafts it finds itself. The service lists in `pom_settings`
+the POM deployment settings that
 apply to it, by their `RuntimeParams` name: `prefill_max_inflight_chunks`,
 `hidden_state_dtype` and `inference_role` are the known ones, any other name is
 dropped. The deploy inspector draws only the declared ones, in their own card
@@ -519,7 +543,8 @@ plugin implements four operations the node calls through its own local host,
 never from another machine or a browser: `engine.load` (`params`:
 `model_path`, `model_label`, `n_ctx`, `max_sessions`, `kv`, `gpus`,
 `settings`, for a slice `link`, and for a whole-model machine with a
-prefill/decode role other than both, `role`: `prefill` or `decode`),
+prefill/decode role other than both, `role`: `prefill`, or `shared` for a
+machine that shares the whole model with others),
 `engine.unload`, `engine.status` (`state` among `idle`, `installing`,
 `preparing`, `loading`, `ready`, `stopping`, `error`, with `detail`, `n_ctx`,
 `busy`) and `engine.upstream` (`{status: "ready", port, token}` of a loopback

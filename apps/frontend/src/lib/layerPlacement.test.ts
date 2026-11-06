@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { layerPlacement } from "./layerPlacement";
+import { layerPlacement, warnsLayersOnCpu } from "./layerPlacement";
 
 describe("layerPlacement", () => {
   it("separates the GPU layers from the ones left on the CPU", () => {
@@ -38,5 +38,24 @@ describe("layerPlacement", () => {
     // The captain's case: Windows with no board at all showing "25 on the GPU" -
     // the reported number was the request's sentinel, not a real reading.
     expect(layerPlacement(0, 63, 25, false)).toBeNull();
+  });
+});
+
+describe("warnsLayersOnCpu", () => {
+  const split = layerPlacement(0, 15, 10, true);
+  const allGpu = layerPlacement(0, 15, -1, true);
+
+  it("warns for llama.cpp with layers on the CPU of a machine with real GPUs", () => {
+    for (const kind of ["nvidia", "amd", "mixed"]) {
+      expect(warnsLayersOnCpu(split, kind, null)).toBe(true);
+    }
+  });
+
+  it("stays quiet on a Mac, without a GPU, under a plugin engine or with everything on the GPU", () => {
+    expect(warnsLayersOnCpu(split, "unified", null)).toBe(false);
+    expect(warnsLayersOnCpu(split, "none", null)).toBe(false);
+    expect(warnsLayersOnCpu(split, "nvidia", "strata")).toBe(false);
+    expect(warnsLayersOnCpu(allGpu, "nvidia", null)).toBe(false);
+    expect(warnsLayersOnCpu(null, "nvidia", null)).toBe(false);
   });
 });

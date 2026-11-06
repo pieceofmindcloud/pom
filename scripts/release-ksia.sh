@@ -28,7 +28,7 @@ cache="${POM_RELEASE_CACHE:-${HOME}/.cache/pom-release}"
 cuda_home="${POM_RELEASE_CUDA_HOME:-/usr/local/cuda-12.9}"
 llvm_bin="${POM_RELEASE_LLVM_BIN:-/usr/lib/llvm-20/bin}"
 llama_repo="${POM_LLAMA_CPP_REPOSITORY:-https://github.com/pieceofmindcloud/llama.cpp.git}"
-llama_ref="${POM_LLAMA_CPP_REF:-pom-tensor-parallel}"
+llama_ref="${POM_LLAMA_CPP_REF:-pom}"
 ninja_version="1.12.1"
 appimagetool_version="1.9.1"
 windows_target="x86_64-pc-windows-msvc"
@@ -171,15 +171,18 @@ case "$variant" in
     binary="${target_dir}/release/pom"
     ;;
   linux-cuda)
-    # An empty CUDAARCHS makes the vendored CMake pick the toolkit's whole
-    # architecture list instead of this machine's GPU (build-and-run.md,
-    # "Arquiteturas de GPU"). Never inherit a narrow development value here.
+    # llama.cpp's whole list under CUDA 12.9 instead of this machine's GPU
+    # (build-and-run.md, "GPU architectures"). Written out because an empty value
+    # leaves POM's MoE kernels with nvcc's one default target. Never inherit a
+    # narrow development value here.
     unset CMAKE_CUDA_ARCHITECTURES
-    export CUDAARCHS=''
+    # POM's MoE kernels would run nvcc through it, and sccache refuses this list.
+    unset CCACHE
+    export CUDAARCHS='50-virtual;61-virtual;70-virtual;75-virtual;80-virtual;86-real;89-real;90-virtual;120a-real;121a-real'
     export CUDA_PATH="$cuda_home"
     export CUDACXX="${cuda_home}/bin/nvcc"
     export PATH="${cuda_home}/bin:${PATH}"
-    run cargo build --release --locked -p node -p pom-plugin-host --features "cuda,${linux_features}"
+    run cargo build --release --locked -p node -p pom-plugin-host --features "cuda-no-vmm,${linux_features}"
     binary="${target_dir}/release/pom"
     ;;
   windows-cpu)

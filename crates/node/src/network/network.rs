@@ -58,6 +58,11 @@ const ADMISSION_TUNNEL_TIMEOUT: Duration = Duration::from_millis(500);
 
 const ADMISSION_CACHE_TTL: Duration = Duration::from_secs(30);
 const REJECTED_ADMISSION_CACHE_TTL: Duration = Duration::from_secs(5);
+/// A peer that never proved membership and does not answer: probed again at most this often. Every `PeerList`
+/// names it again, and each probe costs seconds of timeouts.
+const UNREACHABLE_ADMISSION_CACHE_TTL: Duration = Duration::from_secs(60);
+/// UDP messages handled at once (`receive_loop`).
+const UDP_HANDLERS: usize = 64;
 
 /// How long a peer that already proved membership stays admitted while
 /// the following probes do not reach it. A peer that only the relay reaches loses the
@@ -608,7 +613,10 @@ fn admission_verdict(
                 expires_at: now + REJECTED_ADMISSION_CACHE_TTL,
                 proven_at: Some(proven),
             },
-            None => rejected,
+            None => AdmissionCacheEntry {
+                expires_at: now + UNREACHABLE_ADMISSION_CACHE_TTL,
+                ..rejected
+            },
         },
     }
 }
@@ -2762,6 +2770,11 @@ impl Network {
     pub fn plugin_engine_capabilities(&self) -> Option<Vec<String>> {
         let code = self.external_engine()?;
         let mut caps = vec![crate::plugin_engine::capability(&code)];
+        caps.extend(
+            crate::plugin_engine::STAGE_LINK_DTYPES
+                .iter()
+                .map(|cap| cap.to_string()),
+        );
         if let Some(role) = self.external_engine_role() {
             caps.push(crate::plugin_engine::role_capability(role));
         }
@@ -3120,6 +3133,13 @@ impl Network {
         let Some(admission) = self.admission.as_ref() else {
             return true;
         };
+        // This node's own key: the transport proved the caller holds it, so
+        // the caller is this node. The peers table never holds this node, and
+        // a worker is not in the chain: a worker that is the gateway of its
+        // own request refused its own inference server.
+        if node_id == self.node_id && pubkey == self.pubkey {
+            return true;
+        }
         if crate::admin_trust::is_admin_key(&admission.trust.document(), node_id, pubkey) {
             return true;
         }
@@ -3554,9 +3574,15 @@ impl Network {
         Ok(())
     }
 
-    async fn receive_loop(&self, assignment: Arc<RwLock<Option<LayerAssignment>>>) {
+    /// Reads the UDP socket and hands every message to a task of its own. A message can wait seconds on an
+    /// admission probe (`admit_peer`: 2 s per address, then the tunnel); handled in line, the probes of a `PeerList`
+    /// full of unreachable or foreign nodes held the socket, members' announces queued behind them and their peers
+    /// left the table (`Removed timed-out peers`). At most `UDP_HANDLERS` run at once; past that a message is dropped,
+    /// as UDP would, and the sender's next announce comes in 5 s.
+    async fn receive_loop(self: &Arc<Self>, assignment: Arc<RwLock<Option<LayerAssignment>>>) {
         let mut buf = vec![0u8; 65535];
-        let mut panic_log = PanicLogLimiter::default();
+        let panic_log = Arc::new(std::sync::Mutex::new(PanicLogLimiter::default()));
+        let handlers = Arc::new(tokio::sync::Semaphore::new(UDP_HANDLERS));
         loop {
             match self.socket.recv_from(&mut buf).await {
                 Ok((len, src)) => {
@@ -3566,22 +3592,34 @@ impl Network {
                             debug!("UDP announce from {src} dropped: {reason}");
                             continue;
                         }
+                        let Ok(permit) = handlers.clone().try_acquire_owned() else {
+                            debug!("UDP message from {src} dropped: {UDP_HANDLERS} handlers busy");
+                            continue;
+                        };
                         let context = message_context(&msg);
-                        if let Err(payload) =
-                            AssertUnwindSafe(self.handle_message(msg, src, &assignment))
-                                .catch_unwind()
-                                .await
-                        {
-                            if let Some(suppressed) = panic_log.record(Instant::now()) {
-                                warn!(
-                                    source = %src,
-                                    message = %context,
-                                    panic = %panic_context(payload.as_ref()),
-                                    suppressed,
-                                    "UDP message handler panicked; receive loop continues"
-                                );
+                        let net = Arc::clone(self);
+                        let assignment = assignment.clone();
+                        let panic_log = panic_log.clone();
+                        tokio::spawn(async move {
+                            let _permit = permit;
+                            if let Err(payload) =
+                                AssertUnwindSafe(net.handle_message(msg, src, &assignment))
+                                    .catch_unwind()
+                                    .await
+                            {
+                                let suppressed =
+                                    panic_log.lock().ok().and_then(|mut log| log.record(Instant::now()));
+                                if let Some(suppressed) = suppressed {
+                                    warn!(
+                                        source = %src,
+                                        message = %context,
+                                        panic = %panic_context(payload.as_ref()),
+                                        suppressed,
+                                        "UDP message handler panicked; receive loop continues"
+                                    );
+                                }
                             }
-                        }
+                        });
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -5983,6 +6021,7 @@ mod tests {
         use crate::config::Config;
         Arc::new(RwLock::new(Config {
             retired_tls_required: (),
+            saved_at: None,
             profile: crate::profile::NodeProfile::Worker,
             setup_pending: false,
             local_auto_discovery: false,
@@ -6693,7 +6732,9 @@ mod tests {
         assert_eq!(kept.expires_at, now + REJECTED_ADMISSION_CACHE_TTL);
 
         assert!(!admission_verdict(AdmissionProbe::Unreachable, Some(stale), now).allowed);
-        assert!(!admission_verdict(AdmissionProbe::Unreachable, None, now).allowed);
+        let unknown = admission_verdict(AdmissionProbe::Unreachable, None, now);
+        assert!(!unknown.allowed);
+        assert_eq!(unknown.expires_at, now + UNREACHABLE_ADMISSION_CACHE_TTL);
         assert!(!admission_verdict(AdmissionProbe::Refused, Some(recent), now).allowed);
 
         let approved = admission_verdict(AdmissionProbe::Approved, None, now);
@@ -7383,6 +7424,41 @@ mod tests {
         assert_eq!(stored.addr, real);
         assert_eq!(stored.addr_candidates, vec![real.to_string()]);
         assert_eq!(stored.end_layer, 9, "the rest of the snapshot still applies");
+    }
+
+    /// A worker that is the gateway of its own request dials its own
+    /// advertised address over TLS, so its inference server sees the
+    /// worker's own certificate. The peers table never holds this node, and
+    /// the worker is not in the chain: it refused itself, and the generation
+    /// stopped after two tokens.
+    #[tokio::test]
+    async fn a_worker_is_a_member_to_itself() {
+        let primary_key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+        let primary = crate::admin_trust::AuthorityPrincipal::from_signing_key(
+            "primary",
+            crate::identity::trust_peer_id(primary_key.verifying_key().as_bytes()),
+            &primary_key,
+        );
+        let trust = Arc::new(
+            crate::admin_trust::AdminTrust::bootstrap_primary_in_memory(
+                "test-cluster",
+                primary,
+                &primary_key,
+            )
+            .unwrap(),
+        );
+        let net = Network::testkit("worker".into(), "worker-key".into(), vec![], None, None)
+            .await
+            .unwrap()
+            .with_admission(
+                admission_config("key", crate::config::NetworkVisibility::Public),
+                trust,
+            );
+        assert!(net.is_member_key("worker", "worker-key").await);
+        assert!(
+            !net.is_member_key("worker", "another-key").await,
+            "only this node's own key is this node"
+        );
     }
 
     /// Who passes the transport check of a node-to-node call: an admin of

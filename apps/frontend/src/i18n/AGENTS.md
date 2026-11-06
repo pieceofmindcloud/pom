@@ -102,8 +102,8 @@ as raw text at build time and interprets the messages synchronously with
 - The `deploymentLogs.*` group covers the process console of the local replica:
   auto-scroll state, copying the last 500 lines, the copy's outcome, the filter,
   and collection states.
-- The `about.*` group covers the AGPL-3.0 license published in `LICENSE`, the
-  links to the GNU text and to the repository file, the LGPD
+- The `about.*` group covers the MIT license published in `LICENSE`, the
+  links to the OSI text and to the repository file, the LGPD
   security/privacy notice, and the explanation of plugin creation; it also
   covers the POM update (running version, source, why it cannot be installed here), catalog count and filter,
   ecosystem labels, version and repository.

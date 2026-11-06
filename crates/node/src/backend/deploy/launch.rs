@@ -1,6 +1,30 @@
 use super::*;
 // ── Carrying it out ──────────────────────────────────────────────────────────
 
+/// Records the `deploy` job of `deployment_name`, or returns the id of the one
+/// already running for that name. One deploy per deployment at a time: the
+/// screen answered a click with only a toast, and an operator who saw nothing
+/// happen clicked again, which started the same deployment twice. Checked and
+/// recorded under the same lock, so two requests at once cannot both pass.
+pub(super) async fn claim_deploy_job(
+    job_id: &str,
+    title: String,
+    deployment_name: &str,
+) -> Result<(), String> {
+    let mut map = jobs().write().await;
+    if let Some(running) = map.values().find(|job| {
+        job.kind == "deploy"
+            && job.state == "running"
+            && job.deployment_name.as_deref() == Some(deployment_name)
+    }) {
+        return Err(running.id.clone());
+    }
+    let mut job = new_job(job_id, "deploy", title, "preparing");
+    job.deployment_name = Some(deployment_name.to_string());
+    map.insert(job_id.to_string(), job);
+    Ok(())
+}
+
 pub(super) async fn deploy_endpoint(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
@@ -68,6 +92,7 @@ pub(super) async fn deploy_endpoint(
         links_stale,
         req.vision,
         req.vision_choice.as_ref(),
+        params.inference_service.is_some(),
         params.mtp_enabled,
         req.mtp_choice.as_ref(),
     );
@@ -99,6 +124,7 @@ pub(super) async fn deploy_endpoint(
 
     if plan.blocked.is_none() {
         if let Some(service) = params.inference_service.as_deref() {
+            super::planning::share_whole_model_roles(req.kind, &mut plan.steps, params.inference_role);
             let targets: Vec<String> = plan
                 .steps
                 .iter()
@@ -115,6 +141,10 @@ pub(super) async fn deploy_endpoint(
                 req.kind == DeployKind::Whole,
                 &targets,
                 &roles,
+                survey
+                    .model_shape
+                    .as_ref()
+                    .and_then(|shape| shape.architecture.as_deref()),
             )
             .await;
         }
@@ -209,10 +239,19 @@ pub(super) async fn deploy_endpoint(
             "nodes"
         }
     );
-    jobs().write().await.insert(
-        job_id.clone(),
-        new_job(&job_id, "deploy", title, "preparing"),
-    );
+    if let Err(running) = claim_deploy_job(&job_id, title, &deployment_name).await {
+        return (
+            axum::http::StatusCode::CONFLICT,
+            Json(json!({
+                "error": format!(
+                    "deployment {deployment_name} is already being deployed; wait for it to finish"
+                ),
+                "code": "deploy_in_progress",
+                "job_id": running,
+            })),
+        )
+            .into_response();
+    }
 
     // Minted before anything is brought up: it is the name of this deployment, and it goes along
     // with every `apply` so the node knows which set it became part of.
@@ -1515,4 +1554,36 @@ pub(super) enum RecordPlan {
     /// Reused `deploy_id` (same shape, same proven identity):
     /// appends - or reactivates - a version in this record.
     ReuseVersion(Box<crate::deployment::Deployment>),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A second deploy of a deployment that is still coming up is refused,
+    /// naming the running job; another deployment, or the same one once its
+    /// job ended, goes through.
+    #[tokio::test]
+    async fn a_deployment_is_deployed_once_at_a_time() {
+        let name = format!("guard-{}", uuid::Uuid::new_v4().simple());
+        let first = uuid::Uuid::new_v4().to_string();
+        claim_deploy_job(&first, "first".into(), &name).await.unwrap();
+
+        let second = uuid::Uuid::new_v4().to_string();
+        assert_eq!(claim_deploy_job(&second, "second".into(), &name).await, Err(first.clone()));
+        assert!(!jobs().read().await.contains_key(&second));
+
+        let other = format!("{name}-other");
+        let third = uuid::Uuid::new_v4().to_string();
+        assert!(claim_deploy_job(&third, "other".into(), &other).await.is_ok());
+
+        jobs().write().await.get_mut(&first).unwrap().state = "done";
+        let fourth = uuid::Uuid::new_v4().to_string();
+        assert!(claim_deploy_job(&fourth, "again".into(), &name).await.is_ok());
+
+        let mut map = jobs().write().await;
+        for id in [&first, &third, &fourth] {
+            map.remove(id);
+        }
+    }
 }

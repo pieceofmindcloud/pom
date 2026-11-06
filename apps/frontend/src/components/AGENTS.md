@@ -14,8 +14,9 @@ present: `AddNodeDialog.test.tsx`, `Confirm.test.tsx`, `DeploymentInspector.idle
 `ModelNetworkCanvas.test.tsx`,
 `PeerDetailCard.test.tsx`. Fake peers for these tests come from
 `../test/fixtures.ts` and must have the *full* shape the node serves. A partial
-`node` can slip past one component's `?.` and crash the next; the maintenance
-debt lives in `TODO.md`, item 23.
+`node` can slip past one component's `?.` and crash the next:
+`PeerDetailCard.tsx` still reads `n?.status.state`, which guards `n` but not
+`status`.
 
 ## Chat head choice
 
@@ -72,7 +73,12 @@ Per-file list:
   `actions` puts controls at the right end of the row (the tabs scroll, the
   controls stay). An
   item with `onClose` gets a close button beside the tab (`pom-tab-closable`,
-  siblings, never a button inside a button).
+  siblings, never a button inside a button). A label that can be longer than a
+  `fill` tab (the machine name in the Deploy inspector's tab) goes in `MarqueeText`:
+  clipped to the tab, it scrolls right to left in a loop only when it does not
+  fit, rests at the start of each lap, pauses under the pointer and stays still
+  with an ellipsis under reduced motion (`pom-marquee*`; the rest is
+  `MARQUEE_REST`, in step with `@keyframes pom-marquee`).
 - `AlertTooltip` (ui.tsx) - `compact` makes the icon the size of the `[i]`, without
   a frame, so it fits in the `DeploymentInspector`'s icon column; `Meter` and
   `KeyValue` gained `compact` for the same reason in the machine card. It is the compact
@@ -97,9 +103,16 @@ Per-file list:
   `.pom-store*` styles in `index.css`): the name, description,
   icon, official screenshots and price come from the license-server's public catalog
   (`usePublicPluginCatalog`), with local SVG text and previews when it does not
-  answer; the price is formatted in the interface's language. "Buy now" and
-  the footer link open the site's purchase wizard (`/comprar/`, Paddle) in a
-  new tab with the plugin, the billing period and `lang`. While no plugin
+  answer; the price is formatted in the interface's language
+  (`lib/pluginPricing.ts`) and follows how the site sells the plugin: with a
+  running promotion, the full price struck through above the discounted one,
+  a "Sale -N%" tag and the promotion's terms; with `sales_mode: "contact"`
+  ("talk to sales", set in the license server's console), no price, the
+  first step reads "Talk to our team", and the button opens the site's
+  contact form about the plugin (`/contato/?plugin=`) instead of the wizard.
+  "Buy now" and the footer link open the site's purchase wizard (`/comprar/`,
+  Paddle) in a new tab with the plugin, the billing period and `lang`; sold by
+  contact, the footer link goes to the plugin's card in the site's store. While no plugin
   serves `/logs` or `/statistics`, `nav.ts` folds the Logs section and
   Statistics into one "Business Pack" entry. Tests in `EnterpriseFeatureShowcase.test.tsx`.
 - `PluginBridge.tsx` - mounted once in the shell (`App.tsx`). It publishes
@@ -439,6 +452,15 @@ Per-file list:
   until the bell opens, then get marked read and can be removed. Node-to-infer changes are amber notices without
   action buttons. Authority offers keep their pending state in the bell and
   link to `/config/administration` for the roster.
+  Finished jobs (a deploy, a slicing run; not a model download, whose panel
+  has its own outcome) stay with their outcome for `RECENTLY_FINISHED_MS`
+  (`lib/finishedJobs.ts`): unread until the bell opens, removable with an X,
+  both remembered in `localStorage`. Before, a deploy that ended between two
+  polls left the badge at (1) and the tray empty.
+  `DeployProgressModal.tsx` - the window the Deploy screen opens on the job it
+  started (or on the running one the node names in a 409 `deploy_in_progress`):
+  its steps and progress, then ready or failed with the reason; Close leaves the
+  deploy running, Switch to dashboard goes to `/`.
   It lists **both directions** - an upload icon for `sending`, a download icon for
   `receiving` - and also the **recent outcome**: completed, failed and refused
   stay in the bell for `RECENTLY_FINISHED_MS`. Before, it only showed what was
@@ -495,10 +517,11 @@ Per-file list:
   outline when the ring avoids the return relay) and the icon opens the
   `pipeline-relay-popup` card (it closes with Esc, an outside click or the X) with the legs by
   relay, whether POM bypasses it through the ring and how to improve it.
-- `ModelNetworkCanvas.tsx` - a machine whose peer announces a prefill/decode
-  `role` gets a Prefill/Decode badge; the prefill machine heads the layout,
-  the backend's candidate edge prefill -> decode is drawn, and the gateway
-  sits after the decode machines (a prefill machine never answers).
+- `ModelNetworkCanvas.tsx` - a machine whose peer announces a role gets a
+  badge: "Prefill first" (`prefill`) or "Prefill/Decode" (`shared`, the
+  other machines of a whole model on several); the prefill machine heads the
+  layout, the backend's candidate edge prefill -> the others is drawn, and
+  the gateway sits after the other machines.
 - `ModelNetworkCanvas.tsx` - the main operational view: an SVG graph with
   pan/zoom of nodes (range cards with grouped RAM/load/VRAM meters,
   followed by the compact temperatures when there is a GPU) and curved edges, guided by
@@ -531,6 +554,11 @@ Per-file list:
   compact icon button inside the map's upper-right control area, next to the
   zoom and Fit controls; the dashboard toolbar remains reserved for cluster
   status and actions.
+- `ModelNetworkCanvas.tsx` / `PeerDetailCard.tsx` - a machine whose llama.cpp left layers on the
+  CPU while it has real GPUs (`warnsLayersOnCpu` in `../lib/layerPlacement.ts`: `engine` null,
+  `gpu_kind` nvidia/amd/mixed, `reported_gpu_layers` below the slice) gets an amber `AlertTooltip`
+  beside its layer range (`machine-cpu-warning`, `peer-cpu-warning`) saying how many layers spilled
+  and what to do. Never on `unified` (a Mac) or `none`, nor under a plugin engine, which reports no placement.
 - `RouteRttLabel.tsx` - the shared directional RTT visual badge used by the
   Dashboard map and by the deployment map. On the Dashboard it also identifies the
   effective transport (`HTTP`, `HTTPS` or `QUIC`) observed in the execution; when
@@ -578,7 +606,10 @@ Per-file list:
   (usage, temperature and optional watts in one row per GPU), RAM, load and disks. The disks are
   **one meter per mounted partition**
   (`system.disks`), with a fallback to `system.disk` on a node that does not publish
-  the list yet. `PeerPlacement` (internal) is the only part of the card that
+  the list yet. Another member's sample arrives trimmed by its node (this machine's own card is untrimmed and shows
+  `SharedSummaryNote`, a lock note under the disks and in the GPU processes, saying only the summary is shared): one volume with an empty
+  `mount_point` (labelled `dashboard.modelStorage`) and a `pid` 0 GPU process with no name, the
+  total of every non-POM process (labelled `dashboard.otherGpuProcesses`). `PeerPlacement` (internal) is the only part of the card that
   makes an extra call: it mounts only with the machine serving, and the `enabled` of
   `usePeerRuntime` is what prevents one `/health` per card on every Dashboard cycle.
   When the configuration asked for MTP, the same card also shows
@@ -828,9 +859,9 @@ Key logic carriers:
   several machines, each row with its `inference_role`), the prefill
   machines are a stage of their own before the decode ones (`stagesOf`,
   `roleOf`), so the principal edge goes Prefill -> Decode and the gateway sits
-  after the decode machines. `DeployModel` lets a service that declares
-  `inference_role` take a second machine for a whole model (the first becomes
-  `prefill`, the new one `decode`); the role of each machine is edited in
+  after the others. `DeployModel` lets a service that declares
+  `inference_role` take a second machine for a whole model, with the default
+  role (the node turns it into `shared`); the role of each machine is edited in
   the POM settings card (`DeploymentInspector` `machineRoles`, one row per
   machine), never in the machine card. Back to one machine, `DeployModel`'s
   `rows` drops the row's role, so the deployment's role the inspector shows
@@ -899,7 +930,7 @@ Key logic carriers:
   the inspector draws them in a separate "POM settings" card below it, like
   under llama.cpp, when the slices cross machines (`showHiddenStateDtype`).
   `inference_role` (the prefill/decode split of a whole-model machine:
-  both, prefill or decode, `RuntimeParams.inference_role`) is the opposite:
+  prefill and decode, or prefill first, `RuntimeParams.inference_role`) is the opposite:
   that card draws it only when the model is not split across machines. A
   setting the service publishes with `placement: "pom"` (the Strata's
   `session_save`) goes to that same card in both modes, whole model and slices,
@@ -913,15 +944,16 @@ Key logic carriers:
   temperature, top-p, top-k, min-p, repetition penalties,
   presence and frequency, DRY - followed by the seed; base, allowed size and
   the DRY window only appear with the multiplier above 0, which is what turns DRY on;
-  the installation's KV cache combos; the switches; and the
+  the installation's KV cache combos; MoE experts in RAM and the GPU expert
+  cache (`--cpu-moe`, `--moe-cache-mib`); the switches; and the
   **Speculation**, one choice only - None, MTP or lookup -, because the gateway
   never runs both in the same round (`lib/speculation.ts`); the MTP's numbers
   and where it sits only appear with the MTP chosen, and the lookup's only with it), *POM settings* (disable embeddings, memory fitting,
-  chunks in flight, slice merging, the hidden-state precision, and a *Beta*
-  group inside it, shown to everyone: MoE experts in RAM, the GPU expert cache
-  and the automatic prefill chunk) and *POM settings (DEV)* (the inference
-  engine and the idle unloading per peer). Default settings, POM
-  settings and the Beta group each have a help button by the title that opens
+  chunks in flight, the automatic prefill chunk, slice merging and the
+  hidden-state precision; its *Beta* group is commented out while it has no
+  setting) and *POM settings (DEV)* (the inference
+  engine and the idle unloading per peer). Default settings and POM
+  settings each have a help button by the title that opens
   their guide in a `GuideDialog`. The `[i]` comes **before** the name,
   in a straight column: after names of different widths it came out jagged.
   The engine combo does not offer "Automatic" and assumes `dense` when it mounts - that is

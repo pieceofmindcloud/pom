@@ -779,6 +779,9 @@ impl Discovery {
                     info!("pkarr: dialling {}", addr.id.fmt_short());
                     ctx.p2p.learn(addr.id, &p2p::addr_texts(&addr));
                     policy.dialed.insert(addr.id, p2p::addr_texts(&addr));
+                    if policy.forget_failed_join(addr.id, std::time::Instant::now()) {
+                        debug!("gossip: {} is no neighbor, asking it to join again", addr.id.fmt_short());
+                    }
                     join_gossip(&gossip_tx, &mut policy, addr.id).await;
                 }
                 event = mdns_events.next() => {
@@ -912,7 +915,9 @@ impl Discovery {
                         continue;
                     };
                     let transport = ctx.p2p.clone();
+                    let chat = ctx.chat.clone();
                     tokio::spawn(async move {
+                        let action = request.action.clone();
                         let response = match transport
                             .call(NetworkChatCodec, peer_id, &addr_candidates, request)
                             .await
@@ -920,6 +925,16 @@ impl Discovery {
                             Ok(response) => response,
                             Err(error) => ChatResponse::rejected(error.to_string()),
                         };
+                        // The principal relays to everyone but the sender
+                        // (`relay_chat`), so the sender keeps its own copy
+                        // once the principal accepted it. Without this a
+                        // member's message reached the others and never
+                        // its own screen.
+                        if response.accepted {
+                            if let Err(error) = chat.accept(action) {
+                                debug!("network-chat: could not keep the sent action: {error}");
+                            }
+                        }
                         let _ = reply.send(response);
                     });
                 }
@@ -959,6 +974,8 @@ struct PolicyState {
     /// When this node, with no neighbor at all, last asked every admitted
     /// peer again.
     isolated_rejoin: Option<std::time::Instant>,
+    /// When a peer pkarr found again was last asked to join once more.
+    pkarr_rejoin: std::collections::HashMap<EndpointId, std::time::Instant>,
     /// Member relays this node added to its relay map.
     member_relays: HashSet<RelayUrl>,
 }
@@ -966,6 +983,33 @@ struct PolicyState {
 /// Wait between two rounds of asking every admitted peer to join, while this
 /// node has no gossip neighbor at all.
 const ISOLATED_REJOIN_INTERVAL: Duration = Duration::from_secs(30);
+
+impl PolicyState {
+    /// pkarr found `peer` again while the transport holds no connection to
+    /// it. A join is asked once per peer and counts as done as soon as it is
+    /// queued, but the connection behind it can still fail (the peer was
+    /// starting, or its pkarr record still carried the previous run's
+    /// addresses). Nothing else repairs that: the isolated rejoin only asks
+    /// peers this node already heard from, and a node that never heard an
+    /// announce knows none. So a peer that is not an active neighbor is
+    /// forgotten as joined, once per `ISOLATED_REJOIN_INTERVAL`, and the next
+    /// `join_gossip` asks it again. An active neighbor is left to HyParView.
+    fn forget_failed_join(&mut self, peer: EndpointId, now: std::time::Instant) -> bool {
+        if !self.joined.contains(&peer) || self.neighbors.contains(&peer) {
+            return false;
+        }
+        let due = self
+            .pkarr_rejoin
+            .get(&peer)
+            .is_none_or(|last| now.duration_since(*last) >= ISOLATED_REJOIN_INTERVAL);
+        if !due {
+            return false;
+        }
+        self.pkarr_rejoin.insert(peer, now);
+        self.joined.remove(&peer);
+        true
+    }
+}
 
 async fn join_gossip(gossip: &GossipSender, policy: &mut PolicyState, peer: EndpointId) {
     if policy.joined.insert(peer) {
@@ -1975,6 +2019,37 @@ mod tests {
 
     fn key(seed: u8) -> SecretKey {
         SecretKey::from_bytes(&[seed; 32])
+    }
+
+    /// A join that never became a connection is asked again when pkarr finds
+    /// the peer, at most once per interval, and never for an active neighbor.
+    #[test]
+    fn a_failed_join_is_asked_again_when_pkarr_finds_the_peer() {
+        let peer = key(71).public();
+        let start = std::time::Instant::now();
+        let mut policy = PolicyState::default();
+
+        assert!(!policy.forget_failed_join(peer, start), "never asked: nothing to forget");
+
+        policy.joined.insert(peer);
+        assert!(policy.forget_failed_join(peer, start));
+        assert!(!policy.joined.contains(&peer));
+
+        policy.joined.insert(peer);
+        assert!(
+            !policy.forget_failed_join(peer, start + Duration::from_secs(5)),
+            "asked again inside the interval"
+        );
+        assert!(policy.joined.contains(&peer));
+        assert!(policy.forget_failed_join(peer, start + ISOLATED_REJOIN_INTERVAL));
+
+        policy.joined.insert(peer);
+        policy.neighbors.insert(peer);
+        assert!(
+            !policy.forget_failed_join(peer, start + ISOLATED_REJOIN_INTERVAL * 3),
+            "an active neighbor is HyParView's"
+        );
+        assert!(policy.joined.contains(&peer));
     }
 
     /// Two members call each other through a visitor's anonymous relay on

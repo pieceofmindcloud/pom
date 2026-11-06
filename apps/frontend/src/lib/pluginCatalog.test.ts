@@ -196,3 +196,29 @@ describe("releaseForTarget", () => {
     expect(releaseForTarget([release({ os: "macos", arch: "aarch64" })], "linux", "x86_64")).toBeNull();
   });
 });
+
+describe("how the site sells a plugin", () => {
+  async function read(entry: Record<string, unknown>) {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ plugins: [publicPlugin("logs", entry)] }),
+      { status: 200, headers: { "Content-Type": "application/json" } })));
+    return (await fetchPublicPluginCatalog()).plugins[0]!;
+  }
+
+  it("keeps the sales mode and a running promotion, and defaults an older server to the checkout", async () => {
+    expect((await read({})).sales_mode).toBe("checkout");
+    expect((await read({})).promotion).toBeNull();
+    expect((await read({ sales_mode: "contact" })).sales_mode).toBe("contact");
+    const promotion = { percent: 50, intervals: ["month", "year"], applies_to: "payments", payments: 3, ends_at: "2099-01-01T00:00:00.000Z", discount_id: "dsc_x" };
+    expect((await read({ promotion })).promotion).toEqual({ percent: 50, intervals: ["month", "year"], applies_to: "payments", payments: 3, ends_at: "2099-01-01T00:00:00.000Z" });
+  });
+
+  it("drops a promotion that is malformed or already over", async () => {
+    const valid = { percent: 20, intervals: ["month"], applies_to: "first", payments: null, ends_at: "2099-01-01T00:00:00.000Z" };
+    for (const promotion of [
+      { ...valid, percent: 0 }, { ...valid, percent: 100 }, { ...valid, intervals: ["week"] }, { ...valid, applies_to: "payments" },
+      { ...valid, ends_at: "2000-01-01T00:00:00.000Z" }, { ...valid, ends_at: "soon" }, "50%",
+    ]) {
+      expect((await read({ promotion })).promotion).toBeNull();
+    }
+  });
+});

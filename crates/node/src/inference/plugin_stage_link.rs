@@ -25,8 +25,9 @@
 //!   `prefill_max_inflight_chunks` frames of a connection posted at once
 //!   (`link.max_inflight` tells the engine) and writes their answers back in
 //!   the order of the frames; `seq` numbers them from 0, and the earlier
-//!   machine passes a frame to its engine only after the frame before it, so
-//!   its engine reads the next piece while the answer to the last one travels.
+//!   machine writes a frame to its engine right after the frame before it,
+//!   without waiting for that one's answer ([`Link`]), so its engine finds the
+//!   next pieces waiting while it reads one and the answers travel.
 //! - **The envelope** of every frame between an engine and its node: a kind
 //!   byte, then `1` the bytes as they are, or `2` a tensor - `u32` meta
 //!   length, the meta, then `f32` values. Between the machines a tensor
@@ -68,7 +69,7 @@ const RETRY: Duration = Duration::from_secs(3);
 const MAX_CONNECTIONS: usize = 16;
 /// Frames of one engine connection posted to the earlier machine at once: the
 /// deployment's `prefill_max_inflight_chunks`, within the prefill's own range.
-fn max_in_flight(cfg: &crate::runtime::NodeConfig) -> usize {
+pub(crate) fn max_in_flight(cfg: &crate::runtime::NodeConfig) -> usize {
     (cfg.prefill_max_inflight_chunks as usize)
         .clamp(1, crate::prefill::PrefillOverlapWindow::MAX_INFLIGHT_CHUNKS)
 }
@@ -173,15 +174,53 @@ async fn earlier_peer(
     })
 }
 
-/// The loopback relay of a later stage; it ends when dropped.
+/// How often a later stage checks that the earlier stage's link secret is still the one its engine holds.
+const WATCH_SECRET: Duration = Duration::from_secs(10);
+
+/// The loopback relay of a later stage; it ends when dropped. `stale` fires once
+/// the earlier stage's link secret is no longer the one this stage's engine was
+/// loaded with (the earlier engine restarted, or the secret was taken while it
+/// was still restarting): the engine's handshake can never pass, so the caller
+/// ends this generation and the restart takes the current secret.
 pub(crate) struct Relay {
     task: tokio::task::JoinHandle<()>,
+    watch: tokio::task::JoinHandle<()>,
+    pub(crate) stale: Option<tokio::sync::oneshot::Receiver<String>>,
 }
 
 impl Drop for Relay {
     fn drop(&mut self) {
         self.task.abort();
+        self.watch.abort();
     }
+}
+
+/// Watches the earlier stage's link secret every [`WATCH_SECRET`] and reports, once, when it differs from `token`.
+/// A refusal or an unreachable peer is not a change: the earlier stage may be loading, and the relay already
+/// retries its frames.
+fn watch_secret(
+    state: GatewayState,
+    cfg: crate::runtime::NodeConfig,
+    code: String,
+    token: String,
+    stale: tokio::sync::oneshot::Sender<String>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(WATCH_SECRET).await;
+            let Some(peer) = earlier_peer(&state, &cfg, &code).await else {
+                continue;
+            };
+            match link_secret(&state, &peer, &code, &cfg.deploy_id).await {
+                Ok(current) if current != token => {
+                    warn!(plugin = %code, peer = %peer.node_id, "stage link: the earlier stage's link secret changed; restarting this stage");
+                    let _ = stale.send("the earlier stage restarted: its link secret changed".to_owned());
+                    return;
+                }
+                _ => {}
+            }
+        }
+    })
 }
 
 /// The `link` that `engine.load` receives, and for a later stage the relay
@@ -231,6 +270,14 @@ pub(crate) async fn prepare(
     };
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
     let port = listener.local_addr()?.port();
+    let (stale_tx, stale) = tokio::sync::oneshot::channel();
+    let watch = watch_secret(
+        state.clone(),
+        cfg.clone(),
+        code.to_owned(),
+        token.clone(),
+        stale_tx,
+    );
     let relay_cfg = cfg.clone();
     let relay_code = code.to_owned();
     let task = tokio::spawn(async move {
@@ -249,7 +296,11 @@ pub(crate) async fn prepare(
     });
     Ok((
         json!({ "token": token, "prev_port": port, "max_inflight": max_in_flight(cfg) }),
-        Some(Relay { task }),
+        Some(Relay {
+            task,
+            watch,
+            stale: Some(stale),
+        }),
     ))
 }
 
@@ -355,10 +406,20 @@ async fn relay_connection(
     let mut pending = FuturesOrdered::new();
     let mut seq: u64 = 0;
     let mut open = true;
+    // The link's wall time: from the moment a frame leaves with none in flight to the answer that leaves none, in the
+    // phase the first of them was sent in. The frames' round trips overlap; this is what the engine waited on.
+    let mut busy_since: Option<(Instant, LinkPhase)> = None;
     loop {
         tokio::select! {
             frame = incoming.recv(), if open && pending.len() < in_flight => match frame {
                 Some(frame) => {
+                    if pending.is_empty() {
+                        let phase = match frame_phase_and_tokens(&frame) {
+                            Some((LinkPhase::Prefill, _)) => LinkPhase::Prefill,
+                            _ => current_phase(&code),
+                        };
+                        busy_since = Some((Instant::now(), phase));
+                    }
                     pending.push_back(forward(
                         state.clone(),
                         cfg.clone(),
@@ -373,6 +434,13 @@ async fn relay_connection(
             },
             answer = pending.next(), if !pending.is_empty() => match answer {
                 Some(Some(answer)) => {
+                    if pending.is_empty() {
+                        if let Some((since, phase)) = busy_since.take() {
+                            if let Some(target) = peer.lock().await.as_ref() {
+                                record_wall(&code, &target.node_id, phase, since.elapsed());
+                            }
+                        }
+                    }
                     if write_frame(&mut writer, &answer).await.is_err() {
                         break;
                     }
@@ -386,7 +454,7 @@ async fn relay_connection(
     drop(pending);
     let target = peer.lock().await.clone();
     if let Some(target) = target {
-        let _ = send(&state, &target, &base, Vec::new()).await;
+        let _ = send(&state, &target, &base, Vec::new(), None).await;
     }
 }
 
@@ -402,7 +470,12 @@ pub(crate) enum LinkPhase {
 
 /// What the links to an earlier stage carried. A frame's `round_trip_ms` is the time from sending it to its
 /// answer; `served_ms` is the time the earlier machine spent on it, its own work and the stages below it (it
-/// reports it in the answer); `network_ms` is the rest - the wire and the two relays.
+/// reports it in the answer); `queued_ms` the time it waited there behind the frames before it (frames sent ahead,
+/// the micro-pipelining); `network_ms` is the rest - the wire and the two relays.
+///
+/// With frames in flight their round trips overlap, so their sum outgrows the request (a prompt of 8,857 tokens in
+/// 18 pieces, 8 ahead: 533 s of round trips in a 125 s request). `wall_ms` is the time the link had at least one
+/// frame in flight, measured by the relay that sent them: what the requester actually waited on it.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub(crate) struct LinkStats {
     pub(crate) calls: u32,
@@ -412,6 +485,12 @@ pub(crate) struct LinkStats {
     pub(crate) network_ms: u64,
     pub(crate) bytes_sent: u64,
     pub(crate) bytes_received: u64,
+    /// (absent from an older node's report: 0)
+    #[serde(default)]
+    pub(crate) queued_ms: u64,
+    /// (absent from an older node's report, or a leg without a relay: 0, and the round trips are the time)
+    #[serde(default)]
+    pub(crate) wall_ms: u64,
 }
 
 impl LinkStats {
@@ -423,6 +502,18 @@ impl LinkStats {
         self.network_ms += other.network_ms;
         self.bytes_sent += other.bytes_sent;
         self.bytes_received += other.bytes_received;
+        self.queued_ms += other.queued_ms;
+        self.wall_ms += other.wall_ms;
+    }
+
+    /// The time the requester waited on this link: its wall time when the relay measured one, else the round trips
+    /// (one frame at a time, where the two are the same).
+    pub(crate) fn waited_ms(&self) -> u64 {
+        if self.wall_ms > 0 {
+            self.wall_ms
+        } else {
+            self.round_trip_ms
+        }
     }
 }
 
@@ -491,6 +582,31 @@ pub(crate) struct StageEnvelope {
     pub(crate) served_ms: u64,
     #[serde(default)]
     pub(crate) links: Vec<StageLinkWire>,
+    /// The time the frame waited on this machine before its engine took it up: its turn behind the frames posted
+    /// with it, then the engine still on the frame before (absent from an older node: 0).
+    #[serde(default)]
+    pub(crate) queued_ms: u64,
+}
+
+/// The query parameter a frame carries with the phase the requester's generation is in: the frame's own tag cannot
+/// say it for every engine (DeepSeek-V4.1's stage protocol sends a prompt's pieces as 'W', the tag Strata's Qwen
+/// engine gives its decode windows). An older requester sends none, and the tag decides as before.
+pub(crate) const PHASE_QUERY: &str = "phase";
+
+impl LinkPhase {
+    fn as_header(self) -> &'static str {
+        match self {
+            LinkPhase::Prefill => "prefill",
+            LinkPhase::Decode => "decode",
+        }
+    }
+    fn from_header(value: &str) -> Option<Self> {
+        match value {
+            "prefill" => Some(LinkPhase::Prefill),
+            "decode" => Some(LinkPhase::Decode),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -559,15 +675,16 @@ pub(crate) fn take_own_wait(code: &str, phase: LinkPhase) -> u64 {
 }
 
 /// The phase and the token count of a request a later stage sends, from the engine's stage protocol: `P` is a prompt
-/// piece of n tokens (prefill), `W` a verify window of T tokens (decode). The frame is the envelope's kind byte, the
-/// tag, an i64 position, then the u32 count (native byte order, little-endian on the machines the engine runs on).
+/// piece of n tokens (prefill), `W` a verify window of T tokens (decode) and `V` the same window carrying the last
+/// one's commit. The frame is the envelope's kind byte, the tag, an i64 position, then the u32 count (native byte
+/// order, little-endian on the machines the engine runs on).
 pub(crate) fn frame_phase_and_tokens(frame: &[u8]) -> Option<(LinkPhase, u32)> {
     if frame.len() < 14 || frame[0] != KIND_BYTES {
         return None;
     }
     let phase = match frame[1] {
         b'P' => LinkPhase::Prefill,
-        b'W' => LinkPhase::Decode,
+        b'W' | b'V' => LinkPhase::Decode,
         _ => return None,
     };
     let n = u32::from_le_bytes([frame[10], frame[11], frame[12], frame[13]]);
@@ -617,8 +734,25 @@ pub(crate) fn record_leg(
     served_ms: u64,
     channel: &str,
 ) {
+    record_leg_queued(code, node_id, phase, elapsed, sent, received, served_ms, 0, channel);
+}
+
+/// [`record_leg`] for a frame that also waited `queued_ms` on the other side behind the frames before it: that wait
+/// is neither the other machine's work nor the network.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn record_leg_queued(
+    code: &str,
+    node_id: &str,
+    phase: LinkPhase,
+    elapsed: Duration,
+    sent: u64,
+    received: u64,
+    served_ms: u64,
+    queued_ms: u64,
+    channel: &str,
+) {
     let round_trip_ms = elapsed.as_millis() as u64;
-    let network_ms = round_trip_ms.saturating_sub(served_ms);
+    let network_ms = round_trip_ms.saturating_sub(served_ms).saturating_sub(queued_ms);
     let stats = LinkStats {
         calls: 1,
         round_trip_ms,
@@ -627,24 +761,37 @@ pub(crate) fn record_leg(
         network_ms,
         bytes_sent: sent,
         bytes_received: received,
+        queued_ms,
+        wall_ms: 0,
     };
     let channel_stats = ChannelStats::one(channel, round_trip_ms, network_ms, sent, received);
     merge_in(code, node_id, phase, stats, std::slice::from_ref(&channel_stats));
 }
 
-/// One frame answered by the earlier machine `node_id`, in the current phase.
+/// The time a relay had frames in flight to `node_id` without a break, filed under `phase` (see [`LinkStats`]).
+pub(crate) fn record_wall(code: &str, node_id: &str, phase: LinkPhase, wall: Duration) {
+    let stats = LinkStats {
+        wall_ms: wall.as_millis() as u64,
+        ..LinkStats::default()
+    };
+    merge_in(code, node_id, phase, stats, &[]);
+}
+
+/// One frame answered by the earlier machine `node_id`, in `phase`.
+#[allow(clippy::too_many_arguments)]
 fn record_link(
     code: &str,
     node_id: &str,
+    phase: LinkPhase,
     elapsed: Duration,
     sent: u64,
     received: u64,
     served_ms: u64,
+    queued_ms: u64,
     channel: &str,
 ) {
-    let phase = current_phase(code);
     add_own_wait(code, phase, elapsed.as_millis() as u64);
-    record_leg(code, node_id, phase, elapsed, sent, received, served_ms, channel);
+    record_leg_queued(code, node_id, phase, elapsed, sent, received, served_ms, queued_ms, channel);
 }
 
 /// Totals a machine below us reported in its answer, filed under the phase this machine is in.
@@ -775,10 +922,14 @@ async fn forward(
     path: String,
     frame: Vec<u8>,
 ) -> Option<Vec<u8>> {
-    // The engine's own request names the phase its frames belong to, whatever the stream has told this machine.
-    if let Some((phase, _)) = frame_phase_and_tokens(&frame) {
-        set_phase(&code, phase);
+    // A prompt piece ('P') says it is the prompt, whatever the stream has told this machine. A window ('W', 'V') does
+    // not say it is the decode: DeepSeek-V4.1's engine reads a prompt's pieces as 'W' too, and this machine's own
+    // generation knows the phase (the prompt from its start, the decode from its first token). The frame carries that
+    // phase to the earlier machine, whose own speed is measured on it.
+    if let Some((LinkPhase::Prefill, _)) = frame_phase_and_tokens(&frame) {
+        set_phase(&code, LinkPhase::Prefill);
     }
+    let phase = current_phase(&code);
     let frame = match to_network(frame, cfg.hidden_state_dtype) {
         Ok(frame) => frame,
         Err(error) => {
@@ -803,15 +954,17 @@ async fn forward(
                 let started = Instant::now();
                 let sent = frame.len() as u64;
                 let channel = channel_of(&target.node_id, &state.network.node_id);
-                match send(&state, target, &path, frame.clone()).await {
+                match send(&state, target, &path, frame.clone(), Some(phase)).await {
                     Ok(answer) => {
                         record_link(
                             &code,
                             &target.node_id,
+                            phase,
                             started.elapsed(),
                             sent,
                             answer.body.len() as u64,
                             answer.envelope.served_ms,
+                            answer.envelope.queued_ms,
                             channel,
                         );
                         for link in answer.envelope.links {
@@ -857,9 +1010,16 @@ async fn send(
     peer: &crate::network::PeerInfo,
     path: &str,
     frame: Vec<u8>,
+    phase: Option<LinkPhase>,
 ) -> Result<StageAnswer, Refusal> {
+    // The phase rides in the query: the signature covers the path alone (on both sides), and an older earlier machine
+    // ignores a query it does not read.
+    let path = match phase {
+        Some(phase) => format!("{path}?{PHASE_QUERY}={}", phase.as_header()),
+        None => path.to_owned(),
+    };
     let response = state
-        .control_post_bytes_routed(peer, path, frame, FRAME_TIMEOUT)
+        .control_post_bytes_routed(peer, &path, frame, FRAME_TIMEOUT)
         .await
         .map_err(|error| Refusal::Retry(error.to_string()))?;
     let status = response.status();
@@ -974,14 +1134,63 @@ pub(crate) async fn link_secret_route(
 /// A loopback connection to this machine's engine: the stream and the number
 /// of the next frame it takes (`seq`); `broken` once the engine closed it.
 struct LinkIo {
-    stream: TcpStream,
+    writer: tokio::net::tcp::OwnedWriteHalf,
     next: u64,
     broken: bool,
 }
 
+/// A frame written to the engine whose answer has not come yet.
+struct Waiter {
+    written: Instant,
+    answer: tokio::sync::oneshot::Sender<(Vec<u8>, u64)>,
+}
+
+/// One loopback connection to the earlier stage's engine. The frames are written in `seq` order as their turn comes,
+/// without waiting for the answers to the ones before: the engine finds the next prompt pieces already in its socket
+/// and may read them together (Strata's first stage reads the pieces waiting behind one in a single pass, so it
+/// brings the experts in from RAM once for all of them). A reader task hands each answer to the frame that asked,
+/// in the order they were written.
 struct Link {
     io: tokio::sync::Mutex<LinkIo>,
     turn: tokio::sync::Notify,
+    waiting: Mutex<std::collections::VecDeque<Waiter>>,
+}
+
+/// The connection's reader: each answer goes to the oldest frame still waiting, with the time the engine spent on
+/// it - from its writing, or from the answer before it when it waited behind that one. It holds the link weakly: the
+/// link dropped (the connection closed or evicted) closes the writer, the engine closes its side, and this ends.
+fn spawn_reader(link: &Arc<Link>, mut reader: tokio::net::tcp::OwnedReadHalf, key: (String, String)) {
+    let weak = Arc::downgrade(link);
+    tokio::spawn(async move {
+        let mut last = Instant::now();
+        loop {
+            let answer = match read_frame(&mut reader).await {
+                Ok(Some(answer)) => answer,
+                Ok(None) | Err(_) => break,
+            };
+            let Some(link) = weak.upgrade() else { break };
+            let waiter = link
+                .waiting
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .pop_front();
+            let Some(waiter) = waiter else { break };
+            let now = Instant::now();
+            let served = now.duration_since(waiter.written.max(last)).as_millis() as u64;
+            last = now;
+            let _ = waiter.answer.send((answer, served));
+        }
+        if let Some(link) = weak.upgrade() {
+            link.io.lock().await.broken = true;
+            // the frames still waiting see their sender dropped: the link is gone
+            link.waiting
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clear();
+            link.turn.notify_waiters();
+        }
+        drop_connection_if(&key, &weak);
+    });
 }
 
 type Connection = Arc<Link>;
@@ -1049,6 +1258,34 @@ fn drop_connection(key: &(String, String)) {
         .remove(key);
 }
 
+/// Drops every connection but `key`'s: dropping a link closes its writer, and the engine, seeing that connection end,
+/// goes back to accepting. How many were dropped.
+fn drop_other_connections(key: &(String, String)) -> usize {
+    let mut map = connections()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let before = map.len();
+    map.retain(|other, _| other == key);
+    let dropped = before - map.len();
+    if dropped > 0 {
+        info!(dropped, "stage link: a new connection closes the ones before it");
+    }
+    dropped
+}
+
+/// Drops `key` only while it is still this link: a new connection under the same key stays.
+fn drop_connection_if(key: &(String, String), link: &std::sync::Weak<Link>) {
+    let mut map = connections()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if map
+        .get(key)
+        .is_some_and(|(_, current)| std::ptr::eq(Arc::as_ptr(current), link.as_ptr()))
+    {
+        map.remove(key);
+    }
+}
+
 /// `POST /api/internal/plugins/:code/engine/link/:deploy/:conn`: one frame of
 /// the next stage's engine for this machine's earlier stage, from a node that
 /// numbers none; the answer frame is the body. An empty body closes the
@@ -1057,9 +1294,10 @@ pub(crate) async fn link_frame_route(
     auth: crate::auth::InternalNodeAuth,
     State(state): State<GatewayState>,
     Path((code, deploy, conn)): Path<(String, String, String)>,
+    axum::extract::Query(query): axum::extract::Query<HashMap<String, String>>,
     body: Bytes,
 ) -> Response {
-    link_frame(auth, state, code, deploy, conn, None, body).await
+    link_frame(auth, state, code, deploy, conn, None, phase_of_query(&query), body).await
 }
 
 /// `POST /api/internal/plugins/:code/engine/link/:deploy/:conn/:seq`: frame
@@ -1068,16 +1306,24 @@ pub(crate) async fn link_frame_seq_route(
     auth: crate::auth::InternalNodeAuth,
     State(state): State<GatewayState>,
     Path((code, deploy, conn, seq)): Path<(String, String, String, u64)>,
+    axum::extract::Query(query): axum::extract::Query<HashMap<String, String>>,
     body: Bytes,
 ) -> Response {
-    link_frame(auth, state, code, deploy, conn, Some(seq), body).await
+    link_frame(auth, state, code, deploy, conn, Some(seq), phase_of_query(&query), body).await
 }
 
-/// The answer to a frame: this machine's time on it and the links below it, in the envelope header.
-fn stage_answer(code: &str, body: Vec<u8>, started: Instant) -> Response {
+/// The phase the requester named (`?phase=`), if it named one this node reads.
+fn phase_of_query(query: &HashMap<String, String>) -> Option<LinkPhase> {
+    query.get(PHASE_QUERY).and_then(|value| LinkPhase::from_header(value))
+}
+
+/// The answer to a frame: this machine's time on it, the wait before it, and the links below it, in the envelope
+/// header.
+fn stage_answer(code: &str, body: Vec<u8>, served_ms: u64, queued_ms: u64) -> Response {
     let envelope = StageEnvelope {
-        served_ms: started.elapsed().as_millis() as u64,
+        served_ms,
         links: take_downstream_links(code),
+        queued_ms,
     };
     let mut response = (
         [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
@@ -1093,6 +1339,7 @@ fn stage_answer(code: &str, body: Vec<u8>, started: Instant) -> Response {
     response
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn link_frame(
     auth: crate::auth::InternalNodeAuth,
     state: GatewayState,
@@ -1100,9 +1347,11 @@ async fn link_frame(
     deploy: String,
     conn: String,
     seq: Option<u64>,
+    requested_phase: Option<LinkPhase>,
     body: Bytes,
 ) -> Response {
-    let started = Instant::now();
+    // the frame's time on this machine starts here: what is not its engine's work on it is its wait (queued_ms)
+    let arrived = Instant::now();
     let caller = match authorize(&state, &auth, &code, &deploy).await {
         Ok(caller) => caller,
         Err(refusal) => return refusal,
@@ -1133,6 +1382,12 @@ async fn link_frame(
             return refuse(StatusCode::GONE, "the earlier stage's link was reset")
         }
         None => {
+            // A stage engine serves one connection at a time (both of Strata's: accept, then that connection until
+            // it closes), so a new one is a later stage that started again - or a new machine after a redeploy - and
+            // the ones before it will never be read: their engine is gone without closing them. Left open, the stage
+            // kept serving the dead connection and never read the new one's hello (ksia-gpu1 restarted by an update
+            // waited on salem-gpus for good). Closing them lets the engine take the new one.
+            drop_other_connections(&key);
             let link = match engine_link(&state, &code).await {
                 Ok(link) => link,
                 Err(refusal) => return refusal,
@@ -1159,14 +1414,17 @@ async fn link_frame(
                 }
             };
             let _ = stream.set_nodelay(true);
+            let (reader, writer) = stream.into_split();
             let connection = Arc::new(Link {
                 io: tokio::sync::Mutex::new(LinkIo {
-                    stream,
+                    writer,
                     next: 0,
                     broken: false,
                 }),
                 turn: tokio::sync::Notify::new(),
+                waiting: Mutex::new(std::collections::VecDeque::new()),
             });
+            spawn_reader(&connection, reader, key.clone());
             keep_connection(key.clone(), Arc::clone(&connection));
             connection
         }
@@ -1184,6 +1442,11 @@ async fn link_frame(
             }
         },
     };
+    if io.broken {
+        drop(io);
+        drop_connection(&key);
+        return refuse(StatusCode::BAD_GATEWAY, "the earlier stage closed the link");
+    }
     let frame = match from_network(&body) {
         Ok(frame) => frame,
         Err(error) => {
@@ -1191,11 +1454,14 @@ async fn link_frame(
             return refuse(StatusCode::BAD_REQUEST, &error);
         }
     };
-    // The frame's phase and token count are what this machine's speed is measured on.
-    let tokens = frame_phase_and_tokens(&frame);
+    // The frame's phase and token count are what this machine's speed is measured on. The phase is the requester's
+    // when it named one: the tag alone files a DeepSeek-V4.1 prompt piece ('W') as the decode.
+    let tokens = frame_phase_and_tokens(&frame)
+        .map(|(tagged, count)| (requested_phase.unwrap_or(tagged), count));
     // A prompt that starts at position 0 begins a generation: what an earlier one left unreported is dropped, so a
     // generation that ended without its totals cannot be counted in this one.
-    if frame.len() >= 10 && frame[0] == KIND_BYTES && frame[1] == b'P' && frame[2..10] == [0u8; 8] {
+    let prompt_start = matches!(tokens, Some((LinkPhase::Prefill, _))) && frame[2..10] == [0u8; 8];
+    if prompt_start {
         let _ = take_link_stats(&code);
         let _ = take_channel_stats(&code);
         let _ = take_own_wait(&code, LinkPhase::Prefill);
@@ -1205,36 +1471,52 @@ async fn link_frame(
         set_phase(&code, phase);
     }
     let waits_before = tokens.map_or(0, |(phase, _)| peek_own_wait(&code, phase));
-    let exchanged = tokio::time::timeout(FRAME_TIMEOUT, async {
-        write_frame(&mut io.stream, &frame).await?;
-        read_frame(&mut io.stream).await
-    })
-    .await;
-    let response = match exchanged {
-        Ok(Ok(Some(answer))) => {
-            io.next += 1;
+    // The frame goes to the engine now, and its turn passes to the next frame before the answer comes.
+    let (sender, answered) = tokio::sync::oneshot::channel();
+    connection
+        .waiting
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .push_back(Waiter {
+            written: Instant::now(),
+            answer: sender,
+        });
+    let written = tokio::time::timeout(FRAME_TIMEOUT, write_frame(&mut io.writer, &frame)).await;
+    if !matches!(written, Ok(Ok(()))) {
+        io.broken = true;
+        drop(io);
+        drop_connection(&key);
+        connection.turn.notify_waiters();
+        return refuse(StatusCode::BAD_GATEWAY, "the earlier stage closed the link");
+    }
+    io.next += 1;
+    drop(io);
+    connection.turn.notify_waiters();
+    match tokio::time::timeout(FRAME_TIMEOUT, answered).await {
+        Ok(Ok((answer, served_ms))) => {
+            // its time here that was not its engine's work on it: its turn behind the frames posted with it, then the
+            // engine still on the frame before (frames sent ahead wait here, and that is neither work nor network)
+            let queued_ms = (arrived.elapsed().as_millis() as u64).saturating_sub(served_ms);
             match to_network(answer, dtype) {
                 Ok(answer) => {
                     if let Some((phase, count)) = tokens {
                         // This machine's own work on the frame: its time here minus the waits its relays made.
                         let waited = peek_own_wait(&code, phase).saturating_sub(waits_before);
-                        let own_ms = started.elapsed().as_millis() as f64 - waited as f64;
+                        let own_ms = served_ms as f64 - waited as f64;
                         super::engine_telemetry::record_frame(&code, phase, own_ms, count);
                     }
-                    stage_answer(&code, answer, started)
+                    stage_answer(&code, answer, served_ms, queued_ms)
                 }
                 Err(error) => refuse(StatusCode::BAD_GATEWAY, &error),
             }
         }
-        Ok(Ok(None)) | Ok(Err(_)) | Err(_) => {
-            io.broken = true;
+        Ok(Err(_)) | Err(_) => {
+            connection.io.lock().await.broken = true;
             drop_connection(&key);
+            connection.turn.notify_waiters();
             refuse(StatusCode::BAD_GATEWAY, "the earlier stage closed the link")
         }
-    };
-    drop(io);
-    connection.turn.notify_waiters();
-    response
+    }
 }
 
 #[cfg(test)]
@@ -1360,19 +1642,78 @@ mod tests {
         .is_err());
     }
 
+    fn test_link(stream: TcpStream) -> Arc<Link> {
+        let (_, writer) = stream.into_split();
+        Arc::new(Link {
+            io: tokio::sync::Mutex::new(LinkIo {
+                writer,
+                next: 0,
+                broken: false,
+            }),
+            turn: tokio::sync::Notify::new(),
+            waiting: Mutex::new(std::collections::VecDeque::new()),
+        })
+    }
+
+    /// The engine receives the next frames before it answers the first one, and each answer goes back to the frame
+    /// that asked, in order.
+    #[tokio::test]
+    async fn frames_reach_the_engine_before_the_answers_come_back() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let engine = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            // both frames arrive before the first answer leaves
+            let first = read_frame(&mut socket).await.unwrap().unwrap();
+            let second = read_frame(&mut socket).await.unwrap().unwrap();
+            write_frame(&mut socket, &[first, b"!".to_vec()].concat()).await.unwrap();
+            write_frame(&mut socket, &[second, b"!".to_vec()].concat()).await.unwrap();
+            socket
+        });
+        let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let (reader, writer) = stream.into_split();
+        let link = Arc::new(Link {
+            io: tokio::sync::Mutex::new(LinkIo {
+                writer,
+                next: 0,
+                broken: false,
+            }),
+            turn: tokio::sync::Notify::new(),
+            waiting: Mutex::new(std::collections::VecDeque::new()),
+        });
+        spawn_reader(&link, reader, ("caller".into(), "conn-pipelined".into()));
+        let mut answers = Vec::new();
+        for frame in [b"a".to_vec(), b"b".to_vec()] {
+            let (sender, answer) = tokio::sync::oneshot::channel();
+            link.waiting.lock().unwrap().push_back(Waiter {
+                written: Instant::now(),
+                answer: sender,
+            });
+            write_frame(&mut link.io.lock().await.writer, &frame).await.unwrap();
+            answers.push(answer);
+        }
+        let mut got = Vec::new();
+        for answer in answers {
+            got.push(tokio::time::timeout(Duration::from_secs(5), answer).await.unwrap().unwrap().0);
+        }
+        assert_eq!(got, vec![b"a!".to_vec(), b"b!".to_vec()]);
+        drop(engine.await.unwrap());
+        // the engine gone, the link is marked broken and takes no more frames
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !link.io.lock().await.broken {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
     #[tokio::test]
     async fn numbered_frames_take_their_turn() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-        let link = Arc::new(Link {
-            io: tokio::sync::Mutex::new(LinkIo {
-                stream,
-                next: 0,
-                broken: false,
-            }),
-            turn: tokio::sync::Notify::new(),
-        });
+        let link = test_link(stream);
         let second = {
             let link = Arc::clone(&link);
             tokio::spawn(async move { turn(&link, 1).await.map(|io| io.next) })
@@ -1398,14 +1739,73 @@ mod tests {
 }
 
 #[cfg(test)]
+mod stale_connection_tests {
+    use super::*;
+    use tokio::io::AsyncReadExt;
+
+    fn link_on(stream: TcpStream) -> (Connection, tokio::net::tcp::OwnedReadHalf) {
+        let (reader, writer) = stream.into_split();
+        let link = Arc::new(Link {
+            io: tokio::sync::Mutex::new(LinkIo {
+                writer,
+                next: 0,
+                broken: false,
+            }),
+            turn: tokio::sync::Notify::new(),
+            waiting: Mutex::new(std::collections::VecDeque::new()),
+        });
+        (link, reader)
+    }
+
+    /// A stage engine serves one connection at a time: a connection left by a later stage that died without closing
+    /// it held the engine, and the new one's hello waited unread. Closing the others when a new one opens lets the
+    /// engine take it.
+    #[tokio::test]
+    async fn a_new_connection_closes_the_stale_one_the_engine_was_held_by() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // the engine: one connection at a time, until it ends; it reports the first bytes of each
+        let (seen_tx, mut seen) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        let engine = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut bytes = Vec::new();
+                let _ = socket.read_to_end(&mut bytes).await;
+                seen_tx.send(bytes).unwrap();
+            }
+        });
+        let stale_key = ("node-old".to_string(), "conn-old".to_string());
+        let (stale, _stale_reader) = link_on(TcpStream::connect(("127.0.0.1", port)).await.unwrap());
+        keep_connection(stale_key.clone(), stale);
+        // the new connection's hello: queued behind the stale one, unread
+        let new_key = ("node-new".to_string(), "conn-new".to_string());
+        let mut fresh = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        fresh.write_all(b"hello").await.unwrap();
+        fresh.shutdown().await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), seen.recv()).await.is_err(),
+            "the engine is held by the stale connection"
+        );
+
+        assert_eq!(drop_other_connections(&new_key), 1);
+        let first = tokio::time::timeout(Duration::from_secs(2), seen.recv()).await.unwrap().unwrap();
+        assert!(first.is_empty(), "the stale connection ends");
+        let second = tokio::time::timeout(Duration::from_secs(2), seen.recv()).await.unwrap().unwrap();
+        assert_eq!(second, b"hello", "and the engine reads the new one's hello");
+        assert!(take_connection(&stale_key).is_none());
+        engine.await.unwrap();
+    }
+}
+
+#[cfg(test)]
 mod link_stats_tests {
     use super::*;
 
     #[test]
     fn link_totals_are_taken_once_per_plugin_and_node() {
-        record_link("strata-link-test-a", "node-1", Duration::from_millis(40), 100, 200, 25, "quic");
-        record_link("strata-link-test-a", "node-1", Duration::from_millis(10), 50, 60, 4, "quic");
-        record_link("strata-link-test-b", "node-1", Duration::from_millis(5), 1, 1, 0, "http");
+        record_link("strata-link-test-a", "node-1", LinkPhase::Prefill, Duration::from_millis(40), 100, 200, 25, 0, "quic");
+        record_link("strata-link-test-a", "node-1", LinkPhase::Prefill, Duration::from_millis(10), 50, 60, 4, 0, "quic");
+        record_link("strata-link-test-b", "node-1", LinkPhase::Prefill, Duration::from_millis(5), 1, 1, 0, 0, "http");
         assert_eq!(
             take_link_stats("strata-link-test-a"),
             vec![(
@@ -1419,11 +1819,75 @@ mod link_stats_tests {
                     network_ms: 21,
                     bytes_sent: 150,
                     bytes_received: 260,
+                    queued_ms: 0,
+                    wall_ms: 0,
                 },
             )]
         );
         assert!(take_link_stats("strata-link-test-a").is_empty());
         assert_eq!(take_link_stats("strata-link-test-b").len(), 1);
+    }
+
+    /// A frame sent ahead waits on the earlier machine behind the ones before it: that wait is its queue, not the
+    /// network (a prompt read 8 pieces ahead counted ~400 s of queue as network).
+    #[test]
+    fn the_wait_behind_earlier_frames_is_queue_not_network() {
+        record_link(
+            "strata-queue-test",
+            "node-q",
+            LinkPhase::Prefill,
+            Duration::from_millis(30_000),
+            10,
+            10,
+            4_700,
+            25_000,
+            "quic",
+        );
+        let taken = take_link_stats("strata-queue-test");
+        assert_eq!(taken.len(), 1);
+        let stats = taken[0].2;
+        assert_eq!((stats.served_ms, stats.queued_ms, stats.network_ms), (4_700, 25_000, 300));
+    }
+
+    /// The time the requester waited is the link's wall time when the relay measured it, else the round trips.
+    #[test]
+    fn the_wait_on_a_link_is_its_wall_time_when_measured() {
+        let overlapping = LinkStats {
+            round_trip_ms: 533_318,
+            wall_ms: 85_742,
+            ..Default::default()
+        };
+        assert_eq!(overlapping.waited_ms(), 85_742);
+        let serial = LinkStats {
+            round_trip_ms: 1_200,
+            ..Default::default()
+        };
+        assert_eq!(serial.waited_ms(), 1_200);
+    }
+
+    /// An older node's answer has no queue and an older node's report no wall time: both read as 0.
+    #[test]
+    fn an_older_node_s_envelope_and_report_still_read() {
+        let envelope: StageEnvelope = serde_json::from_str(r#"{"served_ms":7,"links":[]}"#).unwrap();
+        assert_eq!((envelope.served_ms, envelope.queued_ms), (7, 0));
+        let stats: LinkStats = serde_json::from_str(
+            r#"{"calls":1,"round_trip_ms":9,"max_round_trip_ms":9,"served_ms":5,"network_ms":4,"bytes_sent":1,"bytes_received":2}"#,
+        )
+        .unwrap();
+        assert_eq!((stats.queued_ms, stats.wall_ms, stats.waited_ms()), (0, 0, 9));
+    }
+
+    /// The requester names its phase in the query; anything else leaves the frame's tag to decide.
+    #[test]
+    fn the_requester_s_phase_is_read_from_the_query() {
+        let mut query = HashMap::new();
+        assert_eq!(phase_of_query(&query), None);
+        query.insert(PHASE_QUERY.to_string(), "prefill".to_string());
+        assert_eq!(phase_of_query(&query), Some(LinkPhase::Prefill));
+        query.insert(PHASE_QUERY.to_string(), "decode".to_string());
+        assert_eq!(phase_of_query(&query), Some(LinkPhase::Decode));
+        query.insert(PHASE_QUERY.to_string(), "other".to_string());
+        assert_eq!(phase_of_query(&query), None);
     }
 
     #[test]
@@ -1458,6 +1922,7 @@ mod link_stats_tests {
                 },
                 channels: Vec::new(),
             }],
+            queued_ms: 3,
         };
         let text = serde_json::to_string(&envelope).unwrap();
         let back: StageEnvelope = serde_json::from_str(&text).unwrap();
@@ -1468,9 +1933,9 @@ mod link_stats_tests {
 
     #[test]
     fn channels_are_kept_apart_and_aggregated() {
-        record_link("strata-chan-test", "node-7", Duration::from_millis(20), 10, 10, 5, "quic");
-        record_link("strata-chan-test", "node-7", Duration::from_millis(30), 10, 10, 5, "quic");
-        record_link("strata-chan-test", "node-7", Duration::from_millis(9), 4, 4, 1, "tunnel");
+        record_link("strata-chan-test", "node-7", LinkPhase::Prefill, Duration::from_millis(20), 10, 10, 5, 0, "quic");
+        record_link("strata-chan-test", "node-7", LinkPhase::Prefill, Duration::from_millis(30), 10, 10, 5, 0, "quic");
+        record_link("strata-chan-test", "node-7", LinkPhase::Prefill, Duration::from_millis(9), 4, 4, 1, 0, "tunnel");
         let mut taken = take_channel_stats("strata-chan-test");
         taken.sort_by(|a, b| a.2.channel.cmp(&b.2.channel));
         assert_eq!(taken.len(), 2);
@@ -1496,6 +1961,12 @@ mod link_stats_tests {
         window.extend_from_slice(&7i64.to_le_bytes());
         window.extend_from_slice(&3u32.to_le_bytes());
         assert_eq!(frame_phase_and_tokens(&window), Some((LinkPhase::Decode, 3)));
+        // a window that carries the last one's commit (its n_keep after the tokens)
+        let mut folded = vec![KIND_BYTES, b'V'];
+        folded.extend_from_slice(&7i64.to_le_bytes());
+        folded.extend_from_slice(&2u32.to_le_bytes());
+        folded.extend_from_slice(&[0u8; 12]);
+        assert_eq!(frame_phase_and_tokens(&folded), Some((LinkPhase::Decode, 2)));
         let mut commit = vec![KIND_BYTES, b'C'];
         commit.extend_from_slice(&2u32.to_le_bytes());
         assert_eq!(frame_phase_and_tokens(&commit), None, "a commit carries no tokens of its own");

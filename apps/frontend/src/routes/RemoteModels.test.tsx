@@ -10,6 +10,26 @@ vi.mock("../components/ModelDownloadsPanel", () => ({
   ModelDownloadsPanel: () => <div data-testid="model-downloads-panel" />,
 }));
 
+// Stand-ins with the real props, so the test drives the screen's own state:
+// choosing a file opens the download dialog over the details.
+vi.mock("../components/RemoteModelDetails", () => ({
+  RemoteModelDetails: ({ open, onChoose }: { open: boolean; onChoose: (file: unknown, details: unknown) => void }) =>
+    open ? (
+      <div role="dialog" aria-label="model details">
+        <button onClick={() => onChoose({ filename: "q4.gguf" }, { repo_id: "org/qwen-gguf" })}>choose file</button>
+      </div>
+    ) : null,
+}));
+
+vi.mock("../components/DownloadModelDialog", () => ({
+  DownloadModelDialog: ({ open, onStarted, onClose }: { open: boolean; onStarted: () => void; onClose: () => void }) =>
+    open ? (
+      <div role="dialog" aria-label="download">
+        <button onClick={() => { onStarted(); onClose(); }}>start download</button>
+      </div>
+    ) : null,
+}));
+
 vi.mock("../lib/queries", () => ({
   keys: { jobs: ["jobs"] },
   useRemoteModelDetails: () => ({
@@ -111,5 +131,14 @@ describe("RemoteModels", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
     fireEvent.click(screen.getByText("org/qwen-gguf"));
     expect(screen.getByRole("dialog")).toBeTruthy();
+  });
+
+  it("closes the model details too once a download starts", () => {
+    renderScreen();
+    fireEvent.click(screen.getByText("org/qwen-gguf"));
+    fireEvent.click(screen.getByText("choose file"));
+    expect(screen.getByRole("dialog", { name: "download" })).toBeTruthy();
+    fireEvent.click(screen.getByText("start download"));
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 });

@@ -2,7 +2,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocaleProvider } from "../i18n/provider";
-import { cancelRemoteModelDownload, retryRemoteModelDownload } from "../lib/api";
+import { cancelRemoteModelDownload, dismissRemoteModelDownload, retryRemoteModelDownload } from "../lib/api";
 import { useModelDownloads } from "../lib/queries";
 import { ToastProvider } from "../lib/toast";
 import type { Job } from "../lib/types";
@@ -14,6 +14,7 @@ vi.mock("../lib/queries", () => ({
 vi.mock("../lib/api", () => ({
   cancelRemoteModelDownload: vi.fn(),
   retryRemoteModelDownload: vi.fn(),
+  dismissRemoteModelDownload: vi.fn(),
 }));
 
 afterEach(cleanup);
@@ -80,5 +81,16 @@ describe("ModelDownloadsPanel", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     expect(retryRemoteModelDownload).toHaveBeenCalledWith("download-1");
+  });
+
+  it("lets a failed job be dismissed", () => {
+    renderPanel({ ...job, state: "failed", step: "failed", download_status: "failed" });
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(dismissRemoteModelDownload).toHaveBeenCalledWith("download-1");
+  });
+
+  it("offers no Dismiss while the download runs", () => {
+    renderPanel();
+    expect(screen.queryByRole("button", { name: "Dismiss" })).toBeNull();
   });
 });

@@ -20,7 +20,6 @@ place is there, not here.
 | `parallelism.md` | pipeline parallelism, tensor parallelism, choice by topology and telemetry |
 | `slicing.md` | GGUF split/merge, ggml type table, size-based planning |
 | `deployment.md` | putting slices in service, merge, pipeline order, slice lifecycle |
-| `freetoken-moe.md` | FreeToken goal measurements, KV budget and the in-house MoE path |
 | `file-transfer.md` | pulling/offering files between machines, resumption, MD5, concessions |
 | `http-api.md` | every route, authentication, `x_pom.source`, `gateway::testkit` |
 | `web-ui.md` | how the UI comes up, menu, modals, Panel, Chat, slicing/deploy screens |
@@ -42,6 +41,11 @@ reference and recipes for the optional capabilities, gathered from the
 `pom-inference-engine` skill (`.claude/skills/pom-inference-engine/`): engine
 fork intake, an engine plugin overlay, the `engine.*` contract, feature
 levels, fork branch rules and the analysis of the llama.cpp and Strata forks.
+
+**Guides for people** live in `docs/guides/` (concepts, one guide per screen
+with screenshots, deployment settings) and `docs/human/` (`HUMAN.md`, the
+logic of a source folder in plain words, beside the folder's path); the panel's
+Documentation screen renders them. Whoever changes a screen updates its guide.
 
 `docs/AGENTS.md` explains the specs and plans (`docs/superpowers/`);
 `docs/architecture/routing-plugin-contract.md` is the open-core boundary;
@@ -108,7 +112,8 @@ the local rebuild; Cargo writes into `.pom-dev-plugin-builds/` at the POM
 project root, outside the sources that may be mounted read-only. The cluster's
 plugin profile uses the same target and keeps the Cargo cache in
 `.pom-dev-cargo`, inside the project volume and writable by the node's user. The
-release `runtime` image does not include a toolchain. The development Docker
+release `runtime` image does not include a toolchain. The `dev-os` image includes `file` and `xxd` for agents in the plugin terminals;
+the published image includes them too. The development Docker
 builds use libraries from the exact fork release by default; to compile local
 sources, use `POM_LLAMA_CPP_MODE=source` and, optionally,
 `POM_LLAMA_CPP_SOURCE_DIR=/path/to/llama.cpp` with the build scripts.
@@ -254,12 +259,21 @@ breaks the whole product.
   files and restarts POM; the Plugins screen lists it in the same updates
   dialog but only through its own routes. →
   `docs/subsystems/enterprise-licensing.md`
-- **First-version policy.** The product has not shipped yet. Therefore, do not
-  keep in the runtime compatibility code, adapters or fallbacks for old protocol
-  versions - especially the inference v1/v2 formats. The `v1` of
-  `frame/v1-batch` identifies the first current official contract, not an
-  obligation to support a legacy protocol; future changes must evolve that
-  contract explicitly. → `inference.md`
+- **Compatibility policy: POM has launched, avoid breaking changes.** Released
+  nodes, plugins and the state they saved are in people's hands, and a network
+  mixes versions while its machines update one at a time. A change to a contract
+  between machines or programs (the inference frames and the capabilities a node
+  announces, the gossip and peer APIs, the plugin C ABI and the IPC of
+  `crates/enterprise-protocol`, the HTTP and OpenAI-compatible routes) or to what
+  is persisted (`pom.json`, the databases, slice manifests, the last-slice
+  journal) must keep working with what was already released: add optional fields
+  and new capabilities instead of changing or removing existing ones, keep reading
+  the earlier form of a file and migrate it on load, and announce a new version of
+  a contract beside the old one until the old one is retired on purpose. A break
+  that cannot be avoided is a decision written in the release notes, never a side
+  effect. `frame/v1-batch` is the official inference contract; the v1/v2 frames
+  from before the launch never shipped and still get no compatibility code.
+  → `inference.md`
 - **The deployment's `max_new_tokens` bounds one generation, not the request.**
   It was never a backend cap - the `infer_server` does not know it. It caps one
   **leg** of the gateway's continuation loop, which crosses the leg in the same KV
@@ -321,9 +335,11 @@ breaks the whole product.
   `brand::dns_record()`). The only exception cargo forces is the `[[bin]]` in
   `crates/node/Cargo.toml`. → `build-and-run.md`
 - **Between nodes it is always mutual TLS, and the key alone opens nothing.**
-  There is no TLS switch; plain HTTP is served only to loopback (or, in development,
-  to remote browsers with `POM_INSECURE_ADMIN_UI=1`), which keeps
-  `http://localhost` working for the operator. Each node's certificate is
+  There is no switch for peer TLS. Plain HTTP is served only to loopback by
+  default; `--no-tls` / `POM_NO_TLS=1` enables remote browser/client HTTP
+  behind an HTTPS proxy without changing peer mTLS (the published Docker
+  image enables it). `POM_INSECURE_ADMIN_UI=1` is the development switch.
+  `http://localhost` keeps working for the operator. Each node's certificate is
   derived from its `.pom-node.key`, verified by `SHA256(pubkey) == node_id`, and
   presented on both ends, so a call authorized by the connection key also needs
   the caller to be a member today: an admin of the chain, or a node with a valid
@@ -333,8 +349,9 @@ breaks the whole product.
 - **Route tests use `gateway::testkit`**, never real UDP - the suite transmits on
   the LAN and could inject messages into a live cluster. → `http-api.md`
 
-The engineering pending items that accompany these invariants live in `TODO.md`;
-this file does not duplicate the work list.
+The engineering pending items live where the code is: each folder's
+`AGENTS.md`, under `## Open items` and `## Defects noted`; this file does not
+duplicate the work list.
 
 ## Maintaining this file
 

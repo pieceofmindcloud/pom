@@ -2,8 +2,9 @@ use super::*;
 use crate::catalog::{Sidecar, SidecarKind, SidecarLink, SidecarMode};
 // ── Vision projector and MTP draft of a deployment ───────────────────────────
 //
-// The projector loads on the pipeline head and an external MTP draft on the
-// tail. Neither has to live next to the model: the operator links them to the
+// The projector loads where the prompt is read (the pipeline head under
+// llama.cpp, the last stage under a plugin's split) and an external MTP draft
+// on the tail. Neither has to live next to the model: the operator links them to the
 // model (`SidecarLink`, kept on the principal) or picks them on the deploy
 // screen, by file name + size. Here that choice is resolved against the
 // surveyed machines: the target already has the file, or it is copied from a
@@ -66,6 +67,10 @@ pub struct SidecarsPlan {
     /// Compatible files anywhere in the network, both kinds.
     pub(super) options: Vec<SidecarOption>,
     pub(super) vision: Option<SidecarSlot>,
+    /// The projector for every other head of a whole model on several machines (a prefill/decode split, where each
+    /// machine answers requests and so reads their images): the same file, resolved and copied per machine.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(super) vision_heads: Vec<SidecarSlot>,
     pub(super) mtp: Option<SidecarSlot>,
     /// The principal could not be read; the links shown are the local copy.
     pub(super) links_stale: bool,
@@ -216,7 +221,21 @@ fn choice_or_link(
         })
 }
 
+/// Whether the step `[start, end]` of a `total`-layer model is the one that reads the prompt, and so loads the
+/// vision projector: layer 0 under llama.cpp, the last stage under a plugin's inference service (a whole model is
+/// both).
+pub(super) fn vision_reader(start: u32, end: u32, total: u32, plugin: bool) -> bool {
+    if plugin {
+        end.saturating_add(1) == total
+    } else {
+        start == 0
+    }
+}
+
 /// Fill `plan.sidecars` and fold its copies and refusals into the plan.
+///
+/// `vision_on_tail`: the deployment runs on a plugin's inference service, whose split serves the requests from the
+/// last stage ([`vision_reader`]); the projector goes there instead of to the head.
 ///
 /// Vision is only resolved when the operator turned it on; when no projector
 /// is chosen or linked, the catalog's own sibling projector (the old path in
@@ -234,6 +253,7 @@ pub(super) fn attach_sidecars(
     links_stale: bool,
     vision_on: bool,
     vision: Option<&SidecarChoice>,
+    vision_on_tail: bool,
     mtp_on: bool,
     mtp: Option<&SidecarChoice>,
 ) {
@@ -250,6 +270,7 @@ pub(super) fn attach_sidecars(
         embedded_mtp: shape.embedded_mtp,
         options,
         vision: None,
+        vision_heads: Vec::new(),
         mtp: None,
         links_stale,
     };
@@ -278,9 +299,12 @@ pub(super) fn attach_sidecars(
         .and_then(|total| plan.steps.iter().find(|step| step.end_layer + 1 == total))
         .cloned();
 
+    // The projector goes where the prompt is read: llama.cpp's pipeline enters at layer 0, a plugin's staged split
+    // serves from its last stage (`plugin_stage_link`).
+    let reader = if vision_on_tail { tail.as_ref() } else { head.as_ref() };
     if vision_on {
-        if let (Some(head), Some((mode, file, from_link))) = (
-            head.as_ref(),
+        if let (Some(reader), Some((mode, file, from_link))) = (
+            reader,
             choice_or_link(vision, links, &shape.model_key, SidecarKind::Mmproj),
         ) {
             if mode == SidecarMode::File {
@@ -289,12 +313,28 @@ pub(super) fn attach_sidecars(
                     mode,
                     file,
                     from_link,
-                    head,
+                    reader,
                     &out.options,
                 );
                 if let Some(path) = &slot.target_path {
                     plan.mmproj_path = Some(path.clone());
                     plan.mmproj_reason = None;
+                }
+                // the other machines that hold the whole model answer too: each gets the projector
+                let whole = |step: &Step| plan.total_layers.is_some_and(|total| step.end_layer + 1 == total);
+                if whole(reader) {
+                    for other in plan.steps.iter().filter(|step| {
+                        step.start_layer == 0 && whole(step) && step.target_node_id != reader.target_node_id
+                    }) {
+                        out.vision_heads.push(resolve_slot(
+                            SidecarKind::Mmproj,
+                            mode,
+                            slot.file.clone(),
+                            from_link,
+                            other,
+                            &out.options,
+                        ));
+                    }
                 }
                 out.vision = Some(slot);
             }
@@ -317,7 +357,7 @@ pub(super) fn attach_sidecars(
         }
     }
 
-    for slot in [&out.vision, &out.mtp].into_iter().flatten() {
+    for slot in [&out.vision, &out.mtp].into_iter().flatten().chain(&out.vision_heads) {
         if let Some(problem) = &slot.problem {
             plan.blocked.get_or_insert(problem.clone());
         }

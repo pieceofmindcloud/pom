@@ -352,6 +352,11 @@ struct Args {
     #[arg(long, default_value_t = initial_ports::DEFAULT_GATEWAY_PORT)]
     gateway_port: u16,
 
+    /// Allow remote HTTP for the browser UI and client API behind an HTTPS proxy.
+    /// Does not disable TLS or mutual authentication between nodes.
+    #[arg(long)]
+    no_tls: bool,
+
     /// Pkarr public keys of known peers to dial on startup (comma-separated, format: pk:zbase32...).
     #[arg(long, default_value = "")]
     pkarr_peers: String,
@@ -445,6 +450,7 @@ const ARG_ENV: &[(&str, &str)] = &[
     ("advertise_addr", "ADVERTISE_ADDR"),
     ("ollama_url", "OLLAMA_URL"),
     ("gateway_port", "GATEWAY_PORT"),
+    ("no_tls", "NO_TLS"),
     ("pkarr_peers", "PKARR_PEERS"),
     ("public_addr", "PUBLIC_ADDR"),
     ("relay_peers", "RELAY_PEERS"),
@@ -640,8 +646,9 @@ fn run_main() -> Result<()> {
         );
     }
 
+    // Without a display (a container, an SSH session) the AppImage runs as a server.
     #[cfg(all(target_os = "linux", feature = "desktop"))]
-    {
+    if linux_window::available() {
         let (gateway_ready, gateway_ready_rx) = std::sync::mpsc::sync_channel(1);
         return linux_window::run(
             move || service(Some(gateway_ready)),
@@ -649,7 +656,7 @@ fn run_main() -> Result<()> {
         );
     }
 
-    #[cfg(not(any(target_os = "macos", target_os = "windows", all(target_os = "linux", feature = "desktop"))))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     service(None)
 }
 
@@ -837,7 +844,7 @@ fn is_windows_supervisor() -> bool {
 fn already_running(gateway_port: Option<u16>) -> Result<()> {
     let root = config::project_root();
     #[cfg(all(target_os = "linux", feature = "desktop"))]
-    if let Some(port) = gateway_port {
+    if let Some(port) = gateway_port.filter(|_| linux_window::available()) {
         info!(
             "POM is already running from {}; opening its interface on port {port}",
             root.display()
@@ -1017,6 +1024,7 @@ async fn async_main(
         database.clone(),
         app_config.clone(),
         args.ollama_url,
+        args.no_tls,
         args.no_discovery,
         args.no_pkarr,
         args.no_default_relays,
@@ -1139,6 +1147,7 @@ fn blank_config(gateway_port: u16, p2p_port: u16) -> config::Config {
     use crate::config::Config;
     Config {
         retired_tls_required: (),
+        saved_at: None,
         profile: crate::profile::NodeProfile::Admin,
         setup_pending: true,
         local_auto_discovery: false,
@@ -1499,6 +1508,7 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
         .filter(|addr| !addr.is_empty())
         .collect();
     infer_tunnel::set_local_node_id(args.node_id.clone());
+    infer_tunnel::set_local_gateway_port(args.gateway_port);
     let cluster_logs = args.cluster_logs.clone();
     let primary_authority_pubkey = args.primary_authority_pubkey.clone();
     let plugins = args.plugins.clone();
@@ -1756,6 +1766,7 @@ async fn start_node(
     database: Arc<db::PomDb>,
     app_config: config::Config,
     ollama_url: String,
+    no_tls: bool,
     no_discovery: bool,
     no_pkarr: bool,
     no_default_relays: bool,
@@ -1913,11 +1924,9 @@ async fn start_node(
     audit.set_admin_receiver(local_is_admin);
 
     // ── TLS between peers ────────────────────────────────────────────────────
-    // The certificate is derived from the identity that was just loaded and
-    // never goes to disk (see `tls.rs`). It exists from startup even with the
-    // flag off, because it is what allows turning TLS on without restarting: the
-    // server already speaks both languages, and the flag only decides whether
-    // remote clear text is still accepted.
+    // The node certificate is always derived from its identity. `--no-tls`
+    // permits HTTP only for the browser/client surface behind a proxy; peers
+    // still require their own TLS client certificate on the shared port.
     // Addresses that go into the browser certificate: this machine's local
     // ones, the one the operator pinned, and the hostname. Without them the
     // browser would complain about the host, and not about the issuer.
@@ -1934,9 +1943,12 @@ async fn start_node(
             None
         }
     };
+    if no_tls {
+        warn!("--no-tls/POM_NO_TLS: remote HTTP enabled for the UI and client API; keep the gateway behind an HTTPS proxy on a private network (peer mTLS stays enabled)");
+    }
     let tls_server =
         match serve::TlsServer::from_identity(&identity, true, &tls_sans) {
-            Ok(t) => Some(t),
+            Ok(t) => Some(t.with_plain_ui(no_tls)),
             Err(e) => {
                 warn!("could not derive the certificate of this node, TLS unavailable: {e}");
                 WEB_TLS.store(false, std::sync::atomic::Ordering::Relaxed);
@@ -2202,6 +2214,16 @@ mod main_tests {
     fn persisted_gateway_port_wins_over_cli_fallback() {
         assert_eq!(select_gateway_port(Some(9123), 8080), 9123);
         assert_eq!(select_gateway_port(None, 8080), 8080);
+    }
+
+    #[test]
+    fn proxy_http_flag_is_explicit_and_defaults_off() {
+        let parse = |args: &[&str]| {
+            let matches = cli_command().try_get_matches_from(args).unwrap();
+            <Args as clap::FromArgMatches>::from_arg_matches(&matches).unwrap()
+        };
+        assert!(!parse(&["pom"]).no_tls);
+        assert!(parse(&["pom", "--no-tls"]).no_tls);
     }
 
     /// `--bootstrap` alone must reach the node: a start path that read only

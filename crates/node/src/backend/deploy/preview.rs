@@ -64,6 +64,7 @@ pub(super) async fn plan_endpoint(
         links_stale,
         req.vision,
         req.vision_choice.as_ref(),
+        req.params.inference_service.is_some(),
         true,
         req.mtp_choice.as_ref(),
     );
@@ -73,6 +74,7 @@ pub(super) async fn plan_endpoint(
     }
     if p.blocked.is_none() {
         if let Some(service) = req.params.inference_service.as_deref() {
+            super::planning::share_whole_model_roles(req.kind, &mut p.steps, req.params.inference_role);
             let targets: Vec<String> = p
                 .steps
                 .iter()
@@ -89,6 +91,10 @@ pub(super) async fn plan_endpoint(
                 req.kind == DeployKind::Whole,
                 &targets,
                 &roles,
+                survey
+                    .model_shape
+                    .as_ref()
+                    .and_then(|shape| shape.architecture.as_deref()),
             )
             .await;
         }

@@ -30,9 +30,9 @@ generation pipeline, the two output budgets and the KV session rules are
 `docs/subsystems/inference.md`.
 
 The `webui` route registry is organized under `webui/routes/`: `common.rs` holds the
-routes shared by every profile, `infer.rs` the inference-profile actions, `node.rs`
-the local node/model operations and `admin.rs` the administrative and lifecycle
-routes; `routes/mod.rs` is the only composition point. That organization is for
+routes shared by every profile, `visitor.rs` the inference actions and the request
+to join, `worker.rs` the operation of the local machine and its models (for
+`worker` and `admin`) and `admin.rs` the administrative and lifecycle routes; `routes/mod.rs` is the only composition point. That organization is for
 legibility - the gateway's central profile policy remains the effective authorization
 boundary.
 
@@ -111,7 +111,13 @@ boundary.
   `webui::Job` as persistent state, a `CancellationToken` per download and
   a two-process semaphore; it assembles no commands and exposes no token or stderr.
   Each download picks the first non-empty models folder resolved from the
-  configuration, passes that folder to the provider and records the destination in the job. The
+  configuration, passes that folder to the provider and records the destination in the job.
+  Cancelling a download that has not finished takes its job off the list at once (the task
+  winding down updates nothing: progress only touches a listed job), and `retry` replaces the
+  failed or cancelled job with the new attempt instead of listing both - the failed row had no
+  other button and could never be dismissed. `POST .../downloads/:id/dismiss` takes a failed or
+  cancelled job off the list without a new attempt, and refuses a running one (409; Cancel is for
+  that). The
   storage response exposes the eligible folders. The structured status in
   `GET /api/ui/model-provider/status` lets the UI tell an absent CLI, a required login and an
   authenticated session apart.
@@ -232,11 +238,12 @@ boundary.
   candidate it calls `Network::request_peer_addresses` and returns
   `rediscovering: true` instead of `unreachable`, and `model_inventory[]` names in
   `unreadable_nodes` the peers whose coverage it depends on without being able to read them.
-  `PeerView.load` is the in-flight load reported by the peer itself: for the local node it comes
-  from the local `LoadTracker`, and for remote peers it comes from the JSON of
-  `/api/ui/node`. A missing or invalid remote read stays `null`, because
-  the local tracker's zero only means no request went through
-  this gateway.
+  `PeerView.load` is the in-flight load reported by the peer itself: for the local node it combines
+  the local `LoadTracker` (this gateway's turns) with the plugin engine's serving-stream
+  counter (turns sent by other gateways to this node); remote peers report their
+  own combined count in `/api/ui/node`. A missing or invalid remote read stays `null`,
+  because the local tracker's zero only means no request went through this gateway.
+  The local `NodeInfo.load` and the cluster fingerprint must use the same combined count.
   `model_inventory[].complete` and `/api/ui/chat/capabilities` only confirm a
   pipeline when every contributing peer has `runtime_capacity` confirmed
   by `/health` or is `idle`; gossip capacities during the boot stay
@@ -447,8 +454,13 @@ boundary.
   (`stale`), and forwards a save there. `load_sidecar_links` is what the deploy
   preview and launch read.
 - `deploy/sidecars.rs` - `attach_sidecars` fills `Plan.sidecars`: the
-  compatible files of the network with every holder, the head's projector and
-  the tail's MTP draft (screen choice, else the link), whether each is already
+  compatible files of the network with every holder, the projector of the step
+  that reads the prompt (`vision_reader`: the head under llama.cpp, the last stage
+  under a plugin's inference service, `vision_on_tail`) and
+  the tail's MTP draft (screen choice, else the link), and `vision_heads`: the same
+  projector for every other head of a whole model on several machines (a
+  prefill/decode split, where each machine answers and reads images), resolved
+  and copied per machine and set on each launch target, whether each is already
   on its target or copied from a holder, and the refusal when nobody has it. A
   compatible external draft turns `capabilities.mtp` supported for a model
   without `nextn`. `lifecycle::run` adds the copies to its `pulls` and sends
@@ -530,7 +542,9 @@ boundary.
   **inside** a call, it comes back structured and incomplete (`x_pom.truncated_tool_call: true`),
   which is what the two providers return - never raw markup, never a discard. The audit line of
   that result is `incomplete`,
-  while a transport failure stays `partial`. `/v1/models` exposes
+  while a transport failure stays `partial`, keeps the salvaged text and ends the
+  stream in an error event carrying `GenSummary.error` (also `x_pom.error` and
+  the audit's `error`). `/v1/models` exposes
   `context_length` and the `top_provider.max_completion_tokens` compatible with
   OpenRouter, which is the **request's** capacity derived from the `n_ctx`, not the
   size of one leg. The available context shrinks the budget when the prompt already occupies
@@ -554,7 +568,10 @@ boundary.
   otherwise the heads take turns round robin (`routing::fastest::rotate_head`, per-model turn in
   `pipeline::next_head_turn`), and a head with generations in flight is passed over for the next
   free one, or the least loaded when all are busy.
-  The capacity published in `/v1/models` and used by
+  `/v1/models` and `/v1/models/{id}` also publish `capabilities.vision` from
+  the serving head's projector configuration; the harness uses it to mark
+  image input only for deployed vision models. The capacity published in
+  `/v1/models` and used by
   `request_output_limit_for_model` is the smallest `RuntimeCapacity` among the peers
   of the pipeline chosen for the model/deployment. An idle peer in that
   pipeline is woken by the `reload_model` event in parallel to the other idle
@@ -618,7 +635,9 @@ boundary.
   before the SQL query, preserving the broad search when the field was not filled in. The routes
   `/api/ui/requests` and `/api/ui/requests/stats` are Enterprise and fail closed with
   `enterprise_required` without an entitlement. With an active entitlement, the handlers forward
-  the listing and the statistics to the `pom-plugin-host` process.
+  the listing and the statistics (filters, `kind` included) to the
+  `pom-plugin-host` process; while that plugin runs, a query it does not answer
+  is 503 `logs_plugin_unavailable`, never the stale legacy store.
 - **Every call to a peer leaves through `GatewayState.peer_http`** (`PeerClients`), which
   pins the destination's certificate by node_id. There is no longer a shared client without
   pinning in the state: with TLS on it verified no one,
@@ -628,7 +647,12 @@ boundary.
   once, tries each announced address - in `gateway_bases` order, the host that already answered
   first - and falls back to the p2p tunnel
   (`peer_client::send_to_gateway_over`), which is the path to a peer behind symmetric
-  NAT. A signed command that changes state is sent to **one** delivered address: after a timeout on an established connection it is not repeated elsewhere, because the same envelope would be refused as a replay (409) while the peer still runs the first copy. Calls that stop a server (`/api/ui/unload`, `/api/ui/stop-inference`, `/api/ui/leave`) use `webui::PEER_STOP_TIMEOUT` (60 s), not `PEER_TIMEOUT`. `control_get_via_tunnel` is the last resort of whoever already
+  NAT. A control call to this node itself goes only to
+  `http://127.0.0.1:<gateway_port>` (`GatewayState::control_bases`), where a plain
+  loopback call counts as a member (`auth::from_local_plain`): through its own LAN
+  or public IP it failed on a Mac without the Local Network permission, and the
+  deployment survey left the node off its own screen. `gateway_bases` is left
+  alone because its first entry is handed to other machines. A signed command that changes state is sent to **one** delivered address: after a timeout on an established connection it is not repeated elsewhere, because the same envelope would be refused as a replay (409) while the peer still runs the first copy. Calls that stop a server (`/api/ui/unload`, `/api/ui/stop-inference`, `/api/ui/leave`) use `webui::PEER_STOP_TIMEOUT` (60 s), not `PEER_TIMEOUT`. `control_get_via_tunnel` is the last resort of whoever already
   traversed the addresses with the `RouteTable`'s failure memory (the read of
   `/api/ui/cluster`). `admin.rs` calls to the principal (`post_internal_json`)
   use the same `send_to_gateway_over`: direct addresses and, last, the
@@ -647,7 +671,10 @@ boundary.
   later request on it reads zero. The TLS configuration is picked per connection
   from the ClientHello (`LazyConfigAcceptor`, `tls::wants_peer`): a peer is asked for its node
   certificate, a browser for nothing. A plain connection from outside is redirected to https, or, with
-  `POM_INSECURE_ADMIN_UI=1` (`insecure_admin_ui`), served as is except the peer-only routes.
+  `--no-tls` / `POM_NO_TLS=1` on the gateway (or the development-only
+  `POM_INSECURE_ADMIN_UI=1`), served as HTTP for browser/client routes. Peer-only
+  paths and signed control headers are refused on that clear-text path;
+  `TlsServer::peers_only` leaves the inference listener unchanged.
   `TransportPeer` is the caller's node as the transport
   proved it - the client certificate, or the tunnel's PeerId beside the mark - and goes into the
   request's extensions. See
@@ -722,7 +749,9 @@ change lands in the right place.
   client API-key auth - the per-frame `Ticket` is the credential) beside `POST /v1/link`, and
   serves with `tcp_nodelay(true)` because Nagle delayed the small SSE writes. `#[cfg(test)] mod
   testkit` is the shared scaffold for route tests - a whole `GatewayState` with the peer table
-  seeded by hand, loopback-only socket, nothing touches the LAN: `peer(node_id, hostname,
+  seeded by hand, loopback-only socket, nothing touches the LAN, and nothing touches the
+  real configuration either (its own folder holds the `Config::saved_at` file and the
+  runtime's `last-slice` annotation): `peer(node_id, hostname,
   gateway_port)`, `state_with(node_id, peers)`, `state_with_secondary_admin(node_id, peers)`,
   `body_of(response)`.
 - `openai.rs` - `render_prompt` flattens the conversation into one user message and labels
@@ -897,7 +926,11 @@ change lands in the right place.
   followed by a parameter element, is `CallKind::NamedElement` (Gemma 4 under
   Hermes Agent): its closer depends on the name, so it is outside
   `CALL_FORMATS` and the scanner keeps the name (`element_opening`,
-  `named_element_call`). Gemma 4's native
+  `named_element_call`). Flint's
+  `<tool_call>NAME<arg_key>K</arg_key><arg_value>V</arg_value></tool_call>`
+  (verified against its GGUF template) is a `Wrapped` body read by
+  `parse_arg_key_call`: a string value raw, any other JSON; a bare name is a
+  call without arguments. Gemma 4's native
   `<|tool_call>call:NAME{key:<|"|>text<|"|>}<tool_call|>` is `CallKind::Native`
   in `CALL_FORMATS` (verified against the Gemma 4 vocabulary GGUF's template):
   `parse_native_call` reads bare keys, `<|"|>` strings and JSON literals,
@@ -975,7 +1008,10 @@ refusing with the file named, `webui::ApplyRequest.use_mmproj` persisting the ch
 `NodeConfig`) is `docs/subsystems/http-api.md` and `docs/subsystems/deployment.md`. The Chat side
 (`GET /api/ui/chat/capabilities?model=<label>` aggregating coverage, `mmproj_path` and `no_thinking`
 of the deployment's head without exposing the topology to the `visitor` profile; `supported` /
-`unsupported` / `unavailable`, never an invented empty value; `openai::ChatRequest.thinking_enabled`
+`unsupported` / `unavailable`, never an invented empty value; a head with a plugin inference service
+(`config.inference_service`) offers the thinking switch whatever `no_thinking` says, because the plugin
+decides it per request; a plugin service's `vision` (`plugin_services::PluginService.vision`) is what lets
+the deploy screen offer it a projector; `openai::ChatRequest.thinking_enabled`
 travelling in `GenerationInput` and the prefill metadata, with the head applying the global
 kill-switch before rendering the template) is `docs/subsystems/web-ui.md` and
 `docs/subsystems/inference.md`.

@@ -43,6 +43,7 @@ import { admissionsApi, retryWaitMinutes, useAdmissionRequests, useAdmissions, t
 import { useProfile } from "../lib/profile";
 import { useToast } from "../lib/toast";
 import { isFinishedTransfer, isWorthNotifying } from "../lib/transferStatus";
+import { dismissJob, markJobsSeen, readDismissedJobs, readSeenJobs, recentlyFinishedJobs } from "../lib/finishedJobs";
 import { transferHash, transferTitle } from "../lib/transferLabel";
 import type {
   AdminTransferOffer,
@@ -209,6 +210,12 @@ export function Notifications() {
   }
 
   const running = (jobs.data?.jobs ?? []).filter((j) => j.state === "running");
+  // What just ended (a deploy, a slicing run) stays with its outcome, unread
+  // until the bell is opened (`lib/finishedJobs.ts`).
+  const [seenJobs, setSeenJobs] = useState<ReadonlySet<string>>(() => readSeenJobs());
+  const [dismissedJobs, setDismissedJobs] = useState<ReadonlySet<string>>(() => readDismissedJobs());
+  const finished = recentlyFinishedJobs(jobs.data?.jobs ?? []).filter((j) => !dismissedJobs.has(j.id));
+  const unreadFinished = finished.filter((j) => !seenJobs.has(j.id));
   // What is in progress **and** what has just finished: the outcome is the half of the
   // notification that was missing, in both directions.
   const moving = (transfers.data?.jobs ?? []).filter((transfer) => isWorthNotifying(transfer));
@@ -233,11 +240,11 @@ export function Notifications() {
   const passwordNotice = Boolean(access.data?.default_password) && passwordNoticeState !== "dismissed";
   const passwordNoticeUnread = passwordNotice && passwordNoticeState === "unread";
   const [passwordNoticeFresh, setPasswordNoticeFresh] = useState(false);
-  const count = running.length + moving.length + waiting.length + pluginConfirms.length + unreadNotices
+  const count = running.length + unreadFinished.length + moving.length + waiting.length + pluginConfirms.length + unreadNotices
     + pendingAdmissions.length + answeredRequests.length
     + (passwordNoticeUnread ? 1 : 0);
   const hasItems = passwordNotice
-    || running.length + moving.length + waiting.length + pluginConfirms.length + pluginNotices.length
+    || running.length + finished.length + moving.length + waiting.length + pluginConfirms.length + pluginNotices.length
       + pendingAdmissions.length + answeredRequests.length > 0;
 
   useEffect(() => {
@@ -249,6 +256,11 @@ export function Notifications() {
     setPasswordNoticeFresh(true);
     markDefaultPasswordNoticeRead(bootId);
   }, [open, passwordNoticeUnread, bootId]);
+
+  useEffect(() => {
+    if (!open || unreadFinished.length === 0) return;
+    setSeenJobs(markJobsSeen(unreadFinished.map((job) => job.id)));
+  }, [open, unreadFinished]);
 
   useEffect(() => {
     if (!open || unreadNotices === 0) return;
@@ -492,6 +504,35 @@ export function Notifications() {
                     <span className="font-mono text-[0.7rem] text-faint">
                       {t("notifications.started")} {since(j.started_at)}
                     </span>
+                  }
+                />
+              ))}
+
+              {finished.map((j) => (
+                <Row
+                  key={j.id}
+                  icon={j.state === "done" ? <CheckCircle2 className="h-3.5 w-3.5" /> : <X className="h-3.5 w-3.5" />}
+                  tone={j.state === "done" ? "aqua" : "rose"}
+                  title={j.title ?? j.step}
+                  // The reason is the half that matters when it failed; a
+                  // finished job's last step says nothing new.
+                  detail={j.state === "failed" && j.message ? j.message : undefined}
+                  footer={
+                    <>
+                      <span className="font-mono text-[0.7rem] text-faint">
+                        {t(j.state === "done" ? "notifications.jobDone" : "notifications.jobFailed")}{" "}
+                        {j.finished_at ? since(j.finished_at) : ""}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setDismissedJobs(dismissJob(j.id))}
+                        aria-label={t("notifications.jobDismiss")}
+                        title={t("notifications.jobDismiss")}
+                        className="ml-auto inline-flex h-6 w-6 items-center justify-center rounded-md text-faint hover:bg-line/40 hover:text-fg"
+                      >
+                        <X className="h-3.5 w-3.5" aria-hidden="true" />
+                      </button>
+                    </>
                   }
                 />
               ))}

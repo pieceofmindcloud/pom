@@ -6,8 +6,8 @@ GitHub-hosted workflow and a self-hosted copy for `macbook`; Windows remains
 GitHub-hosted. Keep both macOS workflows' build and package steps aligned; each
 DMG includes the plain-text `packaging/macos/README.txt` guide. The Linux and
 both macOS source builds go through the composite action `actions/llama-cache`,
-which resolves the current SHA of the
-`pom-tensor-parallel` branch, restores the
+which resolves the current SHA of the fork's
+`pom` branch (input `ref`), restores the
 checkout by SHA and validates the clone before Cargo uses it. The full strategy,
 including `sccache`, lives in `docs/subsystems/build-and-run.md`, section "Cache in GitHub Actions".
 

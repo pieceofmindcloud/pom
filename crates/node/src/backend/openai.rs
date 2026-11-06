@@ -27,6 +27,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use axum::extract::DefaultBodyLimit;
 use base64::Engine as _;
 use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
@@ -36,12 +37,22 @@ use std::convert::Infallible;
 use tokio::sync::mpsc;
 use tracing::info;
 
+/// Images arrive inline as base64, so axum's 2 MiB default turns a single
+/// photo into a 413 before the handler sees it.
+pub(crate) const PROMPT_BODY_LIMIT: usize = 64 * 1024 * 1024;
+
 pub fn routes() -> Router<GatewayState> {
     Router::new()
         .route("/v1/models", get(list_models))
         .route("/v1/models/:id", get(get_model))
-        .route("/v1/chat/completions", post(chat_completions))
-        .route("/v1/completions", post(completions))
+        .route(
+            "/v1/chat/completions",
+            post(chat_completions).layer(DefaultBodyLimit::max(PROMPT_BODY_LIMIT)),
+        )
+        .route(
+            "/v1/completions",
+            post(completions).layer(DefaultBodyLimit::max(PROMPT_BODY_LIMIT)),
+        )
         // Typed decisions in the TypeSafe Jev shape (see `crate::decisions`).
         .route("/v1/systemone", post(crate::decisions::systemone))
         .route("/v1/decisions", post(crate::decisions::systemone))
@@ -481,6 +492,7 @@ fn model_object(
     created: i64,
     context_length: Option<u32>,
     max_completion_tokens: Option<u32>,
+    vision: bool,
 ) -> ModelObject {
     ModelObject {
         display_name: id.clone(),
@@ -490,7 +502,7 @@ fn model_object(
         owned_by: "pom",
         model_type: "model",
         created_at: "1970-01-01T00:00:00Z",
-        capabilities: None,
+        capabilities: Some(json!({ "vision": vision })),
         max_input_tokens: context_length,
         max_tokens: max_completion_tokens,
         context_length,
@@ -574,12 +586,8 @@ async fn list_models(_auth: ApiKeyAuth, State(state): State<GatewayState>) -> im
         let (context_length, max_completion_tokens) = state
             .advertised_output_limits_from_peers(&peers, Some(&id))
             .await;
-        data.push(model_object(
-            id,
-            created,
-            context_length,
-            max_completion_tokens,
-        ));
+        let vision = crate::webui::model_vision_supported(&state, &id).await;
+        data.push(model_object(id, created, context_length, max_completion_tokens, vision));
     }
 
     let first_id = data.first().map(|model| model.id.clone());
@@ -606,6 +614,7 @@ async fn get_model(
         let (context_length, max_completion_tokens) = state
             .advertised_output_limits_from_peers(&peers, Some(&id))
             .await;
+        let vision = crate::webui::model_vision_supported(&state, &id).await;
         (
             cors_headers(),
             Json(model_object(
@@ -613,6 +622,7 @@ async fn get_model(
                 chrono::Utc::now().timestamp(),
                 context_length,
                 max_completion_tokens,
+                vision,
             )),
         )
             .into_response()
@@ -629,12 +639,24 @@ async fn get_model(
 async fn chat_completions(
     auth: ApiKeyAuth,
     State(state): State<GatewayState>,
-    Json(req): Json<ChatRequest>,
+    Json(body): Json<serde_json::Value>,
 ) -> Response {
+    // The body as the client sent it is the request's details: a plugin engine renders a request with tools from it
+    // (`plugin_engine::chat_api`), and the typed request below drops what the flattened prompt does not use - a
+    // tool's `"type": "function"`, the calls' ids, the results' `tool_call_id`s - which Strata's reader needs.
+    let req: ChatRequest = match serde_json::from_value(body.clone()) {
+        Ok(req) => req,
+        Err(error) => {
+            return error_response(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("Failed to deserialize the JSON body into the target type: {error}"),
+            )
+        }
+    };
     if req.messages.is_empty() {
         return error_response(StatusCode::BAD_REQUEST, "'messages' cannot be empty");
     }
-    let request_details = serde_json::to_value(&req).unwrap_or_else(|_| json!({}));
+    let request_details = body;
 
     let model = match req.model.clone() {
         Some(m) if !m.is_empty() => match resolve_model(&state, m).await {
@@ -1097,6 +1119,7 @@ async fn blocking_response(
                         // the model would have given: transport loss, or the
                         // ceiling cutting a tool call in half.
                         "partial": summary.partial || truncated_tool_call,
+                        "error": summary.error,
                         "finish_reason": summary.finish_reason,
                         "stop_sequence": summary.stop_sequence,
                         "trace": summary.trace,
@@ -1582,6 +1605,14 @@ fn sse_stream(
                             s.truncated_tool_call,
                         );
                         s.queue.push_back(Event::default().data(chunk));
+                        // A peer failed after some text went out: the text stays, and
+                        // the client still learns that the model did not end there.
+                        if let Some(err) = &summary.error {
+                            let payload =
+                                json!({ "error": { "message": err, "type": "server_error" } });
+                            s.queue
+                                .push_back(Event::default().data(payload.to_string()));
+                        }
                         s.queue.push_back(Event::default().data("[DONE]"));
                         s.phase = Phase::Ended;
                         continue;
@@ -1688,6 +1719,7 @@ fn chunk_json_final(
             // See the same field on the non-streaming path: a call
             // cut in half is also a partial response.
             "partial": summary.partial || truncated_tool_call,
+            "error": summary.error,
             "finish_reason": summary.finish_reason,
             "stop_sequence": summary.stop_sequence,
             "trace": summary.trace,
@@ -1789,6 +1821,11 @@ mod tests {
     }
 
     use super::*;
+
+    /// A typed request as the body a client sends (the handler takes the body as it came: see `chat_completions`).
+    fn body(req: ChatRequest) -> Json<serde_json::Value> {
+        Json(serde_json::to_value(req).expect("a chat request serializes"))
+    }
 
     fn msg(role: &str, text: &str) -> ChatMessage {
         ChatMessage {
@@ -2067,7 +2104,7 @@ mod tests {
         let response = chat_completions(
             ApiKeyAuth::for_test(crate::reqlog::Caller::anonymous()),
             State(state),
-            Json(ChatRequest {
+            body(ChatRequest {
                 session: None,
                 // Retrieval is not what this test is about.
                 rag: Some(false),
@@ -2207,7 +2244,7 @@ mod tests {
         let response = chat_completions(
             ApiKeyAuth::for_test(crate::reqlog::Caller::anonymous()),
             State(state),
-            Json(ChatRequest {
+            body(ChatRequest {
                 session: None,
                 // Retrieval is not what this test is about.
                 rag: Some(false),
@@ -2363,7 +2400,7 @@ mod tests {
         let first = chat_completions(
             ApiKeyAuth::for_test(crate::reqlog::Caller::anonymous()),
             State(state.clone()),
-            Json(ChatRequest {
+            body(ChatRequest {
                 session: None,
                 // Retrieval is not what this test is about.
                 rag: Some(false),
@@ -2388,7 +2425,7 @@ mod tests {
         let second = chat_completions(
             ApiKeyAuth::for_test(crate::reqlog::Caller::anonymous()),
             State(state),
-            Json(ChatRequest {
+            body(ChatRequest {
                 session: None,
                 // Retrieval is not what this test is about.
                 rag: Some(false),
@@ -2440,7 +2477,7 @@ mod tests {
         chat_completions(
             ApiKeyAuth::for_test(crate::reqlog::Caller::anonymous()),
             State(state),
-            Json(ChatRequest {
+            body(ChatRequest {
                 session: None,
                 // Retrieval is not what this test is about.
                 rag: Some(false),
@@ -2746,6 +2783,7 @@ mod tests {
             0,
             context_length,
             max_completion_tokens,
+            false,
         ))
         .unwrap();
 
@@ -2769,6 +2807,7 @@ mod tests {
             0,
             context_length,
             max_completion_tokens,
+            true,
         ))
         .unwrap();
 
@@ -2778,7 +2817,7 @@ mod tests {
         assert_eq!(value["created_at"], "1970-01-01T00:00:00Z");
         assert_eq!(value["max_input_tokens"], 100_000);
         assert_eq!(value["max_tokens"], 100_000);
-        assert!(value["capabilities"].is_null());
+        assert_eq!(value["capabilities"]["vision"], true);
         assert_eq!(value["context_length"], 100_000);
         assert_eq!(value["top_provider"]["max_completion_tokens"], 100_000);
     }
@@ -2793,6 +2832,7 @@ mod tests {
             duration_ms: 10,
             timings: crate::gateway::timing_metrics(10, 10, 10, 0, n),
             partial: false,
+            error: None,
             finish_reason: None,
             stop_sequence: None,
             legs: 1,
@@ -3036,6 +3076,49 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_partial_stream_ends_in_an_error_after_the_salvaged_text() {
+        let mut summary = crate::gateway::GenSummary {
+            source: "pipeline:a (partial)".into(),
+            tokens_generated: 1,
+            reasoning_tokens: 0,
+            tokens_per_sec: 1.0,
+            duration_ms: 10,
+            timings: crate::gateway::timing_metrics(10, 10, 10, 1, 1),
+            partial: true,
+            error: None,
+            finish_reason: None,
+            stop_sequence: None,
+            legs: 1,
+            trace: None,
+        };
+        summary.error = Some("pipeline failed at step 1: deadline expired".into());
+        let (tx, rx) = mpsc::channel(4);
+        tx.send(GenEvent::Token("Oi".into())).await.unwrap();
+        tx.send(GenEvent::Done(summary)).await.unwrap();
+        drop(tx);
+        let stream = sse_stream(
+            rx,
+            "chatcmpl-test".into(),
+            1,
+            "flint".into(),
+            Mode::Chat,
+            100,
+            OutputTokenLimit::default(),
+            ToolSignatures::default(),
+        );
+        let body = axum::body::to_bytes(Sse::new(stream).into_response().into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+
+        // The text that went out stays, and the cut is an error, not the model's end.
+        let text_at = body.find("Oi").expect("salvaged text");
+        let error_at = body.find("deadline expired").expect("error event");
+        let done_at = body.find("[DONE]").expect("end of stream");
+        assert!(text_at < error_at && error_at < done_at, "{body}");
+    }
+
     #[test]
     fn final_stream_chunk_carries_generation_summary() {
         let summary = crate::gateway::GenSummary {
@@ -3046,6 +3129,7 @@ mod tests {
             duration_ms: 2666,
             timings: crate::gateway::timing_metrics(2666, 900, 900, 12, 12),
             partial: true,
+            error: None,
             finish_reason: Some("length".into()),
             stop_sequence: None,
             legs: 1,

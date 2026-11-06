@@ -1130,6 +1130,9 @@ mod tests {
             architectures: Vec::new(),
             settings: Vec::new(),
             stages: false,
+            stage_architectures: Vec::new(),
+            draft_architectures: Vec::new(),
+            vision: false,
             pom_settings: Vec::new(),
         };
         assert_eq!(rag_plugin(&[service("rag", "ready")]), Some("qdrant"));

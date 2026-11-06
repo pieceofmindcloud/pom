@@ -759,8 +759,25 @@ impl GatewayState {
         body: Option<Vec<u8>>,
         timeout: std::time::Duration,
     ) -> anyhow::Result<reqwest::Response> {
-        self.control_call_over(peer, &self.gateway_bases(peer), method, path, body, timeout)
+        let bases = self.control_bases(peer);
+        self.control_call_over(peer, &bases, method, path, body, timeout)
             .await
+    }
+
+    /// Where a control call to `peer` goes. This node's own entry is reached on
+    /// loopback, in cleartext (`serve::plain_allowed`), the way the tunnel
+    /// reaches it: through its announced addresses the call depended on the
+    /// machine reaching itself on its LAN or public IP, which macOS refuses
+    /// without the Local Network permission, and the deployment survey then
+    /// left the node out of its own deployment screen. Only here, never in
+    /// `gateway_bases`, whose first entry is handed to other machines.
+    fn control_bases(&self, peer: &crate::network::PeerInfo) -> Vec<String> {
+        match self.network.gateway_port {
+            Some(port) if peer.node_id == self.network.node_id => {
+                vec![format!("http://127.0.0.1:{port}")]
+            }
+            _ => self.gateway_bases(peer),
+        }
     }
 
     async fn control_call_over(
@@ -993,9 +1010,22 @@ pub(crate) async fn require_admin_for_surface(
     let path = request.uri().path().to_owned();
     let method = request.method().clone();
     let (mut parts, body) = request.into_parts();
-    let internal_node = crate::auth::InternalNodeAuth::from_request_parts(&mut parts, &state)
-        .await
-        .ok();
+    // Only a request that says it comes from a node is judged as one. The
+    // browser sends the connection key with no marker, and probing it logged
+    // a refused node-to-node call on every poll of the interface.
+    let claims_node = parts
+        .headers
+        .contains_key(crate::auth::CONTROL_SIGNATURE_HEADER)
+        || parts
+            .headers
+            .contains_key(crate::auth::INTERNAL_NODE_REQUEST_HEADER);
+    let internal_node = if claims_node {
+        crate::auth::InternalNodeAuth::from_request_parts(&mut parts, &state)
+            .await
+            .ok()
+    } else {
+        None
+    };
     let internal_node_request = internal_node.is_some();
     let request = Request::from_parts(parts, body);
     let profile = state.auth.read().await.profile;
@@ -1373,11 +1403,17 @@ pub(crate) async fn ready_for_pipeline(
             started + FIRST_ADMISSION_BUDGET
         };
         let node_id = peer.node_id.clone();
-        probes.push((node_id, deadline, spawn_admission_probe(http, health, network, peer, timeout)));
+        let last_seen = peer.last_seen;
+        probes.push((
+            node_id,
+            last_seen,
+            deadline,
+            spawn_admission_probe(http, health, network, peer, timeout),
+        ));
     }
     let probed = probes.len();
     let mut admitted = Vec::with_capacity(probed);
-    for (node_id, deadline, handle) in probes {
+    for (node_id, last_seen, deadline, handle) in probes {
         let short = &node_id[..node_id.len().min(12)];
         let remaining = deadline.saturating_duration_since(Instant::now());
         match tokio::time::timeout(remaining, handle).await {
@@ -1398,7 +1434,13 @@ pub(crate) async fn ready_for_pipeline(
                 tracing::warn!("admission: peer {short} probe ended in a panic");
             }
             Err(_) => match health.remembered(&node_id, ADMISSION_MEMORY) {
-                Some(peer) => {
+                Some(mut peer) => {
+                    // The memory is the last `/health` verdict, up to
+                    // `ADMISSION_MEMORY` old; liveness is the announcement
+                    // this request was handed. Keeping the stored
+                    // `last_seen` made the planner drop the peer as dead
+                    // (`PEER_TIMEOUT_SECS`) and report a gap at its layers.
+                    peer.last_seen = last_seen;
                     tracing::info!("admission: peer {short} still probing; using its last admission");
                     admitted.push(peer);
                 }
@@ -1497,6 +1539,33 @@ pub(crate) fn spawn_admission_warmup(state: GatewayState) {
 /// One peer's admission. Returns the peer when it may take part, and the path that decided it,
 /// for the log. The tunnel is tried only for a peer that announces a model, and not when every
 /// direct address refused the connection: a refused address is a server that is not there.
+/// This node's own `/health`, in cleartext on loopback (`serve::plain_allowed`).
+/// The handler never waits for the engine (`infer_server::handle_health`), so the
+/// probe's deadline only bounds a server that is not listening yet.
+async fn local_health(port: u16, timeout: Duration) -> Option<serde_json::Value> {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    let client = CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap_or_default()
+    });
+    let response = tokio::time::timeout(
+        timeout,
+        client.get(format!("http://127.0.0.1:{port}/health")).send(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    tokio::time::timeout(timeout, response.json::<serde_json::Value>())
+        .await
+        .ok()?
+        .ok()
+}
+
 async fn admit_peer(
     health: &AdmissionHealth,
     network: &crate::network::Network,
@@ -1505,13 +1574,32 @@ async fn admit_peer(
     bases: Vec<String>,
     timeout: Duration,
 ) -> (Option<PeerInfo>, &'static str) {
-    if bases.is_empty() && crate::peer_client::TunnelPeer::from_peer(&peer).is_none() {
-        return (None, "no-address");
-    }
     // Idle peers keep their assignment announced while `/health` has no loaded model.
     // They are valid plan members and are woken by the reload event before inference starts.
     if peer.idle {
         return (Some(peer), "idle");
+    }
+    // This machine's own entry: its inference server is read on loopback, the
+    // way the tunnel reaches it (`infer_tunnel::forward_loopback`). Dialing its
+    // own public address went through QUIC and the NAT, and on a head busy with
+    // a long prompt that missed the budget and left its layers out of the plan.
+    if peer.node_id == network.node_id {
+        if let Some(port) = network.inference_port {
+            let body = local_health(port, timeout).await;
+            return match body {
+                Some(body) => {
+                    health.note_perf(&peer.node_id, crate::fastest::PeerPerf::from_health(&body));
+                    match refresh_peer_from_health(peer, &body) {
+                        Some(peer) => (Some(peer), "local"),
+                        None => (None, "not-loaded"),
+                    }
+                }
+                None => (None, "local-miss"),
+            };
+        }
+    }
+    if bases.is_empty() && crate::peer_client::TunnelPeer::from_peer(&peer).is_none() {
+        return (None, "no-address");
     }
     let Ok(client) = client else {
         return (None, "no-client");

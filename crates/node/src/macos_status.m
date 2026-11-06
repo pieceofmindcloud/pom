@@ -1,6 +1,8 @@
 #import <AppKit/AppKit.h>
 #import <WebKit/WebKit.h>
 #import <Security/Security.h>
+#import <AVFoundation/AVFoundation.h>
+#import <Speech/Speech.h>
 #import <dispatch/dispatch.h>
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -46,6 +48,8 @@ static void POMShowUnavailable(WKWebView *webView);
 static WKWebView *POMMakeWebView(NSRect frame);
 static NSImage *POMStatusImage(void);
 static void POMInstallApplicationMenu(void);
+static void POMStartDictation(WKWebView *webView, NSString *locale);
+static void POMStopDictation(void);
 
 @interface POMNavigationDelegate : NSObject <WKNavigationDelegate, WKUIDelegate>
 @end
@@ -482,6 +486,150 @@ static NSImage *POMStatusImage(void) {
     return image;
 }
 
+static BOOL POMDictationDeclared(void) {
+    NSBundle *bundle = [NSBundle mainBundle];
+    return [bundle objectForInfoDictionaryKey:@"NSMicrophoneUsageDescription"] != nil &&
+           [bundle objectForInfoDictionaryKey:@"NSSpeechRecognitionUsageDescription"] != nil;
+}
+
+// One dictation at a time, for the whole app. The generation tells a callback from an
+// older dictation to stay quiet: the recognizer and the permission prompts answer late.
+static NSUInteger POMDictationGeneration = 0;
+static WKWebView *POMDictationWebView;
+static SFSpeechRecognizer *POMDictationRecognizer;
+static AVAudioEngine *POMDictationEngine;
+static SFSpeechAudioBufferRecognitionRequest *POMDictationRequest;
+static SFSpeechRecognitionTask *POMDictationTask;
+
+static void POMSendDictationEvent(WKWebView *webView, NSDictionary *event) {
+    NSData *json = [NSJSONSerialization dataWithJSONObject:event options:0 error:nil];
+    if (!json) {
+        return;
+    }
+    NSString *argument = [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding];
+    NSString *script = [NSString stringWithFormat:@"window.__pomDictationEvent&&window.__pomDictationEvent(%@)", argument];
+    [webView evaluateJavaScript:script completionHandler:nil];
+}
+
+static void POMReleaseDictation(void) {
+    if (POMDictationEngine) {
+        [POMDictationEngine stop];
+        [POMDictationEngine.inputNode removeTapOnBus:0];
+    }
+    [POMDictationRequest endAudio];
+    [POMDictationTask cancel];
+    POMDictationEngine = nil;
+    POMDictationRequest = nil;
+    POMDictationTask = nil;
+    POMDictationRecognizer = nil;
+    POMDictationWebView = nil;
+}
+
+static void POMStopDictation(void) {
+    POMDictationGeneration += 1;
+    POMReleaseDictation();
+}
+
+/// Ends the running dictation on its own: the page hears the reason, if any, and the end.
+static void POMFailDictation(NSString *code, NSString *message) {
+    WKWebView *webView = POMDictationWebView;
+    POMStopDictation();
+    if (code) {
+        POMSendDictationEvent(webView, @{@"type": @"error", @"code": code, @"message": message ?: @""});
+    }
+    POMSendDictationEvent(webView, @{@"type": @"end"});
+}
+
+static void POMBeginDictation(NSString *locale) {
+    NSUInteger generation = POMDictationGeneration;
+    NSLocale *language = locale.length > 0 ? [NSLocale localeWithLocaleIdentifier:locale] : [NSLocale currentLocale];
+    SFSpeechRecognizer *recognizer = [[SFSpeechRecognizer alloc] initWithLocale:language];
+    if (!recognizer || !recognizer.isAvailable) {
+        POMFailDictation(@"unavailable", nil);
+        return;
+    }
+    SFSpeechAudioBufferRecognitionRequest *request = [[SFSpeechAudioBufferRecognitionRequest alloc] init];
+    request.shouldReportPartialResults = YES;
+    // What is said stays on this Mac whenever the system can recognize it here.
+    if (recognizer.supportsOnDeviceRecognition) {
+        request.requiresOnDeviceRecognition = YES;
+    }
+    AVAudioEngine *engine = [[AVAudioEngine alloc] init];
+    AVAudioInputNode *input = engine.inputNode;
+    AVAudioFormat *format = [input outputFormatForBus:0];
+    if (format.sampleRate <= 0 || format.channelCount == 0) {
+        POMFailDictation(@"no-microphone", POMLocalized(@"dictation.noMicrophone", @"No microphone was found."));
+        return;
+    }
+    [input installTapOnBus:0
+                bufferSize:4096
+                    format:format
+                     block:^(AVAudioPCMBuffer *buffer, AVAudioTime *when) {
+                         (void)when;
+                         [request appendAudioPCMBuffer:buffer];
+                     }];
+    POMDictationRecognizer = recognizer;
+    POMDictationEngine = engine;
+    POMDictationRequest = request;
+    POMDictationTask = [recognizer
+        recognitionTaskWithRequest:request
+                     resultHandler:^(SFSpeechRecognitionResult *result, NSError *error) {
+                         dispatch_async(dispatch_get_main_queue(), ^{
+                             if (generation != POMDictationGeneration) {
+                                 return;
+                             }
+                             if (result) {
+                                 POMSendDictationEvent(POMDictationWebView, @{
+                                     @"type": result.isFinal ? @"final" : @"result",
+                                     @"text": result.bestTranscription.formattedString,
+                                 });
+                             }
+                             if (error) {
+                                 // 1110 is the recognizer saying it heard no speech.
+                                 BOOL silence = error.code == 1110;
+                                 POMFailDictation(silence ? @"no-speech" : @"failed", error.localizedDescription);
+                             } else if (result.isFinal) {
+                                 POMFailDictation(nil, nil);
+                             }
+                         });
+                     }];
+    [engine prepare];
+    NSError *startError = nil;
+    if (![engine startAndReturnError:&startError]) {
+        POMFailDictation(@"failed", startError.localizedDescription);
+    }
+}
+
+static void POMStartDictation(WKWebView *webView, NSString *locale) {
+    POMStopDictation();
+    NSUInteger generation = POMDictationGeneration;
+    POMDictationWebView = webView;
+    [SFSpeechRecognizer requestAuthorization:^(SFSpeechRecognizerAuthorizationStatus status) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (generation != POMDictationGeneration) {
+                return;
+            }
+            if (status != SFSpeechRecognizerAuthorizationStatusAuthorized) {
+                POMFailDictation(@"denied", nil);
+                return;
+            }
+            [AVCaptureDevice requestAccessForMediaType:AVMediaTypeAudio
+                                     completionHandler:^(BOOL granted) {
+                                         dispatch_async(dispatch_get_main_queue(), ^{
+                                             if (generation != POMDictationGeneration) {
+                                                 return;
+                                             }
+                                             if (granted) {
+                                                 POMBeginDictation(locale);
+                                             } else {
+                                                 POMFailDictation(@"denied", nil);
+                                             }
+                                         });
+                                     }];
+        });
+    }];
+}
+
 static WKWebView *POMMakeWebView(NSRect frame) {
     WKWebViewConfiguration *configuration = [[WKWebViewConfiguration alloc] init];
     configuration.websiteDataStore = [WKWebsiteDataStore defaultDataStore];
@@ -491,6 +639,12 @@ static WKWebView *POMMakeWebView(NSRect frame) {
                                                              name:@"pomRetryGateway"];
     [configuration.userContentController addScriptMessageHandler:POMScriptHandlerInstance
                                                              name:@"pomQuit"];
+    // Asking for either permission without its text in Info.plist kills the process, so a
+    // binary running outside the bundle does not offer the bridge at all.
+    if (POMDictationDeclared()) {
+        [configuration.userContentController addScriptMessageHandler:POMScriptHandlerInstance
+                                                                 name:@"pomDictation"];
+    }
 
     WKWebView *webView = [[WKWebView alloc] initWithFrame:frame configuration:configuration];
     webView.navigationDelegate = POMNavigationDelegateInstance;
@@ -529,6 +683,34 @@ static WKWebView *POMMakeWebView(NSRect frame) {
     return nil;
 }
 
+/// `<input type="file">`: WebKit shows nothing unless the app opens the panel itself.
+- (void)webView:(WKWebView *)webView
+    runOpenPanelWithParameters:(WKOpenPanelParameters *)parameters
+              initiatedByFrame:(WKFrameInfo *)frame
+             completionHandler:(void (^)(NSArray<NSURL *> *URLs))completionHandler {
+    (void)frame;
+    NSOpenPanel *panel = [NSOpenPanel openPanel];
+    panel.canChooseFiles = YES;
+    panel.canChooseDirectories = parameters.allowsDirectories;
+    panel.allowsMultipleSelection = parameters.allowsMultipleSelection;
+    [NSApp activateIgnoringOtherApps:YES];
+    if (webView == POMWindowWebView && webView.window) {
+        [panel beginSheetModalForWindow:webView.window
+                      completionHandler:^(NSModalResponse response) {
+                          completionHandler(response == NSModalResponseOK ? panel.URLs : nil);
+                      }];
+        return;
+    }
+    // A transient popover closes the moment the panel takes the focus, and the choice would
+    // land in a chat nobody sees, so it holds still until the panel is done.
+    NSPopoverBehavior behavior = POMPopover.behavior;
+    POMPopover.behavior = NSPopoverBehaviorApplicationDefined;
+    [panel beginWithCompletionHandler:^(NSModalResponse response) {
+        POMPopover.behavior = behavior;
+        completionHandler(response == NSModalResponseOK ? panel.URLs : nil);
+    }];
+}
+
 - (void)webView:(WKWebView *)webView
     didReceiveAuthenticationChallenge:(NSURLAuthenticationChallenge *)challenge
                     completionHandler:(void (^)(NSURLSessionAuthChallengeDisposition,
@@ -556,6 +738,16 @@ static WKWebView *POMMakeWebView(NSRect frame) {
         POMOpenWindow();
     } else if ([message.name isEqualToString:@"pomQuit"]) {
         [NSApp terminate:nil];
+    } else if ([message.name isEqualToString:@"pomDictation"] &&
+               [message.webView isKindOfClass:[WKWebView class]] &&
+               [message.body isKindOfClass:[NSDictionary class]]) {
+        NSDictionary *body = message.body;
+        if ([body[@"action"] isEqual:@"start"]) {
+            NSString *locale = [body[@"locale"] isKindOfClass:[NSString class]] ? body[@"locale"] : @"";
+            POMStartDictation((WKWebView *)message.webView, locale);
+        } else {
+            POMStopDictation();
+        }
     } else if ([message.name isEqualToString:@"pomRetryGateway"] &&
                [message.webView isKindOfClass:[WKWebView class]]) {
         POMWaitForGateway((WKWebView *)message.webView);

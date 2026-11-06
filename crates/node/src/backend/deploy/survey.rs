@@ -631,43 +631,56 @@ pub(super) async fn survey(
             let load = reported_peer_load(&node);
 
             let mut held: Vec<HeldShard> = match kind {
+                // The slices of the set, and the whole GGUF of the same model: a machine that holds it may join a
+                // sliced deployment as its prefill machine, running every layer (the planner keeps it out of the
+                // auto plan and out of the layer coverage).
                 DeployKind::Shards => body
-                    .get("shard_sets")
+                    .get("models")
                     .and_then(|v| v.as_array())
                     .into_iter()
                     .flatten()
-                    .filter(|set| set.get("group").and_then(|g| g.as_str()) == Some(group.as_str()))
-                    .flat_map(|set| {
-                        let pom_id = set.get("pom_id").and_then(|value| value.as_str());
-                        let mmproj_path = set.get("mmproj_path").and_then(|value| value.as_str());
-                        let mmproj_candidates =
-                            parse_mmproj_candidates(set.get("mmproj_candidates"));
-                        let mmproj_reason =
-                            set.get("mmproj_reason").and_then(|value| value.as_str());
-                        set.get("shards")
+                    .filter_map(|m| parse_whole(m, &group))
+                    .chain(
+                        body.get("shard_sets")
                             .and_then(|v| v.as_array())
                             .into_iter()
                             .flatten()
-                            .map(move |shard| {
-                                (
-                                    shard,
-                                    pom_id,
-                                    mmproj_path,
-                                    mmproj_reason,
-                                    mmproj_candidates.clone(),
-                                )
+                            .filter(|set| {
+                                set.get("group").and_then(|g| g.as_str()) == Some(group.as_str())
                             })
-                    })
-                    .filter_map(
-                        |(shard, pom_id, mmproj_path, mmproj_reason, mmproj_candidates)| {
-                            parse_shard(
-                                shard,
-                                pom_id,
-                                mmproj_path,
-                                mmproj_reason,
-                                &mmproj_candidates,
-                            )
-                        },
+                            .flat_map(|set| {
+                                let pom_id = set.get("pom_id").and_then(|value| value.as_str());
+                                let mmproj_path =
+                                    set.get("mmproj_path").and_then(|value| value.as_str());
+                                let mmproj_candidates =
+                                    parse_mmproj_candidates(set.get("mmproj_candidates"));
+                                let mmproj_reason =
+                                    set.get("mmproj_reason").and_then(|value| value.as_str());
+                                set.get("shards")
+                                    .and_then(|v| v.as_array())
+                                    .into_iter()
+                                    .flatten()
+                                    .map(move |shard| {
+                                        (
+                                            shard,
+                                            pom_id,
+                                            mmproj_path,
+                                            mmproj_reason,
+                                            mmproj_candidates.clone(),
+                                        )
+                                    })
+                            })
+                            .filter_map(
+                                |(shard, pom_id, mmproj_path, mmproj_reason, mmproj_candidates)| {
+                                    parse_shard(
+                                        shard,
+                                        pom_id,
+                                        mmproj_path,
+                                        mmproj_reason,
+                                        &mmproj_candidates,
+                                    )
+                                },
+                            ),
                     )
                     .collect(),
                 DeployKind::Whole => {
@@ -1023,7 +1036,11 @@ pub(super) fn model_stem(name: &str) -> String {
     let split = stem.len().checked_sub(15).map(|at| &stem[at..]);
     if let Some(part) = split {
         let digits = |t: &str| t.len() == 5 && t.chars().all(|c| c.is_ascii_digit());
-        if part.starts_with('-') && digits(&part[1..6]) && &part[6..10] == "-of-" && digits(&part[10..]) {
+        if part.starts_with('-')
+            && digits(&part[1..6])
+            && &part[6..10] == "-of-"
+            && digits(&part[10..])
+        {
             stem.truncate(stem.len() - 15);
         }
     }
@@ -1104,7 +1121,10 @@ mod model_stem_tests {
         let group = "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002-552ac6c0";
         assert_eq!(model_stem(whole), "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS");
         assert_eq!(model_stem(whole), model_stem(group));
-        assert_ne!(model_stem("Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XXS.gguf"), model_stem(whole));
+        assert_ne!(
+            model_stem("Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XXS.gguf"),
+            model_stem(whole)
+        );
         assert_eq!(model_stem("plain.gguf"), "plain");
     }
 }

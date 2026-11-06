@@ -83,6 +83,8 @@ describe("Notifications network offers", () => {
     resetDefaultPasswordNoticeForTest();
     queryMocks.access.data = { default_password: false, boot_id: "boot-1" };
     queryMocks.jobsEnabled = [];
+    queryMocks.jobs.data = { jobs: [] };
+    localStorage.clear();
     queryMocks.transfersEnabled = [];
     queryMocks.offersEnabled = [];
     profileMock.profile = "admin";
@@ -167,6 +169,56 @@ describe("Notifications network offers", () => {
     expect(pluginNotices()).toEqual([]);
   });
 
+  it("keeps a deploy that just finished, unread until the bell opens, and lets it be removed", () => {
+    queryMocks.jobs.data = {
+      jobs: [{
+        id: "deploy-1",
+        kind: "apply",
+        state: "done",
+        title: "Implantar qwen",
+        step: "pronto",
+        message: "",
+        progress: 100,
+        outputs: [],
+        started_at: new Date(Date.now() - 20_000).toISOString(),
+        finished_at: new Date().toISOString(),
+      }],
+    } as never;
+    renderNotifications([]);
+
+    const bell = screen.getByRole("button", { name: /atividade/i });
+    expect(bell.textContent).toContain("1");
+    fireEvent.click(bell);
+    // The tray is not empty: the outcome is there, and opening read it.
+    expect(screen.getByText("Implantar qwen")).toBeTruthy();
+    expect(screen.getByText(/terminou/)).toBeTruthy();
+    expect(bell.textContent).not.toContain("1");
+
+    fireEvent.click(screen.getByRole("button", { name: "Remover do sino" }));
+    expect(screen.queryByText("Implantar qwen")).toBeNull();
+  });
+
+  it("shows why a finished job failed", () => {
+    queryMocks.jobs.data = {
+      jobs: [{
+        id: "deploy-2",
+        kind: "apply",
+        state: "failed",
+        title: "Implantar qwen",
+        step: "carregando",
+        message: "a máquina ksia não respondeu",
+        progress: null,
+        outputs: [],
+        started_at: new Date(Date.now() - 20_000).toISOString(),
+        finished_at: new Date().toISOString(),
+      }],
+    } as never;
+    renderNotifications([]);
+    fireEvent.click(screen.getByRole("button", { name: /atividade/i }));
+    expect(screen.getByText("a máquina ksia não respondeu")).toBeTruthy();
+    expect(screen.getByText(/falhou/)).toBeTruthy();
+  });
+
   it("lists a plugin confirmation with accept and reject, like a transfer offer", () => {
     const resolve = vi.fn();
     addPendingPluginConfirm(
@@ -230,7 +282,7 @@ describe("Notifications network offers", () => {
     const item = screen.getByTestId("admission-candidate-node-id-0001");
     expect(item.textContent).toContain("forasteiro pede para entrar nesta rede");
     // Role, how it connects, latency and hardware, in one line.
-    expect(item.textContent).toContain("Nós da rede");
+    expect(item.textContent).toContain("Worker");
     expect(item.textContent).toContain("por um relé");
     expect(item.textContent).toContain("42 ms");
     expect(item.textContent).toContain("64 GB de RAM");

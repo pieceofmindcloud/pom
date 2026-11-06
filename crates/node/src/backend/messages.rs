@@ -52,6 +52,7 @@ use axum::{
 use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use axum::extract::DefaultBodyLimit;
 use std::collections::VecDeque;
 use std::convert::Infallible;
 use tokio::sync::mpsc;
@@ -62,8 +63,14 @@ use tracing::info;
 /// nothing and keeps a hand-rolled test request from 400ing.
 pub fn routes() -> Router<GatewayState> {
     Router::new()
-        .route("/v1/messages", post(messages))
-        .route("/v1/messages/count_tokens", post(count_tokens))
+        .route(
+            "/v1/messages",
+            post(messages).layer(DefaultBodyLimit::max(crate::openai::PROMPT_BODY_LIMIT)),
+        )
+        .route(
+            "/v1/messages/count_tokens",
+            post(count_tokens).layer(DefaultBodyLimit::max(crate::openai::PROMPT_BODY_LIMIT)),
+        )
         .route("/v1/messages", axum::routing::options(preflight))
         .route(
             "/v1/messages/count_tokens",
@@ -568,8 +575,21 @@ fn content_blocks(parts: &[OutputPart]) -> (Vec<serde_json::Value>, bool) {
 async fn messages(
     auth: ApiKeyAuth,
     State(state): State<GatewayState>,
-    Json(req): Json<MessagesRequest>,
+    Json(body): Json<serde_json::Value>,
 ) -> Response {
+    // The body as the client sent it is the request's details: a plugin engine renders a request with tools from it
+    // (`plugin_engine::chat_api`), and the typed request below drops what the flattened prompt does not use - the
+    // tool_use ids, the tool_result tool_use_ids - and writes the blocks' absent fields as null.
+    let req: MessagesRequest = match serde_json::from_value(body.clone()) {
+        Ok(req) => req,
+        Err(error) => {
+            return error_response(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "invalid_request_error",
+                &format!("Failed to deserialize the JSON body into the target type: {error}"),
+            )
+        }
+    };
     if req.messages.is_empty() {
         return error_response(
             StatusCode::BAD_REQUEST,
@@ -577,7 +597,7 @@ async fn messages(
             "`messages` cannot be empty",
         );
     }
-    let request_details = serde_json::to_value(&req).unwrap_or_else(|_| json!({}));
+    let request_details = body;
 
     let model = match req.model.clone() {
         Some(m) if !m.is_empty() => match resolve_model(&state, m).await {
@@ -852,6 +872,7 @@ async fn blocking_response(params: ResponseParams) -> Response {
                         // A call cut in the middle is also a partial
                         // response - see `openai::blocking_response`.
                         "partial": summary.partial || truncated_tool_call,
+                        "error": summary.error,
                         "finish_reason": summary.finish_reason,
                         "stop_sequence": summary.stop_sequence,
                         "trace": summary.trace,
@@ -1386,6 +1407,7 @@ fn sse_stream(
                                     "duration_ms": summary.duration_ms,
                                     "timings": summary.timings,
                                     "partial": summary.partial || truncated_tool_call,
+                                    "error": summary.error,
                                     "finish_reason": summary.finish_reason,
                                     "stop_sequence": summary.stop_sequence,
                                     "trace": summary.trace,
@@ -1398,8 +1420,20 @@ fn sse_stream(
                                 },
                             }),
                         ));
-                        s.queue
-                            .push_back(ev("message_stop", json!({ "type": "message_stop" })));
+                        // A peer failed after some text went out: the stream ends in an
+                        // error, as Anthropic's does, so the cut is not read as end_turn.
+                        if let Some(err) = &summary.error {
+                            s.queue.push_back(ev(
+                                "error",
+                                json!({
+                                    "type": "error",
+                                    "error": { "type": "api_error", "message": err },
+                                }),
+                            ));
+                        } else {
+                            s.queue
+                                .push_back(ev("message_stop", json!({ "type": "message_stop" })));
+                        }
                         s.phase = Phase::Ended;
                         continue;
                     }
@@ -1726,6 +1760,7 @@ mod tests {
             duration_ms: 10,
             timings: crate::gateway::timing_metrics(10, 10, 10, 0, n),
             partial: false,
+            error: None,
             finish_reason: None,
             stop_sequence: None,
             legs: 1,

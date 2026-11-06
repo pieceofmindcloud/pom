@@ -236,7 +236,9 @@ local-only notice. Routes:
   the principal. `WholeModels` keeps the catalog's projector column and opens
   the same editor in a window. The deploy inspector offers the same pickers
   (head projector, tail MTP draft) prefilled from the link, and says whether
-  the target already has the file or will copy it.
+  the target already has the file or will copy it. With a plugin's inference
+  service, the draft picker only shows for a model of its
+  `draft_architectures`: another engine would ignore the choice.
 - `/deploy` -> DeployModel (a top-level entry to put slices into service)
 - `/deployments` -> Deployments (the record of deployments, activating the
   default one, versions per `deploy_id`, redeploying by version or by new
@@ -253,8 +255,10 @@ local-only notice. Routes:
   `/transfers/send` redirects there, keeping `?filename=`
 - `/logs` and `/statistics` -> `EnterpriseFeatureShowcase`, the sales page
   of the logs plugin (Request Logs, Statistics and Quota, one purchase; public
-  catalog, purchase on the site in a new tab), when no active plugin declares
-  the target. While neither is declared the menu shows one "Business Pack"
+  catalog, purchase on the site in a new tab; a running promotion shows the
+  full price struck through beside the discounted one, and a plugin the
+  console sells by contact shows no price and "Talk to sales"), when no active
+  plugin declares the target. While neither is declared the menu shows one "Business Pack"
   entry (to `/logs`) in place of the whole Logs section and Statistics, since
   the deployment logs are kept by the same plugin. The desktop shells
   (WebView2, WebKitGTK, the macOS panel) open any link to another host and any
@@ -290,7 +294,10 @@ local-only notice. Routes:
   state published by the node, never from the public catalog. Plugins active on
   the node stay listed even when missing from the public catalog, with local
   actions preserved. When the required license is not active, Buy redirects to
-  the public store with the `plugin_code` encoded by `lib/pluginPurchase.ts`.
+  the public store with the `plugin_code` encoded by `lib/pluginPurchase.ts`;
+  for a plugin sold by contact the card reads "Pricing on request" and the
+  button, "Talk to sales", opens the site's contact form about it. A running
+  promotion tags the card and strikes the full price beside the discounted one.
   Active plugins show license expiry, last install/application and last update
   check as distinct dates; the screen reads those times from the state
   persisted by the node. The activation key shows up when any public entry that
@@ -435,13 +442,13 @@ local-only notice. Routes:
   participant list for `admin` and `worker`; `/config/preferences` ->
   Preferences; `/config/preferences/admin` -> administrative preferences;
   `/config/about` -> About, the last item of Settings, with links to the
-  repository's AGPL-3.0 `LICENSE` and the official GNU page, an LGPD
+  repository's MIT `LICENSE` and the Open Source Initiative page, an LGPD
   privacy/security notice and site links, a contact form
   (`https://pieceofmind.cloud/contact.html`) and official repositories; it also
   shows the running POM release and the on-demand check of POM's GitHub
   releases (the site as fallback). When an update is available, the screen
   itself offers to apply and restart, or says why this node cannot (a
-  container, a download that still needs an invitation); it also shows the catalog of direct dependencies grouped by license;
+  container, a download that still needs an invitation); it also shows the catalog of everything a build ships (frontend packages and Rust crates, transitive ones included, plus the native libraries in `NATIVE` of `scripts/build-licenses.mjs`) grouped by license;
   `/config/trust` gathers this machine, sharing and connection keys;
   `/config/keys/api` -> TokenKeys; `/config/storage` -> ModelPaths
   (`/config/folders` remains an alias). When `POM_MODEL_DIRS` or `POM_SHARD_DIR`
@@ -972,7 +979,10 @@ restarting a machine meant scrolling to the end of everything it reports.
 The `AddNodeDialog` queries `POST /api/ui/deploy/node/options` after each
 machine change. So the selector shows the slices and the whole model the target
 really has, plus the controls for layers on the GPU, the KV-on-GPU-versus-RAM
-boolean and that machine's K/V types. POM does not expose an exclusive GPU
+boolean and that machine's K/V types. The vision switch appears when the
+machine holds a compatible projector or the deployment runs with one; it starts
+on when the deployment reads images and is disabled, with a notice to copy a
+projector there, when the machine has none. POM does not expose an exclusive GPU
 selection for the KV: when on, it follows the device of the weights' layer.
 Confirming calls `POST /api/ui/deploy/node` only on the target and keeps the
 other peers' inference. With an active `deploy_id`, the change creates a new
@@ -992,7 +1002,7 @@ open. Disks are **one gauge per mounted partition** (`disks` from
 `/api/ui/cluster`), because a machine with NVMe and HDD, or with separate `/`
 and `/data`, showed up as a single volume - and whoever decides where a 40 GB
 GGUF fits did not see the disk where it would fit. A node that does not publish
-the list yet falls back to the project volume. Next to "Add node" there is
+the list yet falls back to the project volume. Another member arrives already trimmed (`webui::catalog::shared_system`, applied when `/api/ui/node` is asked by a node, signed or marked internal): one volume with no mount point, the space of the volumes holding its model and slice folders, labelled "Model storage", and only POM's GPU processes by binary name, the rest as one `pid` 0 entry labelled "Other processes". This node's own card keeps every volume and process, with a lock note (`SharedSummaryNote`) under the disks and in the GPU processes saying the other machines see only the summary. Next to "Add node" there is
 `UndeployPipeline` when a model is live, but both controls are only mounted
 when `/api/ui/node` reports the `admin` profile. The server also refuses
 `POST /api/ui/deploy/node`, `POST /api/ui/deploy/node/remove` and
@@ -1191,8 +1201,18 @@ besides the turns:
   normal images. The aspect ratio is kept, and the bubble and the pending
   attachment show "Resized automatically" when the image was changed. Sent images
   stay whole in the bubble, with a caption and alternative text.
-- The dictation button only renders when the browser exposes Web Speech, and it
-  dictates in the interface's locale.
+- A PDF becomes text in the browser before it is attached (`lib/pdfDocument.ts`):
+  text pages are read as they are, and a page with almost no text goes through
+  OCR, in Portuguese and English, only that page. The attachment is that text,
+  so the context check measures the text and not the file. Limits: 100 MB, 1000
+  pages and 100 scanned pages; above them, or for a protected or unreadable PDF,
+  the file is refused whole with the reason. The composer shows the reading with
+  a Cancel and does not send meanwhile, and an attachment with pages read from
+  images carries an `OCR` mark because it can hold misread words. Other binary
+  formats are not converted.
+- The dictation button only renders when the browser exposes Web Speech or the
+  macOS app offers its native bridge, and it dictates in the interface's locale.
+  A failure shows the reason in a toast; silence does not.
 - The `Think` button uses the `thinking` field of the same capabilities read
   and only shows up when the head's global `no_thinking` is off. The choice is
   sent as `thinking_enabled` on each Chat call and stays in the `ChatSession`
@@ -1237,9 +1257,10 @@ besides the turns:
   textual content and the multimodal parts stay in `requestContent`, so the
   history resends the same structured request. Each pending attachment can be
   removed without erasing the draft.
-- The microphone button only shows up when `SpeechRecognition` or
-  `webkitSpeechRecognition` exists; the transcription uses the UI locale when
-  possible and goes straight into the text field.
+- The microphone button only shows up when `SpeechRecognition`,
+  `webkitSpeechRecognition` or the app's `pomDictation` bridge exists; the bridge
+  comes first (`lib/nativeDictation.ts`). The transcription uses the UI locale
+  when possible and goes straight into the text field.
 
 `ChatSessionProvider` shares the active session and the actions between the
 Chat and the Sidebar. On `visitor`, the Sidebar uses `ChatSessionList` as the main
@@ -1318,14 +1339,18 @@ pipeline, it explains that there are no edges between peers.
 
 `apps/frontend/src/routes/Documentation.tsx`, with the tabs in `?tab=`.
 
-- **Guides** (`src/guides/`) - the half written for humans: ordered pages with
-  animated SVG diagrams, timelines, headline numbers, checklists and expandable
-  questions, generated from data (`Block[]`, `content.ts`) by `GuideView`, in
-  English and Portuguese. The animations are CSS (`guide-*` in `index.css`), so
+- **Guides** - the half written for humans: markdown files under
+  `docs/guides/` (how it works, one guide per screen with screenshots and
+  videos, the deployment settings) and `docs/human/` (the logic of a source
+  folder, beside its `AGENTS.md`), one file per language. The build parses them
+  into block data that `GuideView` renders: animated SVG diagrams, timelines,
+  headline numbers, checklists, expandable questions, screenshots and embedded
+  videos. The animations are CSS (`guide-*` in `index.css`), so
   `prefers-reduced-motion` freezes them and each drawing still reads static. It is the default tab: a human must not land on
   `AGENTS.md - crates/routing-base/`. No number shows up there unless it is in
-  the markdown - when they diverge, the markdown wins. The list of guides is in
-  `apps/frontend/src/guides/AGENTS.md`.
+  the reference - when they diverge, the reference wins. The format and the list
+  of guides are in `apps/frontend/src/guides/AGENTS.md`. Both tabs carry a
+  search box, and a reference page with a `HUMAN.md` links to it.
 - **Reference** - the repository's living markdown, written for agents,
   embedded in the bundle by `apps/frontend/scripts/build-docs.mjs` (there is no
   route on the node; the screen reads `manifest.json` + `import.meta.glob`).
@@ -1512,15 +1537,16 @@ machine restarted. Today the fingerprint is only model + set of ranges.
   first new field. It has three categories, and the boundary between them is
   whose parameter it is - *Default settings* (what llama.cpp already has:
   context, sessions, max tokens, batch, prefill chunk, sampling, the
-  installation's K/V cache, disabling thinking/embeddings and the speculation
-  choice), *POM settings* (fit to memory, chunks in flight, merging neighboring
-  slices and hidden-state precision, plus a *Beta* group inside it with MoE
-  experts in RAM, the GPU expert cache and the automatic prefill chunk, shown
-  to everyone) and *POM settings (DEV)* (inference engine and per-peer idle
-  unloading). Default settings, POM settings and the Beta group each carry a
-  help button by their title that opens their guide from Documentation in a
-  dialog (`components/GuideDialog.tsx`, guides `config-padrao`, `config-pom`
-  and `config-beta` in `guides/deploySettings.ts`). The DEV section only
+  installation's K/V cache, MoE experts in RAM and the GPU expert cache,
+  disabling thinking/embeddings and the speculation choice), *POM settings*
+  (fit to memory, chunks in flight, the automatic prefill chunk, merging
+  neighboring slices and hidden-state precision; its *Beta* group for settings
+  still being measured is commented out while it has none) and *POM settings
+  (DEV)* (inference engine and per-peer idle unloading). Default settings and
+  POM settings each carry a help button by their title that opens their guide
+  from Documentation in a dialog (`components/GuideDialog.tsx`, guides
+  `default-settings` and `pom-settings`, written in `docs/guides/settings/` and
+  named in `guides/deploySettings.ts`). The DEV section only
   shows up when `NodeInfo.pom_dev_mode` is on; without the flag the UI removes
   its controls from the DOM. The `[i]` comes **before** the name, not after:
   with names of different widths, icons to the right of the text came out

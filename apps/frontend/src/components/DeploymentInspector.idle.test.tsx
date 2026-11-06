@@ -173,15 +173,20 @@ describe("DeploymentInspector DRY", () => {
   });
 });
 
-describe("DeploymentInspector Beta group", () => {
-  it("offers the experts in RAM, the GPU expert cache and the automatic prefill chunk under POM settings, without POM_DEV_MODE", () => {
+describe("DeploymentInspector MoE settings and automatic prefill chunk", () => {
+  it("offers the experts in RAM and the GPU expert cache under Default settings, the automatic prefill chunk under POM settings, and no Beta group", () => {
     const onChange = mount({ ...params }, vi.fn(), undefined, false);
-    const beta = screen.getByText("Beta").closest("div")!.parentElement!;
-    fireEvent.click(screen.getByRole("checkbox", { name: "MoE experts in RAM" }));
+    const defaults = screen.getByText("Default settings").closest("section")!;
+    const pom = screen.getByText("POM settings").closest("section")!;
+    const experts = screen.getByRole("checkbox", { name: "MoE experts in RAM" });
+    const cache = screen.getByRole("spinbutton", { name: "Expert cache on GPU (MiB)" });
+    expect(defaults.contains(experts) && defaults.contains(cache)).toBe(true);
+    fireEvent.click(experts);
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ moe_experts_in_ram: true }));
-    fireEvent.change(screen.getByRole("spinbutton", { name: "Expert cache on GPU (MiB)" }), { target: { value: "8000" } });
+    fireEvent.change(cache, { target: { value: "8000" } });
     expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ moe_cache_mib: 8000 }));
-    expect(beta.contains(screen.getByRole("checkbox", { name: "Automatic prefill chunk" }))).toBe(true);
+    expect(pom.contains(screen.getByRole("checkbox", { name: "Automatic prefill chunk" }))).toBe(true);
+    expect(screen.queryByText("Beta")).toBeNull();
     // The development section keeps only the engine and the idle unload.
     expect(screen.queryByRole("checkbox", { name: "Unload if idle" })).toBeNull();
   });
@@ -193,7 +198,6 @@ describe("DeploymentInspector help", () => {
     for (const [section, title] of [
       ["Default settings", "Default deployment settings"],
       ["POM settings", "POM settings"],
-      ["Beta", "Beta settings"],
     ]) {
       fireEvent.click(screen.getByRole("button", { name: `Learn more about ${section}` }));
       const dialog = screen.getByRole("dialog", { name: title });
@@ -206,12 +210,12 @@ describe("DeploymentInspector help", () => {
   it("opens a reference link inside the dialog, with a way back, without leaving the screen", async () => {
     const before = window.location.href;
     mount({ ...params }, vi.fn(), undefined, false);
-    fireEvent.click(screen.getByRole("button", { name: "Learn more about Beta" }));
+    fireEvent.click(screen.getByRole("button", { name: "Learn more about Default settings" }));
     fireEvent.click(screen.getByRole("button", { name: /MoE experts in RAM and the GPU expert cache/ }));
-    expect(screen.getByRole("dialog", { name: "Beta settings" })).toBeTruthy();
+    expect(screen.getByRole("dialog", { name: "Default deployment settings" })).toBeTruthy();
     await screen.findByRole("button", { name: "Back to the guide" });
     expect(window.location.href).toBe(before);
     fireEvent.click(screen.getByRole("button", { name: "Back to the guide" }));
-    expect(screen.getByRole("dialog").textContent).toContain("Combining them");
+    expect(screen.getByRole("dialog").textContent).toContain("MoE models larger than VRAM");
   });
 });

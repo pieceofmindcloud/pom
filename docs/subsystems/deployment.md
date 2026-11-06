@@ -14,8 +14,7 @@ The durable record of each deployment lives in `pom.db`, in `POM_DB_DIR` when
 set or in the project root by default. The validated JSON stays complete so the
 operator's intent can be listed and recovered; undeploying marks the record
 inactive and keeps a tombstone. The legacy `deployments/` folder is neither
-deleted nor written by the runtime. The optional copy is only done by the
-throwaway script `scripts/migrate_pom_db.py`.
+deleted nor written by the runtime.
 
 ## 1. Overview: the plan, the merge and the order
 
@@ -127,7 +126,8 @@ prerequisite for the deployment.
 `{source_node_id, target_node_id, end_layer}`. The source must announce the
 selected whole model. `model-layer-options` reads the GGUF on that source and
 returns the accepted prefix ends: any whole-layer end in a dense layout, or
-only the architectural boundaries of `arch_boundaries` in a hybrid layout. The
+only the architectural boundaries of `arch_boundaries` in a hybrid layout (a
+dense prefix declared by `leading_dense_block_count` is not a boundary). The
 frontend uses these points as the slider positions; it never turns the slider
 into a fixed step.
 
@@ -416,7 +416,7 @@ target_node_id, n_gpu_layers, offload_kqv }` is validated by position:
   other than `99` is explicit and turns this layer fit off. In
   `tensor_parallel`, the planner normalizes `fit_memory` to off because the
   native fit does not support `split-mode tensor`.
-- **MoE experts in RAM and the GPU expert cache** (POM settings, Beta group):
+- **MoE experts in RAM and the GPU expert cache** (Default settings, llama.cpp's own):
   `RuntimeParams.moe_experts_in_ram` keeps every routed expert in host memory,
   computed by the CPU (llama.cpp's `--cpu-moe`, as a `tensor_buft_overrides`
   entry); it turns the layer fit off, because `common_fit_params` refuses
@@ -432,13 +432,16 @@ target_node_id, n_gpu_layers, offload_kqv }` is validated by position:
   the cache, and turns it off once half is under 512 MiB
   (`moe_cache_retry_mib`). Without routed experts in host memory the cache has
   nothing to hold and changes nothing. The
-  size is per GPU: on a node with two GPUs (an RTX over CUDA and a Radeon over
-  Vulkan, say) both cards keep their share of the layers in VRAM and each one
-  caches the experts of its own layers (one cache per device in the fork).
+  size is the node's total (llama.cpp's `--moe-cache-mib`): on a node with two
+  GPUs (an RTX over CUDA and a Radeon over Vulkan, say) llama.cpp splits it
+  between the devices like the layers - by `tensor_split`, else by free memory -
+  and each device caches the experts of its own layers. A cache above zero also
+  turns off llama.cpp's pipeline parallelism between the node's devices
+  (`llama-context.cpp`), and the cache refuses `split-mode tensor`.
   While the cache is on, the gateway's adaptive prefill chunk never goes below
   64 tokens (`MOE_CACHE_MIN_CHUNK`): a 32-token chunk is a generation batch for
   the cache and thrashed it. `RuntimeParams.adaptive_prefill_chunks` (POM
-  settings, Beta group, on by default) turns the adaptive chunk off, so every prompt
+  settings, on by default) turns the adaptive chunk off, so every prompt
   goes in chunks of exactly `prefill_chunk_tokens`. Measured on a whole
   Qwen3.8-Flash-Next UD-IQ3_XXS (78 GB) with one 16 GB GPU: generation 14.95 ->
   19.26 tok/s with all experts in RAM and an 8000 MiB cache.
@@ -609,7 +612,11 @@ add up. `Step.capacity` (`CapacityPreview`) is the step alone.
    `copies` (`planned_copies`: every slice, rank or sidecar that crosses
    machines) is not empty unless the request carries `allow_transfers: true`,
    creates the job ("Deploy {deployment_name} on {n} nodes") and spawns the
-   execution.
+   execution. The job is claimed by `claim_deploy_job`, which records its
+   `deployment_name` and refuses with 409 `deploy_in_progress` (and the running
+   `job_id`) while a `deploy` job of the same name is still running, checked and
+   recorded under the jobs lock; the screen then follows that job in its
+   progress window (`DeployProgressModal`) instead of reporting an error.
 2. `run` builds the list of `Pull`s - one unit of movement per slice that has
    to reach a target. For pre-sliced TP, the unit is each `TpTarget` that does
    not have the rank on the target yet. For a merged step, it is one `Pull`
@@ -662,7 +669,10 @@ table; reading `GET /api/ui/deployments` is also open to `node`.
 
 `add_node_options_endpoint` rescans only the real catalog of the selected
 machine and returns the materialized slices it has, the matching whole model
-when there is one and the local GPU/KV defaults. When the machine is changed
+when there is one, the local GPU/KV defaults and `vision`: `available` (the
+machine holds a projector compatible with the model) and `deployed` (a machine
+of the deployment runs with a projector now, read from the live `mmproj_path` of
+its machines, since the record does not keep it). When the machine is changed
 in the Dashboard, the screen redoes that query and does not reuse another
 peer's options or the old plan while the inventory is still being read.
 
@@ -680,6 +690,12 @@ call:
 - **`primary_node_id`** - the pipeline's entry does not change by adding a
   node: only whoever holds layer 0 receives the prompt. `primary` is only set
   when `start_layer == 0`.
+- **`vision`** - only the machine that reads the prompt loads the projector
+  (`sidecars::vision_reader`: layer 0 under llama.cpp, the last stage under a
+  plugin's inference service; a whole model is both). Absent, it follows the
+  deployment: on when its machines run with a projector. The file is the one the
+  deployment runs with when the machine holds it, otherwise a compatible one it
+  holds; a machine with none is refused with a message, it is never copied here.
 - Answer `{applied, overlapping_layers, peer_index, peer_count}` - overlap is
   reported, not refused (the machine joins and the screen shows what
   collides).

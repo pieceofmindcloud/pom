@@ -1,4 +1,4 @@
-# Four-node local dev/test cluster. This is the default Salem configuration.
+# Four-node local dev/test cluster (one NVIDIA card plus one Radeon).
 #
 # Host networking is required, same as the manual docker run --net host:
 # P2P discovery broadcasts to 255.255.255.255:42777 and gateway/inference
@@ -10,12 +10,12 @@
 # State lives in each node's tests/fixtures directory. POM_UI_DIST is pinned
 # to the image path because POM_HOME points to the bind-mounted /data volume.
 #
-# Salem GPU visibility:
+# GPU visibility:
 #   node-gpu    : NVIDIA 0 plus Radeon (/dev/dri)
 #   node-gpu2   : NVIDIA 0 only
 #   node-gpu-3  : Radeon (/dev/dri) only
 #   node-cpu    : no GPU
-# Ksia is brought up from the pom-cluster-config repository. Shared
+# Other clusters are brought up from the pom-cluster-config repository. Shared
 # build/runtime data is in docker-compose.common.yml.
 # Secret of the engine release download (read only when POM_PLUGIN_LLAMA_RELEASE is set).
 secrets:

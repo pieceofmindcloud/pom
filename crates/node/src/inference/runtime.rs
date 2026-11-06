@@ -822,6 +822,11 @@ pub struct NodeRuntime {
     /// start a second generation while the first one is still unwinding.
     supervisor: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     thermal: Arc<Mutex<ThermalRuntime>>,
+    /// Where this node keeps `<config>.last-slice.json`, fixed when the runtime
+    /// is built. Read from the process environment on every write, a runtime
+    /// followed a later change of `POM_CONFIG`: in the suite, one test's stop
+    /// erased the annotation another test was watching.
+    last_slice_path: std::path::PathBuf,
 }
 
 struct ThermalRuntime {
@@ -860,6 +865,28 @@ impl NodeRuntime {
         quic: Option<crate::serve::QuicServerConfig>,
         auth: Option<crate::auth::AuthState>,
     ) -> Arc<Self> {
+        Self::build(net, assignment, tls, quic, auth, crate::lastslice::path())
+    }
+
+    /// A runtime whose annotation lives at `last_slice_path`, so a test bench
+    /// never touches the annotation beside the real configuration.
+    #[cfg(test)]
+    pub(crate) fn new_with_last_slice_path(
+        net: Arc<Network>,
+        assignment: Arc<RwLock<Option<LayerAssignment>>>,
+        last_slice_path: std::path::PathBuf,
+    ) -> Arc<Self> {
+        Self::build(net, assignment, None, None, None, last_slice_path)
+    }
+
+    fn build(
+        net: Arc<Network>,
+        assignment: Arc<RwLock<Option<LayerAssignment>>>,
+        tls: Option<crate::serve::TlsServer>,
+        quic: Option<crate::serve::QuicServerConfig>,
+        auth: Option<crate::auth::AuthState>,
+        last_slice_path: std::path::PathBuf,
+    ) -> Arc<Self> {
         let (generation, _) = watch::channel(0u64);
         let quic_port = net.inference_quic_port;
         Arc::new(Self {
@@ -885,6 +912,7 @@ impl NodeRuntime {
                 blocked: false,
                 recovery: None,
             })),
+            last_slice_path,
         })
     }
 
@@ -1055,7 +1083,11 @@ impl NodeRuntime {
             "💤 model unloaded after {} min without requests; the next request reloads it",
             cfg.idle_minutes
         );
-        if let Err(error) = crate::lastslice::save(&cfg, crate::lastslice::SliceState::Idle) {
+        if let Err(error) = crate::lastslice::save_at(
+            &self.last_slice_path,
+            &cfg,
+            crate::lastslice::SliceState::Idle,
+        ) {
             warn!("could not record the idle slice: {error}");
         }
         if let Err(error) = self.net.announce(Some(&assignment)).await {
@@ -1169,22 +1201,37 @@ impl NodeRuntime {
 
         let (pending_supervisor, wait_result) =
             Self::wait_for_supervisor(previous_supervisor).await;
+        // A native load (llama.cpp reading the weights) does not look at the generation while it runs and can
+        // take minutes: the supervisor cannot end in the deadline. The stop still happens - giving up here left
+        // the configuration, the announcement and the pending journal in place, so an undeploy during a load did
+        // nothing, and a load that then crashed the process came back on the next start as a "pending
+        // deployment". The supervisor is kept so the next apply waits for it, and it releases the model the
+        // moment the load returns (`infer_server::run` checks the generation right after loading).
+        let still_loading = pending_supervisor.is_some();
         if let Some(supervisor) = pending_supervisor {
             *self
                 .supervisor
                 .lock()
                 .unwrap_or_else(|error| error.into_inner()) = Some(supervisor);
-            if let Err(error) = wait_result {
-                warn!("could not stop the inference server: {error}");
-                return;
-            }
+        }
+        if let Err(error) = wait_result {
+            warn!(
+                "the inference server is still loading ({error}); this node leaves the deployment now and \
+                 releases the model when the load returns"
+            );
         }
 
         *self.config.write().await = None;
         *self.assignment.write().await = None;
         self.model_cache.clear();
-        *self.status.write().await =
-            RuntimeStatus::new(ServerState::Disabled, "stopped for reconfiguration");
+        *self.status.write().await = RuntimeStatus::new(
+            ServerState::Disabled,
+            if still_loading {
+                "stopped; the model being loaded is released when its load returns"
+            } else {
+                "stopped for reconfiguration"
+            },
+        );
         self.status_changed.notify_waiters();
         self.net.set_idle(false);
         self.net.set_batching_ready(false);
@@ -1195,7 +1242,7 @@ impl NodeRuntime {
 
         // Stopping is the decision of whoever operated. Forgetting the annotation is what keeps the
         // node from coming back serving on the next start and undoing that decision.
-        crate::lastslice::clear();
+        crate::lastslice::clear_at(&self.last_slice_path);
 
         self.thermal.lock().await.recovery = None;
 
@@ -1258,7 +1305,7 @@ impl NodeRuntime {
         self.thermal.lock().await.recovery = None;
 
         if persist_attempt {
-            let attempt = crate::lastslice::begin_new_attempt(&cfg)?;
+            let attempt = crate::lastslice::begin_new_attempt_at(&self.last_slice_path, &cfg)?;
             info!(attempt, "deployment persisted before starting the server");
         }
 
@@ -1474,7 +1521,11 @@ impl NodeRuntime {
         self.net.set_batching_ready(false);
         self.net.set_slot_persist_ready(false);
         self.net.set_runtime_generation(generation);
-        if let Err(error) = crate::lastslice::save(cfg, crate::lastslice::SliceState::Serving) {
+        if let Err(error) = crate::lastslice::save_at(
+            &self.last_slice_path,
+            cfg,
+            crate::lastslice::SliceState::Serving,
+        ) {
             warn!("could not preserve the slice for thermal recovery: {error}");
         }
         let _ = self.net.announce(None).await;
@@ -1551,6 +1602,7 @@ impl NodeRuntime {
         let tls = self.tls.as_ref().map(|t| t.peers_only());
         let quic = self.quic.clone();
         let quic_port = self.quic_port;
+        let last_slice_path = self.last_slice_path.clone();
 
         let supervisor = tokio::spawn(async move {
             status.set_log(&log_file_path(port).to_string_lossy()).await;
@@ -1560,7 +1612,7 @@ impl NodeRuntime {
                 if *gen_rx.borrow() != generation {
                     return; // superseded by a newer configuration
                 }
-                if crate::lastslice::auto_resume_disabled() {
+                if crate::lastslice::auto_resume_disabled_at(&last_slice_path) {
                     let detail =
                         "automatic resume blocked by undeploy; waiting for a manual deployment";
                     append_log(port, detail);
@@ -1588,7 +1640,8 @@ impl NodeRuntime {
                     if *gen_rx.borrow() != generation {
                         return;
                     }
-                    let Ok(attempt) = crate::lastslice::resume_attempt(&cfg) else {
+                    let Ok(attempt) = crate::lastslice::resume_attempt_at(&last_slice_path, &cfg)
+                    else {
                         let detail = "could not persist the deployment resume; server blocked";
                         append_log(port, detail);
                         status
@@ -1727,10 +1780,10 @@ impl NodeRuntime {
     /// correct `total_layers` from the shard's GGUF metadata.
     fn spawn_health_watch(&self, cfg: NodeConfig, generation: u64) {
         let port = cfg.inference_port;
-        // Capture the configuration-specific annotation path before spawning:
-        // tests can change process environment, and two POM instances may use
-        // distinct POM_CONFIG values in the same host process.
-        let last_slice_path = crate::lastslice::path();
+        // The runtime's own annotation path (`last_slice_path`), never the
+        // environment's: two POM instances may use distinct POM_CONFIG values
+        // in the same host process.
+        let last_slice_path = self.last_slice_path.clone();
         let status = StatusWriter {
             status: self.status_handle(),
             changed: self.status_changed.clone(),
@@ -2557,6 +2610,41 @@ mod tests {
         );
     }
 
+    /// The undeploy during a native load: the load does not look at the generation, so the supervisor outlives
+    /// the deadline. The stop must still take effect - the configuration gone, the status saying so and the
+    /// pending journal cleared (it brought the deployment back after the load crashed the process) - and keep the
+    /// supervisor, which releases the model when the load returns.
+    #[tokio::test]
+    async fn a_stop_during_a_load_leaves_the_deployment_and_keeps_the_supervisor_to_finish() {
+        let net = Arc::new(
+            Network::testkit("no".into(), "pk".into(), vec![], None, None)
+                .await
+                .expect("UDP socket on an ephemeral port"),
+        );
+        let dir = tempfile::tempdir().expect("tempdir");
+        let journal = dir.path().join("pom.json.last-slice.json");
+        let rt = NodeRuntime::new_with_last_slice_path(net, Arc::new(RwLock::new(None)), journal.clone());
+        rt.seed_config_for_test(cfg()).await;
+        crate::lastslice::begin_new_attempt_at(&journal, &cfg()).expect("pending journal");
+        assert!(journal.exists());
+        // a load that ignores the generation until it returns
+        let (release, loading) = tokio::sync::oneshot::channel::<()>();
+        *rt.supervisor.lock().unwrap() = Some(tokio::spawn(async move {
+            let _ = loading.await;
+        }));
+
+        rt.stop().await;
+
+        assert!(rt.config().await.is_none(), "the node no longer has the deployment");
+        let status = rt.status().await;
+        assert_eq!(status.state, ServerState::Disabled);
+        assert!(status.detail.contains("released when its load returns"), "{}", status.detail);
+        assert!(!journal.exists(), "a crash of the load must not bring the deployment back");
+        let supervisor = rt.take_supervisor().expect("the loading supervisor is kept for the next apply to wait on");
+        release.send(()).unwrap();
+        supervisor.await.unwrap();
+    }
+
     #[tokio::test]
     async fn a_manual_stop_cancels_the_pending_thermal_resume() {
         let net = Arc::new(
@@ -2564,7 +2652,13 @@ mod tests {
                 .await
                 .expect("UDP socket on an ephemeral port"),
         );
-        let rt = NodeRuntime::new(net, Arc::new(RwLock::new(None)));
+        // `stop` forgets the annotation: its own, never the real configuration's.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let rt = NodeRuntime::new_with_last_slice_path(
+            net,
+            Arc::new(RwLock::new(None)),
+            dir.path().join("pom.json.last-slice.json"),
+        );
         rt.thermal.lock().await.recovery = Some(cfg());
 
         rt.stop().await;

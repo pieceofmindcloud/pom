@@ -62,6 +62,10 @@ pub struct Job {
     /// to undeploy it before any machine announces the model.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deploy_id: Option<String>,
+    /// The deployment name a `deploy` job is bringing up: a second deploy of
+    /// the same name is refused while this one runs (`deploy_endpoint`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deployment_name: Option<String>,
 }
 
 pub(crate) fn jobs() -> &'static RwLock<HashMap<String, Job>> {
@@ -96,6 +100,7 @@ pub(crate) fn new_job(id: &str, kind: &'static str, title: impl Into<String>, st
         local_path: None,
         error: None,
         deploy_id: None,
+        deployment_name: None,
     }
 }
 

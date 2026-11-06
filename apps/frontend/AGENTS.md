@@ -24,9 +24,11 @@ remain local until the deploy preflight.
 - Vitest 3 - `npm test` = `vitest run`. There is no vitest config file; test files that need a DOM opt in per file with the `// @vitest-environment jsdom` pragma (e.g. `routes/Chat.telemetry.test.tsx`, `i18n/provider.test.tsx`).
 - tsconfig: `tsconfig.app.json` (strict, `noUnusedLocals/Parameters`, `@/* -> ./src/*` alias, excludes `*.test.*`) and `tsconfig.node.json` for the build config itself.
 - `scripts/build-brand.mjs` - brings the product identity into the bundle. Runs before dev/build/test via the same npm pre-hooks: reads `brand.json` at the repository root (the file the Rust binary embeds with `include_str!`), copies a URL-rewritten manifest to `src/brand/brand.json` and the images it points at to `public/brand/`. Both are gitignored - build output, and a committed copy is a copy that drifts. Vite cannot import from outside its root, which is the whole reason this step exists. **Published names carry a content hash** (`pom-icon-512.f95e6ea3.png`): the node serves everything except `index.html` as `immutable, max-age=1y` on the premise that asset names are hashed, and files under `public/` are copied verbatim by Vite - a fixed name pinned the old logo in the browser for a year, which is exactly what happened the first time this ran. `vite.config.ts`'s `brandHtml` plugin reads the **generated** manifest for the same reason, and the folder is recreated each run so old hashes do not pile up in `dist/`.
-- `scripts/build-docs.mjs` - embeds the repository's living documentation into the bundle. Runs before dev/build/test via the npm `predev`/`prebuild`/`pretest` hooks: copies the folder `AGENTS.md` files, the `docs/subsystems/*.md` READMEs and the root README into `src/docs/` (gitignored, never committed) plus a generated `manifest.json` (`{id, path, title, label, kind, scope, section, order}`). `label` is the short human name (title minus "Subsystem: "/"AGENTS.md - " and minus everything after the first ":"/" - "/"("), `kind` is `overview` for a folder's `AGENTS.md` and `doc` otherwise, `scope` the folder an overview covers - the screen must never parse paths or show a file name. The Documentation screen reads them through two build-time imports (`manifest.json` + `import.meta.glob`), so the docs travel inside the built JS and work on any machine that serves `dist/` - no node route, no disk reads at runtime. `src/vite-env.d.ts` references `vite/client`, which is what types `import.meta.glob` under `tsconfig.app.json`.
+- `scripts/build-docs.mjs` - embeds the repository's living documentation into the bundle. Runs before dev/build/test via the npm `predev`/`prebuild`/`pretest` hooks: copies the folder `AGENTS.md` files, the `docs/subsystems/*.md` READMEs and the root README into `src/docs/` (gitignored, never committed) plus a generated `manifest.json` (`{id, path, title, label, kind, scope, section, order}`). `label` is the short human name (title minus "Subsystem: "/"AGENTS.md - " and minus everything after the first ":"/" - "/"("), `kind` is `overview` for a folder's `AGENTS.md` and `doc` otherwise, `scope` the folder an overview covers - the screen must never parse paths or show a file name. The Documentation screen reads them through two build-time imports (`manifest.json` + `import.meta.glob`), so the docs travel inside the built JS and work on any machine that serves `dist/` - no node route, no disk reads at runtime. `src/vite-env.d.ts` references `vite/client`, which is what types `import.meta.glob` under `tsconfig.app.json`. The same script reads the guides written for people (`docs/guides/**` and `docs/human/**/HUMAN.md`, parsed by `scripts/guides-md.mjs`) into `src/docs/guides.json` and publishes their screenshots to `public/guide-images/` (gitignored) with a content hash in each name; see `src/guides/AGENTS.md`.
 
-`scripts/build-licenses.mjs` - generates the versioned catalog `src/lib/licenses.generated.ts` from the direct dependencies of the frontend and of the Rust workspace, including direct build dependencies. It reads package manifests and `cargo metadata`, normalizes repository links, and does not expand transitive dependencies. Run `npm run licenses` after changing `package.json`, `package-lock.json`, `Cargo.toml` or `Cargo.lock`, and version the generated file too.
+`scripts/build-document-reader.mjs` - publishes what the Chat loads at run time to read a PDF (the legacy pdf.js worker and its data, the OCR worker, the LSTM engines and the `por` and `eng` languages) to `public/document-reader/<versions>/` and the folder's name to `src/brand/document-reader.json`, both gitignored. They come from this node and not from a CDN, the versions in the folder keep the year-long `immutable` from pinning an old copy, and they add about 34 MB to `dist/` and to an `embed-ui` binary. Runs in the same npm pre-hooks, after `build-brand.mjs`.
+
+`scripts/build-licenses.mjs` - generates the versioned catalog `src/lib/licenses.generated.ts` of everything a build ships, because the permissive licenses ask for their notice wherever the code is distributed: every `package-lock.json` entry that is not development-only, every crate a workspace member reaches through normal or build dependencies (any target, transitive ones included; POM's own unlicensed crates from `pieceofmindcloud` are POM itself), and the native components in `NATIVE` (llama.cpp/ggml, the NVIDIA CUDA runtime and container image). The same run writes `THIRD-PARTY-NOTICES.txt` at the repository root: that catalog with the full text of every license file the packages carry (identical texts once), POM's `LICENSE` and NVIDIA's terms; every release package and both Docker images ship it, and `src/lib/licenses.test.ts` fails when it and the catalog were not regenerated together. The texts come from `node_modules` and the Cargo registry, so run it after `npm ci` and a Cargo build (or `cargo fetch`). Run `npm run licenses` after changing `package.json`, `package-lock.json`, `Cargo.toml` or `Cargo.lock`, and version both generated files.
 
 ## package.json scripts
 
@@ -35,7 +37,7 @@ remain local until the deploy preflight.
 - `preview` - `vite preview --port 5199 --strictPort`.
 - `test` - `vitest run`.
 - `licenses` - `node scripts/build-licenses.mjs` (updates the dependency and license catalog used by About).
-- `predev`/`prebuild`/`pretest` - `node scripts/build-docs.mjs` (regenerate `src/docs/` so the embedded documentation is fresh for the dev server, the build and the tests).
+- `predev`/`prebuild`/`pretest` - `build-brand.mjs`, `build-docs.mjs` and `build-document-reader.mjs` (regenerate what the dev server, the build and the tests read but Git does not keep).
 - Dependencies: `leaflet` (the map of the network location dialog, lazy chunk), `@tanstack/react-query`, `react-router-dom` (v6 with v7 future flags), `framer-motion`, `react-markdown` + `remark-gfm` + `rehype-highlight`, `@uiw/react-md-editor` + `@uiw/react-markdown-preview` + `rehype-sanitize` for trusted read-only Markdown surfaces, `highlight.js`, `lucide-react`, `recharts`, `clsx`, fontsource font packages.
 
 ## src root
@@ -168,7 +170,7 @@ a choice.
   two screens of the same plugin remounts the correct screen. `/logs` and
   `/statistics` remain native fallback routes when no plugin claims them; the
   alias `/logs/statistics` still redirects to `/statistics`.
-- `/documentation` -> Documentation (full-bleed, two tabs: human guides from `src/guides/` and the repository's living markdown embedded by `scripts/build-docs.mjs`; see `src/routes/AGENTS.md` and `src/guides/AGENTS.md`). On mobile the sidebar takes the whole screen and the reader disappears until an explicit selection or a deep link; selecting opens the reader with a Back button at the top, which only closes the mobile view (the selection in `?doc=`/`?guia=` remains).
+- `/documentation` -> Documentation (full-bleed, two tabs, each with its search: the guides for people (markdown under `docs/guides/` and `docs/human/`, rendered by `src/guides/`) and the repository's living markdown embedded by `scripts/build-docs.mjs`; see `src/routes/AGENTS.md` and `src/guides/AGENTS.md`). On mobile the sidebar takes the whole screen and the reader disappears until an explicit selection or a deep link; selecting opens the reader with a Back button at the top, which only closes the mobile view (the selection in `?doc=`/`?guide=` remains).
 - `/config/network` -> NetworkSettings; the main My Network section also gathers
   `/config/network/participants`, `/config/administration` (Administrators),
   `/config/sharing` (TrustAnchor with machine, root and connection key)
@@ -212,7 +214,7 @@ Non-chat pages render inside `AnimatePresence mode="wait"` with a `Page` cross-f
 - `src/routes/` - one screen per route, including the chat telemetry tables, the post-execution directional RTT snapshot, per-machine capacity/configuration cards, diagnosis card, AI analysis action, initial-model mark and `RemoteModels`. See `src/routes/AGENTS.md`.
 - `src/components/` - chrome (Sidebar, Topbar, nav, Notifications, TlsIndicator, ChatSessionList) and shared widgets (ui primitives, Markdown, Confirm, PipelineRail, ModelNetworkCanvas, PeerDetailCard, ErrorBoundary, Logo, MachineIcon, ReleaseSlice, RemoveNode, LeaveNode, UndeployPipeline, AddNodeDialog, ApiKeysTable, DeploymentLogDock, OpenNativeChatWindowButton). `nav.ts` carries both `nav.chat` (`/chat`) and `nav.networkChat` (`/network-chat`), and that is how the two Chat surfaces are reached; `NetworkChat.tsx` uses `Tabs` (`components/ui.tsx`) to switch between the network room and the lobby room. `DeploymentInspector` is the single editor of the deployment's settings, in the Deploy Studio and in the History's redeploy panel, including the f32/f16/f8/i4 hidden-state formats (f16 default).
 - `src/brand/` + `public/brand/` - **generated** by `scripts/build-brand.mjs` from the root `brand.json`; read through `src/lib/brand.ts` (`brand`, `storageKey`). Never edit or commit.
-- `src/guides/` - the human half of the documentation: guide content per locale, its renderer and the SVG diagrams. See `src/guides/AGENTS.md`.
+- `src/guides/` - the human half of the documentation: the loader of the markdown guides, their renderer and the SVG diagrams. See `src/guides/AGENTS.md`.
 - `src/test/` - `fixtures.ts`: fake peers/nodes/clusters with the *full* shape the node serves, for tests only. A partial `node` (e.g. one without `status`) passes one component's `?.` and crashes the next, so tests build from these fixtures and override only the field under test.
 
 `Chat.tsx` keeps only the AI conversation; the network Chat is reached from the
@@ -247,8 +249,19 @@ session per process.
 
 ## Open items
 
-The product and fixture open items of this tree are consolidated in `TODO.md`,
-items 22 and 23.
+Test fixtures: a hand-written partial peer can still crash a component (see
+`src/components/AGENTS.md`).
+
+## Defects noted
+
+- A non-text, non-PDF attachment (a `.docx`, for example) is still read with
+  `file.text()` in `routes/Chat.tsx`, so the model receives binary garbage instead
+  of a refusal.
+- Two hard-coded Portuguese words show in the English interface: the
+  Simple/Complete strategy switch of the Deploy screen (`routes/DeployModel.tsx`,
+  `"Simples"`/`"Completa"`, development mode only) and the `resposta` step of the
+  deploy map's route legend (`components/DeployNetworkCanvas.tsx`). Both belong
+  in `i18n/messages.csv`.
 
 ## Maintaining this file
 

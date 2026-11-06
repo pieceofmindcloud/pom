@@ -218,8 +218,13 @@ pub(crate) fn apply_stage_links(trace: &mut crate::prefill::RequestTrace, code: 
             LinkPhase::Decode => &mut hop.decode,
         };
         part.reported_spans += u64::from(link.calls);
-        part.round_trip_ms += link.round_trip_ms;
-        part.network_ms += link.network_ms;
+        // With frames in flight their round trips overlap: the hop's round trip is the time the link was busy (the
+        // relay's wall time), and its network no more than that. The wait behind the frames sent ahead is the earlier
+        // machine's queue, not the network.
+        let waited = link.waited_ms();
+        part.round_trip_ms += waited;
+        part.network_ms += link.network_ms.min(waited);
+        part.node_queue_ms += link.queued_ms as f64;
         part.bytes_sent += link.bytes_sent;
         part.bytes_received += link.bytes_received;
         part.hidden_state_bytes_sent += link.bytes_sent;
@@ -237,8 +242,10 @@ pub(crate) fn apply_stage_links(trace: &mut crate::prefill::RequestTrace, code: 
     let last = ids.len().saturating_sub(1);
     for (index, node_id) in ids.iter().enumerate() {
         for phase in [LinkPhase::Prefill, LinkPhase::Decode] {
+            // what this machine waited on the one below: the link's wall time (the sum of overlapping round trips
+            // outgrew the request and left the head with no time of its own)
             let below = match index.checked_sub(1) {
-                Some(lower) => sum(&ids[lower], phase, |link| link.round_trip_ms),
+                Some(lower) => sum(&ids[lower], phase, |link| link.waited_ms()),
                 None => 0,
             };
             // The head's own time: its engine's prompt and decode times, less what it waited on below it.

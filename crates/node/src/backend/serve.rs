@@ -158,15 +158,27 @@ pub enum PlainAction {
 /// The transfer routes the screen calls (`jobs`, `offers`, `pull`, `send`) are
 /// not among them: `POM_INSECURE_ADMIN_UI` must serve them to the browser.
 pub fn plain_action(path: &str) -> PlainAction {
-    const PEER_PREFIXES: [&str; 6] = [
+    const PEER_PREFIXES: [&str; 9] = [
+        "/api/internal/",
         "/api/transfer/manifest",
         "/api/transfer/pom",
         "/api/transfer/download",
         "/v1/relay-result",
+        "/v1/remote-stream-result",
+        "/v1/link",
         "/v1/prefill",
         "/v1/step",
     ];
-    const PEER_EXACT: [&str; 2] = ["/api/transfer/offer", "/api/transfer/offers/answer"];
+    const PEER_EXACT: [&str; 8] = [
+        "/api/transfer/offer",
+        "/api/transfer/offers/answer",
+        "/handshake",
+        crate::quic_policy::QUIC_POLICY_PATH,
+        crate::cluster_logs_policy::CLUSTER_LOGS_POLICY_PATH,
+        crate::network_chat_policy::NETWORK_CHAT_POLICY_PATH,
+        crate::webui::NETWORK_SETTINGS_POLICY_PATH,
+        crate::webui::MEMBER_LEFT_PATH,
+    ];
     if PEER_PREFIXES.iter().any(|p| path.starts_with(p)) || PEER_EXACT.contains(&path) {
         PlainAction::Refuse
     } else {
@@ -189,6 +201,8 @@ pub struct TlsServer {
     pub configs: crate::tls::ServerConfigs,
     /// What to do with remote plain text when the policy is on.
     pub plain: PlainPolicy,
+    /// Allow remote HTTP on the browser/client surface (never peer-only routes).
+    pub plain_ui: bool,
     /// With `true`, plain text from outside loopback is refused.
     pub strict: Arc<AtomicBool>,
 }
@@ -236,14 +250,23 @@ impl TlsServer {
         Ok(Self {
             configs: crate::tls::server_configs(id, sans)?,
             plain: PlainPolicy::Redirect,
+            plain_ui: false,
             strict: Arc::new(AtomicBool::new(strict)),
         })
+    }
+
+    /// Enable clear-text browser/client requests on the gateway without changing
+    /// peer TLS or the inference server's policy.
+    pub fn with_plain_ui(mut self, enabled: bool) -> Self {
+        self.plain_ui = enabled;
+        self
     }
 
     /// The same configuration, for a port only peers use.
     pub fn peers_only(&self) -> Self {
         Self {
             plain: PlainPolicy::Refuse,
+            plain_ui: false,
             ..self.clone()
         }
     }
@@ -493,7 +516,9 @@ async fn handle_conn(
 
     let plain_remote = !is_tls && !plain_allowed(peer, strict);
     let policy = tls.as_ref().map(|t| t.plain).unwrap_or(PlainPolicy::Refuse);
-    let insecure_ui = plain_remote && policy == PlainPolicy::Redirect && insecure_admin_ui();
+    let insecure_ui = plain_remote
+        && policy == PlainPolicy::Redirect
+        && tls.as_ref().is_some_and(|t| t.plain_ui || insecure_admin_ui());
     if plain_remote && !insecure_ui {
         if policy == PlainPolicy::Refuse {
             warn!("refused plain text connection from {peer}: the cluster is on TLS");
@@ -516,7 +541,10 @@ async fn handle_conn(
             let caller = caller.clone();
             let handshake = handshake.clone();
             async move {
-                if insecure_ui && plain_action(req.uri().path()) == PlainAction::Refuse {
+                if insecure_ui
+                    && (plain_action(req.uri().path()) == PlainAction::Refuse
+                        || req.headers().contains_key(crate::auth::CONTROL_SIGNATURE_HEADER))
+                {
                     return Ok(refuse_plain().map(axum::body::Body::from));
                 }
                 let mut req = req;
@@ -659,6 +687,124 @@ mod integration {
             let _ = serve(listener, app, Some(tls)).await;
         });
         addr
+    }
+
+    /// The proxy connects over HTTP from another container. Simulate that
+    /// remote socket address even though the test listener binds loopback.
+    async fn start_proxy_test_server(id: &Identity, enabled: bool) -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = Router::new()
+            .route("/health", get(|| async { "ok" }))
+            .route("/api/transfer/download", get(|| async { "peer only" }))
+            .route("/handshake", post(|| async { "peer only" }));
+        let tls = TlsServer::from_identity(id, true, &["127.0.0.1".into()])
+            .unwrap()
+            .with_plain_ui(enabled);
+        tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let app = app.clone();
+                let tls = tls.clone();
+                tokio::spawn(async move {
+                    let remote = "192.0.2.1:12345".parse().unwrap();
+                    let _ =
+                        handle_conn(stream, remote, app, Some(tls.configs.clone()), Some(tls)).await;
+                });
+            }
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn proxy_http_exposes_browser_routes_but_keeps_peer_tls() {
+        let id = Identity::generate();
+        let addr = start_proxy_test_server(&id, true).await;
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        let base = format!("http://127.0.0.1:{}", addr.port());
+        assert_eq!(
+            client
+                .get(format!("{base}/health"))
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap(),
+            "ok"
+        );
+        assert_eq!(
+            client
+                .get(format!("{base}/api/transfer/download"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            403
+        );
+        assert_eq!(
+            client
+                .post(format!("{base}/handshake"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            403
+        );
+        assert_eq!(
+            client
+                .get(format!("{base}/health"))
+                .header(crate::auth::CONTROL_SIGNATURE_HEADER, "forged")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            403
+        );
+        let peer = peer_http(&id, &Identity::generate());
+        assert_eq!(
+            peer.get(format!("https://127.0.0.1:{}/health", addr.port()))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            200
+        );
+    }
+
+    #[test]
+    fn proxy_setting_does_not_open_the_peer_only_listener() {
+        let id = Identity::generate();
+        let gateway = TlsServer::from_identity(&id, true, &["127.0.0.1".into()])
+            .unwrap()
+            .with_plain_ui(true);
+        assert!(gateway.plain_ui);
+        let inference = gateway.peers_only();
+        assert!(!inference.plain_ui);
+        assert_eq!(inference.plain, PlainPolicy::Refuse);
+        assert!(inference.strict.load(Ordering::Relaxed));
+    }
+
+    #[tokio::test]
+    async fn without_proxy_http_remote_plain_still_redirects() {
+        let id = Identity::generate();
+        let addr = start_proxy_test_server(&id, false).await;
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        assert_eq!(
+            client
+                .get(format!("http://127.0.0.1:{}/health", addr.port()))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            307
+        );
     }
 
     fn clients() -> crate::peer_client::PeerClients {
@@ -1309,6 +1455,10 @@ mod tests {
         // failure would not say why. The 403 does.
         assert_eq!(plain_action("/api/transfer/download"), PlainAction::Refuse);
         assert_eq!(plain_action("/v1/relay-result"), PlainAction::Refuse);
+        assert_eq!(plain_action("/v1/remote-stream-result"), PlainAction::Refuse);
+        assert_eq!(plain_action("/v1/link"), PlainAction::Refuse);
+        assert_eq!(plain_action("/handshake"), PlainAction::Refuse);
+        assert_eq!(plain_action("/api/internal/plugins/x/peer/y"), PlainAction::Refuse);
         assert_eq!(plain_action("/v1/prefill"), PlainAction::Refuse);
         assert_eq!(plain_action("/v1/step"), PlainAction::Refuse);
     }

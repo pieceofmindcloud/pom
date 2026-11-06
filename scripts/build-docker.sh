@@ -34,7 +34,7 @@ case "$mode" in
 esac
 export POM_LLAMA_CPP_MODE="$mode"
 export POM_LLAMA_CPP_RELEASE_REPOSITORY=${POM_LLAMA_CPP_RELEASE_REPOSITORY:-pieceofmindcloud/llama.cpp}
-export POM_LLAMA_CPP_REF=${POM_LLAMA_CPP_REF:-pom-tensor-parallel}
+export POM_LLAMA_CPP_REF=${POM_LLAMA_CPP_REF:-pom}
 
 # POM_PLUGIN_LLAMA_RELEASE=latest takes the newest published release of the engine
 # when the build starts. The resolved tag is what the Docker layers see, so a new

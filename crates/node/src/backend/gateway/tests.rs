@@ -214,6 +214,63 @@ mod tests {
         assert_eq!(pipeline_response.status(), StatusCode::OK);
     }
 
+    /// The interface polls `/api/ui/network-chat` and its neighbours with the
+    /// connection key as a bearer and no internal marker. Probing each of those
+    /// calls as a node-to-node one logged "the connection key does not match"
+    /// about two hundred times a minute on a machine nobody had misconfigured.
+    #[tokio::test]
+    async fn a_browser_call_with_the_connection_key_is_not_logged_as_a_refused_node_call() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tracing_subscriber::prelude::*;
+
+        struct WarnCounter(Arc<AtomicUsize>);
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for WarnCounter {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _ctx: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                if *event.metadata().level() <= tracing::Level::WARN {
+                    self.0.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+
+        let warnings = Arc::new(AtomicUsize::new(0));
+        let _guard = tracing::subscriber::set_default(
+            tracing_subscriber::registry().with(WarnCounter(warnings.clone())),
+        );
+        let state = testkit::state_with("eu", vec![]).await;
+        {
+            let mut cfg = state.auth.write().await;
+            cfg.profile = crate::profile::NodeProfile::Worker;
+            cfg.connection_key = "cluster-secret".into();
+        }
+        let app: Router = Router::new()
+            .route(
+                "/api/ui/network-chat",
+                get(|_: crate::auth::ConnectionAuth| async { "snapshot" }),
+            )
+            .with_state(state.clone())
+            .layer(middleware::from_fn_with_state(
+                state,
+                require_admin_for_surface,
+            ));
+
+        let mut request = Request::builder()
+            .uri("/api/ui/network-chat")
+            .header("authorization", "Bearer cluster-secret")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(crate::serve::PeerAddr("[::1]:60332".parse().unwrap()));
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(warnings.load(Ordering::Relaxed), 0);
+    }
+
     #[tokio::test]
     async fn exposed_admin_boundary_requires_and_accepts_the_human_token() {
         let state = testkit::state_with("cluster-secret", vec![]).await;
@@ -1243,7 +1300,6 @@ mod tests {
         }
         struct ConfigPathGuard {
             previous: Option<std::ffi::OsString>,
-            path: std::path::PathBuf,
         }
         impl Drop for ConfigPathGuard {
             fn drop(&mut self) {
@@ -1251,16 +1307,14 @@ mod tests {
                     Some(previous) => std::env::set_var("POM_CONFIG", previous),
                     None => std::env::remove_var("POM_CONFIG"),
                 }
-                std::fs::remove_file(&self.path).ok();
             }
         }
-        let config_path = std::env::current_dir()
-            .unwrap()
-            .join(format!(".pom-test-node-name-{}.json", std::process::id()));
-        std::fs::remove_file(&config_path).ok();
+        // A temporary folder, never the working directory: the rename saves
+        // the configuration and a late save left the file in the repository.
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let config_path = config_dir.path().join("pom.json");
         let _config_path_guard = ConfigPathGuard {
             previous: std::env::var_os("POM_CONFIG"),
-            path: config_path.clone(),
         };
         std::env::set_var("POM_CONFIG", &config_path);
         let app = Router::new()
@@ -1944,6 +1998,7 @@ mod tests {
             duration_ms: 1,
             timings: timing_metrics(1, 1, 1, 1, 4000),
             partial,
+            error: None,
             finish_reason: finish_reason.map(str::to_owned),
             stop_sequence: None,
             legs: 1,
@@ -3079,6 +3134,130 @@ mod peer_visibility_tests {
         );
     }
 
+    /// A control call to this node itself goes to loopback, never to its
+    /// announced addresses: on a Mac without the Local Network permission the
+    /// machine cannot reach its own LAN IP, and the deployment survey left it
+    /// off its own deployment screen.
+    #[tokio::test]
+    async fn a_control_call_to_this_node_goes_to_loopback() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let app = axum::Router::new().route(
+                "/api/ui/node",
+                axum::routing::get(|| async { axum::Json(serde_json::json!({ "ok": true })) }),
+            );
+            axum::serve(listener, app).await.unwrap();
+        });
+        let mut state = crate::gateway::testkit::state_with("me", vec![]).await;
+        state.network = std::sync::Arc::new(
+            crate::network::Network::testkit("me".into(), "pk".into(), vec![], None, Some(port))
+                .await
+                .unwrap(),
+        );
+        // Announced only on an address nobody answers (TEST-NET-3).
+        let mut me = peer("me");
+        me.addr = "203.0.113.7:9".into();
+        me.addr_candidates = vec!["203.0.113.7:9".into()];
+        me.gateway_port = Some(9);
+
+        let response = state
+            .control_get(&me, "/api/ui/node", Duration::from_secs(2))
+            .await
+            .expect("the call to itself reached loopback");
+        assert!(response.status().is_success());
+    }
+
+    /// The gateway's own entry is read on loopback, never through its public
+    /// addresses: on a head busy with a long prompt that dial missed the budget
+    /// and its layers fell out of the plan ("Gap at layer 0").
+    #[tokio::test]
+    async fn the_gateway_admits_itself_on_loopback() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let app = axum::Router::new().route(
+                "/health",
+                axum::routing::get(|| async {
+                    axum::Json(serde_json::json!({
+                        "status": "ok",
+                        "model_loaded": true,
+                        "start_layer": 0,
+                        "end_layer": 15,
+                        "total_layers": 41,
+                    }))
+                }),
+            );
+            axum::serve(listener, app).await.unwrap();
+        });
+        let network = std::sync::Arc::new(
+            crate::network::Network::testkit("me".into(), "pk".into(), vec![], Some(port), None)
+                .await
+                .unwrap(),
+        );
+        // No dialable address at all: only the loopback can admit it.
+        let mut me = peer("me");
+        me.inference_port = Some(port);
+        me.addr = String::new();
+        me.addr_candidates.clear();
+
+        let health = std::sync::Arc::new(super::AdmissionHealth::default());
+        let clients = crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600));
+        let admitted =
+            ready_for_pipeline(&clients, &health, &network, vec![me], Duration::from_secs(2)).await;
+        assert_eq!(admitted.len(), 1, "the gateway left itself out");
+        assert_eq!((admitted[0].start_layer, admitted[0].end_layer), (0, 15));
+    }
+
+    /// A probe that misses the budget falls back to the remembered admission,
+    /// which can be minutes old. Its liveness must come from the announcement
+    /// this request holds, or the planner drops it as dead and reports a gap
+    /// at its layers ("Gap at layer 0").
+    #[tokio::test]
+    async fn a_remembered_admission_takes_the_liveness_of_the_current_announcement() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let app = axum::Router::new().route(
+                "/health",
+                axum::routing::get(|| async {
+                    tokio::time::sleep(Duration::from_millis(600)).await;
+                    axum::Json(serde_json::json!({ "status": "ok", "model_loaded": true }))
+                }),
+            );
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let mut head = peer("head");
+        head.inference_port = Some(port);
+        head.last_seen = chrono::Utc::now() - chrono::Duration::seconds(120);
+
+        let health = std::sync::Arc::new(super::AdmissionHealth::default());
+        let clients = crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600));
+        let state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        let first = ready_for_pipeline(
+            &clients,
+            &health,
+            &state.network,
+            vec![head.clone()],
+            Duration::from_secs(2),
+        )
+        .await;
+        assert_eq!(first.len(), 1);
+
+        head.last_seen = chrono::Utc::now();
+        let second = ready_for_pipeline(
+            &clients,
+            &health,
+            &state.network,
+            vec![head],
+            Duration::from_secs(2),
+        )
+        .await;
+        assert_eq!(second.len(), 1);
+        assert!(second[0].is_alive(), "the remembered admission kept a stale last_seen");
+    }
+
     #[tokio::test]
     async fn a_health_probe_refreshes_stale_layer_coverage_before_planning() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3754,8 +3933,15 @@ pub(crate) mod testkit {
             &authority_signing_key,
         )
         .expect("test root grant");
+        // The bench's own files: what a route saves or a stop forgets never
+        // lands in the configuration `POM_CONFIG` names, another test's or
+        // the working directory's `pom.json`.
+        let bench_dir =
+            std::env::temp_dir().join(format!("pom-testkit-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&bench_dir).expect("testkit folder");
         let auth = Arc::new(RwLock::new(Config {
             retired_tls_required: (),
+            saved_at: Some(bench_dir.join("pom.json")),
             gpus: None,
             thermal: Default::default(),
             cache_type_k: crate::config::KvCacheType::F16,
@@ -3813,7 +3999,11 @@ pub(crate) mod testkit {
                 std::time::Duration::from_secs(600),
             )),
             admission_health: Default::default(),
-            runtime: NodeRuntime::new(net, assignment),
+            runtime: NodeRuntime::new_with_last_slice_path(
+                net,
+                assignment,
+                bench_dir.join("pom.json.last-slice.json"),
+            ),
             audit: crate::reqlog::AuditLog::new(database.clone()),
             plugins,
             pom_core_update,

@@ -10,9 +10,12 @@ in `../routing-contract`, empty for the runtime).
 
 - Single binary: `pom` in `src/main.rs`.
 - `cuda`/`metal` features passed on to `llama-cpp-sys-2` (GGML compiled with GPU).
-  Used by `scripts/build-docker.sh`/`POM_BUILD_FEATURES` in the devupdate. The CUDA
-  build keeps CUDA Graphs off by default; enabling it with `POM_CUDA_GRAPHS=1`
-  requires rebuilding the binary and additional free VRAM.
+  `cuda-no-vmm` enables CUDA while omitting the VMM calls that otherwise link
+  `libcuda.so.1` at startup; release Linux CUDA builds use it so the binary can
+  start without a host NVIDIA driver. Used by `scripts/build-docker.sh`/
+  `POM_BUILD_FEATURES` in the devupdate. The CUDA build keeps CUDA Graphs off by
+  default; enabling it with `POM_CUDA_GRAPHS=1` requires rebuilding the binary
+  and additional free VRAM.
 - Heavy dependencies: `iroh` 1.3 (`unstable-net-report` for the NAT report),
   `iroh-gossip` 0.101, `iroh-mdns-address-lookup` 0.6, `iroh-relay` 1.3 (`server`,
   the embedded relay), `pkarr` 8.1 (8.x is what shares `ed25519-dalek` 3 with iroh),
@@ -50,7 +53,7 @@ in `../routing-contract`, empty for the runtime).
   not change the licensing policy nor the `RuntimeParams` received over the
   network; the absent mode uses `dense` (`llama.cpp`) as the default.
 - The native build automatically prepares the `llama.cpp` fork in a new worktree,
-  cloning the `pom-tensor-parallel` branch when the versioned symlink points at a
+  cloning the fork's `pom` branch when the versioned symlink points at a
   missing tree. `LLAMA_SOURCE` allows reusing a local checkout that contains
   `ggml`; preparation failures show the recovery command. The full procedure is in
   `docs/subsystems/build-and-run.md`, section "Preparing a local worktree".
@@ -61,14 +64,20 @@ in `../routing-contract`, empty for the runtime).
   resolves the GGUF name in `llama-arch.cpp`. It generates
   `OUT_DIR/mtp_graph_architectures.rs`; a missing fork, an empty extraction, fewer
   than thirteen entries or an inconsistent mapping stops the build. The extractor's
-  rules have unit tests in the file itself; the extraction's operational
-  dependency is in `TODO.md`, item 10.
+  rules have unit tests in the file itself; the build therefore depends on a
+  complete checkout of the fork.
 - With the `cuda` feature, `build.rs` compiles the MoE kernels with `CUDACXX`; in a
   validation on the CUDA server, `CUDAARCHS=120` pins the architecture and
   `CCACHE=ccache` wraps the `nvcc`. The procedure and the separate target are in
   `docs/subsystems/build-and-run.md`.
 - On the macOS target, `build.rs` compiles `src/macos_status.m` and links only the
-  system's AppKit, WebKit and Security frameworks. Linux and Windows do not get that bridge.
+  system's AppKit, WebKit, Security, AVFoundation and Speech frameworks. Linux and Windows do not get that bridge.
+- `macos_status.m` opens the file panel for `<input type="file">`, which WebKit
+  does not do alone, holding the transient popover open meanwhile. The `pomDictation`
+  bridge dictates with `SFSpeechRecognizer`, on the device whenever the system
+  supports that language there and on Apple's servers otherwise. It is registered
+  only when `Info.plist` declares both permissions, because asking without them
+  kills the process.
 
 ## src/main.rs - startup flow and CLI
 
@@ -86,7 +95,8 @@ public relay), `--no-cluster-relay`, `--no-relay-transfers` (the three are the
 `relay` section of the config file, see `p2p-network.md`),
 `--no-default-relays`,
 `--no-discovery`, `--no-pkarr` (no pkarr client: a network without internet
-access).
+access), `--no-tls` (remote HTTP for browser/client requests behind an HTTPS
+proxy; peer mTLS remains on).
 `--relay-peers` (relay URLs) adds to the `pom.json`'s `relay_peers` (`merged_relay_peers`,
 config first); `--no-default-relays` drops n0's public relays, as `--bootstrap` does to `bootstrap_nodes`. There is no flag for
 model, memory, layer range, sampling or inference port: that comes from the
@@ -324,7 +334,9 @@ troubled deployment.
   AppImage). The view is built into the window's GTK box (`build_gtk`), not as
   an X11 child window, which painted nothing - and does not exist under
   Wayland. Closing the window ends the process; `show_running` opens a window
-  on a POM already running from the same root.
+  on a POM already running from the same root. `available` is false with
+  `POM_HEADLESS` on or with neither `DISPLAY` nor `WAYLAND_DISPLAY`: then
+  `main` runs the service with no window, as a server build does.
 
 `profile.rs` is the single source of the node's persisted profile (`admin`,
 `worker` or `visitor`) and of the visibility/promotion capabilities and deployment
@@ -333,9 +345,11 @@ undeploying to the `admin` profile; removing one's own machine stays a local
 action of the other profiles. The profile does not replace `Role`, which keeps
 describing authentication and topology.
 
-The inference protocol has not shipped yet. `frame/v1-batch` is the first and only
-official contract: do not keep a fallback, adapter or compatibility code for
-earlier v1/v2 formats. Future changes must evolve this contract explicitly.
+`frame/v1-batch` is the official inference contract, and released nodes speak it:
+change it only in ways they still read (an optional field, a new capability
+announced beside it), never by breaking it (root `AGENTS.md`, compatibility
+policy). The v1/v2 formats from before the launch never shipped and get no
+fallback or adapter.
 
 The startup creates the `NetworkChat` next to the `Discovery`, using its own
 endpoint protocol (ALPN) separate from the inference tunnel. The `GatewayState` shares the service

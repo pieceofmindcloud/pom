@@ -1392,7 +1392,7 @@ pub(super) fn prefill_blocking(
         let mut text = if done {
             String::new()
         } else {
-            let piece = s.engine.token_to_piece_bytes(next_id, false);
+            let piece = s.visible_piece(next_id);
             s.sessions
                 .get_mut(&sid_key)
                 .unwrap()
@@ -2014,13 +2014,13 @@ pub(super) fn prefill_batch_blocking(
                     s.thinking_open_at_start(&item.sid_key),
                 );
                 super::core::mark_first_token_produced(&mut timings, decode_started);
-                let piece = s.engine.token_to_piece_bytes(next_id, false);
+                let piece = s.visible_piece(next_id);
                 let mut text = s
                     .sessions
                     .get_mut(&item.sid_key)
                     .unwrap()
                     .feed_token_piece(&piece);
-                let done = next_id == s.engine.eos_token();
+                let done = s.engine.is_generation_stop(&recent, next_id);
                 if done {
                     finish_terminal_stream(&mut s.sessions, &item.sid_key, &mut text)?;
                 }
@@ -2515,14 +2515,14 @@ pub(super) fn step_batch_blocking(
                 );
                 super::core::mark_first_token_produced(&mut timings, decode_started);
                 let token_text_started = Instant::now();
-                let piece = s.engine.token_to_piece_bytes(next_id, false);
+                let piece = s.visible_piece(next_id);
                 let mut text = s
                     .sessions
                     .get_mut(&item.sid_key)
                     .unwrap()
                     .feed_token_piece(&piece);
                 let token_text_us = token_text_started.elapsed().as_micros() as u64;
-                let done = next_id == s.engine.eos_token();
+                let done = s.engine.is_generation_stop(&recent, next_id);
                 if done {
                     finish_terminal_stream(&mut s.sessions, &item.sid_key, &mut text)?;
                 }

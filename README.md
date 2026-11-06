@@ -1,227 +1,214 @@
-# pom
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/pom-logo-dark.png">
+    <img src="assets/brand/pom-logo-light.png" alt="POM - Piece of Mind" width="420">
+  </picture>
+</p>
 
-> Architecture note: this repository is a Cargo workspace. The shipped
-> `pom` binary is the `node` package in `crates/node`; public routing
-> crates live in `crates/routing-contract` and `crates/routing-base`. The
-> contract extraction is complete, but runtime provider selection remains on
-> the existing node planner while equivalence coverage is expanded. A future
-> enterprise provider is a separate private local plugin, never a dependency of
-> this repository. See `docs/architecture/routing-plugin-contract.md`.
+# POM - Piece of Mind
 
-**POM - Piece Of Mind: distributed LLM inference across ordinary machines, with no central server**
+**AI on your own computers, for free. Every machine holds a piece of the mind.**
 
-Each node allocates a slice of RAM, works out automatically how many model layers fit in it, and coordinates with the other nodes over UDP P2P to cover the whole model.
+POM pools the computers you already own to run AI models too big for any one of
+them. Each computer holds one piece of the model, and they all work together to
+answer: the question passes from one machine to the next and the answer comes
+back to you, with no server in the middle and no expert needed. The answers can
+come from your own machines, or from a network of computers you trust.
+
+Good AI does not have to live in the cloud. Or you can be your own cloud.
+
+- Website: <https://pieceofmind.cloud>
+- Community: <https://discord.gg/d6Yjkk8ej>
+- Windows, macOS and Linux - open source (MIT, see `LICENSE`)
 
 ---
 
-## Installation
+## Why POM
+
+Cloud AI is rented: you pay every month, you depend on the rules of whoever owns
+it, and your questions, documents and customers' data leave your hands. Running
+it at home hits a wall instead: when a model does not fit on one graphics card,
+the rest spills into ordinary memory, which is far slower, while the other
+computers in the house sit idle.
+
+POM splits the model into slices sized to each machine's memory and each computer
+holds its own slice. In a test run from 1 to 6 October 2026 with two home
+computers linked over the internet (about 6 ms apart), the same short answer with
+the same 24.6 GB model took:
+
+| Setup | Time |
+|---|---|
+| 3 cards in 2 homes, split by POM | 3.1 s |
+| 2 cards in one machine | 3.7 s |
+| 1 card of 16 GB (the model does not fit) | ~80 s |
+
+In the same run, DeepSeek V4 Flash, which does not load on either machine alone,
+answered without an error once POM pooled the two.
+
+**Closer is better.** The question passes through one machine at a time, so the
+distance between machines matters: prefer computers in the same house or the same
+city.
+
+## What you get
+
+- **Models bigger than any one machine** - add up the memory of several ordinary
+  computers.
+- **The model never leaves home** - each computer uses its own copy of the model
+  and loads only its piece; only the progress of the answer travels between
+  machines, never the weights.
+- **No server, no sign-up** - there is no central server to maintain and no
+  account to create. Install it, start it, and the computers find each other.
+- **Not all in one room** - POM links computers in different homes over the
+  internet (relays and NAT hole punching included), and works best within the
+  same city or region.
+- **A simple dashboard on every machine** - see who is connected, deploy models
+  and follow everything from the browser. Any machine works as the front door.
+- **Works with the apps you already use** - POM speaks the OpenAI
+  (`/v1/chat/completions`, `/v1/completions`) and Anthropic (`/v1/messages`)
+  APIs. In most apps, switching over means changing one address. Coding agents
+  such as OpenCode, Claude Code and Pi can use it as their model.
+
+## Networks
+
+- **Local or private network** - the machines in your home or company. Only
+  people with your network's key can join, and questions and answers stay
+  between your computers. Best for sensitive data and for companies.
+- **Public network** - from the dashboard, look up a public network, see where it
+  is and join with one click. Your computer works for the network and, together
+  with the other members, you run models nobody could run alone. Best if you have
+  little hardware; keep sensitive data on a private network.
+
+## Plugins and POM Enterprise
+
+The free POM is complete. It grows with plugins, some free and some paid, which
+you install from the POM dashboard and which run isolated in their own process.
+The store lives at <https://pieceofmind.cloud/plugins/>; paid plugins are
+optional monthly or yearly subscriptions (for example *POM Logs / Statistics*
+and *RAG Vector Database (Qdrant)*), see <https://pieceofmind.cloud/precos/>.
+
+**POM Enterprise** is the edition for companies that want AI fully under control:
+private network only, logs and auditing (who asked, when and on which machine),
+usage statistics per machine and model, and connection to the team's coding
+agents.
+
+To build a plugin, start from `.claude/skills/creating-pom-plugins/`; the
+contract is in `docs/subsystems/enterprise-licensing.md` and
+`docs/subsystems/plugins-ui.md`.
+
+---
+
+## Building from source
 
 ```bash
-# Requires Rust 1.75+
+# Rust toolchain
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source ~/.cargo/env
 
-git clone <repo>
+git clone https://github.com/pieceofmindcloud/pom
 cd pom
-cargo build --release
+cargo build --release                       # CPU -> ./target/release/pom
+cargo build --release --features metal      # Apple Silicon
+cargo build --release --features cuda       # NVIDIA (pin CUDAARCHS, see below)
+
+cd apps/frontend && npm install && npm run build   # the web interface
 ```
 
-The binary lands in `./target/release/pom`.
+The build needs the `llama.cpp` fork checked out (or symlinked) at `./llama.cpp`
+on the `pom-tensor-parallel` branch, and the inference engine is fetched from a
+pinned git dependency. With `--features cuda`, set `CUDAARCHS` to your GPU's
+architecture (for example `CUDAARCHS=120`) or llama.cpp compiles every CUDA
+object for ten architectures. Details: `docs/subsystems/build-and-run.md`.
 
----
+The web interface is read from disk at `apps/frontend/dist` at runtime
+(`POM_UI_DIST` overrides it), so `cargo build` needs no Node.
+
+## Running
+
+```bash
+./target/release/pom
+```
+
+With no `pom.json`, the node creates a local network of its own and opens the
+interface at `http://localhost:8080/`, where a first-run wizard asks one name for
+the machine and its network. Start POM on the other computers: on the same LAN
+they find each other on their own. Deploying a model, joining other networks and
+admitting machines all happen in the interface; the model never comes from the
+command line.
+
+Useful flags:
+
+```bash
+./pom --bootstrap 192.168.1.10:42777          # join through a known node
+./pom --port 42778 --gateway-port 8091        # a second node on the same machine
+                                              # (needs its own POM_HOME)
+```
+
+Every node serves the interface and the API on its gateway port (8080). See
+`docs/subsystems/operations.md` for bringing up a cluster and the field gotchas.
 
 ## Docker
 
-### Build
-
 ```bash
 ./scripts/build-docker.sh
-```
 
-Every machine in the cluster builds the same `pom` executable, with CPU, CUDA and Vulkan, plus the
-`pom-plugin-host`; the GGML modules pick whichever backend is available at runtime. The
-frontend is an independent stage. Development builds use, by default, the libraries of the
-exact release of the fork `pieceofmindcloud/llama.cpp` (CUDA 13.4 package), to avoid
-recompiling the native core. The matching release must be published before the build;
-`POM_LLAMA_CPP_RELEASE_TAG` can pin a specific tag. To build a local fork, including a copy
-outside POM or one with uncommitted changes:
-
-```bash
-POM_LLAMA_CPP_MODE=source \
-POM_LLAMA_CPP_SOURCE_DIR=/path/to/llama.cpp \
-  ./scripts/build-docker.sh
-```
-
-The per-machine and per-cluster composes live in the `pom-cluster-config` repository, which
-calls this script with `COMPOSE_FILE` pointing at the cluster's compose. The script reads the POM
-commit on the host and passes it only to the runtime as `POM_BUILD_COMMIT`; the `.dockerignore`
-cuts `.git/` out of the build context, so without it the binary stamps `desconhecido` in
-`/api/ui/node`. Publishing POM binaries does not depend on this Docker mode.
-
-### Run
-
-```bash
-# Single node, with its state (pom.json, keys, models) in a volume
 docker run --rm \
     -p 8080:8080 -p 42777:42777/udp -p 8181:8181 \
     -v ./data:/data -e POM_HOME=/data -e POM_UI_DIST=/app/apps/frontend/dist \
     pom
-
-# Node joining a bootstrap
-docker run --rm \
-    -p 8080:8080 -p 42777:42777/udp -p 8181:8181 \
-    -v ./data:/data -e POM_HOME=/data -e POM_UI_DIST=/app/apps/frontend/dist \
-    pom --bootstrap 192.168.1.10:42777
 ```
 
-The web interface is available at `http://localhost:8080/` as soon as the container
-comes up. On the first visit it walks you through the node's configuration; models
-are deployed through it, never from the command line.
-
----
-
-## Usage
-
-```bash
-# Start a node (with no pom.json, it opens the initial configuration on :8080)
-./pom
-
-# Node with a custom port and a bootstrap
-./pom --port 42777 --bootstrap 192.168.1.10:42777
-
-# Node joining a remote bootstrap (internet)
-./pom --bootstrap 45.33.32.156:42777
-```
-
-Once it is configured, open `http://<node>:8080/` and deploy the model through the
-interface: it slices the GGUF, spreads the layers across the nodes and loads each
-slice on its peer.
+Add `--bootstrap <host>:42777` after `pom` to join an existing node. The image
+carries CPU, CUDA and Vulkan backends plus `pom-plugin-host`; the GGML modules
+pick whichever backend is available at runtime. Build modes and variables are in
+`docs/subsystems/build-and-run.md`.
 
 ---
 
 ## How it works
 
-### 1. Discovery
-On startup, the node:
-1. Sends `PeerRequest` to the bootstrap nodes
-2. Broadcasts locally over UDP (mDNS-style)
-3. Joins the iroh gossip for peers outside the LAN (QUIC, relays, hole punching)
+1. **Discovery** - each node announces itself over UDP on the LAN and through an
+   iroh endpoint (QUIC, relays, hole punching) beyond it. The node's identity is
+   its key, never its IP. → `docs/subsystems/p2p-network.md`
+2. **Deployment** - the interface measures each node's memory and GPUs, plans
+   which layers each one serves, and every peer extracts its own range from its
+   own copy of the GGUF. No weight travels the network because of slicing.
+   → `docs/subsystems/deployment.md`, `docs/subsystems/slicing.md`
+3. **Inference** - whoever holds layer 0 processes the prompt; the hidden state
+   crosses the pipeline in f16 by default, hop by hop, and the answer streams back
+   to the gateway. Tensor parallelism is chosen when the topology favours it.
+   → `docs/subsystems/inference.md`, `docs/subsystems/parallelism.md`
+4. **Security** - between nodes it is always mutual TLS with certificates derived
+   from each node's key; the network key alone opens nothing, admins are named by
+   a signed trust chain and other members carry short-lived membership tokens.
+   → `docs/subsystems/security-model.md`
 
-### 2. Deployment
-Deployment is done through the web interface: it measures the memory and GPU each node
-has, plans which layers each one serves, and every peer extracts its own range
-from its own copy of the model. See `docs/subsystems/deployment.md`.
+## Repository map
 
-### 3. P2P gossip
-Every 5 seconds the node:
-- Announces its layers to every peer it knows
-- Broadcasts locally for new nodes on the LAN
-- Drops peers that have not answered for 30s
-- Exchanges peer lists
+```
+crates/node/              the pom binary (network, gateway, inference, UI server)
+crates/routing-contract/  serializable, versioned routing contract
+crates/routing-base/      open, infrastructure-independent planner
+crates/types/             extraction point for public domain types
+crates/brand/             product identity, from brand.json
+crates/enterprise-protocol/, crates/plugin-host/   plugin C ABI, IPC and host
+apps/frontend/            React/Vite interface
+docs/subsystems/          how each subsystem works and why
+```
+
+`AGENTS.md` at the root is the map for contributors (and agents); each folder
+has its own `AGENTS.md`. This README is a presentation, not the architecture
+reference.
 
 ---
 
-## Workspace layout
-
-```
-Cargo.toml                     # workspace and shared dependencies
-crates/
-├── node/                      # package that produces the pom binary
-│   ├── src/main.rs             # CLI and startup orchestration
-│   ├── src/models/             # catalog, GGUF, profiles and slicing
-│   ├── src/network/            # discovery, identity and P2P transport
-│   ├── src/routing/            # the current pipeline planner
-│   ├── src/backend/            # HTTP gateway, API and admin interface
-│   └── src/utils/              # configuration and monitoring
-├── routing-contract/           # serializable, versioned routing contract
-├── routing-base/               # infrastructure-independent deterministic planner
-├── config/                     # extraction point for public configuration schemas
-└── types/                      # extraction point for public domain types
-apps/frontend/                  # React/Vite source; the node reads the build from disk at runtime
-```
-
-`cargo build`, `cargo test` and `cargo run --bin pom -- <arguments>` at the
-root use `crates/node` as the default workspace member. To validate every public
-crate and the node, use `cargo test --workspace`.
-
-### Message protocol (UDP JSON)
-
-```json
-// Announce - a node announces its layers
-{ "type": "Announce", "node_id": "abc...", "model": "gemma3",
-  "start_layer": 11, "end_layer": 21, "memory_mb": 3840 }
-
-// PeerRequest - asks for the peer list
-{ "type": "PeerRequest", "from": "abc..." }
-
-// PeerList - answers with the peers it knows
-{ "type": "PeerList", "peers": [...] }
-
-// Heartbeat - a liveness signal
-{ "type": "Heartbeat", "node_id": "abc...", "timestamp": "..." }
-
-// LocalDiscover - broadcast LAN
-{ "type": "LocalDiscover", "from": "abc...", "port": 42777 }
-```
-
----
-
-## Supported models
-
-| Model           | Layers | MB/layer | Description          |
-|-----------------|--------|----------|----------------------|
-| gemma3          | 28     | 180      | Google Gemma 3 2B    |
-| gemma3:7b       | 32     | 420      | Google Gemma 3 7B    |
-| gemma3:27b      | 46     | 1100     | Google Gemma 3 27B   |
-| llama3          | 32     | 350      | Meta LLaMA 3 8B      |
-| llama3:70b      | 80     | 1600     | Meta LLaMA 3 70B     |
-| mistral         | 32     | 320      | Mistral 7B           |
-| qwen2.5         | 28     | 290      | Qwen 2.5 7B          |
-| deepseek-r1     | 64     | 980      | DeepSeek R1 32B      |
-
----
-
-## Example of a distributed network
-
-```
-Machine A (10GB) → gemma3 layers 0-27   (covers everything on its own)
-Machine A (3GB)  → gemma3 layers 0-14
-Machine B (3GB)  → gemma3 layers 15-27  (sees the gap, takes the second half)
-Machine C (2GB)  → gemma3 layers 0-9    (already covered, stays as redundancy)
-```
-
----
-
-## Roadmap
-
-- [ ] Automatic WireGuard mesh between peers
-- [ ] Capability tokens for memory access control
-- [ ] QUIC as the transport (replace raw UDP)
-- [ ] Support for more models (auto-detect via the Ollama manifest)
-
----
-
-## Security (next phase)
-
-Right now nodes talk to each other without encryption (fine for a trusted LAN).
-
-For public networks, the plan is:
-1. **WireGuard mesh** - each node_id maps to a WireGuard key
-2. **Capability tokens** - signed Ed25519 tokens for access to memory regions
-3. **Separate channel** - control (TLS) vs data (QUIC + ChaCha20)
-
----
-
-## Dependencies
-
-```toml
-tokio       = "1"        # async runtime
-clap        = "4"        # CLI
-serde_json  = "1"        # P2P protocol
-ed25519-dalek = "2"      # cryptographic identity
-uuid        = "1"        # unique IDs
-sha2        = "0.10"     # public key hash
-chrono      = "0.4"      # timestamps
-tracing     = "0.1"      # structured logs
-anyhow      = "1"        # error handling
-```
+> **Privacy in distributed inference.** When a model is split across machines,
+> each one computes its layers on the hidden states of the conversation, and to
+> do that it has to read them. Traffic between nodes is always encrypted with
+> mutual TLS, so nobody outside the pipeline sees it; a machine that is part of
+> the pipeline, though, sees the hidden states that pass through it, and a
+> malicious one could record them and recover part of the conversation from them.
+> This comes with distributing inference itself - any system in which other
+> people's machines run part of a model shares it - and is not something a
+> network layer can prevent. Choose the machines accordingly: keep sensitive
+> conversations on your own machines or on a network of people you trust, where
+> the admins admit every member, and use public networks for content you would be
+> comfortable sharing.

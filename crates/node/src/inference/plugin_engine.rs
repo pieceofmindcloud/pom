@@ -35,8 +35,9 @@
 //! `{"error": message}`.
 //!
 //! **Prefill/decode split** ([`prefill_on_peer`]): a whole-model machine may be deployed with the role `prefill`
-//! (`RuntimeParams::inference_role`), which it announces as `engine/plugin-role-v1:prefill`. The planner never
-//! makes it the head. Before a named conversation's turn runs on a head, the gateway sends the turn to a prefill
+//! (`RuntimeParams::inference_role`), which it announces as `engine/plugin-role-v1:prefill`; it answers its own
+//! requests as any head. Before a named conversation's turn runs on a head with the sessions on (the `shared` role
+//! the deploy gives the other machines of the model), the gateway sends the turn to a free prefill
 //! machine of the same model with `prefill_only: true`: that machine reads the prompt into a batch slot and saves
 //! the conversation's session (or answers that the new part of the prompt is too short to be worth it). The head's
 //! turn then names it as `session_source`, and the head fetches that session before it reads its prompt
@@ -62,7 +63,7 @@ pub(crate) const ROLE_CAPABILITY_PREFIX: &str = "engine/plugin-role-v1:";
 const PREFILL_TIMEOUT: Duration = Duration::from_secs(3600);
 /// A prompt is the whole conversation; the generation route is not the
 /// small-JSON peer route.
-const MAX_GENERATION_BODY: usize = 32 * 1024 * 1024;
+pub(crate) const MAX_GENERATION_BODY: usize = crate::openai::PROMPT_BODY_LIMIT;
 /// How often the target node reads the plugin's engine state.
 const STATUS_POLL: Duration = Duration::from_secs(2);
 /// One generation may run for a long time (a long prompt, a long answer).
@@ -109,15 +110,9 @@ pub(crate) fn role_of_capabilities(capabilities: &[String]) -> crate::webui::Inf
         .find_map(|cap| cap.strip_prefix(ROLE_CAPABILITY_PREFIX))
     {
         Some("prefill") => InferenceRole::Prefill,
-        Some("decode") => InferenceRole::Decode,
+        Some("shared") => InferenceRole::Shared,
         _ => InferenceRole::Both,
     }
-}
-
-/// A peer whose plugin engine only reads prompts: it is never the head of a plan.
-pub(crate) fn is_prefill_only(peer: &crate::network::PeerInfo) -> bool {
-    engine_of_peer(peer).is_some()
-        && role_of_capabilities(&peer.inference_frame_capabilities) == crate::webui::InferenceRole::Prefill
 }
 
 /// The plugin whose engine serves a peer, from its announced capabilities.
@@ -160,14 +155,10 @@ mod engine_group_tests {
         use crate::webui::InferenceRole;
         let plugin = capability("strata");
         let prefill = role_capability(InferenceRole::Prefill);
-        let decode = role_capability(InferenceRole::Decode);
+        let shared = role_capability(InferenceRole::Shared);
         assert_eq!(prefill, "engine/plugin-role-v1:prefill");
-        assert!(is_prefill_only(&peer("p", "m", &[plugin.as_str(), prefill.as_str()])));
-        assert!(!is_prefill_only(&peer("d", "m", &[plugin.as_str(), decode.as_str()])));
-        assert!(!is_prefill_only(&peer("b", "m", &[plugin.as_str()])));
-        // a role without a plugin engine means nothing
-        assert!(!is_prefill_only(&peer("l", "m", &[prefill.as_str()])));
-        assert_eq!(role_of_capabilities(&[decode]), InferenceRole::Decode);
+        assert_eq!(role_of_capabilities(&[plugin, prefill]), InferenceRole::Prefill);
+        assert_eq!(role_of_capabilities(&[shared]), InferenceRole::Shared);
         assert_eq!(role_of_capabilities(&[]), InferenceRole::Both);
     }
 }
@@ -301,6 +292,10 @@ pub(crate) fn load_params(
     if let Some(link) = link {
         params["link"] = link.clone();
     }
+    // The drafter the deployment chose, on the stage that runs it (`draft_architectures`).
+    if let Some(draft) = cfg.mtp_draft_path.as_deref().filter(|path| !path.trim().is_empty()) {
+        params["mtp_draft_path"] = json!(draft);
+    }
     // The vision projector the deployment chose: the engine reads images with it.
     if let Some(mmproj) = cfg.mmproj_path.as_deref().filter(|path| !path.trim().is_empty()) {
         params["mmproj_path"] = json!(mmproj);
@@ -363,8 +358,19 @@ pub(crate) fn health_body(cfg: &crate::runtime::NodeConfig, code: &str, status: 
     body
 }
 
+/// The lossy hidden-state formats a plugin engine's machines can exchange: the stage link
+/// (`plugin_stage_link`) encodes the engines' tensors with the node's own `wire`, so any of its
+/// formats crosses between two slices whatever the plugin is. A whole-model plugin sends no hidden
+/// state, and announcing them changes nothing there.
+pub(crate) const STAGE_LINK_DTYPES: [&str; 3] = [
+    crate::pipeline::CAP_FRAME_DTYPE_F8,
+    crate::pipeline::CAP_FRAME_DTYPE_I4G64,
+    crate::pipeline::CAP_FRAME_DTYPE_I4G128,
+];
+
 fn health_capabilities(cfg: &crate::runtime::NodeConfig, code: &str) -> Vec<String> {
     let mut caps = vec![capability(code)];
+    caps.extend(STAGE_LINK_DTYPES.iter().map(|cap| cap.to_string()));
     if !cfg.inference_role.is_both() && !crate::plugin_stage_link::is_stage(cfg) {
         caps.push(role_capability(cfg.inference_role));
     }
@@ -380,7 +386,7 @@ async fn query(code: &str, operation: &str, payload: Value) -> Option<Value> {
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run(
     cfg: crate::runtime::NodeConfig,
-    mut stop_rx: tokio::sync::watch::Receiver<u64>,
+    stop_rx: tokio::sync::watch::Receiver<u64>,
     generation: u64,
     tls: Option<crate::serve::TlsServer>,
     quic: Option<crate::serve::QuicServerConfig>,
@@ -400,7 +406,7 @@ pub(crate) async fn run(
     let (gpus, gpu_devices) = node_gpus().await;
     // One stage of a split model: a later stage waits here for the earlier
     // stage's machine and keeps the relay to it while it serves.
-    let (link, _relay) = if crate::plugin_stage_link::is_stage(&cfg) {
+    let (link, mut relay) = if crate::plugin_stage_link::is_stage(&cfg) {
         let stop_check = stop_rx.clone();
         let (link, relay) = crate::plugin_stage_link::prepare(&cfg, &code, move || {
             *stop_check.borrow() != generation
@@ -430,7 +436,7 @@ pub(crate) async fn run(
     }
 
     let status = Arc::new(Mutex::new(json!({"state": "loading"})));
-    let (failed_tx, mut failed_rx) = tokio::sync::oneshot::channel::<String>();
+    let (failed_tx, failed_rx) = tokio::sync::oneshot::channel::<String>();
     let poll_status = Arc::clone(&status);
     let poll_code = code.clone();
     let mut poll_stop = stop_rx.clone();
@@ -504,22 +510,11 @@ pub(crate) async fn run(
 
     let failure = Arc::new(Mutex::new(None::<String>));
     let failure_seen = Arc::clone(&failure);
+    // a later stage whose earlier stage's link secret changed can never link: this generation ends and restarts
+    let stale_rx = relay.as_mut().and_then(|relay| relay.stale.take());
     let served = crate::serve::serve_with_quic(listener, router, tls, quic, quic_port, async move {
-        loop {
-            tokio::select! {
-                changed = stop_rx.changed() => {
-                    if changed.is_err() || *stop_rx.borrow() != generation {
-                        break;
-                    }
-                }
-                detail = &mut failed_rx => {
-                    if let Ok(detail) = detail {
-                        *failure_seen.lock().unwrap_or_else(|error| error.into_inner()) = Some(detail);
-                        break;
-                    }
-                }
-            }
-        }
+        let ended = wait_for_end(generation, stop_rx, Some(failed_rx), stale_rx).await;
+        *failure_seen.lock().unwrap_or_else(|error| error.into_inner()) = ended;
     })
     .await;
     poller.abort();
@@ -534,6 +529,42 @@ pub(crate) async fn run(
     match failure {
         Some(detail) => Err(anyhow::anyhow!("{code}: {detail}")),
         None => Ok(()),
+    }
+}
+
+/// Waits for the end of a generation's serving: the runtime moved to another generation (`None`), or the
+/// engine failed / the earlier stage went stale (`Some(why)`).
+///
+/// Each oneshot is dropped once it completed, sent or not: the status poller drops its sender without a word
+/// when the generation changes, and polling that finished receiver again panics ("called after complete").
+/// The panic ended the supervisor before `engine.unload`, and the plugin kept the engine running on the GPU
+/// after an undeploy.
+async fn wait_for_end(
+    generation: u64,
+    mut stop_rx: tokio::sync::watch::Receiver<u64>,
+    mut failed_rx: Option<tokio::sync::oneshot::Receiver<String>>,
+    mut stale_rx: Option<tokio::sync::oneshot::Receiver<String>>,
+) -> Option<String> {
+    loop {
+        tokio::select! {
+            stale = async { stale_rx.as_mut().expect("guarded by is_some").await }, if stale_rx.is_some() => {
+                stale_rx = None;
+                if let Ok(detail) = stale {
+                    return Some(detail);
+                }
+            }
+            changed = stop_rx.changed() => {
+                if changed.is_err() || *stop_rx.borrow() != generation {
+                    return None;
+                }
+            }
+            detail = async { failed_rx.as_mut().expect("guarded by is_some").await }, if failed_rx.is_some() => {
+                failed_rx = None;
+                if let Ok(detail) = detail {
+                    return Some(detail);
+                }
+            }
+        }
     }
 }
 
@@ -556,8 +587,6 @@ pub(crate) struct EngineRequest {
     pub probe_prefix_bytes: Option<usize>,
     /// The turn's images, as `data:image/...;base64,` URLs (see `image_data_url`).
     pub images: Vec<String>,
-    /// The prefill machine the client chose as the head of a prefill/decode split, when it chose one.
-    pub prefill_node: Option<String>,
 }
 
 /// An image as a `data:` URL, its type read from the first bytes (JPEG when none is recognized).
@@ -577,6 +606,51 @@ pub(crate) fn image_data_url(bytes: &[u8]) -> String {
     format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes))
 }
 
+/// Whether the client chose its thinking itself: the POM's `thinking_enabled`, OpenAI's `reasoning_effort`, `reasoning`
+/// or `chat_template_kwargs.enable_thinking`, Anthropic's `thinking`.
+fn thinking_asked(details: &Value) -> bool {
+    ["thinking_enabled", "reasoning_effort", "reasoning", "thinking"]
+        .iter()
+        .any(|key| !details[*key].is_null())
+        || !details["chat_template_kwargs"]["enable_thinking"].is_null()
+}
+
+/// The API a client's request with tools came in (`"openai"` or `"anthropic"`), when the engine should render the
+/// conversation itself; `None` keeps the flattened prompt alone.
+///
+/// The prompt the gateway flattens describes the tools, and replays the calls, in Qwen3.6's `<tool_call><function=…>`
+/// form (`tool_call::render_tools_block`). An engine with a family of its own was then asked to answer in a form it was
+/// not trained on: DeepSeek-V4.1 (DSML) got its first call right and then looped on broken copies of the example
+/// (`<tool_call> <parameter> PLACEHOLDER </parameter> </function>`, 9,587 tokens of them). With the conversation as the
+/// client sent it, the engine renders the tools and the calls with its own chat template; its answer comes back in the
+/// form the gateway reads, as before. A request whose prompt carries the RAG context the gateway added keeps the
+/// flattened prompt, which holds that context.
+fn chat_api(details: &Value) -> Option<&'static str> {
+    let has_tools = details["tools"].as_array().is_some_and(|tools| !tools.is_empty());
+    if !has_tools || !details["messages"].is_array() || !details["rag"].is_null() {
+        return None;
+    }
+    // Anthropic's tools carry `input_schema` and its conversation a top-level `system` or tool_use/tool_result blocks;
+    // OpenAI's tools are `{type: "function", function: {…}}`
+    let anthropic_tool = details["tools"]
+        .as_array()
+        .is_some_and(|tools| tools.iter().any(|tool| tool.get("input_schema").is_some()));
+    let anthropic_block = details["messages"].as_array().is_some_and(|messages| {
+        messages.iter().any(|message| {
+            message["content"].as_array().is_some_and(|blocks| {
+                blocks
+                    .iter()
+                    .any(|block| matches!(block["type"].as_str(), Some("tool_use" | "tool_result")))
+            })
+        })
+    });
+    Some(if anthropic_tool || anthropic_block || details.get("system").is_some_and(|s| !s.is_null()) {
+        "anthropic"
+    } else {
+        "openai"
+    })
+}
+
 pub(crate) fn generation_body(request: &EngineRequest) -> Value {
     let mut body = json!({
         "prompt": request.prompt,
@@ -585,8 +659,19 @@ pub(crate) fn generation_body(request: &EngineRequest) -> Value {
         "max_tokens": request.max_tokens,
         "stop": request.stops,
     });
+    // The conversation as the client sent it, beside the flattened prompt (see `chat_api`): an engine that reads it
+    // renders the tools with its own template; an older plugin ignores it and reads the prompt
+    if request.chat_template {
+        if let Some(api) = chat_api(&request.request_details) {
+            body["chat"] = json!({ "api": api, "request": request.request_details });
+        }
+    }
     if let Some(session) = &request.session {
         body["session"] = json!(session);
+    }
+    // a client that chose no thinking level leaves it to the engine's own default (its `reasoning_effort`)
+    if !thinking_asked(&request.request_details) {
+        body["thinking_default"] = json!(true);
     }
     if !request.images.is_empty() {
         body["images"] = json!(request.images);
@@ -670,11 +755,15 @@ async fn open_stream(
     node_id: &str,
     code: &str,
     body: &Value,
-) -> Result<(reqwest::Response, Option<super::plugin_session::SessionFetch>), String> {
-    // the session this machine fetched for a turn it heads (a remote head reports its own in the done line)
+) -> Result<(reqwest::Response, Option<super::plugin_session::SessionFetch>, Option<u64>), String> {
+    // the session this machine fetched for a turn it heads, and how long looking for it took (a remote head reports
+    // both in the done line)
     let mut fetched = None;
+    let mut lookup_ms = None;
     let response = if node_id == state.network.node_id {
-        fetched = super::plugin_session::prepare_for_body(state, code, body).await;
+        let (fetch, ms) = super::plugin_session::prepare_timed(state, code, body).await;
+        fetched = fetch;
+        lookup_ms = Some(ms);
         let bytes = serde_json::to_vec(body).map_err(|error| error.to_string())?;
         post_local(&state.plugins, code, bytes).await?
     } else {
@@ -697,7 +786,7 @@ async fn open_stream(
             .map_err(|error| format!("the machine serving this model did not answer: {error}"))?
     };
     if response.status().is_success() {
-        return Ok((response, fetched));
+        return Ok((response, fetched, lookup_ms));
     }
     let status = response.status();
     let text = response.text().await.unwrap_or_default();
@@ -721,12 +810,14 @@ async fn open_stream(
 fn relay_with_links(
     code: String,
     fetched: Option<Value>,
+    lookup_ms: u64,
     upstream: impl futures::Stream<Item = Result<Bytes, reqwest::Error>> + Unpin + Send + 'static,
 ) -> impl futures::Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static {
     struct Relay<S> {
         upstream: S,
         code: String,
         fetched: Option<Value>,
+        lookup_ms: u64,
         pending: Vec<u8>,
         first_token: bool,
         ended: bool,
@@ -736,6 +827,7 @@ fn relay_with_links(
             upstream,
             code,
             fetched,
+            lookup_ms,
             pending: Vec::new(),
             first_token: false,
             ended: false,
@@ -744,7 +836,7 @@ fn relay_with_links(
             loop {
                 if let Some(end) = relay.pending.iter().position(|byte| *byte == b'\n') {
                     let line: Vec<u8> = relay.pending.drain(..=end).collect();
-                    let out = rewrite_line(&relay.code, &line, &mut relay.first_token, relay.fetched.as_ref());
+                    let out = rewrite_line(&relay.code, &line, &mut relay.first_token, relay.fetched.as_ref(), relay.lookup_ms);
                     return Some((Ok(Bytes::from(out)), relay));
                 }
                 if relay.ended {
@@ -765,8 +857,8 @@ fn relay_with_links(
 }
 
 /// One NDJSON line of the engine's answer, with the stage links (and the session this machine fetched for the turn,
-/// `session_fetch`) added to its `done` event.
-fn rewrite_line(code: &str, line: &[u8], first_token: &mut bool, fetched: Option<&Value>) -> Vec<u8> {
+/// `session_fetch`, and how long looking for it took, `session_lookup_ms`) added to its `done` event.
+fn rewrite_line(code: &str, line: &[u8], first_token: &mut bool, fetched: Option<&Value>, lookup_ms: u64) -> Vec<u8> {
     let text = line.strip_suffix(b"\n").unwrap_or(line);
     let Ok(mut value) = serde_json::from_slice::<Value>(text) else {
         return line.to_vec();
@@ -787,6 +879,7 @@ fn rewrite_line(code: &str, line: &[u8], first_token: &mut bool, fetched: Option
     if let Some(fetched) = fetched {
         done["session_fetch"] = fetched.clone();
     }
+    done["session_lookup_ms"] = json!(lookup_ms);
     let mut out = serde_json::to_vec(&value).unwrap_or_else(|_| text.to_vec());
     if line.ends_with(b"\n") {
         out.push(b'\n');
@@ -848,14 +941,18 @@ pub(crate) async fn generate(
                 code,
                 model,
                 node_id,
-                request.prefill_node.as_deref(),
                 key,
                 &body,
                 cancellation,
             )
             .await
             {
-                body["session_source"] = json!(source.node_id);
+                // its pieces are in the head's slot already; else the head fetches the session it saved
+                if source.fetch.is_some() {
+                    body["session_pieces"] = json!(true);
+                } else {
+                    body["session_source"] = json!(source.node_id);
+                }
                 prefill_leg = Some(source);
             }
             if cancellation.is_cancelled() || tx.is_closed() {
@@ -872,7 +969,7 @@ pub(crate) async fn generate(
     super::plugin_stage_link::set_phase(code, super::plugin_stage_link::LinkPhase::Prefill);
     let channel = super::plugin_stage_link::channel_of(node_id, &state.network.node_id);
     let leg_started = Instant::now();
-    let (response, fetched_here) = match open_stream(state, node_id, code, &body).await {
+    let (response, fetched_here, lookup_here) = match open_stream(state, node_id, code, &body).await {
         Ok(opened) => opened,
         Err(error) => {
             let _ = tx.send(GenEvent::Failed(error)).await;
@@ -948,6 +1045,8 @@ pub(crate) async fn generate(
                 if let Some(key) = &session_key {
                     super::plugin_session::note_holder(model, key, node_id);
                 }
+                // and what it read: a new conversation that begins with most of this prompt goes there too
+                super::plugin_session::note_prompt_start(model, &request.prompt, node_id);
                 if super::plugin_session::PUSH_SYNC && node_id == state.network.node_id {
                     if let Some(key) = super::plugin_session::saved_session(done) {
                         super::plugin_session::spawn_sync(state.clone(), code.to_owned(), key);
@@ -969,6 +1068,7 @@ pub(crate) async fn generate(
                 // the session the head fetched before it read the rest: here, or in a remote head's done line
                 let fetched = fetched_here
                     .clone()
+                    .or_else(|| prefill_leg.as_ref().and_then(|leg| leg.fetch.clone()))
                     .or_else(|| super::plugin_session::SessionFetch::from_json(&done["session_fetch"]));
                 let fetch_ms = fetched.as_ref().map_or(0, |fetch| fetch.transfer_ms + fetch.save_wait_ms);
                 let (prefill_ms, prompt_read) = match &prefill_leg {
@@ -1025,6 +1125,47 @@ pub(crate) async fn generate(
                         channel,
                     );
                 }
+                // Looking for the conversation's session on the head happens before its engine reads the prompt; without
+                // its own span the gap between the request and the prefill reads as nothing.
+                // Then the engine's bridge, before the engine reads the prompt: the template, a saved session restored, and
+                // the admission (a parked conversation copied into its slot), which the engine's own prompt time leaves out.
+                let request_epoch_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |now| now.as_millis() as u64)
+                    .saturating_sub(request_started.elapsed().as_millis() as u64);
+                let mut offset_ms = leg_started.saturating_duration_since(request_started).as_millis() as u64;
+                let lookup_ms = lookup_here.or_else(|| done["session_lookup_ms"].as_u64());
+                let bridge = &done["pom_timings"];
+                let admission_ms = bridge["first_token_ms"]
+                    .as_f64()
+                    .map(|first| (first - report.prefill_ms.unwrap_or(0.0)).max(0.0));
+                // A session fetched from a peer is the lookup's last part: the source's save waited for, then the
+                // files copied. Each gets its own span, so a few hundred MB between two machines shows where it went.
+                let (save_wait_ms, transfer_ms) =
+                    fetched.as_ref().map_or((0, 0), |fetch| (fetch.save_wait_ms, fetch.transfer_ms));
+                for (name, ms) in [
+                    (
+                        "session_lookup",
+                        lookup_ms.map(|ms| ms.saturating_sub(save_wait_ms + transfer_ms) as f64),
+                    ),
+                    ("session_save_wait", (save_wait_ms > 0).then_some(save_wait_ms as f64)),
+                    ("session_transfer", fetched.as_ref().map(|_| transfer_ms as f64)),
+                    ("bridge_prepare", bridge["prepare_ms"].as_f64()),
+                    ("session_restore", bridge["restore_ms"].as_f64()),
+                    ("engine_admission", admission_ms),
+                ] {
+                    let Some(ms) = ms.map(|ms| ms.round() as u64) else { continue };
+                    trace.spans.push(crate::prefill::TraceSpan::new(
+                        name,
+                        node_id.get(..8).unwrap_or(node_id),
+                        None,
+                        request_epoch_ms + offset_ms,
+                        offset_ms,
+                        ms,
+                        None,
+                    ));
+                    offset_ms += ms;
+                }
                 super::engine_telemetry::merge_reported_links(code, done);
                 super::engine_telemetry::apply_stage_links(&mut trace, code, engine_prefill_ms.unwrap_or(prefill_ms));
                 if let Some(leg) = &prefill_leg {
@@ -1069,6 +1210,24 @@ pub(crate) async fn generate(
                 trace.complete = true;
                 // a typed decision's label probabilities, from the engine's done line (`probe`), as a llama.cpp peer reports
                 trace.probe = done.get("probe").filter(|value| !value.is_null()).cloned();
+                // A split engine's link keeps up to the deployment's in-flight frames posted (plugin_stage_link),
+                // not the llama.cpp prefill's window this field otherwise reports; its tensors cross in the
+                // deployment's hidden-state precision.
+                if plan.steps.len() > 1 {
+                    if let Some(cfg) = state.runtime.config().await {
+                        trace.prefill_max_inflight_chunks =
+                            super::plugin_stage_link::max_in_flight(&cfg) as u32;
+                        for hop in &mut trace.hops {
+                            for part in [&mut hop.prefill, &mut hop.decode] {
+                                let crossed =
+                                    part.hidden_state_bytes_sent + part.hidden_state_bytes_received;
+                                if crossed > 0 {
+                                    part.hidden_state_dtype = Some(cfg.hidden_state_dtype);
+                                }
+                            }
+                        }
+                    }
+                }
                 trace.refresh_telemetry(total_ms);
                 info!(
                     plugin = %code,
@@ -1088,6 +1247,7 @@ pub(crate) async fn generate(
                     duration_ms: total_ms,
                     timings,
                     partial: false,
+                    error: None,
                     finish_reason: Some(finish_reason(&finish).to_owned()),
                     stop_sequence: report.stop_sequence.clone(),
                     legs: 1,
@@ -1120,25 +1280,49 @@ async fn prefill_peer(
     code: &str,
     model: &str,
     head: &str,
-    preferred: Option<&str>,
 ) -> Option<crate::network::PeerInfo> {
-    let mut best: Option<(u32, crate::network::PeerInfo)> = None;
-    for peer in state.all_peers().await {
+    use crate::webui::InferenceRole;
+    let peers = state.all_peers().await;
+    let perf = state.admission_health.perf_snapshot();
+    let mut load_of = std::collections::HashMap::new();
+    for peer in &peers {
+        let live = state.loads.load(&peer.node_id).await;
+        let reported = perf.get(&peer.node_id).map(|p| p.active_generations).unwrap_or(0);
+        load_of.insert(peer.node_id.clone(), live.max(reported));
+    }
+    let head_role = peers
+        .iter()
+        .find(|peer| peer.node_id == head)
+        .map(|peer| role_of_capabilities(&peer.inference_frame_capabilities))
+        .unwrap_or(InferenceRole::Both);
+    // the head's load counts this turn (`generate` holds it in flight): more than one is another request on it. A busy
+    // head reads its own prompt: it applies a piece only while none of its batch slots decodes, so it would refuse
+    // what another machine read (a free machine takes new requests as their head instead, `auto_head`). Only a head
+    // with the sessions on (`Shared`) can restore what a prefill machine read; a prefill head reads its own prompt.
+    if load_of.get(head).copied().unwrap_or(0) > 1 || head_role != InferenceRole::Shared {
+        return None;
+    }
+    let mut best: Option<(f64, crate::network::PeerInfo)> = None;
+    for peer in peers {
         let whole = peer.total_layers > 0 && peer.start_layer == 0 && peer.end_layer + 1 == peer.total_layers;
+        let role = role_of_capabilities(&peer.inference_frame_capabilities);
+        // an idle prefill machine with the same plugin and the whole model
         if peer.node_id == head
             || peer.model != model
             || !whole
             || engine_of_peer(&peer).as_deref() != Some(code)
-            || !is_prefill_only(&peer)
+            || role != InferenceRole::Prefill
+            || load_of.get(&peer.node_id).copied().unwrap_or(0) > 0
         {
             continue;
         }
-        if preferred == Some(peer.node_id.as_str()) {
-            return Some(peer);
-        }
-        let load = state.loads.load(&peer.node_id).await;
-        if best.as_ref().is_none_or(|(least, _)| load < *least) {
-            best = Some((load, peer));
+        // the fastest at reading prompts (unmeasured last)
+        let speed = perf
+            .get(&peer.node_id)
+            .and_then(|p| p.prefill_ms_per_token)
+            .unwrap_or(f64::INFINITY);
+        if best.as_ref().is_none_or(|(best_speed, _)| speed < *best_speed) {
+            best = Some((speed, peer));
         }
     }
     best.map(|(_, peer)| peer)
@@ -1152,6 +1336,10 @@ pub(crate) struct PrefillLeg {
     pub tokens: u64,
     pub engine_ms: u64,
     pub elapsed_ms: u64,
+    /// The prompt read in pieces, each applied to the head while the next was read: what the head copied, with only
+    /// the wait after the prompt's end as its transfer time (the rest overlapped the read). `None`: one session, which
+    /// the head fetches before its turn (`session_source`).
+    pub fetch: Option<super::plugin_session::SessionFetch>,
 }
 
 /// Runs the prompt of a turn on a prefill machine (`prefill_only`), which saves the conversation's session there.
@@ -1163,12 +1351,11 @@ async fn prefill_on_peer(
     code: &str,
     model: &str,
     head: &str,
-    preferred: Option<&str>,
     key: &str,
     body: &Value,
     cancellation: &crate::prefill::Cancellation,
 ) -> Option<PrefillLeg> {
-    let peer = prefill_peer(state, code, model, head, preferred).await?;
+    let peer = prefill_peer(state, code, model, head).await?;
     // what the head already holds of the conversation: the prefill machine reads the prompt only when the part the
     // head lacks is long enough
     let head_offer = super::plugin_session::offer_of(state, code, key, head).await;
@@ -1206,10 +1393,28 @@ async fn prefill_on_peer(
     prefill["max_tokens"] = json!(1);
     prefill["prefill_only"] = json!(true);
     prefill["decode_holds"] = json!(holds);
+    // read in pieces: the head applies each one while the next is read (a bridge without pieces ignores the flag and
+    // answers with one session, which the head fetches as before)
+    prefill["pieces"] = json!(true);
+    let (piece_tx, mut piece_rx) = mpsc::unbounded_channel::<(String, String)>();
+    let pieces = {
+        let (state, code, head, source, key) =
+            (state.clone(), code.to_owned(), head.to_owned(), peer.node_id.clone(), key.to_owned());
+        tokio::spawn(async move {
+            let (mut bytes, mut applied) = (0u64, 0u64);
+            while let Some((piece, kind)) = piece_rx.recv().await {
+                bytes += super::plugin_session::apply_piece_on(&state, &code, &head, &source, &key, &piece, &kind)
+                    .await
+                    .map_err(|error| format!("{piece}: {error}"))?;
+                applied += 1;
+            }
+            Ok::<(u64, u64), String>((bytes, applied))
+        })
+    };
     let _busy = state.loads.acquire(&peer.node_id).await;
     let started = Instant::now();
     let response = match open_stream(state, &peer.node_id, code, &prefill).await {
-        Ok((response, _)) => response,
+        Ok((response, _, _)) => response,
         Err(error) => {
             warn!(plugin = %code, session = %key, prefill = %peer.node_id, "prefill split: the prefill machine refused: {error}");
             return None;
@@ -1244,10 +1449,62 @@ async fn prefill_on_peer(
                 warn!(plugin = %code, session = %key, prefill = %peer.node_id, "prefill split: the prefill machine failed: {error}");
                 return None;
             }
+            if let Some(piece) = event.get("piece") {
+                if let (Some(name), Some(kind)) = (piece["key"].as_str(), piece["kind"].as_str()) {
+                    let _ = piece_tx.send((name.to_owned(), kind.to_owned()));
+                }
+                continue;
+            }
             let Some(done) = event.get("done") else {
                 continue;
             };
             let read = done["prefill"]["tokens"].as_u64().unwrap_or(0);
+            let announced = done["prefill"]["pieces"].as_u64().unwrap_or(0);
+            if announced > 0 {
+                // the prompt is read: the head applies the pieces still in flight, and only that wait is the turn's
+                let engine_ms = super::engine_telemetry::EngineReport::from_done(done, 0)
+                    .prefill_ms
+                    .map(|ms| ms.round() as u64)
+                    .unwrap_or(0);
+                let elapsed_ms = started.elapsed().as_millis() as u64;
+                drop(piece_tx);
+                let tail = Instant::now();
+                let bytes = match pieces.await {
+                    Ok(Ok((bytes, applied))) if applied == announced => bytes,
+                    Ok(Ok((_, applied))) => {
+                        warn!(plugin = %code, session = %key, prefill = %peer.node_id, applied, announced, "prefill split: the head did not get every piece; the head reads the prompt");
+                        return None;
+                    }
+                    Ok(Err(error)) => {
+                        warn!(plugin = %code, session = %key, prefill = %peer.node_id, head = %head, "prefill split: a piece was not applied on the head: {error}; the head reads the prompt");
+                        return None;
+                    }
+                    Err(error) => {
+                        warn!(plugin = %code, session = %key, "prefill split: the pieces' task failed: {error}");
+                        return None;
+                    }
+                };
+                let tail_ms = tail.elapsed().as_millis() as u64;
+                info!(
+                    plugin = %code, session = %key, prefill = %peer.node_id, head = %head, tokens = read, holds,
+                    pieces = announced, bytes, ms = elapsed_ms, engine_ms, tail_ms,
+                    "prefill split: the prompt was read in pieces on the prefill machine; the head holds them"
+                );
+                return Some(PrefillLeg {
+                    node_id: peer.node_id.clone(),
+                    step: crate::pipeline::step_for(&peer, 0),
+                    tokens: read,
+                    engine_ms,
+                    elapsed_ms,
+                    fetch: Some(super::plugin_session::SessionFetch {
+                        source: peer.node_id.clone(),
+                        tokens: done["prompt_tokens"].as_u64().unwrap_or(0).saturating_sub(1),
+                        bytes,
+                        transfer_ms: tail_ms,
+                        save_wait_ms: 0,
+                    }),
+                });
+            }
             if let Some(reason) = done["prefill"]["skipped"].as_str() {
                 info!(plugin = %code, session = %key, prefill = %peer.node_id, holds, "prefill split: skipped ({reason}); the head reads the prompt");
                 return None;
@@ -1270,6 +1527,7 @@ async fn prefill_on_peer(
                 tokens: read,
                 engine_ms,
                 elapsed_ms,
+                fetch: None,
             });
         }
     }
@@ -1304,17 +1562,19 @@ pub(crate) async fn services_of(state: &GatewayState, node_id: &str) -> Option<V
 }
 
 /// Why a deployment on a plugin's inference service cannot go ahead, if it
-/// cannot. A whole model goes to one machine - or to several in a
-/// prefill/decode split, where `roles` (each target's role, in the order of
-/// `targets`) has at least one prefill machine and one that decodes; layer
-/// slices go one per machine, to a service that publishes `stages`. Every
-/// machine runs the plugin with an inference service that is not in error.
+/// cannot. A whole model goes to one machine or to several, each with its role
+/// (`roles`, in the order of `targets`; the deploy gives `Shared` to the ones
+/// left at `Both`, see `InferenceRole::shared`); layer
+/// slices go one per machine, to a service that publishes `stages` for the
+/// model's `architecture` (its `stage_architectures`, see [`runs_slices`]).
+/// Every machine runs the plugin with an inference service that is not in error.
 pub(crate) async fn deploy_block(
     state: &GatewayState,
     service: &str,
     whole: bool,
     targets: &[String],
     roles: &[crate::webui::InferenceRole],
+    architecture: Option<&str>,
 ) -> Option<String> {
     if !valid_code(service) {
         return Some(format!("invalid inference service: {service}"));
@@ -1326,20 +1586,9 @@ pub(crate) async fn deploy_block(
     if unique.is_empty() {
         return Some("choose the machine that runs the inference service".into());
     }
-    use crate::webui::InferenceRole;
-    if !roles.is_empty() && roles.iter().all(|role| *role == InferenceRole::Prefill) {
-        return Some(format!(
-            "the inference service {service} has no machine that answers: a prefill machine only reads prompts, so \
-             give one machine the decode role, or the role both"
-        ));
-    }
-    let split = roles.contains(&InferenceRole::Prefill) && roles.iter().any(|role| *role != InferenceRole::Prefill);
-    if whole && unique.len() != 1 && !split {
-        return Some(format!(
-            "the inference service {service} runs the whole model on a single machine: choose one machine, or give \
-             the machines a prefill/decode split (one prefill machine and one that decodes)"
-        ));
-    }
+    // several machines with the whole model share the conversations as sessions: the deploy gives them a role that
+    // keeps the sessions on (`InferenceRole::shared`), every one of them answers, and the gateway balances the
+    // prompts between them
     if whole && unique.len() != named.len() {
         return Some(format!(
             "the inference service {service} runs the whole model once per machine: choose different machines"
@@ -1350,6 +1599,17 @@ pub(crate) async fn deploy_block(
             "the inference service {service} runs one slice per machine: choose different machines"
         ));
     }
+    // A sliced deployment's prefill machine runs the whole model beside the stages (the planner checks it is the
+    // whole model): it needs the service, not its stages.
+    let prefill_only = |target: &String| {
+        targets
+            .iter()
+            .zip(roles)
+            .filter(|(id, _)| *id == target)
+            .all(|(_, role)| *role == crate::webui::InferenceRole::Prefill)
+            && roles.len() == targets.len()
+    };
+    let several = unique.len() > 1;
     for target in unique {
         let Some(services) = services_of(state, target).await else {
             return Some(format!(
@@ -1371,15 +1631,46 @@ pub(crate) async fn deploy_block(
                     entry["detail"].as_str().unwrap_or("no detail")
                 ))
             }
-            Some(entry) if !whole && entry["stages"] != true => {
+            // several machines with the whole model hand conversations over as sessions, which the service turns on
+            // through the role it declares among its POM settings
+            Some(entry)
+                if whole
+                    && several
+                    && !entry["pom_settings"]
+                        .as_array()
+                        .is_some_and(|settings| settings.iter().any(|setting| setting == "inference_role")) =>
+            {
                 return Some(format!(
-                    "the inference service {service} serves the whole model: choose \"whole model\""
+                    "the inference service {service} runs the whole model on a single machine: choose one machine"
                 ))
+            }
+            Some(entry) if !whole && !prefill_only(target) && !runs_slices(entry, architecture) => {
+                return Some(match architecture {
+                    Some(architecture) if entry["stages"] == true => format!(
+                        "the inference service {service} runs {architecture} models as the whole model only: choose \"whole model\""
+                    ),
+                    _ => format!("the inference service {service} serves the whole model: choose \"whole model\""),
+                })
             }
             Some(_) => {}
         }
     }
     None
+}
+
+/// Whether a machine's inference service (an entry of its `plugin_services`) runs a model of `architecture` as
+/// layer slices: it publishes `stages`, and its `stage_architectures`, when it lists any, name that architecture. An
+/// architecture the catalog could not read is left to the engine, which refuses a model it cannot run.
+pub(crate) fn runs_slices(entry: &Value, architecture: Option<&str>) -> bool {
+    if entry["stages"] != true {
+        return false;
+    }
+    match (entry["stage_architectures"].as_array(), architecture) {
+        (Some(list), Some(architecture)) if !list.is_empty() => {
+            list.iter().any(|candidate| candidate.as_str() == Some(architecture))
+        }
+        _ => true,
+    }
 }
 
 // ── Route between nodes ──────────────────────────────────────────────────────
@@ -1440,6 +1731,9 @@ pub(crate) async fn engine_generate_route(
     if body.len() > MAX_GENERATION_BODY {
         return refuse(StatusCode::PAYLOAD_TOO_LARGE, "body too large");
     }
+    // The gateway that took the request marked only its own runtime; without
+    // this the serving node counts none of its work and unloads mid-session.
+    state.runtime.note_request();
     // This machine's stage links of the generation start from nothing; its prompt phase begins now.
     let _ = super::plugin_stage_link::take_link_stats(&code);
     let _ = super::plugin_stage_link::take_channel_stats(&code);
@@ -1448,9 +1742,8 @@ pub(crate) async fn engine_generate_route(
     super::plugin_stage_link::set_phase(&code, super::plugin_stage_link::LinkPhase::Prefill);
     // a remote head's turn: the session it lacks is fetched from a peer here, before the turn reads its prompt
     let turn = serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null);
-    let fetched = super::plugin_session::prepare_for_body(&state, &code, &turn)
-        .await
-        .map(|fetch| fetch.to_json());
+    let (fetched, lookup_ms) = super::plugin_session::prepare_timed(&state, &code, &turn).await;
+    let fetched = fetched.map(|fetch| fetch.to_json());
     let response = match post_local(&state.plugins, &code, body.to_vec()).await {
         Ok(response) => response,
         Err(error) => return refuse(StatusCode::SERVICE_UNAVAILABLE, &error),
@@ -1460,6 +1753,7 @@ pub(crate) async fn engine_generate_route(
     let stream = relay_with_links(
         code.clone(),
         fetched,
+        lookup_ms,
         Box::pin(super::engine_telemetry::track(&code, response.bytes_stream())),
     );
     // This machine ran the turn: when its bridge reports the conversation saved, the turn goes on to the peers.
@@ -1494,6 +1788,34 @@ pub(crate) async fn engine_generate_route(
 mod tests {
     use super::*;
 
+    /// The undeploy that left the engine running: the poller drops its sender as the generation changes, and the
+    /// wait must end on the new generation instead of polling the finished receiver again (a panic before unload).
+    #[tokio::test]
+    async fn wait_for_end_survives_a_dropped_failure_sender_and_ends_on_the_new_generation() {
+        let (stop_tx, stop_rx) = tokio::sync::watch::channel(1u64);
+        let (failed_tx, failed_rx) = tokio::sync::oneshot::channel::<String>();
+        let (stale_tx, stale_rx) = tokio::sync::oneshot::channel::<String>();
+        drop(failed_tx);
+        drop(stale_tx);
+        let wait = tokio::spawn(wait_for_end(1, stop_rx, Some(failed_rx), Some(stale_rx)));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        stop_tx.send_replace(2);
+        let ended = tokio::time::timeout(Duration::from_secs(2), wait)
+            .await
+            .expect("the wait ends")
+            .expect("no panic");
+        assert_eq!(ended, None);
+    }
+
+    #[tokio::test]
+    async fn wait_for_end_reports_the_engine_failure() {
+        let (_stop_tx, stop_rx) = tokio::sync::watch::channel(1u64);
+        let (failed_tx, failed_rx) = tokio::sync::oneshot::channel::<String>();
+        failed_tx.send("Strata stopped".into()).unwrap();
+        let ended = wait_for_end(1, stop_rx, Some(failed_rx), None).await;
+        assert_eq!(ended.as_deref(), Some("Strata stopped"));
+    }
+
     #[test]
     fn plugin_reasoning_ndjson_stays_distinct_from_answer_text() {
         assert!(matches!(
@@ -1507,24 +1829,89 @@ mod tests {
         assert!(generated_text_event(&json!({"r": ""})).is_none());
     }
 
+    #[test]
+    fn a_service_runs_slices_only_of_its_stage_architectures() {
+        let strata = json!({"stages": true, "stage_architectures": ["qwen4exp"]});
+        assert!(runs_slices(&strata, Some("qwen4exp")));
+        // Qwen3.6 runs on Strata as the whole model only
+        assert!(!runs_slices(&strata, Some("qwen35moe")));
+        // an architecture the catalog could not read is left to the engine
+        assert!(runs_slices(&strata, None));
+        // no list: every architecture the service runs also runs in slices
+        assert!(runs_slices(&json!({"stages": true}), Some("qwen35moe")));
+        assert!(!runs_slices(&json!({"stages": false, "stage_architectures": ["qwen4exp"]}), Some("qwen4exp")));
+    }
+
     #[tokio::test]
-    async fn a_deployment_of_prefill_machines_only_is_refused() {
+    async fn prefill_machines_answer_too_and_several_need_no_role() {
         use crate::webui::InferenceRole;
         let state = crate::gateway::testkit::state_with("me", vec![]).await;
-        let reason = deploy_block(&state, "strata", true, &["a".into()], &[InferenceRole::Prefill])
-            .await
-            .expect("a lone prefill machine answers no request");
-        assert!(reason.contains("no machine that answers"), "{reason}");
+        // every machine of the split answers: prefill machines alone are a deployment (the machines unknown here are
+        // the only refusal left)
+        for roles in [vec![InferenceRole::Prefill], vec![InferenceRole::Prefill, InferenceRole::Prefill]] {
+            let targets: Vec<String> = ["a", "b"][..roles.len()].iter().map(|id| id.to_string()).collect();
+            let reason = deploy_block(&state, "strata", true, &targets, &roles, None).await.expect("unknown machines");
+            assert!(reason.contains("did not answer which services"), "{reason}");
+        }
+        // two machines with the whole model and no role are a deployment too (the deploy gives them `Shared`)
         let reason = deploy_block(
             &state,
             "strata",
             true,
             &["a".into(), "b".into()],
-            &[InferenceRole::Prefill, InferenceRole::Prefill],
+            &[InferenceRole::Both, InferenceRole::Both],
+            None,
         )
         .await
-        .expect("two prefill machines answer no request either");
-        assert!(reason.contains("no machine that answers"), "{reason}");
+        .expect("unknown machines");
+        assert!(reason.contains("did not answer which services"), "{reason}");
+    }
+
+    #[tokio::test]
+    async fn a_prompt_goes_to_an_idle_machine_only_when_the_balance_calls_for_it() {
+        use crate::webui::InferenceRole;
+        let whole = |id: &str, role: InferenceRole| {
+            let mut p = crate::gateway::testkit::peer(id, id, 8080);
+            p.model = "m".into();
+            p.inference_frame_capabilities = vec![capability("strata"), role_capability(role)];
+            (p.start_layer, p.end_layer, p.total_layers) = (0, 31, 32);
+            p
+        };
+        let state = crate::gateway::testkit::state_with(
+            "me",
+            vec![
+                whole("head", InferenceRole::Shared),
+                whole("fast", InferenceRole::Prefill),
+                whole("other", InferenceRole::Shared),
+                whole("pre2", InferenceRole::Prefill),
+                whole("plain", InferenceRole::Both),
+            ],
+        )
+        .await;
+        let picked = |head: &'static str| {
+            let state = state.clone();
+            async move { prefill_peer(&state, "strata", "m", head).await.map(|p| p.node_id) }
+        };
+        {
+            // this turn is in flight on its head (`generate` holds it)
+            let _turn = state.loads.acquire("head").await;
+            // a free decode head hands its prompt to an idle prefill machine, never to another decode machine
+            assert!(matches!(picked("head").await.as_deref(), Some("fast" | "pre2")));
+            let _fast = state.loads.acquire("fast").await;
+            let _pre2 = state.loads.acquire("pre2").await;
+            assert_eq!(picked("head").await, None, "no idle prefill machine: the free head reads it");
+            drop((_fast, _pre2));
+            // a busy head reads its own prompt: it would refuse the pieces while a slot decodes
+            let _another = state.loads.acquire("head").await;
+            assert_eq!(picked("head").await, None);
+        }
+        // a prefill head reads its own prompt, free or busy
+        let _turn = state.loads.acquire("pre2").await;
+        assert_eq!(picked("pre2").await, None);
+        drop(_turn);
+        // a head without the sessions on could not restore what a prefill machine read: it reads its own prompt
+        let _plain = state.loads.acquire("plain").await;
+        assert_eq!(picked("plain").await, None);
     }
 
     #[test]
@@ -1628,6 +2015,40 @@ mod tests {
         assert_eq!(trace.hops[2].prefill.processing_ms, 200, "the head's 500 ms prompt, less the 300 ms to b");
     }
 
+    /// Frames sent ahead (the micro-pipelining): their round trips overlap and outgrow the request. The hop's round
+    /// trip is the link's wall time, the wait behind the earlier frames is the earlier machine's queue and not the
+    /// network, and the head keeps the time of its own (a summed round trip left it with 0).
+    #[test]
+    fn overlapping_frames_count_the_link_s_wall_time_not_their_sum() {
+        use super::super::plugin_stage_link::{record_leg_queued, record_wall, LinkPhase};
+        let caps = vec![capability("strata")];
+        let plan = crate::pipeline::plan_from_steps(vec![step("a", 0, 19, &caps), step("b", 20, 39, &caps)]);
+        let code = "strata-overlap-test";
+        // 4 prompt pieces to a, sent together: a serves each in 200 ms, one after another, so they wait 0, 200, 400
+        // and 600 ms behind the ones before; the crossings take 50, 100, 100 and 100 ms. The link was busy 900 ms.
+        for k in 0..4u64 {
+            let queued = 200 * k;
+            let crossing = 50 * (k + 1).min(2);
+            let elapsed = std::time::Duration::from_millis(200 + queued + crossing);
+            record_leg_queued(code, "a", LinkPhase::Prefill, elapsed, 10, 1_000, 200, queued, "quic");
+        }
+        record_wall(code, "a", LinkPhase::Prefill, std::time::Duration::from_millis(900));
+        let mut trace = super::super::engine_telemetry::build_trace(
+            "t".into(),
+            "m",
+            &plan,
+            code,
+            &super::super::engine_telemetry::EngineReport::default(),
+        );
+        super::super::engine_telemetry::apply_stage_links(&mut trace, code, 1_000);
+        let earlier = &trace.hops[0].prefill;
+        assert_eq!(earlier.round_trip_ms, 900, "the link's wall time, not the 2,150 ms of summed round trips");
+        assert_eq!(earlier.node_queue_ms, 1_200.0, "0 + 200 + 400 + 600 behind the earlier pieces");
+        assert_eq!(earlier.network_ms, 350, "the crossings alone: 50 + 100 + 100 + 100");
+        assert_eq!(earlier.processing_ms, 800, "a's own work on the 4 pieces");
+        assert_eq!(trace.hops[1].prefill.processing_ms, 100, "the head's 1,000 ms prompt, less the 900 ms it waited on a");
+    }
+
     #[test]
     fn a_plan_runs_on_a_plugin_engine_when_every_step_is_one_of_its_slices() {
         let caps = vec![capability("strata")];
@@ -1696,6 +2117,10 @@ mod tests {
         let cfg =
             crate::runtime::NodeConfig::from_params(&crate::webui::RuntimeParams::default(), true);
         assert!(load_params(&cfg, &[0], &[], None).get("link").is_none());
+        assert!(load_params(&cfg, &[0], &[], None).get("mtp_draft_path").is_none());
+        let mut drafted = cfg.clone();
+        drafted.mtp_draft_path = Some("/m/dspark.gguf".into());
+        assert_eq!(load_params(&drafted, &[0], &[], None)["mtp_draft_path"], "/m/dspark.gguf");
         let link = json!({"token": "t", "prev_port": 4100});
         assert_eq!(
             load_params(&cfg, &[0], &[], Some(&link))["link"]["prev_port"],
@@ -1721,7 +2146,11 @@ mod tests {
         assert_eq!(ready["n_ctx_per_session"], 32768);
         assert_eq!(ready["end_layer"], 47);
         assert_eq!(ready["total_layers"], 48);
-        assert_eq!(ready["capabilities"], json!(["engine/plugin-v1:strata"]));
+        // the stage link carries the node's own wire formats, so a slice offers the lossy ones too
+        assert_eq!(
+            ready["capabilities"],
+            json!(["engine/plugin-v1:strata", "inference/frame-v1-dtype-f8", "inference/frame-v1-dtype-i4g64", "inference/frame-v1-dtype-i4g128"])
+        );
         // a whole-model prefill machine says its role; the plugin hears it in engine.load
         let prefill = crate::runtime::NodeConfig {
             inference_role: crate::webui::InferenceRole::Prefill,
@@ -1730,11 +2159,53 @@ mod tests {
         };
         assert_eq!(
             health_body(&prefill, "strata", &json!({"state": "ready"}))["capabilities"],
-            json!(["engine/plugin-v1:strata", "engine/plugin-role-v1:prefill"])
+            json!(["engine/plugin-v1:strata", "inference/frame-v1-dtype-f8", "inference/frame-v1-dtype-i4g64", "inference/frame-v1-dtype-i4g128", "engine/plugin-role-v1:prefill"])
         );
         assert_eq!(load_params(&prefill, &[0], &[], None)["role"], "prefill");
         assert_eq!(load_params(&prefill, &[0], &[], None)["prefill_min_tokens"], 2048);
         assert!(load_params(&cfg, &[0], &[], None).get("role").is_none());
+    }
+
+    /// A request with tools also carries the conversation as the client sent it, so the engine renders the tools with
+    /// its own template (DeepSeek-V4.1 looped on the Qwen form the flattened prompt teaches); one without tools, or
+    /// whose prompt holds the gateway's RAG context, carries the prompt alone.
+    #[test]
+    fn a_request_with_tools_carries_the_client_s_conversation() {
+        let body_of = |details: Value| {
+            generation_body(&EngineRequest {
+                prompt: "User: oi".into(),
+                chat_template: true,
+                thinking_enabled: false,
+                max_tokens: 128,
+                stops: vec![],
+                session: None,
+                request_details: details,
+                probe_labels: vec![],
+                probe_prefix_bytes: None,
+                images: vec![],
+            })
+        };
+        let openai = json!({
+            "messages": [{"role": "user", "content": "oi"}],
+            "tools": [{"type": "function", "function": {"name": "write", "parameters": {"type": "object"}}}],
+        });
+        let body = body_of(openai.clone());
+        assert_eq!(body["chat"]["api"], "openai");
+        assert_eq!(body["chat"]["request"], openai);
+        assert_eq!(body["prompt"], "User: oi", "the flattened prompt stays, for an older plugin");
+
+        let anthropic = json!({
+            "system": "be brief",
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "oi"}]}],
+            "tools": [{"name": "write", "input_schema": {"type": "object"}}],
+        });
+        assert_eq!(body_of(anthropic)["chat"]["api"], "anthropic");
+
+        assert!(body_of(json!({"messages": [{"role": "user", "content": "oi"}]})).get("chat").is_none());
+        assert!(body_of(json!({"messages": [], "tools": []})).get("chat").is_none());
+        let mut with_rag = openai;
+        with_rag["rag"] = json!({"chunks": 2});
+        assert!(body_of(with_rag).get("chat").is_none(), "the prompt holds the RAG context");
     }
 
     #[test]
@@ -1750,7 +2221,6 @@ mod tests {
             probe_labels: vec!["Yes".into(), "No".into()],
             probe_prefix_bytes: Some(12),
             images: vec!["data:image/png;base64,AAAA".into()],
-            prefill_node: None,
         });
         assert_eq!(body["prompt"], "User: oi");
         assert_eq!(body["probe"]["labels"], json!(["Yes", "No"]));
@@ -1763,6 +2233,16 @@ mod tests {
         assert_eq!(body["top_k"], 20);
         assert!(body.get("seed").is_none());
         assert!(body.get("messages").is_none());
+        // the client chose no thinking level: the engine's own default decides
+        assert_eq!(body["thinking_default"], true);
+        for asked in [
+            json!({"thinking_enabled": true}),
+            json!({"reasoning_effort": "low"}),
+            json!({"thinking": {"type": "disabled"}}),
+            json!({"chat_template_kwargs": {"enable_thinking": false}}),
+        ] {
+            assert!(thinking_asked(&asked), "{asked}");
+        }
     }
 }
 
@@ -1786,6 +2266,7 @@ mod relay_tests {
             b"{\"done\":{\"finish\":\"stop\"}}\n",
             &mut first,
             Some(&fetch.to_json()),
+            0,
         );
         let value: Value = serde_json::from_slice(&done).unwrap();
         let carried = super::super::plugin_session::SessionFetch::from_json(&value["done"]["session_fetch"]);
@@ -1815,10 +2296,10 @@ mod relay_tests {
             },
         );
         let mut first = false;
-        let token = rewrite_line("strata-relay-test", b"{\"t\":\"hi\"}\n", &mut first, None);
+        let token = rewrite_line("strata-relay-test", b"{\"t\":\"hi\"}\n", &mut first, None, 0);
         assert!(first, "a text line is the first token");
         assert_eq!(token, b"{\"t\":\"hi\"}\n", "text lines pass through unchanged");
-        let done = rewrite_line("strata-relay-test", b"{\"done\":{\"finish\":\"stop\"}}\n", &mut first, None);
+        let done = rewrite_line("strata-relay-test", b"{\"done\":{\"finish\":\"stop\"}}\n", &mut first, None, 0);
         let value: Value = serde_json::from_slice(&done[..done.len() - 1]).unwrap();
         assert_eq!(value["done"]["links"][0]["node"], "node-9");
         assert_eq!(value["done"]["links"][0]["phase"], "prefill");

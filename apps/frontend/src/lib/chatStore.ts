@@ -45,6 +45,8 @@ export interface ChatAttachment {
   mediaType?: string;
   size?: number;
   resized?: boolean;
+  /** Pages of a PDF read by OCR, where the text can hold misread words. */
+  ocrPages?: number;
 }
 
 export interface ChatMessage {

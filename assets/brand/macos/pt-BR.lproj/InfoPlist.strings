@@ -1,0 +1,2 @@
+"NSMicrophoneUsageDescription" = "O POM usa o microfone para ditar suas mensagens no chat.";
+"NSSpeechRecognitionUsageDescription" = "O POM transforma o que você dita no texto da sua mensagem.";

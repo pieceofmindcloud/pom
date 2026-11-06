@@ -70,7 +70,7 @@ Nothing here talks to peers; everything is used by `main.rs` and
 ## Key functions
 
 `config.rs`:
-- `brand.rs` - the product identity, read from `brand.json` at the repository
+- `brand` (the `crates/brand` crate, re-exported as `crate::brand`) - the product identity, read from `brand.json` at the repository
   root at compile time (`include_str!`). It is the single source of the name, the
   slogan and the logo files, and **every derived name comes from here**:
   `config_filename()` (`pom.json`), `env_var("HOME")` (`POM_HOME`),
@@ -86,7 +86,9 @@ Nothing here talks to peers; everything is used by `main.rs` and
   come from; without it, an `ssh host '/path/pom'` read another config and found
   no slice at all.
 - `Config::load`/`save`/`config_path` - `$POM_CONFIG` or
-  `<project_root>/pom.json`.
+  `<project_root>/pom.json`. `save` writes to `Config.saved_at` when it is set
+  (never serialized; only a test bench sets it, so one test's save never lands
+  in another test's `POM_CONFIG` or in the working directory's `pom.json`).
   `Config::save` writes with owner-only permission (`0600` on Unix), even when the
   file already existed; the optional field `huggingface_token` is a secret and
   `Config`'s `Debug` masks it. The runtime reads keys, thermal policy and token

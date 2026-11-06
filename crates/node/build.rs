@@ -44,6 +44,8 @@ fn build_macos_status() {
     println!("cargo:rustc-link-lib=framework=AppKit");
     println!("cargo:rustc-link-lib=framework=WebKit");
     println!("cargo:rustc-link-lib=framework=Security");
+    println!("cargo:rustc-link-lib=framework=AVFoundation");
+    println!("cargo:rustc-link-lib=framework=Speech");
 }
 
 #[cfg(not(target_os = "macos"))]

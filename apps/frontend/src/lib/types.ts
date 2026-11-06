@@ -769,6 +769,10 @@ export interface PluginService {
   settings?: EngineSetting[];
   /** Kind `inference`: its engine also runs layer slices, one stage per machine. */
   stages?: boolean;
+  /** Kind `inference` with `stages`: the architectures it runs in slices, when not all of them. */
+  stage_architectures?: string[];
+  /** Kind `inference`: the model architectures whose drafter file its engine takes from the deployment. */
+  draft_architectures?: string[];
   /** Kind `inference`: the POM deployment settings that apply to its engine. */
   pom_settings?: PomSetting[];
   /** Kind `inference`: its engine reads images through the deployment's vision projector (`mmproj`). */
@@ -783,7 +787,8 @@ export type PomSetting =
   | "prefill_min_tokens";
 
 /** A whole-model machine's part in a prefill/decode split of a plugin inference service. */
-export type InferenceRole = "both" | "prefill" | "decode";
+/** `shared` is not chosen on screen: the deploy gives it to a `both` machine that runs the whole model beside others. */
+export type InferenceRole = "both" | "prefill" | "shared";
 
 /** One setting an inference service's engine publishes (`host.services`). */
 export interface EngineSetting {
@@ -1409,6 +1414,11 @@ export interface AddNodeOptionsResponse {
   defaults: {
     n_gpu_layers: number;
     offload_kqv: boolean;
+  };
+  /** The vision switch: the machine holds a compatible projector; the deployment runs with one now. */
+  vision?: {
+    available: boolean;
+    deployed: boolean;
   };
 }
 

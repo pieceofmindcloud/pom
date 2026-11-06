@@ -179,6 +179,29 @@ body {
   .pom-tab-close { display: inline-flex; padding: 3px; border-radius: 4px; color: var(--tab-ink); opacity: .7; }
   .pom-tab-close:hover { opacity: 1; color: rgb(var(--rose)); }
 
+  /* ui.MarqueeText: a line clipped to its box that scrolls right to left when it does not fit. */
+  .pom-marquee { display: block; flex: 0 1 auto; min-width: 0; max-width: 100%; overflow: hidden; white-space: nowrap; }
+  .pom-marquee-track { display: inline-flex; }
+  .pom-marquee-copy, .pom-marquee-gap { display: inline-block; flex: none; }
+  .pom-marquee-on {
+    -webkit-mask-image: linear-gradient(to right, transparent, #000 6px, #000 calc(100% - 10px), transparent);
+    mask-image: linear-gradient(to right, transparent, #000 6px, #000 calc(100% - 10px), transparent);
+  }
+  .pom-marquee-on .pom-marquee-track { animation: pom-marquee var(--marquee-duration, 8s) linear infinite; }
+  .pom-marquee-on:hover .pom-marquee-track,
+  :focus-visible > .pom-marquee-on .pom-marquee-track { animation-play-state: paused; }
+  /* The rest at the start is MARQUEE_REST in ui.tsx. */
+  @keyframes pom-marquee {
+    0%, 15% { transform: translateX(0); }
+    100% { transform: translateX(var(--marquee-shift, 0)); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .pom-marquee-on { -webkit-mask-image: none; mask-image: none; }
+    .pom-marquee-on .pom-marquee-track { display: block; overflow: hidden; text-overflow: ellipsis; animation: none; }
+    .pom-marquee-on .pom-marquee-copy { display: inline; }
+    .pom-marquee-on .pom-marquee-copy[aria-hidden], .pom-marquee-on .pom-marquee-gap { display: none; }
+  }
+
   /* The trust file travelling from one machine to the other (TrustTransferGuide). */
   .trust-travel { animation: trust-travel 2.8s ease-in-out infinite; }
   @keyframes trust-travel {
@@ -852,6 +875,17 @@ body {
 .pom-store-intervals button[aria-pressed="true"] { background: rgba(79, 155, 255, .2); color: #fff; }
 .pom-store-amount { font-size: clamp(30px, 3.4vw, 40px); font-weight: 900; letter-spacing: -.05em; line-height: 1; }
 .pom-store-amount span { margin-left: 4px; color: rgba(255, 255, 255, .55); font-size: 15px; font-weight: 600; letter-spacing: 0; }
+/* "Talk to sales" sets words where the amount goes; a promotion strikes the full price above the one paid now. */
+.pom-store-amount-text { font-size: clamp(24px, 2.6vw, 30px); letter-spacing: -.03em; }
+.pom-store-contact { color: rgba(255, 255, 255, .7); font-size: 13.5px; line-height: 1.55; }
+.pom-store-pay { display: grid; gap: 4px; }
+.pom-store-was { color: rgba(255, 255, 255, .5); font-size: 15px; font-weight: 600; }
+.pom-store-was s { text-decoration-thickness: 1.5px; }
+.pom-store-promo-badge {
+  justify-self: start; padding: 3px 10px; border-radius: 999px;
+  background: rgba(47, 220, 200, .14); color: #2fdcc8; font-size: 11px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase;
+}
+.pom-store-promo { color: #2fdcc8; font-size: 13px; font-weight: 600; line-height: 1.5; }
 .pom-store-buy {
   position: relative; overflow: hidden;
   display: inline-flex; align-items: center; justify-content: center; gap: 9px;

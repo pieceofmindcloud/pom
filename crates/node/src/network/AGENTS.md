@@ -137,7 +137,12 @@ dedicated or member, with iroh's hole punching), are in
   announce signature binds the announce to its endpoint, but does not replace the
   membership proof. Every 5 s `apply_policy` refreshes the relay gate's members and
   URL, the member relays in use, the gossip membership, the published endpoint
-  addresses and the reachability from the NAT report.
+  addresses and the reachability from the NAT report. A gossip join is asked
+  once per peer (`PolicyState::joined`), and a node with no neighbor asks its
+  known peers again every 30 s; a peer pkarr finds again while it is neither
+  connected nor an active neighbor is asked to join again, at most once per
+  30 s (`PolicyState::forget_failed_join`), so a first join that failed while
+  that peer was starting does not leave the node out until a restart.
 - `identity.rs` - the node's **only** Ed25519 key and the `node_id` (SHA256 of
   the pubkey). It lives in `<project_root>/.pom-node.key` (or `$POM_NODE_KEY`).
   The endpoint id (`secret_key`, the hex of the pubkey), the trust chain's
@@ -154,7 +159,9 @@ dedicated or member, with iroh's hole punching), are in
   (`verify_udp_announce`); a `PeerList` never moves the addresses of a peer whose
   own announce arrived in the last 30 s (`firsthand`, `insert_announced_peer`).
   `is_member_key` answers whether a node key is an admin of the chain or holds a
-  valid, unrevoked membership token: what every node-to-node call authorized by the
+  valid, unrevoked membership token, or is this node's own key (the peers table never
+  holds this node, and a worker that is the gateway of its own request dials its
+  own address over TLS): what every node-to-node call authorized by the
   connection key is checked against (`auth::caller_is_member`). On a visitor, `admit_peer`
   refuses another visitor and `alive_peers` leaves one out (`hides`, role from
   the verified token, else the announced profile): visitors never know each
@@ -452,7 +459,8 @@ dedicated or member, with iroh's hole punching), are in
   after `/health` confirms the model is loaded and carries `n_ctx` and
   `max_new_tokens` (a leg); apply, error, stop and thermal unload clear the field
   before announcing. There is no announcement or fallback
-  for earlier frame formats, because the product has not shipped yet.
+  for the frame formats from before the launch, which never shipped; a capability
+  released nodes announce or read is kept (root `AGENTS.md`, compatibility policy).
   `cluster_logs_enabled` is also announced, but only as a trigger of the ratchet:
   the effective policy comes from an authenticated read on the principal.
 - `TpIdentity` (`{role, group_id, size, rank}`) - the tensor

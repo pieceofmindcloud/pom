@@ -9,18 +9,19 @@ about.dataMap,"the map images of the network location dialog, loaded from its se
 about.dataSubtitle,"Data that ships with POM or is shown by it, and its terms.","Dados que acompanham o POM ou são exibidos por ele, e seus termos."
 about.dataTitle,Third-party data,Dados de terceiros
 about.dependenciesCount,"Showing {visible} of {total} dependencies","Mostrando {visible} de {total} dependências"
-about.dependenciesSubtitle,"Direct frontend and Rust dependencies, grouped by their declared license.","Dependências diretas do frontend e do Rust, agrupadas pela licença declarada."
+about.dependenciesSubtitle,"Everything a POM build ships: the interface packages, the Rust crates (transitive ones included) and the native libraries compiled in, grouped by their declared license.","Tudo o que um build do POM distribui: os pacotes da interface, os crates Rust (inclusive os transitivos) e as bibliotecas nativas compiladas junto, agrupados pela licença declarada."
 about.dependenciesTitle,Third-party dependencies,Dependências de terceiros
 about.ecosystem.frontend,Frontend,Frontend
+about.ecosystem.native,Native,Nativa
 about.ecosystem.rust,Rust,Rust
 about.empty,No dependencies match this search.,Nenhuma dependência corresponde a esta busca.
 about.enterpriseCheckFailed,Could not check for POM updates.,Não foi possível verificar atualizações do POM.
 about.enterpriseCheckUpdates,Check for updates,Verificar atualizações
 about.licenseCount,"{count, plural, =1 {1 dependency} other {# dependencies}}","{count, plural, =1 {1 dependência} other {# dependências}}"
-about.placeholderBody,"POM is licensed under the GNU Affero General Public License, version 3 (AGPL-3.0). The complete license is available in this repository and from the Free Software Foundation.","O POM é licenciado sob a GNU Affero General Public License, versão 3 (AGPL-3.0). A licença completa está disponível neste repositório e na Free Software Foundation."
-about.placeholderLicense,AGPL-3.0,AGPL-3.0
-about.placeholderLicenseText,"GNU Affero General Public License, Version 3 (19 November 2007).","GNU Affero General Public License, versão 3 (19 de novembro de 2007)."
-about.placeholderLicenseValue,AGPL-3.0,AGPL-3.0
+about.placeholderBody,"POM is licensed under the MIT License. The complete license is in this repository and on the Open Source Initiative site.","O POM é licenciado sob a Licença MIT. A licença completa está neste repositório e no site da Open Source Initiative."
+about.placeholderLicense,MIT,MIT
+about.placeholderLicenseText,"MIT License: use, copy, modify and distribute, keeping the copyright and permission notice.","Licença MIT: use, copie, modifique e distribua, mantendo o aviso de copyright e de permissão."
+about.placeholderLicenseValue,MIT,MIT
 about.placeholderTitle,POM software license,Licença do software POM
 about.pluginBaseDescription,"POM plugins are built from the Plugin Base template and SDK. Follow its README to create a repository, implement the plugin manifest and UI, then build and publish releases for POM to install.","Plugins POM podem ser criados a partir do template e SDK do Plugin Base. Siga o README para criar um repositório, implementar o manifesto e a interface do plugin, e então compilar e publicar releases para instalação no POM."
 about.pluginBaseLink,POM Plugin Base,POM Plugin Base
@@ -186,6 +187,7 @@ canvas.layers,layers,camadas
 canvas.layersAllGpu,{count} on GPU,{count} na GPU
 canvas.layersOnCpu,"{cpu} layer{cpu, plural, =1 {} other {s}} did not fit on the GPU","{cpu} camada{cpu, plural, =1 {} other {s}} não coube{cpu, plural, =1 {} other {ram}} na GPU"
 canvas.layersSplit,{gpu} GPU · {cpu} CPU,{gpu} GPU · {cpu} CPU
+canvas.layersOnCpuWarning,"{cpu} of {served} layers on this machine run on the CPU: its VRAM did not fit the whole slice, so inference here is much slower. Free VRAM, lower the context or the sessions, or give this machine fewer layers.","{cpu} de {served} camadas desta máquina rodam na CPU: a VRAM dela não coube a fatia inteira, então a inferência aqui fica bem mais lenta. Libere VRAM, reduza o contexto ou as sessões, ou dê menos camadas a esta máquina."
 canvas.legendInactive,Possible traffic,Tráfego possível
 canvas.legendParallel,Parallel route,Rota paralela
 canvas.legendPrimary,Live route,Rota em uso
@@ -216,8 +218,8 @@ canvas.returnDirect,direct return,resposta direta
 canvas.returnDirectHint,Direct return: the last machine answers the gateway itself; each leg costs half a round trip.,Resposta direta: a última máquina responde ao próprio gateway; cada perna custa meio RTT.
 canvas.returnRing,ring,anel
 canvas.returnRingHint,"Ring: the answer comes back over the forward connections, so the tail''s return is not paid.","Anel: a resposta volta pelas conexões da ida, então a volta da cauda não é paga."
-canvas.roleDecode,Decode,Decode
-canvas.rolePrefill,Prefill,Prefill
+canvas.roleShared,Prefill/Decode,Prefill/Decode
+canvas.rolePrefill,Prefill first,Prefill primeiro
 canvas.speedDecode,decode,decode
 canvas.speedPrefill,prefill,prefill
 canvas.speedRelative,"{kind}: {value} tok/s, {percent}% of the fastest slice of this model. Green from 75%, amber from 40%, red below.","{kind}: {value} tok/s, {percent}% da fatia mais rápida deste modelo. Verde a partir de 75%, âmbar a partir de 40%, vermelho abaixo."
@@ -241,8 +243,11 @@ chat.composerHint,"Enter sends, Shift+Enter adds a line.","Enter envia, Shift+En
 chat.copyError,Copy error,Copiar erro
 chat.coverageUnavailable,coverage unavailable,cobertura indisponível
 chat.delete,Delete {title},Apagar {title}
+chat.dictationDenied,"Allow the microphone and speech recognition for POM in System Settings, under Privacy & Security.","Permita o microfone e o reconhecimento de fala para o POM em Ajustes do Sistema, em Privacidade e Segurança."
+chat.dictationFailed,Dictation failed,O ditado falhou
 chat.dictationStart,Start dictation,Iniciar ditado
 chat.dictationStop,Stop dictation,Parar ditado
+chat.dictationUnavailable,Speech recognition is not available right now.,O reconhecimento de fala não está disponível agora.
 chat.dropHint,Drop a file,Solte um ficheiro
 chat.dropRejectedDetail,No file was found in the drop.,Nenhum ficheiro foi encontrado no descarte.
 chat.emptyResponse,The network replied without any tokens. Check the Dashboard to make sure layer coverage is complete.,A rede respondeu sem nenhum token. Confira no Painel se a cobertura de camadas está fechada.
@@ -250,6 +255,7 @@ chat.errorCopied,Copied,Copiado
 chat.filePrompt,"File {name}:\n{content}","Arquivo {name}:\n{content}"
 chat.fileRejected,File rejected,Ficheiro recusado
 chat.headAlternatives,Other heads,Outras cabeças
+chat.headAuto,"Auto · balanced by queue","Auto · balanceado pela fila"
 chat.headCandidateCount,"{count} candidate{count, plural, =1 {} other {s}}","{count} candidata{count, plural, =1 {} other {s}}"
 chat.headCapacity,"context {context} · leg {leg} tokens","contexto {context} · perna {leg} tokens"
 chat.headChoice,Inference entry,Entrada da inferência
@@ -309,6 +315,18 @@ chat.noModelStep.talk,Talk to the network,Conversar com a rede
 chat.noModelStep.talkDetail,Come back here and ask anything.,Volte aqui e pergunte o que quiser.
 chat.openLargerWindow,Open the chat in a larger window,Abrir o chat em uma janela maior
 chat.openLargerWindowShort,Larger window,Janela maior
+chat.pdfBusy,"Wait for the PDF being read to finish, or cancel it.","Espere terminar a leitura do PDF em andamento, ou cancele."
+chat.pdfCancel,Cancel,Cancelar
+chat.pdfEmpty,No text could be read from this PDF.,Não foi possível ler nenhum texto deste PDF.
+chat.pdfInvalid,This file is not a valid PDF.,Este arquivo não é um PDF válido.
+chat.pdfOcrBadge,OCR,OCR
+chat.pdfOcrBadgeTitle,"{pages, plural, one {# page was read} other {# pages were read}} from an image, and may hold misread words.","{pages, plural, one {# página foi lida} other {# páginas foram lidas}} de uma imagem e podem ter palavras trocadas."
+chat.pdfPassword,This PDF is protected by a password. Remove the protection and attach it again.,Este PDF é protegido por senha. Remova a proteção e anexe de novo.
+chat.pdfReading,Reading {name}...,Lendo {name}...
+chat.pdfReadingOcr,Reading {name} from images: page {page} of {pages},Lendo {name} a partir de imagens: página {page} de {pages}
+chat.pdfTooLarge,The limit for a PDF is {megabytes} MB.,O limite para um PDF é de {megabytes} MB.
+chat.pdfTooManyPages,"This PDF has {pages} pages, and the limit is {limit}.","Este PDF tem {pages} páginas, e o limite é {limit}."
+chat.pdfTooManyScanned,"This PDF has {pages} scanned pages, and the limit is {limit}.","Este PDF tem {pages} páginas escaneadas, e o limite é {limit}."
 chat.placeholder,Write to the network…,Escreva para a rede…
 chat.prompt.1,Ask any piece of the mind...,Pergunte a qualquer pedaço da mente...
 chat.prompt.2,Every piece is listening. What do you want to know?,Todas as peças estão ouvindo. O que você quer saber?
@@ -429,6 +447,10 @@ dashboard.flow,Flow,Fluxo
 dashboard.free,free,livres
 dashboard.gpuPower,Power,Potência
 dashboard.gpuProcesses,GPU processes,Processos na GPU
+dashboard.otherGpuProcesses,Other processes,Outros processos
+dashboard.modelStorage,Model storage,Armazenamento de modelos
+dashboard.sharedDisksNote,"Other machines see only one Model storage total: the free space of the volumes that can receive model slices, without their names.","As outras máquinas veem só um total de Armazenamento de modelos: o espaço livre dos volumes que podem receber fatias de modelo, sem os nomes deles."
+dashboard.sharedProcessesNote,"Other machines see only POM's processes, by name; every other process is shown to them as one Other processes total.","As outras máquinas veem só os processos do POM, pelo nome; todos os outros aparecem para elas como um único total de Outros processos."
 dashboard.gpuTemperature,"GPU temperature{__truthy_label, select, false {} other { · {label}}}","Temperatura da GPU{__truthy_label, select, false {} other { · {label}}}"
 dashboard.gpuUsage,Usage,Uso
 dashboard.gpus,GPUs,GPUs
@@ -578,6 +600,7 @@ deploy.addNodeMachineOptions,Machine options,Opções da máquina
 deploy.addNodeSlice,Slice,Fatia
 deploy.addNodeTitle,Add a machine to this model,Somar uma máquina a este modelo
 deploy.addNodeWhole,Whole model,Modelo inteiro
+deploy.addNodeVisionMissing,"This machine has no vision projector for this model: copy one there to read images.","Esta máquina não tem projetor de visão para este modelo: copie um para lá para ler imagens."
 deploy.adminOnlyAdd,Only the administrator can add a machine to a deployment.,Somente o administrador pode adicionar uma máquina à implantação.
 deploy.advancedDetail,"Each request accepts up to {prompt} prompt tokens, in chunks of {chunk}. More is rejected before reaching llama.cpp.","Cada requisição aceita até {prompt} tokens de prompt, em pedaços de {chunk}. Passar disso é recusado antes de chegar ao llama.cpp."
 deploy.allRanges,"All ranges available in the cluster, including ones from different slicing runs. Select the ones to launch and choose each destination.","Todas as faixas que existem no cluster, inclusive as de fatiamentos diferentes. Marque as que devem subir e escolha o destino de cada uma."
@@ -675,16 +698,15 @@ deploy.knob.idle_minutes,Idle time (minutes),Tempo ocioso (minutos)
 deploy.knob.idle_minutesHint,"Minutes without a request before this peer unloads its model.","Minutos sem requisição antes de este peer descarregar o modelo."
 deploy.knob.inference_role,Inference role,Papel na inferência
 deploy.knob.inference_roleBoth,Prefill and decode,Prefill e decode
-deploy.knob.inference_roleDecode,Decode only,Só decode
-deploy.knob.inference_roleHint,"What this machine does with a request when it runs the whole model. Prefill: it only reads long prompts and hands their state to a decode machine of the same model, which writes the answer. Decode: it answers, fetching the state a prefill machine read. Both: it does everything (the default).","O que esta máquina faz com uma requisição quando roda o modelo inteiro. Prefill: só lê prompts longos e entrega o estado deles a uma máquina de decode do mesmo modelo, que escreve a resposta. Decode: responde, buscando o estado que uma máquina de prefill leu. Ambos: faz tudo (o padrão)."
-deploy.knob.inference_rolePrefill,Prefill only,Só prefill
+deploy.knob.inference_roleHint,"How this machine shares the work when several machines run the whole model. Every machine answers requests and reads its own prompts; the gateway spreads new conversations over them by queue. Prefill first: also reads, while it is free, the long prompts of the other machines and hands them over as a session - give it to the machine best at reading prompts. Prefill and decode (the default): reads only its own prompts, and takes the prompts a prefill machine read for it.","Como esta máquina divide o trabalho quando várias máquinas rodam o modelo inteiro. Toda máquina responde requisições e lê os próprios prompts; o gateway distribui as conversas novas entre elas pela fila. Prefill primeiro: além disso, quando está livre, lê os prompts longos das outras máquinas e os entrega como sessão - dê esse papel à máquina melhor em ler prompts. Prefill e decode (o padrão): lê só os próprios prompts e recebe os prompts que uma máquina de prefill leu para ela."
+deploy.knob.inference_rolePrefill,Prefill first (also decodes),Prefill primeiro (também decodifica)
 deploy.knob.max_new_tokens,Max new tokens,Máx. tokens novos
 deploy.knob.max_new_tokensHint,"Ceiling for one leg of the gateway''s continuation loop, not for the request. The client''s max_tokens is what actually bounds a response and produces finish_reason length.","Teto de uma perna do laço de continuação do gateway, não da requisição. Quem limita a resposta e produz finish_reason length é o max_tokens do cliente."
 deploy.knob.max_sessions,Concurrent requests,Requisições simultâneas
 deploy.knob.max_sessionsHint,"Generations served at once. Each one reserves its own full context, so this multiplies the KV-cache VRAM: two sessions at 32k cost the same as one at 64k.","Gerações atendidas ao mesmo tempo. Cada uma reserva o contexto inteiro, então isto multiplica a VRAM do cache KV: duas sessões a 32k custam o mesmo que uma a 64k."
 deploy.knob.min_p,Min-p,Min-p
 deploy.knob.min_pHint,"Drops every candidate token whose probability is below this fraction of the most likely one, after top-k and top-p. 0 is off; 0.05 is a common value.","Descarta todo token candidato cuja probabilidade fica abaixo desta fração do mais provável, depois do top-k e do top-p. 0 desliga; 0,05 é um valor comum."
-deploy.knob.moe_cache_mibHint,"VRAM, in MiB, that keeps the recently used experts held in RAM: only the misses cross PCIe, for batches of up to 32 tokens (generation). 0 turns it off. With the memory fit on, the fit counts it and keeps fewer whole expert layers on the GPU. Per GPU: with two cards, each one caches the experts of its own layers.","VRAM, em MiB, que guarda os experts da RAM usados há pouco: só as faltas atravessam o PCIe, em lotes de até 32 tokens (a geração). 0 desliga. Com o ajuste de memória ligado, o ajuste conta esse espaço e deixa menos camadas de experts inteiras na GPU. Por GPU: com duas placas, cada uma guarda os experts das próprias camadas."
+deploy.knob.moe_cache_mibHint,"VRAM, in MiB, that keeps the recently used experts held in RAM: only the misses cross PCIe, for batches of up to 32 tokens (generation). 0 turns it off. With the memory fit on, the fit counts it and keeps fewer whole expert layers on the GPU. It is the node's total: with two cards it is split between them like the layers, and it turns off llama.cpp''s pipeline parallelism between them.","VRAM, em MiB, que guarda os experts da RAM usados há pouco: só as faltas atravessam o PCIe, em lotes de até 32 tokens (a geração). 0 desliga. Com o ajuste de memória ligado, o ajuste conta esse espaço e deixa menos camadas de experts inteiras na GPU. É o total do nó: com duas placas ele é dividido entre elas como as camadas, e desliga o pipeline parallelism do llama.cpp entre elas."
 deploy.knob.mtp_draft_tokens,MTP draft tokens,Tokens rascunhados pelo MTP
 deploy.knob.mtp_draft_tokensHint,How many tokens the nextn head guesses per round. More widens the batch on every hop; fewer wastes less when a guess is rejected.,Quantos tokens a cabeça nextn adivinha por rodada. Mais alarga o lote em todos os hops; menos desperdiça menos quando o palpite é recusado.
 deploy.knob.mtp_min_probability,MTP minimum probability,Probabilidade mínima do MTP
@@ -703,7 +725,7 @@ deploy.knob.prefill_chunk_tokensHint,Prompt tokens sent through the pipeline per
 deploy.knob.prefill_max_inflight_chunks,Prefill chunks in flight,Pedaços de prefill em voo
 deploy.knob.prefill_max_inflight_chunksHint,How many prefill chunks travel the pipeline at once (1..8). Higher hides per-hop latency on a deep pipeline; 1 turns the overlap off.,Quantos pedaços de prefill andam pelo pipeline ao mesmo tempo (1..8). Maior esconde a latência de cada salto num pipeline profundo; 1 desliga a sobreposição.
 deploy.knob.prefill_min_tokens,Prefill machine from (tokens),Máquina de prefill a partir de (tokens)
-deploy.knob.prefill_min_tokensHint,Prefill/decode split: a turn goes through the prefill machine only when the part of its prompt the decode machine does not already hold has at least this many tokens; a shorter one is read by the decode machine itself (sending the state costs about 118 MB whatever the prompt). Empty: 4096. 0: every turn with anything new.,"Divisão prefill/decode: um turno passa pela máquina de prefill só quando a parte do prompt que a máquina de decode ainda não tem soma pelo menos esse número de tokens; um menor é lido pela própria máquina de decode (enviar o estado custa cerca de 118 MB, qualquer que seja o prompt). Vazio: 4096. 0: todo turno com algo novo."
+deploy.knob.prefill_min_tokensHint,A turn goes through the prefill machine only when the part of its prompt the machine that answers does not already hold has at least this many tokens; a shorter one is read by that machine itself (sending the state costs about 118 MB whatever the prompt). Empty: 4096. 0: every turn with anything new.,"Um turno passa pela máquina de prefill só quando a parte do prompt que a máquina que vai responder ainda não tem soma pelo menos esse número de tokens; um menor é lido por essa própria máquina (enviar o estado custa cerca de 118 MB, qualquer que seja o prompt). Vazio: 4096. 0: todo turno com algo novo."
 deploy.knob.presence_penalty,Presence penalty,Penalidade de presença
 deploy.knob.presence_penaltyHint,"Subtracted once from the logit of every token already seen in the penalty window, however often it appeared, which pushes the model toward new words. 0 is off; Qwen recommends up to 1.5 against endless repetition. Same as llama.cpps presence_penalty.","Subtraída uma vez do logit de cada token já visto na janela da penalidade, não importa quantas vezes apareceu, o que empurra o modelo para palavras novas. 0 desliga; a Qwen recomenda até 1,5 contra repetição sem fim. É o presence_penalty do llama.cpp."
 deploy.knob.reasoning_budget,Reasoning budget (tokens),Limite de raciocínio (tokens)
@@ -806,6 +828,14 @@ deploy.speculative,Speculative decoding,Decodificação especulativa
 deploy.speculativeHint,"Guesses the next tokens from repetitions already in the text and checks them in a single pass through the pipeline, so one internet round trip can yield several tokens. A wrong guess is discarded, never emitted - the answer is the same either way.","Adivinha os próximos tokens a partir de repetições que já estão no texto e confere todos numa passagem só pelo pipeline, então uma ida e volta pela internet pode render vários tokens. Palpite errado é descartado, nunca sai na resposta - o texto gerado é o mesmo."
 deploy.startFailed,Deployment did not start,A implantação não começou
 deploy.started,Deployment started,Implantação começou
+deployProgress.runningTitle,Deploying,Implantando
+deployProgress.doneTitle,Deployment ready,Implantação pronta
+deployProgress.failedTitle,Deployment failed,A implantação falhou
+deployProgress.starting,Starting the deployment…,Iniciando a implantação…
+deployProgress.doneDetail,The model is in service on the network.,O modelo está em serviço na rede.
+deployProgress.failedDetail,The deployment did not complete.,A implantação não terminou.
+deployProgress.closeHint,"Closing this window does not stop the deployment; its result also stays in the bell.","Fechar esta janela não interrompe a implantação; o resultado também fica no sino."
+deployProgress.dashboard,Switch to dashboard,Ir para o painel
 deploy.startedDetail,"Follow it below or from the bell. Progress comes from the nodes, so reloading does not lose anything.","Acompanhe abaixo ou no sino. O progresso vem dos nós, então recarregar não perde nada."
 deploy.subtitle,"Take a model a cluster machine already has and put it into service on the network — a set of shards across machines, or one whole file on one machine.","Pegue um modelo que alguma máquina do cluster já tem e coloque-o para atender na rede - um conjunto de fatias espalhado pelas máquinas, ou um arquivo inteiro numa máquina só."
 deploy.thisDeployment,This deployment,Nesta implantação
@@ -896,7 +926,7 @@ deployStudio.selectMachine,Select a machine on the canvas.,Selecione uma máquin
 deployStudio.showInspector,Show inspector,Mostrar inspetor
 deployStudio.size,Size,Tamanho
 deployStudio.tabGlobal,Global,Globais
-deployStudio.tabMachine,Machine: {name},Máquina: {name}
+deployStudio.tabMachine,Machine,Máquina
 deployStudio.technicalModel,Technical model,Modelo técnico
 deployStudio.tensorParallel,Tensor parallel,Tensor paralelo
 deployStudio.tpGroup,Tensor Parallelism group,Grupo Tensor Parallelism
@@ -1013,6 +1043,11 @@ docs.deeper,Full detail in the reference,"O detalhe completo, na referência"
 docs.empty,Documentation is not available,Documentação indisponível
 docs.emptyDetail,The docs folder is generated at build time by scripts/build-docs.mjs. Run npm run build (or npm run dev) in apps/frontend and reload.,A pasta de docs é gerada no build por scripts/build-docs.mjs. Rode npm run build (ou npm run dev) em apps/frontend e recarregue.
 docs.expand,Expand {section},Expandir {section}
+docs.group.concepts,How it works,Como funciona
+docs.group.human,Inside the code,Por dentro do código
+docs.group.screens,Screens,Telas
+docs.group.settings,Deployment settings,Configurações da implantação
+docs.humanGuide,Read the explanation for people,Ler a explicação para pessoas
 docs.noDoc,This document is not in the embedded set,Este documento não está no conjunto embutido
 docs.noDocDetail,Pick one from the tree on the left.,Escolha um na árvore à esquerda.
 docs.noResults,No documentation matches,Nenhuma documentação encontrada
@@ -1045,7 +1080,12 @@ enterprise.store.badgeInstant,Installs in seconds,Instala em segundos
 enterprise.store.badgeLocal,Your data stays on your nodes,Seus dados ficam nos seus nós
 "enterprise.store.badgePaddle","Secure payment with Paddle","Pagamento seguro com Paddle"
 enterprise.store.buy,Buy now,Comprar agora
+"enterprise.store.contactBody","Every company needs something different: tell us how many computers and what support you need, and we send you an offer with the price and a link to subscribe.","Cada empresa tem uma necessidade: conte quantos computadores e que suporte você precisa, e enviamos uma proposta com o preço e um link para assinar."
+"enterprise.store.contactSales","Talk to sales","Falar com vendas"
+"enterprise.store.contactStep1.body","Tell us how many computers and what support you need. We send you an offer with the price and a link to subscribe with Paddle; card details never pass through your node.","Conte quantos computadores e que suporte você precisa. Enviamos uma proposta com o preço e um link para assinar com o Paddle; os dados do cartão nunca passam pelo seu nó."
+"enterprise.store.contactStep1.title","Talk to our team","Fale com a nossa equipe"
 "enterprise.store.ctaBody","One purchase brings Request Logs, Deployment Logs, Statistics and Quota. The price is shown at checkout. Cancel anytime.","Uma compra traz Logs de Requisições, Logs de Implantação, Estatísticas e Quota. O preço aparece no checkout. Cancele quando quiser."
+"enterprise.store.ctaContact","Business Pack (logs, statistics and quota) for your company, priced to what it needs. Talk to our team.","Business Pack (logs, estatísticas e quota) para a sua empresa, com preço sob medida. Fale com a nossa equipe."
 "enterprise.store.ctaPrice","Business Pack (logs, statistics and quota) for {price}. Cancel anytime.","Business Pack (logs, estatísticas e quota) por {price}. Cancele quando quiser."
 enterprise.store.ctaTitle,Ready to see inside your cluster?,Pronto para enxergar dentro do seu cluster?
 enterprise.store.description,"Advanced observability for POM inference workloads: searchable request logs with a complete, redacted request inspector, and an operational statistics dashboard for tokens, latency, cache, nodes and network.","Observabilidade avançada para a inferência no POM: logs de requisições pesquisáveis com um inspetor completo e com segredos redigidos, e um painel de estatísticas operacionais de tokens, latência, cache, nós e rede."
@@ -1083,6 +1123,7 @@ enterprise.store.logs.titleA,See every request.,Veja cada requisição.
 enterprise.store.logs.titleB,Fix issues in minutes.,Resolva problemas em minutos.
 enterprise.store.moreOnSite,More on the plugin store,Mais na loja de plugins
 "enterprise.store.name","Business Pack","Business Pack"
+"enterprise.store.opensContact","Opens the contact form in your browser.","Abre o formulário de contato no navegador."
 "enterprise.store.opensInBrowser","Opens the purchase in your browser; POM keeps running here.","Abre a compra no seu navegador; o POM continua rodando aqui."
 "enterprise.store.quota.feature1","Plans of input and output tokens per day, week, month or a rolling session","Planos de tokens de entrada e saída por dia, semana, mês ou sessão contínua"
 "enterprise.store.quota.feature2","Assign them to a machine, a team, a project or the whole network","Atribua a uma máquina, a uma equipe, a um projeto ou à rede inteira"
@@ -1124,7 +1165,7 @@ firstRun.advanced,Advanced,Avançado
 firstRun.copyTrust,Copy trust.json,Copiar trust.json
 firstRun.defaultPasswordChange,Change password,Trocar senha
 firstRun.defaultPasswordNotice,The panel still uses the default password. Anyone who reaches it on the network can sign in: set a password of your own.,O painel ainda usa a senha padrão. Qualquer pessoa que o alcance pela rede consegue entrar: defina uma senha sua.
-firstRun.discoveryAdminOptional,Optional: open POM on another machine and choose Node or Inference. You can also add machines later.,Opcional: abra o POM em outra máquina e escolha Nó ou Inferência. Dá para adicionar máquinas depois.
+firstRun.discoveryAdminOptional,Optional: open POM on another machine and choose Node or Visitor. You can also add machines later.,Opcional: abra o POM em outra máquina e escolha Nó ou Visitante. Dá para adicionar máquinas depois.
 firstRun.discoveryAdminWaiting,Waiting for computers on the local network...,Esperando computadores na rede local...
 firstRun.discoveryPeers,"{count, plural, one {# computer found} other {# computers found}}","{count, plural, one {# computador encontrado} other {# computadores encontrados}}"
 firstRun.downloadTrust,Download {filename},Baixar {filename}
@@ -1251,8 +1292,8 @@ huggingFace.tokenHint,The token is saved in this node''s pom.json with owner-onl
 huggingFace.tokenLabel,Access token,Token de acesso
 huggingFace.tokenPlaceholder,••••••••last four characters,••••••••últimos quatro caracteres
 inspector.adaptivePrefillChunks,Automatic prefill chunk,Pedaço de prefill automático
-inspector.betaInfo,"Settings that work but are still being measured, for MoE models larger than VRAM. They pay off in combination:","Configurações que funcionam mas ainda estão sendo medidas, para modelos MoE maiores que a VRAM. Elas rendem em combinação:"
-inspector.betaInfoLink,see how to combine them,veja como combinar
+inspector.betaInfo,"Settings that work but are still being measured: the best value changes from route to route.","Configurações que funcionam mas ainda estão sendo medidas: o melhor valor muda de rota para rota."
+inspector.betaInfoLink,see when to change it,veja quando mudar
 inspector.cacheHint,"KV cache type llama.cpp allocates on this installation. It applies to every context this node loads next, not only to this deployment.","Tipo do cache KV que o llama.cpp aloca nesta instalação. Vale para todo contexto que este nó carregar em seguida, não só para esta implantação."
 inspector.cacheK,K cache,Cache K
 inspector.cacheV,V cache,Cache V
@@ -1666,8 +1707,8 @@ network.countryRequired,Required for a public network,Obrigatório para uma rede
 network.description,Description,Descrição
 network.detached,Disconnected from network,Fora da rede
 network.download,Download,Baixar
-network.enrollment.visitor,Inference nodes,Nós de inferência
-network.enrollment.worker,Network nodes,Nós da rede
+network.enrollment.visitor,Visitor,Visitante
+network.enrollment.worker,Worker,Worker
 network.enrollmentClosed,Not accepting new members,Não aceita novos membros
 network.enrollmentOpen,Any role,Qualquer papel
 network.firewallEyebrow,Windows Firewall,Firewall do Windows
@@ -1812,11 +1853,11 @@ network.relayTransfers,Let file transfers of this network pass,Deixar transferê
 network.relayTransfersHint,"Files are large: turn this off to keep the relay for control and inference only.","Arquivos são grandes: desligue para manter o relé só para controle e inferência."
 network.relayVisitors,Visitor relays,Relés de visitantes
 network.relayVisitorsCount,"{count, plural, =0 {No visitor relays anonymously} one {# visitor relays anonymously for this network} other {# visitors relay anonymously for this network}}","{count, plural, =0 {Nenhum visitante serve de relé anônimo} one {# visitante serve de relé anônimo para esta rede} other {# visitantes servem de relé anônimo para esta rede}}"
-network.relinquishNode,Become an infer node,Virar um nó infer
-network.relinquishNodeDescription,"New inference is routed away first. In-flight inference finishes. Then this node becomes infer and releases its slice. If no other node can serve that same slice, the range becomes uncovered and generations that need it fail clearly.","A inferência nova será encaminhada para outro nó primeiro. A inferência em curso termina. Depois este nó vira infer e libera sua fatia. Se nenhum outro nó puder servir essa mesma fatia, a faixa ficará descoberta e as gerações que precisarem dela falharão claramente."
+network.relinquishNode,Become a visitor,Virar visitante
+network.relinquishNodeDescription,"New inference is routed away first. In-flight inference finishes. Then this node becomes a visitor and releases its slice. If no other node can serve that same slice, the range becomes uncovered and generations that need it fail clearly.","A inferência nova será encaminhada para outro nó primeiro. A inferência em curso termina. Depois este nó vira visitante e libera sua fatia. Se nenhum outro nó puder servir essa mesma fatia, a faixa ficará descoberta e as gerações que precisarem dela falharão claramente."
 network.relinquishNodeFailed,The node could not leave the node role,O nó não conseguiu deixar o papel de node
-network.relinquishNodeStarted,This node is draining before becoming infer,Este nó está drenando antes de virar infer
-network.relinquishNodeTitle,Become an infer node?,Virar um nó infer?
+network.relinquishNodeStarted,This node is draining before becoming a visitor,Este nó está drenando antes de virar visitante
+network.relinquishNodeTitle,Become a visitor?,Virar visitante?
 network.requestNode,Request to become a node,Pedir para virar node
 network.requestNodeFailed,The node request was not sent,O pedido para virar node não foi enviado
 network.requestNodePending,Request pending,Pedido pendente
@@ -1935,7 +1976,7 @@ notifications.nodePromotionAccepted,Node request approved,Pedido de node aprovad
 notifications.nodePromotionAcceptedDetail,{host} is now a node after administrator approval.,{host} agora é node após a aprovação do administrador.
 notifications.nodePromotionDetail,{host} requests permission to become a node.,{host} pede permissão para virar node.
 notifications.nodePromotionRejected,Node request rejected,Pedido de node recusado
-notifications.nodePromotionRejectedDetail,{host} remains infer because the administrators rejected the request.,{host} continua infer porque os administradores recusaram o pedido.
+notifications.nodePromotionRejectedDetail,{host} remains a visitor because the administrators rejected the request.,{host} continua visitante porque os administradores recusaram o pedido.
 notifications.nodePromotionTitle,Node promotion request,Pedido para virar node
 notifications.nodeRelinquishDetail,"{host} is leaving the node role. New inference is routed elsewhere, current inference drains, and the slice is released afterward.","{host} está deixando o papel de node. A inferência nova vai para outro lugar, a atual drena e a fatia é liberada depois."
 notifications.nodeRelinquishTitle,Node leaving the network role,Nó deixando o papel de node
@@ -1957,6 +1998,9 @@ notifications.reject,Reject,Recusar
 notifications.requestApproved,{name} approved this machine,{name} aprovou esta máquina
 notifications.requestRejected,{name} declined this machine,{name} recusou esta máquina
 notifications.started,started,começou
+notifications.jobDone,finished,terminou
+notifications.jobFailed,failed,falhou
+notifications.jobDismiss,Remove from the bell,Remover do sino
 notifications.state.cancelled,cancelled,cancelada
 notifications.state.done,completed · {size},concluída · {size}
 notifications.state.failed,failed,falhou
@@ -2074,6 +2118,7 @@ plugins.catalogError,Could not load the public plugin catalog.,Não foi possíve
 plugins.catalogLoading,Loading the public plugin catalog,Carregando o catálogo público de plugins
 plugins.closeFailed,The plugin process did not stop,O processo do plugin não parou
 plugins.community,Community,Comunidade
+"plugins.contactSales","Talk to sales","Falar com vendas"
 plugins.deactivate,Deactivate,Desativar
 plugins.deactivateConfirmDescription,This will deactivate the plugin on this node. You can activate it again later with a license key.,Isso desativará o plugin neste nó. Você poderá ativá-lo novamente com uma chave de licença.
 plugins.deactivateConfirmTitle,Deactivate {name}?,Desativar {name}?
@@ -2173,7 +2218,10 @@ plugins.preferencesOpen,Open {name} preferences,Abrir preferências de {name}
 plugins.preferencesSave,Save preferences,Salvar preferências
 plugins.preferencesSaveFailed,Could not save these preferences locally.,Não foi possível salvar estas preferências localmente.
 plugins.preferencesTitle,Plugin preferences,Preferências do plugin
+"plugins.priceOnRequest","Pricing on request","Preço sob consulta"
 plugins.pricing,Pricing,Preços
+"plugins.promotion.badge","Sale -{percent}%","Promoção -{percent}%"
+"plugins.promotion.note","Limited time, until {date}: {percent}% off {appliesTo, select, first {the first payment} payments {the first {payments} payments} other {every payment while you stay subscribed}}.","Por tempo limitado, até {date}: {percent}% de desconto {appliesTo, select, first {no primeiro pagamento} payments {nos {payments} primeiros pagamentos} other {em todos os pagamentos, enquanto a assinatura durar}}."
 plugins.publishDescription,Submit your plugin's public GitHub repository on the POM website.,Envie o repositório público do seu plugin pelo site do POM.
 plugins.publishEyebrow,Publish,Publicar
 plugins.publishLink,Submit my plugin,Enviar meu plugin
@@ -2505,6 +2553,8 @@ remoteModels.remaining,{time} remaining,{time} restantes
 remoteModels.requiredSpace,Space required,Espaço necessário
 remoteModels.results,"{count}{count, plural, =1 { result} other { results}}","{count}{count, plural, =1 { resultado} other { resultados}}"
 remoteModels.retry,Try again,Tentar de novo
+remoteModels.dismiss,Dismiss,Descartar
+remoteModels.dismissFailed,Could not dismiss the download,Não foi possível descartar o download
 remoteModels.revision,Revision,Revisão
 remoteModels.savedTo,Saved to,Salvo em
 remoteModels.searchAria,Search remote models,Buscar modelos remotos
@@ -2661,7 +2711,7 @@ setupWizard.healthFailed,The general checks could not run,Não foi possível exe
 setupWizard.healthModelLater,The model check happens after setup so a missing model never blocks first access.,A verificação do modelo acontece depois da configuração para que um modelo ausente nunca bloqueie o primeiro acesso.
 setupWizard.healthTitle,A quick check before restart,Uma verificação rápida antes de reiniciar
 setupWizard.hideContents,Hide contents,Ocultar conteúdo
-setupWizard.infer,Inference node,Nó de inferência
+setupWizard.infer,Visitor,Visitante
 setupWizard.inferDetail,Use this machine to send prompts through a trusted network.,Use esta máquina para enviar prompts por uma rede confiável.
 setupWizard.installedHere,Already on this machine,Já está nesta máquina
 setupWizard.inviteDetail,Save the trust document and connection secret for the people you will invite.,Salve o documento de confiança e o segredo de conexão para as pessoas que você vai convidar.

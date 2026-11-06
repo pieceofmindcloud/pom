@@ -198,7 +198,10 @@ UI.
   Os handlers decodificam o frame e entregam
   commands to a bounded local queue; the worker selects one entry per session and
   may call the multi-sequence decode. Each `Session` keeps its own
-  `Utf8Assembler`: `token_to_piece_bytes` keeps the raw bytes, only the accepted
+  `Utf8Assembler`: `InferState::visible_piece` keeps the raw bytes (control
+  tokens hidden, except the thinking and tool call markers in
+  `preserved_specials`, which Flint's vocabulary marks as control and which
+  otherwise reached the client as nothing), only the accepted
   positions feed the accumulator, and the `flush` happens on EOS or on the cleanup
   of an error/cancellation. `/v1/step-stream` starts a producer on the remote peer
   and a separate emitter: each one uses the same existing decoding, but the tokens
@@ -426,7 +429,11 @@ UI.
   for the cleanup during the overlap window.
   The scenario of a cut in the middle of a prefill also confirms that no hop receives
   a partial removal and that the remaining sessions are released.
-- `moe/` - the in-house experts executor. `cache.rs` keeps a global LRU per
+- `moe/` - the in-house experts executor, an **experimental, opt-in** path:
+  the default `inference_mode` is `dense` (llama.cpp), and this executor only
+  runs for a MoE GGUF when a deployment asks for `moe` or `auto`. Its old
+  measurement journal (`freetoken-moe.md`) was removed; git history keeps it.
+  `cache.rs` keeps a global LRU per
   model/layer/expert/format key, with active leases and eviction only of idle ones;
   `admission.rs` computes the budget from the measured free memory; on the CUDA path
   the admission also keeps a reserve derived from the CUDA compute buffer measured by
@@ -503,7 +510,7 @@ UI.
   end of the block), and the proofs of eight experts with hidden 2048 cover the
   `gate_up` K-quant and the heterogeneous path without accepting a non-finite output.
   The differential CUDA proof of the MoE demands a full GGUF and real CUDA GPUs,
-  therefore it stays out of the local validation; see `TODO.md`, item 17.
+  therefore it stays out of the local validation and has not been run yet.
   `bandwidth.rs` and `coexecution.rs` are compiled on the CUDA path or in the tests;
   they turn concurrent CPU/transfer measurements into a deterministic fraction of the
   misses, split per expert, run the two lanes in parallel and sum outputs with a
@@ -551,11 +558,8 @@ UI.
   metadata and the dtypes assumed by the callback's arguments. It also records the same
   sample after the Rust normalization. Without the variable the instrument stays off and
   does not alter the execution path. The normalization validates and preserves that
-  order; it must not transpose the route again. The ignored test
-  `llm::moe_route_tests::callback_entry_emits_the_default_warn_and_the_moe_target_on_the_same_sink`
-  runs the real callback with the process's same `EnvFilter` and must be run with
-  `POM_MOE_ROUTE_DIAGNOSTICS=1 RUST_LOG=info`; the opt-in coverage is in `TODO.md`, item
-  18.
+  order; it must not transpose the route again. `POM_MOE_ROUTE_DIAGNOSTICS=1`
+  only turns on the callback's diagnostic logs.
   The runtime always records the entry of layer 0 in `moe.layer_input_diagnostic`, with
   the count/first non-finite index, the finite range, hidden and route samples, before
   choosing CPU or CUDA. That separates upstream contamination from a failure in one
@@ -608,8 +612,7 @@ UI.
   and `runtime.rs` passes that profile to the NVFP4. On a CUDA NVFP4 route,
   resident experts stay on the GPU, misses are divided by the measured fraction and the
   CPU and GPU lanes run in parallel; the telemetry publishes each lane's calls and the
-  chosen fraction. The CUDA validation and the observed numbers live in
-  `docs/subsystems/freetoken-moe.md`.
+  chosen fraction.
   The wire uses f16 by default (f32 is a deployment option) and no weight travels; the
   seam still does not replace attention, the other layers or the `LlmEngine`'s sampling.
   When the CUDA bridge exists, `MoeRuntime::start_device_warmup` may walk the canonical
@@ -619,7 +622,7 @@ UI.
   free memory and the reserve of the measured compute buffer; when it runs out, the warmup
   ends with `budget-exhausted`, since it is not possible to keep every expert of a large
   model in VRAM. If the model has a `<model>.cuda-profile.json` sidecar with `bandwidth`,
-  the heterogeneous block reuses the same measured FreeToken fraction to run misses on
+  the heterogeneous block reuses the same measured fraction to run misses on
   overlapping CPU and GPU lanes; without a sidecar it keeps the policy exclusively CUDA and
   does not invent a hardware constant.
   `warmup_status`, bytes, candidates and errors arrive in
@@ -668,14 +671,20 @@ UI.
   Prefill/decode split: a whole-model machine deployed with
   `RuntimeParams::inference_role` = `prefill` announces
   `engine/plugin-role-v1:prefill` (`Network::set_external_engine_role`,
-  `role_capability`), which `generation.rs` drops from planning
-  (`is_prefill_only`), so it is never a head. `prefill_on_peer` sends a named
-  turn to such a machine first (`prefill_only`, `max_tokens` 1, `decode_holds`
-  from the head's session offer); when it saved the session, the head's turn
+  `role_capability`). Every machine of the split is a head too; `prefill_peer`
+  picks, per turn, an idle `prefill` machine for a free head that is not one
+  (a busy head reads its own prompt), and `prefill_on_peer` sends it the named
+  turn (`prefill_only`, `max_tokens` 1, `decode_holds` from the head's session
+  offer, `pieces`). `plugin_session::note_holder` and `note_prompt_start` record,
+  when a turn ends, the head that holds a conversation and the start of the
+  prompt it read; `generation.rs::auto_head` sends a conversation, or a new one
+  that begins with most of that prompt, back there. Only a `shared` head (the role the deploy gives the
+  machines left at `both` when the whole model is on several) gets a prefill machine. When it saved the session, the head's turn
   carries `session_source` and `plugin_session::pull_from` fetches that session
   (waiting for its save) before the turn reads its prompt. `engine.load` gets
   `role` for a non-default role.
-  `deploy_block` is the deployment check: a whole model on one machine, or
+  `deploy_block` is the deployment check: a whole model on one machine (on
+  several when the service declares `inference_role`), or
   slices on distinct machines for a service that publishes `stages`, each
   running the plugin's `inference` service. A slice's `engine.load` also gets
   the `link` from `plugin_stage_link::prepare`. See
@@ -695,11 +704,20 @@ UI.
   frame of the engine to it, up to `prefill_max_inflight_chunks` at once,
   numbered, answers written back in order), `link_secret_route` and
   `link_frame_seq_route` (the earlier machine's side, which keeps one loopback
-  connection per relay connection to the port of `engine.link` and passes the
-  frames on in number order). A tensor frame (kind `2`) crosses between the
+  connection per relay connection to the port of `engine.link`, writes the
+  frames to it in number order without waiting for the answers, and a reader
+  task per connection hands each answer to its frame). A tensor frame (kind `2`) crosses between the
   machines in the deployment's `hidden_state_dtype` through `wire` and reaches
   the engine as `f32` (`to_network`, `from_network`). Both routes take only the
   signed live peer that serves the next slice of the same deployment.
+  Because the link encodes with the node's own `wire`, a plugin engine's
+  machine announces the lossy formats (`plugin_engine::STAGE_LINK_DTYPES`, in
+  `/health` and in `Network::plugin_engine_capabilities`), so a sliced plugin
+  deployment can choose f8 or int4.
+  `watch_secret` checks the earlier stage's secret every 10 s. If the secret
+  changed (the earlier engine restarted), `Relay::stale` makes
+  `plugin_engine::run` end the generation, so the restart links with the new
+  secret.
 - `relay.rs` - `BatchCoordinator` schedules the flush immediately and still groups
   concurrent calls to the same next hop in the same executor cycle; it sends a single
   frame and distributes the answers by `item_id`. QUIC also publishes, in microseconds,
@@ -819,8 +837,8 @@ UI.
   from changing the global decode while the collective still waits for all ranks. The internal
   children of a batch skip the lock through `BATCH_CHILD_HEADER`.
 
-  `/v1/session/rollback` is still not forwarded to TP replicas; the pending item is in
-  `TODO.md`, item 13. It is only used by speculative decoding, today off in the TP
+  `/v1/session/rollback` is still not forwarded to TP replicas (an open item: with
+  TP speculation on, the ranks' KV caches would drift apart). It is only used by speculative decoding, today off in the TP
   configurations.
 
   A collective failure **cannot be silent**: it does not degrade the answer, it makes it
@@ -1029,8 +1047,7 @@ UI.
   mistake.
   `LlmEngine::pool` (N contexts over a single model, `pool_tests` covers how the total is
   split between single-session contexts) still **has no caller**: the server loads one context
-  with `load`, and the `#[allow(dead_code)]` on the `pool` is the mark of that; see `TODO.md`,
-  item 14. `LlmEngine::load_with_cache` uses the runtime's `ModelCache` to create only a new
+  with `load`, and the `#[allow(dead_code)]` on the `pool` is the mark of that. `LlmEngine::load_with_cache` uses the runtime's `ModelCache` to create only a new
   context when the identity of the slice and of the weight loading did not change; KV,
   context, session, batch and sampling parameters do not force a re-read of the GGUF. The
   `moe_external_executor` flag is part of that identity: when on, the fork keeps the metadata
@@ -1283,8 +1300,9 @@ reason that only shows up in the error of a tunnel that also failed.
   normal case), the head's ack (it only matters when it fails, or when an old peer bubbled
   the whole answer - a present `token_id` counts as a result), and the frame's deadline the
   caller passes (`relay::frame_deadline`
-  with the round's tokens and every hop of the plan; a hop died after
-  accepting). In prefill the deadline is a liveness one,
+  with the round's tokens and every hop of the plan, raised by the
+  generation's `step_budget_ms` when the engine is slow - `relay::StepBudget`;
+  a hop died after accepting). In prefill the deadline is a liveness one,
   `relay::prefill_frame_deadline` (10 min per hop): the chunk may wait in the
   peer's queue behind another session, and the work-based deadline brought both
   down. `RemoteDecodeStream::next` uses the same calculation between two
@@ -1330,8 +1348,8 @@ reason that only shows up in the error of a tunnel that also failed.
   first), including with prefix reuse.
 - It inherits from the 2026-08-14 investigation (`labsse.rs`), which proved the asymmetry and
   refuted the SSE hypothesis through a counterfactual.
-- The relay's four failure modes still have no E2E scenario; see `TODO.md`,
-  item 16.
+- The relay's four failure modes (dead middle hop, dead tail, lost direct reply,
+  timeout) still have no four-peer E2E scenario.
 
 `runtime.rs`:
 - `NodeConfig` - everything that defines the slice served: model_path/label,
@@ -1384,7 +1402,9 @@ reason that only shows up in the error of a tunnel that also failed.
   did not fire".
 - `MAX_RESTARTS=3` with `RESTART_INTERVAL=30s` between attempts (a newer generation cuts the
   wait short), `MAX_CONTEXT_TOKENS=250_000`. The restart budget is persisted in the
-  journal `<config>.last-slice.json` and shared with the supervisor: if the slice does not fit
+  journal `<config>.last-slice.json` (the path `NodeRuntime` fixes when it is built, never
+  read again from `POM_CONFIG`; the test benches give each runtime its own) and shared
+  with the supervisor: if the slice does not fit
   in memory or falls during the confirmation, each new process increments `Pending.attempts`. On
   reaching `MAX_AUTOMATIC_ATTEMPTS`, the node comes up without a model and leaves the reason in
   `status.detail`; `pom undeploy` also records a persistent block.
@@ -1395,8 +1415,9 @@ reason that only shows up in the error of a tunnel that also failed.
   outside the payload, an overlap, a duplicated item and a payload above 64 MiB.
 - `encode_batch_items`/`decode_batch_items` is the distributed path; a single-session request
   uses the same protocol through
-  `encode_batch_single`/`decode_batch_single`. There is no fallback to the earlier v1/v2
-  frames, since the product has not shipped.
+  `encode_batch_single`/`decode_batch_single`. There is no fallback to the v1/v2 frames
+  from before the launch, which never shipped; released nodes speak `frame/v1-batch`, so a
+  change to it must stay readable by them (root `AGENTS.md`, compatibility policy).
 - **The hot path does not copy the tensor for nothing.** `encode_batch_items` writes the tensor
   once, straight into the buffer that goes to the wire (the positions come from
   `tensor_payload_len`, which computes them without allocating; `frame_prefix` already sizes the

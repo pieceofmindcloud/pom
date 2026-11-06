@@ -232,7 +232,7 @@ describe("AddNodeDialog", () => {
       });
       // the machine's configuration is the deployment's active version, edited with the deployment inspector
       await waitFor(() => expect(get).toHaveBeenCalledWith("/api/ui/deployments"));
-      await waitFor(() => expect(screen.getAllByRole("combobox").length).toBeGreaterThan(5));
+      await waitFor(() => expect(screen.getAllByRole("combobox").length).toBeGreaterThan(4));
       fireEvent.change(screen.getAllByRole("combobox")[1], { target: { value: "whole:0-39" } });
       fireEvent.click(screen.getByRole("button", { name: "Adicionar" }));
       await waitFor(() => {
@@ -318,9 +318,10 @@ describe("AddNodeDialog", () => {
       name: "Strata",
       architectures: ["qwen35moe"],
       settings: [],
-      pomSettings: [],
+      pomSettings: ["inference_role"],
       nodeIds: ["n2"],
       stages: false,
+      stageArchitectures: [],
       vision: false,
     };
     try {
@@ -352,6 +353,9 @@ describe("AddNodeDialog", () => {
       });
       // a service that runs no layer slices takes the whole model only
       await waitFor(() => expect(screen.queryByRole("option", { name: "20-39" })).toBeNull());
+      // the whole model takes a prefill/decode role (a slice would carry the hidden state instead)
+      const role = screen.getByRole("option", { name: "Prefill primeiro (também decodifica)" }).closest("select") as HTMLSelectElement;
+      fireEvent.change(role, { target: { value: "prefill" } });
       fireEvent.click(screen.getByRole("button", { name: "Adicionar" }));
       await waitFor(() => {
         expect(post).toHaveBeenLastCalledWith(
@@ -359,7 +363,9 @@ describe("AddNodeDialog", () => {
           expect.objectContaining({
             target_node_id: "n2",
             kind: "whole",
-            overrides: { params: expect.objectContaining({ inference_service: "strata", n_ctx: 8192 }) },
+            overrides: {
+              params: expect.objectContaining({ inference_service: "strata", n_ctx: 8192, inference_role: "prefill" }),
+            },
           }),
         );
       });

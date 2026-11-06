@@ -1,7 +1,7 @@
-import { CheckCircle2, Download, RotateCcw, X, XCircle } from "lucide-react";
+import { CheckCircle2, Download, RotateCcw, Trash2, X, XCircle } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { useI18n } from "../i18n/provider";
-import { cancelRemoteModelDownload, retryRemoteModelDownload } from "../lib/api";
+import { cancelRemoteModelDownload, dismissRemoteModelDownload, retryRemoteModelDownload } from "../lib/api";
 import { bytes, duration, rate } from "../lib/format";
 import { isModelDownloadActive, percentOfDownload } from "../lib/modelProvider";
 import { useModelDownloads } from "../lib/queries";
@@ -51,6 +51,15 @@ function DownloadRow({ job, onRefresh }: { job: Job; onRefresh: () => void }) {
     }
   }
 
+  async function dismiss() {
+    try {
+      await dismissRemoteModelDownload(job.id);
+      onRefresh();
+    } catch (error) {
+      toast.error(t("remoteModels.dismissFailed"));
+    }
+  }
+
   return (
     <div className="flex gap-3 border-t border-line px-5 py-4 first:border-t-0">
       <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-line bg-raised text-muted">
@@ -86,6 +95,11 @@ function DownloadRow({ job, onRefresh }: { job: Job; onRefresh: () => void }) {
           {(status === "failed" || status === "cancelled") && (
             <Button size="sm" variant="outline" icon={<RotateCcw className="h-3.5 w-3.5" />} onClick={() => void retry()}>
               {t("remoteModels.retry")}
+            </Button>
+          )}
+          {(status === "failed" || status === "cancelled") && (
+            <Button size="sm" variant="ghost" icon={<Trash2 className="h-3.5 w-3.5" />} onClick={() => void dismiss()}>
+              {t("remoteModels.dismiss")}
             </Button>
           )}
         </div>

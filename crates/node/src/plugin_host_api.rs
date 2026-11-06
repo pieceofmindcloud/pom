@@ -267,7 +267,7 @@ pub(crate) async fn component_call(
         .get("x-pom-job")
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned);
-    let network = crate::components::network_components(&state).await;
+    let network = crate::components::components_for_call(&state, &deploy_id, &component).await;
     let forward = crate::components::live_forward(state.clone());
     let target = network
         .iter()
@@ -354,7 +354,8 @@ pub(crate) async fn image_job_begin(
         let tokens = (request.prompt.len() / 4) as u32;
         crate::quota::admit(&state, &caller, &request.prompt, tokens, &details).await
     };
-    match jobs.begin(&request.job_id, denial, std::time::Instant::now()) {
+    let images = details["images"].as_u64().unwrap_or(1);
+    match jobs.begin(&request.job_id, denial, std::time::Instant::now(), images) {
         Ok(audit_id) => {
             state.audit.begin(crate::reqlog::AuditRequest {
                 id: audit_id.clone(),

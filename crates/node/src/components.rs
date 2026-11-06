@@ -388,12 +388,14 @@ pub(crate) async fn undeploy_image(
     call: &TargetCall,
     deploy_id: &str,
 ) -> Vec<Released> {
-    let mut deployments = load_image_deployments(db);
-    let Some(position) = deployments.iter().position(|d| d.deploy_id == deploy_id) else {
+    let deployments = load_image_deployments(db);
+    let Some(deployment) = deployments
+        .iter()
+        .find(|d| d.deploy_id == deploy_id)
+        .cloned()
+    else {
         return Vec::new();
     };
-    let deployment = deployments.remove(position);
-    save_image_deployments(db, &deployments);
     let mut nodes: Vec<String> = Vec::new();
     for choice in &deployment.components {
         if !nodes.contains(&choice.node_id) {
@@ -414,6 +416,30 @@ pub(crate) async fn undeploy_image(
             error: result.err(),
         });
     }
+    // A machine that did not answer would serve its part again on its next
+    // start (it restores its own list): its part stays on record, so the
+    // screen still lists it and undeploying again releases it.
+    let pending: Vec<ComponentChoice> = deployment
+        .components
+        .iter()
+        .filter(|choice| {
+            released
+                .iter()
+                .any(|r| !r.ok && r.node_id == choice.node_id)
+        })
+        .cloned()
+        .collect();
+    let mut deployments: Vec<ImageDeployment> = deployments
+        .into_iter()
+        .filter(|d| d.deploy_id != deploy_id)
+        .collect();
+    if !pending.is_empty() {
+        deployments.push(ImageDeployment {
+            components: pending,
+            ..deployment
+        });
+    }
+    save_image_deployments(db, &deployments);
     released
 }
 
@@ -851,6 +877,9 @@ pub(crate) struct ImageJob {
     pub audit_id: String,
     pub started: std::time::Instant,
     pub calls: Vec<JobCall>,
+    /// The images asked for at the start: what a generation ComfyUI never
+    /// reports finished is charged, so it is never free.
+    pub images: u64,
 }
 
 /// The open generations of this node, by ComfyUI prompt id.
@@ -867,6 +896,7 @@ impl ImageJobs {
         job_id: &str,
         denial: Option<crate::quota::Denial>,
         now: std::time::Instant,
+        images: u64,
     ) -> Result<String, crate::quota::Denial> {
         let mut jobs = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(job) = jobs.get(job_id) {
@@ -882,6 +912,7 @@ impl ImageJobs {
                 audit_id: audit_id.clone(),
                 started: now,
                 calls: Vec::new(),
+                images,
             },
         );
         Ok(audit_id)
@@ -1035,12 +1066,13 @@ pub(crate) fn spawn_job_sweeper(state: GatewayState) {
         loop {
             tick.tick().await;
             for (_, job) in image_jobs().sweep(std::time::Instant::now()) {
+                let images = job.images;
                 complete_image_job(
                     &state,
                     job,
                     crate::reqlog::AuditStatus::Incomplete,
                     Some("ComfyUI did not report the end of this generation".into()),
-                    0,
+                    images,
                     None,
                     None,
                     None,
@@ -1126,11 +1158,82 @@ pub(crate) async fn network_components(state: &GatewayState) -> Vec<NetworkCompo
     all
 }
 
+/// How long a component call reuses the network's component list: a
+/// sampling run makes one call per step and branch, and asking every peer
+/// for its services each time adds a round trip (or a slow peer's timeout)
+/// to every step.
+const COMPONENT_LIST_TTL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// A value kept for `ttl` after it was read.
+pub(crate) struct Recent<T> {
+    ttl: std::time::Duration,
+    value: std::sync::Mutex<Option<(std::time::Instant, T)>>,
+}
+
+impl<T: Clone> Recent<T> {
+    pub(crate) const fn new(ttl: std::time::Duration) -> Self {
+        Self {
+            ttl,
+            value: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// The kept value, while it is younger than `ttl` at `now`.
+    pub(crate) fn get(&self, now: std::time::Instant) -> Option<T> {
+        let value = self.value.lock().unwrap_or_else(|e| e.into_inner());
+        value
+            .as_ref()
+            .filter(|(at, _)| now.saturating_duration_since(*at) < self.ttl)
+            .map(|(_, value)| value.clone())
+    }
+
+    pub(crate) fn put(&self, now: std::time::Instant, value: T) {
+        *self.value.lock().unwrap_or_else(|e| e.into_inner()) = Some((now, value));
+    }
+}
+
+static RECENT_COMPONENTS: Recent<Vec<NetworkComponent>> = Recent::new(COMPONENT_LIST_TTL);
+
+/// The network's components for a component call: the list read in the last
+/// few seconds when it names `deploy_id`'s `component`, a fresh one
+/// otherwise (a deployment made a moment ago is found at once).
+pub(crate) async fn components_for_call(
+    state: &GatewayState,
+    deploy_id: &str,
+    component: &str,
+) -> Vec<NetworkComponent> {
+    let now = std::time::Instant::now();
+    if let Some(list) = RECENT_COMPONENTS.get(now) {
+        if list
+            .iter()
+            .any(|c| c.deploy_id == deploy_id && c.component == component)
+        {
+            return list;
+        }
+    }
+    let list = network_components(state).await;
+    RECENT_COMPONENTS.put(std::time::Instant::now(), list.clone());
+    list
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn a_recent_list_is_reused_only_while_young() {
+        let recent: Recent<u32> = Recent::new(std::time::Duration::from_secs(5));
+        let start = std::time::Instant::now();
+        assert_eq!(recent.get(start), None);
+        recent.put(start, 7);
+        assert_eq!(
+            recent.get(start + std::time::Duration::from_secs(4)),
+            Some(7)
+        );
+        assert_eq!(recent.get(start + std::time::Duration::from_secs(5)), None);
+    }
 
     /// A plugin that records what it was asked and answers `answer`.
     fn recording(answer: Result<(), String>) -> (PluginCall, Arc<Mutex<Vec<(String, Value)>>>) {
@@ -1424,6 +1527,37 @@ mod tests {
         assert!(load_image_deployments(&db).is_empty());
     }
 
+    #[tokio::test]
+    async fn an_offline_target_keeps_its_part_until_released() {
+        let (_dir, db) = db();
+        let (call, _) = targets_call(None);
+        let req = request(vec![
+            choice("diffusion", "a", "/m/z.safetensors"),
+            choice("vae", "c", "/m/ae.safetensors"),
+        ]);
+        let deploy_id = deploy_image(&db, &network(), &call, req).await.unwrap();
+        // `c` does not answer: `a` is released, `c` stays on record.
+        let call: TargetCall = Arc::new(|node_id: String, _path: &'static str, _body: Value| {
+            Box::pin(async move {
+                if node_id == "c" {
+                    Err("host-c did not answer".to_owned())
+                } else {
+                    Ok(())
+                }
+            })
+        });
+        let released = undeploy_image(&db, &call, &deploy_id).await;
+        assert_eq!(released.iter().filter(|r| r.ok).count(), 1);
+        let left = load_image_deployments(&db);
+        assert_eq!(left.len(), 1, "the screen still lists it for a retry");
+        assert_eq!(left[0].components.len(), 1);
+        assert_eq!(left[0].components[0].node_id, "c");
+        // Undeploying again once `c` answers drops the record.
+        let (call, _) = targets_call(None);
+        undeploy_image(&db, &call, &deploy_id).await;
+        assert!(load_image_deployments(&db).is_empty());
+    }
+
     fn served(deploy_id: &str, component: &str, node_id: &str) -> NetworkComponent {
         NetworkComponent {
             deploy_id: deploy_id.into(),
@@ -1585,9 +1719,9 @@ mod tests {
     fn an_image_generation_is_logged_once_with_its_telemetry() {
         let jobs = ImageJobs::default();
         let now = std::time::Instant::now();
-        let first = jobs.begin("p1", None, now).unwrap();
+        let first = jobs.begin("p1", None, now, 1).unwrap();
         assert_eq!(
-            jobs.begin("p1", None, now).unwrap(),
+            jobs.begin("p1", None, now, 1).unwrap(),
             first,
             "begin is idempotent per job"
         );
@@ -1620,7 +1754,7 @@ mod tests {
             retry_after_secs: Some(60),
         };
         let refused = jobs
-            .begin("p1", Some(denial), std::time::Instant::now())
+            .begin("p1", Some(denial), std::time::Instant::now(), 1)
             .unwrap_err();
         assert!(refused.message.contains("Image budget"));
         jobs.record("p1", job_call("vae", "gpu-c"));
@@ -1650,12 +1784,21 @@ mod tests {
     fn an_unfinished_generation_is_closed_incomplete() {
         let jobs = ImageJobs::default();
         let start = std::time::Instant::now();
-        jobs.begin("old", None, start).unwrap();
-        jobs.begin("new", None, start + std::time::Duration::from_secs(29 * 60))
-            .unwrap();
+        jobs.begin("old", None, start, 2).unwrap();
+        jobs.begin(
+            "new",
+            None,
+            start + std::time::Duration::from_secs(29 * 60),
+            1,
+        )
+        .unwrap();
         let swept = jobs.sweep(start + std::time::Duration::from_secs(31 * 60));
         assert_eq!(swept.len(), 1);
         assert_eq!(swept[0].0, "old");
+        assert_eq!(
+            swept[0].1.images, 2,
+            "a swept generation keeps its estimate"
+        );
         assert!(jobs.take("new").is_some());
     }
 

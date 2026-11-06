@@ -314,6 +314,16 @@ pub(crate) fn check_params(
     params
 }
 
+/// The cache key of a verdict: a node's image budget and its token budget
+/// are separate, so one refusal never stands for the other.
+fn verdict_key(node: &str, request_details: &Value) -> String {
+    if request_details.get("kind").and_then(Value::as_str) == Some("image") {
+        format!("{node}|image")
+    } else {
+        node.to_owned()
+    }
+}
+
 /// May a request of `caller` go to the pipeline? `None` lets it through.
 pub(crate) async fn admit(
     state: &GatewayState,
@@ -327,12 +337,13 @@ pub(crate) async fn admit(
         .clone()
         .filter(|node| !node.is_empty())
         .unwrap_or_else(|| state.network.node_id.clone());
+    let key = verdict_key(&node, request_details);
     {
         let mut memory = lock();
         let now = Instant::now();
         memory.verdicts.retain(|_, (until, _)| *until > now);
         memory.blocked_until.retain(|_, (until, _)| *until > now);
-        if let Some((_, cached)) = memory.verdicts.get(&node) {
+        if let Some((_, cached)) = memory.verdicts.get(&key) {
             return match cached {
                 Cached::Allowed => None,
                 Cached::Denied(denial) => Some(denial.clone()),
@@ -355,7 +366,7 @@ pub(crate) async fn admit(
         }
         return memory
             .blocked_until
-            .get(&node)
+            .get(&key)
             .map(|(_, denial)| denial.clone());
     };
     let cache = reply
@@ -365,11 +376,11 @@ pub(crate) async fn admit(
         .filter(|cache| keep && !cache.is_zero());
     if reply.get("allowed").and_then(Value::as_bool) != Some(false) {
         let mut memory = lock();
-        memory.blocked_until.remove(&node);
+        memory.blocked_until.remove(&key);
         if let Some(cache) = cache {
             memory
                 .verdicts
-                .insert(node, (Instant::now() + cache, Cached::Allowed));
+                .insert(key, (Instant::now() + cache, Cached::Allowed));
         }
         return None;
     }
@@ -377,12 +388,12 @@ pub(crate) async fn admit(
     let mut memory = lock();
     if let Some(cache) = cache {
         memory.verdicts.insert(
-            node.clone(),
+            key.clone(),
             (Instant::now() + cache, Cached::Denied(denial.clone())),
         );
         if let Some(seconds) = denial.retry_after_secs {
             memory.blocked_until.insert(
-                node,
+                key,
                 (Instant::now() + Duration::from_secs(seconds), denial.clone()),
             );
         }
@@ -393,8 +404,11 @@ pub(crate) async fn admit(
 /// Forget cached verdicts of this node, after it changed its own budget.
 fn forget(node: &str) {
     let mut memory = lock();
+    let image = format!("{node}|image");
     memory.verdicts.remove(node);
     memory.blocked_until.remove(node);
+    memory.verdicts.remove(&image);
+    memory.blocked_until.remove(&image);
 }
 
 fn unavailable() -> Response {
@@ -510,6 +524,29 @@ mod tests {
         assert_eq!(denial.map(|denial| denial.message).as_deref(), Some("spent"));
         forget("quota-test-held");
         assert!(admit(&state, &caller("quota-test-held"), "hi", 1, &json!({})).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn an_image_refusal_never_holds_chat_requests_and_back() {
+        let state = crate::gateway::testkit::state_with("gateway", vec![]).await;
+        let caller = crate::reqlog::Caller {
+            key_id: "k".into(),
+            key_label: "k".into(),
+            key_node_id: Some("quota-test-split".into()),
+        };
+        let image = json!({"kind": "image", "images": 1});
+        lock().blocked_until.insert(
+            verdict_key("quota-test-split", &image),
+            (
+                Instant::now() + Duration::from_secs(60),
+                Denial { message: "Image budget exhausted".into(), retry_after_secs: Some(60) },
+            ),
+        );
+        assert!(admit(&state, &caller, "hi", 1, &json!({})).await.is_none(), "chat still passes");
+        let denial = admit(&state, &caller, "a cat", 0, &image).await;
+        assert_eq!(denial.map(|d| d.message).as_deref(), Some("Image budget exhausted"));
+        forget("quota-test-split");
+        assert!(admit(&state, &caller, "a cat", 0, &image).await.is_none(), "forget clears both");
     }
 
     #[test]

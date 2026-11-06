@@ -345,6 +345,52 @@ mod tests {
         assert_eq!(answer["image_files"][0]["name"], "pub/repo/ae.safetensors");
     }
 
+    async fn delete_status(path: &std::path::Path, model_dir: &std::path::Path) -> StatusCode {
+        let state = crate::gateway::testkit::state_with("delete-image", vec![]).await;
+        state.auth.write().await.model_dirs = Some(vec![model_dir.to_string_lossy().into_owned()]);
+        delete_model(
+            crate::auth::ConnectionAuth,
+            State(state),
+            Json(DeleteRequest {
+                path: path.to_string_lossy().into_owned(),
+                force: false,
+            }),
+        )
+        .await
+        .status()
+    }
+
+    #[tokio::test]
+    async fn an_image_file_can_be_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = crate::image_catalog::write_test_safetensors(
+            dir.path(),
+            "pub/repo/ae.safetensors",
+            &crate::image_catalog::test_fixture("flux_ae_vae"),
+        );
+        assert_eq!(delete_status(&file, dir.path()).await, StatusCode::OK);
+        assert!(!file.exists());
+    }
+
+    #[tokio::test]
+    async fn a_text_file_named_safetensors_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("x.safetensors");
+        std::fs::write(&file, b"hello").unwrap();
+        assert_eq!(delete_status(&file, dir.path()).await, StatusCode::BAD_REQUEST);
+        assert!(file.exists());
+    }
+
+    #[tokio::test]
+    async fn an_image_file_outside_the_model_folders_is_refused() {
+        let models = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let bin = elsewhere.path().join("pytorch_model.bin");
+        std::fs::write(&bin, b"anything").unwrap();
+        assert_eq!(delete_status(&bin, models.path()).await, StatusCode::BAD_REQUEST);
+        assert!(bin.exists());
+    }
+
     #[test]
     fn slice_folder_cannot_equal_or_nest_inside_a_whole_model_folder() {
         let root = std::env::temp_dir().join(format!("pom-paths-{}", std::process::id()));

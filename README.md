@@ -18,7 +18,7 @@ come from your own machines, or from a network of computers you trust.
 Good AI does not have to live in the cloud. Or you can be your own cloud.
 
 - Website: <https://pieceofmind.cloud>
-- Community: <https://discord.gg/d6Yjkk8ej>
+- Community: <https://discord.gg/ptGMZbaDkN>
 - Windows, macOS and Linux - open source (MIT, see `LICENSE`)
 
 ---

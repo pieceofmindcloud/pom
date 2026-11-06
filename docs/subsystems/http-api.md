@@ -1452,7 +1452,7 @@ with every holder and its path), the resolved `vision` (head) and `mtp` (tail)
 slots and whether each is already there or will be copied. `DeployRequest.keep_existing`
 (default `false`) keeps in service the machines outside the plan that already
 serve the same model (`deployment.md`, section 1).
-`/api/ui/models` and `/api/ui/cluster/models` carry `sidecars` per machine.
+`/api/ui/models` and `/api/ui/cluster/models` carry `sidecars` per machine. `GET /api/ui/models` also carries `image_files`: the image model files (safetensors and the other formats ComfyUI loads) of the whole-model folders, each with `name`, `path`, `size_bytes`, `source`, `format`, `category` (`diffusion`, `text_encoder`, `vae`, `checkpoint`, `lora`, `controlnet`, `clip_vision`, `upscale` or `other`), `family`, `dtype` and `metadata_error` (`models/image_catalog.rs`).
 
 **`GET` and `POST /api/ui/model-provider/config`** require `ConnectionAuth` and
 control the optional Hugging Face token. GET only returns

@@ -785,6 +785,10 @@ pub(super) async fn scan_catalog(roots: &CatalogRoots) -> Catalog {
         // cached by path, size and mtime, so after the first read this costs a
         // `stat` per file.
         catalog.sidecars = catalog::discover_sidecars(&catalog.sidecar_roots);
+        // Image model files are classified from their header the same way:
+        // cached by path, size and mtime, so a rescan costs a `stat` each.
+        catalog.image_files =
+            crate::image_catalog::discover_image_files(&catalog::image_roots(&dirs));
         catalog
     })
     .await
@@ -797,6 +801,7 @@ pub(super) async fn scan_catalog(roots: &CatalogRoots) -> Catalog {
             metadata_complete: false,
             sidecars: Vec::new(),
             sidecar_roots: Vec::new(),
+            image_files: Vec::new(),
         }
     })
 }
@@ -1019,6 +1024,7 @@ pub(super) async fn local_catalog(state: &GatewayState) -> Arc<Catalog> {
                     metadata_complete: false,
                     sidecars: Vec::new(),
                     sidecar_roots: Vec::new(),
+                    image_files: Vec::new(),
                 });
                 let mut cached = CachedCatalog {
                     at: Instant::now(),
@@ -1898,8 +1904,13 @@ pub(super) async fn save_network_chat(
 }
 
 pub(super) async fn models(State(state): State<GatewayState>) -> impl IntoResponse {
-    let catalog = local_catalog(&state).await;
-    Json(json!({
+    Json(models_answer(&state).await)
+}
+
+/// The body of `GET /api/ui/models`.
+pub(super) async fn models_answer(state: &GatewayState) -> serde_json::Value {
+    let catalog = local_catalog(state).await;
+    json!({
         // Not `sysmon`: that one is the raw operating system hostname and
         // ignores the `node_name` from pom.json. `network.hostname` is the name
         // this node announces to peers, and it is what the rest of the screen
@@ -1911,9 +1922,10 @@ pub(super) async fn models(State(state): State<GatewayState>) -> impl IntoRespon
         "models": catalog.models,
         "shard_sets": catalog.shard_sets,
         "sidecars": catalog.sidecars,
+        "image_files": catalog.image_files,
         "scanned": catalog.scanned,
         "metadata_complete": catalog.metadata_complete,
-    }))
+    })
 }
 
 #[derive(Debug, Serialize, Deserialize)]

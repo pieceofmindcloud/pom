@@ -343,39 +343,46 @@ pub fn discover_image_files(roots: &[(PathBuf, ModelSource)]) -> Vec<ImageModelF
 }
 
 #[cfg(test)]
+/// A safetensors file with this header and a sparse data section as long
+/// as the offsets say, so no weights are written.
+pub(crate) fn write_test_safetensors(dir: &Path, file: &str, header: &str) -> PathBuf {
+    use std::io::Write;
+    let data_len = serde_json::from_str::<serde_json::Value>(header)
+        .ok()
+        .and_then(|v| v.as_object().cloned())
+        .map(|map| {
+            map.iter()
+                .filter(|(k, _)| k.as_str() != "__metadata__")
+                .filter_map(|(_, v)| v["data_offsets"][1].as_u64())
+                .max()
+                .unwrap_or(0)
+        })
+        .unwrap_or(0);
+    let path = dir.join(file);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let mut out = std::fs::File::create(&path).unwrap();
+    out.write_all(&(header.len() as u64).to_le_bytes()).unwrap();
+    out.write_all(header.as_bytes()).unwrap();
+    out.set_len(8 + header.len() as u64 + data_len).unwrap();
+    path
+}
+
+/// Test support: the header of a real file in `fixtures/safetensors/`.
+#[cfg(test)]
+pub(crate) fn test_fixture(name: &str) -> String {
+    let path = format!(
+        "{}/src/models/fixtures/safetensors/{name}.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"))
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     fn fixture(name: &str) -> String {
-        let path = format!(
-            "{}/src/models/fixtures/safetensors/{name}.json",
-            env!("CARGO_MANIFEST_DIR")
-        );
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"))
-    }
-
-    /// A safetensors file with this header and a sparse data section as long
-    /// as the offsets say, so no weights are written.
-    fn write_header(dir: &Path, file: &str, header: &str) -> PathBuf {
-        let data_len = serde_json::from_str::<serde_json::Value>(header)
-            .ok()
-            .and_then(|v| v.as_object().cloned())
-            .map(|map| {
-                map.iter()
-                    .filter(|(k, _)| k.as_str() != "__metadata__")
-                    .filter_map(|(_, v)| v["data_offsets"][1].as_u64())
-                    .max()
-                    .unwrap_or(0)
-            })
-            .unwrap_or(0);
-        let path = dir.join(file);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let mut out = std::fs::File::create(&path).unwrap();
-        out.write_all(&(header.len() as u64).to_le_bytes()).unwrap();
-        out.write_all(header.as_bytes()).unwrap();
-        out.set_len(8 + header.len() as u64 + data_len).unwrap();
-        path
+        test_fixture(name)
     }
 
     fn folder(dir: &Path) -> Vec<(PathBuf, ModelSource)> {
@@ -402,7 +409,8 @@ mod tests {
             ("clip_vision", ImageCategory::ClipVision),
             ("esrgan_upscale", ImageCategory::Upscale),
         ] {
-            let path = write_header(dir.path(), &format!("{name}.safetensors"), &fixture(name));
+            let path =
+                write_test_safetensors(dir.path(), &format!("{name}.safetensors"), &fixture(name));
             let header = read_safetensors_header(&path).unwrap();
             let (category, _, _) = classify(&header);
             assert_eq!(category, expected, "{name}");
@@ -420,7 +428,8 @@ mod tests {
             ("sd15_checkpoint", Some("sd15"), "f16"),
             ("flux_ae_vae", Some("flux.1-ae"), "f32"),
         ] {
-            let path = write_header(dir.path(), &format!("{name}.safetensors"), &fixture(name));
+            let path =
+                write_test_safetensors(dir.path(), &format!("{name}.safetensors"), &fixture(name));
             let (_, got_family, got_dtype) = classify(&read_safetensors_header(&path).unwrap());
             assert_eq!(got_family.as_deref(), family, "{name}");
             assert_eq!(got_dtype.as_deref(), Some(dtype), "{name}");
@@ -431,7 +440,7 @@ mod tests {
     fn an_unknown_tensor_table_is_other() {
         let dir = tempfile::tempdir().unwrap();
         let header = r#"{"foo.weight":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}"#;
-        let path = write_header(dir.path(), "foo.safetensors", header);
+        let path = write_test_safetensors(dir.path(), "foo.safetensors", header);
         let (category, family, _) = classify(&read_safetensors_header(&path).unwrap());
         assert_eq!(category, ImageCategory::Other);
         assert_eq!(family, None);
@@ -450,7 +459,7 @@ mod tests {
         let mut bytes = 100u64.to_le_bytes().to_vec();
         bytes.extend_from_slice(b"{\"a\":");
         std::fs::write(&cut, bytes).unwrap();
-        let array = write_header(dir.path(), "array.safetensors", "[1,2,3]");
+        let array = write_test_safetensors(dir.path(), "array.safetensors", "[1,2,3]");
         for path in [&short, &huge, &over, &cut, &array] {
             assert!(read_safetensors_header(path).is_err(), "{}", path.display());
         }
@@ -466,9 +475,9 @@ mod tests {
     fn partial_downloads_are_not_listed() {
         let dir = tempfile::tempdir().unwrap();
         let vae = fixture("flux_ae_vae");
-        write_header(dir.path(), "pub/repo/ae.safetensors", &vae);
-        write_header(dir.path(), "pub/repo/ae2.safetensors.part", &vae);
-        write_header(dir.path(), "pub/repo/.hidden.safetensors", &vae);
+        write_test_safetensors(dir.path(), "pub/repo/ae.safetensors", &vae);
+        write_test_safetensors(dir.path(), "pub/repo/ae2.safetensors.part", &vae);
+        write_test_safetensors(dir.path(), "pub/repo/.hidden.safetensors", &vae);
         let files = discover_image_files(&folder(dir.path()));
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].name, "pub/repo/ae.safetensors");
@@ -494,7 +503,7 @@ mod tests {
     fn a_folder_reached_twice_lists_each_file_once() {
         let dir = tempfile::tempdir().unwrap();
         let models = dir.path().join("models");
-        write_header(&models, "pub/repo/ae.safetensors", &fixture("flux_ae_vae"));
+        write_test_safetensors(&models, "pub/repo/ae.safetensors", &fixture("flux_ae_vae"));
         let link = dir.path().join("link");
         std::os::unix::fs::symlink(&models, &link).unwrap();
         let roots = vec![(models, ModelSource::Folder), (link, ModelSource::Folder)];

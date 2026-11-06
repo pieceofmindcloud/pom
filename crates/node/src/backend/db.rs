@@ -2408,6 +2408,7 @@ mod tests {
             metadata_complete: true,
             sidecars: Vec::new(),
             sidecar_roots: Vec::new(),
+            image_files: Vec::new(),
         };
         db.record_catalog(&catalog).unwrap();
 
@@ -2430,6 +2431,7 @@ mod tests {
             metadata_complete: true,
             sidecars: Vec::new(),
             sidecar_roots: Vec::new(),
+            image_files: Vec::new(),
         })
         .unwrap();
         assert!(db
@@ -2461,6 +2463,7 @@ mod tests {
             metadata_complete: false,
             sidecars: Vec::new(),
             sidecar_roots: Vec::new(),
+            image_files: Vec::new(),
         };
 
         db.record_catalog(&catalog).unwrap();

@@ -222,6 +222,7 @@ mod tests {
             metadata_complete: false,
             sidecars: Vec::new(),
             sidecar_roots: Vec::new(),
+            image_files: Vec::new(),
         });
         let mut cached = CachedCatalog {
             at: Instant::now(),
@@ -284,6 +285,7 @@ mod tests {
                 metadata_complete: false,
                 sidecars: Vec::new(),
                 sidecar_roots: Vec::new(),
+                image_files: Vec::new(),
             }),
             refreshing: Some(roots),
             enriching: None,
@@ -300,6 +302,47 @@ mod tests {
 
         *catalog_cache().lock().await = None;
         std::fs::remove_dir_all(root).ok();
+    }
+
+    #[tokio::test]
+    async fn image_files_are_in_the_models_answer() {
+        let root = tempfile::tempdir().unwrap();
+        let models = root.path().join("models");
+        let shards = root.path().join("shards");
+        std::fs::create_dir_all(&shards).unwrap();
+        crate::image_catalog::write_test_safetensors(
+            &models,
+            "pub/repo/ae.safetensors",
+            &crate::image_catalog::test_fixture("flux_ae_vae"),
+        );
+        let mut gguf = b"GGUF".to_vec();
+        gguf.extend_from_slice(&[0u8; 60]);
+        std::fs::write(models.join("whole.gguf"), gguf).unwrap();
+
+        let roots = normalize_catalog_roots(vec![models.clone()], shards.clone());
+        let scanned = scan_catalog(&roots).await;
+        assert_eq!(scanned.image_files.len(), 1);
+        assert_eq!(scanned.image_files[0].name, "pub/repo/ae.safetensors");
+        assert!(scanned.models.iter().all(|m| !m.path.ends_with(".safetensors")));
+
+        let state = crate::gateway::testkit::state_with("catalog-images", vec![]).await;
+        {
+            let mut config = state.auth.write().await;
+            config.model_dirs = Some(vec![models.to_string_lossy().into_owned()]);
+            config.shard_dir = Some(shards.to_string_lossy().into_owned());
+        }
+        *catalog_cache().lock().await = Some(CachedCatalog {
+            at: Instant::now(),
+            roots: roots.clone(),
+            catalog: Arc::new(scanned),
+            refreshing: None,
+            enriching: None,
+            pending_refresh: None,
+        });
+        let answer = models_answer(&state).await;
+        *catalog_cache().lock().await = None;
+        assert_eq!(answer["image_files"][0]["category"], "vae");
+        assert_eq!(answer["image_files"][0]["name"], "pub/repo/ae.safetensors");
     }
 
     #[test]

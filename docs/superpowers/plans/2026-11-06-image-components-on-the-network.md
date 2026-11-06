@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-11-06-image-models-by-component-design.md` (sections 5.4 to 5.6). Plan A (`2026-11-06-image-catalog-and-comfyui-folders.md`) is done: `Catalog.image_files`, `host_api` catalog routes, downloads and links in ComfyUI.
 
-**Repositories:** Tasks 1-6 and 11 in `pom-jair` (branch `jair`), tasks 7-10 and 12 in `pom-plugin-comfyui` (`main`), tasks 13-15 in `pom-plugin-logs` (`main`), task 16 is the acceptance run on the operator's cluster and needs the operator's go. Order: 1-6, 7-10, 11, 12, 13-15, 16.
+**Repositories:** Tasks 1-6 and 11 in `pom-jair` (branch `jair`), tasks 7-10 and 12 in `pom-plugin-comfyui` (`main`), tasks 13-15 in `pom-plugin-logs` (`main`), task 17 is the acceptance run on the operator's cluster and needs the operator's go. Order: 1-6, 7-10, 11, 12, 13-15, 16, 17. Task 16 spans `pom-jair` and `pom-plugin-comfyui`.
 
 ## Request log and image budget (decided with the operator)
 
@@ -325,7 +325,25 @@
 - [ ] **Step 4: Run the plugin's full verify.**
 - [ ] **Step 5: Update the guide; commit and push** (`Quota screen: images per window`).
 
-### Task 16: Acceptance on the operator's cluster (only on the operator's explicit go)
+### Task 16: Deploy shortcut inside ComfyUI, for admins (POM + pom-plugin-comfyui)
+
+**Files:**
+- Modify (pom-jair): `crates/node/src/plugin_host_api.rs`, `crates/node/src/components.rs`, route registration, `docs/subsystems/plugins-ui.md`
+- Modify (pom-plugin-comfyui): `runtime/pom_nodes.py` (`/pom/deploy/*` routes), `runtime/web/pom.js` (the dialog), `tests/test_pom_nodes.py`, `docs/getting-started.md`, `AGENTS.md`
+
+**Interfaces:**
+- Consumes: Task 3's deploy, list and undeploy functions; `GET /api/plugin-host/node` (`role`).
+- Produces:
+  - POM: `GET /api/plugin-host/image-deployments`, `POST /api/plugin-host/image-deploy` and `POST /api/plugin-host/image-undeploy` (plugin token) with the bodies of Task 3; they run only when this node's role is `principal` or `admin` (403 `{error: "only an admin node deploys"}` otherwise), with this node's own authority, exactly as the deploy screen's routes. `GET /api/plugin-host/image-files` answers the network's image files per machine (`node_id`, `hostname`, `image_files`, whether it publishes the image service), the data the dialog needs to offer only holders.
+  - ComfyUI: a "Deploy on POM" command in ComfyUI's menu, registered by `pom.js` only when `/pom/deploy/role` says the node is an admin; it opens a dialog with the same choices as POM's screen (name; per component a file of that category and a machine that holds it; the served image models with Undeploy). `pom_nodes` relays `/pom/deploy/*` to the host_api routes; nothing is decided in the browser.
+
+- [ ] **Step 1: Write the failing tests:** POM `a_non_admin_node_cannot_deploy_from_a_plugin` and `a_plugin_on_an_admin_node_deploys`; plugin `test_the_deploy_command_is_offered_only_to_admins` (`/pom/deploy/role` relays the role) and `test_deploy_relays_to_the_node`.
+- [ ] **Step 2: Run them to verify they fail.**
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: Run both verifies.**
+- [ ] **Step 5: Commit and push both** (`Deploy image models from ComfyUI, for admins`).
+
+### Task 17: Acceptance on the operator's cluster (only on the operator's explicit go)
 
 - [ ] **Step 1:** The operator builds and brings up `jair`, rebuilds the ComfyUI plugin and opens ComfyUI once on each node to install it.
 - [ ] **Step 2:** Deploy Z-Image Turbo from the Image model screen with the diffusion model on the NVIDIA node and the text encoder and VAE on the two others (CPU or the AMD card when the NVIDIA one is busy).

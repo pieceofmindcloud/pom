@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** An admin deploys an image model by component (text encoder, diffusion model, VAE), each on a machine that holds its file, and ComfyUI on any machine of the network uses those components through its ordinary loader nodes.
+**Goal:** An admin deploys an image model by component (text encoder, diffusion model, VAE), each on a machine that holds its file, and ComfyUI on any machine of the network uses those components through its ordinary loader nodes; every image generation is recorded in the request log with its telemetry and counted against an image budget of the logs plugin.
 
 **Architecture:** POM gains a small component subsystem beside the LLM runtime: each node keeps the components it was asked to serve (in `pom.db`), hands them to its ComfyUI plugin (`component.serve`), and the plugin's service lists them (`host.services`, kind `image`). A ComfyUI that wants a network component asks its own node over `host_api`; the node finds the serving machine from the peers' services and forwards an opaque body over the signed node-to-node transport to that machine's plugin, whose ComfyUI runs the op on its own GPU. In the client ComfyUI, stand-in `MODEL`/`CLIP`/`VAE` objects replace the weights: the real ComfyUI model classes are built without weights and only the diffusion network's forward pass, the text encoding and the VAE decode/encode cross the network.
 
@@ -10,7 +10,14 @@
 
 **Spec:** `docs/superpowers/specs/2026-11-06-image-models-by-component-design.md` (sections 5.4 to 5.6). Plan A (`2026-11-06-image-catalog-and-comfyui-folders.md`) is done: `Catalog.image_files`, `host_api` catalog routes, downloads and links in ComfyUI.
 
-**Repositories:** Tasks 1-6 in `pom-jair` (branch `jair`), tasks 7-10 in `pom-plugin-comfyui` (`main`), task 11 is the acceptance run on the operator's cluster and needs the operator's go.
+**Repositories:** Tasks 1-6 and 11 in `pom-jair` (branch `jair`), tasks 7-10 and 12 in `pom-plugin-comfyui` (`main`), tasks 13-15 in `pom-plugin-logs` (`main`), task 16 is the acceptance run on the operator's cluster and needs the operator's go. Order: 1-6, 7-10, 11, 12, 13-15, 16.
+
+## Request log and image budget (decided with the operator)
+
+- One audit record per ComfyUI generation (a ComfyUI prompt execution that used at least one network component), not one per call. The record is opened by the node where that ComfyUI runs, on the generation's first component call, and closed when ComfyUI reports the execution's end (success, error or interruption); a record left open 30 minutes is closed `incomplete`.
+- Caller: `Caller { key_id: "plugin:<code>", key_label: "ComfyUI", key_node_id: Some(<this node>) }`, so the generation belongs to the machine the person uses, like the node's own chat key.
+- Telemetry: `{"kind": "image", "images": <n>, "width", "height", "steps", "components": [{"component", "deploy_id", "name", "node_id", "hostname", "calls", "ms", "bytes_in", "bytes_out"}], "total_ms"}`; `hops` are the serving hostnames in first-call order; `source` is `components:<hostname>,<hostname>,...`; `request_details.kind = "image"`; route `/comfyui/image`.
+- Budget: the operator chose **a budget of its own for images** (images per window), set apart from the token limits on the same plans. An image generation spends only the image budget; an image limit of 0 means no limit, as for tokens. ComfyUI's LLM nodes keep using `/v1` and the token budget.
 
 ## Departures from the spec (decided while planning, from the code)
 
@@ -38,6 +45,7 @@
 3. A node restarts: what it served before is served again without the admin redeploying. -> Task 2 test `served_components_survive_a_restart`.
 4. A huge or hostile body on the internal route (over 64 MiB, or for a component the node does not serve): refused before reaching the plugin. -> Task 4 tests `oversized_bodies_are_refused` and `unknown_components_are_refused`.
 5. A LoRA or other patch applied to a remote diffusion model: a clear error, never a silent no-op that produces images without the LoRA. -> Task 9 test `test_patches_on_a_remote_model_are_refused`.
+6. A generation ComfyUI never reports as finished (ComfyUI killed, browser closed mid-run): its record must not stay "in progress" forever nor be charged twice. -> Task 11 test `an_unfinished_generation_is_closed_incomplete`, Task 13 test `an_image_generation_is_charged_once`.
 
 ---
 
@@ -141,7 +149,7 @@
 - [ ] **Step 4: Run to verify they pass,** then `npm test -- src/i18n src/App.test.tsx` and `npm run build`.
 - [ ] **Step 5: Update the two guides; commit** (`ui: deploy an image model by component`).
 
-### Task 6: POM docs pass and branch check
+### Task 6: POM docs pass
 
 **Files:** `docs/subsystems/deployment.md`, `inference.md` (a pointer from 7.1 to the new section: components are not inference services), `crates/node/src/backend/AGENTS.md`, the root `AGENTS.md` only if the map changes (a new top-level module).
 
@@ -223,8 +231,103 @@
 - [ ] **Step 1:** `docs/getting-started.md`: "Use models from the network" (the `POM ▸` names, what crosses the network, LoRAs not yet supported, closing ComfyUI stops this machine's components) and "Serve components" (deploy from POM's Deploy screen, Image model).
 - [ ] **Step 2: Commit and push.**
 
-### Task 11: Acceptance on the operator's cluster (only on the operator's explicit go)
+### Task 11: Image generations in the request log and the image budget (POM)
+
+**Files:**
+- Modify: `crates/node/src/components.rs` (job registry), `crates/node/src/plugin_host_api.rs` (routes), `crates/node/src/backend/quota.rs` (`admit` forwards an image estimate)
+- Modify: route registration and scope table
+- Modify: `docs/subsystems/http-api.md` ("Token budgets" section: the image budget), `docs/subsystems/plugins-ui.md` (host_api table)
+
+**Interfaces:**
+- Consumes: `AuditLog::begin/complete`, `quota::admit`, the forward of Task 4.
+- Produces:
+  - `POST /api/plugin-host/image-job/begin` body `{job_id, prompt, model, details}` (plugin token): runs `quota::admit` with `request_details = {"kind": "image", "images": details.images or 1, ...details}` and the caller above; a `Denial` answers 429 `{error, retry_after_secs?}` and records the rejected request like `/v1` does; otherwise `AuditLog::begin(AuditRequest{ id: <new id>, route: "/comfyui/image", model, caller, entry_node_id, prompt, request_details })` and stores the job (`job_id` -> audit id, start instant, calls). Idempotent per `job_id`.
+  - The forward of Task 4 reads an optional `x-pom-job: <job_id>` header and, for a known job, adds the call (component, deploy_id, hostname, ms, bytes in and out) to the job.
+  - `POST /api/plugin-host/image-job/complete` body `{job_id, status: "ok"|"error"|"interrupted", error?, images, width?, height?, steps?}`: `AuditLog::complete` with the telemetry above (`status` `interrupted` -> `Incomplete`), drops the job. Unknown job -> 404.
+  - A sweeper (the existing periodic task the node already runs, or a `tokio::time::interval` started with the routes) closes jobs older than 30 minutes as `Incomplete` with error `"ComfyUI did not report the end of this generation"`.
+  - `quota::admit` passes `images` (from `request_details`) in the `quota.check` payload when `request_details.kind == "image"`.
+
+- [ ] **Step 1: Write the failing tests:** `an_image_generation_is_logged_once_with_its_telemetry` (begin, three forwarded calls on two machines, complete -> one `begin` and one `complete` event whose telemetry carries both components, `images: 1`, hops in first-call order), `a_spent_image_budget_refuses_before_any_gpu` (a logs plugin stub answering a refusal -> 429 and no audit begin of a running job), `the_check_carries_the_image_estimate`, `an_unfinished_generation_is_closed_incomplete` (sweeper with an injected clock).
+- [ ] **Step 2: Run them to verify they fail.**
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: Run to verify they pass,** plus `cargo test -p node --bin pom -- quota reqlog components`.
+- [ ] **Step 5: Commit and push** (`components: image generations in the request log and the image budget`).
+
+### Task 12 (pom-plugin-comfyui): ComfyUI reports its generations
+
+**Files:**
+- Modify: `runtime/pom_remote.py` (job tracking), `tests/test_pom_remote.py`, `docs/getting-started.md`, `AGENTS.md`
+
+**Interfaces:**
+- Consumes: Task 11's routes.
+- Produces:
+  - On the first remote call of an execution (`server.PromptServer.instance.last_prompt_id` while executing), `image-job/begin` with `job_id = <prompt_id>`, the prompt text of the first remote `encode` (empty until known), the deployment name, and `details.images` = the latent batch size when known, else 1. A 429 raises `RuntimeError("Image budget spent on this machine: <error>")` before any GPU call.
+  - Every remote call sends `x-pom-job: <prompt_id>`.
+  - The execution's end, seen by wrapping `PromptServer.instance.send_sync` for the events `execution_success`, `execution_error` and `execution_interrupted`, sends `image-job/complete` with the status, the error message, `images` (images decoded by `RemoteVAE.decode` in that execution, summed over the batch dimension) and the width, height and steps observed (latent size x 8, number of `forward` calls per conditioning branch). A failed `complete` is logged, never raised.
+
+- [ ] **Step 1: Write the failing tests:** `test_a_generation_begins_once_and_completes_with_its_images`, `test_a_spent_budget_stops_before_the_first_call`, `test_every_call_carries_the_job`, `test_an_error_completes_the_job_with_its_message`.
+- [ ] **Step 2: Run them to verify they fail.**
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: Run the plugin verify.**
+- [ ] **Step 5: Commit and push** (`ComfyUI reports its image generations to POM`).
+
+### Task 13 (pom-plugin-logs): the image budget
+
+**Files:**
+- Modify: `src/quota.rs` (schema migration, evaluation, check, status, grants, overruns), `src/lib.rs` (`note_begin`/`note_complete` call sites)
+- Test: `src/quota.rs` tests
+
+**Interfaces:**
+- Produces:
+  - Schema (added with `ALTER TABLE ... ADD COLUMN ... DEFAULT 0` when missing, so existing databases migrate on open): `quota_plans.image_limit`, `quota_grants.extra_images`, `quota_usage.images`, `quota_overruns.used_images`.
+  - A request whose `request_details.kind` is `image` is noted with `input = output = 0` and `images` = `request_details.images` at begin (the estimate) and `telemetry.images` at completion; every other request keeps its token accounting and `images = 0`.
+  - `check` with `images > 0` in its payload refuses when an applying plan has `image_limit > 0` and `used_images + images > image_limit + extra_images`; such a request is not measured against the token limits. A token request is not measured against the image limit.
+  - `status` and the plan, grant and overrun JSON gain `image_limit`, `used_images`, `extra_images`; the plan editing operation accepts `image_limit` (validated like the token limits).
+
+- [ ] **Step 1: Write the failing tests:** `an_old_database_gains_the_image_columns`, `an_image_generation_is_charged_once` (begin estimate replaced by the completion count), `a_spent_image_budget_refuses_only_images`, `a_token_budget_does_not_stop_images`, `a_grant_raises_the_image_limit`.
+- [ ] **Step 2: Run them to verify they fail.** Run: `cargo test --locked quota` (with the SSH rewrite for the private dependency noted in the repository's README if the fetch fails)
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: Run the plugin's full verify (its `AGENTS.md` names it).**
+- [ ] **Step 5: Commit and push** (`Quota: a budget of images per window`).
+
+### Task 14 (pom-plugin-logs): image generations in Request Logs and Statistics
+
+**Files:**
+- Modify: `src/lib.rs` (kind classification and filter, list rows, stats), `src/stats.rs`
+- Modify: `ui/src/routes/Logs.tsx`, `ui/src/routes/Statistics.tsx`, `ui/src/telemetry/` (an image telemetry view), the plugin's i18n files, their tests
+- Modify: the plugin's guides of the Logs and Statistics screens (both languages)
+
+**Interfaces:**
+- Produces:
+  - `kind` gains `image` (from `request_details.kind`), beside `normal` and `jev`; the `kind` filter accepts it; a row's `kind` is `image` for those requests.
+  - Stats gain `images` totals and an `image` bucket in the per-kind breakdown (`{"requests", "images"}`).
+  - The request detail of an image row shows the telemetry: images, size, steps, total time and one line per component (machine, calls, time, bytes in and out), in the style of the LLM hops.
+  - The list shows "Image" as the kind badge and the image count where tokens are shown for LLM rows.
+
+- [ ] **Step 1: Write the failing tests:** Rust `image_requests_are_their_own_kind` and `stats_count_images`; UI `an image request shows its components and machines` and `the kind filter offers Image`.
+- [ ] **Step 2: Run them to verify they fail.**
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: Run the plugin's full verify.**
+- [ ] **Step 5: Update the two guides; commit and push** (`Logs: image generations with their telemetry`).
+
+### Task 15 (pom-plugin-logs): the image budget on the Quota screen
+
+**Files:**
+- Modify: `ui/src/routes/Quota.tsx`, `ui/src/quota/components.tsx`, `ui/src/quota/api.ts`, i18n, tests, the Quota guide (both languages)
+
+**Interfaces:**
+- Consumes: Task 13's JSON fields.
+- Produces: an "Images per window" field in the plan editor (empty or 0 = no limit), an images meter beside the token meters wherever a plan's use is drawn (assignments, overruns, a node's status), and grants that can add images.
+
+- [ ] **Step 1: Write the failing tests:** `the plan editor saves an image limit`, `the images meter shows use against the limit`, `a grant can add images`.
+- [ ] **Step 2: Run them to verify they fail.**
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: Run the plugin's full verify.**
+- [ ] **Step 5: Update the guide; commit and push** (`Quota screen: images per window`).
+
+### Task 16: Acceptance on the operator's cluster (only on the operator's explicit go)
 
 - [ ] **Step 1:** The operator builds and brings up `jair`, rebuilds the ComfyUI plugin and opens ComfyUI once on each node to install it.
 - [ ] **Step 2:** Deploy Z-Image Turbo from the Image model screen with the diffusion model on the NVIDIA node and the text encoder and VAE on the two others (CPU or the AMD card when the NVIDIA one is busy).
 - [ ] **Step 3:** In ComfyUI on a fourth node (or any node), load the Z-Image template, pick the three `POM ▸` entries and queue it. Check: an image comes out; with the same seed it matches the all-local run within tolerance; the serving nodes' logs show the ops; undeploying makes the next run fail with a named error.
+- [ ] **Step 4:** Request Logs shows the generation as one "Image" row with its three components and machines; Statistics counts it; with a plan of 1 image per window assigned to that node, the second generation is refused in ComfyUI with the budget message before any GPU work.

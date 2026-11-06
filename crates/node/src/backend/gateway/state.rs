@@ -657,6 +657,18 @@ impl GatewayState {
     /// address that last answered. For a call with a deadline of
     /// milliseconds, where walking every announced address would spend it on
     /// the ones that do not answer. The tunnel stays as the fallback.
+    /// A signed POST of opaque bytes (an image component op's body).
+    pub(crate) async fn control_post_bytes(
+        &self,
+        peer: &crate::network::PeerInfo,
+        path: &str,
+        body: Vec<u8>,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<reqwest::Response> {
+        self.control_call(peer, reqwest::Method::POST, path, Some(body), timeout)
+            .await
+    }
+
     pub(crate) async fn control_post_json_routed<T: serde::Serialize>(
         &self,
         peer: &crate::network::PeerInfo,

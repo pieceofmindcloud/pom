@@ -583,6 +583,8 @@ plugin, so a plugin only ever speaks as itself.
 | `POST /api/plugin-host/peer` | `{node_id, op, params}` runs `peer.<op>` of **the same plugin** on that machine, through the signed peer call above (or locally, with `caller.local: true`, for this node's own `node_id`), and answers `{reply}`; 404 when the node is not a live peer, 502 when its plugin refused |
 | `GET /api/plugin-host/catalog/images` | `{image_files, metadata_complete}`: the image model files of this node's whole-model folders (the `image_files` entries of `GET /api/ui/models`), read fresh on each call |
 | `POST /api/plugin-host/catalog/refresh` | `{ok: true}` after asking the node to rescan its catalog, so a file the plugin just wrote reaches the screens and the deploy survey |
+| `GET /api/plugin-host/components` | `{components: [{deploy_id, name, component, files, status, node_id, hostname, plugin_code}]}`: the image model components served on the network now |
+| `POST /api/plugin-host/component/:deploy_id/:component/:op` | runs an op of a network component on the machine that serves it and answers its status and body unchanged; the body is opaque, at most 64 MiB (413 above); 404 when no machine serves it, 502 naming the machine when it does not answer, 400 for an op that is not a short lowercase word. An optional `x-pom-job` header names the ComfyUI generation the call belongs to |
 | `POST /api/plugin-host/sign` | `{statement}` signed by the node key: `{signature, public_key, did_key}` (hex) |
 
 The node key also signs announces, control envelopes, grants and the pkarr

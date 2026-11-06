@@ -118,6 +118,9 @@ pub fn gateway_path_is_allowed(path: &str) -> bool {
             | "/api/ui/slice-ranges"
             | "/api/ui/plan"
             | "/api/ui/apply"
+            // An image model component given to, or taken from, a machine.
+            | "/api/ui/components/apply"
+            | "/api/ui/components/release"
             | "/api/ui/reconfigure"
             | "/api/ui/stop-inference"
             | "/api/ui/unload"
@@ -181,6 +184,11 @@ fn plugin_path_is_allowed(path: &str) -> bool {
         // (`quota.status`), so the tunnel carries every op a direct call does.
         [code, "peer", op] => segment(code) && crate::plugin_services::valid_peer_op(op),
         [code, "engine", "generate"] => segment(code),
+        // An op of an image model component (`components.rs`), which the
+        // node running ComfyUI sends to the machine that serves it.
+        [code, "component", deploy, component, op] => {
+            segment(code) && segment(deploy) && segment(component) && segment(op)
+        }
         _ => false,
     }
 }
@@ -811,6 +819,14 @@ mod tests {
     #[test]
     fn the_tunnel_carries_the_plugin_calls() {
         assert!(gateway_path_is_allowed("/api/internal/plugins/services"));
+        assert!(gateway_path_is_allowed(
+            "/api/internal/plugins/comfyui/component/img-1a2b/vae/decode"
+        ));
+        assert!(!gateway_path_is_allowed(
+            "/api/internal/plugins/comfyui/component/img-1/vae/../x"
+        ));
+        assert!(gateway_path_is_allowed("/api/ui/components/apply"));
+        assert!(gateway_path_is_allowed("/api/ui/components/release"));
         assert!(gateway_path_is_allowed("/api/internal/plugins/rag/peer/search"));
         assert!(gateway_path_is_allowed("/api/internal/plugins/moe_x/engine/generate"));
         assert!(gateway_path_is_allowed("/api/internal/plugins/logs/peer/quota.status"));

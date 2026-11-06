@@ -381,6 +381,17 @@ serves, so components are a registry of their own.
   component's live status (`missing` when no service lists it) and
   `POST /api/ui/image-undeploy` `{deploy_id}` releases every machine of the
   record (a silent one is reported) and drops it.
+- **Calls.** A ComfyUI that uses a network component calls its own node's
+  `host_api` (`plugins-ui.md`); the node finds the serving machine in
+  `network_components` and, when it is another one, posts the opaque body to
+  `POST /api/internal/plugins/:code/component/:deploy_id/:component/:op` there
+  (signed, from a live member, at most 64 MiB, also through the p2p tunnel for a
+  machine behind NAT). That machine checks it serves the component (404
+  otherwise), asks its plugin `component.upstream` (`{status, port, token}`) and
+  posts the body to the plugin's loopback server
+  (`/pom/component/<deploy_id>/<component>/<op>`, `x-pom-plugin-token`). The
+  calls wait up to 15 minutes (a cold load of a large model). POM never reads
+  the bodies.
 - **Who serves what.** The plugin lists its components in its `image` service
   (`plugins-ui.md`, `host.services`); `components::network_components` gathers
   them from this node and every live peer.

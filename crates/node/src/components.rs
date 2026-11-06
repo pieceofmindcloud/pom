@@ -567,6 +567,224 @@ pub(crate) async fn image_undeploy_route(
     axum::Json(serde_json::json!({ "released": released }))
 }
 
+// ── Calls to a component ─────────────────────────────────────────────────────
+
+/// The largest op body that crosses the network (a latent, an image, the
+/// conditioning of a prompt).
+pub(crate) const MAX_COMPONENT_BODY: usize = 64 * 1024 * 1024;
+/// A cold load of a large diffusion model can take minutes.
+const COMPONENT_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+fn valid_op(op: &str) -> bool {
+    !op.is_empty() && op.len() <= 32 && op.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
+}
+
+/// Sends an op to the machine that serves the component: `(target, op, body,
+/// job)` -> `(status, body)`, or the transport error.
+pub(crate) type Forward = std::sync::Arc<
+    dyn Fn(
+            NetworkComponent,
+            String,
+            Vec<u8>,
+            Option<String>,
+        ) -> futures::future::BoxFuture<'static, Result<(u16, Vec<u8>), String>>
+        + Send
+        + Sync,
+>;
+
+fn error_body(message: String) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({ "error": message })).unwrap_or_default()
+}
+
+/// One op on a network component: find who serves it and forward.
+pub(crate) async fn call_component(
+    network: &[NetworkComponent],
+    deploy_id: &str,
+    component: &str,
+    op: &str,
+    body: Vec<u8>,
+    job: Option<String>,
+    forward: &Forward,
+) -> (u16, Vec<u8>) {
+    if !valid_op(op) {
+        return (400, error_body(format!("invalid op {op:?}")));
+    }
+    let Some(target) = network.iter().find(|c| {
+        c.deploy_id == deploy_id
+            && c.component == component
+            && (c.status == "ready" || c.status == "loading")
+    }) else {
+        return (
+            404,
+            error_body(format!("no machine serves {component} of {deploy_id}")),
+        );
+    };
+    let hostname = target.hostname.clone();
+    match forward(target.clone(), op.to_owned(), body, job).await {
+        Ok(answer) => answer,
+        Err(cause) => (
+            502,
+            error_body(format!(
+                "{hostname} did not answer for {component}: {cause}"
+            )),
+        ),
+    }
+}
+
+/// The plugin that serves this component of this deployment here, if any.
+pub(crate) fn serving_plugin(
+    assignments: &[ComponentAssignment],
+    deploy_id: &str,
+    component: &str,
+) -> Option<String> {
+    assignments
+        .iter()
+        .find(|a| a.deploy_id == deploy_id && a.component == component)
+        .map(|a| a.plugin_code.clone())
+}
+
+/// Runs the op on this node's plugin: its loopback component server, behind
+/// the plugin's own token.
+async fn call_local_plugin(
+    state: &GatewayState,
+    code: &str,
+    deploy_id: &str,
+    component: &str,
+    op: &str,
+    body: Vec<u8>,
+) -> Result<(u16, Vec<u8>), String> {
+    let upstream = state
+        .plugins
+        .query_audit(
+            code,
+            "component.upstream",
+            serde_json::json!({ "deploy_id": deploy_id, "component": component }),
+        )
+        .await
+        .ok_or_else(|| format!("the plugin '{code}' did not answer"))?;
+    if upstream["status"] != "ready" {
+        return Err(format!(
+            "ComfyUI is {}",
+            upstream["status"].as_str().unwrap_or("not ready")
+        ));
+    }
+    let port = upstream["port"].as_u64().ok_or("the plugin gave no port")?;
+    let token = upstream["token"].as_str().unwrap_or_default();
+    let url = format!("http://127.0.0.1:{port}/pom/component/{deploy_id}/{component}/{op}");
+    let response = state
+        .peer_http
+        .plain()
+        .post(url)
+        .header("x-pom-plugin-token", token)
+        .body(body)
+        .timeout(COMPONENT_CALL_TIMEOUT)
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    let status = response.status().as_u16();
+    let bytes = response.bytes().await.map_err(|error| error.to_string())?;
+    Ok((status, bytes.to_vec()))
+}
+
+/// The forward through this node: its own plugin when it serves the
+/// component, else the signed internal route of the machine that does.
+pub(crate) fn live_forward(state: GatewayState) -> Forward {
+    std::sync::Arc::new(
+        move |target: NetworkComponent, op: String, body: Vec<u8>, _job: Option<String>| {
+            let state = state.clone();
+            Box::pin(async move {
+                if target.node_id == state.network.node_id {
+                    return call_local_plugin(
+                        &state,
+                        &target.plugin_code,
+                        &target.deploy_id,
+                        &target.component,
+                        &op,
+                        body,
+                    )
+                    .await;
+                }
+                let peer = state
+                    .all_peers()
+                    .await
+                    .into_iter()
+                    .find(|peer| peer.node_id == target.node_id)
+                    .ok_or("the machine left the network")?;
+                let path = format!(
+                    "/api/internal/plugins/{}/component/{}/{}/{op}",
+                    target.plugin_code, target.deploy_id, target.component
+                );
+                let response = state
+                    .control_post_bytes(&peer, &path, body, COMPONENT_CALL_TIMEOUT)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let status = response.status().as_u16();
+                let bytes = response.bytes().await.map_err(|error| error.to_string())?;
+                Ok((status, bytes.to_vec()))
+            })
+        },
+    )
+}
+
+/// `POST /api/internal/plugins/:code/component/:deploy_id/:component/:op`:
+/// a live member asks this node to run an op of a component it serves.
+pub(crate) async fn internal_component_route(
+    auth: crate::auth::InternalNodeAuth,
+    axum::extract::State(state): axum::extract::State<GatewayState>,
+    axum::extract::Path((code, deploy_id, component, op)): axum::extract::Path<(
+        String,
+        String,
+        String,
+        String,
+    )>,
+    body: axum::body::Bytes,
+) -> axum::response::Response {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    let refuse = |status: StatusCode, message: String| {
+        (status, axum::Json(serde_json::json!({ "error": message }))).into_response()
+    };
+    let Some(principal) = auth.principal() else {
+        return refuse(
+            StatusCode::FORBIDDEN,
+            "a signed peer call is required".into(),
+        );
+    };
+    if !state
+        .network
+        .alive_peers()
+        .await
+        .iter()
+        .any(|peer| peer.node_id == principal.node_id)
+    {
+        return refuse(
+            StatusCode::FORBIDDEN,
+            "the caller is not a live peer".into(),
+        );
+    }
+    if !valid_op(&op) {
+        return refuse(StatusCode::BAD_REQUEST, format!("invalid op {op:?}"));
+    }
+    match serving_plugin(&load_assignments(&state.database), &deploy_id, &component) {
+        Some(serving) if serving == code => {}
+        _ => {
+            return refuse(
+                StatusCode::NOT_FOUND,
+                format!("this machine does not serve {component} of {deploy_id}"),
+            )
+        }
+    }
+    match call_local_plugin(&state, &code, &deploy_id, &component, &op, body.to_vec()).await {
+        Ok((status, bytes)) => (
+            StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
+            [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
+            bytes,
+        )
+            .into_response(),
+        Err(error) => refuse(StatusCode::BAD_GATEWAY, error),
+    }
+}
+
 /// A component served somewhere on the network.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct NetworkComponent {
@@ -939,6 +1157,150 @@ mod tests {
         assert!(released.iter().all(|r| r.ok));
         assert_eq!(seen.lock().unwrap().len(), 2);
         assert!(load_image_deployments(&db).is_empty());
+    }
+
+    fn served(deploy_id: &str, component: &str, node_id: &str) -> NetworkComponent {
+        NetworkComponent {
+            deploy_id: deploy_id.into(),
+            name: "Z-Image".into(),
+            component: component.into(),
+            files: vec![],
+            status: "ready".into(),
+            node_id: node_id.into(),
+            hostname: format!("host-{node_id}"),
+            plugin_code: "comfyui".into(),
+        }
+    }
+
+    type ForwardLog = Arc<Mutex<Vec<(String, String, usize)>>>;
+
+    fn forwarding(answer: Result<(u16, Vec<u8>), String>) -> (Forward, ForwardLog) {
+        let seen: ForwardLog = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::clone(&seen);
+        let forward: Forward = Arc::new(
+            move |target: NetworkComponent, op: String, body: Vec<u8>, _job: Option<String>| {
+                log.lock()
+                    .unwrap()
+                    .push((target.node_id.clone(), op, body.len()));
+                let answer = answer.clone();
+                Box::pin(async move { answer })
+            },
+        );
+        (forward, seen)
+    }
+
+    #[tokio::test]
+    async fn remote_calls_reach_the_serving_node() {
+        let network = vec![
+            served("img-1", "vae", "c"),
+            served("img-1", "diffusion", "a"),
+        ];
+        let (forward, seen) = forwarding(Ok((200, b"out".to_vec())));
+        let (status, body) = call_component(
+            &network,
+            "img-1",
+            "diffusion",
+            "forward",
+            b"in".to_vec(),
+            None,
+            &forward,
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(body, b"out");
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [("a".to_owned(), "forward".to_owned(), 2)]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unserved_component_is_not_found() {
+        let (forward, seen) = forwarding(Ok((200, vec![])));
+        let (status, body) = call_component(
+            &[served("img-1", "vae", "c")],
+            "img-2",
+            "vae",
+            "decode",
+            vec![],
+            None,
+            &forward,
+        )
+        .await;
+        assert_eq!(status, 404);
+        assert!(String::from_utf8_lossy(&body).contains("no machine serves vae of img-2"));
+        assert!(seen.lock().unwrap().is_empty());
+        let (status, _) = call_component(
+            &[served("img-1", "vae", "c")],
+            "img-1",
+            "vae",
+            "../x",
+            vec![],
+            None,
+            &forward,
+        )
+        .await;
+        assert_eq!(status, 400, "an op is a short lowercase word");
+    }
+
+    #[tokio::test]
+    async fn a_vanished_server_is_a_named_error() {
+        let (forward, _) = forwarding(Err("connection refused".into()));
+        let (status, body) = call_component(
+            &[served("img-1", "vae", "c")],
+            "img-1",
+            "vae",
+            "decode",
+            vec![],
+            None,
+            &forward,
+        )
+        .await;
+        assert_eq!(status, 502);
+        let text = String::from_utf8_lossy(&body);
+        assert!(
+            text.contains("host-c") && text.contains("vae") && text.contains("connection refused"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn unknown_components_are_refused() {
+        let assignments = vec![ComponentAssignment {
+            deploy_id: "img-1".into(),
+            name: "Z".into(),
+            component: "vae".into(),
+            paths: vec!["/m/ae.safetensors".into()],
+            plugin_code: "comfyui".into(),
+            options: Value::Null,
+        }];
+        assert_eq!(
+            serving_plugin(&assignments, "img-1", "vae"),
+            Some("comfyui".to_owned())
+        );
+        assert_eq!(serving_plugin(&assignments, "img-1", "diffusion"), None);
+        assert_eq!(serving_plugin(&assignments, "img-2", "vae"), None);
+    }
+
+    #[tokio::test]
+    async fn oversized_bodies_are_refused() {
+        use tower::ServiceExt;
+        let reached = Arc::new(Mutex::new(false));
+        let flag = Arc::clone(&reached);
+        let app = axum::Router::new().route(
+            "/x",
+            axum::routing::post(move |_body: axum::body::Bytes| {
+                *flag.lock().unwrap() = true;
+                async { "ok" }
+            })
+            .layer(axum::extract::DefaultBodyLimit::max(MAX_COMPONENT_BODY)),
+        );
+        let request = axum::http::Request::post("/x")
+            .body(axum::body::Body::from(vec![0u8; MAX_COMPONENT_BODY + 1]))
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::PAYLOAD_TOO_LARGE);
+        assert!(!*reached.lock().unwrap());
     }
 
     #[test]

@@ -24,6 +24,9 @@
 //!   this plugin on that machine and answers `{reply}`.
 //! - `GET /api/plugin-host/catalog/images`: this node's image model files.
 //! - `POST /api/plugin-host/catalog/refresh`: rescan this node's catalog.
+//! - `GET /api/plugin-host/components` and
+//!   `POST /api/plugin-host/component/:deploy_id/:component/:op`: the image
+//!   model components of the network, and an op run on the machine serving one.
 //! - `POST /api/plugin-host/sign`: `{statement}` is signed with the node key
 //!   only when it is an external identity statement in which this node's
 //!   `did:key` vouches for a key (see [`signable_statement`]). The node key
@@ -173,6 +176,44 @@ pub(crate) async fn catalog_refresh(
     }
     crate::webui::invalidate_catalog(state.database.clone()).await;
     Json(json!({ "ok": true })).into_response()
+}
+
+/// `GET /api/plugin-host/components`: the image model components served on
+/// the network now.
+pub(crate) async fn components(State(state): State<GatewayState>, headers: HeaderMap) -> Response {
+    if let Err(response) = caller_code(&state, &headers) {
+        return response;
+    }
+    let components = crate::components::network_components(&state).await;
+    Json(json!({ "components": components })).into_response()
+}
+
+/// `POST /api/plugin-host/component/:deploy_id/:component/:op`: run an op of
+/// a network component on the machine that serves it; the body is opaque.
+pub(crate) async fn component_call(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+    axum::extract::Path((deploy_id, component, op)): axum::extract::Path<(String, String, String)>,
+    body: axum::body::Bytes,
+) -> Response {
+    if let Err(response) = caller_code(&state, &headers) {
+        return response;
+    }
+    let job = headers
+        .get("x-pom-job")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let network = crate::components::network_components(&state).await;
+    let forward = crate::components::live_forward(state.clone());
+    let (status, bytes) =
+        crate::components::call_component(&network, &deploy_id, &component, &op, body.to_vec(), job, &forward)
+            .await;
+    (
+        StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
+        [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
+        bytes,
+    )
+        .into_response()
 }
 
 /// `GET /api/plugin-host/peers`.
@@ -338,7 +379,17 @@ mod tests {
         for headers in [HeaderMap::new(), headers("not-the-token")] {
             let response = catalog_images(State(state.clone()), headers.clone()).await;
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-            let response = catalog_refresh(State(state.clone()), headers).await;
+            let response = catalog_refresh(State(state.clone()), headers.clone()).await;
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            let response = components(State(state.clone()), headers.clone()).await;
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            let response = component_call(
+                State(state.clone()),
+                headers,
+                axum::extract::Path(("img-1".to_owned(), "vae".to_owned(), "decode".to_owned())),
+                axum::body::Bytes::new(),
+            )
+            .await;
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         }
         let response = node(State(state.clone()), headers(&token)).await;

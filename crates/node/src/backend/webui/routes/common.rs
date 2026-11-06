@@ -61,6 +61,22 @@ pub(super) fn routes() -> Router<GatewayState> {
             post(crate::plugin_host_api::catalog_refresh),
         )
         .route(
+            "/api/plugin-host/components",
+            get(crate::plugin_host_api::components),
+        )
+        .route(
+            "/api/plugin-host/component/:deploy_id/:component/:op",
+            post(crate::plugin_host_api::component_call).layer(
+                axum::extract::DefaultBodyLimit::max(crate::components::MAX_COMPONENT_BODY),
+            ),
+        )
+        .route(
+            "/api/internal/plugins/:code/component/:deploy_id/:component/:op",
+            post(crate::components::internal_component_route).layer(
+                axum::extract::DefaultBodyLimit::max(crate::components::MAX_COMPONENT_BODY),
+            ),
+        )
+        .route(
             "/api/internal/plugins/:code/engine/generate",
             post(crate::plugin_engine::engine_generate_route).layer(
                 axum::extract::DefaultBodyLimit::max(crate::plugin_engine::MAX_GENERATION_BODY),

@@ -288,6 +288,32 @@ fn denial_of(reply: &Value) -> Denial {
     }
 }
 
+/// The `quota.check` payload. An image generation (`request_details.kind ==
+/// "image"`, from ComfyUI) also carries how many images it makes, which the
+/// logs plugin measures against the image budget instead of tokens.
+pub(crate) fn check_params(
+    node: &str,
+    caller: &crate::reqlog::Caller,
+    prompt: &str,
+    prompt_tokens: u32,
+    request_details: &Value,
+) -> Value {
+    let mut params = json!({
+        "node_id": node,
+        "prompt_tokens": prompt_tokens,
+        "prompt": truncate(prompt, MAX_PROMPT_CHARS),
+        "key_label": caller.key_label,
+        "request_details": digest_details(request_details),
+    });
+    if request_details.get("kind").and_then(Value::as_str) == Some("image") {
+        params["images"] = json!(request_details
+            .get("images")
+            .and_then(Value::as_u64)
+            .unwrap_or(1));
+    }
+    params
+}
+
 /// May a request of `caller` go to the pipeline? `None` lets it through.
 pub(crate) async fn admit(
     state: &GatewayState,
@@ -313,13 +339,7 @@ pub(crate) async fn admit(
             };
         }
     }
-    let params = json!({
-        "node_id": node,
-        "prompt_tokens": prompt_tokens,
-        "prompt": truncate(prompt, MAX_PROMPT_CHARS),
-        "key_label": caller.key_label,
-        "request_details": digest_details(request_details),
-    });
+    let params = check_params(&node, caller, prompt, prompt_tokens, request_details);
     let found = lookup(state, "check", &params).await;
     // A "no budget" while a source holding the plugin did not answer is not a
     // verdict to keep: that source may be the one with the budgets.

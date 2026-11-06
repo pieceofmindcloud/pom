@@ -27,6 +27,9 @@
 //! - `GET /api/plugin-host/components` and
 //!   `POST /api/plugin-host/component/:deploy_id/:component/:op`: the image
 //!   model components of the network, and an op run on the machine serving one.
+//! - `POST /api/plugin-host/image-job/begin` and `.../complete`: a ComfyUI
+//!   generation on network components, checked against the image budget and
+//!   recorded as one request.
 //! - `POST /api/plugin-host/sign`: `{statement}` is signed with the node key
 //!   only when it is an external identity statement in which this node's
 //!   `did:key` vouches for a key (see [`signable_statement`]). The node key
@@ -205,15 +208,164 @@ pub(crate) async fn component_call(
         .map(str::to_owned);
     let network = crate::components::network_components(&state).await;
     let forward = crate::components::live_forward(state.clone());
-    let (status, bytes) =
-        crate::components::call_component(&network, &deploy_id, &component, &op, body.to_vec(), job, &forward)
-            .await;
+    let target = network
+        .iter()
+        .find(|c| c.deploy_id == deploy_id && c.component == component)
+        .cloned();
+    let bytes_in = body.len() as u64;
+    let started = std::time::Instant::now();
+    let (status, bytes) = crate::components::call_component(
+        &network,
+        &deploy_id,
+        &component,
+        &op,
+        body.to_vec(),
+        job.clone(),
+        &forward,
+    )
+    .await;
+    // The generation's telemetry: which machine ran what, for how long.
+    if let (Some(job), Some(target)) = (job, target) {
+        crate::components::image_jobs().record(
+            &job,
+            crate::components::JobCall {
+                component: target.component,
+                deploy_id: target.deploy_id,
+                name: target.name,
+                node_id: target.node_id,
+                hostname: target.hostname,
+                ms: started.elapsed().as_millis() as u64,
+                bytes_in,
+                bytes_out: bytes.len() as u64,
+            },
+        );
+    }
     (
         StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
         [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
         bytes,
     )
         .into_response()
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct ImageJobBegin {
+    job_id: String,
+    #[serde(default)]
+    prompt: String,
+    #[serde(default)]
+    model: String,
+    #[serde(default)]
+    details: Value,
+}
+
+/// `POST /api/plugin-host/image-job/begin`: a ComfyUI generation that uses
+/// network components starts. The image budget is checked first: a refusal is
+/// 429 and recorded like a refused `/v1` request; otherwise one audit record
+/// opens for the whole generation.
+pub(crate) async fn image_job_begin(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+    Json(request): Json<ImageJobBegin>,
+) -> Response {
+    let code = match caller_code(&state, &headers) {
+        Ok(code) => code,
+        Err(response) => return response,
+    };
+    if request.job_id.is_empty() || request.job_id.len() > 128 {
+        return refuse(StatusCode::BAD_REQUEST, "invalid job id");
+    }
+    crate::components::spawn_job_sweeper(state.clone());
+    let jobs = crate::components::image_jobs();
+    let caller = crate::components::image_caller(&state, &code);
+    let mut details = if request.details.is_object() { request.details.clone() } else { json!({}) };
+    details["kind"] = json!("image");
+    if details.get("images").and_then(Value::as_u64).is_none() {
+        details["images"] = json!(1);
+    }
+    let denial = if jobs.is_open(&request.job_id) {
+        None
+    } else {
+        let tokens = (request.prompt.len() / 4) as u32;
+        crate::quota::admit(&state, &caller, &request.prompt, tokens, &details).await
+    };
+    match jobs.begin(&request.job_id, denial, std::time::Instant::now()) {
+        Ok(audit_id) => {
+            state.audit.begin(crate::reqlog::AuditRequest {
+                id: audit_id.clone(),
+                received_at: chrono::Utc::now().to_rfc3339(),
+                route: "/comfyui/image".into(),
+                model: request.model,
+                caller,
+                entry_node_id: state.network.node_id.clone(),
+                prompt: request.prompt,
+                request_details: details,
+            });
+            Json(json!({ "ok": true })).into_response()
+        }
+        Err(denial) => {
+            crate::gateway::record_rejected(
+                &state,
+                "/comfyui/image",
+                caller,
+                request.model,
+                request.prompt,
+                details,
+                denial.message.clone(),
+            );
+            denial.decorate(
+                (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    Json(json!({ "error": denial.message, "retry_after_secs": denial.retry_after_secs })),
+                )
+                    .into_response(),
+            )
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct ImageJobComplete {
+    job_id: String,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    images: u64,
+    width: Option<u64>,
+    height: Option<u64>,
+    steps: Option<u64>,
+}
+
+/// `POST /api/plugin-host/image-job/complete`: the generation ended.
+pub(crate) async fn image_job_complete(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+    Json(request): Json<ImageJobComplete>,
+) -> Response {
+    if let Err(response) = caller_code(&state, &headers) {
+        return response;
+    }
+    let Some(job) = crate::components::image_jobs().take(&request.job_id) else {
+        return refuse(StatusCode::NOT_FOUND, "unknown generation");
+    };
+    let status = match request.status.as_str() {
+        "ok" => crate::reqlog::AuditStatus::Ok,
+        "interrupted" => crate::reqlog::AuditStatus::Incomplete,
+        _ => crate::reqlog::AuditStatus::Error,
+    };
+    crate::components::complete_image_job(
+        &state,
+        job,
+        status,
+        request.error,
+        request.images,
+        request.width,
+        request.height,
+        request.steps,
+    );
+    Json(json!({ "ok": true })).into_response()
 }
 
 /// `GET /api/plugin-host/peers`.
@@ -382,6 +534,13 @@ mod tests {
             let response = catalog_refresh(State(state.clone()), headers.clone()).await;
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
             let response = components(State(state.clone()), headers.clone()).await;
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            let response = image_job_complete(
+                State(state.clone()),
+                headers.clone(),
+                Json(serde_json::from_value(json!({"job_id": "p"})).unwrap()),
+            )
+            .await;
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
             let response = component_call(
                 State(state.clone()),

@@ -785,6 +785,229 @@ pub(crate) async fn internal_component_route(
     }
 }
 
+// ── Image generations: the request log and the image budget ─────────────────
+
+/// A generation left open this long is closed `incomplete`.
+pub(crate) const JOB_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+/// One op a generation ran on a network component.
+#[derive(Debug, Clone)]
+pub(crate) struct JobCall {
+    pub component: String,
+    pub deploy_id: String,
+    pub name: String,
+    pub node_id: String,
+    pub hostname: String,
+    pub ms: u64,
+    pub bytes_in: u64,
+    pub bytes_out: u64,
+}
+
+/// A ComfyUI generation that uses network components: one audit record.
+#[derive(Debug, Clone)]
+pub(crate) struct ImageJob {
+    pub audit_id: String,
+    pub started: std::time::Instant,
+    pub calls: Vec<JobCall>,
+}
+
+/// The open generations of this node, by ComfyUI prompt id.
+#[derive(Default)]
+pub(crate) struct ImageJobs {
+    jobs: std::sync::Mutex<std::collections::HashMap<String, ImageJob>>,
+}
+
+impl ImageJobs {
+    /// Open the generation (the same id again returns the same record), or
+    /// refuse it when the budget said so: nothing is recorded then.
+    pub(crate) fn begin(
+        &self,
+        job_id: &str,
+        denial: Option<crate::quota::Denial>,
+        now: std::time::Instant,
+    ) -> Result<String, crate::quota::Denial> {
+        let mut jobs = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(job) = jobs.get(job_id) {
+            return Ok(job.audit_id.clone());
+        }
+        if let Some(denial) = denial {
+            return Err(denial);
+        }
+        let audit_id = uuid::Uuid::new_v4().simple().to_string();
+        jobs.insert(
+            job_id.to_owned(),
+            ImageJob {
+                audit_id: audit_id.clone(),
+                started: now,
+                calls: Vec::new(),
+            },
+        );
+        Ok(audit_id)
+    }
+
+    pub(crate) fn is_open(&self, job_id: &str) -> bool {
+        self.jobs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(job_id)
+    }
+
+    pub(crate) fn record(&self, job_id: &str, call: JobCall) {
+        if let Some(job) = self
+            .jobs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_mut(job_id)
+        {
+            job.calls.push(call);
+        }
+    }
+
+    pub(crate) fn take(&self, job_id: &str) -> Option<ImageJob> {
+        self.jobs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(job_id)
+    }
+
+    /// The generations open longer than `JOB_TIMEOUT` at `now`, removed.
+    pub(crate) fn sweep(&self, now: std::time::Instant) -> Vec<(String, ImageJob)> {
+        let mut jobs = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
+        let old: Vec<String> = jobs
+            .iter()
+            .filter(|(_, job)| now.saturating_duration_since(job.started) >= JOB_TIMEOUT)
+            .map(|(id, _)| id.clone())
+            .collect();
+        old.into_iter()
+            .filter_map(|id| jobs.remove(&id).map(|job| (id, job)))
+            .collect()
+    }
+}
+
+/// This node's open generations.
+pub(crate) fn image_jobs() -> &'static ImageJobs {
+    static JOBS: std::sync::OnceLock<ImageJobs> = std::sync::OnceLock::new();
+    JOBS.get_or_init(ImageJobs::default)
+}
+
+/// The telemetry, hops and source of a finished generation.
+pub(crate) fn image_telemetry(
+    job: &ImageJob,
+    images: u64,
+    width: Option<u64>,
+    height: Option<u64>,
+    steps: Option<u64>,
+) -> (Value, Vec<String>, String) {
+    let mut hops: Vec<String> = Vec::new();
+    let mut parts: Vec<(String, String, Value)> = Vec::new();
+    for call in &job.calls {
+        if !hops.contains(&call.hostname) {
+            hops.push(call.hostname.clone());
+        }
+        match parts
+            .iter_mut()
+            .find(|(component, node, _)| *component == call.component && *node == call.node_id)
+        {
+            Some((_, _, entry)) => {
+                for (key, add) in [
+                    ("calls", 1),
+                    ("ms", call.ms),
+                    ("bytes_in", call.bytes_in),
+                    ("bytes_out", call.bytes_out),
+                ] {
+                    entry[key] = serde_json::json!(entry[key].as_u64().unwrap_or(0) + add);
+                }
+            }
+            None => parts.push((
+                call.component.clone(),
+                call.node_id.clone(),
+                serde_json::json!({
+                    "component": call.component, "deploy_id": call.deploy_id, "name": call.name,
+                    "node_id": call.node_id, "hostname": call.hostname, "calls": 1,
+                    "ms": call.ms, "bytes_in": call.bytes_in, "bytes_out": call.bytes_out,
+                }),
+            )),
+        }
+    }
+    let telemetry = serde_json::json!({
+        "kind": "image",
+        "images": images,
+        "width": width,
+        "height": height,
+        "steps": steps,
+        "components": parts.into_iter().map(|(_, _, entry)| entry).collect::<Vec<_>>(),
+        "total_ms": job.started.elapsed().as_millis() as u64,
+    });
+    let source = format!("components:{}", hops.join(","));
+    (telemetry, hops, source)
+}
+
+/// The caller an image generation is recorded under: this node's ComfyUI,
+/// so the generation belongs to (and is budgeted on) this machine.
+pub(crate) fn image_caller(state: &GatewayState, plugin_code: &str) -> crate::reqlog::Caller {
+    crate::reqlog::Caller {
+        key_id: format!("plugin:{plugin_code}"),
+        key_label: "ComfyUI".into(),
+        key_node_id: Some(state.network.node_id.clone()),
+    }
+}
+
+/// Close a generation in the audit.
+pub(crate) fn complete_image_job(
+    state: &GatewayState,
+    job: ImageJob,
+    status: crate::reqlog::AuditStatus,
+    error: Option<String>,
+    images: u64,
+    width: Option<u64>,
+    height: Option<u64>,
+    steps: Option<u64>,
+) {
+    let (telemetry, hops, source) = image_telemetry(&job, images, width, height, steps);
+    state.audit.complete(
+        job.audit_id.clone(),
+        crate::reqlog::AuditCompletion {
+            completed_at: chrono::Utc::now().to_rfc3339(),
+            result: None,
+            telemetry: Some(telemetry),
+            timings: None,
+            source,
+            hops,
+            prompt_tokens: None,
+            completion_tokens: None,
+            duration_ms: Some(job.started.elapsed().as_millis() as u64),
+            status,
+            error,
+        },
+    );
+}
+
+/// Close the generations ComfyUI never reported finished.
+pub(crate) fn spawn_job_sweeper(state: GatewayState) {
+    static STARTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    if STARTED.set(()).is_err() {
+        return;
+    }
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            tick.tick().await;
+            for (_, job) in image_jobs().sweep(std::time::Instant::now()) {
+                complete_image_job(
+                    &state,
+                    job,
+                    crate::reqlog::AuditStatus::Incomplete,
+                    Some("ComfyUI did not report the end of this generation".into()),
+                    0,
+                    None,
+                    None,
+                    None,
+                );
+            }
+        }
+    });
+}
+
 /// A component served somewhere on the network.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct NetworkComponent {
@@ -1301,6 +1524,97 @@ mod tests {
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), axum::http::StatusCode::PAYLOAD_TOO_LARGE);
         assert!(!*reached.lock().unwrap());
+    }
+
+    fn job_call(component: &str, host: &str) -> JobCall {
+        JobCall {
+            component: component.into(),
+            deploy_id: "img-1".into(),
+            name: "Z-Image".into(),
+            node_id: format!("id-{host}"),
+            hostname: host.into(),
+            ms: 10,
+            bytes_in: 100,
+            bytes_out: 200,
+        }
+    }
+
+    #[test]
+    fn an_image_generation_is_logged_once_with_its_telemetry() {
+        let jobs = ImageJobs::default();
+        let now = std::time::Instant::now();
+        let first = jobs.begin("p1", None, now).unwrap();
+        assert_eq!(
+            jobs.begin("p1", None, now).unwrap(),
+            first,
+            "begin is idempotent per job"
+        );
+        jobs.record("p1", job_call("text_encoder", "gpu-b"));
+        jobs.record("p1", job_call("diffusion", "gpu-a"));
+        jobs.record("p1", job_call("diffusion", "gpu-a"));
+        jobs.record("p1", job_call("vae", "gpu-c"));
+        jobs.record("unknown", job_call("vae", "gpu-c"));
+        let job = jobs.take("p1").unwrap();
+        assert_eq!(job.audit_id, first);
+        assert!(jobs.take("p1").is_none(), "taken once");
+        let (telemetry, hops, source) = image_telemetry(&job, 1, Some(1024), Some(1024), Some(8));
+        assert_eq!(hops, ["gpu-b", "gpu-a", "gpu-c"]);
+        assert_eq!(source, "components:gpu-b,gpu-a,gpu-c");
+        assert_eq!(telemetry["kind"], "image");
+        assert_eq!(telemetry["images"], 1);
+        assert_eq!(telemetry["steps"], 8);
+        let components = telemetry["components"].as_array().unwrap();
+        assert_eq!(components.len(), 3);
+        assert_eq!(components[1]["component"], "diffusion");
+        assert_eq!(components[1]["calls"], 2);
+        assert_eq!(components[1]["bytes_out"], 400);
+    }
+
+    #[test]
+    fn a_spent_image_budget_refuses_before_any_gpu() {
+        let jobs = ImageJobs::default();
+        let denial = crate::quota::Denial {
+            message: "Image budget exhausted".into(),
+            retry_after_secs: Some(60),
+        };
+        let refused = jobs
+            .begin("p1", Some(denial), std::time::Instant::now())
+            .unwrap_err();
+        assert!(refused.message.contains("Image budget"));
+        jobs.record("p1", job_call("vae", "gpu-c"));
+        assert!(jobs.take("p1").is_none(), "no job, nothing recorded");
+    }
+
+    #[test]
+    fn the_check_carries_the_image_estimate() {
+        let caller = crate::reqlog::Caller {
+            key_id: "plugin:comfyui".into(),
+            key_label: "ComfyUI".into(),
+            key_node_id: Some("n".into()),
+        };
+        let image = crate::quota::check_params(
+            "n",
+            &caller,
+            "a cat",
+            2,
+            &json!({"kind": "image", "images": 3}),
+        );
+        assert_eq!(image["images"], 3);
+        let chat = crate::quota::check_params("n", &caller, "hi", 1, &json!({"messages": []}));
+        assert!(chat.get("images").is_none());
+    }
+
+    #[test]
+    fn an_unfinished_generation_is_closed_incomplete() {
+        let jobs = ImageJobs::default();
+        let start = std::time::Instant::now();
+        jobs.begin("old", None, start).unwrap();
+        jobs.begin("new", None, start + std::time::Duration::from_secs(29 * 60))
+            .unwrap();
+        let swept = jobs.sweep(start + std::time::Duration::from_secs(31 * 60));
+        assert_eq!(swept.len(), 1);
+        assert_eq!(swept[0].0, "old");
+        assert!(jobs.take("new").is_some());
     }
 
     #[test]

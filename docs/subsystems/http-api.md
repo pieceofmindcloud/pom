@@ -1030,7 +1030,7 @@ then each live admin through the signed peer call
 `POST /api/internal/plugins/logs/peer/quota.check` (1.5 s each, with the
 request body cut to the system prompt and the newest turns so a project can be
 recognized); the first answer from a plugin with budgets configured decides.
-A refusal is HTTP 429 in the route's own error shape (`rate_limit_error` for
+A ComfyUI generation on network components is admitted the same way (`POST /api/plugin-host/image-job/begin`, `plugins-ui.md`), with `images` in the `quota.check` payload (`quota::check_params`): the logs plugin measures it against the plan's image budget, never its tokens. A refusal is HTTP 429 in the route's own error shape (`rate_limit_error` for
 Anthropic), with `Retry-After` when the window's end is known, and is recorded
 in the audit as a rejected request. With no plugin answering the request goes
 on (fail-open, one warning a minute), except for a node already refused, which

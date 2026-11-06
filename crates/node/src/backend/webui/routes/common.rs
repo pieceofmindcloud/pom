@@ -65,6 +65,14 @@ pub(super) fn routes() -> Router<GatewayState> {
             get(crate::plugin_host_api::components),
         )
         .route(
+            "/api/plugin-host/image-job/begin",
+            post(crate::plugin_host_api::image_job_begin),
+        )
+        .route(
+            "/api/plugin-host/image-job/complete",
+            post(crate::plugin_host_api::image_job_complete),
+        )
+        .route(
             "/api/plugin-host/component/:deploy_id/:component/:op",
             post(crate::plugin_host_api::component_call).layer(
                 axum::extract::DefaultBodyLimit::max(crate::components::MAX_COMPONENT_BODY),

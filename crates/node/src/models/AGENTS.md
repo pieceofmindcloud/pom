@@ -62,8 +62,9 @@ Models, GGUF reading, planning and slice files. The module is used by
 - `image_catalog.rs` - image model files (`ImageModelFile`, `ImageCategory`):
   reads only the safetensors header (`read_safetensors_header`, capped at
   `MAX_SAFETENSORS_HEADER`), `classify` by tensor names, and
-  `discover_image_files` over the model folders. Pickle formats are listed,
-  never opened. The rules and their order are in `docs/subsystems/slicing.md`
+  `discover_image_files` over the model folders. Pickle formats (not `.bin`)
+  are listed, never opened; LLM weights (sharded sets, files beside a
+  transformers `config.json`) are skipped. The rules and their order are in `docs/subsystems/slicing.md`
   section 1; the test fixtures are real headers in `fixtures/safetensors/`
   (their sources in its `README.md`).
 - `plan.rs` - computes ranges by budget or by real layer size and calls the GGUF

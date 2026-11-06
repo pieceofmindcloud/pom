@@ -31,8 +31,11 @@ in a fixed order: `checkpoint` (a denoiser and a VAE in one file), `lora`,
 else `other`. `family` is a display hint from distinctive tensor names
 (`flux`, `qwen_image`, `z_image`, `sdxl`, `sd15`), else from
 `__metadata__["modelspec.architecture"]`; `dtype` is the dtype most tensors
-use. Pickle formats (`.ckpt`, `.pt`, `.pth`, `.bin`) are never opened: they
-are listed by `stat` as `other`. Hidden files, `.part` downloads and the
+use. Pickle formats (`.ckpt`, `.pt`, `.pth`) are never opened: they are listed
+by `stat` as `other`; `.bin` is not listed at all, being too generic. LLM
+weights in safetensors are left out too: a part of a sharded set
+(`-00001-of-00004`) or a file beside a transformers `config.json` that
+declares `architectures` (`is_llm_weights`). Hidden files, `.part` downloads and the
 slicer's working folders are skipped, a folder reached twice is read once, and
 the classification is cached by path, size and mtime. The rules are tested
 against the real headers in `models/fixtures/safetensors/`.

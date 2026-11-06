@@ -22,7 +22,9 @@ pub const MAX_SAFETENSORS_HEADER: u64 = 100 * 1024 * 1024;
 /// Same depth the GGUF walk uses.
 const MAX_WALK_DEPTH: usize = 6;
 const HEADER_EXTENSIONS: [&str; 2] = ["safetensors", "sft"];
-const PICKLE_EXTENSIONS: [&str; 4] = ["ckpt", "pt", "pth", "bin"];
+/// `.bin` is left out: it is too generic (engine runtimes, tokenizers and
+/// transformers checkpoints all use it) to be listed as an image model.
+const PICKLE_EXTENSIONS: [&str; 3] = ["ckpt", "pt", "pth"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -280,10 +282,38 @@ fn find_image_files(root: &Path, depth: usize, out: &mut Vec<PathBuf>) {
         };
         if kind.is_dir() {
             find_image_files(&path, depth + 1, out);
-        } else if image_extension(&path).is_some() {
+        } else if image_extension(&path).is_some() && !is_llm_weights(&path) {
             out.push(path);
         }
     }
+}
+
+/// LLM weights in safetensors carry the same tensor names as a text encoder
+/// but are not image models: a part of a sharded set (`-00001-of-00004`, which
+/// no ComfyUI loader reads), or a file beside a transformers `config.json`
+/// that declares `architectures` (an LLM's repository layout; ComfyUI's own
+/// encoders ship as single files).
+fn is_llm_weights(path: &Path) -> bool {
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default();
+    let parts: Vec<&str> = stem.rsplitn(4, '-').collect();
+    let sharded = parts.len() == 4
+        && parts[1] == "of"
+        && [parts[0], parts[2]]
+            .iter()
+            .all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+    if sharded {
+        return true;
+    }
+    let Some(config) = path.parent().map(|dir| dir.join("config.json")) else {
+        return false;
+    };
+    std::fs::read(&config)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .is_some_and(|config| config.get("architectures").is_some())
 }
 
 /// Every image model file under these roots. A folder reached twice (listed
@@ -493,6 +523,39 @@ mod tests {
         assert!(error.contains("cut short"), "{error}");
         let files = discover_image_files(&folder(dir.path()));
         assert!(files[0].metadata_error.is_some());
+    }
+
+    #[test]
+    fn llm_weights_are_not_image_models() {
+        let dir = tempfile::tempdir().unwrap();
+        let te = fixture("qwen3_4b_text_encoder");
+        // A sharded LLM, and a transformers checkpoint with its config.json.
+        write_test_safetensors(
+            dir.path(),
+            "nvidia/llm/model-00001-of-00002.safetensors",
+            &te,
+        );
+        write_test_safetensors(dir.path(), "qwen/Qwen3-4B/model.safetensors", &te);
+        std::fs::write(
+            dir.path().join("qwen/Qwen3-4B/config.json"),
+            r#"{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3"}"#,
+        )
+        .unwrap();
+        // A text encoder shipped for ComfyUI stays.
+        write_test_safetensors(dir.path(), "Comfy-Org/z/qwen_3_4b.safetensors", &te);
+        let files = discover_image_files(&folder(dir.path()));
+        let names: Vec<&str> = files.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["Comfy-Org/z/qwen_3_4b.safetensors"]);
+    }
+
+    #[test]
+    fn bin_files_are_not_listed() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("dense.bin"), b"strata runtime").unwrap();
+        std::fs::write(dir.path().join("upscaler.pth"), b"pickle").unwrap();
+        let files = discover_image_files(&folder(dir.path()));
+        let names: Vec<&str> = files.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["upscaler.pth"]);
     }
 
     #[test]

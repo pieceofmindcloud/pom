@@ -32,6 +32,18 @@ pub(super) fn routes() -> Router<GatewayState> {
             "/api/ui/components/release",
             post(crate::components::release_route),
         )
+        .route(
+            "/api/ui/image-deploy",
+            post(crate::components::image_deploy_route),
+        )
+        .route(
+            "/api/ui/image-undeploy",
+            post(crate::components::image_undeploy_route),
+        )
+        .route(
+            "/api/ui/image-deployments",
+            axum::routing::get(crate::components::image_deployments_route),
+        )
         .route("/api/ui/launch", post(launch))
         .route("/api/ui/stop-inference", post(stop_inference))
         .route("/api/ui/unload", post(unload_model))

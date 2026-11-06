@@ -366,6 +366,21 @@ serves, so components are a registry of their own.
   at startup and every 10 minutes) asks `component.serve` again for every stored
   assignment (`components::restore`), so a node serves after a reboot, and a
   ComfyUI closed with its X is reopened, without the admin deploying again.
+- **Deploying.** `POST /api/ui/image-deploy` `{name, components: [{component,
+  node_id, path}]}` (any admin) surveys the network (each machine's
+  `GET /api/ui/models` `image_files` and whether it publishes an `image`
+  service) and refuses, before touching any machine, a component chosen twice, a
+  machine that does not run ComfyUI, a machine that does not hold that file and
+  a file of another category (a `checkpoint` fits all three). It mints a
+  `deploy_id` (`img-` and 12 hex digits) and applies each component in turn
+  (`POST /api/ui/components/apply` on that machine, signed); a failure releases
+  the machines already applied and answers 502 naming the machine. Only a
+  complete deploy is recorded, in the deploying node's `pom.db` setting
+  `image_deployments`. No file is copied: the screen offers only machines that
+  hold the file. `GET /api/ui/image-deployments` lists the records with each
+  component's live status (`missing` when no service lists it) and
+  `POST /api/ui/image-undeploy` `{deploy_id}` releases every machine of the
+  record (a silent one is reported) and drops it.
 - **Who serves what.** The plugin lists its components in its `image` service
   (`plugins-ui.md`, `host.services`); `components::network_components` gathers
   them from this node and every live peer.

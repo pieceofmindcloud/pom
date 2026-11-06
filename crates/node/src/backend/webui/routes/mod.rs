@@ -526,6 +526,21 @@ const ROUTE_RULES: &[RouteRule] = &[
         scope: RouteScope::AnyAdmin,
     },
     RouteRule {
+        prefix: "/api/ui/image-deploy",
+        method: None,
+        scope: RouteScope::AnyAdmin,
+    },
+    RouteRule {
+        prefix: "/api/ui/image-undeploy",
+        method: None,
+        scope: RouteScope::AnyAdmin,
+    },
+    RouteRule {
+        prefix: "/api/ui/image-deployments",
+        method: None,
+        scope: RouteScope::AnyAdmin,
+    },
+    RouteRule {
         prefix: "/api/ui/launch",
         method: None,
         scope: RouteScope::AnyAdmin,

@@ -205,6 +205,368 @@ pub(crate) async fn release_route(
     axum::Json(serde_json::json!({ "ok": true }))
 }
 
+// ── Image deployments (the node an admin deploys from) ──────────────────────
+
+const DEPLOYMENTS_KEY: &str = "image_deployments";
+const APPLY_PATH: &str = "/api/ui/components/apply";
+const RELEASE_PATH: &str = "/api/ui/components/release";
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ComponentChoice {
+    pub component: String,
+    pub node_id: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct ImageDeployRequest {
+    pub name: String,
+    pub components: Vec<ComponentChoice>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ImageDeployment {
+    pub deploy_id: String,
+    pub name: String,
+    pub created_at: String,
+    pub components: Vec<ComponentChoice>,
+}
+
+/// What the deploy needs to know of one machine.
+#[derive(Debug, Clone)]
+pub(crate) struct MachineFacts {
+    pub node_id: String,
+    pub hostname: String,
+    /// (path, category) of its readable image files.
+    pub image_files: Vec<(String, String)>,
+    pub has_image_service: bool,
+}
+
+/// A call to a machine's component route: `(node_id, path, body)`.
+pub(crate) type TargetCall = std::sync::Arc<
+    dyn Fn(String, &'static str, Value) -> futures::future::BoxFuture<'static, Result<(), String>>
+        + Send
+        + Sync,
+>;
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct Released {
+    pub node_id: String,
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+pub(crate) fn load_image_deployments(db: &crate::db::PomDb) -> Vec<ImageDeployment> {
+    db.local_setting_json(DEPLOYMENTS_KEY)
+        .ok()
+        .flatten()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default()
+}
+
+fn save_image_deployments(db: &crate::db::PomDb, deployments: &[ImageDeployment]) {
+    if let Err(error) = db.save_local_setting(DEPLOYMENTS_KEY, deployments) {
+        tracing::warn!(%error, "could not store the image deployments");
+    }
+}
+
+/// A category a component accepts: its own, or a checkpoint holding all three.
+fn fits(component: &str, category: &str) -> bool {
+    category == component || category == "checkpoint"
+}
+
+fn validate(request: &ImageDeployRequest, machines: &[MachineFacts]) -> Result<(), String> {
+    if request.name.trim().is_empty() {
+        return Err("an image deployment needs a name".into());
+    }
+    if request.components.is_empty() || request.components.len() > COMPONENTS.len() {
+        return Err("choose one to three components".into());
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for choice in &request.components {
+        if !COMPONENTS.contains(&choice.component.as_str()) {
+            return Err(format!("unknown component {}", choice.component));
+        }
+        if !seen.insert(choice.component.as_str()) {
+            return Err(format!("{} is chosen twice", choice.component));
+        }
+        let Some(machine) = machines.iter().find(|m| m.node_id == choice.node_id) else {
+            return Err(format!("machine {} is not on the network", choice.node_id));
+        };
+        if !machine.has_image_service {
+            return Err(format!("{} does not run ComfyUI", machine.hostname));
+        }
+        let file = std::path::Path::new(&choice.path)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        match machine
+            .image_files
+            .iter()
+            .find(|(path, _)| *path == choice.path)
+        {
+            None => return Err(format!("{} does not hold {file}", machine.hostname)),
+            Some((_, category)) if !fits(&choice.component, category) => {
+                return Err(format!(
+                    "{file} is a {category}, not a {}",
+                    choice.component
+                ))
+            }
+            Some(_) => {}
+        }
+    }
+    Ok(())
+}
+
+fn assignment_of(deploy_id: &str, name: &str, choice: &ComponentChoice) -> Value {
+    serde_json::json!({
+        "deploy_id": deploy_id,
+        "name": name,
+        "component": choice.component,
+        "paths": [choice.path],
+        "plugin_code": crate::components::IMAGE_PLUGIN,
+        "options": {},
+    })
+}
+
+/// The plugin that serves image components. One today; the service lists
+/// its own code, so another plugin could join later.
+pub(crate) const IMAGE_PLUGIN: &str = "comfyui";
+
+/// Deploy an image model by component. On a failure the machines already
+/// applied are released and nothing is recorded.
+pub(crate) async fn deploy_image(
+    db: &crate::db::PomDb,
+    machines: &[MachineFacts],
+    call: &TargetCall,
+    request: ImageDeployRequest,
+) -> Result<String, String> {
+    validate(&request, machines)?;
+    let deploy_id = format!("img-{}", &hex::encode(rand::random::<[u8; 6]>()));
+    let name = request.name.trim().to_owned();
+    let mut applied: Vec<String> = Vec::new();
+    for choice in &request.components {
+        let body = assignment_of(&deploy_id, &name, choice);
+        if let Err(error) = call(choice.node_id.clone(), APPLY_PATH, body).await {
+            for node_id in &applied {
+                let _ = call(
+                    node_id.clone(),
+                    RELEASE_PATH,
+                    serde_json::json!({"deploy_id": deploy_id}),
+                )
+                .await;
+            }
+            let hostname = machines
+                .iter()
+                .find(|m| m.node_id == choice.node_id)
+                .map(|m| m.hostname.clone())
+                .unwrap_or_else(|| choice.node_id.clone());
+            return Err(format!(
+                "{hostname} could not serve the {}: {error}",
+                choice.component
+            ));
+        }
+        if !applied.contains(&choice.node_id) {
+            applied.push(choice.node_id.clone());
+        }
+    }
+    let mut deployments = load_image_deployments(db);
+    deployments.push(ImageDeployment {
+        deploy_id: deploy_id.clone(),
+        name,
+        created_at: chrono::Utc::now().to_rfc3339(),
+        components: request.components,
+    });
+    save_image_deployments(db, &deployments);
+    Ok(deploy_id)
+}
+
+/// Undeploy: every target is asked to release; the record goes either way.
+pub(crate) async fn undeploy_image(
+    db: &crate::db::PomDb,
+    call: &TargetCall,
+    deploy_id: &str,
+) -> Vec<Released> {
+    let mut deployments = load_image_deployments(db);
+    let Some(position) = deployments.iter().position(|d| d.deploy_id == deploy_id) else {
+        return Vec::new();
+    };
+    let deployment = deployments.remove(position);
+    save_image_deployments(db, &deployments);
+    let mut nodes: Vec<String> = Vec::new();
+    for choice in &deployment.components {
+        if !nodes.contains(&choice.node_id) {
+            nodes.push(choice.node_id.clone());
+        }
+    }
+    let mut released = Vec::new();
+    for node_id in nodes {
+        let result = call(
+            node_id.clone(),
+            RELEASE_PATH,
+            serde_json::json!({"deploy_id": deploy_id}),
+        )
+        .await;
+        released.push(Released {
+            node_id,
+            ok: result.is_ok(),
+            error: result.err(),
+        });
+    }
+    released
+}
+
+/// The machines of the network as the deploy sees them: their image files
+/// (`GET /api/ui/models`) and whether they run an image service.
+pub(crate) async fn survey_machines(state: &GatewayState) -> Vec<MachineFacts> {
+    let peers = state.all_peers().await;
+    let lookups = peers.into_iter().map(|peer| async move {
+        let models = state
+            .control_get(&peer, "/api/ui/models", std::time::Duration::from_secs(16))
+            .await
+            .ok()?;
+        let body: Value = models.json().await.ok()?;
+        let image_files = body["image_files"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|f| f["metadata_error"].is_null())
+            .filter_map(|f| {
+                Some((
+                    f["path"].as_str()?.to_owned(),
+                    f["category"].as_str()?.to_owned(),
+                ))
+            })
+            .collect();
+        let services = crate::plugin_engine::services_of(state, &peer.node_id)
+            .await
+            .unwrap_or_default();
+        Some(MachineFacts {
+            node_id: peer.node_id.clone(),
+            hostname: peer.hostname.clone(),
+            image_files,
+            has_image_service: services.iter().any(|s| s["kind"] == "image"),
+        })
+    });
+    futures::future::join_all(lookups)
+        .await
+        .into_iter()
+        .flatten()
+        .collect()
+}
+
+/// Calls to the machines' component routes, signed, through each one's own
+/// address (this node through loopback).
+pub(crate) fn live_targets(state: GatewayState) -> TargetCall {
+    std::sync::Arc::new(move |node_id: String, path: &'static str, body: Value| {
+        let state = state.clone();
+        Box::pin(async move {
+            let peer = state
+                .all_peers()
+                .await
+                .into_iter()
+                .find(|peer| peer.node_id == node_id)
+                .ok_or_else(|| format!("machine {node_id} is not on the network"))?;
+            let response = state
+                .control_post_json(&peer, path, &body, std::time::Duration::from_secs(120))
+                .await
+                .map_err(|error| error.to_string())?;
+            if response.status().is_success() {
+                return Ok(());
+            }
+            let status = response.status();
+            let body: Value = response.json().await.unwrap_or(Value::Null);
+            Err(body["error"]
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| status.to_string()))
+        })
+    })
+}
+
+/// `POST /api/ui/image-deploy`.
+pub(crate) async fn image_deploy_route(
+    _auth: crate::auth::ConnectionAuth,
+    axum::extract::State(state): axum::extract::State<GatewayState>,
+    axum::Json(request): axum::Json<ImageDeployRequest>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let machines = survey_machines(&state).await;
+    let call = live_targets(state.clone());
+    match deploy_image(&state.database, &machines, &call, request).await {
+        Ok(deploy_id) => axum::Json(serde_json::json!({ "deploy_id": deploy_id })).into_response(),
+        Err(error) => {
+            let status = if error.contains("could not serve") {
+                axum::http::StatusCode::BAD_GATEWAY
+            } else {
+                axum::http::StatusCode::BAD_REQUEST
+            };
+            (status, axum::Json(serde_json::json!({ "error": error }))).into_response()
+        }
+    }
+}
+
+/// The image deployments this node recorded, with each component's status
+/// on the network (`missing` when no live service lists it).
+pub(crate) async fn image_deployments_view(state: &GatewayState) -> Value {
+    let served = network_components(state).await;
+    let peers = state.all_peers().await;
+    let deployments: Vec<Value> = load_image_deployments(&state.database)
+        .into_iter()
+        .map(|deployment| {
+            let components: Vec<Value> = deployment
+                .components
+                .iter()
+                .map(|choice| {
+                    let status = served
+                        .iter()
+                        .find(|s| {
+                            s.deploy_id == deployment.deploy_id
+                                && s.component == choice.component
+                                && s.node_id == choice.node_id
+                        })
+                        .map(|s| s.status.clone())
+                        .unwrap_or_else(|| "missing".into());
+                    let hostname = peers
+                        .iter()
+                        .find(|p| p.node_id == choice.node_id)
+                        .map(|p| p.hostname.clone())
+                        .unwrap_or_else(|| choice.node_id.clone());
+                    serde_json::json!({
+                        "component": choice.component, "node_id": choice.node_id,
+                        "hostname": hostname, "path": choice.path, "status": status,
+                    })
+                })
+                .collect();
+            serde_json::json!({
+                "deploy_id": deployment.deploy_id, "name": deployment.name,
+                "created_at": deployment.created_at, "components": components,
+            })
+        })
+        .collect();
+    serde_json::json!({ "deployments": deployments })
+}
+
+/// `GET /api/ui/image-deployments`.
+pub(crate) async fn image_deployments_route(
+    _auth: crate::auth::ConnectionAuth,
+    axum::extract::State(state): axum::extract::State<GatewayState>,
+) -> axum::Json<Value> {
+    axum::Json(image_deployments_view(&state).await)
+}
+
+/// `POST /api/ui/image-undeploy`.
+pub(crate) async fn image_undeploy_route(
+    _auth: crate::auth::ConnectionAuth,
+    axum::extract::State(state): axum::extract::State<GatewayState>,
+    axum::Json(request): axum::Json<ReleaseRequest>,
+) -> axum::Json<Value> {
+    let call = live_targets(state.clone());
+    let released = undeploy_image(&state.database, &call, &request.deploy_id).await;
+    axum::Json(serde_json::json!({ "released": released }))
+}
+
 /// A component served somewhere on the network.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct NetworkComponent {
@@ -422,6 +784,161 @@ mod tests {
         assert_eq!(seen.len(), 1);
         assert_eq!(seen[0].0, "component.serve");
         assert_eq!(seen[0].1["deploy_id"], "img-1");
+    }
+
+    fn machine(node_id: &str, files: &[(&str, &str)], service: bool) -> MachineFacts {
+        MachineFacts {
+            node_id: node_id.into(),
+            hostname: format!("host-{node_id}"),
+            image_files: files
+                .iter()
+                .map(|(path, category)| (path.to_string(), category.to_string()))
+                .collect(),
+            has_image_service: service,
+        }
+    }
+
+    fn choice(component: &str, node_id: &str, path: &str) -> ComponentChoice {
+        ComponentChoice {
+            component: component.into(),
+            node_id: node_id.into(),
+            path: path.into(),
+        }
+    }
+
+    fn network() -> Vec<MachineFacts> {
+        vec![
+            machine("a", &[("/m/z.safetensors", "diffusion")], true),
+            machine("b", &[("/m/qwen.safetensors", "text_encoder")], true),
+            machine("c", &[("/m/ae.safetensors", "vae")], true),
+            machine("d", &[("/m/ae.safetensors", "vae")], false),
+        ]
+    }
+
+    fn request(components: Vec<ComponentChoice>) -> ImageDeployRequest {
+        ImageDeployRequest {
+            name: "Z-Image".into(),
+            components,
+        }
+    }
+
+    type Calls = Arc<Mutex<Vec<String>>>;
+
+    fn targets_call(fail_on: Option<&'static str>) -> (TargetCall, Calls) {
+        let seen: Calls = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::clone(&seen);
+        let call: TargetCall = Arc::new(move |node_id: String, path: &'static str, body: Value| {
+            log.lock().unwrap().push(format!(
+                "{path} {node_id} {}",
+                body["component"].as_str().unwrap_or("")
+            ));
+            let fail = fail_on == Some(node_id.as_str()) && path.ends_with("apply");
+            Box::pin(async move {
+                if fail {
+                    Err("ComfyUI is not installed".to_owned())
+                } else {
+                    Ok(())
+                }
+            })
+        });
+        (call, seen)
+    }
+
+    #[tokio::test]
+    async fn an_image_model_is_deployed_on_its_holders() {
+        let (_dir, db) = db();
+        let (call, seen) = targets_call(None);
+        let req = request(vec![
+            choice("diffusion", "a", "/m/z.safetensors"),
+            choice("text_encoder", "b", "/m/qwen.safetensors"),
+            choice("vae", "c", "/m/ae.safetensors"),
+        ]);
+        let deploy_id = deploy_image(&db, &network(), &call, req).await.unwrap();
+        assert!(deploy_id.starts_with("img-"));
+        let seen = seen.lock().unwrap();
+        assert_eq!(
+            *seen,
+            [
+                "/api/ui/components/apply a diffusion",
+                "/api/ui/components/apply b text_encoder",
+                "/api/ui/components/apply c vae",
+            ]
+        );
+        let records = load_image_deployments(&db);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].components.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_machine_without_the_file_is_refused() {
+        let (_dir, db) = db();
+        let (call, seen) = targets_call(None);
+        let req = request(vec![choice("diffusion", "b", "/m/z.safetensors")]);
+        let error = deploy_image(&db, &network(), &call, req).await.unwrap_err();
+        assert!(
+            error.contains("host-b") && error.contains("z.safetensors"),
+            "{error}"
+        );
+        assert!(seen.lock().unwrap().is_empty());
+        let req = request(vec![choice("vae", "d", "/m/ae.safetensors")]);
+        let error = deploy_image(&db, &network(), &call, req).await.unwrap_err();
+        assert!(
+            error.contains("ComfyUI"),
+            "a machine without the image service: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_wrong_category_is_refused() {
+        let (_dir, db) = db();
+        let (call, _) = targets_call(None);
+        let req = request(vec![choice("vae", "a", "/m/z.safetensors")]);
+        assert!(deploy_image(&db, &network(), &call, req).await.is_err());
+        let req = request(vec![
+            choice("vae", "c", "/m/ae.safetensors"),
+            choice("vae", "c", "/m/ae.safetensors"),
+        ]);
+        assert!(
+            deploy_image(&db, &network(), &call, req).await.is_err(),
+            "a component twice"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_target_releases_the_others() {
+        let (_dir, db) = db();
+        let (call, seen) = targets_call(Some("c"));
+        let req = request(vec![
+            choice("diffusion", "a", "/m/z.safetensors"),
+            choice("text_encoder", "b", "/m/qwen.safetensors"),
+            choice("vae", "c", "/m/ae.safetensors"),
+        ]);
+        let error = deploy_image(&db, &network(), &call, req).await.unwrap_err();
+        assert!(
+            error.contains("host-c") && error.contains("not installed"),
+            "{error}"
+        );
+        let seen = seen.lock().unwrap();
+        assert!(seen.contains(&"/api/ui/components/release a ".to_owned()));
+        assert!(seen.contains(&"/api/ui/components/release b ".to_owned()));
+        assert!(load_image_deployments(&db).is_empty());
+    }
+
+    #[tokio::test]
+    async fn undeploy_releases_every_target() {
+        let (_dir, db) = db();
+        let (call, _) = targets_call(None);
+        let req = request(vec![
+            choice("diffusion", "a", "/m/z.safetensors"),
+            choice("vae", "c", "/m/ae.safetensors"),
+        ]);
+        let deploy_id = deploy_image(&db, &network(), &call, req).await.unwrap();
+        let (call, seen) = targets_call(None);
+        let released = undeploy_image(&db, &call, &deploy_id).await;
+        assert_eq!(released.len(), 2);
+        assert!(released.iter().all(|r| r.ok));
+        assert_eq!(seen.lock().unwrap().len(), 2);
+        assert!(load_image_deployments(&db).is_empty());
     }
 
     #[test]

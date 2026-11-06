@@ -1012,7 +1012,10 @@ cluster measurement.
 
 `POST /api/ui/components/apply` and `POST /api/ui/components/release`
 (`AnyAdmin`, refused on a visitor profile) serve or stop an image model
-component on this node; the contract is `deployment.md`, section 1.7.
+component on this node. `POST /api/ui/image-deploy`, `GET /api/ui/image-deployments`
+and `POST /api/ui/image-undeploy` (`AnyAdmin`) deploy, list and undeploy an
+image model by component from the node the admin uses. The contracts are
+`deployment.md`, section 1.7.
 
 ### Token budgets, checked before the pipeline
 

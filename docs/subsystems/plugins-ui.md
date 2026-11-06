@@ -450,8 +450,9 @@ stable mount is `/data/workspace` and must stay persistent across restarts.
 POM checks the path when saving the configuration and resends the context to
 running hosts when the root changes.
 `model_dirs` lists the node's whole-model folders (`model_dir_paths()`,
-without the slice folder), so a plugin can store a model file where the
-catalog reads it; a plugin that ignores the field is unaffected.
+without the slice folder and without Ollama stores, the folders the image
+catalog reads), so a plugin can store a model file where the catalog finds
+it; a plugin that ignores the field is unaffected.
 
 ## Services a plugin offers to the cluster
 

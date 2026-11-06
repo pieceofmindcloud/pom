@@ -90,6 +90,7 @@ pub fn read_safetensors_header(path: &Path) -> Result<SafetensorsHeader, String>
     let table: serde_json::Map<String, serde_json::Value> =
         serde_json::from_slice(&body).map_err(|e| format!("header is not a JSON object: {e}"))?;
     let mut header = SafetensorsHeader::default();
+    let mut data_end = 0u64;
     for (name, value) in table {
         if name == "__metadata__" {
             if let Some(map) = value.as_object() {
@@ -102,7 +103,13 @@ pub fn read_safetensors_header(path: &Path) -> Result<SafetensorsHeader, String>
             continue;
         }
         let dtype = value["dtype"].as_str().unwrap_or_default().to_owned();
+        data_end = data_end.max(value["data_offsets"][1].as_u64().unwrap_or(0));
         header.tensors.push((name, dtype));
+    }
+    // A complete header over missing weights: an interrupted copy or download
+    // that wrote straight to the final name.
+    if 8 + len + data_end > size {
+        return Err("data is cut short (an incomplete file?)".to_owned());
     }
     Ok(header)
 }
@@ -469,6 +476,23 @@ mod tests {
         assert!(files
             .iter()
             .all(|file| file.category == ImageCategory::Other));
+    }
+
+    #[test]
+    fn a_file_whose_weights_are_cut_short_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_test_safetensors(dir.path(), "ae.safetensors", &fixture("flux_ae_vae"));
+        let full = std::fs::metadata(&path).unwrap().len();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(full - 1)
+            .unwrap();
+        let error = read_safetensors_header(&path).unwrap_err();
+        assert!(error.contains("cut short"), "{error}");
+        let files = discover_image_files(&folder(dir.path()));
+        assert!(files[0].metadata_error.is_some());
     }
 
     #[test]

@@ -25,7 +25,7 @@ Image model files (diffusion models, text encoders, VAEs and the rest of what
 ComfyUI loads) are read by `image_catalog.rs`, not by the GGUF walk. For a
 `.safetensors` or `.sft` file it reads only the header (an 8-byte length and a
 JSON table of tensor names and dtypes, refused above `MAX_SAFETENSORS_HEADER`,
-100 MiB, or when it is cut short) and classifies the file by its tensor names,
+100 MiB, or when it or the weights after it are cut short, as an interrupted copy leaves them) and classifies the file by its tensor names,
 in a fixed order: `checkpoint` (a denoiser and a VAE in one file), `lora`,
 `controlnet`, `vae`, `diffusion`, `clip_vision`, `text_encoder`, `upscale`,
 else `other`. `family` is a display hint from distinctive tensor names

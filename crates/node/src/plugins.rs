@@ -3980,18 +3980,23 @@ fn host_context_payload(
     })
 }
 
+/// The model folders a plugin may store files in: the whole-model folders the
+/// image catalog reads, so never an Ollama store (a file written there would
+/// never show up).
+fn plugin_model_dirs(dirs: &[std::path::PathBuf]) -> Vec<String> {
+    crate::catalog::image_roots(dirs)
+        .into_iter()
+        .map(|(dir, _)| dir.to_string_lossy().into_owned())
+        .collect()
+}
+
 pub(crate) async fn refresh_host_context(
     state: &crate::gateway::GatewayState,
 ) -> anyhow::Result<()> {
     let (key, _) = crate::admin::node_chat_key(state).await?;
     let workspace_root = state.auth.read().await.workspace_root_path();
     let workspace_root = workspace_root.to_string_lossy();
-    let model_dirs: Vec<String> = state
-        .model_dirs()
-        .await
-        .iter()
-        .map(|dir| dir.to_string_lossy().into_owned())
-        .collect();
+    let model_dirs = plugin_model_dirs(&state.model_dirs().await);
     state
         .plugins
         .set_host_context(host_context_payload(
@@ -6991,6 +6996,21 @@ mod tests {
         let dirs = vec!["/models/a".to_owned(), "/models/b".to_owned()];
         let context = host_context_payload(8080, "sk-test", "/data/workspace", &dirs);
         assert_eq!(context["model_dirs"], serde_json::json!(["/models/a", "/models/b"]));
+    }
+
+    #[test]
+    fn plugins_never_get_an_ollama_store_as_a_model_folder() {
+        let root = tempfile::tempdir().unwrap();
+        let ollama = root.path().join("ollama");
+        std::fs::create_dir_all(ollama.join("manifests/registry")).unwrap();
+        std::fs::create_dir_all(ollama.join("blobs")).unwrap();
+        std::fs::write(ollama.join("blobs/sha256-0"), b"x").unwrap();
+        let full = root.path().join("full");
+        std::fs::create_dir_all(&full).unwrap();
+        assert_eq!(
+            plugin_model_dirs(&[ollama, full.clone()]),
+            [full.to_string_lossy().into_owned()]
+        );
     }
 
     #[tokio::test]

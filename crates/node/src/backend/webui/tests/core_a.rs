@@ -373,11 +373,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_text_file_named_safetensors_is_refused() {
+    async fn a_corrupt_safetensors_in_a_model_folder_can_be_deleted() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("x.safetensors");
         std::fs::write(&file, b"hello").unwrap();
-        assert_eq!(delete_status(&file, dir.path()).await, StatusCode::BAD_REQUEST);
+        assert_eq!(delete_status(&file, dir.path()).await, StatusCode::OK);
+        assert!(!file.exists());
+    }
+
+    #[tokio::test]
+    async fn a_safetensors_outside_the_model_folders_is_refused() {
+        let models = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let file = elsewhere.path().join("x.safetensors");
+        std::fs::write(&file, b"hello").unwrap();
+        assert_eq!(delete_status(&file, models.path()).await, StatusCode::BAD_REQUEST);
         assert!(file.exists());
     }
 

@@ -1100,10 +1100,9 @@ pub(super) async fn delete_model(
     Json(json!({ "deleted": true, "path": target, "freed_bytes": size })).into_response()
 }
 
-/// What the Full models screen may delete: a GGUF, or an image model file
-/// inside one of the whole-model folders - a safetensors file whose header
-/// reads, or a pickle format by extension (POM never opens those). The folder
-/// rule keeps a generic extension like `.bin` from reaching any file on disk.
+/// What the Full models screen may delete: a GGUF, or a file with an image
+/// model extension inside one of the whole-model folders. The folder rule
+/// keeps a generic extension like `.bin` from reaching any file on disk.
 pub(crate) fn ensure_deletable_model(
     path: &std::path::Path,
     model_dirs: &[std::path::PathBuf],
@@ -1125,11 +1124,10 @@ pub(crate) fn ensure_deletable_model(
         .and_then(|e| e.to_str())
         .map(str::to_ascii_lowercase)
         .unwrap_or_default();
+    // Inside a model folder the extension is enough: a corrupt or cut-short
+    // file is exactly the one worth deleting, and the folder is the guard.
     match extension.as_str() {
-        "safetensors" | "sft" => crate::image_catalog::read_safetensors_header(path)
-            .map(|_| ())
-            .map_err(|e| format!("{} is not a model file: {e}", path.display())),
-        "ckpt" | "pt" | "pth" | "bin" if path.is_file() => Ok(()),
+        "safetensors" | "sft" | "ckpt" | "pt" | "pth" | "bin" if path.is_file() => Ok(()),
         _ => gguf,
     }
 }

@@ -2485,6 +2485,14 @@ async fn post_session_lifecycle(
     // announced addresses, and trying QUIC and TCP on them before used up the whole deadline - the
     // rewind failed (prefix lost) and so did the release (KV stuck on the peer,
     // which then showed up with a queue for the planner).
+    //
+    // The hop is this very node (a standalone machine, or the gateway that
+    // serves a range): in-process, never over its own announced addresses.
+    if crate::infer_tunnel::is_local_node(&step.node_id) {
+        if let Some(result) = crate::relay::post_json_in_process(path, body).await {
+            return result;
+        }
+    }
     let tunnel = crate::infer_tunnel::tunnel_sender().filter(|_| step.endpoint_id.is_some());
     let pinned_tunnel = crate::route_plan::book()
         .kind_map(crate::route_plan::Plane::Inference)

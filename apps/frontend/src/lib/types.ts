@@ -1295,6 +1295,23 @@ export interface ImageModelFile {
   metadata_error: string | null;
 }
 
+/** A component of an image deployment: the machine and file it runs from. */
+export interface ImageDeploymentComponent {
+  component: "diffusion" | "text_encoder" | "vae";
+  node_id: string;
+  hostname: string;
+  path: string;
+  /** `ready`, `loading`, `error`, or `missing` when no live service lists it. */
+  status: string;
+}
+
+export interface ImageDeployment {
+  deploy_id: string;
+  name: string;
+  created_at: string;
+  components: ImageDeploymentComponent[];
+}
+
 export type SidecarKind = "mmproj" | "mtp";
 export type SidecarMode = "file" | "embedded" | "none";
 
@@ -1381,6 +1398,8 @@ export interface PeerCatalog {
   models: DiscoveredModel[];
   shard_sets: ShardSet[];
   sidecars?: Sidecar[];
+  /** Image model files of this machine's whole-model folders. Absent on an old node. */
+  image_files?: ImageModelFile[];
   scanned?: ScannedRoot[];
   /** False while this peer is reading GGUF headers in the background. */
   metadata_complete?: boolean;

@@ -58,6 +58,7 @@ import type {
   NetworkChatSnapshot,
   NetworkOffer,
   PathsResponse,
+  ImageDeployment,
   PeerCatalog,
   PeerRuntime,
   TransferJob,
@@ -97,6 +98,7 @@ export const keys = {
   chatCapabilities: ["chat-capabilities"] as const,
   models: ["models"] as const,
   clusterModels: ["cluster-models"] as const,
+  imageDeployments: ["image-deployments"] as const,
   sidecarLinks: ["model-sidecar-links"] as const,
   paths: ["paths"] as const,
   cacheTypes: ["cache-types"] as const,
@@ -558,6 +560,15 @@ export function useSidecarLinks(enabled = true) {
       api.get<{ links: SidecarLink[]; stale: boolean }>("/api/ui/model-sidecar-links"),
     enabled,
     staleTime: 15_000,
+  });
+}
+
+/** The image models this node deployed by component, with each one's status. */
+export function useImageDeployments() {
+  return useQuery({
+    queryKey: keys.imageDeployments,
+    queryFn: () => api.get<{ deployments: ImageDeployment[] }>("/api/ui/image-deployments"),
+    refetchInterval: 10_000,
   });
 }
 

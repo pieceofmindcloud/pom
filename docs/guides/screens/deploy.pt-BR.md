@@ -49,6 +49,21 @@ Se uma máquina não tem o arquivo de que precisa, a implantação é recusada a
 Cada categoria do inspetor tem um botão de ajuda que abre o guia dela: Configurações padrões e Configurações do POM.
 :::
 
+## Modelos de imagem
+
+**Modelo de imagem** na barra de modos abre a tela de implantar imagem. Um modelo de imagem (Z-Image, Qwen Image, Flux...) é servido por componente: o modelo de difusão, o text encoder e o VAE vão cada um para uma máquina que roda o ComfyUI e já tem aquele arquivo, então uma GPU pequena guarda a difusão enquanto os outros ficam em outras máquinas.
+
+:::steps
+### Escolha o modelo de difusão
+Escolha o arquivo do modelo de difusão. O text encoder e o VAE são preenchidos quando a mesma pasta tem exatamente um de cada; troque se quiser outros.
+### Escolha as máquinas
+Para cada componente, escolha a máquina. Só aparecem as máquinas que já têm aquele arquivo e rodam o ComfyUI; nada é copiado.
+### Implante
+Implante. O ComfyUI de cada máquina passa a servir o seu componente, e o ComfyUI de qualquer máquina da rede o lista como `POM ▸ <nome> ▸ <arquivo>` nos loaders normais.
+:::
+
+A lista abaixo mostra o que está servindo, a máquina e o estado de cada componente, e **Tirar do ar**. Uma máquina que reinicia volta a servir os seus componentes sozinha.
+
 :::deep docs/subsystems/deployment.md
 O plano, a fusão, a ordem e o ciclo de vida da fatia
 :::

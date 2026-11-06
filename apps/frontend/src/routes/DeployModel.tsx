@@ -46,7 +46,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import {
   Check,
   ChevronLeft,
@@ -1411,6 +1411,12 @@ export function DeployModel() {
                   {label}
                 </button>
               ))}
+              <Link
+                to="/deploy/image"
+                className="rounded-md px-3 py-1.5 text-[0.72rem] font-medium text-muted transition-colors hover:text-fg"
+              >
+                {t("deployStudio.kindImage")}
+              </Link>
             </div>
             <div className="flex min-w-[15rem] flex-1 gap-2">
               {inferenceServices.length > 0 && (

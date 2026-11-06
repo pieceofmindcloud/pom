@@ -1166,6 +1166,7 @@ pub(super) async fn cluster_models(State(state): State<GatewayState>) -> impl In
         "models": local.models,
         "shard_sets": local.shard_sets,
         "sidecars": local.sidecars,
+        "image_files": local.image_files,
         "scanned": local.scanned,
         "metadata_complete": local.metadata_complete,
     })];
@@ -1179,6 +1180,7 @@ pub(super) async fn cluster_models(State(state): State<GatewayState>) -> impl In
                 "models": v.get("models").cloned().unwrap_or(json!([])),
                 "shard_sets": v.get("shard_sets").cloned().unwrap_or(json!([])),
                 "sidecars": v.get("sidecars").cloned().unwrap_or(json!([])),
+                "image_files": v.get("image_files").cloned().unwrap_or(json!([])),
                 "scanned": v.get("scanned").cloned().unwrap_or(json!([])),
                 "metadata_complete": v
                     .get("metadata_complete")

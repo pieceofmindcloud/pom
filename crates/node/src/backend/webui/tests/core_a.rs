@@ -340,9 +340,18 @@ mod tests {
             pending_refresh: None,
         });
         let answer = models_answer(&state).await;
+        let cluster = crate::gateway::testkit::body_of(
+            cluster_models(State(state.clone())).await.into_response(),
+        )
+        .await;
         *catalog_cache().lock().await = None;
         assert_eq!(answer["image_files"][0]["category"], "vae");
         assert_eq!(answer["image_files"][0]["name"], "pub/repo/ae.safetensors");
+        assert_eq!(
+            cluster["peers"][0]["image_files"][0]["name"],
+            "pub/repo/ae.safetensors",
+            "the cluster catalog carries each machine's image files"
+        );
     }
 
     async fn delete_status(path: &std::path::Path, model_dir: &std::path::Path) -> StatusCode {

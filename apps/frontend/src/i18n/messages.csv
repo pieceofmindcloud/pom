@@ -885,6 +885,7 @@ deployStudio.gpuUseFree,GPU used / free,GPU uso / livre
 deployStudio.heldBy,Held by,Está em
 deployStudio.hideInspector,Hide inspector,Ocultar inspetor
 deployStudio.inDeployment,in the deployment,na implantação
+deployStudio.kindImage,Image model,Modelo de imagem
 deployStudio.kindShards,Shards,Fatias
 deployStudio.kindWhole,Whole model,Modelo inteiro
 deployStudio.kvCacheOnGpu,KV cache on the GPU,KV cache na GPU
@@ -1291,6 +1292,31 @@ huggingFace.title,Hugging Face,Hugging Face
 huggingFace.tokenHint,The token is saved in this node''s pom.json with owner-only permissions and is never returned here.,O token é salvo no pom.json deste nó com permissão exclusiva do proprietário e nunca é devolvido aqui.
 huggingFace.tokenLabel,Access token,Token de acesso
 huggingFace.tokenPlaceholder,••••••••last four characters,••••••••últimos quatro caracteres
+imageDeploy.back,LLM models,Modelos LLM
+imageDeploy.chooseFile,Choose a file,Escolha um arquivo
+imageDeploy.chooseMachine,Choose a machine,Escolha uma máquina
+imageDeploy.component.diffusion,Diffusion model,Modelo de difusão
+imageDeploy.component.text_encoder,Text encoder,Text encoder
+imageDeploy.component.vae,VAE,VAE
+imageDeploy.deploy,Deploy,Implantar
+imageDeploy.deployed,"{name} is being served on the network","{name} está servindo na rede"
+imageDeploy.failed,The image model was not deployed,O modelo de imagem não foi implantado
+imageDeploy.file,File,Arquivo
+imageDeploy.machine,Machine,Máquina
+imageDeploy.name,Name,Nome
+imageDeploy.noHolder,No machine running ComfyUI holds this file,Nenhuma máquina com ComfyUI tem este arquivo
+imageDeploy.none,No image model is served on the network,Nenhum modelo de imagem servindo na rede
+imageDeploy.served,Served image models,Modelos de imagem servindo
+imageDeploy.status.error,Error,Erro
+imageDeploy.status.loading,Loading,Carregando
+imageDeploy.status.missing,Not served,Fora do ar
+imageDeploy.status.ready,Ready,Pronto
+imageDeploy.subtitle,Each component on one machine that already holds its file; ComfyUI on every machine of the network can then use it.,Cada componente numa máquina que já tem o arquivo; o ComfyUI de qualquer máquina da rede passa a usá-lo.
+imageDeploy.title,Deploy an image model,Implantar modelo de imagem
+imageDeploy.undeploy,Undeploy,Tirar do ar
+imageDeploy.undeployConfirm,"Stop serving {name} on every machine?","Parar de servir {name} em todas as máquinas?"
+imageDeploy.undeployNamed,"Undeploy {name}","Tirar {name} do ar"
+imageDeploy.undeployed,"{name} is no longer served","{name} saiu do ar"
 inspector.adaptivePrefillChunks,Automatic prefill chunk,Pedaço de prefill automático
 inspector.betaInfo,"Settings that work but are still being measured: the best value changes from route to route.","Configurações que funcionam mas ainda estão sendo medidas: o melhor valor muda de rota para rota."
 inspector.betaInfoLink,see when to change it,veja quando mudar

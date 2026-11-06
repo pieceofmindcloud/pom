@@ -49,6 +49,21 @@ If a machine does not have the file it needs, the deploy is refused unless you a
 Each category of the inspector has a help button that opens its guide: Default settings and POM settings.
 :::
 
+## Image models
+
+**Image model** in the mode bar opens the image deploy screen. An image model (Z-Image, Qwen Image, Flux...) is served by component: the diffusion model, the text encoder and the VAE each go to one machine that runs ComfyUI and already holds that file, so a small GPU can hold the diffusion model while the others live elsewhere.
+
+:::steps
+### Choose the diffusion model
+Choose the diffusion model's file. The text encoder and the VAE are filled in when the same folder holds exactly one of each; change them if you want others.
+### Choose the machines
+For each component, choose the machine. Only machines that already have that exact file and run ComfyUI are offered; nothing is copied.
+### Deploy
+Deploy. Each machine's ComfyUI starts serving its component, and ComfyUI on any machine of the network lists it as `POM ▸ <name> ▸ <file>` in its ordinary loaders.
+:::
+
+The list below shows what is served, each component's machine and state, and **Undeploy**. A machine that restarts serves its components again by itself.
+
 :::deep docs/subsystems/deployment.md
 The plan, the merge, the order and the slice lifecycle
 :::

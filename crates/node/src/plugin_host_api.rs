@@ -22,6 +22,8 @@
 //!   principal or a visitor.
 //! - `POST /api/plugin-host/peer`: `{node_id, op, params}` runs `peer.<op>` of
 //!   this plugin on that machine and answers `{reply}`.
+//! - `GET /api/plugin-host/catalog/images`: this node's image model files.
+//! - `POST /api/plugin-host/catalog/refresh`: rescan this node's catalog.
 //! - `POST /api/plugin-host/sign`: `{statement}` is signed with the node key
 //!   only when it is an external identity statement in which this node's
 //!   `did:key` vouches for a key (see [`signable_statement`]). The node key
@@ -138,6 +140,39 @@ pub(crate) async fn node(State(state): State<GatewayState>, headers: HeaderMap) 
         "principal_node_id": document.primary.node_id,
     }))
     .into_response()
+}
+
+/// `GET /api/plugin-host/catalog/images`: the image model files of this
+/// node's whole-model folders. Read fresh on every call (headers are cached by
+/// path, size and mtime), so a file a plugin just downloaded is in the answer.
+pub(crate) async fn catalog_images(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) = caller_code(&state, &headers) {
+        return response;
+    }
+    let dirs = state.model_dirs().await;
+    let files = tokio::task::spawn_blocking(move || {
+        crate::image_catalog::discover_image_files(&crate::catalog::image_roots(&dirs))
+    })
+    .await
+    .unwrap_or_default();
+    Json(json!({ "image_files": files, "metadata_complete": true })).into_response()
+}
+
+/// `POST /api/plugin-host/catalog/refresh`: rescan the catalog now (after a
+/// plugin wrote a model file), so the screens and the deploy survey see it
+/// without waiting for the cache to turn stale.
+pub(crate) async fn catalog_refresh(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) = caller_code(&state, &headers) {
+        return response;
+    }
+    crate::webui::invalidate_catalog(state.database.clone()).await;
+    Json(json!({ "ok": true })).into_response()
 }
 
 /// `GET /api/plugin-host/peers`.
@@ -300,7 +335,33 @@ mod tests {
             .await;
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         }
+        for headers in [HeaderMap::new(), headers("not-the-token")] {
+            let response = catalog_images(State(state.clone()), headers.clone()).await;
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            let response = catalog_refresh(State(state.clone()), headers).await;
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
         let response = node(State(state.clone()), headers(&token)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn the_image_catalog_lists_the_node_files() {
+        let (state, token) = state_with_plugin().await;
+        let models = tempfile::tempdir().unwrap();
+        crate::image_catalog::write_test_safetensors(
+            models.path(),
+            "pub/repo/ae.safetensors",
+            &crate::image_catalog::test_fixture("flux_ae_vae"),
+        );
+        state.auth.write().await.model_dirs =
+            Some(vec![models.path().to_string_lossy().into_owned()]);
+        let response = catalog_images(State(state.clone()), headers(&token)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = crate::gateway::testkit::body_of(response).await;
+        assert_eq!(body["image_files"][0]["name"], "pub/repo/ae.safetensors");
+        assert_eq!(body["image_files"][0]["category"], "vae");
+        let response = catalog_refresh(State(state), headers(&token)).await;
         assert_eq!(response.status(), StatusCode::OK);
     }
 

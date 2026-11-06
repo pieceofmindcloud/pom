@@ -3962,8 +3962,12 @@ fn host_context_payload(
     gateway_port: u16,
     api_key: &str,
     workspace_root: &str,
+    model_dirs: &[String],
 ) -> serde_json::Value {
     serde_json::json!({
+        // The whole-model folders (not the slice folder), so a plugin can
+        // store and find model files where POM's catalog reads them.
+        "model_dirs": model_dirs,
         "gateway": {
             "openai_base_url": format!("http://127.0.0.1:{gateway_port}/v1"),
             "api_key": api_key,
@@ -3982,12 +3986,19 @@ pub(crate) async fn refresh_host_context(
     let (key, _) = crate::admin::node_chat_key(state).await?;
     let workspace_root = state.auth.read().await.workspace_root_path();
     let workspace_root = workspace_root.to_string_lossy();
+    let model_dirs: Vec<String> = state
+        .model_dirs()
+        .await
+        .iter()
+        .map(|dir| dir.to_string_lossy().into_owned())
+        .collect();
     state
         .plugins
         .set_host_context(host_context_payload(
             state.gateway_port,
             &key.secret,
             &workspace_root,
+            &model_dirs,
         ))
         .await;
     Ok(())
@@ -6964,7 +6975,7 @@ mod tests {
 
     #[test]
     fn host_context_payload_includes_the_shared_workspace_root() {
-        let context = host_context_payload(8080, "sk-test", "/data/workspace");
+        let context = host_context_payload(8080, "sk-test", "/data/workspace", &[]);
         assert_eq!(
             context.get("workspace_root").and_then(Value::as_str),
             Some("/data/workspace")
@@ -6973,6 +6984,13 @@ mod tests {
             context.get("host_api_base_url").and_then(Value::as_str),
             Some("http://127.0.0.1:8080/api/plugin-host")
         );
+    }
+
+    #[test]
+    fn host_context_carries_the_model_dirs() {
+        let dirs = vec!["/models/a".to_owned(), "/models/b".to_owned()];
+        let context = host_context_payload(8080, "sk-test", "/data/workspace", &dirs);
+        assert_eq!(context["model_dirs"], serde_json::json!(["/models/a", "/models/b"]));
     }
 
     #[tokio::test]

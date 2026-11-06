@@ -432,6 +432,7 @@ operation:
 {"operation": "host.configure",
  "gateway": {"openai_base_url": "http://127.0.0.1:8080/v1", "api_key": "sk-..."},
  "workspace_root": "/data/workspace",
+ "model_dirs": ["/models/full", "/mnt/disk2/models"],
  "host_api": {"base_url": "http://127.0.0.1:8080/api/plugin-host", "token": "<hex>"},
  "preferences": {"features": {"capture_headers": false}, "storage_directory": null}}
 ```
@@ -448,6 +449,9 @@ logically `~/pom_workspace`, with no question in the wizard; in Compose the
 stable mount is `/data/workspace` and must stay persistent across restarts.
 POM checks the path when saving the configuration and resends the context to
 running hosts when the root changes.
+`model_dirs` lists the node's whole-model folders (`model_dir_paths()`,
+without the slice folder), so a plugin can store a model file where the
+catalog reads it; a plugin that ignores the field is unaffected.
 
 ## Services a plugin offers to the cluster
 
@@ -568,6 +572,8 @@ plugin, so a plugin only ever speaks as itself.
 | `GET /api/plugin-host/node` | `{node_id, hostname, public_key, did_key, role, principal_node_id}`: the node key in hex and as a `did:key`, the node's role in the trust chain (`principal`, `admin`, `visitor` or `member`) |
 | `GET /api/plugin-host/peers` | `{peers: [{node_id, hostname, principal, visitor}]}`: the live peers |
 | `POST /api/plugin-host/peer` | `{node_id, op, params}` runs `peer.<op>` of **the same plugin** on that machine, through the signed peer call above (or locally, with `caller.local: true`, for this node's own `node_id`), and answers `{reply}`; 404 when the node is not a live peer, 502 when its plugin refused |
+| `GET /api/plugin-host/catalog/images` | `{image_files, metadata_complete}`: the image model files of this node's whole-model folders (the `image_files` entries of `GET /api/ui/models`), read fresh on each call |
+| `POST /api/plugin-host/catalog/refresh` | `{ok: true}` after asking the node to rescan its catalog, so a file the plugin just wrote reaches the screens and the deploy survey |
 | `POST /api/plugin-host/sign` | `{statement}` signed by the node key: `{signature, public_key, did_key}` (hex) |
 
 The node key also signs announces, control envelopes, grants and the pkarr

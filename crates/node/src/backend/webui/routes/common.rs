@@ -53,6 +53,14 @@ pub(super) fn routes() -> Router<GatewayState> {
         )
         .route("/api/plugin-host/sign", post(crate::plugin_host_api::sign))
         .route(
+            "/api/plugin-host/catalog/images",
+            get(crate::plugin_host_api::catalog_images),
+        )
+        .route(
+            "/api/plugin-host/catalog/refresh",
+            post(crate::plugin_host_api::catalog_refresh),
+        )
+        .route(
             "/api/internal/plugins/:code/engine/generate",
             post(crate::plugin_engine::engine_generate_route).layer(
                 axum::extract::DefaultBodyLimit::max(crate::plugin_engine::MAX_GENERATION_BODY),

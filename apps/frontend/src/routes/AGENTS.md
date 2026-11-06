@@ -910,6 +910,11 @@ Per-file list:
   the screen only renders it; the cell's "Vision and MTP" button opens the
   same `SidecarLinkEditor` as Shards in a window. `ScannedRoots`
   lists the scanned folders and per-folder file counts. Full-bleed shell.
+  A `Tabs` pair under the header switches between "LLM (GGUF)" and "Image"
+  (`?kind=image` keeps the choice across a reload); the Image tab lists
+  `CatalogResponse.image_files` (`ImageModelRow`: name, path, source,
+  translated category, family, dtype, size, delete only - image files are not
+  sliced, and Send stays GGUF-only until the transfer gate accepts them).
 - `RemoteModels.tsx` - it shows trending GGUF models through the public Hugging
   Face API on opening, without credentials; the authenticated search uses debounce in
   `/api/ui/model-provider/search`, with a filter, sorting, pagination by URL,

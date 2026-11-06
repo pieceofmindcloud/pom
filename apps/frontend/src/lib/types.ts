@@ -1261,9 +1261,38 @@ export interface CatalogResponse {
   shard_sets: ShardSet[];
   /** Vision projectors and MTP drafts found in this node's folders. */
   sidecars?: Sidecar[];
+  /** Image model files (safetensors...) in this node's whole-model folders. */
+  image_files?: ImageModelFile[];
   scanned: ScannedRoot[];
   /** False while the node is reading GGUF headers in the background. */
   metadata_complete: boolean;
+}
+
+export type ImageCategory =
+  | "diffusion"
+  | "text_encoder"
+  | "vae"
+  | "checkpoint"
+  | "lora"
+  | "controlnet"
+  | "clip_vision"
+  | "upscale"
+  | "other";
+
+/** An image model file found on one machine's disk (`models/image_catalog.rs`). */
+export interface ImageModelFile {
+  id: string;
+  /** Path relative to its folder: `<publisher>/<repo>/<file>`. */
+  name: string;
+  path: string;
+  size_bytes: number;
+  source: ModelSource;
+  source_label: string;
+  format: string;
+  category: ImageCategory;
+  family: string | null;
+  dtype: string | null;
+  metadata_error: string | null;
 }
 
 export type SidecarKind = "mmproj" | "mtp";

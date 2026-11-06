@@ -1527,8 +1527,20 @@ location.title,Location,Localização
 location.useBrowser,Use my browser's location,Usar a localização do meu navegador
 machine.kindUnknown,Unknown,Desconhecida
 models.architecture,Architecture,Arquitetura
+models.category.checkpoint,Checkpoint,Checkpoint
+models.category.clip_vision,CLIP Vision,CLIP Vision
+models.category.controlnet,ControlNet,ControlNet
+models.category.diffusion,Diffusion,Difusão
+models.category.lora,LoRA,LoRA
+models.category.other,Other,Outro
+models.category.text_encoder,Text encoder,Text encoder
+models.category.upscale,Upscaler,Upscaler
+models.category.vae,VAE,VAE
 models.chooseFolders,Choose folders,Escolher as pastas
 models.columnActions,Actions,Ações
+models.columnCategory,Category,Categoria
+models.columnDtype,Type,Tipo
+models.columnFamily,Family,Família
 models.columnName,Model,Modelo
 models.columnSource,Source,Fonte
 models.deleteAria,Delete {name} from disk,Excluir {name} do disco
@@ -1545,6 +1557,11 @@ models.folderMissing,does not exist on this machine,não existe nesta máquina
 models.folderSettings,Choose search folders in Settings › Model folders.,Escolha onde procurar em Configurações › Pastas de modelos.
 models.fullSubtitle,Complete GGUF files found on this machine. Full models can be sliced; shards are shown on the next screen.,Os GGUF completos encontrados nesta máquina. Um modelo inteiro é o que se fatia; as fatias ficam na tela ao lado.
 models.fullTitle,Full models,Modelos inteiros
+models.imageEmptyDetail,No .safetensors files were found in the model folders. Files ComfyUI downloads land there.,Nenhum arquivo .safetensors foi encontrado nas pastas de modelos. Os arquivos que o ComfyUI baixa vão para lá.
+models.imageEmptyTitle,No image models,Nenhum modelo de imagem
+models.imageUnreadable,"Unreadable: {error}","Ilegível: {error}"
+models.kindImage,Image,Imagem
+models.kindLlm,LLM (GGUF),LLM (GGUF)
 models.layers,Layers,Camadas
 models.localSlice,Slicing is local: each machine extracts its own range from its own GGUF copy. No weights travel over the network.,Fatiar é local: cada máquina extrai a própria faixa da própria cópia do GGUF. Nenhum peso trafega pela rede.
 models.machineCount,"{count}{count, plural, =1 { model on this machine} other { models on this machine}}","{count}{count, plural, =1 { modelo nesta máquina} other { modelos nesta máquina}}"

@@ -2685,6 +2685,11 @@ runs it through that plugin or fails.
   its first user message, so its turns share it. Two conversations that open with the same
   message share a name, and the later save replaces the earlier one (`session_of`).
 
+Image model components (a diffusion model, a text encoder, a VAE served by
+ComfyUI) are not inference services and never go through this path: they have
+a registry of their own beside the node's runtime (`deployment.md`, section
+1.7).
+
 **Split across machines.** A service that publishes `stages: true` also runs
 POM layer slices, one per machine (`crates/node/src/inference/plugin_stage_link.rs`).
 Every machine of such a deployment runs `plugin_engine::run` on its slice; the

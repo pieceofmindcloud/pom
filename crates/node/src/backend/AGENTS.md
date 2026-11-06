@@ -610,6 +610,12 @@ boundary.
   below), and a non-admin caller of a `ServingMember` route needs a `worker`
   token (`caller_may_ask`). `chain_status` feeds
   `NodeInfo.cluster_version` and `POST /api/ui/network/trust-sync`.
+- Image model components live in `crates/node/src/components.rs`, outside this
+  folder: `POST /api/ui/components/apply|release` (a node serves a component),
+  `POST /api/ui/image-deploy`, `GET /api/ui/image-deployments`,
+  `POST /api/ui/image-undeploy` (an admin deploys by component), the internal
+  `POST /api/internal/plugins/:code/component/...` forward, and the `host_api`
+  routes in `plugin_host_api.rs`. Contract: `docs/subsystems/deployment.md` 1.7.
 - `quota.rs` - token budgets before the pipeline: `admit` asks the local logs
   plugin, then each live admin (`peer.quota.check` over the signed peer call),
   and the inference handlers answer its `Denial` with 429 + `Retry-After` and

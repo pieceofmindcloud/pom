@@ -343,6 +343,33 @@ difference is on the target, where the runtime asks the plugin to load the
 model instead of starting llama.cpp (`inference.md`, section 7.1); undeploying
 or removing the machine stops the runtime, which asks the plugin to unload.
 
+## 1.7 Image model components
+
+An image model (a diffusion model, a text encoder and a VAE) is served by
+component, each on one machine, by the ComfyUI plugin of that machine
+(`crates/node/src/components.rs`). It does not use the node's model runtime:
+a node has one `NodeRuntime`, and a component must not unload the LLM it
+serves, so components are a registry of their own.
+
+- **On the serving node.** `POST /api/ui/components/apply` (any admin of the
+  trust chain, refused on a visitor like `apply`) takes a
+  `ComponentAssignment` `{deploy_id, name, component, paths, plugin_code,
+  options}`. Every path must be one of this node's image files (the catalog's
+  `image_files`, without a `metadata_error`); `component` is `diffusion`,
+  `text_encoder` or `vae`. The node opens the plugin if it is on demand and asks
+  `component.serve`; a refusal (`{"status": "refused", "error"}`, or no answer)
+  is 502 with the reason and nothing is stored. Accepted, the assignment is kept
+  in the `pom.db` setting `served_components`, replacing the same component of
+  the same deployment. `POST /api/ui/components/release` `{deploy_id}` drops that
+  deployment's assignments and asks `component.release`.
+- **After a restart.** The host-context loop (`plugins::spawn_host_context`,
+  at startup and every 10 minutes) asks `component.serve` again for every stored
+  assignment (`components::restore`), so a node serves after a reboot, and a
+  ComfyUI closed with its X is reopened, without the admin deploying again.
+- **Who serves what.** The plugin lists its components in its `image` service
+  (`plugins-ui.md`, `host.services`); `components::network_components` gathers
+  them from this node and every live peer.
+
 ## 2. The survey (`survey`)
 
 `survey` gathers, for each machine in the cluster, `GET /api/ui/models`

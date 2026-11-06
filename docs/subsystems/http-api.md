@@ -1008,6 +1008,12 @@ send.
 it reaches generation; whether the served model knows how to use it is a
 cluster measurement.
 
+### Image model components
+
+`POST /api/ui/components/apply` and `POST /api/ui/components/release`
+(`AnyAdmin`, refused on a visitor profile) serve or stop an image model
+component on this node; the contract is `deployment.md`, section 1.7.
+
 ### Token budgets, checked before the pipeline
 
 `/v1/chat/completions`, `/v1/completions`, `/v1/messages`, `/api/generate` and

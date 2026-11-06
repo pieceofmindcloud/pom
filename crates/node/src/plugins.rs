@@ -4110,7 +4110,13 @@ pub(crate) fn spawn_host_context(state: crate::gateway::GatewayState) {
     tokio::spawn(async move {
         loop {
             let wait = match refresh_host_context(&state).await {
-                Ok(()) => REFRESH,
+                Ok(()) => {
+                    // The image components this node serves, again: after a
+                    // restart, or a plugin closed and reopened since.
+                    let call = crate::components::live_plugins(std::sync::Arc::clone(&state.plugins));
+                    crate::components::restore(&state.database, &call).await;
+                    REFRESH
+                }
                 Err(error) => {
                     tracing::warn!(%error, "plugin context without an API key; retrying in 30 s");
                     RETRY

@@ -521,6 +521,11 @@ const ROUTE_RULES: &[RouteRule] = &[
         scope: RouteScope::AnyAdmin,
     },
     RouteRule {
+        prefix: "/api/ui/components",
+        method: None,
+        scope: RouteScope::AnyAdmin,
+    },
+    RouteRule {
         prefix: "/api/ui/launch",
         method: None,
         scope: RouteScope::AnyAdmin,
@@ -628,6 +633,7 @@ pub(crate) fn route_scope(method: &Method, path: &str) -> RouteScope {
 /// network admitted the machine as, and no request changes that.
 const VISITOR_REFUSES: &[&str] = &[
     "/api/ui/apply",
+    "/api/ui/components",
     "/api/ui/launch",
     "/api/ui/deploy",
     "/api/ui/reconfigure",

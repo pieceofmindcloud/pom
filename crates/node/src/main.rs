@@ -60,6 +60,7 @@ mod capabilities;
 mod catalog;
 #[path = "models/image_catalog.rs"]
 mod image_catalog;
+mod chat_image;
 mod components;
 mod image_plan;
 mod image_records;

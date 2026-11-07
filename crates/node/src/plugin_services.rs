@@ -83,6 +83,59 @@ pub(crate) struct PluginService {
     /// now (`components.rs`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub components: Vec<ServedComponent>,
+    /// For a service of kind `image`: the workflows the Chat may run on this
+    /// machine (`chat_image.rs`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workflows: Vec<ImageWorkflow>,
+}
+
+/// A ComfyUI workflow the Chat can run: a deployment's built-in text to
+/// image (`builtin:<deploy_id>`) or one an admin published (`pub:<slug>`).
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
+pub(crate) struct ImageWorkflow {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deploy_id: Option<String>,
+    #[serde(default)]
+    pub inputs: Vec<String>,
+}
+
+const MAX_WORKFLOWS: usize = 32;
+
+fn workflow_id(value: &Value) -> Option<String> {
+    let text = value.as_str()?;
+    (!text.is_empty()
+        && text.len() <= 96
+        && text.bytes().all(|byte| {
+            byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || matches!(byte, b'.' | b'_' | b'-' | b':')
+        }))
+    .then(|| text.to_owned())
+}
+
+fn parse_workflows(kind: &str, value: &Value) -> Vec<ImageWorkflow> {
+    if kind != "image" {
+        return Vec::new();
+    }
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take(MAX_WORKFLOWS)
+        .filter_map(|entry| {
+            Some(ImageWorkflow {
+                id: workflow_id(&entry["id"])?,
+                name: text(&entry["name"])?,
+                deploy_id: slug(&entry["deploy_id"]),
+                inputs: entry["inputs"]
+                    .as_array()
+                    .map(|list| list.iter().filter_map(slug).take(8).collect())
+                    .unwrap_or_default(),
+            })
+        })
+        .collect()
 }
 
 /// One image model component a plugin serves: a part of an image deployment.
@@ -328,6 +381,7 @@ pub(crate) fn parse_services(plugin_code: &str, answer: &Value) -> Vec<PluginSer
         let vision = kind == "inference" && entry["vision"] == true;
         let pom_settings = parse_pom_settings(&kind, &entry["pom_settings"]);
         let components = parse_components(&kind, &entry["components"]);
+        let workflows = parse_workflows(&kind, &entry["workflows"]);
         services.push(PluginService {
             plugin_code: plugin_code.to_owned(),
             id,
@@ -367,6 +421,7 @@ pub(crate) fn parse_services(plugin_code: &str, answer: &Value) -> Vec<PluginSer
             vision,
             pom_settings,
             components,
+            workflows,
         });
     }
     services

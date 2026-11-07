@@ -1011,6 +1011,8 @@ async fn chat_capabilities_value(
         "unavailable"
     };
     let rag_collections = crate::rag::collections(&state).await;
+    // ComfyUI workflows some machine offers for the Chat's Generate image.
+    let image_workflows = crate::chat_image::network_workflows(state).await;
     // A machine of the pipeline has its model unloaded (`unload_if_idle`) or
     // is loading it again: the next answer waits for the reload, and the Chat
     // says so instead of looking stuck.
@@ -1026,6 +1028,8 @@ async fn chat_capabilities_value(
         "rag": rag_state,
         // What a request may keep its retrieval to (`rag_collection`).
         "rag_collections": rag_collections,
+        "image": if image_workflows.is_empty() { "unavailable" } else { "supported" },
+        "image_workflows": image_workflows,
     })
 }
 

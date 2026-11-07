@@ -659,7 +659,6 @@ pub fn split(
 /// range) carry data, so the file is a few KB to a few MB (the tokenizer) and
 /// takes milliseconds to write. It is valid only while the source files stay
 /// where they are and unchanged.
-#[allow(dead_code)] // wired to deployment in phase 2 of the layer range spec
 pub fn write_virtual_slice(
     src: &Path,
     dst: &Path,

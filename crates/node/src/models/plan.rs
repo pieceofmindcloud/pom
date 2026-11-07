@@ -453,6 +453,81 @@ pub async fn extract_shard(
     .await
 }
 
+/// Suffix of the opt-in that makes a node serve a range of a whole model it
+/// holds through a header-only virtual slice instead of cutting a real one
+/// (`splitter::write_virtual_slice`). Off until the pinned engine is built
+/// from a fork commit with external tensor data: an engine without it fails to
+/// load the header.
+pub const VIRTUAL_SLICES_ENV: &str = "VIRTUAL_SLICES";
+
+pub fn virtual_slices_enabled() -> bool {
+    crate::brand::env(VIRTUAL_SLICES_ENV).is_ok_and(|value| value == "1")
+}
+
+/// Where a node keeps its virtual slice headers: outside every model folder,
+/// so the catalog never lists them as models.
+pub fn virtual_slice_dir() -> PathBuf {
+    crate::config::project_root().join("virtual-slices")
+}
+
+/// Why a range of `source` cannot be served through a virtual slice, or
+/// `None` when it can.
+pub fn virtual_slice_refusal(source: &Path) -> Option<String> {
+    match crate::gguf::read_info(source) {
+        // The MoE external executor maps the model file itself and reads
+        // expert bytes by offset; a header-only file has none.
+        Ok(info) if info.is_moe() => Some("a mixture-of-experts model".into()),
+        Ok(_) => None,
+        Err(error) => Some(format!("the GGUF header could not be read: {error}")),
+    }
+}
+
+/// Writes this node's range of `source_model` as a virtual slice and returns
+/// its path. Rewritten on every apply: it takes milliseconds and stays true to
+/// the source file as it is now. The name carries the source's canonical path,
+/// size and modification time, so two models never share a header.
+pub async fn write_virtual_shard(
+    source_model: &str,
+    start_layer: u32,
+    end_layer: u32,
+    is_first: bool,
+    is_last: bool,
+) -> Result<String> {
+    let src = std::fs::canonicalize(source_model)
+        .with_context(|| format!("resolve {source_model}"))?;
+    let meta = std::fs::metadata(&src).with_context(|| format!("stat {}", src.display()))?;
+    let identity = {
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        hash.update(src.to_string_lossy().as_bytes());
+        hash.update(meta.len().to_le_bytes());
+        if let Ok(modified) = meta.modified() {
+            if let Ok(since) = modified.duration_since(std::time::UNIX_EPOCH) {
+                hash.update(since.as_nanos().to_le_bytes());
+            }
+        }
+        hex::encode(&hash.finalize()[..6])
+    };
+    let stem = src
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "model".into());
+    let tail = if is_last { "-last" } else { "" };
+    let dir = virtual_slice_dir();
+    std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+    let dst = dir.join(format!("{stem}-{identity}-L{start_layer}-{end_layer}{tail}.gguf"));
+    let tmp = dst.with_extension("gguf.tmp");
+    let tmp_for_write = tmp.clone();
+    tokio::task::spawn_blocking(move || {
+        crate::splitter::write_virtual_slice(&src, &tmp_for_write, start_layer, end_layer, is_first, is_last)
+    })
+    .await
+    .context("virtual slice task")??;
+    std::fs::rename(&tmp, &dst).with_context(|| format!("rename to {}", dst.display()))?;
+    info!("virtual slice ready: {}", dst.display());
+    Ok(dst.to_string_lossy().into_owned())
+}
+
 /// Extracts the tensor shard of one tensor parallelism rank (path C).
 ///
 /// Mirror of `extract_shard`: runs `splitter::shard_tensor_parallel` in a
@@ -836,6 +911,19 @@ pub fn base_name_from_label(label: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_dense_model_can_be_served_through_a_virtual_slice_and_an_unreadable_one_cannot() {
+        let dir = std::env::temp_dir().join(format!("pom-virtual-refusal-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dense = dir.join("dense.gguf");
+        std::fs::write(&dense, crate::splitter::test_gguf_bytes(4)).unwrap();
+        assert_eq!(virtual_slice_refusal(&dense), None);
+        let broken = dir.join("broken.gguf");
+        std::fs::write(&broken, b"not a gguf").unwrap();
+        assert!(virtual_slice_refusal(&broken).is_some());
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     fn plan_split(
         model_path: &str,

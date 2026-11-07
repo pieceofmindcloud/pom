@@ -190,10 +190,18 @@ rules.
   bytes by offset, so it must refuse a virtual slice (or follow the external
   keys) before virtual slices are used with it.
 
-POM wiring (phase 2): the node writes the virtual slice for its range at
-apply time (next to the deployment state, named by source `pom_id` and
-range), loads it as a slice, announces `model/range-load-v1`, and `/health`
-reports the range as today from the header's `pom.*` keys.
+POM wiring (phase 2, first part done): `run_apply`, where a node holding the
+whole model cut its range locally, writes the virtual slice instead when
+`POM_VIRTUAL_SLICES=1` and the model is not a mixture of experts. The header
+lives under `<project root>/virtual-slices/`, named by the source's path, size,
+modification time and the range, and is rewritten on every apply. The engine
+loads it as a slice and `/health` reports the range from its `pom.*` keys.
+Verified live on one CPU node with Qwen3.8-27B: layers 0-31 and 32-64 (last,
+MTP layer) each written in about 15 ms, loaded, and run by the slice speed
+test. Not verified yet: a two-node pipeline generating end to end, GPUs.
+Still to do: the `model/range-load-v1` capability (replacing the opt-in once
+the pinned engine has the fork feature), the range step form for the deploy
+plan, and the MoE executor following the external keys.
 
 ### Part B: Strata
 

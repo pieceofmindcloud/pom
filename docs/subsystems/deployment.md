@@ -867,6 +867,12 @@ The derived facts the machine needs to know:
   catalog).
 - `skip_split` or `(is_first && is_last && peer_count <= 1)` -> serves the file
   as is (the slice already exists on disk).
+- with `POM_VIRTUAL_SLICES=1` and a model that is not a mixture of experts
+  (`plan::virtual_slice_refusal`) -> `plan::write_virtual_shard`: a
+  header-only virtual slice of the range under `<project root>/virtual-slices/`
+  (outside the model folders, so the catalog never lists it), rewritten on
+  every apply in milliseconds, which the engine loads from the whole file
+  (`slicing.md`, "Virtual slices"). No `.pom` manifest and no catalog entry.
 - otherwise -> `extract_shard` (local slicing, "slicing" job, progress through
   `set_job_progress`, `invalidate_catalog`, outcome `reused`/produced).
 

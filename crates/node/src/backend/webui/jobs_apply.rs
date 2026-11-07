@@ -771,6 +771,44 @@ pub(super) fn seal_single_part(
         .into_owned())
 }
 
+/// This peer's range as a header-only virtual slice of the whole model it
+/// holds, when the node opted in and the model allows it; `None` keeps the
+/// real local slicing.
+async fn virtual_shard_for(req: &ApplyRequest, job_id: &str) -> anyhow::Result<Option<String>> {
+    if !plan::virtual_slices_enabled() {
+        return Ok(None);
+    }
+    let source = std::path::PathBuf::from(&req.source_model_path);
+    let probe = source.clone();
+    let refusal = tokio::task::spawn_blocking(move || plan::virtual_slice_refusal(&probe)).await?;
+    if let Some(reason) = refusal {
+        info!(
+            "virtual slice not used for {} ({reason}); slicing locally",
+            source.display()
+        );
+        return Ok(None);
+    }
+    set_job(
+        job_id,
+        "running",
+        "slicing",
+        &format!(
+            "pointing at layers {}-{} of the whole model",
+            req.start_layer, req.end_layer
+        ),
+    )
+    .await;
+    let path = plan::write_virtual_shard(
+        &req.source_model_path,
+        req.start_layer,
+        req.end_layer,
+        req.is_first(),
+        req.is_last(),
+    )
+    .await?;
+    Ok(Some(path))
+}
+
 pub(super) async fn run_apply(
     state: GatewayState,
     req: ApplyRequest,
@@ -837,6 +875,8 @@ pub(super) async fn run_apply(
     } else if req.skip_split || (req.is_first() && req.is_last() && req.peer_count <= 1) {
         // Nothing to carve out: this peer serves the file as it is.
         req.source_model_path.clone()
+    } else if let Some(path) = virtual_shard_for(&req, job_id).await? {
+        path
     } else {
         set_job(
             job_id,

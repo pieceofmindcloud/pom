@@ -1040,7 +1040,10 @@ bytes, at most 16 images and 32 MiB each, nothing written when one is refused)
 before the last line. A workflow listed by another machine runs there through
 `POST /api/internal/plugins/:code/workflow/run` (signed, live member, body at
 most 256 KiB), which relays that machine's plugin NDJSON. `:hash` must be 64
-lowercase hex digits (400 otherwise, 404 when the file is gone). Code:
+lowercase hex digits (400 otherwise, 404 when the file is gone). The
+gateway never compresses `application/x-ndjson` (`gateway/http.rs`,
+`compression`), like SSE: compressed, the stream's last line was lost and
+browsers failed it (`ERR_HTTP2_PROTOCOL_ERROR`, "network error"). Code:
 `crates/node/src/chat_image.rs`.
 
 ### Token budgets, checked before the pipeline

@@ -219,14 +219,29 @@ pub(crate) struct ImageDeployRequest {
     pub components: Vec<ComponentChoice>,
 }
 
+/// One readable image file of a machine, as the stage plan needs it.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ImageFileFact {
+    pub path: String,
+    pub size_bytes: u64,
+    pub category: String,
+}
+
 /// What the deploy needs to know of one machine.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct MachineFacts {
     pub node_id: String,
     pub hostname: String,
     /// (path, category) of its readable image files.
     pub image_files: Vec<(String, String)>,
     pub has_image_service: bool,
+    /// The same files with their sizes (the identity across machines is the
+    /// file name and size).
+    pub files: Vec<ImageFileFact>,
+    /// The status of its `image` service, when it publishes one.
+    pub service_status: Option<String>,
+    pub gpu_free_mb: u64,
+    pub ram_free_mb: u64,
 }
 
 /// A call to a machine's component route: `(node_id, path, body)`.
@@ -435,26 +450,48 @@ pub(crate) async fn survey_machines(state: &GatewayState) -> Vec<MachineFacts> {
             .await
             .ok()?;
         let body: Value = models.json().await.ok()?;
-        let image_files = body["image_files"]
+        let files: Vec<ImageFileFact> = body["image_files"]
             .as_array()
             .into_iter()
             .flatten()
             .filter(|f| f["metadata_error"].is_null())
             .filter_map(|f| {
-                Some((
-                    f["path"].as_str()?.to_owned(),
-                    f["category"].as_str()?.to_owned(),
-                ))
+                Some(ImageFileFact {
+                    path: f["path"].as_str()?.to_owned(),
+                    size_bytes: f["size_bytes"].as_u64().unwrap_or(0),
+                    category: f["category"].as_str()?.to_owned(),
+                })
             })
             .collect();
         let services = crate::plugin_engine::services_of(state, &peer.node_id)
             .await
             .unwrap_or_default();
+        let service_status = services
+            .iter()
+            .find(|s| s["kind"] == "image")
+            .map(|s| s["status"].as_str().unwrap_or("ready").to_owned());
+        // The free memory the LLM plan reads, from the machine's node view.
+        let node: Option<Value> = match state
+            .control_get(&peer, "/api/ui/node", std::time::Duration::from_secs(8))
+            .await
+        {
+            Ok(response) => response.json().await.ok(),
+            Err(_) => None,
+        };
+        let (gpu_free_mb, ram_free_mb) =
+            crate::deploy::memory_capacity(node.as_ref().and_then(|n| n.get("system")));
         Some(MachineFacts {
             node_id: peer.node_id.clone(),
             hostname: peer.hostname.clone(),
-            image_files,
-            has_image_service: services.iter().any(|s| s["kind"] == "image"),
+            image_files: files
+                .iter()
+                .map(|f| (f.path.clone(), f.category.clone()))
+                .collect(),
+            has_image_service: service_status.is_some(),
+            files,
+            service_status,
+            gpu_free_mb,
+            ram_free_mb,
         })
     });
     futures::future::join_all(lookups)
@@ -1363,6 +1400,7 @@ mod tests {
                 .map(|(path, category)| (path.to_string(), category.to_string()))
                 .collect(),
             has_image_service: service,
+            ..Default::default()
         }
     }
 

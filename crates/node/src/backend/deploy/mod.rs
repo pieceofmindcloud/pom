@@ -99,6 +99,7 @@ pub use routes_impl::*;
 pub use sidecars::*;
 #[cfg(test)]
 pub(crate) use survey::survey_for_tests;
+pub(crate) use survey::memory_capacity;
 use survey::*;
 pub use types::*;
 

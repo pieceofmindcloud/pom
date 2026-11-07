@@ -37,6 +37,10 @@ pub(super) fn routes() -> Router<GatewayState> {
             post(crate::components::image_deploy_route),
         )
         .route(
+            "/api/ui/image-deploy/plan",
+            post(crate::image_plan::plan_route),
+        )
+        .route(
             "/api/ui/image-undeploy",
             post(crate::components::image_undeploy_route),
         )

@@ -28,6 +28,10 @@ Opens the Deployment logs filtered to this deployment.
 Clicking a version shows its settings read-only. The KV cache is not there on purpose: it belongs to the machine and to the moment, not to the version.
 :::
 
+## Image models
+
+Image models are listed below the language models with an **Image model** badge: their stages and the machines of each one, whether every stage is served, and Undeploy. Opening a row shows its versions, newest first; adding or removing a replica on the Dashboard writes a new version, and **Redeploy this version** brings an older one back. Versions are kept by the node that deployed the model; any administrator's node lists it and can undeploy it.
+
 :::deep docs/subsystems/deployment.md
 Versions, the default deployment and redeploying
 :::

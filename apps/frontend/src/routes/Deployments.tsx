@@ -26,7 +26,7 @@ import {
   redeployDeployment,
   type DeploymentRow,
 } from "../lib/api";
-import { useCluster, useDeployments, useInvalidate, useJobs, useNode } from "../lib/queries";
+import { useCluster, useDeployments, useImageDeployments, useInvalidate, useJobs, useNode } from "../lib/queries";
 import { engineOfParams, inferenceServiceCatalog } from "../lib/inferenceServices";
 import { useToast } from "../lib/toast";
 import { layerRange } from "../lib/format";
@@ -46,6 +46,7 @@ import {
 import type { DeploymentKind, DeploymentVersion, RuntimeParams } from "../lib/types";
 import type { InferenceServiceEntry } from "../lib/inferenceServices";
 import { machineParamsOf } from "../lib/machineParams";
+import { ImageDeploymentsTable } from "../components/ImageDeploymentsTable";
 import { useI18n } from "../i18n/provider";
 
 /** Which version of which deployment is open in the inspector on the right. */
@@ -563,6 +564,7 @@ function MachinesSection({
 }
 
 export function Deployments() {
+  const images = useImageDeployments().data?.deployments ?? [];
   const { t } = useI18n();
   const { data, isLoading } = useDeployments();
   const node = useNode();
@@ -636,7 +638,7 @@ export function Deployments() {
               <Skeleton className="h-8" />
               <Skeleton className="h-8" />
             </div>
-          ) : rows.length === 0 ? (
+          ) : rows.length === 0 && images.length === 0 ? (
             <Empty icon={<Layers className="h-5 w-5" />} title={t("deployments.emptyTitle")}>
               {t("deployments.emptyHint")}
             </Empty>
@@ -675,6 +677,7 @@ export function Deployments() {
                   ))}
                 </tbody>
               </table>
+              <ImageDeploymentsTable deployments={images} />
             </ScrollX>
           )}
         </div>

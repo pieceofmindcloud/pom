@@ -1336,6 +1336,14 @@ imageStudio.hint,"Text encoder, diffusion and VAE, in the order the image is mad
 imageStudio.memory,"{gpu} VRAM, {ram} RAM free · needs about {need}","{gpu} de VRAM, {ram} de RAM livres · precisa de cerca de {need}"
 imageStudio.remove,"Remove {host}","Remover {host}"
 imageStudio.replicas,"{count} replicas: each call goes to the nearest one that answers","{count} réplicas: cada chamada vai para a mais próxima que responder"
+imageTable.active,Active,Ativa
+imageTable.notServing,Not serving,Fora do ar
+imageTable.redeploy,Redeploy this version,Reimplantar esta versão
+imageTable.redeployFailed,The version was not redeployed,A versão não foi reimplantada
+imageTable.redeployed,"Version {version} is live again","A versão {version} voltou ao ar"
+imageTable.serving,Serving,Servindo
+imageTable.title,Image models,Modelos de imagem
+imageTable.versions,Versions,Versões
 inspector.adaptivePrefillChunks,Automatic prefill chunk,Pedaço de prefill automático
 inspector.betaInfo,"Settings that work but are still being measured: the best value changes from route to route.","Configurações que funcionam mas ainda estão sendo medidas: o melhor valor muda de rota para rota."
 inspector.betaInfoLink,see when to change it,veja quando mudar

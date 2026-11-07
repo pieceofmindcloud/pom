@@ -6,7 +6,7 @@ name: Release · Linux
 # click on Linux distributions. See `docs/subsystems/build-and-run.md`, "Release through
 # GitHub Actions".
 #
-# With `cuda` off it builds a Vulkan/CPU-only AppImage (`...-unknown-linux-gnu-cpu`): a
+# With `gpu` off it builds a CPU-only AppImage (no CUDA, no Vulkan) (`...-unknown-linux-gnu-cpu`): a
 # smaller and much faster build, meant for the Docker image of a node that runs as a
 # visitor on a VPS without a GPU. `docker` then says where the image of this release goes:
 # pereirajair/pom, pereirajair/pom-develop (development images) or nowhere.
@@ -22,8 +22,8 @@ on:
         required: false
         default: true
         type: boolean
-      cuda:
-        description: 'Build with CUDA (off = Vulkan/CPU only, for a Docker image on a VPS)'
+      gpu:
+        description: 'Build with CUDA + Vulkan (off = CPU only, for a Docker image on a VPS)'
         required: false
         default: true
         type: boolean
@@ -48,8 +48,8 @@ env:
   POM_RELEASE_VERSION: ${{ inputs.version }}
   # The AppImage's name: the CUDA one keeps the bare name the updater looks for; the one
   # without CUDA is named like the CPU packages (`crates/node/src/pom_core_update.rs`).
-  APPIMAGE_NAME: ${{ inputs.cuda && format('pom-{0}-x86_64', inputs.version) || format('pom-{0}-x86_64-unknown-linux-gnu-cpu', inputs.version) }}
-  CARGO_FEATURES: ${{ inputs.cuda && 'cuda-no-vmm,vulkan,embed-ui,desktop' || 'vulkan,embed-ui,desktop' }}
+  APPIMAGE_NAME: ${{ inputs.gpu && format('pom-{0}-x86_64', inputs.version) || format('pom-{0}-x86_64-unknown-linux-gnu-cpu', inputs.version) }}
+  CARGO_FEATURES: ${{ inputs.gpu && 'cuda-no-vmm,vulkan,embed-ui,desktop' || 'embed-ui,desktop' }}
 
 jobs:
   # A single job: on a self-hosted runner there is no minute multiplier, so splitting it
@@ -85,7 +85,7 @@ jobs:
       # The toolkit is installed on ksia under /usr/local/cuda, but the runner's PATH does
       # not include it.
       - name: Put the CUDA toolkit on PATH
-        if: inputs.cuda
+        if: inputs.gpu
         shell: bash
         run: |
           if [ -x /usr/local/cuda/bin/nvcc ]; then
@@ -103,16 +103,19 @@ jobs:
           # on Linux, so without it the link fails. `libclang` is for bindgen. The Vulkan
           # backend needs the headers and `glslc` (the shader compiler).
           faltou=""
-          for p in cmake clang mold git glslc; do
+          for p in cmake clang mold git; do
             command -v "$p" >/dev/null || faltou="$faltou $p"
           done
-          [ -f /usr/include/vulkan/vulkan.h ] || faltou="$faltou libvulkan-dev"
+          if [ "${{ inputs.gpu }}" = true ]; then
+            command -v glslc >/dev/null || faltou="$faltou glslc"
+            [ -f /usr/include/vulkan/vulkan.h ] || faltou="$faltou libvulkan-dev"
+          fi
           # The window of the desktop feature: GTK 3 and WebKitGTK 4.1 headers and libraries.
           for m in gtk+-3.0 webkit2gtk-4.1 libsoup-3.0; do
             pkg-config --exists "$m" || faltou="$faltou $m(pkg-config)"
           done
           [ -n "$(ldconfig -p 2>/dev/null | grep libclang)" ] || faltou="$faltou libclang-dev"
-          if [ "${{ inputs.cuda }}" = true ]; then
+          if [ "${{ inputs.gpu }}" = true ]; then
             command -v nvcc >/dev/null || faltou="$faltou nvcc(cuda-toolkit)"
           fi
           if [ -n "$faltou" ]; then
@@ -250,7 +253,7 @@ jobs:
     uses: ./.github/workflows/docker-hub.yml
     with:
       release: ${{ inputs.version }}
-      asset: ${{ inputs.cuda && format('pom-{0}-x86_64.AppImage', inputs.version) || format('pom-{0}-x86_64-unknown-linux-gnu-cpu.AppImage', inputs.version) }}
+      asset: ${{ inputs.gpu && format('pom-{0}-x86_64.AppImage', inputs.version) || format('pom-{0}-x86_64-unknown-linux-gnu-cpu.AppImage', inputs.version) }}
       develop: ${{ inputs.docker == 'pom-develop' }}
       # A prerelease does not move `latest` of the public image; the develop one always does.
       latest: ${{ inputs.docker == 'pom-develop' || !inputs.prerelease }}

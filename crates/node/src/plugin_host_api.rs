@@ -222,7 +222,7 @@ pub(crate) async fn image_files(State(state): State<GatewayState>, headers: Head
 pub(crate) async fn image_deploy(
     State(state): State<GatewayState>,
     headers: HeaderMap,
-    Json(request): Json<crate::components::ImageDeployRequest>,
+    Json(request): Json<crate::image_plan::DeployBody>,
 ) -> Response {
     if let Err(response) = admin_caller(&state, &headers).await {
         return response;
@@ -689,7 +689,7 @@ mod tests {
         .await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let body = crate::gateway::testkit::body_of(response).await;
-        assert_eq!(body["error"], "machine elsewhere is not on the network");
+        assert_eq!(body["error"], "elsewhere is not on the network");
         let response = image_undeploy(
             State(state),
             headers(&token),

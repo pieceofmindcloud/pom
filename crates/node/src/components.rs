@@ -210,7 +210,6 @@ pub(crate) async fn release_route(
 
 // ── Image deployments (the node an admin deploys from) ──────────────────────
 
-const APPLY_PATH: &str = "/api/ui/components/apply";
 const RELEASE_PATH: &str = "/api/ui/components/release";
 
 #[derive(Debug, Clone, Deserialize)]
@@ -259,55 +258,7 @@ pub(crate) struct Released {
     pub error: Option<String>,
 }
 
-/// A category a component accepts: its own, or a checkpoint holding all three.
-fn fits(component: &str, category: &str) -> bool {
-    category == component || category == "checkpoint"
-}
-
-fn validate(request: &ImageDeployRequest, machines: &[MachineFacts]) -> Result<(), String> {
-    if request.name.trim().is_empty() {
-        return Err("an image deployment needs a name".into());
-    }
-    if request.components.is_empty() || request.components.len() > COMPONENTS.len() {
-        return Err("choose one to three components".into());
-    }
-    let mut seen = std::collections::BTreeSet::new();
-    for choice in &request.components {
-        if !COMPONENTS.contains(&choice.component.as_str()) {
-            return Err(format!("unknown component {}", choice.component));
-        }
-        if !seen.insert(choice.component.as_str()) {
-            return Err(format!("{} is chosen twice", choice.component));
-        }
-        let Some(machine) = machines.iter().find(|m| m.node_id == choice.node_id) else {
-            return Err(format!("machine {} is not on the network", choice.node_id));
-        };
-        if !machine.has_image_service {
-            return Err(format!("{} does not run ComfyUI", machine.hostname));
-        }
-        let file = std::path::Path::new(&choice.path)
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        match machine
-            .image_files
-            .iter()
-            .find(|(path, _)| *path == choice.path)
-        {
-            None => return Err(format!("{} does not hold {file}", machine.hostname)),
-            Some((_, category)) if !fits(&choice.component, category) => {
-                return Err(format!(
-                    "{file} is a {category}, not a {}",
-                    choice.component
-                ))
-            }
-            Some(_) => {}
-        }
-    }
-    Ok(())
-}
-
-fn assignment_of(deploy_id: &str, name: &str, choice: &ComponentChoice) -> Value {
+pub(crate) fn assignment_of(deploy_id: &str, name: &str, choice: &ComponentChoice) -> Value {
     serde_json::json!({
         "deploy_id": deploy_id,
         "name": name,
@@ -322,7 +273,8 @@ fn assignment_of(deploy_id: &str, name: &str, choice: &ComponentChoice) -> Value
 /// its own code, so another plugin could join later.
 pub(crate) const IMAGE_PLUGIN: &str = "comfyui";
 
-/// Deploy an image model by component. On a failure the machines already
+/// Deploy an image model from the form before the stages (one machine per
+/// component). The stage plan checks it; on a failure the machines already
 /// applied are released and nothing is recorded.
 pub(crate) async fn deploy_image(
     db: &crate::db::PomDb,
@@ -330,49 +282,13 @@ pub(crate) async fn deploy_image(
     call: &TargetCall,
     request: ImageDeployRequest,
 ) -> Result<String, String> {
-    validate(&request, machines)?;
-    let deploy_id = format!("img-{}", hex::encode(rand::random::<[u8; 6]>()));
-    let name = request.name.trim().to_owned();
-    let mut applied: Vec<String> = Vec::new();
-    for choice in &request.components {
-        let body = assignment_of(&deploy_id, &name, choice);
-        if let Err(error) = call(choice.node_id.clone(), APPLY_PATH, body).await {
-            for node_id in &applied {
-                let _ = call(
-                    node_id.clone(),
-                    RELEASE_PATH,
-                    serde_json::json!({"deploy_id": deploy_id}),
-                )
-                .await;
-            }
-            let hostname = machines
-                .iter()
-                .find(|m| m.node_id == choice.node_id)
-                .map(|m| m.hostname.clone())
-                .unwrap_or_else(|| choice.node_id.clone());
-            return Err(format!(
-                "{hostname} could not serve the {}: {error}",
-                choice.component
-            ));
-        }
-        if !applied.contains(&choice.node_id) {
-            applied.push(choice.node_id.clone());
-        }
+    let request = crate::image_plan::DeployBody::Components(request).into_request();
+    let plan = crate::image_plan::plan_image(&request, machines);
+    if let Some((_, body)) = crate::image_plan::refusal(&plan, false) {
+        return Err(body["error"].as_str().unwrap_or("refused").to_owned());
     }
-    let mut deployments = load_image_deployments(db);
-    let mut record = ImageDeployment {
-        deploy_id: deploy_id.clone(),
-        name,
-        created_at: chrono::Utc::now().to_rfc3339(),
-        created_by: String::new(),
-        family: None,
-        components: request.components,
-        versions: Vec::new(),
-        active_version: 1,
-    };
-    record.ensure_versions();
-    deployments.push(record);
-    save_image_deployments(db, &deployments);
+    let deploy_id = crate::image_plan::new_deploy_id();
+    crate::image_plan::deploy_stages(db, &plan, call, &deploy_id, "", &|_| {}).await?;
     Ok(deploy_id)
 }
 
@@ -530,34 +446,99 @@ pub(crate) fn live_targets(state: GatewayState) -> TargetCall {
     })
 }
 
-/// `POST /api/ui/image-deploy`.
+/// `POST /api/ui/image-deploy`: checks the plan, answers `{deploy_id,
+/// job_id}` at once and applies the stages in a deploy job, which the
+/// deploy studio's progress window and the bell follow.
 pub(crate) async fn image_deploy_route(
     _auth: crate::auth::ConnectionAuth,
     axum::extract::State(state): axum::extract::State<GatewayState>,
-    axum::Json(request): axum::Json<ImageDeployRequest>,
-) -> axum::response::Response {
-    deploy_response(&state, request).await
-}
-
-/// Deploy `request` with this node's authority and answer as the deploy
-/// screen's route does (the plugin host API answers the same).
-pub(crate) async fn deploy_response(
-    state: &GatewayState,
-    request: ImageDeployRequest,
+    axum::Json(body): axum::Json<crate::image_plan::DeployBody>,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
-    let machines = survey_machines(state).await;
-    let call = live_targets(state.clone());
-    match deploy_image(&state.database, &machines, &call, request).await {
-        Ok(deploy_id) => axum::Json(serde_json::json!({ "deploy_id": deploy_id })).into_response(),
-        Err(error) => {
-            let status = if error.contains("could not serve") {
-                axum::http::StatusCode::BAD_GATEWAY
-            } else {
-                axum::http::StatusCode::BAD_REQUEST
-            };
-            (status, axum::Json(serde_json::json!({ "error": error }))).into_response()
+    let request = body.into_request();
+    let machines = survey_machines(&state).await;
+    let plan = crate::image_plan::plan_image(&request, &machines);
+    if let Some((status, body)) = crate::image_plan::refusal(&plan, request.allow_transfers) {
+        let status = axum::http::StatusCode::from_u16(status)
+            .unwrap_or(axum::http::StatusCode::BAD_REQUEST);
+        return (status, axum::Json(body)).into_response();
+    }
+    let deploy_id = crate::image_plan::new_deploy_id();
+    let job_id = format!("deploy-{deploy_id}");
+    let mut job = crate::webui::new_job(&job_id, "deploy", format!("Deploy {}", plan.name), "applying");
+    job.deploy_id = Some(deploy_id.clone());
+    job.deployment_name = Some(plan.name.clone());
+    crate::webui::jobs().write().await.insert(job_id.clone(), job);
+    let by = state.network.node_id.clone();
+    let (task_deploy_id, task_job_id) = (deploy_id.clone(), job_id.clone());
+    tokio::spawn(async move {
+        let call = live_targets(state.clone());
+        let progress_job = task_job_id.clone();
+        let progress = move |pct: f64| {
+            let id = progress_job.clone();
+            tokio::spawn(async move { crate::webui::set_job_progress(&id, pct).await });
+        };
+        match crate::image_plan::deploy_stages(
+            &state.database,
+            &plan,
+            &call,
+            &task_deploy_id,
+            &by,
+            &progress,
+        )
+        .await
+        {
+            Ok(failed) if failed.is_empty() => {
+                crate::webui::set_job(&task_job_id, "done", "ready", "every machine is serving").await
+            }
+            Ok(failed) => {
+                let names: Vec<String> = failed
+                    .iter()
+                    .map(|f| format!("{}: {}", f.hostname, f.reason.clone().unwrap_or_default()))
+                    .collect();
+                crate::webui::set_job(
+                    &task_job_id,
+                    "done",
+                    "ready",
+                    &format!("serving; these machines could not join: {}", names.join("; ")),
+                )
+                .await
+            }
+            Err(error) => crate::webui::set_job(&task_job_id, "failed", "failed", &error).await,
         }
+    });
+    axum::Json(serde_json::json!({ "deploy_id": deploy_id, "job_id": job_id })).into_response()
+}
+
+/// Deploy with this node's authority and wait for the result (the plugin
+/// host API's deploy, which answers `{deploy_id, failed}`).
+pub(crate) async fn deploy_response(
+    state: &GatewayState,
+    body: crate::image_plan::DeployBody,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let request = body.into_request();
+    let machines = survey_machines(state).await;
+    let plan = crate::image_plan::plan_image(&request, &machines);
+    if let Some((status, body)) = crate::image_plan::refusal(&plan, request.allow_transfers) {
+        let status = axum::http::StatusCode::from_u16(status)
+            .unwrap_or(axum::http::StatusCode::BAD_REQUEST);
+        return (status, axum::Json(body)).into_response();
+    }
+    let call = live_targets(state.clone());
+    let deploy_id = crate::image_plan::new_deploy_id();
+    let by = state.network.node_id.clone();
+    match crate::image_plan::deploy_stages(&state.database, &plan, &call, &deploy_id, &by, &|_| {})
+        .await
+    {
+        Ok(failed) => {
+            axum::Json(serde_json::json!({ "deploy_id": deploy_id, "failed": failed })).into_response()
+        }
+        Err(error) => (
+            axum::http::StatusCode::BAD_GATEWAY,
+            axum::Json(serde_json::json!({ "error": error })),
+        )
+            .into_response(),
     }
 }
 
@@ -1400,6 +1381,15 @@ mod tests {
                 .map(|(path, category)| (path.to_string(), category.to_string()))
                 .collect(),
             has_image_service: service,
+            files: files
+                .iter()
+                .map(|(path, category)| ImageFileFact {
+                    path: path.to_string(),
+                    size_bytes: 0,
+                    category: category.to_string(),
+                })
+                .collect(),
+            service_status: service.then(|| "ready".to_owned()),
             ..Default::default()
         }
     }
@@ -1464,9 +1454,10 @@ mod tests {
         let seen = seen.lock().unwrap();
         assert_eq!(
             *seen,
+            // In flow order: text encoder, diffusion, VAE.
             [
-                "/api/ui/components/apply a diffusion",
                 "/api/ui/components/apply b text_encoder",
+                "/api/ui/components/apply a diffusion",
                 "/api/ui/components/apply c vae",
             ]
         );
@@ -1479,10 +1470,10 @@ mod tests {
     async fn a_machine_without_the_file_is_refused() {
         let (_dir, db) = db();
         let (call, seen) = targets_call(None);
-        let req = request(vec![choice("diffusion", "b", "/m/z.safetensors")]);
+        let req = request(vec![choice("diffusion", "b", "/m/none.safetensors")]);
         let error = deploy_image(&db, &network(), &call, req).await.unwrap_err();
         assert!(
-            error.contains("host-b") && error.contains("z.safetensors"),
+            error.contains("host-b") && error.contains("none.safetensors"),
             "{error}"
         );
         assert!(seen.lock().unwrap().is_empty());
@@ -1525,8 +1516,8 @@ mod tests {
             "{error}"
         );
         let seen = seen.lock().unwrap();
-        assert!(seen.contains(&"/api/ui/components/release a ".to_owned()));
-        assert!(seen.contains(&"/api/ui/components/release b ".to_owned()));
+        assert!(seen.contains(&"/api/ui/components/release a diffusion".to_owned()));
+        assert!(seen.contains(&"/api/ui/components/release b text_encoder".to_owned()));
         assert!(load_image_deployments(&db).is_empty());
     }
 

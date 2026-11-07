@@ -262,6 +262,153 @@ pub(crate) fn plan_image(request: &ImagePlanRequest, machines: &[MachineFacts]) 
     }
 }
 
+// ── Deploying the stages ─────────────────────────────────────────────────────
+
+const APPLY_PATH: &str = "/api/ui/components/apply";
+const RELEASE_PATH: &str = "/api/ui/components/release";
+
+/// The body of `POST /api/ui/image-deploy`: the stage form, or the form from
+/// before the stages (one machine per component), which still deploys.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum DeployBody {
+    Stages(ImagePlanRequest),
+    Components(crate::components::ImageDeployRequest),
+}
+
+impl DeployBody {
+    pub(crate) fn into_request(self) -> ImagePlanRequest {
+        match self {
+            DeployBody::Stages(request) => request,
+            DeployBody::Components(old) => {
+                let mut stages: Vec<StageRequest> = Vec::new();
+                for choice in old.components {
+                    // A component chosen twice stays twice: the plan refuses it.
+                    stages.push(StageRequest {
+                        component: choice.component.clone(),
+                        file: FileIdentity { name: base_name(&choice.path), size_bytes: 0 },
+                        node_ids: vec![choice.node_id],
+                    });
+                }
+                ImagePlanRequest { name: old.name, stages, allow_transfers: false }
+            }
+        }
+    }
+}
+
+/// Why a plan cannot be deployed, as the route answers it: `None` when it can.
+pub(crate) fn refusal(plan: &ImagePlan, allow_transfers: bool) -> Option<(u16, serde_json::Value)> {
+    if !plan.copies.is_empty() && !allow_transfers {
+        return Some((
+            409,
+            serde_json::json!({ "error": "transfers_not_authorized", "copies": plan.copies }),
+        ));
+    }
+    if !plan.copies.is_empty() {
+        return Some((
+            400,
+            serde_json::json!({ "error": "image files cannot be copied between machines yet; place the file on the machine first" }),
+        ));
+    }
+    plan.blocked
+        .first()
+        .map(|reason| (400, serde_json::json!({ "error": reason })))
+}
+
+/// Applies every (stage, replica) of `plan` under `deploy_id`. A replica that
+/// fails is released and reported; when a stage is left with no replica,
+/// everything applied is released and the deploy fails. Only a deploy that
+/// succeeds is recorded. Returns the replicas that failed.
+pub(crate) async fn deploy_stages(
+    db: &crate::db::PomDb,
+    plan: &ImagePlan,
+    call: &crate::components::TargetCall,
+    deploy_id: &str,
+    by: &str,
+    progress: &(dyn Fn(f64) + Send + Sync),
+) -> Result<Vec<MachineVerdict>, String> {
+    use crate::image_records::{ImageDeployment, ImageStage, Replica};
+    let total: usize = plan.stages.iter().map(|s| s.chosen.len()).sum::<usize>().max(1);
+    let mut done = 0usize;
+    let mut applied: Vec<(String, String)> = Vec::new(); // (node_id, component)
+    let mut failed: Vec<MachineVerdict> = Vec::new();
+    let mut stages: Vec<ImageStage> = Vec::new();
+    for stage in &plan.stages {
+        let mut replicas = Vec::new();
+        let mut errors = Vec::new();
+        for verdict in &stage.chosen {
+            let Some(path) = verdict.path.clone() else { continue };
+            let choice = crate::components::ComponentChoice {
+                component: stage.component.clone(),
+                node_id: verdict.node_id.clone(),
+                path: path.clone(),
+            };
+            let body = crate::components::assignment_of(deploy_id, &plan.name, &choice);
+            match call(verdict.node_id.clone(), APPLY_PATH, body).await {
+                Ok(()) => {
+                    applied.push((verdict.node_id.clone(), stage.component.clone()));
+                    replicas.push(Replica {
+                        node_id: verdict.node_id.clone(),
+                        hostname: verdict.hostname.clone(),
+                        path,
+                    });
+                }
+                Err(error) => {
+                    let _ = call(
+                        verdict.node_id.clone(),
+                        RELEASE_PATH,
+                        serde_json::json!({ "deploy_id": deploy_id, "component": stage.component }),
+                    )
+                    .await;
+                    errors.push(format!("{}: {error}", verdict.hostname));
+                    failed.push(MachineVerdict {
+                        ok: false,
+                        reason: Some(error),
+                        ..verdict.clone()
+                    });
+                }
+            }
+            done += 1;
+            progress(100.0 * done as f64 / total as f64);
+        }
+        if replicas.is_empty() {
+            for (node_id, component) in &applied {
+                let _ = call(
+                    node_id.clone(),
+                    RELEASE_PATH,
+                    serde_json::json!({ "deploy_id": deploy_id, "component": component }),
+                )
+                .await;
+            }
+            return Err(format!(
+                "{}: no machine could serve it ({})",
+                stage.component,
+                errors.join("; ")
+            ));
+        }
+        stages.push(ImageStage {
+            component: stage.component.clone(),
+            file: stage.file.clone(),
+            replicas,
+        });
+    }
+    let mut deployments = crate::image_records::load_image_deployments(db);
+    deployments.retain(|d| d.deploy_id != deploy_id);
+    deployments.push(ImageDeployment::new(
+        deploy_id.to_owned(),
+        plan.name.clone(),
+        by,
+        None,
+        stages,
+    ));
+    crate::image_records::save_image_deployments(db, &deployments);
+    Ok(failed)
+}
+
+pub(crate) fn new_deploy_id() -> String {
+    format!("img-{}", hex::encode(rand::random::<[u8; 6]>()))
+}
+
 /// `POST /api/ui/image-deploy/plan`.
 pub(crate) async fn plan_route(
     _auth: crate::auth::ConnectionAuth,
@@ -466,5 +613,102 @@ mod tests {
         let plan = plan_image(&request, &network());
         assert!(plan.blocked.contains(&"unknown component lora".to_owned()));
         assert!(plan.blocked.contains(&"vae is chosen twice".to_owned()));
+    }
+
+    // ── deploy_stages ──
+
+    type Calls = std::sync::Arc<std::sync::Mutex<Vec<(String, &'static str, serde_json::Value)>>>;
+
+    fn targets(fail_on: &'static [&'static str]) -> (crate::components::TargetCall, Calls) {
+        let calls: Calls = Default::default();
+        let seen = calls.clone();
+        let call: crate::components::TargetCall = std::sync::Arc::new(move |node: String, path: &'static str, body: serde_json::Value| {
+            seen.lock().unwrap().push((node.clone(), path, body));
+            let fail = fail_on.contains(&node.as_str()) && path == APPLY_PATH;
+            Box::pin(async move { if fail { Err("offline".to_owned()) } else { Ok(()) } })
+        });
+        (call, calls)
+    }
+
+    fn db() -> (tempfile::TempDir, crate::db::PomDb) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::PomDb::open(dir.path().join("pom.db")).unwrap();
+        (dir, db)
+    }
+
+    fn applies(calls: &Calls) -> Vec<(String, String)> {
+        calls.lock().unwrap().iter()
+            .filter(|(_, path, _)| *path == APPLY_PATH)
+            .map(|(node, _, body)| (node.clone(), body["component"].as_str().unwrap().to_owned()))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn replicas_are_all_applied() {
+        let (_dir, db) = db();
+        let plan = plan_image(&zimage(&["b", "c"]), &network());
+        let (call, calls) = targets(&[]);
+        let failed = deploy_stages(&db, &plan, &call, "img-1", "me", &|_| {}).await.unwrap();
+        assert!(failed.is_empty());
+        let diffusion: Vec<_> = applies(&calls).into_iter().filter(|(_, c)| c == "diffusion").map(|(n, _)| n).collect();
+        assert_eq!(diffusion, ["b", "c"]);
+        let record = &crate::image_records::load_image_deployments(&db)[0];
+        assert_eq!(record.active().stages[1].replicas.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_machine_on_two_stages_gets_two_assignments() {
+        let (_dir, db) = db();
+        let plan = plan_image(&zimage(&["b"]), &network());
+        let (call, calls) = targets(&[]);
+        deploy_stages(&db, &plan, &call, "img-1", "me", &|_| {}).await.unwrap();
+        let on_a: Vec<_> = applies(&calls).into_iter().filter(|(n, _)| n == "a").map(|(_, c)| c).collect();
+        assert_eq!(on_a, ["text_encoder", "vae"]);
+    }
+
+    #[tokio::test]
+    async fn a_failed_replica_is_reported_and_the_deploy_succeeds() {
+        let (_dir, db) = db();
+        let plan = plan_image(&zimage(&["b", "c"]), &network());
+        let (call, calls) = targets(&["c"]);
+        let failed = deploy_stages(&db, &plan, &call, "img-1", "me", &|_| {}).await.unwrap();
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].node_id, "c");
+        assert!(calls.lock().unwrap().iter().any(|(n, p, b)| n == "c" && *p == RELEASE_PATH && b["component"] == "diffusion"));
+        let record = &crate::image_records::load_image_deployments(&db)[0];
+        assert_eq!(record.active().stages[1].replicas.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_stage_left_empty_releases_everything() {
+        let (_dir, db) = db();
+        let plan = plan_image(&zimage(&["b"]), &network());
+        let (call, calls) = targets(&["b"]);
+        let error = deploy_stages(&db, &plan, &call, "img-1", "me", &|_| {}).await.unwrap_err();
+        assert!(error.starts_with("diffusion: no machine could serve it"), "{error}");
+        assert!(calls.lock().unwrap().iter().any(|(n, p, _)| n == "a" && *p == RELEASE_PATH));
+        assert!(crate::image_records::load_image_deployments(&db).is_empty());
+    }
+
+    #[test]
+    fn the_old_components_form_still_deploys() {
+        let body: DeployBody = serde_json::from_value(serde_json::json!({
+            "name": "z",
+            "components": [{"component": "diffusion", "node_id": "b", "path": "/m/z.safetensors"},
+                           {"component": "vae", "node_id": "a", "path": "/m/ae.safetensors"}]
+        })).unwrap();
+        let request = body.into_request();
+        let plan = plan_image(&request, &network());
+        assert!(plan.blocked.is_empty(), "{:?}", plan.blocked);
+        assert_eq!(plan.stages[0].chosen[0].path.as_deref(), Some("/m/z.safetensors"));
+    }
+
+    #[test]
+    fn a_plan_with_copies_and_no_permission_is_refused() {
+        let plan = plan_image(&zimage(&["a"]), &network());
+        let (status, body) = refusal(&plan, false).unwrap();
+        assert_eq!(status, 409);
+        assert_eq!(body["error"], "transfers_not_authorized");
+        assert!(refusal(&plan_image(&zimage(&["b"]), &network()), false).is_none());
     }
 }

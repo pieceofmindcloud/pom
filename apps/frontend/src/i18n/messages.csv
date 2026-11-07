@@ -412,6 +412,16 @@ chatImage.sizeDefault,Workflow default,Padrão do fluxo
 chatImage.toggleHint,"Generate an image instead of a text answer","Gerar uma imagem em vez de uma resposta em texto"
 chatImage.baseTooLarge,"The base image must be a PNG or JPEG of at most 16 MB.","A imagem de base precisa ser PNG ou JPEG de até 16 MB."
 chatImage.open,Click to open the full image,Clique para abrir a imagem inteira
+chatImage.attachedForTool,"[The user attached an image you cannot see. If they want an image made from it, call generate_image with use_attached_image set to true.]","[O usuário anexou uma imagem que você não consegue ver. Se ele quiser uma imagem feita a partir dela, chame generate_image com use_attached_image verdadeiro.]"
+chatImage.mode.always,Always image,Sempre imagem
+chatImage.mode.alwaysHint,Every message goes straight to the workflow,Toda mensagem vai direto para o fluxo
+chatImage.mode.auto,Automatic,Automático
+chatImage.mode.autoHint,The model makes an image when you ask for one,O modelo faz uma imagem quando você pede
+chatImage.mode.text,Text only,Só texto
+chatImage.mode.textHint,Never makes images,Nunca faz imagens
+chatImage.onAuto,"Images on request: {workflow}, {size}","Imagens quando pedidas: {workflow}, {size}"
+chatImage.prompt,Prompt,Prompt
+chatImage.workflow,Workflow,Fluxo
 cluster.peerCount,"{count, plural, one {{count} node} other {{count} nodes}}","{count, plural, one {{count} nó} other {{count} nós}}"
 common.cancel,Cancel,Cancelar
 common.close,Close,Fechar

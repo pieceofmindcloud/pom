@@ -93,6 +93,7 @@ import { chatModelOptions } from "../lib/chatModels";
 import { useToast } from "../lib/toast";
 import { ChatImageGrid } from "../components/ChatImageGrid";
 import { startChatImage } from "../lib/chatImage";
+import { generateImageTool, imageCallOf, sizeFor, type ToolCall } from "../lib/chatImageTool";
 import { useI18n } from "../i18n/provider";
 import type { ClusterView, PeerRuntime } from "../lib/types";
 import { isWholeModel } from "../lib/types";
@@ -335,6 +336,12 @@ export function Bubble({
             </div>
           )}
           {message.images && message.images.length > 0 && <ChatImageGrid images={message.images} />}
+          {message.imagePrompt && (
+            <details className="mt-1.5 text-[0.72rem] text-muted" data-testid="chat-image-prompt">
+              <summary className="cursor-pointer select-none text-faint hover:text-muted">{t("chatImage.prompt")}</summary>
+              <p className="mt-1 whitespace-pre-wrap">{message.imagePrompt}</p>
+            </details>
+          )}
           {message.error && (
             <ChatError message={message.error} />
           )}
@@ -632,16 +639,20 @@ export const IMAGE_SIZES = ["", "1024x1024", "1216x832", "832x1216", "1344x768",
  * Generate image, as a menu like retrieval's: the answer (text, or one of the
  * ComfyUI workflows the network offers) and the size of the image.
  */
+type ImageMode = "auto" | "text" | "always";
+
 function ImageMenu({
+  mode,
   workflow,
   workflows,
   size,
   onChange,
 }: {
+  mode: ImageMode;
   workflow: string;
   workflows: ChatImageWorkflow[];
   size: string;
-  onChange: (workflow: string, size: string) => void;
+  onChange: (change: { mode?: ImageMode; workflow?: string; size?: string }) => void;
 }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
@@ -661,7 +672,7 @@ function ImageMenu({
       document.removeEventListener("keydown", escape);
     };
   }, [open]);
-  const enabled = workflow !== "";
+  const enabled = mode !== "text";
   const current = workflows.find((w) => w.id === workflow);
   const sizeLabel = (value: string) => (value ? value.replace("x", " × ") : t("chatImage.sizeDefault"));
   const item = "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[0.78rem] text-fg hover:bg-line/40";
@@ -673,7 +684,7 @@ function ImageMenu({
         aria-pressed={enabled}
         aria-haspopup="menu"
         aria-expanded={open}
-        title={enabled ? t("chatImage.on", { workflow: current?.name ?? "", size: sizeLabel(size) }) : t("chatImage.toggleHint")}
+        title={enabled ? t(mode === "auto" ? "chatImage.onAuto" : "chatImage.on", { workflow: current?.name ?? "", size: sizeLabel(size) }) : t("chatImage.toggleHint")}
         onClick={() => setOpen(!open)}
         className={clsx(
           "inline-flex h-8 w-8 items-center justify-center rounded-lg border transition-colors duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-iris/25",
@@ -685,17 +696,31 @@ function ImageMenu({
       {open && (
         <div role="menu" aria-label={t("chatImage.toggle")} className="absolute bottom-full left-0 z-20 mb-1.5 max-h-80 w-60 overflow-y-auto rounded-lg border border-line bg-raised p-1 shadow-lg">
           <p className="px-2 pb-1 pt-1.5 text-[0.62rem] font-semibold uppercase tracking-[0.1em] text-faint">{t("chatImage.answer")}</p>
-          {[{ id: "", name: t("chatImage.off") }, ...workflows].map((w) => (
-            <button key={w.id || "off"} type="button" role="menuitemradio" aria-checked={workflow === w.id} onClick={() => onChange(w.id, size)} className={item}>
-              <span className={clsx("h-1.5 w-1.5 shrink-0 rounded-full", workflow === w.id ? "bg-aqua" : "bg-transparent")} />
-              <span className="min-w-0 truncate">{w.name}</span>
+          {(["auto", "text", "always"] as ImageMode[]).map((value) => (
+            <button key={value} type="button" role="menuitemradio" aria-checked={mode === value} onClick={() => onChange({ mode: value })} className={item}>
+              <span className={clsx("h-1.5 w-1.5 shrink-0 rounded-full", mode === value ? "bg-aqua" : "bg-transparent")} />
+              <span className="min-w-0">
+                <span className="block">{t(`chatImage.mode.${value}`)}</span>
+                <span className="block text-[0.64rem] text-faint">{t(`chatImage.mode.${value}Hint`)}</span>
+              </span>
             </button>
           ))}
           {enabled && (
             <>
+              {workflows.length > 1 && (
+                <>
+                  <p className="mt-1 border-t border-line px-2 pb-1 pt-2 text-[0.62rem] font-semibold uppercase tracking-[0.1em] text-faint">{t("chatImage.workflow")}</p>
+                  {workflows.map((w) => (
+                    <button key={w.id} type="button" role="menuitemradio" aria-checked={workflow === w.id} onClick={() => onChange({ workflow: w.id })} className={item}>
+                      <span className={clsx("h-1.5 w-1.5 shrink-0 rounded-full", workflow === w.id ? "bg-aqua" : "bg-transparent")} />
+                      <span className="min-w-0 truncate">{w.name}</span>
+                    </button>
+                  ))}
+                </>
+              )}
               <p className="mt-1 border-t border-line px-2 pb-1 pt-2 text-[0.62rem] font-semibold uppercase tracking-[0.1em] text-faint">{t("chatImage.size")}</p>
               {IMAGE_SIZES.map((value) => (
-                <button key={value || "default"} type="button" role="menuitemradio" aria-checked={size === value} onClick={() => { onChange(workflow, value); setOpen(false); }} className={item}>
+                <button key={value || "default"} type="button" role="menuitemradio" aria-checked={size === value} onClick={() => { onChange({ size: value }); setOpen(false); }} className={item}>
                   <span className={clsx("h-1.5 w-1.5 shrink-0 rounded-full", size === value ? "bg-aqua" : "bg-transparent")} />
                   <span className="font-mono text-[0.74rem]">{sizeLabel(value)}</span>
                 </button>
@@ -1025,7 +1050,13 @@ function ChatScreen() {
   const ragCollections = chatCapabilities.data?.rag_collections ?? [];
   // Generate image: on while the conversation names a workflow the network still offers.
   const imageWorkflows = chatCapabilities.data?.image_workflows ?? [];
-  const imageWorkflow = imageWorkflows.find((w) => w.id === session.imageWorkflow) ?? null;
+  // Automatic unless the conversation chose otherwise; a conversation from
+  // before the modes that named a workflow kept every message an image.
+  const imageMode: ImageMode = session.imageMode ?? (session.imageWorkflow ? "always" : "auto");
+  const chosenWorkflow = imageWorkflows.find((w) => w.id === session.imageWorkflow) ?? imageWorkflows[0] ?? null;
+  // The workflow images use now: none in Text only.
+  const imageWorkflow = imageMode === "text" ? null : chosenWorkflow;
+  const offerImageTool = imageMode === "auto" && imageWorkflow != null;
   const [imageBusy, setImageBusy] = useState(false);
   // A collection that no longer exists is not asked for.
   const ragCollection =
@@ -1097,7 +1128,10 @@ function ChatScreen() {
         }
         continue;
       }
-      if (file.type.startsWith("image/") && imageWorkflow && (imageWorkflow.inputs == null || imageWorkflow.inputs.includes("image"))) {
+      // The image goes to ComfyUI rather than to the LLM when every message is
+      // an image, or when the LLM cannot see it (the tool may then use it).
+      const imageIsBase = imageWorkflow != null && (imageMode === "always" || !visionAvailable);
+      if (file.type.startsWith("image/") && imageIsBase && imageWorkflow && (imageWorkflow.inputs == null || imageWorkflow.inputs.includes("image"))) {
         // The base of image to image: it goes to ComfyUI as it is, not to the
         // LLM, so neither vision nor the context budget apply.
         if (!["image/png", "image/jpeg"].includes(file.type) || file.size > MAX_BASE_IMAGE_BYTES) {
@@ -1113,7 +1147,7 @@ function ChatScreen() {
         added.push({ id: newId(), name: file.name, kind: "image", data, mediaType: file.type, size: file.size, resized: false });
         continue;
       }
-      if (file.type.startsWith("image/") && imageWorkflow) {
+      if (file.type.startsWith("image/") && imageIsBase) {
         // Generate image is on, but this workflow lists no base image input:
         // the LLM's vision has nothing to do with it.
         toast.error(t("chat.imageRejected"), t("chatImage.noBase"));
@@ -1283,6 +1317,36 @@ function ChatScreen() {
     void addFiles(event.dataTransfer.files);
   }
 
+  /** The LLM called generate_image: run the workflow on its reply with the prompt it wrote. */
+  async function runImageTool(
+    calls: ToolCall[],
+    patch: (change: Partial<ChatMessage>) => void,
+    workflow: ChatImageWorkflow,
+    sent: ChatAttachment[],
+  ) {
+    const call = imageCallOf(calls);
+    if (!call) return;
+    const base = call.useAttachedImage && (workflow.inputs == null || workflow.inputs.includes("image"))
+      ? sent.find((attachment) => attachment.kind === "image")
+      : undefined;
+    const { width, height } = sizeFor(call.aspect, session.imageSize ?? "");
+    patch({ imagePrompt: call.prompt, imageProgress: { step: 0, of: 0 } });
+    try {
+      const images = await startChatImage({
+        workflowId: workflow.id,
+        nodeId: workflow.node_id,
+        prompt: call.prompt,
+        width,
+        height,
+        image: base?.data,
+        onProgress: (step, of) => patch({ imageProgress: { step, of } }),
+      });
+      patch({ images, imageProgress: undefined });
+    } catch (error) {
+      patch({ imageProgress: undefined, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
   /** Generate image: the message goes to the chosen ComfyUI workflow instead of the LLM. */
   async function sendImage(text: string, workflow: ChatImageWorkflow) {
     // An attached image is the base of image to image, when the workflow takes one.
@@ -1329,21 +1393,28 @@ function ChatScreen() {
 
   async function send(options?: { visibleText?: string; requestContent?: string }) {
     const text = options?.visibleText ?? draft.trim();
-    if (imageWorkflow && !options) {
+    if (imageMode === "always" && imageWorkflow && !options) {
       if (!text || imageBusy) return;
       await sendImage(text, imageWorkflow);
       return;
     }
     if ((!text && attachments.length === 0) || streaming || !model || pdfProgress) return;
     if (listening) stopDictation();
-    if (attachments.some((attachment) => attachment.kind === "image") && !visionAvailable) {
+    // In Automatic mode an image the LLM cannot see is still the base the
+    // tool may use: it is described to the LLM in text instead.
+    const blindBase = offerImageTool && !visionAvailable
+      ? attachments.find((attachment) => attachment.kind === "image")
+      : undefined;
+    if (!blindBase && attachments.some((attachment) => attachment.kind === "image") && !visionAvailable) {
       toast.error(t("chat.imageRejected"), t("chat.imageVisionUnavailable"));
       return;
     }
 
     const requestParts: ChatRequestPart[] = [];
     if (text) requestParts.push({ type: "text", text });
+    if (blindBase) requestParts.push({ type: "text", text: t("chatImage.attachedForTool") });
     for (const attachment of attachments) {
+      if (attachment.kind === "image" && blindBase) continue;
       if (attachment.kind === "image") {
         requestParts.push({ type: "image_url", image_url: { url: attachment.data } });
       } else {
@@ -1414,6 +1485,9 @@ function ChatScreen() {
       thinkingEnabled,
       ragEnabled: ragAvailable ? ragEnabled : undefined,
       ragCollection: ragAvailable && ragCollection ? ragCollection : undefined,
+      ...(offerImageTool && imageWorkflow
+        ? { tools: [generateImageTool], onToolCalls: (calls: ToolCall[], patch: (change: Partial<ChatMessage>) => void) => runImageTool(calls, patch, imageWorkflow, attachments) }
+        : {}),
       emptyResponseMessage: t("chat.emptyResponse"),
       interruptedMessage: t("chat.interrupted"),
       cluster: cluster.data ?? null,
@@ -1693,11 +1767,17 @@ function ChatScreen() {
                 <ModelPicker value={model} options={available} onChange={chooseModel} />
                 {chatCapabilities.data?.image === "supported" && (
                   <ImageMenu
-                    workflow={imageWorkflow?.id ?? ""}
+                    mode={imageMode}
+                    workflow={chosenWorkflow?.id ?? ""}
                     workflows={imageWorkflows}
                     size={session.imageSize ?? ""}
-                    onChange={(workflow, size) => {
-                      const updated = { ...session, imageWorkflow: workflow || undefined, imageSize: size || undefined };
+                    onChange={(change) => {
+                      const updated = {
+                        ...session,
+                        imageMode: change.mode ?? imageMode,
+                        imageWorkflow: change.workflow ?? chosenWorkflow?.id,
+                        imageSize: change.size === undefined ? session.imageSize : change.size || undefined,
+                      };
                       setSession(updated);
                       upsert(updated);
                     }}

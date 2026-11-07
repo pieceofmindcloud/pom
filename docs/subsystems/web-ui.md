@@ -1225,10 +1225,15 @@ besides the turns:
   `ChatStreamState.reasoningTokens`, kept as `ChatMessage.reasoningTokens`).
   The text opens only on a click.
 - **Generate image** (`ImageMenu` in `routes/Chat.tsx`, a menu like the RAG
-  one) shows when `chat/capabilities` reports `image: supported`: "Text answer"
-  or one of `image_workflows` (`ChatSession.imageWorkflow`) and, with a
-  workflow, the image size (`IMAGE_SIZES`, `ChatSession.imageSize`, sent as
-  `width`/`height`). An image attached to the message is sent as the base of
+  one) shows when `chat/capabilities` reports `image: supported`: the mode
+  (`ChatSession.imageMode`: `auto`, the default, offers the LLM the
+  `generate_image` tool of `lib/chatImageTool.ts` in its own request, and a
+  call streamed in fragments is reassembled by `chatStore` and run on the same
+  reply with the prompt the LLM wrote, kept as `ChatMessage.imagePrompt` and
+  shown under the images; `always` sends every message straight to the
+  workflow; `text` offers nothing), the workflow (`imageWorkflow`, default the
+  first) and the image size (`IMAGE_SIZES`, `imageSize`; it wins over the
+  tool's `aspect`). An image attached to the message is sent as the base of
   image to image (`image`) when the workflow lists `image` in its `inputs`, and
   refused otherwise. With a
   workflow chosen, a message goes to `POST /api/ui/chat/image`

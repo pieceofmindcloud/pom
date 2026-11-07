@@ -1086,6 +1086,10 @@ export interface ChatCapabilities {
   rag?: "supported" | "unavailable";
   /** Collections of the RAG server a message may keep its search to. */
   rag_collections?: string[];
+  /** Some machine offers a ComfyUI workflow for Generate image. Absent on an older node. */
+  image?: "supported" | "unavailable";
+  /** The workflows Generate image may run, built-in ones first. */
+  image_workflows?: ChatImageWorkflow[];
 }
 
 export type ModelSource = "ollama" | "lmstudio" | "folder" | string;
@@ -1305,11 +1309,103 @@ export interface ImageDeploymentComponent {
   status: string;
 }
 
+export type ImageStageName = "text_encoder" | "diffusion" | "vae";
+
+/** A file's identity across machines: its name and size. */
+export interface ImageFileIdentity {
+  name: string;
+  size_bytes: number;
+}
+
+export interface ImageReplicaView {
+  node_id: string;
+  hostname: string;
+  /** `ready`, `loading`, `error`, or `missing` when no live service lists it. */
+  status: string;
+  in_flight: number | null;
+}
+
+export interface ImageStageView {
+  component: ImageStageName;
+  file: ImageFileIdentity;
+  replicas: ImageReplicaView[];
+}
+
+export interface ImageDeploymentVersion {
+  version: number;
+  created_at: string;
+  created_by: string;
+  stages: Array<{
+    component: ImageStageName;
+    file: ImageFileIdentity;
+    replicas: Array<{ node_id: string; hostname: string; path: string }>;
+  }>;
+}
+
+/** `GET /api/ui/image-deployments`: records and what the network serves, by stage. */
 export interface ImageDeployment {
   deploy_id: string;
   name: string;
-  created_at: string;
+  family?: string | null;
+  /** This node deployed it (it keeps the versions); others still list and undeploy it. */
+  recorded: boolean;
+  active_version: number;
+  created_at?: string | null;
+  serving: boolean;
+  stages: ImageStageView[];
+  /** The flat form older screens read. */
   components: ImageDeploymentComponent[];
+  versions?: ImageDeploymentVersion[];
+}
+
+export interface ImageStageRequest {
+  component: ImageStageName;
+  file: ImageFileIdentity;
+  node_ids: string[];
+}
+
+export interface ImagePlanRequest {
+  name: string;
+  stages: ImageStageRequest[];
+  allow_transfers?: boolean;
+}
+
+export interface ImageMachineVerdict {
+  node_id: string;
+  hostname: string;
+  ok: boolean;
+  reason?: string;
+  path?: string;
+}
+
+export interface ImageStagePlan {
+  component: ImageStageName;
+  file: ImageFileIdentity;
+  chosen: ImageMachineVerdict[];
+  alternatives: ImageMachineVerdict[];
+}
+
+/** `POST /api/ui/image-deploy/plan`. */
+export interface ImagePlan {
+  name: string;
+  stages: ImageStagePlan[];
+  memory: Array<{ node_id: string; gpu_free_mb: number; ram_free_mb: number; need_mb: number }>;
+  copies: Array<{ component: ImageStageName; file: ImageFileIdentity; from_node_id: string; to_node_id: string; path: string }>;
+  blocked: string[];
+}
+
+/** An image the Chat generated, kept on this node by its hash. */
+export interface ChatImage {
+  hash: string;
+  ext: "png" | "jpg";
+  width: number;
+  height: number;
+}
+
+export interface ChatImageWorkflow {
+  id: string;
+  name: string;
+  node_id: string;
 }
 
 export type SidecarKind = "mmproj" | "mtp";

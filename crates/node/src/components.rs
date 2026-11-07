@@ -920,6 +920,15 @@ async fn call_local_plugin(
     op: &str,
     body: Vec<u8>,
 ) -> Result<(u16, Vec<u8>), String> {
+    // An LLM on the same physical GPU comes first (`gpu_arbiter.rs`).
+    let need_mb: u64 = load_assignments(&state.database)
+        .iter()
+        .filter(|a| a.deploy_id == deploy_id && a.component == component)
+        .flat_map(|a| a.paths.iter())
+        .filter_map(|path| std::fs::metadata(path).ok())
+        .map(|meta| meta.len().div_ceil(1024 * 1024))
+        .sum();
+    crate::gpu_arbiter::admit_image(need_mb).await;
     let upstream = state
         .plugins
         .query_audit(

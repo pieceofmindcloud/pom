@@ -18,6 +18,7 @@ pub(crate) async fn start_gateway_with_ready(
     crate::user_session::announce_operator_path();
     let _ = crate::user_session::demo_mode();
     let admin = admin::admin_routes().with_state(state.clone());
+    crate::gpu_arbiter::install(state.clone());
     let app = Router::new()
         .route("/api/generate", post(handle_generate))
         .route("/generate", post(handle_generate)) // alias

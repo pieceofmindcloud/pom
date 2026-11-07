@@ -94,6 +94,11 @@ pub(super) fn routes() -> Router<GatewayState> {
                 axum::extract::DefaultBodyLimit::max(crate::components::MAX_COMPONENT_BODY),
             ),
         )
+        .route("/api/internal/gpu/yield", post(crate::gpu_arbiter::yield_route))
+        .route(
+            "/api/internal/gpu/release-images",
+            post(crate::gpu_arbiter::release_route),
+        )
         .route(
             "/api/internal/plugins/:code/workflow/run",
             post(crate::chat_image::internal_run_route).layer(

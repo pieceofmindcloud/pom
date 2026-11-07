@@ -1006,6 +1006,9 @@ impl NodeRuntime {
                     "⏰ waking the idle deployment: {} layers {}-{}",
                     cfg.model_label, cfg.start_layer, cfg.end_layer
                 );
+                // An image component on the same GPU may hold its VRAM: ask
+                // it to free the card before the model loads again.
+                crate::gpu_arbiter::before_llm_reload().await;
                 // Keep the operation lock while transitioning Idle ->
                 // Starting so concurrent requests cannot duplicate a load.
                 self.apply_locked(cfg, true, true).await?;
@@ -1069,6 +1072,36 @@ impl NodeRuntime {
         let Some(assignment) = self.assignment.read().await.clone() else {
             return;
         };
+        let detail = format!("model unloaded after {} min without requests", cfg.idle_minutes);
+        self.unload_locked(&cfg, &assignment, detail).await;
+    }
+
+    /// Lend the GPU to an image component on the same card (`gpu_arbiter.rs`):
+    /// the idle unload, without waiting for the idle timer, only when the
+    /// deployment allows it (`yield_gpu_to_images`) and no request is in
+    /// flight. The next request reloads it as after an idle unload.
+    pub async fn yield_for_images(&self) -> bool {
+        let _operation = self.operation.lock().await;
+        let Some(cfg) = self.config.read().await.clone() else {
+            return false;
+        };
+        if !cfg.yield_gpu_to_images
+            || self.loads.load(&self.net.node_id).await != 0
+            || self.status.read().await.state != ServerState::Ready
+        {
+            return false;
+        }
+        let Some(assignment) = self.assignment.read().await.clone() else {
+            return false;
+        };
+        self.unload_locked(&cfg, &assignment, "model lent its GPU to an image".to_owned())
+            .await;
+        true
+    }
+
+    /// The unload itself, under the operation lock: the model leaves memory,
+    /// the peer keeps announcing and enters `idle`.
+    async fn unload_locked(&self, cfg: &NodeConfig, assignment: &LayerAssignment, detail: String) {
         let generation = *self.generation.borrow() + 1;
         self.generation.send_replace(generation);
         self.model_cache.clear();
@@ -1078,24 +1111,18 @@ impl NodeRuntime {
         self.net.set_idle(true);
         *self.status.write().await = RuntimeStatus::new(
             ServerState::Idle,
-            format!(
-                "model unloaded after {} min without requests",
-                cfg.idle_minutes
-            ),
+            detail.clone(),
         );
         self.status_changed.notify_waiters();
-        info!(
-            "💤 model unloaded after {} min without requests; the next request reloads it",
-            cfg.idle_minutes
-        );
+        info!("💤 {detail}; the next request reloads it");
         if let Err(error) = crate::lastslice::save_at(
             &self.last_slice_path,
-            &cfg,
+            cfg,
             crate::lastslice::SliceState::Idle,
         ) {
             warn!("could not record the idle slice: {error}");
         }
-        if let Err(error) = self.net.announce(Some(&assignment)).await {
+        if let Err(error) = self.net.announce(Some(assignment)).await {
             warn!("announce after the idle unload failed: {error}");
         }
     }

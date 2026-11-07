@@ -61,6 +61,27 @@ any of those types.
 - **Outputs:** images as thumbnails (as now), video with a player, audio with a
   player; all open full size with Download.
 
+## The API (operator request: tool calls through the API too)
+
+The same functions serve any OpenAI-compatible client with a key this node
+minted (every `/v1` route's rule), so an agent outside the Chat runs the
+standard tool-call loop against POM:
+
+- `GET /v1/pom/tools` lists the tool definitions the Chat uses
+  (`generate_image` while a built-in workflow serves, `wf_<slug>` per
+  published workflow) in the `tools` format of `/v1/chat/completions`; an
+  image parameter becomes `image_url: string` (a data URL or an http(s) URL
+  is not fetched: data URLs only).
+- `POST /v1/pom/tools/call {name, arguments}` runs one call and answers
+  `{content, media: [{url, kind, mime, width?, height?}]}` once the run ends:
+  `content` is the text to send back as the `tool` message, `url` is
+  `/v1/pom/media/<hash>.<ext>` on this node (same key).
+- `POST /v1/images/generations` (OpenAI images API: `prompt`, `n`, `size`,
+  `response_format` `b64_json` or `url`) runs the built-in workflow.
+
+The gateway does not run tools by itself inside `/v1/chat/completions`: the
+client keeps the loop, as with any OpenAI tool.
+
 ## Compatibility
 
 Only optional fields and new values: `params`, `description`, `outputs`,

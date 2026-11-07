@@ -17,6 +17,7 @@
 - A video or audio output is stored with the right extension and served with its type (node test).
 - An old published workflow (prompt map only) still runs (plugin test).
 - Tool names never collide with `generate_image` (UI test).
+- A tool call through the API with an unknown name, or arguments that are not an object, is a 400, never a run (node test).
 
 ### Task 1: Plugin - parameters and media outputs
 **Files (pom-plugin-comfyui):** `runtime/pom_workflows.py` (`publish(home, name, graph, params, description)`, `params_of(record)`, `apply_params(graph, params, values, save_image)`, media collection from history outputs), `src/components.rs` (service lists `description`, `params`), `runtime/web/pom.js` (publish dialog with per-input checkboxes), tests.
@@ -29,3 +30,7 @@
 ### Task 3: Chat - tools per workflow, form, players
 **Files:** `lib/chatImageTool.ts` (`workflowTool(w)`, `argsToParams`), `lib/chatImage.ts` (`params`, `media`), `lib/types.ts`, `routes/Chat.tsx` (tools list, call dispatch, Run dialog), `components/WorkflowForm.tsx`, `components/ChatImageGrid.tsx` (video/audio), i18n, guides.
 - [ ] Tests: tool schema from params; dispatch of `wf_<slug>` calls; form fields per type and submit values; video/audio players. Implement; PASS; commit; docs; push.
+
+### Task 4: API - tools, calls and OpenAI images
+**Files:** `crates/node/src/chat_tools.rs` (new: `tool_definitions(workflows)`, `call_to_request(workflows, name, args)`, routes `GET /v1/pom/tools`, `POST /v1/pom/tools/call`, `GET /v1/pom/media/:file`, `POST /v1/images/generations`), route wiring, `lib/chatImageTool.ts` reads the same definitions, `docs/subsystems/http-api.md`, guides.
+- [ ] Tests: definitions from params (names `generate_image`, `wf_<slug>`, schema types, required prompt); a call maps arguments to a `RunRequest` (choice/number passed as given, image data URL); unknown name / non-object refused; images API maps `size` and `n`, answers `b64_json` and `url`. Implement; PASS; commit; docs; push.

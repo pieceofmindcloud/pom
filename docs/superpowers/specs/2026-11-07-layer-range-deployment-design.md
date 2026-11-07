@@ -105,8 +105,8 @@ report the same three things:
 
 - **Range support** per architecture. Plugin engines add `"stage_ranges":
   [<architectures>]` to the describe block next to `stages` and
-  `stage_architectures`; llama.cpp answers through a new fork function
-  `llama_model_range_supported(arch)`.
+  `stage_architectures`. For llama.cpp, every architecture the slicer
+  supports, on an engine build whose fork has external tensor data (Part A).
 - **Valid cuts**: the layer ends a range may stop at. For llama.cpp, today's
   `valid_prefix_end_layers` (every whole layer for dense, architectural
   boundaries for hybrid). For a plugin, new `engine.cuts {model_path}` ->
@@ -151,30 +151,49 @@ parameters, not a new file.
 
 ### Part A: llama.cpp
 
-Fork (`pom-tensor-parallel`/`pom` branch rules in the `pom-inference-engine`
-skill):
+Decided on 2026-11-07 during implementation: a **virtual slice**, not range
+parameters in the loader. The slicer's header rewrite (block count, per-layer
+arrays, counts from the start or the end, layer selectors, recurrent layers
+from the `ssm_conv1d` tensors present, PLE and DeepSeek-V4.1 keys, required
+heads, the identity `output_norm` of a non-final range) is the architecture
+knowledge; reimplementing it in the C++ loader would keep two copies of the
+rules.
 
-- `llama_model_params` gains `layer_start`, `layer_end` (default: whole
-  model). The loader creates only the tensors of `blk.{start..end-1}`,
-  `token_embd` when `start == 0`, `output_norm`/`output` (and the MTP `nextn`
-  layers when used) when `end == total`, and maps global layer indices to
-  local ones.
-- Per-layer hyperparameters (KV heads per layer, sliding-window pattern,
-  recurrent layers of hybrid models, MoE layer flags, rope settings per
-  layer) are read at the global index.
-- The result must be the **same in-memory model** the slice of that range
-  produces, so the slice runtime (hidden state in and out, KV sized for local
-  layers, MTP, the MoE executor hooks) is reused unchanged.
-- With mmap, untouched tensors cost address space only; without mmap the
-  loader seeks past them. Multipart GGUF uses the loader's existing split
-  handling.
-- `llama_model_range_supported(arch)`: true only for architectures covered by
-  the equivalence test below.
+- **POM** (`crates/node/src/models/splitter.rs`):
+  `write_virtual_slice` writes the same header `split` writes, plus
+  `general.external_data.files` (the source file or files, absolute paths),
+  `general.external_data.tensor_files` (an `i32` per tensor: the file, or -1
+  when the bytes are in the header) and `general.external_data.tensor_offsets`
+  (a `u64` per tensor: absolute offset in that file). Tensors with data in the
+  header (the injected identity `output_norm`) come first in the table. The
+  file is the size of the metadata (about 11 MB for a 27B model, mostly the
+  tokenizer) and holds no weights. It is valid only while the source files
+  stay where they are, unchanged.
+- **Fork** (`feature/gguf-external-tensor-data`, from the fork's `master`,
+  commit `1219b422`): one block in `src/llama-model-loader.cpp`. With the three
+  keys, the loader opens the listed files (relative to the header's folder
+  unless absolute), appends them to `files`, and gives each external tensor its
+  file index and offset, with bounds checked against that file. mmap, direct
+  I/O and lazy reads already work per file index. Split GGUFs with external
+  data are refused. Not POM specific; it could be proposed upstream.
+- The in-memory model is the slice's by construction (the same header), so the
+  slice runtime (hidden state in and out, KV for local layers, MTP) is reused
+  unchanged, for every architecture the slicer supports.
+- **Verified** on Qwen3.8-27B (IQ3_S), CPU: a header-only copy of the whole
+  model and the original give identical greedy output; the real and virtual
+  slices of layers 0-15 (with the internal identity `output_norm`) and of
+  48-63 (last, with the MTP layer, on the fork's `pom` branch) give identical
+  output. `splitter::tests::a_virtual_slice_points_at_the_same_bytes_the_real_slice_copies`
+  checks every tensor's bytes on a synthetic model.
+- **Limit**: the MoE external executor (`llama-engine`,
+  `moe/format_heterogeneous.rs`) mmaps the model file itself and reads expert
+  bytes by offset, so it must refuse a virtual slice (or follow the external
+  keys) before virtual slices are used with it.
 
-POM (`crates/node`, the `llama-engine` binding in `pom-plugin-llama.cpp`):
-
-- Pass the range in the model params; announce `model/range-load-v1`.
-- `/health` reports the range from the deployment, not from file metadata.
+POM wiring (phase 2): the node writes the virtual slice for its range at
+apply time (next to the deployment state, named by source `pom_id` and
+range), loads it as a slice, announces `model/range-load-v1`, and `/health`
+reports the range as today from the header's `pom.*` keys.
 
 ### Part B: Strata
 
@@ -415,9 +434,9 @@ Costs and risks:
 - Every node serving by range keeps the **whole** model on disk (and, on
   Strata, a whole pack). For large models that is more disk per node than a
   slice; slices stay for small-disk nodes.
-- The fork loaders must index per-layer metadata correctly for every
-  architecture; that knowledge lives in the slicer today and moves to C++
-  (llama.cpp) and the Strata fork. Gated by equivalence tests.
+- On llama.cpp the rules stay in the slicer (Part A). On Strata, the fork must
+  index per-layer metadata correctly for each architecture it splits, unless
+  its pack tool reads the same virtual header. Gated by equivalence tests.
 - Engine estimates can be wrong; the plan keeps a margin and the load's
   real fit (`/health` fit reports, the existing fit fallback) still wins.
 
@@ -466,7 +485,8 @@ loading.
 
 ## Phases
 
-1. llama.cpp fork range loading with the equivalence test, dense families.
+1. Virtual slices: the fork's external tensor data and `write_virtual_slice`,
+   with the equivalence test (done for Qwen3.8-27B, see Part A).
 2. POM: step form, capability, journal, fallback to slicing; llama.cpp only.
 3. Planner and Auto-balance with live memory and the full parameter set.
 4. Hybrid and MoE families on llama.cpp.

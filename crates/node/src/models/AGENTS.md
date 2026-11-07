@@ -130,6 +130,14 @@ Models, GGUF reading, planning and slice files. The module is used by
   an extra unclaimed tensor - that was the cause of "wrong number of tensors" on
   the first slice of a real Qwen3.8 Flash Next. The result is validated by
   `gguf::read_layout` before the backend names it by content.
+  `write_virtual_slice` writes the same header with no weights: each source
+  tensor points at its bytes in the source file(s) through
+  `general.external_data.files`/`tensor_files`/`tensor_offsets`, which the
+  llama.cpp fork's loader reads (branch `feature/gguf-external-tensor-data`).
+  Tensors with data in the header (the identity `output_norm`) come first. It
+  is not wired to deployment yet; the MoE external executor reads the model
+  file directly and cannot load one
+  (`docs/superpowers/specs/2026-11-07-layer-range-deployment-design.md`, Part A).
 - `kv_budget.rs` - a pure byte policy of the KV cache. It replicates the row size
   of the supported types and refuses a width that does not close a block or any
   overflow, without consulting FFI or a device.

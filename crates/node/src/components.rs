@@ -790,7 +790,44 @@ fn error_body(message: String) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({ "error": message })).unwrap_or_default()
 }
 
-/// One op on a network component: find who serves it and forward.
+/// The replicas to try for one call, best first: ready before loading, then
+/// the measured RTT to this node (unknown last), then the calls in flight.
+pub(crate) fn replica_order(
+    candidates: &[NetworkComponent],
+    rtt_ms: &(dyn Fn(&str) -> Option<f64> + Sync),
+) -> Vec<NetworkComponent> {
+    let mut list: Vec<NetworkComponent> = candidates
+        .iter()
+        .filter(|c| c.status == "ready" || c.status == "loading")
+        .cloned()
+        .collect();
+    list.sort_by(|a, b| {
+        let ready = |c: &NetworkComponent| u8::from(c.status != "ready");
+        let rtt = |c: &NetworkComponent| rtt_ms(&c.node_id).unwrap_or(f64::INFINITY);
+        ready(a)
+            .cmp(&ready(b))
+            .then(rtt(a).total_cmp(&rtt(b)))
+            .then(a.in_flight.unwrap_or(0).cmp(&b.in_flight.unwrap_or(0)))
+            .then(a.node_id.cmp(&b.node_id))
+    });
+    list
+}
+
+/// The replica each generation (`x-pom-job`) used last, per component, so the
+/// sampling steps of one image stay where the weights are warm.
+type StickyKey = (String, String, String); // (job, deploy_id, component)
+static STICKY: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<StickyKey, (String, std::time::Instant)>>,
+> = std::sync::OnceLock::new();
+
+fn sticky() -> &'static std::sync::Mutex<std::collections::HashMap<StickyKey, (String, std::time::Instant)>> {
+    STICKY.get_or_init(Default::default)
+}
+
+/// One op on a network component: try its replicas, best first, and the one
+/// this generation already used before the others. A transport failure or a
+/// 5xx moves on to the next replica; a 4xx is the plugin's answer.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn call_component(
     network: &[NetworkComponent],
     deploy_id: &str,
@@ -799,30 +836,63 @@ pub(crate) async fn call_component(
     body: Vec<u8>,
     job: Option<String>,
     forward: &Forward,
-) -> (u16, Vec<u8>) {
+    rtt_ms: &(dyn Fn(&str) -> Option<f64> + Sync),
+) -> (u16, Vec<u8>, Option<NetworkComponent>) {
     if !valid_op(op) {
-        return (400, error_body(format!("invalid op {op:?}")));
+        return (400, error_body(format!("invalid op {op:?}")), None);
     }
-    let Some(target) = network.iter().find(|c| {
-        c.deploy_id == deploy_id
-            && c.component == component
-            && (c.status == "ready" || c.status == "loading")
-    }) else {
+    let candidates: Vec<NetworkComponent> = network
+        .iter()
+        .filter(|c| c.deploy_id == deploy_id && c.component == component)
+        .cloned()
+        .collect();
+    let mut order = replica_order(&candidates, rtt_ms);
+    if order.is_empty() {
         return (
             404,
             error_body(format!("no machine serves {component} of {deploy_id}")),
+            None,
         );
-    };
-    let hostname = target.hostname.clone();
-    match forward(target.clone(), op.to_owned(), body, job).await {
-        Ok(answer) => answer,
-        Err(cause) => (
-            502,
-            error_body(format!(
-                "{hostname} did not answer for {component}: {cause}"
-            )),
-        ),
     }
+    let key = job
+        .as_ref()
+        .map(|job| (job.clone(), deploy_id.to_owned(), component.to_owned()));
+    if let Some(key) = &key {
+        let now = std::time::Instant::now();
+        let mut map = sticky().lock().unwrap_or_else(|e| e.into_inner());
+        map.retain(|_, (_, at)| now.saturating_duration_since(*at) < JOB_TIMEOUT);
+        if let Some((node_id, _)) = map.get(key) {
+            if let Some(index) = order.iter().position(|c| &c.node_id == node_id) {
+                let kept = order.remove(index);
+                order.insert(0, kept);
+            }
+        }
+    }
+    let mut failures = Vec::new();
+    for target in order {
+        let hostname = target.hostname.clone();
+        match forward(target.clone(), op.to_owned(), body.clone(), job.clone()).await {
+            Ok((status, bytes)) if status < 500 => {
+                if let Some(key) = key {
+                    sticky()
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(key, (target.node_id.clone(), std::time::Instant::now()));
+                }
+                return (status, bytes, Some(target));
+            }
+            Ok((status, _)) => failures.push(format!("{hostname}: {status}")),
+            Err(cause) => failures.push(format!("{hostname}: {cause}")),
+        }
+    }
+    (
+        502,
+        error_body(format!(
+            "no machine answered for {component}: {}",
+            failures.join("; ")
+        )),
+        None,
+    )
 }
 
 /// The plugin that serves this component of this deployment here, if any.
@@ -1714,6 +1784,96 @@ mod tests {
 
     type ForwardLog = Arc<Mutex<Vec<(String, String, usize)>>>;
 
+    fn scripted(answers: Vec<(&'static str, Result<(u16, Vec<u8>), String>)>) -> (Forward, Arc<Mutex<Vec<String>>>) {
+        let seen: Arc<Mutex<Vec<String>>> = Default::default();
+        let log = seen.clone();
+        let answers = Arc::new(answers);
+        let forward: Forward = Arc::new(move |target: NetworkComponent, _op: String, _body: Vec<u8>, _job: Option<String>| {
+            log.lock().unwrap().push(target.node_id.clone());
+            let answer = answers
+                .iter()
+                .find(|(node, _)| *node == target.node_id)
+                .map(|(_, a)| a.clone())
+                .unwrap_or(Ok((200, vec![])));
+            Box::pin(async move { answer })
+        });
+        (forward, seen)
+    }
+
+    fn rtts(table: &'static [(&'static str, f64)]) -> impl Fn(&str) -> Option<f64> + Sync {
+        move |node: &str| table.iter().find(|(n, _)| *n == node).map(|(_, ms)| *ms)
+    }
+
+    #[tokio::test]
+    async fn the_nearest_ready_replica_is_called() {
+        let mut loading = served("img-1", "diffusion", "a");
+        loading.status = "loading".into();
+        let network = vec![loading, served("img-1", "diffusion", "b"), served("img-1", "diffusion", "c")];
+        let (forward, seen) = scripted(vec![]);
+        let (status, _, target) = call_component(&network, "img-1", "diffusion", "forward", vec![], None, &forward, &rtts(&[("a", 1.0), ("b", 9.0), ("c", 3.0)])).await;
+        assert_eq!(status, 200);
+        assert_eq!(target.unwrap().node_id, "c");
+        assert_eq!(*seen.lock().unwrap(), ["c"]);
+    }
+
+    #[tokio::test]
+    async fn ties_go_to_the_least_busy() {
+        let mut busy = served("img-1", "diffusion", "a");
+        busy.in_flight = Some(4);
+        let mut idle = served("img-1", "diffusion", "b");
+        idle.in_flight = Some(0);
+        let order = replica_order(&[busy, idle], &rtts(&[("a", 2.0), ("b", 2.0)]));
+        assert_eq!(order[0].node_id, "b");
+    }
+
+    #[tokio::test]
+    async fn a_dead_replica_fails_over() {
+        let network = vec![served("img-1", "vae", "a"), served("img-1", "vae", "b")];
+        let (forward, seen) = scripted(vec![("a", Err("connection refused".into()))]);
+        let (status, _, target) = call_component(&network, "img-1", "vae", "decode", vec![], None, &forward, &rtts(&[("a", 1.0), ("b", 2.0)])).await;
+        assert_eq!(status, 200);
+        assert_eq!(target.unwrap().node_id, "b");
+        assert_eq!(*seen.lock().unwrap(), ["a", "b"]);
+    }
+
+    #[tokio::test]
+    async fn a_5xx_fails_over_but_a_4xx_is_returned() {
+        let network = vec![served("img-1", "vae", "a"), served("img-1", "vae", "b")];
+        let (forward, seen) = scripted(vec![("a", Ok((503, vec![])))]);
+        let (status, _, _) = call_component(&network, "img-1", "vae", "decode", vec![], None, &forward, &rtts(&[("a", 1.0), ("b", 2.0)])).await;
+        assert_eq!(status, 200);
+        assert_eq!(seen.lock().unwrap().len(), 2);
+        let (forward, seen) = scripted(vec![("a", Ok((400, b"bad".to_vec())))]);
+        let (status, body, _) = call_component(&network, "img-1", "vae", "decode", vec![], None, &forward, &rtts(&[("a", 1.0), ("b", 2.0)])).await;
+        assert_eq!((status, body), (400, b"bad".to_vec()));
+        assert_eq!(*seen.lock().unwrap(), ["a"]);
+    }
+
+    #[tokio::test]
+    async fn a_job_stays_on_its_replica() {
+        let network = vec![served("img-1", "diffusion", "a"), served("img-1", "diffusion", "b")];
+        let (forward, _) = scripted(vec![("a", Err("down".into()))]);
+        let job = Some("job-sticky-1".to_owned());
+        let (_, _, first) = call_component(&network, "img-1", "diffusion", "forward", vec![], job.clone(), &forward, &rtts(&[("a", 1.0), ("b", 5.0)])).await;
+        assert_eq!(first.unwrap().node_id, "b");
+        // a comes back and is nearer, but the generation keeps its replica.
+        let (forward, seen) = scripted(vec![]);
+        let (_, _, again) = call_component(&network, "img-1", "diffusion", "forward", vec![], job, &forward, &rtts(&[("a", 1.0), ("b", 5.0)])).await;
+        assert_eq!(again.unwrap().node_id, "b");
+        assert_eq!(*seen.lock().unwrap(), ["b"]);
+    }
+
+    #[tokio::test]
+    async fn all_replicas_down_names_every_host() {
+        let network = vec![served("img-1", "vae", "a"), served("img-1", "vae", "b")];
+        let (forward, _) = scripted(vec![("a", Err("refused".into())), ("b", Ok((500, vec![])))]);
+        let (status, body, target) = call_component(&network, "img-1", "vae", "decode", vec![], None, &forward, &|_| None).await;
+        assert_eq!(status, 502);
+        assert!(target.is_none());
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("host-a: refused") && text.contains("host-b: 500"), "{text}");
+    }
+
     fn zimage_record() -> ImageDeployment {
         use crate::image_records::{FileIdentity, ImageStage, Replica};
         let stage = |component: &str, file: &str, nodes: &[&str]| ImageStage {
@@ -1838,7 +1998,7 @@ mod tests {
             served("img-1", "diffusion", "a"),
         ];
         let (forward, seen) = forwarding(Ok((200, b"out".to_vec())));
-        let (status, body) = call_component(
+        let (status, body, _) = call_component(
             &network,
             "img-1",
             "diffusion",
@@ -1846,6 +2006,7 @@ mod tests {
             b"in".to_vec(),
             None,
             &forward,
+            &|_| None,
         )
         .await;
         assert_eq!(status, 200);
@@ -1859,7 +2020,7 @@ mod tests {
     #[tokio::test]
     async fn an_unserved_component_is_not_found() {
         let (forward, seen) = forwarding(Ok((200, vec![])));
-        let (status, body) = call_component(
+        let (status, body, _) = call_component(
             &[served("img-1", "vae", "c")],
             "img-2",
             "vae",
@@ -1867,12 +2028,13 @@ mod tests {
             vec![],
             None,
             &forward,
+            &|_| None,
         )
         .await;
         assert_eq!(status, 404);
         assert!(String::from_utf8_lossy(&body).contains("no machine serves vae of img-2"));
         assert!(seen.lock().unwrap().is_empty());
-        let (status, _) = call_component(
+        let (status, _, _) = call_component(
             &[served("img-1", "vae", "c")],
             "img-1",
             "vae",
@@ -1880,6 +2042,7 @@ mod tests {
             vec![],
             None,
             &forward,
+            &|_| None,
         )
         .await;
         assert_eq!(status, 400, "an op is a short lowercase word");
@@ -1888,7 +2051,7 @@ mod tests {
     #[tokio::test]
     async fn a_vanished_server_is_a_named_error() {
         let (forward, _) = forwarding(Err("connection refused".into()));
-        let (status, body) = call_component(
+        let (status, body, _) = call_component(
             &[served("img-1", "vae", "c")],
             "img-1",
             "vae",
@@ -1896,6 +2059,7 @@ mod tests {
             vec![],
             None,
             &forward,
+            &|_| None,
         )
         .await;
         assert_eq!(status, 502);

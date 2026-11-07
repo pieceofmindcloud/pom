@@ -269,13 +269,21 @@ pub(crate) async fn component_call(
         .map(str::to_owned);
     let network = crate::components::components_for_call(&state, &deploy_id, &component).await;
     let forward = crate::components::live_forward(state.clone());
-    let target = network
-        .iter()
-        .find(|c| c.deploy_id == deploy_id && c.component == component)
-        .cloned();
     let bytes_in = body.len() as u64;
     let started = std::time::Instant::now();
-    let (status, bytes) = crate::components::call_component(
+    // The RTT the Flow map shows, measured from this node; this node is 0.
+    let measured = state.network.rtts.fresh_snapshot();
+    let local = state.network.node_id.clone();
+    let rtt_ms = move |node_id: &str| {
+        if node_id == local {
+            return Some(0.0);
+        }
+        measured
+            .iter()
+            .find(|m| m.target_node_id == node_id)
+            .map(|m| m.rtt_ms)
+    };
+    let (status, bytes, target) = crate::components::call_component(
         &network,
         &deploy_id,
         &component,
@@ -283,6 +291,7 @@ pub(crate) async fn component_call(
         body.to_vec(),
         job.clone(),
         &forward,
+        &rtt_ms,
     )
     .await;
     // The generation's telemetry: which machine ran what, for how long.

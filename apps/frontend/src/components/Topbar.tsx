@@ -43,7 +43,7 @@ function NodeChipItems() {
   // says it all, so neither its name again nor "1 node" is drawn.
   const alone =
     Boolean(n.network_name) &&
-    n.network_name.trim() === n.hostname.trim() &&
+    n.network_name.trim() === (n.hostname ?? "").trim() &&
     (c?.peers.length ?? 0) <= 1;
 
   return (

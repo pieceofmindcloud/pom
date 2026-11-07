@@ -797,8 +797,21 @@ pub fn redact(value: &mut Value, demo: bool) {
             let keys = map.keys().cloned().collect::<Vec<_>>();
             for key in keys {
                 let lower = key.to_ascii_lowercase();
-                if SECRET_KEYS.contains(&lower.as_str()) || (demo && address_key(&lower)) {
+                if SECRET_KEYS.contains(&lower.as_str()) {
                     map.remove(&key);
+                    continue;
+                }
+                // An address keeps its key and its type, so the interface
+                // (which reads `hostname.trim()`, `addrs.length`, ...) still
+                // draws: text becomes "hidden", a list empty, anything else null.
+                if demo && address_key(&lower) {
+                    if let Some(slot) = map.get_mut(&key) {
+                        *slot = match slot {
+                            Value::String(_) => Value::String("hidden".into()),
+                            Value::Array(_) => Value::Array(Vec::new()),
+                            _ => Value::Null,
+                        };
+                    }
                     continue;
                 }
                 let Some(mut inner) = map.remove(&key) else {
@@ -1003,6 +1016,11 @@ mod tests {
         assert_eq!(demo["peers"][0]["name"], "gpu box");
         assert_eq!(demo["peers"][0]["layers"], json!([0, 31]));
         assert_eq!(demo["node_id"], demo["peers"][0]["node_id"]);
+        // The shape stays: the interface reads these fields without guards.
+        assert_eq!(demo["peers"][0]["advertise_addr"], "hidden");
+        let mut node = json!({"hostname": "box", "listen_addrs": ["10.0.0.1:1"], "lat": 1.5});
+        redact(&mut node, true);
+        assert_eq!(node, json!({"hostname": "hidden", "listen_addrs": [], "lat": null}));
     }
 
     #[test]

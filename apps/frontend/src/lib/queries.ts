@@ -35,6 +35,7 @@ import { getTrendingModels } from "./publicModelDiscovery";
 import { fetchPublicPlugin, fetchPublicPluginCatalog, type PublicPluginCatalogQuery } from "./pluginCatalog";
 import { jobsPollInterval, offersPollInterval } from "./polling";
 import { isConnecting } from "./connection";
+import { isUserSession } from "./session";
 import type {
   ConnectionStatus,
   LocalCaStatus,
@@ -231,6 +232,8 @@ function inactivePlugin(code: string): PluginStatus {
 export function usePlugins() {
   return useQuery<PluginStatus[]>({
     queryKey: keys.plugins,
+    // A signed-in person never reaches the catalog (`user_may_call`).
+    enabled: !isUserSession(),
     queryFn: () => optional(api.get<PluginStatus[]>("/api/ui/plugins"), []),
     retry: false,
     refetchInterval: 30_000,
@@ -317,6 +320,7 @@ export function useEnterpriseStatus() {
 export function usePomCoreUpdateStatus() {
   return useQuery<PomCoreUpdateStatus>({
     queryKey: keys.pomCoreUpdate,
+    enabled: !isUserSession(),
     queryFn: () =>
       optional(api.get<PomCoreUpdateStatus>("/api/ui/pom-update/status", { auth: false }), {
         core_update: null,
@@ -369,6 +373,7 @@ export function useMyQuota<T extends { available: boolean; pending?: boolean }>(
 export function useConnection() {
   return useQuery({
     queryKey: keys.connection,
+    enabled: !isUserSession(),
     queryFn: () => api.get<ConnectionStatus>("/api/ui/connection"),
     refetchInterval: (query) => (isConnecting(query.state.data) ? 2_000 : 15_000),
   });
@@ -404,7 +409,7 @@ export function useCluster() {
  */
 export function useNetworkChat(room: NetworkChatRoom = "network", enabled = true) {
   return useQuery({
-    enabled,
+    enabled: enabled && !isUserSession(),
     // The main room keeps the bare key: the menu's unread counter and the
     // plugin bridge share that cache entry.
     queryKey: room === "network" ? keys.networkChat : [...keys.networkChat, room],
@@ -567,6 +572,7 @@ export function useSidecarLinks(enabled = true) {
 export function useImageDeployments() {
   return useQuery({
     queryKey: keys.imageDeployments,
+    enabled: !isUserSession(),
     queryFn: () => api.get<{ deployments: ImageDeployment[] }>("/api/ui/image-deployments"),
     refetchInterval: 10_000,
   });

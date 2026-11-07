@@ -96,6 +96,9 @@ pub(crate) struct ServedComponent {
     pub files: Vec<String>,
     /// `ready`, `loading` or `error`.
     pub status: String,
+    /// Calls being served now, when the plugin counts them.
+    #[serde(default)]
+    pub in_flight: Option<u32>,
 }
 
 const MAX_COMPONENTS: usize = 64;
@@ -122,6 +125,9 @@ fn parse_components(kind: &str, value: &Value) -> Vec<ServedComponent> {
                     .as_str()
                     .filter(|s| ["ready", "loading", "error"].contains(s))?
                     .to_owned(),
+                in_flight: entry["in_flight"]
+                    .as_u64()
+                    .map(|n| n.min(u64::from(u16::MAX)) as u32),
             })
         })
         .collect()

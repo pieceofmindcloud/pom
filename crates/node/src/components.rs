@@ -574,45 +574,138 @@ pub(crate) async fn deploy_response(
     }
 }
 
-/// The image deployments this node recorded, with each component's status
-/// on the network (`missing` when no live service lists it).
-pub(crate) async fn image_deployments_view(state: &GatewayState) -> Value {
-    let served = network_components(state).await;
-    let peers = state.all_peers().await;
-    let deployments: Vec<Value> = load_image_deployments(&state.database)
+/// The image deployments of the network: every `deploy_id` this node recorded
+/// or some live service serves, with each stage's replicas and their state
+/// (`missing` for a recorded replica no service lists). `components` keeps the
+/// flat form older screens read.
+pub(crate) fn view_of(
+    records: &[ImageDeployment],
+    served: &[NetworkComponent],
+    hostname_of: &dyn Fn(&str) -> Option<String>,
+) -> Vec<Value> {
+    use crate::image_records::STAGES;
+    let mut ids: Vec<String> = records.iter().map(|r| r.deploy_id.clone()).collect();
+    for component in served {
+        if !ids.contains(&component.deploy_id) {
+            ids.push(component.deploy_id.clone());
+        }
+    }
+    let mut views: Vec<(String, Value)> = ids
         .into_iter()
-        .map(|deployment| {
-            let components: Vec<Value> = deployment
-                .components
+        .map(|deploy_id| {
+            let record = records.iter().find(|r| r.deploy_id == deploy_id);
+            let live: Vec<&NetworkComponent> =
+                served.iter().filter(|c| c.deploy_id == deploy_id).collect();
+            let name = record
+                .map(|r| r.name.clone())
+                .or_else(|| live.first().map(|c| c.name.clone()))
+                .unwrap_or_default();
+            // (component, file name, size, [(node_id, path)]) per stage.
+            let mut stages: Vec<(String, String, u64, Vec<(String, String)>)> = Vec::new();
+            if let Some(record) = record {
+                for stage in &record.active().stages {
+                    stages.push((
+                        stage.component.clone(),
+                        stage.file.name.clone(),
+                        stage.file.size_bytes,
+                        stage.replicas.iter().map(|r| (r.node_id.clone(), r.path.clone())).collect(),
+                    ));
+                }
+            }
+            for component in &live {
+                let entry = match stages.iter_mut().find(|s| s.0 == component.component) {
+                    Some(entry) => entry,
+                    None => {
+                        stages.push((
+                            component.component.clone(),
+                            component.files.first().cloned().unwrap_or_default(),
+                            0,
+                            Vec::new(),
+                        ));
+                        stages.last_mut().expect("just pushed")
+                    }
+                };
+                if !entry.3.iter().any(|(node, _)| *node == component.node_id) {
+                    entry.3.push((component.node_id.clone(), String::new()));
+                }
+            }
+            stages.sort_by_key(|s| STAGES.iter().position(|c| *c == s.0).unwrap_or(STAGES.len()));
+            let stage_views: Vec<Value> = stages
                 .iter()
-                .map(|choice| {
-                    let status = served
+                .map(|(component, file, size, replicas)| {
+                    let replicas: Vec<Value> = replicas
                         .iter()
-                        .find(|s| {
-                            s.deploy_id == deployment.deploy_id
-                                && s.component == choice.component
-                                && s.node_id == choice.node_id
+                        .map(|(node_id, _)| {
+                            let found = live
+                                .iter()
+                                .find(|c| c.component == *component && c.node_id == *node_id);
+                            serde_json::json!({
+                                "node_id": node_id,
+                                "hostname": found.map(|c| c.hostname.clone())
+                                    .or_else(|| hostname_of(node_id))
+                                    .unwrap_or_else(|| node_id.clone()),
+                                "status": found.map(|c| c.status.clone()).unwrap_or_else(|| "missing".into()),
+                                "in_flight": found.and_then(|c| c.in_flight),
+                            })
                         })
-                        .map(|s| s.status.clone())
-                        .unwrap_or_else(|| "missing".into());
-                    let hostname = peers
-                        .iter()
-                        .find(|p| p.node_id == choice.node_id)
-                        .map(|p| p.hostname.clone())
-                        .unwrap_or_else(|| choice.node_id.clone());
+                        .collect();
                     serde_json::json!({
-                        "component": choice.component, "node_id": choice.node_id,
-                        "hostname": hostname, "path": choice.path, "status": status,
+                        "component": component,
+                        "file": { "name": file, "size_bytes": size },
+                        "replicas": replicas,
                     })
                 })
                 .collect();
-            serde_json::json!({
-                "deploy_id": deployment.deploy_id, "name": deployment.name,
-                "created_at": deployment.created_at, "components": components,
-            })
+            let serving = !stage_views.is_empty()
+                && stage_views.iter().all(|stage| {
+                    stage["replicas"]
+                        .as_array()
+                        .is_some_and(|r| r.iter().any(|r| r["status"] == "ready"))
+                });
+            let components: Vec<Value> = stage_views
+                .iter()
+                .flat_map(|stage| {
+                    let component = stage["component"].clone();
+                    stage["replicas"].as_array().cloned().unwrap_or_default().into_iter().map(move |r| {
+                        serde_json::json!({
+                            "component": component, "node_id": r["node_id"],
+                            "hostname": r["hostname"], "status": r["status"],
+                        })
+                    })
+                })
+                .collect();
+            let mut view = serde_json::json!({
+                "deploy_id": deploy_id,
+                "name": name,
+                "family": record.and_then(|r| r.family.clone()),
+                "recorded": record.is_some(),
+                "active_version": record.map(|r| r.active_version).unwrap_or(1),
+                "created_at": record.map(|r| r.created_at.clone()),
+                "serving": serving,
+                "stages": stage_views,
+                "components": components,
+            });
+            if let Some(record) = record {
+                view["versions"] = serde_json::to_value(&record.versions).unwrap_or(Value::Null);
+            }
+            (name, view)
         })
         .collect();
-    serde_json::json!({ "deployments": deployments })
+    views.sort_by(|a, b| a.0.cmp(&b.0));
+    views.into_iter().map(|(_, view)| view).collect()
+}
+
+pub(crate) async fn image_deployments_view(state: &GatewayState) -> Value {
+    let served = network_components(state).await;
+    let peers = state.all_peers().await;
+    let records = load_image_deployments(&state.database);
+    let hostname_of = |node_id: &str| {
+        peers
+            .iter()
+            .find(|p| p.node_id == node_id)
+            .map(|p| p.hostname.clone())
+    };
+    serde_json::json!({ "deployments": view_of(&records, &served, &hostname_of) })
 }
 
 /// `GET /api/ui/image-deployments`.
@@ -1126,6 +1219,8 @@ pub(crate) struct NetworkComponent {
     pub node_id: String,
     pub hostname: String,
     pub plugin_code: String,
+    #[serde(default)]
+    pub in_flight: Option<u32>,
 }
 
 /// The components the image services of one machine serve.
@@ -1156,6 +1251,7 @@ pub(crate) fn components_of(
                     node_id: node_id.to_owned(),
                     hostname: hostname.to_owned(),
                     plugin_code: code.clone(),
+                    in_flight: c.in_flight,
                 })
         })
         .collect()
@@ -1612,10 +1708,80 @@ mod tests {
             node_id: node_id.into(),
             hostname: format!("host-{node_id}"),
             plugin_code: "comfyui".into(),
+            in_flight: None,
         }
     }
 
     type ForwardLog = Arc<Mutex<Vec<(String, String, usize)>>>;
+
+    fn zimage_record() -> ImageDeployment {
+        use crate::image_records::{FileIdentity, ImageStage, Replica};
+        let stage = |component: &str, file: &str, nodes: &[&str]| ImageStage {
+            component: component.into(),
+            file: FileIdentity { name: file.into(), size_bytes: 5 },
+            replicas: nodes.iter().map(|n| Replica { node_id: (*n).into(), hostname: String::new(), path: format!("/m/{file}") }).collect(),
+        };
+        ImageDeployment::new(
+            "img-1".into(), "Z-Image".into(), "me", None,
+            vec![stage("vae", "ae", &["a"]), stage("diffusion", "z", &["b", "c"]), stage("text_encoder", "q", &["a"])],
+        )
+    }
+
+    #[test]
+    fn the_view_merges_records_and_services() {
+        let served = vec![
+            served("img-1", "text_encoder", "a"),
+            served("img-1", "vae", "a"),
+            served("img-1", "diffusion", "b"),
+        ];
+        let views = view_of(&[zimage_record()], &served, &|_| None);
+        assert_eq!(views.len(), 1);
+        let view = &views[0];
+        assert_eq!(view["recorded"], true);
+        let order: Vec<_> = view["stages"].as_array().unwrap().iter().map(|s| s["component"].as_str().unwrap()).collect();
+        assert_eq!(order, ["text_encoder", "diffusion", "vae"]);
+        let diffusion = &view["stages"][1]["replicas"];
+        assert_eq!(diffusion[0]["status"], "ready");
+        assert_eq!(diffusion[1]["status"], "missing");
+        assert_eq!(diffusion[1]["hostname"], "c");
+        assert_eq!(view["serving"], true);
+        assert_eq!(view["versions"].as_array().unwrap().len(), 1);
+        assert_eq!(view["components"].as_array().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn a_deployment_seen_only_on_the_network_is_listed() {
+        let mut part = served("img-7", "diffusion", "b");
+        part.files = vec!["z.safetensors".into()];
+        let views = view_of(&[], &[part], &|_| None);
+        assert_eq!(views[0]["recorded"], false);
+        assert_eq!(views[0]["stages"][0]["file"]["name"], "z.safetensors");
+        assert!(views[0].get("versions").is_none());
+    }
+
+    #[test]
+    fn serving_needs_a_ready_replica_per_stage() {
+        let mut loading = served("img-1", "diffusion", "b");
+        loading.status = "loading".into();
+        let served = vec![served("img-1", "text_encoder", "a"), served("img-1", "vae", "a"), loading];
+        assert_eq!(view_of(&[zimage_record()], &served, &|_| None)[0]["serving"], false);
+    }
+
+    #[test]
+    fn in_flight_is_read_from_the_service() {
+        let with: crate::plugin_services::ServedComponent = serde_json::from_value(serde_json::json!({
+            "deploy_id": "img-1", "name": "Z", "component": "vae", "files": [], "status": "ready", "in_flight": 2
+        })).unwrap();
+        assert_eq!(with.in_flight, Some(2));
+        let without: crate::plugin_services::ServedComponent = serde_json::from_value(serde_json::json!({
+            "deploy_id": "img-1", "name": "Z", "component": "vae", "files": [], "status": "ready"
+        })).unwrap();
+        assert_eq!(without.in_flight, None);
+        let mut busy = served("img-1", "vae", "a");
+        busy.in_flight = Some(3);
+        let view = &view_of(&[zimage_record()], &[busy], &|_| None)[0];
+        assert_eq!(view["stages"][2]["replicas"][0]["in_flight"], 3);
+    }
 
     #[tokio::test]
     async fn release_with_a_component_drops_only_it() {

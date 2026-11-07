@@ -26,6 +26,10 @@ Shows up only for a model that can think before answering. The choice stays with
 The clip adds one or more files to the message; images go to models that have vision. A PDF is turned into text before it is sent, and scanned pages are read by OCR, which takes a few seconds per page and can misread a word, so that attachment shows an OCR mark. A PDF can have up to 100 MB, 1000 pages and 100 scanned pages.
 :::
 
+## Generating images
+
+When the network serves an image model, a **Generate image** menu appears below the box. Pick a workflow - each image model offers a ready text-to-image one, and an administrator can publish any ComfyUI workflow with **POM > Publish to Chat** - and the next messages go to it instead of the language model: write what the image should show and the answer shows the progress, then the images. A click opens one full size with **Download**. The images are copied to this node and kept in `.comfyui/images` inside the workspace, named by their content, so they stay when the machine that made them goes away; the conversation keeps only that name. **Text answer** goes back to the language model.
+
 ## After an answer
 
 Each answer carries a short line with the time to the first token and the speed of the generation. Opening it shows the full telemetry: the machines of the path, the network time between them, how long each hop took and the format of the hidden state that crossed the network. A thought, when the model thinks, stays closed above the answer and opens on a click.

@@ -19,6 +19,7 @@ import {
   ChevronDown,
   Copy,
   Database,
+  Image as ImageIcon,
   Download,
   History,
   MessageCircle,
@@ -87,9 +88,11 @@ import {
 } from "../lib/queries";
 import { useStableRecord } from "../lib/stableRecord";
 import { awaitingModels, connectionStuck, isConnecting } from "../lib/connection";
-import type { ConnectionStatus } from "../lib/types";
+import type { ChatImageWorkflow, ConnectionStatus } from "../lib/types";
 import { chatModelOptions } from "../lib/chatModels";
 import { useToast } from "../lib/toast";
+import { ChatImageGrid } from "../components/ChatImageGrid";
+import { startChatImage } from "../lib/chatImage";
 import { useI18n } from "../i18n/provider";
 import type { ClusterView, PeerRuntime } from "../lib/types";
 import { isWholeModel } from "../lib/types";
@@ -321,6 +324,7 @@ export function Bubble({
             />
           )}
           {message.content && <Markdown>{message.content}</Markdown>}
+          {message.images && message.images.length > 0 && <ChatImageGrid images={message.images} />}
           {message.error && (
             <ChatError message={message.error} />
           )}
@@ -607,6 +611,36 @@ function TitleField({
  * A database icon next to the model picker; it lights up while retrieval is
  * on, and its menu opens upward because the composer sits at the bottom.
  */
+/** Generate image: off (the LLM answers) or one of the ComfyUI workflows the network offers. */
+function ImageMenu({
+  workflow,
+  workflows,
+  onChange,
+}: {
+  workflow: string;
+  workflows: ChatImageWorkflow[];
+  onChange: (workflow: string) => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <label className={clsx(
+      "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border px-2 text-[0.72rem]",
+      workflow ? "border-aqua/50 bg-aqua/[0.1] text-aqua" : "border-line bg-raised text-faint",
+    )}>
+      <ImageIcon className="h-3.5 w-3.5" />
+      <select
+        aria-label={t("chatImage.toggle")}
+        value={workflow}
+        onChange={(event) => onChange(event.target.value)}
+        className="max-w-[11rem] bg-transparent text-[0.72rem] outline-none"
+      >
+        <option value="">{t("chatImage.off")}</option>
+        {workflows.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+      </select>
+    </label>
+  );
+}
+
 function RagMenu({
   enabled,
   collection,
@@ -921,6 +955,10 @@ function ChatScreen() {
   // pipeline has to process on every question.
   const ragEnabled = session.ragEnabled ?? false;
   const ragCollections = chatCapabilities.data?.rag_collections ?? [];
+  // Generate image: on while the conversation names a workflow the network still offers.
+  const imageWorkflows = chatCapabilities.data?.image_workflows ?? [];
+  const imageWorkflow = imageWorkflows.find((w) => w.id === session.imageWorkflow) ?? null;
+  const [imageBusy, setImageBusy] = useState(false);
   // A collection that no longer exists is not asked for.
   const ragCollection =
     session.ragCollection && ragCollections.includes(session.ragCollection) ? session.ragCollection : "";
@@ -1155,8 +1193,46 @@ function ChatScreen() {
     void addFiles(event.dataTransfer.files);
   }
 
+  /** Generate image: the message goes to the chosen ComfyUI workflow instead of the LLM. */
+  async function sendImage(text: string, workflow: ChatImageWorkflow) {
+    const user: ChatMessage = { id: newId(), role: "user", content: text, at: new Date().toISOString() };
+    const reply: ChatMessage = { id: newId(), role: "assistant", content: t("chatImage.generating"), at: new Date().toISOString() };
+    let live: ChatSession = {
+      ...session,
+      title: session.titled || turnsOnly(session.messages).length > 0 ? session.title : titleFrom(text),
+      messages: [...session.messages, user, reply],
+    };
+    const patch = (change: Partial<ChatMessage>) => {
+      live = { ...live, messages: live.messages.map((m) => (m.id === reply.id ? { ...m, ...change } : m)) };
+      setSession(live);
+    };
+    setSession(live);
+    setDraft("");
+    autoFollow.current = true;
+    setImageBusy(true);
+    try {
+      const images = await startChatImage({
+        workflowId: workflow.id,
+        nodeId: workflow.node_id,
+        prompt: text,
+        onProgress: (step, of) => patch({ content: t("chatImage.progress", { step, of }) }),
+      });
+      patch({ content: "", images, source: workflow.name });
+    } catch (error) {
+      patch({ content: "", error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setImageBusy(false);
+      upsert(live);
+    }
+  }
+
   async function send(options?: { visibleText?: string; requestContent?: string }) {
     const text = options?.visibleText ?? draft.trim();
+    if (imageWorkflow && !options) {
+      if (!text || imageBusy) return;
+      await sendImage(text, imageWorkflow);
+      return;
+    }
     if ((!text && attachments.length === 0) || streaming || !model || pdfProgress) return;
     if (listening) stopDictation();
     if (attachments.some((attachment) => attachment.kind === "image") && !visionAvailable) {
@@ -1305,7 +1381,8 @@ function ChatScreen() {
     startNewSession(model || null);
   }
 
-  const noModel = available.length === 0 && !node.data?.active_model && !cluster.data?.active_model;
+  // A network serving only image models still has something to talk to: Generate image.
+  const noModel = available.length === 0 && !node.data?.active_model && !cluster.data?.active_model && imageWorkflows.length === 0;
   // No models yet because this node is still on its way into its network, or
   // just got in, not because the network serves none.
   const connecting = noModel && (isConnecting(connection.data) || awaitingModels(connection.data));
@@ -1513,6 +1590,17 @@ function ChatScreen() {
             <div className="mt-2 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
               <div className="flex min-w-0 items-center gap-2">
                 <ModelPicker value={model} options={available} onChange={chooseModel} />
+                {chatCapabilities.data?.image === "supported" && (
+                  <ImageMenu
+                    workflow={imageWorkflow?.id ?? ""}
+                    workflows={imageWorkflows}
+                    onChange={(workflow) => {
+                      const updated = { ...session, imageWorkflow: workflow || undefined };
+                      setSession(updated);
+                      upsert(updated);
+                    }}
+                  />
+                )}
                 {ragAvailable && (
                   <RagMenu
                     enabled={ragEnabled}

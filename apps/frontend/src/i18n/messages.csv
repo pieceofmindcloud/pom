@@ -390,6 +390,14 @@ chat.wait.wake.3,Loading the model back into the GPUs...,Colocando o modelo de v
 chat.wait.wake.4,Warming up the GPUs. Coffee is brewing...,Aquecendo as GPUs. O café está passando...
 chat.wait.wake.5,"Putting the mind back together, piece by piece...","Remontando a mente, peça por peça..."
 chat.wait.wake.6,Almost awake. Your request is first in line...,Quase acordados. Seu pedido é o primeiro da fila...
+chatImage.alt,"Generated image, {width} by {height}","Imagem gerada, {width} por {height}"
+chatImage.download,Download,Baixar
+chatImage.generating,Generating the image…,Gerando a imagem…
+chatImage.missing,This image is no longer on this node,Esta imagem não está mais neste nó
+chatImage.off,Text answer,Resposta em texto
+chatImage.progress,"Generating the image: step {step} of {of}","Gerando a imagem: passo {step} de {of}"
+chatImage.title,Generated image,Imagem gerada
+chatImage.toggle,Generate image,Gerar imagem
 cluster.peerCount,"{count, plural, one {{count} node} other {{count} nodes}}","{count, plural, one {{count} nó} other {{count} nós}}"
 common.cancel,Cancel,Cancelar
 common.close,Close,Fechar

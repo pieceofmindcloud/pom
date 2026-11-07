@@ -26,6 +26,10 @@ Aparece só para um modelo que sabe pensar antes de responder. A escolha fica co
 O clipe adiciona um ou mais arquivos à mensagem; imagens vão para modelos que têm visão. Um PDF vira texto antes do envio, e páginas escaneadas são lidas por OCR, que leva alguns segundos por página e pode trocar uma palavra, por isso esse anexo mostra uma marca OCR. Um PDF pode ter até 100 MB, 1000 páginas e 100 páginas escaneadas.
 :::
 
+## Gerando imagens
+
+Quando a rede serve um modelo de imagem, um menu **Gerar imagem** aparece embaixo da caixa. Escolha um fluxo - cada modelo de imagem oferece um pronto de texto para imagem, e um administrador pode publicar qualquer fluxo do ComfyUI com **POM > Publish to Chat** - e as próximas mensagens vão para ele em vez do modelo de linguagem: escreva o que a imagem deve mostrar e a resposta mostra o progresso e depois as imagens. Um clique abre uma em tamanho cheio com **Baixar**. As imagens são copiadas para este nó e guardadas em `.comfyui/images` dentro do workspace, com o nome tirado do conteúdo, então continuam aqui quando a máquina que as fez sai da rede; a conversa guarda só esse nome. **Resposta em texto** volta para o modelo de linguagem.
+
 ## Depois de uma resposta
 
 Cada resposta traz uma linha curta com o tempo até o primeiro token e a velocidade da geração. Abrindo, aparece a telemetria completa: as máquinas do caminho, o tempo de rede entre elas, quanto durou cada salto e o formato do estado oculto que atravessou a rede. O pensamento, quando o modelo pensa, fica fechado acima da resposta e abre com um clique.

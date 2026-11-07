@@ -71,6 +71,8 @@ export interface ChatMessage {
   source?: string;
   /** Thinking blocks emitted by models with reasoning enabled. */
   reasoning?: string;
+  /** Images a ComfyUI workflow generated for this answer, kept on this node by hash. */
+  images?: import("./types").ChatImage[];
   /** How many tokens the model spent thinking, counted from the stream. */
   reasoningTokens?: number;
   /** Authoritative final throughput from the generating node. */
@@ -110,6 +112,8 @@ export interface ChatSession {
   ragEnabled?: boolean;
   /** The collection retrieval is kept to in this conversation. Absent means all. */
   ragCollection?: string;
+  /** Generate image: the workflow this conversation sends its messages to. Absent means off (the LLM answers). */
+  imageWorkflow?: string;
   messages: ChatMessage[];
   updatedAt: string;
 }

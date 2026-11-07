@@ -50,6 +50,8 @@ import { useNavigate } from "react-router-dom";
 import {
   Check,
   ChevronLeft,
+  Minus,
+  Plus,
   Rocket,
   Server,
   ServerCog,
@@ -67,6 +69,7 @@ import { DeployNetworkCanvas } from "../components/DeployNetworkCanvas";
 import { DeployProgressModal } from "../components/DeployProgressModal";
 import { trackOf } from "../components/PipelineRail";
 import { tensorParallelModelsOf, wholeModelsOf } from "../lib/wholeModels";
+import { evenSplit, isWholeRangeSplit, stepRange, validEnds, wholeRangesOf } from "../lib/wholeRanges";
 import { inferenceServicesOf, serviceRunsModel, serviceRunsSlices, serviceTakesDraft } from "../lib/inferenceServices";
 import {
   Badge,
@@ -502,6 +505,14 @@ export function DeployModel() {
   const wholeModel = isWhole || (isTp && !hasSlicedTp)
     ? wholes.find((w) => w.name === chosen)
     : undefined;
+  /** Whether a set of rows splits the whole model over machines that each hold
+   *  it: then the request names them as `whole_ranges`, and each machine is
+   *  applied with its own whole file and its range (nothing is copied). */
+  const wholeTotal = wholeModel?.total_layers ?? null;
+  const splitsWhole = (candidate: DeploySelection[] | null): candidate is DeploySelection[] =>
+    isWhole && !service && candidate != null && isWholeRangeSplit(candidate, wholeModel?.holders ?? [], wholeTotal);
+  const rowsPayload = (candidate: DeploySelection[] | null) =>
+    candidate == null ? {} : splitsWhole(candidate) ? { whole_ranges: wholeRangesOf(candidate) } : { selection: candidate };
   /** The TpLaunch the node expects: `size` is derived from the workers picked,
    *  never a free number — the select is the single source of truth. */
   const tpPayload = (): TpLaunch => ({
@@ -571,7 +582,7 @@ export function DeployModel() {
         kind,
         strategy,
         preferred_node_ids: preferredNodeIds,
-        ...(settled ? { selection: settled } : {}),
+        ...rowsPayload(settled),
         ...(isTp ? { tp: tpPayload() } : {}),
         // The merge toggle is not on screen for a whole model. Sending it
         // anyway would be sending a value the operator was never shown.
@@ -1111,7 +1122,7 @@ export function DeployModel() {
         deployment_name: deploymentName || chosen,
         strategy,
         preferred_node_ids: preferredNodeIds,
-        ...(selection ? { selection: rows } : {}),
+        ...rowsPayload(selection ? rows : null),
         ...(params || service ? { params: sentParams } : {}),
         ...(merge != null && !isWhole ? { merge } : {}),
         ...(isTp ? { tp: tpPayload() } : {}),
@@ -1809,6 +1820,64 @@ export function DeployModel() {
                           )) : <span className="text-[0.64rem] text-faint">{t("deployStudio.noLayerAssigned")}</span>}
                         </div>
                       </div>
+                      {isWhole && !service && wholeTotal != null && (() => {
+                        // Ranges of the whole model, each from the machine's own copy.
+                        const holdersOnMap = mapMachineIds.filter((nodeId) => wholeModel?.holders.includes(nodeId));
+                        const ends = validEnds(wholeTotal, currentPlan?.layer_options?.cuts.map((cut) => cut.end_layer) ?? null);
+                        const split = splitsWhole(rows);
+                        const limitText = (limit: string) =>
+                          t(limit === "noCut" ? "deployStudio.layerLimitNoCut" : "deployStudio.layerLimitEmpty");
+                        return (
+                          <div className="mt-3 space-y-1.5 border-t border-line pt-2">
+                            {split && taking.map((row) => {
+                              const index = rows.indexOf(row);
+                              const fewer = stepRange(rows, index, "shrink", ends);
+                              const more = stepRange(rows, index, "grow", ends);
+                              const count = row.end_layer - row.start_layer + 1;
+                              return (
+                                <div key={`step-${row.start_layer}`} className="flex items-center justify-between gap-2">
+                                  <span className="font-mono text-[0.64rem] text-muted">{layerRange(row.start_layer, row.end_layer)}</span>
+                                  <div className="flex items-center gap-1">
+                                    <button
+                                      type="button"
+                                      aria-label={t("deployStudio.fewerLayers", { machine: machine.label })}
+                                      title={Array.isArray(fewer) ? t("deployStudio.fewerLayers", { machine: machine.label }) : limitText(fewer)}
+                                      disabled={!Array.isArray(fewer)}
+                                      onClick={() => Array.isArray(fewer) && setSelection(fewer)}
+                                      className="border border-line bg-ink p-0.5 text-muted hover:border-aqua/50 hover:text-fg disabled:opacity-40"
+                                    >
+                                      <Minus className="h-3 w-3" />
+                                    </button>
+                                    <span className="min-w-[4.5rem] text-center font-mono text-[0.64rem] text-fg">{t("deployStudio.layerCount", { count })}</span>
+                                    <button
+                                      type="button"
+                                      aria-label={t("deployStudio.moreLayers", { machine: machine.label })}
+                                      title={Array.isArray(more) ? t("deployStudio.moreLayers", { machine: machine.label }) : limitText(more)}
+                                      disabled={!Array.isArray(more)}
+                                      onClick={() => Array.isArray(more) && setSelection(more)}
+                                      className="border border-line bg-ink p-0.5 text-muted hover:border-aqua/50 hover:text-fg disabled:opacity-40"
+                                    >
+                                      <Plus className="h-3 w-3" />
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                            {holdersOnMap.length >= 2 && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                type="button"
+                                className="w-full"
+                                onClick={() => setSelection(evenSplit(holdersOnMap, wholeTotal, ends))}
+                              >
+                                {t("deployStudio.splitLayers", { count: holdersOnMap.length })}
+                              </Button>
+                            )}
+                            {split && <p className="text-[0.6rem] leading-snug text-faint">{t("deployStudio.splitLayersHint")}</p>}
+                          </div>
+                        );
+                      })()}
                       <div className="mt-3 border-t border-aqua/15 pt-2">
                         <p className="text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-aqua">{t("deployStudio.layersOnPeer")}</p>
                         <div className="mt-1.5 flex flex-wrap gap-1">

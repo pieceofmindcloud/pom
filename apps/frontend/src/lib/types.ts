@@ -2280,6 +2280,22 @@ export interface TpLaunch {
   worker_node_ids: string[];
 }
 
+export interface WholeLayerCut {
+  end_layer: number;
+  layers: number;
+  size_bytes: number;
+  remainder_bytes: number;
+}
+
+export interface WholeLayerOptions {
+  source_node_id: string;
+  total_layers: number;
+  cuts: WholeLayerCut[];
+  granularity: number | null;
+  rule: string;
+  reason: string | null;
+}
+
 export interface DeployPlan {
   group: string;
   deployment_name: string;
@@ -2319,6 +2335,9 @@ export interface DeployPlan {
   transfer_bytes: number;
   /** Set when the plan cannot be carried out at all, and why. */
   blocked: string | null;
+  /** Valid cuts of the whole GGUF, when the request named layer ranges of a
+   *  whole model (`whole_ranges`). Absent on older nodes. */
+  layer_options?: WholeLayerOptions | null;
   /** True while this is the node's suggestion rather than the operator's edit. */
   auto: boolean;
   /** True when the operator asked each machine's adjacent slices to be joined

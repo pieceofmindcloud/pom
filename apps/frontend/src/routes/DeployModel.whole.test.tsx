@@ -644,6 +644,70 @@ describe("DeployModel · whole model", () => {
     expect(planCalls().some(([, body]) => (body as { selection?: Array<{ target_node_id: string }> }).selection?.some((row) => row.target_node_id === "mac"))).toBe(false);
   });
 
+  it("splits the whole model over machines that hold it and sends the ranges, not a selection", async () => {
+    answerPlans();
+    // The node answers a range request with one step per range, as it does.
+    const plain = post.getMockImplementation()!;
+    post.mockImplementation((url: string, body: {
+      whole_ranges?: Array<{ node_id: string; start_layer: number; end_layer: number }>;
+      selection?: Array<{ target_node_id: string; start_layer: number; end_layer: number }>;
+    }) => {
+      const ranges = body?.whole_ranges
+        ?? (body?.selection && body.selection.length > 1
+          ? body.selection.map((row) => ({ node_id: row.target_node_id, start_layer: row.start_layer, end_layer: row.end_layer }))
+          : undefined);
+      if (url !== "/api/ui/deploy/plan" || !ranges) return plain(url, body);
+      const base = wholePlan();
+      return Promise.resolve({
+        ...base,
+        // A plan for ranges the operator named is never the node's own choice.
+        auto: false,
+        steps: ranges.map((range, index) => ({
+          ...base.steps[0],
+          position: index + 1,
+          start_layer: range.start_layer,
+          end_layer: range.end_layer,
+          target_node_id: range.node_id,
+          target_host: range.node_id,
+          primary: range.start_layer === 0,
+        })),
+      });
+    });
+    mount();
+    chooseWhole();
+    fireEvent.click(await screen.findByRole("button", { name: /ksia RTT/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Remover ksia da implantação/ })).toBeTruthy());
+    fireEvent.click(await screen.findByRole("button", { name: /mac RTT/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Remover mac da implantação/ })).toBeTruthy());
+
+    fireEvent.click(await screen.findByRole("button", { name: /Dividir as camadas entre 2 máquinas/ }));
+    type RangesBody = { whole_ranges?: Array<{ node_id: string; start_layer: number; end_layer: number }>; selection?: unknown };
+    await waitFor(() => {
+      const last = planCalls().at(-1)![1] as RangesBody;
+      expect(last.whole_ranges).toEqual([
+        { node_id: "ksia", start_layer: 0, end_layer: 15 },
+        { node_id: "mac", start_layer: 16, end_layer: 31 },
+      ]);
+      expect(last.selection).toBeUndefined();
+    });
+
+    // The last machine gives a layer back by moving the cut before it.
+    fireEvent.click(await screen.findByRole("button", { name: /Menos camadas em mac/ }));
+    await waitFor(() => {
+      const last = planCalls().at(-1)![1] as RangesBody;
+      expect(last.whole_ranges?.map((range) => [range.start_layer, range.end_layer])).toEqual([[0, 16], [17, 31]]);
+    });
+
+    const button = await screen.findByRole("button", { name: /^Implantar$/ });
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(button);
+    await waitFor(() => {
+      const deploy = post.mock.calls.find(([url]) => url === "/api/ui/deploy")?.[1] as RangesBody | undefined;
+      expect(deploy?.whole_ranges?.map((range) => range.node_id)).toEqual(["ksia", "mac"]);
+      expect(deploy?.selection).toBeUndefined();
+    });
+  });
+
   describe("with machines already in service", () => {
     const serving = (nodeId: string, model: string) => ({
       node_id: nodeId,

@@ -31,6 +31,8 @@ The machines in the deployment, each with the layer range it will serve, the mem
 For Shards, the model list shows the slice sets some machine of the network already has. For Whole model, the whole GGUF files.
 ### Put the machines on the map
 Drag machines from the strip at the bottom to the map. The planner places the ranges, and **Model coverage**, at the bottom right, counts the layers covered.
+### Split a whole model over machines that have it
+In **Whole model**, when two or more machines on the map hold the whole file, the Machine tab offers **Split the layers over N machines**. It divides the layers evenly, in map order, at cuts the model allows. Each machine then shows its range with **-** and **+**: a click moves the cut it shares with its neighbour by one valid step, and a button that cannot move says why (no valid cut that way, or a machine would be left with no layers). Each machine serves its range from its own copy, so nothing is copied over the network.
 ### Read the verdict
 When the selection cannot be deployed, a red line at the top says why - for example, which layers are in no chosen slice. The Deploy button stays off until the plan closes.
 ### Deploy

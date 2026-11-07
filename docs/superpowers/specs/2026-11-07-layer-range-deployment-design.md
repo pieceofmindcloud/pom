@@ -209,7 +209,10 @@ copy. A node with `POM_VIRTUAL_SLICES=1` announces `model/range-load-v1`
 a range. The capability follows the opt-in rather than a check of the build:
 a node cannot tell whether its llama.cpp loads external tensor data (a
 prebuilt fork library cannot be inspected), so the operator sets it on builds
-that do. Still to do: Deploy Studio sending `whole_ranges`. The POM branch pins the engine branch `pom-external-data` (`dc9e951`),
+that do. Deploy Studio sends `whole_ranges` from its "Split the layers over N
+machines" action and per-range - / + controls (first part of the Deploy
+Studio section); locks, Auto-balance, several ranges per machine and the
+overcommit display are still to do. The POM branch pins the engine branch `pom-external-data` (`dc9e951`),
 whose `llama-cpp.lock` points at the fork branch of the same name.
 
 ### Part B: Strata

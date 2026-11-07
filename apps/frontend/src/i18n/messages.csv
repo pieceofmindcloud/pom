@@ -889,6 +889,13 @@ deployStudio.kindShards,Shards,Fatias
 deployStudio.kindWhole,Whole model,Modelo inteiro
 deployStudio.kvCacheOnGpu,KV cache on the GPU,KV cache na GPU
 deployStudio.layers,Layers,Camadas
+deployStudio.splitLayers,Split the layers over {count} machines,Dividir as camadas entre {count} máquinas
+deployStudio.splitLayersHint,"Each machine serves its range from its own copy of the model, so nothing is copied.","Cada máquina serve sua faixa a partir da própria cópia do modelo, então nada é copiado."
+deployStudio.layerCount,{count} layers,{count} camadas
+deployStudio.fewerLayers,Fewer layers on {machine},Menos camadas em {machine}
+deployStudio.moreLayers,More layers on {machine},Mais camadas em {machine}
+deployStudio.layerLimitNoCut,This model has no valid cut in that direction,Este modelo não tem corte válido nessa direção
+deployStudio.layerLimitEmpty,"A machine would be left with no layers: take it off the map instead","Uma máquina ficaria sem camadas: tire-a do mapa"
 deployStudio.layersOnMachine,Layers on this machine,Camadas nesta máquina
 deployStudio.layersOnPeer,Layers available on this peer,Camadas disponíveis neste peer
 deployStudio.layersWithoutMachine,Layers without a machine: {ranges},Camadas sem máquina: {ranges}

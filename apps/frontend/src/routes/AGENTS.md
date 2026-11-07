@@ -592,6 +592,17 @@ Per-file list:
   silence the screen. Deploy memory is namespaced `whole:<name>`, because a
   shard set and a model routinely share a name. Tests:
   `DeployModel.whole.test.tsx`, `../lib/wholeModels.test.ts`.
+  Whole mode can split the model over machines that each hold it: the Machine
+  tab offers "Split the layers over N machines" (`../lib/wholeRanges`
+  `evenSplit`, on the plan's `layer_options` cuts, every layer while none are
+  known) and per-range - / + (`stepRange`, which moves the shared cut by one
+  valid step or returns why it cannot). When every row's machine holds the
+  whole model and a row is partial (`isWholeRangeSplit`), the plan and the
+  deploy send the rows as `whole_ranges` instead of `selection`. A test mock
+  answering those ranges must set `auto: false`, as the node does: an `auto`
+  plan's topology becomes the "auto" query key and the plan refetches forever.
+  Tests: `DeployModel.whole.test.tsx` ("splits the whole model..."),
+  `../lib/wholeRanges.test.ts`.
   In whole-model mode, the inspector does not repeat the GGUF's facts nor offer a
   machine selector: the map is the only choice. When switching from slices to that
   mode, the screen clears the map and lets the operator add the machine they want.

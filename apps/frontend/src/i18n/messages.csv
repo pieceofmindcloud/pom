@@ -410,6 +410,7 @@ chatImage.on,"Generate image: {workflow}, {size}","Gerar imagem: {workflow}, {si
 chatImage.size,Image size,Tamanho da imagem
 chatImage.sizeDefault,Workflow default,Padrão do fluxo
 chatImage.toggleHint,"Generate an image instead of a text answer","Gerar uma imagem em vez de uma resposta em texto"
+chatImage.baseTooLarge,"The base image must be a PNG or JPEG of at most 16 MB.","A imagem de base precisa ser PNG ou JPEG de até 16 MB."
 cluster.peerCount,"{count, plural, one {{count} node} other {{count} nodes}}","{count, plural, one {{count} nó} other {{count} nós}}"
 common.cancel,Cancel,Cancelar
 common.close,Close,Fechar

@@ -612,6 +612,9 @@ function TitleField({
  * on, and its menu opens upward because the composer sits at the bottom.
  */
 /** Generate image: off (the LLM answers) or one of the ComfyUI workflows the network offers. */
+/** The largest base image ComfyUI takes (the plugin's limit). */
+const MAX_BASE_IMAGE_BYTES = 16 * 1024 * 1024;
+
 /** The sizes Generate image offers; empty = the workflow's own default. */
 export const IMAGE_SIZES = ["", "1024x1024", "1216x832", "832x1216", "1344x768", "1328x1328"] as const;
 
@@ -1082,6 +1085,22 @@ function ChatScreen() {
             toast.error(t("chat.fileRejected"), `${file.name}: ${pdfRefusal(error)}`);
           }
         }
+        continue;
+      }
+      if (file.type.startsWith("image/") && imageWorkflow?.inputs?.includes("image")) {
+        // The base of image to image: it goes to ComfyUI as it is, not to the
+        // LLM, so neither vision nor the context budget apply.
+        if (!["image/png", "image/jpeg"].includes(file.type) || file.size > MAX_BASE_IMAGE_BYTES) {
+          toast.error(t("chat.imageRejected"), t("chatImage.baseTooLarge"));
+          continue;
+        }
+        const data = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result));
+          reader.onerror = () => reject(reader.error);
+          reader.readAsDataURL(file);
+        });
+        added.push({ id: newId(), name: file.name, kind: "image", data, mediaType: file.type, size: file.size, resized: false });
         continue;
       }
       if (file.type.startsWith("image/")) {

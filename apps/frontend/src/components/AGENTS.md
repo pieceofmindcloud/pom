@@ -171,6 +171,11 @@ Per-file list:
   code split, every fenced block gets a copy button (answers here are mostly
   commands). Used by `Chat`. `compact` shrinks text, headings and block gaps
   together for side panels (the Networks screen's network panel).
+- `WorkflowForm.tsx` - the Chat's form for a published ComfyUI workflow: a
+  field per parameter (text, number with its bounds, switch, select, PNG/JPEG
+  picker up to 16 MiB) prefilled by `initialValues`; `onRun` gets the values by
+  key. `ChatImageGrid.tsx` draws a reply's outputs: image thumbnails (full size
+  with Download) and video/audio players.
 - `ChatSessionList.tsx` - shared conversation history list. The Chat screen
   uses the wide variant; the `visitor` Sidebar uses the compact variant. The
   list owns the bounded `overflow-y-auto` region, active `aria-pressed` state,

@@ -47,6 +47,16 @@ describe("chat images", () => {
     expect(JSON.parse(init.body as string)).toMatchObject({ width: 1216, height: 832, image: "data:image/png;base64,AAAA" });
   });
 
+  it("sends a workflow's params and reads every output kind", async () => {
+    const line = '{"media":[{"hash":"' + "a".repeat(64) + '","ext":"mp4","kind":"video"}],"images":[]}\n';
+    const fetchMock = vi.fn(() => Promise.resolve(ndjson([line])));
+    vi.stubGlobal("fetch", fetchMock);
+    const out = await startChatImage({ workflowId: "pub:clip", nodeId: "n2", prompt: "", params: { frames: 16 } });
+    expect(out).toEqual([{ hash: "a".repeat(64), ext: "mp4", kind: "video", width: 0, height: 0 }]);
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(init.body as string).params).toEqual({ frames: 16 });
+  });
+
   it("rejects with the plugin's reason", async () => {
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(ndjson(['{"error":"no machine serves diffusion of img-x"}\n']))));
     await expect(startChatImage({ workflowId: "w", nodeId: "n", prompt: "x" })).rejects.toThrow("no machine serves diffusion of img-x");

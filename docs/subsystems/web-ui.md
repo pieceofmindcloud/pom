@@ -1235,13 +1235,21 @@ besides the turns:
   first) and the image size (`IMAGE_SIZES`, `imageSize`; it wins over the
   tool's `aspect`). An image attached to the message is sent as the base of
   image to image (`image`) when the workflow lists `image` in its `inputs`, and
-  refused otherwise. With a
+  refused otherwise. In `auto` the request also offers one `wf_<slug>` tool per
+  published workflow with `params` (`workflowTools`; never named
+  `generate_image`), and a call runs that workflow with its arguments
+  (`workflowCallOf`; `use_attached_image` sends the attachment as its image
+  parameter). The menu's Functions section opens `components/WorkflowForm.tsx`
+  for one of them: a field per parameter prefilled with the defaults; running it
+  adds a user turn naming the workflow and its values (`describeRun`) and a
+  reply with the outputs. With a
   workflow chosen, a message goes to `POST /api/ui/chat/image`
   (`lib/chatImage.ts`) instead of `/v1/chat/completions`: the reply shows the
   progress, then `ChatImageGrid` (thumbnails read by hash from
   `/api/ui/chat/image/:hash` with the Chat key, a full-size dialog with
-  Download, and "no longer on this node" on a 404). The message keeps only
-  `images: [{hash, ext, width, height}]`, never the bytes, since
+  Download, and "no longer on this node" on a 404; video and audio outputs
+  get a player and Download). The message keeps only
+  `images: [{hash, ext, kind?, width, height}]`, never the bytes, since
   `localStorage` cannot hold images. A network that serves only image models
   still opens the composer.
 - While the network serves no model, the Chat draws no composer and no RAG

@@ -1411,11 +1411,26 @@ export interface ImagePlan {
 }
 
 /** An image the Chat generated, kept on this node by its hash. */
+/** An output a ComfyUI workflow made, kept on this node by hash. */
 export interface ChatImage {
   hash: string;
-  ext: "png" | "jpg";
+  ext: "png" | "jpg" | "webp" | "gif" | "mp4" | "webm" | "wav" | "mp3" | "flac" | "ogg";
+  /** Absent on what older nodes stored: an image. */
+  kind?: "image" | "video" | "audio";
   width: number;
   height: number;
+}
+
+/** A value a published workflow takes (the plugin coerces what it gets). */
+export interface ChatWorkflowParam {
+  key: string;
+  label: string;
+  description?: string;
+  type: "text" | "number" | "integer" | "boolean" | "choice" | "image";
+  default?: string | number | boolean;
+  min?: number;
+  max?: number;
+  options?: Array<string | number>;
 }
 
 export interface ChatImageWorkflow {
@@ -1424,6 +1439,10 @@ export interface ChatImageWorkflow {
   node_id: string;
   /** What it takes: `prompt`, and `image` when it accepts a base image. */
   inputs?: string[];
+  /** What it does (the Chat's model reads it). */
+  description?: string;
+  /** A published workflow's typed values; absent: only the prompt. */
+  params?: ChatWorkflowParam[];
 }
 
 export type SidecarKind = "mmproj" | "mtp";

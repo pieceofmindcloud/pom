@@ -1,6 +1,9 @@
-// The generate_image tool the Chat offers its LLM in Automatic mode: the
-// schema, the reassembly of a call streamed in fragments, and the size an
-// aspect stands for.
+// The tools the Chat offers its LLM in Automatic mode: generate_image (the
+// chosen workflow, from a prompt), one `wf_<slug>` per published ComfyUI
+// workflow with parameters, the reassembly of a call streamed in fragments,
+// and the size an aspect stands for. The node builds the same definitions for
+// the API (`crates/node/src/chat_tools.rs`).
+import type { ChatImageWorkflow, ChatWorkflowParam } from "./types";
 
 export const GENERATE_IMAGE = "generate_image";
 
@@ -77,4 +80,94 @@ export function sizeFor(aspect: ImageToolArgs["aspect"], menuSize: string): { wi
   const chosen = menuSize || { square: "1024x1024", landscape: "1216x832", portrait: "832x1216", wide: "1344x768" }[aspect ?? "square"] || "";
   const [width, height] = chosen.split("x").map(Number);
   return width && height ? { width, height } : {};
+}
+
+/** `wf_` and the published workflow's slug, `[a-z0-9_]` only; null for a built-in one. */
+export function workflowToolName(workflow: ChatImageWorkflow): string | null {
+  if (!workflow.id.startsWith("pub:")) return null;
+  return `wf_${workflow.id.slice(4).replace(/[^a-z0-9_]/g, "_")}`.slice(0, 64);
+}
+
+interface WorkflowTool {
+  type: "function";
+  function: {
+    name: string;
+    description: string;
+    parameters: { type: "object"; properties: Record<string, Record<string, unknown>>; required: string[] };
+  };
+}
+
+function propertyOf(param: ChatWorkflowParam): Record<string, unknown> {
+  const description = param.description ? `${param.label}: ${param.description}` : param.label;
+  const schema: Record<string, unknown> =
+    param.type === "number" ? { type: "number" }
+    : param.type === "integer" ? { type: "integer" }
+    : param.type === "boolean" ? { type: "boolean" }
+    : param.type === "choice" ? { enum: param.options ?? [] }
+    : { type: "string" };
+  schema.description = description;
+  if (param.min != null) schema.minimum = param.min;
+  if (param.max != null) schema.maximum = param.max;
+  if (param.default != null) schema.default = param.default;
+  return schema;
+}
+
+/** The tools of the published workflows that list parameters (an image one is the attachment). */
+export function workflowTools(workflows: ChatImageWorkflow[]): WorkflowTool[] {
+  const names = new Set<string>([GENERATE_IMAGE]);
+  const tools: WorkflowTool[] = [];
+  for (const workflow of workflows) {
+    const name = workflowToolName(workflow);
+    if (!name || !workflow.params?.length || names.has(name)) continue;
+    names.add(name);
+    const properties: Record<string, Record<string, unknown>> = {};
+    const required: string[] = [];
+    for (const param of workflow.params) {
+      if (param.type === "image") {
+        properties.use_attached_image = { type: "boolean", description: `${param.label} (the image the user attached)` };
+        continue;
+      }
+      if (properties[param.key]) continue;
+      properties[param.key] = propertyOf(param);
+      if (param.default == null && param.type !== "boolean") required.push(param.key);
+    }
+    tools.push({
+      type: "function",
+      function: {
+        name,
+        description: workflow.description || `Run the ComfyUI workflow "${workflow.name}".`,
+        parameters: { type: "object", properties, required },
+      },
+    });
+  }
+  return tools;
+}
+
+export interface WorkflowCall {
+  workflow: ChatImageWorkflow;
+  /** The arguments the workflow's parameters name (an image is added by the caller). */
+  params: Record<string, unknown>;
+  useAttachedImage: boolean;
+}
+
+/** The first complete call of a published workflow's tool, or null. */
+export function workflowCallOf(calls: ToolCall[], workflows: ChatImageWorkflow[]): WorkflowCall | null {
+  for (const call of calls) {
+    const workflow = workflows.find((w) => w.params?.length && workflowToolName(w) === call.name);
+    if (!workflow) continue;
+    let args: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(call.arguments || "{}") as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+      args = parsed as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    const params: Record<string, unknown> = {};
+    for (const param of workflow.params ?? []) {
+      if (param.type !== "image" && args[param.key] != null) params[param.key] = args[param.key];
+    }
+    return { workflow, params, useAttachedImage: args.use_attached_image === true };
+  }
+  return null;
 }

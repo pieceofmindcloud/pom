@@ -93,7 +93,8 @@ import { chatModelOptions } from "../lib/chatModels";
 import { useToast } from "../lib/toast";
 import { ChatImageGrid } from "../components/ChatImageGrid";
 import { startChatImage } from "../lib/chatImage";
-import { generateImageTool, imageCallOf, sizeFor, type ToolCall } from "../lib/chatImageTool";
+import { generateImageTool, imageCallOf, sizeFor, workflowCallOf, workflowTools, type ToolCall } from "../lib/chatImageTool";
+import { WorkflowForm, type WorkflowValues } from "../components/WorkflowForm";
 import { useI18n } from "../i18n/provider";
 import type { ClusterView, PeerRuntime } from "../lib/types";
 import { isWholeModel } from "../lib/types";
@@ -641,18 +642,29 @@ export const IMAGE_SIZES = ["", "1024x1024", "1216x832", "832x1216", "1344x768",
  */
 type ImageMode = "auto" | "text" | "always";
 
+/** A run of a published workflow in words: its name and the values given (an image as a mark). */
+export function describeRun(workflow: ChatImageWorkflow, values: Record<string, unknown>): string {
+  const lines = (workflow.params ?? [])
+    .filter((param) => values[param.key] != null && values[param.key] !== "")
+    .map((param) => `- ${param.label}: ${param.type === "image" ? "🖼" : String(values[param.key])}`);
+  return [`**${workflow.name}**`, ...lines].join("\n");
+}
+
 function ImageMenu({
   mode,
   workflow,
   workflows,
   size,
   onChange,
+  onRun,
 }: {
   mode: ImageMode;
   workflow: string;
   workflows: ChatImageWorkflow[];
   size: string;
   onChange: (change: { mode?: ImageMode; workflow?: string; size?: string }) => void;
+  /** Opens the form of a published workflow with parameters. */
+  onRun: (workflow: ChatImageWorkflow) => void;
 }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
@@ -726,6 +738,17 @@ function ImageMenu({
                 </button>
               ))}
               {current?.inputs?.includes("image") && <p className="px-2 py-1.5 text-[0.66rem] text-faint">{t("chatImage.baseHint")}</p>}
+            </>
+          )}
+          {workflows.some((w) => w.params?.length) && (
+            <>
+              <p className="mt-1 border-t border-line px-2 pb-1 pt-2 text-[0.62rem] font-semibold uppercase tracking-[0.1em] text-faint" title={t("chatImage.functionsHint")}>{t("chatImage.functions")}</p>
+              {workflows.filter((w) => w.params?.length).map((w) => (
+                <button key={`run-${w.id}`} type="button" role="menuitem" onClick={() => { setOpen(false); onRun(w); }} className={item} title={w.description || undefined}>
+                  <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-transparent" />
+                  <span className="min-w-0 truncate">{t("chatImage.runWorkflow", { workflow: w.name })}</span>
+                </button>
+              ))}
             </>
           )}
         </div>
@@ -1058,6 +1081,7 @@ function ChatScreen() {
   const imageWorkflow = imageMode === "text" ? null : chosenWorkflow;
   const offerImageTool = imageMode === "auto" && imageWorkflow != null;
   const [imageBusy, setImageBusy] = useState(false);
+  const [formWorkflow, setFormWorkflow] = useState<ChatImageWorkflow | null>(null);
   // A collection that no longer exists is not asked for.
   const ragCollection =
     session.ragCollection && ragCollections.includes(session.ragCollection) ? session.ragCollection : "";
@@ -1325,7 +1349,27 @@ function ChatScreen() {
     sent: ChatAttachment[],
   ) {
     const call = imageCallOf(calls);
-    if (!call) return;
+    if (!call) {
+      const run = workflowCallOf(calls, imageWorkflows);
+      if (!run) return;
+      const imageParam = run.workflow.params?.find((param) => param.type === "image");
+      const attached = run.useAttachedImage && imageParam ? sent.find((attachment) => attachment.kind === "image") : undefined;
+      const params = { ...run.params, ...(attached && imageParam ? { [imageParam.key]: attached.data } : {}) };
+      patch({ imagePrompt: describeRun(run.workflow, params), imageProgress: { step: 0, of: 0 } });
+      try {
+        const images = await startChatImage({
+          workflowId: run.workflow.id,
+          nodeId: run.workflow.node_id,
+          prompt: typeof params.prompt === "string" ? params.prompt : "",
+          params,
+          onProgress: (step, of) => patch({ imageProgress: { step, of } }),
+        });
+        patch({ images, imageProgress: undefined });
+      } catch (error) {
+        patch({ imageProgress: undefined, error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
     const base = call.useAttachedImage && (workflow.inputs == null || workflow.inputs.includes("image"))
       ? sent.find((attachment) => attachment.kind === "image")
       : undefined;
@@ -1385,6 +1429,41 @@ function ChatScreen() {
       patch({ content: "", images, imageProgress: undefined });
     } catch (error) {
       patch({ content: "", imageProgress: undefined, error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setImageBusy(false);
+      upsert(live);
+    }
+  }
+
+  /** The form of a published workflow ran: a user turn naming it and its values, a reply with the outputs. */
+  async function runWorkflowForm(workflow: ChatImageWorkflow, values: WorkflowValues) {
+    setFormWorkflow(null);
+    const text = describeRun(workflow, values);
+    const user: ChatMessage = { id: newId(), role: "user", content: text, at: new Date().toISOString() };
+    const reply: ChatMessage = { id: newId(), role: "assistant", content: "", imageProgress: { step: 0, of: 0 }, at: new Date().toISOString() };
+    let live: ChatSession = {
+      ...session,
+      title: session.titled || turnsOnly(session.messages).length > 0 ? session.title : titleFrom(workflow.name),
+      messages: [...session.messages, user, reply],
+    };
+    const patch = (change: Partial<ChatMessage>) => {
+      live = { ...live, messages: live.messages.map((m) => (m.id === reply.id ? { ...m, ...change } : m)) };
+      setSession(live);
+    };
+    setSession(live);
+    autoFollow.current = true;
+    setImageBusy(true);
+    try {
+      const images = await startChatImage({
+        workflowId: workflow.id,
+        nodeId: workflow.node_id,
+        prompt: typeof values.prompt === "string" ? values.prompt : "",
+        params: values,
+        onProgress: (step, of) => patch({ imageProgress: { step, of } }),
+      });
+      patch({ images, imageProgress: undefined });
+    } catch (error) {
+      patch({ imageProgress: undefined, error: error instanceof Error ? error.message : String(error) });
     } finally {
       setImageBusy(false);
       upsert(live);
@@ -1486,7 +1565,7 @@ function ChatScreen() {
       ragEnabled: ragAvailable ? ragEnabled : undefined,
       ragCollection: ragAvailable && ragCollection ? ragCollection : undefined,
       ...(offerImageTool && imageWorkflow
-        ? { tools: [generateImageTool], onToolCalls: (calls: ToolCall[], patch: (change: Partial<ChatMessage>) => void) => runImageTool(calls, patch, imageWorkflow, attachments) }
+        ? { tools: [generateImageTool, ...workflowTools(imageWorkflows)], onToolCalls: (calls: ToolCall[], patch: (change: Partial<ChatMessage>) => void) => runImageTool(calls, patch, imageWorkflow, attachments) }
         : {}),
       emptyResponseMessage: t("chat.emptyResponse"),
       interruptedMessage: t("chat.interrupted"),
@@ -1781,6 +1860,7 @@ function ChatScreen() {
                       setSession(updated);
                       upsert(updated);
                     }}
+                    onRun={setFormWorkflow}
                   />
                 )}
                 {ragAvailable && (
@@ -1821,6 +1901,14 @@ function ChatScreen() {
 
   return (
     <div className="flex h-full min-h-0">
+      {formWorkflow && (
+        <WorkflowForm
+          workflow={formWorkflow}
+          open
+          onClose={() => setFormWorkflow(null)}
+          onRun={(values) => void runWorkflowForm(formWorkflow, values)}
+        />
+      )}
       {!historyLivesInMainMenu && showHistory && (
         <ChatSessionList
           sessions={sessions}

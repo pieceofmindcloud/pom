@@ -1037,17 +1037,25 @@ group the nodes of one card by. See `deployment.md`, section 1.7.
 
 `GET /api/ui/chat/capabilities` also answers `image` (`supported` when some
 machine offers a ComfyUI workflow) and `image_workflows` (`[{id, name,
-node_id}]`, built-in ones first). `POST /api/ui/chat/image` `{workflow_id,
-node_id, prompt, negative?, width?, height?, seed?, count?, image?, strength?}`
-(`image`: a PNG/JPEG data URL, the base of image to image, for a workflow whose
-`inputs` list `image`; body at most 24 MiB) and
+node_id, inputs?, description?, params?}]`, built-in ones first; `params` are a
+published workflow's typed values, `{key, label, description?, type:
+text|number|integer|boolean|choice|image, default?, min?, max?, options?}`, at
+most 24, validated in `plugin_services::parse_param`). `POST /api/ui/chat/image`
+`{workflow_id, node_id, prompt?, params?, negative?, width?, height?, seed?,
+count?, image?, strength?}` (`params`: values by key, which the plugin coerces,
+clamps and refuses outside a choice's options; `image`: a PNG/JPEG data URL, the
+base of image to image, for a workflow whose `inputs` list `image`; body at most
+24 MiB) and
 `GET /api/ui/chat/image/:hash` sit under the `HandlerAuth` scope of
 `/api/ui/chat/` and take the node's API key (`ApiKeyAuth`, the Chat's
-`X-API-Key`). The run answers NDJSON: `{p, of}` progress, then `{"images":
-[{hash, ext, width, height}]}` or `{"error"}`; the images are stored on this
-node in `<workspace>/.comfyui/images/<sha256>.<png|jpg>` (extension from the
-bytes, at most 16 images and 32 MiB each, nothing written when one is refused)
-before the last line. A workflow listed by another machine runs there through
+`X-API-Key`). The run answers NDJSON: `{p, of}` progress, then `{"media":
+[{hash, ext, kind, width?, height?}], "images": [{hash, ext, width, height}]}`
+(`images` repeats the pictures for older screens; an older plugin's line gives
+`images` only) or `{"error"}`; every output is stored on this node in
+`<workspace>/.comfyui/images/<sha256>.<ext>` (kind and extension from the bytes:
+png, jpg, webp, gif images, mp4, webm video, wav, mp3, flac, ogg audio; at most
+16 files and 32 MiB each, nothing written when one is refused) before the last
+line, and `GET .../:hash` serves any of them with its type. A workflow listed by another machine runs there through
 `POST /api/internal/plugins/:code/workflow/run` (signed, live member, body at
 most 256 KiB), which relays that machine's plugin NDJSON. `:hash` must be 64
 lowercase hex digits (400 otherwise, 404 when the file is gone). The
@@ -1055,6 +1063,29 @@ gateway never compresses `application/x-ndjson` (`gateway/http.rs`,
 `compression`), like SSE: compressed, the stream's last line was lost and
 browsers failed it (`ERR_HTTP2_PROTOCOL_ERROR`, "network error"). Code:
 `crates/node/src/chat_image.rs`.
+
+The same functions serve any client through `/v1` (`ApiKeyAuth`, a key this
+node minted; `crates/node/src/chat_tools.rs`), so an agent runs the standard
+tool-call loop against POM; the gateway never runs a tool inside
+`/v1/chat/completions` by itself:
+
+- `GET /v1/pom/tools` answers `{tools}` in the `tools` format of
+  `/v1/chat/completions`: `generate_image` while a built-in workflow serves
+  (`prompt`, `negative_prompt?`, `aspect?`, `image_url?`) and `wf_<slug>` per
+  published workflow with parameters (its description, a JSON schema from the
+  parameters; an image parameter is `<key>_url`, a data URL). `?for=chat`
+  describes an image as `use_attached_image`, what the Chat builds itself
+  (`lib/chatImageTool.ts`).
+- `POST /v1/pom/tools/call` `{name, arguments}` (`arguments` an object or its
+  JSON string) runs the call to its end and answers `{content, media: [{url,
+  kind, hash, ext, width?, height?}]}`; `content` is the text to send back as
+  the `tool` message. An unknown name, arguments that are not an object or an
+  image that is not a data URL are 400 before any run; a failed run is 502.
+- `GET /v1/pom/media/:file` (`<hash>.<ext>`) serves what a run stored.
+- `POST /v1/images/generations` (OpenAI images API: `prompt`, `n` 1 to 4,
+  `size` `WxH` or `auto`, `model` a built-in workflow's id or name,
+  `response_format` `b64_json` or `url`) runs a built-in workflow and answers
+  `{created, data}`.
 
 ### Token budgets, checked before the pipeline
 

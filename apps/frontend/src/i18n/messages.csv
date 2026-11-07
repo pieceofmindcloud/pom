@@ -405,6 +405,11 @@ chatImage.title,Generated image,Imagem gerada
 chatImage.toggle,Generate image,Gerar imagem
 chatImage.answer,Answer with,Responder com
 chatImage.baseHint,"Attach an image to the message to use it as the base: the new image starts from it.","Anexe uma imagem à mensagem para usá-la como base: a nova imagem parte dela."
+chatImage.formRun,Run,Executar
+chatImage.formImageRefused,"Choose a PNG or JPEG image up to 16 MiB.","Escolha uma imagem PNG ou JPEG de até 16 MiB."
+chatImage.functions,Functions,Funções
+chatImage.runWorkflow,"Run {workflow}…","Executar {workflow}…"
+chatImage.functionsHint,"Published ComfyUI workflows: the model calls them in Automatic mode, or run one here with its form.","Workflows do ComfyUI publicados: o modelo os chama no modo Automático, ou execute um aqui pelo formulário."
 chatImage.noBase,"This workflow takes no base image. Choose the built-in workflow of an up-to-date ComfyUI plugin (it lists the image input) or send the message without the image.","Este fluxo não aceita imagem de base. Escolha o fluxo pronto de um plugin do ComfyUI atualizado (ele anuncia a entrada de imagem) ou envie a mensagem sem a imagem."
 chatImage.on,"Generate image: {workflow}, {size}","Gerar imagem: {workflow}, {size}"
 chatImage.size,Image size,Tamanho da imagem

@@ -13,6 +13,8 @@ export interface ChatImageRequest {
   height?: number;
   /** A base image (data URL) for image to image. */
   image?: string;
+  /** A published workflow's values by parameter key. */
+  params?: Record<string, unknown>;
   onProgress?: (step: number, of: number) => void;
   signal?: AbortSignal;
 }
@@ -35,7 +37,7 @@ async function withKey(path: string, init: RequestInit): Promise<Response> {
   return response as Response;
 }
 
-/** Runs the workflow and resolves with the images, or rejects with the node's or plugin's reason. */
+/** Runs the workflow and resolves with its outputs, or rejects with the node's or plugin's reason. */
 export async function startChatImage(request: ChatImageRequest): Promise<ChatImage[]> {
   const response = await withKey("/api/ui/chat/image", {
     method: "POST",
@@ -46,6 +48,7 @@ export async function startChatImage(request: ChatImageRequest): Promise<ChatIma
       prompt: request.prompt,
       ...(request.width && request.height ? { width: request.width, height: request.height } : {}),
       ...(request.image ? { image: request.image } : {}),
+      ...(request.params ? { params: request.params } : {}),
     }),
     signal: request.signal,
   });
@@ -70,8 +73,10 @@ export async function startChatImage(request: ChatImageRequest): Promise<ChatIma
       const line = buffer.slice(0, end).trim();
       buffer = buffer.slice(end + 1);
       if (!line) continue;
-      const frame = JSON.parse(line) as { p?: number; of?: number; images?: ChatImage[]; error?: string };
+      const frame = JSON.parse(line) as { p?: number; of?: number; images?: ChatImage[]; media?: ChatImage[]; error?: string };
       if (frame.error) throw new ApiError(502, frame.error);
+      // `media` holds every output (images, video, audio); older nodes answer `images` only.
+      if (frame.media) return frame.media.map((item) => ({ ...item, width: item.width ?? 0, height: item.height ?? 0 }));
       if (frame.images) return frame.images;
       if (frame.p != null && frame.of != null) request.onProgress?.(frame.p, frame.of);
     }

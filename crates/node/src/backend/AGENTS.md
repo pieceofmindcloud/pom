@@ -618,7 +618,10 @@ boundary.
   replicas), `image_plan.rs` (`POST /api/ui/image-deploy/plan`, the deploy job,
   `/image-deploy/:deploy_id/{add,remove,redeploy}`) and `chat_image.rs` (the
   Chat's workflows, `POST /api/ui/chat/image`, `GET /api/ui/chat/image/:hash`,
-  the internal workflow run); the `host_api` routes are in `plugin_host_api.rs`.
+  the internal workflow run, outputs of any kind stored by magic bytes) and
+  `chat_tools.rs` (the same functions through `/v1`: `GET /v1/pom/tools`,
+  `POST /v1/pom/tools/call`, `GET /v1/pom/media/:file`,
+  `POST /v1/images/generations`); the `host_api` routes are in `plugin_host_api.rs`.
   `gpu_identity.rs` and `gpu_arbiter.rs` arbitrate one physical GPU shared by
   an LLM and image components in the LLM's favour (`/api/internal/gpu/*`).
   Contracts: `docs/subsystems/deployment.md` 1.7 and `http-api.md` "Chat images".

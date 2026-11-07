@@ -21,3 +21,15 @@ describe("ChatImageGrid", () => {
     expect(await screen.findByText("This image is no longer on this node")).toBeTruthy();
   });
 });
+
+describe("ChatImageGrid media", () => {
+  it("plays video and audio outputs", async () => {
+    const { container } = render(<LocaleProvider><ChatImageGrid images={[
+      { hash: "a1".padEnd(64, "0"), ext: "mp4", kind: "video", width: 0, height: 0 },
+      { hash: "a2".padEnd(64, "0"), ext: "flac", kind: "audio", width: 0, height: 0 },
+    ]} /></LocaleProvider>);
+    await screen.findAllByText("Download");
+    expect(container.querySelector("video")?.getAttribute("src")).toBe("blob:a");
+    expect(container.querySelector("audio")?.hasAttribute("controls")).toBe(true);
+  });
+});

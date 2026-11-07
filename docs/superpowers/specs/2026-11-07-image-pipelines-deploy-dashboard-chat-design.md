@@ -98,7 +98,7 @@ An image model must be deployed, watched and undeployed the way an LLM is:
 | Several machines on one stage | Allowed: replicas, routed per call (operator: redundancy). |
 | Where the record lives | Its own record (section 5.1), not `Deployment`: a new `DeploymentKind` value would make older nodes fail to read the LLM records. The screens show both kinds side by side. |
 | What the Dashboard trusts | The live services of the network (`network_components`), so every admin node sees every image deployment, not only the one that deployed it. |
-| Chat images storage | On the node that ran the workflow, served by URL; the conversation keeps only the reference (section 7.4). |
+| Chat images storage | Copied to the node that made the request and saved as `<workspace>/.comfyui/images/<sha256>.<png|jpg>`, so they survive the serving machine going away; the conversation keeps only the hash (operator, section 7.4). |
 | Which workflows the Chat offers | Each image deployment's built-in "Text to image" workflow, plus workflows an admin publishes from ComfyUI (section 7.1). |
 
 ## 5. Backend
@@ -286,9 +286,12 @@ height?, seed?, count?}` (any profile allowed to chat; the image budget of plan
 B applies). The node forwards it to that machine's plugin op `workflow.run`
 (through the signed peer call for another machine). The plugin queues the
 workflow in its ComfyUI with the inputs substituted, streams progress
-(`{"p": step, "of": steps}`) and ends with `{"images": [{id, width, height,
-mime}]}` or `{"error"}`. The route answers as NDJSON so the bubble can show
-progress. The request log records it as an image request (plan B).
+(`{"p": step, "of": steps}`) and ends with the images themselves (`{"images":
+[{mime, width, height, data}]}`, PNG or JPEG bytes, base64 in the frame) or
+`{"error"}`. The requesting node stores them (section 7.4) before answering;
+its route answers as NDJSON so the bubble can show progress, ending with
+`{"images": [{hash, ext, width, height}]}`. The request log records it as an
+image request (plan B).
 
 ### 7.3 The Chat
 
@@ -301,13 +304,30 @@ progress. The request log records it as an image request (plan B).
 
 ### 7.4 Keeping the images
 
-The plugin keeps each output in its ComfyUI output folder under
-`pom-chat/<date>/` and the node serves it at
-`GET /api/ui/chat/image/:node_id/:image_id` (proxied through the signed peer
-call when it lives on another machine). The `ChatMessage` stores only
-`images: [{node_id, image_id, width, height}]`. When the file is gone or the
-machine is offline the bubble says so instead of a broken image. Images are not
-deleted by POM in this phase; the guide says where they live.
+The images are copied to the node that made the request, so they are not lost
+when the machine that ran the workflow goes offline, deletes its outputs or
+leaves the network:
+
+- The requesting node writes each image to
+  `<workspace>/.comfyui/images/<sha256>.<ext>`, where `<sha256>` is the hex
+  digest of the file's bytes and `<ext>` is `png` or `jpg` from its content
+  (magic bytes, never the plugin's word). The same image twice is one file.
+  `<workspace>` is the node's `workspace_root`; a node without one uses its
+  project root. The folder is created when missing, whether or not ComfyUI is
+  installed on that node.
+- Limits: at most 16 images per request and 32 MiB per image; a larger or
+  unrecognized file is refused with the reason and nothing is written.
+- `GET /api/ui/chat/image/:hash` serves the file from that folder (same
+  authorization as the Chat; the hash is checked to be 64 hex digits and the
+  extension looked up, so no path is taken from the request).
+- The `ChatMessage` stores only `images: [{hash, ext, width, height}]`. A
+  conversation opened in another browser of the same node shows them; opened
+  through another node, the bubble says the image lives on the node that
+  generated it. When the file is missing the bubble says so instead of a
+  broken image.
+- The machine that ran the workflow keeps ComfyUI's own output as ComfyUI
+  does; POM deletes nothing in this phase, and the guide says where the copies
+  live.
 
 ## 8. Compatibility
 
@@ -332,6 +352,9 @@ deleted by POM in this phase; the guide says where they live.
 - UI: image mode drag and drop per stage and the same machine on two stages;
   verdict line; Dashboard chip, Flow stages, Add and Undeploy; Deployments
   badge and versions; Chat switch, picker, progress, image grid, missing image.
+- Images: the copy lands in `.comfyui/images/<sha256>.<ext>` on the requesting
+  node, the extension follows the bytes, a duplicate is one file, a bad hash or
+  oversized image is refused.
 - Live acceptance of goal 5 on the operator's cluster.
 
 ## 10. Out of scope

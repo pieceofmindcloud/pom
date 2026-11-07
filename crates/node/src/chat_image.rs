@@ -1,7 +1,8 @@
 //! Images from the Chat: the ComfyUI workflows the network offers, running one
 //! on the machine that lists it, and keeping its images on the node that made
-//! the request, in `<workspace>/.comfyui/images/<sha256>.<png|jpg>`, so they
-//! survive the serving machine going away.
+//! the request, in `<workspace>/.comfyui/images/<sha256>.<ext>` (images,
+//! video and audio, kind by magic bytes), so they survive the serving machine
+//! going away.
 
 use std::path::{Path, PathBuf};
 
@@ -31,6 +32,11 @@ pub(crate) struct Workflow {
     /// What the workflow takes: `prompt`, and `image` when it accepts a base image.
     #[serde(default)]
     pub inputs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// The typed values a published workflow takes (empty: only the prompt).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub params: Vec<crate::plugin_services::WorkflowParam>,
 }
 
 /// The workflows the network's `image` services list. A built-in one is
@@ -68,6 +74,8 @@ pub(crate) fn workflows_of(
                     node_id: node_id.clone(),
                     deploy_id: workflow.deploy_id,
                     inputs: workflow.inputs,
+                    description: workflow.description,
+                    params: workflow.params,
                 };
                 match found.iter_mut().find(|w| w.id == candidate.id) {
                     Some(existing) if candidate.node_id == local_node_id => *existing = candidate,
@@ -151,6 +159,65 @@ pub(crate) struct StoredImage {
     pub height: u32,
 }
 
+/// A stored output of any kind: `image`, `video` or `audio`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub(crate) struct StoredMedia {
+    pub hash: String,
+    pub ext: &'static str,
+    pub kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+}
+
+/// Every kind kept, by extension: (ext, kind, mime).
+const MEDIA_TYPES: [(&str, &str, &str); 10] = [
+    ("png", "image", "image/png"),
+    ("jpg", "image", "image/jpeg"),
+    ("webp", "image", "image/webp"),
+    ("gif", "image", "image/gif"),
+    ("mp4", "video", "video/mp4"),
+    ("webm", "video", "video/webm"),
+    ("wav", "audio", "audio/wav"),
+    ("mp3", "audio", "audio/mpeg"),
+    ("flac", "audio", "audio/flac"),
+    ("ogg", "audio", "audio/ogg"),
+];
+
+/// (ext, kind) of a file from its first bytes.
+fn media_kind(bytes: &[u8]) -> Option<(&'static str, &'static str)> {
+    let ext = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        "png"
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        "jpg"
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        "gif"
+    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        "webp"
+    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WAVE" {
+        "wav"
+    } else if bytes.len() >= 8 && &bytes[4..8] == b"ftyp" {
+        "mp4"
+    } else if bytes.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]) {
+        "webm"
+    } else if bytes.starts_with(b"ID3")
+        || (bytes.len() > 1 && bytes[0] == 0xFF && bytes[1] & 0xE0 == 0xE0)
+    {
+        "mp3"
+    } else if bytes.starts_with(b"fLaC") {
+        "flac"
+    } else if bytes.starts_with(b"OggS") {
+        "ogg"
+    } else {
+        return None;
+    };
+    MEDIA_TYPES
+        .iter()
+        .find(|(e, _, _)| *e == ext)
+        .map(|(e, kind, _)| (*e, *kind))
+}
+
 fn image_kind(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         Some("png")
@@ -161,6 +228,41 @@ fn image_kind(bytes: &[u8]) -> Option<&'static str> {
     }
 }
 
+fn write_once(dir: &Path, bytes: &[u8], ext: &str) -> Result<String, String> {
+    use sha2::Digest;
+    let hash = hex::encode(sha2::Sha256::digest(bytes));
+    std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    let path = dir.join(format!("{hash}.{ext}"));
+    if !path.exists() {
+        let partial = dir.join(format!(".{hash}.{ext}.part"));
+        std::fs::write(&partial, bytes).map_err(|e| format!("cannot write the file: {e}"))?;
+        std::fs::rename(&partial, &path).map_err(|e| format!("cannot write the file: {e}"))?;
+    }
+    Ok(hash)
+}
+
+/// Writes an output of any kept kind as `<sha256>.<ext>` in `dir`.
+pub(crate) fn store_media(
+    dir: &Path,
+    bytes: &[u8],
+    width: u32,
+    height: u32,
+) -> Result<StoredMedia, String> {
+    if bytes.len() > MAX_IMAGE_BYTES {
+        return Err("an output is larger than 32 MiB".into());
+    }
+    let (ext, kind) = media_kind(bytes).ok_or("not an image, video or audio file")?;
+    let hash = write_once(dir, bytes, ext)?;
+    let sized = kind == "image" && width > 0 && height > 0;
+    Ok(StoredMedia {
+        hash,
+        ext,
+        kind,
+        width: sized.then_some(width),
+        height: sized.then_some(height),
+    })
+}
+
 /// Writes `bytes` as `<sha256>.<ext>` in `dir`; the same image is one file.
 pub(crate) fn store_image(
     dir: &Path,
@@ -168,19 +270,11 @@ pub(crate) fn store_image(
     width: u32,
     height: u32,
 ) -> Result<StoredImage, String> {
-    use sha2::Digest;
     if bytes.len() > MAX_IMAGE_BYTES {
         return Err("an image is larger than 32 MiB".into());
     }
     let ext = image_kind(bytes).ok_or("not a PNG or JPEG image")?;
-    let hash = hex::encode(sha2::Sha256::digest(bytes));
-    std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
-    let path = dir.join(format!("{hash}.{ext}"));
-    if !path.exists() {
-        let partial = dir.join(format!(".{hash}.{ext}.part"));
-        std::fs::write(&partial, bytes).map_err(|e| format!("cannot write the image: {e}"))?;
-        std::fs::rename(&partial, &path).map_err(|e| format!("cannot write the image: {e}"))?;
-    }
+    let hash = write_once(dir, bytes, ext)?;
     Ok(StoredImage {
         hash,
         ext,
@@ -201,7 +295,7 @@ pub(crate) fn find_image(
     {
         return Err("not an image hash".into());
     }
-    for (ext, mime) in [("png", "image/png"), ("jpg", "image/jpeg")] {
+    for (ext, _, mime) in MEDIA_TYPES {
         let path = dir.join(format!("{hash}.{ext}"));
         if path.is_file() {
             return Ok(Some((path, mime)));
@@ -215,6 +309,9 @@ pub(crate) fn find_image(
 /// written when one image is refused or there are too many.
 pub(crate) fn store_images(dir: &Path, line: &Value) -> Result<Value, String> {
     use base64::Engine;
+    if line.get("media").is_some() {
+        return store_media_line(dir, line);
+    }
     let images = line["images"].as_array().cloned().unwrap_or_default();
     if images.len() > MAX_IMAGES {
         return Err(format!(
@@ -244,13 +341,65 @@ pub(crate) fn store_images(dir: &Path, line: &Value) -> Result<Value, String> {
     Ok(serde_json::json!({ "images": stored }))
 }
 
+/// Stores every output of a newer plugin's last line: `{"media": [{kind,
+/// mime, data, width?, height?}]}` -> `{"media": [{hash, ext, kind, width?,
+/// height?}], "images": [{hash, ext, width, height}]}` (the pictures again
+/// for screens that read only `images`). Nothing is written when one output
+/// is refused or there are too many.
+fn store_media_line(dir: &Path, line: &Value) -> Result<Value, String> {
+    use base64::Engine;
+    let media = line["media"].as_array().cloned().unwrap_or_default();
+    if media.len() > MAX_IMAGES {
+        return Err(format!(
+            "the workflow saved {} files; at most {MAX_IMAGES}",
+            media.len()
+        ));
+    }
+    let mut decoded = Vec::new();
+    for item in &media {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(item["data"].as_str().unwrap_or_default())
+            .map_err(|_| "an output is not valid base64".to_owned())?;
+        if bytes.len() > MAX_IMAGE_BYTES {
+            return Err("an output is larger than 32 MiB".into());
+        }
+        if media_kind(&bytes).is_none() {
+            return Err("an output is not an image, video or audio file".into());
+        }
+        let width = item["width"].as_u64().unwrap_or(0) as u32;
+        let height = item["height"].as_u64().unwrap_or(0) as u32;
+        decoded.push((bytes, width, height));
+    }
+    let mut stored = Vec::new();
+    for (bytes, width, height) in decoded {
+        stored.push(store_media(dir, &bytes, width, height)?);
+    }
+    let images: Vec<StoredImage> = stored
+        .iter()
+        .filter(|m| m.kind == "image")
+        .map(|m| StoredImage {
+            hash: m.hash.clone(),
+            ext: m.ext,
+            width: m.width.unwrap_or(0),
+            height: m.height.unwrap_or(0),
+        })
+        .collect();
+    Ok(serde_json::json!({ "media": stored, "images": images }))
+}
+
 // ── Running a workflow ──────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct RunRequest {
     pub workflow_id: String,
     pub node_id: String,
+    /// The prompt of a built-in workflow (a published one takes `params`).
+    #[serde(default)]
     pub prompt: String,
+    /// A published workflow's values by parameter key; the plugin coerces
+    /// each to its type.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params: Option<serde_json::Map<String, Value>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub negative: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -356,7 +505,7 @@ pub(crate) async fn relay(
     let mut finished = false;
     let handle = |line: &[u8], finished: &mut bool| -> Option<Value> {
         let value: Value = serde_json::from_slice(line).ok()?;
-        if value.get("images").is_some() {
+        if value.get("images").is_some() || value.get("media").is_some() {
             *finished = true;
             return Some(match store_images(&dir, &value) {
                 Ok(stored) => stored,
@@ -739,5 +888,65 @@ mod tests {
             out.last().unwrap()["error"],
             "the workflow ended without images"
         );
+    }
+
+    #[test]
+    fn media_is_stored_by_magic_with_its_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let cases: [(&[u8], &str, &str); 9] = [
+            (b"GIF89a-rest", "gif", "image"),
+            (b"RIFF\0\0\0\0WEBPVP8 ", "webp", "image"),
+            (b"\0\0\0\x18ftypmp42rest", "mp4", "video"),
+            (b"\x1aE\xdf\xa3rest", "webm", "video"),
+            (b"RIFF\0\0\0\0WAVEfmt ", "wav", "audio"),
+            (b"ID3\x04rest", "mp3", "audio"),
+            (b"fLaCrest", "flac", "audio"),
+            (b"OggSrest", "ogg", "audio"),
+            (PNG, "png", "image"),
+        ];
+        for (bytes, ext, kind) in cases {
+            let stored = store_media(dir.path(), bytes, 0, 0).unwrap();
+            assert_eq!((stored.ext, stored.kind), (ext, kind), "{ext}");
+            assert!(dir.path().join(format!("{}.{ext}", stored.hash)).is_file());
+        }
+        assert!(store_media(dir.path(), b"plain text", 0, 0).is_err());
+    }
+
+    #[test]
+    fn video_and_audio_are_served_with_their_type() {
+        let dir = tempfile::tempdir().unwrap();
+        let video = store_media(dir.path(), b"\0\0\0\x18ftypmp42rest", 0, 0).unwrap();
+        let audio = store_media(dir.path(), b"fLaCrest", 0, 0).unwrap();
+        assert_eq!(find_image(dir.path(), &video.hash).unwrap().unwrap().1, "video/mp4");
+        assert_eq!(find_image(dir.path(), &audio.hash).unwrap().unwrap().1, "audio/flac");
+    }
+
+    #[tokio::test]
+    async fn a_media_line_is_stored_with_kinds_and_images_kept() {
+        let png = base64::engine::general_purpose::STANDARD.encode(PNG);
+        let mp4 = base64::engine::general_purpose::STANDARD.encode(b"\0\0\0\x18ftypmp42rest");
+        let last: &'static [u8] = Box::leak(format!(
+            "{{\"media\":[{{\"kind\":\"image\",\"mime\":\"image/png\",\"width\":8,\"height\":4,\"data\":\"{png}\"}},{{\"kind\":\"video\",\"mime\":\"video/mp4\",\"data\":\"{mp4}\"}}],\"images\":[{{\"mime\":\"image/png\",\"width\":8,\"height\":4,\"data\":\"{png}\"}}]}}\n"
+        ).into_bytes().into_boxed_slice());
+        let (_dir, out) = relayed(vec![last]).await;
+        let media = out[0]["media"].as_array().unwrap();
+        assert_eq!(media.len(), 2);
+        assert_eq!((media[0]["kind"].as_str(), media[0]["ext"].as_str()), (Some("image"), Some("png")));
+        assert_eq!(media[0]["width"], 8);
+        assert_eq!((media[1]["kind"].as_str(), media[1]["ext"].as_str()), (Some("video"), Some("mp4")));
+        let images = out[0]["images"].as_array().unwrap();
+        assert_eq!(images.len(), 1, "older screens still read the pictures");
+        assert_eq!(images[0]["hash"], media[0]["hash"]);
+    }
+
+    #[test]
+    fn a_run_takes_params_and_no_prompt() {
+        let request: RunRequest = serde_json::from_value(serde_json::json!({
+            "workflow_id": "pub:typed", "node_id": "n", "params": {"steps": 12, "sampler": "euler"}
+        }))
+        .unwrap();
+        let body = serde_json::to_value(&request).unwrap();
+        assert_eq!(body["params"]["steps"], 12);
+        assert_eq!(body["prompt"], "");
     }
 }

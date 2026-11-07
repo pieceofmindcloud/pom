@@ -7,6 +7,8 @@ vi.mock("./api", () => ({
   },
   ensureChatApiKey: vi.fn(() => Promise.resolve("pom-key")),
   forgetChatApiKey: vi.fn(),
+  getAdminAccessToken: vi.fn(() => "admin"),
+  ADMIN_ACCESS_TOKEN_HEADER: "X-POM-Access-Token",
 }));
 
 import { loadChatImage, startChatImage } from "./chatImage";
@@ -34,6 +36,7 @@ describe("chat images", () => {
     const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(JSON.parse(init.body as string)).toEqual({ workflow_id: "builtin:img-1", node_id: "n1", prompt: "a fox" });
     expect(new Headers(init.headers).get("X-API-Key")).toBe("pom-key");
+    expect(new Headers(init.headers).get("X-POM-Access-Token")).toBe("admin");
   });
 
   it("rejects with the plugin's reason", async () => {

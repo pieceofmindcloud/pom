@@ -2,7 +2,7 @@
 // `POST /api/ui/chat/image`, which runs a ComfyUI workflow on the machine
 // that lists it and answers NDJSON (progress, then the stored images). The
 // images stay on this node, by hash; the conversation keeps only the hashes.
-import { ApiError, ensureChatApiKey, forgetChatApiKey } from "./api";
+import { ADMIN_ACCESS_TOKEN_HEADER, ApiError, ensureChatApiKey, forgetChatApiKey, getAdminAccessToken } from "./api";
 import type { ChatImage } from "./types";
 
 export interface ChatImageRequest {
@@ -18,6 +18,9 @@ async function withKey(path: string, init: RequestInit): Promise<Response> {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const headers = new Headers(init.headers);
     headers.set("X-API-Key", await ensureChatApiKey(attempt > 0));
+    // `/api/ui/**` also asks for the panel password when the admin is exposed on the network.
+    const access = getAdminAccessToken();
+    if (access) headers.set(ADMIN_ACCESS_TOKEN_HEADER, access);
     response = await fetch(path, { ...init, headers, credentials: "same-origin" });
     if ((response.status === 401 || response.status === 403) && attempt === 0) {
       forgetChatApiKey();

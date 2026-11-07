@@ -40,6 +40,10 @@ For privacy, another machine shares only a summary of itself: its disks come as 
 It is the read-only view of the deployment's active version: the same inspector the Deploy screen edits, with the context, sessions, sampling and the POM settings it came up with.
 :::
 
+## Image models
+
+An image model picked in the model chip (marked with an image icon) shows as its pipeline: the **text encoder**, the **diffusion model** and the **VAE**, in the order the image is made, each stage with the machines that serve it. Each machine shows whether it is ready, the round trip from this node and the calls it is serving now. ComfyUI calls each stage from the machine it runs on, and each call goes to the nearest ready replica. **Add replica** puts one more machine on a stage, among those that hold its file; **Undeploy** releases the model on every machine of the list it shows first, from any administrator's node.
+
 ## What an administrator can do here
 
 :::steps

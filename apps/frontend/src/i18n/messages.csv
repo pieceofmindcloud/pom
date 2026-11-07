@@ -1317,6 +1317,18 @@ imageDeploy.undeploy,Undeploy,Tirar do ar
 imageDeploy.undeployConfirm,"Stop serving {name} on every machine?","Parar de servir {name} em todas as máquinas?"
 imageDeploy.undeployNamed,"Undeploy {name}","Tirar {name} do ar"
 imageDeploy.undeployed,"{name} is no longer served","{name} saiu do ar"
+imageMap.add,Add,Adicionar
+imageMap.addFailed,The replica was not added,A réplica não foi adicionada
+imageMap.addReplica,Add replica,Adicionar réplica
+imageMap.addTitle,"Add a replica to {name}","Adicionar uma réplica a {name}"
+imageMap.added,The replica is serving,A réplica está servindo
+imageMap.badge,Image model,Modelo de imagem
+imageMap.coverage,"{covered} of {total} stages ready","{covered} de {total} estágios prontos"
+imageMap.noReplica,No machine serves this stage,Nenhuma máquina serve este estágio
+imageMap.notRecorded,"This deployment was made from another machine: add replicas there. Undeploy works from here.","Esta implantação foi feita de outra máquina: adicione réplicas lá. Tirar do ar funciona daqui."
+imageMap.routing,"ComfyUI calls each stage from the machine it runs on; each call goes to the nearest ready replica and moves to the next one if it does not answer.","O ComfyUI chama cada estágio da máquina onde roda; cada chamada vai para a réplica pronta mais próxima e passa para a próxima se ela não responder."
+imageMap.stage,Stage,Estágio
+imageMap.undeployPartial,Some machines did not confirm,Algumas máquinas não confirmaram
 imageStudio.chooseDiffusion,"Choose the diffusion model, then drag machines onto each stage.","Escolha o modelo de difusão e arraste máquinas para cada estágio."
 imageStudio.copiesUnsupported,"A machine without the file would need a copy; image files cannot be copied yet, so place the file on that machine first.","Uma máquina sem o arquivo precisaria de uma cópia; arquivos de imagem ainda não são copiados, então coloque o arquivo nessa máquina antes."
 imageStudio.dropHere,Drag a machine here,Arraste uma máquina para cá

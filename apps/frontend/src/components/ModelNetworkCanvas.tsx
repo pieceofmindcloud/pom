@@ -1,5 +1,5 @@
 import clsx from "clsx";
-import { LayoutGrid, Maximize2, Minimize2, Minus, PanelRightClose, PanelRightOpen, Plus, RotateCcw } from "lucide-react";
+import { LayoutGrid, Maximize2, Minimize2, Minus, PanelRightClose, PanelRightOpen, Plus, RotateCcw , Image as ImageIcon } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { gpuDisplayName, machineKind, MachineIcon } from "./MachineIcon";
 import { PeerDetailDialog } from "./PeerDetailCard";
@@ -338,6 +338,7 @@ export function ModelNetworkCanvas({
   onSelectNode,
   model: controlledModel,
   onModelChange,
+  extraModels = [],
 }: {
   cluster: ClusterView;
   rttMeasurements?: ChatTelemetryRtt[];
@@ -354,6 +355,8 @@ export function ModelNetworkCanvas({
    */
   model?: string;
   onModelChange?: (model: string) => void;
+  /** Image deployments, listed after the LLMs in the bar; picking one calls `onModelChange` with its id. */
+  extraModels?: Array<{ id: string; label: string }>;
 }) {
   const { t } = useI18n();
   const graph = useMemo(() => graphFromCluster(cluster), [cluster]);
@@ -551,7 +554,7 @@ export function ModelNetworkCanvas({
 
   return <section ref={canvas} className="relative h-full min-h-0 w-full overflow-auto bg-[radial-gradient(circle_at_1px_1px,rgba(91,78,255,.16)_1px,transparent_0)]" style={{ backgroundSize: "18px 18px" }}>
     <div className="absolute left-4 top-3 z-20 flex max-w-[calc(100%-2rem)] flex-wrap items-center gap-2 rounded-xl border border-line bg-ink/90 p-1.5 shadow-panel backdrop-blur-md">
-      <div className="flex max-w-[min(46rem,60vw)] overflow-x-auto" role="group" aria-label={t("canvas.modelGroupAria")}>{modelIds.length ? modelIds.map((name) => <button key={name} onClick={() => setModel(name)} aria-pressed={selected === name} className={clsx("h-8 shrink-0 rounded-md px-3 font-mono text-xs", selected === name ? "bg-iris text-white" : "text-muted hover:bg-raised hover:text-fg")}>{name}</button>) : <span className="px-2 text-xs text-muted">{t("canvas.noModel")}</span>}</div>
+      <div className="flex max-w-[min(46rem,60vw)] overflow-x-auto" role="group" aria-label={t("canvas.modelGroupAria")}>{modelIds.length ? modelIds.map((name) => <button key={name} onClick={() => setModel(name)} aria-pressed={selected === name} className={clsx("h-8 shrink-0 rounded-md px-3 font-mono text-xs", selected === name ? "bg-iris text-white" : "text-muted hover:bg-raised hover:text-fg")}>{name}</button>) : <span className="px-2 text-xs text-muted">{t("canvas.noModel")}</span>}{extraModels.map((extra) => <button key={extra.id} type="button" onClick={() => setModel(extra.id)} aria-pressed={false} className="flex h-8 shrink-0 items-center gap-1 rounded-md px-3 font-mono text-xs text-muted hover:bg-raised hover:text-fg"><ImageIcon className="h-3 w-3" aria-label={t("imageMap.badge")} />{extra.label}</button>)}</div>
       {/*
         Full coverage with an unreadable machine is not complete (see Dashboard).
         The badge loses the green and gains the `?` glued to the number, which is what

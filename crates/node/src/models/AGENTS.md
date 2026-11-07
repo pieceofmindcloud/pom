@@ -133,7 +133,7 @@ Models, GGUF reading, planning and slice files. The module is used by
   `write_virtual_slice` writes the same header with no weights: each source
   tensor points at its bytes in the source file(s) through
   `general.external_data.files`/`tensor_files`/`tensor_offsets`, which the
-  llama.cpp fork's loader reads (branch `feature/gguf-external-tensor-data`).
+  llama.cpp fork's loader reads (branch `pom-external-data`).
   Tensors with data in the header (the identity `output_norm`) come first.
   `plan::write_virtual_shard` is the apply step that uses it behind
   `POM_VIRTUAL_SLICES=1`; `plan::virtual_slice_refusal` keeps MoE models on

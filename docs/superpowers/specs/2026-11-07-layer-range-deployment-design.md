@@ -169,8 +169,8 @@ rules.
   file is the size of the metadata (about 11 MB for a 27B model, mostly the
   tokenizer) and holds no weights. It is valid only while the source files
   stay where they are, unchanged.
-- **Fork** (`feature/gguf-external-tensor-data`, from the fork's `master`,
-  commit `1219b422`): one block in `src/llama-model-loader.cpp`. With the three
+- **Fork** (`pom-external-data`: the fork's `pom` plus
+  commit `bd4b9586`; `pom` itself is unchanged until this is validated): one block in `src/llama-model-loader.cpp`. With the three
   keys, the loader opens the listed files (relative to the header's folder
   unless absolute), appends them to `files`, and gives each external tensor its
   file index and offset, with bounds checked against that file. mmap, direct

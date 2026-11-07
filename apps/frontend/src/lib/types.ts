@@ -165,6 +165,8 @@ export interface NodeConfig {
   mtp_min_probability: number;
   /** Local peer unload policy; absent means the pre-feature default. */
   unload_if_idle?: boolean;
+  /** The GPU arbiter may unload this model while no request is in flight, for an image on the same card (POM settings, off by default). */
+  yield_gpu_to_images?: boolean;
   idle_minutes?: number;
   /** Every routed MoE expert stays in RAM and the CPU computes it (llama.cpp `--cpu-moe`). */
   moe_experts_in_ram?: boolean;
@@ -2357,6 +2359,8 @@ export interface RuntimeParams {
   /** Where the MTP block goes: with the model when it all fits (auto), always in VRAM, or always in RAM. */
   mtp_placement?: MtpPlacement;
   unload_if_idle?: boolean;
+  /** The GPU arbiter may unload this model while no request is in flight, for an image on the same card (POM settings, off by default). */
+  yield_gpu_to_images?: boolean;
   idle_minutes?: number;
   /** Every routed MoE expert stays in RAM and the CPU computes it (llama.cpp `--cpu-moe`). */
   moe_experts_in_ram?: boolean;

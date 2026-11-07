@@ -1424,6 +1424,8 @@ inspector.sectionDefaults,Default settings,Configurações padrões
 inspector.sectionInferenceService,{name} settings,Configurações do {name}
 inspector.sectionPom,POM settings,Configurações POM
 inspector.sectionPomDev,POM settings (DEV),Configurações POM (DESENV)
+inspector.yieldGpuToImages,Yield the GPU to images,Ceder a GPU para imagens
+inspector.yieldGpuToImagesHint,"When an image model on the same physical GPU needs room and this model has no request in flight, POM unloads it; the next request reloads it, and a running image pauses until this model is quiet again. Off: this model never leaves memory for an image.","Quando um modelo de imagem na mesma GPU física precisa de espaço e este modelo não tem pedido em andamento, o POM o descarrega; o próximo pedido o recarrega, e uma imagem em andamento pausa até este modelo ficar quieto de novo. Desligado: este modelo nunca sai da memória por causa de uma imagem."
 jobs.emptyDetail,"Slicing and model-assignment jobs appear here while running, and for ten minutes after they finish.",Fatiamentos e atribuições de modelo aparecem aqui enquanto rodam e por dez minutos depois de terminarem.
 jobs.failed,failed,falhou
 jobs.finishedAt,finished,terminou

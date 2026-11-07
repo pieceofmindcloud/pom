@@ -558,6 +558,7 @@ Per-file list:
   on the right, using the same layout and the same values configured in the Deploy
   Studio. On the `admin` profile, `DeploymentLogDock` stays collapsed in the footer and
   expands upwards with the logs in real time and auto-scroll.
+- `Dashboard.tsx` - image deployments (`useImageDeployments`) are listed after the LLMs in the map's model chip as `image:<deploy_id>` (`ModelNetworkCanvas` `extraModels`); picking one, or having no LLM served, draws `components/ImagePipelineMap.tsx` (three stage columns, replicas with status, RTT from this node and in-flight calls) and swaps Add/Undeploy for `ImageAddReplicaButton` and `ImageUndeploy`.
 - In `Dashboard`, node and infer profiles do not reuse the administrator's
   cluster verdict: they show the local model, its real layer slice and local
   in-flight request count. A missing `/api/ui/node` response is rendered as

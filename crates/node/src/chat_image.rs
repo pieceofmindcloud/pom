@@ -579,18 +579,26 @@ pub(crate) async fn run_route(
     axum::Json(request): axum::Json<RunRequest>,
 ) -> axum::response::Response {
     let (tx, rx) = tokio::sync::mpsc::channel(16);
+    tokio::spawn(async move { run_into(&state, request, tx).await });
+    ndjson(rx)
+}
+
+/// Runs `request` on the machine that lists its workflow and sends each line
+/// (progress, then the stored outputs or an error) to `out`.
+pub(crate) async fn run_into(
+    state: &GatewayState,
+    request: RunRequest,
+    out: tokio::sync::mpsc::Sender<Value>,
+) {
     let root = state.auth.read().await.workspace_root_path();
     let dir = images_dir(&root);
     let body = serde_json::to_vec(&request).unwrap_or_default();
-    tokio::spawn(async move {
-        match run_on(&state, &request.node_id, body).await {
-            Ok(lines) => relay(lines, dir, tx).await,
-            Err(error) => {
-                let _ = tx.send(serde_json::json!({ "error": error })).await;
-            }
+    match run_on(state, &request.node_id, body).await {
+        Ok(lines) => relay(lines, dir, out).await,
+        Err(error) => {
+            let _ = out.send(serde_json::json!({ "error": error })).await;
         }
-    });
-    ndjson(rx)
+    }
 }
 
 /// `GET /api/ui/chat/image/:hash`.
@@ -694,7 +702,10 @@ mod tests {
         }))
         .unwrap();
         assert!(serde_json::to_value(&plain).unwrap().get("image").is_none());
-        assert!(MAX_RUN_BODY >= 16 * 1024 * 1024 * 4 / 3 + 1024, "a 16 MiB image in base64 fits");
+        assert!(
+            MAX_RUN_BODY >= 16 * 1024 * 1024 * 4 / 3 + 1024,
+            "a 16 MiB image in base64 fits"
+        );
     }
 
     #[test]
@@ -786,7 +797,11 @@ mod tests {
         let ids: Vec<_> = list.iter().map(|w| w.id.as_str()).collect();
         assert_eq!(ids, ["builtin:img-1", "pub:sketch"], "img-2 does not serve");
         assert_eq!(list[0].node_id, "n2", "this node runs it when it lists it");
-        assert_eq!(list[1].inputs, ["prompt", "image"], "what a workflow takes is passed on");
+        assert_eq!(
+            list[1].inputs,
+            ["prompt", "image"],
+            "what a workflow takes is passed on"
+        );
     }
 
     #[test]
@@ -917,8 +932,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let video = store_media(dir.path(), b"\0\0\0\x18ftypmp42rest", 0, 0).unwrap();
         let audio = store_media(dir.path(), b"fLaCrest", 0, 0).unwrap();
-        assert_eq!(find_image(dir.path(), &video.hash).unwrap().unwrap().1, "video/mp4");
-        assert_eq!(find_image(dir.path(), &audio.hash).unwrap().unwrap().1, "audio/flac");
+        assert_eq!(
+            find_image(dir.path(), &video.hash).unwrap().unwrap().1,
+            "video/mp4"
+        );
+        assert_eq!(
+            find_image(dir.path(), &audio.hash).unwrap().unwrap().1,
+            "audio/flac"
+        );
     }
 
     #[tokio::test]
@@ -931,9 +952,15 @@ mod tests {
         let (_dir, out) = relayed(vec![last]).await;
         let media = out[0]["media"].as_array().unwrap();
         assert_eq!(media.len(), 2);
-        assert_eq!((media[0]["kind"].as_str(), media[0]["ext"].as_str()), (Some("image"), Some("png")));
+        assert_eq!(
+            (media[0]["kind"].as_str(), media[0]["ext"].as_str()),
+            (Some("image"), Some("png"))
+        );
         assert_eq!(media[0]["width"], 8);
-        assert_eq!((media[1]["kind"].as_str(), media[1]["ext"].as_str()), (Some("video"), Some("mp4")));
+        assert_eq!(
+            (media[1]["kind"].as_str(), media[1]["ext"].as_str()),
+            (Some("video"), Some("mp4"))
+        );
         let images = out[0]["images"].as_array().unwrap();
         assert_eq!(images.len(), 1, "older screens still read the pictures");
         assert_eq!(images[0]["hash"], media[0]["hash"]);

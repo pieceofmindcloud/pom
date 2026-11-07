@@ -72,6 +72,7 @@ pub(crate) async fn start_gateway_with_ready(
             post(handle_remote_stream_link).layer(axum::extract::DefaultBodyLimit::disable()),
         )
         .merge(crate::openai::routes())
+        .merge(crate::chat_tools::routes())
         .merge(crate::messages::routes())
         .merge(crate::webui::routes())
         .merge(crate::transfer::routes())

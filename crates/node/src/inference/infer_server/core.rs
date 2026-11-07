@@ -1823,6 +1823,7 @@ mod tests {
             moe_cache_mib: 0,
             adaptive_prefill_chunks: true,
             unload_if_idle: false,
+            yield_gpu_to_images: false,
             idle_minutes: 60,
             tp: None,
         };

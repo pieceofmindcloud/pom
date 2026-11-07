@@ -367,6 +367,10 @@ pub struct NodeConfig {
     /// Unloads the weights when this peer is idle.
     #[serde(default)]
     pub unload_if_idle: bool,
+    /// The GPU arbiter may unload this model while no request is in flight,
+    /// for an image component on the same GPU (`gpu_arbiter.rs`).
+    #[serde(default)]
+    pub yield_gpu_to_images: bool,
     /// Minutes without a request before entering `idle`.
     #[serde(default = "default_idle_minutes")]
     pub idle_minutes: u32,
@@ -457,6 +461,7 @@ impl NodeConfig {
             moe_cache_mib: p.moe_cache_mib,
             adaptive_prefill_chunks: p.adaptive_prefill_chunks,
             unload_if_idle: p.unload_if_idle,
+            yield_gpu_to_images: p.yield_gpu_to_images,
             idle_minutes: p.idle_minutes,
         }
     }
@@ -2455,6 +2460,7 @@ mod tests {
             moe_cache_mib: 0,
             adaptive_prefill_chunks: true,
             unload_if_idle: false,
+            yield_gpu_to_images: false,
             idle_minutes: 60,
             tp: None,
         }

@@ -58,6 +58,10 @@ pub struct NodeInfo {
     pub plugin_services: Vec<crate::plugin_services::PluginService>,
     /// Disk used by this machine's KV snapshot directory (`kv-slots`).
     pub kv_cache: KvCacheDisk,
+    /// The physical GPUs this node sees (`gpu_identity.rs`): the GPU arbiter
+    /// groups the nodes of one machine that share a card. Empty when unknown.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gpu_ids: Vec<crate::gpu_identity::GpuId>,
     pub peer_count: usize,
     pub load: u32,
     pub active_model: String,
@@ -337,6 +341,7 @@ pub(super) async fn node_info(
         system,
         plugin_services,
         kv_cache,
+        gpu_ids: crate::gpu_identity::gpu_ids().await,
     })
 }
 

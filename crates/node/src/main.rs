@@ -66,6 +66,8 @@ mod catalog;
 mod image_catalog;
 mod chat_image;
 mod components;
+mod gpu_arbiter;
+mod gpu_identity;
 mod image_plan;
 mod image_records;
 #[path = "network/cluster_logs.rs"]

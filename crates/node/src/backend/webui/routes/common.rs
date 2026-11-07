@@ -156,7 +156,12 @@ pub(super) fn routes() -> Router<GatewayState> {
         )
         .route("/api/ui/cluster", get(cluster))
         .route("/api/ui/chat/capabilities", get(chat_capabilities))
-        .route("/api/ui/chat/image", post(crate::chat_image::run_route))
+        .route(
+            "/api/ui/chat/image",
+            post(crate::chat_image::run_route).layer(axum::extract::DefaultBodyLimit::max(
+                crate::chat_image::MAX_RUN_BODY,
+            )),
+        )
         .route("/api/ui/chat/image/:hash", get(crate::chat_image::image_route))
         .route("/api/ui/cluster/models", get(cluster_models))
         .route(

@@ -403,6 +403,13 @@ chatImage.off,Text answer,Resposta em texto
 chatImage.progress,"Generating the image: step {step} of {of}","Gerando a imagem: passo {step} de {of}"
 chatImage.title,Generated image,Imagem gerada
 chatImage.toggle,Generate image,Gerar imagem
+chatImage.answer,Answer with,Responder com
+chatImage.baseHint,"Attach an image to the message to use it as the base: the new image starts from it.","Anexe uma imagem à mensagem para usá-la como base: a nova imagem parte dela."
+chatImage.noBase,"This workflow takes no base image; choose the built-in one or send the message without the image.","Este fluxo não aceita imagem de base; escolha o fluxo pronto ou envie a mensagem sem a imagem."
+chatImage.on,"Generate image: {workflow}, {size}","Gerar imagem: {workflow}, {size}"
+chatImage.size,Image size,Tamanho da imagem
+chatImage.sizeDefault,Workflow default,Padrão do fluxo
+chatImage.toggleHint,"Generate an image instead of a text answer","Gerar uma imagem em vez de uma resposta em texto"
 cluster.peerCount,"{count, plural, one {{count} node} other {{count} nodes}}","{count, plural, one {{count} nó} other {{count} nós}}"
 common.cancel,Cancel,Cancelar
 common.close,Close,Fechar

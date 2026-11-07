@@ -9,6 +9,10 @@ export interface ChatImageRequest {
   workflowId: string;
   nodeId: string;
   prompt: string;
+  width?: number;
+  height?: number;
+  /** A base image (data URL) for image to image. */
+  image?: string;
   onProgress?: (step: number, of: number) => void;
   signal?: AbortSignal;
 }
@@ -36,7 +40,13 @@ export async function startChatImage(request: ChatImageRequest): Promise<ChatIma
   const response = await withKey("/api/ui/chat/image", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ workflow_id: request.workflowId, node_id: request.nodeId, prompt: request.prompt }),
+    body: JSON.stringify({
+      workflow_id: request.workflowId,
+      node_id: request.nodeId,
+      prompt: request.prompt,
+      ...(request.width && request.height ? { width: request.width, height: request.height } : {}),
+      ...(request.image ? { image: request.image } : {}),
+    }),
     signal: request.signal,
   });
   if (!response.ok || !response.body) {

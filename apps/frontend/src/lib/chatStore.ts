@@ -114,6 +114,8 @@ export interface ChatSession {
   ragCollection?: string;
   /** Generate image: the workflow this conversation sends its messages to. Absent means off (the LLM answers). */
   imageWorkflow?: string;
+  /** Generate image: the size asked for, `<width>x<height>`. Absent means the workflow's default. */
+  imageSize?: string;
   messages: ChatMessage[];
   updatedAt: string;
 }

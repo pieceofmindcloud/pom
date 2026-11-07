@@ -28,7 +28,7 @@ The clip adds one or more files to the message; images go to models that have vi
 
 ## Generating images
 
-When the network serves an image model, a **Generate image** menu appears below the box. Pick a workflow - each image model offers a ready text-to-image one, and an administrator can publish any ComfyUI workflow with **POM > Publish to Chat** - and the next messages go to it instead of the language model: write what the image should show and the answer shows the progress, then the images. A click opens one full size with **Download**. The images are copied to this node and kept in `.comfyui/images` inside the workspace, named by their content, so they stay when the machine that made them goes away; the conversation keeps only that name. **Text answer** goes back to the language model.
+When the network serves an image model, a **Generate image** menu appears below the box. Pick a workflow - each image model offers a ready text-to-image one, and an administrator can publish any ComfyUI workflow with **POM > Publish to Chat** - and the next messages go to it instead of the language model: write what the image should show and the answer shows the progress, then the images. A click opens one full size with **Download**. The same menu picks the image size. Attach an image to the message to use it as the base: the new image starts from it (with the ready workflow, or a published one that takes an image). The images are copied to this node and kept in `.comfyui/images` inside the workspace, named by their content, so they stay when the machine that made them goes away; the conversation keeps only that name. **Text answer** goes back to the language model.
 
 ## After an answer
 

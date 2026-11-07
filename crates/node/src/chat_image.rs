@@ -14,8 +14,9 @@ use crate::gateway::GatewayState;
 pub(crate) const MAX_IMAGES: usize = 16;
 /// At most this many bytes per image.
 pub(crate) const MAX_IMAGE_BYTES: usize = 32 * 1024 * 1024;
-/// The request body that crosses to another machine.
-pub(crate) const MAX_RUN_BODY: usize = 256 * 1024;
+/// The request body, here and when it crosses to another machine: the prompt
+/// and, for image to image, a base image (at most 16 MiB, base64).
+pub(crate) const MAX_RUN_BODY: usize = 24 * 1024 * 1024;
 /// A workflow on a cold diffusion model can take minutes.
 const RUN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20 * 60);
 
@@ -27,6 +28,9 @@ pub(crate) struct Workflow {
     pub node_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deploy_id: Option<String>,
+    /// What the workflow takes: `prompt`, and `image` when it accepts a base image.
+    #[serde(default)]
+    pub inputs: Vec<String>,
 }
 
 /// The workflows the network's `image` services list. A built-in one is
@@ -63,6 +67,7 @@ pub(crate) fn workflows_of(
                     name: workflow.name,
                     node_id: node_id.clone(),
                     deploy_id: workflow.deploy_id,
+                    inputs: workflow.inputs,
                 };
                 match found.iter_mut().find(|w| w.id == candidate.id) {
                     Some(existing) if candidate.node_id == local_node_id => *existing = candidate,
@@ -256,6 +261,12 @@ pub(crate) struct RunRequest {
     pub seed: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub count: Option<u32>,
+    /// A base image for image to image: a PNG or JPEG data URL (or plain base64).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    /// How far image to image moves from the base image, 0.05 to 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strength: Option<f64>,
 }
 
 type LineStream = futures::stream::BoxStream<'static, Result<bytes::Bytes, String>>;
@@ -520,6 +531,24 @@ mod tests {
     const JPG: &[u8] = &[0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3];
 
     #[test]
+    fn a_base_image_travels_with_the_run() {
+        let request: RunRequest = serde_json::from_value(serde_json::json!({
+            "workflow_id": "builtin:img-1", "node_id": "n", "prompt": "a boat",
+            "image": "data:image/png;base64,AAAA", "strength": 0.5
+        }))
+        .unwrap();
+        let body = serde_json::to_value(&request).unwrap();
+        assert_eq!(body["image"], "data:image/png;base64,AAAA");
+        assert_eq!(body["strength"], 0.5);
+        let plain: RunRequest = serde_json::from_value(serde_json::json!({
+            "workflow_id": "w", "node_id": "n", "prompt": "x"
+        }))
+        .unwrap();
+        assert!(serde_json::to_value(&plain).unwrap().get("image").is_none());
+        assert!(MAX_RUN_BODY >= 16 * 1024 * 1024 * 4 / 3 + 1024, "a 16 MiB image in base64 fits");
+    }
+
+    #[test]
     fn png_and_jpeg_get_their_extension() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(store_image(dir.path(), PNG, 1, 1).unwrap().ext, "png");
@@ -588,7 +617,7 @@ mod tests {
                 vec![image_service(
                     "ready",
                     serde_json::json!([
-                        {"id": "pub:sketch", "name": "A sketch", "inputs": ["prompt"]},
+                        {"id": "pub:sketch", "name": "A sketch", "inputs": ["prompt", "image"]},
                         {"id": "builtin:img-1", "name": "Z-Image", "deploy_id": "img-1", "inputs": ["prompt"]},
                         {"id": "builtin:img-2", "name": "Flux", "deploy_id": "img-2", "inputs": ["prompt"]},
                     ]),
@@ -608,6 +637,7 @@ mod tests {
         let ids: Vec<_> = list.iter().map(|w| w.id.as_str()).collect();
         assert_eq!(ids, ["builtin:img-1", "pub:sketch"], "img-2 does not serve");
         assert_eq!(list[0].node_id, "n2", "this node runs it when it lists it");
+        assert_eq!(list[1].inputs, ["prompt", "image"], "what a workflow takes is passed on");
     }
 
     #[test]

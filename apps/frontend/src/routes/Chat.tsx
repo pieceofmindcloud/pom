@@ -612,32 +612,87 @@ function TitleField({
  * on, and its menu opens upward because the composer sits at the bottom.
  */
 /** Generate image: off (the LLM answers) or one of the ComfyUI workflows the network offers. */
+/** The sizes Generate image offers; empty = the workflow's own default. */
+export const IMAGE_SIZES = ["", "1024x1024", "1216x832", "832x1216", "1344x768", "1328x1328"] as const;
+
+/**
+ * Generate image, as a menu like retrieval's: the answer (text, or one of the
+ * ComfyUI workflows the network offers) and the size of the image.
+ */
 function ImageMenu({
   workflow,
   workflows,
+  size,
   onChange,
 }: {
   workflow: string;
   workflows: ChatImageWorkflow[];
-  onChange: (workflow: string) => void;
+  size: string;
+  onChange: (workflow: string, size: string) => void;
 }) {
   const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const outside = (event: MouseEvent) => {
+      if (!root.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", outside);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("mousedown", outside);
+      document.removeEventListener("keydown", escape);
+    };
+  }, [open]);
+  const enabled = workflow !== "";
+  const current = workflows.find((w) => w.id === workflow);
+  const sizeLabel = (value: string) => (value ? value.replace("x", " × ") : t("chatImage.sizeDefault"));
+  const item = "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[0.78rem] text-fg hover:bg-line/40";
   return (
-    <label className={clsx(
-      "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border px-2 text-[0.72rem]",
-      workflow ? "border-aqua/50 bg-aqua/[0.1] text-aqua" : "border-line bg-raised text-faint",
-    )}>
-      <ImageIcon className="h-3.5 w-3.5" />
-      <select
+    <div ref={root} className="relative shrink-0">
+      <button
+        type="button"
         aria-label={t("chatImage.toggle")}
-        value={workflow}
-        onChange={(event) => onChange(event.target.value)}
-        className="max-w-[11rem] bg-transparent text-[0.72rem] outline-none"
+        aria-pressed={enabled}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title={enabled ? t("chatImage.on", { workflow: current?.name ?? "", size: sizeLabel(size) }) : t("chatImage.toggleHint")}
+        onClick={() => setOpen(!open)}
+        className={clsx(
+          "inline-flex h-8 w-8 items-center justify-center rounded-lg border transition-colors duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-iris/25",
+          enabled ? "border-aqua/50 bg-aqua/[0.1] text-aqua" : "border-line bg-raised text-faint hover:border-line-strong hover:text-muted",
+        )}
       >
-        <option value="">{t("chatImage.off")}</option>
-        {workflows.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
-      </select>
-    </label>
+        <ImageIcon className="h-3.5 w-3.5" />
+      </button>
+      {open && (
+        <div role="menu" aria-label={t("chatImage.toggle")} className="absolute bottom-full left-0 z-20 mb-1.5 max-h-80 w-60 overflow-y-auto rounded-lg border border-line bg-raised p-1 shadow-lg">
+          <p className="px-2 pb-1 pt-1.5 text-[0.62rem] font-semibold uppercase tracking-[0.1em] text-faint">{t("chatImage.answer")}</p>
+          {[{ id: "", name: t("chatImage.off") }, ...workflows].map((w) => (
+            <button key={w.id || "off"} type="button" role="menuitemradio" aria-checked={workflow === w.id} onClick={() => onChange(w.id, size)} className={item}>
+              <span className={clsx("h-1.5 w-1.5 shrink-0 rounded-full", workflow === w.id ? "bg-aqua" : "bg-transparent")} />
+              <span className="min-w-0 truncate">{w.name}</span>
+            </button>
+          ))}
+          {enabled && (
+            <>
+              <p className="mt-1 border-t border-line px-2 pb-1 pt-2 text-[0.62rem] font-semibold uppercase tracking-[0.1em] text-faint">{t("chatImage.size")}</p>
+              {IMAGE_SIZES.map((value) => (
+                <button key={value || "default"} type="button" role="menuitemradio" aria-checked={size === value} onClick={() => { onChange(workflow, value); setOpen(false); }} className={item}>
+                  <span className={clsx("h-1.5 w-1.5 shrink-0 rounded-full", size === value ? "bg-aqua" : "bg-transparent")} />
+                  <span className="font-mono text-[0.74rem]">{sizeLabel(value)}</span>
+                </button>
+              ))}
+              {current?.inputs?.includes("image") && <p className="px-2 py-1.5 text-[0.66rem] text-faint">{t("chatImage.baseHint")}</p>}
+            </>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1195,7 +1250,14 @@ function ChatScreen() {
 
   /** Generate image: the message goes to the chosen ComfyUI workflow instead of the LLM. */
   async function sendImage(text: string, workflow: ChatImageWorkflow) {
-    const user: ChatMessage = { id: newId(), role: "user", content: text, at: new Date().toISOString() };
+    // An attached image is the base of image to image, when the workflow takes one.
+    const base = attachments.find((attachment) => attachment.kind === "image");
+    if (base && !workflow.inputs?.includes("image")) {
+      toast.error(t("chat.imageRejected"), t("chatImage.noBase"));
+      return;
+    }
+    const [width, height] = (session.imageSize ?? "").split("x").map(Number);
+    const user: ChatMessage = { id: newId(), role: "user", content: text, attachments: base ? [base] : undefined, at: new Date().toISOString() };
     const reply: ChatMessage = { id: newId(), role: "assistant", content: t("chatImage.generating"), at: new Date().toISOString() };
     let live: ChatSession = {
       ...session,
@@ -1208,6 +1270,7 @@ function ChatScreen() {
     };
     setSession(live);
     setDraft("");
+    setAttachments([]);
     autoFollow.current = true;
     setImageBusy(true);
     try {
@@ -1215,6 +1278,9 @@ function ChatScreen() {
         workflowId: workflow.id,
         nodeId: workflow.node_id,
         prompt: text,
+        width: width || undefined,
+        height: height || undefined,
+        image: base?.data,
         onProgress: (step, of) => patch({ content: t("chatImage.progress", { step, of }) }),
       });
       patch({ content: "", images, source: workflow.name });
@@ -1594,8 +1660,9 @@ function ChatScreen() {
                   <ImageMenu
                     workflow={imageWorkflow?.id ?? ""}
                     workflows={imageWorkflows}
-                    onChange={(workflow) => {
-                      const updated = { ...session, imageWorkflow: workflow || undefined };
+                    size={session.imageSize ?? ""}
+                    onChange={(workflow, size) => {
+                      const updated = { ...session, imageWorkflow: workflow || undefined, imageSize: size || undefined };
                       setSession(updated);
                       upsert(updated);
                     }}

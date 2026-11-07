@@ -1030,7 +1030,9 @@ with that node's own authority, and any other role answers 403.
 `GET /api/ui/chat/capabilities` also answers `image` (`supported` when some
 machine offers a ComfyUI workflow) and `image_workflows` (`[{id, name,
 node_id}]`, built-in ones first). `POST /api/ui/chat/image` `{workflow_id,
-node_id, prompt, negative?, width?, height?, seed?, count?}` and
+node_id, prompt, negative?, width?, height?, seed?, count?, image?, strength?}`
+(`image`: a PNG/JPEG data URL, the base of image to image, for a workflow whose
+`inputs` list `image`; body at most 24 MiB) and
 `GET /api/ui/chat/image/:hash` sit under the `HandlerAuth` scope of
 `/api/ui/chat/` and take the node's API key (`ApiKeyAuth`, the Chat's
 `X-API-Key`). The run answers NDJSON: `{p, of}` progress, then `{"images":

@@ -1420,6 +1420,8 @@ export interface ChatImageWorkflow {
   id: string;
   name: string;
   node_id: string;
+  /** What it takes: `prompt`, and `image` when it accepts a base image. */
+  inputs?: string[];
 }
 
 export type SidecarKind = "mmproj" | "mtp";

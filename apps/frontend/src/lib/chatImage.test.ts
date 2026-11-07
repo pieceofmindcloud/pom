@@ -39,6 +39,14 @@ describe("chat images", () => {
     expect(new Headers(init.headers).get("X-POM-Access-Token")).toBe("admin");
   });
 
+  it("sends the size and the base image when given", async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(ndjson(['{"images":[]}\n'])));
+    vi.stubGlobal("fetch", fetchMock);
+    await startChatImage({ workflowId: "w", nodeId: "n", prompt: "x", width: 1216, height: 832, image: "data:image/png;base64,AAAA" });
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toMatchObject({ width: 1216, height: 832, image: "data:image/png;base64,AAAA" });
+  });
+
   it("rejects with the plugin's reason", async () => {
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(ndjson(['{"error":"no machine serves diffusion of img-x"}\n']))));
     await expect(startChatImage({ workflowId: "w", nodeId: "n", prompt: "x" })).rejects.toThrow("no machine serves diffusion of img-x");

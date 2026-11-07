@@ -1224,9 +1224,13 @@ besides the turns:
   tokens (one per stream delta that added to the reasoning,
   `ChatStreamState.reasoningTokens`, kept as `ChatMessage.reasoningTokens`).
   The text opens only on a click.
-- **Generate image** (`ImageMenu` in `routes/Chat.tsx`) shows when
-  `chat/capabilities` reports `image: supported`: one select, "Text answer" or
-  one of `image_workflows`, kept in `ChatSession.imageWorkflow`. With a
+- **Generate image** (`ImageMenu` in `routes/Chat.tsx`, a menu like the RAG
+  one) shows when `chat/capabilities` reports `image: supported`: "Text answer"
+  or one of `image_workflows` (`ChatSession.imageWorkflow`) and, with a
+  workflow, the image size (`IMAGE_SIZES`, `ChatSession.imageSize`, sent as
+  `width`/`height`). An image attached to the message is sent as the base of
+  image to image (`image`) when the workflow lists `image` in its `inputs`, and
+  refused otherwise. With a
   workflow chosen, a message goes to `POST /api/ui/chat/image`
   (`lib/chatImage.ts`) instead of `/v1/chat/completions`: the reply shows the
   progress, then `ChatImageGrid` (thumbnails read by hash from

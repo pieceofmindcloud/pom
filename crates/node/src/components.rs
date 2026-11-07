@@ -125,18 +125,30 @@ pub(crate) async fn apply_assignment(
     Ok(())
 }
 
-/// Stop serving every component of a deployment here.
-pub(crate) async fn release_deployment(db: &crate::db::PomDb, call: &PluginCall, deploy_id: &str) {
+/// Stop serving a deployment here: one of its components, or all of them
+/// when `component` is `None`.
+pub(crate) async fn release_deployment(
+    db: &crate::db::PomDb,
+    call: &PluginCall,
+    deploy_id: &str,
+    component: Option<&str>,
+) {
     let mut assignments = load_assignments(db);
+    let matches = |a: &ComponentAssignment| {
+        a.deploy_id == deploy_id && component.is_none_or(|c| a.component == c)
+    };
     let codes: std::collections::BTreeSet<String> = assignments
         .iter()
-        .filter(|a| a.deploy_id == deploy_id)
+        .filter(|a| matches(a))
         .map(|a| a.plugin_code.clone())
         .collect();
-    assignments.retain(|a| a.deploy_id != deploy_id);
+    assignments.retain(|a| !matches(a));
     save_assignments(db, &assignments);
     for code in codes {
-        let payload = serde_json::json!({ "deploy_id": deploy_id });
+        let mut payload = serde_json::json!({ "deploy_id": deploy_id });
+        if let Some(component) = component {
+            payload["component"] = serde_json::json!(component);
+        }
         if let Err(error) = call(code.clone(), "component.release".into(), payload).await {
             tracing::warn!(plugin = %code, %error, deploy_id, "component release");
         }
@@ -195,6 +207,9 @@ pub(crate) async fn apply_route(
 #[derive(Deserialize)]
 pub(crate) struct ReleaseRequest {
     pub deploy_id: String,
+    /// One component only; absent releases the whole deployment.
+    #[serde(default)]
+    pub component: Option<String>,
 }
 
 /// `POST /api/ui/components/release`.
@@ -204,7 +219,13 @@ pub(crate) async fn release_route(
     axum::Json(request): axum::Json<ReleaseRequest>,
 ) -> axum::Json<Value> {
     let call = live_plugins(std::sync::Arc::clone(&state.plugins));
-    release_deployment(&state.database, &call, &request.deploy_id).await;
+    release_deployment(
+        &state.database,
+        &call,
+        &request.deploy_id,
+        request.component.as_deref(),
+    )
+    .await;
     axum::Json(serde_json::json!({ "ok": true }))
 }
 
@@ -297,19 +318,25 @@ pub(crate) async fn undeploy_image(
     db: &crate::db::PomDb,
     call: &TargetCall,
     deploy_id: &str,
+    served: &[NetworkComponent],
 ) -> Vec<Released> {
     let deployments = load_image_deployments(db);
-    let Some(deployment) = deployments
-        .iter()
-        .find(|d| d.deploy_id == deploy_id)
-        .cloned()
-    else {
-        return Vec::new();
-    };
+    let record = deployments.iter().find(|d| d.deploy_id == deploy_id).cloned();
+    // Every machine the record names and every machine that serves the
+    // deployment now: an admin node that did not deploy it has no record.
     let mut nodes: Vec<String> = Vec::new();
-    for choice in &deployment.components {
-        if !nodes.contains(&choice.node_id) {
-            nodes.push(choice.node_id.clone());
+    if let Some(record) = &record {
+        for stage in &record.active().stages {
+            for replica in &stage.replicas {
+                if !nodes.contains(&replica.node_id) {
+                    nodes.push(replica.node_id.clone());
+                }
+            }
+        }
+    }
+    for component in served.iter().filter(|c| c.deploy_id == deploy_id) {
+        if !nodes.contains(&component.node_id) {
+            nodes.push(component.node_id.clone());
         }
     }
     let mut released = Vec::new();
@@ -326,30 +353,35 @@ pub(crate) async fn undeploy_image(
             error: result.err(),
         });
     }
+    let Some(record) = record else {
+        return released;
+    };
     // A machine that did not answer would serve its part again on its next
     // start (it restores its own list): its part stays on record, so the
     // screen still lists it and undeploying again releases it.
-    let pending: Vec<ComponentChoice> = deployment
-        .components
+    let silent = |node_id: &str| released.iter().any(|r| !r.ok && r.node_id == node_id);
+    let pending: Vec<crate::image_records::ImageStage> = record
+        .active()
+        .stages
         .iter()
-        .filter(|choice| {
-            released
+        .map(|stage| crate::image_records::ImageStage {
+            replicas: stage
+                .replicas
                 .iter()
-                .any(|r| !r.ok && r.node_id == choice.node_id)
+                .filter(|r| silent(&r.node_id))
+                .cloned()
+                .collect(),
+            ..stage.clone()
         })
-        .cloned()
+        .filter(|stage| !stage.replicas.is_empty())
         .collect();
     let mut deployments: Vec<ImageDeployment> = deployments
         .into_iter()
         .filter(|d| d.deploy_id != deploy_id)
         .collect();
     if !pending.is_empty() {
-        let mut record = ImageDeployment {
-            components: pending,
-            versions: Vec::new(),
-            ..deployment
-        };
-        record.ensure_versions();
+        let mut record = record;
+        record.push_version(pending, "");
         deployments.push(record);
     }
     save_image_deployments(db, &deployments);
@@ -603,7 +635,8 @@ pub(crate) async fn image_undeploy_route(
 /// Release a deployment everywhere: `{released: [...]}`.
 pub(crate) async fn undeploy_view(state: &GatewayState, deploy_id: &str) -> Value {
     let call = live_targets(state.clone());
-    let released = undeploy_image(&state.database, &call, deploy_id).await;
+    let served = network_components(state).await;
+    let released = undeploy_image(&state.database, &call, deploy_id, &served).await;
     serde_json::json!({ "released": released })
 }
 
@@ -1338,7 +1371,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(load_assignments(&db).len(), 3);
-        release_deployment(&db, &call, "img-1").await;
+        release_deployment(&db, &call, "img-1", None).await;
         let left = load_assignments(&db);
         assert_eq!(left.len(), 1);
         assert_eq!(left[0].deploy_id, "img-2");
@@ -1531,7 +1564,7 @@ mod tests {
         ]);
         let deploy_id = deploy_image(&db, &network(), &call, req).await.unwrap();
         let (call, seen) = targets_call(None);
-        let released = undeploy_image(&db, &call, &deploy_id).await;
+        let released = undeploy_image(&db, &call, &deploy_id, &[]).await;
         assert_eq!(released.len(), 2);
         assert!(released.iter().all(|r| r.ok));
         assert_eq!(seen.lock().unwrap().len(), 2);
@@ -1557,7 +1590,7 @@ mod tests {
                 }
             })
         });
-        let released = undeploy_image(&db, &call, &deploy_id).await;
+        let released = undeploy_image(&db, &call, &deploy_id, &[]).await;
         assert_eq!(released.iter().filter(|r| r.ok).count(), 1);
         let left = load_image_deployments(&db);
         assert_eq!(left.len(), 1, "the screen still lists it for a retry");
@@ -1565,7 +1598,7 @@ mod tests {
         assert_eq!(left[0].components[0].node_id, "c");
         // Undeploying again once `c` answers drops the record.
         let (call, _) = targets_call(None);
-        undeploy_image(&db, &call, &deploy_id).await;
+        undeploy_image(&db, &call, &deploy_id, &[]).await;
         assert!(load_image_deployments(&db).is_empty());
     }
 
@@ -1583,6 +1616,39 @@ mod tests {
     }
 
     type ForwardLog = Arc<Mutex<Vec<(String, String, usize)>>>;
+
+    #[tokio::test]
+    async fn release_with_a_component_drops_only_it() {
+        let (_dir, db) = db();
+        let (call, seen) = recording(Ok(()));
+        let catalog = vec!["/m/ae.safetensors".to_owned(), "/m/q.safetensors".to_owned()];
+        apply_assignment(&db, &catalog, &call, assignment("img-1", "vae", "/m/ae.safetensors")).await.unwrap();
+        apply_assignment(&db, &catalog, &call, assignment("img-1", "text_encoder", "/m/q.safetensors")).await.unwrap();
+        release_deployment(&db, &call, "img-1", Some("vae")).await;
+        let left = load_assignments(&db);
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].component, "text_encoder");
+        assert!(seen.lock().unwrap().iter().any(|(op, payload)| op == "component.release" && payload["component"] == "vae"));
+    }
+
+    #[tokio::test]
+    async fn undeploy_without_a_record_releases_every_server() {
+        let (_dir, db) = db();
+        let (call, seen) = targets_call(None);
+        let served = vec![
+            served("img-9", "diffusion", "a"),
+            served("img-9", "vae", "b"),
+            served("img-9", "text_encoder", "b"),
+            served("img-other", "vae", "c"),
+        ];
+        let released = undeploy_image(&db, &call, "img-9", &served).await;
+        assert_eq!(released.len(), 2);
+        assert!(released.iter().all(|r| r.ok));
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert!(seen.iter().all(|line| line.starts_with("/api/ui/components/release")));
+        assert!(!seen.iter().any(|line| line.contains(" c ")));
+    }
 
     fn forwarding(answer: Result<(u16, Vec<u8>), String>) -> (Forward, ForwardLog) {
         let seen: ForwardLog = Arc::new(Mutex::new(Vec::new()));

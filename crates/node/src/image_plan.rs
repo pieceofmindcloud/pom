@@ -409,6 +409,259 @@ pub(crate) fn new_deploy_id() -> String {
     format!("img-{}", hex::encode(rand::random::<[u8; 6]>()))
 }
 
+// ── Changing a live deployment ───────────────────────────────────────────────
+
+/// A refusal of a change: the HTTP status and the JSON body.
+pub(crate) type Refused = (u16, serde_json::Value);
+
+fn refused(status: u16, error: impl Into<String>) -> Refused {
+    (status, serde_json::json!({ "error": error.into() }))
+}
+
+fn record_of(
+    db: &crate::db::PomDb,
+    deploy_id: &str,
+) -> Result<(Vec<crate::image_records::ImageDeployment>, usize), Refused> {
+    let deployments = crate::image_records::load_image_deployments(db);
+    let index = deployments
+        .iter()
+        .position(|d| d.deploy_id == deploy_id)
+        .ok_or_else(|| refused(404, "this deployment was made from another machine"))?;
+    Ok((deployments, index))
+}
+
+/// Adds `node_id` as a replica of `component` and appends a version.
+pub(crate) async fn add_replica(
+    db: &crate::db::PomDb,
+    machines: &[MachineFacts],
+    call: &crate::components::TargetCall,
+    deploy_id: &str,
+    component: &str,
+    node_id: &str,
+    by: &str,
+) -> Result<u32, Refused> {
+    let (mut deployments, index) = record_of(db, deploy_id)?;
+    let record = &deployments[index];
+    let stage = record
+        .active()
+        .stages
+        .iter()
+        .find(|s| s.component == component)
+        .cloned()
+        .ok_or_else(|| refused(400, format!("this deployment has no {component}")))?;
+    if stage.replicas.iter().any(|r| r.node_id == node_id) {
+        return Err(refused(400, format!("that machine already serves the {component}")));
+    }
+    let request = ImagePlanRequest {
+        name: record.name.clone(),
+        stages: vec![StageRequest {
+            component: component.to_owned(),
+            file: stage.file.clone(),
+            node_ids: vec![node_id.to_owned()],
+        }],
+        allow_transfers: false,
+    };
+    let plan = plan_image(&request, machines);
+    let verdict = plan.stages[0].chosen[0].clone();
+    let path = match (&verdict.path, verdict.ok) {
+        (Some(path), true) => path.clone(),
+        _ => {
+            return Err(refused(
+                400,
+                verdict
+                    .reason
+                    .unwrap_or_else(|| "that machine cannot serve it".into()),
+            ))
+        }
+    };
+    let choice = crate::components::ComponentChoice {
+        component: component.to_owned(),
+        node_id: node_id.to_owned(),
+        path: path.clone(),
+    };
+    let body = crate::components::assignment_of(deploy_id, &record.name, &choice);
+    call(node_id.to_owned(), APPLY_PATH, body)
+        .await
+        .map_err(|error| refused(502, format!("{}: {error}", verdict.hostname)))?;
+    let mut stages = record.active().stages.clone();
+    if let Some(target) = stages.iter_mut().find(|s| s.component == component) {
+        target.replicas.push(crate::image_records::Replica {
+            node_id: node_id.to_owned(),
+            hostname: verdict.hostname.clone(),
+            path,
+        });
+    }
+    let version = deployments[index].push_version(stages, by);
+    crate::image_records::save_image_deployments(db, &deployments);
+    Ok(version)
+}
+
+/// Releases `component` on `node_id` and appends a version. The last replica
+/// of a stage needs `confirm_gap`. Answers the version and whether every
+/// stage still has a replica.
+pub(crate) async fn remove_replica(
+    db: &crate::db::PomDb,
+    call: &crate::components::TargetCall,
+    deploy_id: &str,
+    component: &str,
+    node_id: &str,
+    confirm_gap: bool,
+    by: &str,
+) -> Result<(u32, bool), Refused> {
+    let (mut deployments, index) = record_of(db, deploy_id)?;
+    let mut stages = deployments[index].active().stages.clone();
+    let stage = stages
+        .iter_mut()
+        .find(|s| s.component == component)
+        .ok_or_else(|| refused(400, format!("this deployment has no {component}")))?;
+    if !stage.replicas.iter().any(|r| r.node_id == node_id) {
+        return Err(refused(404, format!("that machine does not serve the {component}")));
+    }
+    if stage.replicas.len() == 1 && !confirm_gap {
+        return Err((
+            409,
+            serde_json::json!({ "error": "gap", "component": component }),
+        ));
+    }
+    call(
+        node_id.to_owned(),
+        RELEASE_PATH,
+        serde_json::json!({ "deploy_id": deploy_id, "component": component }),
+    )
+    .await
+    .map_err(|error| refused(502, error))?;
+    stage.replicas.retain(|r| r.node_id != node_id);
+    let serving = stages.iter().all(|s| !s.replicas.is_empty());
+    let version = deployments[index].push_version(stages, by);
+    crate::image_records::save_image_deployments(db, &deployments);
+    Ok((version, serving))
+}
+
+/// Brings `version` back: releases what it does not have, applies what it
+/// has and makes it the live version, without appending one.
+pub(crate) async fn redeploy_version(
+    db: &crate::db::PomDb,
+    call: &crate::components::TargetCall,
+    deploy_id: &str,
+    version: u32,
+) -> Result<u32, Refused> {
+    let (mut deployments, index) = record_of(db, deploy_id)?;
+    let record = &deployments[index];
+    let target = record
+        .versions
+        .iter()
+        .find(|v| v.version == version)
+        .cloned()
+        .ok_or_else(|| refused(400, format!("version {version} does not exist")))?;
+    let pairs = |stages: &[crate::image_records::ImageStage]| -> Vec<(String, String, String)> {
+        stages
+            .iter()
+            .flat_map(|s| {
+                s.replicas
+                    .iter()
+                    .map(|r| (s.component.clone(), r.node_id.clone(), r.path.clone()))
+            })
+            .collect()
+    };
+    let live = pairs(&record.active().stages);
+    let wanted = pairs(&target.stages);
+    for (component, node_id, _) in live.iter().filter(|p| !wanted.iter().any(|w| w.0 == p.0 && w.1 == p.1)) {
+        let _ = call(
+            node_id.clone(),
+            RELEASE_PATH,
+            serde_json::json!({ "deploy_id": deploy_id, "component": component }),
+        )
+        .await;
+    }
+    for (component, node_id, path) in &wanted {
+        let choice = crate::components::ComponentChoice {
+            component: component.clone(),
+            node_id: node_id.clone(),
+            path: path.clone(),
+        };
+        let body = crate::components::assignment_of(deploy_id, &record.name, &choice);
+        call(node_id.clone(), APPLY_PATH, body)
+            .await
+            .map_err(|error| refused(502, format!("{node_id}: {error}")))?;
+    }
+    deployments[index].active_version = version;
+    crate::image_records::save_image_deployments(db, &deployments);
+    Ok(version)
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ReplicaChange {
+    pub component: String,
+    pub node_id: String,
+    #[serde(default)]
+    pub confirm_gap: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct VersionChoice {
+    pub version: u32,
+}
+
+fn answer(result: Result<serde_json::Value, Refused>) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    match result {
+        Ok(body) => axum::Json(body).into_response(),
+        Err((status, body)) => (
+            axum::http::StatusCode::from_u16(status).unwrap_or(axum::http::StatusCode::BAD_REQUEST),
+            axum::Json(body),
+        )
+            .into_response(),
+    }
+}
+
+/// `POST /api/ui/image-deploy/:deploy_id/add`.
+pub(crate) async fn add_route(
+    _auth: crate::auth::ConnectionAuth,
+    axum::extract::State(state): axum::extract::State<crate::gateway::GatewayState>,
+    axum::extract::Path(deploy_id): axum::extract::Path<String>,
+    axum::Json(change): axum::Json<ReplicaChange>,
+) -> axum::response::Response {
+    let machines = crate::components::survey_machines(&state).await;
+    let call = crate::components::live_targets(state.clone());
+    let by = state.network.node_id.clone();
+    answer(
+        add_replica(&state.database, &machines, &call, &deploy_id, &change.component, &change.node_id, &by)
+            .await
+            .map(|version| serde_json::json!({ "version": version })),
+    )
+}
+
+/// `POST /api/ui/image-deploy/:deploy_id/remove`.
+pub(crate) async fn remove_route(
+    _auth: crate::auth::ConnectionAuth,
+    axum::extract::State(state): axum::extract::State<crate::gateway::GatewayState>,
+    axum::extract::Path(deploy_id): axum::extract::Path<String>,
+    axum::Json(change): axum::Json<ReplicaChange>,
+) -> axum::response::Response {
+    let call = crate::components::live_targets(state.clone());
+    let by = state.network.node_id.clone();
+    answer(
+        remove_replica(&state.database, &call, &deploy_id, &change.component, &change.node_id, change.confirm_gap, &by)
+            .await
+            .map(|(version, serving)| serde_json::json!({ "version": version, "serving": serving })),
+    )
+}
+
+/// `POST /api/ui/image-deploy/:deploy_id/redeploy`.
+pub(crate) async fn redeploy_route(
+    _auth: crate::auth::ConnectionAuth,
+    axum::extract::State(state): axum::extract::State<crate::gateway::GatewayState>,
+    axum::extract::Path(deploy_id): axum::extract::Path<String>,
+    axum::Json(choice): axum::Json<VersionChoice>,
+) -> axum::response::Response {
+    let call = crate::components::live_targets(state.clone());
+    answer(
+        redeploy_version(&state.database, &call, &deploy_id, choice.version)
+            .await
+            .map(|version| serde_json::json!({ "version": version })),
+    )
+}
+
 /// `POST /api/ui/image-deploy/plan`.
 pub(crate) async fn plan_route(
     _auth: crate::auth::ConnectionAuth,
@@ -710,5 +963,73 @@ mod tests {
         assert_eq!(status, 409);
         assert_eq!(body["error"], "transfers_not_authorized");
         assert!(refusal(&plan_image(&zimage(&["b"]), &network()), false).is_none());
+    }
+
+    // ── add / remove / redeploy ──
+
+    async fn deployed(db: &crate::db::PomDb, diffusion: &[&str]) -> String {
+        let plan = plan_image(&zimage(diffusion), &network());
+        let (call, _) = targets(&[]);
+        deploy_stages(db, &plan, &call, "img-1", "me", &|_| {}).await.unwrap();
+        "img-1".to_owned()
+    }
+
+    #[tokio::test]
+    async fn adding_a_replica_appends_a_version() {
+        let (_dir, db) = db();
+        let id = deployed(&db, &["b"]).await;
+        let (call, calls) = targets(&[]);
+        let version = add_replica(&db, &network(), &call, &id, "diffusion", "c", "me").await.unwrap();
+        assert_eq!(version, 2);
+        assert_eq!(applies(&calls), [("c".to_owned(), "diffusion".to_owned())]);
+        let record = &crate::image_records::load_image_deployments(&db)[0];
+        assert_eq!(record.active().stages[1].replicas.len(), 2);
+        let refused = add_replica(&db, &network(), &call, &id, "diffusion", "d", "me").await.unwrap_err();
+        assert_eq!(refused.0, 400);
+        assert_eq!(refused.1["error"], "does not run ComfyUI");
+        let missing = add_replica(&db, &network(), &call, "img-other", "diffusion", "c", "me").await.unwrap_err();
+        assert_eq!(missing.0, 404);
+    }
+
+    #[tokio::test]
+    async fn removing_the_last_replica_asks_first() {
+        let (_dir, db) = db();
+        let id = deployed(&db, &["b"]).await;
+        let (call, calls) = targets(&[]);
+        let refused = remove_replica(&db, &call, &id, "diffusion", "b", false, "me").await.unwrap_err();
+        assert_eq!(refused.0, 409);
+        assert_eq!(refused.1["error"], "gap");
+        assert!(calls.lock().unwrap().is_empty());
+        let (version, serving) = remove_replica(&db, &call, &id, "diffusion", "b", true, "me").await.unwrap();
+        assert_eq!((version, serving), (2, false));
+    }
+
+    #[tokio::test]
+    async fn removing_one_stage_keeps_the_other_on_that_machine() {
+        let (_dir, db) = db();
+        let id = deployed(&db, &["b"]).await;
+        let (call, calls) = targets(&[]);
+        remove_replica(&db, &call, &id, "vae", "a", true, "me").await.unwrap();
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "a");
+        assert_eq!(calls[0].2["component"], "vae");
+        let record = &crate::image_records::load_image_deployments(&db)[0];
+        assert_eq!(record.active().stages[0].replicas[0].node_id, "a", "text encoder stays");
+    }
+
+    #[tokio::test]
+    async fn redeploy_reactivates_an_old_version() {
+        let (_dir, db) = db();
+        let id = deployed(&db, &["b"]).await;
+        let (call, _) = targets(&[]);
+        add_replica(&db, &network(), &call, &id, "diffusion", "c", "me").await.unwrap();
+        let (call, calls) = targets(&[]);
+        assert_eq!(redeploy_version(&db, &call, &id, 1).await.unwrap(), 1);
+        assert!(calls.lock().unwrap().iter().any(|(n, p, b)| n == "c" && *p == RELEASE_PATH && b["component"] == "diffusion"));
+        let record = &crate::image_records::load_image_deployments(&db)[0];
+        assert_eq!(record.active_version, 1);
+        assert_eq!(record.versions.len(), 2, "no version appended");
+        assert_eq!(redeploy_version(&db, &call, &id, 9).await.unwrap_err().0, 400);
     }
 }

@@ -1317,6 +1317,13 @@ imageDeploy.undeploy,Undeploy,Tirar do ar
 imageDeploy.undeployConfirm,"Stop serving {name} on every machine?","Parar de servir {name} em todas as máquinas?"
 imageDeploy.undeployNamed,"Undeploy {name}","Tirar {name} do ar"
 imageDeploy.undeployed,"{name} is no longer served","{name} saiu do ar"
+imageStudio.chooseDiffusion,"Choose the diffusion model, then drag machines onto each stage.","Escolha o modelo de difusão e arraste máquinas para cada estágio."
+imageStudio.copiesUnsupported,"A machine without the file would need a copy; image files cannot be copied yet, so place the file on that machine first.","Uma máquina sem o arquivo precisaria de uma cópia; arquivos de imagem ainda não são copiados, então coloque o arquivo nessa máquina antes."
+imageStudio.dropHere,Drag a machine here,Arraste uma máquina para cá
+imageStudio.hint,"Text encoder, diffusion and VAE, in the order the image is made. More machines on a stage are replicas; one machine can serve several stages.","Text encoder, difusão e VAE, na ordem em que a imagem é feita. Mais máquinas num estágio são réplicas; uma máquina pode servir vários estágios."
+imageStudio.memory,"{gpu} VRAM, {ram} RAM free · needs about {need}","{gpu} de VRAM, {ram} de RAM livres · precisa de cerca de {need}"
+imageStudio.remove,"Remove {host}","Remover {host}"
+imageStudio.replicas,"{count} replicas: each call goes to the nearest one that answers","{count} réplicas: cada chamada vai para a mais próxima que responder"
 inspector.adaptivePrefillChunks,Automatic prefill chunk,Pedaço de prefill automático
 inspector.betaInfo,"Settings that work but are still being measured: the best value changes from route to route.","Configurações que funcionam mas ainda estão sendo medidas: o melhor valor muda de rota para rota."
 inspector.betaInfoLink,see when to change it,veja quando mudar

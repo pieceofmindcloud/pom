@@ -51,18 +51,18 @@ Cada categoria do inspetor tem um botão de ajuda que abre o guia dela: Configur
 
 ## Modelos de imagem
 
-**Modelo de imagem** na barra de modos abre a tela de implantar imagem. Um modelo de imagem (Z-Image, Qwen Image, Flux...) é servido por componente: o modelo de difusão, o text encoder e o VAE vão cada um para uma máquina que roda o ComfyUI e já tem aquele arquivo, então uma GPU pequena guarda a difusão enquanto os outros ficam em outras máquinas.
+**Modelo de imagem** na barra de modos transforma o estúdio numa pipeline de imagem. Um modelo de imagem (Z-Image, Qwen Image, Flux...) é servido por estágio, na ordem em que a imagem é feita: o **text encoder** lê o prompt, o **modelo de difusão** desenha a imagem passo a passo e o **VAE** transforma o resultado em pixels. Cada estágio roda em máquinas que rodam o ComfyUI e já têm o arquivo daquele estágio, então uma GPU pequena guarda a difusão enquanto os outros ficam em outras máquinas.
 
 :::steps
-### Escolha o modelo de difusão
+### Escolha os arquivos
 Escolha o arquivo do modelo de difusão. O text encoder e o VAE são preenchidos quando a mesma pasta tem exatamente um de cada; troque se quiser outros.
-### Escolha as máquinas
-Para cada componente, escolha a máquina. Só aparecem as máquinas que já têm aquele arquivo e rodam o ComfyUI; nada é copiado.
-### Implante
-Implante. O ComfyUI de cada máquina passa a servir o seu componente, e o ComfyUI de qualquer máquina da rede o lista como `POM ▸ <nome> ▸ <arquivo>` nos loaders normais.
+### Arraste máquinas para os estágios
+Arraste máquinas da barra de baixo para cada estágio. Mais de uma máquina num estágio são réplicas: cada chamada vai para a mais próxima que responder, e a imagem continua quando uma delas para. Uma máquina pode servir vários estágios; o VAE, pequeno, costuma ir junto com outro. Uma máquina que não pode receber um estágio diz o motivo no cartão.
+### Leia o veredito e implante
+A linha vermelha no topo diz o que ainda falta. Implantar segue a mesma janela de progresso de um modelo de linguagem, e a implantação aparece no Dashboard e em Implantações.
 :::
 
-A lista abaixo mostra o que está servindo, a máquina e o estado de cada componente, e **Tirar do ar**. Uma máquina que reinicia volta a servir os seus componentes sozinha.
+O ComfyUI de qualquer máquina da rede lista os estágios como `POM ▸ <nome> ▸ <arquivo>` nos loaders normais, e o Chat pode gerar imagens com ele. Nada é copiado: uma máquina sem o arquivo não é oferecida.
 
 :::deep docs/subsystems/deployment.md
 O plano, a fusão, a ordem e o ciclo de vida da fatia

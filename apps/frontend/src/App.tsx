@@ -171,7 +171,6 @@ export const routeLoaders = {
   about: () => import("./routes/About").then(({ About }) => About),
   notFound: () => import("./routes/NotFound").then(({ NotFound }) => NotFound),
   deployModel: () => import("./routes/DeployModel").then(({ DeployModel }) => DeployModel),
-  imageDeploy: () => import("./routes/ImageDeploy").then(({ ImageDeploy }) => ImageDeploy),
   deployments: () => import("./routes/Deployments").then(({ Deployments }) => Deployments),
   shards: () => import("./routes/Shards").then(({ Shards }) => Shards),
   sliceModels: () => import("./routes/SliceModels").then(({ SliceModels }) => SliceModels),
@@ -206,7 +205,6 @@ const Preferences = lazyRoute(routeLoaders.preferences);
 const About = lazyRoute(routeLoaders.about);
 const NotFound = lazyRoute(routeLoaders.notFound);
 const DeployModel = lazyRoute(routeLoaders.deployModel);
-const ImageDeploy = lazyRoute(routeLoaders.imageDeploy);
 const Deployments = lazyRoute(routeLoaders.deployments);
 const Shards = lazyRoute(routeLoaders.shards);
 const SliceModels = lazyRoute(routeLoaders.sliceModels);
@@ -306,7 +304,6 @@ export default function App() {
     (isDashboard ||
       location.pathname === "/documentation" ||
       location.pathname === "/deploy" ||
-      location.pathname === "/deploy/image" ||
       location.pathname === "/deployments" ||
       pluginRoute?.route.full_bleed === true ||
       location.pathname === "/deployments/logs" ||
@@ -467,7 +464,7 @@ export default function App() {
                         <Route path="/models/slice" element={<Page><SliceModels /></Page>} />
                         <Route path="/shards" element={<Page><Shards /></Page>} />
                         <Route path="/deploy" element={<Page><DeployModel /></Page>} />
-                        <Route path="/deploy/image" element={<Page><ImageDeploy /></Page>} />
+                        <Route path="/deploy/image" element={<Navigate to="/deploy?mode=image" replace />} />
                         <Route path="/deployments" element={<Page><Deployments /></Page>} />
                         <Route path="/deployments/logs" element={<Page><DeploymentLogs /></Page>} />
                         {/* Keep the former deploy URL working for old bookmarks. */}

@@ -723,16 +723,7 @@ Per-file list:
   larger and invisible click and focus area. It sits outside the content's scroll,
   so it stays anchored to the screen height during scrolling and resizing; when closed,
   the reopening control stays in the existing compact column.
-- `ImageDeploy.tsx` - `/deploy/image` (admin, full-bleed), reached from the
-  Deploy screen's mode bar ("Image model"): an image model by component. Per
-  component (diffusion, text encoder, VAE) a file picker over the network's
-  `image_files` (`useClusterCatalog`; a file is name + size, a `checkpoint`
-  fits all three) and a machine picker of the machines that hold that file and
-  publish a kind `image` service (`useCluster` `plugin_services`). Choosing the
-  diffusion file pre-fills the other two when its `<org>/<repo>` folder holds
-  exactly one of each, and the name. Deploys with `POST /api/ui/image-deploy`;
-  below, `useImageDeployments` lists what is served with each component's
-  status and Undeploy behind a `Confirm` (`POST /api/ui/image-undeploy`).
+- `DeployModel.tsx` - "Image model" in the mode bar sets `?mode=image` (`/deploy/image` redirects there) and the screen renders `components/ImageDeployStudio.tsx` in place of the LLM studio: three stage columns in flow order (text encoder, diffusion, VAE), machines dragged from the strip onto a stage (several are replicas, one machine may serve several stages), file pickers over the network's `image_files` (the diffusion file pre-fills the other two from its folder), the verdict from `POST /api/ui/image-deploy/plan` and Deploy through `POST /api/ui/image-deploy`, followed in `DeployProgressModal`. Helpers in `../lib/imagePipeline.ts`.
 - `Deployments.tsx` - it lists the deployments registered in the cluster through
   `useDeployments`, tells "no ar" ("live") apart from "padrão" ("default"), orders the history by the
   last activation (`deployment.activated_at`) and shows the "Última

@@ -43,6 +43,10 @@ pub mod addrs;
 pub(crate) mod admin;
 #[path = "backend/auth.rs"]
 mod auth;
+#[path = "backend/user_session.rs"]
+mod user_session;
+#[path = "backend/user_keys.rs"]
+mod user_keys;
 // `brand` and the llama.cpp cluster moved out to their own crates (`crates/brand`
 // and `crates/llama-engine`) so that editing backend/network/routing does not
 // rebuild them. Re-exported below so that `crate::brand::…`, `crate::llm::…`

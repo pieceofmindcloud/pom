@@ -25,6 +25,7 @@ mod tests {
                 origin_node_id: "eu".into(),
                 active: true,
                 created_at: "2026-09-07T00:00:00Z".into(),
+                user_id: String::new(),
             })
             .unwrap();
         let app = Router::new()

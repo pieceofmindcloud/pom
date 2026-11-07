@@ -227,7 +227,43 @@ own.
   (`principal`, `admin`, `member`, `visitor`) and `head: false` for visitors.
   Each plugin must check `caller.role` itself.
 
+## People signed in through a plugin
+
+A node can serve people, not only its operator. The node knows no identity
+provider: a plugin (the logs plugin) answers `auth.providers` with the login
+screen's buttons and owns every route under `/auth/<code>/` (forwarded as the
+query `auth.http`). When a sign-in completes, the plugin answers a `session`
+and the node opens a session of kind `User` (`crate::user_session`); the
+plugin never sees a cookie. Design:
+`docs/superpowers/specs/2026-11-07-demo-mode-and-user-sign-in-design.md`.
+
+- **User surface.** A user session reaches only the paths in
+  `user_session::user_may_call` (dashboard reads, the Chat, request logs and
+  statistics, the RPCs and assets of plugins that offer sign-in, `/api/ui/me`,
+  sign-out and its own keys). Anything else answers 404. It never reads the
+  connection key or other credentials (`user_session::redact`).
+- **Inference.** `POST /api/ui/chat-key` gives a user session an in-memory
+  token bound to it (`sk-pom-u-...`, eight hours) instead of the node key.
+  `Caller::user_id` carries the person into the audit, the quota check and
+  the logs plugin, which scopes every read by it (`profile: "user"`).
+- **Own API keys** (`/api/ui/my-keys`) are stored with `api_keys.user_id`;
+  refused in demo mode.
+- **Operator path.** While any provider is offered the password header opens
+  no session; the password is accepted only by `POST <POM_OPERATOR_PATH>/login`,
+  with a per-address lock-out after three failures (doubling up to 15 min) and
+  a global one past 30 failures a minute. That session ends after 30 minutes
+  idle.
+- **Demo mode** (`DEMO_MODE=1`) removes own API keys and redacts from what a
+  user session reads every address-shaped field and value and every node id
+  (replaced by a stable per-process alias), on the dashboard reads, the
+  request log and plugin RPC answers.
+
 ## Known limits
+
+- **A session chat token can be copied** from the browser and used for the
+  life of the session; it carries the person's id and quota, no more.
+- **Redaction is by shape**: a new field naming an address under an unexpected
+  key passes through until `user_session::redact` learns it.
 
 - **Rogue secondary admin**: while the principal is offline, a secondary admin
   can still issue tokens and ban members until the principal removes it;

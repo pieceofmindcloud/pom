@@ -301,12 +301,19 @@ pub(crate) async fn admit(
         .clone()
         .filter(|node| !node.is_empty())
         .unwrap_or_else(|| state.network.node_id.clone());
+    // A person signed in on this node has a budget of their own: the cached
+    // verdict is theirs, not the node's.
+    let verdict_key = caller
+        .user_id
+        .as_ref()
+        .map(|user| format!("user:{user}"))
+        .unwrap_or_else(|| node.clone());
     {
         let mut memory = lock();
         let now = Instant::now();
         memory.verdicts.retain(|_, (until, _)| *until > now);
         memory.blocked_until.retain(|_, (until, _)| *until > now);
-        if let Some((_, cached)) = memory.verdicts.get(&node) {
+        if let Some((_, cached)) = memory.verdicts.get(&verdict_key) {
             return match cached {
                 Cached::Allowed => None,
                 Cached::Denied(denial) => Some(denial.clone()),
@@ -318,6 +325,7 @@ pub(crate) async fn admit(
         "prompt_tokens": prompt_tokens,
         "prompt": truncate(prompt, MAX_PROMPT_CHARS),
         "key_label": caller.key_label,
+        "user_id": caller.user_id,
         "request_details": digest_details(request_details),
     });
     let found = lookup(state, "check", &params).await;
@@ -335,7 +343,7 @@ pub(crate) async fn admit(
         }
         return memory
             .blocked_until
-            .get(&node)
+            .get(&verdict_key)
             .map(|(_, denial)| denial.clone());
     };
     let cache = reply
@@ -345,11 +353,11 @@ pub(crate) async fn admit(
         .filter(|cache| keep && !cache.is_zero());
     if reply.get("allowed").and_then(Value::as_bool) != Some(false) {
         let mut memory = lock();
-        memory.blocked_until.remove(&node);
+        memory.blocked_until.remove(&verdict_key);
         if let Some(cache) = cache {
             memory
                 .verdicts
-                .insert(node, (Instant::now() + cache, Cached::Allowed));
+                .insert(verdict_key, (Instant::now() + cache, Cached::Allowed));
         }
         return None;
     }
@@ -357,12 +365,12 @@ pub(crate) async fn admit(
     let mut memory = lock();
     if let Some(cache) = cache {
         memory.verdicts.insert(
-            node.clone(),
+            verdict_key.clone(),
             (Instant::now() + cache, Cached::Denied(denial.clone())),
         );
         if let Some(seconds) = denial.retry_after_secs {
             memory.blocked_until.insert(
-                node,
+                verdict_key,
                 (Instant::now() + Duration::from_secs(seconds), denial.clone()),
             );
         }
@@ -476,6 +484,7 @@ mod tests {
             key_id: "k".into(),
             key_label: "k".into(),
             key_node_id: Some(node.into()),
+            user_id: None,
         };
         assert!(admit(&state, &caller("quota-test-free"), "hi", 1, &json!({})).await.is_none());
 

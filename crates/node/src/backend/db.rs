@@ -322,8 +322,9 @@ impl PomDb {
         self.with_write("save API key", |connection| {
             connection.execute(
                 "INSERT INTO api_keys
-                    (id, key_hash, key_hint, label, node_id, origin_node_id, active, created_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    (id, key_hash, key_hint, label, node_id, origin_node_id, active, created_at,
+                     user_id)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                  ON CONFLICT(id) DO UPDATE SET
                     label = excluded.label,
                     node_id = excluded.node_id,
@@ -352,6 +353,7 @@ impl PomDb {
                     },
                     key.active as i64,
                     &key.created_at,
+                    &key.user_id,
                 ],
             )?;
             Ok(())
@@ -1508,6 +1510,7 @@ impl PomDb {
             origin_node_id: String::new(),
             active: true,
             created_at: marker.into(),
+            user_id: String::new(),
         };
         self.insert_api_key(&key)
     }
@@ -1838,6 +1841,19 @@ fn ensure_schema(connection: &Connection) -> Result<()> {
         )?;
     }
     migrate_api_key_secrets(connection)?;
+    let has_user_id = connection
+        .prepare("PRAGMA table_info(api_keys)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .iter()
+        .any(|column| column == "user_id");
+    if !has_user_id {
+        // Keys a person minted after signing in through a plugin's provider.
+        connection.execute(
+            "ALTER TABLE api_keys ADD COLUMN user_id TEXT NOT NULL DEFAULT ''",
+            [],
+        )?;
+    }
     Ok(())
 }
 
@@ -1935,7 +1951,7 @@ pub(crate) fn secure_database_permissions(path: &Path) -> Result<()> {
 
 /// Columns of an `ApiKey`, in `api_key_from_row` order.
 const API_KEY_COLUMNS: &str =
-    "id, key_hash, key_hint, label, node_id, origin_node_id, active, created_at";
+    "id, key_hash, key_hint, label, node_id, origin_node_id, active, created_at, user_id";
 
 /// `local_secrets` row holding this node's own API key (`node_api_key`).
 const NODE_API_KEY_SECRET: &str = "node_api_key";
@@ -1950,6 +1966,7 @@ fn api_key_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ApiKey> {
         origin_node_id: row.get(5)?,
         active: row.get::<_, i64>(6)? != 0,
         created_at: row.get(7)?,
+        user_id: row.get(8)?,
     })
 }
 
@@ -2162,6 +2179,7 @@ mod tests {
             origin_node_id: "node-a".into(),
             active: true,
             created_at: "2026-09-02T10:00:00Z".into(),
+            user_id: String::new(),
         })
         .unwrap();
         assert!(db.api_key_for_token("sk-secret").unwrap().is_some());
@@ -2180,6 +2198,7 @@ mod tests {
             origin_node_id: "node-a".into(),
             active: true,
             created_at: "2026-09-02T10:00:00Z".into(),
+            user_id: String::new(),
         };
         reopened.insert_api_key(&key).unwrap();
         assert!(reopened.api_key_for_token("sk-secret").unwrap().is_none());
@@ -2209,6 +2228,7 @@ mod tests {
                 origin_node_id: origin.into(),
                 active: true,
                 created_at: "2026-09-07T00:00:00Z".into(),
+                user_id: String::new(),
             })
             .unwrap();
         }
@@ -2534,6 +2554,7 @@ mod tests {
             origin_node_id: node.into(),
             active: true,
             created_at: created.into(),
+            user_id: String::new(),
         };
         db.insert_api_key(&key("old", "pom-n1", "n1", "2026-01-01"))
             .unwrap();

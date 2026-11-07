@@ -834,6 +834,11 @@ pub(super) struct AdminAccessStatus {
     /// restart from a page reload.
     pub(super) boot_id: &'static str,
     pub(super) gateway_port: u16,
+    /// Sign-in providers the plugins offer (`crate::user_session`). With any,
+    /// the login screen shows only them; the password lives at the operator
+    /// path.
+    pub(super) auth_providers: Vec<serde_json::Value>,
+    pub(super) demo_mode: bool,
 }
 
 /// Random per process, never persisted: a restart is a new id. It says nothing
@@ -844,8 +849,11 @@ fn boot_id() -> &'static str {
 }
 
 pub(super) async fn admin_access_status(State(state): State<GatewayState>) -> impl IntoResponse {
+    let auth_providers = crate::user_session::auth_providers(&state).await;
     let cfg = state.auth.read().await;
     Json(AdminAccessStatus {
+        auth_providers,
+        demo_mode: crate::user_session::demo_mode(),
         admin_exposure: cfg.admin_exposure,
         requires_password: cfg.admin_exposure.requires_password(),
         default_password: cfg.admin_exposure.requires_password() && cfg.admin_password_default,
@@ -878,6 +886,7 @@ pub(super) fn is_pipeline_or_public_path(path: &str) -> bool {
         || path.starts_with("/api/internal/")
         || path.starts_with("/api/plugin-host/")
         || path.starts_with("/v1/")
+        || path.starts_with(crate::user_session::AUTH_PREFIX)
 }
 
 /// Administrative paths are protected at the server boundary. Unknown paths
@@ -1009,6 +1018,13 @@ pub(crate) async fn require_admin_for_surface(
 ) -> Response {
     let path = request.uri().path().to_owned();
     let method = request.method().clone();
+    // The operator path answers before anything else: it is where the node
+    // password opens a session once a plugin offers sign-in.
+    crate::user_session::auth_providers(&state).await;
+    let request = match crate::user_session::before_gate(&state, request).await {
+        Ok(response) => return response,
+        Err(request) => request,
+    };
     let (mut parts, body) = request.into_parts();
     // Only a request that says it comes from a node is judged as one. The
     // browser sends the connection key with no marker, and probing it logged
@@ -1140,7 +1156,13 @@ pub(crate) async fn require_admin_for_surface(
         .get::<crate::serve::TransportSecurity>()
         .is_some_and(|transport| transport.0);
     let cookie_name = crate::auth::admin_session_cookie_name(&parts.headers, secure);
-    let mut response = next.run(Request::from_parts(parts, body)).await;
+    let mut response = crate::user_session::after_gate(
+        &state,
+        auth.principal,
+        Request::from_parts(parts, body),
+        next,
+    )
+    .await;
     if let Some(session_id) = auth.session_id_to_set {
         for path in crate::auth::ADMIN_SESSION_COOKIE_PATHS {
             let value = crate::auth::session_cookie_header(&cookie_name, &session_id, secure, path);

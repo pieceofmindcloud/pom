@@ -473,13 +473,22 @@ pub fn virtual_slice_dir() -> PathBuf {
 /// Why a range of `source` cannot be served through a virtual slice, or
 /// `None` when it can.
 pub fn virtual_slice_refusal(source: &Path) -> Option<String> {
-    match crate::gguf::read_info(source) {
-        // The MoE external executor maps the model file itself and reads
-        // expert bytes by offset; a header-only file has none.
-        Ok(info) if info.is_moe() => Some("a mixture-of-experts model".into()),
-        Ok(_) => None,
-        Err(error) => Some(format!("the GGUF header could not be read: {error}")),
+    let info = match crate::gguf::read_info(source) {
+        Ok(info) => info,
+        Err(error) => return Some(format!("the GGUF header could not be read: {error}")),
+    };
+    // The MoE external executor follows a virtual slice into one source file
+    // (`moe::format_q4_0::map_tensor_source`), not into several parts.
+    if info.is_moe() {
+        match crate::multipart::declared_split_count(source) {
+            Ok(Some(parts)) if parts > 1 => {
+                return Some(format!("a mixture-of-experts model in {parts} files"))
+            }
+            Ok(_) => {}
+            Err(error) => return Some(format!("the GGUF parts could not be read: {error}")),
+        }
     }
+    None
 }
 
 /// Writes this node's range of `source_model` as a virtual slice and returns

@@ -185,14 +185,16 @@ rules.
   48-63 (last, with the MTP layer, on the fork's `pom` branch) give identical
   output. `splitter::tests::a_virtual_slice_points_at_the_same_bytes_the_real_slice_copies`
   checks every tensor's bytes on a synthetic model.
-- **Limit**: the MoE external executor (`llama-engine`,
-  `moe/format_heterogeneous.rs`) mmaps the model file itself and reads expert
-  bytes by offset, so it must refuse a virtual slice (or follow the external
-  keys) before virtual slices are used with it.
+- **MoE executor**: the expert readers in `llama-engine` map the model file
+  themselves. On the engine branch `pom-external-data` (`pom-plugin-llama.cpp`)
+  they open it through `moe::format_q4_0::map_tensor_source`, which follows a
+  virtual slice into its one source file with absolute offsets; a MoE source in
+  several files stays on real slicing.
 
 POM wiring (phase 2, first part done): `run_apply`, where a node holding the
 whole model cut its range locally, writes the virtual slice instead when
-`POM_VIRTUAL_SLICES=1` and the model is not a mixture of experts. The header
+`POM_VIRTUAL_SLICES=1`, unless the model is a mixture of experts split in
+several files. The header
 lives under `<project root>/virtual-slices/`, named by the source's path, size,
 modification time and the range, and is rewritten on every apply. The engine
 loads it as a slice and `/health` reports the range from its `pom.*` keys.
@@ -200,8 +202,9 @@ Verified live on one CPU node with Qwen3.8-27B: layers 0-31 and 32-64 (last,
 MTP layer) each written in about 15 ms, loaded, and run by the slice speed
 test. Not verified yet: a two-node pipeline generating end to end, GPUs.
 Still to do: the `model/range-load-v1` capability (replacing the opt-in once
-the pinned engine has the fork feature), the range step form for the deploy
-plan, and the MoE executor following the external keys.
+the pinned engine has the fork feature) and the range step form for the deploy
+plan. The POM branch pins the engine branch `pom-external-data` (`dc9e951`),
+whose `llama-cpp.lock` points at the fork branch of the same name.
 
 ### Part B: Strata
 

@@ -7,6 +7,9 @@ use serde_json::Value;
 
 use crate::gateway::GatewayState;
 use crate::plugin_services::ServedComponent;
+pub(crate) use crate::image_records::{
+    load_image_deployments, save_image_deployments, ComponentChoice, ImageDeployment,
+};
 
 // ── This node's assignments ──────────────────────────────────────────────────
 
@@ -207,28 +210,12 @@ pub(crate) async fn release_route(
 
 // ── Image deployments (the node an admin deploys from) ──────────────────────
 
-const DEPLOYMENTS_KEY: &str = "image_deployments";
 const APPLY_PATH: &str = "/api/ui/components/apply";
 const RELEASE_PATH: &str = "/api/ui/components/release";
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub(crate) struct ComponentChoice {
-    pub component: String,
-    pub node_id: String,
-    pub path: String,
-}
 
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct ImageDeployRequest {
     pub name: String,
-    pub components: Vec<ComponentChoice>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub(crate) struct ImageDeployment {
-    pub deploy_id: String,
-    pub name: String,
-    pub created_at: String,
     pub components: Vec<ComponentChoice>,
 }
 
@@ -255,20 +242,6 @@ pub(crate) struct Released {
     pub ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-}
-
-pub(crate) fn load_image_deployments(db: &crate::db::PomDb) -> Vec<ImageDeployment> {
-    db.local_setting_json(DEPLOYMENTS_KEY)
-        .ok()
-        .flatten()
-        .and_then(|raw| serde_json::from_str(&raw).ok())
-        .unwrap_or_default()
-}
-
-fn save_image_deployments(db: &crate::db::PomDb, deployments: &[ImageDeployment]) {
-    if let Err(error) = db.save_local_setting(DEPLOYMENTS_KEY, deployments) {
-        tracing::warn!(%error, "could not store the image deployments");
-    }
 }
 
 /// A category a component accepts: its own, or a checkpoint holding all three.
@@ -372,12 +345,18 @@ pub(crate) async fn deploy_image(
         }
     }
     let mut deployments = load_image_deployments(db);
-    deployments.push(ImageDeployment {
+    let mut record = ImageDeployment {
         deploy_id: deploy_id.clone(),
         name,
         created_at: chrono::Utc::now().to_rfc3339(),
+        created_by: String::new(),
+        family: None,
         components: request.components,
-    });
+        versions: Vec::new(),
+        active_version: 1,
+    };
+    record.ensure_versions();
+    deployments.push(record);
     save_image_deployments(db, &deployments);
     Ok(deploy_id)
 }
@@ -434,10 +413,13 @@ pub(crate) async fn undeploy_image(
         .filter(|d| d.deploy_id != deploy_id)
         .collect();
     if !pending.is_empty() {
-        deployments.push(ImageDeployment {
+        let mut record = ImageDeployment {
             components: pending,
+            versions: Vec::new(),
             ..deployment
-        });
+        };
+        record.ensure_versions();
+        deployments.push(record);
     }
     save_image_deployments(db, &deployments);
     released

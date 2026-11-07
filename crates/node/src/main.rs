@@ -61,6 +61,7 @@ mod catalog;
 #[path = "models/image_catalog.rs"]
 mod image_catalog;
 mod components;
+mod image_records;
 #[path = "network/cluster_logs.rs"]
 mod cluster_logs;
 #[path = "network/cluster_logs_policy.rs"]

@@ -1742,9 +1742,21 @@ pub(super) fn plan_with_rtt_options(
                     problem = Some(format!("{unit} exists on no machine of the cluster"));
                 }
 
+                // A target that points at its range of its own whole model
+                // writes no slice (`CAP_RANGE_LOAD`).
+                let from_whole = source
+                    .filter(|m| m.node_id == *target_id)
+                    .and_then(|m| m.holds(c.start_layer, c.end_layer))
+                    .is_some_and(|shard| shard.virtual_slice);
+                let writes_nothing = from_whole
+                    && target.is_some_and(|t| {
+                        t.inference_capabilities.as_ref().is_some_and(|caps| {
+                            caps.iter().any(|cap| cap == crate::pipeline::CAP_RANGE_LOAD)
+                        })
+                    });
                 if let (None, Some(t)) = (&problem, target) {
                     let need = needed_mb(c.size_bytes);
-                    if !ready && t.disk_free_mb > 0 && need > t.disk_free_mb {
+                    if !ready && !writes_nothing && t.disk_free_mb > 0 && need > t.disk_free_mb {
                         problem = Some(format!(
                             "{} has {} GB free on disk and {unit} weighs {} GB",
                             t.label(),
@@ -1759,7 +1771,7 @@ pub(super) fn plan_with_rtt_options(
                             kind.indefinite(),
                             gb(need)
                         ));
-                    } else if !ready {
+                    } else if !ready && !from_whole {
                         // The pull direction is the one the sender did not
                         // choose, so `transfer::safe_model_path` keeps it inside
                         // the sender's slice folder. A whole model is routinely

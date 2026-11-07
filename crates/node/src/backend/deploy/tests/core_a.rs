@@ -563,6 +563,47 @@
     }
 
     #[test]
+    fn a_range_from_the_own_whole_file_charges_disk_only_without_range_load() {
+        let options = WholeLayerOptions {
+            source_node_id: "a".to_string(),
+            total_layers: 32,
+            cuts: vec![LayerCut { end_layer: 15, layers: 16, size_bytes: 10 * GIB, remainder_bytes: 10 * GIB }],
+            granularity: Some(1),
+            rule: "every layer".to_string(),
+            reason: None,
+        };
+        let ranges = [
+            WholeRangeSelection { node_id: "a".into(), start_layer: 0, end_layer: 15 },
+            WholeRangeSelection { node_id: "b".into(), start_layer: 16, end_layer: 31 },
+        ];
+        let blocked_for = |range_load: bool| {
+            let mut machines = build(vec![
+                m("a", 900_000, &[(0, 31)]),
+                m("b", 900_000, &[(0, 31)]),
+            ]);
+            for machine in &mut machines {
+                machine.disk_free_mb = 1024;
+                machine.inference_capabilities = range_load
+                    .then(|| vec![crate::pipeline::CAP_RANGE_LOAD.to_string()]);
+            }
+            let selection = super::add_whole_ranges(&mut machines, "model", &ranges, &options).unwrap();
+            let plan = super::plan(
+                "model",
+                &machines,
+                Some(&selection),
+                &RuntimeParams::default(),
+                false,
+                DeployKind::Whole,
+                None,
+            );
+            assert!(plan.steps.iter().all(|step| step.note.as_deref().is_none_or(|note| !note.contains("over the network"))));
+            plan.blocked
+        };
+        assert!(blocked_for(false).is_some_and(|reason| reason.contains("free on disk")));
+        assert_eq!(blocked_for(true), None);
+    }
+
+    #[test]
     fn a_whole_range_on_a_machine_without_the_whole_model_is_refused_by_name() {
         let mut machines = build(vec![
             m("a", 900_000, &[(0, 31)]),

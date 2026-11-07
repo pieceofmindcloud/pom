@@ -204,9 +204,12 @@ test. Not verified yet: a two-node pipeline generating end to end, GPUs.
 The range step form exists as `whole_ranges` in the deploy request
 (`deployment.md` 1.1.1): each machine is applied with its own whole file and
 its range (`Step::from_whole_path`), with no cut on another machine and no
-copy. Still to do: the `model/range-load-v1` capability (replacing the opt-in
-once the pinned engine has the fork feature), so the disk check and the screen
-know a target points at its range instead of cutting it. The POM branch pins the engine branch `pom-external-data` (`dc9e951`),
+copy. A node with `POM_VIRTUAL_SLICES=1` announces `model/range-load-v1`
+(`pipeline::CAP_RANGE_LOAD`) and the planner then charges it no disk for such
+a range. The capability follows the opt-in rather than a check of the build:
+a node cannot tell whether its llama.cpp loads external tensor data (a
+prebuilt fork library cannot be inspected), so the operator sets it on builds
+that do. Still to do: Deploy Studio sending `whole_ranges`. The POM branch pins the engine branch `pom-external-data` (`dc9e951`),
 whose `llama-cpp.lock` points at the fork branch of the same name.
 
 ### Part B: Strata

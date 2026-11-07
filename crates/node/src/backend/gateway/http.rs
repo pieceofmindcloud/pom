@@ -15,11 +15,17 @@ pub(crate) async fn start_gateway_with_ready(
     let tls_server = state.tls_server.clone();
     let quic_server = state.quic_server.clone();
     let quic_port = state.quic_port;
+    crate::user_session::announce_operator_path();
+    let _ = crate::user_session::demo_mode();
     let admin = admin::admin_routes().with_state(state.clone());
     let app = Router::new()
         .route("/api/generate", post(handle_generate))
         .route("/generate", post(handle_generate)) // alias
         .route("/api/access", get(admin_access_status))
+        .route(
+            "/auth/*rest",
+            axum::routing::any(crate::user_session::auth_http),
+        )
         .route("/api/public/network", get(public_network))
         .route("/api/public/networks", get(public_networks))
         .route("/api/public/networks/locate", get(locate_public_network))

@@ -1221,6 +1221,7 @@ pub(crate) fn image_caller(state: &GatewayState, plugin_code: &str) -> crate::re
         key_id: format!("plugin:{plugin_code}"),
         key_label: "ComfyUI".into(),
         key_node_id: Some(state.network.node_id.clone()),
+        user_id: None,
     }
 }
 
@@ -2179,6 +2180,7 @@ mod tests {
             key_id: "plugin:comfyui".into(),
             key_label: "ComfyUI".into(),
             key_node_id: Some("n".into()),
+            user_id: None,
         };
         let image = crate::quota::check_params(
             "n",

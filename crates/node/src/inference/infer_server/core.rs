@@ -885,6 +885,24 @@ impl crate::relay::InProcessInference for InferenceAppState {
                 .await
                 .into_response()
             }
+            "/v1/session/rollback" => {
+                let request = serde_json::from_slice(&body)
+                    .map_err(|e| anyhow::anyhow!("invalid rollback: {e}"))?;
+                handle_rollback(State(self.clone()), Json(request))
+                    .await
+                    .into_response()
+            }
+            "/v1/session/release" => {
+                let request = serde_json::from_slice(&body)
+                    .map_err(|e| anyhow::anyhow!("invalid release: {e}"))?;
+                handle_release(
+                    State(self.clone()),
+                    axum::http::HeaderMap::new(),
+                    Json(request),
+                )
+                .await
+                .into_response()
+            }
             _ => {
                 return Err(anyhow::anyhow!(
                     "unknown in-process inference route: {path}"

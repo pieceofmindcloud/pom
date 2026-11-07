@@ -123,3 +123,25 @@ describe("canAccessEnterprise", () => {
     expect(canAccessEnterprise("/statistics", true)).toBe(true);
   });
 });
+
+describe("signed-in person (user session)", () => {
+  it("opens only the user surface, and own keys only outside demo mode", async () => {
+    const session = await import("./session");
+    session.setSessionInfo({ kind: "user", demo_mode: true, can_mint_keys: false, user: { user_id: "u1", label: "Ana", provider: "google", plugin: "logs" } });
+    try {
+      expect(canAccessRoute("/", "admin")).toBe(true);
+      expect(canAccessRoute("/chat", "worker")).toBe(true);
+      expect(canAccessRoute("/deploy", "admin")).toBe(false);
+      expect(canAccessRoute("/config/keys/api", "admin")).toBe(false);
+      expect(canAccessRoute("/config/my-keys", "admin")).toBe(false);
+      session.setSessionInfo({ kind: "user", demo_mode: false, can_mint_keys: true });
+      expect(canAccessRoute("/config/my-keys", "visitor")).toBe(true);
+    } finally {
+      session.setSessionInfo(null);
+    }
+  });
+
+  it("keeps own keys away from every node profile", () => {
+    expect(canAccessRoute("/config/my-keys", "admin")).toBe(false);
+  });
+});

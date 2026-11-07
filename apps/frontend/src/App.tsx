@@ -24,17 +24,54 @@ import { ChangePassword } from "./components/ChangePassword";
 import { FirstRunWizard, useFirstRunWizard } from "./components/FirstRunWizard";
 import { EnterpriseFeatureShowcase } from "./components/EnterpriseFeatureShowcase";
 import { useI18n } from "./i18n/provider";
+import type { AdminAccessStatus } from "./lib/types";
+import { loadSession } from "./lib/session";
 import pomMark from "./assets/pom-mark-dark.png";
 import { BrandLanguageSwitch } from "./components/BrandLanguageSwitch";
 import { Panel, PanelHeader } from "./components/ui";
 
+
+/** Where the operator page probes from: the first path segment, never the app's own mount. */
+function operatorBase(): string | null {
+  // `main.tsx` moves an address outside the basename under `/admin-ui`, so
+  // the operator path arrives as `/admin-ui/<path>`.
+  let path = window.location.pathname.replace(/\/+$/, "");
+  if (path === "/admin-ui" || path.startsWith("/admin-ui/")) path = path.slice("/admin-ui".length);
+  if (!path || path.split("/").length !== 2) return null;
+  return path;
+}
 
 function AdminAccessGate({ onAuthenticated }: { onAuthenticated: () => void }) {
   const { t } = useI18n();
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
+  const [waitSeconds, setWaitSeconds] = useState<number | null>(null);
+  const [access, setAccess] = useState<AdminAccessStatus | null>(null);
+  /** `null` until probed; a path when this page is the operator path. */
+  const [operatorPath, setOperatorPath] = useState<string | null | undefined>(undefined);
   const formRef = useRef<HTMLFormElement>(null);
+
+  useEffect(() => {
+    let live = true;
+    void api
+      .get<AdminAccessStatus>("/api/access", { auth: false })
+      .then((value) => live && setAccess(value))
+      .catch(() => undefined);
+    const base = operatorBase();
+    if (!base) {
+      setOperatorPath(null);
+    } else {
+      void fetch(`${base}/login`, { credentials: "same-origin" })
+        .then((response) => live && setOperatorPath(response.status === 204 ? base : null))
+        .catch(() => live && setOperatorPath(null));
+    }
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  const providers = access?.auth_providers ?? [];
 
   /** Shakes the form on a refused password, except with reduced motion. */
   function shake() {
@@ -63,6 +100,35 @@ function AdminAccessGate({ onAuthenticated }: { onAuthenticated: () => void }) {
     }
     setBusy(true);
     setFailed(false);
+    setWaitSeconds(null);
+    if (operatorPath) {
+      // The operator path opens the session itself (cookie); the password
+      // never becomes a header the rest of the app would send.
+      try {
+        const response = await fetch(`${operatorPath}/login`, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ password: draft }),
+        });
+        if (response.status === 204) {
+          window.location.assign("/");
+          return;
+        }
+        if (response.status === 429) {
+          const body = (await response.json().catch(() => ({}))) as { retry_after_secs?: number };
+          setWaitSeconds(body.retry_after_secs ?? 60);
+        }
+        setFailed(true);
+        shake();
+      } catch {
+        setFailed(true);
+        shake();
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
     setAdminAccessToken(draft);
     try {
       await api.get("/api/ui/node", { auth: false });
@@ -76,8 +142,12 @@ function AdminAccessGate({ onAuthenticated }: { onAuthenticated: () => void }) {
     }
   }
 
+  // With sign-in providers, the public login shows only them: the password
+  // form exists only at the operator path, which nothing here names.
+  const showProviders = providers.length > 0 && !operatorPath;
+
   // Same visual signature as the pieceofmind.cloud home page: the floating
-  // dark panel with the brand, over the theme background. Only the password is asked.
+  // dark panel with the brand, over the theme background.
   return (
     <main className="pom-login">
       {/* The language comes from the browser (English for those not using Portuguese); the
@@ -88,27 +158,51 @@ function AdminAccessGate({ onAuthenticated }: { onAuthenticated: () => void }) {
         <p className="pom-login-sub">PIECE OF MIND</p>
         {/* A piece of mind traveling between machines: decorative. */}
         <span className="pom-login-link" aria-hidden="true"><i /><i /><i /></span>
-        <form ref={formRef} className="pom-login-form" autoComplete="on" onSubmit={(event) => void authenticate(event)}>
-          <label className="sr-only" htmlFor="admin-access-password">{t("accessGate.passwordLabel")}</label>
-          <input
-            autoFocus
-            className="pom-login-input"
-            type="password"
-            name="password"
-            id="admin-access-password"
-            value={draft}
-            placeholder={t("accessGate.passwordPlaceholder")}
-            onChange={(event) => setDraft(event.target.value)}
-            aria-label={t("accessGate.passwordLabel")}
-            aria-invalid={failed || undefined}
-            autoComplete="current-password"
-          />
-          <button className="pom-login-button" type="submit" disabled={busy}>
-            {busy ? <span className="pom-login-spinner" aria-hidden="true" /> : null}
-            {t("accessGate.submit")}
-          </button>
-          {failed && <p role="alert" className="pom-login-error">{t("accessGate.passwordInvalid")}</p>}
-        </form>
+        {showProviders ? (
+          <div className="pom-login-form">
+            <p className="pom-login-error" style={{ opacity: 0.8 }}>{t("accessGate.providersSubtitle")}</p>
+            {providers.map((provider) => (
+              <a
+                key={`${provider.plugin}:${provider.id}`}
+                className="pom-login-button"
+                href={provider.start_url}
+                data-provider={provider.id}
+              >
+                {t("accessGate.signInWith", { provider: provider.label })}
+              </a>
+            ))}
+            {access?.demo_mode && <p className="pom-login-error" style={{ opacity: 0.7 }}>{t("accessGate.demoNotice")}</p>}
+          </div>
+        ) : (
+          <form ref={formRef} className="pom-login-form" autoComplete="on" onSubmit={(event) => void authenticate(event)}>
+            {operatorPath && <p className="pom-login-error" style={{ opacity: 0.8 }}>{t("accessGate.operatorSubtitle")}</p>}
+            <label className="sr-only" htmlFor="admin-access-password">{t("accessGate.passwordLabel")}</label>
+            <input
+              autoFocus
+              className="pom-login-input"
+              type="password"
+              name="password"
+              id="admin-access-password"
+              value={draft}
+              placeholder={t("accessGate.passwordPlaceholder")}
+              onChange={(event) => setDraft(event.target.value)}
+              aria-label={t("accessGate.passwordLabel")}
+              aria-invalid={failed || undefined}
+              autoComplete="current-password"
+            />
+            <button className="pom-login-button" type="submit" disabled={busy}>
+              {busy ? <span className="pom-login-spinner" aria-hidden="true" /> : null}
+              {t("accessGate.submit")}
+            </button>
+            {failed && (
+              <p role="alert" className="pom-login-error">
+                {waitSeconds !== null
+                  ? t("accessGate.tooManyAttempts", { seconds: waitSeconds })
+                  : t("accessGate.passwordInvalid")}
+              </p>
+            )}
+          </form>
+        )}
       </section>
     </main>
   );
@@ -164,6 +258,7 @@ export const routeLoaders = {
   networkParticipants: () => import("./routes/NetworkSettings").then(({ NetworkParticipants }) => NetworkParticipants),
   myMachine: () => import("./routes/MyMachine").then(({ MyMachine }) => MyMachine),
   myBudget: () => import("./routes/MyBudget").then(({ MyBudget }) => MyBudget),
+  myKeys: () => import("./routes/MyKeys").then(({ MyKeys }) => MyKeys),
   adminAuthority: () => import("./routes/AdminAuthority").then(({ AdminAuthority }) => AdminAuthority),
   trustAnchor: () => import("./routes/TrustAnchor").then(({ TrustAnchor }) => TrustAnchor),
   networkSharing: () => import("./routes/NetworkSharing").then(({ NetworkSharing }) => NetworkSharing),
@@ -189,6 +284,7 @@ function lazyRoute<T extends React.ComponentType<any>>(loader: () => Promise<T>)
 
 const PublicNetworks = lazyRoute(routeLoaders.publicNetworks);
 const Chat = lazyRoute(routeLoaders.chat);
+const MyKeys = lazyRoute(routeLoaders.myKeys);
 const NetworkChat = lazyRoute(routeLoaders.networkChat);
 const Dashboard = lazyRoute(routeLoaders.dashboard);
 const DeploymentLogs = lazyRoute(routeLoaders.deploymentLogs);
@@ -334,6 +430,17 @@ export default function App() {
    * behind an `adminReady` left over from a session that no longer exists.
    */
   useEffect(() => onAdminSessionLost(() => setAdminReady(false)), []);
+  const [sessionKnown, setSessionKnown] = useState(false);
+  const pastGate =
+    adminSurface.data === "available" || (adminSurface.data === "requires-password" && adminReady);
+  useEffect(() => {
+    if (!pastGate) return;
+    let live = true;
+    void loadSession().then(() => live && setSessionKnown(true));
+    return () => {
+      live = false;
+    };
+  }, [pastGate]);
 
   // Undefined means the probe has not answered yet. Rendering either branch on
   // a guess flashes the wrong screen, so hold the paint for one request.
@@ -343,6 +450,8 @@ export default function App() {
   if (adminSurface.data === "requires-password" && !adminReady) {
     return <AdminAccessGate onAuthenticated={() => setAdminReady(true)} />;
   }
+  // Past the gate: who this session is decides what the menu offers.
+  if (!sessionKnown) return <div className="h-full bg-ink" />;
 
   /*
    * The native macOS status bar panel loads this route inside a narrow
@@ -478,6 +587,7 @@ export default function App() {
                         <Route path="/config/network/participants" element={<Page><NetworkParticipants /></Page>} />
                         <Route path="/config/my-machine" element={<Page><MyMachine /></Page>} />
                         <Route path="/config/usage" element={<Page><MyBudget /></Page>} />
+                        <Route path="/config/my-keys" element={<Page><MyKeys /></Page>} />
                         <Route path="/config/budget" element={<Navigate to="/config/usage" replace />} />
                         <Route path="/config/administration" element={<Page><AdminAuthority /></Page>} />
                         <Route path="/config/sharing" element={<Page><NetworkSharing /></Page>} />

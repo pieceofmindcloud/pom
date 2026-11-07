@@ -186,6 +186,20 @@ export interface AdminAccessStatus {
   /** Identifies this run of the node; changes on every restart. */
   boot_id?: string;
   gateway_port: number;
+  /**
+   * Sign-in providers offered by plugins. With any, the login screen shows
+   * only them and the password lives at the operator path.
+   */
+  auth_providers?: AuthProvider[];
+  demo_mode?: boolean;
+}
+
+export interface AuthProvider {
+  plugin: string;
+  id: string;
+  label: string;
+  icon: string;
+  start_url: string;
 }
 
 /** Administrative state queried after the page has already been authenticated. */

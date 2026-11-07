@@ -620,6 +620,13 @@ boundary.
   Chat's workflows, `POST /api/ui/chat/image`, `GET /api/ui/chat/image/:hash`,
   the internal workflow run); the `host_api` routes are in `plugin_host_api.rs`.
   Contracts: `docs/subsystems/deployment.md` 1.7 and `http-api.md` "Chat images".
+- `user_session.rs` - people on the node: the session principal
+  (`Operator` / `User`), the providers plugins offer (`auth_providers`,
+  `/api/access.auth_providers`), the public `/auth/<code>/*` forwarder
+  (`auth_http`), the operator path and its throttle (`before_gate`), the user
+  surface allowlist, redaction and session chat tokens (`after_gate`, called
+  by `gateway::require_admin_for_surface`), and `DEMO_MODE`. `user_keys.rs`
+  serves a person's own `/api/ui/my-keys`. See `security-model.md`.
 - `quota.rs` - token budgets before the pipeline: `admit` asks the local logs
   plugin, then each live admin (`peer.quota.check` over the signed peer call),
   and the inference handlers answer its `Denial` with 429 + `Retry-After` and

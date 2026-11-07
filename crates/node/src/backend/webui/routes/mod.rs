@@ -72,6 +72,13 @@ const ROUTE_RULES: &[RouteRule] = &[
         method: None,
         scope: RouteScope::HandlerAuth,
     },
+    // A plugin's sign-in flow (`crate::user_session::auth_http`): public by
+    // design, it is how a person without a session gets one.
+    RouteRule {
+        prefix: "/auth/",
+        method: None,
+        scope: RouteScope::HandlerAuth,
+    },
     RouteRule {
         prefix: "/api/public/",
         method: None,
@@ -249,6 +256,24 @@ const ROUTE_RULES: &[RouteRule] = &[
     },
     RouteRule {
         prefix: "/api/ui/chat/history",
+        method: None,
+        scope: RouteScope::LocalOnly,
+    },
+    // The session's own identity, sign-out and a signed-in person's own API
+    // keys: answered by `crate::user_session` inside the gate, local to this
+    // node like every session.
+    RouteRule {
+        prefix: "/api/ui/me",
+        method: None,
+        scope: RouteScope::LocalOnly,
+    },
+    RouteRule {
+        prefix: "/api/ui/logout",
+        method: None,
+        scope: RouteScope::LocalOnly,
+    },
+    RouteRule {
+        prefix: "/api/ui/my-keys",
         method: None,
         scope: RouteScope::LocalOnly,
     },

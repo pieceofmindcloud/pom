@@ -92,6 +92,8 @@ describe("navForProfile", () => {
     const labels = navForProfile("admin").map((s) => s.labelKey);
     expect(labels).toEqual(NAV.map((s) => s.labelKey)
       .filter((label) => label !== "nav.statistics")
+      // A signed-in person's own keys: never a node profile's.
+      .filter((label) => label !== "nav.myKeys")
       .map((label) => label === "nav.logs" ? "nav.businessPack" : label));
     expect(navFooterForProfile("admin")).toEqual([]);
     expect(navFooterForProfile("worker")).toEqual([]);

@@ -303,6 +303,7 @@ pub(crate) fn check_params(
         "prompt_tokens": prompt_tokens,
         "prompt": truncate(prompt, MAX_PROMPT_CHARS),
         "key_label": caller.key_label,
+        "user_id": caller.user_id,
         "request_details": digest_details(request_details),
     });
     if request_details.get("kind").and_then(Value::as_str) == Some("image") {
@@ -316,11 +317,11 @@ pub(crate) fn check_params(
 
 /// The cache key of a verdict: a node's image budget and its token budget
 /// are separate, so one refusal never stands for the other.
-fn verdict_key(node: &str, request_details: &Value) -> String {
+fn verdict_key(owner: &str, request_details: &Value) -> String {
     if request_details.get("kind").and_then(Value::as_str) == Some("image") {
-        format!("{node}|image")
+        format!("{owner}|image")
     } else {
-        node.to_owned()
+        owner.to_owned()
     }
 }
 
@@ -337,7 +338,14 @@ pub(crate) async fn admit(
         .clone()
         .filter(|node| !node.is_empty())
         .unwrap_or_else(|| state.network.node_id.clone());
-    let key = verdict_key(&node, request_details);
+    // A person signed in on this node has a budget of their own: the cached
+    // verdict is theirs, not the node's; an image request is kept apart.
+    let owner = caller
+        .user_id
+        .as_ref()
+        .map(|user| format!("user:{user}"))
+        .unwrap_or_else(|| node.clone());
+    let key = verdict_key(&owner, request_details);
     {
         let mut memory = lock();
         let now = Instant::now();
@@ -510,6 +518,7 @@ mod tests {
             key_id: "k".into(),
             key_label: "k".into(),
             key_node_id: Some(node.into()),
+            user_id: None,
         };
         assert!(admit(&state, &caller("quota-test-free"), "hi", 1, &json!({})).await.is_none());
 
@@ -533,6 +542,7 @@ mod tests {
             key_id: "k".into(),
             key_label: "k".into(),
             key_node_id: Some("quota-test-split".into()),
+            user_id: None,
         };
         let image = json!({"kind": "image", "images": 1});
         lock().blocked_until.insert(

@@ -63,6 +63,11 @@ accessGate.title,Access token required,Token de acesso necessário
 accessGate.unavailable,The node did not publish its administrative access policy. The interface stays locked until it can verify that policy.,O nó não publicou a política de acesso administrativo. A interface permanece fechada até conseguir verificá-la.
 accessGate.unavailableTitle,Interface unavailable,Interface indisponível
 accessGate.username,Account,Conta
+accessGate.operatorSubtitle,Operator access to this node. Sessions end after 30 minutes without use.,Acesso do operador a este nó. A sessão termina após 30 minutos sem uso.
+accessGate.providersSubtitle,Sign in to use this network.,Entre para usar esta rede.
+accessGate.signInWith,Sign in with {provider},Entrar com {provider}
+accessGate.tooManyAttempts,Too many attempts. Try again in {seconds} s.,Muitas tentativas. Tente de novo em {seconds} s.
+accessGate.demoNotice,Demonstration: you can watch the network and run inference within your quota.,Demonstração: você pode acompanhar a rede e fazer inferência dentro da sua cota.
 adminAuthority.actionFailed,The authority action was refused.,A ação de autoridade foi recusada.
 adminAuthority.actionsSubtitle,Only the principal can change the administrator chain.,Somente o principal pode alterar a cadeia de administradores.
 adminAuthority.actionsTitle,Administrator actions,Ações de administrador
@@ -3440,3 +3445,15 @@ wizard.welcomeEyebrow,A calmer way to start,Um começo mais tranquilo
 wizard.welcomeSubtitle,Your AI. Your infrastructure. Your network. Set up a capable local network in a few clear steps.,Sua IA. Sua infraestrutura. Sua rede. Configure uma rede local capaz em poucos passos claros.
 wizard.welcomeTitle,Piece of Mind,Piece of Mind
 wizard.whenIdle,Only when this computer is idle,Somente quando o computador estiver ocioso
+session.signOut,Sign out,Sair
+session.demo,Demo,Demo
+myKeys.title,My API keys,Minhas chaves de API
+myKeys.subtitle,Keys for using this node's models from your own tools. Requests with them count against your quota and appear in your logs.,Chaves para usar os modelos deste nó nas suas ferramentas. As requisições com elas contam na sua cota e aparecem nos seus logs.
+myKeys.create,Create key,Criar chave
+myKeys.label,Name (optional),Nome (opcional)
+myKeys.copyOnce,Copy the key now: it is shown only once.,Copie a chave agora: ela é mostrada só uma vez.
+myKeys.revoke,Revoke,Revogar
+myKeys.revoked,revoked,revogada
+myKeys.empty,No keys yet.,Nenhuma chave ainda.
+myKeys.failed,The node refused the request.,O nó recusou o pedido.
+nav.myKeys,My API keys,Minhas chaves de API

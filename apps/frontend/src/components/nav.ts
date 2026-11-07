@@ -111,6 +111,8 @@ export const NAV: NavSection[] = [
     ],
   },
   { labelKey: "nav.statistics", icon: ChartNoAxesColumn, to: "/statistics" },
+  // A signed-in person's own keys; only their session opens it (`lib/access.ts`).
+  { labelKey: "nav.myKeys", icon: KeyRound, to: "/config/my-keys" },
   // The plugin catalog is a storefront with a place of its own in the menu,
   // not a setting. The menus of the installed plugins are inserted right
   // after it, before Documentation (`withPluginMenus`).

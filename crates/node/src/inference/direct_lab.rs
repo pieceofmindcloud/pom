@@ -759,6 +759,7 @@ async fn direct_pipeline_reproduces_both_missing_credentials() {
             origin_node_id: "gateway".into(),
             active: true,
             created_at: "2026-09-07T00:00:00Z".into(),
+            user_id: String::new(),
         });
     }
     let http = crate::peer_client::PeerClients::new(Duration::from_secs(600));

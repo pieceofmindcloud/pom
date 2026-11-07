@@ -1,6 +1,6 @@
 import clsx from "clsx";
 import { AnimatePresence, motion } from "framer-motion";
-import { ArrowUpCircle, ChevronDown, ChevronUp, Moon, Sun, X } from "lucide-react";
+import { ArrowUpCircle, ChevronDown, ChevronUp, LogOut, Moon, Sun, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
@@ -16,6 +16,7 @@ import { keys, useNode, usePluginUi, usePomCoreUpdateStatus } from "../lib/queri
 import { canAccessRoute } from "../lib/access";
 import { useTheme } from "../lib/theme";
 import { LeaveNetworkButton } from "./LeaveNetworkButton";
+import { isUserSession, sessionInfo, signOut } from "../lib/session";
 import { useToast } from "../lib/toast";
 import { TlsChip } from "./TlsIndicator";
 import { LanguageFlags } from "./LanguageFlags";
@@ -251,7 +252,19 @@ function SidebarUtilityControls({ collapsed }: { collapsed: boolean }) {
             {node?.pom_dev_mode && node.build_commit ? ` · ${node.build_commit}` : null}
           </span>
         )}
-        {known && profile === "visitor" && <LeaveNetworkButton />}
+        {known && profile === "visitor" && !isUserSession() && <LeaveNetworkButton />}
+        {isUserSession() && (
+          <button
+            type="button"
+            onClick={() => void signOut()}
+            title={sessionInfo()?.user?.label}
+            aria-label={t("session.signOut")}
+            className="flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-line px-2 text-xs text-muted hover:text-fg"
+          >
+            <LogOut className="h-3.5 w-3.5" />
+            {!collapsed && t("session.signOut")}
+          </button>
+        )}
         <button
           type="button"
           onClick={toggle}

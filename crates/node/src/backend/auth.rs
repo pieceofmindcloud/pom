@@ -43,6 +43,12 @@ struct AdminSession {
     id_digest: [u8; 32],
     token_digest: [u8; 32],
     expires_at: Instant,
+    /// Who the session is: the node's operator (password) or a person who
+    /// signed in through a plugin's provider (`crate::user_session`).
+    principal: crate::user_session::SessionPrincipal,
+    /// Idle limit, renewed on each use. `None` keeps only `expires_at`.
+    idle: Option<Duration>,
+    last_seen: Instant,
 }
 
 fn digest(value: &str) -> [u8; 32] {
@@ -55,12 +61,57 @@ impl AdminSessionStore {
     }
 
     pub(crate) fn issue_at(&mut self, token: &str, now: Instant, ttl: Duration) -> String {
+        self.issue_principal_at(
+            token,
+            crate::user_session::SessionPrincipal::Operator,
+            None,
+            now,
+            ttl,
+        )
+    }
+
+    /// An operator session opened at the operator path: the same as `issue`
+    /// with an idle limit, because that path is reachable from the internet.
+    pub(crate) fn issue_operator_idle(&mut self, token: &str, idle: Duration) -> String {
+        self.issue_principal_at(
+            token,
+            crate::user_session::SessionPrincipal::Operator,
+            Some(idle),
+            Instant::now(),
+            ADMIN_SESSION_TTL,
+        )
+    }
+
+    /// A person's session, opened by a plugin's sign-in. It is not bound to
+    /// the node password, so changing the password does not end it - only
+    /// `invalidate_all` and the expiry do.
+    pub(crate) fn issue_user(&mut self, user: crate::user_session::UserIdentity) -> String {
+        self.issue_principal_at(
+            "",
+            crate::user_session::SessionPrincipal::User(user),
+            None,
+            Instant::now(),
+            ADMIN_SESSION_TTL,
+        )
+    }
+
+    fn issue_principal_at(
+        &mut self,
+        token: &str,
+        principal: crate::user_session::SessionPrincipal,
+        idle: Option<Duration>,
+        now: Instant,
+        ttl: Duration,
+    ) -> String {
         let id = uuid::Uuid::new_v4().simple().to_string();
-        self.sessions.retain(|session| session.expires_at > now);
+        self.sessions.retain(|session| session.live_at(now));
         self.sessions.push(AdminSession {
             id_digest: digest(&id),
             token_digest: digest(token),
             expires_at: now + ttl,
+            principal,
+            idle,
+            last_seen: now,
         });
         id
     }
@@ -70,18 +121,60 @@ impl AdminSessionStore {
     }
 
     pub(crate) fn validate_at(&mut self, session_id: &str, token: &str, now: Instant) -> bool {
-        self.sessions.retain(|session| session.expires_at > now);
+        self.principal_at(session_id, token, now).is_some()
+    }
+
+    /// The principal of a live session. An operator session must still match
+    /// the password in force (`token`); a user session matches by id alone.
+    pub(crate) fn principal(
+        &mut self,
+        session_id: &str,
+        token: &str,
+    ) -> Option<crate::user_session::SessionPrincipal> {
+        self.principal_at(session_id, token, Instant::now())
+    }
+
+    fn principal_at(
+        &mut self,
+        session_id: &str,
+        token: &str,
+        now: Instant,
+    ) -> Option<crate::user_session::SessionPrincipal> {
+        self.sessions.retain(|session| session.live_at(now));
         let session_digest = digest(session_id);
         let token_digest = digest(token);
-        self.sessions.iter().fold(false, |valid, session| {
-            let id_matches = session.id_digest.ct_eq(&session_digest);
-            let token_matches = session.token_digest.ct_eq(&token_digest);
-            valid | bool::from(id_matches & token_matches)
-        })
+        let mut found = None;
+        for (index, session) in self.sessions.iter().enumerate() {
+            let id_matches = bool::from(session.id_digest.ct_eq(&session_digest));
+            let token_matches = bool::from(session.token_digest.ct_eq(&token_digest));
+            let is_user = matches!(
+                session.principal,
+                crate::user_session::SessionPrincipal::User(_)
+            );
+            if id_matches && (token_matches || is_user) {
+                found = Some(index);
+            }
+        }
+        let session = &mut self.sessions[found?];
+        session.last_seen = now;
+        Some(session.principal.clone())
+    }
+
+    /// Ends one session (sign-out).
+    pub(crate) fn revoke(&mut self, session_id: &str) {
+        let session_digest = digest(session_id);
+        self.sessions
+            .retain(|session| !bool::from(session.id_digest.ct_eq(&session_digest)));
     }
 
     pub(crate) fn invalidate_all(&mut self) {
         self.sessions.clear();
+    }
+}
+
+impl AdminSession {
+    fn live_at(&self, now: Instant) -> bool {
+        self.expires_at > now && self.idle.map_or(true, |idle| now < self.last_seen + idle)
     }
 }
 
@@ -146,7 +239,7 @@ pub(crate) fn session_cookie_header(
 
 /// Every `Cookie` header counts: over HTTP/2 a browser splits its cookies into
 /// one header each, and the session's need not be the first.
-fn session_id_from_cookie(headers: &HeaderMap, secure: bool) -> Option<&str> {
+pub(crate) fn session_id_from_cookie(headers: &HeaderMap, secure: bool) -> Option<&str> {
     let cookie_name = admin_session_cookie_name(headers, secure);
     headers
         .get_all(axum::http::header::COOKIE)
@@ -633,6 +726,9 @@ impl IntoResponse for AuthRejection {
 
 pub struct AdminAuth {
     pub(crate) session_id_to_set: Option<String>,
+    /// Who passed the gate. Every path that existed before user sign-in
+    /// yields `Operator`.
+    pub(crate) principal: crate::user_session::SessionPrincipal,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -835,6 +931,7 @@ where
             return if is_loopback_addr(peer.0) {
                 Ok(AdminAuth {
                     session_id_to_set: None,
+                    principal: crate::user_session::SessionPrincipal::Operator,
                 })
             } else {
                 Err(AdminAuthRejection::LocalhostOnly)
@@ -852,6 +949,7 @@ where
         {
             return Ok(AdminAuth {
                 session_id_to_set: None,
+                principal: crate::user_session::SessionPrincipal::Operator,
             });
         }
 
@@ -863,15 +961,24 @@ where
             let State(sessions): State<AdminSessionState> = State::from_request_parts(parts, state)
                 .await
                 .map_err(|_| AdminAuthRejection::InvalidToken)?;
-            if sessions
+            let principal = sessions
                 .lock()
                 .await
-                .validate(&session_id, &configured_password_hash)
-            {
+                .principal(&session_id, &configured_password_hash);
+            if let Some(principal) = principal {
                 return Ok(AdminAuth {
                     session_id_to_set: None,
+                    principal,
                 });
             }
+        }
+
+        // Once a plugin offers sign-in providers, the password opens a
+        // session only at the operator path (`crate::user_session`): the
+        // header is ignored everywhere else, so the login screen and the API
+        // give no way to try passwords.
+        if crate::user_session::sign_in_offered() {
+            return Err(AdminAuthRejection::MissingToken);
         }
 
         let supplied = parts
@@ -886,6 +993,7 @@ where
             let session_id = sessions.lock().await.issue(&configured_password_hash);
             Ok(AdminAuth {
                 session_id_to_set: Some(session_id),
+                principal: crate::user_session::SessionPrincipal::Operator,
             })
         } else {
             Err(AdminAuthRejection::InvalidToken)
@@ -906,6 +1014,17 @@ where
             State::from_request_parts(parts, state)
                 .await
                 .map_err(|_| AuthRejection::MissingHeader)?;
+        // A person's session never sees the connection key. The UI gate puts
+        // this marker on a request only after checking the session and the
+        // user surface allowlist (`crate::user_session::user_may_call`); a
+        // client cannot set a request extension.
+        if parts
+            .extensions
+            .get::<crate::user_session::SessionPrincipal>()
+            .is_some_and(crate::user_session::SessionPrincipal::is_user)
+        {
+            return Ok(ConnectionAuth);
+        }
         if gateway.auth.read().await.connection_key.is_empty()
             && parts
                 .extensions
@@ -997,6 +1116,14 @@ where
             return Err(AuthRejection::MissingHeader);
         }
 
+        for token in &candidates {
+            if let Some(caller) = crate::user_session::chat_token_caller(token) {
+                return Ok(ApiKeyAuth {
+                    caller,
+                    token: (*token).into(),
+                });
+            }
+        }
         for token in candidates {
             // SQLite is authoritative here rather than the startup snapshot:
             // a key minted by another process becomes usable immediately, and
@@ -1009,6 +1136,7 @@ where
                         key_id: api_key_identity(&key),
                         key_label: key.label,
                         key_node_id: (!key.node_id.is_empty()).then_some(key.node_id),
+                        user_id: (!key.user_id.is_empty()).then_some(key.user_id),
                     },
                     token: token.into(),
                 });
@@ -1388,6 +1516,7 @@ mod tests {
             origin_node_id: "node-a".into(),
             active: true,
             created_at: String::new(),
+            user_id: String::new(),
         };
         assert_eq!(api_key_identity(&key), "finance-id");
         assert_ne!(api_key_identity(&key), "sk-secret");
@@ -1453,6 +1582,7 @@ mod tests {
                     origin_node_id: String::new(),
                     active: true,
                     created_at: String::new(),
+                    user_id: String::new(),
                 },
                 crate::config::ApiKey {
                     id: "revoked-id".into(),
@@ -1463,6 +1593,7 @@ mod tests {
                     origin_node_id: String::new(),
                     active: false,
                     created_at: String::new(),
+                    user_id: String::new(),
                 },
             ],
             blocked_nodes: vec![],
@@ -1525,6 +1656,7 @@ mod tests {
                 origin_node_id: String::new(),
                 active: true,
                 created_at: String::new(),
+                user_id: String::new(),
             }],
             blocked_nodes: vec![],
             quic_enabled: false,
@@ -1570,6 +1702,7 @@ mod tests {
             origin_node_id: "eu".into(),
             active: true,
             created_at: String::new(),
+            user_id: String::new(),
         };
         state.database.insert_api_key(&key).unwrap();
         state.auth.write().await.api_keys.push(key);

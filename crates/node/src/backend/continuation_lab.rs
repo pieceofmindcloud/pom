@@ -503,6 +503,7 @@ async fn no_with_peer_capacities(
         origin_node_id: "eu".into(),
         active: true,
         created_at: String::new(),
+        user_id: String::new(),
     };
     state.database.insert_api_key(&api_key).unwrap();
     state.auth.write().await.api_keys.push(api_key);

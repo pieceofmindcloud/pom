@@ -27,7 +27,7 @@ Two changes the operator asked for after using image generation in the Chat:
 | The Generate image menu | Three modes: **Automatic** (default: the tool is offered), **Text only** (no tool), **Always image** (today's forced mode). The menu still picks the workflow and size the tool uses (operator). |
 | Image arrives, LLM holds the GPU | If the LLM has no request in flight, unload it, run the image, let it come back on its next request. With a request in flight the image waits (operator). |
 | LLM request arrives during an image | The image pauses between two of its network calls, ComfyUI frees the GPU, the LLM loads and answers; the image resumes afterwards (operator). |
-| Engines | llama.cpp and Strata; an engine whose reload is long (Strata) only yields when its deployment allows it, off by default (operator). |
+| Engines | llama.cpp and Strata, both only when the deployment allows it: "Yield the GPU to images" is a POM setting, off by default for every engine (operator). |
 
 ## 3. The image tool
 
@@ -122,9 +122,9 @@ zero and stays there for a grace period (default 10 s), held image ops resume
 
 ### 4.5 Deployment settings
 
-`RuntimeParams.yield_gpu_to_images: bool`, default true for llama.cpp
-deployments and false for a plugin inference service (Strata), editable in the
-deploy inspector's POM settings. A deployment that does not yield is never
+`RuntimeParams.yield_gpu_to_images: bool`, **off by default for every engine**
+(llama.cpp and plugin inference services alike), shown in the deploy
+inspector's **POM settings** card. A deployment that does not yield is never
 unloaded for an image; images then wait for its idle unload or run in the VRAM
 left.
 

@@ -151,6 +151,12 @@ pub struct DeployRequest {
     /// on that proposer as the next pipeline stage.
     #[serde(default)]
     pub whole_slice: Option<WholeSliceSelection>,
+    /// Ranges of a whole model, each served by a machine that holds the whole
+    /// file itself: nothing is cut on another machine or copied. Each machine
+    /// is applied with its own file and its range (`Step::from_whole_path`).
+    /// The ranges become the operator's selection when `selection` is absent.
+    #[serde(default)]
+    pub whole_ranges: Option<Vec<WholeRangeSelection>>,
     /// Join adjacent slices assigned to the same machine into a single file,
     /// so that run becomes one pipeline step. `false` keeps each selected
     /// range as its own pipeline step.
@@ -195,6 +201,13 @@ pub struct DeployRequest {
 pub struct WholeSliceSelection {
     pub source_node_id: String,
     pub target_node_id: String,
+    pub end_layer: u32,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct WholeRangeSelection {
+    pub node_id: String,
+    pub start_layer: u32,
     pub end_layer: u32,
 }
 

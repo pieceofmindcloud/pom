@@ -20,7 +20,9 @@ pub(super) async fn plan_endpoint(
     .await;
     let mut machines = survey.machines;
     let pairwise_rtt = survey.pairwise_rtt;
-    let layer_options = if req.kind == DeployKind::Whole && req.whole_slice.is_some() {
+    let layer_options = if req.kind == DeployKind::Whole
+        && (req.whole_slice.is_some() || req.whole_ranges.is_some())
+    {
         whole_layer_options_for_plan(&state, &machines, &req.group).await
     } else {
         None
@@ -31,11 +33,26 @@ pub(super) async fn plan_endpoint(
             return bad(json!({ "error": error }));
         }
     }
+    let range_selection = match (&req.whole_ranges, &layer_options) {
+        (None, _) => None,
+        (Some(_), None) => {
+            return bad(json!({
+                "error": format!("ranges of {} need kind \"whole\" and a machine that holds the whole model", req.group)
+            }))
+        }
+        (Some(ranges), Some(options)) => {
+            match add_whole_ranges(&mut machines, &req.group, ranges, options) {
+                Ok(selection) => Some(selection),
+                Err(error) => return bad(json!({ "error": error })),
+            }
+        }
+    };
+    let selection = req.selection.clone().or(range_selection);
     let params = effective_params_for_kind(req.kind, &req.params);
     let mut p = plan_with_rtt_options(
         &req.group,
         &machines,
-        req.selection.as_deref(),
+        selection.as_deref(),
         &params,
         req.merge,
         req.kind,

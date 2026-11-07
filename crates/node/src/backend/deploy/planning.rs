@@ -126,6 +126,13 @@ pub struct Step {
     pub(super) source_sha256: Option<String>,
     /// True when the source is a virtual range backed by a whole GGUF.
     pub(super) source_needs_split: bool,
+    /// The target's own whole GGUF this range comes from, when the target is
+    /// also the virtual range's source. Nothing is cut or copied by the deploy:
+    /// the target is applied with the whole file and the range, and cuts its
+    /// range locally, or points at it with a virtual slice
+    /// (`webui::jobs_apply::run_apply`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) from_whole_path: Option<String>,
     /// Where it will be on the target once it lands, when known up front.
     pub(super) target_path: Option<String>,
     /// Entry point of the pipeline — whoever holds layer 0.
@@ -1682,6 +1689,7 @@ pub(super) fn plan_with_rtt_options(
                 source_path: None,
                 source_sha256: None,
                 source_needs_split: false,
+                from_whole_path: None,
                 target_path: None,
                 primary: start_layer == 0,
                 n_gpu_layers: grp[0].2.n_gpu_layers,
@@ -1801,6 +1809,11 @@ pub(super) fn plan_with_rtt_options(
                         m.holds(c.start_layer, c.end_layer)
                             .is_some_and(|shard| shard.virtual_slice)
                     }),
+                    from_whole_path: source
+                        .filter(|m| m.node_id == *target_id)
+                        .and_then(|m| m.holds(c.start_layer, c.end_layer))
+                        .filter(|shard| shard.virtual_slice)
+                        .map(|shard| shard.path.clone()),
                     target_path: target
                         .and_then(|t| t.holds_ready(c.start_layer, c.end_layer))
                         .map(|s| s.path.clone()),

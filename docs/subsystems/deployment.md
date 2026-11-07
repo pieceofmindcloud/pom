@@ -138,6 +138,24 @@ exists on the target, it stays in the list of available layers and has no
 slider. A failure or missing GGUF read is a refusal by name, with the reason
 visible in the inspector.
 
+A range that stays on the machine that holds the whole model (the remainder
+of a `whole_slice` on its source, or any `whole_ranges` entry) is not cut by
+`slice-ranges` and copied to itself: the planner marks its step
+`from_whole_path` (the machine's own whole GGUF), no pull is planned, and the
+launch applies that machine with the whole file, the range and `skip_split:
+false`. `run_apply` then cuts the range locally, or writes a virtual slice
+with `POM_VIRTUAL_SLICES=1` (section 8).
+
+`whole_ranges` (`[{node_id, start_layer, end_layer}]`, `kind: "whole"`) is the
+range form of a whole-model deploy, on both `/api/ui/deploy/plan` and
+`/api/ui/deploy`: each machine serves its range of the whole model it holds
+itself, so nothing is cut on another machine or copied. `add_whole_ranges`
+refuses by name a machine without the whole model and a cut the GGUF's rules
+do not allow (`model-layer-options`), sizes each range from the cut table, and
+turns the ranges into the selection when `selection` is absent; coverage and
+order are the planner's checks. The disk check still charges a real slice of
+the range, since the target may not have virtual slices on.
+
 The preflight also checks the output contract the loader requires. For the
 `deepseek4` architecture, `llama.cpp` requires `token_embd.weight`,
 `output_norm.weight`, `output.weight`, `output_hc_fn.weight`,

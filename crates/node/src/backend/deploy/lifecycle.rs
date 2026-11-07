@@ -179,7 +179,7 @@ pub(super) async fn run(
                         end_layer: part.end_layer,
                     });
                 }
-            } else if !step.ready {
+            } else if !step.ready && step.from_whole_path.is_none() {
                 let (Some(source_node), Some(source_path)) =
                     (&step.source_node_id, &step.source_path)
                 else {

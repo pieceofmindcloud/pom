@@ -48,7 +48,9 @@ pub(super) async fn deploy_endpoint(
     }
     let mut machines = survey.machines;
     let pairwise_rtt = survey.pairwise_rtt;
-    let layer_options = if req.kind == DeployKind::Whole && req.whole_slice.is_some() {
+    let layer_options = if req.kind == DeployKind::Whole
+        && (req.whole_slice.is_some() || req.whole_ranges.is_some())
+    {
         whole_layer_options_for_plan(&state, &machines, &req.group).await
     } else {
         None
@@ -59,6 +61,21 @@ pub(super) async fn deploy_endpoint(
             return bad(json!({ "error": error }));
         }
     }
+    let range_selection = match (&req.whole_ranges, &layer_options) {
+        (None, _) => None,
+        (Some(_), None) => {
+            return bad(json!({
+                "error": format!("ranges of {} need kind \"whole\" and a machine that holds the whole model", req.group)
+            }))
+        }
+        (Some(ranges), Some(options)) => {
+            match add_whole_ranges(&mut machines, &req.group, ranges, options) {
+                Ok(selection) => Some(selection),
+                Err(error) => return bad(json!({ "error": error })),
+            }
+        }
+    };
+    let selection = req.selection.clone().or(range_selection);
     let deployment_name =
         match normalize_deployment_name(req.deployment_name.as_deref(), &req.group) {
             Ok(name) => name,
@@ -68,7 +85,7 @@ pub(super) async fn deploy_endpoint(
     let mut plan = plan_with_rtt_options(
         &req.group,
         &machines,
-        req.selection.as_deref(),
+        selection.as_deref(),
         &params,
         req.merge,
         req.kind,
@@ -770,6 +787,40 @@ pub(super) fn launch_targets(
             continue;
         }
 
+        if let Some(whole) = &step.from_whole_path {
+            // The target holds the whole model: it gets the file and its range,
+            // and cuts or points at the range itself.
+            let (peer_index, peer_count) = pipeline_fields(step);
+            targets.push(LaunchTarget {
+                node_id: step.target_node_id.clone(),
+                source_model_path: whole.clone(),
+                start_layer: step.start_layer,
+                end_layer: step.end_layer,
+                skip_split: false,
+                part_sha256: None,
+                merge: None,
+                n_gpu_layers: step.n_gpu_layers,
+                offload_kqv: step.offload_kqv,
+                inference_role: step.inference_role,
+                no_embeddings: None,
+                peer_index,
+                peer_count,
+                tp: None,
+                mmproj_path: (step.start_layer == 0)
+                    .then(|| {
+                        target_machine
+                            .and_then(|m| m.held.iter().find(|held| held.path == *whole))
+                            .and_then(|held| held.mmproj_path.clone())
+                    })
+                    .flatten(),
+                mtp_draft_path: None,
+                mtp_draft_file: None,
+                mmproj_file: None,
+                use_mmproj: false,
+            });
+            continue;
+        }
+
         let held = target_machine
             .and_then(|m| m.holds_ready(step.start_layer, step.end_layer))
             .ok_or_else(|| {
@@ -1086,6 +1137,109 @@ pub(super) fn add_virtual_whole_slices(
         });
     }
     Ok(())
+}
+
+/// Adds each `whole_ranges` entry as a virtual range on the machine that will
+/// serve it, which must hold the whole model itself, and returns the matching
+/// selection. Cuts follow the GGUF's real rules (`options.cuts`); coverage and
+/// order are the planner's checks, like for any selection.
+pub(super) fn add_whole_ranges(
+    machines: &mut [Machine],
+    group: &str,
+    ranges: &[WholeRangeSelection],
+    options: &WholeLayerOptions,
+) -> Result<Vec<SelectedSlice>, String> {
+    if let Some(reason) = &options.reason {
+        return Err(format!("cannot choose layers of {}: {}", group, reason));
+    }
+    let last = options.total_layers.checked_sub(1).ok_or("the model has no layers")?;
+    let whole_bytes = options
+        .cuts
+        .first()
+        .map(|cut| cut.size_bytes + cut.remainder_bytes);
+    // Bytes of layers 0..=end, from the cut table; the last layer is the model.
+    let prefix_bytes = |end: u32| -> Option<u64> {
+        if end == last {
+            return whole_bytes;
+        }
+        options.cuts.iter().find(|cut| cut.end_layer == end).map(|cut| cut.size_bytes)
+    };
+    let mut selection = Vec::with_capacity(ranges.len());
+    for range in ranges {
+        if range.start_layer > range.end_layer || range.end_layer > last {
+            return Err(format!(
+                "the range L{}-{} is outside the {} layers of {}",
+                range.start_layer, range.end_layer, options.total_layers, group
+            ));
+        }
+        let end_bytes = prefix_bytes(range.end_layer).ok_or_else(|| {
+            format!(
+                "the cut at layer L{} does not respect the real rules of the GGUF",
+                range.end_layer
+            )
+        })?;
+        let start_bytes = match range.start_layer {
+            0 => 0,
+            start => prefix_bytes(start - 1).ok_or_else(|| {
+                format!(
+                    "the cut before layer L{} does not respect the real rules of the GGUF",
+                    start
+                )
+            })?,
+        };
+        let machine = machines
+            .iter_mut()
+            .find(|machine| machine.node_id == range.node_id)
+            .ok_or_else(|| format!("machine {} is not in the cluster", range.node_id))?;
+        let whole = machine
+            .held
+            .iter()
+            .find(|shard| {
+                shard.start_layer == 0 && shard.end_layer == last && !shard.virtual_slice
+            })
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "{} does not have the whole model {}: download it or place it in a model folder there",
+                    machine.label(),
+                    group
+                )
+            })?;
+        if machine.holds_ready(range.start_layer, range.end_layer).is_none()
+            && !machine
+                .holds(range.start_layer, range.end_layer)
+                .is_some_and(|shard| shard.virtual_slice)
+        {
+            machine.held.push(HeldShard {
+                kind: HeldKind::Shard,
+                start_layer: range.start_layer,
+                end_layer: range.end_layer,
+                total_layers: Some(options.total_layers),
+                name: format!("{group} L{}-{}", range.start_layer, range.end_layer),
+                path: whole.path.clone(),
+                mmproj_path: whole.mmproj_path.clone(),
+                mmproj_candidates: whole.mmproj_candidates.clone(),
+                mmproj_reason: whole.mmproj_reason.clone(),
+                size_bytes: end_bytes.saturating_sub(start_bytes),
+                sha256: None,
+                pom_id: None,
+                virtual_slice: true,
+                tp_rank: None,
+                tp_size: None,
+                is_moe: whole.is_moe,
+                model_capabilities: whole.model_capabilities.clone(),
+            });
+        }
+        selection.push(SelectedSlice {
+            start_layer: range.start_layer,
+            end_layer: range.end_layer,
+            target_node_id: range.node_id.clone(),
+            n_gpu_layers: None,
+            offload_kqv: None,
+            inference_role: None,
+        });
+    }
+    Ok(selection)
 }
 
 /// Cut virtual ranges on the peer that owns the whole GGUF. The actual

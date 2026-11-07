@@ -507,6 +507,93 @@
         assert!(plan.steps[1].source_needs_split);
     }
 
+    #[test]
+    fn whole_ranges_launch_each_machine_with_its_own_whole_file() {
+        let mut machines = build(vec![
+            m("a", 900_000, &[(0, 31)]),
+            m("b", 900_000, &[(0, 31)]),
+        ]);
+        let options = WholeLayerOptions {
+            source_node_id: "a".to_string(),
+            total_layers: 32,
+            cuts: vec![LayerCut {
+                end_layer: 15,
+                layers: 16,
+                size_bytes: GIB,
+                remainder_bytes: 2 * GIB,
+            }],
+            granularity: Some(1),
+            rule: "every layer".to_string(),
+            reason: None,
+        };
+        let ranges = [
+            WholeRangeSelection { node_id: "a".into(), start_layer: 0, end_layer: 15 },
+            WholeRangeSelection { node_id: "b".into(), start_layer: 16, end_layer: 31 },
+        ];
+        let selection = super::add_whole_ranges(&mut machines, "model", &ranges, &options)
+            .expect("both machines hold the whole model");
+        let plan = super::plan(
+            "model",
+            &machines,
+            Some(&selection),
+            &RuntimeParams::default(),
+            false,
+            DeployKind::Whole,
+            None,
+        );
+        assert!(plan.blocked.is_none(), "{:?}", plan.blocked);
+        assert_eq!(plan.transfer_bytes, 0);
+        assert_eq!(plan.steps.len(), 2);
+        for (step, machine) in plan.steps.iter().zip(&machines) {
+            assert_eq!(step.target_node_id, machine.node_id);
+            assert_eq!(step.from_whole_path.as_deref(), Some(machine.held[0].path.as_str()));
+        }
+        assert_eq!(plan.steps[0].size_bytes, GIB);
+        assert_eq!(plan.steps[1].size_bytes, 2 * GIB);
+
+        let targets = super::launch_targets(&plan.steps, &machines, DeployKind::Whole, None, &[])
+            .expect("launch targets");
+        assert_eq!(targets.len(), 2);
+        for (target, machine) in targets.iter().zip(&machines) {
+            assert!(!target.skip_split, "the target cuts or points at its range itself");
+            assert_eq!(target.source_model_path, machine.held[0].path);
+            assert_eq!(target.peer_count, Some(2));
+        }
+        assert_eq!((targets[1].start_layer, targets[1].end_layer), (16, 31));
+    }
+
+    #[test]
+    fn a_whole_range_on_a_machine_without_the_whole_model_is_refused_by_name() {
+        let mut machines = build(vec![
+            m("a", 900_000, &[(0, 31)]),
+            m("b", 900_000, &[(16, 31)]),
+        ]);
+        let options = WholeLayerOptions {
+            source_node_id: "a".to_string(),
+            total_layers: 32,
+            cuts: vec![LayerCut { end_layer: 15, layers: 16, size_bytes: GIB, remainder_bytes: GIB }],
+            granularity: Some(1),
+            rule: "every layer".to_string(),
+            reason: None,
+        };
+        let error = super::add_whole_ranges(
+            &mut machines,
+            "model",
+            &[WholeRangeSelection { node_id: "b".into(), start_layer: 16, end_layer: 31 }],
+            &options,
+        )
+        .unwrap_err();
+        assert!(error.contains("does not have the whole model"), "{error}");
+        let error = super::add_whole_ranges(
+            &mut machines,
+            "model",
+            &[WholeRangeSelection { node_id: "a".into(), start_layer: 0, end_layer: 9 }],
+            &options,
+        )
+        .unwrap_err();
+        assert!(error.contains("L9"), "{error}");
+    }
+
     /// The knobs are their own axis; every test below is about the placement,
     /// so they all run on the defaults unless they say otherwise.
     fn plan(group: &str, machines: &[Machine], selection: Option<&[SelectedSlice]>) -> Plan {

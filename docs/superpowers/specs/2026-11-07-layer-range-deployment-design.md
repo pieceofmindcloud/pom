@@ -201,9 +201,12 @@ loads it as a slice and `/health` reports the range from its `pom.*` keys.
 Verified live on one CPU node with Qwen3.8-27B: layers 0-31 and 32-64 (last,
 MTP layer) each written in about 15 ms, loaded, and run by the slice speed
 test. Not verified yet: a two-node pipeline generating end to end, GPUs.
-Still to do: the `model/range-load-v1` capability (replacing the opt-in once
-the pinned engine has the fork feature) and the range step form for the deploy
-plan. The POM branch pins the engine branch `pom-external-data` (`dc9e951`),
+The range step form exists as `whole_ranges` in the deploy request
+(`deployment.md` 1.1.1): each machine is applied with its own whole file and
+its range (`Step::from_whole_path`), with no cut on another machine and no
+copy. Still to do: the `model/range-load-v1` capability (replacing the opt-in
+once the pinned engine has the fork feature), so the disk check and the screen
+know a target points at its range instead of cutting it. The POM branch pins the engine branch `pom-external-data` (`dc9e951`),
 whose `llama-cpp.lock` points at the fork branch of the same name.
 
 ### Part B: Strata

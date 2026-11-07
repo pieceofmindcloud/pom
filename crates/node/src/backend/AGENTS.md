@@ -610,12 +610,16 @@ boundary.
   below), and a non-admin caller of a `ServingMember` route needs a `worker`
   token (`caller_may_ask`). `chain_status` feeds
   `NodeInfo.cluster_version` and `POST /api/ui/network/trust-sync`.
-- Image model components live in `crates/node/src/components.rs`, outside this
-  folder: `POST /api/ui/components/apply|release` (a node serves a component),
-  `POST /api/ui/image-deploy`, `GET /api/ui/image-deployments`,
-  `POST /api/ui/image-undeploy` (an admin deploys by component), the internal
-  `POST /api/internal/plugins/:code/component/...` forward, and the `host_api`
-  routes in `plugin_host_api.rs`. Contract: `docs/subsystems/deployment.md` 1.7.
+- Image models live outside this folder, in `crates/node/src/`:
+  `components.rs` (a node serves components, `POST /api/ui/components/apply|release`;
+  the live view `GET /api/ui/image-deployments`; undeploy; replica routing of
+  component calls and the internal `POST /api/internal/plugins/:code/component/...`
+  forward), `image_records.rs` (the versioned record: stages in flow order with
+  replicas), `image_plan.rs` (`POST /api/ui/image-deploy/plan`, the deploy job,
+  `/image-deploy/:deploy_id/{add,remove,redeploy}`) and `chat_image.rs` (the
+  Chat's workflows, `POST /api/ui/chat/image`, `GET /api/ui/chat/image/:hash`,
+  the internal workflow run); the `host_api` routes are in `plugin_host_api.rs`.
+  Contracts: `docs/subsystems/deployment.md` 1.7 and `http-api.md` "Chat images".
 - `quota.rs` - token budgets before the pipeline: `admit` asks the local logs
   plugin, then each live admin (`peer.quota.check` over the signed peer call),
   and the inference handlers answer its `Denial` with 429 + `Retry-After` and

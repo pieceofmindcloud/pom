@@ -366,24 +366,69 @@ serves, so components are a registry of their own.
   at startup and every 10 minutes) asks `component.serve` again for every stored
   assignment (`components::restore`), so a node serves after a reboot, and a
   ComfyUI closed with its X is reopened, without the admin deploying again.
-- **Deploying.** `POST /api/ui/image-deploy` `{name, components: [{component,
-  node_id, path}]}` (any admin) surveys the network (each machine's
-  `GET /api/ui/models` `image_files` and whether it publishes an `image`
-  service) and refuses, before touching any machine, a component chosen twice, a
-  machine that does not run ComfyUI, a machine that does not hold that file and
-  a file of another category (a `checkpoint` fits all three). It mints a
-  `deploy_id` (`img-` and 12 hex digits) and applies each component in turn
-  (`POST /api/ui/components/apply` on that machine, signed); a failure releases
-  the machines already applied and answers 502 naming the machine. Only a
-  complete deploy is recorded, in the deploying node's `pom.db` setting
-  `image_deployments`. No file is copied: the screen offers only machines that
-  hold the file. `GET /api/ui/image-deployments` lists the records with each
-  component's live status (`missing` when no service lists it) and
-  `POST /api/ui/image-undeploy` `{deploy_id}` releases every machine of the
-  record (a silent one is reported) and drops it.
+- **The record.** An image deployment is a pipeline of stages in data-flow
+  order, `text_encoder`, `diffusion`, `vae` (`image_records.rs`, `STAGES`).
+  Each stage names one file (`FileIdentity`: name and size, the identity across
+  machines) and one or more replicas (`{node_id, hostname, path}`); one machine
+  may serve several stages. The deploying node keeps it in the `pom.db` setting
+  `image_deployments` with its versions (`versions`, `active_version`); a record
+  from before the stages (one machine per component in `components`) loads as
+  version 1, and `components` keeps being written (the first replica of each
+  stage) so an older node still lists it. It is not an LLM `Deployment`: a new
+  `DeploymentKind` would make older nodes fail to read every deployment.
+- **Planning.** `POST /api/ui/image-deploy/plan` `{name, stages: [{component,
+  file, node_ids}], allow_transfers}` (any admin, `image_plan.rs`,
+  `plan_image`) surveys every machine (`components::survey_machines`: its
+  `image_files` with sizes, whether it publishes an `image` service and its
+  status, its free VRAM/RAM from `/api/ui/node`) and answers, touching nothing,
+  per stage the verdict of each chosen machine and of every machine
+  (`alternatives`): `does not run ComfyUI`, `ComfyUI is <status>` (`error`,
+  `waiting`), `does not hold <file>`, `holds another <file> (<size> bytes)`,
+  `<file> is a <category>, not a <component>` (a `checkpoint` fits all three),
+  or ok with the path; `memory` per machine (free memory and the sum of the
+  files it would load); `copies` (a chosen machine without the file when
+  another holds it); and `blocked`. Copies are not made yet (`transfer.rs`
+  serves GGUF only): without `allow_transfers` the deploy answers 409
+  `transfers_not_authorized` with the list, and with it 400 asking to place the
+  file first.
+- **Deploying.** `POST /api/ui/image-deploy` takes the stage form (or the older
+  `{name, components}` form, read as one replica per stage), checks the plan,
+  mints a `deploy_id` (`img-` and 12 hex digits) and answers `{deploy_id,
+  job_id}` at once; a `deploy` job (`Job.deploy_id`, `deployment_name`) applies
+  every (stage, replica) with `POST /api/ui/components/apply` on that machine,
+  signed, so the Deploy studio's progress window and the bell follow it. A
+  replica that fails is released (`component` named) and listed in the job's
+  message; when a stage is left with no replica everything applied is released
+  and the job fails. Only a successful deploy is recorded. The plugin host API
+  deploy (`/api/plugin-host/image-deploy`, the ComfyUI dialog) waits and
+  answers `{deploy_id, failed}`.
+- **Changing it.** `POST /api/ui/image-deploy/:deploy_id/add` `{component,
+  node_id}` applies one more replica (checked by the same plan) and appends a
+  version; `/remove` `{component, node_id, confirm_gap}` releases that
+  component only (`POST /api/ui/components/release` takes an optional
+  `component`, passed to the plugin's `component.release`) and appends a
+  version, asking first (409 `{"error": "gap"}`) before removing the last
+  replica of a stage; `/redeploy` `{version}` releases what that version does
+  not have, applies what it has and makes it live without appending. These need
+  the record, so they answer 404 on another admin node.
+- **Undeploying.** `POST /api/ui/image-undeploy` `{deploy_id}` releases every
+  machine the record names and every machine whose `image` service lists the
+  `deploy_id`, so it works from any admin node; it answers one outcome per
+  machine, a silent one included, and keeps a silent machine's part on record.
+- **The live view.** `GET /api/ui/image-deployments` lists every `deploy_id` a
+  record or a live service names (`components::view_of`): `recorded`, the
+  stages in flow order with each replica's `status` (`ready`, `loading`,
+  `error`, or `missing` for a recorded replica no service lists) and
+  `in_flight`, `serving` (every stage has a ready replica), the versions when
+  recorded, and the flat `components` older screens read. The Dashboard and the
+  Deployments screen read it.
 - **Calls.** A ComfyUI that uses a network component calls its own node's
-  `host_api` (`plugins-ui.md`); the node finds the serving machine in
-  `network_components` and, when it is another one, posts the opaque body to
+  `host_api` (`plugins-ui.md`); the node orders the replicas in
+  `network_components` (`replica_order`: ready before loading, then the
+  measured RTT to this node, then `in_flight`), tries the one this generation
+  (`x-pom-job`) used last first, so its sampling steps stay where the weights
+  are warm, and moves to the next replica after a transport error or a 5xx (a
+  4xx is the plugin's answer and is returned). For a remote replica it posts the opaque body to
   `POST /api/internal/plugins/:code/component/:deploy_id/:component/:op` there
   (signed, from a live member, at most 64 MiB, also through the p2p tunnel for a
   machine behind NAT). That machine checks it serves the component (404

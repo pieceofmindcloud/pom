@@ -1224,6 +1224,17 @@ besides the turns:
   tokens (one per stream delta that added to the reasoning,
   `ChatStreamState.reasoningTokens`, kept as `ChatMessage.reasoningTokens`).
   The text opens only on a click.
+- **Generate image** (`ImageMenu` in `routes/Chat.tsx`) shows when
+  `chat/capabilities` reports `image: supported`: one select, "Text answer" or
+  one of `image_workflows`, kept in `ChatSession.imageWorkflow`. With a
+  workflow chosen, a message goes to `POST /api/ui/chat/image`
+  (`lib/chatImage.ts`) instead of `/v1/chat/completions`: the reply shows the
+  progress, then `ChatImageGrid` (thumbnails read by hash from
+  `/api/ui/chat/image/:hash` with the Chat key, a full-size dialog with
+  Download, and "no longer on this node" on a 404). The message keeps only
+  `images: [{hash, ext, width, height}]`, never the bytes, since
+  `localStorage` cannot hold images. A network that serves only image models
+  still opens the composer.
 - While the network serves no model, the Chat draws no composer and no RAG
   menu: an empty conversation shows `components/MissingPiece.tsx`, three
   puzzle pieces in the brand colours locking together around an empty,

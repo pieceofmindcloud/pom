@@ -296,7 +296,9 @@ pub(crate) const IMAGE_PLUGIN: &str = "comfyui";
 
 /// Deploy an image model from the form before the stages (one machine per
 /// component). The stage plan checks it; on a failure the machines already
-/// applied are released and nothing is recorded.
+/// applied are released and nothing is recorded. The routes take the stage
+/// form (`image_plan::DeployBody`); the tests keep this older entry.
+#[cfg(test)]
 pub(crate) async fn deploy_image(
     db: &crate::db::PomDb,
     machines: &[MachineFacts],
@@ -601,7 +603,8 @@ pub(crate) fn view_of(
                 .or_else(|| live.first().map(|c| c.name.clone()))
                 .unwrap_or_default();
             // (component, file name, size, [(node_id, path)]) per stage.
-            let mut stages: Vec<(String, String, u64, Vec<(String, String)>)> = Vec::new();
+            type StageRow = (String, String, u64, Vec<(String, String)>);
+            let mut stages: Vec<StageRow> = Vec::new();
             if let Some(record) = record {
                 for stage in &record.active().stages {
                     stages.push((
@@ -1784,7 +1787,9 @@ mod tests {
 
     type ForwardLog = Arc<Mutex<Vec<(String, String, usize)>>>;
 
-    fn scripted(answers: Vec<(&'static str, Result<(u16, Vec<u8>), String>)>) -> (Forward, Arc<Mutex<Vec<String>>>) {
+    type Script = Vec<(&'static str, Result<(u16, Vec<u8>), String>)>;
+
+    fn scripted(answers: Script) -> (Forward, Arc<Mutex<Vec<String>>>) {
         let seen: Arc<Mutex<Vec<String>>> = Default::default();
         let log = seen.clone();
         let answers = Arc::new(answers);

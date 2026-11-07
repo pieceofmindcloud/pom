@@ -124,7 +124,11 @@ pub(crate) async fn network_workflows(state: &GatewayState) -> Vec<Workflow> {
         .iter()
         .flat_map(|(node_id, list)| crate::components::components_of(node_id, node_id, list))
         .collect();
-    workflows_of(&services, &serving_deployments(&served), &state.network.node_id)
+    workflows_of(
+        &services,
+        &serving_deployments(&served),
+        &state.network.node_id,
+    )
 }
 
 // ── Keeping the images ──────────────────────────────────────────────────────
@@ -153,7 +157,12 @@ fn image_kind(bytes: &[u8]) -> Option<&'static str> {
 }
 
 /// Writes `bytes` as `<sha256>.<ext>` in `dir`; the same image is one file.
-pub(crate) fn store_image(dir: &Path, bytes: &[u8], width: u32, height: u32) -> Result<StoredImage, String> {
+pub(crate) fn store_image(
+    dir: &Path,
+    bytes: &[u8],
+    width: u32,
+    height: u32,
+) -> Result<StoredImage, String> {
     use sha2::Digest;
     if bytes.len() > MAX_IMAGE_BYTES {
         return Err("an image is larger than 32 MiB".into());
@@ -167,12 +176,24 @@ pub(crate) fn store_image(dir: &Path, bytes: &[u8], width: u32, height: u32) -> 
         std::fs::write(&partial, bytes).map_err(|e| format!("cannot write the image: {e}"))?;
         std::fs::rename(&partial, &path).map_err(|e| format!("cannot write the image: {e}"))?;
     }
-    Ok(StoredImage { hash, ext, width, height })
+    Ok(StoredImage {
+        hash,
+        ext,
+        width,
+        height,
+    })
 }
 
 /// The file of `hash` in `dir`, when `hash` is 64 lowercase hex digits.
-pub(crate) fn find_image(dir: &Path, hash: &str) -> Result<Option<(PathBuf, &'static str)>, String> {
-    if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+pub(crate) fn find_image(
+    dir: &Path,
+    hash: &str,
+) -> Result<Option<(PathBuf, &'static str)>, String> {
+    if hash.len() != 64
+        || !hash
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
         return Err("not an image hash".into());
     }
     for (ext, mime) in [("png", "image/png"), ("jpg", "image/jpeg")] {
@@ -191,7 +212,10 @@ pub(crate) fn store_images(dir: &Path, line: &Value) -> Result<Value, String> {
     use base64::Engine;
     let images = line["images"].as_array().cloned().unwrap_or_default();
     if images.len() > MAX_IMAGES {
-        return Err(format!("the workflow made {} images; at most {MAX_IMAGES}", images.len()));
+        return Err(format!(
+            "the workflow made {} images; at most {MAX_IMAGES}",
+            images.len()
+        ));
     }
     let mut decoded = Vec::new();
     for image in &images {
@@ -268,7 +292,10 @@ async fn run_local(state: &GatewayState, body: Vec<u8>) -> Result<LineStream, St
             .unwrap_or_else(|| status.to_string());
         return Err(reason);
     }
-    Ok(response.bytes_stream().map(|r| r.map_err(|e| e.to_string())).boxed())
+    Ok(response
+        .bytes_stream()
+        .map(|r| r.map_err(|e| e.to_string()))
+        .boxed())
 }
 
 /// The run on `node_id`: this node's plugin, or the signed internal route of
@@ -300,7 +327,10 @@ async fn run_on(state: &GatewayState, node_id: &str, body: Vec<u8>) -> Result<Li
             .map(str::to_owned)
             .unwrap_or_else(|| status.to_string()));
     }
-    Ok(response.bytes_stream().map(|r| r.map_err(|e| e.to_string())).boxed())
+    Ok(response
+        .bytes_stream()
+        .map(|r| r.map_err(|e| e.to_string()))
+        .boxed())
 }
 
 /// Reads the plugin's NDJSON, relays progress and stores the images: every
@@ -313,7 +343,7 @@ pub(crate) async fn relay(
     use futures::StreamExt;
     let mut buffer: Vec<u8> = Vec::new();
     let mut finished = false;
-    let mut handle = |line: &[u8], finished: &mut bool| -> Option<Value> {
+    let handle = |line: &[u8], finished: &mut bool| -> Option<Value> {
         let value: Value = serde_json::from_slice(line).ok()?;
         if value.get("images").is_some() {
             *finished = true;
@@ -337,7 +367,9 @@ pub(crate) async fn relay(
         };
         buffer.extend_from_slice(&chunk);
         if buffer.len() > MAX_IMAGES * MAX_IMAGE_BYTES * 2 {
-            let _ = out.send(serde_json::json!({ "error": "the workflow answered too much" })).await;
+            let _ = out
+                .send(serde_json::json!({ "error": "the workflow answered too much" }))
+                .await;
             return;
         }
         while let Some(end) = buffer.iter().position(|b| *b == b'\n') {
@@ -411,13 +443,24 @@ pub(crate) async fn image_route(
     use axum::response::IntoResponse;
     let root = state.auth.read().await.workspace_root_path();
     match find_image(&images_dir(&root), &hash) {
-        Err(error) => (StatusCode::BAD_REQUEST, axum::Json(serde_json::json!({ "error": error }))).into_response(),
-        Ok(None) => (StatusCode::NOT_FOUND, axum::Json(serde_json::json!({ "error": "this image is not on this node" }))).into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            axum::Json(serde_json::json!({ "error": error })),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({ "error": "this image is not on this node" })),
+        )
+            .into_response(),
         Ok(Some((path, mime))) => match tokio::fs::read(&path).await {
             Ok(bytes) => (
                 [
                     (axum::http::header::CONTENT_TYPE, mime),
-                    (axum::http::header::CACHE_CONTROL, "private, max-age=31536000, immutable"),
+                    (
+                        axum::http::header::CACHE_CONTROL,
+                        "private, max-age=31536000, immutable",
+                    ),
                 ],
                 bytes,
             )
@@ -488,7 +531,10 @@ mod tests {
     #[test]
     fn other_bytes_are_refused() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(store_image(dir.path(), b"GIF89a", 1, 1).unwrap_err(), "not a PNG or JPEG image");
+        assert_eq!(
+            store_image(dir.path(), b"GIF89a", 1, 1).unwrap_err(),
+            "not a PNG or JPEG image"
+        );
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 
@@ -497,7 +543,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut big = PNG.to_vec();
         big.resize(MAX_IMAGE_BYTES + 1, 0);
-        assert_eq!(store_image(dir.path(), &big, 1, 1).unwrap_err(), "an image is larger than 32 MiB");
+        assert_eq!(
+            store_image(dir.path(), &big, 1, 1).unwrap_err(),
+            "an image is larger than 32 MiB"
+        );
     }
 
     #[test]
@@ -521,7 +570,10 @@ mod tests {
         assert!(find_image(dir.path(), &"A".repeat(64)).is_err());
         assert_eq!(find_image(dir.path(), &"a".repeat(64)).unwrap(), None);
         let stored = store_image(dir.path(), PNG, 1, 1).unwrap();
-        assert_eq!(find_image(dir.path(), &stored.hash).unwrap().unwrap().1, "image/png");
+        assert_eq!(
+            find_image(dir.path(), &stored.hash).unwrap().unwrap().1,
+            "image/png"
+        );
     }
 
     fn image_service(status: &str, workflows: Value) -> Value {
@@ -531,14 +583,26 @@ mod tests {
     #[test]
     fn workflows_list_builtins_of_serving_deployments_first() {
         let services = vec![
-            ("n1".to_owned(), vec![image_service("ready", serde_json::json!([
-                {"id": "pub:sketch", "name": "A sketch", "inputs": ["prompt"]},
-                {"id": "builtin:img-1", "name": "Z-Image", "deploy_id": "img-1", "inputs": ["prompt"]},
-                {"id": "builtin:img-2", "name": "Flux", "deploy_id": "img-2", "inputs": ["prompt"]},
-            ]))]),
-            ("n2".to_owned(), vec![image_service("ready", serde_json::json!([
-                {"id": "builtin:img-1", "name": "Z-Image", "deploy_id": "img-1"},
-            ]))]),
+            (
+                "n1".to_owned(),
+                vec![image_service(
+                    "ready",
+                    serde_json::json!([
+                        {"id": "pub:sketch", "name": "A sketch", "inputs": ["prompt"]},
+                        {"id": "builtin:img-1", "name": "Z-Image", "deploy_id": "img-1", "inputs": ["prompt"]},
+                        {"id": "builtin:img-2", "name": "Flux", "deploy_id": "img-2", "inputs": ["prompt"]},
+                    ]),
+                )],
+            ),
+            (
+                "n2".to_owned(),
+                vec![image_service(
+                    "ready",
+                    serde_json::json!([
+                        {"id": "builtin:img-1", "name": "Z-Image", "deploy_id": "img-1"},
+                    ]),
+                )],
+            ),
         ];
         let list = workflows_of(&services, &["img-1".to_owned()], "n2");
         let ids: Vec<_> = list.iter().map(|w| w.id.as_str()).collect();
@@ -548,20 +612,38 @@ mod tests {
 
     #[test]
     fn a_published_workflow_needs_a_ready_service() {
-        let services = vec![("n1".to_owned(), vec![image_service("starting", serde_json::json!([
-            {"id": "pub:sketch", "name": "A sketch"},
-        ]))])];
+        let services = vec![(
+            "n1".to_owned(),
+            vec![image_service(
+                "starting",
+                serde_json::json!([
+                    {"id": "pub:sketch", "name": "A sketch"},
+                ]),
+            )],
+        )];
         assert!(workflows_of(&services, &[], "n1").is_empty());
     }
 
     #[test]
     fn serving_needs_a_ready_part_per_component() {
         let part = |component: &str, status: &str| crate::components::NetworkComponent {
-            deploy_id: "img-1".into(), name: "Z".into(), component: component.into(), files: vec![],
-            status: status.into(), node_id: "n".into(), hostname: "n".into(), plugin_code: "comfyui".into(), in_flight: None,
+            deploy_id: "img-1".into(),
+            name: "Z".into(),
+            component: component.into(),
+            files: vec![],
+            status: status.into(),
+            node_id: "n".into(),
+            hostname: "n".into(),
+            plugin_code: "comfyui".into(),
+            in_flight: None,
         };
-        assert_eq!(serving_deployments(&[part("diffusion", "ready"), part("vae", "ready")]), ["img-1"]);
-        assert!(serving_deployments(&[part("diffusion", "loading"), part("vae", "ready")]).is_empty());
+        assert_eq!(
+            serving_deployments(&[part("diffusion", "ready"), part("vae", "ready")]),
+            ["img-1"]
+        );
+        assert!(
+            serving_deployments(&[part("diffusion", "loading"), part("vae", "ready")]).is_empty()
+        );
         assert!(serving_deployments(&[part("vae", "ready")]).is_empty());
     }
 
@@ -569,7 +651,9 @@ mod tests {
     fn too_many_images_write_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let data = base64::engine::general_purpose::STANDARD.encode(PNG);
-        let images: Vec<Value> = (0..17).map(|_| serde_json::json!({"mime": "image/png", "data": data})).collect();
+        let images: Vec<Value> = (0..17)
+            .map(|_| serde_json::json!({"mime": "image/png", "data": data}))
+            .collect();
         assert!(store_images(dir.path(), &serde_json::json!({"images": images})).is_err());
         let mixed = serde_json::json!({"images": [{"data": data}, {"data": base64::engine::general_purpose::STANDARD.encode(b"GIF89a")}]});
         assert!(store_images(dir.path(), &mixed).is_err());
@@ -579,7 +663,9 @@ mod tests {
     async fn relayed(chunks: Vec<&'static [u8]>) -> (tempfile::TempDir, Vec<Value>) {
         use futures::StreamExt;
         let dir = tempfile::tempdir().unwrap();
-        let lines: LineStream = futures::stream::iter(chunks.into_iter().map(|c| Ok(bytes::Bytes::from_static(c)))).boxed();
+        let lines: LineStream =
+            futures::stream::iter(chunks.into_iter().map(|c| Ok(bytes::Bytes::from_static(c))))
+                .boxed();
         let (tx, mut rx) = tokio::sync::mpsc::channel(16);
         relay(lines, dir.path().join("images"), tx).await;
         let mut out = Vec::new();
@@ -593,21 +679,35 @@ mod tests {
     async fn progress_then_stored_images() {
         let data = base64::engine::general_purpose::STANDARD.encode(PNG);
         let last: &'static [u8] = Box::leak(format!("{{\"images\":[{{\"mime\":\"image/png\",\"width\":8,\"height\":8,\"data\":\"{data}\"}}]}}\n").into_bytes().into_boxed_slice());
-        let (dir, out) = relayed(vec![b"{\"p\":1,\"of\":8}\n{\"p\":", b"8,\"of\":8}\n", last]).await;
+        let (dir, out) =
+            relayed(vec![b"{\"p\":1,\"of\":8}\n{\"p\":", b"8,\"of\":8}\n", last]).await;
         assert_eq!(out[0]["p"], 1);
         assert_eq!(out[1]["p"], 8);
         let image = &out[2]["images"][0];
         assert_eq!(image["ext"], "png");
         assert_eq!(image["width"], 8);
         let hash = image["hash"].as_str().unwrap();
-        assert!(dir.path().join("images").join(format!("{hash}.png")).is_file());
+        assert!(dir
+            .path()
+            .join("images")
+            .join(format!("{hash}.png"))
+            .is_file());
     }
 
     #[tokio::test]
     async fn a_failed_run_answers_the_plugin_reason() {
-        let (_dir, out) = relayed(vec![b"{\"error\":\"no machine serves diffusion of img-x\"}\n"]).await;
-        assert_eq!(out.last().unwrap()["error"], "no machine serves diffusion of img-x");
+        let (_dir, out) = relayed(vec![
+            b"{\"error\":\"no machine serves diffusion of img-x\"}\n",
+        ])
+        .await;
+        assert_eq!(
+            out.last().unwrap()["error"],
+            "no machine serves diffusion of img-x"
+        );
         let (_dir, out) = relayed(vec![b"{\"p\":1,\"of\":8}\n"]).await;
-        assert_eq!(out.last().unwrap()["error"], "the workflow ended without images");
+        assert_eq!(
+            out.last().unwrap()["error"],
+            "the workflow ended without images"
+        );
     }
 }

@@ -1012,13 +1012,36 @@ cluster measurement.
 
 `POST /api/ui/components/apply` and `POST /api/ui/components/release`
 (`AnyAdmin`, refused on a visitor profile) serve or stop an image model
-component on this node. `POST /api/ui/image-deploy`, `GET /api/ui/image-deployments`
-and `POST /api/ui/image-undeploy` (`AnyAdmin`) deploy, list and undeploy an
-image model by component from the node the admin uses. The contracts are
+component on this node (`release` takes an optional `component`).
+`POST /api/ui/image-deploy/plan`, `POST /api/ui/image-deploy` (answers
+`{deploy_id, job_id}` and runs a `deploy` job),
+`POST /api/ui/image-deploy/:deploy_id/{add,remove,redeploy}`,
+`GET /api/ui/image-deployments` and `POST /api/ui/image-undeploy`
+(`AnyAdmin`) plan, deploy, change, list and undeploy an image model as a
+pipeline of stages with replicas; undeploy and the list work from any admin
+node. The contracts are
 `deployment.md`, section 1.7. A plugin reaches the same list, survey, deploy
 and undeploy through its loopback host API (`/api/plugin-host/image-*`,
 `plugins-ui.md`) only when its node is a principal or admin: the plugin acts
 with that node's own authority, and any other role answers 403.
+
+### Chat images
+
+`GET /api/ui/chat/capabilities` also answers `image` (`supported` when some
+machine offers a ComfyUI workflow) and `image_workflows` (`[{id, name,
+node_id}]`, built-in ones first). `POST /api/ui/chat/image` `{workflow_id,
+node_id, prompt, negative?, width?, height?, seed?, count?}` and
+`GET /api/ui/chat/image/:hash` sit under the `HandlerAuth` scope of
+`/api/ui/chat/` and take the node's API key (`ApiKeyAuth`, the Chat's
+`X-API-Key`). The run answers NDJSON: `{p, of}` progress, then `{"images":
+[{hash, ext, width, height}]}` or `{"error"}`; the images are stored on this
+node in `<workspace>/.comfyui/images/<sha256>.<png|jpg>` (extension from the
+bytes, at most 16 images and 32 MiB each, nothing written when one is refused)
+before the last line. A workflow listed by another machine runs there through
+`POST /api/internal/plugins/:code/workflow/run` (signed, live member, body at
+most 256 KiB), which relays that machine's plugin NDJSON. `:hash` must be 64
+lowercase hex digits (400 otherwise, 404 when the file is gone). Code:
+`crates/node/src/chat_image.rs`.
 
 ### Token budgets, checked before the pipeline
 

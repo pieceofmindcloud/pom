@@ -482,9 +482,16 @@ operation answers with an error, which is ignored.
 
 A service of kind `image` (the ComfyUI plugin's) also lists the image model
 components it serves now, `components: [{deploy_id, name, component, files,
-status}]`: `component` is `diffusion`, `text_encoder` or `vae`, `files` holds
-file names only (never paths), `status` is `ready`, `loading` or `error`; at
-most 64 are read. `components::network_components` gathers them from this node
+status, in_flight?}]`: `component` is `diffusion`, `text_encoder` or `vae`,
+`files` holds file names only (never paths), `status` is `ready`, `loading` or
+`error`, `in_flight` the calls it serves now (the node picks the least busy of
+equally near replicas); at most 64 are read. It may also list `workflows: [{id,
+name, deploy_id?, inputs}]` (at most 32; `id` is lowercase with `.` `_` `-`
+`:`, `builtin:<deploy_id>` or `pub:<slug>`), the ComfyUI workflows the Chat
+may run on that machine; the node runs one through the plugin's loopback
+`POST /pom/workflow/run` (found with `ui.upstream`, behind the plugin token),
+which streams `{p, of}` and ends with `{"images": [{mime, width, height,
+data}]}` or `{"error"}` (`chat_image.rs`, `http-api.md` "Chat images"). `components::network_components` gathers them from this node
 and every live peer (`plugin_engine::services_of`) to find who serves what;
 LLM planning, `/v1/models` and retrieval never read services of this kind.
 

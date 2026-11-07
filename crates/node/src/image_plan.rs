@@ -138,7 +138,11 @@ fn verdict(
             None,
         );
     }
-    if let Some(other) = machine.files.iter().find(|f| base_name(&f.path) == file.name) {
+    if let Some(other) = machine
+        .files
+        .iter()
+        .find(|f| base_name(&f.path) == file.name)
+    {
         return refuse(format!(
             "holds another {} ({} bytes)",
             file.name, other.size_bytes
@@ -286,11 +290,18 @@ impl DeployBody {
                     // A component chosen twice stays twice: the plan refuses it.
                     stages.push(StageRequest {
                         component: choice.component.clone(),
-                        file: FileIdentity { name: base_name(&choice.path), size_bytes: 0 },
+                        file: FileIdentity {
+                            name: base_name(&choice.path),
+                            size_bytes: 0,
+                        },
                         node_ids: vec![choice.node_id],
                     });
                 }
-                ImagePlanRequest { name: old.name, stages, allow_transfers: false }
+                ImagePlanRequest {
+                    name: old.name,
+                    stages,
+                    allow_transfers: false,
+                }
             }
         }
     }
@@ -328,7 +339,12 @@ pub(crate) async fn deploy_stages(
     progress: &(dyn Fn(f64) + Send + Sync),
 ) -> Result<Vec<MachineVerdict>, String> {
     use crate::image_records::{ImageDeployment, ImageStage, Replica};
-    let total: usize = plan.stages.iter().map(|s| s.chosen.len()).sum::<usize>().max(1);
+    let total: usize = plan
+        .stages
+        .iter()
+        .map(|s| s.chosen.len())
+        .sum::<usize>()
+        .max(1);
     let mut done = 0usize;
     let mut applied: Vec<(String, String)> = Vec::new(); // (node_id, component)
     let mut failed: Vec<MachineVerdict> = Vec::new();
@@ -337,7 +353,9 @@ pub(crate) async fn deploy_stages(
         let mut replicas = Vec::new();
         let mut errors = Vec::new();
         for verdict in &stage.chosen {
-            let Some(path) = verdict.path.clone() else { continue };
+            let Some(path) = verdict.path.clone() else {
+                continue;
+            };
             let choice = crate::components::ComponentChoice {
                 component: stage.component.clone(),
                 node_id: verdict.node_id.clone(),
@@ -450,7 +468,10 @@ pub(crate) async fn add_replica(
         .cloned()
         .ok_or_else(|| refused(400, format!("this deployment has no {component}")))?;
     if stage.replicas.iter().any(|r| r.node_id == node_id) {
-        return Err(refused(400, format!("that machine already serves the {component}")));
+        return Err(refused(
+            400,
+            format!("that machine already serves the {component}"),
+        ));
     }
     let request = ImagePlanRequest {
         name: record.name.clone(),
@@ -515,7 +536,10 @@ pub(crate) async fn remove_replica(
         .find(|s| s.component == component)
         .ok_or_else(|| refused(400, format!("this deployment has no {component}")))?;
     if !stage.replicas.iter().any(|r| r.node_id == node_id) {
-        return Err(refused(404, format!("that machine does not serve the {component}")));
+        return Err(refused(
+            404,
+            format!("that machine does not serve the {component}"),
+        ));
     }
     if stage.replicas.len() == 1 && !confirm_gap {
         return Err((
@@ -565,7 +589,10 @@ pub(crate) async fn redeploy_version(
     };
     let live = pairs(&record.active().stages);
     let wanted = pairs(&target.stages);
-    for (component, node_id, _) in live.iter().filter(|p| !wanted.iter().any(|w| w.0 == p.0 && w.1 == p.1)) {
+    for (component, node_id, _) in live
+        .iter()
+        .filter(|p| !wanted.iter().any(|w| w.0 == p.0 && w.1 == p.1))
+    {
         let _ = call(
             node_id.clone(),
             RELEASE_PATH,
@@ -625,9 +652,17 @@ pub(crate) async fn add_route(
     let call = crate::components::live_targets(state.clone());
     let by = state.network.node_id.clone();
     answer(
-        add_replica(&state.database, &machines, &call, &deploy_id, &change.component, &change.node_id, &by)
-            .await
-            .map(|version| serde_json::json!({ "version": version })),
+        add_replica(
+            &state.database,
+            &machines,
+            &call,
+            &deploy_id,
+            &change.component,
+            &change.node_id,
+            &by,
+        )
+        .await
+        .map(|version| serde_json::json!({ "version": version })),
     )
 }
 
@@ -641,9 +676,17 @@ pub(crate) async fn remove_route(
     let call = crate::components::live_targets(state.clone());
     let by = state.network.node_id.clone();
     answer(
-        remove_replica(&state.database, &call, &deploy_id, &change.component, &change.node_id, change.confirm_gap, &by)
-            .await
-            .map(|(version, serving)| serde_json::json!({ "version": version, "serving": serving })),
+        remove_replica(
+            &state.database,
+            &call,
+            &deploy_id,
+            &change.component,
+            &change.node_id,
+            change.confirm_gap,
+            &by,
+        )
+        .await
+        .map(|(version, serving)| serde_json::json!({ "version": version, "serving": serving })),
     )
 }
 
@@ -709,8 +752,16 @@ mod tests {
                 ],
                 Some("ready"),
             ),
-            machine("b", &[("/m/z.safetensors", 12 * GB, "diffusion")], Some("ready")),
-            machine("c", &[("/m/z.safetensors", 12 * GB, "diffusion")], Some("ready")),
+            machine(
+                "b",
+                &[("/m/z.safetensors", 12 * GB, "diffusion")],
+                Some("ready"),
+            ),
+            machine(
+                "c",
+                &[("/m/z.safetensors", 12 * GB, "diffusion")],
+                Some("ready"),
+            ),
             machine("d", &[("/m/z.safetensors", 12 * GB, "diffusion")], None),
         ]
     }
@@ -754,7 +805,10 @@ mod tests {
     fn a_machine_on_two_stages_is_fine() {
         let plan = plan_image(&zimage(&["b"]), &network());
         assert!(plan.stages[0].chosen[0].ok && plan.stages[2].chosen[0].ok);
-        assert_eq!(plan.stages[2].chosen[0].path.as_deref(), Some("/m/ae.safetensors"));
+        assert_eq!(
+            plan.stages[2].chosen[0].path.as_deref(),
+            Some("/m/ae.safetensors")
+        );
     }
 
     #[test]
@@ -768,7 +822,9 @@ mod tests {
     #[test]
     fn an_empty_stage_blocks() {
         let plan = plan_image(&zimage(&[]), &network());
-        assert!(plan.blocked.contains(&"diffusion has no machine".to_owned()));
+        assert!(plan
+            .blocked
+            .contains(&"diffusion has no machine".to_owned()));
     }
 
     #[test]
@@ -782,7 +838,10 @@ mod tests {
         let mut net = network();
         net[1].service_status = Some("error".into());
         let plan = plan_image(&zimage(&["b"]), &net);
-        assert_eq!(plan.stages[1].chosen[0].reason.as_deref(), Some("ComfyUI is error"));
+        assert_eq!(
+            plan.stages[1].chosen[0].reason.as_deref(),
+            Some("ComfyUI is error")
+        );
     }
 
     #[test]
@@ -813,7 +872,11 @@ mod tests {
 
     #[test]
     fn a_checkpoint_fits_every_stage() {
-        let net = vec![machine("e", &[("/m/sdxl.safetensors", 7 * GB, "checkpoint")], Some("ready"))];
+        let net = vec![machine(
+            "e",
+            &[("/m/sdxl.safetensors", 7 * GB, "checkpoint")],
+            Some("ready"),
+        )];
         let request = ImagePlanRequest {
             name: "sdxl".into(),
             stages: STAGES
@@ -844,7 +907,9 @@ mod tests {
         assert_eq!(plan.copies[0].to_node_id, "a");
         assert_eq!(plan.copies[0].from_node_id, "b");
         assert!(plan.stages[1].chosen[0].ok);
-        assert!(plan.blocked.contains(&"copies need your permission".to_owned()));
+        assert!(plan
+            .blocked
+            .contains(&"copies need your permission".to_owned()));
         let mut allowed = zimage(&["a"]);
         allowed.allow_transfers = true;
         assert!(plan_image(&allowed, &network()).blocked.is_empty());
@@ -862,7 +927,9 @@ mod tests {
     fn unknown_and_repeated_stages_block() {
         let mut request = zimage(&["b"]);
         request.stages.push(stage("lora", file("x", 1), &["a"]));
-        request.stages.push(stage("vae", file("ae.safetensors", GB / 3), &["a"]));
+        request
+            .stages
+            .push(stage("vae", file("ae.safetensors", GB / 3), &["a"]));
         let plan = plan_image(&request, &network());
         assert!(plan.blocked.contains(&"unknown component lora".to_owned()));
         assert!(plan.blocked.contains(&"vae is chosen twice".to_owned()));
@@ -875,11 +942,19 @@ mod tests {
     fn targets(fail_on: &'static [&'static str]) -> (crate::components::TargetCall, Calls) {
         let calls: Calls = Default::default();
         let seen = calls.clone();
-        let call: crate::components::TargetCall = std::sync::Arc::new(move |node: String, path: &'static str, body: serde_json::Value| {
-            seen.lock().unwrap().push((node.clone(), path, body));
-            let fail = fail_on.contains(&node.as_str()) && path == APPLY_PATH;
-            Box::pin(async move { if fail { Err("offline".to_owned()) } else { Ok(()) } })
-        });
+        let call: crate::components::TargetCall = std::sync::Arc::new(
+            move |node: String, path: &'static str, body: serde_json::Value| {
+                seen.lock().unwrap().push((node.clone(), path, body));
+                let fail = fail_on.contains(&node.as_str()) && path == APPLY_PATH;
+                Box::pin(async move {
+                    if fail {
+                        Err("offline".to_owned())
+                    } else {
+                        Ok(())
+                    }
+                })
+            },
+        );
         (call, calls)
     }
 
@@ -890,7 +965,10 @@ mod tests {
     }
 
     fn applies(calls: &Calls) -> Vec<(String, String)> {
-        calls.lock().unwrap().iter()
+        calls
+            .lock()
+            .unwrap()
+            .iter()
             .filter(|(_, path, _)| *path == APPLY_PATH)
             .map(|(node, _, body)| (node.clone(), body["component"].as_str().unwrap().to_owned()))
             .collect()
@@ -901,9 +979,15 @@ mod tests {
         let (_dir, db) = db();
         let plan = plan_image(&zimage(&["b", "c"]), &network());
         let (call, calls) = targets(&[]);
-        let failed = deploy_stages(&db, &plan, &call, "img-1", "me", &|_| {}).await.unwrap();
+        let failed = deploy_stages(&db, &plan, &call, "img-1", "me", &|_| {})
+            .await
+            .unwrap();
         assert!(failed.is_empty());
-        let diffusion: Vec<_> = applies(&calls).into_iter().filter(|(_, c)| c == "diffusion").map(|(n, _)| n).collect();
+        let diffusion: Vec<_> = applies(&calls)
+            .into_iter()
+            .filter(|(_, c)| c == "diffusion")
+            .map(|(n, _)| n)
+            .collect();
         assert_eq!(diffusion, ["b", "c"]);
         let record = &crate::image_records::load_image_deployments(&db)[0];
         assert_eq!(record.active().stages[1].replicas.len(), 2);
@@ -914,8 +998,14 @@ mod tests {
         let (_dir, db) = db();
         let plan = plan_image(&zimage(&["b"]), &network());
         let (call, calls) = targets(&[]);
-        deploy_stages(&db, &plan, &call, "img-1", "me", &|_| {}).await.unwrap();
-        let on_a: Vec<_> = applies(&calls).into_iter().filter(|(n, _)| n == "a").map(|(_, c)| c).collect();
+        deploy_stages(&db, &plan, &call, "img-1", "me", &|_| {})
+            .await
+            .unwrap();
+        let on_a: Vec<_> = applies(&calls)
+            .into_iter()
+            .filter(|(n, _)| n == "a")
+            .map(|(_, c)| c)
+            .collect();
         assert_eq!(on_a, ["text_encoder", "vae"]);
     }
 
@@ -924,10 +1014,16 @@ mod tests {
         let (_dir, db) = db();
         let plan = plan_image(&zimage(&["b", "c"]), &network());
         let (call, calls) = targets(&["c"]);
-        let failed = deploy_stages(&db, &plan, &call, "img-1", "me", &|_| {}).await.unwrap();
+        let failed = deploy_stages(&db, &plan, &call, "img-1", "me", &|_| {})
+            .await
+            .unwrap();
         assert_eq!(failed.len(), 1);
         assert_eq!(failed[0].node_id, "c");
-        assert!(calls.lock().unwrap().iter().any(|(n, p, b)| n == "c" && *p == RELEASE_PATH && b["component"] == "diffusion"));
+        assert!(calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(n, p, b)| n == "c" && *p == RELEASE_PATH && b["component"] == "diffusion"));
         let record = &crate::image_records::load_image_deployments(&db)[0];
         assert_eq!(record.active().stages[1].replicas.len(), 1);
     }
@@ -937,9 +1033,18 @@ mod tests {
         let (_dir, db) = db();
         let plan = plan_image(&zimage(&["b"]), &network());
         let (call, calls) = targets(&["b"]);
-        let error = deploy_stages(&db, &plan, &call, "img-1", "me", &|_| {}).await.unwrap_err();
-        assert!(error.starts_with("diffusion: no machine could serve it"), "{error}");
-        assert!(calls.lock().unwrap().iter().any(|(n, p, _)| n == "a" && *p == RELEASE_PATH));
+        let error = deploy_stages(&db, &plan, &call, "img-1", "me", &|_| {})
+            .await
+            .unwrap_err();
+        assert!(
+            error.starts_with("diffusion: no machine could serve it"),
+            "{error}"
+        );
+        assert!(calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(n, p, _)| n == "a" && *p == RELEASE_PATH));
         assert!(crate::image_records::load_image_deployments(&db).is_empty());
     }
 
@@ -949,11 +1054,15 @@ mod tests {
             "name": "z",
             "components": [{"component": "diffusion", "node_id": "b", "path": "/m/z.safetensors"},
                            {"component": "vae", "node_id": "a", "path": "/m/ae.safetensors"}]
-        })).unwrap();
+        }))
+        .unwrap();
         let request = body.into_request();
         let plan = plan_image(&request, &network());
         assert!(plan.blocked.is_empty(), "{:?}", plan.blocked);
-        assert_eq!(plan.stages[0].chosen[0].path.as_deref(), Some("/m/z.safetensors"));
+        assert_eq!(
+            plan.stages[0].chosen[0].path.as_deref(),
+            Some("/m/z.safetensors")
+        );
     }
 
     #[test]
@@ -970,7 +1079,9 @@ mod tests {
     async fn deployed(db: &crate::db::PomDb, diffusion: &[&str]) -> String {
         let plan = plan_image(&zimage(diffusion), &network());
         let (call, _) = targets(&[]);
-        deploy_stages(db, &plan, &call, "img-1", "me", &|_| {}).await.unwrap();
+        deploy_stages(db, &plan, &call, "img-1", "me", &|_| {})
+            .await
+            .unwrap();
         "img-1".to_owned()
     }
 
@@ -979,15 +1090,21 @@ mod tests {
         let (_dir, db) = db();
         let id = deployed(&db, &["b"]).await;
         let (call, calls) = targets(&[]);
-        let version = add_replica(&db, &network(), &call, &id, "diffusion", "c", "me").await.unwrap();
+        let version = add_replica(&db, &network(), &call, &id, "diffusion", "c", "me")
+            .await
+            .unwrap();
         assert_eq!(version, 2);
         assert_eq!(applies(&calls), [("c".to_owned(), "diffusion".to_owned())]);
         let record = &crate::image_records::load_image_deployments(&db)[0];
         assert_eq!(record.active().stages[1].replicas.len(), 2);
-        let refused = add_replica(&db, &network(), &call, &id, "diffusion", "d", "me").await.unwrap_err();
+        let refused = add_replica(&db, &network(), &call, &id, "diffusion", "d", "me")
+            .await
+            .unwrap_err();
         assert_eq!(refused.0, 400);
         assert_eq!(refused.1["error"], "does not run ComfyUI");
-        let missing = add_replica(&db, &network(), &call, "img-other", "diffusion", "c", "me").await.unwrap_err();
+        let missing = add_replica(&db, &network(), &call, "img-other", "diffusion", "c", "me")
+            .await
+            .unwrap_err();
         assert_eq!(missing.0, 404);
     }
 
@@ -996,11 +1113,15 @@ mod tests {
         let (_dir, db) = db();
         let id = deployed(&db, &["b"]).await;
         let (call, calls) = targets(&[]);
-        let refused = remove_replica(&db, &call, &id, "diffusion", "b", false, "me").await.unwrap_err();
+        let refused = remove_replica(&db, &call, &id, "diffusion", "b", false, "me")
+            .await
+            .unwrap_err();
         assert_eq!(refused.0, 409);
         assert_eq!(refused.1["error"], "gap");
         assert!(calls.lock().unwrap().is_empty());
-        let (version, serving) = remove_replica(&db, &call, &id, "diffusion", "b", true, "me").await.unwrap();
+        let (version, serving) = remove_replica(&db, &call, &id, "diffusion", "b", true, "me")
+            .await
+            .unwrap();
         assert_eq!((version, serving), (2, false));
     }
 
@@ -1009,13 +1130,19 @@ mod tests {
         let (_dir, db) = db();
         let id = deployed(&db, &["b"]).await;
         let (call, calls) = targets(&[]);
-        remove_replica(&db, &call, &id, "vae", "a", true, "me").await.unwrap();
+        remove_replica(&db, &call, &id, "vae", "a", true, "me")
+            .await
+            .unwrap();
         let calls = calls.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, "a");
         assert_eq!(calls[0].2["component"], "vae");
         let record = &crate::image_records::load_image_deployments(&db)[0];
-        assert_eq!(record.active().stages[0].replicas[0].node_id, "a", "text encoder stays");
+        assert_eq!(
+            record.active().stages[0].replicas[0].node_id,
+            "a",
+            "text encoder stays"
+        );
     }
 
     #[tokio::test]
@@ -1023,13 +1150,22 @@ mod tests {
         let (_dir, db) = db();
         let id = deployed(&db, &["b"]).await;
         let (call, _) = targets(&[]);
-        add_replica(&db, &network(), &call, &id, "diffusion", "c", "me").await.unwrap();
+        add_replica(&db, &network(), &call, &id, "diffusion", "c", "me")
+            .await
+            .unwrap();
         let (call, calls) = targets(&[]);
         assert_eq!(redeploy_version(&db, &call, &id, 1).await.unwrap(), 1);
-        assert!(calls.lock().unwrap().iter().any(|(n, p, b)| n == "c" && *p == RELEASE_PATH && b["component"] == "diffusion"));
+        assert!(calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(n, p, b)| n == "c" && *p == RELEASE_PATH && b["component"] == "diffusion"));
         let record = &crate::image_records::load_image_deployments(&db)[0];
         assert_eq!(record.active_version, 1);
         assert_eq!(record.versions.len(), 2, "no version appended");
-        assert_eq!(redeploy_version(&db, &call, &id, 9).await.unwrap_err().0, 400);
+        assert_eq!(
+            redeploy_version(&db, &call, &id, 9).await.unwrap_err().0,
+            400
+        );
     }
 }

@@ -324,6 +324,16 @@ export function Bubble({
             />
           )}
           {message.content && <Markdown>{message.content}</Markdown>}
+          {message.imageProgress && (
+            <div className="py-2" data-testid="chat-image-progress">
+              <MissingPiece
+                compact
+                variant="loading"
+                title={t("chatImage.generating")}
+                detail={message.imageProgress.of > 0 ? t("chatImage.progress", { step: message.imageProgress.step, of: message.imageProgress.of }) : undefined}
+              />
+            </div>
+          )}
           {message.images && message.images.length > 0 && <ChatImageGrid images={message.images} />}
           {message.error && (
             <ChatError message={message.error} />
@@ -1087,7 +1097,7 @@ function ChatScreen() {
         }
         continue;
       }
-      if (file.type.startsWith("image/") && imageWorkflow?.inputs?.includes("image")) {
+      if (file.type.startsWith("image/") && imageWorkflow && (imageWorkflow.inputs == null || imageWorkflow.inputs.includes("image"))) {
         // The base of image to image: it goes to ComfyUI as it is, not to the
         // LLM, so neither vision nor the context budget apply.
         if (!["image/png", "image/jpeg"].includes(file.type) || file.size > MAX_BASE_IMAGE_BYTES) {
@@ -1271,13 +1281,13 @@ function ChatScreen() {
   async function sendImage(text: string, workflow: ChatImageWorkflow) {
     // An attached image is the base of image to image, when the workflow takes one.
     const base = attachments.find((attachment) => attachment.kind === "image");
-    if (base && !workflow.inputs?.includes("image")) {
+    if (base && workflow.inputs != null && !workflow.inputs.includes("image")) {
       toast.error(t("chat.imageRejected"), t("chatImage.noBase"));
       return;
     }
     const [width, height] = (session.imageSize ?? "").split("x").map(Number);
     const user: ChatMessage = { id: newId(), role: "user", content: text, attachments: base ? [base] : undefined, at: new Date().toISOString() };
-    const reply: ChatMessage = { id: newId(), role: "assistant", content: t("chatImage.generating"), at: new Date().toISOString() };
+    const reply: ChatMessage = { id: newId(), role: "assistant", content: "", imageProgress: { step: 0, of: 0 }, at: new Date().toISOString() };
     let live: ChatSession = {
       ...session,
       title: session.titled || turnsOnly(session.messages).length > 0 ? session.title : titleFrom(text),
@@ -1300,11 +1310,11 @@ function ChatScreen() {
         width: width || undefined,
         height: height || undefined,
         image: base?.data,
-        onProgress: (step, of) => patch({ content: t("chatImage.progress", { step, of }) }),
+        onProgress: (step, of) => patch({ imageProgress: { step, of } }),
       });
-      patch({ content: "", images, source: workflow.name });
+      patch({ content: "", images, imageProgress: undefined });
     } catch (error) {
-      patch({ content: "", error: error instanceof Error ? error.message : String(error) });
+      patch({ content: "", imageProgress: undefined, error: error instanceof Error ? error.message : String(error) });
     } finally {
       setImageBusy(false);
       upsert(live);

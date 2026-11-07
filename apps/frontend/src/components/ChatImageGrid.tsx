@@ -31,11 +31,16 @@ function Thumbnail({ image, onOpen }: { image: ChatImage; onOpen: (url: string) 
   const { t } = useI18n();
   const { url, missing } = useImageUrl(image.hash);
   if (missing) {
-    return <div className="flex aspect-square items-center justify-center rounded-lg border border-line bg-raised p-3 text-center text-[0.72rem] text-muted">{t("chatImage.missing")}</div>;
+    return <div className="flex h-40 w-40 items-center justify-center rounded-lg border border-line bg-raised p-3 text-center text-[0.72rem] text-muted">{t("chatImage.missing")}</div>;
   }
-  if (!url) return <div className="aspect-square animate-pulse rounded-lg bg-raised" />;
+  if (!url) return <div className="h-40 w-40 animate-pulse rounded-lg bg-raised" />;
   return (
-    <button type="button" onClick={() => onOpen(url)} className="overflow-hidden rounded-lg border border-line">
+    <button
+      type="button"
+      onClick={() => onOpen(url)}
+      title={t("chatImage.open")}
+      className="h-40 w-40 overflow-hidden rounded-lg border border-line transition hover:border-iris/60 hover:shadow-panel"
+    >
       <img src={url} alt={t("chatImage.alt", { width: image.width, height: image.height })} className="h-full w-full object-cover" />
     </button>
   );
@@ -46,7 +51,7 @@ export function ChatImageGrid({ images }: { images: ChatImage[] }) {
   const [open, setOpen] = useState<{ url: string; image: ChatImage } | null>(null);
   return (
     <>
-      <div className={`grid gap-2 ${images.length > 1 ? "grid-cols-2" : "grid-cols-1"} max-w-xl`} data-testid="chat-images">
+      <div className="flex flex-wrap gap-2" data-testid="chat-images">
         {images.map((image) => <Thumbnail key={image.hash} image={image} onOpen={(url) => setOpen({ url, image })} />)}
       </div>
       <Modal

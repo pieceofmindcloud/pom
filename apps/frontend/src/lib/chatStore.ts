@@ -73,6 +73,8 @@ export interface ChatMessage {
   reasoning?: string;
   /** Images a ComfyUI workflow generated for this answer, kept on this node by hash. */
   images?: import("./types").ChatImage[];
+  /** Generate image still running: the sampling step reached (`of` 0 before the first step). */
+  imageProgress?: { step: number; of: number };
   /** How many tokens the model spent thinking, counted from the stream. */
   reasoningTokens?: number;
   /** Authoritative final throughput from the generating node. */

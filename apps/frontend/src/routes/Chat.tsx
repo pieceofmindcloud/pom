@@ -1113,6 +1113,12 @@ function ChatScreen() {
         added.push({ id: newId(), name: file.name, kind: "image", data, mediaType: file.type, size: file.size, resized: false });
         continue;
       }
+      if (file.type.startsWith("image/") && imageWorkflow) {
+        // Generate image is on, but this workflow lists no base image input:
+        // the LLM's vision has nothing to do with it.
+        toast.error(t("chat.imageRejected"), t("chatImage.noBase"));
+        continue;
+      }
       if (file.type.startsWith("image/")) {
         if (!visionAvailable) {
           toast.error(t("chat.imageRejected"), t("chat.imageVisionUnavailable"));

@@ -1025,6 +1025,14 @@ and undeploy through its loopback host API (`/api/plugin-host/image-*`,
 `plugins-ui.md`) only when its node is a principal or admin: the plugin acts
 with that node's own authority, and any other role answers 403.
 
+### GPU arbiter
+
+`POST /api/internal/gpu/yield` and `POST /api/internal/gpu/release-images`
+(signed, from a live member) unload this node's LLM for an image when its
+deployment allows it, and ask this node's ComfyUI to free the GPU; both answer
+`{ok}`. `GET /api/ui/node` carries the optional `gpu_ids: [{index, id}]` they
+group the nodes of one card by. See `deployment.md`, section 1.7.
+
 ### Chat images
 
 `GET /api/ui/chat/capabilities` also answers `image` (`supported` when some

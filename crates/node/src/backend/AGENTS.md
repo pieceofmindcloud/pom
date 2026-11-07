@@ -619,6 +619,8 @@ boundary.
   `/image-deploy/:deploy_id/{add,remove,redeploy}`) and `chat_image.rs` (the
   Chat's workflows, `POST /api/ui/chat/image`, `GET /api/ui/chat/image/:hash`,
   the internal workflow run); the `host_api` routes are in `plugin_host_api.rs`.
+  `gpu_identity.rs` and `gpu_arbiter.rs` arbitrate one physical GPU shared by
+  an LLM and image components in the LLM's favour (`/api/internal/gpu/*`).
   Contracts: `docs/subsystems/deployment.md` 1.7 and `http-api.md` "Chat images".
 - `user_session.rs` - people on the node: the session principal
   (`Operator` / `User`), the providers plugins offer (`auth_providers`,

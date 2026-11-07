@@ -437,6 +437,22 @@ serves, so components are a registry of their own.
   (`/pom/component/<deploy_id>/<component>/<op>`, `x-pom-plugin-token`). The
   calls wait up to 15 minutes (a cold load of a large model). POM never reads
   the bodies.
+- **Sharing a GPU with an LLM** (`gpu_arbiter.rs`). Before an op runs on the
+  node that serves the component (`call_local_plugin`), the gate reads the
+  nodes on the same physical card (`gpu_identity.rs`: the NVIDIA UUID, or the
+  AMD PCI slot with the host's boot id, published as `NodeInfo.gpu_ids`): with
+  no LLM loaded on the card, or room in its VRAM for the component's files plus
+  1 GiB, the op runs; with every LLM there quiet for 10 s (`GRACE`) and allowed
+  to yield (`RuntimeParams.yield_gpu_to_images`, a POM setting, off by default
+  for every engine), each is asked to unload (`POST /api/internal/gpu/yield`,
+  `NodeRuntime::yield_for_images`: the idle unload without the timer); else the
+  op waits (up to 10 min, then runs). A yielded LLM that wakes calls
+  `gpu_arbiter::before_llm_reload` first: every node on its card that serves
+  image components frees its VRAM (`POST /api/internal/gpu/release-images`,
+  ComfyUI's `/pom/gpu/yield`), so a running image pauses at its next op until
+  the LLM is quiet again. Node views are cached for 2 s, since the diffusion
+  stage makes one op per sampling step. A node without GPU identity is never
+  arbitrated.
 - **Who serves what.** The plugin lists its components in its `image` service
   (`plugins-ui.md`, `host.services`); `components::network_components` gathers
   them from this node and every live peer.

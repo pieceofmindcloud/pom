@@ -1672,7 +1672,9 @@ pub(crate) fn compression() -> tower_http::compression::CompressionLayer<
     tower_http::compression::CompressionLayer::new().compress_when(
         tower_http::compression::Predicate::and(
             tower_http::compression::predicate::DefaultPredicate::new(),
-            tower_http::compression::predicate::NotForContentType::const_new("application/x-ndjson"),
+            tower_http::compression::predicate::NotForContentType::const_new(
+                "application/x-ndjson",
+            ),
         ),
     )
 }
@@ -1686,7 +1688,10 @@ mod compression_tests {
             .route(
                 "/",
                 axum::routing::get(move || async move {
-                    ([(axum::http::header::CONTENT_TYPE, content_type)], "x".repeat(4096))
+                    (
+                        [(axum::http::header::CONTENT_TYPE, content_type)],
+                        "x".repeat(4096),
+                    )
                 }),
             )
             .layer(super::compression());
@@ -1709,6 +1714,9 @@ mod compression_tests {
     async fn a_streamed_ndjson_answer_is_never_compressed() {
         assert_eq!(encoding_of("application/x-ndjson").await, None);
         assert_eq!(encoding_of("text/event-stream").await, None);
-        assert!(encoding_of("application/json").await.is_some(), "JSON still is");
+        assert!(
+            encoding_of("application/json").await.is_some(),
+            "JSON still is"
+        );
     }
 }

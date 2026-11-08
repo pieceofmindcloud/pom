@@ -467,6 +467,8 @@
                 layers: 4,
                 size_bytes: GIB,
                 remainder_bytes: GIB,
+                kv_bytes: None,
+                remainder_kv_bytes: None,
             }],
             granularity: Some(4),
             rule: "real boundaries".to_string(),
@@ -505,6 +507,200 @@
         assert!(plan.steps.iter().all(|step| !step.ready));
         assert!(plan.steps[0].source_needs_split);
         assert!(plan.steps[1].source_needs_split);
+    }
+
+    #[test]
+    fn whole_ranges_launch_each_machine_with_its_own_whole_file() {
+        let mut machines = build(vec![
+            m("a", 900_000, &[(0, 31)]),
+            m("b", 900_000, &[(0, 31)]),
+        ]);
+        let options = WholeLayerOptions {
+            source_node_id: "a".to_string(),
+            total_layers: 32,
+            cuts: vec![LayerCut {
+                end_layer: 15,
+                layers: 16,
+                size_bytes: GIB,
+                remainder_bytes: 2 * GIB,
+                kv_bytes: None,
+                remainder_kv_bytes: None,
+            }],
+            granularity: Some(1),
+            rule: "every layer".to_string(),
+            reason: None,
+        };
+        let ranges = [
+            WholeRangeSelection { node_id: "a".into(), start_layer: 0, end_layer: 15 },
+            WholeRangeSelection { node_id: "b".into(), start_layer: 16, end_layer: 31 },
+        ];
+        let selection = super::add_whole_ranges(&mut machines, "model", &ranges, &options)
+            .expect("both machines hold the whole model");
+        let plan = super::plan(
+            "model",
+            &machines,
+            Some(&selection),
+            &RuntimeParams::default(),
+            false,
+            DeployKind::Whole,
+            None,
+        );
+        assert!(plan.blocked.is_none(), "{:?}", plan.blocked);
+        assert_eq!(plan.transfer_bytes, 0);
+        assert_eq!(plan.steps.len(), 2);
+        for (step, machine) in plan.steps.iter().zip(&machines) {
+            assert_eq!(step.target_node_id, machine.node_id);
+            assert_eq!(step.from_whole_path.as_deref(), Some(machine.held[0].path.as_str()));
+        }
+        assert_eq!(plan.steps[0].size_bytes, GIB);
+        assert_eq!(plan.steps[1].size_bytes, 2 * GIB);
+
+        let targets = super::launch_targets(&plan.steps, &machines, DeployKind::Whole, None, &[])
+            .expect("launch targets");
+        assert_eq!(targets.len(), 2);
+        for (target, machine) in targets.iter().zip(&machines) {
+            assert!(!target.skip_split, "the target cuts or points at its range itself");
+            assert_eq!(target.source_model_path, machine.held[0].path);
+            assert_eq!(target.peer_count, Some(2));
+        }
+        assert_eq!((targets[1].start_layer, targets[1].end_layer), (16, 31));
+    }
+
+    #[test]
+    fn a_range_from_the_own_whole_file_charges_disk_only_without_range_load() {
+        let options = WholeLayerOptions {
+            source_node_id: "a".to_string(),
+            total_layers: 32,
+            cuts: vec![LayerCut { end_layer: 15, layers: 16, size_bytes: 10 * GIB, remainder_bytes: 10 * GIB, kv_bytes: None, remainder_kv_bytes: None }],
+            granularity: Some(1),
+            rule: "every layer".to_string(),
+            reason: None,
+        };
+        let ranges = [
+            WholeRangeSelection { node_id: "a".into(), start_layer: 0, end_layer: 15 },
+            WholeRangeSelection { node_id: "b".into(), start_layer: 16, end_layer: 31 },
+        ];
+        let plan_for = |range_load: bool| {
+            let mut machines = build(vec![
+                m("a", 900_000, &[(0, 31)]),
+                m("b", 900_000, &[(0, 31)]),
+            ]);
+            for machine in &mut machines {
+                machine.disk_free_mb = 1024;
+                machine.inference_capabilities = range_load
+                    .then(|| vec![crate::pipeline::CAP_RANGE_LOAD.to_string()]);
+            }
+            let selection = super::add_whole_ranges(&mut machines, "model", &ranges, &options).unwrap();
+            let plan = super::plan(
+                "model",
+                &machines,
+                Some(&selection),
+                &RuntimeParams::default(),
+                false,
+                DeployKind::Whole,
+                None,
+            );
+            assert!(plan.steps.iter().all(|step| step.note.as_deref().is_none_or(|note| !note.contains("over the network"))));
+            plan
+        };
+        assert!(plan_for(false).blocked.is_some_and(|reason| reason.contains("free on disk")));
+        let ready = plan_for(true);
+        assert_eq!(ready.blocked, None);
+        assert!(ready.steps.iter().all(|step| step.note.is_none()), "a target that points at its range writes nothing");
+    }
+
+    #[test]
+    fn a_target_without_range_load_is_told_it_writes_the_range_to_disk() {
+        let mut machines = build(vec![
+            m("a", 900_000, &[(0, 31)]),
+            m("b", 900_000, &[(0, 31)]),
+        ]);
+        let options = WholeLayerOptions {
+            source_node_id: "a".to_string(),
+            total_layers: 32,
+            cuts: vec![LayerCut { end_layer: 15, layers: 16, size_bytes: GIB, remainder_bytes: GIB, kv_bytes: None, remainder_kv_bytes: None }],
+            granularity: Some(1),
+            rule: "every layer".to_string(),
+            reason: None,
+        };
+        let selection = super::add_whole_ranges(
+            &mut machines,
+            "model",
+            &[
+                WholeRangeSelection { node_id: "a".into(), start_layer: 0, end_layer: 15 },
+                WholeRangeSelection { node_id: "b".into(), start_layer: 16, end_layer: 31 },
+            ],
+            &options,
+        )
+        .unwrap();
+        let plan = super::plan("model", &machines, Some(&selection), &RuntimeParams::default(), false, DeployKind::Whole, None);
+        assert!(plan.blocked.is_none(), "{:?}", plan.blocked);
+        for step in &plan.steps {
+            let note = step.note.as_deref().unwrap_or_default();
+            assert!(note.contains("written to disk") && note.contains("model/range-load-v1"), "{note}");
+        }
+    }
+
+    #[test]
+    fn a_range_whose_cpu_part_exceeds_the_free_ram_is_refused_by_name() {
+        let mut machines = build(vec![m("a", 900_000, &[(0, 31)])]);
+        machines[0].ram_free_mb = 4 * 1024;
+        let preview = |cpu_ram_bytes: u64| crate::webui::CapacityPreview {
+            fits: false,
+            degraded: false,
+            note: None,
+            effective_n_gpu_layers: Some(32),
+            effective_n_ctx: Some(4096),
+            gpus: Vec::new(),
+            gpu_layers_fit: Some(20),
+            cpu_layers: Some(12),
+            cpu_ram_bytes: Some(cpu_ram_bytes),
+            weights_bytes: None,
+            kv_bytes: None,
+            kv_in_vram: None,
+        };
+        let selection = [pick(0, 31, "a")];
+        let mut plan = super::plan("model", &machines, Some(&selection), &RuntimeParams::default(), false, DeployKind::Whole, None);
+        plan.steps[0].capacity = Some(preview(3 * GIB));
+        super::refuse_cpu_part_beyond_ram(&mut plan, &machines);
+        assert!(plan.blocked.is_none(), "{:?}", plan.blocked);
+
+        plan.steps[0].capacity = Some(preview(6 * GIB));
+        super::refuse_cpu_part_beyond_ram(&mut plan, &machines);
+        let reason = plan.blocked.expect("6 GB on the CPU with 4 GB of free RAM");
+        assert!(reason.contains("free RAM") && reason.contains("12 layers"), "{reason}");
+    }
+
+    #[test]
+    fn a_whole_range_on_a_machine_without_the_whole_model_is_refused_by_name() {
+        let mut machines = build(vec![
+            m("a", 900_000, &[(0, 31)]),
+            m("b", 900_000, &[(16, 31)]),
+        ]);
+        let options = WholeLayerOptions {
+            source_node_id: "a".to_string(),
+            total_layers: 32,
+            cuts: vec![LayerCut { end_layer: 15, layers: 16, size_bytes: GIB, remainder_bytes: GIB, kv_bytes: None, remainder_kv_bytes: None }],
+            granularity: Some(1),
+            rule: "every layer".to_string(),
+            reason: None,
+        };
+        let error = super::add_whole_ranges(
+            &mut machines,
+            "model",
+            &[WholeRangeSelection { node_id: "b".into(), start_layer: 16, end_layer: 31 }],
+            &options,
+        )
+        .unwrap_err();
+        assert!(error.contains("does not have the whole model"), "{error}");
+        let error = super::add_whole_ranges(
+            &mut machines,
+            "model",
+            &[WholeRangeSelection { node_id: "a".into(), start_layer: 0, end_layer: 9 }],
+            &options,
+        )
+        .unwrap_err();
+        assert!(error.contains("L9"), "{error}");
     }
 
     /// The knobs are their own axis; every test below is about the placement,

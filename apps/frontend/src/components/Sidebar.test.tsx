@@ -73,7 +73,7 @@ describe("Sidebar", () => {
   it("collapses to icon buttons and exposes child destinations in a hover flyout", () => {
     render(
       <MemoryRouter
-        initialEntries={["/models/slice"]}
+        initialEntries={["/models/remote"]}
         future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <LocaleProvider initialLocale="pt-BR">
@@ -92,7 +92,7 @@ describe("Sidebar", () => {
     expect(scroller.className).toContain("overscroll-y-contain");
     expect(scroller.className).toContain("overflow-x-hidden");
     expect(screen.getByRole("button", { name: "Modelos" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Fatiar modelos" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Modelos inteiros" })).toBeTruthy();
     expect(window.localStorage.getItem("pom.sidebar.collapsed")).toBe("true");
   });
 

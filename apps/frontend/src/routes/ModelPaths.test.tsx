@@ -4,9 +4,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { LocaleProvider } from "../i18n/provider";
 
-const { post, extra } = vi.hoisted(() => ({ post: vi.fn(), extra: { value: {} as Record<string, unknown> } }));
+const { post, rescanModels, extra } = vi.hoisted(() => ({ post: vi.fn(), rescanModels: vi.fn().mockResolvedValue({}), extra: { value: {} as Record<string, unknown> } }));
 
-vi.mock("../lib/api", () => ({ api: { post } }));
+vi.mock("../lib/api", () => ({ api: { post }, rescanModels }));
 vi.mock("../lib/queries", () => ({
   usePaths: () => ({
     data: {
@@ -42,7 +42,7 @@ vi.mock("../lib/queries", () => ({
   useInvalidate: () => vi.fn(),
 }));
 vi.mock("../lib/toast", () => ({
-  useToast: () => ({ success: vi.fn(), fromError: vi.fn() }),
+  useToast: () => ({ success: vi.fn(), info: vi.fn(), fromError: vi.fn() }),
 }));
 
 import { ModelPaths } from "./ModelPaths";
@@ -51,6 +51,18 @@ describe("ModelPaths", () => {
   afterEach(() => {
     cleanup();
     extra.value = {};
+  });
+
+  it("asks this machine to walk its model folders again", async () => {
+    render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <LocaleProvider initialLocale="en">
+          <ModelPaths />
+        </LocaleProvider>
+      </MemoryRouter>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Rescan folders" }));
+    await waitFor(() => expect(rescanModels).toHaveBeenCalledWith());
   });
 
   it("shows the slice storage limit and current usage", () => {

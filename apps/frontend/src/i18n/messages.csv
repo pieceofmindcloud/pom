@@ -679,17 +679,6 @@ deploy.capacityWarnDetail,"The projected use is over capacity on {machines}. lla
 deploy.capacityWarnTitle,Projection exceeds a machine''s VRAM,A projeção passa da VRAM de uma máquina
 deploy.checking,checking…,conferindo…
 deploy.chooseMachine,— choose machine —,— escolher máquina —
-deploy.copiesAuthorize,Authorize and deploy,Autorizar e implantar
-deploy.copiesDetail,"{count, plural, one {This deploy copies # file ({size}) to a machine that does not have it yet.} other {This deploy copies # files ({size}) to machines that do not have them yet.}} Nothing is copied without your authorization.","{count, plural, one {Esta implantação copia # arquivo ({size}) para uma máquina que ainda não o tem.} other {Esta implantação copia # arquivos ({size}) para máquinas que ainda não os têm.}} Nada é copiado sem a sua autorização."
-deploy.copiesTitle,Authorize the copies,Autorizar as cópias
-deploy.copy, · copy, · copiar
-deploy.copyAndMerge,copy from {host} and merge into {range},copiar de {host} e fundir em {range}
-deploy.copyCount,"{count}{count, plural, =1 { copy} other { copies}}","{count}{count, plural, =1 { cópia} other { cópias}}"
-deploy.copyFrom,copy from {host},copiar de {host}
-deploy.copyMmproj,Vision projector {name},Projetor de visão {name}
-deploy.copyMtp,MTP draft {name},Rascunho MTP {name}
-deploy.copyRoute,from {from} to {to},de {from} para {to}
-deploy.copySummary,"{count}{count, plural, =1 { copy} other { copies}} · {size} over the network","{count}{count, plural, =1 { cópia} other { cópias}} · {size} pela rede"
 deploy.coverage,Layers covered by this selection,Camadas cobertas pela escolha
 deploy.deploy,Deploy this way,Implantar assim
 deploy.deployment,Deployment,Implantação
@@ -951,6 +940,24 @@ deployStudio.kindShards,Shards,Fatias
 deployStudio.kindWhole,Whole model,Modelo inteiro
 deployStudio.kvCacheOnGpu,KV cache on the GPU,KV cache na GPU
 deployStudio.layers,Layers,Camadas
+deployStudio.splitLayers,Split the layers over {count} machines,Dividir as camadas entre {count} máquinas
+deployStudio.splitLayersHint,"Each machine serves its range from its own copy of the model, so nothing is copied.","Cada máquina serve sua faixa a partir da própria cópia do modelo, então nada é copiado."
+deployStudio.layerCount,{count} layers,{count} camadas
+deployStudio.fewerLayers,Fewer layers on {machine},Menos camadas em {machine}
+deployStudio.moreLayers,More layers on {machine},Mais camadas em {machine}
+deployStudio.layerLimitNoCut,This model has no valid cut in that direction,Este modelo não tem corte válido nessa direção
+deployStudio.layerLimitEmpty,"A machine would be left with no layers: take it off the map instead","Uma máquina ficaria sem camadas: tire-a do mapa"
+deployStudio.autoBalance,Auto-balance by free memory,Equilibrar pela memória livre
+deployStudio.autoBalanceHint,"Divides the unlocked machines' layers in proportion to each one's free memory (GPU, or RAM without a GPU), counting the weights and the context's KV cache, at cuts the model allows. Locked ranges stay as they are.","Divide as camadas das máquinas destravadas na proporção da memória livre de cada uma (GPU, ou RAM sem GPU), contando os pesos e o cache KV do contexto, em cortes que o modelo permite. Faixas travadas ficam como estão."
+deployStudio.autoBalanceWaiting,Waiting for the model's cuts from the plan,Aguardando os cortes do modelo vindos do plano
+deployStudio.autoBalanceAllLocked,Unlock at least two machines to balance their layers,Destrave pelo menos duas máquinas para equilibrar as camadas
+deployStudio.autoBalanceNoSizes,"The plan does not give the size of every cut yet, or the cuts are too few for every machine","O plano ainda não informa o tamanho de todo corte, ou os cortes são poucos para todas as máquinas"
+deployStudio.lockRange,Lock the range of {machine},Travar a faixa de {machine}
+deployStudio.unlockRange,Unlock the range of {machine},Destravar a faixa de {machine}
+deployStudio.layerLimitLocked,This range is locked: unlock it to change it,Esta faixa está travada: destrave para mudar
+deployStudio.layerLimitNeighbourLocked,The machine sharing this cut is locked,A máquina que divide este corte está travada
+deployStudio.gpuCpuSplit,"{gpu} on GPU, {cpu} on CPU","{gpu} na GPU, {cpu} na CPU"
+deployStudio.gpuCpuSplitDetail,"The VRAM does not hold the whole range: the rest runs on the CPU from {ram} of RAM, and generation will be much slower.","A VRAM não comporta a faixa inteira: o resto roda na CPU usando {ram} de RAM, e a geração fica bem mais lenta."
 deployStudio.layersOnMachine,Layers on this machine,Camadas nesta máquina
 deployStudio.layersOnPeer,Layers available on this peer,Camadas disponíveis neste peer
 deployStudio.layersWithoutMachine,Layers without a machine: {ranges},Camadas sem máquina: {ranges}
@@ -1749,13 +1756,11 @@ nav.requestLogs,Request logs,Logs de requisições
 nav.sendFile,Send a file,Enviar um arquivo
 nav.settings,Settings,Configurações
 nav.setupWizard,Setup wizard,Wizard de configuração
-nav.shards,Shards,Fatias
 nav.shareNetwork,Share network access,Compartilhar acesso à rede
 nav.sharing,Sharing,Compartilhamento
-nav.sliceModels,Slice models,Fatiar modelos
 nav.statistics,Statistics,Estatísticas
 nav.storage,Storage,Armazenamento
-nav.transfers,Transfers,Transferências
+nav.transfers,Downloads,Downloads
 nav.trustAnchor,Trust root,Raiz de confiança
 nav.trustMachine,This machine,Esta máquina
 network.acceptedEnrollments,Accepting new members,Aceitando novos membros
@@ -2706,25 +2711,6 @@ remoteModels.trending,Trending GGUF models,Modelos GGUF em alta
 remoteModels.trendingSubtitle,"Public Hugging Face discovery, without signing in.","Descoberta pública do Hugging Face, sem precisar entrar."
 remoteModels.updated,Updated,Atualizado
 remoteModels.verifying,Verifying,Verificando
-sendFile.choose,Choose…,Escolher…
-sendFile.destination,Destination machine,Máquina de destino
-sendFile.file,GGUF file,Arquivo GGUF
-sendFile.fileAndTarget,File and destination,Arquivo e destino
-sendFile.fileHint,Only files from the local catalog with the .gguf extension can be sent.,Só arquivos do catálogo local com extensão .gguf podem ser enviados.
-sendFile.howItWorks,How it works,Como funciona
-sendFile.inviteOnly,Nothing is written to another machine''s disk without an invitation. The other side sees the offer in the bell and decides.,Nada é gravado no disco alheio sem convite. O outro lado vê a oferta no sino e decide.
-sendFile.noPeers,No other machine on the network,Nenhuma outra máquina na rede
-sendFile.noPeersDetail,There is no destination available. Check discovery under Settings › Network.,Não há para quem enviar. Confira a descoberta em Configurações › Rede.
-sendFile.offer,Offer file,Oferecer o arquivo
-sendFile.offerFailed,The offer was not sent,A oferta não saiu
-sendFile.offerNotWrite,"Offer, not remote write","Oferta, não escrita"
-sendFile.offerSent,Offer sent,Oferta enviada
-sendFile.offerSentDetail,The owner of the other machine must accept before any bytes leave this machine.,O dono da outra máquina precisa aceitar; só então os bytes saem daqui.
-sendFile.pickFromList,Choose a file…,Escolher um arquivo…
-sendFile.received,"Once accepted, the destination machine fetches the file and stores it in its shard folder''s received/ directory.","Depois de aceita, a máquina de destino busca o arquivo e o grava em received/, dentro da pasta de fatias dela."
-sendFile.resume,"The transfer resumes with Range and verifies MD5 before the file gets its final name. If it does not match, the partial file is deleted.","A transferência retoma por Range e o MD5 é conferido antes de o arquivo tomar o nome final. Se não bater, o parcial é apagado."
-sendFile.subtitle,Choose a GGUF already present in this machine''s catalog and a destination.,Escolha um GGUF que já esteja no catálogo desta máquina e uma máquina de destino.
-sendFile.title,Send a file from this machine,Enviar um arquivo desta máquina
 setup.addresses,Addresses other nodes should use,Endereços que os outros nós devem usar
 setup.adminDetail,Creates the cluster key and administers the network.,Cria a chave do cluster e administra a rede.
 setup.connectionKey,Cluster connection key,Chave de conexão do cluster
@@ -2961,29 +2947,6 @@ setupWizard.vulkanAvailable,Vulkan ready,Vulkan disponível
 setupWizard.welcomeDetail,Let us set up this machine.,Vamos configurar esta máquina.
 setupWizard.welcomeEyebrow,Your first step,Seu primeiro passo
 setupWizard.welcomeTitle,Welcome to POM,Bem-vindo ao POM
-shards.complete,covers model,cobre o modelo
-shards.empty,No shards on this machine,Nenhuma fatia nesta máquina
-shards.emptyDetail,Shards appear here after local slicing or an accepted transfer. They are stored in the configured shard folder.,Fatias aparecem aqui depois de um fatiamento local ou de uma transferência aceita. Elas são gravadas na pasta de fatias configurada.
-shards.everyoneHas,everyone already has it,todas já têm
-shards.incomplete,incomplete coverage,cobertura incompleta
-shards.noOtherMachine,no other machine,nenhuma outra máquina
-shards.offerDetail,"Sending creates an offer. The owner of the other machine accepts it, and only then do bytes leave this machine.","Enviar cria uma oferta: o dono da outra máquina aceita, e só então os bytes saem daqui."
-shards.offerFailed,The offer was not sent,A oferta não saiu
-shards.offerSent,Offer sent,Oferta enviada
-shards.offerSentDetail,The other machine must accept before the transfer starts.,O outro lado precisa aceitar antes de a transferência começar.
-shards.parts,Pipeline parts,Partes do pipeline
-shards.rescan,Scan again,Varrer de novo
-shards.sendAria,Send {name} to,Enviar {name} para
-shards.sendTo,Send to…,Enviar para…
-shards.sending,Sending offer…,Enviando oferta…
-shards.set,Shard set,Conjunto de fatias
-shards.setDetail,"{count}{count, plural, =1 { shard of a } other { shards of a }}{total}-layer model","{count}{count, plural, =1 { fatia de um modelo de } other { fatias de um modelo de }}{total} camadas"
-shards.setUnknown,"{count}{count, plural, =1 { shard} other { shards}}","{count}{count, plural, =1 { fatia} other { fatias}}"
-shards.subtitle,"Every local shard appears here, even when everyone already has a copy. Destinations are restricted to machines that do not have it.","Toda fatia local aparece aqui, mesmo quando todo mundo já tem uma cópia. O destino se restringe a quem ainda não tem."
-shards.title,Shards on this machine,Fatias nesta máquina
-shards.tpGroup,Tensor-parallel - {size} ranks,Tensor-parallel - {size} ranks
-shards.tpParts,Tensor-parallel parts,Partes tensor-parallel
-shards.unknownRange,unknown range,faixa desconhecida
 sidebar.build,build,build
 sidebar.buildTitle,Commit this node''s binary was built from. Compare it across cards to see whether every node runs the same version.,Commit de que o binário deste nó foi compilado. Compare entre os cards para ver se todos os nós estão na mesma versão.
 sidebar.collapse,Minimize menu,Minimizar menu
@@ -3082,6 +3045,8 @@ slice.title,Slice models,Fatiar modelos
 slice.tooSmall,too small,pequena demais
 slice.tpAllLayers,Each rank covers all layers. The output folder and model manifest stay the same as pipeline slicing.,Cada rank cobre todas as camadas. A pasta de saída e o manifesto do modelo são os mesmos do fatiamento de pipeline.
 slice.tpAllLayersShort,all layers,todas as camadas
+slice.tpDevOnly,Tensor parallel shards need development mode,Partes tensor-parallel exigem o modo de desenvolvimento
+slice.tpDevOnlyDetail,"A pipeline deploy serves each range from the whole model, so nothing is sliced. Tensor parallel shards are cut here only on a node started with POM_DEV_MODE=1.","Uma implantação em pipeline serve cada faixa a partir do modelo inteiro, então nada é fatiado. Partes tensor-parallel só são cortadas aqui num nó iniciado com POM_DEV_MODE=1."
 slice.tpParts,Tensor-parallel parts,Partes tensor-parallel
 slice.tpPartsDetail,Create one complete-model tensor shard for each rank in the group.,Cria uma parte do modelo completo para cada rank do grupo.
 slice.tpPreviewDetail,Every row is a rank. All ranks cover the same layers and receive one tensor shard.,Cada linha é um rank. Todos cobrem as mesmas camadas e recebem uma parte tensorial.
@@ -3089,6 +3054,8 @@ slice.tpRankCount,{size} ranks,{size} ranks
 slice.tpSize,Number of TP ranks,Quantidade de ranks TP
 slice.tpSizeAria,Number of TP ranks,Quantidade de ranks TP
 slice.tpSizeHint,Choose the number of machines that will hold this tensor-parallel model.,Escolha quantas máquinas vão guardar este modelo em tensor parallelism.
+slice.tpSubtitle,"Cut one tensor shard per rank from a whole model, for a tensor parallel deploy.","Corte uma parte tensorial por rank de um modelo inteiro, para uma implantação em tensor parallel."
+slice.tpTitle,Tensor parallel shards,Partes tensor-parallel
 topbar.apiTitle,OpenAI-compatible API served by this node,API compatível com OpenAI servida por este nó
 topbar.behindNat,Behind NAT,Atrás de NAT
 topbar.behindNatHint,Some connections of this machine go through a relay. Click for what it means and how to fix it.,Algumas conexões desta máquina passam por um relé. Clique para ver o que isso significa e como resolver.
@@ -3154,8 +3121,8 @@ transfers.remaining,remaining,faltam
 transfers.replyNeeded,Your response is needed,Precisa da sua resposta
 transfers.sendFile,Send a file,Enviar um arquivo
 transfers.sendingTo,sending to {host},enviando para {host}
-transfers.subtitle,"A 10 GB shard takes minutes over a real link, so every transfer resumes and verifies MD5 before using the final file name.","Uma fatia de 10 GB leva minutos no enlace real, então tudo aqui retoma de onde parou e confere o MD5 antes de o arquivo tomar o nome final."
-transfers.title,Transfers,Transferências
+transfers.subtitle,"The models each machine is downloading. Files are no longer sent between machines; an older admin's transfer to this machine still shows here.","Os modelos que cada máquina está baixando. Arquivos não são mais enviados entre máquinas; uma transferência de um admin mais antigo para esta máquina ainda aparece aqui."
+transfers.title,Downloads,Downloads
 trustAnchor.anchored,This node has a trust root,Este nó tem raiz de confiança
 trustAnchor.anchoredElsewhereDetail,The root was brought in by the operator and this node checks the administrators' chain against it.,A raiz foi trazida pelo operador e este nó confere a cadeia dos administradores contra ela.
 trustAnchor.anchoredHereDetail,The root is this machine's own key. Its fingerprint is what the operator carries to every other node.,A raiz é a chave desta máquina. A impressão digital dela é o que o operador leva a cada outro nó.
@@ -3507,3 +3474,30 @@ myKeys.revoked,revoked,revogada
 myKeys.empty,No keys yet.,Nenhuma chave ainda.
 myKeys.failed,The node refused the request.,O nó recusou o pedido.
 nav.myKeys,My API keys,Minhas chaves de API
+remoteModels.downloadOn,Download on,Baixar em
+remoteModels.thisMachine,This machine,Esta máquina
+remoteModels.remoteChecks,"{machine} downloads with its own Hugging Face token into its own models folder, and checks its free space when it starts.","{machine} baixa com o próprio token do Hugging Face para a própria pasta de modelos, e confere o espaço livre ao começar."
+remoteModels.downloadStartedOn,{name} is being downloaded on {machine}.,{name} está sendo baixado em {machine}.
+remoteModels.machineUnreachable,Could not reach that machine.,Não foi possível alcançar essa máquina.
+remoteModels.downloadsOn,Downloads on {machine},Downloads em {machine}
+remoteModels.splitParts,"This model is split into {count} files; all of them are downloaded.","Este modelo é dividido em {count} arquivos; todos são baixados."
+remoteModels.alsoDownload,Also download,Baixar também
+remoteModels.extraFailed,Could not start the download of {name}.,Não foi possível iniciar o download de {name}.
+paths.rescan,Rescan folders,Varrer pastas
+paths.rescanStarted,"Scanning the model folders again; new files show up in a moment.","Varrendo as pastas de modelos de novo; arquivos novos aparecem em instantes."
+paths.rescanFailed,Could not scan the folders again,Não foi possível varrer as pastas de novo
+deployStudio.lacksModel,"This machine does not have the model. Download it here, or place the file in a model folder and rescan.","Esta máquina não tem o modelo. Baixe aqui, ou coloque o arquivo numa pasta de modelos e varra de novo."
+deployStudio.lacksModelPlace,"This machine does not have the model. Place the file in one of its model folders, then rescan.","Esta máquina não tem o modelo. Coloque o arquivo numa das pastas de modelos dela e varra de novo."
+deployStudio.downloadHere,Download here,Baixar aqui
+deployStudio.rescan,Rescan,Varrer
+deployStudio.downloadingHere,Downloading the model: {pct}%,Baixando o modelo: {pct}%
+deployStudio.kindPipeline,Pipeline,Pipeline
+deployStudio.kindShardsLegacy,Slices (legacy),Fatias (legado)
+deploy.whyNotLacksModel,"Without the model: {machines}. Download it on the card, or place the file and rescan.","Sem o modelo: {machines}. Baixe pelo cartão, ou coloque o arquivo e varra de novo."
+deploy.cpuSplitConfirm,"{gpu} layers on the GPU, {cpu} on the CPU: generation will be much slower.","{gpu} camadas na GPU, {cpu} na CPU: a geração vai ficar bem mais lenta."
+deployStudio.lacksMmproj,This machine needs the vision projector {name}.,Esta máquina precisa do projetor de visão {name}.
+deployStudio.lacksMtp,This machine needs the MTP draft {name}.,Esta máquina precisa do rascunho MTP {name}.
+deployStudio.lacksFileDownload,"Download it here, or place the file in a model folder and rescan.","Baixe aqui, ou coloque o arquivo numa pasta de modelos e varra de novo."
+deployStudio.lacksFilePlace,"Place the file in one of its model folders, then rescan.","Coloque o arquivo numa das pastas de modelos dela e varra de novo."
+deployStudio.memoryKvVram,"Weights {weights} · KV {kv} in VRAM","Pesos {weights} · KV {kv} na VRAM"
+deployStudio.memoryKvRam,"Weights {weights} · KV {kv} in RAM","Pesos {weights} · KV {kv} na RAM"

@@ -2622,6 +2622,9 @@ impl Network {
                 if self.slot_persist_ready() {
                     caps.push(crate::pipeline::CAP_SLOT_PERSIST.into());
                 }
+                if crate::plan::virtual_slices_enabled() {
+                    caps.push(crate::pipeline::CAP_RANGE_LOAD.into());
+                }
                 if self.p2p_tunnel_ready() {
                     caps.push("transport/iroh-tunnel-v1".into());
                     caps.push(crate::pipeline::CAP_P2P_TUNNEL_STREAM.into());

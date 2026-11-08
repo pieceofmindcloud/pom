@@ -183,6 +183,11 @@ session gate; another node goes through `caller_may_ask` (`gateway/state.rs`).
 
 - `/api/transfer/*` (model files) needs a signed request; the connection key
   alone pulls nothing.
+- From another node, starting, cancelling, retrying or dismissing a model
+  download (`POST /api/ui/model-provider/downloads...`) and
+  `/api/ui/models/rescan` take an admin's signature, not a worker's
+  (`node_to_node_scope`): a worker downloads for itself, only an admin makes
+  another machine download. Reading the downloads stays `ServingMember`.
 - A forwarded `POST /api/ui/leave` (removing another machine) needs an admin's
   signature, and the principal's when the machine leaving is an admin.
 - **The administrative UI** uses an in-memory session with an `HttpOnly`,

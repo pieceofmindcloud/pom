@@ -19,6 +19,7 @@ import {
   getRemoteModelStorage,
   getHuggingFaceTokenConfig,
   listDeployments,
+  listRemoteModelDownloads,
   searchRemoteModels,
   setAdminAccessToken,
   setConnectionKey,
@@ -30,7 +31,7 @@ import {
  * `default_password` and the interface enters without asking for it and asks for a change.
  */
 export const DEFAULT_ADMIN_PASSWORD = "admin";
-import { modelDownloadJobs } from "./modelProvider";
+import { modelDownloadJobs, modelDownloadPollInterval } from "./modelProvider";
 import { getTrendingModels } from "./publicModelDiscovery";
 import { fetchPublicPlugin, fetchPublicPluginCatalog, type PublicPluginCatalogQuery } from "./pluginCatalog";
 import { jobsPollInterval, offersPollInterval } from "./polling";
@@ -863,6 +864,29 @@ export function useModelDownloads() {
     ...jobs,
     data: modelDownloadJobs(jobs.data?.jobs ?? []),
   };
+}
+
+/**
+ * The machines, other than this one, that may hold models: every live peer
+ * that is not a visitor. Where the admin can start a download.
+ */
+export function useServingMachines() {
+  const cluster = useCluster();
+  const machines = (cluster.data?.peers ?? [])
+    .filter((peer) => !peer.is_self && peer.node?.profile !== "visitor")
+    .map((peer) => ({ nodeId: peer.node_id, name: peer.node?.hostname || peer.short_id }));
+  const seen = new Set<string>();
+  return machines.filter((machine) => !seen.has(machine.nodeId) && seen.add(machine.nodeId));
+}
+
+/** Another machine's model downloads, polled faster while one runs. */
+export function useMachineDownloads(nodeId: string) {
+  return useQuery({
+    queryKey: ["machine-downloads", nodeId] as const,
+    queryFn: ({ signal }) => listRemoteModelDownloads(nodeId, signal).then((answer) => answer.downloads),
+    refetchInterval: (query) => modelDownloadPollInterval(query.state.data ?? []),
+    retry: false,
+  });
 }
 
 /** After an action lands, the screens that could have changed refetch at once. */

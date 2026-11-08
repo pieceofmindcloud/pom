@@ -1,5 +1,13 @@
 # Subsystem: file transfer between machines
 
+> **Deprecated.** Deployments no longer copy files between machines: a plan
+> that would is refused by name (`deploy::planning::copies_refusal`), each
+> machine serves from its own copy of the model (downloaded there through
+> `model_provider_backend`, or placed by hand and rescanned), and the screens
+> no longer offer sending. `/api/transfer/*` is still served, with
+> `Deprecation: true` on every answer, so an older admin can deploy to this
+> node for one more release; then `transfer.rs` and this document go away.
+
 This subsystem moves GGUF slices between machines in the cluster, entirely in
 `crates/node/src/backend/transfer.rs`. There are two directions that end in
 the same download: **pull** (this node asks a peer for a slice) and **offer**
@@ -281,12 +289,12 @@ The transport is the same; what changes is who chooses what:
   missing on the other side. That explains "there is no option to send a slice"
   when the machines have the same slices: the panel is a difference list and
   no row is left to click.
-- **Send a file from this machine** (the first panel of the Transfers screen): a combobox with name and full
-  path for visual checking, sending only the safe basename.
+- **Send a file from this machine**: removed from the screens (the panel of
+  the Transfers screen, now Downloads, and the "Send to..." picker of the
+  slices screen). `POST /api/transfer/send` is still served, deprecated.
 
-A deploy's own copies are the fourth door, and also the operator's: the
-deploy screen lists them and the node refuses a deploy that copies without
-`allow_transfers` (`deployment.md`, section 4).
+A deploy's own copies were the fourth door: a current node refuses a plan
+that copies (`deployment.md`, section 4).
 
 Progress lives in the bell and comes from the nodes, so closing the tab
 interrupts nothing.

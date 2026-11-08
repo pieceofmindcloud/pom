@@ -1384,7 +1384,9 @@ started at that head. A missing, invalid or vanished choice fails closed,
 without silently switching nodes.
 
 The same endpoint accepts `thinking_enabled: boolean` for that inference's
-choice. A missing field keeps the default on; `false` reaches the prefill
+choice. Without it the gateway reads the client's
+`chat_template_kwargs.enable_thinking`, then `reasoning_effort: "none"` as off
+(`openai::client_thinking`), and only then keeps the default on; `false` reaches the prefill
 metadata up to the deployment's head, which combines it with the global
 `no_thinking` before applying the template. The hub, ring and direct reply
 relays keep the field together with the existing metadata.
@@ -1431,6 +1433,28 @@ provider's commands or tokens. `/storage` reports the model folders resolved
 from the configuration. A download picks the first eligible folder, records the
 path in `Job.local_path` and shows up in `GET /api/ui/jobs`, which is the UI's
 source of progress, cancellation and retry.
+
+**Downloads on another machine.** `POST /api/ui/model-provider/downloads`
+takes an optional `node_id`; `GET .../downloads` (this machine's model
+downloads, newest first, `{ node_id, downloads }`) and the `cancel`, `retry`
+and `dismiss` actions take `?node_id=`. When the id names another member, the
+node forwards the call to it signed by itself
+(`model_provider_backend::forward_to_node`, over the tunnel when no address
+answers) and returns its answer unchanged; an unknown id is 404
+`node_not_found`, an unreachable one 502 `node_unreachable` (`{ error: { code,
+message } }`, as the other download errors). The worker
+authorizes the signature by its own route policy (`ServingMember`: an admin,
+or an attested worker; never a visitor) and downloads with its own Hugging
+Face token into its own models folder: only the call crosses, never a file.
+From another node the writes take an admin's signature (`node_to_node_scope`,
+see `security-model.md`). The start body also takes `extra_files`, other files
+of the same repository (split parts, a projector, an MTP draft) started as
+their own rows; the answer adds `extra_download_ids`, `skipped` (already
+installed or downloading) and `failed` (`{ filename, code }`).
+**`POST /api/ui/models/rescan`** (`ServingMember`, body optional
+`{ node_id }`) walks the models folders again at once, for a file placed by
+hand, and answers `{ node_id, rescanning: true }` before the walk ends; with
+another machine's id it is forwarded the same way.
 **`GET /api/ui/model-provider/status`** requires `ConnectionAuth` and returns
 `{ cli: { installed, version, authenticated, username } }`: a missing CLI is a
 structured state, while login required and an authenticated session stay
@@ -1494,11 +1518,34 @@ never from the file name. For a dense model the UI hides the choice; when a
 combination is not supported yet, the reason stays visible and the deploy is
 refused so a preference that will not be honored is not presented.
 
+**Ranges of a whole model.** `DeployRequest.whole_ranges` (optional, on
+`/api/ui/deploy/plan` and `/api/ui/deploy`) is a list of
+`{ node_id, start_layer, end_layer }`, each machine holding the whole file
+itself; it becomes the selection when `selection` is absent, and each machine
+is applied with its own file and its range (`deployment.md`). A range refused
+for the model (a cut the GGUF does not allow) comes back as a `blocked` plan
+with `auto: false` and `layer_options`, the real cuts, so the screen can
+redo the split. Each step may carry a `note` (for example that the machine
+will write its range to disk because it does not announce
+`model/range-load-v1`) and `capacity.gpu_layers_fit`, `capacity.cpu_layers`
+and `capacity.cpu_ram_bytes` when the range overflows the VRAM, and `capacity.weights_bytes`,
+`capacity.kv_bytes` and `capacity.kv_in_vram` (the GPU layers' cost apart; compute buffers are not
+estimated); a CPU part
+beyond the machine's free RAM blocks the plan by name.
+**`POST /api/ui/model-layer-options`** (`ServingMember`, body
+`{ path, kv?: { n_ctx, max_sessions } }`) reads the valid cuts of a GGUF on
+that machine: `{ total_layers, cuts: [{ end_layer, layers, size_bytes,
+remainder_bytes, kv_bytes?, remainder_kv_bytes? }], granularity, rule }`;
+`kv` adds each cut's KV cache at that context with this node's cache types.
+
 `DeployPlan.copies` lists every file the deploy would copy between machines
 (`kind` `slice`/`mmproj`/`mtp`, `name`, `size_bytes`, `layers`, source and
-target node and host). `POST /api/ui/deploy` with copies and without
-`allow_transfers: true` answers 409 `{error, code: "transfers_not_authorized",
-copies}` before touching any peer. The deploy job carries `deploy_id`, and
+target node and host). The preview of a plan with copies is `blocked` with a
+reason naming each machine and what it lacks, and `POST /api/ui/deploy` answers
+409 `{error, code: "machine_lacks_files", copies}` before touching any peer;
+`allow_transfers` is accepted and ignored. Every `/api/transfer/*` answer
+carries `Deprecation: true`: the routes stay one release for older admins and
+are then removed. The deploy job carries `deploy_id`, and
 `POST /api/ui/undeploy` stops a deploy of that id still in flight (task
 aborted, copies cancelled on the targets), answering `cancelled: true`.
 
@@ -1531,7 +1578,7 @@ with every holder and its path), the resolved `vision` (head) and `mtp` (tail)
 slots and whether each is already there or will be copied. `DeployRequest.keep_existing`
 (default `false`) keeps in service the machines outside the plan that already
 serve the same model (`deployment.md`, section 1).
-`/api/ui/models` and `/api/ui/cluster/models` carry `sidecars` per machine. `POST /api/ui/models/delete` deletes a GGUF, or a file with an image model extension (`.safetensors`, `.sft`, `.ckpt`, `.pt`, `.pth`, `.bin`) that is inside one of the whole-model folders, unreadable ones included; anything else is 400 (`webui::setup::ensure_deletable_model`). `GET /api/ui/models` also carries `image_files`: the image model files (safetensors and the other formats ComfyUI loads) of the whole-model folders, each with `name`, `path`, `size_bytes`, `source`, `format`, `category` (`diffusion`, `text_encoder`, `vae`, `checkpoint`, `lora`, `controlnet`, `clip_vision`, `upscale` or `other`), `family`, `dtype` and `metadata_error` (`models/image_catalog.rs`).
+`/api/ui/models` and `/api/ui/cluster/models` carry `sidecars` per machine, and `hf_sources`: `{ path, repo_id, revision, filename }` for each file the machine downloaded through POM (read from `<models folder>/.pom-hf/`), empty from an older node. `POST /api/ui/models/delete` deletes a GGUF, or a file with an image model extension (`.safetensors`, `.sft`, `.ckpt`, `.pt`, `.pth`, `.bin`) that is inside one of the whole-model folders, unreadable ones included; anything else is 400 (`webui::setup::ensure_deletable_model`). `GET /api/ui/models` also carries `image_files`: the image model files (safetensors and the other formats ComfyUI loads) of the whole-model folders, each with `name`, `path`, `size_bytes`, `source`, `format`, `category` (`diffusion`, `text_encoder`, `vae`, `checkpoint`, `lora`, `controlnet`, `clip_vision`, `upscale` or `other`), `family`, `dtype` and `metadata_error` (`models/image_catalog.rs`).
 
 **`GET` and `POST /api/ui/model-provider/config`** require `ConnectionAuth` and
 control the optional Hugging Face token. GET only returns

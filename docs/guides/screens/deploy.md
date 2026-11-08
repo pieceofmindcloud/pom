@@ -17,7 +17,7 @@ Deploy to network is the studio where a model goes into service: you choose what
 
 :::cards
 ### The top bar
-What to deploy: **Shards** (a set of slices, one range per machine) or **Whole model** (the whole file on a machine). Beside it, the engine (llama.cpp, or an inference service a plugin publishes), the model and the deployment's name.
+What to deploy: **Pipeline**, the default, starts from a whole model: one machine serves it all, or several machines that hold it each serve a range. **Slices (legacy)** shows only for slice sets made before, or for an inference service that runs slices in stages. Beside it, the engine (llama.cpp, or an inference service a plugin publishes), the model and the deployment's name.
 ### The map
 The machines in the deployment, each with the layer range it will serve, the memory it has and the projection after loading. The **Gateway** closes the cycle with the cost of one token once it can be measured.
 ### The inspector
@@ -28,9 +28,17 @@ The machines in the deployment, each with the layer range it will serve, the mem
 
 :::steps
 ### Choose the model
-For Shards, the model list shows the slice sets some machine of the network already has. For Whole model, the whole GGUF files.
+For Pipeline, the whole GGUF files known on any machine. Slices (legacy) lists the slice sets some machine already has.
 ### Put the machines on the map
 Drag machines from the strip at the bottom to the map. The planner places the ranges, and **Model coverage**, at the bottom right, counts the layers covered.
+
+In **Pipeline**, the card of a machine that does not have the model says so. **Download here** has it download the same Hugging Face repository and file another machine downloaded, every part of a split file included; the card then shows the progress. For a file copied by hand, put it in one of that machine's model folders and press **Rescan**. A model nobody downloaded through POM offers only Rescan. The same goes for a vision projector or an MTP draft the deployment needs on a machine that lacks it: its card names the file and offers Download here (the repository another machine downloaded it from) or Rescan. Each card also shows what its layers weigh and their KV cache at the current settings, and whether the KV sits in VRAM or RAM. A machine without the model is never sent a copy over the network: the Deploy button stays grey and names it until the model is there. A machine given more layers than its GPUs hold runs the rest on the CPU; Deploy then asks for a confirmation that names each such machine with its GPU and CPU layer counts.
+### Split a whole model over machines that have it
+In **Pipeline**, when two or more machines on the map hold the whole file, the Machine tab offers **Split the layers over N machines**. It divides the layers evenly, in map order, at cuts the model allows. Each machine then shows its range with **-** and **+**: a click moves the cut it shares with its neighbour by one valid step, and a button that cannot move says why (no valid cut that way, or a machine would be left with no layers). Each machine serves its range from its own copy, so nothing is copied over the network. A machine that cannot point at its range writes it to disk as a slice first; its tab says so, with the size.
+
+The lock beside a range keeps it exactly as it is. **Auto-balance by free memory** then divides the layers of the unlocked machines in proportion to each one's free memory (GPU memory, or RAM on a machine without a GPU), at cuts the model allows, around the locked ranges. A locked range's - and + are off until you unlock it, and so are a neighbour's buttons when they would move the cut it shares with the locked range. It counts the weights and the context's memory (the KV cache, for the context size and sessions you set), but not the compute buffers.
+
+When a machine's free VRAM cannot hold its whole range, its tab shows how the layers split, for example **18 on GPU, 6 on CPU**, with the RAM the CPU part needs. The layers that do not fit run on the CPU, which makes generation much slower; the deploy still goes ahead after the usual confirmation, unless the CPU part does not fit in the machine's free RAM either: then the plan is refused and says how much RAM it needs. Auto-balance never chooses this on its own, so give that machine fewer layers or add a machine when you can.
 ### Read the verdict
 When the selection cannot be deployed, a red line at the top says why - for example, which layers are in no chosen slice. The Deploy button stays off until the plan closes.
 ### Deploy

@@ -19,13 +19,11 @@ Video: the Models screens - full models, slices and transfers - explained.
 
 :::cards
 ### Layers and architecture
-Read from the GGUF header, without loading the model. The number of layers is what slicing and deploying divide.
+Read from the GGUF header, without loading the model. The number of layers is what a deploy divides into ranges.
 ### Vision (mmproj)
 The vision projector that belongs to the model, when there is one. **Vision and MTP** links a projector or an MTP draft found anywhere in the network to this model.
 ### Slice
-Opens Slice models with this file chosen.
-### Send
-Offers the file to another machine, in Transfers. The other side has to accept.
+Only in development mode: opens Tensor parallel shards with this file chosen. A pipeline deploy needs no slicing.
 ### Image models
 The **Image** tab lists the `.safetensors` files of the same folders with what each one is: diffusion model, text encoder, VAE, checkpoint, LoRA, ControlNet, CLIP Vision or upscaler, read from the file's own header, never from its name. Family and data type come from the same header. These files are deleted here; they are not sliced.
 :::

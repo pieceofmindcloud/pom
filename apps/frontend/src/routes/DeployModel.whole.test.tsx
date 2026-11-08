@@ -194,6 +194,7 @@ function mount(
         node_id: "ksia",
         hostname: "ksia",
         is_self: false,
+        hf_sources: [{ path: "/lm/mmproj-qwen-f16.gguf", repo_id: "org/qwen-gguf", revision: null, filename: "mmproj-qwen-f16.gguf" }],
         models: [
           {
             id: "1",
@@ -338,6 +339,14 @@ const planCalls = () =>
 const chooseWhole = () =>
   fireEvent.click(screen.getByRole("radio", { name: /Um modelo inteiro/ }));
 
+/** Slices are no longer the default: Pipeline (the whole model) is. */
+async function chooseSlices() {
+  fireEvent.click(await screen.findByRole("radio", { name: "Fatias (legado)" }));
+  await waitFor(() =>
+    expect(planCalls().some(([, body]) => (body as { kind?: string }).kind === "shards")).toBe(true),
+  );
+}
+
 const chooseTensor = () => fireEvent.click(screen.getByRole("radio", { name: "Tensor" }));
 
 async function ensureWholeMachine(node = "ksia") {
@@ -364,19 +373,15 @@ describe("DeployModel · whole model", () => {
   });
   afterEach(cleanup);
 
-  it("asks the node about slices by default, and about the whole model when chosen", async () => {
+  it("asks the node about the whole model by default, and about slices when chosen", async () => {
     answerPlans();
     mount();
 
     await waitFor(() => expect(planCalls().length).toBeGreaterThan(0));
-    expect(planCalls()[0][1]).toMatchObject({ group: "qwen", kind: "shards" });
+    expect(planCalls()[0][1]).toMatchObject({ group: "qwen3.5-9b", kind: "whole" });
 
-    chooseWhole();
-
-    await waitFor(() => {
-      const last = planCalls().at(-1)![1];
-      expect(last).toMatchObject({ group: "qwen3.5-9b", kind: "whole" });
-    });
+    await chooseSlices();
+    expect(planCalls().at(-1)![1]).toMatchObject({ group: "qwen", kind: "shards" });
   });
 
   it("names the native studio fields for accessibility and password managers", async () => {
@@ -440,7 +445,7 @@ describe("DeployModel · whole model", () => {
   it("does not re-query the plan when adjusting the GPU layers of the machine", async () => {
     answerPlans();
     mount();
-    await waitFor(() => expect(planCalls()).toHaveLength(1));
+    await chooseSlices();
     await waitFor(() => expect(screen.getByRole("button", { name: /ksia na implantação/ })).toBeTruthy());
 
     const before = planCalls().length;
@@ -464,7 +469,7 @@ describe("DeployModel · whole model", () => {
       return Promise.resolve(shardPlan());
     });
     mount();
-    await waitFor(() => expect(planCalls()).toHaveLength(1));
+    await chooseSlices();
 
     chooseWhole();
     await waitFor(() => expect(screen.getByText("conferindo com o nó…")).toBeTruthy());
@@ -497,6 +502,7 @@ describe("DeployModel · whole model", () => {
   it("shows neither the coverage strip nor the range marking column", async () => {
     answerPlans();
     mount();
+    await chooseSlices();
 
     await waitFor(() => expect(screen.getByText(/Cobertura do modelo/)).toBeTruthy());
     expect(screen.getAllByText(/L0–31/).length).toBeGreaterThan(0);
@@ -551,6 +557,7 @@ describe("DeployModel · whole model", () => {
       return Promise.resolve(plan);
     });
     mount("qwen3.5-9b", shardName, shardName);
+    fireEvent.click(await screen.findByRole("radio", { name: "Fatias (legado)" }));
 
     const model = await screen.findByRole("combobox", { name: "Modelo técnico" });
     expect(within(model).getByRole("option", { name: "Ornith-1.5-35B-Q4_K_M" })).toBeTruthy();
@@ -577,6 +584,7 @@ describe("DeployModel · whole model", () => {
   it("empties the map when switching from slices to whole model", async () => {
     answerPlans();
     mount();
+    await chooseSlices();
 
     await waitFor(() => expect(screen.getByRole("button", { name: /mac RTT/ })).toBeTruthy());
     fireEvent.click(screen.getByRole("button", { name: /mac RTT/ }));
@@ -642,6 +650,254 @@ describe("DeployModel · whole model", () => {
     });
     // The new machine only gets layers when the operator assigns a range.
     expect(planCalls().some(([, body]) => (body as { selection?: Array<{ target_node_id: string }> }).selection?.some((row) => row.target_node_id === "mac"))).toBe(false);
+  });
+
+  it("splits the whole model over machines that hold it and sends the ranges, not a selection", async () => {
+    answerPlans();
+    // The node answers a range request with one step per range, as it does.
+    const plain = post.getMockImplementation()!;
+    post.mockImplementation((url: string, body: {
+      whole_ranges?: Array<{ node_id: string; start_layer: number; end_layer: number }>;
+      selection?: Array<{ target_node_id: string; start_layer: number; end_layer: number }>;
+    }) => {
+      const ranges = body?.whole_ranges
+        ?? (body?.selection && body.selection.length > 1
+          ? body.selection.map((row) => ({ node_id: row.target_node_id, start_layer: row.start_layer, end_layer: row.end_layer }))
+          : undefined);
+      if (url !== "/api/ui/deploy/plan" || !ranges) return plain(url, body);
+      const base = wholePlan();
+      return Promise.resolve({
+        ...base,
+        // A plan for ranges the operator named is never the node's own choice.
+        auto: false,
+        steps: ranges.map((range, index) => ({
+          ...base.steps[0],
+          position: index + 1,
+          start_layer: range.start_layer,
+          end_layer: range.end_layer,
+          target_node_id: range.node_id,
+          target_host: range.node_id,
+          primary: range.start_layer === 0,
+        })),
+      });
+    });
+    mount();
+    chooseWhole();
+    fireEvent.click(await screen.findByRole("button", { name: /ksia RTT/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Remover ksia da implantação/ })).toBeTruthy());
+    fireEvent.click(await screen.findByRole("button", { name: /mac RTT/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Remover mac da implantação/ })).toBeTruthy());
+
+    fireEvent.click(await screen.findByRole("button", { name: /Dividir as camadas entre 2 máquinas/ }));
+    type RangesBody = { whole_ranges?: Array<{ node_id: string; start_layer: number; end_layer: number }>; selection?: unknown };
+    await waitFor(() => {
+      const last = planCalls().at(-1)![1] as RangesBody;
+      expect(last.whole_ranges).toEqual([
+        { node_id: "ksia", start_layer: 0, end_layer: 15 },
+        { node_id: "mac", start_layer: 16, end_layer: 31 },
+      ]);
+      expect(last.selection).toBeUndefined();
+    });
+
+    // The last machine gives a layer back by moving the cut before it.
+    fireEvent.click(await screen.findByRole("button", { name: /Menos camadas em mac/ }));
+    await waitFor(() => {
+      const last = planCalls().at(-1)![1] as RangesBody;
+      expect(last.whole_ranges?.map((range) => [range.start_layer, range.end_layer])).toEqual([[0, 16], [17, 31]]);
+    });
+
+    const button = await screen.findByRole("button", { name: /^Implantar$/ });
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(button);
+    await waitFor(() => {
+      const deploy = post.mock.calls.find(([url]) => url === "/api/ui/deploy")?.[1] as RangesBody | undefined;
+      expect(deploy?.whole_ranges?.map((range) => range.node_id)).toEqual(["ksia", "mac"]);
+      expect(deploy?.selection).toBeUndefined();
+    });
+  });
+
+  it("locks a range and auto-balances the unlocked ones by free memory", async () => {
+    answerPlans();
+    const plain = post.getMockImplementation()!;
+    const memory: Record<string, number> = { ksia: 3000, mac: 1000, salem: 1000 };
+    post.mockImplementation((url: string, body: { whole_ranges?: Array<{ node_id: string; start_layer: number; end_layer: number }> }) => {
+      if (url !== "/api/ui/deploy/plan" || !body?.whole_ranges) return plain(url, body);
+      const base = wholePlan();
+      return Promise.resolve({
+        ...base,
+        auto: false,
+        // One byte per layer: every layer is a valid cut.
+        layer_options: {
+          source_node_id: "ksia",
+          total_layers: 32,
+          cuts: Array.from({ length: 31 }, (_, end) => ({ end_layer: end, layers: end + 1, size_bytes: end + 1, remainder_bytes: 31 - end })),
+          granularity: 1,
+          rule: "every layer",
+          reason: null,
+        },
+        machines: base.machines.map((machine) => ({ ...machine, gpu_free_mb: memory[machine.node_id], ram_free_mb: 8000 })),
+        steps: body.whole_ranges.map((range, index) => ({
+          ...base.steps[0],
+          position: index + 1,
+          start_layer: range.start_layer,
+          end_layer: range.end_layer,
+          target_node_id: range.node_id,
+          target_host: range.node_id,
+          primary: range.start_layer === 0,
+        })),
+      });
+    });
+    mount();
+    chooseWhole();
+    fireEvent.click(await screen.findByRole("button", { name: /ksia RTT/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Remover ksia da implantação/ })).toBeTruthy());
+    fireEvent.click(await screen.findByRole("button", { name: /mac RTT/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Remover mac da implantação/ })).toBeTruthy());
+    fireEvent.click(await screen.findByRole("button", { name: /Dividir as camadas entre 2 máquinas/ }));
+
+    type RangesBody = { whole_ranges?: Array<{ node_id: string; start_layer: number; end_layer: number }> };
+    const lastRanges = () => (planCalls().at(-1)![1] as RangesBody).whole_ranges?.map((range) => [range.start_layer, range.end_layer]);
+    await waitFor(() => expect(lastRanges()).toEqual([[0, 15], [16, 31]]));
+
+    const balance = await screen.findByRole("button", { name: /Equilibrar pela memória livre/ });
+    await waitFor(() => expect((balance as HTMLButtonElement).disabled).toBe(false));
+
+    fireEvent.click(screen.getByRole("button", { name: /Travar a faixa de mac/ }));
+    const fewer = screen.getByRole("button", { name: /Menos camadas em mac/ }) as HTMLButtonElement;
+    expect(fewer.disabled).toBe(true);
+    expect(fewer.title).toMatch(/travada/);
+    expect((screen.getByRole("button", { name: /Equilibrar pela memória livre/ }) as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: /Destravar a faixa de mac/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Equilibrar pela memória livre/ }));
+    await waitFor(() => expect(lastRanges()).toEqual([[0, 23], [24, 31]]));
+  });
+
+  it("auto-balance counts the KV cache the node costs for each cut", async () => {
+    answerPlans();
+    const plain = post.getMockImplementation()!;
+    // 1 byte of weights per layer; 3 bytes of KV per layer from layer 16 on.
+    const kv = (end: number) => Math.max(0, end - 15) * 3;
+    post.mockImplementation((url: string, body: { whole_ranges?: Array<{ node_id: string; start_layer: number; end_layer: number }> }) => {
+      if (url !== "/api/ui/deploy/plan" || !body?.whole_ranges) return plain(url, body);
+      const base = wholePlan();
+      return Promise.resolve({
+        ...base,
+        auto: false,
+        layer_options: {
+          source_node_id: "ksia",
+          total_layers: 32,
+          cuts: Array.from({ length: 31 }, (_, end) => ({
+            end_layer: end, layers: end + 1, size_bytes: end + 1, remainder_bytes: 31 - end, kv_bytes: kv(end), remainder_kv_bytes: kv(31) - kv(end),
+          })),
+          granularity: 1,
+          rule: "every layer",
+          reason: null,
+        },
+        machines: base.machines.map((machine) => ({ ...machine, gpu_free_mb: 1000, ram_free_mb: 8000 })),
+        steps: body.whole_ranges.map((range, index) => ({
+          ...base.steps[0],
+          position: index + 1,
+          start_layer: range.start_layer,
+          end_layer: range.end_layer,
+          target_node_id: range.node_id,
+          target_host: range.node_id,
+          primary: range.start_layer === 0,
+        })),
+      });
+    });
+    mount();
+    chooseWhole();
+    fireEvent.click(await screen.findByRole("button", { name: /ksia RTT/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Remover ksia da implantação/ })).toBeTruthy());
+    fireEvent.click(await screen.findByRole("button", { name: /mac RTT/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Remover mac da implantação/ })).toBeTruthy());
+    fireEvent.click(await screen.findByRole("button", { name: /Dividir as camadas entre 2 máquinas/ }));
+    type RangesBody = { whole_ranges?: Array<{ start_layer: number; end_layer: number }> };
+    const lastRanges = () => (planCalls().at(-1)![1] as RangesBody).whole_ranges?.map((range) => [range.start_layer, range.end_layer]);
+    await waitFor(() => expect(lastRanges()).toEqual([[0, 15], [16, 31]]));
+    const balance = await screen.findByRole("button", { name: /Equilibrar pela memória livre/ });
+    await waitFor(() => expect((balance as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(balance);
+    await waitFor(() => expect(lastRanges()).toEqual([[0, 21], [22, 31]]));
+  });
+
+  it("shows how many layers run on the GPU and how many on the CPU", async () => {
+    post.mockImplementation((url: string, body: { kind?: string }) => {
+      if (url !== "/api/ui/deploy/plan" || body?.kind !== "whole") return Promise.resolve(body?.kind === "whole" ? wholePlan() : shardPlan());
+      const plan = wholePlan();
+      plan.steps[0].capacity = { fits: true, degraded: true, note: null, gpus: [], gpu_layers_fit: 18, cpu_layers: 6, cpu_ram_bytes: 3 * 1024 ** 3 };
+      return Promise.resolve(plan);
+    });
+    mount();
+    chooseWhole();
+    await ensureWholeMachine();
+    expect(await screen.findByText(/18 na GPU, 6 na CPU/)).toBeTruthy();
+
+    // Deploying asks for a confirmation that names the machine and its CPU layers.
+    const button = screen.getByRole("button", { name: /^Implantar$/ }) as HTMLButtonElement;
+    await waitFor(() => expect(button.disabled).toBe(false));
+    fireEvent.click(button);
+    const splits = await screen.findByTestId("deploy-cpu-splits");
+    expect(splits.textContent).toContain("ksia");
+    expect(splits.textContent).toContain("18 camadas na GPU, 6 na CPU");
+  });
+
+  it("shows in the machine tab the note the node gives a step", async () => {
+    post.mockImplementation((url: string, body: { kind?: string }) => {
+      if (url !== "/api/ui/deploy/plan" || body?.kind !== "whole") return Promise.resolve(body?.kind === "whole" ? wholePlan() : shardPlan());
+      const plan = wholePlan();
+      plan.steps[0].note = "ksia cuts this range from its own copy: 5 GB written to disk (it does not announce model/range-load-v1)";
+      return Promise.resolve(plan);
+    });
+    mount();
+    chooseWhole();
+    await ensureWholeMachine();
+    expect(await screen.findByText(/ksia cuts this range from its own copy/)).toBeTruthy();
+  });
+
+  it("redoes the split on the GGUF's real cuts when the node refuses the first guess", async () => {
+    answerPlans();
+    const plain = post.getMockImplementation()!;
+    const cuts = [11, 23];
+    post.mockImplementation((url: string, body: { whole_ranges?: Array<{ node_id: string; start_layer: number; end_layer: number }> }) => {
+      if (url !== "/api/ui/deploy/plan" || !body?.whole_ranges) return plain(url, body);
+      const base = wholePlan();
+      const layerOptions = { source_node_id: "ksia", total_layers: 32, cuts: cuts.map((end) => ({ end_layer: end, layers: end + 1, size_bytes: 1, remainder_bytes: 1 })), granularity: null, rule: "real boundaries", reason: null };
+      const bad = body.whole_ranges.find((range) => range.end_layer !== 31 && !cuts.includes(range.end_layer));
+      if (bad) {
+        return Promise.resolve({ ...base, auto: false, blocked: `the cut at layer L${bad.end_layer} does not respect the real rules of the GGUF`, layer_options: layerOptions });
+      }
+      return Promise.resolve({
+        ...base,
+        auto: false,
+        layer_options: layerOptions,
+        steps: body.whole_ranges.map((range, index) => ({
+          ...base.steps[0],
+          position: index + 1,
+          start_layer: range.start_layer,
+          end_layer: range.end_layer,
+          target_node_id: range.node_id,
+          target_host: range.node_id,
+          primary: range.start_layer === 0,
+        })),
+      });
+    });
+    mount();
+    chooseWhole();
+    fireEvent.click(await screen.findByRole("button", { name: /ksia RTT/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Remover ksia da implantação/ })).toBeTruthy());
+    fireEvent.click(await screen.findByRole("button", { name: /mac RTT/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Remover mac da implantação/ })).toBeTruthy());
+    fireEvent.click(await screen.findByRole("button", { name: /Dividir as camadas entre 2 máquinas/ }));
+
+    type RangesBody = { whole_ranges?: Array<{ node_id: string; start_layer: number; end_layer: number }> };
+    await waitFor(() => {
+      const sent = planCalls().map(([, body]) => (body as RangesBody).whole_ranges).filter(Boolean);
+      // The first guess cut at every-layer granularity; the second is on a real cut.
+      expect(sent[0]?.map((range) => [range.start_layer, range.end_layer])).toEqual([[0, 15], [16, 31]]);
+      expect(sent.at(-1)?.map((range) => [range.start_layer, range.end_layer])).toEqual([[0, 11], [12, 31]]);
+    });
   });
 
   describe("with machines already in service", () => {
@@ -789,6 +1045,65 @@ describe("DeployModel · whole model", () => {
    * answer about slices. Reading the absence as "slices" is what keeps the screen
    * from going mute during an update in progress.
    */
+  it("shows each card's weights and KV cache from the node's estimate", async () => {
+    post.mockImplementation((url: string, body: { kind?: string }) => {
+      if (url !== "/api/ui/deploy/plan" || body?.kind !== "whole") return Promise.resolve(body?.kind === "whole" ? wholePlan() : shardPlan());
+      const plan = wholePlan();
+      plan.steps[0].capacity = { fits: true, degraded: false, note: null, gpus: [], weights_bytes: 5 * 1024 ** 3, kv_bytes: 1024 ** 3, kv_in_vram: true };
+      return Promise.resolve(plan);
+    });
+    mount();
+    await ensureWholeMachine();
+    const memory = await screen.findByTestId("card-memory");
+    expect(memory.textContent).toMatch(/Pesos 5.*KV 1.*na VRAM/);
+  });
+
+  it("offers Download here on the card of a machine that lacks the projector the plan needs", async () => {
+    post.mockImplementation((url: string, body: { kind?: string }) => {
+      if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
+      if (body.kind !== "whole") return Promise.resolve(shardPlan());
+      const plan = wholePlan();
+      plan.copies = [{
+        kind: "mmproj",
+        name: "mmproj-qwen-f16.gguf",
+        size_bytes: 1,
+        source_node_id: "ksia",
+        source_host: "ksia",
+        target_node_id: "ksia",
+        target_host: "ksia",
+      }];
+      return Promise.resolve(plan);
+    });
+    mount();
+    await ensureWholeMachine();
+    expect(await screen.findByText(/precisa do projetor de visão mmproj-qwen-f16.gguf/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Baixar aqui" })).toBeTruthy();
+  });
+
+  it("refuses by name a machine without the model instead of offering a copy", async () => {
+    post.mockImplementation((url: string, body: { kind?: string }) => {
+      if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
+      if (body.kind !== "whole") return Promise.resolve(shardPlan());
+      const plan = wholePlan();
+      plan.copies = [{
+        kind: "slice",
+        name: "qwen3.5-9b",
+        size_bytes: 1,
+        layers: [16, 31],
+        source_node_id: "ksia",
+        source_host: "ksia",
+        target_node_id: "mac",
+        target_host: "mac",
+      }];
+      return Promise.resolve(plan);
+    });
+    mount();
+    await ensureWholeMachine();
+    expect(await screen.findByText(/Sem o modelo: mac/)).toBeTruthy();
+    const button = screen.getByRole("button", { name: /^Implantar$/ }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+  });
+
   it("reads a plan without `kind` as a slices plan", async () => {
     post.mockImplementation(() => {
       const p = shardPlan();
@@ -796,6 +1111,7 @@ describe("DeployModel · whole model", () => {
       return Promise.resolve(p);
     });
     mount();
+    fireEvent.click(await screen.findByRole("radio", { name: "Fatias (legado)" }));
 
     await waitFor(() => {
       const button = screen.getByRole("button", { name: /^Implantar$/ });

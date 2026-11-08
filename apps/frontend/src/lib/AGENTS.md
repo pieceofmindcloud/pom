@@ -79,7 +79,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `deleteModel.ts` - two-step delete of a GGUF with a warnings/force round trip.
 - `deployMemory.ts` - last deploy per model remembered in `localStorage` for the Deploy screen, including the operational name and strategy when available. Keys are namespaced by kind (`whole:<name>` for a whole model), because a shard set and a model routinely share a name.
 - `inferenceServices.ts` - `inferenceServicesOf` groups the `inference` services that plugins publish in `node.plugin_services` (Strata, for example) by plugin code, with the GGUF architectures the engine runs, the settings it publishes and the machines that can take a model; `serviceRunsModel` is the architecture filter the Deploy screen applies to whole models.
-- `wholeModels.ts` - `wholeModelsOf` names each un-sliced model of the cluster catalog once, collecting its holders. `tensorParallelModelsOf` groups `ShardSet.tp_parts` by source group and TP width, preserving rank holders for the Deploy screen. The menu the Deploy screen needs before it has a plan; a model whose GGUF header gave no layer count stays in the list on purpose, so the node can say what is wrong with the file.
+- `wholeModels.ts` - `wholeModelsOf` names each un-sliced model of the cluster catalog once, collecting its holders and `source`, the Hugging Face repository and file any holder downloaded it from (matched by path in the peer's `hf_sources`), with the other parts of a split file. `tensorParallelModelsOf` groups `ShardSet.tp_parts` by source group and TP width, preserving rank holders for the Deploy screen. The menu the Deploy screen needs before it has a plan; a model whose GGUF header gave no layer count stays in the list on purpose, so the node can say what is wrong with the file.
 - `format.ts` - number/time formatting in the active locale plus node-state
   labels, including the `idle` state distinct from `serving` and `noAir`.
 - `thermal.ts` - pure temperature-band and highest-known-reading helpers used by
@@ -133,6 +133,10 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   jobs and offers slow to 10s when idle and return to 2s while active.
   `useModelDownloads` derives the `model_download` jobs from `/api/ui/jobs` and
   is shared by the remote-model and transfers screens.
+  `useServingMachines` lists the other live peers that are not visitors (where a download
+  can start) and `useMachineDownloads(nodeId)` polls that machine's downloads through
+  `listRemoteModelDownloads`; `api.ts` passes an optional `nodeId` to every download call and
+  `rescanModels(nodeId)` asks a machine to walk its models folders again.
   `useCacheTypes` reads the installation-wide K/V cache representation from
   `/api/ui/cache-types`; the deployment inspector applies combo changes through
   the same endpoint. The add-machine dialog reads and updates the selected
@@ -690,7 +694,7 @@ would go.
 - `networkPeers` is used by `components/ModelNetworkCanvas.tsx`,
   `components/PipelineRail.tsx` and `routes/Dashboard.tsx` (`pipelinePeers`),
   and by `components/PeerDetailCard.tsx` (`hasSlice`).
-- `routes/WholeModels.tsx` and `routes/Shards.tsx` both use `deleteModel`.
+- `routes/WholeModels.tsx` uses `deleteModel`.
 - `components/Notifications.tsx` and `routes/Transfers.tsx` use `transferStatus` and `transferLabel`.
 - `components/Sidebar.tsx` uses `theme`.
 - `i18n/locales.ts` is imported by `api.ts` and `chatStore.ts` (`getActiveLocale`) for non-React localized strings.

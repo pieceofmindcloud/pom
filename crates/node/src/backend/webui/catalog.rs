@@ -1915,7 +1915,9 @@ pub(super) async fn models(State(state): State<GatewayState>) -> impl IntoRespon
 /// The body of `GET /api/ui/models`.
 pub(super) async fn models_answer(state: &GatewayState) -> serde_json::Value {
     let catalog = local_catalog(state).await;
+    let hf_sources = crate::model_provider_backend::installed_sources(state.model_dirs().await).await;
     json!({
+        "hf_sources": hf_sources,
         // Not `sysmon`: that one is the raw operating system hostname and
         // ignores the `node_name` from pom.json. `network.hostname` is the name
         // this node announces to peers, and it is what the rest of the screen
@@ -1931,6 +1933,46 @@ pub(super) async fn models_answer(state: &GatewayState) -> serde_json::Value {
         "scanned": catalog.scanned,
         "metadata_complete": catalog.metadata_complete,
     })
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(super) struct RescanRequest {
+    /// The machine whose models folders are walked again, when it is not
+    /// this one: the admin's node forwards the call, signed.
+    #[serde(default)]
+    pub(super) node_id: Option<String>,
+}
+
+/// Walks the models folders again now, instead of waiting for the catalog's
+/// age to run out: after the operator placed a file by hand. With a
+/// `node_id`, on that machine. The answer comes at once; the catalog fills
+/// as the scan finishes.
+pub(super) async fn rescan_models(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    body: Option<Json<RescanRequest>>,
+) -> Response {
+    let request = body.map(|Json(body)| body).unwrap_or_default();
+    let target = request
+        .node_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty() && *id != state.network.node_id);
+    if let Some(node_id) = target {
+        return crate::model_provider_backend::forward_to_node(
+            &state,
+            node_id,
+            reqwest::Method::POST,
+            "/api/ui/models/rescan",
+            Some(json!({})),
+        )
+        .await;
+    }
+    // The first call installs the cache and starts the walk; a later one
+    // claims a fresh walk over the same roots.
+    let _ = local_catalog(&state).await;
+    invalidate_catalog(state.database.clone()).await;
+    Json(json!({ "node_id": state.network.node_id, "rescanning": true })).into_response()
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -572,8 +572,9 @@ Per-file list:
   in read-only) and a draggable bottom peer strip. What stays in
   `DeployModel` and did not move to the inspector are the sections only the deploy
   screen has: the TP group, tensor parallel and the machine tab. Three shapes, chosen by the
-  mode bar at the top and carried to the node as `kind`: **a set of shards**
-  (below), **a whole model** (one model picker from `../lib/wholeModels`, with
+  mode bar at the top and carried to the node as `kind`: **Pipeline** (`whole`, the default
+  whenever a whole model exists; it opens on an empty map), **Slices (legacy)** (`shards`,
+  offered only with slice sets or a staged service; below), **a whole model** (one model picker from `../lib/wholeModels`, with
   the deployment map as its machine choice and no "included"/merge; the
   coverage ribbon shows once a second machine is on the map), or **tensor parallel** (`tensor_parallel`): when the catalog
   has `tp_parts`, the picker groups the round by TP width and the inspector
@@ -593,6 +594,27 @@ Per-file list:
   silence the screen. Deploy memory is namespaced `whole:<name>`, because a
   shard set and a model routinely share a name. Tests:
   `DeployModel.whole.test.tsx`, `../lib/wholeModels.test.ts`.
+  Whole mode can split the model over machines that each hold it: the Machine
+  tab offers "Split the layers over N machines" (`../lib/wholeRanges`
+  `evenSplit`, on the plan's `layer_options` cuts, every layer while none are
+  known) and per-range - / + (`stepRange`, which moves the shared cut by one
+  valid step or returns why it cannot). When every row's machine holds the
+  whole model and a row is partial (`isWholeRangeSplit`), the plan and the
+  deploy send the rows as `whole_ranges` instead of `selection`. A split made
+  before the plan knew the cuts (`pendingSplit`) is redone on the real cuts
+  when the plan answers with `layer_options`, even a blocked one: a hybrid
+  model refuses the every-layer guess. A lock per range (`lockedNodes`, by machine)
+  keeps it exact: `stepRange` refuses to move it or the cut a neighbour
+  shares with it ("locked" / "neighbourLocked"). Auto-balance
+  (`wholeRanges.autoBalance`) splits each run of unlocked ranges between
+  locked ones in proportion to the machines' free memory (live GPU free MB,
+  or RAM free MB without a GPU), at valid cuts, sized by the plan's
+  `layer_options` prefix bytes: weights plus the cut's `kv_bytes` when the
+  node costs them (no compute buffers). A test mock
+  answering those ranges must set `auto: false`, as the node does: an `auto`
+  plan's topology becomes the "auto" query key and the plan refetches forever.
+  Tests: `DeployModel.whole.test.tsx` ("splits the whole model..."),
+  `../lib/wholeRanges.test.ts`.
   In whole-model mode, the inspector does not repeat the GGUF's facts nor offer a
   machine selector: the map is the only choice. When switching from slices to that
   mode, the screen clears the map and lets the operator add the machine they want.
@@ -668,10 +690,9 @@ Per-file list:
   serve any model are listed as taken over ("Replace and deploy"), and the
   machines outside the plan that serve this same model get the choice between
   "Undeploy and deploy" and "Keep in parallel", which sends
-  `keep_existing: true`. Before it, when `DeployPlan.copies` is not empty,
-  "Authorize the copies" lists each file, range, source and target; only its
-  confirmation sends `allow_transfers: true`, and a 409
-  `transfers_not_authorized` reopens it with the node's list. The confirms
+  `keep_existing: true`. There is no copy authorization any more: a plan with
+  `copies` comes `blocked` from the node, which names the machine, and the
+  screen never sends `allow_transfers`. The confirms
   chain through `attemptDeploy`.
   Topology edits are debounced 260 ms and validated by
   `POST /api/ui/deploy/plan`. Runtime parameters, per-machine GPU/KV overrides
@@ -783,7 +804,8 @@ Per-file list:
 - `ModelPaths.tsx` - edits `model_dirs`, `shard_dir` and `shard_max_gb` via
   `POST /api/ui/paths`. The Storage screen (`Armazenamento`) rejects a slice folder equal to
   or inside a whole-model folder, shows current usage and the slice limit, and
-  keeps `/config/folders` as an alias.
+  keeps `/config/folders` as an alias. **Rescan folders** calls `rescanModels()` for a file
+  placed by hand.
 - `NetworkSettings.tsx` - This node's membership and network information
   screen. Its `NetworkParticipants` export reuses the known-node area at
   `/config/network/participants`; the route is allowed only to `admin` and
@@ -848,49 +870,17 @@ Per-file list:
   tells you to use the authorized node instead of telling you to look for a route fault. Who
   picks it is the guard in `../App.tsx`, through the table in `../lib/access.ts`.
 ## Models, slicing and transfers
-- `SendFile.tsx` - offers a `.gguf` from the local catalog via
-  `POST /api/transfer/send` (`{to_node_id, filename}`). The UI displays the
-  friendly name and full path, but sends only the basename; the backend resolves
-  it again and the receiver sees only an opaque grant. It is `SendFilePanel`,
-  the first panel of `Transfers.tsx`, not a screen of its own; `?filename=`
-  preselects the file, and `/transfers/send` redirects to `/transfers` keeping
-  the query.
-- `Shards.tsx` - "Fatias": every local slice always listed (the Nodes screen
-  only shows the difference), with who is missing it. Pipeline `parts` and TP
-  `tp_parts` are separate sections; TP groups are ordered by group size and
-  rows use the one-based labels `1of2`, `2of2`, and so on, with the zero-based
-  rank shown alongside. Sends via `POST /api/transfer/send`; deletes via
-  `../lib/deleteModel`. `uniquePeerName` (`../lib/peerName`) disambiguates same-hostname peers with
-  the node_id prefix. Full-bleed shell; each `ShardCard` carries the set's
-  vision / MTP link editor (`SidecarLinkEditor`), with the compatible files of
-  every machine from `useClusterCatalog`.
-- `SliceModels.tsx` - "Fatiar": full-bleed shell. Pipeline and Tensor
-  Parallelism are a segmented tab pair (`role="tablist"`), not a checkbox -
-  each mode owns its own controls (Pipeline: size list, one explicit layer
-  range, or Tensor Parallelism's rank count). The Tensor Parallelism tab only
-  mounts when `useNode().data.pom_dev_mode === true` (the same
-  `POM_DEV_MODE=1`-gated pattern as `DeploymentInspector`);
-  without it the screen never offers or sends `mode: "tensor_parallel"`, and an
-  effect snaps a stale selection back to `"pipeline"` if the flag turns out
-  false after the first render. Pipeline builds a by-size plan
-  (target GB per slice, empty = "the rest"); a single range uses the GGUF
-  architectural starts and ends; TP chooses 2..64 ranks and previews one full
-  layer range per rank, labeled `1ofN`. The modes use the debounced
-  `POST /api/ui/slice/plan` and start through `POST /api/ui/slice`; TP sends
-  `mode: "tensor_parallel"` and `tp_size`, while pipeline sends `slices` or
-  `range`. `SlicingJobsPanel` keeps running, completed and failed jobs visible,
-  including named phase, bytes and partial output paths.
-  For architectures with a required non-final head, the plan includes
-  `required_head_bytes`, and the preview identifies the real payload repeated
-  in each intermediate slice. `asPlan` keeps this field optional for older
-  nodes and for tensor-parallel plans.
-  `asPlan` validates both response shapes. Only whole models (`isWholeModel`)
-  can be sliced. Multipart models show the summed physical size, every
-  declared part and an explicit instruction to keep the set together before
-  POM slicing; incomplete sets surface the backend reason and leave the start
-  action disabled.
-- `Transfers.tsx` - The one Transfers screen (a single menu entry): the send
-  panel (`SendFilePanel`, from `SendFile.tsx`) first, then remote model downloads from `useModelDownloads` in
+- `SliceModels.tsx` - "Tensor parallel shards" (`/models/slice`, off the
+  menu): the Shards screen and pipeline slicing were removed, since a pipeline
+  deploy serves ranges from the whole model. Only with
+  `useNode().data.pom_dev_mode`; otherwise it shows `slice.tpDevOnly` and
+  plans nothing. Whole model + 2..64 ranks, debounced
+  `POST /api/ui/slice/plan` (`mode: "tensor_parallel"`, `tp_size`), start via
+  `POST /api/ui/slice`; `asPlan` guards the TP plan shape; `SlicingJobsPanel`
+  keeps jobs visible. An incomplete multipart source shows its reason and
+  disables the start.
+- `Transfers.tsx` - The Downloads screen (menu "Downloads", route `/transfers`): this machine's
+  model downloads (`useModelDownloads`) and one `MachineDownloadsPanel` per other machine, in
   the same in-progress screen as pending offers (accept/reject via
   `POST /api/transfer/offers/:id/accept|reject`), active transfers (bytes +
   speed + ETA + cancel via `POST /api/transfer/jobs/:id/cancel`), and finished
@@ -903,14 +893,14 @@ Per-file list:
   active and finished ones are each a full-width table instead of the earlier
   list of cards, with a fixed header and actions in the last column.
 - `WholeModels.tsx` - Full-model catalog from `useLocalCatalog`, one full-width
-  table row (`ModelRow`) per model with actions: slice (links to
-  `/models/slice?path=`), send (`/transfers?filename=`), delete
+  table row (`ModelRow`) per model with actions: slice (development mode only, links to
+  `/models/slice?path=` for tensor parallel shards), delete
   (`../lib/deleteModel`). A dedicated "Vision (mmproj)" column shows the
   projector's basename (`../lib/format::optionalBasename`) when
   `DiscoveredModel.mmproj_path` is set, or "no projector" otherwise - the
   catalog already resolves this file from GGUF identity and projection dimensions,
   the screen only renders it; the cell's "Vision and MTP" button opens the
-  same `SidecarLinkEditor` as Shards in a window. `ScannedRoots`
+  `SidecarLinkEditor` in a window. `ScannedRoots`
   lists the scanned folders and per-folder file counts. Full-bleed shell.
   A `Tabs` pair under the header switches between "LLM (GGUF)" and "Image"
   (`?kind=image` keeps the choice across a reload); the Image tab lists
@@ -971,8 +961,8 @@ Key logic carriers:
 - `DeployModel.deploy` (DeployModel.tsx:602) - posts the current rows/settings
   (from `rows`/`eff`, not the nullable edit state), remembers them via
   `rememberDeploy`, and tracks the returned job id.
-- `SliceModels.asPlan` (SliceModels.tsx:56) - shape guard on pipeline and TP
-  plan responses; the one screen rendering straight off a POST body.
+- `SliceModels.asPlan` (SliceModels.tsx) - shape guard on the TP plan
+  response; the one screen rendering straight off a POST body.
 - `Setup.save` (Setup.tsx) - posts the complete first-access payload, including
   trust document, typed fingerprint, resource policy, storage and network
   visibility, then reloads after the node respawns.

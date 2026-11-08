@@ -189,7 +189,7 @@ the boundary.
 two sections with the same drawing cannot be told apart at a glance. The
 `/deploy` leaf keeps `Rocket` without clashing with the section, because the
 Sidebar draws no leaf icons. Inside `Models`, the order is `Find HF models`,
-`Full models`, `Slice models`, `Shards`. The side menu can be minimized: in
+`Full models`. The side menu can be minimized: in
 that state it only shows icons, with a 64px brand header to line up with the
 toolbar. Sections with leaves show a submenu on hover, focus or click; picking a
 leaf navigates to its route. In the minimized state, navigation uses
@@ -219,18 +219,18 @@ local-only notice. Routes:
   through the `See online` button. The AI/NETWORK tabs are the first strip of
   the content on both chat screens, above the header and the conversation.
 - `/models` -> WholeModels; `/models/remote` -> RemoteModels; and
-  `/models/slice` -> SliceModels, with the jobs panel and slicing progress
-  embedded
-- `/shards` -> Shards; `/shards/deploy` -> redirects to `/deploy` (old
-  link)
-- Those four routes, plus `/transfers`, are
+  `/models/slice` -> SliceModels (tensor parallel shards, development mode,
+  off the menu), with the jobs panel embedded
+- `/shards` and `/shards/deploy` -> redirect to `/models` and `/deploy` (old
+  links; the Shards screen was removed)
+- Those three routes, plus `/transfers`, are
   full screen (`isFullBleed` in `App.tsx`), under the same contract as
   `/deployments`/`/deployments/logs`: a fixed header
   (`FullBleedHeader`/`FullBleedToolbar`, `components/ui.tsx`) and a table or
   its own content scrolling inside, instead of the central column with
-  `max-w-[1400px]`. `WholeModels`, `Shards` and the `RemoteModels` search became
+  `max-w-[1400px]`. `WholeModels` and the `RemoteModels` search became
   full-width tables; `RemoteModelCard`, the card the search used before, was
-  removed. `Shards` shows, for each slice set, the vision / MTP link editor
+  removed. The vision / MTP link editor
   (`SidecarLinkEditor`): two pickers over the compatible sidecars of every
   machine, each option naming its machines and the full path on each, saved on
   the principal. `WholeModels` keeps the catalog's projector column and opens
@@ -562,7 +562,10 @@ The screen title is "Find models on Hugging Face". The detail queries
 the configuration before starting. The download picks one of those folders; the
 job persisted in `GET /api/ui/jobs` records the final path and
 `ModelDownloadsPanel` shows progress, cancellation and retry. That panel also
-shows up in `/transfers`, next to file transfers.
+shows up in `/transfers`, next to file transfers. The dialog's **Download on** picks
+another machine that holds models (`useServingMachines`): the call carries `node_id`, the
+node forwards it, and that machine's downloads show in a `MachineDownloadsPanel` per machine
+below the local one.
 
 In `/config/preferences`, `HuggingFaceSettingsPanel` offers the optional token
 for private and gated models. The field is `password`, starts empty and only
@@ -1514,42 +1517,28 @@ machine restarted. Today the fingerprint is only model + set of ranges.
 
 ## Slicing, deploying and transferring on screen
 
-- **Slice** (`SliceModels`): Pipeline and Tensor Parallelism are a pair of tabs
-  (`role="tablist"`) at the top of the source panel, not a checkbox - each mode
-  has its own controls below. The Tensor Parallelism tab only exists when
-  `useNode().data.pom_dev_mode === true` (`NodeInfo.pom_dev_mode`, the same
-  `POM_DEV_MODE=1` that already hides the DEV sections of `DeploymentInspector`);
-  without the flag the screen never offers nor sends
-  `mode: "tensor_parallel"` - the only possible mode is pipeline, and a `mode`
-  already set to `tensor_parallel` when the `/api/ui/node` answer arrives later
-  is reverted. Pipeline offers a plan by size (target in GB per slice, empty =
-  "the rest") or a specific range by start/end layer; the specific range uses
-  the GGUF's architectural options, sends `range: { start_layer, end_layer }`
-  and adds the part to the manifest by hash, without replacing or deleting
-  earlier slices. In TP mode, the operator picks 2..64 ranks and the preview
-  shows one full range per rank with the identifier `1of2`, `2of2`, `1of4`
-  etc. Each change posts `POST /api/ui/slice/plan` (260 ms debounce); TP carries
-  `mode: "tensor_parallel"` and `tp_size`, while pipeline carries `slices` or
-  `range`. `POST /api/ui/slice` runs the job. The activity panel stays visible
-  also for finished jobs and shows the named phase, bytes, rate, ETA when
-  reliable, current file and partial outputs on failure. The preview checks the
-  free space at the real configured destination, with a concrete number and a
-  warning before starting. The Shards screen separates `parts` and `tp_parts`,
-  groups TP by size and sorts the ranks inside each group. The transfer
-  considers both lists. When the catalog confirms a multipart GGUF, this screen
-  shows the real sum of bytes, the MULTIPART label and the list of physical
-  parts. While the header is still being enriched, it does not show the first
-  part's size. If the source is incomplete, the reason coming from
-  `split.count`, `split.no` or the missing part shows up in the panel and the
-  slice button is disabled; the operator needs to put the full set together and
-  let POM produce the slices. The preview and the job start repeat the GGUF
+- **Tensor parallel shards** (`SliceModels`, `/models/slice`): the Shards
+  screen and pipeline slicing were removed once every pipeline deploy serves
+  ranges straight from the whole model; slices already on disk keep serving
+  and show as a legacy deployment. The screen is out of the menu and is opened
+  by the Models screen's Slice button, drawn only with
+  `NodeInfo.pom_dev_mode`; without it the screen says tensor parallel needs
+  development mode and plans nothing. It picks a whole model and 2..64 ranks,
+  previews one full range per rank (`1of2`, `2of2`), posts
+  `POST /api/ui/slice/plan` with `mode: "tensor_parallel"` and `tp_size` (260
+  ms debounce) and starts with `POST /api/ui/slice`. The activity panel keeps
+  finished and failed jobs with phase, bytes and partial outputs. An
+  incomplete multipart source shows its reason and the start stays disabled. The preview and the job start repeat the GGUF
   preflight for the head the loader requires. In `deepseek4`, an intermediate
   range copies the real head weights the loader requires, and the preview shows
   the additional payload repeated in each one; if the tensor table does not
   allow the copy, the refusal lists the concrete reason. The final range is only
   offered when the table contains the full head.
 - **Deploy** (`DeployModel`): opens the Deploy Studio on a wide screen, with
-  Shards/Whole model/Tensor tabs, separate technical model and operational name,
+  Pipeline / Slices (legacy) / Tensor tabs (Pipeline, the whole model, is the default; a
+  Pipeline plan whose copies would carry a range to a machine without the model is refused by
+  name instead of offering the copy: `lackingModel` in `DeployModel.tsx`; the capacity
+  confirmation lists each step with `capacity.cpu_layers > 0` as `cpuSplits`), separate technical model and operational name,
   Simple/Complete strategies, a central map and a compact property inspector.
   Every peer shows up in the bottom strip and can be dragged onto the map; in
   the Globals tab, the inspector also lets you pick `cache_type_k` and
@@ -1744,18 +1733,13 @@ machine restarted. Today the fingerprint is only model + set of ranges.
   Redeploying the same shape from the Deploy Studio (same proven model, same
   machines and ranges) also lands on the same `deploy_id`; changing machine or
   range mints a new id. See `deployment.md` §7.1.
-- **Transfer** (`Transfers` with its `SendFilePanel`, `Notifications`): remote model downloads
-  with progress and cancellation, pending offers (accept/refuse straight from
-  the bell), active transfers (bytes, speed, ETA, cancel) and finished ones.
-  Sending ("send a file from this machine") offers a file from the local
-  catalog through `POST /api/transfer/send`; the receiver only sees an opaque
-  grant (`grant`), so "send anything" never becomes "read anything". Progress
-  comes from the nodes, so reloading the tab loses nothing.
-  `POM_DEV_AUTO_ACCEPT_TRANSFERS=1` (a variable of the receiving process, read
-  at startup) accepts every offer without a click - dev only. Peers on the same
-  machine share the hostname, so the destination and the availability label
-  carry the start of the `node_id` when the name repeats (`uniquePeerName` in
-  `lib/peerName.ts`, used by `routes/Shards.tsx`). Offers, active and finished transfers in `Transfers`
+- **Downloads** (`Transfers`, menu "Downloads", and `Notifications`): this machine's model
+  downloads and one panel per other machine, with progress and cancellation; pending offers
+  from an older admin (accept/refuse straight from the bell), active transfers (bytes, speed,
+  ETA, cancel) and finished ones. Nothing offers sending any more: the send panel, the
+  slices screen's "Send to..." and the full models screen's Send were removed with deploy
+  copies. `POM_DEV_AUTO_ACCEPT_TRANSFERS=1` still accepts every offer without a click (dev
+  only). Offers, active and finished transfers in `Transfers`
   are each a full-width table (it used to be a list of cards), with the
   accept/refuse/cancel action in the last column.
 
@@ -1891,7 +1875,7 @@ on the My machine screen ("Machine name", `POST /api/ui/network/node-name`),
 with no restart: the next announce carries it. The first run wizard asks for
 it through the same route. Without a `node_name` the machine goes by the system hostname. Every
 screen reads that
-name; the "Send to..." selector of `/shards` used to read `sysmon`, the
+name; the "Send to..." selector of the removed Shards screen used to read `sysmon`, the
 operating system's raw hostname, and was the only place in the app that called
 the machine by another name. On a machine with two nodes it was worse: both
 reported the same OS hostname, the list saw a collision and broke the tie with

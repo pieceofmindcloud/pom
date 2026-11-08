@@ -62,7 +62,7 @@ Per-file list:
   full-viewport table screen (the one `Deployments`/`PublicNetworks`/
   `DeploymentLogs` already used before these existed): a fixed edge-to-edge
   header bar and, optionally, a filter strip under it, above a body that
-  scrolls on its own. `WholeModels`, `Shards`, `SliceModels`, `RemoteModels`,
+  scrolls on its own. `WholeModels`, `SliceModels`, `RemoteModels`,
   and `Transfers` (`../routes/`) all build on these two instead of
   repeating the bar's markup; `Deployments`/`PublicNetworks` keep
   their own hand-written bar and were not touched, since refactoring a
@@ -852,7 +852,7 @@ Key logic carriers:
   inline vs block + copy button.
 - `nav.ts:NAV` (nav.ts:40) - the source of truth for the menu, its order and
   its routes; the section that is "its own entry" (`/deploy`, deploy) is a
-  deliberate first-class navigation item, not a leaf under the shards section.
+  deliberate first-class navigation item, not a leaf under the Models section.
 - `networkPeers.pipelinePeers` (networkPeers.ts:13) - execution order: peers
   on the active model sorted by start layer (falls back to all peers);
   `Dashboard`, `PipelineRail` and `ModelNetworkCanvas` derive "the pipeline"
@@ -882,6 +882,13 @@ Key logic carriers:
   machine), never in the machine card. Back to one machine, `DeployModel`'s
   `rows` drops the row's role, so the deployment's role the inspector shows
   is the one deployed.
+- `ModelPresence.tsx` - `FilePresence` is the generic card foot for a file a machine lacks (`source`, `missing`
+  text); `ModelPresence` wraps it for the model, and the studio uses it for each `mmproj`/`mtp` entry of
+  `DeployPlan.copies` aimed at that machine, with the source from `fileSourceOn` (`lib/wholeModels.ts`).
+  The foot of a machine card (`DeployNetworkCanvas` `cardFooter`) when the
+  machine lacks the selected whole model: its running download from `useMachineDownloads`, or
+  **Download here** (the `WholeModelEntry.source` repository, file and split parts, sent with
+  `nodeId`) and **Rescan** (`rescanModels(nodeId)`, then the cluster catalog refetches).
 - `DeployNetworkCanvas.tsx` - the compact, deploy-time topology view. It
   reuses the visual contract of the `ModelNetworkCanvas`: the dotted background, machine
   cards, `autoLayout`, positions persisted per fingerprint, pointer drag,
@@ -933,8 +940,8 @@ Key logic carriers:
   a reference link (`deep`) opens that document inside the dialog (loaded on
   demand from `src/docs/`), with "Back to the guide". `GuideHelpButton` is the
   round "?" button a section heading uses.
-- `SidecarLinkEditor.tsx` - the model's vision / MTP link, edited in place
-  (Shards) or in a window (Models) and saved on the principal through
+- `SidecarLinkEditor.tsx` - the model's vision / MTP link, edited in a window
+  (Models) and saved on the principal through
   `POST /api/ui/model-sidecar-links`; read-only outside the `admin` profile.
 - `EngineSettings.tsx` - draws the settings an inference service's engine
   publishes (`PluginService.settings`) in the interface's language: one row
@@ -1031,11 +1038,17 @@ Key logic carriers:
   the effective source, and the panel invalidates status/config after saving.
 - `DownloadModelDialog.tsx` - the confirmation of a remote download; it calls only the
   structured API, shows the available space and the model folders resolved by
-  the backend, without accepting a path from the browser.
+  the backend, without accepting a path from the browser. **Download on** (shown when
+  `useServingMachines` lists other non-visitor peers) sends `node_id`: that machine downloads
+  with its own token and folder, so this machine's space and folders are hidden and do not block. `downloadCompanions`
+  (`lib/modelProvider.ts`) adds the other parts of a split GGUF to every download and offers
+  projectors and MTP drafts as **Also download** checkboxes; all go as `extraFiles`.
 - `ModelDownloadsPanel.tsx` - the progress, local destination, cancellation and retry of
   `model_download` jobs coming from `useModelDownloads`; it is reused in Remote
   Models and Transfers. The source of truth is the node and the panel creates no
-  local downloader.
+  local downloader. `MachineDownloadsPanel` is the same list for another machine
+  (`useMachineDownloads`, `GET .../downloads?node_id=`), its actions pass that `node_id`; it
+  renders nothing when the machine cannot be asked (an older node).
 
 Links to other folders: everything imports `../lib/*` - `api.ts` (HTTP client
 with connection-key auth), `queries.ts` (all React Query hooks: `useNode`,
@@ -1051,6 +1064,13 @@ Backend endpoints touched directly: `POST /api/ui/unload`, `POST /api/ui/leave`,
 `GET/POST /api/ui/release/candidate` + `/api/ui/release`,
 `GET /api/transfer/jobs`, `GET /api/transfer/offers`,
 `POST /api/transfer/offers/:id/accept|reject`; the rest go through the hooks.
+
+## Defects noted
+
+- `PluginScreen.test.tsx` ("opens as soon as the plugin signals it finished
+  rendering") fails now and then in the full parallel `npx vitest run` and
+  passes when the file runs alone (seen twice on 2026-11-08, then 3 of 3 alone
+  each time): a timing assumption that does not hold under load.
 
 ## Maintaining this file
 

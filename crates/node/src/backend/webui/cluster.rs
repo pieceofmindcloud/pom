@@ -1163,7 +1163,9 @@ pub(super) async fn cluster_models(State(state): State<GatewayState>) -> impl In
         })
         .collect();
 
+    let hf_sources = crate::model_provider_backend::installed_sources(state.model_dirs().await).await;
     let mut out = vec![json!({
+        "hf_sources": hf_sources,
         "node_id": self_id,
         "hostname": local_host,
         "is_self": true,
@@ -1185,6 +1187,8 @@ pub(super) async fn cluster_models(State(state): State<GatewayState>) -> impl In
                 "shard_sets": v.get("shard_sets").cloned().unwrap_or(json!([])),
                 "sidecars": v.get("sidecars").cloned().unwrap_or(json!([])),
                 "image_files": v.get("image_files").cloned().unwrap_or(json!([])),
+                // Absent on an older node: its models just offer no Download here.
+                "hf_sources": v.get("hf_sources").cloned().unwrap_or(json!([])),
                 "scanned": v.get("scanned").cloned().unwrap_or(json!([])),
                 "metadata_complete": v
                     .get("metadata_complete")

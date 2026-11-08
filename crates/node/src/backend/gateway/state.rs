@@ -1103,7 +1103,14 @@ pub(crate) async fn require_admin_for_surface(
                     Ok(())
                 }
             }
-            issuer => caller_may_ask(&state, scope, issuer).await,
+            issuer => {
+                caller_may_ask(
+                    &state,
+                    crate::webui::node_to_node_scope(&method, &path, scope),
+                    issuer,
+                )
+                .await
+            }
         };
         if let Err(reason) = verdict {
             return (
@@ -1852,6 +1859,9 @@ impl GatewayState {
                     }
                     if self.network.slot_persist_ready() {
                         caps.push(crate::pipeline::CAP_SLOT_PERSIST.into());
+                    }
+                    if crate::plan::virtual_slices_enabled() {
+                        caps.push(crate::pipeline::CAP_RANGE_LOAD.into());
                     }
                     if self.network.p2p_tunnel_ready() {
                         caps.push("transport/iroh-tunnel-v1".into());

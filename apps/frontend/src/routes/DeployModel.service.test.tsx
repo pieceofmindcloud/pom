@@ -229,10 +229,12 @@ describe("DeployModel · plugin inference service", () => {
     await waitFor(() => expect(model.options.length).toBe(2));
 
     fireEvent.change(screen.getByRole("combobox", { name: "Serviço de inferência" }), { target: { value: "strata" } });
+    // Pipeline is the default; a staged engine still offers its slice sets.
+    fireEvent.click(screen.getByRole("radio", { name: "Fatias (legado)" }));
     await waitFor(() =>
       expect([...model.options].map((option) => option.value)).toEqual(["qwen3.8-flash-next"]),
     );
-    expect(screen.getByRole("radio", { name: "Fatias" }).getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByRole("radio", { name: "Fatias (legado)" }).getAttribute("aria-checked")).toBe("true");
   });
 
   it("without a plugin inference service, there is no engine choice", async () => {
@@ -252,7 +254,10 @@ describe("DeployModel · plugin inference service", () => {
     await waitFor(() =>
       expect([...model.options].map((option) => option.value)).toEqual(["qwen3.8-flash-next"]),
     );
-    expect((screen.getByRole("radio", { name: "Fatias" }) as HTMLButtonElement).disabled).toBe(true);
+    // Slices are offered only for a staged service or old slice sets, and then
+    // not to an engine that runs only whole models.
+    const slices = screen.queryByRole("radio", { name: "Fatias (legado)" }) as HTMLButtonElement | null;
+    expect(slices === null || slices.disabled).toBe(true);
 
     await waitFor(() => {
       const plan = post.mock.calls.filter(([url]) => url === "/api/ui/deploy/plan").at(-1);

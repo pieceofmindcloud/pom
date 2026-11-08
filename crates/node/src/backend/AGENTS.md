@@ -117,7 +117,15 @@ boundary.
   failed or cancelled job with the new attempt instead of listing both - the failed row had no
   other button and could never be dismissed. `POST .../downloads/:id/dismiss` takes a failed or
   cancelled job off the list without a new attempt, and refuses a running one (409; Cancel is for
-  that). The
+  that). Every download route takes an optional `node_id` (in the start body, as `?node_id=`
+  on `GET .../downloads` and the actions): another machine's id makes `forward_to_node` send the
+  call to that member signed by this node and hand its answer back, so the admin starts and
+  follows downloads on a worker; the worker uses its own token and folder. `forward_to_node`
+  also serves `POST /api/ui/models/rescan` (`webui/catalog.rs`). `extra_files` in the start
+  body runs `start_one` once per extra file after the main one; installed or running extras are
+  `skipped`, others `failed`, and the main download is not undone. The `pom_id` hash of a model
+  is cached by `webui::model_hash_cache` (`jobs_apply.rs`), keyed by every part's path, size
+  and mtime, in memory and in `.<slug>-model-hashes.json` at the project root. The
   storage response exposes the eligible folders. The structured status in
   `GET /api/ui/model-provider/status` lets the UI tell an absent CLI, a required login and an
   authenticated session apart.
@@ -505,7 +513,9 @@ boundary.
   `/api/ui/leave`) deletes its `.bin`/`.json` files, resets
   `GatewayState.prefix_disk` and clears the inference server's host-memory
   cache. See `http-api.md`.
-- `transfer.rs` (1542) - slice push/pull over HTTP `Range` with resume and MD5;
+- `transfer.rs` (1542) - **deprecated**: `routes()` adds `Deprecation: true` to every answer;
+  served one more release for older admins, then removed (deploys no longer copy:
+  `deploy::planning::copies_refusal`). Slice push/pull over HTTP `Range` with resume and MD5;
   offers carry only a `stat`, the digest is computed by the receiver. Pushes
   accept only a catalog basename in `filename`, resolve it server-side and
   require `.gguf` or no extension. Manifest v1 are merged by `pom_id` on the receiving peer,
@@ -1040,6 +1050,16 @@ the deploy screen offer it a projector; `openai::ChatRequest.thinking_enabled`
 travelling in `GenerationInput` and the prefill metadata, with the head applying the global
 kill-switch before rendering the template) is `docs/subsystems/web-ui.md` and
 `docs/subsystems/inference.md`.
+
+## Defects noted
+
+- `webui::leave_tests::leaving_for_a_peer_is_forwarded_to_that_peer` (`webui/tests/early.rs`)
+  passes alone and in the full `cargo test -p node --bin pom`, but failed twice in a row
+  (2026-11-08) when run filtered to `deploy:: webui::` together: it depends on test order or
+  shared state, not yet traced.
+- In the dev container ten tests fail at this branch's head, outside this folder: two
+  `splitter` tests expect English error text the pinned `llama-engine` gives in Portuguese, and
+  eight inference lab, relay, server reload and machine-address tests not investigated.
 
 ## Maintaining this file
 

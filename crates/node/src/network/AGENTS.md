@@ -57,7 +57,7 @@ dedicated or member, with iroh's hole punching), are in
   `transfer_chunk_is_bounded` hold the file rule on the receiving side (a piece is a bounded
   range, refused with `TRANSFER_ROUTE_REFUSED_STATUS` 421 on a connection that crosses a public
   relay - the receiver checks the connection's selected path); `gateway_path_is_allowed` is the closed exact-comparison list, plus the plugin calls in
-  their fixed shape (`plugin_path_is_allowed`: services, `<code>/peer/<op>`, `<code>/engine/generate`); `serve_loopback` hands
+  their fixed shape (`plugin_path_is_allowed`: services, `<code>/peer/<op>`, `<code>/engine/generate`), and the model download calls an admin forwards to a worker (`model_download_path_is_allowed`: `downloads` and `downloads/<id>/{cancel,retry,dismiss}`) plus `/api/ui/models/rescan`; `serve_loopback` hands
   the call to the gateway over `127.0.0.1` and marks it with `TUNNEL_ORIGIN_HEADER` and
   `tunnel_mark` so `serve::request_origin` never reads it as local. `peer_client::send_to_gateway_over`
   is the control plane's sender: each announced address and, last, the tunnel. `measure_rtt`

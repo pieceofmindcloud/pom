@@ -32,6 +32,7 @@ vi.mock("../components/DownloadModelDialog", () => ({
 
 vi.mock("../lib/queries", () => ({
   keys: { jobs: ["jobs"] },
+  useServingMachines: () => [],
   useRemoteModelDetails: () => ({
     data: undefined,
     isLoading: false,

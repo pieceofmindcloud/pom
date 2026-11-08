@@ -51,6 +51,10 @@ import { ImageDeployStudio } from "../components/ImageDeployStudio";
 import {
   Check,
   ChevronLeft,
+  Lock,
+  LockOpen,
+  Minus,
+  Plus,
   Rocket,
   Server,
   ServerCog,
@@ -64,11 +68,14 @@ import { useToast } from "../lib/toast";
 import { bytes, deployModelDisplayName, layerRange, megabytes } from "../lib/format";
 import { Confirm, Modal } from "../components/Confirm";
 import { DeploymentInspector, InspectorRow } from "../components/DeploymentInspector";
+import { FilePresence, ModelPresence } from "../components/ModelPresence";
 import { DeployNetworkCanvas } from "../components/DeployNetworkCanvas";
 import { DeployProgressModal } from "../components/DeployProgressModal";
 import { trackOf } from "../components/PipelineRail";
-import { tensorParallelModelsOf, wholeModelsOf } from "../lib/wholeModels";
-import { inferenceServicesOf, serviceRunsModel, serviceRunsSlices, serviceTakesDraft } from "../lib/inferenceServices";
+import { fileSourceOn, tensorParallelModelsOf, wholeModelsOf } from "../lib/wholeModels";
+import { autoBalance, evenSplit, isWholeRangeSplit, stepRange, validEnds, wholeRangesOf } from "../lib/wholeRanges";
+import { inferenceServicesOf, serviceRunsModel, serviceCutsRanges,
+  serviceRunsSlices, serviceTakesDraft } from "../lib/inferenceServices";
 import {
   Badge,
   Button,
@@ -82,7 +89,6 @@ import {
 import type {
   DeployKind,
   DeployPlan,
-  PlannedCopy,
   DeploySelection,
   DeployStrategy,
   CacheTypesResponse,
@@ -345,11 +351,6 @@ export function DeployModel() {
   /** Third confirm: machines that already serve a model would be taken over
    *  or undeployed by this deploy. */
   const [inServiceAsked, setInServiceAsked] = useState(false);
-  /** The copies waiting for the operator's authorization, when the deploy
-   *  moves files between machines; `null` while nothing is being asked. */
-  const [copiesAsked, setCopiesAsked] = useState<PlannedCopy[] | null>(null);
-  /** The operator authorized the copies of this deploy gesture. */
-  const transfersAllowed = useRef(false);
   const [running, setRunning] = useState(false);
   const [cacheTypeK, setCacheTypeK] = useState<KvCacheType>("f16");
   const [cacheTypeV, setCacheTypeV] = useState<KvCacheType>("f16");
@@ -466,9 +467,22 @@ export function DeployModel() {
    * screen that looks like a broken deploy page rather than an unanswered
    * question. The operator's own choice always wins once made.
    */
+  // Pipeline (a whole model, cut into ranges on the machines that hold it) is
+  // the default; slices stay for a staged service and for slice sets made
+  // before range loading.
   const kind: DeployKind = service
     ? service.stages && pickedKind === "shards" ? "shards" : "whole"
-    : pickedKind ?? (groups.length === 0 && wholes.length > 0 ? "whole" : "shards");
+    : pickedKind ?? (wholes.length === 0 && groups.length > 0 ? "shards" : "whole");
+  const offersSlices = Boolean(service?.stages) || groups.length > 0 || kind === "shards";
+  /** Pipeline as the default opens on an empty map, as choosing it did when
+   *  slices were the default: the operator drops the machines that serve it. */
+  const openedOnPipeline = useRef(false);
+  useEffect(() => {
+    if (openedOnPipeline.current || pickedKind !== null || service || kind !== "whole" || wholes.length === 0) return;
+    openedOnPipeline.current = true;
+    setSelection((current) => current ?? []);
+    setSettled((current) => current ?? []);
+  }, [pickedKind, service, kind, wholes.length]);
   const isWhole = kind === "whole";
   const isTp = kind === "tensor_parallel";
   const tpGroup = useMemo(
@@ -506,6 +520,25 @@ export function DeployModel() {
   const wholeModel = isWhole || (isTp && !hasSlicedTp)
     ? wholes.find((w) => w.name === chosen)
     : undefined;
+  /** Whether a set of rows splits the whole model over machines that each hold
+   *  it: then the request names them as `whole_ranges`, and each machine is
+   *  applied with its own whole file and its range (nothing is copied). */
+  const wholeTotal = wholeModel?.total_layers ?? null;
+  /** llama.cpp, or an inference service whose engine cuts a range of this model from the whole file itself
+   *  (`stage_ranges`, Strata's Flash-Next): ranges of the whole model can be split over the machines that hold it. */
+  const rangesOnWhole = !service || serviceCutsRanges(service, wholeModel?.architecture ?? null);
+  const splitsWhole = (candidate: DeploySelection[] | null): candidate is DeploySelection[] =>
+    isWhole && rangesOnWhole && candidate != null && isWholeRangeSplit(candidate, wholeModel?.holders ?? [], wholeTotal);
+  /** Machines of a split made before the plan knew the GGUF's cuts. The first
+   *  split assumes every layer is a valid cut; once the plan answers with
+   *  `layer_options`, it is redone on the real cuts (a hybrid model is only cut
+   *  at its architectural boundaries). */
+  const pendingSplit = useRef<string[] | null>(null);
+  /** Machines whose range the operator locked: Auto-balance and the
+   *  neighbours' - / + leave it exactly as it is. */
+  const [lockedNodes, setLockedNodes] = useState<Set<string>>(() => new Set());
+  const rowsPayload = (candidate: DeploySelection[] | null) =>
+    candidate == null ? {} : splitsWhole(candidate) ? { whole_ranges: wholeRangesOf(candidate) } : { selection: candidate };
   /** The TpLaunch the node expects: `size` is derived from the workers picked,
    *  never a free number — the select is the single source of truth. */
   const tpPayload = (): TpLaunch => ({
@@ -575,7 +608,7 @@ export function DeployModel() {
         kind,
         strategy,
         preferred_node_ids: preferredNodeIds,
-        ...(settled ? { selection: settled } : {}),
+        ...rowsPayload(settled),
         ...(isTp ? { tp: tpPayload() } : {}),
         // The merge toggle is not on screen for a whole model. Sending it
         // anyway would be sending a value the operator was never shown.
@@ -773,6 +806,15 @@ export function DeployModel() {
       return single;
     });
   }, [selection, p]);
+  useEffect(() => {
+    const holders = pendingSplit.current;
+    const options = currentPlan?.layer_options;
+    if (!holders || !options || wholeTotal == null) return;
+    pendingSplit.current = null;
+    if (options.reason) return;
+    const next = evenSplit(holders, wholeTotal, validEnds(wholeTotal, options.cuts.map((cut) => cut.end_layer)));
+    if (!sameRows(next, rows)) setSelection(next);
+  }, [currentPlan, wholeTotal, rows]);
   /** One row per machine for the per-machine role: a whole model has one row per machine already; slices may put
    *  several ranges on one machine, which share its role. A sliced deployment may also hold a prefill machine that
    *  runs the whole model beside the slices. */
@@ -1115,7 +1157,7 @@ export function DeployModel() {
         deployment_name: deploymentName || chosen,
         strategy,
         preferred_node_ids: preferredNodeIds,
-        ...(selection ? { selection: rows } : {}),
+        ...rowsPayload(selection ? rows : null),
         ...(params || service ? { params: sentParams } : {}),
         ...(merge != null && !isWhole ? { merge } : {}),
         ...(isTp ? { tp: tpPayload() } : {}),
@@ -1128,7 +1170,6 @@ export function DeployModel() {
           : {}),
         ...sidecarChoices(),
         ...(keepExisting ? { keep_existing: true } : {}),
-        ...(transfersAllowed.current ? { allow_transfers: true } : {}),
       });
       setJobId(started.job_id);
       setProgressOpen(true);
@@ -1144,11 +1185,6 @@ export function DeployModel() {
       });
       invalidate();
     } catch (e) {
-      // The node found copies the screen did not ask about (the cluster moved
-      // since the preview): ask now, with the node's own list.
-      const refused = e instanceof ApiError && e.status === 409
-        ? (e.body as { code?: string; copies?: PlannedCopy[] } | undefined)
-        : undefined;
       const inProgress = e instanceof ApiError && e.status === 409
         ? (e.body as { code?: string; job_id?: string } | undefined)
         : undefined;
@@ -1158,11 +1194,9 @@ export function DeployModel() {
         setJobId(inProgress.job_id);
         setProgressOpen(true);
         invalidate();
-      } else if (refused?.code === "transfers_not_authorized" && refused.copies?.length) {
-        setInServiceAsked(false);
-        transfersAllowed.current = false;
-        setCopiesAsked(refused.copies);
       } else {
+        // A machine that lacks a file (`machine_lacks_files`) is named in the
+        // node's message: files are not copied between machines any more.
         toast.fromError(t("deploy.startFailed"), e);
       }
     } finally {
@@ -1280,8 +1314,15 @@ export function DeployModel() {
   }
 
   const job = jobs.data?.jobs.find((j) => j.id === jobId);
+  /** In Pipeline mode a machine without the model is not sent a copy: it
+   *  downloads the model (Download here on its card) or gets the file placed.
+   *  The ranges the plan would copy name those machines. */
+  const lackingModel = isWhole && rangesOnWhole
+    ? [...new Set((p?.copies ?? []).filter((copy) => copy.kind === "slice").map((copy) => copy.target_host))]
+    : [];
   const canDeploy =
     validated &&
+    lackingModel.length === 0 &&
     !p?.blocked &&
     inferenceModeSupported &&
     rows.length > 0;
@@ -1291,9 +1332,20 @@ export function DeployModel() {
   /** Machines whose projection overflows the VRAM (rose) or that only fit because
    *  "Fit to memory" would trim the request (amber) - both call for a warning
    *  before deploying. */
+  /** The ranges that would run layers on the CPU, by machine: the deploy
+   *  asks for a confirmation naming each one and its CPU layer count. */
+  const cpuSplits = (displayPlan?.steps ?? [])
+    .filter((step) => step.target_node_id && (step.capacity?.cpu_layers ?? 0) > 0)
+    .map((step) => ({
+      nodeId: step.target_node_id!,
+      label: labelOf(step.target_node_id!),
+      gpu: step.capacity?.gpu_layers_fit ?? 0,
+      cpu: step.capacity?.cpu_layers ?? 0,
+    }));
   const capacityWarnMachines = (displayPlan?.machines ?? []).filter(
     (machine) =>
-      machine.capacity && (!machine.capacity.fits || machine.capacity.degraded),
+      (machine.capacity && (!machine.capacity.fits || machine.capacity.degraded)) ||
+      cpuSplits.some((split) => split.nodeId === machine.node_id),
   );
   const anyOverCapacity = capacityWarnMachines.some((m) => !m.capacity?.fits);
 
@@ -1323,15 +1375,10 @@ export function DeployModel() {
   function attemptDeploy(from: "coverage" | "capacity" | "copies" | "inService" = "coverage") {
     setAsked(false);
     setCapacityAsked(false);
-    setCopiesAsked(null);
-    if (from === "coverage") transfersAllowed.current = false;
-    const copies = p?.copies ?? [];
     if (from === "coverage" && !p?.complete) {
       setAsked(true);
     } else if ((from === "coverage" || from === "capacity") && capacityWarnMachines.length > 0) {
       setCapacityAsked(true);
-    } else if (from !== "inService" && copies.length > 0 && !transfersAllowed.current) {
-      setCopiesAsked(copies);
     } else if (replacedPeers.length > 0 || elsewherePeers.length > 0) {
       setInServiceAsked(true);
     } else {
@@ -1354,6 +1401,8 @@ export function DeployModel() {
       ? t("deploy.whyNotEmpty")
       : syncing || !p
         ? t("deploy.whyNotChecking")
+          : lackingModel.length > 0
+            ? t("deploy.whyNotLacksModel", { machines: lackingModel.join(", ") })
           : p.blocked
             ? t("deploy.whyNotBlocked")
           : !inferenceModeSupported
@@ -1424,8 +1473,8 @@ export function DeployModel() {
           <div className="flex flex-wrap items-center gap-2">
             <div className="mr-auto flex items-center gap-1 rounded-lg border border-line bg-ink p-1">
               {([
-                ["shards", t("deployStudio.kindShards")],
-                ["whole", t("deployStudio.kindWhole")],
+                ["whole", t("deployStudio.kindPipeline")],
+                ...(offersSlices ? [["shards", t("deployStudio.kindShardsLegacy")] as [DeployKind, string]] : []),
                 ...(pomDevMode ? [["tensor_parallel", "Tensor"] as [DeployKind, string]] : []),
               ] as [DeployKind, string][]).map(([value, label]) => (
                 <button
@@ -1632,6 +1681,48 @@ export function DeployModel() {
                 primaryCandidateIds={isTp ? tpCandidates : undefined}
                 primaryNodeId={isTp ? tp.primary_node_id : undefined}
                 onTogglePrimary={isTp ? togglePrimary : undefined}
+                cardFooter={isWhole && rangesOnWhole && wholeModel
+                  ? (nodeId) => {
+                      const sidecars = (p?.copies ?? []).filter(
+                        (copy) => copy.target_node_id === nodeId && (copy.kind === "mmproj" || copy.kind === "mtp"),
+                      );
+                      const lacksModel = !wholeModel.holders.includes(nodeId);
+                      const costed = (p?.steps ?? []).filter(
+                        (step) => step.target_node_id === nodeId && step.capacity?.weights_bytes != null,
+                      );
+                      const weights = costed.reduce((sum, step) => sum + (step.capacity?.weights_bytes ?? 0), 0);
+                      const kv = costed.reduce((sum, step) => sum + (step.capacity?.kv_bytes ?? 0), 0);
+                      const kvInRam = costed.some((step) => step.capacity?.kv_in_vram === false);
+                      const memory = costed.length > 0 && (
+                        <p className="mt-2 font-mono text-[9px] text-muted" data-testid="card-memory">
+                          {t(kvInRam ? "deployStudio.memoryKvRam" : "deployStudio.memoryKvVram", {
+                            weights: bytes(weights),
+                            kv: bytes(kv),
+                          })}
+                        </p>
+                      );
+                      if (!lacksModel && sidecars.length === 0) return memory || null;
+                      return (
+                        <>
+                          {memory}
+                          {lacksModel && <ModelPresence nodeId={nodeId} machine={labelOf(nodeId)} model={wholeModel} />}
+                          {sidecars.map((copy) => {
+                            const source = fileSourceOn(cluster.data?.peers, copy.source_node_id, copy.name);
+                            const what = t(copy.kind === "mtp" ? "deployStudio.lacksMtp" : "deployStudio.lacksMmproj", { name: copy.name });
+                            return (
+                              <FilePresence
+                                key={`${copy.kind}:${copy.name}`}
+                                nodeId={nodeId}
+                                machine={labelOf(nodeId)}
+                                source={source}
+                                missing={`${what} ${t(source ? "deployStudio.lacksFileDownload" : "deployStudio.lacksFilePlace")}`}
+                              />
+                            );
+                          })}
+                        </>
+                      );
+                    }
+                  : undefined}
               />
             ) : (
               <div className="flex min-h-[22rem] flex-1 items-center justify-center rounded-xl border border-dashed border-line-strong p-4">
@@ -1851,6 +1942,140 @@ export function DeployModel() {
                           )) : <span className="text-[0.64rem] text-faint">{t("deployStudio.noLayerAssigned")}</span>}
                         </div>
                       </div>
+                      {isWhole && rangesOnWhole && wholeTotal != null && (() => {
+                        // Ranges of the whole model, each from the machine's own copy.
+                        const holdersOnMap = mapMachineIds.filter((nodeId) => wholeModel?.holders.includes(nodeId));
+                        const ends = validEnds(wholeTotal, currentPlan?.layer_options?.cuts.map((cut) => cut.end_layer) ?? null);
+                        const split = splitsWhole(rows);
+                        const locked = new Set(rows.flatMap((row, index) => (lockedNodes.has(row.target_node_id) ? [index] : [])));
+                        const limitText = (limit: string) =>
+                          t({
+                            noCut: "deployStudio.layerLimitNoCut",
+                            neighbourEmpty: "deployStudio.layerLimitEmpty",
+                            locked: "deployStudio.layerLimitLocked",
+                            neighbourLocked: "deployStudio.layerLimitNeighbourLocked",
+                          }[limit] ?? "deployStudio.layerLimitEmpty");
+                        const options = currentPlan?.layer_options;
+                        // Weights plus the KV cache for the deployment's context, when the node costs it.
+                        const prefixBytes = (end: number): number | null => {
+                          if (!options || options.cuts.length === 0) return null;
+                          if (end === wholeTotal - 1) {
+                            const first = options.cuts[0];
+                            return first.size_bytes + first.remainder_bytes + (first.kv_bytes ?? 0) + (first.remainder_kv_bytes ?? 0);
+                          }
+                          const cut = options.cuts.find((item) => item.end_layer === end);
+                          return cut ? cut.size_bytes + (cut.kv_bytes ?? 0) : null;
+                        };
+                        const freeMemory = (nodeId: string) => {
+                          const live = liveMachines.find((item) => item.node_id === nodeId);
+                          const gpu = live?.gpu_free_mb ?? 0;
+                          return gpu > 0 ? gpu : live?.ram_free_mb ?? 0;
+                        };
+                        const balanced = split && options ? autoBalance(rows, locked, ends, prefixBytes, freeMemory) : null;
+                        const balanceReason = balanced == null
+                          ? t("deployStudio.autoBalanceWaiting")
+                          : Array.isArray(balanced)
+                            ? null
+                            : t(balanced === "allLocked" ? "deployStudio.autoBalanceAllLocked" : "deployStudio.autoBalanceNoSizes");
+                        return (
+                          <div className="mt-3 space-y-1.5 border-t border-line pt-2">
+                            {split && taking.map((row) => {
+                              const index = rows.indexOf(row);
+                              const fewer = stepRange(rows, index, "shrink", ends, locked);
+                              const more = stepRange(rows, index, "grow", ends, locked);
+                              const isLocked = locked.has(index);
+                              const count = row.end_layer - row.start_layer + 1;
+                              return (
+                                <div key={`step-${row.start_layer}`} className="flex items-center justify-between gap-2">
+                                  <span className="font-mono text-[0.64rem] text-muted">{layerRange(row.start_layer, row.end_layer)}</span>
+                                  <div className="flex items-center gap-1">
+                                    <button
+                                      type="button"
+                                      aria-pressed={isLocked}
+                                      aria-label={t(isLocked ? "deployStudio.unlockRange" : "deployStudio.lockRange", { machine: machine.label })}
+                                      title={t(isLocked ? "deployStudio.unlockRange" : "deployStudio.lockRange", { machine: machine.label })}
+                                      onClick={() => setLockedNodes((current) => {
+                                        const next = new Set(current);
+                                        if (next.has(machine.node_id)) next.delete(machine.node_id);
+                                        else next.add(machine.node_id);
+                                        return next;
+                                      })}
+                                      className={`border p-0.5 ${isLocked ? "border-aqua/40 bg-aqua/10 text-aqua" : "border-line bg-ink text-muted hover:border-aqua/50 hover:text-fg"}`}
+                                    >
+                                      {isLocked ? <Lock className="h-3 w-3" /> : <LockOpen className="h-3 w-3" />}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      aria-label={t("deployStudio.fewerLayers", { machine: machine.label })}
+                                      title={Array.isArray(fewer) ? t("deployStudio.fewerLayers", { machine: machine.label }) : limitText(fewer)}
+                                      disabled={!Array.isArray(fewer)}
+                                      onClick={() => Array.isArray(fewer) && setSelection(fewer)}
+                                      className="border border-line bg-ink p-0.5 text-muted hover:border-aqua/50 hover:text-fg disabled:opacity-40"
+                                    >
+                                      <Minus className="h-3 w-3" />
+                                    </button>
+                                    <span className="min-w-[4.5rem] text-center font-mono text-[0.64rem] text-fg">{t("deployStudio.layerCount", { count })}</span>
+                                    <button
+                                      type="button"
+                                      aria-label={t("deployStudio.moreLayers", { machine: machine.label })}
+                                      title={Array.isArray(more) ? t("deployStudio.moreLayers", { machine: machine.label }) : limitText(more)}
+                                      disabled={!Array.isArray(more)}
+                                      onClick={() => Array.isArray(more) && setSelection(more)}
+                                      className="border border-line bg-ink p-0.5 text-muted hover:border-aqua/50 hover:text-fg disabled:opacity-40"
+                                    >
+                                      <Plus className="h-3 w-3" />
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                            {split && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                type="button"
+                                className="w-full"
+                                disabled={!Array.isArray(balanced)}
+                                title={balanceReason ?? t("deployStudio.autoBalanceHint")}
+                                onClick={() => Array.isArray(balanced) && setSelection(balanced)}
+                              >
+                                {t("deployStudio.autoBalance")}
+                              </Button>
+                            )}
+                            {holdersOnMap.length >= 2 && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                type="button"
+                                className="w-full"
+                                onClick={() => {
+                                  if (!currentPlan?.layer_options) pendingSplit.current = holdersOnMap;
+                                  setSelection(evenSplit(holdersOnMap, wholeTotal, ends));
+                                }}
+                              >
+                                {t("deployStudio.splitLayers", { count: holdersOnMap.length })}
+                              </Button>
+                            )}
+                            {split && <p className="text-[0.6rem] leading-snug text-faint">{t("deployStudio.splitLayersHint")}</p>}
+                          </div>
+                        );
+                      })()}
+                      {(currentPlan?.steps ?? [])
+                        .filter((step) => step.target_node_id === machine.node_id && (step.capacity?.cpu_layers ?? 0) > 0)
+                        .map((step) => (
+                          <p key={`cpu-${step.start_layer}`} className="mt-2 border-l-2 border-amber/50 pl-2 text-[0.62rem] leading-snug text-amber">
+                            <span className="font-semibold">{t("deployStudio.gpuCpuSplit", { gpu: step.capacity?.gpu_layers_fit ?? 0, cpu: step.capacity?.cpu_layers ?? 0 })}</span>
+                            {" "}
+                            {t("deployStudio.gpuCpuSplitDetail", { ram: megabytes(Math.round((step.capacity?.cpu_ram_bytes ?? 0) / (1024 * 1024))) })}
+                          </p>
+                        ))}
+                      {(currentPlan?.steps ?? [])
+                        .filter((step) => step.target_node_id === machine.node_id && step.note)
+                        .map((step) => (
+                          <p key={`note-${step.start_layer}`} className="mt-2 border-l-2 border-amber/50 pl-2 text-[0.62rem] leading-snug text-amber">
+                            {step.note}
+                          </p>
+                        ))}
                       <div className="mt-3 border-t border-aqua/15 pt-2">
                         <p className="text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-aqua">{t("deployStudio.layersOnPeer")}</p>
                         <div className="mt-1.5 flex flex-wrap gap-1">
@@ -1980,6 +2205,16 @@ export function DeployModel() {
                   ))}
               </ul>
             )}
+            {cpuSplits.length > 0 && (
+              <ul className="mt-2 list-disc space-y-1 pl-4 text-[0.72rem] text-amber" data-testid="deploy-cpu-splits">
+                {cpuSplits.map((split) => (
+                  <li key={split.nodeId}>
+                    <span className="font-medium">{split.label}:</span>{" "}
+                    {t("deploy.cpuSplitConfirm", { gpu: split.gpu, cpu: split.cpu })}
+                  </li>
+                ))}
+              </ul>
+            )}
           </>
         }
         confirmLabel={t("deploy.deploy")}
@@ -1987,54 +2222,6 @@ export function DeployModel() {
         onConfirm={() => attemptDeploy("copies")}
         onCancel={() => setCapacityAsked(false)}
       />
-
-      <Modal
-        open={copiesAsked !== null}
-        title={t("deploy.copiesTitle")}
-        onClose={() => setCopiesAsked(null)}
-        footer={
-          <>
-            <Button variant="ghost" disabled={running} onClick={() => setCopiesAsked(null)}>
-              {t("common.cancel")}
-            </Button>
-            <Button
-              variant="primary"
-              loading={running}
-              data-testid="deploy-authorize-copies"
-              onClick={() => {
-                transfersAllowed.current = true;
-                attemptDeploy("inService");
-              }}
-            >
-              {t("deploy.copiesAuthorize")}
-            </Button>
-          </>
-        }
-      >
-        <div className="text-[0.8rem] leading-relaxed text-muted" data-testid="deploy-copies">
-          <p>
-            {t("deploy.copiesDetail", {
-              count: copiesAsked?.length ?? 0,
-              size: bytes((copiesAsked ?? []).reduce((sum, copy) => sum + copy.size_bytes, 0)),
-            })}
-          </p>
-          <ul className="mt-2 divide-y divide-line overflow-hidden rounded-lg border border-line">
-            {(copiesAsked ?? []).map((copy) => (
-              <li key={`${copy.kind}:${copy.target_node_id}:${copy.name}`} className="flex flex-col gap-0.5 px-3 py-2">
-                <span className="flex items-baseline justify-between gap-3">
-                  <span className="truncate text-fg">
-                    {copy.layers
-                      ? `${deployModelDisplayName(chosen)} · ${layerRange(copy.layers[0], copy.layers[1])}`
-                      : t(copy.kind === "mtp" ? "deploy.copyMtp" : "deploy.copyMmproj", { name: copy.name })}
-                  </span>
-                  <span className="shrink-0 font-mono text-xs">{bytes(copy.size_bytes)}</span>
-                </span>
-                <span className="text-xs">{t("deploy.copyRoute", { from: copy.source_host, to: copy.target_host })}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      </Modal>
 
       <Modal
         open={inServiceAsked}

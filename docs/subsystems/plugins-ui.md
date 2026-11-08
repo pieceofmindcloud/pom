@@ -548,7 +548,16 @@ is offered and deployed on that service as the whole model only
 (`plugin_engine::runs_slices`, checked by `deploy_block` at plan, deploy and
 add-machine time, and `serviceRunsSlices` on the Deploy screen). Strata
 publishes `["qwen4exp"]`, so Qwen3.6 (`qwen35moe`) runs whole on it, while
-llama.cpp still slices that architecture. A service whose engine takes a
+llama.cpp still slices that architecture. A service whose engine can also cut
+a stage from the whole model at run time names those architectures in
+`stage_ranges`: a Pipeline deployment then splits the whole model in ranges
+over the machines that hold it (`whole_ranges`, `serviceCutsRanges` on the
+Deploy screen), `deploy_block` checks each machine with
+`plugin_engine::runs_ranges`, the apply keeps the whole file
+(`plugin_cuts_range` in `webui/jobs_apply.rs`) and `engine.load` carries
+`range: {start_layer, end_layer}` whenever a stage's file is the whole model
+(`load_params`). Strata publishes `["qwen4exp"]` on its `pom-whole-range`
+branch. A service whose engine takes a
 drafter file from the deployment names the model architectures in
 `draft_architectures`: the Deploy screen then offers the compatible files
 (`serviceTakesDraft`), the plan resolves the choice on the stage with the last

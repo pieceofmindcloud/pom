@@ -140,14 +140,16 @@ a choice.
   triggered.
 - `/admin-ui/chat` -> the compact Chat for the native macOS status bar panel; it keeps only the chat screen, with an `h-full min-h-0 overflow-hidden` layout, and the larger-window button appears only when the native WebKit provides the `pomOpenWindow` bridge.
 - `/models` -> WholeModels; `/models/remote` -> RemoteModels (search,
-  details and downloads persisted on the node); `/models/slice` -> SliceModels, which also
-  shows the slicing jobs and their progress bars
-- `/shards` -> Shards; `/shards/deploy` -> redirects to `/deploy` (kept for old links)
-- `/models`, `/models/remote`, `/models/slice`, `/shards`,
+  details and downloads persisted on the node); `/models/slice` -> SliceModels, tensor parallel
+  shards only (development mode, off the menu, opened from a model's Slice
+  button), with the slicing jobs and their progress bars
+- `/shards` -> redirects to `/models`, `/shards/deploy` to `/deploy` (old
+  links; the Shards screen was removed with pipeline slicing)
+- `/models`, `/models/remote`, `/models/slice`,
   and `/transfers` are full-bleed, in the same
   pattern as `/deployments`/`/deployments/logs`: fixed header
   (`FullBleedHeader`, `components/ui.tsx`) and a table or content scrolling
-  inside. Whole models and Slices show the `mmproj` file name when the
+  inside. Whole models show the `mmproj` file name when the
   model/round has vision (`DiscoveredModel.mmproj_path`/
   `ShardSet.mmproj_path`, already coming from the catalog - the screen only
   renders it). See `src/routes/AGENTS.md`.

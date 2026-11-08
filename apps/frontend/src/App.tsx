@@ -269,7 +269,6 @@ export const routeLoaders = {
   notFound: () => import("./routes/NotFound").then(({ NotFound }) => NotFound),
   deployModel: () => import("./routes/DeployModel").then(({ DeployModel }) => DeployModel),
   deployments: () => import("./routes/Deployments").then(({ Deployments }) => Deployments),
-  shards: () => import("./routes/Shards").then(({ Shards }) => Shards),
   sliceModels: () => import("./routes/SliceModels").then(({ SliceModels }) => SliceModels),
   tokenKeys: () => import("./routes/Keys").then(({ TokenKeys }) => TokenKeys),
   connectionKeys: () => import("./routes/Keys").then(({ ConnectionKeys }) => ConnectionKeys),
@@ -304,7 +303,6 @@ const About = lazyRoute(routeLoaders.about);
 const NotFound = lazyRoute(routeLoaders.notFound);
 const DeployModel = lazyRoute(routeLoaders.deployModel);
 const Deployments = lazyRoute(routeLoaders.deployments);
-const Shards = lazyRoute(routeLoaders.shards);
 const SliceModels = lazyRoute(routeLoaders.sliceModels);
 const TokenKeys = lazyRoute(routeLoaders.tokenKeys);
 const ConnectionKeys = lazyRoute(routeLoaders.connectionKeys);
@@ -412,7 +410,6 @@ export default function App() {
       location.pathname === "/models/remote" ||
       location.pathname === "/models/slice" ||
       location.pathname === "/plugins" ||
-      location.pathname === "/shards" ||
       location.pathname === "/transfers");
   const adminSurface = useAdminSurface();
   const [adminReady, setAdminReady] = useState(false);
@@ -606,7 +603,7 @@ export default function App() {
                         <Route path="/models" element={<Page><WholeModels /></Page>} />
                         <Route path="/models/remote" element={<Page><RemoteModels /></Page>} />
                         <Route path="/models/slice" element={<Page><SliceModels /></Page>} />
-                        <Route path="/shards" element={<Page><Shards /></Page>} />
+                        <Route path="/shards" element={<Navigate to="/models" replace />} />
                         <Route path="/deploy" element={<Page><DeployModel /></Page>} />
                         <Route path="/deploy/image" element={<Navigate to="/deploy?mode=image" replace />} />
                         <Route path="/deployments" element={<Page><Deployments /></Page>} />

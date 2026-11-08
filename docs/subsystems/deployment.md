@@ -107,11 +107,15 @@ What actually changes:
   `model_label` to the peer - two different names for the same file are two
   models, here and in the pipeline planner.
 
-Known limit: if the target machine does not have the file yet, the copy uses
+Since phase 8 of the range deployment work, a plan in which a target lacks the
+file is refused (`machine_lacks_files`, section 4) instead of copying it; the
+machine downloads the model or gets it placed. What follows describes the copy
+path, which a current node no longer reaches (an older admin runs its own copy
+of it). Known limit: if the target machine does not have the file yet, the copy uses
 the **pull** direction, which `transfer::safe_model_path` confines to the
 sender's slice folder. A whole model almost always lives outside it (LM Studio
-library, Ollama store), so the step's `note` advises sending the file through
-the Transfers screen first.
+library, Ollama store). The step's `note` now says the machine does not have the
+model and to download it there or place the file and rescan.
 
 Planning a whole model does not wait for the full catalog. If the fast
 inventory already showed the file but the answer has no `total_layers` yet,
@@ -137,6 +141,39 @@ manifest with `sha256` before starting `transfer/pull`. If a range already
 exists on the target, it stays in the list of available layers and has no
 slider. A failure or missing GGUF read is a refusal by name, with the reason
 visible in the inspector.
+
+A range that stays on the machine that holds the whole model (the remainder
+of a `whole_slice` on its source, or any `whole_ranges` entry) is not cut by
+`slice-ranges` and copied to itself: the planner marks its step
+`from_whole_path` (the machine's own whole GGUF), no pull is planned, and the
+launch applies that machine with the whole file, the range and `skip_split:
+false`. `run_apply` then cuts the range locally, or writes a virtual slice
+with `POM_VIRTUAL_SLICES=1` (section 8).
+
+`model-layer-options` takes an optional `kv: {n_ctx, max_sessions}`; with it
+each cut also carries `kv_bytes` and `remainder_kv_bytes`, the KV cache of the
+prefix and of the rest for that context with this node's cache types, costed
+like the capacity preview. The plan asks it with the deployment's settings,
+and Auto-balance adds it to each prefix.
+
+`whole_ranges` (`[{node_id, start_layer, end_layer}]`, `kind: "whole"`) is the
+range form of a whole-model deploy, on both `/api/ui/deploy/plan` and
+`/api/ui/deploy`: each machine serves its range of the whole model it holds
+itself, so nothing is cut on another machine or copied. `add_whole_ranges`
+refuses by name a machine without the whole model and a cut the GGUF's rules
+do not allow (`model-layer-options`), sizes each range from the cut table, and
+turns the ranges into the selection when `selection` is absent; coverage and
+order are the planner's checks. On `/api/ui/deploy/plan`, a refused range is a
+blocked plan (`auto: false`) that still carries `layer_options`, so the screen
+learns the valid cuts from its first guess; `/api/ui/deploy` refuses it
+outright. Such a step never gets the "over the network"
+note, and the disk check charges a real slice of the range only when the
+target does not announce `model/range-load-v1` (`pipeline::CAP_RANGE_LOAD`,
+announced with `POM_VIRTUAL_SLICES=1`): without it the target cuts the range
+locally, the step's `note` says so ("cuts this range from its own copy: N GB
+written to disk"), and Deploy Studio shows step notes in the machine's tab.
+On the target, the fallback logs "POM_VIRTUAL_SLICES is not set: cutting
+layers a-b of <model> locally".
 
 The preflight also checks the output contract the loader requires. For the
 `deepseek4` architecture, `llama.cpp` requires `token_embd.weight`,
@@ -642,10 +679,11 @@ folder, often the folder of another quantization. Three pieces handle that.
 - **Plan and launch.** `deploy::attach_sidecars` resolves the screen's choice
   (`DeployRequest.vision_choice` / `mtp_choice`) or else the link: the head
   gets the projector, the tail gets the MTP draft. A target that already has a
-  file with that name and size uses it; otherwise a holder is chosen, the copy
-  joins `transfer_bytes` and the `pulls` of `lifecycle::run` (by path, landing
-  in the target's `received/` folder), and a file nobody has blocks the plan
-  naming it. `LaunchTarget`/`ApplyRequest` carry `mmproj_file` and
+  file with that name and size uses it; otherwise a holder is chosen and the
+  plan lists the copy, which a current node refuses as `machine_lacks_files`
+  (the copy through `transfer_bytes` and the `pulls` of `lifecycle::run`,
+  landing in `received/`, is no longer reached); a file nobody has
+  blocks the plan naming it. `LaunchTarget`/`ApplyRequest` carry `mmproj_file` and
   `mtp_draft_file`; the target resolves them on its own disk at apply time
   (`catalog::find_local_sidecar`), so a file copied a moment ago is found
   without waiting for the catalog cache. A model without `nextn` reports MTP as
@@ -666,6 +704,21 @@ target machines. Slices without a total are named "L{}-{} on {}" (`nameless`)
 and only show up that way.
 
 ## 3.1 Capacity preview (projected VRAM)
+
+A step that serves a range of the machine's own whole file (`from_whole_path`)
+is previewed on that file with `range_of_whole: true`, which costs only
+`start_layer..=end_layer`. On a machine with dedicated VRAM, the preview also
+answers how many of the requested GPU layers fit in the free VRAM minus the
+fit margin per device (`gpu_layers_fit`, `webui::params::gpu_layers_that_fit`),
+how many would run on the CPU (`cpu_layers`) and the RAM their weights need
+(`cpu_ram_bytes`), and adds "N layers fit on the GPU, M on the CPU: generation
+will be much slower" to its note. That note reaches the machine card and the
+confirmation before deploying; Deploy Studio shows "N on GPU, M on CPU" in the
+machine's tab. Unified memory reports no split. When a step's CPU part
+(`cpu_ram_bytes`) exceeds the machine's free RAM, the plan is blocked by name
+(`preview::refuse_cpu_part_beyond_ram`): the load could not succeed. The
+check runs on the preview, so the screen's Deploy button stays off; a direct
+`POST /api/ui/deploy` does not repeat it.
 
 After `plan_endpoint` builds the steps (and only if `blocked` is empty),
 `enrich_capacity_previews` asks each target where the step is already
@@ -722,9 +775,13 @@ add up. `Step.capacity` (`CapacityPreview`) is the step alone.
 ## 4. Execution (`deploy_endpoint` -> `run`)
 
 1. `deploy_endpoint` rescans (`survey`), replans, refuses `blocked`/empty,
-   refuses with 409 `transfers_not_authorized` (and the `copies`) a plan whose
-   `copies` (`planned_copies`: every slice, rank or sidecar that crosses
-   machines) is not empty unless the request carries `allow_transfers: true`,
+   refuses with 409 `machine_lacks_files` (and the `copies`) a plan whose
+   `copies` (`planned_copies`: every slice, rank or sidecar that would cross
+   machines) is not empty, naming each machine and what it lacks
+   (`planning::copies_refusal`); `allow_transfers` is still parsed for an older
+   screen and authorizes nothing. The preview marks the same plan `blocked`
+   with that reason. Weights no longer travel between nodes: a machine
+   downloads the model or gets the file placed,
    creates the job ("Deploy {deployment_name} on {n} nodes") and spawns the
    execution. The job is claimed by `claim_deploy_job`, which records its
    `deployment_name` and refuses with 409 `deploy_in_progress` (and the running
@@ -756,11 +813,10 @@ add up. `Step.capacity` (`CapacityPreview`) is the step alone.
 5. `done` = "the model is serving on the network"; an error becomes a `failed`
    job.
 
-The Deploy screen lists `Plan.copies` (file, range, from, to, size) in an
-"Authorize the copies" window, after the coverage and capacity confirms and
-before the in-service one, and only then sends `allow_transfers`. A 409 from a
-cluster that moved since the preview opens the same window with the node's
-list. The job carries `deploy_id`, and the deploy stays registered as in flight
+Steps 2 and 3 (the `Pull`s over the transfer transport) no longer run from a
+current admin, since a plan with copies is refused; they stay one release for
+an older admin deploying to this node and are removed with `transfer.rs`. The
+job carries `deploy_id`, and the deploy stays registered as in flight
 (`lifecycle::in_flight`: its task and the copies already asked of the targets)
 until `run` ends.
 
@@ -981,6 +1037,14 @@ The derived facts the machine needs to know:
   catalog).
 - `skip_split` or `(is_first && is_last && peer_count <= 1)` -> serves the file
   as is (the slice already exists on disk).
+- with `POM_VIRTUAL_SLICES=1` and a model the virtual slice supports
+  (`plan::virtual_slice_refusal`: not a mixture-of-experts model split in
+  several files under the `moe` or `auto` inference mode, whose external
+  executor reads one source file; `dense` llama.cpp reads any number) -> `plan::write_virtual_shard`: a
+  header-only virtual slice of the range under `<project root>/virtual-slices/`
+  (outside the model folders, so the catalog never lists it), rewritten on
+  every apply in milliseconds, which the engine loads from the whole file
+  (`slicing.md`, "Virtual slices"). No `.pom` manifest and no catalog entry.
 - otherwise -> `extract_shard` (local slicing, "slicing" job, progress through
   `set_job_progress`, `invalidate_catalog`, outcome `reused`/produced).
 

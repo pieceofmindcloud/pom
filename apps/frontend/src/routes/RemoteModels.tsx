@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
 import { DownloadModelDialog } from "../components/DownloadModelDialog";
-import { ModelDownloadsPanel } from "../components/ModelDownloadsPanel";
+import { MachineDownloadsPanel, ModelDownloadsPanel } from "../components/ModelDownloadsPanel";
 import { RemoteModelDetails } from "../components/RemoteModelDetails";
 import {
   Badge,
@@ -20,7 +20,7 @@ import {
 } from "../components/ui";
 import { useI18n } from "../i18n/provider";
 import { num, since } from "../lib/format";
-import { keys, useRemoteModelProviderStatus, useRemoteModelSearch, useTrendingPublicModels } from "../lib/queries";
+import { keys, useRemoteModelProviderStatus, useServingMachines, useRemoteModelSearch, useTrendingPublicModels } from "../lib/queries";
 import type { RemoteGgufFile, RemoteModelDetails as RemoteModelDetailsData, RemoteModelSummary } from "../lib/types";
 
 const PAGE_SIZE = 20;
@@ -116,6 +116,7 @@ export function RemoteModels() {
   const [detailsRepo, setDetailsRepo] = useState<string | null>(null);
   const [download, setDownload] = useState<{ file: RemoteGgufFile; details: RemoteModelDetailsData } | null>(null);
   const providerStatus = useRemoteModelProviderStatus();
+  const machines = useServingMachines();
   const trending = useTrendingPublicModels();
   const search = useRemoteModelSearch({
     query,
@@ -193,6 +194,9 @@ export function RemoteModels() {
       <div className="min-h-0 min-w-0 flex-1 overflow-auto">
         <div className="space-y-4 p-4 empty:hidden sm:p-5">
           <ModelDownloadsPanel />
+          {machines.map((machine) => (
+            <MachineDownloadsPanel key={machine.nodeId} nodeId={machine.nodeId} name={machine.name} />
+          ))}
         </div>
 
         <FullBleedToolbar>

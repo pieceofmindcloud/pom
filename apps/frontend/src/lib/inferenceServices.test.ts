@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { inferenceServicesOf, serviceRunsModel, serviceRunsSlices, serviceTakesDraft } from "./inferenceServices";
+import { inferenceServicesOf, serviceCutsRanges, serviceRunsModel, serviceRunsSlices, serviceTakesDraft } from "./inferenceServices";
 import type { PeerView } from "./types";
 
 const peer = (node_id: string, services: unknown[]) =>
@@ -17,7 +17,7 @@ describe("inferenceServicesOf", () => {
       peer("d", []),
     ]);
     expect(services).toEqual([
-      { code: "strata", name: "Strata", architectures: ["qwen4exp"], settings: [], pomSettings: [], nodeIds: ["a", "c"], stages: false, stageArchitectures: [], draftArchitectures: [], vision: false },
+      { code: "strata", name: "Strata", architectures: ["qwen4exp"], settings: [], pomSettings: [], nodeIds: ["a", "c"], stages: false, stageArchitectures: [], stageRanges: [], draftArchitectures: [], vision: false },
     ]);
     expect(serviceRunsModel(services[0], "qwen4exp")).toBe(true);
     expect(serviceRunsModel(services[0], "llama")).toBe(false);
@@ -68,5 +68,14 @@ describe("inferenceServicesOf", () => {
 
   it("is empty without peers", () => {
     expect(inferenceServicesOf(undefined)).toEqual([]);
+  });
+
+  it("cuts ranges of the whole model only for the architectures the service names", () => {
+    const [strata] = inferenceServicesOf([peer("a", [{ plugin_code: "strata", name: "Strata", kind: "inference", status: "ready",
+      stages: true, architectures: ["qwen4exp", "qwen35moe"], stage_ranges: ["qwen4exp"] }])]);
+    expect(strata.stageRanges).toEqual(["qwen4exp"]);
+    expect(serviceCutsRanges(strata, "qwen4exp")).toBe(true);
+    expect(serviceCutsRanges(strata, "qwen35moe")).toBe(false);
+    expect(serviceCutsRanges(strata, null)).toBe(false);
   });
 });

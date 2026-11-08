@@ -126,7 +126,9 @@ the private repository `pom-plugin-llama.cpp`, pinned by `rev` in `Cargo.toml`
 with the `git` client (`[net] git-fetch-with-cli` in `.cargo/config.toml`).
 
 The Cargo builds and the Docker `source` mode need the `llama.cpp` fork on the
-`pom-tensor-parallel` branch. `.cargo/config.toml` sets `LLAMA_SOURCE=llama.cpp`
+branch the pinned `pom-plugin-llama.cpp` revision builds against (its
+`llama-cpp.lock`): today `pom-external-data`, the fork's `pom` branch plus the
+external tensor data loader that virtual slices need (`slicing.md`). `.cargo/config.toml` sets `LLAMA_SOURCE=llama.cpp`
 relative to this root: leave a checkout or a symlink of the fork there (gitignored).
 An `LLAMA_SOURCE` already set in the environment (CI, Docker) prevails. The
 binding's build accepts a checkout with `ggml`; with none, the preparation error
@@ -321,14 +323,15 @@ breaks the whole product.
   event until all answer `ready` and replanning afterwards. There is no new timer
   or `sleep` in the inference: the wait only exists while an idle pipeline wakes
   up. → `deployment.md`, `p2p-network.md`
-- **No weight travels the network because of slicing**: each peer extracts
-  its own range from its own copy. A file transfer is an explicit act of the
-  operator (a deploy that copies anything is refused without
-  `allow_transfers`, which the screen sends only after listing the copies), and **a file never crosses a public relay** (n0's, one in
-  `relay_peers`, or one that is not a member of the cluster): it goes direct, over a hole
-  punched connection, or through a relay of the cluster itself. A node the
+- **No weight travels between nodes**: each machine serves its range from
+  its own copy of the model, downloaded there (`model_provider_backend`, an
+  admin may start it on a worker) or placed by hand and rescanned. A deploy
+  plan that would copy a file is refused by name (`machine_lacks_files`).
+  `/api/transfer/*` is deprecated and served one more release only for older
+  admins; while it lives, **a file never crosses a public relay** (n0's, one in
+  `relay_peers`, or one that is not a member of the cluster). A node the
   internet reaches relays for its own cluster by default; relaying for everyone
-  is an option. → `slicing.md`, `file-transfer.md`, `p2p-network.md`
+  is an option. → `deployment.md`, `file-transfer.md`, `p2p-network.md`
 - **The product's name is not literal anywhere.** Config, env, keys, GGUF
   metadata and the pkarr record derive from `brand.json`'s `slug`
   (`brand::config_filename()`, `brand::env_var()`, `brand::gguf_key()`,

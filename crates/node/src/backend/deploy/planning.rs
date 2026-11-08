@@ -126,6 +126,13 @@ pub struct Step {
     pub(super) source_sha256: Option<String>,
     /// True when the source is a virtual range backed by a whole GGUF.
     pub(super) source_needs_split: bool,
+    /// The target's own whole GGUF this range comes from, when the target is
+    /// also the virtual range's source. Nothing is cut or copied by the deploy:
+    /// the target is applied with the whole file and the range, and cuts its
+    /// range locally, or points at it with a virtual slice
+    /// (`webui::jobs_apply::run_apply`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) from_whole_path: Option<String>,
     /// Where it will be on the target once it lands, when known up front.
     pub(super) target_path: Option<String>,
     /// Entry point of the pipeline — whoever holds layer 0.
@@ -357,6 +364,35 @@ pub(super) fn planned_copies(plan: &Plan) -> Vec<PlannedCopy> {
         });
     }
     out
+}
+
+/// Why a plan that would copy files cannot go on. Deployments no longer copy
+/// weights between machines: each machine serves from its own copy of the
+/// model, downloaded there or placed by hand (`/api/transfer/*` stays only so
+/// an older admin can still deploy to this node, and is deprecated). The
+/// reason names each machine and what it lacks, `None` when nothing would be
+/// copied.
+pub(crate) fn copies_refusal(copies: &[PlannedCopy]) -> Option<String> {
+    if copies.is_empty() {
+        return None;
+    }
+    let mut lacking: Vec<String> = Vec::new();
+    for copy in copies {
+        let what = match (copy.kind, copy.layers) {
+            ("slice", Some([start, end])) => format!("{} (layers {start}-{end})", copy.name),
+            ("mmproj", _) => format!("the vision projector {}", copy.name),
+            ("mtp", _) => format!("the MTP draft {}", copy.name),
+            _ => copy.name.clone(),
+        };
+        let line = format!("{} has no {what}", copy.target_host);
+        if !lacking.contains(&line) {
+            lacking.push(line);
+        }
+    }
+    Some(format!(
+        "{}. Files are not copied between machines: download the model there, or place the file in one of its model folders and rescan",
+        lacking.join("; ")
+    ))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1646,7 +1682,7 @@ pub(super) fn plan_with_rtt_options(
                     ));
                 } else if !ready {
                     note = Some(format!(
-                        "{} GB over the network before starting",
+                        "this machine does not have this file ({} GB): files are not copied between machines",
                         gb(mem_need)
                     ));
                 }
@@ -1682,6 +1718,7 @@ pub(super) fn plan_with_rtt_options(
                 source_path: None,
                 source_sha256: None,
                 source_needs_split: false,
+                from_whole_path: None,
                 target_path: None,
                 primary: start_layer == 0,
                 n_gpu_layers: grp[0].2.n_gpu_layers,
@@ -1734,9 +1771,21 @@ pub(super) fn plan_with_rtt_options(
                     problem = Some(format!("{unit} exists on no machine of the cluster"));
                 }
 
+                // A target that points at its range of its own whole model
+                // writes no slice (`CAP_RANGE_LOAD`).
+                let from_whole = source
+                    .filter(|m| m.node_id == *target_id)
+                    .and_then(|m| m.holds(c.start_layer, c.end_layer))
+                    .is_some_and(|shard| shard.virtual_slice);
+                let writes_nothing = from_whole
+                    && target.is_some_and(|t| {
+                        t.inference_capabilities.as_ref().is_some_and(|caps| {
+                            caps.iter().any(|cap| cap == crate::pipeline::CAP_RANGE_LOAD)
+                        })
+                    });
                 if let (None, Some(t)) = (&problem, target) {
                     let need = needed_mb(c.size_bytes);
-                    if !ready && t.disk_free_mb > 0 && need > t.disk_free_mb {
+                    if !ready && !writes_nothing && t.disk_free_mb > 0 && need > t.disk_free_mb {
                         problem = Some(format!(
                             "{} has {} GB free on disk and {unit} weighs {} GB",
                             t.label(),
@@ -1751,25 +1800,34 @@ pub(super) fn plan_with_rtt_options(
                             kind.indefinite(),
                             gb(need)
                         ));
-                    } else if !ready {
-                        // The pull direction is the one the sender did not
-                        // choose, so `transfer::safe_model_path` keeps it inside
-                        // the sender's slice folder. A whole model is routinely
-                        // outside it — an LM Studio library, an Ollama store —
-                        // and that copy is refused at the far end, which is a
-                        // thing to read before pressing the button rather than
-                        // after the job fails.
+                    } else if !ready && !from_whole {
+                        // Files are not copied between machines any more: this
+                        // plan is blocked (`copies_refusal`). The note says what
+                        // the machine lacks and how it gets it.
                         note = Some(if kind.whole() {
                             format!(
-                                "{} GB over the network before starting - the source machine only sends on its own what is in its slices folder; from outside it, send the file from the Transfers screen first",
+                                "this machine does not have the model ({} GB): download it here, or place the file in one of its model folders and rescan",
                                 gb(need)
                             )
                         } else {
-                            format!("{} GB over the network before starting", gb(need))
+                            format!(
+                                "this machine does not have this slice ({} GB): files are not copied between machines",
+                                gb(need)
+                            )
                         });
                     }
                 }
 
+                // Nothing travels, but a target without range loading still
+                // writes the range as a real slice: say so before the deploy.
+                if problem.is_none() && note.is_none() && from_whole && !writes_nothing {
+                    note = Some(format!(
+                        "{} cuts this range from its own copy: {} GB written to disk (it does not announce {})",
+                        target.map(|t| t.label()).unwrap_or_default(),
+                        gb(needed_mb(c.size_bytes)),
+                        crate::pipeline::CAP_RANGE_LOAD
+                    ));
+                }
                 if let Some(p) = &problem {
                     blocked.get_or_insert(p.clone());
                 }
@@ -1801,6 +1859,11 @@ pub(super) fn plan_with_rtt_options(
                         m.holds(c.start_layer, c.end_layer)
                             .is_some_and(|shard| shard.virtual_slice)
                     }),
+                    from_whole_path: source
+                        .filter(|m| m.node_id == *target_id)
+                        .and_then(|m| m.holds(c.start_layer, c.end_layer))
+                        .filter(|shard| shard.virtual_slice)
+                        .map(|shard| shard.path.clone()),
                     target_path: target
                         .and_then(|t| t.holds_ready(c.start_layer, c.end_layer))
                         .map(|s| s.path.clone()),
@@ -2226,11 +2289,24 @@ pub(super) fn tp_check_verdict(body: &serde_json::Value, label: &str) -> Option<
 /// A whole model on several machines: each machine left at `Both` (its own role, else the deployment's) runs as
 /// `Shared`, which keeps its plugin's sessions on, so the machines can hand conversations to each other and take a
 /// prompt a prefill machine read. Nothing to do for one machine or for slices.
+/// A whole-model plan cut into ranges, one stage per machine (`whole_ranges`):
+/// some step serves less than the whole model.
+pub(super) fn splits_whole_into_ranges(kind: DeployKind, steps: &[Step]) -> bool {
+    kind == DeployKind::Whole
+        && steps
+            .iter()
+            .any(|step| step.start_layer > 0 || step.total_layers.is_some_and(|total| step.end_layer + 1 < total))
+}
+
 pub(super) fn share_whole_model_roles(
     kind: DeployKind,
     steps: &mut [Step],
     default: crate::webui::InferenceRole,
 ) {
+    // the stages of a range split are not replicas: they share no conversations
+    if splits_whole_into_ranges(kind, steps) {
+        return;
+    }
     let mut machines: Vec<&str> = steps.iter().map(|step| step.target_node_id.as_str()).collect();
     machines.sort();
     machines.dedup();

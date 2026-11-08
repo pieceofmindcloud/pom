@@ -1,6 +1,5 @@
 import { Check, CheckCircle2, Download, Inbox, Upload, X } from "lucide-react";
-import { ModelDownloadsPanel } from "../components/ModelDownloadsPanel";
-import { SendFilePanel } from "./SendFile";
+import { MachineDownloadsPanel, ModelDownloadsPanel } from "../components/ModelDownloadsPanel";
 import {
   Badge,
   Button,
@@ -16,7 +15,7 @@ import {
 } from "../components/ui";
 import { api } from "../lib/api";
 import { bytes, duration, layerRange, rate } from "../lib/format";
-import { useModelDownloads, useOffers, useTransfers } from "../lib/queries";
+import { useModelDownloads, useOffers, useServingMachines, useTransfers } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import { canCancel, isActiveTransfer, isFinishedTransfer } from "../lib/transferStatus";
 import { transferHash, transferTitle } from "../lib/transferLabel";
@@ -25,6 +24,7 @@ import type { TransferOffer } from "../lib/types";
 
 export function Transfers() {
   const { t } = useI18n();
+  const machines = useServingMachines();
   const transfers = useTransfers();
   const offers = useOffers();
   const modelDownloads = useModelDownloads();
@@ -76,9 +76,10 @@ export function Transfers() {
         )}
 
         <div className="space-y-5">
-          <SendFilePanel />
-
           <ModelDownloadsPanel />
+          {machines.map((machine) => (
+            <MachineDownloadsPanel key={machine.nodeId} nodeId={machine.nodeId} name={machine.name} />
+          ))}
 
           {waiting.length > 0 && (
             <Panel>

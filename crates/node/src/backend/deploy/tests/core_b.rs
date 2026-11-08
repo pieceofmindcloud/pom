@@ -672,8 +672,25 @@ fn the_copies_a_deploy_makes_are_listed_for_authorization() {
     assert!(planned_copies(&local).is_empty());
 }
 
-/// A machine that does not have the file receives a copy, exactly like a
-/// slice - and the plan names who sends it.
+/// Nothing is copied any more: a plan that would copy names the machine and
+/// what it lacks, and one that copies nothing is not refused.
+#[test]
+fn a_plan_that_would_copy_is_refused_by_name() {
+    let ms = vec![
+        whole_machine("tem", 900_000, true),
+        whole_machine("nao-tem", 900_000, false),
+    ];
+    let p = whole("qwen3.5-9b", &ms, Some(&[pick(0, 31, "nao-tem")]));
+    let reason = super::planning::copies_refusal(&planned_copies(&p)).unwrap();
+    assert!(reason.contains("has no"), "{reason}");
+    assert!(reason.contains("layers 0-31"), "{reason}");
+    assert!(reason.contains("download the model there"), "{reason}");
+    let local = whole("qwen3.5-9b", &ms, Some(&[pick(0, 31, "tem")]));
+    assert_eq!(super::planning::copies_refusal(&planned_copies(&local)), None);
+}
+
+/// A machine that does not have the file is planned as a copy, exactly like a
+/// slice, and its note says how it gets the model instead.
 #[test]
 fn a_machine_without_the_model_is_planned_as_a_copy() {
     let ms = vec![
@@ -688,14 +705,13 @@ fn a_machine_without_the_model_is_planned_as_a_copy() {
     assert_eq!(s.source_node_id.as_deref(), Some("tem"));
     assert_eq!(s.source_path.as_deref(), Some("/tem/qwen3.5-9b.gguf"));
     assert_eq!(p.transfer_bytes, 5 * GIB);
-    // The warning exists because `transfer::safe_model_path` pins the "pull"
-    // direction to the sender's slice folder, and a whole model almost
-    // always lives outside it.
+    // The step says what the machine lacks and how it gets the model; the
+    // preview then blocks the plan (`copies_refusal`).
     assert!(
         s.note
             .as_deref()
             .unwrap_or_default()
-            .contains("Transfers"),
+            .contains("download it here"),
         "the copy of a whole model must say where it can come from: {:?}",
         s.note
     );

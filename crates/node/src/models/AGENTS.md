@@ -138,6 +138,18 @@ Models, GGUF reading, planning and slice files. The module is used by
   an extra unclaimed tensor - that was the cause of "wrong number of tensors" on
   the first slice of a real Qwen3.8 Flash Next. The result is validated by
   `gguf::read_layout` before the backend names it by content.
+  `write_virtual_slice` writes the same header with no weights: each source
+  tensor points at its bytes in the source file(s) through
+  `general.external_data.files`/`tensor_files`/`tensor_offsets`, which the
+  llama.cpp fork's loader reads (branch `pom-external-data`).
+  Tensors with data in the header (the identity `output_norm`) come first.
+  `plan::write_virtual_shard` is the apply step that uses it behind
+  `POM_VIRTUAL_SLICES=1`; `plan::virtual_slice_refusal` keeps on real
+  slicing only a header it cannot read and, when the inference mode is `moe`
+  or `auto`, a MoE model in several files (under `dense` llama.cpp reads the
+  parts itself), since the MoE external executor follows a virtual slice into one source file
+  (`moe::format_q4_0::map_tensor_source` in the engine)
+  (`docs/superpowers/specs/2026-11-07-layer-range-deployment-design.md`, Part A).
 - `kv_budget.rs` - a pure byte policy of the KV cache. It replicates the row size
   of the supported types and refuses a width that does not close a block or any
   overflow, without consulting FFI or a device.

@@ -787,6 +787,8 @@ export interface PluginService {
   stages?: boolean;
   /** Kind `inference` with `stages`: the architectures it runs in slices, when not all of them. */
   stage_architectures?: string[];
+  /** Architectures whose stage it also cuts from the whole model (`range` in `engine.load`). */
+  stage_ranges?: string[];
   /** Kind `inference`: the model architectures whose drafter file its engine takes from the deployment. */
   draft_architectures?: string[];
   /** Kind `inference`: the POM deployment settings that apply to its engine. */
@@ -1537,6 +1539,16 @@ export interface PeerCatalog {
   /** False while this peer is reading GGUF headers in the background. */
   metadata_complete?: boolean;
   error?: string;
+  /** Where the models this peer downloaded through POM came from. Absent on an older node. */
+  hf_sources?: HfSource[];
+}
+
+/** The Hugging Face repository and file a model on disk was downloaded from. */
+export interface HfSource {
+  path: string;
+  repo_id: string;
+  revision: string | null;
+  filename: string;
 }
 
 export interface PathEntry {
@@ -2194,6 +2206,11 @@ export interface GpuCapacityProjection {
 /** A single deploy step's capacity projection. `src/backend/webui/params.rs` -
  *  `CapacityPreview`. */
 export interface CapacityPreview {
+  /** The GPU layers' weights, apart (absent from an older node). */
+  weights_bytes?: number | null;
+  /** Their KV cache at this context and sessions; `kv_in_vram` says whether it sits in VRAM or host RAM. */
+  kv_bytes?: number | null;
+  kv_in_vram?: boolean | null;
   /** `vram_projected_mb <= vram_total_mb` on every device. `true` on a
    *  machine with no discrete GPU — nothing to run out of. */
   fits: boolean;
@@ -2206,6 +2223,13 @@ export interface CapacityPreview {
   effective_n_gpu_layers?: number | null;
   effective_n_ctx?: number | null;
   gpus: GpuCapacityProjection[];
+  /** Requested GPU layers that fit in the free VRAM, when fewer than requested
+   *  (the rest run on the CPU). Absent when all fit, or on unified memory. */
+  gpu_layers_fit?: number | null;
+  /** Layers of the step that would run on the CPU from system RAM. */
+  cpu_layers?: number | null;
+  /** RAM the CPU layers' weights need. */
+  cpu_ram_bytes?: number | null;
 }
 
 /** A whole machine's projection: the sum, per GPU, of every step it would
@@ -2463,6 +2487,26 @@ export interface TpLaunch {
   worker_node_ids: string[];
 }
 
+export interface WholeLayerCut {
+  end_layer: number;
+  layers: number;
+  size_bytes: number;
+  remainder_bytes: number;
+  /** KV cache of layers 0..=end_layer and of the remainder, for the
+   *  deployment's context. Absent on older nodes. */
+  kv_bytes?: number | null;
+  remainder_kv_bytes?: number | null;
+}
+
+export interface WholeLayerOptions {
+  source_node_id: string;
+  total_layers: number;
+  cuts: WholeLayerCut[];
+  granularity: number | null;
+  rule: string;
+  reason: string | null;
+}
+
 export interface DeployPlan {
   group: string;
   deployment_name: string;
@@ -2502,6 +2546,9 @@ export interface DeployPlan {
   transfer_bytes: number;
   /** Set when the plan cannot be carried out at all, and why. */
   blocked: string | null;
+  /** Valid cuts of the whole GGUF, when the request named layer ranges of a
+   *  whole model (`whole_ranges`). Absent on older nodes. */
+  layer_options?: WholeLayerOptions | null;
   /** True while this is the node's suggestion rather than the operator's edit. */
   auto: boolean;
   /** True when the operator asked each machine's adjacent slices to be joined

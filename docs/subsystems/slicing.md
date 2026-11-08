@@ -581,6 +581,17 @@ and dimensions that do not divide land here.
 `spawn_blocking`, reuses an already complete file and writes the
 content-addressed part, like any other.
 
+### Virtual slices (header only)
+
+`splitter::write_virtual_slice` writes the header `split` would write and no
+weights: three `general.external_data.*` keys give, per tensor, the source file
+and the absolute offset of its bytes, and only the injected identity
+`output_norm` keeps its data in the file. A llama.cpp build with the fork's
+external tensor data loads it as the same model as the real slice. A node
+uses it at apply time behind `POM_VIRTUAL_SLICES=1` (`deployment.md` section
+8); see
+`docs/superpowers/specs/2026-11-07-layer-range-deployment-design.md`.
+
 ## 5. Merge
 
 `splitter::merge` joins adjacent slices into a single file (`MergePart { path,

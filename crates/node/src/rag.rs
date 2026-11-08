@@ -1131,6 +1131,7 @@ mod tests {
             settings: Vec::new(),
             stages: false,
             stage_architectures: Vec::new(),
+            stage_ranges: Vec::new(),
             draft_architectures: Vec::new(),
             vision: false,
             pom_settings: Vec::new(),

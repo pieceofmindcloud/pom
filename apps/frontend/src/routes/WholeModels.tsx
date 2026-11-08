@@ -1,4 +1,4 @@
-import { Boxes, FolderSearch, RefreshCw, Scissors, Trash2, Upload } from "lucide-react";
+import { Boxes, FolderSearch, RefreshCw, Scissors, Trash2 } from "lucide-react";
 import { Link, useSearchParams } from "react-router-dom";
 import {
   Badge,
@@ -14,7 +14,7 @@ import {
 } from "../components/ui";
 import { bytes, num, optionalBasename } from "../lib/format";
 import { deleteModel } from "../lib/deleteModel";
-import { useLocalCatalog } from "../lib/queries";
+import { useLocalCatalog, useNode } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import {
   isWholeModel,
@@ -58,6 +58,9 @@ function WholeModelLinks({ model, onClose }: { model: DiscoveredModel; onClose: 
 
 export function ModelRow({ model }: { model: DiscoveredModel }) {
   const { t } = useI18n();
+  // Only tensor parallel still loads pre-cut shards, and it is a development
+  // feature: a pipeline deploy serves ranges straight from this file.
+  const pomDevMode = useNode().data?.pom_dev_mode === true;
   const toast = useToast();
   const catalog = useLocalCatalog();
   const mmprojName = optionalBasename(model.mmproj_path);
@@ -120,24 +123,12 @@ export function ModelRow({ model }: { model: DiscoveredModel }) {
       <td className="whitespace-nowrap px-5 py-3.5">
         {/* A demonstration visitor sees the catalog, not its actions. */}
         <div className={isDemoUser() ? "hidden" : "flex shrink-0 items-center gap-2"}>
-          <Link
-            to={`/models/slice?path=${encodeURIComponent(model.path)}&name=${encodeURIComponent(model.name)}`}
-          >
-            <Button size="sm" icon={<Scissors className="h-3.5 w-3.5" />}>
-              {t("models.slice")}
-            </Button>
-          </Link>
-          {/\.gguf$/i.test(model.path) && (
+          {pomDevMode && (
             <Link
-              to={`/transfers?filename=${encodeURIComponent(model.path.split(/[\\/]/).pop() ?? "")}`}
+              to={`/models/slice?path=${encodeURIComponent(model.path)}&name=${encodeURIComponent(model.name)}`}
             >
-              <Button
-                size="sm"
-                variant="ghost"
-                icon={<Upload className="h-3.5 w-3.5" />}
-                aria-label={t("models.sendAria", { name: model.name })}
-              >
-                {t("models.send")}
+              <Button size="sm" icon={<Scissors className="h-3.5 w-3.5" />}>
+                {t("models.slice")}
               </Button>
             </Link>
           )}

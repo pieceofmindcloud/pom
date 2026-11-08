@@ -1,39 +1,31 @@
 ---
 id: screen-slice-models
-label: Slice models
-summary: Cut a whole model into slices by size
-title: Slicing a model
+label: Tensor parallel shards
+summary: Cut one tensor shard per rank from a whole model (development mode)
+title: Tensor parallel shards
 route: /models/slice
 order: 70
 ---
 
 :::lead
-Slice models cuts a whole GGUF into slices of layers. You say how big each slice should be, the preview shows the layer range and the real size each one gets, and only then the files are written.
+A pipeline deploy no longer needs slices: each machine serves its range straight from its own copy of the whole model. This screen is left for one job only, cutting the shards of a tensor parallel deploy, and it works only on a node started in development mode (`POM_DEV_MODE=1`). It is reached from the **Slice** button of a model on the Models screen, which shows only in that mode.
 :::
-
-![Slice models: the source model on the left and, on the right, the preview of the result with each slice's range and size, and the disk check.](../images/en/slice-models.webp)
 
 :::steps
 ### Choose the source model
-Only whole models can be sliced. A model split into several physical parts shows every part and asks to keep them together.
-### Give a target per slice
-One size in GB per slice; an empty last line means "the rest". **Slice one layer range** cuts a single exact range instead.
+Only whole models can be cut. A model split into several physical parts must have every part present; a missing part is named and the start stays disabled.
+### Choose the rank count
+One shard per rank, from 2 to 64. Every rank covers all the layers and gets a different part of each tensor.
 ### Read the preview
-Each slice gets a whole number of layers, so the real size is rounded. The preview also shows how much of the model's head every intermediate slice repeats.
-### Check the disk
-The output disk check compares the free space of the slice folder with what the plan needs, and warns before the slicing starts.
+One row per rank, labeled `1of2`, `2of2` and so on, with any warning the node raises.
 ### Slice now
 The job shows its phase and the bytes read while it runs, and stays in the list when it ends or fails.
 :::
 
-:::diagram slicing
-A 32-layer GGUF cut by size target, not into equal parts.
-:::
-
-:::note You may not need this screen
-Deploying a model across machines asks each machine to cut its own range from its own copy. This screen is for preparing slices ahead of time or for a machine that will receive a slice instead of the whole file.
+:::note Shards made earlier
+Pipeline slices already on a machine keep serving until they are undeployed, and the deploy screen shows them as a legacy deployment. There is no screen that lists them any more.
 :::
 
 :::deep docs/subsystems/slicing.md
-Required tensors, repeated heads and size planning
+Required tensors and tensor parallel shards
 :::

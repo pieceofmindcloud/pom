@@ -44,7 +44,7 @@ Outside the same local network, automatic discovery does not reach the administr
 :::checklist Ready for the next step when
 - Both machines show up on the Dashboard.
 - The default panel password was changed in Preferences.
-- There is a GGUF model in the models folder, or a finished download in Transfers.
+- There is a GGUF model in the models folder, or a finished download in Downloads.
 :::
 
 :::faq

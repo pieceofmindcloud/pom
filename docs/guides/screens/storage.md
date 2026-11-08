@@ -17,7 +17,7 @@ Storage tells this machine where to look for models, where to write slices and h
 ### Project workspace
 One shared root for user projects and the data of every plugin, separate from the model folders. Blank restores the default.
 ### Full models
-Read-only folders, each read for what it is: an Ollama store, an LM Studio library or a plain GGUF folder. **Add another folder** for more.
+Read-only folders, each read for what it is: an Ollama store, an LM Studio library or a plain GGUF folder. **Add another folder** for more. A file copied into one of them by hand shows up after **Rescan folders**, without waiting for the next scan.
 ### Shard folder
 One folder only. It receives local slicing and incoming files, and it is the only folder another machine may pull a file from. It cannot be a model folder or sit inside one.
 ### Slice limit

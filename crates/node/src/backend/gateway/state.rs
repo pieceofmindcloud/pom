@@ -1075,7 +1075,14 @@ pub(crate) async fn require_admin_for_surface(
                     Ok(())
                 }
             }
-            issuer => caller_may_ask(&state, scope, issuer).await,
+            issuer => {
+                caller_may_ask(
+                    &state,
+                    crate::webui::node_to_node_scope(&method, &path, scope),
+                    issuer,
+                )
+                .await
+            }
         };
         if let Err(reason) = verdict {
             return (

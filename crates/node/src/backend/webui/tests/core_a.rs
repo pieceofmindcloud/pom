@@ -699,6 +699,31 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// A model read once is identified again without reading it; a file
+    /// rewritten with other bytes gets its new hash.
+    #[test]
+    fn source_hash_is_cached_until_the_file_changes() {
+        let root = std::env::temp_dir().join(format!("pom-hash-cache-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("model.gguf");
+        std::fs::write(&source, crate::splitter::test_gguf_bytes(4)).unwrap();
+        let first = hash_source_with_progress(&source, |_, _| {}).unwrap();
+        let mut reports = Vec::new();
+        let again = hash_source_with_progress(&source, |done, total| reports.push((done, total))).unwrap();
+        assert_eq!(first, again);
+        assert_eq!(reports.len(), 1, "a cached hash reads nothing: {reports:?}");
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&source, crate::splitter::test_gguf_bytes(5)).unwrap();
+        let changed = hash_source_with_progress(&source, |_, _| {}).unwrap();
+        assert_ne!(changed, first);
+        assert_eq!(
+            changed,
+            crate::multipart::GgufSource::open(&source).unwrap().hash_sha256()
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
     #[test]
     fn source_hash_reports_bytes_read_before_slicing() {
         let root = std::env::temp_dir().join(format!(

@@ -546,7 +546,9 @@ loading.
 4. Hybrid and MoE families on llama.cpp.
 5. Strata: validation of the existing split (done for Flash-Next, see Part
    B), fork range loading from a whole pack, plugin operations.
-6. Remote download and rescan on another machine; Downloads screen.
+6. Remote download and rescan on another machine; Downloads screen (done
+   except the Transfers to Downloads rename, which goes with phase 7; a
+   remote rescan button waits for phase 7's machine cards).
 7. Deploy Studio: single Pipeline mode, machine cards with Download here,
    range editor, memory per machine; removal of the slice screens.
 8. Retire transfers: first release stops planning copies and offering sends

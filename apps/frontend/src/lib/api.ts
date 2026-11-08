@@ -398,6 +398,8 @@ export interface RemoteModelDownloadRequest {
   quantization?: string;
   /** Another machine that downloads, with its own token into its own folder. */
   nodeId?: string;
+  /** Other files of the repository fetched by the same action. */
+  extraFiles?: string[];
 }
 
 /** `?node_id=` for a download route that names another machine, or nothing. */
@@ -406,12 +408,18 @@ function nodeQuery(nodeId?: string) {
 }
 
 export function startRemoteModelDownload(request: RemoteModelDownloadRequest) {
-  return api.post<{ download_id: string }>("/api/ui/model-provider/downloads", {
+  return api.post<{
+    download_id: string;
+    extra_download_ids?: string[];
+    skipped?: { filename: string; code: string }[];
+    failed?: { filename: string; code: string }[];
+  }>("/api/ui/model-provider/downloads", {
     repo_id: request.repoId,
     revision: request.revision ?? null,
     filename: request.filename,
     quantization: request.quantization ?? null,
     ...(request.nodeId ? { node_id: request.nodeId } : {}),
+    ...(request.extraFiles?.length ? { extra_files: request.extraFiles } : {}),
   });
 }
 

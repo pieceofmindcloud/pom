@@ -396,6 +396,14 @@ where
 {
     let source = crate::multipart::GgufSource::open(path)?;
     let total = source.source_bytes();
+    // A full read of a large model takes minutes: the hash is kept per file
+    // set, keyed by every part's path, size and mtime, so a model read once
+    // is identified at once until it changes.
+    let fingerprint = source_fingerprint(&source);
+    if let Some(known) = fingerprint.as_deref().and_then(model_hash_cache::get) {
+        on_progress(total, total);
+        return Ok(known);
+    }
     let mut hasher = Sha256::new();
     let mut done = 0u64;
     let mut reported = 0u64;
@@ -414,7 +422,87 @@ where
     if done != total {
         anyhow::bail!("the GGUF size changed while the hash was being computed");
     }
-    Ok(hex::encode(hasher.finalize()))
+    let sha = hex::encode(hasher.finalize());
+    // Taken again after the read: a file rewritten meanwhile is not cached
+    // under its old fingerprint.
+    if let Some(fingerprint) = fingerprint.filter(|before| source_fingerprint(&source).as_ref() == Some(before)) {
+        model_hash_cache::put(&fingerprint, &sha);
+    }
+    Ok(sha)
+}
+
+/// Every part's canonical path, size and modification time, as one key.
+fn source_fingerprint(source: &crate::multipart::GgufSource) -> Option<String> {
+    let mut key = String::new();
+    for part in source.parts() {
+        let path = std::fs::canonicalize(&part.path).ok()?;
+        let meta = std::fs::metadata(&path).ok()?;
+        let mtime = meta
+            .modified()
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_nanos();
+        key.push_str(&format!("{}\u{0}{}\u{0}{}\n", path.display(), meta.len(), mtime));
+    }
+    Some(key)
+}
+
+/// The sha256 of model files already read, in memory and in a small file in
+/// the project root (`.<slug>-model-hashes.json`), so a restart does not read
+/// every model again. Keys are fingerprints (`source_fingerprint`); a changed
+/// file has a new key, and old keys are dropped past `MAX_ENTRIES`.
+pub(crate) mod model_hash_cache {
+    use std::collections::BTreeMap;
+    use std::sync::Mutex;
+
+    const MAX_ENTRIES: usize = 512;
+
+    fn file() -> std::path::PathBuf {
+        // Tests never write into whatever the project root resolves to.
+        #[cfg(test)]
+        return std::env::temp_dir().join(format!("pom-model-hashes-test-{}.json", std::process::id()));
+        #[cfg(not(test))]
+        crate::config::project_root().join(format!(".{}-model-hashes.json", crate::brand::slug()))
+    }
+
+    fn table() -> &'static Mutex<Option<BTreeMap<String, String>>> {
+        static TABLE: Mutex<Option<BTreeMap<String, String>>> = Mutex::new(None);
+        &TABLE
+    }
+
+    fn with_table<T>(f: impl FnOnce(&mut BTreeMap<String, String>) -> T) -> T {
+        let mut guard = table().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let map = guard.get_or_insert_with(|| {
+            std::fs::read(file())
+                .ok()
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+                .unwrap_or_default()
+        });
+        f(map)
+    }
+
+    pub(crate) fn get(fingerprint: &str) -> Option<String> {
+        with_table(|map| map.get(fingerprint).cloned())
+    }
+
+    pub(crate) fn put(fingerprint: &str, sha256: &str) {
+        let snapshot = with_table(|map| {
+            map.insert(fingerprint.to_string(), sha256.to_string());
+            while map.len() > MAX_ENTRIES {
+                let Some(first) = map.keys().next().cloned() else { break };
+                map.remove(&first);
+            }
+            serde_json::to_vec(map).ok()
+        });
+        if let Some(bytes) = snapshot {
+            let path = file();
+            let temp = path.with_extension("json.tmp");
+            if std::fs::write(&temp, bytes).is_ok() {
+                let _ = std::fs::rename(&temp, &path);
+            }
+        }
+    }
 }
 
 pub(super) async fn source_model_sha256(path: &std::path::Path) -> anyhow::Result<String> {

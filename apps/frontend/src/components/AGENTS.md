@@ -1017,7 +1017,9 @@ Key logic carriers:
   structured API, shows the available space and the model folders resolved by
   the backend, without accepting a path from the browser. **Download on** (shown when
   `useServingMachines` lists other non-visitor peers) sends `node_id`: that machine downloads
-  with its own token and folder, so this machine's space and folders are hidden and do not block.
+  with its own token and folder, so this machine's space and folders are hidden and do not block. `downloadCompanions`
+  (`lib/modelProvider.ts`) adds the other parts of a split GGUF to every download and offers
+  projectors and MTP drafts as **Also download** checkboxes; all go as `extraFiles`.
 - `ModelDownloadsPanel.tsx` - the progress, local destination, cancellation and retry of
   `model_download` jobs coming from `useModelDownloads`; it is reused in Remote
   Models and Transfers. The source of truth is the node and the panel creates no

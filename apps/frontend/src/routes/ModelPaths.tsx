@@ -7,7 +7,7 @@
  * the second field from looking like one more entry in the first list.
  */
 import { AnimatePresence, motion } from "framer-motion";
-import { FolderTree, HardDriveDownload, Lock, Plus, RotateCcw, Save, Trash2 } from "lucide-react";
+import { FolderTree, HardDriveDownload, Lock, Plus, RefreshCw, RotateCcw, Save, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import {
   Badge,
@@ -21,7 +21,7 @@ import {
   PanelHeader,
   Skeleton,
 } from "../components/ui";
-import { api } from "../lib/api";
+import { api, rescanModels } from "../lib/api";
 import { bytes } from "../lib/format";
 import { useInvalidate, usePaths } from "../lib/queries";
 import { useToast } from "../lib/toast";
@@ -46,6 +46,22 @@ export function ModelPaths() {
   const [shardMaxGb, setShardMaxGb] = useState("100");
   const [saving, setSaving] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [rescanning, setRescanning] = useState(false);
+
+  // A file copied into a folder by hand shows up without waiting for the
+  // catalog's next walk.
+  async function rescan() {
+    setRescanning(true);
+    try {
+      await rescanModels();
+      toast.info(t("paths.rescanStarted"));
+      invalidate();
+    } catch (e) {
+      toast.fromError(t("paths.rescanFailed"), e);
+    } finally {
+      setRescanning(false);
+    }
+  }
 
   // Load once: re-syncing on every poll would fight the operator's typing.
   useEffect(() => {
@@ -87,15 +103,25 @@ export function ModelPaths() {
         title={t("paths.title")}
         subtitle={t("paths.subtitle")}
         actions={
-          <Button
-            variant="primary"
-            icon={<Save className="h-3.5 w-3.5" />}
-            loading={saving}
-            onClick={() => void save()}
-            disabled={!loaded}
-          >
-            {t("paths.save")}
-          </Button>
+          <>
+            <Button
+              variant="ghost"
+              icon={<RefreshCw className="h-3.5 w-3.5" />}
+              loading={rescanning}
+              onClick={() => void rescan()}
+            >
+              {t("paths.rescan")}
+            </Button>
+            <Button
+              variant="primary"
+              icon={<Save className="h-3.5 w-3.5" />}
+              loading={saving}
+              onClick={() => void save()}
+              disabled={!loaded}
+            >
+              {t("paths.save")}
+            </Button>
+          </>
         }
       />
 

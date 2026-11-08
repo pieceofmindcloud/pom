@@ -121,7 +121,11 @@ boundary.
   on `GET .../downloads` and the actions): another machine's id makes `forward_to_node` send the
   call to that member signed by this node and hand its answer back, so the admin starts and
   follows downloads on a worker; the worker uses its own token and folder. `forward_to_node`
-  also serves `POST /api/ui/models/rescan` (`webui/catalog.rs`). The
+  also serves `POST /api/ui/models/rescan` (`webui/catalog.rs`). `extra_files` in the start
+  body runs `start_one` once per extra file after the main one; installed or running extras are
+  `skipped`, others `failed`, and the main download is not undone. The `pom_id` hash of a model
+  is cached by `webui::model_hash_cache` (`jobs_apply.rs`), keyed by every part's path, size
+  and mtime, in memory and in `.<slug>-model-hashes.json` at the project root. The
   storage response exposes the eligible folders. The structured status in
   `GET /api/ui/model-provider/status` lets the UI tell an absent CLI, a required login and an
   authenticated session apart.

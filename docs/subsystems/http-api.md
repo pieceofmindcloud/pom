@@ -1365,6 +1365,11 @@ message } }`, as the other download errors). The worker
 authorizes the signature by its own route policy (`ServingMember`: an admin,
 or an attested worker; never a visitor) and downloads with its own Hugging
 Face token into its own models folder: only the call crosses, never a file.
+From another node the writes take an admin's signature (`node_to_node_scope`,
+see `security-model.md`). The start body also takes `extra_files`, other files
+of the same repository (split parts, a projector, an MTP draft) started as
+their own rows; the answer adds `extra_download_ids`, `skipped` (already
+installed or downloading) and `failed` (`{ filename, code }`).
 **`POST /api/ui/models/rescan`** (`ServingMember`, body optional
 `{ node_id }`) walks the models folders again at once, for a file placed by
 hand, and answers `{ node_id, rescanning: true }` before the walk ends; with

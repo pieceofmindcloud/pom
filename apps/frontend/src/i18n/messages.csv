@@ -3386,3 +3386,9 @@ remoteModels.remoteChecks,"{machine} downloads with its own Hugging Face token i
 remoteModels.downloadStartedOn,{name} is being downloaded on {machine}.,{name} está sendo baixado em {machine}.
 remoteModels.machineUnreachable,Could not reach that machine.,Não foi possível alcançar essa máquina.
 remoteModels.downloadsOn,Downloads on {machine},Downloads em {machine}
+remoteModels.splitParts,"This model is split into {count} files; all of them are downloaded.","Este modelo é dividido em {count} arquivos; todos são baixados."
+remoteModels.alsoDownload,Also download,Baixar também
+remoteModels.extraFailed,Could not start the download of {name}.,Não foi possível iniciar o download de {name}.
+paths.rescan,Rescan folders,Varrer pastas
+paths.rescanStarted,"Scanning the model folders again; new files show up in a moment.","Varrendo as pastas de modelos de novo; arquivos novos aparecem em instantes."
+paths.rescanFailed,Could not scan the folders again,Não foi possível varrer as pastas de novo

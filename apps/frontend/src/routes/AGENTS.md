@@ -802,7 +802,8 @@ Per-file list:
 - `ModelPaths.tsx` - edits `model_dirs`, `shard_dir` and `shard_max_gb` via
   `POST /api/ui/paths`. The Storage screen (`Armazenamento`) rejects a slice folder equal to
   or inside a whole-model folder, shows current usage and the slice limit, and
-  keeps `/config/folders` as an alias.
+  keeps `/config/folders` as an alias. **Rescan folders** calls `rescanModels()` for a file
+  placed by hand.
 - `NetworkSettings.tsx` - This node's membership and network information
   screen. Its `NetworkParticipants` export reuses the known-node area at
   `/config/network/participants`; the route is allowed only to `admin` and

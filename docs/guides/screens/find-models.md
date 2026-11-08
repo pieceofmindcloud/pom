@@ -21,6 +21,8 @@ Each repository lists its GGUF files with their sizes, and the license. A gated 
 ### Download
 The dialog shows the folder the file goes to. Once the download starts, the dialog and the model details close and its progress shows in the downloads panel. **Cancel** takes an unfinished download off the panel, and **Try again** on a failed one replaces it with the new attempt; **Dismiss** takes a failed one off the panel without trying again. The download keeps running if you leave the screen or reload it, and it shows up in Transfers too.
 
+A model split into several files downloads all of them, and the space shown counts them all. **Also download** lists the repository's vision projectors and MTP drafts; tick the ones the deployment needs and they come in the same action, each with its own row.
+
 **Download on** picks the machine that downloads, when the network has other machines that hold models. That machine uses its own Hugging Face token and its own model folders, and checks its own free space when it starts; its downloads show in their own panel, **Downloads on** that machine, where Cancel, Try again and Dismiss act on it.
 :::
 

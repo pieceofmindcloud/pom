@@ -4,6 +4,7 @@ import { useI18n } from "../i18n/provider";
 import { ApiError, startRemoteModelDownload } from "../lib/api";
 import { bytes } from "../lib/format";
 import type { RemoteGgufFile, RemoteModelDetails } from "../lib/types";
+import { downloadCompanions } from "../lib/modelProvider";
 import { useServingMachines } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import { Modal } from "./Confirm";
@@ -34,18 +35,28 @@ export function DownloadModelDialog({
   // "" is this machine; another id makes that machine download with its own
   // token into its own folder.
   const [target, setTarget] = useState("");
+  const [picked, setPicked] = useState<Set<string>>(new Set());
   const machines = useServingMachines();
   useEffect(() => {
-    if (!open) setTarget("");
+    if (!open) {
+      setTarget("");
+      setPicked(new Set());
+    }
   }, [open]);
   if (!details || !file) return null;
   const remote = machines.find((machine) => machine.nodeId === target) ?? null;
   const selectedDetails = details;
   const selectedFile = file;
+  const { parts, sidecars } = downloadCompanions(selectedFile.filename, selectedDetails.gguf_files);
+  const chosenSidecars = sidecars.filter((sidecar) => picked.has(sidecar.filename));
+  const together = [selectedFile, ...parts, ...chosenSidecars];
+  const requiredBytes = together.every((item) => item.size_bytes != null)
+    ? together.reduce((sum, item) => sum + (item.size_bytes ?? 0), 0)
+    : null;
   const insufficient =
-    selectedFile.size_bytes != null &&
+    requiredBytes != null &&
     selectedDetails.storage.available_bytes != null &&
-    selectedFile.size_bytes > selectedDetails.storage.available_bytes;
+    requiredBytes > selectedDetails.storage.available_bytes;
   // The space and folder shown are this machine's; another machine checks
   // its own when it starts.
   const blocked = !remote && (insufficient || !selectedDetails.storage.destination_available);
@@ -53,13 +64,17 @@ export function DownloadModelDialog({
   async function download() {
     setBusy(true);
     try {
-      await startRemoteModelDownload({
+      const started = await startRemoteModelDownload({
         repoId: selectedDetails.repo_id,
         revision: selectedDetails.revision ?? undefined,
         filename: selectedFile.filename,
         quantization: selectedFile.quantization ?? undefined,
         nodeId: remote?.nodeId,
+        extraFiles: [...parts, ...chosenSidecars].map((item) => item.filename),
       });
+      for (const miss of started.failed ?? []) {
+        toast.error(t("remoteModels.extraFailed", { name: miss.filename }));
+      }
       toast.success(
         t("remoteModels.downloadStarted"),
         remote
@@ -160,12 +175,38 @@ export function DownloadModelDialog({
               t("remoteModels.destination")
             )}
           </KeyValue>}
-          <KeyValue label={t("remoteModels.requiredSpace")}>{bytes(selectedFile.size_bytes)}</KeyValue>
+          <KeyValue label={t("remoteModels.requiredSpace")}>{bytes(requiredBytes)}</KeyValue>
           {!remote && <KeyValue label={t("remoteModels.availableSpace")}>
             {bytes(selectedDetails.storage.available_bytes)}
           </KeyValue>}
           <KeyValue label={t("remoteModels.revision")}>{selectedDetails.revision || "main"}</KeyValue>
         </dl>
+        {parts.length > 0 && (
+          <p className="text-xs leading-relaxed text-muted">
+            {t("remoteModels.splitParts", { count: parts.length + 1 })}
+          </p>
+        )}
+        {sidecars.length > 0 && (
+          <fieldset className="space-y-1.5">
+            <legend className="text-xs font-medium text-fg">{t("remoteModels.alsoDownload")}</legend>
+            {sidecars.map((sidecar) => (
+              <label key={sidecar.filename} className="flex items-center gap-2 text-xs text-muted">
+                <input
+                  type="checkbox"
+                  checked={picked.has(sidecar.filename)}
+                  onChange={(event) => {
+                    const next = new Set(picked);
+                    if (event.target.checked) next.add(sidecar.filename);
+                    else next.delete(sidecar.filename);
+                    setPicked(next);
+                  }}
+                />
+                <span className="break-path font-mono">{sidecar.filename}</span>
+                <span className="text-faint">{bytes(sidecar.size_bytes)}</span>
+              </label>
+            ))}
+          </fieldset>
+        )}
         {selectedDetails.gated && (
           <p className="flex items-start gap-2 rounded-lg border border-amber/30 bg-amber/10 px-3 py-2.5 text-xs leading-relaxed text-muted">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber" />

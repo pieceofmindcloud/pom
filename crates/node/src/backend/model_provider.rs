@@ -77,6 +77,12 @@ pub(crate) struct DownloadRequest {
     /// id: a local download, as before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_id: Option<String>,
+    /// Other files of the same repository fetched by the same action: the
+    /// other parts of a split GGUF, a vision projector, an MTP draft. Each
+    /// becomes its own download row; one already installed or downloading
+    /// is skipped, not an error.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_files: Vec<String>,
 }
 
 /// `?node_id=` on the download routes that name a download by id, and on the
@@ -615,6 +621,59 @@ async fn start_download(
         .await;
     }
     request.node_id = None;
+    let extra_files = std::mem::take(&mut request.extra_files);
+    let main = start_one(state.clone(), request.clone()).await;
+    if !main.status().is_success() || extra_files.is_empty() {
+        return main;
+    }
+    let body = axum::body::to_bytes(main.into_body(), 64 * 1024)
+        .await
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .unwrap_or_default();
+    let mut extra_ids = Vec::new();
+    let mut skipped = Vec::new();
+    let mut failed = Vec::new();
+    let mut seen = HashSet::from([request.filename.clone()]);
+    for filename in extra_files {
+        if !seen.insert(filename.clone()) {
+            continue;
+        }
+        let extra = DownloadRequest {
+            filename: filename.clone(),
+            quantization: None,
+            ..request.clone()
+        };
+        let response = start_one(state.clone(), extra).await;
+        let status = response.status();
+        let answer = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .unwrap_or_default();
+        if status.is_success() {
+            extra_ids.push(answer["download_id"].clone());
+            continue;
+        }
+        let code = answer["error"]["code"].as_str().unwrap_or("download_failed").to_string();
+        if matches!(code.as_str(), "model_installed" | "download_in_progress") {
+            skipped.push(json!({ "filename": filename, "code": code }));
+        } else {
+            failed.push(json!({ "filename": filename, "code": code }));
+        }
+    }
+    Json(json!({
+        "download_id": body["download_id"],
+        "extra_download_ids": extra_ids,
+        "skipped": skipped,
+        "failed": failed,
+    }))
+    .into_response()
+}
+
+/// Starts one file's download on this machine: the checks, the job row and
+/// the background task.
+async fn start_one(state: GatewayState, request: DownloadRequest) -> Response {
     let identity = match request.identity() {
         Ok(identity) => identity,
         Err(error) => return provider_error(error),
@@ -802,6 +861,7 @@ async fn retry_download(
         filename: job.filename.unwrap_or_default(),
         quantization: job.quantization,
         node_id: None,
+        extra_files: Vec::new(),
     };
     let response = start_download(ConnectionAuth, State(state), Json(request)).await;
     // The new attempt replaces the old row: "Try again" used to add a second
@@ -1776,6 +1836,7 @@ mod tests {
                 filename: "model.gguf".into(),
                 quantization: None,
                 node_id: Some("someone-else".into()),
+                extra_files: Vec::new(),
             }),
         )
         .await;
@@ -1824,6 +1885,44 @@ mod tests {
         );
     }
 
+    /// The extra files of one action: the main file again is ignored, a file
+    /// the repository lacks is reported as failed, and the main download
+    /// still starts.
+    #[tokio::test]
+    async fn extra_files_ride_on_the_same_action() {
+        let destination = std::env::temp_dir().join(format!(
+            "pom-model-extra-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        tokio::fs::create_dir_all(&destination).await.unwrap();
+        let mut state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        state.auth.write().await.model_dirs =
+            Some(vec![destination.to_string_lossy().into_owned()]);
+        state.model_service = Arc::new(ModelService::new(Arc::new(DestinationProvider)));
+        let response = start_download(
+            ConnectionAuth,
+            State(state),
+            Json(DownloadRequest {
+                repo_id: "owner/extra-model".into(),
+                revision: None,
+                filename: "model.gguf".into(),
+                quantization: None,
+                node_id: None,
+                extra_files: vec!["model.gguf".into(), "mmproj.gguf".into()],
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = crate::gateway::testkit::body_of(response).await;
+        let main = body["download_id"].as_str().unwrap().to_string();
+        assert!(body["extra_download_ids"].as_array().unwrap().is_empty());
+        assert_eq!(body["failed"][0]["filename"], "mmproj.gguf");
+        if let Some(token) = webui::jobs().write().await.remove(&main) {
+            drop(token);
+        }
+        let _ = tokio::fs::remove_dir_all(destination).await;
+    }
+
     #[tokio::test]
     async fn start_download_records_the_configured_folder_as_destination() {
         let destination = std::env::temp_dir().join(format!(
@@ -1845,6 +1944,7 @@ mod tests {
                 filename: "model.gguf".into(),
                 quantization: None,
                 node_id: None,
+                extra_files: Vec::new(),
             }),
         )
         .await;
@@ -1872,6 +1972,7 @@ mod tests {
             filename: "Qwen3-Q5_K_M.gguf".into(),
             quantization: Some("Q5_K_M".into()),
             node_id: None,
+            extra_files: Vec::new(),
         };
 
         assert_eq!(valid.identity().unwrap().repo_id, "Qwen/model");

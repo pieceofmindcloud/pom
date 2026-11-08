@@ -25,6 +25,10 @@ const details = {
   gated: false,
   license: { detected: true, name: "MIT", id: "mit" },
   storage: { destination_paths: ["/models"], available_bytes: 10, destination_available: true },
+  gguf_files: [
+    { filename: "model-Q4_K_M.gguf", size_bytes: 100 },
+    { filename: "mmproj-model-f16.gguf", size_bytes: 5 },
+  ],
 } as unknown as RemoteModelDetails;
 const file = { filename: "model-Q4_K_M.gguf", quantization: "Q4_K_M", size_bytes: 100 } as RemoteGgufFile;
 
@@ -49,6 +53,19 @@ describe("DownloadModelDialog", () => {
     fireEvent.click(confirm);
     await waitFor(() =>
       expect(startRemoteModelDownload).toHaveBeenCalledWith(expect.objectContaining({ nodeId: "worker-1" })),
+    );
+  });
+
+  it("adds a projector the operator ticks to the same download", async () => {
+    vi.mocked(startRemoteModelDownload).mockClear();
+    renderDialog();
+    fireEvent.change(screen.getByLabelText("Download on"), { target: { value: "worker-1" } });
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getByRole("button", { name: "Start download" }));
+    await waitFor(() =>
+      expect(startRemoteModelDownload).toHaveBeenCalledWith(
+        expect.objectContaining({ extraFiles: ["mmproj-model-f16.gguf"] }),
+      ),
     );
   });
 });

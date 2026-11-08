@@ -276,7 +276,21 @@ weights. `pom-plugin-strata` (same branch name) takes `range` in
 and omits `--ple-gguf` past layer 1. The node splits a Pipeline deployment on
 such a service into ranges, keeps the whole file at apply and sends `range`.
 Not done: `engine.cuts` and `engine.estimate` (the planner uses the GGUF's
-cuts), DeepSeek-V4.1, and a real two-machine deployment through POM.
+cuts) and DeepSeek-V4.1.
+
+**Through POM, two nodes (2026-11-08).** Two real POM nodes (debug build), each
+in its own container with one GPU (RTX 3060 / RTX 5060 Ti) and no network
+beyond a shared loopback, the Strata plugin installed from its
+`pom-whole-range` branch by the development rebuild. A Pipeline deployment of
+Flash-Next with `inference_service: strata` and `whole_ranges` 0-23 / 24-47
+planned with no copies, applied without writing any slice, and started the
+engines as `--native <whole> --stage-layers 0-23 --stage-serve` (with the PLE
+table) and `--stage-layers 24-47 --stage-prev` (without it) on the shared
+whole-model pack. A request to `/v1/chat/completions` on the first node
+answered correctly (203 tokens, `stop`, 12.5 s). Found on the way: the
+per-step note claimed a disk write a plugin range does not make (fixed), and
+the first deploy waits on hashing the 76 GB model once (about 25 minutes on a
+debug build; the hash is cached after).
 
 
 ## Retiring file transfers

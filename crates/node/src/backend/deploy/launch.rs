@@ -166,6 +166,12 @@ pub(super) async fn deploy_endpoint(
                     .and_then(|shape| shape.architecture.as_deref()),
             )
             .await;
+            // the service cuts each range from the whole file itself: nothing is written to disk
+            if ranges && plan.blocked.is_none() {
+                for step in plan.steps.iter_mut().filter(|step| step.from_whole_path.is_some()) {
+                    step.note = None;
+                }
+            }
         }
     }
     if let Some(reason) = plan.blocked {

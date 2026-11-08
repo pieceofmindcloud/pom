@@ -133,6 +133,12 @@ pub(super) async fn plan_endpoint(
                     .and_then(|shape| shape.architecture.as_deref()),
             )
             .await;
+            // the service cuts each range from the whole file itself: nothing is written to disk
+            if ranges && p.blocked.is_none() {
+                for step in p.steps.iter_mut().filter(|step| step.from_whole_path.is_some()) {
+                    step.note = None;
+                }
+            }
         }
     }
     // A plan already refused gains nothing from knowing whether it would fit

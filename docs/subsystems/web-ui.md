@@ -1524,7 +1524,9 @@ machine restarted. Today the fingerprint is only model + set of ranges.
   allow the copy, the refusal lists the concrete reason. The final range is only
   offered when the table contains the full head.
 - **Deploy** (`DeployModel`): opens the Deploy Studio on a wide screen, with
-  Shards/Whole model/Tensor tabs, separate technical model and operational name,
+  Pipeline / Slices (legacy) / Tensor tabs (Pipeline, the whole model, is the default; a
+  Pipeline plan whose copies would carry a range to a machine without the model is refused by
+  name instead of offering the copy: `lackingModel` in `DeployModel.tsx`), separate technical model and operational name,
   Simple/Complete strategies, a central map and a compact property inspector.
   Every peer shows up in the bottom strip and can be dragged onto the map; in
   the Globals tab, the inspector also lets you pick `cache_type_k` and

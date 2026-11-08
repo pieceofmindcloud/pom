@@ -3397,3 +3397,6 @@ deployStudio.lacksModelPlace,"This machine does not have the model. Place the fi
 deployStudio.downloadHere,Download here,Baixar aqui
 deployStudio.rescan,Rescan,Varrer
 deployStudio.downloadingHere,Downloading the model: {pct}%,Baixando o modelo: {pct}%
+deployStudio.kindPipeline,Pipeline,Pipeline
+deployStudio.kindShardsLegacy,Slices (legacy),Fatias (legado)
+deploy.whyNotLacksModel,"Without the model: {machines}. Download it on the card, or place the file and rescan.","Sem o modelo: {machines}. Baixe pelo cartão, ou coloque o arquivo e varra de novo."

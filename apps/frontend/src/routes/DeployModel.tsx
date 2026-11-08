@@ -468,9 +468,22 @@ export function DeployModel() {
    * screen that looks like a broken deploy page rather than an unanswered
    * question. The operator's own choice always wins once made.
    */
+  // Pipeline (a whole model, cut into ranges on the machines that hold it) is
+  // the default; slices stay for a staged service and for slice sets made
+  // before range loading.
   const kind: DeployKind = service
     ? service.stages && pickedKind === "shards" ? "shards" : "whole"
-    : pickedKind ?? (groups.length === 0 && wholes.length > 0 ? "whole" : "shards");
+    : pickedKind ?? (wholes.length === 0 && groups.length > 0 ? "shards" : "whole");
+  const offersSlices = Boolean(service?.stages) || groups.length > 0 || kind === "shards";
+  /** Pipeline as the default opens on an empty map, as choosing it did when
+   *  slices were the default: the operator drops the machines that serve it. */
+  const openedOnPipeline = useRef(false);
+  useEffect(() => {
+    if (openedOnPipeline.current || pickedKind !== null || service || kind !== "whole" || wholes.length === 0) return;
+    openedOnPipeline.current = true;
+    setSelection((current) => current ?? []);
+    setSettled((current) => current ?? []);
+  }, [pickedKind, service, kind, wholes.length]);
   const isWhole = kind === "whole";
   const isTp = kind === "tensor_parallel";
   const tpGroup = useMemo(
@@ -1307,8 +1320,15 @@ export function DeployModel() {
   }
 
   const job = jobs.data?.jobs.find((j) => j.id === jobId);
+  /** In Pipeline mode a machine without the model is not sent a copy: it
+   *  downloads the model (Download here on its card) or gets the file placed.
+   *  The ranges the plan would copy name those machines. */
+  const lackingModel = isWhole && !service
+    ? [...new Set((p?.copies ?? []).filter((copy) => copy.kind === "slice").map((copy) => copy.target_host))]
+    : [];
   const canDeploy =
     validated &&
+    lackingModel.length === 0 &&
     !p?.blocked &&
     inferenceModeSupported &&
     rows.length > 0;
@@ -1381,6 +1401,8 @@ export function DeployModel() {
       ? t("deploy.whyNotEmpty")
       : syncing || !p
         ? t("deploy.whyNotChecking")
+          : lackingModel.length > 0
+            ? t("deploy.whyNotLacksModel", { machines: lackingModel.join(", ") })
           : p.blocked
             ? t("deploy.whyNotBlocked")
           : !inferenceModeSupported
@@ -1422,8 +1444,8 @@ export function DeployModel() {
           <div className="flex flex-wrap items-center gap-2">
             <div className="mr-auto flex items-center gap-1 rounded-lg border border-line bg-ink p-1">
               {([
-                ["shards", t("deployStudio.kindShards")],
-                ["whole", t("deployStudio.kindWhole")],
+                ["whole", t("deployStudio.kindPipeline")],
+                ...(offersSlices ? [["shards", t("deployStudio.kindShardsLegacy")] as [DeployKind, string]] : []),
                 ...(pomDevMode ? [["tensor_parallel", "Tensor"] as [DeployKind, string]] : []),
               ] as [DeployKind, string][]).map(([value, label]) => (
                 <button

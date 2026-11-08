@@ -571,8 +571,9 @@ Per-file list:
   in read-only) and a draggable bottom peer strip. What stays in
   `DeployModel` and did not move to the inspector are the sections only the deploy
   screen has: the TP group, tensor parallel and the machine tab. Three shapes, chosen by the
-  mode bar at the top and carried to the node as `kind`: **a set of shards**
-  (below), **a whole model** (one model picker from `../lib/wholeModels`, with
+  mode bar at the top and carried to the node as `kind`: **Pipeline** (`whole`, the default
+  whenever a whole model exists; it opens on an empty map), **Slices (legacy)** (`shards`,
+  offered only with slice sets or a staged service; below), **a whole model** (one model picker from `../lib/wholeModels`, with
   the deployment map as its machine choice and no "included"/merge; the
   coverage ribbon shows once a second machine is on the map), or **tensor parallel** (`tensor_parallel`): when the catalog
   has `tp_parts`, the picker groups the round by TP width and the inspector

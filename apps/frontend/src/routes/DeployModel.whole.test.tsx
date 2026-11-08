@@ -338,6 +338,14 @@ const planCalls = () =>
 const chooseWhole = () =>
   fireEvent.click(screen.getByRole("radio", { name: /Um modelo inteiro/ }));
 
+/** Slices are no longer the default: Pipeline (the whole model) is. */
+async function chooseSlices() {
+  fireEvent.click(await screen.findByRole("radio", { name: "Fatias (legado)" }));
+  await waitFor(() =>
+    expect(planCalls().some(([, body]) => (body as { kind?: string }).kind === "shards")).toBe(true),
+  );
+}
+
 const chooseTensor = () => fireEvent.click(screen.getByRole("radio", { name: "Tensor" }));
 
 async function ensureWholeMachine(node = "ksia") {
@@ -364,19 +372,15 @@ describe("DeployModel · whole model", () => {
   });
   afterEach(cleanup);
 
-  it("asks the node about slices by default, and about the whole model when chosen", async () => {
+  it("asks the node about the whole model by default, and about slices when chosen", async () => {
     answerPlans();
     mount();
 
     await waitFor(() => expect(planCalls().length).toBeGreaterThan(0));
-    expect(planCalls()[0][1]).toMatchObject({ group: "qwen", kind: "shards" });
+    expect(planCalls()[0][1]).toMatchObject({ group: "qwen3.5-9b", kind: "whole" });
 
-    chooseWhole();
-
-    await waitFor(() => {
-      const last = planCalls().at(-1)![1];
-      expect(last).toMatchObject({ group: "qwen3.5-9b", kind: "whole" });
-    });
+    await chooseSlices();
+    expect(planCalls().at(-1)![1]).toMatchObject({ group: "qwen", kind: "shards" });
   });
 
   it("names the native studio fields for accessibility and password managers", async () => {
@@ -440,7 +444,7 @@ describe("DeployModel · whole model", () => {
   it("does not re-query the plan when adjusting the GPU layers of the machine", async () => {
     answerPlans();
     mount();
-    await waitFor(() => expect(planCalls()).toHaveLength(1));
+    await chooseSlices();
     await waitFor(() => expect(screen.getByRole("button", { name: /ksia na implantação/ })).toBeTruthy());
 
     const before = planCalls().length;
@@ -464,7 +468,7 @@ describe("DeployModel · whole model", () => {
       return Promise.resolve(shardPlan());
     });
     mount();
-    await waitFor(() => expect(planCalls()).toHaveLength(1));
+    await chooseSlices();
 
     chooseWhole();
     await waitFor(() => expect(screen.getByText("conferindo com o nó…")).toBeTruthy());
@@ -497,6 +501,7 @@ describe("DeployModel · whole model", () => {
   it("shows neither the coverage strip nor the range marking column", async () => {
     answerPlans();
     mount();
+    await chooseSlices();
 
     await waitFor(() => expect(screen.getByText(/Cobertura do modelo/)).toBeTruthy());
     expect(screen.getAllByText(/L0–31/).length).toBeGreaterThan(0);
@@ -551,6 +556,7 @@ describe("DeployModel · whole model", () => {
       return Promise.resolve(plan);
     });
     mount("qwen3.5-9b", shardName, shardName);
+    fireEvent.click(await screen.findByRole("radio", { name: "Fatias (legado)" }));
 
     const model = await screen.findByRole("combobox", { name: "Modelo técnico" });
     expect(within(model).getByRole("option", { name: "Ornith-1.5-35B-Q4_K_M" })).toBeTruthy();
@@ -577,6 +583,7 @@ describe("DeployModel · whole model", () => {
   it("empties the map when switching from slices to whole model", async () => {
     answerPlans();
     mount();
+    await chooseSlices();
 
     await waitFor(() => expect(screen.getByRole("button", { name: /mac RTT/ })).toBeTruthy());
     fireEvent.click(screen.getByRole("button", { name: /mac RTT/ }));
@@ -1029,6 +1036,30 @@ describe("DeployModel · whole model", () => {
    * answer about slices. Reading the absence as "slices" is what keeps the screen
    * from going mute during an update in progress.
    */
+  it("refuses by name a machine without the model instead of offering a copy", async () => {
+    post.mockImplementation((url: string, body: { kind?: string }) => {
+      if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
+      if (body.kind !== "whole") return Promise.resolve(shardPlan());
+      const plan = wholePlan();
+      plan.copies = [{
+        kind: "slice",
+        name: "qwen3.5-9b",
+        size_bytes: 1,
+        layers: [16, 31],
+        source_node_id: "ksia",
+        source_host: "ksia",
+        target_node_id: "mac",
+        target_host: "mac",
+      }];
+      return Promise.resolve(plan);
+    });
+    mount();
+    await ensureWholeMachine();
+    expect(await screen.findByText(/Sem o modelo: mac/)).toBeTruthy();
+    const button = screen.getByRole("button", { name: /^Implantar$/ }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+  });
+
   it("reads a plan without `kind` as a slices plan", async () => {
     post.mockImplementation(() => {
       const p = shardPlan();
@@ -1036,6 +1067,7 @@ describe("DeployModel · whole model", () => {
       return Promise.resolve(p);
     });
     mount();
+    fireEvent.click(await screen.findByRole("radio", { name: "Fatias (legado)" }));
 
     await waitFor(() => {
       const button = screen.getByRole("button", { name: /^Implantar$/ });

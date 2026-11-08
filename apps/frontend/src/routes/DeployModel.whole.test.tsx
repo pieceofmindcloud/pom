@@ -194,6 +194,7 @@ function mount(
         node_id: "ksia",
         hostname: "ksia",
         is_self: false,
+        hf_sources: [{ path: "/lm/mmproj-qwen-f16.gguf", repo_id: "org/qwen-gguf", revision: null, filename: "mmproj-qwen-f16.gguf" }],
         models: [
           {
             id: "1",
@@ -1044,6 +1045,41 @@ describe("DeployModel · whole model", () => {
    * answer about slices. Reading the absence as "slices" is what keeps the screen
    * from going mute during an update in progress.
    */
+  it("shows each card's weights and KV cache from the node's estimate", async () => {
+    post.mockImplementation((url: string, body: { kind?: string }) => {
+      if (url !== "/api/ui/deploy/plan" || body?.kind !== "whole") return Promise.resolve(body?.kind === "whole" ? wholePlan() : shardPlan());
+      const plan = wholePlan();
+      plan.steps[0].capacity = { fits: true, degraded: false, note: null, gpus: [], weights_bytes: 5 * 1024 ** 3, kv_bytes: 1024 ** 3, kv_in_vram: true };
+      return Promise.resolve(plan);
+    });
+    mount();
+    await ensureWholeMachine();
+    const memory = await screen.findByTestId("card-memory");
+    expect(memory.textContent).toMatch(/Pesos 5.*KV 1.*na VRAM/);
+  });
+
+  it("offers Download here on the card of a machine that lacks the projector the plan needs", async () => {
+    post.mockImplementation((url: string, body: { kind?: string }) => {
+      if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
+      if (body.kind !== "whole") return Promise.resolve(shardPlan());
+      const plan = wholePlan();
+      plan.copies = [{
+        kind: "mmproj",
+        name: "mmproj-qwen-f16.gguf",
+        size_bytes: 1,
+        source_node_id: "ksia",
+        source_host: "ksia",
+        target_node_id: "ksia",
+        target_host: "ksia",
+      }];
+      return Promise.resolve(plan);
+    });
+    mount();
+    await ensureWholeMachine();
+    expect(await screen.findByText(/precisa do projetor de visão mmproj-qwen-f16.gguf/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Baixar aqui" })).toBeTruthy();
+  });
+
   it("refuses by name a machine without the model instead of offering a copy", async () => {
     post.mockImplementation((url: string, body: { kind?: string }) => {
       if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });

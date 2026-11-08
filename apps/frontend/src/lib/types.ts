@@ -2025,6 +2025,11 @@ export interface GpuCapacityProjection {
 /** A single deploy step's capacity projection. `src/backend/webui/params.rs` -
  *  `CapacityPreview`. */
 export interface CapacityPreview {
+  /** The GPU layers' weights, apart (absent from an older node). */
+  weights_bytes?: number | null;
+  /** Their KV cache at this context and sessions; `kv_in_vram` says whether it sits in VRAM or host RAM. */
+  kv_bytes?: number | null;
+  kv_in_vram?: boolean | null;
   /** `vram_projected_mb <= vram_total_mb` on every device. `true` on a
    *  machine with no discrete GPU — nothing to run out of. */
   fits: boolean;

@@ -17,11 +17,30 @@ import { Button, Progress } from "./ui";
  */
 export function ModelPresence({ nodeId, machine, model }: { nodeId: string; machine: string; model: WholeModelEntry }) {
   const { t } = useI18n();
+  return (
+    <FilePresence
+      nodeId={nodeId}
+      machine={machine}
+      source={model.source}
+      missing={model.source ? t("deployStudio.lacksModel") : t("deployStudio.lacksModelPlace")}
+    />
+  );
+}
+
+/** The repository and file a missing file can be downloaded from, with the other files that go with it. */
+export type FileSource = { repo_id: string; revision: string | null; filename: string; extra_files: string[] };
+
+/**
+ * The same for any file a machine lacks - the model, or a sidecar the plan
+ * needs there (vision projector, MTP draft): `missing` says what is missing,
+ * `source` is where a holder downloaded it from (`null`: placed by hand).
+ */
+export function FilePresence({ nodeId, machine, source, missing }: { nodeId: string; machine: string; source: FileSource | null; missing: string }) {
+  const { t } = useI18n();
   const toast = useToast();
   const queryClient = useQueryClient();
   const downloads = useMachineDownloads(nodeId);
   const [busy, setBusy] = useState<"download" | "rescan" | null>(null);
-  const source = model.source;
   const running = (downloads.data ?? []).find(
     (job) => isModelDownloadActive(job) && source != null && job.repo_id === source.repo_id && job.filename === source.filename,
   );
@@ -73,7 +92,7 @@ export function ModelPresence({ nodeId, machine, model }: { nodeId: string; mach
   return (
     <div className="mt-3 rounded-lg border border-amber/30 bg-amber/10 px-2 py-1.5" data-testid="model-presence-missing" {...stop}>
       <p className="text-[10px] leading-snug text-amber">
-        {source ? t("deployStudio.lacksModel") : t("deployStudio.lacksModelPlace")}
+        {missing}
       </p>
       <div className="mt-1.5 flex flex-wrap gap-1">
         {source && (

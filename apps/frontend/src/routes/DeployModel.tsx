@@ -67,11 +67,11 @@ import { useToast } from "../lib/toast";
 import { bytes, deployModelDisplayName, layerRange, megabytes } from "../lib/format";
 import { Confirm, Modal } from "../components/Confirm";
 import { DeploymentInspector, InspectorRow } from "../components/DeploymentInspector";
-import { ModelPresence } from "../components/ModelPresence";
+import { FilePresence, ModelPresence } from "../components/ModelPresence";
 import { DeployNetworkCanvas } from "../components/DeployNetworkCanvas";
 import { DeployProgressModal } from "../components/DeployProgressModal";
 import { trackOf } from "../components/PipelineRail";
-import { tensorParallelModelsOf, wholeModelsOf } from "../lib/wholeModels";
+import { fileSourceOn, tensorParallelModelsOf, wholeModelsOf } from "../lib/wholeModels";
 import { autoBalance, evenSplit, isWholeRangeSplit, stepRange, validEnds, wholeRangesOf } from "../lib/wholeRanges";
 import { inferenceServicesOf, serviceRunsModel, serviceCutsRanges,
   serviceRunsSlices, serviceTakesDraft } from "../lib/inferenceServices";
@@ -1640,9 +1640,46 @@ export function DeployModel() {
                 primaryNodeId={isTp ? tp.primary_node_id : undefined}
                 onTogglePrimary={isTp ? togglePrimary : undefined}
                 cardFooter={isWhole && rangesOnWhole && wholeModel
-                  ? (nodeId) => wholeModel.holders.includes(nodeId)
-                    ? null
-                    : <ModelPresence nodeId={nodeId} machine={labelOf(nodeId)} model={wholeModel} />
+                  ? (nodeId) => {
+                      const sidecars = (p?.copies ?? []).filter(
+                        (copy) => copy.target_node_id === nodeId && (copy.kind === "mmproj" || copy.kind === "mtp"),
+                      );
+                      const lacksModel = !wholeModel.holders.includes(nodeId);
+                      const costed = (p?.steps ?? []).filter(
+                        (step) => step.target_node_id === nodeId && step.capacity?.weights_bytes != null,
+                      );
+                      const weights = costed.reduce((sum, step) => sum + (step.capacity?.weights_bytes ?? 0), 0);
+                      const kv = costed.reduce((sum, step) => sum + (step.capacity?.kv_bytes ?? 0), 0);
+                      const kvInRam = costed.some((step) => step.capacity?.kv_in_vram === false);
+                      const memory = costed.length > 0 && (
+                        <p className="mt-2 font-mono text-[9px] text-muted" data-testid="card-memory">
+                          {t(kvInRam ? "deployStudio.memoryKvRam" : "deployStudio.memoryKvVram", {
+                            weights: bytes(weights),
+                            kv: bytes(kv),
+                          })}
+                        </p>
+                      );
+                      if (!lacksModel && sidecars.length === 0) return memory || null;
+                      return (
+                        <>
+                          {memory}
+                          {lacksModel && <ModelPresence nodeId={nodeId} machine={labelOf(nodeId)} model={wholeModel} />}
+                          {sidecars.map((copy) => {
+                            const source = fileSourceOn(cluster.data?.peers, copy.source_node_id, copy.name);
+                            const what = t(copy.kind === "mtp" ? "deployStudio.lacksMtp" : "deployStudio.lacksMmproj", { name: copy.name });
+                            return (
+                              <FilePresence
+                                key={`${copy.kind}:${copy.name}`}
+                                nodeId={nodeId}
+                                machine={labelOf(nodeId)}
+                                source={source}
+                                missing={`${what} ${t(source ? "deployStudio.lacksFileDownload" : "deployStudio.lacksFilePlace")}`}
+                              />
+                            );
+                          })}
+                        </>
+                      );
+                    }
                   : undefined}
               />
             ) : (

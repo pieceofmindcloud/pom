@@ -1447,7 +1447,9 @@ with `auto: false` and `layer_options`, the real cuts, so the screen can
 redo the split. Each step may carry a `note` (for example that the machine
 will write its range to disk because it does not announce
 `model/range-load-v1`) and `capacity.gpu_layers_fit`, `capacity.cpu_layers`
-and `capacity.cpu_ram_bytes` when the range overflows the VRAM; a CPU part
+and `capacity.cpu_ram_bytes` when the range overflows the VRAM, and `capacity.weights_bytes`,
+`capacity.kv_bytes` and `capacity.kv_in_vram` (the GPU layers' cost apart; compute buffers are not
+estimated); a CPU part
 beyond the machine's free RAM blocks the plan by name.
 **`POST /api/ui/model-layer-options`** (`ServingMember`, body
 `{ path, kv?: { n_ctx, max_sessions } }`) reads the valid cuts of a GGUF on

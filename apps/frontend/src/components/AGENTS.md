@@ -866,7 +866,10 @@ Key logic carriers:
   machine), never in the machine card. Back to one machine, `DeployModel`'s
   `rows` drops the row's role, so the deployment's role the inspector shows
   is the one deployed.
-- `ModelPresence.tsx` - the foot of a machine card (`DeployNetworkCanvas` `cardFooter`) when the
+- `ModelPresence.tsx` - `FilePresence` is the generic card foot for a file a machine lacks (`source`, `missing`
+  text); `ModelPresence` wraps it for the model, and the studio uses it for each `mmproj`/`mtp` entry of
+  `DeployPlan.copies` aimed at that machine, with the source from `fileSourceOn` (`lib/wholeModels.ts`).
+  The foot of a machine card (`DeployNetworkCanvas` `cardFooter`) when the
   machine lacks the selected whole model: its running download from `useMachineDownloads`, or
   **Download here** (the `WholeModelEntry.source` repository, file and split parts, sent with
   `nodeId`) and **Rescan** (`rescanModels(nodeId)`, then the cluster catalog refetches).

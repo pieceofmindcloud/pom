@@ -192,6 +192,16 @@ pub struct CapacityPreview {
     /// RAM the CPU layers' weights need.
     #[serde(default)]
     pub cpu_ram_bytes: Option<u64>,
+    /// What the GPU layers cost, apart: their weights and their KV cache at
+    /// this context and sessions; `kv_in_vram` says whether the KV cache sits
+    /// in VRAM (`offload_kqv`) or in host RAM. Compute buffers are not
+    /// estimated. Absent from an older node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weights_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kv_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kv_in_vram: Option<bool>,
 }
 
 /// The most of the first `requested` layers whose VRAM cost (`in_vram`,
@@ -503,6 +513,9 @@ pub(super) async fn capacity_preview_endpoint(
         gpu_layers_fit,
         cpu_layers,
         cpu_ram_bytes,
+        weights_bytes: Some(weight_bytes),
+        kv_bytes: Some(kv_bytes),
+        kv_in_vram: Some(kv_in_vram),
     })
     .into_response()
 }

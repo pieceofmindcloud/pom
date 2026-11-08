@@ -655,6 +655,9 @@
             gpu_layers_fit: Some(20),
             cpu_layers: Some(12),
             cpu_ram_bytes: Some(cpu_ram_bytes),
+            weights_bytes: None,
+            kv_bytes: None,
+            kv_in_vram: None,
         };
         let selection = [pick(0, 31, "a")];
         let mut plan = super::plan("model", &machines, Some(&selection), &RuntimeParams::default(), false, DeployKind::Whole, None);

@@ -3362,3 +3362,9 @@ deployStudio.kindPipeline,Pipeline,Pipeline
 deployStudio.kindShardsLegacy,Slices (legacy),Fatias (legado)
 deploy.whyNotLacksModel,"Without the model: {machines}. Download it on the card, or place the file and rescan.","Sem o modelo: {machines}. Baixe pelo cartão, ou coloque o arquivo e varra de novo."
 deploy.cpuSplitConfirm,"{gpu} layers on the GPU, {cpu} on the CPU: generation will be much slower.","{gpu} camadas na GPU, {cpu} na CPU: a geração vai ficar bem mais lenta."
+deployStudio.lacksMmproj,This machine needs the vision projector {name}.,Esta máquina precisa do projetor de visão {name}.
+deployStudio.lacksMtp,This machine needs the MTP draft {name}.,Esta máquina precisa do rascunho MTP {name}.
+deployStudio.lacksFileDownload,"Download it here, or place the file in a model folder and rescan.","Baixe aqui, ou coloque o arquivo numa pasta de modelos e varra de novo."
+deployStudio.lacksFilePlace,"Place the file in one of its model folders, then rescan.","Coloque o arquivo numa das pastas de modelos dela e varra de novo."
+deployStudio.memoryKvVram,"Weights {weights} · KV {kv} in VRAM","Pesos {weights} · KV {kv} na VRAM"
+deployStudio.memoryKvRam,"Weights {weights} · KV {kv} in RAM","Pesos {weights} · KV {kv} na RAM"

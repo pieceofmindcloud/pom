@@ -170,3 +170,15 @@ export function tensorParallelModelsOf(
     }))
     .sort((a, b) => a.label.localeCompare(b.label) || a.tp_size - b.tp_size);
 }
+
+/**
+ * Where `nodeId` downloaded the file named `fileName` (a sidecar the plan
+ * would copy from it), read from its `hf_sources`; `null` when that machine
+ * did not download it through POM.
+ */
+export function fileSourceOn(peers: PeerCatalog[] | undefined, nodeId: string, fileName: string) {
+  const peer = (peers ?? []).find((candidate) => candidate.node_id === nodeId);
+  const base = (path: string) => path.split(/[\\/]/).pop() ?? path;
+  const found = (peer?.hf_sources ?? []).find((source) => base(source.path) === fileName || base(source.filename) === fileName);
+  return found ? { repo_id: found.repo_id, revision: found.revision, filename: found.filename, extra_files: [] as string[] } : null;
+}

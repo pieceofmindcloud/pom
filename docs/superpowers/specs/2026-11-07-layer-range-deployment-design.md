@@ -571,6 +571,8 @@ loading.
    range editor came in phase 3. Waiting: removing the slice screens, which
    Strata stages still need until Strata loads a range of a whole pack;
    Download here for sidecars; weights / KV / compute per card.
+   Leftovers done 2026-11-08: Download here for sidecars and weights / KV per
+   card (compute buffers are not estimated by the node, so not shown).
 8. Retire transfers: first release stops planning copies and offering sends
    (routes kept, deprecated); the next removes `transfer.rs` and the routes.
    First stage done: plans with copies are blocked and refused

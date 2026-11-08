@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { tensorParallelModelsOf, wholeModelsOf } from "./wholeModels";
+import { fileSourceOn, tensorParallelModelsOf, wholeModelsOf } from "./wholeModels";
 import type { DiscoveredModel, PeerCatalog } from "./types";
 
 function model(over: Partial<DiscoveredModel>): DiscoveredModel {
@@ -130,5 +130,17 @@ describe("wholeModelsOf", () => {
     expect(out[0].key).toBe("qwen-hash:2");
     expect(out[0].ranks.map((rank) => rank.rank)).toEqual([0, 1]);
     expect(out[0].ranks.every((rank) => rank.holders.includes("ksia"))).toBe(true);
+  });
+});
+
+describe("fileSourceOn", () => {
+  it("finds the repository a machine downloaded a file from, by its name", () => {
+    const peers = [{
+      ...peer("ksia", []),
+      hf_sources: [{ path: "/m/mmproj-q.gguf", repo_id: "org/q", revision: "main", filename: "mmproj-q.gguf" }],
+    }];
+    expect(fileSourceOn(peers, "ksia", "mmproj-q.gguf")).toEqual({ repo_id: "org/q", revision: "main", filename: "mmproj-q.gguf", extra_files: [] });
+    expect(fileSourceOn(peers, "ksia", "other.gguf")).toBeNull();
+    expect(fileSourceOn(peers, "mac", "mmproj-q.gguf")).toBeNull();
   });
 });

@@ -12,13 +12,11 @@ import {
   Info,
   KeyRound,
   Laptop,
-  Layers,
   ListTree,
   MessagesSquare,
   Network,
   Puzzle,
   Rocket,
-  Scissors,
   Search,
   Send,
   Settings,
@@ -86,8 +84,6 @@ export const NAV: NavSection[] = [
     children: [
       { labelKey: "nav.remoteModels", to: "/models/remote", icon: Search },
       { labelKey: "nav.fullModels", to: "/models", icon: Boxes, end: true },
-      { labelKey: "nav.sliceModels", to: "/models/slice", icon: Scissors },
-      { labelKey: "nav.shards", to: "/shards", icon: Layers, end: true },
     ],
   },
   {

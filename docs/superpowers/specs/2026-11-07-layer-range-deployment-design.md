@@ -587,6 +587,10 @@ loading.
    Download here for sidecars; weights / KV / compute per card.
    Leftovers done 2026-11-08: Download here for sidecars and weights / KV per
    card (compute buffers are not estimated by the node, so not shown).
+   Slice screens removed 2026-11-08: Shards is gone (`/shards` redirects to
+   `/models`) and Slice models is cut down to tensor parallel shards,
+   development mode only, off the menu and opened from a model's Slice
+   button. Moving that step into the deploy flow is still open.
 8. Retire transfers: first release stops planning copies and offering sends
    (routes kept, deprecated); the next removes `transfer.rs` and the routes.
    First stage done: plans with copies are blocked and refused

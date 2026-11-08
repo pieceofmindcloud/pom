@@ -19,11 +19,11 @@ Video: the Models screens - full models, slices and transfers - explained.
 
 :::cards
 ### Layers and architecture
-Read from the GGUF header, without loading the model. The number of layers is what slicing and deploying divide.
+Read from the GGUF header, without loading the model. The number of layers is what a deploy divides into ranges.
 ### Vision (mmproj)
 The vision projector that belongs to the model, when there is one. **Vision and MTP** links a projector or an MTP draft found anywhere in the network to this model.
 ### Slice
-Opens Slice models with this file chosen.
+Only in development mode: opens Tensor parallel shards with this file chosen. A pipeline deploy needs no slicing.
 :::
 
 :::note Where these files come from

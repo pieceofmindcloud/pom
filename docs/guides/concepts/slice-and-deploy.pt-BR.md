@@ -1,30 +1,22 @@
 ---
 id: slice-and-deploy
 label: Do modelo ao cluster servindo
-summary: Fatiar por tamanho, distribuir, pôr em serviço
+summary: Escolher as faixas, levar o modelo a cada máquina, pôr em serviço
 title: Do modelo ao cluster servindo
 order: 50
 ---
 
 :::lead
-São três atos distintos, e vale separá-los na cabeça: cortar o arquivo, levar o modelo às máquinas certas, e mandar as máquinas carregarem a faixa delas.
+São três atos distintos, e vale separá-los na cabeça: escolher quem serve quais camadas, levar o modelo às máquinas certas, e mandar as máquinas carregarem a faixa delas.
 :::
 
 :::note Antes de tudo, um modelo
-Os modelos inteiros vêm das pastas de modelos da máquina. Para baixar um, use Encontrar Modelos HF: a tela mostra a licença antes do download e o progresso fica em Downloads. Um modelo que cabe inteiro numa máquina pode ser implantado sem fatiar.
+Os modelos inteiros vêm das pastas de modelos da máquina. Para baixar um, use Encontrar Modelos HF: a tela mostra a licença antes do download e o progresso fica em Downloads. Um modelo que cabe inteiro numa máquina é implantado só nela.
 :::
 
-:::diagram slicing
-Um GGUF de 32 camadas cortado por alvo de tamanho, não em partes iguais.
-:::
+## 1. Escolher as faixas (sem cortar)
 
-## 1. Fatiar (Fatiar modelos)
-
-Você monta uma lista de fatias e dá a cada uma um alvo em GB; a última pode simplesmente levar o resto. A tela converte GB em faixa de camadas somando o tamanho real de cada bloco do arquivo - não uma divisão do total pelo número de camadas, porque os blocos não são iguais entre si e algumas partes do modelo se repetem em toda fatia.
-
-:::note O arredondamento fica à vista
-Camada é unidade indivisível, então o que você pediu e o que saiu quase nunca batem exatamente. A tela mostra os números lado a lado: o alvo pedido, a faixa que saiu e o tamanho real do arquivo.
-:::
+Cada máquina serve a sua faixa de camadas direto da sua própria cópia do arquivo inteiro, então nada é cortado antes de uma implantação. A tela de implantação propõe os cortes nas fronteiras que o modelo permite, e mudar os cortes depois é só uma recarga. Fatiar o arquivo só sobrevive para as partes de tensor parallel, um recurso de desenvolvimento (Partes tensor-parallel).
 
 ## 2. D## 2. Levar o modelo a cada máquina (Downloads)
 
@@ -55,14 +47,14 @@ A janela de contexto e o tamanho do lote governam a cadeia inteira. Já quantas 
 Para conferir, abra Implantações: a versão ativa mostra os parâmetros usados, e Reimplantar esta versão volta a qualquer versão anterior.
 
 :::faq
-### Preciso fatiar sempre?
-Não. Um modelo que cabe inteiro numa máquina é implantado como modelo inteiro, numa máquina só. Mais máquinas podem entrar no mapa, desde que as faixas delas cubram todas as camadas.
+### Preciso fatiar o modelo?
+Não. Cada máquina serve a sua faixa a partir do arquivo inteiro. Um modelo que cabe inteiro numa máquina é implantado como modelo inteiro, numa máquina só. Mais máquinas podem entrar no mapa, desde que as faixas delas cubram todas as camadas.
 ### Pipeline ou tensor parallelism?
 Pipeline é a opção recomendada entre máquinas pela internet: uma travessia por fronteira de camadas por token. No tensor parallelism cada camada é repartida e as máquinas somam resultados várias vezes por token, então ele pede uma rede rápida.
 :::
 
 :::deep docs/subsystems/slicing.md
-Fatiamento, tabela de tipos e planejamento por tamanho
+Fatiamento (partes tensor-parallel), tabela de tipos
 :::
 
 :::deep docs/subsystems/deployment.md

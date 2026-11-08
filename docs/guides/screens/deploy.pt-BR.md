@@ -28,7 +28,7 @@ As máquinas da implantação, cada uma com a faixa de camadas que vai servir, a
 
 :::steps
 ### Escolher o modelo
-Em Fatias, a lista mostra os conjuntos de fatias que alguma máquina da rede já tem. Em Modelo inteiro, os arquivos GGUF inteiros.
+Em Pipeline, os arquivos GGUF inteiros que alguma máquina conhece. Fatias (legado) lista os conjuntos de fatias que alguma máquina já tem.
 ### Pôr as máquinas no mapa
 Arraste máquinas da faixa de baixo para o mapa. O planejador distribui as faixas, e **Cobertura do modelo**, no canto de baixo, conta as camadas cobertas.
 

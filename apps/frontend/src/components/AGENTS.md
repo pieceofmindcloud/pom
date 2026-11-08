@@ -62,7 +62,7 @@ Per-file list:
   full-viewport table screen (the one `Deployments`/`PublicNetworks`/
   `DeploymentLogs` already used before these existed): a fixed edge-to-edge
   header bar and, optionally, a filter strip under it, above a body that
-  scrolls on its own. `WholeModels`, `Shards`, `SliceModels`, `RemoteModels`,
+  scrolls on its own. `WholeModels`, `SliceModels`, `RemoteModels`,
   and `Transfers` (`../routes/`) all build on these two instead of
   repeating the bar's markup; `Deployments`/`PublicNetworks` keep
   their own hand-written bar and were not touched, since refactoring a
@@ -836,7 +836,7 @@ Key logic carriers:
   inline vs block + copy button.
 - `nav.ts:NAV` (nav.ts:40) - the source of truth for the menu, its order and
   its routes; the section that is "its own entry" (`/deploy`, deploy) is a
-  deliberate first-class navigation item, not a leaf under the shards section.
+  deliberate first-class navigation item, not a leaf under the Models section.
 - `networkPeers.pipelinePeers` (networkPeers.ts:13) - execution order: peers
   on the active model sorted by start layer (falls back to all peers);
   `Dashboard`, `PipelineRail` and `ModelNetworkCanvas` derive "the pipeline"
@@ -924,8 +924,8 @@ Key logic carriers:
   a reference link (`deep`) opens that document inside the dialog (loaded on
   demand from `src/docs/`), with "Back to the guide". `GuideHelpButton` is the
   round "?" button a section heading uses.
-- `SidecarLinkEditor.tsx` - the model's vision / MTP link, edited in place
-  (Shards) or in a window (Models) and saved on the principal through
+- `SidecarLinkEditor.tsx` - the model's vision / MTP link, edited in a window
+  (Models) and saved on the principal through
   `POST /api/ui/model-sidecar-links`; read-only outside the `admin` profile.
 - `EngineSettings.tsx` - draws the settings an inference service's engine
   publishes (`PluginService.settings`) in the interface's language: one row

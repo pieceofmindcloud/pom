@@ -1623,10 +1623,8 @@ nav.requestLogs,Request logs,Logs de requisições
 nav.sendFile,Send a file,Enviar um arquivo
 nav.settings,Settings,Configurações
 nav.setupWizard,Setup wizard,Wizard de configuração
-nav.shards,Shards,Fatias
 nav.shareNetwork,Share network access,Compartilhar acesso à rede
 nav.sharing,Sharing,Compartilhamento
-nav.sliceModels,Slice models,Fatiar modelos
 nav.statistics,Statistics,Estatísticas
 nav.storage,Storage,Armazenamento
 nav.transfers,Downloads,Downloads
@@ -2816,20 +2814,6 @@ setupWizard.vulkanAvailable,Vulkan ready,Vulkan disponível
 setupWizard.welcomeDetail,Let us set up this machine.,Vamos configurar esta máquina.
 setupWizard.welcomeEyebrow,Your first step,Seu primeiro passo
 setupWizard.welcomeTitle,Welcome to POM,Bem-vindo ao POM
-shards.complete,covers model,cobre o modelo
-shards.empty,No shards on this machine,Nenhuma fatia nesta máquina
-shards.emptyDetail,Shards appear here after local slicing or an accepted transfer. They are stored in the configured shard folder.,Fatias aparecem aqui depois de um fatiamento local ou de uma transferência aceita. Elas são gravadas na pasta de fatias configurada.
-shards.incomplete,incomplete coverage,cobertura incompleta
-shards.parts,Pipeline parts,Partes do pipeline
-shards.rescan,Scan again,Varrer de novo
-shards.set,Shard set,Conjunto de fatias
-shards.setDetail,"{count}{count, plural, =1 { shard of a } other { shards of a }}{total}-layer model","{count}{count, plural, =1 { fatia de um modelo de } other { fatias de um modelo de }}{total} camadas"
-shards.setUnknown,"{count}{count, plural, =1 { shard} other { shards}}","{count}{count, plural, =1 { fatia} other { fatias}}"
-shards.subtitle,"Every local shard appears here, even when everyone already has a copy. Destinations are restricted to machines that do not have it.","Toda fatia local aparece aqui, mesmo quando todo mundo já tem uma cópia. O destino se restringe a quem ainda não tem."
-shards.title,Shards on this machine,Fatias nesta máquina
-shards.tpGroup,Tensor-parallel - {size} ranks,Tensor-parallel - {size} ranks
-shards.tpParts,Tensor-parallel parts,Partes tensor-parallel
-shards.unknownRange,unknown range,faixa desconhecida
 sidebar.build,build,build
 sidebar.buildTitle,Commit this node''s binary was built from. Compare it across cards to see whether every node runs the same version.,Commit de que o binário deste nó foi compilado. Compare entre os cards para ver se todos os nós estão na mesma versão.
 sidebar.collapse,Minimize menu,Minimizar menu
@@ -2928,6 +2912,8 @@ slice.title,Slice models,Fatiar modelos
 slice.tooSmall,too small,pequena demais
 slice.tpAllLayers,Each rank covers all layers. The output folder and model manifest stay the same as pipeline slicing.,Cada rank cobre todas as camadas. A pasta de saída e o manifesto do modelo são os mesmos do fatiamento de pipeline.
 slice.tpAllLayersShort,all layers,todas as camadas
+slice.tpDevOnly,Tensor parallel shards need development mode,Partes tensor-parallel exigem o modo de desenvolvimento
+slice.tpDevOnlyDetail,"A pipeline deploy serves each range from the whole model, so nothing is sliced. Tensor parallel shards are cut here only on a node started with POM_DEV_MODE=1.","Uma implantação em pipeline serve cada faixa a partir do modelo inteiro, então nada é fatiado. Partes tensor-parallel só são cortadas aqui num nó iniciado com POM_DEV_MODE=1."
 slice.tpParts,Tensor-parallel parts,Partes tensor-parallel
 slice.tpPartsDetail,Create one complete-model tensor shard for each rank in the group.,Cria uma parte do modelo completo para cada rank do grupo.
 slice.tpPreviewDetail,Every row is a rank. All ranks cover the same layers and receive one tensor shard.,Cada linha é um rank. Todos cobrem as mesmas camadas e recebem uma parte tensorial.
@@ -2935,6 +2921,8 @@ slice.tpRankCount,{size} ranks,{size} ranks
 slice.tpSize,Number of TP ranks,Quantidade de ranks TP
 slice.tpSizeAria,Number of TP ranks,Quantidade de ranks TP
 slice.tpSizeHint,Choose the number of machines that will hold this tensor-parallel model.,Escolha quantas máquinas vão guardar este modelo em tensor parallelism.
+slice.tpSubtitle,"Cut one tensor shard per rank from a whole model, for a tensor parallel deploy.","Corte uma parte tensorial por rank de um modelo inteiro, para uma implantação em tensor parallel."
+slice.tpTitle,Tensor parallel shards,Partes tensor-parallel
 topbar.apiTitle,OpenAI-compatible API served by this node,API compatível com OpenAI servida por este nó
 topbar.behindNat,Behind NAT,Atrás de NAT
 topbar.behindNatHint,Some connections of this machine go through a relay. Click for what it means and how to fix it.,Algumas conexões desta máquina passam por um relé. Clique para ver o que isso significa e como resolver.

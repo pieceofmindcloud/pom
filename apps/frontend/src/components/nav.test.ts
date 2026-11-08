@@ -8,8 +8,6 @@ describe("navigation structure", () => {
     expect(models?.children?.map((child) => child.to)).toEqual([
       "/models/remote",
       "/models",
-      "/models/slice",
-      "/shards",
     ]);
     expect(models?.children?.[0]?.labelKey).toBe("nav.remoteModels");
     expect(NAV.some((section) => section.labelKey === "nav.shardedModels")).toBe(false);
@@ -129,8 +127,6 @@ describe("navForProfile", () => {
     expect(models?.children?.map((c) => c.to)).toEqual([
       "/models/remote",
       "/models",
-      "/models/slice",
-      "/shards",
     ]);
   });
 

@@ -694,7 +694,7 @@ would go.
 - `networkPeers` is used by `components/ModelNetworkCanvas.tsx`,
   `components/PipelineRail.tsx` and `routes/Dashboard.tsx` (`pipelinePeers`),
   and by `components/PeerDetailCard.tsx` (`hasSlice`).
-- `routes/WholeModels.tsx` and `routes/Shards.tsx` both use `deleteModel`.
+- `routes/WholeModels.tsx` uses `deleteModel`.
 - `components/Notifications.tsx` and `routes/Transfers.tsx` use `transferStatus` and `transferLabel`.
 - `components/Sidebar.tsx` uses `theme`.
 - `i18n/locales.ts` is imported by `api.ts` and `chatStore.ts` (`getActiveLocale`) for non-React localized strings.

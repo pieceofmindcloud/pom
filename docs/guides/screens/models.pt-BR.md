@@ -19,11 +19,11 @@ Vídeo: as telas de Modelos - modelos inteiros, fatias e transferências - expli
 
 :::cards
 ### Camadas e arquitetura
-Lidas do cabeçalho do GGUF, sem carregar o modelo. O número de camadas é o que o fatiamento e a implantação dividem.
+Lidas do cabeçalho do GGUF, sem carregar o modelo. O número de camadas é o que uma implantação divide em faixas.
 ### Visão (mmproj)
 O projetor de visão que pertence ao modelo, quando existe. **Visão e MTP** liga a este modelo um projetor ou um rascunho MTP encontrado em qualquer máquina da rede.
 ### Fatiar
-Abre Fatiar modelos com este arquivo escolhido.
+Só no modo de desenvolvimento: abre Partes tensor-parallel com este arquivo escolhido. Uma implantação em pipeline não precisa fatiar.
 :::
 
 :::note De onde vêm estes arquivos

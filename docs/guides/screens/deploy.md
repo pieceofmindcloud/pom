@@ -28,7 +28,7 @@ The machines in the deployment, each with the layer range it will serve, the mem
 
 :::steps
 ### Choose the model
-For Shards, the model list shows the slice sets some machine of the network already has. For Whole model, the whole GGUF files.
+For Pipeline, the whole GGUF files known on any machine. Slices (legacy) lists the slice sets some machine already has.
 ### Put the machines on the map
 Drag machines from the strip at the bottom to the map. The planner places the ranges, and **Model coverage**, at the bottom right, counts the layers covered.
 

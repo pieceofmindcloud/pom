@@ -56,6 +56,7 @@ vi.mock("../lib/queries", () => ({
     isFetching: false,
     refetch: vi.fn(),
   }),
+  useNode: () => ({ data: { pom_dev_mode: false } }),
 }));
 
 vi.mock("../lib/toast", () => ({
@@ -92,6 +93,8 @@ describe("WholeModels", () => {
     const table = screen.getByRole("table");
     expect(table).toBeTruthy();
     expect(screen.getAllByRole("row")).toHaveLength(3); // header + 2 models
-    expect(screen.getAllByRole("button", { name: "Slice" })).toHaveLength(2);
+    // Pipelines serve ranges from the whole file; slicing is only for tensor
+    // parallel, which is a development feature.
+    expect(screen.queryByRole("button", { name: "Slice" })).toBeNull();
   });
 });

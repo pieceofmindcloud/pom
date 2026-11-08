@@ -13,7 +13,7 @@ import {
 } from "../components/ui";
 import { bytes, num, optionalBasename } from "../lib/format";
 import { deleteModel } from "../lib/deleteModel";
-import { useLocalCatalog } from "../lib/queries";
+import { useLocalCatalog, useNode } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import { isWholeModel, type DiscoveredModel, type ModelSource } from "../lib/types";
 import { useI18n } from "../i18n/provider";
@@ -51,6 +51,9 @@ function WholeModelLinks({ model, onClose }: { model: DiscoveredModel; onClose: 
 
 export function ModelRow({ model }: { model: DiscoveredModel }) {
   const { t } = useI18n();
+  // Only tensor parallel still loads pre-cut shards, and it is a development
+  // feature: a pipeline deploy serves ranges straight from this file.
+  const pomDevMode = useNode().data?.pom_dev_mode === true;
   const toast = useToast();
   const catalog = useLocalCatalog();
   const mmprojName = optionalBasename(model.mmproj_path);
@@ -110,13 +113,15 @@ export function ModelRow({ model }: { model: DiscoveredModel }) {
       </td>
       <td className="whitespace-nowrap px-5 py-3.5">
         <div className="flex shrink-0 items-center gap-2">
-          <Link
-            to={`/models/slice?path=${encodeURIComponent(model.path)}&name=${encodeURIComponent(model.name)}`}
-          >
-            <Button size="sm" icon={<Scissors className="h-3.5 w-3.5" />}>
-              {t("models.slice")}
-            </Button>
-          </Link>
+          {pomDevMode && (
+            <Link
+              to={`/models/slice?path=${encodeURIComponent(model.path)}&name=${encodeURIComponent(model.name)}`}
+            >
+              <Button size="sm" icon={<Scissors className="h-3.5 w-3.5" />}>
+                {t("models.slice")}
+              </Button>
+            </Link>
+          )}
           <Button
             size="sm"
             variant="ghost"

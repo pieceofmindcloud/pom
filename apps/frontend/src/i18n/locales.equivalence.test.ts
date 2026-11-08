@@ -132,7 +132,9 @@ const removed = (key: string) =>
   key.includes(".knob.cycle_detection_") ||
   key.startsWith("deploy.wholeSingleMachine") ||
   // Sending files between machines, retired with deployments that copy.
-  /^(sendFile\.|deploy\.copies|deploy\.copy|shards\.send|shards\.offer|shards\.sending$|shards\.noOtherMachine$|shards\.everyoneHas$)/.test(key);
+  /^(sendFile\.|deploy\.copies|deploy\.copy)/.test(key) ||
+  // The Shards and pipeline slicing screens, retired with ranges served from the whole model.
+  /^(shards\.|nav\.shards$|nav\.sliceModels$)/.test(key);
 const moved = (key: string) =>
   key.startsWith("chat.telemetry.") || MOVED_TO_PLUGINS.has(key) || removed(key);
 

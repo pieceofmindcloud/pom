@@ -624,6 +624,30 @@ dashboard.versionProperties,Deployment version properties,Propriedades da versã
 dashboard.machineProperties,Machine: {host},Máquina: {host}
 dashboard.vram,VRAM · {name},VRAM · {name}
 dashboard.wiredMemory,Wired memory (Metal buffers),Memória wired (buffers do Metal)
+demo.clockLabel,Demonstration time left: {time},Tempo restante da demonstração: {time}
+demo.clockTitle,Time left in this demonstration,Tempo restante nesta demonstração
+demo.expired,Your demonstration time is over. Sign in again to join the queue.,Seu tempo de demonstração acabou. Entre de novo para voltar à fila.
+demo.leaveQueue,Leave the queue,Sair da fila
+demo.networkEyebrow,Current network,Rede atual
+demo.networkLocation,Location,Localização
+demo.networkMachines,Machines,Máquinas
+demo.networkModel,Model in service,Modelo em serviço
+demo.networkNoSlice,no slice,sem fatia
+demo.networkOrganization,Organization,Organização
+demo.networkVisibility,Visibility,Visibilidade
+demo.queueDetail,"This server runs on a few machines, so it opens to {seats} people at a time, for {minutes} minutes each. Your turn comes up automatically.","Este servidor roda em poucas máquinas, então atende {seats} pessoas por vez, por {minutes} minutos cada. A sua vez chega automaticamente."
+demo.queueEta,Estimated wait: about {minutes} min,Espera estimada: cerca de {minutes} min
+demo.queueKeepOpen,Keep this page open to hold your place.,Mantenha esta página aberta para não perder o lugar.
+demo.queuePosition,You are number {position} of {waiting} waiting,Você é o número {position} de {waiting} aguardando
+demo.queueTitle,The demonstration is full right now,A demonstração está cheia no momento
+demo.readOnly,Read-only on this demonstration server,Somente visualização neste servidor de demonstração
+demo.welcomeDisabled,"Several features are disabled here: installing plugins, slicing and transferring models, and changing the network or its settings. Screens show what exists, read-only.","Diversas funcionalidades estão desabilitadas aqui: instalar plugins, fatiar e transferir modelos e alterar a rede ou suas configurações. As telas mostram o que existe, somente para visualização."
+demo.welcomeIntro,This is a demonstration server: you can chat with the model the network serves and look around the panel.,Este é um servidor de demonstração: você pode conversar com o modelo que a rede serve e conhecer o painel.
+demo.welcomeStart,Start,Começar
+demo.welcomeTime,Your visit lasts {minutes} minutes. The clock in the top bar shows how much time you have left.,Sua visita dura {minutes} minutos. O relógio na barra de topo mostra quanto tempo ainda resta.
+demo.welcomeStar,Did you like Piece of Mind? Please leave a star on GitHub:,Gostou do Piece of Mind? Deixe uma estrela no GitHub:
+demo.welcomeStarLink,github.com/pieceofmindcloud/pom,github.com/pieceofmindcloud/pom
+demo.welcomeTitle,Welcome to the POM demonstration,Bem-vindo à demonstração do POM
 deploy.adaptivePrefillChunksHint,"The gateway picks each prompt's chunk size, between 32 tokens and the prefill chunk above, from what it measured on the route (64 at least while the MoE expert cache is on). Off, every prompt goes in chunks of exactly the prefill chunk.","O gateway escolhe o tamanho do pedaço de cada prompt, entre 32 tokens e o pedaço de prefill acima, pelo que mediu na rota (no mínimo 64 com o cache de experts do MoE ligado). Desligado, todo prompt vai em pedaços de exatamente o pedaço de prefill."
 deploy.addNode,Add,Adicionar
 deploy.addNodeCacheK,KV cache K,Cache KV K

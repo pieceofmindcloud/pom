@@ -14,11 +14,27 @@ export interface SessionUser {
   plugin: string;
 }
 
+/**
+ * A person's seat on a demonstration node (`crates/node/src/backend/demo_slots.rs`):
+ * holding one for `remaining_secs`, or waiting in the queue at `position`.
+ */
+export interface DemoSeat {
+  state: "active" | "queued" | "expired";
+  remaining_secs?: number;
+  expires_at?: number;
+  position?: number;
+  waiting?: number;
+  eta_secs?: number;
+  session_secs?: number;
+  max_sessions?: number;
+}
+
 export interface SessionInfo {
   kind: "operator" | "user";
   demo_mode: boolean;
   can_mint_keys?: boolean;
   user?: SessionUser;
+  demo?: DemoSeat;
 }
 
 let current: SessionInfo | null = null;
@@ -29,6 +45,11 @@ export function sessionInfo(): SessionInfo | null {
 
 export function isUserSession(): boolean {
   return current?.kind === "user";
+}
+
+/** A person signed in on a demonstration node: a read-only, timed visit. */
+export function isDemoUser(): boolean {
+  return current?.kind === "user" && current.demo_mode === true;
 }
 
 export function setSessionInfo(info: SessionInfo | null) {
@@ -61,3 +82,10 @@ export async function signOut() {
 
 /** Routes a signed-in person may open. */
 export const USER_ROUTES = ["/", "/chat", "/logs", "/statistics", "/documentation", "/config/my-keys"] as const;
+
+/**
+ * What a demonstration node also shows a person, read-only: the plugins, the
+ * models and slices, and the network it is in. Searching and downloading
+ * models (`/models/remote`) is not among them.
+ */
+export const DEMO_USER_ROUTES = ["/plugins", "/models", "/models/slice", "/shards", "/config/network"] as const;

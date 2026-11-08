@@ -256,7 +256,32 @@ plugin never sees a cookie. Design:
 - **Demo mode** (`DEMO_MODE=1`) removes own API keys and redacts from what a
   user session reads every address-shaped field and value and every node id
   (replaced by a stable per-process alias), on the dashboard reads, the
-  request log and plugin RPC answers.
+  request log and plugin RPC answers. It also shows a person, read-only, the
+  installed plugins and the catalog (`GET /api/ui/plugins`,
+  `/api/ui/plugins/github-repositories`, `/api/ui/plugin-catalog`), the local
+  catalog (`GET /api/ui/models`), a slicing preview (`POST /api/ui/slice/plan`;
+  starting a job stays refused), the current network (`/api/ui/network/info`,
+  redacted) and their own budget (`GET /api/ui/quota`, answered from the
+  sign-in plugin's `rpc.me`). Plugins listed in `DEMO_PLUGINS` (every active
+  one when unset) open their assets, RPCs and web proxy to a person; the
+  sign-in plugin's `auth` screen and its `rpc.auth.*` never do.
+- **Demo seats** (`backend/demo_slots.rs`). In demo mode a signed-in person
+  takes one of `DEMO_MAX_SESSIONS` seats (default 10) for
+  `DEMO_SESSION_TIME` minutes (default 20). Past the seats they wait in a FIFO
+  queue and reach only `/api/ui/me`, `/api/ui/demo/session` and sign-out (423
+  `demo_queue` elsewhere); `GET /api/ui/demo/session` answers the seat
+  (`state`, `remaining_secs`, `expires_at`) or the place (`position`,
+  `waiting`, `eta_secs`, estimated from the seats' remaining times). A queued
+  place nobody polls for 45 s is dropped. Sign-out frees the seat at once; an
+  expired seat revokes the session and its chat tokens (401
+  `demo_session_expired`). One person holds one seat across browsers. The
+  state is in memory: a restart empties it.
+- **A person's folder.** `<workspace_root>/users/<hash>` (`user_folder`: 16 hex
+  of SHA-256 over plugin and user id), created on first use. The plugin proxy
+  sends it to the plugin as `x-pom-user` (the hash) and
+  `x-pom-user-workspace` (the path), removing any such header the browser sent;
+  RPCs carry it as `user_workspace`. Keeping each person inside it is the
+  plugin's job.
 
 ## Known limits
 

@@ -124,6 +124,39 @@ pub fn sign_in_offered() -> bool {
     SIGN_IN_OFFERED.load(Ordering::Relaxed)
 }
 
+/// `DEMO_PLUGINS`: the plugin codes a person reaches on a demonstration
+/// node besides the sign-in plugin (comma separated). Unset, every active
+/// plugin is reachable.
+fn demo_plugin_allowlist() -> &'static Option<BTreeSet<String>> {
+    static LIST: OnceLock<Option<BTreeSet<String>>> = OnceLock::new();
+    LIST.get_or_init(|| {
+        std::env::var("DEMO_PLUGINS")
+            .ok()
+            .or_else(|| crate::brand::env("DEMO_PLUGINS").ok())
+            .map(|raw| {
+                raw.split(',')
+                    .map(|code| code.trim().to_owned())
+                    .filter(|code| !code.is_empty())
+                    .collect()
+            })
+    })
+}
+
+/// Whether a person reaches plugin `code`: the plugins that sign people in
+/// always, and on a demonstration node the allowed ones as well.
+fn user_reaches_plugin(code: &str, demo: bool) -> bool {
+    if user_plugins().contains(code) {
+        return true;
+    }
+    demo && demo_plugin_allowlist()
+        .as_ref()
+        .is_none_or(|list| list.contains(code))
+}
+
+/// Menu entries and routes of a plugin a person never sees: the sign-in
+/// plugin's provider administration.
+const OPERATOR_ONLY_PLUGIN_SCREENS: &[&str] = &["auth"];
+
 fn user_plugins() -> BTreeSet<String> {
     providers_cache()
         .lock()
@@ -689,13 +722,44 @@ pub fn user_may_call(method: &Method, path: &str, demo: bool) -> bool {
     if post && matches!(path, "/api/ui/chat-key" | "/api/ui/logout") {
         return true;
     }
+    // A demonstration node shows, read-only, what the operator has: the
+    // installed plugins and the catalog, the models and slices, the
+    // network it is in, and the person's own budget.
+    if demo && get {
+        let demo_get = [
+            "/api/ui/plugins",
+            "/api/ui/plugins/github-repositories",
+            "/api/ui/plugin-catalog",
+            "/api/ui/models",
+            "/api/ui/network/info",
+            "/api/ui/quota",
+            "/api/ui/demo/session",
+        ];
+        if demo_get.contains(&path) || path.starts_with("/api/ui/plugin-catalog/") {
+            return true;
+        }
+    }
+    // Previewing a slicing plan only reads GGUF headers: the Slice screen
+    // shows it, while starting the job stays refused.
+    if demo && post && path == "/api/ui/slice/plan" {
+        return true;
+    }
+    if path == "/api/ui/demo/session" && get {
+        return demo;
+    }
     if let Some(rest) = path.strip_prefix("/api/ui/plugins/") {
         let (code, rest) = rest.split_once('/').unwrap_or((rest, ""));
-        let reaches = user_plugins().contains(code);
+        let reaches = user_reaches_plugin(code, demo);
         if get && reaches && rest.starts_with("assets/") {
             return true;
         }
         if post && reaches && rest.starts_with("rpc/") {
+            // The sign-in plugin's provider administration is the operator's.
+            return !rest.starts_with("rpc/auth.");
+        }
+        // A plugin's own web interface (the editor, a harness): only on a
+        // demonstration node, where each person gets their own folder.
+        if demo && reaches && (rest == "proxy" || rest.starts_with("proxy/")) {
             return true;
         }
         return false;
@@ -719,6 +783,7 @@ fn redacted_path(path: &str, demo: bool) -> bool {
     matches!(
         path,
         "/api/ui/node"
+            | "/api/ui/network/info"
             | "/api/ui/cluster"
             | "/api/ui/cluster/models"
             | "/api/ui/deployments"
@@ -838,16 +903,34 @@ pub fn redact(value: &mut Value, demo: bool) {
     }
 }
 
-/// Only the plugins that offer sign-in show their screens to a user.
-fn keep_user_plugins(value: &mut Value) {
-    let plugins = user_plugins();
-    if let Some(list) = value.get_mut("plugins").and_then(Value::as_array_mut) {
-        list.retain(|plugin| {
-            plugin
-                .get("code")
-                .and_then(Value::as_str)
-                .is_some_and(|code| plugins.contains(code))
-        });
+/// Only the plugins a person reaches show their screens to them, without the
+/// operator-only screens.
+fn keep_user_plugins(value: &mut Value, demo: bool) {
+    let Some(list) = value.get_mut("plugins").and_then(Value::as_array_mut) else {
+        return;
+    };
+    list.retain(|plugin| {
+        plugin
+            .get("code")
+            .and_then(Value::as_str)
+            .is_some_and(|code| user_reaches_plugin(code, demo))
+    });
+    for plugin in list.iter_mut() {
+        let Some(manifest) = plugin.get_mut("manifest") else {
+            continue;
+        };
+        if let Some(menu) = manifest.get_mut("menu").and_then(Value::as_array_mut) {
+            menu.retain(|item| {
+                let id = item.get("id").and_then(Value::as_str).unwrap_or("");
+                !OPERATOR_ONLY_PLUGIN_SCREENS.contains(&id)
+            });
+        }
+        if let Some(routes) = manifest.get_mut("routes").and_then(Value::as_array_mut) {
+            routes.retain(|route| {
+                let screen = route.get("screen").and_then(Value::as_str).unwrap_or("");
+                !OPERATOR_ONLY_PLUGIN_SCREENS.contains(&screen)
+            });
+        }
     }
 }
 
@@ -870,33 +953,116 @@ async fn redact_response(response: Response, path: &str, demo: bool) -> Response
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
     if path == "/api/ui/plugins/ui" {
-        keep_user_plugins(&mut value);
+        keep_user_plugins(&mut value, demo);
+        // Manifests name no machine, and their screenshots are https URLs.
+        redact(&mut value, false);
+    } else {
+        redact(&mut value, demo);
     }
-    redact(&mut value, demo);
     let bytes = serde_json::to_vec(&value).unwrap_or_default();
     parts.headers.remove(header::CONTENT_LENGTH);
     parts.headers.remove(header::ETAG);
     Response::from_parts(parts, Body::from(bytes))
 }
 
-/// `GET /api/ui/me`.
-fn me(principal: &SessionPrincipal) -> Response {
+/// `GET /api/ui/me`. On a demonstration node a person's answer carries their
+/// seat (`demo`), read by `seat_of`.
+fn me(principal: &SessionPrincipal, seat: Option<Value>) -> Response {
     let demo = demo_mode();
     match principal {
         SessionPrincipal::Operator => Json(json!({ "kind": "operator", "demo_mode": demo })),
-        SessionPrincipal::User(user) => Json(json!({
-            "kind": "user",
-            "demo_mode": demo,
-            "can_mint_keys": !demo,
-            "user": user,
-        })),
+        SessionPrincipal::User(user) => {
+            let mut body = json!({
+                "kind": "user",
+                "demo_mode": demo,
+                "can_mint_keys": !demo,
+                "user": user,
+                "workspace": user_folder(user),
+            });
+            if let Some(seat) = seat {
+                body["demo"] = seat;
+            }
+            Json(body)
+        }
     }
     .into_response()
+}
+
+/// A person's own folder name inside the workspace: a hash of who they are,
+/// so the name says nothing about them and two people never share one.
+pub fn user_folder(user: &UserIdentity) -> String {
+    let digest = Sha256::digest(format!("{}:{}", user.plugin, user.user_id).as_bytes());
+    digest[..8].iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The absolute folder of a person inside the workspace
+/// (`<workspace_root>/users/<hash>`), created on first use. Plugins that work
+/// on files (the editor, a harness) receive it and keep to it.
+pub async fn user_workspace(state: &GatewayState, user: &UserIdentity) -> std::path::PathBuf {
+    let root = state.auth.read().await.workspace_root_path();
+    let folder = root.join("users").join(user_folder(user));
+    if let Err(error) = std::fs::create_dir_all(&folder) {
+        tracing::warn!(%error, "could not create a person's workspace folder");
+    }
+    folder
+}
+
+/// The seat of this session on a demonstration node. Seats that expired in
+/// this sweep lose their session and their chat tokens.
+async fn seat_of(
+    state: &GatewayState,
+    user: &UserIdentity,
+    headers: &axum::http::HeaderMap,
+    secure: bool,
+) -> crate::demo_slots::SeatStatus {
+    let Some(session) = crate::auth::session_id_from_cookie(headers, secure).map(str::to_owned) else {
+        return crate::demo_slots::SeatStatus::Expired;
+    };
+    let (status, expired) = crate::demo_slots::status(&session, &user.user_id);
+    if !expired.is_empty() {
+        let mut sessions = state.admin_sessions.lock().await;
+        for (session, user_id) in &expired {
+            sessions.revoke(session);
+            forget_chat_tokens(user_id);
+            tracing::info!(user = %user_id, "demo seat expired");
+        }
+    }
+    status
+}
+
+fn forget_chat_tokens(user_id: &str) {
+    if let Ok(mut tokens) = chat_tokens().lock() {
+        tokens.retain(|_, token| token.caller.user_id.as_deref() != Some(user_id));
+    }
+}
+
+/// `GET /api/ui/quota` for a person: their own budget, from the plugin that
+/// signed them in (`rpc.me`).
+async fn user_quota(state: &GatewayState, user: &UserIdentity) -> Response {
+    let reply = state
+        .plugins
+        .query_audit(
+            &user.plugin,
+            "rpc.me",
+            json!({ "profile": "user", "user_id": user.user_id, "params": {} }),
+        )
+        .await;
+    match reply.and_then(|reply| reply.get("quota").cloned()).filter(|q| q.is_object()) {
+        Some(mut quota) => {
+            quota["available"] = json!(true);
+            if let Some(map) = quota.as_object_mut() {
+                map.remove("node_id");
+            }
+            Json(quota).into_response()
+        }
+        None => Json(json!({ "available": false, "configured": false })).into_response(),
+    }
 }
 
 async fn logout(state: &GatewayState, headers: axum::http::HeaderMap, secure: bool) -> Response {
     if let Some(session_id) = crate::auth::session_id_from_cookie(&headers, secure).map(str::to_owned) {
         state.admin_sessions.lock().await.revoke(&session_id);
+        crate::demo_slots::release(&session_id);
     }
     clear_session_cookies(StatusCode::NO_CONTENT.into_response(), &headers, secure)
 }
@@ -916,22 +1082,66 @@ pub(crate) async fn after_gate(
 ) -> Response {
     let path = request.uri().path().to_owned();
     let method = request.method().clone();
-    if path == "/api/ui/me" && method == Method::GET {
-        return me(&principal);
-    }
     if path == "/api/ui/logout" && method == Method::POST {
         let secure = is_secure(&request);
         return logout(state, request.headers().clone(), secure).await;
     }
     let SessionPrincipal::User(user) = &principal else {
+        if path == "/api/ui/me" && method == Method::GET {
+            return me(&principal, None);
+        }
         request.extensions_mut().insert(principal);
         return next.run(request).await;
     };
     let demo = demo_mode();
+    // A demonstration node opens to a few people at a time: past the seats,
+    // a person waits in the queue and reaches only who they are and the
+    // queue itself.
+    let mut seat_json = None;
+    if demo {
+        let secure = is_secure(&request);
+        let seat = seat_of(state, user, request.headers(), secure).await;
+        let now = Instant::now();
+        let body = seat.to_json(now);
+        match seat {
+            crate::demo_slots::SeatStatus::Expired => {
+                let response = (
+                    StatusCode::UNAUTHORIZED,
+                    [("x-pom-admin-error", "demo_session_expired")],
+                    Json(json!({ "error": "demo_session_expired" })),
+                )
+                    .into_response();
+                return clear_session_cookies(response, request.headers(), secure);
+            }
+            crate::demo_slots::SeatStatus::Queued { .. } => {
+                if path != "/api/ui/me" && path != "/api/ui/demo/session" {
+                    return (
+                        StatusCode::LOCKED,
+                        Json(json!({ "error": "demo_queue", "demo": body })),
+                    )
+                        .into_response();
+                }
+            }
+            crate::demo_slots::SeatStatus::Active { .. } => {}
+        }
+        seat_json = Some(body);
+    }
+    if path == "/api/ui/me" && method == Method::GET {
+        return me(&principal, seat_json);
+    }
+    if path == "/api/ui/demo/session" && method == Method::GET {
+        return match seat_json {
+            Some(body) => Json(body).into_response(),
+            None => not_found(),
+        };
+    }
     // The plugin list may have moved on since the cache was filled.
     auth_providers(state).await;
     if !user_may_call(&method, &path, demo) {
         return not_found();
+    }
+    if path == "/api/ui/quota" {
+        return user_quota(state, user).await;
     }
     if path == "/api/ui/chat-key" {
         return (StatusCode::OK, Json(json!({ "key": issue_chat_token(user) }))).into_response();
@@ -983,6 +1193,38 @@ mod tests {
         assert!(!user_may_call(&Method::GET, "/api/ui/my-keys", true));
         assert!(!user_may_call(&Method::POST, "/api/ui/my-keys", true));
         assert!(!user_may_call(&Method::DELETE, "/api/ui/my-keys/k1", true));
+    }
+
+    #[test]
+    fn demo_shows_the_catalog_read_only() {
+        for path in ["/api/ui/plugins", "/api/ui/models", "/api/ui/network/info", "/api/ui/quota"] {
+            assert!(user_may_call(&Method::GET, path, true), "{path}");
+            assert!(!user_may_call(&Method::GET, path, false), "{path}");
+        }
+        assert!(!user_may_call(&Method::POST, "/api/ui/plugins/activate", true));
+        assert!(!user_may_call(&Method::POST, "/api/ui/plugins/github-repositories", true));
+        assert!(!user_may_call(&Method::POST, "/api/ui/slice", true));
+        assert!(!user_may_call(&Method::POST, "/api/transfer/send", true));
+        assert!(!user_may_call(&Method::POST, "/api/ui/network/settings", true));
+        assert!(!user_may_call(&Method::GET, "/api/ui/network-chat", true));
+        assert!(!user_may_call(&Method::GET, "/api/ui/cluster-logs", true));
+        assert!(user_may_call(&Method::GET, "/api/ui/demo/session", true));
+        assert!(!user_may_call(&Method::GET, "/api/ui/demo/session", false));
+    }
+
+    #[test]
+    fn the_sign_in_plugins_provider_screens_stay_with_the_operator() {
+        let mut value = json!({"plugins": [{"code": "logs", "manifest": {
+            "menu": [{"id": "statistics"}, {"id": "auth"}],
+            "routes": [{"path": "/statistics", "screen": "stats"}, {"path": "/auth", "screen": "auth"}],
+        }}]});
+        if let Ok(mut cache) = providers_cache().lock() {
+            cache.plugins.insert("logs".into());
+        }
+        keep_user_plugins(&mut value, true);
+        let manifest = &value["plugins"][0]["manifest"];
+        assert_eq!(manifest["menu"], json!([{"id": "statistics"}]));
+        assert_eq!(manifest["routes"].as_array().unwrap().len(), 1);
     }
 
     #[test]

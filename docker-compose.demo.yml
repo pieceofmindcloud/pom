@@ -1,0 +1,42 @@
+# A public demonstration node (DEMO_MODE=1).
+#
+#   docker compose -f docker-compose.demo.yml up -d
+#
+# People sign in through a plugin's provider (the logs plugin, POM_OAUTH_*),
+# take one of DEMO_MAX_SESSIONS seats for DEMO_SESSION_TIME minutes, and wait
+# in a queue when every seat is taken. Screens are read-only for them.
+#
+# Each person's files live in <workspace_root>/users/<hash>. That folder is
+# bound to the host's /tmp, so whatever a visitor writes is disposable and
+# goes away with the host's /tmp. The node's workspace_root must be
+# /data/workspace (Storage screen, or "workspace_root" in pom.json).
+services:
+  demo:
+    image: pom:latest
+    container_name: pom-demo
+    network_mode: host
+    restart: always
+    environment:
+      POM_HOME: /data
+      POM_UI_DIST: /app/apps/frontend/dist
+      POM_PLUGIN_HOST: /usr/local/bin/pom-plugin-host
+      POM_BIN: /usr/local/bin/pom
+      DEMO_MODE: 1
+      DEMO_MAX_SESSIONS: ${DEMO_MAX_SESSIONS:-10}
+      DEMO_SESSION_TIME: ${DEMO_SESSION_TIME:-20}
+      # Plugins a visitor reaches besides the sign-in plugin; empty or unset
+      # means every active plugin.
+      DEMO_PLUGINS: ${DEMO_PLUGINS:-}
+      POM_OPERATOR_PATH: ${POM_OPERATOR_PATH:?set an unguessable operator path}
+      POM_OAUTH_REDIRECT_BASE: ${POM_OAUTH_REDIRECT_BASE:?set the public origin}
+      POM_OAUTH_1_ID: ${POM_OAUTH_1_ID:-google}
+      POM_OAUTH_1_PRESET: ${POM_OAUTH_1_PRESET:-google}
+      POM_OAUTH_1_CLIENT_ID: ${POM_OAUTH_1_CLIENT_ID:-}
+      POM_OAUTH_1_CLIENT_SECRET: ${POM_OAUTH_1_CLIENT_SECRET:-}
+      POM_OAUTH_1_DEFAULT_PLAN: ${POM_OAUTH_1_DEFAULT_PLAN:-demo}
+    volumes:
+      - ${POM_DEMO_DATA_DIR:-./demo-data}:/data
+      - ${POM_SHARD_MODELS_DIR:-./models}:/data/models
+      - ${POM_WORKSPACE_DIR:-./workspace}:/data/workspace
+      # Visitors' folders: on the host's /tmp, lost with it on purpose.
+      - ${POM_DEMO_USERS_DIR:-/tmp/pom-demo-users}:/data/workspace/users

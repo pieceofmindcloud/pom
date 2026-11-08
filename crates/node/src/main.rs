@@ -43,6 +43,8 @@ pub mod addrs;
 pub(crate) mod admin;
 #[path = "backend/auth.rs"]
 mod auth;
+#[path = "backend/demo_slots.rs"]
+mod demo_slots;
 #[path = "backend/user_keys.rs"]
 mod user_keys;
 #[path = "backend/user_session.rs"]

@@ -630,8 +630,11 @@ boundary.
   `/api/access.auth_providers`), the public `/auth/<code>/*` forwarder
   (`auth_http`), the operator path and its throttle (`before_gate`), the user
   surface allowlist, redaction and session chat tokens (`after_gate`, called
-  by `gateway::require_admin_for_surface`), and `DEMO_MODE`. `user_keys.rs`
-  serves a person's own `/api/ui/my-keys`. See `security-model.md`.
+  by `gateway::require_admin_for_surface`), `DEMO_MODE`, a person's quota
+  (`user_quota`) and workspace folder (`user_workspace`). `demo_slots.rs` is the
+  demo seats and queue (`DEMO_MAX_SESSIONS`, `DEMO_SESSION_TIME`), consulted by
+  `after_gate`. `user_keys.rs` serves a person's own `/api/ui/my-keys`. See
+  `security-model.md`.
 - `quota.rs` - token budgets before the pipeline: `admit` asks the local logs
   plugin, then each live admin (`peer.quota.check` over the signed peer call),
   and the inference handlers answer its `Denial` with 429 + `Retry-After` and

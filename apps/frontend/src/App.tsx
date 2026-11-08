@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { canAccessRoute, homeRoute, isEnterprisePath } from "./lib/access";
 import {
   api,
@@ -25,7 +25,8 @@ import { FirstRunWizard, useFirstRunWizard } from "./components/FirstRunWizard";
 import { EnterpriseFeatureShowcase } from "./components/EnterpriseFeatureShowcase";
 import { useI18n } from "./i18n/provider";
 import type { AdminAccessStatus } from "./lib/types";
-import { loadSession } from "./lib/session";
+import { isDemoUser, loadSession } from "./lib/session";
+import { DemoExpiredNotice, DemoNetwork, DemoQueue, DemoWelcome, useDemoSeat } from "./components/DemoMode";
 import pomMark from "./assets/pom-mark-dark.png";
 import { BrandLanguageSwitch } from "./components/BrandLanguageSwitch";
 import { Panel, PanelHeader } from "./components/ui";
@@ -172,6 +173,7 @@ function AdminAccessGate({ onAuthenticated }: { onAuthenticated: () => void }) {
               </a>
             ))}
             {access?.demo_mode && <p className="pom-login-error" style={{ opacity: 0.7 }}>{t("accessGate.demoNotice")}</p>}
+            {access?.demo_mode && <DemoExpiredNotice />}
           </div>
         ) : (
           <form ref={formRef} className="pom-login-form" autoComplete="on" onSubmit={(event) => void authenticate(event)}>
@@ -442,6 +444,33 @@ export default function App() {
     };
   }, [pastGate]);
 
+  // A demonstration visit: a seat, or a place in the queue.
+  const demoSeat = useDemoSeat(sessionKnown && isDemoUser());
+  const demoQueued = sessionKnown && isDemoUser() && demoSeat?.state === "queued";
+  // The queue reaches nothing else: once the seat comes, load the panel fresh.
+  const wasQueued = useRef(false);
+  useEffect(() => {
+    if (wasQueued.current && !demoQueued) window.location.reload();
+    wasQueued.current = demoQueued;
+  }, [demoQueued]);
+
+  // A demonstration visit opens on the Chat, not on the Dashboard: the sign-in
+  // lands on `/`, and only that first landing is moved.
+  const navigate = useNavigate();
+  useEffect(() => {
+    if (!sessionKnown || !isDemoUser() || demoSeat?.state !== "active") return;
+    let landed = false;
+    try {
+      landed = window.sessionStorage.getItem("pom.demo.landed") === "1";
+      window.sessionStorage.setItem("pom.demo.landed", "1");
+    } catch {
+      /* without storage, every visit to `/` stays where it is after the first */
+    }
+    if (!landed && location.pathname === "/") navigate("/chat", { replace: true });
+    // Only when the seat is first known.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionKnown, demoSeat?.state]);
+
   // Undefined means the probe has not answered yet. Rendering either branch on
   // a guess flashes the wrong screen, so hold the paint for one request.
   if (adminSurface.isLoading) return <div className="h-full bg-ink" />;
@@ -452,6 +481,7 @@ export default function App() {
   }
   // Past the gate: who this session is decides what the menu offers.
   if (!sessionKnown) return <div className="h-full bg-ink" />;
+  if (demoQueued && demoSeat) return <DemoQueue seat={demoSeat} />;
 
   /*
    * The native macOS status bar panel loads this route inside a narrow
@@ -502,6 +532,11 @@ export default function App() {
         <ErrorBoundary fallback={null}>
           <PluginBridge />
         </ErrorBoundary>
+        {isDemoUser() && (
+          <ErrorBoundary fallback={null}>
+            <DemoWelcome seat={demoSeat} />
+          </ErrorBoundary>
+        )}
         <ErrorBoundary fallback={null}>
           <Sidebar />
         </ErrorBoundary>
@@ -583,7 +618,7 @@ export default function App() {
                         <Route path="/transfers/send" element={<TransfersSendRedirect />} />
                         <Route path="/plugins" element={<Page><Plugins /></Page>} />
                         <Route path="/documentation" element={<Page><Documentation /></Page>} />
-                        <Route path="/config/network" element={<Page><NetworkSettings /></Page>} />
+                        <Route path="/config/network" element={<Page>{isDemoUser() ? <DemoNetwork /> : <NetworkSettings />}</Page>} />
                         <Route path="/config/network/participants" element={<Page><NetworkParticipants /></Page>} />
                         <Route path="/config/my-machine" element={<Page><MyMachine /></Page>} />
                         <Route path="/config/usage" element={<Page><MyBudget /></Page>} />

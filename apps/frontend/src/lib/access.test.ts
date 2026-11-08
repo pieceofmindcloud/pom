@@ -141,6 +141,24 @@ describe("signed-in person (user session)", () => {
     }
   });
 
+  it("shows a demonstration visitor the catalog read-only and opens on the Chat", async () => {
+    const session = await import("./session");
+    session.setSessionInfo({ kind: "user", demo_mode: true, can_mint_keys: false });
+    try {
+      for (const path of ["/plugins", "/models", "/models/slice", "/shards", "/config/network"]) {
+        expect(canAccessRoute(path, "admin")).toBe(true);
+      }
+      for (const path of ["/models/remote", "/transfers", "/network-chat", "/deployments/logs", "/config/network/participants"]) {
+        expect(canAccessRoute(path, "admin")).toBe(false);
+      }
+      expect(homeRoute("admin")).toBe("/chat");
+      session.setSessionInfo({ kind: "user", demo_mode: false });
+      expect(canAccessRoute("/plugins", "admin")).toBe(false);
+    } finally {
+      session.setSessionInfo(null);
+    }
+  });
+
   it("keeps own keys away from every node profile", () => {
     expect(canAccessRoute("/config/my-keys", "admin")).toBe(false);
   });

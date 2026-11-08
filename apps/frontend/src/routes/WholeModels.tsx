@@ -23,6 +23,7 @@ import {
   type ModelSource,
 } from "../lib/types";
 import { useI18n } from "../i18n/provider";
+import { isDemoUser } from "../lib/session";
 import { useState } from "react";
 import { Modal } from "../components/Confirm";
 import { SidecarLinkEditor } from "../components/SidecarLinkEditor";
@@ -106,16 +107,19 @@ export function ModelRow({ model }: { model: DiscoveredModel }) {
         ) : (
           <span className="text-[0.78rem] text-faint">{t("models.mmprojNone")}</span>
         )}
-        <Button size="sm" variant="ghost" className="ml-2 h-6 px-2 text-[0.68rem]" onClick={() => setLinkOpen(true)}>
-          {t("sidecars.linkTitle")}
-        </Button>
+        {!isDemoUser() && (
+          <Button size="sm" variant="ghost" className="ml-2 h-6 px-2 text-[0.68rem]" onClick={() => setLinkOpen(true)}>
+            {t("sidecars.linkTitle")}
+          </Button>
+        )}
         {linkOpen && <WholeModelLinks model={model} onClose={() => setLinkOpen(false)} />}
       </td>
       <td className="whitespace-nowrap px-5 py-3.5">
         <Mono>{bytes(model.size_bytes)}</Mono>
       </td>
       <td className="whitespace-nowrap px-5 py-3.5">
-        <div className="flex shrink-0 items-center gap-2">
+        {/* A demonstration visitor sees the catalog, not its actions. */}
+        <div className={isDemoUser() ? "hidden" : "flex shrink-0 items-center gap-2"}>
           <Link
             to={`/models/slice?path=${encodeURIComponent(model.path)}&name=${encodeURIComponent(model.name)}`}
           >
@@ -199,7 +203,7 @@ export function ImageModelRow({ file }: { file: ImageModelFile }) {
         <Mono>{bytes(file.size_bytes)}</Mono>
       </td>
       <td className="whitespace-nowrap px-5 py-3.5">
-        <Button
+        {!isDemoUser() && <Button
           size="sm"
           variant="ghost"
           icon={<Trash2 className="h-3.5 w-3.5" />}
@@ -207,7 +211,7 @@ export function ImageModelRow({ file }: { file: ImageModelFile }) {
           onClick={() => void remove()}
         >
           {t("models.deleteButton")}
-        </Button>
+        </Button>}
       </td>
     </tr>
   );

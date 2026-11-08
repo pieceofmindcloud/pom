@@ -653,6 +653,9 @@ pub(crate) async fn plugin_rpc(
         query["user_id"] = json!(user.user_id);
         query["user"] = json!(user);
         query["demo_mode"] = json!(crate::user_session::demo_mode());
+        query["user_workspace"] = json!(crate::user_session::user_workspace(&state, &user)
+            .await
+            .to_string_lossy());
     }
     match state
         .plugins

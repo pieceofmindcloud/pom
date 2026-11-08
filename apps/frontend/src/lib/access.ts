@@ -20,7 +20,7 @@
  */
 import type { Profile } from "./profile";
 import { pluginRouteProfiles } from "./pluginUi";
-import { isUserSession, sessionInfo, USER_ROUTES } from "./session";
+import { DEMO_USER_ROUTES, isDemoUser, isUserSession, sessionInfo, USER_ROUTES } from "./session";
 
 /**
  * Route prefix -> profiles that get in.
@@ -108,6 +108,10 @@ export function canAccessRoute(path: string, profile: Profile): boolean {
   if (isUserSession()) {
     if (isUnder(path, "/config/my-keys")) return sessionInfo()?.can_mint_keys === true;
     if (pluginRouteProfiles(path)) return true;
+    if (isDemoUser()) {
+      const pathname = path.split(/[?#]/, 1)[0];
+      if (DEMO_USER_ROUTES.includes(pathname as (typeof DEMO_USER_ROUTES)[number])) return true;
+    }
     return USER_ROUTES.some((prefix) => (prefix === "/" ? path.split(/[?#]/, 1)[0] === "/" : isUnder(path, prefix)));
   }
   // Plugin UIs are local to this node and open to every profile.
@@ -138,6 +142,8 @@ export function canAccessEnterprise(path: string, _active: boolean): boolean {
  * the route table, so as not to become a second list.
  */
 export function homeRoute(profile: Profile): string {
+  // A demonstration visit is timed: it opens on the Chat, what the visit is for.
+  if (isDemoUser()) return "/chat";
   return canAccessRoute("/", profile) ? "/" : "/chat";
 }
 

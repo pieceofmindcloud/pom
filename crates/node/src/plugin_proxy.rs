@@ -400,8 +400,30 @@ pub(crate) async fn plugin_proxy(
     if request.method() == Method::CONNECT {
         return refusal(StatusCode::METHOD_NOT_ALLOWED, "method not supported");
     }
+    let mut request = request;
+    // Who is calling, for a plugin that keeps each person to their own
+    // folder. Never taken from the browser: removed, then set from the
+    // session the gate authenticated.
+    request.headers_mut().remove(USER_HEADER);
+    request.headers_mut().remove(USER_WORKSPACE_HEADER);
+    if let Some(user) = crate::user_session::user_of(request.extensions()).cloned() {
+        let workspace = crate::user_session::user_workspace(&state, &user).await;
+        if let Ok(value) = HeaderValue::from_str(&crate::user_session::user_folder(&user)) {
+            request.headers_mut().insert(HeaderName::from_static(USER_HEADER), value);
+        }
+        if let Ok(value) = HeaderValue::from_str(&workspace.to_string_lossy()) {
+            request
+                .headers_mut()
+                .insert(HeaderName::from_static(USER_WORKSPACE_HEADER), value);
+        }
+    }
     forward(&upstream, &prefix, request).await
 }
+
+/// The signed-in person behind a proxied request (a hash, never their id),
+/// and their own folder inside the workspace. Absent for the operator.
+pub(crate) const USER_HEADER: &str = "x-pom-user";
+pub(crate) const USER_WORKSPACE_HEADER: &str = "x-pom-user-workspace";
 
 #[cfg(test)]
 mod tests {

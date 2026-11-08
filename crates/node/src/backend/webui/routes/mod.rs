@@ -267,6 +267,12 @@ const ROUTE_RULES: &[RouteRule] = &[
         method: None,
         scope: RouteScope::LocalOnly,
     },
+    // A person's seat on a demonstration node (`crate::demo_slots`).
+    RouteRule {
+        prefix: "/api/ui/demo/session",
+        method: None,
+        scope: RouteScope::LocalOnly,
+    },
     RouteRule {
         prefix: "/api/ui/logout",
         method: None,

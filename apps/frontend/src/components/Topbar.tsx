@@ -16,6 +16,7 @@ import { ConnectionBadge } from "./ConnectionStatus";
 import { NatBadge } from "./NatBadge";
 import { Notifications } from "./Notifications";
 import { UsageButton } from "./UsageButton";
+import { DemoClock } from "./DemoMode";
 import { SidebarContent } from "./Sidebar";
 import { Badge, Dot, Skeleton } from "./ui";
 import { OpenNativeChatWindowButton, QuitNativeAppButton } from "./OpenNativeChatWindowButton";
@@ -203,6 +204,7 @@ export function Topbar() {
           <span className="hidden md:contents">
             <ProfileBadge />
           </span>
+          <DemoClock />
           <UsageButton />
           <Notifications />
           <QuitNativeAppButton />

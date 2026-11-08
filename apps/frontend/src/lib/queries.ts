@@ -35,7 +35,7 @@ import { getTrendingModels } from "./publicModelDiscovery";
 import { fetchPublicPlugin, fetchPublicPluginCatalog, type PublicPluginCatalogQuery } from "./pluginCatalog";
 import { jobsPollInterval, offersPollInterval } from "./polling";
 import { isConnecting } from "./connection";
-import { isUserSession } from "./session";
+import { isDemoUser, isUserSession } from "./session";
 import type {
   ConnectionStatus,
   LocalCaStatus,
@@ -232,8 +232,9 @@ function inactivePlugin(code: string): PluginStatus {
 export function usePlugins() {
   return useQuery<PluginStatus[]>({
     queryKey: keys.plugins,
-    // A signed-in person never reaches the catalog (`user_may_call`).
-    enabled: !isUserSession(),
+    // A signed-in person reaches the installed list only on a demonstration
+    // node, read-only (`user_may_call`).
+    enabled: !isUserSession() || isDemoUser(),
     queryFn: () => optional(api.get<PluginStatus[]>("/api/ui/plugins"), []),
     retry: false,
     refetchInterval: 30_000,

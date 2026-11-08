@@ -137,8 +137,9 @@ Models, GGUF reading, planning and slice files. The module is used by
   Tensors with data in the header (the identity `output_norm`) come first.
   `plan::write_virtual_shard` is the apply step that uses it behind
   `POM_VIRTUAL_SLICES=1`; `plan::virtual_slice_refusal` keeps on real
-  slicing only a header it cannot read and a MoE model in several files,
-  since the MoE external executor follows a virtual slice into one source file
+  slicing only a header it cannot read and, when the inference mode is `moe`
+  or `auto`, a MoE model in several files (under `dense` llama.cpp reads the
+  parts itself), since the MoE external executor follows a virtual slice into one source file
   (`moe::format_q4_0::map_tensor_source` in the engine)
   (`docs/superpowers/specs/2026-11-07-layer-range-deployment-design.md`, Part A).
 - `kv_budget.rs` - a pure byte policy of the KV cache. It replicates the row size

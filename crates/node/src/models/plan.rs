@@ -471,15 +471,18 @@ pub fn virtual_slice_dir() -> PathBuf {
 }
 
 /// Why a range of `source` cannot be served through a virtual slice, or
-/// `None` when it can.
-pub fn virtual_slice_refusal(source: &Path) -> Option<String> {
+/// `None` when it can. `moe_executor` says whether the deployment may run the
+/// MoE external executor (inference mode `moe` or `auto`); under `dense`
+/// llama.cpp loads every tensor itself and reads a virtual slice spread over
+/// any number of source files.
+pub fn virtual_slice_refusal(source: &Path, moe_executor: bool) -> Option<String> {
     let info = match crate::gguf::read_info(source) {
         Ok(info) => info,
         Err(error) => return Some(format!("the GGUF header could not be read: {error}")),
     };
     // The MoE external executor follows a virtual slice into one source file
     // (`moe::format_q4_0::map_tensor_source`), not into several parts.
-    if info.is_moe() {
+    if moe_executor && info.is_moe() {
         match crate::multipart::declared_split_count(source) {
             Ok(Some(parts)) if parts > 1 => {
                 return Some(format!("a mixture-of-experts model in {parts} files"))
@@ -927,10 +930,11 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let dense = dir.join("dense.gguf");
         std::fs::write(&dense, crate::splitter::test_gguf_bytes(4)).unwrap();
-        assert_eq!(virtual_slice_refusal(&dense), None);
+        assert_eq!(virtual_slice_refusal(&dense, false), None);
+        assert_eq!(virtual_slice_refusal(&dense, true), None);
         let broken = dir.join("broken.gguf");
         std::fs::write(&broken, b"not a gguf").unwrap();
-        assert!(virtual_slice_refusal(&broken).is_some());
+        assert!(virtual_slice_refusal(&broken, false).is_some());
         std::fs::remove_dir_all(&dir).ok();
     }
 

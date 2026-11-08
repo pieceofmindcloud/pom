@@ -925,7 +925,8 @@ The derived facts the machine needs to know:
   as is (the slice already exists on disk).
 - with `POM_VIRTUAL_SLICES=1` and a model the virtual slice supports
   (`plan::virtual_slice_refusal`: not a mixture-of-experts model split in
-  several files) -> `plan::write_virtual_shard`: a
+  several files under the `moe` or `auto` inference mode, whose external
+  executor reads one source file; `dense` llama.cpp reads any number) -> `plan::write_virtual_shard`: a
   header-only virtual slice of the range under `<project root>/virtual-slices/`
   (outside the model folders, so the catalog never lists it), rewritten on
   every apply in milliseconds, which the engine loads from the whole file

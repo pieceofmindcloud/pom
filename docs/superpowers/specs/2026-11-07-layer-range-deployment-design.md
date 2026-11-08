@@ -213,12 +213,16 @@ that do. Deploy Studio sends `whole_ranges` from its "Split the layers over N
 machines" action and per-range - / + controls (first part of the Deploy
 Studio section), plus locks and Auto-balance by free memory (weights only;
 the KV and compute cost from `engine.estimate` is not counted yet). Several
-ranges per machine is still to do. The overcommit display exists in a first
+ranges per machine were dropped (see "One range per machine" in the Deploy
+Studio section). The overcommit display exists in a first
 form: the capacity preview reports `gpu_layers_fit`, `cpu_layers` and
 `cpu_ram_bytes` for a step (including a range of the own whole file), the
 machine's tab shows "N on GPU, M on CPU", and the note reaches the existing
-confirmation. The launch does not pin `n_gpu_layers` to the estimate yet:
-`fit_memory` still decides the real split at load time. The POM branch pins the engine branch `pom-external-data` (`dc9e951`),
+confirmation. Remaining: pin `n_gpu_layers` to the estimate at launch (today
+`fit_memory` still decides the real split at load time), refuse a range
+whose CPU part does not fit in RAM, count the KV and compute cost in
+Auto-balance, and let Auto-balance propose the least-bad overcommit when
+nothing fits in VRAM. The POM branch pins the engine branch `pom-external-data` (`dc9e951`),
 whose `llama-cpp.lock` points at the fork branch of the same name.
 
 ### Part B: Strata
@@ -369,17 +373,21 @@ machine serves, not only Auto-balance:
   layers from the next machine in the pipeline, or from the previous one for
   the last machine. More precise than dragging on a model with many layers;
   dragging stays.
-- **Lock.** A lock on a card keeps its manual layer count. Auto-balance then
-  spreads only the remaining layers over the unlocked machines, so it never
-  undoes a manual edit; with every card locked it has nothing to do and says
+- **Lock.** A lock on a card keeps its exact range. Auto-balance then spreads
+  the layers of each run of unlocked machines between locked ones, so it never
+  undoes a manual edit; a neighbour's - / + cannot move a cut shared with a
+  locked range, and with fewer than two machines unlocked Auto-balance says
   so.
-- **Several ranges on one machine.** "Add range" on a card gives that machine
-  a second (or third) range, as POM already allows ("one node may serve
-  several ranges", root `AGENTS.md`), for example a machine at both ends of
-  the pipeline. With range loading both come from the same file. Pipeline
-  order still follows layer order, and `merge` still only joins adjacent
-  ranges on the same machine. Each range has its own − / + and lock; removing
-  a range gives its layers to its neighbours.
+- **One range per machine.** A machine serves one contiguous range of the
+  model. Several ranges on one machine were considered and dropped: they
+  existed for the slices world, where a machine reused the files it already
+  had (L0-7 and L24-31 from earlier rounds). With range loading any range
+  costs nothing to create, and any split of layer counts across machines can
+  be laid out contiguously by ordering the machines, so a second range never
+  makes a model fit. It would only add a pipeline hop per generated token
+  (A -> B -> C -> A), a second runtime on the machine, and planner and screen
+  complexity. A machine already serving non-adjacent slices from the slices
+  flow keeps working as it does today.
 - **Limits explained.** When − or + cannot move, the button says why: no valid
   cut there, the neighbour would be left with no layers (remove it from the
   map instead), or the engine cannot spill to the CPU (below). Memory is
@@ -492,8 +500,8 @@ loading.
   `gpu_layers`, the rest runs on the CPU, the warning and confirmation show,
   and the Dashboard reports the CPU layers; a range whose CPU part exceeds the
   RAM is refused; an engine with `cpu_offload: false` stops at the VRAM.
-- **UI**: − / + move by valid cuts and explain each limit; a second range on
-  one machine keeps pipeline order; removing a range hands its layers on.
+- **UI**: − / + move by valid cuts and explain each limit; one range per
+  machine.
 - **Live**: two nodes in isolated containers deploying by range, rebalanced
   without new files.
 

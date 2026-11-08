@@ -66,6 +66,11 @@ pub(crate) struct PluginService {
     /// architecture it runs also runs in slices.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub stage_architectures: Vec<String>,
+    /// For a service with `stages`: the architectures whose stage it can also
+    /// cut from the whole model at run time (`range` in `engine.load`), so the
+    /// machine keeps the whole file and writes no slice. Empty: none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stage_ranges: Vec<String>,
     /// Kind `inference`: the model architectures whose drafter file its engine takes from the deployment.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub draft_architectures: Vec<String>,
@@ -297,6 +302,14 @@ pub(crate) fn parse_services(plugin_code: &str, answer: &Value) -> Vec<PluginSer
                 .as_array()
                 .map(|list| list.iter().filter_map(slug).take(MAX_ARCHITECTURES).collect())
                 .unwrap_or_default(),
+            stage_ranges: if stages {
+                entry["stage_ranges"]
+                    .as_array()
+                    .map(|list| list.iter().filter_map(slug).take(MAX_ARCHITECTURES).collect())
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            },
             stage_architectures: if stages {
                 entry["stage_architectures"]
                     .as_array()

@@ -771,6 +771,8 @@ export interface PluginService {
   stages?: boolean;
   /** Kind `inference` with `stages`: the architectures it runs in slices, when not all of them. */
   stage_architectures?: string[];
+  /** Architectures whose stage it also cuts from the whole model (`range` in `engine.load`). */
+  stage_ranges?: string[];
   /** Kind `inference`: the model architectures whose drafter file its engine takes from the deployment. */
   draft_architectures?: string[];
   /** Kind `inference`: the POM deployment settings that apply to its engine. */

@@ -687,7 +687,11 @@ UI.
   several when the service declares `inference_role`), or
   slices on distinct machines for a service that publishes `stages`, each
   running the plugin's `inference` service. A slice's `engine.load` also gets
-  the `link` from `plugin_stage_link::prepare`. See
+  the `link` from `plugin_stage_link::prepare`. A stage whose file is the whole
+  model (`file_is_whole_model`) also gets `range: {start_layer, end_layer}`;
+  `runs_ranges` says whether a service's `stage_ranges` covers an
+  architecture, and `deploy_block` takes `ranges` for a whole model split in
+  ranges. See
   `docs/subsystems/inference.md`, "Plugin inference services".
 - `engine_telemetry.rs` - what the POM measures about any plugin engine. A
   plugin reports only its basic data in the `done` event (`EngineReport::from_done`:

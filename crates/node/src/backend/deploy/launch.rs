@@ -152,10 +152,12 @@ pub(super) async fn deploy_endpoint(
                 .iter()
                 .map(|step| step.inference_role.unwrap_or(params.inference_role))
                 .collect();
+            let ranges = super::planning::splits_whole_into_ranges(req.kind, &plan.steps);
             plan.blocked = crate::plugin_engine::deploy_block(
                 &state,
                 service,
-                req.kind == DeployKind::Whole,
+                req.kind == DeployKind::Whole && !ranges,
+                ranges,
                 &targets,
                 &roles,
                 survey

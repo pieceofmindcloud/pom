@@ -322,6 +322,7 @@ describe("AddNodeDialog", () => {
       nodeIds: ["n2"],
       stages: false,
       stageArchitectures: [],
+      stageRanges: [],
       vision: false,
     };
     try {

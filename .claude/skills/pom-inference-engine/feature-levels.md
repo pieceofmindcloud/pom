@@ -81,11 +81,11 @@ wraps the engine's own handler). Never patch the engine tree for POM glue.
 | Prompt pieces in flight, answers in order; prompt cache continued on every stage | engine | the prompt reads on both machines at once |
 | Optional: serve a range of the whole model with no slice on disk (llama.cpp: external tensor data, a header-only virtual slice; the node announces `model/range-load-v1`) | engine feature branch | the range answers as the real slice does; nothing written but the header |
 
-A plugin engine cannot yet be handed a range of a whole model: the range
-operations a plugin would describe (`stage_ranges`, `engine.cuts`,
-`engine.estimate`, `range` in `engine.load`) are designed in the layer range
-deployment spec (`docs/superpowers/specs/2026-11-07-layer-range-deployment-design.md`,
-Part B) but not implemented. Plugin engines with stages still run slices.
+A plugin engine may also take a range of the whole model: it lists the
+architecture in `stage_ranges` and gets `range` in `engine.load`
+(`engine-contract.md`). Strata does it for Flash-Next (`--stage-layers`). The
+other range operations of the layer range deployment spec (`engine.cuts`,
+`engine.estimate`) are not implemented: the planner uses the GGUF's cuts.
 
 ## Platforms
 

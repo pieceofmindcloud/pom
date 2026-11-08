@@ -73,7 +73,8 @@ import { DeployProgressModal } from "../components/DeployProgressModal";
 import { trackOf } from "../components/PipelineRail";
 import { tensorParallelModelsOf, wholeModelsOf } from "../lib/wholeModels";
 import { autoBalance, evenSplit, isWholeRangeSplit, stepRange, validEnds, wholeRangesOf } from "../lib/wholeRanges";
-import { inferenceServicesOf, serviceRunsModel, serviceRunsSlices, serviceTakesDraft } from "../lib/inferenceServices";
+import { inferenceServicesOf, serviceRunsModel, serviceCutsRanges,
+  serviceRunsSlices, serviceTakesDraft } from "../lib/inferenceServices";
 import {
   Badge,
   Button,
@@ -519,8 +520,11 @@ export function DeployModel() {
    *  it: then the request names them as `whole_ranges`, and each machine is
    *  applied with its own whole file and its range (nothing is copied). */
   const wholeTotal = wholeModel?.total_layers ?? null;
+  /** llama.cpp, or an inference service whose engine cuts a range of this model from the whole file itself
+   *  (`stage_ranges`, Strata's Flash-Next): ranges of the whole model can be split over the machines that hold it. */
+  const rangesOnWhole = !service || serviceCutsRanges(service, wholeModel?.architecture ?? null);
   const splitsWhole = (candidate: DeploySelection[] | null): candidate is DeploySelection[] =>
-    isWhole && !service && candidate != null && isWholeRangeSplit(candidate, wholeModel?.holders ?? [], wholeTotal);
+    isWhole && rangesOnWhole && candidate != null && isWholeRangeSplit(candidate, wholeModel?.holders ?? [], wholeTotal);
   /** Machines of a split made before the plan knew the GGUF's cuts. The first
    *  split assumes every layer is a valid cut; once the plan answers with
    *  `layer_options`, it is redone on the real cuts (a hybrid model is only cut
@@ -1309,7 +1313,7 @@ export function DeployModel() {
   /** In Pipeline mode a machine without the model is not sent a copy: it
    *  downloads the model (Download here on its card) or gets the file placed.
    *  The ranges the plan would copy name those machines. */
-  const lackingModel = isWhole && !service
+  const lackingModel = isWhole && rangesOnWhole
     ? [...new Set((p?.copies ?? []).filter((copy) => copy.kind === "slice").map((copy) => copy.target_host))]
     : [];
   const canDeploy =
@@ -1635,7 +1639,7 @@ export function DeployModel() {
                 primaryCandidateIds={isTp ? tpCandidates : undefined}
                 primaryNodeId={isTp ? tp.primary_node_id : undefined}
                 onTogglePrimary={isTp ? togglePrimary : undefined}
-                cardFooter={isWhole && !service && wholeModel
+                cardFooter={isWhole && rangesOnWhole && wholeModel
                   ? (nodeId) => wholeModel.holders.includes(nodeId)
                     ? null
                     : <ModelPresence nodeId={nodeId} machine={labelOf(nodeId)} model={wholeModel} />
@@ -1859,7 +1863,7 @@ export function DeployModel() {
                           )) : <span className="text-[0.64rem] text-faint">{t("deployStudio.noLayerAssigned")}</span>}
                         </div>
                       </div>
-                      {isWhole && !service && wholeTotal != null && (() => {
+                      {isWhole && rangesOnWhole && wholeTotal != null && (() => {
                         // Ranges of the whole model, each from the machine's own copy.
                         const holdersOnMap = mapMachineIds.filter((nodeId) => wholeModel?.holders.includes(nodeId));
                         const ends = validEnds(wholeTotal, currentPlan?.layer_options?.cuts.map((cut) => cut.end_layer) ?? null);

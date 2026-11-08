@@ -2289,11 +2289,24 @@ pub(super) fn tp_check_verdict(body: &serde_json::Value, label: &str) -> Option<
 /// A whole model on several machines: each machine left at `Both` (its own role, else the deployment's) runs as
 /// `Shared`, which keeps its plugin's sessions on, so the machines can hand conversations to each other and take a
 /// prompt a prefill machine read. Nothing to do for one machine or for slices.
+/// A whole-model plan cut into ranges, one stage per machine (`whole_ranges`):
+/// some step serves less than the whole model.
+pub(super) fn splits_whole_into_ranges(kind: DeployKind, steps: &[Step]) -> bool {
+    kind == DeployKind::Whole
+        && steps
+            .iter()
+            .any(|step| step.start_layer > 0 || step.total_layers.is_some_and(|total| step.end_layer + 1 < total))
+}
+
 pub(super) fn share_whole_model_roles(
     kind: DeployKind,
     steps: &mut [Step],
     default: crate::webui::InferenceRole,
 ) {
+    // the stages of a range split are not replicas: they share no conversations
+    if splits_whole_into_ranges(kind, steps) {
+        return;
+    }
     let mut machines: Vec<&str> = steps.iter().map(|step| step.target_node_id.as_str()).collect();
     machines.sort();
     machines.dedup();

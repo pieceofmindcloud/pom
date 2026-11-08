@@ -264,6 +264,20 @@ stage A, while the same engine started directly links at once; a real
 two-machine POM deploy must be tried before relying on the bridge path.
 DeepSeek-V4.1 split is still unvalidated.
 
+**Range from the whole model (2026-11-08).** Built as a run-time cut rather
+than virtual slices for Strata: the engine already drives a stage by two
+numbers, so the Strata branch `pom-whole-range` (from the fork's `pom`) adds
+`--stage-layers LO-HI`, opening the whole model and its whole-model pack and
+leaving out what a slice of those layers would not hold. On the same two
+GPUs, prompt and options, layers 0-23 and 24-47 cut this way gave exactly the
+62 tokens of the slice-based split, and stage A loaded the same 771 MiB of
+weights. `pom-plugin-strata` (same branch name) takes `range` in
+`engine.load`, announces `stage_ranges`, shares the plain whole-model pack
+and omits `--ple-gguf` past layer 1. The node splits a Pipeline deployment on
+such a service into ranges, keeps the whole file at apply and sends `range`.
+Not done: `engine.cuts` and `engine.estimate` (the planner uses the GGUF's
+cuts), DeepSeek-V4.1, and a real two-machine deployment through POM.
+
 
 ## Retiring file transfers
 

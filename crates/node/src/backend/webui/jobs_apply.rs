@@ -916,6 +916,29 @@ pub(super) fn seal_single_part(
         .into_owned())
 }
 
+/// Whether this range of the whole model goes to a plugin inference service
+/// that cuts it itself: the deployment names a service, the source is the
+/// whole model (not a slice), and this machine's service lists the model's
+/// architecture in `stage_ranges`.
+async fn plugin_cuts_range(state: &GatewayState, req: &ApplyRequest) -> bool {
+    let Some(service) = req.params.inference_service.as_deref() else {
+        return false;
+    };
+    let source = std::path::PathBuf::from(&req.source_model_path);
+    let info = match tokio::task::spawn_blocking(move || crate::gguf::read_info(&source)).await {
+        Ok(Ok(info)) if info.shard_range.is_none() => info,
+        _ => return false,
+    };
+    crate::plugin_engine::services_of(state, &state.network.node_id)
+        .await
+        .and_then(|services| {
+            services
+                .into_iter()
+                .find(|entry| entry["plugin_code"] == service && entry["kind"] == "inference")
+        })
+        .is_some_and(|entry| crate::plugin_engine::runs_ranges(&entry, info.architecture.as_deref()))
+}
+
 /// This peer's range as a header-only virtual slice of the whole model it
 /// holds, when the node opted in and the model allows it; `None` keeps the
 /// real local slicing.
@@ -1026,6 +1049,14 @@ pub(super) async fn run_apply(
         merged
     } else if req.skip_split || (req.is_first() && req.is_last() && req.peer_count <= 1) {
         // Nothing to carve out: this peer serves the file as it is.
+        req.source_model_path.clone()
+    } else if plugin_cuts_range(&state, &req).await {
+        // The plugin's engine cuts this range from the whole file itself (`range` in `engine.load`): nothing is
+        // written, the file is served as it is.
+        info!(
+            "the inference service cuts layers {}-{} of {} itself; no slice is written",
+            req.start_layer, req.end_layer, req.source_model_path
+        );
         req.source_model_path.clone()
     } else if let Some(path) = virtual_shard_for(&req, job_id).await? {
         path

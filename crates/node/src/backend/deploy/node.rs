@@ -520,6 +520,7 @@ pub(super) async fn add_node_endpoint(
             &state,
             service,
             whole,
+            false,
             std::slice::from_ref(&req.target_node_id),
             &[node_params.inference_role],
             architecture.as_deref(),

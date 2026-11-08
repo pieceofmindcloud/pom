@@ -366,6 +366,35 @@ pub(super) fn planned_copies(plan: &Plan) -> Vec<PlannedCopy> {
     out
 }
 
+/// Why a plan that would copy files cannot go on. Deployments no longer copy
+/// weights between machines: each machine serves from its own copy of the
+/// model, downloaded there or placed by hand (`/api/transfer/*` stays only so
+/// an older admin can still deploy to this node, and is deprecated). The
+/// reason names each machine and what it lacks, `None` when nothing would be
+/// copied.
+pub(crate) fn copies_refusal(copies: &[PlannedCopy]) -> Option<String> {
+    if copies.is_empty() {
+        return None;
+    }
+    let mut lacking: Vec<String> = Vec::new();
+    for copy in copies {
+        let what = match (copy.kind, copy.layers) {
+            ("slice", Some([start, end])) => format!("{} (layers {start}-{end})", copy.name),
+            ("mmproj", _) => format!("the vision projector {}", copy.name),
+            ("mtp", _) => format!("the MTP draft {}", copy.name),
+            _ => copy.name.clone(),
+        };
+        let line = format!("{} has no {what}", copy.target_host);
+        if !lacking.contains(&line) {
+            lacking.push(line);
+        }
+    }
+    Some(format!(
+        "{}. Files are not copied between machines: download the model there, or place the file in one of its model folders and rescan",
+        lacking.join("; ")
+    ))
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct RouteOption {
     pub(super) from_node_id: String,

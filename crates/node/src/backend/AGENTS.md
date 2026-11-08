@@ -513,7 +513,9 @@ boundary.
   `/api/ui/leave`) deletes its `.bin`/`.json` files, resets
   `GatewayState.prefix_disk` and clears the inference server's host-memory
   cache. See `http-api.md`.
-- `transfer.rs` (1542) - slice push/pull over HTTP `Range` with resume and MD5;
+- `transfer.rs` (1542) - **deprecated**: `routes()` adds `Deprecation: true` to every answer;
+  served one more release for older admins, then removed (deploys no longer copy:
+  `deploy::planning::copies_refusal`). Slice push/pull over HTTP `Range` with resume and MD5;
   offers carry only a `stat`, the digest is computed by the receiver. Pushes
   accept only a catalog basename in `filename`, resolve it server-side and
   require `.gguf` or no extension. Manifest v1 are merged by `pom_id` on the receiving peer,

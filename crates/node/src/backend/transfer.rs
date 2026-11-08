@@ -127,7 +127,24 @@ fn is_finished(state: &str) -> bool {
     matches!(state, TRANSFER_DONE | TRANSFER_FAILED | TRANSFER_CANCELLED)
 }
 
+/// Deprecated. Deployments no longer copy files between machines (a plan that
+/// would is refused, `deploy::planning::copies_refusal`) and the screens no
+/// longer offer sending. These routes stay for one release so an older admin
+/// can still deploy to this node; every answer carries `Deprecation: true`.
+/// The next release removes them and this module.
 pub fn routes() -> Router<GatewayState> {
+    deprecated_routes().layer(axum::middleware::map_response(
+        |mut response: axum::response::Response| async move {
+            response.headers_mut().insert(
+                axum::http::HeaderName::from_static("deprecation"),
+                axum::http::HeaderValue::from_static("true"),
+            );
+            response
+        },
+    ))
+}
+
+fn deprecated_routes() -> Router<GatewayState> {
     Router::new()
         // Serving side
         .route("/api/transfer/manifest", get(manifest))

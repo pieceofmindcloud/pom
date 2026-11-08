@@ -7,11 +7,11 @@ order: 50
 ---
 
 :::lead
-São três atos distintos, e vale separá-los na cabeça: cortar o arquivo, levar os pedaços às máquinas certas, e mandar as máquinas carregarem o que receberam.
+São três atos distintos, e vale separá-los na cabeça: cortar o arquivo, levar o modelo às máquinas certas, e mandar as máquinas carregarem a faixa delas.
 :::
 
 :::note Antes de tudo, um modelo
-Os modelos inteiros vêm das pastas de modelos da máquina. Para baixar um, use Encontrar Modelos HF: a tela mostra a licença antes do download e o progresso fica em Transferências. Um modelo que cabe inteiro numa máquina pode ser implantado sem fatiar.
+Os modelos inteiros vêm das pastas de modelos da máquina. Para baixar um, use Encontrar Modelos HF: a tela mostra a licença antes do download e o progresso fica em Downloads. Um modelo que cabe inteiro numa máquina pode ser implantado sem fatiar.
 :::
 
 :::diagram slicing
@@ -26,20 +26,11 @@ Você monta uma lista de fatias e dá a cada uma um alvo em GB; a última pode s
 Camada é unidade indivisível, então o que você pediu e o que saiu quase nunca batem exatamente. A tela mostra os números lado a lado: o alvo pedido, a faixa que saiu e o tamanho real do arquivo.
 :::
 
-## 2. Distribuir (Transferências)
+## 2. D## 2. Levar o modelo a cada máquina (Downloads)
 
-Uma fatia chega à outra máquina de dois jeitos: ela puxa, ou o dono do arquivo oferece. Uma oferta aparece como notificação do outro lado e só começa depois de aceita - nunca se escreve no disco alheio sem convite.
+Arquivos não são mais enviados entre máquinas. Cada máquina que serve uma faixa guarda a própria cópia do modelo inteiro: baixe nela (por Encontrar Modelos HF, ou **Baixar aqui** no cartão dela na tela de implantação, que usa o mesmo repositório e arquivo que outra máquina baixou), ou copie o arquivo para uma das pastas de modelos dela e **Varrer**. A máquina serve a faixa dela a partir dessa cópia; nada passa pela rede antes de o modelo começar.
 
-:::cards
-### Retomada
-O arquivo baixa como .part e continua de onde parou. Interromper não significa recomeçar.
-### Conferência
-O arquivo é conferido antes de tomar o nome final. Não bateu, o parcial é apagado.
-### Espaço em disco
-Verificado antes de começar, e a implantação conta a união das fatias mais o que ainda falta.
-:::
-
-## 3. Implantar (Implantar na rede)
+mplantar (Implantar na rede)
 
 Aqui você escolhe qual máquina serve qual faixa e manda o cluster carregar. O nó sugere uma distribuição; a sua escolha viaja na requisição e o cluster é revarrido na hora de aplicar, em vez de confiar na prévia. Os cartões do mapa mostram quanto de memória cada máquina vai usar depois do deploy.
 
@@ -83,5 +74,5 @@ Pipeline e tensor parallelism
 :::
 
 :::deep docs/subsystems/file-transfer.md
-Transferência entre máquinas
+As transferências entre máquinas, aposentadas
 :::

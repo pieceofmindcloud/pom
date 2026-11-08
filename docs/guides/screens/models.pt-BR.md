@@ -24,8 +24,6 @@ Lidas do cabeçalho do GGUF, sem carregar o modelo. O número de camadas é o qu
 O projetor de visão que pertence ao modelo, quando existe. **Visão e MTP** liga a este modelo um projetor ou um rascunho MTP encontrado em qualquer máquina da rede.
 ### Fatiar
 Abre Fatiar modelos com este arquivo escolhido.
-### Enviar
-Oferece o arquivo a outra máquina, em Transferências. O outro lado precisa aceitar.
 :::
 
 :::note De onde vêm estes arquivos

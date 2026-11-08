@@ -656,9 +656,13 @@ add up. `Step.capacity` (`CapacityPreview`) is the step alone.
 ## 4. Execution (`deploy_endpoint` -> `run`)
 
 1. `deploy_endpoint` rescans (`survey`), replans, refuses `blocked`/empty,
-   refuses with 409 `transfers_not_authorized` (and the `copies`) a plan whose
-   `copies` (`planned_copies`: every slice, rank or sidecar that crosses
-   machines) is not empty unless the request carries `allow_transfers: true`,
+   refuses with 409 `machine_lacks_files` (and the `copies`) a plan whose
+   `copies` (`planned_copies`: every slice, rank or sidecar that would cross
+   machines) is not empty, naming each machine and what it lacks
+   (`planning::copies_refusal`); `allow_transfers` is still parsed for an older
+   screen and authorizes nothing. The preview marks the same plan `blocked`
+   with that reason. Weights no longer travel between nodes: a machine
+   downloads the model or gets the file placed,
    creates the job ("Deploy {deployment_name} on {n} nodes") and spawns the
    execution. The job is claimed by `claim_deploy_job`, which records its
    `deployment_name` and refuses with 409 `deploy_in_progress` (and the running
@@ -690,11 +694,10 @@ add up. `Step.capacity` (`CapacityPreview`) is the step alone.
 5. `done` = "the model is serving on the network"; an error becomes a `failed`
    job.
 
-The Deploy screen lists `Plan.copies` (file, range, from, to, size) in an
-"Authorize the copies" window, after the coverage and capacity confirms and
-before the in-service one, and only then sends `allow_transfers`. A 409 from a
-cluster that moved since the preview opens the same window with the node's
-list. The job carries `deploy_id`, and the deploy stays registered as in flight
+Steps 2 and 3 (the `Pull`s over the transfer transport) no longer run from a
+current admin, since a plan with copies is refused; they stay one release for
+an older admin deploying to this node and are removed with `transfer.rs`. The
+job carries `deploy_id`, and the deploy stays registered as in flight
 (`lifecycle::in_flight`: its task and the copies already asked of the targets)
 until `run` ends.
 

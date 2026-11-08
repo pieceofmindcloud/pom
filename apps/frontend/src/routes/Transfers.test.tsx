@@ -23,6 +23,7 @@ vi.mock("../components/ModelDownloadsPanel", () => ({
 vi.mock("../lib/api", () => ({ api: { post: vi.fn() } }));
 vi.mock("../lib/queries", () => ({
   useModelDownloads: vi.fn(() => queryResult([])),
+  useServingMachines: () => [],
   useOffers: vi.fn(() => queryResult({ offers: [] })),
   useTransfers: vi.fn(() => queryResult(transfersState.value)),
   useCluster: vi.fn(() => queryResult({ peers: [{ node_id: "atena", is_self: false, short_id: "b2c3", addr: "10.0.0.2:8080", node: { hostname: "atena" } }] })),
@@ -54,11 +55,9 @@ describe("Transfers", () => {
     expect(screen.getByTestId("model-downloads-panel")).toBeTruthy();
   });
 
-  it("sends a file from the same screen, above what is under way", () => {
+  it("offers no way to send a file: files are not copied between machines", () => {
     renderScreen();
-    const send = screen.getByTestId("send-file");
-    expect(send.textContent).toContain("atena");
-    expect(send.compareDocumentPosition(screen.getByTestId("model-downloads-panel")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByTestId("send-file")).toBeNull();
   });
 
   it("shows an active transfer as a full-width table row with its progress", () => {

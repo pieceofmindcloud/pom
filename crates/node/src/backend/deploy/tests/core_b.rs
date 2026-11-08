@@ -672,6 +672,23 @@ fn the_copies_a_deploy_makes_are_listed_for_authorization() {
     assert!(planned_copies(&local).is_empty());
 }
 
+/// Nothing is copied any more: a plan that would copy names the machine and
+/// what it lacks, and one that copies nothing is not refused.
+#[test]
+fn a_plan_that_would_copy_is_refused_by_name() {
+    let ms = vec![
+        whole_machine("tem", 900_000, true),
+        whole_machine("nao-tem", 900_000, false),
+    ];
+    let p = whole("qwen3.5-9b", &ms, Some(&[pick(0, 31, "nao-tem")]));
+    let reason = super::planning::copies_refusal(&planned_copies(&p)).unwrap();
+    assert!(reason.contains("has no"), "{reason}");
+    assert!(reason.contains("layers 0-31"), "{reason}");
+    assert!(reason.contains("download the model there"), "{reason}");
+    let local = whole("qwen3.5-9b", &ms, Some(&[pick(0, 31, "tem")]));
+    assert_eq!(super::planning::copies_refusal(&planned_copies(&local)), None);
+}
+
 /// A machine that does not have the file receives a copy, exactly like a
 /// slice - and the plan names who sends it.
 #[test]

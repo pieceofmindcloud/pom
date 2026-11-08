@@ -44,7 +44,7 @@ Fora da mesma rede local, a descoberta automática não alcança o administrador
 :::checklist Pronto para o próximo passo quando
 - As duas máquinas aparecem no Painel.
 - A senha padrão do painel foi trocada em Preferências.
-- Há um modelo GGUF na pasta de modelos, ou um download concluído em Transferências.
+- Há um modelo GGUF na pasta de modelos, ou um download concluído em Downloads.
 :::
 
 :::faq

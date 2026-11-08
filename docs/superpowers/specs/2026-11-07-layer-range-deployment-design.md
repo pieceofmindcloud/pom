@@ -559,6 +559,12 @@ loading.
    Download here for sidecars; weights / KV / compute per card.
 8. Retire transfers: first release stops planning copies and offering sends
    (routes kept, deprecated); the next removes `transfer.rs` and the routes.
+   First stage done: plans with copies are blocked and refused
+   (`machine_lacks_files`), `allow_transfers` is ignored, `/api/transfer/*`
+   answers carry `Deprecation: true`, and the send panel, the slices
+   screen's Send to and the full models screen's Send are gone; Transfers is
+   now Downloads. The repository has no release notes file: the break for an
+   older admin has to be written in the GitHub release of this version.
 9. Docs: `slicing.md`, `deployment.md`, `inference.md` (plugin engine
    contract), `plugins-ui.md` (describe fields), `file-transfer.md` (retired),
    `http-api.md`, the root `AGENTS.md` invariants, the guides, and the

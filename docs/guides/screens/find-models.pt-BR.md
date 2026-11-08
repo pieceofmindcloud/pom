@@ -19,7 +19,7 @@ Digite um modelo, um autor ou um termo relacionado. **Apenas GGUF** deixa só os
 ### Abrir os detalhes
 Cada repositório lista os arquivos GGUF com os tamanhos e a licença. Um modelo restrito (gated) é marcado antes de qualquer download.
 ### Baixar
-O diálogo mostra a pasta para onde o arquivo vai. Quando o download começa, o diálogo e os detalhes do modelo se fecham e o progresso aparece no painel de downloads. **Cancelar** tira do painel um download ainda não concluído, e **Tentar de novo** num download que falhou o substitui pela nova tentativa; **Descartar** tira do painel um download que falhou, sem tentar de novo. O download continua se você sair da tela ou recarregar, e aparece também em Transferências.
+O diálogo mostra a pasta para onde o arquivo vai. Quando o download começa, o diálogo e os detalhes do modelo se fecham e o progresso aparece no painel de downloads. **Cancelar** tira do painel um download ainda não concluído, e **Tentar de novo** num download que falhou o substitui pela nova tentativa; **Descartar** tira do painel um download que falhou, sem tentar de novo. O download continua se você sair da tela ou recarregar, e aparece também em Downloads.
 
 Um modelo dividido em vários arquivos baixa todos eles, e o espaço mostrado conta todos. **Baixar também** lista os projetores de visão e os rascunhos MTP do repositório; marque os que a implantação precisa e eles vêm na mesma ação, cada um com a própria linha.
 

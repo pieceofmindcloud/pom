@@ -1722,18 +1722,13 @@ machine restarted. Today the fingerprint is only model + set of ranges.
   Redeploying the same shape from the Deploy Studio (same proven model, same
   machines and ranges) also lands on the same `deploy_id`; changing machine or
   range mints a new id. See `deployment.md` §7.1.
-- **Transfer** (`Transfers` with its `SendFilePanel`, `Notifications`): remote model downloads
-  with progress and cancellation, pending offers (accept/refuse straight from
-  the bell), active transfers (bytes, speed, ETA, cancel) and finished ones.
-  Sending ("send a file from this machine") offers a file from the local
-  catalog through `POST /api/transfer/send`; the receiver only sees an opaque
-  grant (`grant`), so "send anything" never becomes "read anything". Progress
-  comes from the nodes, so reloading the tab loses nothing.
-  `POM_DEV_AUTO_ACCEPT_TRANSFERS=1` (a variable of the receiving process, read
-  at startup) accepts every offer without a click - dev only. Peers on the same
-  machine share the hostname, so the destination and the availability label
-  carry the start of the `node_id` when the name repeats (`uniquePeerName` in
-  `lib/peerName.ts`, used by `routes/Shards.tsx`). Offers, active and finished transfers in `Transfers`
+- **Downloads** (`Transfers`, menu "Downloads", and `Notifications`): this machine's model
+  downloads and one panel per other machine, with progress and cancellation; pending offers
+  from an older admin (accept/refuse straight from the bell), active transfers (bytes, speed,
+  ETA, cancel) and finished ones. Nothing offers sending any more: the send panel, the
+  slices screen's "Send to..." and the full models screen's Send were removed with deploy
+  copies. `POM_DEV_AUTO_ACCEPT_TRANSFERS=1` still accepts every offer without a click (dev
+  only). Offers, active and finished transfers in `Transfers`
   are each a full-width table (it used to be a list of cards), with the
   accept/refuse/cancel action in the last column.
 

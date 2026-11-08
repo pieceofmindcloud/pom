@@ -689,10 +689,9 @@ Per-file list:
   serve any model are listed as taken over ("Replace and deploy"), and the
   machines outside the plan that serve this same model get the choice between
   "Undeploy and deploy" and "Keep in parallel", which sends
-  `keep_existing: true`. Before it, when `DeployPlan.copies` is not empty,
-  "Authorize the copies" lists each file, range, source and target; only its
-  confirmation sends `allow_transfers: true`, and a 409
-  `transfers_not_authorized` reopens it with the node's list. The confirms
+  `keep_existing: true`. There is no copy authorization any more: a plan with
+  `copies` comes `blocked` from the node, which names the machine, and the
+  screen never sends `allow_transfers`. The confirms
   chain through `attemptDeploy`.
   Topology edits are debounced 260 ms and validated by
   `POST /api/ui/deploy/plan`. Runtime parameters, per-machine GPU/KV overrides
@@ -869,20 +868,11 @@ Per-file list:
   tells you to use the authorized node instead of telling you to look for a route fault. Who
   picks it is the guard in `../App.tsx`, through the table in `../lib/access.ts`.
 ## Models, slicing and transfers
-- `SendFile.tsx` - offers a `.gguf` from the local catalog via
-  `POST /api/transfer/send` (`{to_node_id, filename}`). The UI displays the
-  friendly name and full path, but sends only the basename; the backend resolves
-  it again and the receiver sees only an opaque grant. It is `SendFilePanel`,
-  the first panel of `Transfers.tsx`, not a screen of its own; `?filename=`
-  preselects the file, and `/transfers/send` redirects to `/transfers` keeping
-  the query.
-- `Shards.tsx` - "Fatias": every local slice always listed (the Nodes screen
-  only shows the difference), with who is missing it. Pipeline `parts` and TP
+- `Shards.tsx` - "Fatias": every local slice always listed, kept for slice sets made before
+  range loading and for staged services; it lists and deletes, and no longer sends. Pipeline `parts` and TP
   `tp_parts` are separate sections; TP groups are ordered by group size and
   rows use the one-based labels `1of2`, `2of2`, and so on, with the zero-based
-  rank shown alongside. Sends via `POST /api/transfer/send`; deletes via
-  `../lib/deleteModel`. `uniquePeerName` (`../lib/peerName`) disambiguates same-hostname peers with
-  the node_id prefix. Full-bleed shell; each `ShardCard` carries the set's
+  rank shown alongside. Deletes via `../lib/deleteModel`. Full-bleed shell; each `ShardCard` carries the set's
   vision / MTP link editor (`SidecarLinkEditor`), with the compatible files of
   every machine from `useClusterCatalog`.
 - `SliceModels.tsx` - "Fatiar": full-bleed shell. Pipeline and Tensor
@@ -910,8 +900,8 @@ Per-file list:
   declared part and an explicit instruction to keep the set together before
   POM slicing; incomplete sets surface the backend reason and leave the start
   action disabled.
-- `Transfers.tsx` - The one Transfers screen (a single menu entry): the send
-  panel (`SendFilePanel`, from `SendFile.tsx`) first, then remote model downloads from `useModelDownloads` in
+- `Transfers.tsx` - The Downloads screen (menu "Downloads", route `/transfers`): this machine's
+  model downloads (`useModelDownloads`) and one `MachineDownloadsPanel` per other machine, in
   the same in-progress screen as pending offers (accept/reject via
   `POST /api/transfer/offers/:id/accept|reject`), active transfers (bytes +
   speed + ETA + cancel via `POST /api/transfer/jobs/:id/cancel`), and finished

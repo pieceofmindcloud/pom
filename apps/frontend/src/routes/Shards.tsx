@@ -1,29 +1,21 @@
 /**
- * The slices on this machine, and who else in the network is missing them.
- *
- * Every local slice is listed, always — the panel on the Nodes screen is a
- * *difference* list and goes empty when both machines already agree, which is
- * exactly when it looks like sending a slice is impossible. Here the slice is
- * always there and the destination picker is the one that narrows.
+ * The slices on this machine, kept for slice sets made before range loading
+ * and for staged services. Files are no longer sent between machines, so
+ * the screen lists and deletes them only.
  */
-import { Layers, PackageOpen, RefreshCw, Trash2 } from "lucide-react";
-import { useState } from "react";
+import { PackageOpen, RefreshCw, Trash2 } from "lucide-react";
 import {
   Badge,
   Button,
   Empty,
   ErrorState,
-  Footnote,
   FullBleedHeader,
   Panel,
   PanelHeader,
-  Select,
   Skeleton,
 } from "../components/ui";
-import { api } from "../lib/api";
 import { bytes, layerRange, num } from "../lib/format";
 import { deleteModel } from "../lib/deleteModel";
-import { uniquePeerName } from "../lib/peerName";
 import { useClusterCatalog, useCluster, useLocalCatalog } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import { tpPartsOf, type DiscoveredModel, type PeerCatalog, type ShardSet } from "../lib/types";
@@ -56,17 +48,11 @@ function PartRows({
   parts,
   tensorParallel,
   heading,
-  peersMissing,
-  aloneInNetwork,
-  onSend,
   onDelete,
 }: {
   parts: DiscoveredModel[];
   tensorParallel: boolean;
   heading: string;
-  peersMissing: (shard: DiscoveredModel) => PeerCatalog[];
-  aloneInNetwork: boolean;
-  onSend: (shard: DiscoveredModel, nodeId: string) => void;
   onDelete: (shard: DiscoveredModel) => void;
 }) {
   const { t } = useI18n();
@@ -78,7 +64,6 @@ function PartRows({
       </div>
       <div className="divide-y divide-line">
         {parts.map((s) => {
-          const missing = peersMissing(s);
           const tensorLabel = tensorParallel && s.tp_rank != null
             ? `${s.tp_rank + 1}of${s.tp_size ?? "?"}`
             : null;
@@ -122,27 +107,6 @@ function PartRows({
               >
                 {t("models.deleteButton")}
               </Button>
-              <div className="flex shrink-0 items-center gap-2">
-                {missing.length === 0 ? (
-                  <span className="text-[0.78rem] text-faint">
-                    {aloneInNetwork ? t("shards.noOtherMachine") : t("shards.everyoneHas")}
-                  </span>
-                ) : (
-                  <Select
-                    className="w-52"
-                    value=""
-                    aria-label={t("shards.sendAria", { name: s.name })}
-                    onChange={(e) => e.target.value && onSend(s, e.target.value)}
-                  >
-                    <option value="">{t("shards.sendTo")}</option>
-                    {missing.map((p) => (
-                      <option key={p.node_id} value={p.node_id}>
-                        {uniquePeerName(p, missing)}
-                      </option>
-                    ))}
-                  </Select>
-                )}
-              </div>
             </div>
           );
         })}
@@ -154,19 +118,13 @@ function PartRows({
 function ShardCard({
   set,
   peers,
-  peersMissing,
-  aloneInNetwork,
-  onSend,
   onDelete,
 }: {
   set: ShardSet;
   /** Every machine's catalog: where the sidecars that can be linked live. */
   peers: PeerCatalog[] | undefined;
-  peersMissing: (shard: DiscoveredModel) => PeerCatalog[];
   /** No other machine is on the network at all — different from "everyone
       already has this slice", and the label has to say so. */
-  aloneInNetwork: boolean;
-  onSend: (shard: DiscoveredModel, nodeId: string) => void;
   onDelete: (shard: DiscoveredModel) => void;
 }) {
   const { t } = useI18n();
@@ -215,9 +173,6 @@ function ShardCard({
         parts={set.shards}
         tensorParallel={false}
         heading={t("shards.parts")}
-        peersMissing={peersMissing}
-        aloneInNetwork={aloneInNetwork}
-        onSend={onSend}
         onDelete={onDelete}
       />
       {tpGroups.map(([size, parts]) => (
@@ -226,9 +181,6 @@ function ShardCard({
           parts={parts}
           tensorParallel
           heading={size > 0 ? t("shards.tpGroup", { size }) : t("shards.tpParts")}
-          peersMissing={peersMissing}
-          aloneInNetwork={aloneInNetwork}
-          onSend={onSend}
           onDelete={onDelete}
         />
       ))}
@@ -242,21 +194,9 @@ export function Shards() {
   const cluster = useCluster();
   const clusterCatalog = useClusterCatalog();
   const toast = useToast();
-  const [sending, setSending] = useState<string | null>(null);
 
   const sets = catalog.data?.shard_sets ?? [];
   const selfId = cluster.data?.self_id;
-  const others = (clusterCatalog.data?.peers ?? []).filter((p) => !p.is_self);
-
-  /** A peer is missing a slice when nothing it reports has that filename. */
-  const peersMissing = (shard: DiscoveredModel) =>
-    others.filter((p) => {
-      const known = [
-        ...(p.models ?? []),
-        ...(p.shard_sets ?? []).flatMap((s) => [...s.shards, ...tpPartsOf(s)]),
-      ];
-      return !known.some((m) => m.name === shard.name);
-    });
 
   async function remove(shard: DiscoveredModel) {
     try {
@@ -267,22 +207,6 @@ export function Shards() {
       }
     } catch (e) {
       toast.fromError(t("models.deleteFailed"), e);
-    }
-  }
-
-  async function send(shard: DiscoveredModel, nodeId: string) {
-    setSending(shard.id);
-    try {
-      const filename = shard.path.split(/[\\/]/).pop() ?? shard.name;
-      await api.post("/api/transfer/send", { to_node_id: nodeId, filename });
-      toast.success(
-        t("shards.offerSent"),
-        t("shards.offerSentDetail"),
-      );
-    } catch (e) {
-      toast.fromError(t("shards.offerFailed"), e);
-    } finally {
-      setSending(null);
     }
   }
 
@@ -328,25 +252,12 @@ export function Shards() {
               key={set.group}
               set={set}
               peers={clusterCatalog.data?.peers}
-              peersMissing={peersMissing}
-              aloneInNetwork={others.length === 0}
-              onSend={(shard, nodeId) => void send(shard, nodeId)}
               onDelete={(shard) => void remove(shard)}
             />
           ))}
         </div>
       </div>
 
-      {sets.length > 0 && (
-        <Footnote
-          className="shrink-0 border-t border-line px-4 py-2.5"
-          icon={<Layers className="h-3.5 w-3.5" />}
-        >
-          {sending
-            ? t("shards.sending")
-            : t("shards.offerDetail")}
-        </Footnote>
-      )}
     </div>
   );
 }

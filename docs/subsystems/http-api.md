@@ -1439,9 +1439,12 @@ refused so a preference that will not be honored is not presented.
 
 `DeployPlan.copies` lists every file the deploy would copy between machines
 (`kind` `slice`/`mmproj`/`mtp`, `name`, `size_bytes`, `layers`, source and
-target node and host). `POST /api/ui/deploy` with copies and without
-`allow_transfers: true` answers 409 `{error, code: "transfers_not_authorized",
-copies}` before touching any peer. The deploy job carries `deploy_id`, and
+target node and host). The preview of a plan with copies is `blocked` with a
+reason naming each machine and what it lacks, and `POST /api/ui/deploy` answers
+409 `{error, code: "machine_lacks_files", copies}` before touching any peer;
+`allow_transfers` is accepted and ignored. Every `/api/transfer/*` answer
+carries `Deprecation: true`: the routes stay one release for older admins and
+are then removed. The deploy job carries `deploy_id`, and
 `POST /api/ui/undeploy` stops a deploy of that id still in flight (task
 aborted, copies cancelled on the targets), answering `cancelled: true`.
 

@@ -190,9 +190,9 @@ pub struct DeployRequest {
     /// because a node serves one model at a time.
     #[serde(default)]
     pub keep_existing: bool,
-    /// The operator authorized the copies this deploy makes (`Plan.copies`).
-    /// Without it a deploy that has to copy any file is refused with
-    /// `transfers_not_authorized` before anything moves.
+    /// Deprecated: once authorized the copies this deploy made. Still read so
+    /// an older screen's request parses; a plan with copies is refused with
+    /// `machine_lacks_files` whatever it says (`planning::copies_refusal`).
     #[serde(default)]
     pub allow_transfers: bool,
 }

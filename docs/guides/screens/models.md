@@ -24,8 +24,6 @@ Read from the GGUF header, without loading the model. The number of layers is wh
 The vision projector that belongs to the model, when there is one. **Vision and MTP** links a projector or an MTP draft found anywhere in the network to this model.
 ### Slice
 Opens Slice models with this file chosen.
-### Send
-Offers the file to another machine, in Transfers. The other side has to accept.
 :::
 
 :::note Where these files come from

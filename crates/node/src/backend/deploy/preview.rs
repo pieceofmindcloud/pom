@@ -101,6 +101,11 @@ pub(super) async fn plan_endpoint(
     if let Some(reason) = survey.metadata_pending {
         p.blocked = Some(reason);
     }
+    // `copies` stays in the answer so a screen can name the machines; the
+    // plan is blocked because nothing is copied any more.
+    if p.blocked.is_none() {
+        p.blocked = super::planning::copies_refusal(&p.copies);
+    }
     if p.blocked.is_none() {
         if let Some(service) = req.params.inference_service.as_deref() {
             super::planning::share_whole_model_roles(req.kind, &mut p.steps, req.params.inference_role);

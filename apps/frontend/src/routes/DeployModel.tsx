@@ -87,7 +87,6 @@ import {
 import type {
   DeployKind,
   DeployPlan,
-  PlannedCopy,
   DeploySelection,
   DeployStrategy,
   CacheTypesResponse,
@@ -350,11 +349,6 @@ export function DeployModel() {
   /** Third confirm: machines that already serve a model would be taken over
    *  or undeployed by this deploy. */
   const [inServiceAsked, setInServiceAsked] = useState(false);
-  /** The copies waiting for the operator's authorization, when the deploy
-   *  moves files between machines; `null` while nothing is being asked. */
-  const [copiesAsked, setCopiesAsked] = useState<PlannedCopy[] | null>(null);
-  /** The operator authorized the copies of this deploy gesture. */
-  const transfersAllowed = useRef(false);
   const [running, setRunning] = useState(false);
   const [cacheTypeK, setCacheTypeK] = useState<KvCacheType>("f16");
   const [cacheTypeV, setCacheTypeV] = useState<KvCacheType>("f16");
@@ -1168,7 +1162,6 @@ export function DeployModel() {
           : {}),
         ...sidecarChoices(),
         ...(keepExisting ? { keep_existing: true } : {}),
-        ...(transfersAllowed.current ? { allow_transfers: true } : {}),
       });
       setJobId(started.job_id);
       setProgressOpen(true);
@@ -1184,11 +1177,6 @@ export function DeployModel() {
       });
       invalidate();
     } catch (e) {
-      // The node found copies the screen did not ask about (the cluster moved
-      // since the preview): ask now, with the node's own list.
-      const refused = e instanceof ApiError && e.status === 409
-        ? (e.body as { code?: string; copies?: PlannedCopy[] } | undefined)
-        : undefined;
       const inProgress = e instanceof ApiError && e.status === 409
         ? (e.body as { code?: string; job_id?: string } | undefined)
         : undefined;
@@ -1198,11 +1186,9 @@ export function DeployModel() {
         setJobId(inProgress.job_id);
         setProgressOpen(true);
         invalidate();
-      } else if (refused?.code === "transfers_not_authorized" && refused.copies?.length) {
-        setInServiceAsked(false);
-        transfersAllowed.current = false;
-        setCopiesAsked(refused.copies);
       } else {
+        // A machine that lacks a file (`machine_lacks_files`) is named in the
+        // node's message: files are not copied between machines any more.
         toast.fromError(t("deploy.startFailed"), e);
       }
     } finally {
@@ -1381,15 +1367,10 @@ export function DeployModel() {
   function attemptDeploy(from: "coverage" | "capacity" | "copies" | "inService" = "coverage") {
     setAsked(false);
     setCapacityAsked(false);
-    setCopiesAsked(null);
-    if (from === "coverage") transfersAllowed.current = false;
-    const copies = p?.copies ?? [];
     if (from === "coverage" && !p?.complete) {
       setAsked(true);
     } else if ((from === "coverage" || from === "capacity") && capacityWarnMachines.length > 0) {
       setCapacityAsked(true);
-    } else if (from !== "inService" && copies.length > 0 && !transfersAllowed.current) {
-      setCopiesAsked(copies);
     } else if (replacedPeers.length > 0 || elsewherePeers.length > 0) {
       setInServiceAsked(true);
     } else {
@@ -2158,54 +2139,6 @@ export function DeployModel() {
         onConfirm={() => attemptDeploy("copies")}
         onCancel={() => setCapacityAsked(false)}
       />
-
-      <Modal
-        open={copiesAsked !== null}
-        title={t("deploy.copiesTitle")}
-        onClose={() => setCopiesAsked(null)}
-        footer={
-          <>
-            <Button variant="ghost" disabled={running} onClick={() => setCopiesAsked(null)}>
-              {t("common.cancel")}
-            </Button>
-            <Button
-              variant="primary"
-              loading={running}
-              data-testid="deploy-authorize-copies"
-              onClick={() => {
-                transfersAllowed.current = true;
-                attemptDeploy("inService");
-              }}
-            >
-              {t("deploy.copiesAuthorize")}
-            </Button>
-          </>
-        }
-      >
-        <div className="text-[0.8rem] leading-relaxed text-muted" data-testid="deploy-copies">
-          <p>
-            {t("deploy.copiesDetail", {
-              count: copiesAsked?.length ?? 0,
-              size: bytes((copiesAsked ?? []).reduce((sum, copy) => sum + copy.size_bytes, 0)),
-            })}
-          </p>
-          <ul className="mt-2 divide-y divide-line overflow-hidden rounded-lg border border-line">
-            {(copiesAsked ?? []).map((copy) => (
-              <li key={`${copy.kind}:${copy.target_node_id}:${copy.name}`} className="flex flex-col gap-0.5 px-3 py-2">
-                <span className="flex items-baseline justify-between gap-3">
-                  <span className="truncate text-fg">
-                    {copy.layers
-                      ? `${deployModelDisplayName(chosen)} · ${layerRange(copy.layers[0], copy.layers[1])}`
-                      : t(copy.kind === "mtp" ? "deploy.copyMtp" : "deploy.copyMmproj", { name: copy.name })}
-                  </span>
-                  <span className="shrink-0 font-mono text-xs">{bytes(copy.size_bytes)}</span>
-                </span>
-                <span className="text-xs">{t("deploy.copyRoute", { from: copy.source_host, to: copy.target_host })}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      </Modal>
 
       <Modal
         open={inServiceAsked}

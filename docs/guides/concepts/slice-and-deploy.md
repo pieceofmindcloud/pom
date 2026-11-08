@@ -7,11 +7,11 @@ order: 50
 ---
 
 :::lead
-These are three separate acts, and it helps to keep them apart: cutting the file, getting the pieces to the right machines, and telling those machines to load what they received.
+These are three separate acts, and it helps to keep them apart: cutting the file, getting the model onto the right machines, and telling those machines to load their range of it.
 :::
 
 :::note First of all, a model
-Full models come from the machine's model folders. To download one, use Find HF models: the screen shows the license before the download and the progress shows up in Transfers. A model that fits whole on one machine can be deployed without slicing.
+Full models come from the machine's model folders. To download one, use Find HF models: the screen shows the license before the download and the progress shows up in Downloads. A model that fits whole on one machine can be deployed without slicing.
 :::
 
 :::diagram slicing
@@ -26,18 +26,9 @@ You build a list of slices and give each a target in GB; the last one can simply
 A layer is indivisible, so what you asked for and what came out almost never match exactly. The screen shows the numbers side by side: the target, the resulting range and the real file size.
 :::
 
-## 2. Distribute (Transfers)
+## 2. Get the model onto each machine (Downloads)
 
-A slice reaches another machine in one of two ways: it pulls, or the file's owner offers. An offer shows up as a notification on the other side and only starts once accepted - nothing is ever written to someone else's disk uninvited.
-
-:::cards
-### Resume
-The file downloads as .part and picks up where it stopped. Interrupting it does not mean starting over.
-### Verification
-The file is checked before it takes its final name. If it does not match, the partial file is deleted.
-### Disk space
-Checked before starting, and deployment counts the union of the slices plus what is still missing.
-:::
+Files are no longer sent between machines. Each machine that serves a range keeps its own copy of the whole model: download it there (from Find HF models, or **Download here** on its card in the deploy screen, which uses the same repository and file another machine downloaded), or copy the file into one of its model folders and **Rescan**. A machine serves its range from that copy; nothing crosses the network before the model starts.
 
 ## 3. Deploy (Deploy to network)
 
@@ -83,5 +74,5 @@ Pipeline and tensor parallelism
 :::
 
 :::deep docs/subsystems/file-transfer.md
-Transfers between machines
+The retired transfers between machines
 :::

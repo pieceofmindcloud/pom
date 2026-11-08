@@ -17,6 +17,15 @@ const dump = reference as ReferenceDump;
 // The dump is the frozen pre-ICU baseline. Keep intentional product-copy
 // revisions here rather than rewriting the generated 1.8 MB single-line file.
 const copyUpdates: Record<string, string> = {
+  // Transfers became Downloads when deployments stopped copying files.
+  "en:nav.transfers": "Downloads",
+  "pt-BR:nav.transfers": "Downloads",
+  "en:transfers.title": "Downloads",
+  "pt-BR:transfers.title": "Downloads",
+  "en:transfers.subtitle":
+    "The models each machine is downloading. Files are no longer sent between machines; an older admin's transfer to this machine still shows here.",
+  "pt-BR:transfers.subtitle":
+    "Os modelos que cada máquina está baixando. Arquivos não são mais enviados entre máquinas; uma transferência de um admin mais antigo para esta máquina ainda aparece aqui.",
   // "Network" beside "Networks" in the main menu read as the same thing twice.
   "en:nav.network": "My Network",
   "pt-BR:nav.network": "Minha Rede",
@@ -115,13 +124,15 @@ const MOVED_TO_PLUGINS = new Set([
   "chat.ttftPipeline",
 ]);
 // Keys of the repetition-cycle detector, removed from the POM with it, of
-// the one-machine limit a whole model no longer has, and of the profiles
-// renamed to `worker` and `visitor`.
+// the one-machine limit a whole model no longer has, of the profiles
+// renamed to `worker` and `visitor`, and of sending files between machines.
 const removed = (key: string) =>
   /^(profile|network\.enrollment|publicNetworks\.roleTip|quickSetup\.role)\.(node|infer)$/.test(key) ||
   key.startsWith("deploy.cycleDetection") ||
   key.includes(".knob.cycle_detection_") ||
-  key.startsWith("deploy.wholeSingleMachine");
+  key.startsWith("deploy.wholeSingleMachine") ||
+  // Sending files between machines, retired with deployments that copy.
+  /^(sendFile\.|deploy\.copies|deploy\.copy|shards\.send|shards\.offer|shards\.sending$|shards\.noOtherMachine$|shards\.everyoneHas$)/.test(key);
 const moved = (key: string) =>
   key.startsWith("chat.telemetry.") || MOVED_TO_PLUGINS.has(key) || removed(key);
 

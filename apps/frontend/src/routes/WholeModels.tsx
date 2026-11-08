@@ -1,4 +1,4 @@
-import { Boxes, FolderSearch, RefreshCw, Scissors, Trash2, Upload } from "lucide-react";
+import { Boxes, FolderSearch, RefreshCw, Scissors, Trash2 } from "lucide-react";
 import { Link } from "react-router-dom";
 import {
   Badge,
@@ -117,20 +117,6 @@ export function ModelRow({ model }: { model: DiscoveredModel }) {
               {t("models.slice")}
             </Button>
           </Link>
-          {/\.gguf$/i.test(model.path) && (
-            <Link
-              to={`/transfers?filename=${encodeURIComponent(model.path.split(/[\\/]/).pop() ?? "")}`}
-            >
-              <Button
-                size="sm"
-                variant="ghost"
-                icon={<Upload className="h-3.5 w-3.5" />}
-                aria-label={t("models.sendAria", { name: model.name })}
-              >
-                {t("models.send")}
-              </Button>
-            </Link>
-          )}
           <Button
             size="sm"
             variant="ghost"

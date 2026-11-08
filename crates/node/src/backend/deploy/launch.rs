@@ -180,19 +180,18 @@ pub(super) async fn deploy_endpoint(
         )
             .into_response();
     }
-    // Copying a file is the operator's act, never a side effect of Deploy: the
-    // screen lists `plan.copies` and asks before sending `allow_transfers`.
-    // Checked on the fresh survey, so a copy the preview did not show is
-    // refused too, before any peer is touched.
-    if !plan.copies.is_empty() && !req.allow_transfers {
+    // Weights are not copied between machines any more: a machine without the
+    // file downloads it or gets it placed. `allow_transfers` is still read
+    // (an older screen sends it) and no longer authorizes anything. Checked on
+    // the fresh survey, so a copy the preview did not show is refused too,
+    // before any peer is touched.
+    if let Some(reason) = super::planning::copies_refusal(&plan.copies) {
+        let _ = req.allow_transfers;
         return (
             axum::http::StatusCode::CONFLICT,
             Json(json!({
-                "error": format!(
-                    "this deploy copies {} file(s) between machines; authorize the transfers to go on",
-                    plan.copies.len()
-                ),
-                "code": "transfers_not_authorized",
+                "error": reason,
+                "code": "machine_lacks_files",
                 "copies": plan.copies,
             })),
         )

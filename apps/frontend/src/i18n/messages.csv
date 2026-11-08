@@ -618,17 +618,6 @@ deploy.capacityWarnDetail,"The projected use is over capacity on {machines}. lla
 deploy.capacityWarnTitle,Projection exceeds a machine''s VRAM,A projeção passa da VRAM de uma máquina
 deploy.checking,checking…,conferindo…
 deploy.chooseMachine,— choose machine —,— escolher máquina —
-deploy.copiesAuthorize,Authorize and deploy,Autorizar e implantar
-deploy.copiesDetail,"{count, plural, one {This deploy copies # file ({size}) to a machine that does not have it yet.} other {This deploy copies # files ({size}) to machines that do not have them yet.}} Nothing is copied without your authorization.","{count, plural, one {Esta implantação copia # arquivo ({size}) para uma máquina que ainda não o tem.} other {Esta implantação copia # arquivos ({size}) para máquinas que ainda não os têm.}} Nada é copiado sem a sua autorização."
-deploy.copiesTitle,Authorize the copies,Autorizar as cópias
-deploy.copy, · copy, · copiar
-deploy.copyAndMerge,copy from {host} and merge into {range},copiar de {host} e fundir em {range}
-deploy.copyCount,"{count}{count, plural, =1 { copy} other { copies}}","{count}{count, plural, =1 { cópia} other { cópias}}"
-deploy.copyFrom,copy from {host},copiar de {host}
-deploy.copyMmproj,Vision projector {name},Projetor de visão {name}
-deploy.copyMtp,MTP draft {name},Rascunho MTP {name}
-deploy.copyRoute,from {from} to {to},de {from} para {to}
-deploy.copySummary,"{count}{count, plural, =1 { copy} other { copies}} · {size} over the network","{count}{count, plural, =1 { cópia} other { cópias}} · {size} pela rede"
 deploy.coverage,Layers covered by this selection,Camadas cobertas pela escolha
 deploy.deploy,Deploy this way,Implantar assim
 deploy.deployment,Deployment,Implantação
@@ -1640,7 +1629,7 @@ nav.sharing,Sharing,Compartilhamento
 nav.sliceModels,Slice models,Fatiar modelos
 nav.statistics,Statistics,Estatísticas
 nav.storage,Storage,Armazenamento
-nav.transfers,Transfers,Transferências
+nav.transfers,Downloads,Downloads
 nav.trustAnchor,Trust root,Raiz de confiança
 nav.trustMachine,This machine,Esta máquina
 network.acceptedEnrollments,Accepting new members,Aceitando novos membros
@@ -2591,25 +2580,6 @@ remoteModels.trending,Trending GGUF models,Modelos GGUF em alta
 remoteModels.trendingSubtitle,"Public Hugging Face discovery, without signing in.","Descoberta pública do Hugging Face, sem precisar entrar."
 remoteModels.updated,Updated,Atualizado
 remoteModels.verifying,Verifying,Verificando
-sendFile.choose,Choose…,Escolher…
-sendFile.destination,Destination machine,Máquina de destino
-sendFile.file,GGUF file,Arquivo GGUF
-sendFile.fileAndTarget,File and destination,Arquivo e destino
-sendFile.fileHint,Only files from the local catalog with the .gguf extension can be sent.,Só arquivos do catálogo local com extensão .gguf podem ser enviados.
-sendFile.howItWorks,How it works,Como funciona
-sendFile.inviteOnly,Nothing is written to another machine''s disk without an invitation. The other side sees the offer in the bell and decides.,Nada é gravado no disco alheio sem convite. O outro lado vê a oferta no sino e decide.
-sendFile.noPeers,No other machine on the network,Nenhuma outra máquina na rede
-sendFile.noPeersDetail,There is no destination available. Check discovery under Settings › Network.,Não há para quem enviar. Confira a descoberta em Configurações › Rede.
-sendFile.offer,Offer file,Oferecer o arquivo
-sendFile.offerFailed,The offer was not sent,A oferta não saiu
-sendFile.offerNotWrite,"Offer, not remote write","Oferta, não escrita"
-sendFile.offerSent,Offer sent,Oferta enviada
-sendFile.offerSentDetail,The owner of the other machine must accept before any bytes leave this machine.,O dono da outra máquina precisa aceitar; só então os bytes saem daqui.
-sendFile.pickFromList,Choose a file…,Escolher um arquivo…
-sendFile.received,"Once accepted, the destination machine fetches the file and stores it in its shard folder''s received/ directory.","Depois de aceita, a máquina de destino busca o arquivo e o grava em received/, dentro da pasta de fatias dela."
-sendFile.resume,"The transfer resumes with Range and verifies MD5 before the file gets its final name. If it does not match, the partial file is deleted.","A transferência retoma por Range e o MD5 é conferido antes de o arquivo tomar o nome final. Se não bater, o parcial é apagado."
-sendFile.subtitle,Choose a GGUF already present in this machine''s catalog and a destination.,Escolha um GGUF que já esteja no catálogo desta máquina e uma máquina de destino.
-sendFile.title,Send a file from this machine,Enviar um arquivo desta máquina
 setup.addresses,Addresses other nodes should use,Endereços que os outros nós devem usar
 setup.adminDetail,Creates the cluster key and administers the network.,Cria a chave do cluster e administra a rede.
 setup.connectionKey,Cluster connection key,Chave de conexão do cluster
@@ -2849,18 +2819,9 @@ setupWizard.welcomeTitle,Welcome to POM,Bem-vindo ao POM
 shards.complete,covers model,cobre o modelo
 shards.empty,No shards on this machine,Nenhuma fatia nesta máquina
 shards.emptyDetail,Shards appear here after local slicing or an accepted transfer. They are stored in the configured shard folder.,Fatias aparecem aqui depois de um fatiamento local ou de uma transferência aceita. Elas são gravadas na pasta de fatias configurada.
-shards.everyoneHas,everyone already has it,todas já têm
 shards.incomplete,incomplete coverage,cobertura incompleta
-shards.noOtherMachine,no other machine,nenhuma outra máquina
-shards.offerDetail,"Sending creates an offer. The owner of the other machine accepts it, and only then do bytes leave this machine.","Enviar cria uma oferta: o dono da outra máquina aceita, e só então os bytes saem daqui."
-shards.offerFailed,The offer was not sent,A oferta não saiu
-shards.offerSent,Offer sent,Oferta enviada
-shards.offerSentDetail,The other machine must accept before the transfer starts.,O outro lado precisa aceitar antes de a transferência começar.
 shards.parts,Pipeline parts,Partes do pipeline
 shards.rescan,Scan again,Varrer de novo
-shards.sendAria,Send {name} to,Enviar {name} para
-shards.sendTo,Send to…,Enviar para…
-shards.sending,Sending offer…,Enviando oferta…
 shards.set,Shard set,Conjunto de fatias
 shards.setDetail,"{count}{count, plural, =1 { shard of a } other { shards of a }}{total}-layer model","{count}{count, plural, =1 { fatia de um modelo de } other { fatias de um modelo de }}{total} camadas"
 shards.setUnknown,"{count}{count, plural, =1 { shard} other { shards}}","{count}{count, plural, =1 { fatia} other { fatias}}"
@@ -3039,8 +3000,8 @@ transfers.remaining,remaining,faltam
 transfers.replyNeeded,Your response is needed,Precisa da sua resposta
 transfers.sendFile,Send a file,Enviar um arquivo
 transfers.sendingTo,sending to {host},enviando para {host}
-transfers.subtitle,"A 10 GB shard takes minutes over a real link, so every transfer resumes and verifies MD5 before using the final file name.","Uma fatia de 10 GB leva minutos no enlace real, então tudo aqui retoma de onde parou e confere o MD5 antes de o arquivo tomar o nome final."
-transfers.title,Transfers,Transferências
+transfers.subtitle,"The models each machine is downloading. Files are no longer sent between machines; an older admin's transfer to this machine still shows here.","Os modelos que cada máquina está baixando. Arquivos não são mais enviados entre máquinas; uma transferência de um admin mais antigo para esta máquina ainda aparece aqui."
+transfers.title,Downloads,Downloads
 trustAnchor.anchored,This node has a trust root,Este nó tem raiz de confiança
 trustAnchor.anchoredElsewhereDetail,The root was brought in by the operator and this node checks the administrators' chain against it.,A raiz foi trazida pelo operador e este nó confere a cadeia dos administradores contra ela.
 trustAnchor.anchoredHereDetail,The root is this machine's own key. Its fingerprint is what the operator carries to every other node.,A raiz é a chave desta máquina. A impressão digital dela é o que o operador leva a cada outro nó.

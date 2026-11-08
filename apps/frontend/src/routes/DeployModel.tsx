@@ -1895,6 +1895,13 @@ export function DeployModel() {
                           </div>
                         );
                       })()}
+                      {(currentPlan?.steps ?? [])
+                        .filter((step) => step.target_node_id === machine.node_id && step.note)
+                        .map((step) => (
+                          <p key={`note-${step.start_layer}`} className="mt-2 border-l-2 border-amber/50 pl-2 text-[0.62rem] leading-snug text-amber">
+                            {step.note}
+                          </p>
+                        ))}
                       <div className="mt-3 border-t border-aqua/15 pt-2">
                         <p className="text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-aqua">{t("deployStudio.layersOnPeer")}</p>
                         <div className="mt-1.5 flex flex-wrap gap-1">

@@ -576,7 +576,7 @@
             WholeRangeSelection { node_id: "a".into(), start_layer: 0, end_layer: 15 },
             WholeRangeSelection { node_id: "b".into(), start_layer: 16, end_layer: 31 },
         ];
-        let blocked_for = |range_load: bool| {
+        let plan_for = |range_load: bool| {
             let mut machines = build(vec![
                 m("a", 900_000, &[(0, 31)]),
                 m("b", 900_000, &[(0, 31)]),
@@ -597,10 +597,44 @@
                 None,
             );
             assert!(plan.steps.iter().all(|step| step.note.as_deref().is_none_or(|note| !note.contains("over the network"))));
-            plan.blocked
+            plan
         };
-        assert!(blocked_for(false).is_some_and(|reason| reason.contains("free on disk")));
-        assert_eq!(blocked_for(true), None);
+        assert!(plan_for(false).blocked.is_some_and(|reason| reason.contains("free on disk")));
+        let ready = plan_for(true);
+        assert_eq!(ready.blocked, None);
+        assert!(ready.steps.iter().all(|step| step.note.is_none()), "a target that points at its range writes nothing");
+    }
+
+    #[test]
+    fn a_target_without_range_load_is_told_it_writes_the_range_to_disk() {
+        let mut machines = build(vec![
+            m("a", 900_000, &[(0, 31)]),
+            m("b", 900_000, &[(0, 31)]),
+        ]);
+        let options = WholeLayerOptions {
+            source_node_id: "a".to_string(),
+            total_layers: 32,
+            cuts: vec![LayerCut { end_layer: 15, layers: 16, size_bytes: GIB, remainder_bytes: GIB }],
+            granularity: Some(1),
+            rule: "every layer".to_string(),
+            reason: None,
+        };
+        let selection = super::add_whole_ranges(
+            &mut machines,
+            "model",
+            &[
+                WholeRangeSelection { node_id: "a".into(), start_layer: 0, end_layer: 15 },
+                WholeRangeSelection { node_id: "b".into(), start_layer: 16, end_layer: 31 },
+            ],
+            &options,
+        )
+        .unwrap();
+        let plan = super::plan("model", &machines, Some(&selection), &RuntimeParams::default(), false, DeployKind::Whole, None);
+        assert!(plan.blocked.is_none(), "{:?}", plan.blocked);
+        for step in &plan.steps {
+            let note = step.note.as_deref().unwrap_or_default();
+            assert!(note.contains("written to disk") && note.contains("model/range-load-v1"), "{note}");
+        }
     }
 
     #[test]

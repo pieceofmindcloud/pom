@@ -776,6 +776,13 @@ pub(super) fn seal_single_part(
 /// real local slicing.
 async fn virtual_shard_for(req: &ApplyRequest, job_id: &str) -> anyhow::Result<Option<String>> {
     if !plan::virtual_slices_enabled() {
+        info!(
+            "{} is not set: cutting layers {}-{} of {} locally",
+            crate::brand::env_var(plan::VIRTUAL_SLICES_ENV),
+            req.start_layer,
+            req.end_layer,
+            req.source_model_path
+        );
         return Ok(None);
     }
     let source = std::path::PathBuf::from(&req.source_model_path);

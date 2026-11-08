@@ -1790,6 +1790,16 @@ pub(super) fn plan_with_rtt_options(
                     }
                 }
 
+                // Nothing travels, but a target without range loading still
+                // writes the range as a real slice: say so before the deploy.
+                if problem.is_none() && note.is_none() && from_whole && !writes_nothing {
+                    note = Some(format!(
+                        "{} cuts this range from its own copy: {} GB written to disk (it does not announce {})",
+                        target.map(|t| t.label()).unwrap_or_default(),
+                        gb(needed_mb(c.size_bytes)),
+                        crate::pipeline::CAP_RANGE_LOAD
+                    ));
+                }
                 if let Some(p) = &problem {
                     blocked.get_or_insert(p.clone());
                 }

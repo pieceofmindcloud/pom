@@ -160,7 +160,10 @@ outright. Such a step never gets the "over the network"
 note, and the disk check charges a real slice of the range only when the
 target does not announce `model/range-load-v1` (`pipeline::CAP_RANGE_LOAD`,
 announced with `POM_VIRTUAL_SLICES=1`): without it the target cuts the range
-locally.
+locally, the step's `note` says so ("cuts this range from its own copy: N GB
+written to disk"), and Deploy Studio shows step notes in the machine's tab.
+On the target, the fallback logs "POM_VIRTUAL_SLICES is not set: cutting
+layers a-b of <model> locally".
 
 The preflight also checks the output contract the loader requires. For the
 `deepseek4` architecture, `llama.cpp` requires `token_embd.weight`,

@@ -708,6 +708,19 @@ describe("DeployModel · whole model", () => {
     });
   });
 
+  it("shows in the machine tab the note the node gives a step", async () => {
+    post.mockImplementation((url: string, body: { kind?: string }) => {
+      if (url !== "/api/ui/deploy/plan" || body?.kind !== "whole") return Promise.resolve(body?.kind === "whole" ? wholePlan() : shardPlan());
+      const plan = wholePlan();
+      plan.steps[0].note = "ksia cuts this range from its own copy: 5 GB written to disk (it does not announce model/range-load-v1)";
+      return Promise.resolve(plan);
+    });
+    mount();
+    chooseWhole();
+    await ensureWholeMachine();
+    expect(await screen.findByText(/ksia cuts this range from its own copy/)).toBeTruthy();
+  });
+
   it("redoes the split on the GGUF's real cuts when the node refuses the first guess", async () => {
     answerPlans();
     const plain = post.getMockImplementation()!;

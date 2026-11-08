@@ -244,6 +244,26 @@ Before Part B ships: the split output of DeepSeek-V4.1 must be compared with
 the whole model (the plugin README notes it has not been), and the stage link
 tested on Metal if Macs are to take part.
 
+**Split validation (2026-11-08, Flash-Next).** Qwen3.8-Flash-Next IQ3_XXS
+(48 layers, two GGUF files), cut by POM's slicer at layer 23 into two real
+slices, each packed with the runtime's `iq_pack.py`. The whole model ran on
+one GPU (RTX 5060 Ti) and the split as two stages (layers 0-23 on an RTX
+3060 with `--stage-serve`, 24-47 on the 5060 Ti with `--stage-prev`), both
+driven directly over the engine's stdin protocol with the same 30-token
+prompt, greedy, thinking off, `STRATA_ROUTE_PRIOR=0`,
+`STRATA_PREFILL_CPU_SHARE=0`. Result: the same correct answer, the first 40
+of 55 tokens identical, then a paraphrase of the second sentence (55 vs 62
+tokens). The difference is explained by the expert cache: the GPU rounds
+cached experts differently from the CPU, and the cache held 6,564 experts on
+the 5060 Ti but 2,164 on the 3060, so different experts ran on different
+hardware; `--expert-cache 0` does not disable the cache, so an exact run was
+not possible. Verdict: the split is functionally correct, not proven
+bit-identical. Open: started through the plugin's HTTP bridge
+(`pom_strata_server.py`) with a hand-written config, stage B never linked to
+stage A, while the same engine started directly links at once; a real
+two-machine POM deploy must be tried before relying on the bridge path.
+DeepSeek-V4.1 split is still unvalidated.
+
 
 ## Retiring file transfers
 
@@ -524,8 +544,8 @@ loading.
 2. POM: step form, capability, journal, fallback to slicing; llama.cpp only.
 3. Planner and Auto-balance with live memory and the full parameter set.
 4. Hybrid and MoE families on llama.cpp.
-5. Strata: validation of the existing split, fork range loading from a whole
-   pack, plugin operations.
+5. Strata: validation of the existing split (done for Flash-Next, see Part
+   B), fork range loading from a whole pack, plugin operations.
 6. Remote download and rescan on another machine; Downloads screen.
 7. Deploy Studio: single Pipeline mode, machine cards with Download here,
    range editor, memory per machine; removal of the slice screens.

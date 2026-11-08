@@ -531,10 +531,10 @@ pub(crate) async fn forward_to_node(
     else {
         return (
             StatusCode::NOT_FOUND,
-            Json(json!({
+            Json(json!({ "error": {
                 "code": "node_not_found",
-                "error": "that machine is not in the network",
-            })),
+                "message": "that machine is not in the network",
+            } })),
         )
             .into_response();
     };
@@ -551,10 +551,10 @@ pub(crate) async fn forward_to_node(
         Err(error) => {
             return (
                 StatusCode::BAD_GATEWAY,
-                Json(json!({
+                Json(json!({ "error": {
                     "code": "node_unreachable",
-                    "error": format!("could not reach that machine: {error:#}"),
-                })),
+                    "message": format!("could not reach that machine: {error:#}"),
+                } })),
             )
                 .into_response();
         }
@@ -1781,7 +1781,7 @@ mod tests {
         .await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         let body = crate::gateway::testkit::body_of(response).await;
-        assert_eq!(body["code"], "node_not_found");
+        assert_eq!(body["error"]["code"], "node_not_found");
         assert_eq!(webui::jobs().read().await.len(), before);
 
         let remote = Query(NodeQuery {

@@ -3,13 +3,14 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocaleProvider } from "../i18n/provider";
 import { cancelRemoteModelDownload, dismissRemoteModelDownload, retryRemoteModelDownload } from "../lib/api";
-import { useModelDownloads } from "../lib/queries";
+import { useMachineDownloads, useModelDownloads } from "../lib/queries";
 import { ToastProvider } from "../lib/toast";
 import type { Job } from "../lib/types";
-import { ModelDownloadsPanel } from "./ModelDownloadsPanel";
+import { MachineDownloadsPanel, ModelDownloadsPanel } from "./ModelDownloadsPanel";
 
 vi.mock("../lib/queries", () => ({
   useModelDownloads: vi.fn(),
+  useMachineDownloads: vi.fn(),
 }));
 vi.mock("../lib/api", () => ({
   cancelRemoteModelDownload: vi.fn(),
@@ -68,7 +69,7 @@ describe("ModelDownloadsPanel", () => {
     expect(screen.getByText("/models/model-Q5_K_M.gguf")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(cancelRemoteModelDownload).toHaveBeenCalledWith("download-1");
+    expect(cancelRemoteModelDownload).toHaveBeenCalledWith("download-1", undefined);
   });
 
   it("keeps retry as a backend action for a failed job", () => {
@@ -80,17 +81,55 @@ describe("ModelDownloadsPanel", () => {
       error: "The provider could not complete this download",
     });
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
-    expect(retryRemoteModelDownload).toHaveBeenCalledWith("download-1");
+    expect(retryRemoteModelDownload).toHaveBeenCalledWith("download-1", undefined);
   });
 
   it("lets a failed job be dismissed", () => {
     renderPanel({ ...job, state: "failed", step: "failed", download_status: "failed" });
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
-    expect(dismissRemoteModelDownload).toHaveBeenCalledWith("download-1");
+    expect(dismissRemoteModelDownload).toHaveBeenCalledWith("download-1", undefined);
   });
 
   it("offers no Dismiss while the download runs", () => {
     renderPanel();
     expect(screen.queryByRole("button", { name: "Dismiss" })).toBeNull();
+  });
+
+  it("names another machine and acts on its download there", () => {
+    vi.mocked(useMachineDownloads).mockReturnValue({
+      data: [job],
+      isError: false,
+      isLoading: false,
+      error: null,
+      refetch: vi.fn(),
+    } as never);
+    render(
+      <LocaleProvider initialLocale="en">
+        <ToastProvider>
+          <MachineDownloadsPanel nodeId="worker-1" name="gpu-box" />
+        </ToastProvider>
+      </LocaleProvider>,
+    );
+    expect(screen.getByText("Downloads on gpu-box")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(cancelRemoteModelDownload).toHaveBeenCalledWith("download-1", "worker-1");
+  });
+
+  it("shows nothing for a machine that cannot be asked", () => {
+    vi.mocked(useMachineDownloads).mockReturnValue({
+      data: undefined,
+      isError: true,
+      isLoading: false,
+      error: new Error("old node"),
+      refetch: vi.fn(),
+    } as never);
+    const { container } = render(
+      <LocaleProvider initialLocale="en">
+        <ToastProvider>
+          <MachineDownloadsPanel nodeId="worker-1" name="gpu-box" />
+        </ToastProvider>
+      </LocaleProvider>,
+    );
+    expect(container.textContent).toBe("");
   });
 });

@@ -1015,11 +1015,15 @@ Key logic carriers:
   the effective source, and the panel invalidates status/config after saving.
 - `DownloadModelDialog.tsx` - the confirmation of a remote download; it calls only the
   structured API, shows the available space and the model folders resolved by
-  the backend, without accepting a path from the browser.
+  the backend, without accepting a path from the browser. **Download on** (shown when
+  `useServingMachines` lists other non-visitor peers) sends `node_id`: that machine downloads
+  with its own token and folder, so this machine's space and folders are hidden and do not block.
 - `ModelDownloadsPanel.tsx` - the progress, local destination, cancellation and retry of
   `model_download` jobs coming from `useModelDownloads`; it is reused in Remote
   Models and Transfers. The source of truth is the node and the panel creates no
-  local downloader.
+  local downloader. `MachineDownloadsPanel` is the same list for another machine
+  (`useMachineDownloads`, `GET .../downloads?node_id=`), its actions pass that `node_id`; it
+  renders nothing when the machine cannot be asked (an older node).
 
 Links to other folders: everything imports `../lib/*` - `api.ts` (HTTP client
 with connection-key auth), `queries.ts` (all React Query hooks: `useNode`,

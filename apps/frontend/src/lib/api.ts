@@ -25,7 +25,7 @@ import type {
   RuntimeParams,
   KvCacheType,
 } from "./types";
-import type { KvCacheCleared, NetworkChatRequest } from "./types";
+import type { Job, KvCacheCleared, NetworkChatRequest } from "./types";
 
 const KEY_STORAGE = storageKey("connectionKey");
 
@@ -396,6 +396,13 @@ export interface RemoteModelDownloadRequest {
   revision?: string;
   filename: string;
   quantization?: string;
+  /** Another machine that downloads, with its own token into its own folder. */
+  nodeId?: string;
+}
+
+/** `?node_id=` for a download route that names another machine, or nothing. */
+function nodeQuery(nodeId?: string) {
+  return nodeId ? `?node_id=${encodeURIComponent(nodeId)}` : "";
 }
 
 export function startRemoteModelDownload(request: RemoteModelDownloadRequest) {
@@ -404,24 +411,41 @@ export function startRemoteModelDownload(request: RemoteModelDownloadRequest) {
     revision: request.revision ?? null,
     filename: request.filename,
     quantization: request.quantization ?? null,
+    ...(request.nodeId ? { node_id: request.nodeId } : {}),
   });
 }
 
-export function cancelRemoteModelDownload(downloadId: string) {
+/** The model downloads of another machine (or this one), newest first. */
+export function listRemoteModelDownloads(nodeId?: string, signal?: AbortSignal) {
+  return api.get<{ node_id: string; downloads: Job[] }>(
+    `/api/ui/model-provider/downloads${nodeQuery(nodeId)}`,
+    { signal },
+  );
+}
+
+export function cancelRemoteModelDownload(downloadId: string, nodeId?: string) {
   return api.post<{ download_id: string; status: string }>(
-    `/api/ui/model-provider/downloads/${encodeURIComponent(downloadId)}/cancel`,
+    `/api/ui/model-provider/downloads/${encodeURIComponent(downloadId)}/cancel${nodeQuery(nodeId)}`,
   );
 }
 
-export function dismissRemoteModelDownload(downloadId: string) {
+export function dismissRemoteModelDownload(downloadId: string, nodeId?: string) {
   return api.post<{ download_id: string; dismissed: boolean }>(
-    `/api/ui/model-provider/downloads/${encodeURIComponent(downloadId)}/dismiss`,
+    `/api/ui/model-provider/downloads/${encodeURIComponent(downloadId)}/dismiss${nodeQuery(nodeId)}`,
   );
 }
 
-export function retryRemoteModelDownload(downloadId: string) {
+export function retryRemoteModelDownload(downloadId: string, nodeId?: string) {
   return api.post<{ download_id: string }>(
-    `/api/ui/model-provider/downloads/${encodeURIComponent(downloadId)}/retry`,
+    `/api/ui/model-provider/downloads/${encodeURIComponent(downloadId)}/retry${nodeQuery(nodeId)}`,
+  );
+}
+
+/** Walks a machine's models folders again, after a file was placed by hand. */
+export function rescanModels(nodeId?: string) {
+  return api.post<{ node_id: string; rescanning: boolean }>(
+    "/api/ui/models/rescan",
+    nodeId ? { node_id: nodeId } : {},
   );
 }
 

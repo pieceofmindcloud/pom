@@ -20,6 +20,8 @@ Digite um modelo, um autor ou um termo relacionado. **Apenas GGUF** deixa só os
 Cada repositório lista os arquivos GGUF com os tamanhos e a licença. Um modelo restrito (gated) é marcado antes de qualquer download.
 ### Baixar
 O diálogo mostra a pasta para onde o arquivo vai. Quando o download começa, o diálogo e os detalhes do modelo se fecham e o progresso aparece no painel de downloads. **Cancelar** tira do painel um download ainda não concluído, e **Tentar de novo** num download que falhou o substitui pela nova tentativa; **Descartar** tira do painel um download que falhou, sem tentar de novo. O download continua se você sair da tela ou recarregar, e aparece também em Transferências.
+
+**Baixar em** escolhe a máquina que baixa, quando a rede tem outras máquinas que guardam modelos. Essa máquina usa o próprio token do Hugging Face e as próprias pastas de modelos, e confere o próprio espaço livre ao começar; os downloads dela aparecem num painel próprio, **Downloads em** essa máquina, onde Cancelar, Tentar de novo e Descartar agem nela.
 :::
 
 :::note Entrar é opcional
@@ -27,7 +29,7 @@ A lista em alta usa a listagem pública do Hugging Face. Entrar (o link na barra
 :::
 
 :::note Só nesta máquina
-O arquivo vai para esta máquina. Para servi-lo em várias máquinas, baixe em cada uma ou fatie aqui e deixe cada máquina pegar a própria faixa.
+O arquivo vai para a máquina escolhida. Para servi-lo em várias máquinas, baixe em cada uma com **Baixar em**, ou fatie aqui e deixe cada máquina pegar a própria faixa.
 :::
 
 :::deep docs/subsystems/http-api.md

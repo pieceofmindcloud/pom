@@ -562,7 +562,10 @@ The screen title is "Find models on Hugging Face". The detail queries
 the configuration before starting. The download picks one of those folders; the
 job persisted in `GET /api/ui/jobs` records the final path and
 `ModelDownloadsPanel` shows progress, cancellation and retry. That panel also
-shows up in `/transfers`, next to file transfers.
+shows up in `/transfers`, next to file transfers. The dialog's **Download on** picks
+another machine that holds models (`useServingMachines`): the call carries `node_id`, the
+node forwards it, and that machine's downloads show in a `MachineDownloadsPanel` per machine
+below the local one.
 
 In `/config/preferences`, `HuggingFaceSettingsPanel` offers the optional token
 for private and gated models. The field is `password`, starts empty and only

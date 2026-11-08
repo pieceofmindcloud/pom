@@ -133,6 +133,10 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   jobs and offers slow to 10s when idle and return to 2s while active.
   `useModelDownloads` derives the `model_download` jobs from `/api/ui/jobs` and
   is shared by the remote-model and transfers screens.
+  `useServingMachines` lists the other live peers that are not visitors (where a download
+  can start) and `useMachineDownloads(nodeId)` polls that machine's downloads through
+  `listRemoteModelDownloads`; `api.ts` passes an optional `nodeId` to every download call and
+  `rescanModels(nodeId)` asks a machine to walk its models folders again.
   `useCacheTypes` reads the installation-wide K/V cache representation from
   `/api/ui/cache-types`; the deployment inspector applies combo changes through
   the same endpoint. The add-machine dialog reads and updates the selected

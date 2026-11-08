@@ -1360,7 +1360,8 @@ and `dismiss` actions take `?node_id=`. When the id names another member, the
 node forwards the call to it signed by itself
 (`model_provider_backend::forward_to_node`, over the tunnel when no address
 answers) and returns its answer unchanged; an unknown id is 404
-`node_not_found`, an unreachable one 502 `node_unreachable`. The worker
+`node_not_found`, an unreachable one 502 `node_unreachable` (`{ error: { code,
+message } }`, as the other download errors). The worker
 authorizes the signature by its own route policy (`ServingMember`: an admin,
 or an attested worker; never a visitor) and downloads with its own Hugging
 Face token into its own models folder: only the call crosses, never a file.

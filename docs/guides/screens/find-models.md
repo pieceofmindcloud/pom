@@ -20,6 +20,8 @@ Type a model, an author or a related term. **Only GGUF** keeps the list to files
 Each repository lists its GGUF files with their sizes, and the license. A gated model is marked before any download.
 ### Download
 The dialog shows the folder the file goes to. Once the download starts, the dialog and the model details close and its progress shows in the downloads panel. **Cancel** takes an unfinished download off the panel, and **Try again** on a failed one replaces it with the new attempt; **Dismiss** takes a failed one off the panel without trying again. The download keeps running if you leave the screen or reload it, and it shows up in Transfers too.
+
+**Download on** picks the machine that downloads, when the network has other machines that hold models. That machine uses its own Hugging Face token and its own model folders, and checks its own free space when it starts; its downloads show in their own panel, **Downloads on** that machine, where Cancel, Try again and Dismiss act on it.
 :::
 
 :::note Signing in is optional
@@ -27,7 +29,7 @@ The trending list uses Hugging Face's public listing. Signing in (the link in th
 :::
 
 :::note Only this machine
-The file lands on this machine. To serve it on several machines, either download it on each one or slice it here and let each machine take its own range.
+The file lands on the machine you picked. To serve it on several machines, download it on each one with **Download on**, or slice it here and let each machine take its own range.
 :::
 
 :::deep docs/subsystems/http-api.md

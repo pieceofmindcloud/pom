@@ -4,7 +4,7 @@ import { useI18n } from "../i18n/provider";
 import { cancelRemoteModelDownload, dismissRemoteModelDownload, retryRemoteModelDownload } from "../lib/api";
 import { bytes, duration, rate } from "../lib/format";
 import { isModelDownloadActive, percentOfDownload } from "../lib/modelProvider";
-import { useModelDownloads } from "../lib/queries";
+import { useMachineDownloads, useModelDownloads } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import type { Job, RemoteDownloadStatus } from "../lib/types";
 import { Badge, Button, ErrorState, Panel, PanelHeader, Progress, Skeleton } from "./ui";
@@ -23,7 +23,7 @@ function statusLabel(status: RemoteDownloadStatus | undefined, t: (key: string, 
   return t(`remoteModels.${status ?? "failed"}`);
 }
 
-function DownloadRow({ job, onRefresh }: { job: Job; onRefresh: () => void }) {
+function DownloadRow({ job, nodeId, onRefresh }: { job: Job; nodeId?: string; onRefresh: () => void }) {
   const { t } = useI18n();
   const toast = useToast();
   const status = job.download_status;
@@ -33,7 +33,7 @@ function DownloadRow({ job, onRefresh }: { job: Job; onRefresh: () => void }) {
 
   async function cancel() {
     try {
-      await cancelRemoteModelDownload(job.id);
+      await cancelRemoteModelDownload(job.id, nodeId);
       toast.info(t("remoteModels.cancel"));
       onRefresh();
     } catch (error) {
@@ -43,7 +43,7 @@ function DownloadRow({ job, onRefresh }: { job: Job; onRefresh: () => void }) {
 
   async function retry() {
     try {
-      await retryRemoteModelDownload(job.id);
+      await retryRemoteModelDownload(job.id, nodeId);
       toast.info(t("remoteModels.starting"));
       onRefresh();
     } catch (error) {
@@ -53,7 +53,7 @@ function DownloadRow({ job, onRefresh }: { job: Job; onRefresh: () => void }) {
 
   async function dismiss() {
     try {
-      await dismissRemoteModelDownload(job.id);
+      await dismissRemoteModelDownload(job.id, nodeId);
       onRefresh();
     } catch (error) {
       toast.error(t("remoteModels.dismissFailed"));
@@ -109,8 +109,31 @@ function DownloadRow({ job, onRefresh }: { job: Job; onRefresh: () => void }) {
 }
 
 export function ModelDownloadsPanel() {
-  const { t } = useI18n();
   const downloads = useModelDownloads();
+  return <DownloadsList downloads={downloads} />;
+}
+
+/**
+ * The downloads of another machine, started from here: the admin's node asks
+ * that machine and its rows act on it. Nothing shows while it has none, or
+ * when it cannot be reached (an older node without the route).
+ */
+export function MachineDownloadsPanel({ nodeId, name }: { nodeId: string; name: string }) {
+  const downloads = useMachineDownloads(nodeId);
+  if (downloads.isError) return null;
+  return <DownloadsList downloads={downloads} nodeId={nodeId} machine={name} />;
+}
+
+function DownloadsList({
+  downloads,
+  nodeId,
+  machine,
+}: {
+  downloads: { data?: Job[]; isError: boolean; isLoading: boolean; error: unknown; refetch: () => unknown };
+  nodeId?: string;
+  machine?: string;
+}) {
+  const { t } = useI18n();
   const toast = useToast();
   const previous = useRef(new Map<string, RemoteDownloadStatus | undefined>());
   const list = downloads.data ?? [];
@@ -119,7 +142,7 @@ export function ModelDownloadsPanel() {
     for (const job of list) {
       const before = previous.current.get(job.id);
       if (before && before !== job.download_status && job.download_status === "completed") {
-        toast.success(t("remoteModels.completed"), job.filename);
+        toast.success(t("remoteModels.completed"), machine ? `${job.filename} · ${machine}` : job.filename);
       }
       if (before && before !== job.download_status && job.download_status === "failed") {
         toast.error(t("remoteModels.downloadFailed"), job.error ?? undefined);
@@ -135,11 +158,11 @@ export function ModelDownloadsPanel() {
   return (
     <Panel aria-label={t("remoteModels.downloadsTitle")}>
       <PanelHeader
-        eyebrow={t("remoteModels.downloadsTitle")}
+        eyebrow={machine ? t("remoteModels.downloadsOn", { machine }) : t("remoteModels.downloadsTitle")}
         title={t("remoteModels.downloadsCount", { count: list.filter((job) => job.state === "running").length })}
         subtitle={t("remoteModels.subtitle")}
       />
-      <div>{list.map((job) => <DownloadRow key={job.id} job={job} onRefresh={() => void downloads.refetch()} />)}</div>
+      <div>{list.map((job) => <DownloadRow key={job.id} job={job} nodeId={nodeId} onRefresh={() => void downloads.refetch()} />)}</div>
     </Panel>
   );
 }

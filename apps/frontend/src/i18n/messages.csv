@@ -3380,3 +3380,9 @@ wizard.welcomeEyebrow,A calmer way to start,Um começo mais tranquilo
 wizard.welcomeSubtitle,Your AI. Your infrastructure. Your network. Set up a capable local network in a few clear steps.,Sua IA. Sua infraestrutura. Sua rede. Configure uma rede local capaz em poucos passos claros.
 wizard.welcomeTitle,Piece of Mind,Piece of Mind
 wizard.whenIdle,Only when this computer is idle,Somente quando o computador estiver ocioso
+remoteModels.downloadOn,Download on,Baixar em
+remoteModels.thisMachine,This machine,Esta máquina
+remoteModels.remoteChecks,"{machine} downloads with its own Hugging Face token into its own models folder, and checks its free space when it starts.","{machine} baixa com o próprio token do Hugging Face para a própria pasta de modelos, e confere o espaço livre ao começar."
+remoteModels.downloadStartedOn,{name} is being downloaded on {machine}.,{name} está sendo baixado em {machine}.
+remoteModels.machineUnreachable,Could not reach that machine.,Não foi possível alcançar essa máquina.
+remoteModels.downloadsOn,Downloads on {machine},Downloads em {machine}

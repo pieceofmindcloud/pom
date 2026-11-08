@@ -1,12 +1,13 @@
 import { AlertTriangle, HardDriveDownload } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useI18n } from "../i18n/provider";
 import { ApiError, startRemoteModelDownload } from "../lib/api";
 import { bytes } from "../lib/format";
 import type { RemoteGgufFile, RemoteModelDetails } from "../lib/types";
+import { useServingMachines } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import { Modal } from "./Confirm";
-import { Badge, Button, KeyValue } from "./ui";
+import { Badge, Button, Field, KeyValue, Select } from "./ui";
 
 function errorCode(error: unknown): string | null {
   if (!(error instanceof ApiError)) return null;
@@ -30,14 +31,24 @@ export function DownloadModelDialog({
   const { t } = useI18n();
   const toast = useToast();
   const [busy, setBusy] = useState(false);
+  // "" is this machine; another id makes that machine download with its own
+  // token into its own folder.
+  const [target, setTarget] = useState("");
+  const machines = useServingMachines();
+  useEffect(() => {
+    if (!open) setTarget("");
+  }, [open]);
   if (!details || !file) return null;
+  const remote = machines.find((machine) => machine.nodeId === target) ?? null;
   const selectedDetails = details;
   const selectedFile = file;
   const insufficient =
     selectedFile.size_bytes != null &&
     selectedDetails.storage.available_bytes != null &&
     selectedFile.size_bytes > selectedDetails.storage.available_bytes;
-  const blocked = insufficient || !selectedDetails.storage.destination_available;
+  // The space and folder shown are this machine's; another machine checks
+  // its own when it starts.
+  const blocked = !remote && (insufficient || !selectedDetails.storage.destination_available);
 
   async function download() {
     setBusy(true);
@@ -47,10 +58,13 @@ export function DownloadModelDialog({
         revision: selectedDetails.revision ?? undefined,
         filename: selectedFile.filename,
         quantization: selectedFile.quantization ?? undefined,
+        nodeId: remote?.nodeId,
       });
       toast.success(
         t("remoteModels.downloadStarted"),
-        t("remoteModels.downloadStartedDetail", { name: selectedFile.quantization || selectedFile.filename }),
+        remote
+          ? t("remoteModels.downloadStartedOn", { name: selectedFile.quantization || selectedFile.filename, machine: remote.name })
+          : t("remoteModels.downloadStartedDetail", { name: selectedFile.quantization || selectedFile.filename }),
       );
       onStarted();
       onClose();
@@ -73,7 +87,9 @@ export function DownloadModelDialog({
                     ? "remoteModels.downloadInProgress"
                     : code === "model_installed"
                       ? "remoteModels.modelInstalled"
-                      : "remoteModels.downloadFailed";
+                      : code === "node_not_found" || code === "node_unreachable"
+                        ? "remoteModels.machineUnreachable"
+                        : "remoteModels.downloadFailed";
       toast.error(t(key), code === "authentication_required" ? t("remoteModels.authDetail") : undefined);
     } finally {
       setBusy(false);
@@ -115,8 +131,27 @@ export function DownloadModelDialog({
             <Badge tone="amber">{t("remoteModels.licenseUnknown")}</Badge>
           )}
         </div>
+        {machines.length > 0 && (
+          <Field label={t("remoteModels.downloadOn")}>
+            <Select
+              value={target}
+              onChange={(event) => setTarget(event.target.value)}
+              data-guide="model-download-machine"
+            >
+              <option value="">{t("remoteModels.thisMachine")}</option>
+              {machines.map((machine) => (
+                <option key={machine.nodeId} value={machine.nodeId}>{machine.name}</option>
+              ))}
+            </Select>
+          </Field>
+        )}
+        {remote ? (
+          <p className="rounded-lg border border-line bg-raised px-3 py-2.5 text-xs leading-relaxed text-muted">
+            {t("remoteModels.remoteChecks", { machine: remote.name })}
+          </p>
+        ) : null}
         <dl className="grid gap-3 sm:grid-cols-2">
-          <KeyValue label={t("remoteModels.destination")}>
+          {!remote && <KeyValue label={t("remoteModels.destination")}>
             {selectedDetails.storage.destination_paths.length > 0 ? (
               <ul className="break-path space-y-1 font-mono text-xs">
                 {selectedDetails.storage.destination_paths.map((path) => <li key={path}>{path}</li>)}
@@ -124,11 +159,11 @@ export function DownloadModelDialog({
             ) : (
               t("remoteModels.destination")
             )}
-          </KeyValue>
+          </KeyValue>}
           <KeyValue label={t("remoteModels.requiredSpace")}>{bytes(selectedFile.size_bytes)}</KeyValue>
-          <KeyValue label={t("remoteModels.availableSpace")}>
+          {!remote && <KeyValue label={t("remoteModels.availableSpace")}>
             {bytes(selectedDetails.storage.available_bytes)}
-          </KeyValue>
+          </KeyValue>}
           <KeyValue label={t("remoteModels.revision")}>{selectedDetails.revision || "main"}</KeyValue>
         </dl>
         {selectedDetails.gated && (
@@ -137,12 +172,12 @@ export function DownloadModelDialog({
             {t("remoteModels.gatedDetail")}
           </p>
         )}
-        {insufficient && (
+        {!remote && insufficient && (
           <p className="rounded-lg border border-rose/30 bg-rose/10 px-3 py-2.5 text-xs text-muted">
             {t("remoteModels.insufficientSpace")}
           </p>
         )}
-        {!details.storage.destination_available && (
+        {!remote && !details.storage.destination_available && (
           <p className="rounded-lg border border-rose/30 bg-rose/10 px-3 py-2.5 text-xs text-muted">
             {t("remoteModels.destinationUnavailable")}
           </p>

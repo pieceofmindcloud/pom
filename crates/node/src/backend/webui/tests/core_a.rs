@@ -1204,4 +1204,24 @@ mod tests {
             std::fs::remove_dir_all(&root).ok();
         });
     }
+
+    /// Rescan answers at once for this machine, and for a machine that is not
+    /// in the network says so instead of walking this node's folders.
+    #[tokio::test]
+    async fn rescan_runs_here_or_names_the_missing_machine() {
+        let state = crate::gateway::testkit::state_with("rescan", vec![]).await;
+        let response = rescan_models(ConnectionAuth, State(state.clone()), None).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = crate::gateway::testkit::body_of(response).await;
+        assert_eq!(body["rescanning"], true);
+        let response = rescan_models(
+            ConnectionAuth,
+            State(state),
+            Some(Json(RescanRequest {
+                node_id: Some("not-a-member".into()),
+            })),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
 }

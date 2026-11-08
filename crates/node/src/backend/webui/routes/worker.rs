@@ -7,6 +7,7 @@ pub(super) fn routes() -> Router<GatewayState> {
     Router::new()
         .route("/api/ui/models", get(models))
         .route("/api/ui/models/delete", post(delete_model))
+        .route("/api/ui/models/rescan", post(rescan_models))
         .route("/api/ui/paths", get(get_paths).post(save_paths))
         .route("/api/ui/thermal", get(get_thermal).post(save_thermal))
         .route(

@@ -84,6 +84,7 @@ pub fn gateway_path_is_allowed(path: &str) -> bool {
     // exact comparison.
     let path = path.split(['?', '#']).next().unwrap_or(path);
     plugin_path_is_allowed(path)
+        || model_download_path_is_allowed(path)
         || matches!(
         path,
         "/handshake"
@@ -112,6 +113,9 @@ pub fn gateway_path_is_allowed(path: &str) -> bool {
             // connection key, as it would in a direct call.
             | "/api/ui/node"
             | "/api/ui/models"
+            // Asking a worker to walk its models folders again after a file
+            // was placed by hand.
+            | "/api/ui/models/rescan"
             | "/api/ui/model-metadata"
             | "/api/ui/model-identity"
             | "/api/ui/model-layer-options"
@@ -158,6 +162,25 @@ pub fn gateway_path_is_allowed(path: &str) -> bool {
             | "/api/transfer/manifest"
             | "/api/transfer/pom"
     )
+}
+
+/// A model download the admin's node starts, follows, cancels, retries or
+/// dismisses on a worker (`model_provider_backend::forward_to_node`): the
+/// worker downloads with its own token, so only the small signed call
+/// crosses, never a file.
+fn model_download_path_is_allowed(path: &str) -> bool {
+    if path == "/api/ui/model-provider/downloads" {
+        return true;
+    }
+    let Some(rest) = path.strip_prefix("/api/ui/model-provider/downloads/") else {
+        return false;
+    };
+    match rest.split('/').collect::<Vec<_>>().as_slice() {
+        [id, "cancel" | "retry" | "dismiss"] => {
+            !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        }
+        _ => false,
+    }
 }
 
 /// The plugin calls between nodes that `control_get`/`control_post_json`
@@ -785,6 +808,12 @@ mod tests {
     fn the_tunnel_carries_the_deployment_control_plane() {
         assert!(gateway_path_is_allowed("/api/ui/node"));
         assert!(gateway_path_is_allowed("/api/ui/apply"));
+        assert!(gateway_path_is_allowed("/api/ui/models/rescan"));
+        assert!(gateway_path_is_allowed("/api/ui/model-provider/downloads"));
+        assert!(gateway_path_is_allowed("/api/ui/model-provider/downloads/ab12/cancel"));
+        assert!(!gateway_path_is_allowed("/api/ui/model-provider/downloads/ab12/delete"));
+        assert!(!gateway_path_is_allowed("/api/ui/model-provider/downloads/../x/cancel"));
+        assert!(!gateway_path_is_allowed("/api/ui/model-provider/config"));
         assert!(gateway_path_is_allowed("/api/ui/deployments?local=true"));
     }
 

@@ -117,7 +117,11 @@ boundary.
   failed or cancelled job with the new attempt instead of listing both - the failed row had no
   other button and could never be dismissed. `POST .../downloads/:id/dismiss` takes a failed or
   cancelled job off the list without a new attempt, and refuses a running one (409; Cancel is for
-  that). The
+  that). Every download route takes an optional `node_id` (in the start body, as `?node_id=`
+  on `GET .../downloads` and the actions): another machine's id makes `forward_to_node` send the
+  call to that member signed by this node and hand its answer back, so the admin starts and
+  follows downloads on a worker; the worker uses its own token and folder. `forward_to_node`
+  also serves `POST /api/ui/models/rescan` (`webui/catalog.rs`). The
   storage response exposes the eligible folders. The structured status in
   `GET /api/ui/model-provider/status` lets the UI tell an absent CLI, a required login and an
   authenticated session apart.

@@ -1352,6 +1352,22 @@ provider's commands or tokens. `/storage` reports the model folders resolved
 from the configuration. A download picks the first eligible folder, records the
 path in `Job.local_path` and shows up in `GET /api/ui/jobs`, which is the UI's
 source of progress, cancellation and retry.
+
+**Downloads on another machine.** `POST /api/ui/model-provider/downloads`
+takes an optional `node_id`; `GET .../downloads` (this machine's model
+downloads, newest first, `{ node_id, downloads }`) and the `cancel`, `retry`
+and `dismiss` actions take `?node_id=`. When the id names another member, the
+node forwards the call to it signed by itself
+(`model_provider_backend::forward_to_node`, over the tunnel when no address
+answers) and returns its answer unchanged; an unknown id is 404
+`node_not_found`, an unreachable one 502 `node_unreachable`. The worker
+authorizes the signature by its own route policy (`ServingMember`: an admin,
+or an attested worker; never a visitor) and downloads with its own Hugging
+Face token into its own models folder: only the call crosses, never a file.
+**`POST /api/ui/models/rescan`** (`ServingMember`, body optional
+`{ node_id }`) walks the models folders again at once, for a file placed by
+hand, and answers `{ node_id, rescanning: true }` before the walk ends; with
+another machine's id it is forwarded the same way.
 **`GET /api/ui/model-provider/status`** requires `ConnectionAuth` and returns
 `{ cli: { installed, version, authenticated, username } }`: a missing CLI is a
 structured state, while login required and an authenticated session stay

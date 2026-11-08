@@ -1853,10 +1853,15 @@ export function DeployModel() {
                             neighbourLocked: "deployStudio.layerLimitNeighbourLocked",
                           }[limit] ?? "deployStudio.layerLimitEmpty");
                         const options = currentPlan?.layer_options;
+                        // Weights plus the KV cache for the deployment's context, when the node costs it.
                         const prefixBytes = (end: number): number | null => {
                           if (!options || options.cuts.length === 0) return null;
-                          if (end === wholeTotal - 1) return options.cuts[0].size_bytes + options.cuts[0].remainder_bytes;
-                          return options.cuts.find((cut) => cut.end_layer === end)?.size_bytes ?? null;
+                          if (end === wholeTotal - 1) {
+                            const first = options.cuts[0];
+                            return first.size_bytes + first.remainder_bytes + (first.kv_bytes ?? 0) + (first.remainder_kv_bytes ?? 0);
+                          }
+                          const cut = options.cuts.find((item) => item.end_layer === end);
+                          return cut ? cut.size_bytes + (cut.kv_bytes ?? 0) : null;
                         };
                         const freeMemory = (nodeId: string) => {
                           const live = liveMachines.find((item) => item.node_id === nodeId);

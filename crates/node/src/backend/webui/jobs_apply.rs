@@ -475,6 +475,13 @@ pub(crate) struct LayerCut {
     pub layers: u32,
     pub size_bytes: u64,
     pub remainder_bytes: u64,
+    /// KV cache of layers 0..=end_layer and of the remainder, for the context
+    /// asked in `ModelLayerOptionsRequest::kv`. Absent without it, or on an
+    /// older node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kv_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remainder_kv_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -490,6 +497,17 @@ pub(crate) struct ModelLayerOptions {
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct ModelLayerOptionsRequest {
     pub path: String,
+    /// Also cost the KV cache of each cut for this deployment's context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kv: Option<LayerOptionsKv>,
+}
+
+/// The deployment settings the KV cache of a cut depends on. The cache types
+/// are this node's installation-wide ones, as in the real launch.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub(crate) struct LayerOptionsKv {
+    pub n_ctx: u32,
+    pub max_sessions: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -645,7 +663,7 @@ pub(super) async fn model_layer_options(
     State(state): State<GatewayState>,
     Json(req): Json<ModelLayerOptionsRequest>,
 ) -> Response {
-    match model_layer_options_local(&state, &req.path).await {
+    match model_layer_options_local(&state, &req.path, req.kv).await {
         Ok(options) => Json(options).into_response(),
         Err(error) => bad_request(error),
     }
@@ -654,6 +672,7 @@ pub(super) async fn model_layer_options(
 pub(crate) async fn model_layer_options_local(
     state: &GatewayState,
     requested: &str,
+    kv: Option<LayerOptionsKv>,
 ) -> Result<ModelLayerOptions, String> {
     let requested_path = std::path::Path::new(requested);
     let canonical = requested_path
@@ -686,6 +705,38 @@ pub(crate) async fn model_layer_options_local(
     if total_layers == 0 {
         return Err("the GGUF declares no layers to slice".to_string());
     }
+    // The KV cache of a range, costed exactly as the capacity preview does.
+    let kv_plan = match kv {
+        Some(kv) => {
+            let (cache_type_k, cache_type_v) = {
+                let config = state.auth.read().await;
+                (config.cache_type_k, config.cache_type_v)
+            };
+            let info_path = canonical.clone();
+            let info = tokio::task::spawn_blocking(move || crate::gguf::read_info(&info_path))
+                .await
+                .map_err(|e| format!("GGUF read failed: {e}"))?
+                .map_err(|e| format!("could not read the KV geometry of the GGUF: {e}"))?;
+            let n_ctx = crate::runtime::total_context_tokens(kv.n_ctx, kv.max_sessions.max(1))
+                .map_err(|e| format!("invalid context: {e}"))?;
+            Some((
+                info,
+                plan::KvPlanParams {
+                    n_ctx,
+                    max_sessions: kv.max_sessions.max(1),
+                    cache_type_k,
+                    cache_type_v,
+                },
+            ))
+        }
+        None => None,
+    };
+    let kv_of = |start: u32, end: u32| -> Option<u64> {
+        let (info, kv) = kv_plan.as_ref()?;
+        plan::range_cost(&layout, Some(info), Some(*kv), start, end, end + 1 >= total_layers)
+            .ok()
+            .map(|(_, kv_bytes, _)| kv_bytes)
+    };
     let cuts = layout
         .valid_prefix_end_layers()
         .into_iter()
@@ -697,6 +748,12 @@ pub(crate) async fn model_layer_options_local(
                 layout.slice_bytes(end_layer + 1, total_layers - 1, true)
             } else {
                 0
+            },
+            kv_bytes: kv_of(0, end_layer),
+            remainder_kv_bytes: if end_layer + 1 < total_layers {
+                kv_of(end_layer + 1, total_layers - 1)
+            } else {
+                Some(0).filter(|_| kv_plan.is_some())
             },
         })
         .collect::<Vec<_>>();

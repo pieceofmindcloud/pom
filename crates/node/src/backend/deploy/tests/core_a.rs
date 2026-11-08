@@ -467,6 +467,8 @@
                 layers: 4,
                 size_bytes: GIB,
                 remainder_bytes: GIB,
+                kv_bytes: None,
+                remainder_kv_bytes: None,
             }],
             granularity: Some(4),
             rule: "real boundaries".to_string(),
@@ -521,6 +523,8 @@
                 layers: 16,
                 size_bytes: GIB,
                 remainder_bytes: 2 * GIB,
+                kv_bytes: None,
+                remainder_kv_bytes: None,
             }],
             granularity: Some(1),
             rule: "every layer".to_string(),
@@ -567,7 +571,7 @@
         let options = WholeLayerOptions {
             source_node_id: "a".to_string(),
             total_layers: 32,
-            cuts: vec![LayerCut { end_layer: 15, layers: 16, size_bytes: 10 * GIB, remainder_bytes: 10 * GIB }],
+            cuts: vec![LayerCut { end_layer: 15, layers: 16, size_bytes: 10 * GIB, remainder_bytes: 10 * GIB, kv_bytes: None, remainder_kv_bytes: None }],
             granularity: Some(1),
             rule: "every layer".to_string(),
             reason: None,
@@ -614,7 +618,7 @@
         let options = WholeLayerOptions {
             source_node_id: "a".to_string(),
             total_layers: 32,
-            cuts: vec![LayerCut { end_layer: 15, layers: 16, size_bytes: GIB, remainder_bytes: GIB }],
+            cuts: vec![LayerCut { end_layer: 15, layers: 16, size_bytes: GIB, remainder_bytes: GIB, kv_bytes: None, remainder_kv_bytes: None }],
             granularity: Some(1),
             rule: "every layer".to_string(),
             reason: None,
@@ -638,6 +642,33 @@
     }
 
     #[test]
+    fn a_range_whose_cpu_part_exceeds_the_free_ram_is_refused_by_name() {
+        let mut machines = build(vec![m("a", 900_000, &[(0, 31)])]);
+        machines[0].ram_free_mb = 4 * 1024;
+        let preview = |cpu_ram_bytes: u64| crate::webui::CapacityPreview {
+            fits: false,
+            degraded: false,
+            note: None,
+            effective_n_gpu_layers: Some(32),
+            effective_n_ctx: Some(4096),
+            gpus: Vec::new(),
+            gpu_layers_fit: Some(20),
+            cpu_layers: Some(12),
+            cpu_ram_bytes: Some(cpu_ram_bytes),
+        };
+        let selection = [pick(0, 31, "a")];
+        let mut plan = super::plan("model", &machines, Some(&selection), &RuntimeParams::default(), false, DeployKind::Whole, None);
+        plan.steps[0].capacity = Some(preview(3 * GIB));
+        super::refuse_cpu_part_beyond_ram(&mut plan, &machines);
+        assert!(plan.blocked.is_none(), "{:?}", plan.blocked);
+
+        plan.steps[0].capacity = Some(preview(6 * GIB));
+        super::refuse_cpu_part_beyond_ram(&mut plan, &machines);
+        let reason = plan.blocked.expect("6 GB on the CPU with 4 GB of free RAM");
+        assert!(reason.contains("free RAM") && reason.contains("12 layers"), "{reason}");
+    }
+
+    #[test]
     fn a_whole_range_on_a_machine_without_the_whole_model_is_refused_by_name() {
         let mut machines = build(vec![
             m("a", 900_000, &[(0, 31)]),
@@ -646,7 +677,7 @@
         let options = WholeLayerOptions {
             source_node_id: "a".to_string(),
             total_layers: 32,
-            cuts: vec![LayerCut { end_layer: 15, layers: 16, size_bytes: GIB, remainder_bytes: GIB }],
+            cuts: vec![LayerCut { end_layer: 15, layers: 16, size_bytes: GIB, remainder_bytes: GIB, kv_bytes: None, remainder_kv_bytes: None }],
             granularity: Some(1),
             rule: "every layer".to_string(),
             reason: None,

@@ -765,6 +765,55 @@ describe("DeployModel · whole model", () => {
     await waitFor(() => expect(lastRanges()).toEqual([[0, 23], [24, 31]]));
   });
 
+  it("auto-balance counts the KV cache the node costs for each cut", async () => {
+    answerPlans();
+    const plain = post.getMockImplementation()!;
+    // 1 byte of weights per layer; 3 bytes of KV per layer from layer 16 on.
+    const kv = (end: number) => Math.max(0, end - 15) * 3;
+    post.mockImplementation((url: string, body: { whole_ranges?: Array<{ node_id: string; start_layer: number; end_layer: number }> }) => {
+      if (url !== "/api/ui/deploy/plan" || !body?.whole_ranges) return plain(url, body);
+      const base = wholePlan();
+      return Promise.resolve({
+        ...base,
+        auto: false,
+        layer_options: {
+          source_node_id: "ksia",
+          total_layers: 32,
+          cuts: Array.from({ length: 31 }, (_, end) => ({
+            end_layer: end, layers: end + 1, size_bytes: end + 1, remainder_bytes: 31 - end, kv_bytes: kv(end), remainder_kv_bytes: kv(31) - kv(end),
+          })),
+          granularity: 1,
+          rule: "every layer",
+          reason: null,
+        },
+        machines: base.machines.map((machine) => ({ ...machine, gpu_free_mb: 1000, ram_free_mb: 8000 })),
+        steps: body.whole_ranges.map((range, index) => ({
+          ...base.steps[0],
+          position: index + 1,
+          start_layer: range.start_layer,
+          end_layer: range.end_layer,
+          target_node_id: range.node_id,
+          target_host: range.node_id,
+          primary: range.start_layer === 0,
+        })),
+      });
+    });
+    mount();
+    chooseWhole();
+    fireEvent.click(await screen.findByRole("button", { name: /ksia RTT/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Remover ksia da implantação/ })).toBeTruthy());
+    fireEvent.click(await screen.findByRole("button", { name: /mac RTT/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Remover mac da implantação/ })).toBeTruthy());
+    fireEvent.click(await screen.findByRole("button", { name: /Dividir as camadas entre 2 máquinas/ }));
+    type RangesBody = { whole_ranges?: Array<{ start_layer: number; end_layer: number }> };
+    const lastRanges = () => (planCalls().at(-1)![1] as RangesBody).whole_ranges?.map((range) => [range.start_layer, range.end_layer]);
+    await waitFor(() => expect(lastRanges()).toEqual([[0, 15], [16, 31]]));
+    const balance = await screen.findByRole("button", { name: /Equilibrar pela memória livre/ });
+    await waitFor(() => expect((balance as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(balance);
+    await waitFor(() => expect(lastRanges()).toEqual([[0, 21], [22, 31]]));
+  });
+
   it("shows how many layers run on the GPU and how many on the CPU", async () => {
     post.mockImplementation((url: string, body: { kind?: string }) => {
       if (url !== "/api/ui/deploy/plan" || body?.kind !== "whole") return Promise.resolve(body?.kind === "whole" ? wholePlan() : shardPlan());

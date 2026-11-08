@@ -23,7 +23,7 @@ pub(super) async fn plan_endpoint(
     let layer_options = if req.kind == DeployKind::Whole
         && (req.whole_slice.is_some() || req.whole_ranges.is_some())
     {
-        whole_layer_options_for_plan(&state, &machines, &req.group).await
+        whole_layer_options_for_plan(&state, &machines, &req.group, &req.params).await
     } else {
         None
     };
@@ -230,6 +230,8 @@ pub(super) async fn enrich_capacity_previews(
         }
     }
 
+    refuse_cpu_part_beyond_ram(plan, machines);
+
     for machine in &mut plan.machines {
         let mut by_device: std::collections::BTreeMap<u32, crate::webui::GpuCapacityProjection> =
             std::collections::BTreeMap::new();
@@ -280,5 +282,34 @@ pub(super) async fn enrich_capacity_previews(
             note: (!notes.is_empty()).then(|| notes.join("; ")),
             gpus: by_device.into_values().collect(),
         });
+    }
+}
+
+/// Layers that do not fit in VRAM run on the CPU from system RAM; past the
+/// machine's free RAM the load cannot succeed, so the plan is refused by name.
+pub(super) fn refuse_cpu_part_beyond_ram(plan: &mut Plan, machines: &[Machine]) {
+    if plan.blocked.is_some() {
+        return;
+    }
+    for step in &plan.steps {
+        let Some(cpu_ram) = step.capacity.as_ref().and_then(|c| c.cpu_ram_bytes) else {
+            continue;
+        };
+        let Some(machine) = machines.iter().find(|m| m.node_id == step.target_node_id) else {
+            continue;
+        };
+        let free = machine.ram_free_mb.saturating_mul(1024 * 1024);
+        if machine.ram_free_mb > 0 && cpu_ram > free {
+            plan.blocked = Some(format!(
+                "{} has {} GB of free RAM, and the {} layers of L{}-{} that do not fit in its VRAM need {} GB: give it fewer layers or add a machine",
+                machine.label(),
+                gb(machine.ram_free_mb),
+                step.capacity.as_ref().and_then(|c| c.cpu_layers).unwrap_or(0),
+                step.start_layer,
+                step.end_layer,
+                gb(cpu_ram.div_ceil(1024 * 1024)),
+            ));
+            return;
+        }
     }
 }

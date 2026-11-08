@@ -2292,6 +2292,10 @@ export interface WholeLayerCut {
   layers: number;
   size_bytes: number;
   remainder_bytes: number;
+  /** KV cache of layers 0..=end_layer and of the remainder, for the
+   *  deployment's context. Absent on older nodes. */
+  kv_bytes?: number | null;
+  remainder_kv_bytes?: number | null;
 }
 
 export interface WholeLayerOptions {

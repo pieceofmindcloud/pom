@@ -146,6 +146,12 @@ launch applies that machine with the whole file, the range and `skip_split:
 false`. `run_apply` then cuts the range locally, or writes a virtual slice
 with `POM_VIRTUAL_SLICES=1` (section 8).
 
+`model-layer-options` takes an optional `kv: {n_ctx, max_sessions}`; with it
+each cut also carries `kv_bytes` and `remainder_kv_bytes`, the KV cache of the
+prefix and of the rest for that context with this node's cache types, costed
+like the capacity preview. The plan asks it with the deployment's settings,
+and Auto-balance adds it to each prefix.
+
 `whole_ranges` (`[{node_id, start_layer, end_layer}]`, `kind: "whole"`) is the
 range form of a whole-model deploy, on both `/api/ui/deploy/plan` and
 `/api/ui/deploy`: each machine serves its range of the whole model it holds
@@ -589,7 +595,11 @@ how many would run on the CPU (`cpu_layers`) and the RAM their weights need
 (`cpu_ram_bytes`), and adds "N layers fit on the GPU, M on the CPU: generation
 will be much slower" to its note. That note reaches the machine card and the
 confirmation before deploying; Deploy Studio shows "N on GPU, M on CPU" in the
-machine's tab. Unified memory reports no split.
+machine's tab. Unified memory reports no split. When a step's CPU part
+(`cpu_ram_bytes`) exceeds the machine's free RAM, the plan is blocked by name
+(`preview::refuse_cpu_part_beyond_ram`): the load could not succeed. The
+check runs on the preview, so the screen's Deploy button stays off; a direct
+`POST /api/ui/deploy` does not repeat it.
 
 After `plan_endpoint` builds the steps (and only if `blocked` is empty),
 `enrich_capacity_previews` asks each target where the step is already

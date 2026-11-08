@@ -897,7 +897,7 @@ deployStudio.moreLayers,More layers on {machine},Mais camadas em {machine}
 deployStudio.layerLimitNoCut,This model has no valid cut in that direction,Este modelo não tem corte válido nessa direção
 deployStudio.layerLimitEmpty,"A machine would be left with no layers: take it off the map instead","Uma máquina ficaria sem camadas: tire-a do mapa"
 deployStudio.autoBalance,Auto-balance by free memory,Equilibrar pela memória livre
-deployStudio.autoBalanceHint,"Divides the unlocked machines' layers in proportion to each one's free memory (GPU, or RAM without a GPU), at cuts the model allows. Locked ranges stay as they are.","Divide as camadas das máquinas destravadas na proporção da memória livre de cada uma (GPU, ou RAM sem GPU), em cortes que o modelo permite. Faixas travadas ficam como estão."
+deployStudio.autoBalanceHint,"Divides the unlocked machines' layers in proportion to each one's free memory (GPU, or RAM without a GPU), counting the weights and the context's KV cache, at cuts the model allows. Locked ranges stay as they are.","Divide as camadas das máquinas destravadas na proporção da memória livre de cada uma (GPU, ou RAM sem GPU), contando os pesos e o cache KV do contexto, em cortes que o modelo permite. Faixas travadas ficam como estão."
 deployStudio.autoBalanceWaiting,Waiting for the model's cuts from the plan,Aguardando os cortes do modelo vindos do plano
 deployStudio.autoBalanceAllLocked,Unlock at least two machines to balance their layers,Destrave pelo menos duas máquinas para equilibrar as camadas
 deployStudio.autoBalanceNoSizes,"The plan does not give the size of every cut yet, or the cuts are too few for every machine","O plano ainda não informa o tamanho de todo corte, ou os cortes são poucos para todas as máquinas"

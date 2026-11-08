@@ -943,7 +943,7 @@ pub(crate) async fn materialize_slice_ranges(
     if req.name.trim().is_empty() {
         return Err("the slicing needs the model name".to_string());
     }
-    let options = model_layer_options_local(state, &req.model_path).await?;
+    let options = model_layer_options_local(state, &req.model_path, None).await?;
     let source = std::path::Path::new(&req.model_path)
         .canonicalize()
         .map_err(|error| format!("could not resolve the whole model: {error}"))?;

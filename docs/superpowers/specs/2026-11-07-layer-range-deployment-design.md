@@ -212,17 +212,17 @@ prebuilt fork library cannot be inspected), so the operator sets it on builds
 that do. Deploy Studio sends `whole_ranges` from its "Split the layers over N
 machines" action and per-range - / + controls (first part of the Deploy
 Studio section), plus locks and Auto-balance by free memory (weights only;
-the KV and compute cost from `engine.estimate` is not counted yet). Several
+the KV cache now counted from `model-layer-options`, compute buffers not). Several
 ranges per machine were dropped (see "One range per machine" in the Deploy
 Studio section). The overcommit display exists in a first
 form: the capacity preview reports `gpu_layers_fit`, `cpu_layers` and
 `cpu_ram_bytes` for a step (including a range of the own whole file), the
 machine's tab shows "N on GPU, M on CPU", and the note reaches the existing
 confirmation. Remaining: pin `n_gpu_layers` to the estimate at launch (today
-`fit_memory` still decides the real split at load time), refuse a range
-whose CPU part does not fit in RAM, count the KV and compute cost in
-Auto-balance, and let Auto-balance propose the least-bad overcommit when
-nothing fits in VRAM. The POM branch pins the engine branch `pom-external-data` (`dc9e951`),
+`fit_memory` still decides the real split at load time), count the compute
+buffers in Auto-balance, and let Auto-balance propose the least-bad
+overcommit when nothing fits in VRAM. A range whose CPU part does not fit in
+the free RAM is refused by name on the preview. The POM branch pins the engine branch `pom-external-data` (`dc9e951`),
 whose `llama-cpp.lock` points at the fork branch of the same name.
 
 ### Part B: Strata

@@ -51,7 +51,7 @@ pub(super) async fn deploy_endpoint(
     let layer_options = if req.kind == DeployKind::Whole
         && (req.whole_slice.is_some() || req.whole_ranges.is_some())
     {
-        whole_layer_options_for_plan(&state, &machines, &req.group).await
+        whole_layer_options_for_plan(&state, &machines, &req.group, &req.params).await
     } else {
         None
     };
@@ -948,7 +948,13 @@ pub(super) async fn whole_layer_options_for_plan(
     state: &GatewayState,
     machines: &[Machine],
     group: &str,
+    params: &RuntimeParams,
 ) -> Option<WholeLayerOptions> {
+    // The KV cache of each cut follows this deployment's context.
+    let kv = Some(crate::webui::LayerOptionsKv {
+        n_ctx: params.n_ctx,
+        max_sessions: params.max_sessions,
+    });
     let source = machines.iter().find_map(|machine| {
         machine
             .held
@@ -958,7 +964,7 @@ pub(super) async fn whole_layer_options_for_plan(
     })?;
     let (machine, path, total_layers) = source;
     let result: Result<ModelLayerOptions, String> = if machine.node_id == state.network.node_id {
-        crate::webui::model_layer_options_local(state, &path).await
+        crate::webui::model_layer_options_local(state, &path, kv).await
     } else {
         let Some(peer) = state
             .all_peers()
@@ -975,7 +981,7 @@ pub(super) async fn whole_layer_options_for_plan(
                 reason: Some(format!("{} is not in the cluster", machine.label())),
             });
         };
-        let request_body = crate::webui::ModelLayerOptionsRequest { path };
+        let request_body = crate::webui::ModelLayerOptionsRequest { path, kv };
         let response = state
             .control_post_json(
                 &peer,

@@ -432,6 +432,7 @@ operation:
 {"operation": "host.configure",
  "gateway": {"openai_base_url": "http://127.0.0.1:8080/v1", "api_key": "sk-..."},
  "workspace_root": "/data/workspace",
+ "model_dirs": ["/models/full", "/mnt/disk2/models"],
  "host_api": {"base_url": "http://127.0.0.1:8080/api/plugin-host", "token": "<hex>"},
  "preferences": {"features": {"capture_headers": false}, "storage_directory": null}}
 ```
@@ -448,6 +449,10 @@ logically `~/pom_workspace`, with no question in the wizard; in Compose the
 stable mount is `/data/workspace` and must stay persistent across restarts.
 POM checks the path when saving the configuration and resends the context to
 running hosts when the root changes.
+`model_dirs` lists the node's whole-model folders (`model_dir_paths()`,
+without the slice folder and without Ollama stores, the folders the image
+catalog reads), so a plugin can store a model file where the catalog finds
+it; a plugin that ignores the field is unaffected.
 
 ## Services a plugin offers to the cluster
 
@@ -474,6 +479,23 @@ The dashboard draws each service next to its machine: in the Flow, hanging
 under the machine's card with a connecting line, and in the machine's detail
 card (`components/PluginServices.tsx`). A plugin that does not know the
 operation answers with an error, which is ignored.
+
+A service of kind `image` (the ComfyUI plugin's) also lists the image model
+components it serves now, `components: [{deploy_id, name, component, files,
+status, in_flight?}]`: `component` is `diffusion`, `text_encoder` or `vae`,
+`files` holds file names only (never paths), `status` is `ready`, `loading` or
+`error`, `in_flight` the calls it serves now (the node picks the least busy of
+equally near replicas); at most 64 are read. It may also list `workflows: [{id,
+name, deploy_id?, inputs, description?, params?}]` (at most 32, `params` at most
+24 typed values, see `http-api.md` "Chat images"; `id` is lowercase with `.` `_` `-`
+`:`, `builtin:<deploy_id>` or `pub:<slug>`), the ComfyUI workflows the Chat
+may run on that machine; the node runs one through the plugin's loopback
+`POST /pom/workflow/run` (found with `ui.upstream`, behind the plugin token),
+which streams `{p, of}` and ends with `{"media": [{kind, mime, data, width?,
+height?}], "images": [{mime, width, height, data}]}` (an older plugin: `images`
+only) or `{"error"}` (`chat_image.rs`, `http-api.md` "Chat images"). `components::network_components` gathers them from this node
+and every live peer (`plugin_engine::services_of`) to find who serves what;
+LLM planning, `/v1/models` and retrieval never read services of this kind.
 
 **Peer calls.** `POST /api/internal/plugins/:code/peer/:op` lets a peer call
 the plugin's `peer.<op>` operation on another machine. The call must carry the
@@ -568,6 +590,16 @@ plugin, so a plugin only ever speaks as itself.
 | `GET /api/plugin-host/node` | `{node_id, hostname, public_key, did_key, role, principal_node_id}`: the node key in hex and as a `did:key`, the node's role in the trust chain (`principal`, `admin`, `visitor` or `member`) |
 | `GET /api/plugin-host/peers` | `{peers: [{node_id, hostname, principal, visitor}]}`: the live peers |
 | `POST /api/plugin-host/peer` | `{node_id, op, params}` runs `peer.<op>` of **the same plugin** on that machine, through the signed peer call above (or locally, with `caller.local: true`, for this node's own `node_id`), and answers `{reply}`; 404 when the node is not a live peer, 502 when its plugin refused |
+| `GET /api/plugin-host/catalog/images` | `{image_files, metadata_complete}`: the image model files of this node's whole-model folders (the `image_files` entries of `GET /api/ui/models`), read fresh on each call |
+| `POST /api/plugin-host/catalog/refresh` | `{ok: true}` after asking the node to rescan its catalog, so a file the plugin just wrote reaches the screens and the deploy survey |
+| `GET /api/plugin-host/components` | `{components: [{deploy_id, name, component, files, status, node_id, hostname, plugin_code}]}`: the image model components served on the network now |
+| `POST /api/plugin-host/component/:deploy_id/:component/:op` | runs an op of a network component on the machine that serves it and answers its status and body unchanged; the body is opaque, at most 64 MiB (413 above); 404 when no machine serves it, 502 naming the machine when it does not answer, 400 for an op that is not a short lowercase word. An optional `x-pom-job` header names the ComfyUI generation the call belongs to |
+| `POST /api/plugin-host/image-job/begin` | `{job_id, prompt, model, details}`: a ComfyUI generation that uses network components starts (`job_id` is ComfyUI's prompt id). The image budget is checked first (`quota.check` with `images`); a refusal is 429 `{error, retry_after_secs}`, recorded as a refused request. Otherwise one audit record opens (route `/comfyui/image`, caller `plugin:<code>` labelled ComfyUI on this node, `request_details.kind = "image"`); the same id again is a no-op. Component calls carrying `x-pom-job` add to its telemetry |
+| `POST /api/plugin-host/image-job/complete` | `{job_id, status: ok|error|interrupted, error?, images, width?, height?, steps?}` closes the record with `telemetry {kind: "image", images, width, height, steps, components: [{component, deploy_id, name, node_id, hostname, calls, ms, bytes_in, bytes_out}], total_ms}`, the serving hostnames as `hops` and `source` `components:<hosts>`; 404 for an unknown id. A generation left open 30 minutes is closed `incomplete` |
+| `GET /api/plugin-host/image-deployments` | the deploy screen's `{deployments: [{deploy_id, name, created_at, components: [{component, node_id, hostname, path, status}]}]}`. This and the next three answer only on a `principal` or `admin` node (403 `{error: "only an admin node deploys"}` otherwise) and act with the node's own authority, as the screen's routes do: ComfyUI's admin-only "Deploy on POM" dialog uses them |
+| `GET /api/plugin-host/image-files` | `{machines: [{node_id, hostname, image_files: [{path, name, category}], has_image_service}]}`: the network's image files per machine, so a dialog offers only machines that hold a file |
+| `POST /api/plugin-host/image-deploy` | `{name, components: [{component, node_id, path}]}` deploys as `POST /api/ui/image-deploy` does: `{deploy_id}`, 400 for a choice the survey refuses, 502 when a machine could not serve |
+| `POST /api/plugin-host/image-undeploy` | `{deploy_id}` releases it everywhere: `{released: [{node_id, ok, error?}]}` |
 | `POST /api/plugin-host/sign` | `{statement}` signed by the node key: `{signature, public_key, did_key}` (hex) |
 
 The node key also signs announces, control envelopes, grants and the pkarr

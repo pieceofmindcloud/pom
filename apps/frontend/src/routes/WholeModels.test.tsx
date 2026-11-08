@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocaleProvider } from "../i18n/provider";
@@ -40,6 +40,21 @@ const { catalogData } = vi.hoisted(() => ({
         shard_group: null,
         versions: [],
         active_version: 0,
+      },
+    ],
+    image_files: [
+      {
+        id: "folder:/models/pub/repo/ae.safetensors",
+        name: "pub/repo/ae.safetensors",
+        path: "/models/pub/repo/ae.safetensors",
+        size_bytes: 335_304_388,
+        source: "folder",
+        source_label: "Folder",
+        format: "safetensors",
+        category: "vae",
+        family: "flux.1-ae",
+        dtype: "bf16",
+        metadata_error: null,
       },
     ],
     scanned: [{ path: "/models", exists: true, found: 2, source: "folder" }],
@@ -93,5 +108,24 @@ describe("WholeModels", () => {
     expect(table).toBeTruthy();
     expect(screen.getAllByRole("row")).toHaveLength(3); // header + 2 models
     expect(screen.getAllByRole("button", { name: "Slice" })).toHaveLength(2);
+  });
+
+  it("shows image files under the Image switch", () => {
+    renderScreen();
+    expect(screen.getByText("qwen.gguf")).toBeTruthy();
+    expect(screen.queryByText("pub/repo/ae.safetensors")).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "Image" }));
+    expect(screen.getByText("pub/repo/ae.safetensors")).toBeTruthy();
+    expect(screen.getByText("VAE")).toBeTruthy();
+    expect(screen.getByText("bf16")).toBeTruthy();
+    expect(screen.getByText("flux.1-ae")).toBeTruthy();
+    expect(screen.queryByText("qwen.gguf")).toBeNull();
+  });
+
+  it("image rows offer delete and no slice", () => {
+    renderScreen();
+    fireEvent.click(screen.getByRole("tab", { name: "Image" }));
+    expect(screen.getByRole("button", { name: /Delete pub\/repo\/ae.safetensors/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Slice" })).toBeNull();
   });
 });

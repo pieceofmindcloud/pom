@@ -165,6 +165,8 @@ export interface NodeConfig {
   mtp_min_probability: number;
   /** Local peer unload policy; absent means the pre-feature default. */
   unload_if_idle?: boolean;
+  /** The GPU arbiter may unload this model while no request is in flight, for an image on the same card (POM settings, off by default). */
+  yield_gpu_to_images?: boolean;
   idle_minutes?: number;
   /** Every routed MoE expert stays in RAM and the CPU computes it (llama.cpp `--cpu-moe`). */
   moe_experts_in_ram?: boolean;
@@ -186,6 +188,20 @@ export interface AdminAccessStatus {
   /** Identifies this run of the node; changes on every restart. */
   boot_id?: string;
   gateway_port: number;
+  /**
+   * Sign-in providers offered by plugins. With any, the login screen shows
+   * only them and the password lives at the operator path.
+   */
+  auth_providers?: AuthProvider[];
+  demo_mode?: boolean;
+}
+
+export interface AuthProvider {
+  plugin: string;
+  id: string;
+  label: string;
+  icon: string;
+  start_url: string;
 }
 
 /** Administrative state queried after the page has already been authenticated. */
@@ -1086,6 +1102,10 @@ export interface ChatCapabilities {
   rag?: "supported" | "unavailable";
   /** Collections of the RAG server a message may keep its search to. */
   rag_collections?: string[];
+  /** Some machine offers a ComfyUI workflow for Generate image. Absent on an older node. */
+  image?: "supported" | "unavailable";
+  /** The workflows Generate image may run, built-in ones first. */
+  image_workflows?: ChatImageWorkflow[];
 }
 
 export type ModelSource = "ollama" | "lmstudio" | "folder" | string;
@@ -1261,9 +1281,168 @@ export interface CatalogResponse {
   shard_sets: ShardSet[];
   /** Vision projectors and MTP drafts found in this node's folders. */
   sidecars?: Sidecar[];
+  /** Image model files (safetensors...) in this node's whole-model folders. */
+  image_files?: ImageModelFile[];
   scanned: ScannedRoot[];
   /** False while the node is reading GGUF headers in the background. */
   metadata_complete: boolean;
+}
+
+export type ImageCategory =
+  | "diffusion"
+  | "text_encoder"
+  | "vae"
+  | "checkpoint"
+  | "lora"
+  | "controlnet"
+  | "clip_vision"
+  | "upscale"
+  | "other";
+
+/** An image model file found on one machine's disk (`models/image_catalog.rs`). */
+export interface ImageModelFile {
+  id: string;
+  /** Path relative to its folder: `<publisher>/<repo>/<file>`. */
+  name: string;
+  path: string;
+  size_bytes: number;
+  source: ModelSource;
+  source_label: string;
+  format: string;
+  category: ImageCategory;
+  family: string | null;
+  dtype: string | null;
+  metadata_error: string | null;
+}
+
+/** A component of an image deployment: the machine and file it runs from. */
+export interface ImageDeploymentComponent {
+  component: "diffusion" | "text_encoder" | "vae";
+  node_id: string;
+  hostname: string;
+  path: string;
+  /** `ready`, `loading`, `error`, or `missing` when no live service lists it. */
+  status: string;
+}
+
+export type ImageStageName = "text_encoder" | "diffusion" | "vae";
+
+/** A file's identity across machines: its name and size. */
+export interface ImageFileIdentity {
+  name: string;
+  size_bytes: number;
+}
+
+export interface ImageReplicaView {
+  node_id: string;
+  hostname: string;
+  /** `ready`, `loading`, `error`, or `missing` when no live service lists it. */
+  status: string;
+  in_flight: number | null;
+}
+
+export interface ImageStageView {
+  component: ImageStageName;
+  file: ImageFileIdentity;
+  replicas: ImageReplicaView[];
+}
+
+export interface ImageDeploymentVersion {
+  version: number;
+  created_at: string;
+  created_by: string;
+  stages: Array<{
+    component: ImageStageName;
+    file: ImageFileIdentity;
+    replicas: Array<{ node_id: string; hostname: string; path: string }>;
+  }>;
+}
+
+/** `GET /api/ui/image-deployments`: records and what the network serves, by stage. */
+export interface ImageDeployment {
+  deploy_id: string;
+  name: string;
+  family?: string | null;
+  /** This node deployed it (it keeps the versions); others still list and undeploy it. */
+  recorded: boolean;
+  active_version: number;
+  created_at?: string | null;
+  serving: boolean;
+  stages: ImageStageView[];
+  /** The flat form older screens read. */
+  components: ImageDeploymentComponent[];
+  versions?: ImageDeploymentVersion[];
+}
+
+export interface ImageStageRequest {
+  component: ImageStageName;
+  file: ImageFileIdentity;
+  node_ids: string[];
+}
+
+export interface ImagePlanRequest {
+  name: string;
+  stages: ImageStageRequest[];
+  allow_transfers?: boolean;
+}
+
+export interface ImageMachineVerdict {
+  node_id: string;
+  hostname: string;
+  ok: boolean;
+  reason?: string;
+  path?: string;
+}
+
+export interface ImageStagePlan {
+  component: ImageStageName;
+  file: ImageFileIdentity;
+  chosen: ImageMachineVerdict[];
+  alternatives: ImageMachineVerdict[];
+}
+
+/** `POST /api/ui/image-deploy/plan`. */
+export interface ImagePlan {
+  name: string;
+  stages: ImageStagePlan[];
+  memory: Array<{ node_id: string; gpu_free_mb: number; ram_free_mb: number; need_mb: number }>;
+  copies: Array<{ component: ImageStageName; file: ImageFileIdentity; from_node_id: string; to_node_id: string; path: string }>;
+  blocked: string[];
+}
+
+/** An image the Chat generated, kept on this node by its hash. */
+/** An output a ComfyUI workflow made, kept on this node by hash. */
+export interface ChatImage {
+  hash: string;
+  ext: "png" | "jpg" | "webp" | "gif" | "mp4" | "webm" | "wav" | "mp3" | "flac" | "ogg";
+  /** Absent on what older nodes stored: an image. */
+  kind?: "image" | "video" | "audio";
+  width: number;
+  height: number;
+}
+
+/** A value a published workflow takes (the plugin coerces what it gets). */
+export interface ChatWorkflowParam {
+  key: string;
+  label: string;
+  description?: string;
+  type: "text" | "number" | "integer" | "boolean" | "choice" | "image";
+  default?: string | number | boolean;
+  min?: number;
+  max?: number;
+  options?: Array<string | number>;
+}
+
+export interface ChatImageWorkflow {
+  id: string;
+  name: string;
+  node_id: string;
+  /** What it takes: `prompt`, and `image` when it accepts a base image. */
+  inputs?: string[];
+  /** What it does (the Chat's model reads it). */
+  description?: string;
+  /** A published workflow's typed values; absent: only the prompt. */
+  params?: ChatWorkflowParam[];
 }
 
 export type SidecarKind = "mmproj" | "mtp";
@@ -1352,6 +1531,8 @@ export interface PeerCatalog {
   models: DiscoveredModel[];
   shard_sets: ShardSet[];
   sidecars?: Sidecar[];
+  /** Image model files of this machine's whole-model folders. Absent on an old node. */
+  image_files?: ImageModelFile[];
   scanned?: ScannedRoot[];
   /** False while this peer is reading GGUF headers in the background. */
   metadata_complete?: boolean;
@@ -2197,6 +2378,8 @@ export interface RuntimeParams {
   /** Where the MTP block goes: with the model when it all fits (auto), always in VRAM, or always in RAM. */
   mtp_placement?: MtpPlacement;
   unload_if_idle?: boolean;
+  /** The GPU arbiter may unload this model while no request is in flight, for an image on the same card (POM settings, off by default). */
+  yield_gpu_to_images?: boolean;
   idle_minutes?: number;
   /** Every routed MoE expert stays in RAM and the CPU computes it (llama.cpp `--cpu-moe`). */
   moe_experts_in_ram?: boolean;

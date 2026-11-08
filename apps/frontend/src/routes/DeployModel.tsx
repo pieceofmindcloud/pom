@@ -46,7 +46,8 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { ImageDeployStudio } from "../components/ImageDeployStudio";
 import {
   Check,
   ChevronLeft,
@@ -365,6 +366,9 @@ export function DeployModel() {
   // The progress window of the deploy just started (`DeployProgressModal`).
   const [progressOpen, setProgressOpen] = useState(false);
   const navigate = useNavigate();
+  // `?mode=image`: the image model mode (a pipeline of three stages).
+  const [searchParams, setSearchParams] = useSearchParams();
+  const imageMode = searchParams.get("mode") === "image";
   const toast = useToast();
   const invalidate = useInvalidate();
   const jobs = useJobs();
@@ -1376,6 +1380,35 @@ export function DeployModel() {
     setJobId(null);
   }
 
+  if (imageMode) {
+    return (
+      <ImageDeployStudio
+        modeBar={
+          <div className="mr-auto flex items-center gap-1 rounded-lg border border-line bg-ink p-1" role="radiogroup">
+            {([
+              ["shards", t("deployStudio.kindShards")],
+              ["whole", t("deployStudio.kindWhole")],
+            ] as [DeployKind, string][]).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                role="radio"
+                aria-checked={false}
+                onClick={() => { setSearchParams({}); selectKind(value); }}
+                className="rounded-md px-3 py-1.5 text-[0.72rem] font-medium text-muted transition-colors hover:text-fg"
+              >
+                {label}
+              </button>
+            ))}
+            <button type="button" role="radio" aria-checked className="rounded-md bg-iris px-3 py-1.5 text-[0.72rem] font-medium text-white">
+              {t("deployStudio.kindImage")}
+            </button>
+          </div>
+        }
+      />
+    );
+  }
+
   return (
     <>
       <section
@@ -1411,6 +1444,15 @@ export function DeployModel() {
                   {label}
                 </button>
               ))}
+              <button
+                type="button"
+                role="radio"
+                aria-checked={false}
+                onClick={() => setSearchParams({ mode: "image" })}
+                className="rounded-md px-3 py-1.5 text-[0.72rem] font-medium text-muted transition-colors hover:text-fg"
+              >
+                {t("deployStudio.kindImage")}
+              </button>
             </div>
             <div className="flex min-w-[15rem] flex-1 gap-2">
               {inferenceServices.length > 0 && (

@@ -610,6 +610,31 @@ boundary.
   below), and a non-admin caller of a `ServingMember` route needs a `worker`
   token (`caller_may_ask`). `chain_status` feeds
   `NodeInfo.cluster_version` and `POST /api/ui/network/trust-sync`.
+- Image models live outside this folder, in `crates/node/src/`:
+  `components.rs` (a node serves components, `POST /api/ui/components/apply|release`;
+  the live view `GET /api/ui/image-deployments`; undeploy; replica routing of
+  component calls and the internal `POST /api/internal/plugins/:code/component/...`
+  forward), `image_records.rs` (the versioned record: stages in flow order with
+  replicas), `image_plan.rs` (`POST /api/ui/image-deploy/plan`, the deploy job,
+  `/image-deploy/:deploy_id/{add,remove,redeploy}`) and `chat_image.rs` (the
+  Chat's workflows, `POST /api/ui/chat/image`, `GET /api/ui/chat/image/:hash`,
+  the internal workflow run, outputs of any kind stored by magic bytes) and
+  `chat_tools.rs` (the same functions through `/v1`: `GET /v1/pom/tools`,
+  `POST /v1/pom/tools/call`, `GET /v1/pom/media/:file`,
+  `POST /v1/images/generations`); the `host_api` routes are in `plugin_host_api.rs`.
+  `gpu_identity.rs` and `gpu_arbiter.rs` arbitrate one physical GPU shared by
+  an LLM and image components in the LLM's favour (`/api/internal/gpu/*`).
+  Contracts: `docs/subsystems/deployment.md` 1.7 and `http-api.md` "Chat images".
+- `user_session.rs` - people on the node: the session principal
+  (`Operator` / `User`), the providers plugins offer (`auth_providers`,
+  `/api/access.auth_providers`), the public `/auth/<code>/*` forwarder
+  (`auth_http`), the operator path and its throttle (`before_gate`), the user
+  surface allowlist, redaction and session chat tokens (`after_gate`, called
+  by `gateway::require_admin_for_surface`), `DEMO_MODE`, a person's quota
+  (`user_quota`) and workspace folder (`user_workspace`). `demo_slots.rs` is the
+  demo seats and queue (`DEMO_MAX_SESSIONS`, `DEMO_SESSION_TIME`), consulted by
+  `after_gate`. `user_keys.rs` serves a person's own `/api/ui/my-keys`. See
+  `security-model.md`.
 - `quota.rs` - token budgets before the pipeline: `admit` asks the local logs
   plugin, then each live admin (`peer.quota.check` over the signed peer call),
   and the inference handlers answer its `Denial` with 429 + `Retry-After` and

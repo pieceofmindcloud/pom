@@ -40,6 +40,7 @@ import {
   type TpSlicePlan,
 } from "../lib/types";
 import { useI18n } from "../i18n/provider";
+import { isDemoUser } from "../lib/session";
 import { SlicingJobsPanel } from "../components/SlicingJobsPanel";
 
 /** One row of the builder. Empty means "the rest of the model". */
@@ -571,7 +572,7 @@ export function SliceModels() {
               eyebrow={t("slice.preview")}
               title={t("slice.result")}
               subtitle={tensorMode ? t("slice.tpPreviewDetail") : t("slice.previewDetail")}
-              actions={
+              actions={isDemoUser() ? <span className="text-xs text-muted">{t("demo.readOnly")}</span> : (
                 <Button
                   variant="primary"
                   icon={<Play className="h-3.5 w-3.5" />}
@@ -581,7 +582,7 @@ export function SliceModels() {
                 >
                   {t("slice.now")}
                 </Button>
-              }
+              )}
             />
 
             {planError && (

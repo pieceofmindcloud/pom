@@ -478,7 +478,9 @@ loses offload on the first click.
   the runtime. There are two final images. `runtime` is the distribution
   image and has no compiler. `dev-runtime` is the development image: its
   toolchain (Rust/Cargo under world-readable directories, native compilers,
-  Node, plus Google Chrome for the agents in the plugin terminals - the
+  Node, the OpenSSH client so those agents reach Git remotes over SSH with
+  keys the cluster mounts in the node's home, plus Google Chrome for the
+  agents in the plugin terminals - the
   stage's first layer, amd64 only, run as root with `--no-sandbox`, and the
   Compose gives it `shm_size: 1gb`) is installed in the `dev-os` stage, on top of the operating system
   stage `runtime-os` and before any POM file, and the POM files are then
@@ -743,6 +745,13 @@ flags on the command line.
 | `POM_SLOT_AUTO_TTL_SECS` | TTL of an unused automatic prefix snapshot, in seconds (default 7 days). Beats `slot_auto_ttl_secs` in `pom.json`. Read at gateway startup. |
 | `POM_HEADLESS` | Linux `desktop` build (the AppImage): `=1` (`true`/`yes`/`on`) never opens the window and runs the node as a server, as happens anyway when neither `DISPLAY` nor `WAYLAND_DISPLAY` is set. |
 | `POM_NO_TLS` | Boolean equivalent of `--no-tls`: allows HTTP for remote browser UI and client API behind an HTTPS reverse proxy; peer-only requests stay refused and mutual TLS between nodes is unchanged. Off by default in the binary, on by default in the published Docker image. Never publish the plain HTTP port directly to the internet. |
+| `DEMO_MODE` / `POM_DEMO_MODE` | `1` makes the node a public demonstration: a person signed in through a plugin's provider reads the dashboard with every address and node id redacted and cannot mint API keys. The operator session is unaffected. See `security-model.md`, "People signed in through a plugin". |
+| `DEMO_MAX_SESSIONS` / `POM_DEMO_MAX_SESSIONS` | Demo mode only: how many signed-in people use the node at once (default 10); the rest wait in a queue. |
+| `DEMO_SESSION_TIME` / `POM_DEMO_SESSION_TIME` | Demo mode only: minutes each seat lasts (default 20). |
+| `DEMO_PLUGINS` / `POM_DEMO_PLUGINS` | Demo mode only: comma-separated plugin codes a signed-in person reaches besides the sign-in plugin; unset, every active plugin. `docker-compose.demo.yml` brings up such a node with visitors' folders on the host's `/tmp`. |
+| `POM_OPERATOR_PATH` | Path where the node password opens an operator session once a plugin offers sign-in (for example `/_k7q-console`). Unset, a random path is made on first start, kept in `.pom-operator-path` under the project root and printed in the start-up log. |
+| `POM_OAUTH_REDIRECT_BASE` | Public origin used for the sign-in callbacks (`https://demo.example`); unset, the request's own origin. |
+| `POM_OAUTH_<n>_*` | Sign-in providers read by the logs plugin (`ID`, `PRESET`, `LABEL`, `ISSUER`, `CLIENT_ID`, `CLIENT_SECRET`, `SCOPES`, `AUTHORIZE_URL`, `TOKEN_URL`, `USERINFO_URL`, `ALLOWED_DOMAINS`, `DEFAULT_PLAN`, `ENABLED`), n = 1..32. The node only passes its environment to the plugin host. |
 | `POM_INSECURE_ADMIN_UI` | `=1` serves the admin UI in plain HTTP to remote browsers too, instead of redirecting them to https. Development only, for machines reached by IP with no trusted certificate; read once at startup. Peer-only routes stay refused in plain text and plain node-to-node calls still prove no membership. Loopback never needs it. |
 | `POM_TLS_NAMES` | Comma-separated DNS names this node is reached by besides its host name (`localhost` is always in), for a node in a container whose host name is not the one browsers use. They go into the local CA's name constraints when the CA is created and into the web certificate. A name added after the CA exists stays out of the certificate until the CA files (`.pom-ca.key`, `.pom-ca.crt`) are deleted and the new CA trusted again. |
 | `POM_DEV_AUTO_ACCEPT_TRANSFERS` | `=1` makes the **receiving** node accept every transfer offer without a click. Development only; read once at startup. The sender cannot ask for it. |

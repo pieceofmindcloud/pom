@@ -79,6 +79,213 @@ pub(crate) struct PluginService {
     /// in their own card, apart from the engine's settings.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub pom_settings: Vec<String>,
+    /// For a service of kind `image`: the image model components it serves
+    /// now (`components.rs`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub components: Vec<ServedComponent>,
+    /// For a service of kind `image`: the workflows the Chat may run on this
+    /// machine (`chat_image.rs`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workflows: Vec<ImageWorkflow>,
+}
+
+/// A ComfyUI workflow the Chat can run: a deployment's built-in text to
+/// image (`builtin:<deploy_id>`) or one an admin published (`pub:<slug>`).
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
+pub(crate) struct ImageWorkflow {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deploy_id: Option<String>,
+    #[serde(default)]
+    pub inputs: Vec<String>,
+    /// What the workflow does (the Chat's model reads it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// The values a published workflow takes; empty for a built-in one and
+    /// for a plugin that lists none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub params: Vec<WorkflowParam>,
+}
+
+/// One value a published workflow takes. The graph's node and input stay in
+/// the plugin.
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
+pub(crate) struct WorkflowParam {
+    pub key: String,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// `text`, `number`, `integer`, `boolean`, `choice` or `image`.
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<Vec<Value>>,
+}
+
+const MAX_WORKFLOWS: usize = 32;
+pub(crate) const MAX_PARAMS: usize = 24;
+const PARAM_TYPES: [&str; 6] = ["text", "number", "integer", "boolean", "choice", "image"];
+const MAX_PARAM_OPTIONS: usize = 200;
+
+/// A scalar a parameter may hold: a short string, a number or a boolean.
+fn scalar(value: &Value) -> Option<Value> {
+    match value {
+        Value::Bool(_) | Value::Number(_) => Some(value.clone()),
+        Value::String(text) if text.len() <= 8000 => Some(value.clone()),
+        _ => None,
+    }
+}
+
+fn parse_param(entry: &Value) -> Option<WorkflowParam> {
+    let key = entry["key"].as_str().filter(|key| {
+        !key.is_empty()
+            && key.len() <= 40
+            && key
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+    })?;
+    let kind = entry["type"].as_str().filter(|k| PARAM_TYPES.contains(k))?;
+    let options = match kind {
+        "choice" => {
+            let list: Vec<Value> = entry["options"]
+                .as_array()?
+                .iter()
+                .filter_map(scalar)
+                .take(MAX_PARAM_OPTIONS)
+                .collect();
+            if list.is_empty() {
+                return None;
+            }
+            Some(list)
+        }
+        _ => None,
+    };
+    let bound = |name: &str| {
+        matches!(kind, "number" | "integer")
+            .then(|| entry[name].as_f64())
+            .flatten()
+    };
+    Some(WorkflowParam {
+        key: key.to_owned(),
+        label: text(&entry["label"]).unwrap_or_else(|| key.to_owned()),
+        description: short_text(&entry["description"], 300),
+        kind: kind.to_owned(),
+        default: (kind != "image")
+            .then(|| scalar(&entry["default"]))
+            .flatten(),
+        min: bound("min"),
+        max: bound("max"),
+        options,
+    })
+}
+
+/// A trimmed text of at most `limit` bytes without control characters.
+fn short_text(value: &Value, limit: usize) -> Option<String> {
+    let text = value.as_str()?.trim();
+    (!text.is_empty() && text.len() <= limit && !text.chars().any(char::is_control))
+        .then(|| text.to_owned())
+}
+
+fn workflow_id(value: &Value) -> Option<String> {
+    let text = value.as_str()?;
+    (!text.is_empty()
+        && text.len() <= 96
+        && text.bytes().all(|byte| {
+            byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || matches!(byte, b'.' | b'_' | b'-' | b':')
+        }))
+    .then(|| text.to_owned())
+}
+
+fn parse_workflows(kind: &str, value: &Value) -> Vec<ImageWorkflow> {
+    if kind != "image" {
+        return Vec::new();
+    }
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take(MAX_WORKFLOWS)
+        .filter_map(|entry| {
+            Some(ImageWorkflow {
+                id: workflow_id(&entry["id"])?,
+                name: text(&entry["name"])?,
+                deploy_id: slug(&entry["deploy_id"]),
+                inputs: entry["inputs"]
+                    .as_array()
+                    .map(|list| list.iter().filter_map(slug).take(MAX_PARAMS).collect())
+                    .unwrap_or_default(),
+                description: short_text(&entry["description"], 500),
+                params: entry["params"]
+                    .as_array()
+                    .map(|list| {
+                        let mut seen = std::collections::HashSet::new();
+                        list.iter()
+                            .filter_map(parse_param)
+                            .filter(|p| seen.insert(p.key.clone()))
+                            .take(MAX_PARAMS)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            })
+        })
+        .collect()
+}
+
+/// One image model component a plugin serves: a part of an image deployment.
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
+pub(crate) struct ServedComponent {
+    pub deploy_id: String,
+    pub name: String,
+    /// `diffusion`, `text_encoder` or `vae`.
+    pub component: String,
+    /// File names (never paths).
+    pub files: Vec<String>,
+    /// `ready`, `loading` or `error`.
+    pub status: String,
+    /// Calls being served now, when the plugin counts them.
+    #[serde(default)]
+    pub in_flight: Option<u32>,
+}
+
+const MAX_COMPONENTS: usize = 64;
+
+fn parse_components(kind: &str, value: &Value) -> Vec<ServedComponent> {
+    if kind != "image" {
+        return Vec::new();
+    }
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take(MAX_COMPONENTS)
+        .filter_map(|entry| {
+            Some(ServedComponent {
+                deploy_id: slug(&entry["deploy_id"])?,
+                name: text(&entry["name"])?,
+                component: slug(&entry["component"])?,
+                files: entry["files"]
+                    .as_array()
+                    .map(|files| files.iter().filter_map(text).take(8).collect())
+                    .unwrap_or_default(),
+                status: entry["status"]
+                    .as_str()
+                    .filter(|s| ["ready", "loading", "error"].contains(s))?
+                    .to_owned(),
+                in_flight: entry["in_flight"]
+                    .as_u64()
+                    .map(|n| n.min(u64::from(u16::MAX)) as u32),
+            })
+        })
+        .collect()
 }
 
 /// The POM deployment settings an inference service may declare, by their
@@ -275,6 +482,8 @@ pub(crate) fn parse_services(plugin_code: &str, answer: &Value) -> Vec<PluginSer
         let stages = kind == "inference" && entry["stages"] == true;
         let vision = kind == "inference" && entry["vision"] == true;
         let pom_settings = parse_pom_settings(&kind, &entry["pom_settings"]);
+        let components = parse_components(&kind, &entry["components"]);
+        let workflows = parse_workflows(&kind, &entry["workflows"]);
         services.push(PluginService {
             plugin_code: plugin_code.to_owned(),
             id,
@@ -313,6 +522,8 @@ pub(crate) fn parse_services(plugin_code: &str, answer: &Value) -> Vec<PluginSer
             stages,
             vision,
             pom_settings,
+            components,
+            workflows,
         });
     }
     services
@@ -477,6 +688,26 @@ pub(crate) async fn plugin_peer_call(
 mod tests {
     use super::*;
 
+    #[test]
+    fn components_are_parsed_from_an_image_service() {
+        let answer = json!({"services": [
+            {"id": "comfyui-image", "kind": "image", "name": "ComfyUI", "status": "ready",
+             "components": [
+                {"deploy_id": "img-1", "name": "Z-Image", "component": "vae",
+                 "files": ["ae.safetensors"], "status": "ready"},
+                {"deploy_id": "img-1", "name": "Z-Image", "component": "diffusion",
+                 "files": ["z.safetensors"], "status": "loading"},
+                {"deploy_id": "", "component": "vae"}
+             ]},
+            {"id": "comfyui", "kind": "app", "name": "ComfyUI", "status": "ready"}
+        ]});
+        let services = parse_services("comfyui", &answer);
+        assert_eq!(services[0].components.len(), 2);
+        assert_eq!(services[0].components[0].component, "vae");
+        assert_eq!(services[0].components[1].status, "loading");
+        assert!(services[1].components.is_empty());
+    }
+
     /// A plugin learns the caller's proven role, and an inference node is
     /// never a head even when it announces layer 0.
     #[test]
@@ -639,5 +870,42 @@ mod tests {
         for bad in ["", ".a", "a.", "A", "a/b", "a b", &"x".repeat(65)] {
             assert!(!valid_peer_op(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn workflow_params_are_parsed_and_bounded() {
+        let mut params: Vec<Value> = vec![
+            json!({"key": "prompt", "label": "Prompt", "node": "6", "input": "text", "type": "text",
+                   "description": "What to draw"}),
+            json!({"key": "steps", "label": "Steps", "node": "3", "input": "steps", "type": "integer",
+                   "min": 1, "max": 50, "default": 20}),
+            json!({"key": "sampler", "label": "Sampler", "node": "3", "input": "sampler_name",
+                   "type": "choice", "options": ["euler", "dpmpp_2m"], "default": "euler"}),
+            json!({"key": "Bad Key", "label": "x", "type": "text"}),
+            json!({"key": "odd", "label": "x", "type": "video"}),
+            json!({"key": "pick", "label": "x", "type": "choice"}),
+        ];
+        params.extend((0..30).map(|i| json!({"key": format!("k{i}"), "label": "K", "type": "boolean"})));
+        let answer = json!({"services": [
+            {"id": "comfyui-image", "kind": "image", "name": "ComfyUI", "status": "ready",
+             "workflows": [{"id": "pub:typed", "name": "Typed", "description": "Paints a picture",
+                            "inputs": ["prompt", "steps"], "params": params}]}
+        ]});
+        let workflow = &parse_services("comfyui", &answer)[0].workflows[0];
+        assert_eq!(workflow.description.as_deref(), Some("Paints a picture"));
+        assert_eq!(workflow.params.len(), MAX_PARAMS, "at most 24 parameters");
+        let keys: Vec<_> = workflow.params.iter().map(|p| p.key.as_str()).collect();
+        assert_eq!(&keys[..4], ["prompt", "steps", "sampler", "k0"], "bad entries are dropped");
+        assert_eq!(workflow.params[0].description.as_deref(), Some("What to draw"));
+        assert_eq!(workflow.params[1].kind, "integer");
+        assert_eq!((workflow.params[1].min, workflow.params[1].max), (Some(1.0), Some(50.0)));
+        assert_eq!(workflow.params[2].options.as_ref().unwrap().len(), 2);
+        assert_eq!(workflow.params[2].default, Some(json!("euler")));
+        let older = json!({"services": [
+            {"id": "comfyui-image", "kind": "image", "name": "ComfyUI", "status": "ready",
+             "workflows": [{"id": "pub:old", "name": "Old", "inputs": ["prompt"]}]}
+        ]});
+        let workflow = &parse_services("comfyui", &older)[0].workflows[0];
+        assert!(workflow.params.is_empty() && workflow.description.is_none());
     }
 }

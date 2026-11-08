@@ -1134,6 +1134,8 @@ mod tests {
             draft_architectures: Vec::new(),
             vision: false,
             pom_settings: Vec::new(),
+            components: Vec::new(),
+            workflows: Vec::new(),
         };
         assert_eq!(rag_plugin(&[service("rag", "ready")]), Some("qdrant"));
         assert_eq!(rag_plugin(&[service("rag", "starting")]), None);

@@ -79,6 +79,12 @@ pub struct Caller {
     pub key_id: String,
     pub key_label: String,
     pub key_node_id: Option<String>,
+    /// The person behind the credential, when one signed in through a
+    /// plugin's provider (`crate::user_session`): a session chat token or an
+    /// API key that person minted. Absent for node and operator keys, and
+    /// left out of the JSON then, so older readers see what they always did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
 }
 
 impl Caller {
@@ -87,6 +93,7 @@ impl Caller {
             key_id: "connection-key".into(),
             key_label: "connection key".into(),
             key_node_id: None,
+            user_id: None,
         }
     }
 
@@ -95,6 +102,7 @@ impl Caller {
             key_id: "anonymous".into(),
             key_label: "without a token".into(),
             key_node_id: None,
+            user_id: None,
         }
     }
 }
@@ -191,6 +199,13 @@ pub struct AuditQuery {
     pub kind: Option<String>,
     pub limit: Option<usize>,
     pub offset: Option<usize>,
+    /// Set by the node, never by the browser: the person signed in through a
+    /// provider (`crate::user_session`). The logs plugin answers only that
+    /// person's requests; the legacy store answers nothing to a user.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1415,8 +1430,10 @@ fn logs_plugin_unavailable() -> axum::response::Response {
 pub async fn list_requests(
     _auth: ConnectionAuth,
     State(state): State<crate::gateway::GatewayState>,
+    user: Option<axum::Extension<crate::user_session::UserIdentity>>,
     Query(query): Query<LogQuery>,
 ) -> impl IntoResponse {
+    let user_id = user.map(|axum::Extension(user)| user.user_id);
     let plugin_status = state.plugins.status(crate::plugins::LOGS_PLUGIN_CODE).await;
     let plugin_running = plugin_status
         .as_ref()
@@ -1443,6 +1460,8 @@ pub async fn list_requests(
         kind: query.kind,
         limit: query.limit,
         offset: query.offset,
+        profile: user_id.as_ref().map(|_| "user".to_owned()),
+        user_id,
     };
     if let Some(response) = state
         .plugins
@@ -1455,7 +1474,7 @@ pub async fn list_requests(
     {
         return (StatusCode::OK, Json(response)).into_response();
     }
-    if plugin_running {
+    if plugin_running || query.user_id.is_some() {
         return logs_plugin_unavailable();
     }
     match state.audit.list(query).await {
@@ -1476,8 +1495,10 @@ pub async fn list_requests(
 pub async fn stats_requests(
     _auth: ConnectionAuth,
     State(state): State<crate::gateway::GatewayState>,
+    user: Option<axum::Extension<crate::user_session::UserIdentity>>,
     Query(query): Query<LogQuery>,
 ) -> impl IntoResponse {
+    let user_id = user.map(|axum::Extension(user)| user.user_id);
     let plugin_status = state.plugins.status(crate::plugins::LOGS_PLUGIN_CODE).await;
     let plugin_running = plugin_status
         .as_ref()
@@ -1504,6 +1525,8 @@ pub async fn stats_requests(
         kind: query.kind,
         limit: None,
         offset: None,
+        profile: user_id.as_ref().map(|_| "user".to_owned()),
+        user_id,
     };
     if let Some(response) = state
         .plugins
@@ -1516,7 +1539,7 @@ pub async fn stats_requests(
     {
         return (StatusCode::OK, Json(response)).into_response();
     }
-    if plugin_running {
+    if plugin_running || query.user_id.is_some() {
         return logs_plugin_unavailable();
     }
     match state.audit.stats(query).await {
@@ -1644,6 +1667,7 @@ mod tests {
                 key_id: key_id.into(),
                 key_label: "financeiro".into(),
                 key_node_id: Some("node-a".into()),
+                user_id: None,
             },
             entry_node_id: "node-gateway".into(),
             prompt: prompt.into(),

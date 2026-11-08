@@ -313,6 +313,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl-dev \
     nodejs \
     npm \
+    openssh-client \
     pkg-config \
     xxd \
     && rm -rf /var/lib/apt/lists/*

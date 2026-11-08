@@ -15,6 +15,7 @@ import { LocaleProvider } from "../i18n/provider";
 import { fakeCluster, fakeNode, fakePeer, fakeSlicePeer } from "../test/fixtures";
 import { keys } from "../lib/queries";
 import type { DeploymentRow } from "../lib/api";
+import type { ImageDeployment } from "../lib/types";
 import { ProfileProvider } from "../lib/profile";
 import type { NodeInfo, RuntimeParams } from "../lib/types";
 import type { PipelineRouteCost } from "../components/PipelineGatewayNode";
@@ -95,6 +96,7 @@ function mount(
   nodeOverride?: Partial<NodeInfo> | null,
   deployments?: { node_id: string; deployments: DeploymentRow[] },
   pipelineRoutes?: PipelineRouteCost[],
+  images?: ImageDeployment[],
 ) {
   // active_model is set, but there are no peers: the estendida view shows
   // "Nenhuma maquina na rede" in its panel.
@@ -122,6 +124,7 @@ function mount(
     });
   }
   if (deployments) client.setQueryData(keys.deployments, deployments);
+  if (images) client.setQueryData(keys.imageDeployments, { deployments: images });
   const defaultNode = {
     node_id: "no-0", short_id: "no-0", hostname: "no-0",
     role: "peer" as const, profile, connection_key: "",
@@ -173,6 +176,24 @@ describe("Dashboard", () => {
 
     // The absolute overlay that used to render alongside the panel is gone.
     expect(screen.queryByText("A rede esta vazia")).toBeNull();
+  });
+
+  it("shows an image deployment with no LLM served, in the Flow, with its undeploy", async () => {
+    const replica = (node_id: string) => ({ node_id, hostname: node_id, status: "ready", in_flight: 0 });
+    const image: ImageDeployment = {
+      deploy_id: "img-1", name: "Z-Image", recorded: true, active_version: 1, serving: true, components: [],
+      stages: [
+        { component: "text_encoder", file: { name: "q", size_bytes: 1 }, replicas: [replica("a")] },
+        { component: "diffusion", file: { name: "z", size_bytes: 1 }, replicas: [replica("b"), replica("c")] },
+        { component: "vae", file: { name: "ae", size_bytes: 1 }, replicas: [replica("a")] },
+      ],
+    };
+    mount(fakeCluster([], ""), "admin", undefined, undefined, undefined, undefined, [image]);
+    expect(await screen.findByTestId("image-pipeline-map")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Fluxo/ }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByTestId("map-replica-diffusion-c")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Tirar do ar" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Adicionar réplica/ })).toBeTruthy();
   });
 
   it("without an active model hides Add and opens Details by default", async () => {

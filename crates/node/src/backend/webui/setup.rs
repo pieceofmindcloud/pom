@@ -1020,8 +1020,10 @@ pub(super) async fn delete_model(
         }
     };
 
-    // The same gate that governs what leaves the machine governs what disappears from it.
-    if let Err(e) = crate::transfer::ensure_gguf(&path) {
+    // A model file and nothing else: a GGUF (the gate that governs what
+    // leaves the machine) or an image model file of the catalog.
+    let model_dirs = state.auth.read().await.model_dir_paths();
+    if let Err(e) = ensure_deletable_model(&path, &model_dirs) {
         return bad_request(e);
     }
 
@@ -1096,6 +1098,38 @@ pub(super) async fn delete_model(
     }
     info!("🗑️  deleted from disk: {}", path.display());
     Json(json!({ "deleted": true, "path": target, "freed_bytes": size })).into_response()
+}
+
+/// What the Full models screen may delete: a GGUF, or a file with an image
+/// model extension inside one of the whole-model folders. The folder rule
+/// keeps a generic extension like `.bin` from reaching any file on disk.
+pub(crate) fn ensure_deletable_model(
+    path: &std::path::Path,
+    model_dirs: &[std::path::PathBuf],
+) -> Result<(), String> {
+    let gguf = crate::transfer::ensure_gguf(path);
+    if gguf.is_ok() {
+        return Ok(());
+    }
+    let inside = model_dirs.iter().any(|dir| {
+        dir.canonicalize()
+            .map(|dir| path.starts_with(dir))
+            .unwrap_or(false)
+    });
+    if !inside {
+        return gguf;
+    }
+    let extension = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    // Inside a model folder the extension is enough: a corrupt or cut-short
+    // file is exactly the one worth deleting, and the folder is the guard.
+    match extension.as_str() {
+        "safetensors" | "sft" | "ckpt" | "pt" | "pth" | "bin" if path.is_file() => Ok(()),
+        _ => gguf,
+    }
 }
 
 pub(super) fn bad_request(message: impl Into<String>) -> Response {

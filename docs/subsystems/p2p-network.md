@@ -778,7 +778,13 @@ one record in the DHT, so the two would overwrite each other.
   to join the gossip topic. It replaces the IP the trust document used to
   carry: a node that only has the document finds the principal by its key.
   `Discovery` does not redial a target that is already connected or backing
-  off. A key that stays out of the table backs off on its own
+  off. A gossip join counts as done once it is queued, but its connection can
+  still fail, for example when both machines start together and the record
+  still carries the previous run's addresses. So when the dial finds a peer
+  that was already asked but is not an active gossip neighbor, it asks again,
+  at most once per 30 s (`PolicyState::forget_failed_join`). Without this, a
+  node that never heard an announce stayed out until it restarted: the
+  isolated rejoin only asks the peers already in its table. A key that stays out of the table backs off on its own
   (`main::pkarr_bootstrap_wait`): 30 s after the first miss, doubling up to
   10 min, and back to every tick once it is alive.
 - **No internet** (`--no-pkarr` / `POM_NO_PKARR=1`): no pkarr client is

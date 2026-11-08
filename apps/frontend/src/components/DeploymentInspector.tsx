@@ -769,8 +769,16 @@ export function DeploymentInspector({
           )}
         </Section>
         {visionSection}
-        {(pomSettings.length > 0 || pomCardSettings.length > 0) && (
+        {(
           <Section title={t("inspector.sectionPom")} tone="aqua" guide={DEPLOY_SETTINGS_GUIDES.pom}>
+            {toggle({
+              key: "yield_gpu_to_images",
+              label: t("inspector.yieldGpuToImages"),
+              alwaysVisible: true,
+              checked: value.yield_gpu_to_images ?? false,
+              onToggle: (next) => set({ yield_gpu_to_images: next }),
+              tip: t("inspector.yieldGpuToImagesHint"),
+            })}
             {pomSettings.includes("prefill_max_inflight_chunks") && numeric("prefill_max_inflight_chunks")}
             {pomSettings.includes("hidden_state_dtype") && hiddenStateField()}
             {pomSettings.includes("inference_role") && inferenceRoleField()}
@@ -978,6 +986,14 @@ export function DeploymentInspector({
           checked: value.adaptive_prefill_chunks ?? true,
           onToggle: (next) => set({ adaptive_prefill_chunks: next }),
           tip: t("deploy.adaptivePrefillChunksHint"),
+        })}
+        {toggle({
+          key: "yield_gpu_to_images",
+          label: t("inspector.yieldGpuToImages"),
+          alwaysVisible: true,
+          checked: value.yield_gpu_to_images ?? false,
+          onToggle: (next) => set({ yield_gpu_to_images: next }),
+          tip: t("inspector.yieldGpuToImagesHint"),
         })}
         {merge && (
           <InspectorRow label={t("deploy.merge")} tip={t("deploy.mergeHint")}>

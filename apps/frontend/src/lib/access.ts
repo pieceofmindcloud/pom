@@ -20,6 +20,7 @@
  */
 import type { Profile } from "./profile";
 import { pluginRouteProfiles } from "./pluginUi";
+import { DEMO_USER_ROUTES, isDemoUser, isUserSession, sessionInfo, USER_ROUTES } from "./session";
 
 /**
  * Route prefix -> profiles that get in.
@@ -35,6 +36,9 @@ const RESTRICTED: Readonly<Record<string, readonly Profile[]>> = {
   // The cluster's connection key is the operator's credential: only the
   // admin sees it.
   "/config/keys/connection": ["admin"],
+  // A signed-in person's own keys: no node profile opens it, only that
+  // person's session (`canAccessRoute`).
+  "/config/my-keys": [],
 };
 
 /**
@@ -99,6 +103,17 @@ export function routeProfiles(path: string): readonly Profile[] | null {
 
 /** Whether this profile can open this route, including Enterprise surfaces. */
 export function canAccessRoute(path: string, profile: Profile): boolean {
+  // A person signed in through a provider sees the user surface only. The
+  // node lists to them only the plugins that offer sign-in.
+  if (isUserSession()) {
+    if (isUnder(path, "/config/my-keys")) return sessionInfo()?.can_mint_keys === true;
+    if (pluginRouteProfiles(path)) return true;
+    if (isDemoUser()) {
+      const pathname = path.split(/[?#]/, 1)[0];
+      if (DEMO_USER_ROUTES.includes(pathname as (typeof DEMO_USER_ROUTES)[number])) return true;
+    }
+    return USER_ROUTES.some((prefix) => (prefix === "/" ? path.split(/[?#]/, 1)[0] === "/" : isUnder(path, prefix)));
+  }
   // Plugin UIs are local to this node and open to every profile.
   // The explicit blocks on native `infer` surfaces still apply.
   if (profile === "visitor" && INFER_DENIED_ROUTES.some((prefix) => isUnder(path, prefix))) return false;
@@ -127,6 +142,8 @@ export function canAccessEnterprise(path: string, _active: boolean): boolean {
  * the route table, so as not to become a second list.
  */
 export function homeRoute(profile: Profile): string {
+  // A demonstration visit is timed: it opens on the Chat, what the visit is for.
+  if (isDemoUser()) return "/chat";
   return canAccessRoute("/", profile) ? "/" : "/chat";
 }
 

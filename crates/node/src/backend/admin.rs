@@ -60,7 +60,7 @@ pub(crate) struct IssuedApiKey {
     pub secret: String,
 }
 
-async fn refresh_api_key_snapshot(state: &crate::gateway::GatewayState) -> anyhow::Result<()> {
+pub(crate) async fn refresh_api_key_snapshot(state: &crate::gateway::GatewayState) -> anyhow::Result<()> {
     let keys = state.database.api_keys()?;
     state.auth.write().await.api_keys = keys;
     Ok(())
@@ -132,6 +132,17 @@ async fn create_key(
     label: String,
     node_id: String,
 ) -> anyhow::Result<IssuedApiKey> {
+    create_key_for(state, label, node_id, String::new()).await
+}
+
+/// `create_key` for a person signed in on this node (`crate::user_keys`):
+/// requests with the key carry `user_id`.
+pub(crate) async fn create_key_for(
+    state: &crate::gateway::GatewayState,
+    label: String,
+    node_id: String,
+    user_id: String,
+) -> anyhow::Result<IssuedApiKey> {
     let secret = crate::auth::generate_api_key_secret();
     let key = ApiKey {
         id: Uuid::new_v4().simple().to_string(),
@@ -142,6 +153,7 @@ async fn create_key(
         origin_node_id: state.network.node_id.clone(),
         active: true,
         created_at: chrono::Utc::now().to_rfc3339(),
+        user_id,
     };
     state.database.insert_api_key(&key)?;
     refresh_api_key_snapshot(state).await?;
@@ -1736,6 +1748,7 @@ mod tests {
             origin_node_id: "eu".into(),
             active: true,
             created_at: "2026-01-01T00:00:00Z".into(),
+            user_id: String::new(),
         };
         state.database.insert_api_key(&orphan).unwrap();
 

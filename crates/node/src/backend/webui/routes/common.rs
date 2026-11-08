@@ -53,6 +53,65 @@ pub(super) fn routes() -> Router<GatewayState> {
         )
         .route("/api/plugin-host/sign", post(crate::plugin_host_api::sign))
         .route(
+            "/api/plugin-host/catalog/images",
+            get(crate::plugin_host_api::catalog_images),
+        )
+        .route(
+            "/api/plugin-host/catalog/refresh",
+            post(crate::plugin_host_api::catalog_refresh),
+        )
+        .route(
+            "/api/plugin-host/components",
+            get(crate::plugin_host_api::components),
+        )
+        .route(
+            "/api/plugin-host/image-deployments",
+            get(crate::plugin_host_api::image_deployments),
+        )
+        .route(
+            "/api/plugin-host/image-files",
+            get(crate::plugin_host_api::image_files),
+        )
+        .route(
+            "/api/plugin-host/image-deploy",
+            post(crate::plugin_host_api::image_deploy),
+        )
+        .route(
+            "/api/plugin-host/image-undeploy",
+            post(crate::plugin_host_api::image_undeploy),
+        )
+        .route(
+            "/api/plugin-host/image-job/begin",
+            post(crate::plugin_host_api::image_job_begin),
+        )
+        .route(
+            "/api/plugin-host/image-job/complete",
+            post(crate::plugin_host_api::image_job_complete),
+        )
+        .route(
+            "/api/plugin-host/component/:deploy_id/:component/:op",
+            post(crate::plugin_host_api::component_call).layer(
+                axum::extract::DefaultBodyLimit::max(crate::components::MAX_COMPONENT_BODY),
+            ),
+        )
+        .route("/api/internal/gpu/yield", post(crate::gpu_arbiter::yield_route))
+        .route(
+            "/api/internal/gpu/release-images",
+            post(crate::gpu_arbiter::release_route),
+        )
+        .route(
+            "/api/internal/plugins/:code/workflow/run",
+            post(crate::chat_image::internal_run_route).layer(
+                axum::extract::DefaultBodyLimit::max(crate::chat_image::MAX_RUN_BODY),
+            ),
+        )
+        .route(
+            "/api/internal/plugins/:code/component/:deploy_id/:component/:op",
+            post(crate::components::internal_component_route).layer(
+                axum::extract::DefaultBodyLimit::max(crate::components::MAX_COMPONENT_BODY),
+            ),
+        )
+        .route(
             "/api/internal/plugins/:code/engine/generate",
             post(crate::plugin_engine::engine_generate_route).layer(
                 axum::extract::DefaultBodyLimit::max(crate::plugin_engine::MAX_GENERATION_BODY),
@@ -102,6 +161,13 @@ pub(super) fn routes() -> Router<GatewayState> {
         )
         .route("/api/ui/cluster", get(cluster))
         .route("/api/ui/chat/capabilities", get(chat_capabilities))
+        .route(
+            "/api/ui/chat/image",
+            post(crate::chat_image::run_route).layer(axum::extract::DefaultBodyLimit::max(
+                crate::chat_image::MAX_RUN_BODY,
+            )),
+        )
+        .route("/api/ui/chat/image/:hash", get(crate::chat_image::image_route))
         .route("/api/ui/cluster/models", get(cluster_models))
         .route(
             "/api/ui/model-sidecar-links",

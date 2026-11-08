@@ -599,6 +599,7 @@ fn valid_rpc_op(op: &str) -> bool {
 pub(crate) async fn plugin_rpc(
     State(state): State<crate::gateway::GatewayState>,
     Path((code, op)): Path<(String, String)>,
+    user: Option<axum::Extension<crate::user_session::UserIdentity>>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
@@ -640,17 +641,25 @@ pub(crate) async fn plugin_rpc(
     let profile = state.auth.read().await.profile;
     // The node's own id lets the plugin keep a non-admin to the requests this
     // node received: rows from before it lost the admin role stay in its store.
+    // A person signed in through a provider is profile `user` with their id:
+    // the plugin scopes every read to that person (`crate::user_session`).
+    let mut query = json!({
+        "params": params,
+        "profile": profile.to_string(),
+        "node_id": state.network.node_id,
+    });
+    if let Some(axum::Extension(user)) = user {
+        query["profile"] = json!("user");
+        query["user_id"] = json!(user.user_id);
+        query["user"] = json!(user);
+        query["demo_mode"] = json!(crate::user_session::demo_mode());
+        query["user_workspace"] = json!(crate::user_session::user_workspace(&state, &user)
+            .await
+            .to_string_lossy());
+    }
     match state
         .plugins
-        .query_audit(
-            &code,
-            &format!("rpc.{op}"),
-            json!({
-                "params": params,
-                "profile": profile.to_string(),
-                "node_id": state.network.node_id,
-            }),
-        )
+        .query_audit(&code, &format!("rpc.{op}"), query)
         .await
     {
         Some(reply) => axum::Json(reply).into_response(),

@@ -12,11 +12,20 @@ name: Docker Hub image
 # Needs the repository secrets DOCKERHUB_USERNAME and DOCKERHUB_TOKEN (an access token
 # with Read & Write, created at hub.docker.com > Account settings > Personal access
 # tokens). The variable DOCKERHUB_REPOSITORY overrides the image name.
+#
+# With `develop` on, the image goes to pereirajair/pom-develop instead (the variable
+# DOCKERHUB_DEVELOP_REPOSITORY overrides it): development images, apart from the public
+# one. Dispatch it from the branch you want; `Release · Linux` also calls it directly
+# (workflow_call) with the release it has just published.
 on:
   workflow_dispatch:
     inputs:
       release:
         description: 'Release tag to package (empty = newest with a Linux AppImage)'
+        required: false
+        type: string
+      asset:
+        description: 'AppImage file of the release (empty = picked automatically)'
         required: false
         type: string
       tag:
@@ -28,24 +37,59 @@ on:
         required: false
         default: true
         type: boolean
+      develop:
+        description: 'Publish to pereirajair/pom-develop instead of pereirajair/pom'
+        required: false
+        default: false
+        type: boolean
+  workflow_call:
+    inputs:
+      release:
+        description: 'Release tag to package (empty = newest with a Linux AppImage)'
+        required: false
+        type: string
+      asset:
+        description: 'AppImage file of the release (empty = picked automatically)'
+        required: false
+        type: string
+      tag:
+        description: 'Docker tag (empty = the release tag)'
+        required: false
+        type: string
+      latest:
+        description: 'Also tag as latest'
+        required: false
+        default: true
+        type: boolean
+      develop:
+        description: 'Publish to pereirajair/pom-develop instead of pereirajair/pom'
+        required: false
+        default: false
+        type: boolean
+    secrets:
+      DOCKERHUB_USERNAME:
+        required: true
+      DOCKERHUB_TOKEN:
+        required: true
+  # `Release · Linux` is not here: it calls this workflow itself, saying which image.
   workflow_run:
-    workflows: ['Release · Linux', 'Release · ksia (Linux + CUDA, Windows)']
+    workflows: ['Release · ksia (Linux + CUDA, Windows)']
     types: [completed]
 
 permissions:
   contents: read
 
 concurrency:
-  group: docker-hub
+  group: docker-hub-${{ inputs.develop && 'develop' || 'main' }}
   cancel-in-progress: false
 
 env:
-  IMAGE: ${{ vars.DOCKERHUB_REPOSITORY || 'pereirajair/pom' }}
+  IMAGE: ${{ inputs.develop && (vars.DOCKERHUB_DEVELOP_REPOSITORY || 'pereirajair/pom-develop') || vars.DOCKERHUB_REPOSITORY || 'pereirajair/pom' }}
 
 jobs:
   image:
     name: Build and push
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -57,6 +101,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           WANTED: ${{ inputs.release }}
+          WANTED_ASSET: ${{ inputs.asset }}
           WANTED_TAG: ${{ inputs.tag }}
         run: |
           # In a release, the CUDA + Vulkan AppImage first: with the libcuda stub it also
@@ -70,7 +115,7 @@ jobs:
           }
           if [ -n "$WANTED" ]; then
             release="$WANTED"
-            asset="$(pick_asset "$release")"
+            asset="${WANTED_ASSET:-$(pick_asset "$release")}"
           else
             release=""; asset=""
             for tag in $(gh release list -R "$GITHUB_REPOSITORY" --exclude-drafts -L 40 \
@@ -129,7 +174,7 @@ jobs:
       - name: Push
         env:
           TAG: ${{ steps.pick.outputs.tag }}
-          LATEST: ${{ github.event_name != 'workflow_dispatch' || inputs.latest }}
+          LATEST: ${{ github.event_name == 'workflow_run' || inputs.latest }}
         run: |
           docker tag pom:smoke "$IMAGE:$TAG"
           docker push "$IMAGE:$TAG"

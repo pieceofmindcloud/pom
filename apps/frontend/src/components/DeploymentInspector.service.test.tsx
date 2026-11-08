@@ -114,9 +114,12 @@ describe("DeploymentInspector with a plugin's inference service", () => {
     }
   });
 
-  it("has no POM card for a service that declares none", () => {
-    mount(true, vi.fn(), []);
-    expect(screen.queryByText("POM settings")).toBeNull();
+  it("a service that declares no POM setting still gets the POM card, with only Yield the GPU to images, off", () => {
+    const onChange = vi.fn();
+    mount(true, onChange, []);
+    expect(screen.getByText("POM settings")).toBeTruthy();
+    expect(screen.getByText("Yield the GPU to images")).toBeTruthy();
+    expect(screen.queryByRole("combobox", { name: "Hidden-state precision" })).toBeNull();
   });
 
   it("leaves them out for a model on one machine", () => {

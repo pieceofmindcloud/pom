@@ -30,6 +30,7 @@ import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
 import { Modal } from "./Confirm";
 import { Button } from "./ui";
+import { isUserSession } from "../lib/session";
 
 /** Interval for reading the node's events for the plugin screens. */
 const NODE_EVENTS_POLL_MS = 3000;
@@ -129,6 +130,8 @@ export function PluginBridge() {
     let after: number | null = null;
     let stopped = false;
     const poll = async () => {
+      // A signed-in person has no node events (`user_may_call`).
+      if (isUserSession()) return;
       try {
         const query = after === null ? "" : `?after=${after}`;
         const response = await api.get<{ latest?: unknown; events?: unknown }>(`/api/ui/plugins/events${query}`);

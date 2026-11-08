@@ -49,6 +49,21 @@ If a machine does not have the file it needs, the deploy is refused unless you a
 Each category of the inspector has a help button that opens its guide: Default settings and POM settings.
 :::
 
+## Image models
+
+**Image model** in the mode bar turns the studio into an image pipeline. An image model (Z-Image, Qwen Image, Flux...) is served by stage, in the order the image is made: the **text encoder** reads the prompt, the **diffusion model** draws the image step by step, and the **VAE** turns the result into pixels. Each stage runs on machines that run ComfyUI and already hold that stage's file, so a small GPU can hold the diffusion model while the others live elsewhere.
+
+:::steps
+### Choose the files
+Choose the diffusion model's file. The text encoder and the VAE are filled in when the same folder holds exactly one of each; change them if you want others.
+### Drag machines onto the stages
+Drag machines from the strip at the bottom onto each stage. More than one machine on a stage makes replicas: each call goes to the nearest one that answers, and the image keeps going when one of them stops. One machine can serve several stages; the small VAE usually rides along with another one. A machine that cannot take a stage says why on its card.
+### Read the verdict and deploy
+The red line at the top says what is still missing. Deploy follows the same progress window as a language model, and the deployment shows on the Dashboard and in Deployments.
+:::
+
+ComfyUI on any machine of the network lists the stages as `POM ▸ <name> ▸ <file>` in its ordinary loaders, and the Chat can generate images with it. Nothing is copied: a machine without the file is not offered.
+
 :::deep docs/subsystems/deployment.md
 The plan, the merge, the order and the slice lifecycle
 :::

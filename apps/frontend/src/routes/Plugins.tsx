@@ -14,6 +14,7 @@ import { navigateToPluginContact, navigateToPluginPurchase } from "../lib/plugin
 import { promotionEnd, promotionFor, salesByContact, termPrice, type PlanInterval } from "../lib/pluginPricing";
 import { pluginAssetUrl, pluginUiSnapshot } from "../lib/pluginUi";
 import { useI18n } from "../i18n/provider";
+import { isDemoUser } from "../lib/session";
 
 function stateTone(state: PluginStatus["state"] | null): Tone {
   switch (state) {
@@ -372,6 +373,7 @@ function PluginCard({
   developmentFailure,
   onDevelopmentBuild,
 }: PluginCardProps) {
+  const readOnly = isDemoUser();
   const { t } = useI18n();
   const uiPlugin = pluginUiSnapshot().find((plugin) => plugin.code === code);
   const name = entry?.display_name ?? repository?.manifest.display_name ?? developmentSource?.display_name ?? code;
@@ -512,7 +514,7 @@ function PluginCard({
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-0.5">
-          {repository && (
+          {repository && !readOnly && (
             <>
               <button
                 type="button"
@@ -536,7 +538,7 @@ function PluginCard({
               </button>
             </>
           )}
-          {active && preferenceSchema && (
+          {active && preferenceSchema && !readOnly && (
             <button
               type="button"
               aria-label={t("plugins.preferencesOpen", { name })}
@@ -645,7 +647,7 @@ function PluginCard({
           </div>
         )}
 
-        {repository && (releases.length === 0 || updates.length > 0 || repository.check_error || githubFailedId === repository.id) && (
+        {repository && !readOnly && (releases.length === 0 || updates.length > 0 || repository.check_error || githubFailedId === repository.id) && (
           <div className="space-y-2 rounded-lg border border-line bg-raised/30 p-2.5">
             {releases.length === 0 ? (
               <p className="text-xs text-muted">{t("plugins.githubNoCompatibleReleases")}</p>
@@ -691,7 +693,8 @@ function PluginCard({
           </div>
         )}
 
-        <div className="mt-auto flex flex-wrap gap-2">
+        {/* A demonstration visitor sees what is installed, never how to change it. */}
+        <div className={readOnly ? "hidden" : "mt-auto flex flex-wrap gap-2"}>
           {active && status?.public_install !== true && !localOnlyDevelopmentInstall && (
             <>
               <Button variant="outline" loading={busyCode === code} icon={<RefreshCw className="h-3.5 w-3.5" />} onClick={() => onRefresh(code)}>
@@ -768,7 +771,7 @@ function PluginCard({
         {developmentSuccess && <p role="status" className="text-xs text-aqua">{developmentSuccess}</p>}
         {developmentFailure && <p role="alert" className="break-words text-xs text-rose">{developmentFailure}</p>}
 
-        {active && status?.available_update && (
+        {active && status?.available_update && !readOnly && (
           <div className="space-y-2 rounded-lg border border-iris/35 bg-iris/8 px-3 py-2.5" role="status">
             <p className="text-xs font-medium text-fg">
               {t("plugins.updateAvailable", { version: status.available_update.version })}
@@ -859,6 +862,8 @@ function GithubSourceCard({
 
 export function Plugins() {
   const { t, locale } = useI18n();
+  // A demonstration visitor browses the catalog and what is installed, read-only.
+  const readOnly = isDemoUser();
   const queryClient = useQueryClient();
   const plugins = usePlugins();
   const catalog = usePublicPluginCatalog();
@@ -1170,7 +1175,8 @@ export function Plugins() {
     licenseStatus: licenseStatusByCode.get(code) ?? localByCode.get(code) ?? null,
   });
   // The example plugin lives in the "Develop your plugin" tab.
-  const cards = codes.filter((code) => code !== EXAMPLE_PLUGIN_CODE).map(cardFor);
+  // A visitor has no Develop tab, so the example plugin joins the list.
+  const cards = codes.filter((code) => readOnly || code !== EXAMPLE_PLUGIN_CODE).map(cardFor);
   const total = storePage.data?.total ?? null;
   const pageCount = total === null ? 1 : Math.max(1, Math.ceil(total / PAGE_SIZE));
   const licenseStatusAvailable = !plugins.isLoading && !plugins.isError && plugins.data !== undefined;
@@ -1289,8 +1295,8 @@ export function Plugins() {
     <div className="flex h-full min-h-0 min-w-0 flex-col bg-ink">
       <FullBleedHeader
         title={t("plugins.title")}
-        subtitle={t("plugins.subtitle")}
-        actions={(
+        subtitle={readOnly ? t("demo.readOnly") : t("plugins.subtitle")}
+        actions={readOnly ? undefined : (
           <Button
             variant="outline"
             loading={updatesChecking}
@@ -1301,7 +1307,7 @@ export function Plugins() {
           </Button>
         )}
       />
-      <Tabs
+      {!readOnly && <Tabs
         label={t("plugins.tabsLabel")}
         value={tab}
         onChange={setTab}
@@ -1309,7 +1315,7 @@ export function Plugins() {
           { value: "catalog", label: t("plugins.tabCatalog") },
           { value: "develop", label: t("plugins.tabDevelop") },
         ]}
-      />
+      />}
 
       <div className="min-h-0 min-w-0 flex-1 overflow-auto px-5 py-5">
         {tab === "catalog" ? (
@@ -1384,7 +1390,7 @@ export function Plugins() {
           </div>
 
           <div className="order-1 min-w-0 space-y-4 self-start lg:order-2">
-            {shouldShowActivation && (
+            {shouldShowActivation && !readOnly && (
               <Panel>
                 <PanelHeader
                   eyebrow={t("plugins.activationEyebrow")}
@@ -1420,13 +1426,13 @@ export function Plugins() {
                 </form>
               </Panel>
             )}
-            <GithubSourceCard
+            {!readOnly && <GithubSourceCard
               busy={githubBusyId === "add"}
               failed={githubFailedId === "add"}
               failureMessage={githubFailureMessage}
               listError={githubRepositories.error}
               onAdd={addRepository}
-            />
+            />}
             {developmentEnabled && (developmentSources.isError
               || (developmentSources.data && (!developmentSources.data.mount_available || developmentSources.data.sources.length === 0))) && (
               <Panel>

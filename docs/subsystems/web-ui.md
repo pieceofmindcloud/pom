@@ -1224,6 +1224,34 @@ besides the turns:
   tokens (one per stream delta that added to the reasoning,
   `ChatStreamState.reasoningTokens`, kept as `ChatMessage.reasoningTokens`).
   The text opens only on a click.
+- **Generate image** (`ImageMenu` in `routes/Chat.tsx`, a menu like the RAG
+  one) shows when `chat/capabilities` reports `image: supported`: the mode
+  (`ChatSession.imageMode`: `auto`, the default, offers the LLM the
+  `generate_image` tool of `lib/chatImageTool.ts` in its own request, and a
+  call streamed in fragments is reassembled by `chatStore` and run on the same
+  reply with the prompt the LLM wrote, kept as `ChatMessage.imagePrompt` and
+  shown under the images; `always` sends every message straight to the
+  workflow; `text` offers nothing), the workflow (`imageWorkflow`, default the
+  first) and the image size (`IMAGE_SIZES`, `imageSize`; it wins over the
+  tool's `aspect`). An image attached to the message is sent as the base of
+  image to image (`image`) when the workflow lists `image` in its `inputs`, and
+  refused otherwise. In `auto` the request also offers one `wf_<slug>` tool per
+  published workflow with `params` (`workflowTools`; never named
+  `generate_image`), and a call runs that workflow with its arguments
+  (`workflowCallOf`; `use_attached_image` sends the attachment as its image
+  parameter). The menu's Functions section opens `components/WorkflowForm.tsx`
+  for one of them: a field per parameter prefilled with the defaults; running it
+  adds a user turn naming the workflow and its values (`describeRun`) and a
+  reply with the outputs. With a
+  workflow chosen, a message goes to `POST /api/ui/chat/image`
+  (`lib/chatImage.ts`) instead of `/v1/chat/completions`: the reply shows the
+  progress, then `ChatImageGrid` (thumbnails read by hash from
+  `/api/ui/chat/image/:hash` with the Chat key, a full-size dialog with
+  Download, and "no longer on this node" on a 404; video and audio outputs
+  get a player and Download). The message keeps only
+  `images: [{hash, ext, kind?, width, height}]`, never the bytes, since
+  `localStorage` cannot hold images. A network that serves only image models
+  still opens the composer.
 - While the network serves no model, the Chat draws no composer and no RAG
   menu: an empty conversation shows `components/MissingPiece.tsx`, three
   puzzle pieces in the brand colours locking together around an empty,

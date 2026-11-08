@@ -7,6 +7,7 @@
  * nobody has asked. The trade is stated in `apps/frontend/README.md`: sessions do not
  * follow you to another browser, and clearing site data clears them.
  */
+import { accumulateToolCalls } from "./chatImageTool";
 import {
   createContext,
   createElement,
@@ -71,6 +72,12 @@ export interface ChatMessage {
   source?: string;
   /** Thinking blocks emitted by models with reasoning enabled. */
   reasoning?: string;
+  /** Images a ComfyUI workflow generated for this answer, kept on this node by hash. */
+  images?: import("./types").ChatImage[];
+  /** The diffusion prompt the LLM wrote for these images (Generate image's tool). */
+  imagePrompt?: string;
+  /** Generate image still running: the sampling step reached (`of` 0 before the first step). */
+  imageProgress?: { step: number; of: number };
   /** How many tokens the model spent thinking, counted from the stream. */
   reasoningTokens?: number;
   /** Authoritative final throughput from the generating node. */
@@ -110,6 +117,12 @@ export interface ChatSession {
   ragEnabled?: boolean;
   /** The collection retrieval is kept to in this conversation. Absent means all. */
   ragCollection?: string;
+  /** Generate image: the workflow this conversation sends its messages to. Absent means off (the LLM answers). */
+  imageWorkflow?: string;
+  /** Generate image: `auto` (the LLM decides through a tool), `text`, or `always` (every message is an image). */
+  imageMode?: "auto" | "text" | "always";
+  /** Generate image: the size asked for, `<width>x<height>`. Absent means the workflow's default. */
+  imageSize?: string;
   messages: ChatMessage[];
   updatedAt: string;
 }
@@ -128,6 +141,13 @@ export interface StartChatStreamOptions {
   ragEnabled?: boolean;
   /** The collection the retrieval of this message is kept to. */
   ragCollection?: string;
+  /** Tools offered to the model (Generate image's `generate_image` in Automatic mode). */
+  tools?: unknown[];
+  /**
+   * The model ended its answer with a tool call: run it on the same reply,
+   * before the conversation is saved (`patch` edits that reply).
+   */
+  onToolCalls?: (calls: import("./chatImageTool").ToolCall[], patch: (change: Partial<ChatMessage>) => void) => Promise<void>;
   emptyResponseMessage: string;
   interruptedMessage: string;
   cluster: ClusterView | null;
@@ -374,12 +394,15 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
         // A new message owns the controller from this point on. Do not let a
         // late delta from the aborted request overwrite its newer transcript.
         if (streamAbort.current !== controller) return;
+        // Mark the change, then publish it now when asked: a flush alone
+        // publishes nothing that was not scheduled.
+        scheduler.schedule();
         if (immediate) scheduler.flush();
-        else scheduler.schedule();
       };
 
       try {
         let streamed = emptyChatStream();
+        let toolCalls: import("./chatImageTool").ToolCall[] = [];
         const requestStartedAt = performance.now();
         let firstChunkAt: number | undefined;
         let firstTokenAt: number | undefined;
@@ -400,9 +423,13 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
             thinking_enabled: options.thinkingEnabled,
             ...(options.ragEnabled === undefined ? {} : { rag: options.ragEnabled }),
             ...(options.ragEnabled && options.ragCollection ? { rag_collection: options.ragCollection } : {}),
+            ...(options.tools && options.tools.length > 0 ? { tools: options.tools } : {}),
             messages: turnsOnly(options.history).map((message) => ({
               role: message.role,
-              content: message.content,
+              // An image the model made earlier stays in the conversation as text.
+              content: message.imagePrompt
+                ? `${message.content}${message.content ? "\n" : ""}[generated an image: ${message.imagePrompt}]`
+                : message.content,
             })),
           },
           controller.signal,
@@ -435,6 +462,7 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
               streamed = consumeChatDelta(streamed, delta);
               patchReply({ content: streamed.content, reasoning: streamed.reasoning || undefined, reasoningTokens: streamed.reasoningTokens || undefined });
             }
+            if (Array.isArray(toolDelta)) toolCalls = accumulateToolCalls(toolCalls, toolDelta);
             if (typeof reasoningDelta === "string" && reasoningDelta) {
               streamed = consumeReasoningDelta(streamed, reasoningDelta);
               patchReply({ content: streamed.content, reasoning: streamed.reasoning, reasoningTokens: streamed.reasoningTokens });
@@ -482,7 +510,9 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
             cluster: options.cluster,
           });
         }
-        if (!streamed.content && !streamed.reasoning && !streamed.error) {
+        if (toolCalls.length > 0 && options.onToolCalls && !streamed.error) {
+          await options.onToolCalls(toolCalls, (change) => patchReply(change, true));
+        } else if (!streamed.content && !streamed.reasoning && !streamed.error) {
           patchReply({ error: options.emptyResponseMessage }, true);
         }
       } catch (error) {

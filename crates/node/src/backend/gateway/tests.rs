@@ -25,6 +25,7 @@ mod tests {
                 origin_node_id: "eu".into(),
                 active: true,
                 created_at: "2026-09-07T00:00:00Z".into(),
+                user_id: String::new(),
             })
             .unwrap();
         let app = Router::new()
@@ -2627,6 +2628,7 @@ mod budget_tests {
             moe_cache_mib: 0,
             adaptive_prefill_chunks: true,
             unload_if_idle: false,
+            yield_gpu_to_images: false,
             idle_minutes: 60,
             tp: None,
             speculative_k: 4,
@@ -4101,6 +4103,7 @@ pub(crate) mod testkit {
             moe_cache_mib: 0,
             adaptive_prefill_chunks: true,
             unload_if_idle: false,
+            yield_gpu_to_images: false,
             idle_minutes: 60,
             tp: None,
             speculative_k: 4,

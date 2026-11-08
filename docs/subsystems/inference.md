@@ -157,7 +157,11 @@ entry surface, against the keys that node minted; no other node is asked
 about a key, and keys take no part in authenticating the internal hops. When a step's announced target is
 this process's own `node_id`, the relay dispatches the frame straight to the
 in-process inference handler. That call opens no socket and does not go through
-HTTP. The HTTP inference server stays up for health checks and for remote peers;
+HTTP. The gateway's session lifecycle calls (`/v1/session/rewind`, `rollback`,
+`release`) to its own node take the same in-process path
+(`relay::post_json_in_process`): over the node's own announced QUIC address the
+handshake never completed on macOS, and every speculative round paid the whole
+QUIC budget before falling back to TCP. The HTTP inference server stays up for health checks and for remote peers;
 with QUIC on, the remote order is QUIC, direct HTTP/HTTPS and, only last, the
 p2p tunnel. With QUIC off, direct HTTP/HTTPS also comes before the tunnel.
 That ladder only applies to an edge with no analysis yet. With a route pinned by
@@ -2684,6 +2688,11 @@ runs it through that plugin or fails.
   without one - an agent that sends no session id - is named `auto-<24 hex>`, a hash of
   its first user message, so its turns share it. Two conversations that open with the same
   message share a name, and the later save replaces the earlier one (`session_of`).
+
+Image model components (a diffusion model, a text encoder, a VAE served by
+ComfyUI) are not inference services and never go through this path: they have
+a registry of their own beside the node's runtime (`deployment.md`, section
+1.7).
 
 **Split across machines.** A service that publishes `stages: true` also runs
 POM layer slices, one per machine (`crates/node/src/inference/plugin_stage_link.rs`).

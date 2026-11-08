@@ -104,7 +104,7 @@ runtime is Rust (`crates/node/src/inference/infer_server/`,
   `pom-plugin-host`; the builds use cache mounts and the frontend is independent.
   There are two final images: `runtime`, the distribution one, without a
   compiler; and `dev-runtime`, the development one, with Rust/Cargo, native
-  tools and Google Chrome (amd64, first layer of `dev-os`). The toolchain sits in the `dev-os` stage, over the operating system
+  tools, the OpenSSH client and Google Chrome (amd64, first layer of `dev-os`). The toolchain sits in the `dev-os` stage, over the operating system
   (`runtime-os`) and before any POM file, and `dev-runtime` copies the finished
   artifacts from `runtime`: a POM build reuses the toolchain layers instead of
   reinstalling it. The host commit becomes `ENV POM_BUILD_COMMIT` in the runtime,

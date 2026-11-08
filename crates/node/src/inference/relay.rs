@@ -57,6 +57,34 @@ async fn current_local_inference() -> Option<LocalInference> {
         .map(|(_, local)| local.clone())
 }
 
+/// A JSON session lifecycle call (`/v1/session/{rewind,rollback,release}`)
+/// to this very process, dispatched in-process. `None` when no local server is
+/// installed. Addressing itself over the network failed on macOS: the QUIC
+/// handshake to its own announced address never completes, and every
+/// speculative round's rollback paid the whole QUIC budget before TCP.
+pub(crate) async fn post_json_in_process(
+    path: &str,
+    body: &Value,
+) -> Option<Result<Value, String>> {
+    let local = current_local_inference().await?;
+    let payload = match serde_json::to_vec(body) {
+        Ok(payload) => payload,
+        Err(error) => return Some(Err(format!("invalid JSON body: {error}"))),
+    };
+    let response = match local.dispatch(path, Bytes::from(payload)).await {
+        Ok(response) => response,
+        Err(error) => return Some(Err(format!("in-process {path}: {error}"))),
+    };
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap_or_default();
+    if !status.is_success() {
+        return Some(Err(format!("{path} on this node answered HTTP {status}")));
+    }
+    Some(Ok(serde_json::from_slice(&bytes).unwrap_or(Value::Null)))
+}
+
 #[cfg(test)]
 pub(crate) async fn set_test_local_inference(local: Option<LocalInference>) {
     *local_inference_slot().write().await = local.map(|local| (u64::MAX, local));

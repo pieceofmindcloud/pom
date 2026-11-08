@@ -226,6 +226,11 @@ pub struct RuntimeParams {
     /// Unloads the weights after a period with no requests on this peer.
     #[serde(default)]
     pub unload_if_idle: bool,
+    /// Lets the GPU arbiter unload this deployment while it has no request in
+    /// flight, so an image component on the same physical GPU can run; the
+    /// next request reloads it (POM settings, off by default for every engine).
+    #[serde(default)]
+    pub yield_gpu_to_images: bool,
     /// Minutes of inactivity before releasing RAM/VRAM.
     #[serde(default = "d_idle_minutes")]
     pub idle_minutes: u32,
@@ -379,6 +384,7 @@ impl Default for RuntimeParams {
             moe_cache_mib: 0,
             adaptive_prefill_chunks: true,
             unload_if_idle: false,
+            yield_gpu_to_images: false,
             idle_minutes: d_idle_minutes(),
         }
     }
@@ -442,6 +448,7 @@ impl From<&NodeConfig> for RuntimeParams {
             moe_cache_mib: c.moe_cache_mib,
             adaptive_prefill_chunks: c.adaptive_prefill_chunks,
             unload_if_idle: c.unload_if_idle,
+            yield_gpu_to_images: c.yield_gpu_to_images,
             idle_minutes: c.idle_minutes,
         }
     }

@@ -28,6 +28,10 @@ Abre os Logs da implantação filtrados para esta implantação.
 Clicar numa versão mostra as configurações dela só para leitura. O cache KV não aparece de propósito: ele pertence à máquina e ao momento, não à versão.
 :::
 
+## Modelos de imagem
+
+Os modelos de imagem aparecem abaixo dos modelos de linguagem com o selo **Modelo de imagem**: os estágios e as máquinas de cada um, se todos os estágios estão servidos, e Tirar do ar. Abrir uma linha mostra as versões, da mais nova para a mais antiga; adicionar ou remover uma réplica no Dashboard grava uma versão nova, e **Reimplantar esta versão** traz uma antiga de volta. As versões ficam no nó que implantou o modelo; o nó de qualquer administrador o lista e pode tirá-lo do ar.
+
 :::deep docs/subsystems/deployment.md
 Versões, a implantação padrão e reimplantar
 :::

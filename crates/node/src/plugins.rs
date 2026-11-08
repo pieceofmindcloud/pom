@@ -3962,8 +3962,12 @@ fn host_context_payload(
     gateway_port: u16,
     api_key: &str,
     workspace_root: &str,
+    model_dirs: &[String],
 ) -> serde_json::Value {
     serde_json::json!({
+        // The whole-model folders (not the slice folder), so a plugin can
+        // store and find model files where POM's catalog reads them.
+        "model_dirs": model_dirs,
         "gateway": {
             "openai_base_url": format!("http://127.0.0.1:{gateway_port}/v1"),
             "api_key": api_key,
@@ -3976,18 +3980,30 @@ fn host_context_payload(
     })
 }
 
+/// The model folders a plugin may store files in: the whole-model folders the
+/// image catalog reads, so never an Ollama store (a file written there would
+/// never show up).
+fn plugin_model_dirs(dirs: &[std::path::PathBuf]) -> Vec<String> {
+    crate::catalog::image_roots(dirs)
+        .into_iter()
+        .map(|(dir, _)| dir.to_string_lossy().into_owned())
+        .collect()
+}
+
 pub(crate) async fn refresh_host_context(
     state: &crate::gateway::GatewayState,
 ) -> anyhow::Result<()> {
     let (key, _) = crate::admin::node_chat_key(state).await?;
     let workspace_root = state.auth.read().await.workspace_root_path();
     let workspace_root = workspace_root.to_string_lossy();
+    let model_dirs = plugin_model_dirs(&state.model_dirs().await);
     state
         .plugins
         .set_host_context(host_context_payload(
             state.gateway_port,
             &key.secret,
             &workspace_root,
+            &model_dirs,
         ))
         .await;
     Ok(())
@@ -4094,7 +4110,13 @@ pub(crate) fn spawn_host_context(state: crate::gateway::GatewayState) {
     tokio::spawn(async move {
         loop {
             let wait = match refresh_host_context(&state).await {
-                Ok(()) => REFRESH,
+                Ok(()) => {
+                    // The image components this node serves, again: after a
+                    // restart, or a plugin closed and reopened since.
+                    let call = crate::components::live_plugins(std::sync::Arc::clone(&state.plugins));
+                    crate::components::restore(&state.database, &call).await;
+                    REFRESH
+                }
                 Err(error) => {
                     tracing::warn!(%error, "plugin context without an API key; retrying in 30 s");
                     RETRY
@@ -6964,7 +6986,7 @@ mod tests {
 
     #[test]
     fn host_context_payload_includes_the_shared_workspace_root() {
-        let context = host_context_payload(8080, "sk-test", "/data/workspace");
+        let context = host_context_payload(8080, "sk-test", "/data/workspace", &[]);
         assert_eq!(
             context.get("workspace_root").and_then(Value::as_str),
             Some("/data/workspace")
@@ -6972,6 +6994,28 @@ mod tests {
         assert_eq!(
             context.get("host_api_base_url").and_then(Value::as_str),
             Some("http://127.0.0.1:8080/api/plugin-host")
+        );
+    }
+
+    #[test]
+    fn host_context_carries_the_model_dirs() {
+        let dirs = vec!["/models/a".to_owned(), "/models/b".to_owned()];
+        let context = host_context_payload(8080, "sk-test", "/data/workspace", &dirs);
+        assert_eq!(context["model_dirs"], serde_json::json!(["/models/a", "/models/b"]));
+    }
+
+    #[test]
+    fn plugins_never_get_an_ollama_store_as_a_model_folder() {
+        let root = tempfile::tempdir().unwrap();
+        let ollama = root.path().join("ollama");
+        std::fs::create_dir_all(ollama.join("manifests/registry")).unwrap();
+        std::fs::create_dir_all(ollama.join("blobs")).unwrap();
+        std::fs::write(ollama.join("blobs/sha256-0"), b"x").unwrap();
+        let full = root.path().join("full");
+        std::fs::create_dir_all(&full).unwrap();
+        assert_eq!(
+            plugin_model_dirs(&[ollama, full.clone()]),
+            [full.to_string_lossy().into_owned()]
         );
     }
 

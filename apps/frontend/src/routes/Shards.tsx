@@ -28,6 +28,7 @@ import { useClusterCatalog, useCluster, useLocalCatalog } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import { tpPartsOf, type DiscoveredModel, type PeerCatalog, type ShardSet } from "../lib/types";
 import { useI18n } from "../i18n/provider";
+import { isDemoUser } from "../lib/session";
 import { SidecarLinkEditor } from "../components/SidecarLinkEditor";
 
 function CoverageBar({ set }: { set: ShardSet }) {
@@ -113,7 +114,7 @@ function PartRows({
               <span className="shrink-0 font-mono text-[0.82rem] text-muted">
                 {bytes(s.size_bytes)}
               </span>
-              <Button
+              {!isDemoUser() && <Button
                 size="sm"
                 variant="ghost"
                 icon={<Trash2 className="h-3.5 w-3.5" />}
@@ -121,8 +122,9 @@ function PartRows({
                 onClick={() => onDelete(s)}
               >
                 {t("models.deleteButton")}
-              </Button>
-              <div className="flex shrink-0 items-center gap-2">
+              </Button>}
+              {/* Offering a slice to another machine is not a visitor's. */}
+              <div className={isDemoUser() ? "hidden" : "flex shrink-0 items-center gap-2"}>
                 {missing.length === 0 ? (
                   <span className="text-[0.78rem] text-faint">
                     {aloneInNetwork ? t("shards.noOtherMachine") : t("shards.everyoneHas")}
@@ -198,7 +200,7 @@ function ShardCard({
           </Badge>
         }
       />
-      <div className="border-b border-line px-5 py-3">
+      <div className={isDemoUser() ? "hidden" : "border-b border-line px-5 py-3"}>
         <SidecarLinkEditor
           modelKey={set.model_label || set.group}
           model={shape}

@@ -171,6 +171,11 @@ Per-file list:
   code split, every fenced block gets a copy button (answers here are mostly
   commands). Used by `Chat`. `compact` shrinks text, headings and block gaps
   together for side panels (the Networks screen's network panel).
+- `WorkflowForm.tsx` - the Chat's form for a published ComfyUI workflow: a
+  field per parameter (text, number with its bounds, switch, select, PNG/JPEG
+  picker up to 16 MiB) prefilled by `initialValues`; `onRun` gets the values by
+  key. `ChatImageGrid.tsx` draws a reply's outputs: image thumbnails (full size
+  with Download) and video/audio players.
 - `ChatSessionList.tsx` - shared conversation history list. The Chat screen
   uses the wide variant; the `visitor` Sidebar uses the compact variant. The
   list owns the bounded `overflow-y-auto` region, active `aria-pressed` state,
@@ -380,6 +385,17 @@ Per-file list:
   succession controls only when the presentation contract says this viewer is
   the principal; refusal states remain explicit. Inference nodes are left out
   of the promotion candidates (the node refuses them as well).
+- `DemoMode.tsx` - a visit to a demonstration node (`lib/session.ts`
+  `isDemoUser`, the node's `backend/demo_slots.rs`): `useDemoSeat` polls
+  `GET /api/ui/demo/session` (5 s queued, 30 s seated; a 401 means the time
+  ran out and returns to sign-in, which shows `DemoExpiredNotice`);
+  `DemoQueue` replaces the whole shell while queued (position, people
+  waiting, estimated minutes); `DemoWelcome` opens once per seat; `DemoClock`
+  is the top bar's countdown beside the quota; `DemoNetwork` is the read-only
+  current-network listing `App.tsx` routes `/config/network` to for a visitor.
+  `App.tsx` also moves the first landing on `/` to `/chat`. Plugins, Whole
+  models, Slice and Shards hide their actions for a visitor
+  (`isDemoUser()`); the node refuses them anyway.
 - `Topbar.tsx` - Sticky header: `NodeChip` (the network this machine is in,
   from `NodeInfo.network_name` and linking to `/config/network`; then
   `ConnectionBadge` on a member; then hostname,

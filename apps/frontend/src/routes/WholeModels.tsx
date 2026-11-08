@@ -1,5 +1,5 @@
 import { Boxes, FolderSearch, RefreshCw, Scissors, Trash2, Upload } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import {
   Badge,
   Button,
@@ -10,13 +10,20 @@ import {
   Mono,
   ScrollX,
   Skeleton,
+  Tabs,
 } from "../components/ui";
 import { bytes, num, optionalBasename } from "../lib/format";
 import { deleteModel } from "../lib/deleteModel";
 import { useLocalCatalog } from "../lib/queries";
 import { useToast } from "../lib/toast";
-import { isWholeModel, type DiscoveredModel, type ModelSource } from "../lib/types";
+import {
+  isWholeModel,
+  type DiscoveredModel,
+  type ImageModelFile,
+  type ModelSource,
+} from "../lib/types";
 import { useI18n } from "../i18n/provider";
+import { isDemoUser } from "../lib/session";
 import { useState } from "react";
 import { Modal } from "../components/Confirm";
 import { SidecarLinkEditor } from "../components/SidecarLinkEditor";
@@ -100,16 +107,19 @@ export function ModelRow({ model }: { model: DiscoveredModel }) {
         ) : (
           <span className="text-[0.78rem] text-faint">{t("models.mmprojNone")}</span>
         )}
-        <Button size="sm" variant="ghost" className="ml-2 h-6 px-2 text-[0.68rem]" onClick={() => setLinkOpen(true)}>
-          {t("sidecars.linkTitle")}
-        </Button>
+        {!isDemoUser() && (
+          <Button size="sm" variant="ghost" className="ml-2 h-6 px-2 text-[0.68rem]" onClick={() => setLinkOpen(true)}>
+            {t("sidecars.linkTitle")}
+          </Button>
+        )}
         {linkOpen && <WholeModelLinks model={model} onClose={() => setLinkOpen(false)} />}
       </td>
       <td className="whitespace-nowrap px-5 py-3.5">
         <Mono>{bytes(model.size_bytes)}</Mono>
       </td>
       <td className="whitespace-nowrap px-5 py-3.5">
-        <div className="flex shrink-0 items-center gap-2">
+        {/* A demonstration visitor sees the catalog, not its actions. */}
+        <div className={isDemoUser() ? "hidden" : "flex shrink-0 items-center gap-2"}>
           <Link
             to={`/models/slice?path=${encodeURIComponent(model.path)}&name=${encodeURIComponent(model.name)}`}
           >
@@ -143,6 +153,100 @@ export function ModelRow({ model }: { model: DiscoveredModel }) {
         </div>
       </td>
     </tr>
+  );
+}
+
+/** One image model file: no layers, no slicing; delete only. */
+export function ImageModelRow({ file }: { file: ImageModelFile }) {
+  const { t } = useI18n();
+  const toast = useToast();
+  const catalog = useLocalCatalog();
+
+  async function remove() {
+    try {
+      const out = await deleteModel(file.path, file.name, (m) => window.confirm(m));
+      if (out.status === "deleted") {
+        toast.success(t("models.deleted", { name: file.name, bytes: bytes(out.freedBytes) }));
+        void catalog.refetch();
+      }
+    } catch (e) {
+      toast.fromError(t("models.deleteFailed"), e);
+    }
+  }
+
+  return (
+    <tr className="border-t border-line align-top transition-colors duration-150 hover:bg-raised">
+      <td className="min-w-[16rem] px-5 py-3.5">
+        <span className="truncate font-medium text-fg" title={file.name}>
+          {file.name}
+        </span>
+        <p className="break-path mt-1 font-mono text-[0.7rem] text-faint">{file.path}</p>
+        {file.metadata_error && (
+          <p className="mt-1 text-[0.7rem] text-rose">
+            {t("models.imageUnreadable", { error: file.metadata_error })}
+          </p>
+        )}
+      </td>
+      <td className="whitespace-nowrap px-5 py-3.5">
+        <Badge tone={SOURCE_TONE[file.source] ?? "neutral"}>{file.source_label}</Badge>
+      </td>
+      <td className="whitespace-nowrap px-5 py-3.5">
+        <Badge tone={file.category === "other" ? "neutral" : "iris"}>
+          {t(`models.category.${file.category}`)}
+        </Badge>
+      </td>
+      <td className="hidden whitespace-nowrap px-5 py-3.5 text-fg sm:table-cell">{file.family ?? "—"}</td>
+      <td className="whitespace-nowrap px-5 py-3.5">
+        <Mono>{file.dtype ?? "—"}</Mono>
+      </td>
+      <td className="whitespace-nowrap px-5 py-3.5">
+        <Mono>{bytes(file.size_bytes)}</Mono>
+      </td>
+      <td className="whitespace-nowrap px-5 py-3.5">
+        {!isDemoUser() && <Button
+          size="sm"
+          variant="ghost"
+          icon={<Trash2 className="h-3.5 w-3.5" />}
+          aria-label={t("models.deleteAria", { name: file.name })}
+          onClick={() => void remove()}
+        >
+          {t("models.deleteButton")}
+        </Button>}
+      </td>
+    </tr>
+  );
+}
+
+function ImageModelTable({ files }: { files: ImageModelFile[] }) {
+  const { t } = useI18n();
+  if (files.length === 0) {
+    return (
+      <Empty icon={<FolderSearch className="h-5 w-5" />} title={t("models.imageEmptyTitle")}>
+        {t("models.imageEmptyDetail")}
+      </Empty>
+    );
+  }
+  return (
+    <ScrollX>
+      <table className="w-full min-w-[56rem] text-sm">
+        <thead className="sticky top-0 z-10 bg-surface/95 backdrop-blur-sm">
+          <tr className="text-left text-xs text-faint">
+            <th className="px-5 py-2">{t("models.columnName")}</th>
+            <th className="px-5 py-2">{t("models.columnSource")}</th>
+            <th className="px-5 py-2">{t("models.columnCategory")}</th>
+            <th className="hidden px-5 py-2 sm:table-cell">{t("models.columnFamily")}</th>
+            <th className="px-5 py-2">{t("models.columnDtype")}</th>
+            <th className="px-5 py-2">{t("models.size")}</th>
+            <th className="px-5 py-2">{t("models.columnActions")}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {files.map((file) => (
+            <ImageModelRow key={file.id} file={file} />
+          ))}
+        </tbody>
+      </table>
+    </ScrollX>
   );
 }
 
@@ -183,6 +287,15 @@ export function WholeModels() {
   // models - the catalog still brings both, and whoever needs the slices
   // reads `shard_sets` (or asks the inverse question).
   const models = (catalog.data?.models ?? []).filter(isWholeModel);
+  const imageFiles = catalog.data?.image_files ?? [];
+  const [params, setParams] = useSearchParams();
+  const kind = params.get("kind") === "image" ? "image" : "llm";
+  const chooseKind = (next: "llm" | "image") => {
+    const updated = new URLSearchParams(params);
+    if (next === "image") updated.set("kind", "image");
+    else updated.delete("kind");
+    setParams(updated, { replace: true });
+  };
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col bg-ink">
@@ -200,6 +313,16 @@ export function WholeModels() {
         }
       />
 
+      <Tabs
+        items={[
+          { value: "llm", label: t("models.kindLlm") },
+          { value: "image", label: t("models.kindImage") },
+        ]}
+        value={kind}
+        onChange={chooseKind}
+        label={t("models.fullTitle")}
+      />
+
       <div className="min-h-0 min-w-0 flex-1 overflow-auto">
         {catalog.isError && (
           <div className="p-5">
@@ -215,7 +338,9 @@ export function WholeModels() {
           </div>
         )}
 
-        {catalog.data && models.length === 0 && (
+        {catalog.data && kind === "image" && <ImageModelTable files={imageFiles} />}
+
+        {catalog.data && kind === "llm" && models.length === 0 && (
           <Empty
             icon={<FolderSearch className="h-5 w-5" />}
             title={t("models.emptyTitle")}
@@ -229,7 +354,7 @@ export function WholeModels() {
           </Empty>
         )}
 
-        {catalog.data && models.length > 0 && (
+        {catalog.data && kind === "llm" && models.length > 0 && (
           <ScrollX>
             <table className="w-full min-w-[64rem] text-sm">
               <thead className="sticky top-0 z-10 bg-surface/95 backdrop-blur-sm">
@@ -257,7 +382,7 @@ export function WholeModels() {
         )}
       </div>
 
-      {catalog.data && models.length > 0 && (
+      {catalog.data && kind === "llm" && models.length > 0 && (
         <Footnote
           className="shrink-0 border-t border-line px-4 py-2.5"
           icon={<Boxes className="h-3.5 w-3.5" />}

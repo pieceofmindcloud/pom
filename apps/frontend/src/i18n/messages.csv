@@ -63,6 +63,11 @@ accessGate.title,Access token required,Token de acesso necessário
 accessGate.unavailable,The node did not publish its administrative access policy. The interface stays locked until it can verify that policy.,O nó não publicou a política de acesso administrativo. A interface permanece fechada até conseguir verificá-la.
 accessGate.unavailableTitle,Interface unavailable,Interface indisponível
 accessGate.username,Account,Conta
+accessGate.operatorSubtitle,Operator access to this node. Sessions end after 30 minutes without use.,Acesso do operador a este nó. A sessão termina após 30 minutos sem uso.
+accessGate.providersSubtitle,Sign in to use this network.,Entre para usar esta rede.
+accessGate.signInWith,Sign in with {provider},Entrar com {provider}
+accessGate.tooManyAttempts,Too many attempts. Try again in {seconds} s.,Muitas tentativas. Tente de novo em {seconds} s.
+accessGate.demoNotice,Demonstration: you can watch the network and run inference within your quota.,Demonstração: você pode acompanhar a rede e fazer inferência dentro da sua cota.
 adminAuthority.actionFailed,The authority action was refused.,A ação de autoridade foi recusada.
 adminAuthority.actionsSubtitle,Only the principal can change the administrator chain.,Somente o principal pode alterar a cadeia de administradores.
 adminAuthority.actionsTitle,Administrator actions,Ações de administrador
@@ -390,6 +395,38 @@ chat.wait.wake.3,Loading the model back into the GPUs...,Colocando o modelo de v
 chat.wait.wake.4,Warming up the GPUs. Coffee is brewing...,Aquecendo as GPUs. O café está passando...
 chat.wait.wake.5,"Putting the mind back together, piece by piece...","Remontando a mente, peça por peça..."
 chat.wait.wake.6,Almost awake. Your request is first in line...,Quase acordados. Seu pedido é o primeiro da fila...
+chatImage.alt,"Generated image, {width} by {height}","Imagem gerada, {width} por {height}"
+chatImage.download,Download,Baixar
+chatImage.generating,Generating the image…,Gerando a imagem…
+chatImage.missing,This image is no longer on this node,Esta imagem não está mais neste nó
+chatImage.off,Text answer,Resposta em texto
+chatImage.progress,"Generating the image: step {step} of {of}","Gerando a imagem: passo {step} de {of}"
+chatImage.title,Generated image,Imagem gerada
+chatImage.toggle,Generate image,Gerar imagem
+chatImage.answer,Answer with,Responder com
+chatImage.baseHint,"Attach an image to the message to use it as the base: the new image starts from it.","Anexe uma imagem à mensagem para usá-la como base: a nova imagem parte dela."
+chatImage.formRun,Run,Executar
+chatImage.formImageRefused,"Choose a PNG or JPEG image up to 16 MiB.","Escolha uma imagem PNG ou JPEG de até 16 MiB."
+chatImage.functions,Functions,Funções
+chatImage.runWorkflow,"Run {workflow}…","Executar {workflow}…"
+chatImage.functionsHint,"Published ComfyUI workflows: the model calls them in Automatic mode, or run one here with its form.","Workflows do ComfyUI publicados: o modelo os chama no modo Automático, ou execute um aqui pelo formulário."
+chatImage.noBase,"This workflow takes no base image. Choose the built-in workflow of an up-to-date ComfyUI plugin (it lists the image input) or send the message without the image.","Este fluxo não aceita imagem de base. Escolha o fluxo pronto de um plugin do ComfyUI atualizado (ele anuncia a entrada de imagem) ou envie a mensagem sem a imagem."
+chatImage.on,"Generate image: {workflow}, {size}","Gerar imagem: {workflow}, {size}"
+chatImage.size,Image size,Tamanho da imagem
+chatImage.sizeDefault,Workflow default,Padrão do fluxo
+chatImage.toggleHint,"Generate an image instead of a text answer","Gerar uma imagem em vez de uma resposta em texto"
+chatImage.baseTooLarge,"The base image must be a PNG or JPEG of at most 16 MB.","A imagem de base precisa ser PNG ou JPEG de até 16 MB."
+chatImage.open,Click to open the full image,Clique para abrir a imagem inteira
+chatImage.attachedForTool,"[The user attached an image you cannot see. If they want an image made from it, call generate_image with use_attached_image set to true.]","[O usuário anexou uma imagem que você não consegue ver. Se ele quiser uma imagem feita a partir dela, chame generate_image com use_attached_image verdadeiro.]"
+chatImage.mode.always,Always image,Sempre imagem
+chatImage.mode.alwaysHint,Every message goes straight to the workflow,Toda mensagem vai direto para o fluxo
+chatImage.mode.auto,Automatic,Automático
+chatImage.mode.autoHint,The model makes an image when you ask for one,O modelo faz uma imagem quando você pede
+chatImage.mode.text,Text only,Só texto
+chatImage.mode.textHint,Never makes images,Nunca faz imagens
+chatImage.onAuto,"Images on request: {workflow}, {size}","Imagens quando pedidas: {workflow}, {size}"
+chatImage.prompt,Prompt,Prompt
+chatImage.workflow,Workflow,Fluxo
 cluster.peerCount,"{count, plural, one {{count} node} other {{count} nodes}}","{count, plural, one {{count} nó} other {{count} nós}}"
 common.cancel,Cancel,Cancelar
 common.close,Close,Fechar
@@ -587,6 +624,30 @@ dashboard.versionProperties,Deployment version properties,Propriedades da versã
 dashboard.machineProperties,Machine: {host},Máquina: {host}
 dashboard.vram,VRAM · {name},VRAM · {name}
 dashboard.wiredMemory,Wired memory (Metal buffers),Memória wired (buffers do Metal)
+demo.clockLabel,Demonstration time left: {time},Tempo restante da demonstração: {time}
+demo.clockTitle,Time left in this demonstration,Tempo restante nesta demonstração
+demo.expired,Your demonstration time is over. Sign in again to join the queue.,Seu tempo de demonstração acabou. Entre de novo para voltar à fila.
+demo.leaveQueue,Leave the queue,Sair da fila
+demo.networkEyebrow,Current network,Rede atual
+demo.networkLocation,Location,Localização
+demo.networkMachines,Machines,Máquinas
+demo.networkModel,Model in service,Modelo em serviço
+demo.networkNoSlice,no slice,sem fatia
+demo.networkOrganization,Organization,Organização
+demo.networkVisibility,Visibility,Visibilidade
+demo.queueDetail,"This server runs on a few machines, so it opens to {seats} people at a time, for {minutes} minutes each. Your turn comes up automatically.","Este servidor roda em poucas máquinas, então atende {seats} pessoas por vez, por {minutes} minutos cada. A sua vez chega automaticamente."
+demo.queueEta,Estimated wait: about {minutes} min,Espera estimada: cerca de {minutes} min
+demo.queueKeepOpen,Keep this page open to hold your place.,Mantenha esta página aberta para não perder o lugar.
+demo.queuePosition,You are number {position} of {waiting} waiting,Você é o número {position} de {waiting} aguardando
+demo.queueTitle,The demonstration is full right now,A demonstração está cheia no momento
+demo.readOnly,Read-only on this demonstration server,Somente visualização neste servidor de demonstração
+demo.welcomeDisabled,"Several features are disabled here: installing plugins, slicing and transferring models, and changing the network or its settings. Screens show what exists, read-only.","Diversas funcionalidades estão desabilitadas aqui: instalar plugins, fatiar e transferir modelos e alterar a rede ou suas configurações. As telas mostram o que existe, somente para visualização."
+demo.welcomeIntro,This is a demonstration server: you can chat with the model the network serves and look around the panel.,Este é um servidor de demonstração: você pode conversar com o modelo que a rede serve e conhecer o painel.
+demo.welcomeStart,Start,Começar
+demo.welcomeTime,Your visit lasts {minutes} minutes. The clock in the top bar shows how much time you have left.,Sua visita dura {minutes} minutos. O relógio na barra de topo mostra quanto tempo ainda resta.
+demo.welcomeStar,Did you like Piece of Mind? Please leave a star on GitHub:,Gostou do Piece of Mind? Deixe uma estrela no GitHub:
+demo.welcomeStarLink,github.com/pieceofmindcloud/pom,github.com/pieceofmindcloud/pom
+demo.welcomeTitle,Welcome to the POM demonstration,Bem-vindo à demonstração do POM
 deploy.adaptivePrefillChunksHint,"The gateway picks each prompt's chunk size, between 32 tokens and the prefill chunk above, from what it measured on the route (64 at least while the MoE expert cache is on). Off, every prompt goes in chunks of exactly the prefill chunk.","O gateway escolhe o tamanho do pedaço de cada prompt, entre 32 tokens e o pedaço de prefill acima, pelo que mediu na rota (no mínimo 64 com o cache de experts do MoE ligado). Desligado, todo prompt vai em pedaços de exatamente o pedaço de prefill."
 deploy.addNode,Add,Adicionar
 deploy.addNodeCacheK,KV cache K,Cache KV K
@@ -885,6 +946,7 @@ deployStudio.gpuUseFree,GPU used / free,GPU uso / livre
 deployStudio.heldBy,Held by,Está em
 deployStudio.hideInspector,Hide inspector,Ocultar inspetor
 deployStudio.inDeployment,in the deployment,na implantação
+deployStudio.kindImage,Image model,Modelo de imagem
 deployStudio.kindShards,Shards,Fatias
 deployStudio.kindWhole,Whole model,Modelo inteiro
 deployStudio.kvCacheOnGpu,KV cache on the GPU,KV cache na GPU
@@ -1291,6 +1353,58 @@ huggingFace.title,Hugging Face,Hugging Face
 huggingFace.tokenHint,The token is saved in this node''s pom.json with owner-only permissions and is never returned here.,O token é salvo no pom.json deste nó com permissão exclusiva do proprietário e nunca é devolvido aqui.
 huggingFace.tokenLabel,Access token,Token de acesso
 huggingFace.tokenPlaceholder,••••••••last four characters,••••••••últimos quatro caracteres
+imageDeploy.back,LLM models,Modelos LLM
+imageDeploy.chooseFile,Choose a file,Escolha um arquivo
+imageDeploy.chooseMachine,Choose a machine,Escolha uma máquina
+imageDeploy.component.diffusion,Diffusion model,Modelo de difusão
+imageDeploy.component.text_encoder,Text encoder,Text encoder
+imageDeploy.component.vae,VAE,VAE
+imageDeploy.deploy,Deploy,Implantar
+imageDeploy.deployed,"{name} is being served on the network","{name} está servindo na rede"
+imageDeploy.failed,The image model was not deployed,O modelo de imagem não foi implantado
+imageDeploy.file,File,Arquivo
+imageDeploy.machine,Machine,Máquina
+imageDeploy.name,Name,Nome
+imageDeploy.noHolder,No machine running ComfyUI holds this file,Nenhuma máquina com ComfyUI tem este arquivo
+imageDeploy.none,No image model is served on the network,Nenhum modelo de imagem servindo na rede
+imageDeploy.served,Served image models,Modelos de imagem servindo
+imageDeploy.status.error,Error,Erro
+imageDeploy.status.loading,Loading,Carregando
+imageDeploy.status.missing,Not served,Fora do ar
+imageDeploy.status.ready,Ready,Pronto
+imageDeploy.subtitle,Each component on one machine that already holds its file; ComfyUI on every machine of the network can then use it.,Cada componente numa máquina que já tem o arquivo; o ComfyUI de qualquer máquina da rede passa a usá-lo.
+imageDeploy.title,Deploy an image model,Implantar modelo de imagem
+imageDeploy.undeploy,Undeploy,Tirar do ar
+imageDeploy.undeployConfirm,"Stop serving {name} on every machine?","Parar de servir {name} em todas as máquinas?"
+imageDeploy.undeployNamed,"Undeploy {name}","Tirar {name} do ar"
+imageDeploy.undeployed,"{name} is no longer served","{name} saiu do ar"
+imageMap.add,Add,Adicionar
+imageMap.addFailed,The replica was not added,A réplica não foi adicionada
+imageMap.addReplica,Add replica,Adicionar réplica
+imageMap.addTitle,"Add a replica to {name}","Adicionar uma réplica a {name}"
+imageMap.added,The replica is serving,A réplica está servindo
+imageMap.badge,Image model,Modelo de imagem
+imageMap.coverage,"{covered} of {total} stages ready","{covered} de {total} estágios prontos"
+imageMap.noReplica,No machine serves this stage,Nenhuma máquina serve este estágio
+imageMap.notRecorded,"This deployment was made from another machine: add replicas there. Undeploy works from here.","Esta implantação foi feita de outra máquina: adicione réplicas lá. Tirar do ar funciona daqui."
+imageMap.routing,"ComfyUI calls each stage from the machine it runs on; each call goes to the nearest ready replica and moves to the next one if it does not answer.","O ComfyUI chama cada estágio da máquina onde roda; cada chamada vai para a réplica pronta mais próxima e passa para a próxima se ela não responder."
+imageMap.stage,Stage,Estágio
+imageMap.undeployPartial,Some machines did not confirm,Algumas máquinas não confirmaram
+imageStudio.chooseDiffusion,"Choose the diffusion model, then drag machines onto each stage.","Escolha o modelo de difusão e arraste máquinas para cada estágio."
+imageStudio.copiesUnsupported,"A machine without the file would need a copy; image files cannot be copied yet, so place the file on that machine first.","Uma máquina sem o arquivo precisaria de uma cópia; arquivos de imagem ainda não são copiados, então coloque o arquivo nessa máquina antes."
+imageStudio.dropHere,Drag a machine here,Arraste uma máquina para cá
+imageStudio.hint,"Text encoder, diffusion and VAE, in the order the image is made. More machines on a stage are replicas; one machine can serve several stages.","Text encoder, difusão e VAE, na ordem em que a imagem é feita. Mais máquinas num estágio são réplicas; uma máquina pode servir vários estágios."
+imageStudio.memory,"{gpu} VRAM, {ram} RAM free · needs about {need}","{gpu} de VRAM, {ram} de RAM livres · precisa de cerca de {need}"
+imageStudio.remove,"Remove {host}","Remover {host}"
+imageStudio.replicas,"{count} replicas: each call goes to the nearest one that answers","{count} réplicas: cada chamada vai para a mais próxima que responder"
+imageTable.active,Active,Ativa
+imageTable.notServing,Not serving,Fora do ar
+imageTable.redeploy,Redeploy this version,Reimplantar esta versão
+imageTable.redeployFailed,The version was not redeployed,A versão não foi reimplantada
+imageTable.redeployed,"Version {version} is live again","A versão {version} voltou ao ar"
+imageTable.serving,Serving,Servindo
+imageTable.title,Image models,Modelos de imagem
+imageTable.versions,Versions,Versões
 inspector.adaptivePrefillChunks,Automatic prefill chunk,Pedaço de prefill automático
 inspector.betaInfo,"Settings that work but are still being measured: the best value changes from route to route.","Configurações que funcionam mas ainda estão sendo medidas: o melhor valor muda de rota para rota."
 inspector.betaInfoLink,see when to change it,veja quando mudar
@@ -1349,6 +1463,8 @@ inspector.sectionDefaults,Default settings,Configurações padrões
 inspector.sectionInferenceService,{name} settings,Configurações do {name}
 inspector.sectionPom,POM settings,Configurações POM
 inspector.sectionPomDev,POM settings (DEV),Configurações POM (DESENV)
+inspector.yieldGpuToImages,Yield the GPU to images,Ceder a GPU para imagens
+inspector.yieldGpuToImagesHint,"When an image model on the same physical GPU needs room and this model has no request in flight, POM unloads it; the next request reloads it, and a running image pauses until this model is quiet again. Off: this model never leaves memory for an image.","Quando um modelo de imagem na mesma GPU física precisa de espaço e este modelo não tem pedido em andamento, o POM o descarrega; o próximo pedido o recarrega, e uma imagem em andamento pausa até este modelo ficar quieto de novo. Desligado: este modelo nunca sai da memória por causa de uma imagem."
 jobs.emptyDetail,"Slicing and model-assignment jobs appear here while running, and for ten minutes after they finish.",Fatiamentos e atribuições de modelo aparecem aqui enquanto rodam e por dez minutos depois de terminarem.
 jobs.failed,failed,falhou
 jobs.finishedAt,finished,terminou
@@ -1527,8 +1643,20 @@ location.title,Location,Localização
 location.useBrowser,Use my browser's location,Usar a localização do meu navegador
 machine.kindUnknown,Unknown,Desconhecida
 models.architecture,Architecture,Arquitetura
+models.category.checkpoint,Checkpoint,Checkpoint
+models.category.clip_vision,CLIP Vision,CLIP Vision
+models.category.controlnet,ControlNet,ControlNet
+models.category.diffusion,Diffusion,Difusão
+models.category.lora,LoRA,LoRA
+models.category.other,Other,Outro
+models.category.text_encoder,Text encoder,Text encoder
+models.category.upscale,Upscaler,Upscaler
+models.category.vae,VAE,VAE
 models.chooseFolders,Choose folders,Escolher as pastas
 models.columnActions,Actions,Ações
+models.columnCategory,Category,Categoria
+models.columnDtype,Type,Tipo
+models.columnFamily,Family,Família
 models.columnName,Model,Modelo
 models.columnSource,Source,Fonte
 models.deleteAria,Delete {name} from disk,Excluir {name} do disco
@@ -1545,6 +1673,11 @@ models.folderMissing,does not exist on this machine,não existe nesta máquina
 models.folderSettings,Choose search folders in Settings › Model folders.,Escolha onde procurar em Configurações › Pastas de modelos.
 models.fullSubtitle,Complete GGUF files found on this machine. Full models can be sliced; shards are shown on the next screen.,Os GGUF completos encontrados nesta máquina. Um modelo inteiro é o que se fatia; as fatias ficam na tela ao lado.
 models.fullTitle,Full models,Modelos inteiros
+models.imageEmptyDetail,No .safetensors files were found in the model folders. Files ComfyUI downloads land there.,Nenhum arquivo .safetensors foi encontrado nas pastas de modelos. Os arquivos que o ComfyUI baixa vão para lá.
+models.imageEmptyTitle,No image models,Nenhum modelo de imagem
+models.imageUnreadable,"Unreadable: {error}","Ilegível: {error}"
+models.kindImage,Image,Imagem
+models.kindLlm,LLM (GGUF),LLM (GGUF)
 models.layers,Layers,Camadas
 models.localSlice,Slicing is local: each machine extracts its own range from its own GGUF copy. No weights travel over the network.,Fatiar é local: cada máquina extrai a própria faixa da própria cópia do GGUF. Nenhum peso trafega pela rede.
 models.machineCount,"{count}{count, plural, =1 { model on this machine} other { models on this machine}}","{count}{count, plural, =1 { modelo nesta máquina} other { modelos nesta máquina}}"
@@ -3362,3 +3495,15 @@ wizard.welcomeEyebrow,A calmer way to start,Um começo mais tranquilo
 wizard.welcomeSubtitle,Your AI. Your infrastructure. Your network. Set up a capable local network in a few clear steps.,Sua IA. Sua infraestrutura. Sua rede. Configure uma rede local capaz em poucos passos claros.
 wizard.welcomeTitle,Piece of Mind,Piece of Mind
 wizard.whenIdle,Only when this computer is idle,Somente quando o computador estiver ocioso
+session.signOut,Sign out,Sair
+session.demo,Demo,Demo
+myKeys.title,My API keys,Minhas chaves de API
+myKeys.subtitle,Keys for using this node's models from your own tools. Requests with them count against your quota and appear in your logs.,Chaves para usar os modelos deste nó nas suas ferramentas. As requisições com elas contam na sua cota e aparecem nos seus logs.
+myKeys.create,Create key,Criar chave
+myKeys.label,Name (optional),Nome (opcional)
+myKeys.copyOnce,Copy the key now: it is shown only once.,Copie a chave agora: ela é mostrada só uma vez.
+myKeys.revoke,Revoke,Revogar
+myKeys.revoked,revoked,revogada
+myKeys.empty,No keys yet.,Nenhuma chave ainda.
+myKeys.failed,The node refused the request.,O nó recusou o pedido.
+nav.myKeys,My API keys,Minhas chaves de API

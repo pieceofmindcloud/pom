@@ -43,6 +43,12 @@ pub mod addrs;
 pub(crate) mod admin;
 #[path = "backend/auth.rs"]
 mod auth;
+#[path = "backend/demo_slots.rs"]
+mod demo_slots;
+#[path = "backend/user_keys.rs"]
+mod user_keys;
+#[path = "backend/user_session.rs"]
+mod user_session;
 // `brand` and the llama.cpp cluster moved out to their own crates (`crates/brand`
 // and `crates/llama-engine`) so that editing backend/network/routing does not
 // rebuild them. Re-exported below so that `crate::brand::…`, `crate::llm::…`
@@ -52,18 +58,23 @@ use ::brand;
 pub use llama_engine::{collective, gguf, kv_budget, llm, moe, mtp, multipart, sysmon, wire};
 #[path = "admin_trust.rs"]
 mod admin_trust;
-mod membership;
-mod relay_pass;
+#[path = "network/anon_tunnel.rs"]
+mod anon_tunnel;
 #[path = "backend/capabilities.rs"]
 mod capabilities;
 #[path = "models/catalog.rs"]
 mod catalog;
+mod chat_image;
+mod chat_tools;
 #[path = "network/cluster_logs.rs"]
 mod cluster_logs;
 #[path = "network/cluster_logs_policy.rs"]
 mod cluster_logs_policy;
+mod components;
 #[path = "utils/config.rs"]
 mod config;
+#[path = "utils/console.rs"]
+mod console;
 #[cfg(test)]
 #[path = "backend/continuation_lab.rs"]
 mod continuation_lab;
@@ -83,30 +94,41 @@ mod devupdate;
 mod direct;
 #[path = "inference/direct_lab.rs"]
 mod direct_lab;
-#[path = "network/anon_tunnel.rs"]
-mod anon_tunnel;
 #[path = "network/discovery.rs"]
 mod discovery;
+#[path = "inference/engine_telemetry.rs"]
+mod engine_telemetry;
 #[path = "enterprise_p2p.rs"]
 mod enterprise_p2p;
 #[path = "inference/executor.rs"]
 mod executor;
+#[path = "utils/external_links.rs"]
+#[cfg_attr(not(any(windows, feature = "desktop", test)), allow(dead_code))]
+mod external_links;
 #[path = "routing/fastest.rs"]
 pub mod fastest;
 #[path = "backend/gateway/mod.rs"]
 mod gateway;
 #[path = "utils/geo.rs"]
 mod geo;
+mod gpu_arbiter;
+mod gpu_identity;
 #[path = "models/huggingface.rs"]
 mod huggingface;
 #[path = "network/identity.rs"]
 mod identity;
+#[path = "models/image_catalog.rs"]
+mod image_catalog;
+mod image_plan;
+mod image_records;
 #[path = "inference/infer_server/mod.rs"]
 mod infer_server;
 #[path = "network/infer_tunnel.rs"]
 mod infer_tunnel;
 #[path = "initial_ports.rs"]
 mod initial_ports;
+#[path = "utils/instance_lock.rs"]
+mod instance_lock;
 #[path = "models/lastslice.rs"]
 mod lastslice;
 #[path = "inference/link.rs"]
@@ -123,6 +145,7 @@ mod local_discovery;
 mod local_discovery_tests;
 #[cfg(target_os = "macos")]
 mod macos_status;
+mod membership;
 #[path = "backend/messages.rs"]
 mod messages;
 #[path = "models/model.rs"]
@@ -146,29 +169,27 @@ mod network_lobby;
 mod ollama;
 #[path = "backend/openai.rs"]
 mod openai;
+#[path = "network/p2p.rs"]
+mod p2p;
 #[path = "network/peer_client.rs"]
 pub mod peer_client;
 #[path = "routing/pipeline.rs"]
 mod pipeline;
-#[path = "network/p2p.rs"]
-mod p2p;
 #[path = "network/pkarr_node.rs"]
 mod pkarr_node;
 #[path = "models/plan.rs"]
 mod plan;
 mod plugin_dev;
-#[path = "inference/engine_telemetry.rs"]
-mod engine_telemetry;
 #[path = "inference/plugin_engine.rs"]
 mod plugin_engine;
-#[path = "inference/plugin_session.rs"]
-mod plugin_session;
 mod plugin_github;
-mod plugin_host_api;
 #[path = "plugin_host.rs"]
 mod plugin_host;
+mod plugin_host_api;
 mod plugin_proxy;
 mod plugin_services;
+#[path = "inference/plugin_session.rs"]
+mod plugin_session;
 #[path = "inference/plugin_stage_link.rs"]
 mod plugin_stage_link;
 mod plugin_ui;
@@ -200,22 +221,16 @@ mod public_directory;
 pub mod quic;
 #[path = "network/quic_policy.rs"]
 pub mod quic_policy;
+#[path = "backend/quota.rs"]
+mod quota;
 mod rag;
 #[path = "inference/relay.rs"]
 mod relay;
-#[path = "backend/quota.rs"]
-mod quota;
+mod relay_pass;
 #[path = "backend/reqlog.rs"]
 mod reqlog;
-#[path = "utils/instance_lock.rs"]
-mod instance_lock;
 #[path = "utils/respawn.rs"]
 mod respawn;
-#[path = "utils/console.rs"]
-mod console;
-#[path = "utils/external_links.rs"]
-#[cfg_attr(not(any(windows, feature = "desktop", test)), allow(dead_code))]
-mod external_links;
 #[path = "network/route.rs"]
 pub mod route;
 #[path = "network/route_plan.rs"]
@@ -242,13 +257,13 @@ mod thermal;
 pub mod tls;
 #[path = "backend/tool_call.rs"]
 mod tool_call;
-#[path = "network/web_ca.rs"]
-pub mod web_ca;
-mod trust_store;
 #[path = "inference/tp.rs"]
 mod tp;
 #[path = "backend/transfer.rs"]
 mod transfer;
+mod trust_store;
+#[path = "network/web_ca.rs"]
+pub mod web_ca;
 #[path = "backend/webapp.rs"]
 mod webapp;
 #[path = "backend/webui/mod.rs"]
@@ -640,20 +655,14 @@ fn run_main() -> Result<()> {
     #[cfg(target_os = "windows")]
     {
         let (gateway_ready, gateway_ready_rx) = std::sync::mpsc::sync_channel(1);
-        return windows_status::run(
-            move || service(Some(gateway_ready)),
-            gateway_ready_rx,
-        );
+        return windows_status::run(move || service(Some(gateway_ready)), gateway_ready_rx);
     }
 
     // Without a display (a container, an SSH session) the AppImage runs as a server.
     #[cfg(all(target_os = "linux", feature = "desktop"))]
     if linux_window::available() {
         let (gateway_ready, gateway_ready_rx) = std::sync::mpsc::sync_channel(1);
-        return linux_window::run(
-            move || service(Some(gateway_ready)),
-            gateway_ready_rx,
-        );
+        return linux_window::run(move || service(Some(gateway_ready)), gateway_ready_rx);
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -799,7 +808,11 @@ fn local_scheme() -> &'static str {
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows", all(target_os = "linux", feature = "desktop")))]
+#[cfg(any(
+    target_os = "macos",
+    target_os = "windows",
+    all(target_os = "linux", feature = "desktop")
+))]
 fn gateway_url(port: u16) -> String {
     format!("{}://127.0.0.1:{port}/admin-ui/chat", local_scheme())
 }
@@ -893,7 +906,11 @@ fn move_busy_saved_ports(args: &Args) -> Result<()> {
 
 /// Writes into `saved` the selected ports that did not come from the
 /// environment, and tells whether any changed.
-fn moved_ports(saved: &mut config::Config, args: &Args, selected: initial_ports::InitialPorts) -> bool {
+fn moved_ports(
+    saved: &mut config::Config,
+    args: &Args,
+    selected: initial_ports::InitialPorts,
+) -> bool {
     let mut changed = false;
     if !args.gateway_port_from_env && saved.gateway_port != selected.gateway {
         saved.gateway_port = selected.gateway;
@@ -1946,15 +1963,14 @@ async fn start_node(
     if no_tls {
         warn!("--no-tls/POM_NO_TLS: remote HTTP enabled for the UI and client API; keep the gateway behind an HTTPS proxy on a private network (peer mTLS stays enabled)");
     }
-    let tls_server =
-        match serve::TlsServer::from_identity(&identity, true, &tls_sans) {
-            Ok(t) => Some(t.with_plain_ui(no_tls)),
-            Err(e) => {
-                warn!("could not derive the certificate of this node, TLS unavailable: {e}");
-                WEB_TLS.store(false, std::sync::atomic::Ordering::Relaxed);
-                None
-            }
-        };
+    let tls_server = match serve::TlsServer::from_identity(&identity, true, &tls_sans) {
+        Ok(t) => Some(t.with_plain_ui(no_tls)),
+        Err(e) => {
+            warn!("could not derive the certificate of this node, TLS unavailable: {e}");
+            WEB_TLS.store(false, std::sync::atomic::Ordering::Relaxed);
+            None
+        }
+    };
 
     let hf_token_store =
         huggingface::HfTokenStore::new_from_database(app_config.huggingface_token.clone());
@@ -2439,7 +2455,13 @@ mod llama_engine_contract {
         assert_eq!(super::pkarr_bootstrap_wait(1), Duration::from_secs(30));
         assert_eq!(super::pkarr_bootstrap_wait(2), Duration::from_secs(60));
         assert_eq!(super::pkarr_bootstrap_wait(5), Duration::from_secs(480));
-        assert_eq!(super::pkarr_bootstrap_wait(6), super::PKARR_BOOTSTRAP_CEILING);
-        assert_eq!(super::pkarr_bootstrap_wait(u32::MAX), super::PKARR_BOOTSTRAP_CEILING);
+        assert_eq!(
+            super::pkarr_bootstrap_wait(6),
+            super::PKARR_BOOTSTRAP_CEILING
+        );
+        assert_eq!(
+            super::pkarr_bootstrap_wait(u32::MAX),
+            super::PKARR_BOOTSTRAP_CEILING
+        );
     }
 }

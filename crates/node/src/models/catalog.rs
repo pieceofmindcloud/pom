@@ -227,6 +227,11 @@ pub struct Catalog {
     /// with the headers, by `enrich`.
     #[serde(default)]
     pub sidecars: Vec<Sidecar>,
+    /// Image model files (safetensors and the other formats ComfyUI loads)
+    /// in the whole-model folders, with their category. Filled beside the
+    /// sidecars by the inventory (`image_catalog`).
+    #[serde(default)]
+    pub image_files: Vec<crate::image_catalog::ImageModelFile>,
     /// Where `enrich` looks for sidecars: the slice folder and the GGUF
     /// libraries `discover_fast` scanned. Not serialized.
     #[serde(skip)]
@@ -2035,8 +2040,19 @@ pub fn discover_fast(model_dirs: &[PathBuf], shard_dir: &Path) -> Catalog {
         scanned,
         metadata_complete: false,
         sidecars: Vec::new(),
+        image_files: Vec::new(),
         sidecar_roots,
     }
+}
+
+/// The roots image model files are looked for in: the whole-model folders
+/// that are not an Ollama store, never the slice folder.
+pub fn image_roots(model_dirs: &[PathBuf]) -> Vec<(PathBuf, ModelSource)> {
+    model_dirs
+        .iter()
+        .map(|dir| (dir.clone(), detect_source(dir)))
+        .filter(|(_, source)| *source != ModelSource::Ollama)
+        .collect()
 }
 
 /// Enrich an already published inventory with GGUF header information.
@@ -2081,7 +2097,9 @@ pub(crate) fn rebuild_shard_sets_fast(catalog: &mut Catalog) {
 /// Full discovery for non-UI callers that still need a complete answer before
 /// continuing, such as transfer path resolution and existing tests.
 pub fn discover(model_dirs: &[PathBuf], shard_dir: &Path) -> Catalog {
-    enrich(discover_fast(model_dirs, shard_dir))
+    let mut catalog = enrich(discover_fast(model_dirs, shard_dir));
+    catalog.image_files = crate::image_catalog::discover_image_files(&image_roots(model_dirs));
+    catalog
 }
 
 #[cfg(test)]

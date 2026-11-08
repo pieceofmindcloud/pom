@@ -905,7 +905,7 @@ pub(super) fn free_memory_mb(system: Option<&serde_json::Value>) -> u64 {
     }
 }
 
-pub(super) fn memory_capacity(system: Option<&serde_json::Value>) -> (u64, u64) {
+pub(crate) fn memory_capacity(system: Option<&serde_json::Value>) -> (u64, u64) {
     let Some(system) = system else { return (0, 0) };
     let gpu = system
         .get("gpus")

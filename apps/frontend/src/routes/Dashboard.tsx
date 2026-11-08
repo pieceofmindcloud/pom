@@ -16,13 +16,16 @@ import { DeploymentLogDock } from "../components/DeploymentLogDock";
 import { UndeployPipeline } from "../components/UndeployPipeline";
 import { AddNodeDialog } from "../components/AddNodeDialog";
 import { ModelNetworkCanvas } from "../components/ModelNetworkCanvas";
+import { ImageAddReplicaButton, ImagePipelineMap, ImageUndeploy } from "../components/ImagePipelineMap";
+import { canvasModelIds } from "../lib/networkGraph";
+import { deployIdOfImageModel, imageModelId } from "../lib/imagePipeline";
 import { Button, Empty, ErrorState, Footnote, Panel, Skeleton } from "../components/ui";
 import { canSeePeerDetails } from "../lib/access";
 import { engineOfParams, inferenceServiceCatalog, inferenceServicesOf } from "../lib/inferenceServices";
 import { isServing, layerRange, num, pct, since } from "../lib/format";
 import { selectedCanvasModel } from "../lib/networkGraph";
 import { networkPeers } from "../lib/networkPeers";
-import { useCluster, useDeployments, useEnterpriseStatus, useInvalidate, useJobs, useNetworkRtt, useNode } from "../lib/queries";
+import { useCluster, useDeployments, useEnterpriseStatus, useImageDeployments, useInvalidate, useJobs, useNetworkRtt, useNode } from "../lib/queries";
 import { useProfile } from "../lib/profile";
 import type { PeerView, RuntimeParams } from "../lib/types";
 import { machineParamsOf } from "../lib/machineParams";
@@ -177,7 +180,13 @@ export function Dashboard() {
   const groupPeers = (c?.peers ?? [])
     .filter((p) => p.model === group && p.total_layers > 0)
     .sort((a, b) => a.start_layer - b.start_layer || a.short_id.localeCompare(b.short_id));
-  const hasActiveModel = Boolean(group);
+  // Image deployments (text encoder -> diffusion -> VAE) sit beside the LLMs in the map's bar.
+  const imageDeployments = useImageDeployments();
+  const images = imageDeployments.data?.deployments ?? [];
+  const pickedImageId = deployIdOfImageModel(pickedModel);
+  const imageDeployment = images.find((d) => d.deploy_id === pickedImageId)
+    ?? (!group ? images[0] : undefined);
+  const hasActiveModel = Boolean(group) || imageDeployment != null;
   // A deploy still copying or loading: the admin may give up on it before any
   // machine announces the model, so Undeploy shows while it runs.
   const jobs = useJobs(isAdmin);
@@ -318,7 +327,13 @@ export function Dashboard() {
         )}
       </div>
       <div className="flex items-center gap-2">
-        {isAdmin && hasActiveModel && (
+        {isAdmin && imageDeployment && (
+          <>
+            <ImageAddReplicaButton deployment={imageDeployment} />
+            <ImageUndeploy deployment={imageDeployment} />
+          </>
+        )}
+        {isAdmin && hasActiveModel && !imageDeployment && (
           <>
             <Button size="sm" variant="outline" onClick={() => setAdding(true)}>
               <Plus className="h-3.5 w-3.5" />
@@ -359,7 +374,22 @@ export function Dashboard() {
                 {t("dashboard.mixedEngines", { models: mixedEngineModels.join(", ") })}
               </p>
             )}
-          <div className="min-h-0 flex-1"><ModelNetworkCanvas cluster={c} rttMeasurements={networkRtt.data?.measurements} pipelineCost={networkRtt.data?.pipeline_cost ? { legsMs: networkRtt.data.pipeline_cost.legs_ms, computeMs: networkRtt.data.pipeline_cost.compute_ms } : undefined} pipelineRoutes={networkRtt.data?.pipeline_routes?.map((route) => ({ nodeIds: route.node_ids, legsMs: route.legs_ms, computeMs: route.compute_ms ?? null, rttMs: route.rtt_ms, networkMs: route.network_ms ?? null, totalMs: route.total_ms ?? null, returnMode: route.return_mode ?? null, relayed: route.relayed ?? false, relayedLegs: route.relayed_legs ?? [], relayBypassedByRing: route.relay_bypassed_by_ring ?? false }))} peerPerf={networkRtt.data?.peer_perf} propertiesOpen={showProperties} onToggleProperties={activeVersion ? () => setShowProperties((value) => !value) : undefined} onSelectNode={activeVersion ? (nodeId) => setPropertiesMachine(nodeId) : undefined} model={group || undefined} onModelChange={(next) => { setPickedModel(next); setPropertiesMachine(null); }} /></div>
+          {imageDeployment ? (
+            <div className="min-h-0 flex-1">
+              <ImagePipelineMap
+                deployment={imageDeployment}
+                models={[
+                  ...canvasModelIds(c).map((id) => ({ id, label: id })),
+                  ...images.map((d) => ({ id: imageModelId(d.deploy_id), label: d.name, image: true })),
+                ]}
+                onModelChange={(next) => { setPickedModel(next); setPropertiesMachine(null); }}
+                rtt={networkRtt.data?.measurements}
+                localNodeId={node.data?.node_id}
+              />
+            </div>
+          ) : (
+          <div className="min-h-0 flex-1"><ModelNetworkCanvas cluster={c} rttMeasurements={networkRtt.data?.measurements} pipelineCost={networkRtt.data?.pipeline_cost ? { legsMs: networkRtt.data.pipeline_cost.legs_ms, computeMs: networkRtt.data.pipeline_cost.compute_ms } : undefined} pipelineRoutes={networkRtt.data?.pipeline_routes?.map((route) => ({ nodeIds: route.node_ids, legsMs: route.legs_ms, computeMs: route.compute_ms ?? null, rttMs: route.rtt_ms, networkMs: route.network_ms ?? null, totalMs: route.total_ms ?? null, returnMode: route.return_mode ?? null, relayed: route.relayed ?? false, relayedLegs: route.relayed_legs ?? [], relayBypassedByRing: route.relay_bypassed_by_ring ?? false }))} peerPerf={networkRtt.data?.peer_perf} propertiesOpen={showProperties} onToggleProperties={activeVersion ? () => setShowProperties((value) => !value) : undefined} onSelectNode={activeVersion ? (nodeId) => setPropertiesMachine(nodeId) : undefined} model={group || undefined} onModelChange={(next) => { setPickedModel(next); setPropertiesMachine(null); }} extraModels={images.map((d) => ({ id: imageModelId(d.deploy_id), label: d.name }))} /></div>
+          )}
           </>
         ) : (
           <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">

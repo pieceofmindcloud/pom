@@ -16,6 +16,7 @@ import { ConnectionBadge } from "./ConnectionStatus";
 import { NatBadge } from "./NatBadge";
 import { Notifications } from "./Notifications";
 import { UsageButton } from "./UsageButton";
+import { DemoClock } from "./DemoMode";
 import { SidebarContent } from "./Sidebar";
 import { Badge, Dot, Skeleton } from "./ui";
 import { OpenNativeChatWindowButton, QuitNativeAppButton } from "./OpenNativeChatWindowButton";
@@ -43,7 +44,7 @@ function NodeChipItems() {
   // says it all, so neither its name again nor "1 node" is drawn.
   const alone =
     Boolean(n.network_name) &&
-    n.network_name.trim() === n.hostname.trim() &&
+    n.network_name.trim() === (n.hostname ?? "").trim() &&
     (c?.peers.length ?? 0) <= 1;
 
   return (
@@ -203,6 +204,7 @@ export function Topbar() {
           <span className="hidden md:contents">
             <ProfileBadge />
           </span>
+          <DemoClock />
           <UsageButton />
           <Notifications />
           <QuitNativeAppButton />

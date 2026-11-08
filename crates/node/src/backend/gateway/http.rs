@@ -15,11 +15,18 @@ pub(crate) async fn start_gateway_with_ready(
     let tls_server = state.tls_server.clone();
     let quic_server = state.quic_server.clone();
     let quic_port = state.quic_port;
+    crate::user_session::announce_operator_path();
+    let _ = crate::user_session::demo_mode();
     let admin = admin::admin_routes().with_state(state.clone());
+    crate::gpu_arbiter::install(state.clone());
     let app = Router::new()
         .route("/api/generate", post(handle_generate))
         .route("/generate", post(handle_generate)) // alias
         .route("/api/access", get(admin_access_status))
+        .route(
+            "/auth/*rest",
+            axum::routing::any(crate::user_session::auth_http),
+        )
         .route("/api/public/network", get(public_network))
         .route("/api/public/networks", get(public_networks))
         .route("/api/public/networks/locate", get(locate_public_network))
@@ -65,6 +72,7 @@ pub(crate) async fn start_gateway_with_ready(
             post(handle_remote_stream_link).layer(axum::extract::DefaultBodyLimit::disable()),
         )
         .merge(crate::openai::routes())
+        .merge(crate::chat_tools::routes())
         .merge(crate::messages::routes())
         .merge(crate::webui::routes())
         .merge(crate::transfer::routes())
@@ -89,7 +97,10 @@ pub(crate) async fn start_gateway_with_ready(
             state,
             verify_control_request,
         ))
-        .layer(tower_http::compression::CompressionLayer::new())
+        // A streamed NDJSON answer (the Chat's image generation) is left
+        // uncompressed like SSE: compressed, its last line never reached the
+        // browser, which then failed the whole stream with "network error".
+        .layer(compression())
         // Every response says which node it came from; see `peer_client::answered_by_other_node`.
         .layer(middleware::map_response(crate::peer_client::stamp_node_id));
 
@@ -1649,5 +1660,65 @@ mod public_directory_isolation_tests {
         assert!(allow_public_p2p_discovery(
             crate::config::NetworkVisibility::Public
         ));
+    }
+}
+
+/// The gateway's response compression: tower-http's defaults (never SSE,
+/// images or gRPC) and never a streamed NDJSON answer either.
+pub(crate) fn compression() -> tower_http::compression::CompressionLayer<
+    tower_http::compression::predicate::And<
+        tower_http::compression::predicate::DefaultPredicate,
+        tower_http::compression::predicate::NotForContentType,
+    >,
+> {
+    tower_http::compression::CompressionLayer::new().compress_when(
+        tower_http::compression::Predicate::and(
+            tower_http::compression::predicate::DefaultPredicate::new(),
+            tower_http::compression::predicate::NotForContentType::const_new(
+                "application/x-ndjson",
+            ),
+        ),
+    )
+}
+
+#[cfg(test)]
+mod compression_tests {
+    use tower::ServiceExt;
+
+    async fn encoding_of(content_type: &'static str) -> Option<String> {
+        let app = axum::Router::new()
+            .route(
+                "/",
+                axum::routing::get(move || async move {
+                    (
+                        [(axum::http::header::CONTENT_TYPE, content_type)],
+                        "x".repeat(4096),
+                    )
+                }),
+            )
+            .layer(super::compression());
+        let response = app
+            .oneshot(
+                axum::http::Request::get("/")
+                    .header("accept-encoding", "zstd, gzip")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        response
+            .headers()
+            .get(axum::http::header::CONTENT_ENCODING)
+            .map(|v| v.to_str().unwrap().to_owned())
+    }
+
+    #[tokio::test]
+    async fn a_streamed_ndjson_answer_is_never_compressed() {
+        assert_eq!(encoding_of("application/x-ndjson").await, None);
+        assert_eq!(encoding_of("text/event-stream").await, None);
+        assert!(
+            encoding_of("application/json").await.is_some(),
+            "JSON still is"
+        );
     }
 }

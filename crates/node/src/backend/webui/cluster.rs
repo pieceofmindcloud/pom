@@ -1011,6 +1011,8 @@ async fn chat_capabilities_value(
         "unavailable"
     };
     let rag_collections = crate::rag::collections(&state).await;
+    // ComfyUI workflows some machine offers for the Chat's Generate image.
+    let image_workflows = crate::chat_image::network_workflows(state).await;
     // A machine of the pipeline has its model unloaded (`unload_if_idle`) or
     // is loading it again: the next answer waits for the reload, and the Chat
     // says so instead of looking stuck.
@@ -1026,6 +1028,8 @@ async fn chat_capabilities_value(
         "rag": rag_state,
         // What a request may keep its retrieval to (`rag_collection`).
         "rag_collections": rag_collections,
+        "image": if image_workflows.is_empty() { "unavailable" } else { "supported" },
+        "image_workflows": image_workflows,
     })
 }
 
@@ -1166,6 +1170,7 @@ pub(super) async fn cluster_models(State(state): State<GatewayState>) -> impl In
         "models": local.models,
         "shard_sets": local.shard_sets,
         "sidecars": local.sidecars,
+        "image_files": local.image_files,
         "scanned": local.scanned,
         "metadata_complete": local.metadata_complete,
     })];
@@ -1179,6 +1184,7 @@ pub(super) async fn cluster_models(State(state): State<GatewayState>) -> impl In
                 "models": v.get("models").cloned().unwrap_or(json!([])),
                 "shard_sets": v.get("shard_sets").cloned().unwrap_or(json!([])),
                 "sidecars": v.get("sidecars").cloned().unwrap_or(json!([])),
+                "image_files": v.get("image_files").cloned().unwrap_or(json!([])),
                 "scanned": v.get("scanned").cloned().unwrap_or(json!([])),
                 "metadata_complete": v
                     .get("metadata_complete")

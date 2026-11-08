@@ -298,6 +298,11 @@ pub struct ApiKey {
     #[serde(default)]
     pub active: bool,
     pub created_at: String,
+    /// The person who minted this key on this node, signed in through a
+    /// plugin's provider (`crate::user_session`). Empty for node and operator
+    /// keys. Requests with the key carry it as `Caller::user_id`.
+    #[serde(default)]
+    pub user_id: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -2026,6 +2031,7 @@ mod tests {
                     origin_node_id: "n1".into(),
                     active: false,
                     created_at: "2026-01-01T00:00:00Z".into(),
+                    user_id: String::new(),
                 },
                 ApiKey {
                     id: "active-id".into(),
@@ -2036,6 +2042,7 @@ mod tests {
                     origin_node_id: "n1".into(),
                     active: true,
                     created_at: "2026-02-01T00:00:00Z".into(),
+                    user_id: String::new(),
                 },
             ],
             blocked_nodes: vec![],

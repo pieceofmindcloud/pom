@@ -22,6 +22,18 @@
 //!   principal or a visitor.
 //! - `POST /api/plugin-host/peer`: `{node_id, op, params}` runs `peer.<op>` of
 //!   this plugin on that machine and answers `{reply}`.
+//! - `GET /api/plugin-host/catalog/images`: this node's image model files.
+//! - `POST /api/plugin-host/catalog/refresh`: rescan this node's catalog.
+//! - `GET /api/plugin-host/components` and
+//!   `POST /api/plugin-host/component/:deploy_id/:component/:op`: the image
+//!   model components of the network, and an op run on the machine serving one.
+//! - `POST /api/plugin-host/image-job/begin` and `.../complete`: a ComfyUI
+//!   generation on network components, checked against the image budget and
+//!   recorded as one request.
+//! - `GET /api/plugin-host/image-deployments`, `GET .../image-files`,
+//!   `POST .../image-deploy` and `POST .../image-undeploy`: the image deploy
+//!   screen's list, survey, deploy and undeploy, only on a principal or admin
+//!   node (403 otherwise), with the node's own authority.
 //! - `POST /api/plugin-host/sign`: `{statement}` is signed with the node key
 //!   only when it is an external identity statement in which this node's
 //!   `did:key` vouches for a key (see [`signable_statement`]). The node key
@@ -138,6 +150,297 @@ pub(crate) async fn node(State(state): State<GatewayState>, headers: HeaderMap) 
         "principal_node_id": document.primary.node_id,
     }))
     .into_response()
+}
+
+/// `GET /api/plugin-host/catalog/images`: the image model files of this
+/// node's whole-model folders. Read fresh on every call (headers are cached by
+/// path, size and mtime), so a file a plugin just downloaded is in the answer.
+pub(crate) async fn catalog_images(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) = caller_code(&state, &headers) {
+        return response;
+    }
+    let dirs = state.model_dirs().await;
+    let files = tokio::task::spawn_blocking(move || {
+        crate::image_catalog::discover_image_files(&crate::catalog::image_roots(&dirs))
+    })
+    .await
+    .unwrap_or_default();
+    Json(json!({ "image_files": files, "metadata_complete": true })).into_response()
+}
+
+/// `POST /api/plugin-host/catalog/refresh`: rescan the catalog now (after a
+/// plugin wrote a model file), so the screens and the deploy survey see it
+/// without waiting for the cache to turn stale.
+pub(crate) async fn catalog_refresh(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) = caller_code(&state, &headers) {
+        return response;
+    }
+    crate::webui::invalidate_catalog(state.database.clone()).await;
+    Json(json!({ "ok": true })).into_response()
+}
+
+/// The plugin's call, when this node may deploy: a plugin acts with the
+/// node's own authority, so only a principal or admin node deploys.
+async fn admin_caller(state: &GatewayState, headers: &HeaderMap) -> Result<String, Response> {
+    let code = caller_code(state, headers)?;
+    match crate::plugin_services::local_role(state).await {
+        "principal" | "admin" => Ok(code),
+        _ => Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "only an admin node deploys" })),
+        )
+            .into_response()),
+    }
+}
+
+/// `GET /api/plugin-host/image-deployments`: what the deploy screen lists.
+pub(crate) async fn image_deployments(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) = admin_caller(&state, &headers).await {
+        return response;
+    }
+    Json(crate::components::image_deployments_view(&state).await).into_response()
+}
+
+/// `GET /api/plugin-host/image-files`: the network's image files per machine.
+pub(crate) async fn image_files(State(state): State<GatewayState>, headers: HeaderMap) -> Response {
+    if let Err(response) = admin_caller(&state, &headers).await {
+        return response;
+    }
+    Json(crate::components::image_files_view(&state).await).into_response()
+}
+
+/// `POST /api/plugin-host/image-deploy`: the deploy screen's deploy.
+pub(crate) async fn image_deploy(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+    Json(request): Json<crate::image_plan::DeployBody>,
+) -> Response {
+    if let Err(response) = admin_caller(&state, &headers).await {
+        return response;
+    }
+    crate::components::deploy_response(&state, request).await
+}
+
+/// `POST /api/plugin-host/image-undeploy`: the deploy screen's undeploy.
+pub(crate) async fn image_undeploy(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+    Json(request): Json<crate::components::ReleaseRequest>,
+) -> Response {
+    if let Err(response) = admin_caller(&state, &headers).await {
+        return response;
+    }
+    Json(crate::components::undeploy_view(&state, &request.deploy_id).await).into_response()
+}
+
+/// `GET /api/plugin-host/components`: the image model components served on
+/// the network now.
+pub(crate) async fn components(State(state): State<GatewayState>, headers: HeaderMap) -> Response {
+    if let Err(response) = caller_code(&state, &headers) {
+        return response;
+    }
+    let components = crate::components::network_components(&state).await;
+    Json(json!({ "components": components })).into_response()
+}
+
+/// `POST /api/plugin-host/component/:deploy_id/:component/:op`: run an op of
+/// a network component on the machine that serves it; the body is opaque.
+pub(crate) async fn component_call(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+    axum::extract::Path((deploy_id, component, op)): axum::extract::Path<(String, String, String)>,
+    body: axum::body::Bytes,
+) -> Response {
+    if let Err(response) = caller_code(&state, &headers) {
+        return response;
+    }
+    let job = headers
+        .get("x-pom-job")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let network = crate::components::components_for_call(&state, &deploy_id, &component).await;
+    let forward = crate::components::live_forward(state.clone());
+    let bytes_in = body.len() as u64;
+    let started = std::time::Instant::now();
+    // The RTT the Flow map shows, measured from this node; this node is 0.
+    let measured = state.network.rtts.fresh_snapshot();
+    let local = state.network.node_id.clone();
+    let rtt_ms = move |node_id: &str| {
+        if node_id == local {
+            return Some(0.0);
+        }
+        measured
+            .iter()
+            .find(|m| m.target_node_id == node_id)
+            .map(|m| m.rtt_ms)
+    };
+    let (status, bytes, target) = crate::components::call_component(
+        &network,
+        &deploy_id,
+        &component,
+        &op,
+        body.to_vec(),
+        job.clone(),
+        &forward,
+        &rtt_ms,
+    )
+    .await;
+    // The generation's telemetry: which machine ran what, for how long.
+    if let (Some(job), Some(target)) = (job, target) {
+        crate::components::image_jobs().record(
+            &job,
+            crate::components::JobCall {
+                component: target.component,
+                deploy_id: target.deploy_id,
+                name: target.name,
+                node_id: target.node_id,
+                hostname: target.hostname,
+                ms: started.elapsed().as_millis() as u64,
+                bytes_in,
+                bytes_out: bytes.len() as u64,
+            },
+        );
+    }
+    (
+        StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
+        [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
+        bytes,
+    )
+        .into_response()
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct ImageJobBegin {
+    job_id: String,
+    #[serde(default)]
+    prompt: String,
+    #[serde(default)]
+    model: String,
+    #[serde(default)]
+    details: Value,
+}
+
+/// `POST /api/plugin-host/image-job/begin`: a ComfyUI generation that uses
+/// network components starts. The image budget is checked first: a refusal is
+/// 429 and recorded like a refused `/v1` request; otherwise one audit record
+/// opens for the whole generation.
+pub(crate) async fn image_job_begin(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+    Json(request): Json<ImageJobBegin>,
+) -> Response {
+    let code = match caller_code(&state, &headers) {
+        Ok(code) => code,
+        Err(response) => return response,
+    };
+    if request.job_id.is_empty() || request.job_id.len() > 128 {
+        return refuse(StatusCode::BAD_REQUEST, "invalid job id");
+    }
+    crate::components::spawn_job_sweeper(state.clone());
+    let jobs = crate::components::image_jobs();
+    let caller = crate::components::image_caller(&state, &code);
+    let mut details = if request.details.is_object() {
+        request.details.clone()
+    } else {
+        json!({})
+    };
+    details["kind"] = json!("image");
+    if details.get("images").and_then(Value::as_u64).is_none() {
+        details["images"] = json!(1);
+    }
+    let denial = if jobs.is_open(&request.job_id) {
+        None
+    } else {
+        let tokens = (request.prompt.len() / 4) as u32;
+        crate::quota::admit(&state, &caller, &request.prompt, tokens, &details).await
+    };
+    let images = details["images"].as_u64().unwrap_or(1);
+    match jobs.begin(&request.job_id, denial, std::time::Instant::now(), images) {
+        Ok(audit_id) => {
+            state.audit.begin(crate::reqlog::AuditRequest {
+                id: audit_id.clone(),
+                received_at: chrono::Utc::now().to_rfc3339(),
+                route: "/comfyui/image".into(),
+                model: request.model,
+                caller,
+                entry_node_id: state.network.node_id.clone(),
+                prompt: request.prompt,
+                request_details: details,
+            });
+            Json(json!({ "ok": true })).into_response()
+        }
+        Err(denial) => {
+            crate::gateway::record_rejected(
+                &state,
+                "/comfyui/image",
+                caller,
+                request.model,
+                request.prompt,
+                details,
+                denial.message.clone(),
+            );
+            denial.decorate(
+                (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    Json(json!({ "error": denial.message, "retry_after_secs": denial.retry_after_secs })),
+                )
+                    .into_response(),
+            )
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct ImageJobComplete {
+    job_id: String,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    images: u64,
+    width: Option<u64>,
+    height: Option<u64>,
+    steps: Option<u64>,
+}
+
+/// `POST /api/plugin-host/image-job/complete`: the generation ended.
+pub(crate) async fn image_job_complete(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+    Json(request): Json<ImageJobComplete>,
+) -> Response {
+    if let Err(response) = caller_code(&state, &headers) {
+        return response;
+    }
+    let Some(job) = crate::components::image_jobs().take(&request.job_id) else {
+        return refuse(StatusCode::NOT_FOUND, "unknown generation");
+    };
+    let status = match request.status.as_str() {
+        "ok" => crate::reqlog::AuditStatus::Ok,
+        "interrupted" => crate::reqlog::AuditStatus::Incomplete,
+        _ => crate::reqlog::AuditStatus::Error,
+    };
+    crate::components::complete_image_job(
+        &state,
+        job,
+        status,
+        request.error,
+        request.images,
+        request.width,
+        request.height,
+        request.steps,
+    );
+    Json(json!({ "ok": true })).into_response()
 }
 
 /// `GET /api/plugin-host/peers`.
@@ -300,7 +603,128 @@ mod tests {
             .await;
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         }
+        for headers in [HeaderMap::new(), headers("not-the-token")] {
+            let response = catalog_images(State(state.clone()), headers.clone()).await;
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            let response = catalog_refresh(State(state.clone()), headers.clone()).await;
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            let response = components(State(state.clone()), headers.clone()).await;
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            let response = image_job_complete(
+                State(state.clone()),
+                headers.clone(),
+                Json(serde_json::from_value(json!({"job_id": "p"})).unwrap()),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            let response = component_call(
+                State(state.clone()),
+                headers,
+                axum::extract::Path(("img-1".to_owned(), "vae".to_owned(), "decode".to_owned())),
+                axum::body::Bytes::new(),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
         let response = node(State(state.clone()), headers(&token)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    async fn with_profile(state: &GatewayState, profile: crate::profile::NodeProfile) {
+        state.auth.write().await.profile = profile;
+    }
+
+    #[tokio::test]
+    async fn a_non_admin_node_cannot_deploy_from_a_plugin() {
+        let (state, token) = state_with_plugin().await;
+        with_profile(&state, crate::profile::NodeProfile::Worker).await;
+        assert_eq!(crate::plugin_services::local_role(&state).await, "member");
+        let request = || {
+            Json(
+                serde_json::from_value(json!({"name": "Z", "components": [
+                    {"component": "vae", "node_id": "n", "path": "/m/ae.safetensors"}
+                ]}))
+                .unwrap(),
+            )
+        };
+        let responses = [
+            image_deployments(State(state.clone()), headers(&token)).await,
+            image_files(State(state.clone()), headers(&token)).await,
+            image_deploy(State(state.clone()), headers(&token), request()).await,
+            image_undeploy(
+                State(state.clone()),
+                headers(&token),
+                Json(serde_json::from_value(json!({"deploy_id": "img-1"})).unwrap()),
+            )
+            .await,
+        ];
+        for response in responses {
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+            let body = crate::gateway::testkit::body_of(response).await;
+            assert_eq!(body["error"], "only an admin node deploys");
+        }
+        // Without the plugin token nothing answers at all.
+        let response = image_deployments(State(state.clone()), HeaderMap::new()).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn a_plugin_on_an_admin_node_deploys() {
+        let (state, token) = state_with_plugin().await;
+        with_profile(&state, crate::profile::NodeProfile::Admin).await;
+        assert_eq!(
+            crate::plugin_services::local_role(&state).await,
+            "principal"
+        );
+        let response = image_deployments(State(state.clone()), headers(&token)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = crate::gateway::testkit::body_of(response).await;
+        assert_eq!(body["deployments"], json!([]));
+        let response = image_files(State(state.clone()), headers(&token)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = crate::gateway::testkit::body_of(response).await;
+        assert!(body["machines"].is_array(), "{body}");
+        // The deploy itself runs: its own checks answer, not the role gate.
+        let response = image_deploy(
+            State(state.clone()),
+            headers(&token),
+            Json(
+                serde_json::from_value(json!({"name": "Z", "components": [
+                    {"component": "vae", "node_id": "elsewhere", "path": "/m/ae.safetensors"}
+                ]}))
+                .unwrap(),
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = crate::gateway::testkit::body_of(response).await;
+        assert_eq!(body["error"], "elsewhere is not on the network");
+        let response = image_undeploy(
+            State(state),
+            headers(&token),
+            Json(serde_json::from_value(json!({"deploy_id": "img-unknown"})).unwrap()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn the_image_catalog_lists_the_node_files() {
+        let (state, token) = state_with_plugin().await;
+        let models = tempfile::tempdir().unwrap();
+        crate::image_catalog::write_test_safetensors(
+            models.path(),
+            "pub/repo/ae.safetensors",
+            &crate::image_catalog::test_fixture("flux_ae_vae"),
+        );
+        state.auth.write().await.model_dirs =
+            Some(vec![models.path().to_string_lossy().into_owned()]);
+        let response = catalog_images(State(state.clone()), headers(&token)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = crate::gateway::testkit::body_of(response).await;
+        assert_eq!(body["image_files"][0]["name"], "pub/repo/ae.safetensors");
+        assert_eq!(body["image_files"][0]["category"], "vae");
+        let response = catalog_refresh(State(state), headers(&token)).await;
         assert_eq!(response.status(), StatusCode::OK);
     }
 

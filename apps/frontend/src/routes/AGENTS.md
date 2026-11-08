@@ -558,6 +558,7 @@ Per-file list:
   on the right, using the same layout and the same values configured in the Deploy
   Studio. On the `admin` profile, `DeploymentLogDock` stays collapsed in the footer and
   expands upwards with the logs in real time and auto-scroll.
+- `Dashboard.tsx` - image deployments (`useImageDeployments`) are listed after the LLMs in the map's model chip as `image:<deploy_id>` (`ModelNetworkCanvas` `extraModels`); picking one, or having no LLM served, draws `components/ImagePipelineMap.tsx` (three stage columns, replicas with status, RTT from this node and in-flight calls) and swaps Add/Undeploy for `ImageAddReplicaButton` and `ImageUndeploy`.
 - In `Dashboard`, node and infer profiles do not reuse the administrator's
   cluster verdict: they show the local model, its real layer slice and local
   in-flight request count. A missing `/api/ui/node` response is rendered as
@@ -723,6 +724,7 @@ Per-file list:
   larger and invisible click and focus area. It sits outside the content's scroll,
   so it stays anchored to the screen height during scrolling and resizing; when closed,
   the reopening control stays in the existing compact column.
+- `DeployModel.tsx` - "Image model" in the mode bar sets `?mode=image` (`/deploy/image` redirects there) and the screen renders `components/ImageDeployStudio.tsx` in place of the LLM studio: three stage columns in flow order (text encoder, diffusion, VAE), machines dragged from the strip onto a stage (several are replicas, one machine may serve several stages), file pickers over the network's `image_files` (the diffusion file pre-fills the other two from its folder), the verdict from `POST /api/ui/image-deploy/plan` and Deploy through `POST /api/ui/image-deploy`, followed in `DeployProgressModal`. Helpers in `../lib/imagePipeline.ts`.
 - `Deployments.tsx` - it lists the deployments registered in the cluster through
   `useDeployments`, tells "no ar" ("live") apart from "padrão" ("default"), orders the history by the
   last activation (`deployment.activated_at`) and shows the "Última
@@ -910,6 +912,11 @@ Per-file list:
   the screen only renders it; the cell's "Vision and MTP" button opens the
   same `SidecarLinkEditor` as Shards in a window. `ScannedRoots`
   lists the scanned folders and per-folder file counts. Full-bleed shell.
+  A `Tabs` pair under the header switches between "LLM (GGUF)" and "Image"
+  (`?kind=image` keeps the choice across a reload); the Image tab lists
+  `CatalogResponse.image_files` (`ImageModelRow`: name, path, source,
+  translated category, family, dtype, size, delete only - image files are not
+  sliced, and Send stays GGUF-only until the transfer gate accepts them).
 - `RemoteModels.tsx` - it shows trending GGUF models through the public Hugging
   Face API on opening, without credentials; the authenticated search uses debounce in
   `/api/ui/model-provider/search`, with a filter, sorting, pagination by URL,

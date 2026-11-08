@@ -343,6 +343,120 @@ difference is on the target, where the runtime asks the plugin to load the
 model instead of starting llama.cpp (`inference.md`, section 7.1); undeploying
 or removing the machine stops the runtime, which asks the plugin to unload.
 
+## 1.7 Image model components
+
+An image model (a diffusion model, a text encoder and a VAE) is served by
+component, each on one machine, by the ComfyUI plugin of that machine
+(`crates/node/src/components.rs`). It does not use the node's model runtime:
+a node has one `NodeRuntime`, and a component must not unload the LLM it
+serves, so components are a registry of their own.
+
+- **On the serving node.** `POST /api/ui/components/apply` (any admin of the
+  trust chain, refused on a visitor like `apply`) takes a
+  `ComponentAssignment` `{deploy_id, name, component, paths, plugin_code,
+  options}`. Every path must be one of this node's image files (the catalog's
+  `image_files`, without a `metadata_error`); `component` is `diffusion`,
+  `text_encoder` or `vae`. The node opens the plugin if it is on demand and asks
+  `component.serve`; a refusal (`{"status": "refused", "error"}`, or no answer)
+  is 502 with the reason and nothing is stored. Accepted, the assignment is kept
+  in the `pom.db` setting `served_components`, replacing the same component of
+  the same deployment. `POST /api/ui/components/release` `{deploy_id}` drops that
+  deployment's assignments and asks `component.release`.
+- **After a restart.** The host-context loop (`plugins::spawn_host_context`,
+  at startup and every 10 minutes) asks `component.serve` again for every stored
+  assignment (`components::restore`), so a node serves after a reboot, and a
+  ComfyUI closed with its X is reopened, without the admin deploying again.
+- **The record.** An image deployment is a pipeline of stages in data-flow
+  order, `text_encoder`, `diffusion`, `vae` (`image_records.rs`, `STAGES`).
+  Each stage names one file (`FileIdentity`: name and size, the identity across
+  machines) and one or more replicas (`{node_id, hostname, path}`); one machine
+  may serve several stages. The deploying node keeps it in the `pom.db` setting
+  `image_deployments` with its versions (`versions`, `active_version`); a record
+  from before the stages (one machine per component in `components`) loads as
+  version 1, and `components` keeps being written (the first replica of each
+  stage) so an older node still lists it. It is not an LLM `Deployment`: a new
+  `DeploymentKind` would make older nodes fail to read every deployment.
+- **Planning.** `POST /api/ui/image-deploy/plan` `{name, stages: [{component,
+  file, node_ids}], allow_transfers}` (any admin, `image_plan.rs`,
+  `plan_image`) surveys every machine (`components::survey_machines`: its
+  `image_files` with sizes, whether it publishes an `image` service and its
+  status, its free VRAM/RAM from `/api/ui/node`) and answers, touching nothing,
+  per stage the verdict of each chosen machine and of every machine
+  (`alternatives`): `does not run ComfyUI`, `ComfyUI is <status>` (`error`,
+  `waiting`), `does not hold <file>`, `holds another <file> (<size> bytes)`,
+  `<file> is a <category>, not a <component>` (a `checkpoint` fits all three),
+  or ok with the path; `memory` per machine (free memory and the sum of the
+  files it would load); `copies` (a chosen machine without the file when
+  another holds it); and `blocked`. Copies are not made yet (`transfer.rs`
+  serves GGUF only): without `allow_transfers` the deploy answers 409
+  `transfers_not_authorized` with the list, and with it 400 asking to place the
+  file first.
+- **Deploying.** `POST /api/ui/image-deploy` takes the stage form (or the older
+  `{name, components}` form, read as one replica per stage), checks the plan,
+  mints a `deploy_id` (`img-` and 12 hex digits) and answers `{deploy_id,
+  job_id}` at once; a `deploy` job (`Job.deploy_id`, `deployment_name`) applies
+  every (stage, replica) with `POST /api/ui/components/apply` on that machine,
+  signed, so the Deploy studio's progress window and the bell follow it. A
+  replica that fails is released (`component` named) and listed in the job's
+  message; when a stage is left with no replica everything applied is released
+  and the job fails. Only a successful deploy is recorded. The plugin host API
+  deploy (`/api/plugin-host/image-deploy`, the ComfyUI dialog) waits and
+  answers `{deploy_id, failed}`.
+- **Changing it.** `POST /api/ui/image-deploy/:deploy_id/add` `{component,
+  node_id}` applies one more replica (checked by the same plan) and appends a
+  version; `/remove` `{component, node_id, confirm_gap}` releases that
+  component only (`POST /api/ui/components/release` takes an optional
+  `component`, passed to the plugin's `component.release`) and appends a
+  version, asking first (409 `{"error": "gap"}`) before removing the last
+  replica of a stage; `/redeploy` `{version}` releases what that version does
+  not have, applies what it has and makes it live without appending. These need
+  the record, so they answer 404 on another admin node.
+- **Undeploying.** `POST /api/ui/image-undeploy` `{deploy_id}` releases every
+  machine the record names and every machine whose `image` service lists the
+  `deploy_id`, so it works from any admin node; it answers one outcome per
+  machine, a silent one included, and keeps a silent machine's part on record.
+- **The live view.** `GET /api/ui/image-deployments` lists every `deploy_id` a
+  record or a live service names (`components::view_of`): `recorded`, the
+  stages in flow order with each replica's `status` (`ready`, `loading`,
+  `error`, or `missing` for a recorded replica no service lists) and
+  `in_flight`, `serving` (every stage has a ready replica), the versions when
+  recorded, and the flat `components` older screens read. The Dashboard and the
+  Deployments screen read it.
+- **Calls.** A ComfyUI that uses a network component calls its own node's
+  `host_api` (`plugins-ui.md`); the node orders the replicas in
+  `network_components` (`replica_order`: ready before loading, then the
+  measured RTT to this node, then `in_flight`), tries the one this generation
+  (`x-pom-job`) used last first, so its sampling steps stay where the weights
+  are warm, and moves to the next replica after a transport error or a 5xx (a
+  4xx is the plugin's answer and is returned). For a remote replica it posts the opaque body to
+  `POST /api/internal/plugins/:code/component/:deploy_id/:component/:op` there
+  (signed, from a live member, at most 64 MiB, also through the p2p tunnel for a
+  machine behind NAT). That machine checks it serves the component (404
+  otherwise), asks its plugin `component.upstream` (`{status, port, token}`) and
+  posts the body to the plugin's loopback server
+  (`/pom/component/<deploy_id>/<component>/<op>`, `x-pom-plugin-token`). The
+  calls wait up to 15 minutes (a cold load of a large model). POM never reads
+  the bodies.
+- **Sharing a GPU with an LLM** (`gpu_arbiter.rs`). Before an op runs on the
+  node that serves the component (`call_local_plugin`), the gate reads the
+  nodes on the same physical card (`gpu_identity.rs`: the NVIDIA UUID, or the
+  AMD PCI slot with the host's boot id, published as `NodeInfo.gpu_ids`): with
+  no LLM loaded on the card, or room in its VRAM for the component's files plus
+  1 GiB, the op runs; with every LLM there quiet for 10 s (`GRACE`) and allowed
+  to yield (`RuntimeParams.yield_gpu_to_images`, a POM setting, off by default
+  for every engine), each is asked to unload (`POST /api/internal/gpu/yield`,
+  `NodeRuntime::yield_for_images`: the idle unload without the timer); else the
+  op waits (up to 10 min, then runs). A yielded LLM that wakes calls
+  `gpu_arbiter::before_llm_reload` first: every node on its card that serves
+  image components frees its VRAM (`POST /api/internal/gpu/release-images`,
+  ComfyUI's `/pom/gpu/yield`), so a running image pauses at its next op until
+  the LLM is quiet again. Node views are cached for 2 s, since the diffusion
+  stage makes one op per sampling step. A node without GPU identity is never
+  arbitrated.
+- **Who serves what.** The plugin lists its components in its `image` service
+  (`plugins-ui.md`, `host.services`); `components::network_components` gathers
+  them from this node and every live peer.
+
 ## 2. The survey (`survey`)
 
 `survey` gathers, for each machine in the cluster, `GET /api/ui/models`

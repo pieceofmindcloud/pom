@@ -1008,6 +1008,85 @@ send.
 it reaches generation; whether the served model knows how to use it is a
 cluster measurement.
 
+### Image model components
+
+`POST /api/ui/components/apply` and `POST /api/ui/components/release`
+(`AnyAdmin`, refused on a visitor profile) serve or stop an image model
+component on this node (`release` takes an optional `component`).
+`POST /api/ui/image-deploy/plan`, `POST /api/ui/image-deploy` (answers
+`{deploy_id, job_id}` and runs a `deploy` job),
+`POST /api/ui/image-deploy/:deploy_id/{add,remove,redeploy}`,
+`GET /api/ui/image-deployments` and `POST /api/ui/image-undeploy`
+(`AnyAdmin`) plan, deploy, change, list and undeploy an image model as a
+pipeline of stages with replicas; undeploy and the list work from any admin
+node. The contracts are
+`deployment.md`, section 1.7. A plugin reaches the same list, survey, deploy
+and undeploy through its loopback host API (`/api/plugin-host/image-*`,
+`plugins-ui.md`) only when its node is a principal or admin: the plugin acts
+with that node's own authority, and any other role answers 403.
+
+### GPU arbiter
+
+`POST /api/internal/gpu/yield` and `POST /api/internal/gpu/release-images`
+(signed, from a live member) unload this node's LLM for an image when its
+deployment allows it, and ask this node's ComfyUI to free the GPU; both answer
+`{ok}`. `GET /api/ui/node` carries the optional `gpu_ids: [{index, id}]` they
+group the nodes of one card by. See `deployment.md`, section 1.7.
+
+### Chat images
+
+`GET /api/ui/chat/capabilities` also answers `image` (`supported` when some
+machine offers a ComfyUI workflow) and `image_workflows` (`[{id, name,
+node_id, inputs?, description?, params?}]`, built-in ones first; `params` are a
+published workflow's typed values, `{key, label, description?, type:
+text|number|integer|boolean|choice|image, default?, min?, max?, options?}`, at
+most 24, validated in `plugin_services::parse_param`). `POST /api/ui/chat/image`
+`{workflow_id, node_id, prompt?, params?, negative?, width?, height?, seed?,
+count?, image?, strength?}` (`params`: values by key, which the plugin coerces,
+clamps and refuses outside a choice's options; `image`: a PNG/JPEG data URL, the
+base of image to image, for a workflow whose `inputs` list `image`; body at most
+24 MiB) and
+`GET /api/ui/chat/image/:hash` sit under the `HandlerAuth` scope of
+`/api/ui/chat/` and take the node's API key (`ApiKeyAuth`, the Chat's
+`X-API-Key`). The run answers NDJSON: `{p, of}` progress, then `{"media":
+[{hash, ext, kind, width?, height?}], "images": [{hash, ext, width, height}]}`
+(`images` repeats the pictures for older screens; an older plugin's line gives
+`images` only) or `{"error"}`; every output is stored on this node in
+`<workspace>/.comfyui/images/<sha256>.<ext>` (kind and extension from the bytes:
+png, jpg, webp, gif images, mp4, webm video, wav, mp3, flac, ogg audio; at most
+16 files and 32 MiB each, nothing written when one is refused) before the last
+line, and `GET .../:hash` serves any of them with its type. A workflow listed by another machine runs there through
+`POST /api/internal/plugins/:code/workflow/run` (signed, live member, body at
+most 256 KiB), which relays that machine's plugin NDJSON. `:hash` must be 64
+lowercase hex digits (400 otherwise, 404 when the file is gone). The
+gateway never compresses `application/x-ndjson` (`gateway/http.rs`,
+`compression`), like SSE: compressed, the stream's last line was lost and
+browsers failed it (`ERR_HTTP2_PROTOCOL_ERROR`, "network error"). Code:
+`crates/node/src/chat_image.rs`.
+
+The same functions serve any client through `/v1` (`ApiKeyAuth`, a key this
+node minted; `crates/node/src/chat_tools.rs`), so an agent runs the standard
+tool-call loop against POM; the gateway never runs a tool inside
+`/v1/chat/completions` by itself:
+
+- `GET /v1/pom/tools` answers `{tools}` in the `tools` format of
+  `/v1/chat/completions`: `generate_image` while a built-in workflow serves
+  (`prompt`, `negative_prompt?`, `aspect?`, `image_url?`) and `wf_<slug>` per
+  published workflow with parameters (its description, a JSON schema from the
+  parameters; an image parameter is `<key>_url`, a data URL). `?for=chat`
+  describes an image as `use_attached_image`, what the Chat builds itself
+  (`lib/chatImageTool.ts`).
+- `POST /v1/pom/tools/call` `{name, arguments}` (`arguments` an object or its
+  JSON string) runs the call to its end and answers `{content, media: [{url,
+  kind, hash, ext, width?, height?}]}`; `content` is the text to send back as
+  the `tool` message. An unknown name, arguments that are not an object or an
+  image that is not a data URL are 400 before any run; a failed run is 502.
+- `GET /v1/pom/media/:file` (`<hash>.<ext>`) serves what a run stored.
+- `POST /v1/images/generations` (OpenAI images API: `prompt`, `n` 1 to 4,
+  `size` `WxH` or `auto`, `model` a built-in workflow's id or name,
+  `response_format` `b64_json` or `url`) runs a built-in workflow and answers
+  `{created, data}`.
+
 ### Token budgets, checked before the pipeline
 
 `/v1/chat/completions`, `/v1/completions`, `/v1/messages`, `/api/generate` and
@@ -1021,7 +1100,7 @@ then each live admin through the signed peer call
 `POST /api/internal/plugins/logs/peer/quota.check` (1.5 s each, with the
 request body cut to the system prompt and the newest turns so a project can be
 recognized); the first answer from a plugin with budgets configured decides.
-A refusal is HTTP 429 in the route's own error shape (`rate_limit_error` for
+A ComfyUI generation on network components is admitted the same way (`POST /api/plugin-host/image-job/begin`, `plugins-ui.md`), with `images` in the `quota.check` payload (`quota::check_params`): the logs plugin measures it against the plan's image budget, never its tokens. A refusal is HTTP 429 in the route's own error shape (`rate_limit_error` for
 Anthropic), with `Retry-After` when the window's end is known, and is recorded
 in the audit as a rejected request. With no plugin answering the request goes
 on (fail-open, one warning a minute), except for a node already refused, which
@@ -1452,7 +1531,7 @@ with every holder and its path), the resolved `vision` (head) and `mtp` (tail)
 slots and whether each is already there or will be copied. `DeployRequest.keep_existing`
 (default `false`) keeps in service the machines outside the plan that already
 serve the same model (`deployment.md`, section 1).
-`/api/ui/models` and `/api/ui/cluster/models` carry `sidecars` per machine.
+`/api/ui/models` and `/api/ui/cluster/models` carry `sidecars` per machine. `POST /api/ui/models/delete` deletes a GGUF, or a file with an image model extension (`.safetensors`, `.sft`, `.ckpt`, `.pt`, `.pth`, `.bin`) that is inside one of the whole-model folders, unreadable ones included; anything else is 400 (`webui::setup::ensure_deletable_model`). `GET /api/ui/models` also carries `image_files`: the image model files (safetensors and the other formats ComfyUI loads) of the whole-model folders, each with `name`, `path`, `size_bytes`, `source`, `format`, `category` (`diffusion`, `text_encoder`, `vae`, `checkpoint`, `lora`, `controlnet`, `clip_vision`, `upscale` or `other`), `family`, `dtype` and `metadata_error` (`models/image_catalog.rs`).
 
 **`GET` and `POST /api/ui/model-provider/config`** require `ConnectionAuth` and
 control the optional Hugging Face token. GET only returns

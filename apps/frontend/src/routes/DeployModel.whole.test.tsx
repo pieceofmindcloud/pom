@@ -832,6 +832,14 @@ describe("DeployModel · whole model", () => {
     chooseWhole();
     await ensureWholeMachine();
     expect(await screen.findByText(/18 na GPU, 6 na CPU/)).toBeTruthy();
+
+    // Deploying asks for a confirmation that names the machine and its CPU layers.
+    const button = screen.getByRole("button", { name: /^Implantar$/ }) as HTMLButtonElement;
+    await waitFor(() => expect(button.disabled).toBe(false));
+    fireEvent.click(button);
+    const splits = await screen.findByTestId("deploy-cpu-splits");
+    expect(splits.textContent).toContain("ksia");
+    expect(splits.textContent).toContain("18 camadas na GPU, 6 na CPU");
   });
 
   it("shows in the machine tab the note the node gives a step", async () => {

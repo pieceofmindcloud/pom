@@ -3400,3 +3400,4 @@ deployStudio.downloadingHere,Downloading the model: {pct}%,Baixando o modelo: {p
 deployStudio.kindPipeline,Pipeline,Pipeline
 deployStudio.kindShardsLegacy,Slices (legacy),Fatias (legado)
 deploy.whyNotLacksModel,"Without the model: {machines}. Download it on the card, or place the file and rescan.","Sem o modelo: {machines}. Baixe pelo cartão, ou coloque o arquivo e varra de novo."
+deploy.cpuSplitConfirm,"{gpu} layers on the GPU, {cpu} on the CPU: generation will be much slower.","{gpu} camadas na GPU, {cpu} na CPU: a geração vai ficar bem mais lenta."

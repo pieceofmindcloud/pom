@@ -1526,7 +1526,8 @@ machine restarted. Today the fingerprint is only model + set of ranges.
 - **Deploy** (`DeployModel`): opens the Deploy Studio on a wide screen, with
   Pipeline / Slices (legacy) / Tensor tabs (Pipeline, the whole model, is the default; a
   Pipeline plan whose copies would carry a range to a machine without the model is refused by
-  name instead of offering the copy: `lackingModel` in `DeployModel.tsx`), separate technical model and operational name,
+  name instead of offering the copy: `lackingModel` in `DeployModel.tsx`; the capacity
+  confirmation lists each step with `capacity.cpu_layers > 0` as `cpuSplits`), separate technical model and operational name,
   Simple/Complete strategies, a central map and a compact property inspector.
   Every peer shows up in the bottom strip and can be dragged onto the map; in
   the Globals tab, the inspector also lets you pick `cache_type_k` and

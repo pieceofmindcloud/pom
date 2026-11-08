@@ -1338,9 +1338,20 @@ export function DeployModel() {
   /** Machines whose projection overflows the VRAM (rose) or that only fit because
    *  "Fit to memory" would trim the request (amber) - both call for a warning
    *  before deploying. */
+  /** The ranges that would run layers on the CPU, by machine: the deploy
+   *  asks for a confirmation naming each one and its CPU layer count. */
+  const cpuSplits = (displayPlan?.steps ?? [])
+    .filter((step) => step.target_node_id && (step.capacity?.cpu_layers ?? 0) > 0)
+    .map((step) => ({
+      nodeId: step.target_node_id!,
+      label: labelOf(step.target_node_id!),
+      gpu: step.capacity?.gpu_layers_fit ?? 0,
+      cpu: step.capacity?.cpu_layers ?? 0,
+    }));
   const capacityWarnMachines = (displayPlan?.machines ?? []).filter(
     (machine) =>
-      machine.capacity && (!machine.capacity.fits || machine.capacity.degraded),
+      (machine.capacity && (!machine.capacity.fits || machine.capacity.degraded)) ||
+      cpuSplits.some((split) => split.nodeId === machine.node_id),
   );
   const anyOverCapacity = capacityWarnMachines.some((m) => !m.capacity?.fits);
 
@@ -2128,6 +2139,16 @@ export function DeployModel() {
                       {machine.capacity?.note}
                     </li>
                   ))}
+              </ul>
+            )}
+            {cpuSplits.length > 0 && (
+              <ul className="mt-2 list-disc space-y-1 pl-4 text-[0.72rem] text-amber" data-testid="deploy-cpu-splits">
+                {cpuSplits.map((split) => (
+                  <li key={split.nodeId}>
+                    <span className="font-medium">{split.label}:</span>{" "}
+                    {t("deploy.cpuSplitConfirm", { gpu: split.gpu, cpu: split.cpu })}
+                  </li>
+                ))}
               </ul>
             )}
           </>

@@ -1,6 +1,6 @@
 import clsx from "clsx";
 import { ArrowRight, LayoutGrid, Minus, Plus, RotateCcw, ServerCog, Sparkles, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type PointerEvent, type ReactNode } from "react";
 import { layerRange, megabytes } from "../lib/format";
 import {
   CARD_HEIGHT,
@@ -38,6 +38,8 @@ type DeployNetworkCanvasProps = {
   primaryNodeId?: string;
   onTogglePrimary?: (nodeId: string) => void;
   pipelineCost?: PipelineCycleCost;
+  /** Extra content at the foot of a machine's card (the model it lacks, its download). */
+  cardFooter?: (nodeId: string) => ReactNode;
 };
 
 function machineRows(rows: DeploySelection[], nodeId: string) {
@@ -192,6 +194,7 @@ function NodeCard({
   onPointerUp,
   primaryNodeId,
   onTogglePrimary,
+  footer,
 }: {
   machine: DeployMachine;
   rows: DeploySelection[];
@@ -206,6 +209,7 @@ function NodeCard({
   onPointerUp: (event: PointerEvent<HTMLElement>) => void;
   primaryNodeId?: string;
   onTogglePrimary?: () => void;
+  footer?: ReactNode;
 }) {
   const taking = machineRows(rows, machine.node_id);
   const active = taking.length > 0;
@@ -378,6 +382,7 @@ function NodeCard({
           tone={machine.load != null && machine.load >= 7 ? "amber" : "aqua"}
         />
       </div>
+      {footer}
     </article>
   );
 }
@@ -396,6 +401,7 @@ export function DeployNetworkCanvas({
   primaryNodeId,
   onTogglePrimary,
   pipelineCost,
+  cardFooter,
 }: DeployNetworkCanvasProps) {
   const { t } = useI18n();
   const canvas = useRef<HTMLDivElement>(null);
@@ -578,7 +584,7 @@ export function DeployNetworkCanvas({
             return <RouteRttLabel key={`rtt-gateway-${nodeId}`} rttMs={route?.rtt_ms} left={geometry.labelX} top={geometry.labelY} />;
           })}
           {machines.map((machine, index) => (
-            <NodeCard key={machine.node_id} machine={machine} rows={rows} position={positionOf(machine.node_id, index)} selected={inspectedNodeId === machine.node_id} dragging={dragging === machine.node_id} primaryNodeId={primaryNodeId} onTogglePrimary={onTogglePrimary && (primaryCandidateIds ?? []).includes(machine.node_id) ? () => onTogglePrimary(machine.node_id) : undefined} onInspect={() => onInspect(machine.node_id)} onAddPeer={() => onAddPeer(machine.node_id)} onRemovePeer={() => onRemovePeer(machine.node_id)} onPointerDown={(event) => beginDrag(machine.node_id, index, event)} onPointerMove={(event) => drag(machine.node_id, event)} onPointerUp={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); setDragging(null); }} />
+            <NodeCard key={machine.node_id} footer={cardFooter?.(machine.node_id)} machine={machine} rows={rows} position={positionOf(machine.node_id, index)} selected={inspectedNodeId === machine.node_id} dragging={dragging === machine.node_id} primaryNodeId={primaryNodeId} onTogglePrimary={onTogglePrimary && (primaryCandidateIds ?? []).includes(machine.node_id) ? () => onTogglePrimary(machine.node_id) : undefined} onInspect={() => onInspect(machine.node_id)} onAddPeer={() => onAddPeer(machine.node_id)} onRemovePeer={() => onRemovePeer(machine.node_id)} onPointerDown={(event) => beginDrag(machine.node_id, index, event)} onPointerMove={(event) => drag(machine.node_id, event)} onPointerUp={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); setDragging(null); }} />
           ))}
           {gatewayPosition && <PipelineGatewayNode position={gatewayPosition} cost={pipelineCost} />}
           <div className="absolute bottom-3 left-4 flex items-center gap-2 border border-line bg-ink/90 px-3 py-2 text-[10px] text-muted shadow-panel backdrop-blur">

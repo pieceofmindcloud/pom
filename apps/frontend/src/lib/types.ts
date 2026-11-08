@@ -1356,6 +1356,16 @@ export interface PeerCatalog {
   /** False while this peer is reading GGUF headers in the background. */
   metadata_complete?: boolean;
   error?: string;
+  /** Where the models this peer downloaded through POM came from. Absent on an older node. */
+  hf_sources?: HfSource[];
+}
+
+/** The Hugging Face repository and file a model on disk was downloaded from. */
+export interface HfSource {
+  path: string;
+  repo_id: string;
+  revision: string | null;
+  filename: string;
 }
 
 export interface PathEntry {

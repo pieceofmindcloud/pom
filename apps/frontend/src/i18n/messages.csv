@@ -3392,3 +3392,8 @@ remoteModels.extraFailed,Could not start the download of {name}.,Não foi possí
 paths.rescan,Rescan folders,Varrer pastas
 paths.rescanStarted,"Scanning the model folders again; new files show up in a moment.","Varrendo as pastas de modelos de novo; arquivos novos aparecem em instantes."
 paths.rescanFailed,Could not scan the folders again,Não foi possível varrer as pastas de novo
+deployStudio.lacksModel,"This machine does not have the model. Download it here, or place the file in a model folder and rescan.","Esta máquina não tem o modelo. Baixe aqui, ou coloque o arquivo numa pasta de modelos e varra de novo."
+deployStudio.lacksModelPlace,"This machine does not have the model. Place the file in one of its model folders, then rescan.","Esta máquina não tem o modelo. Coloque o arquivo numa das pastas de modelos dela e varra de novo."
+deployStudio.downloadHere,Download here,Baixar aqui
+deployStudio.rescan,Rescan,Varrer
+deployStudio.downloadingHere,Downloading the model: {pct}%,Baixando o modelo: {pct}%

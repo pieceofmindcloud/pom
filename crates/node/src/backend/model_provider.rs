@@ -1169,6 +1169,44 @@ struct InstalledRecord {
     downloaded_at: String,
 }
 
+/// Where each model downloaded through POM came from, read from the
+/// records the download leaves in `<models folder>/.pom-hf/`:
+/// `{ path, repo_id, revision, filename }`, `path` being the file in that
+/// folder. The catalogs carry it (`hf_sources`) so the deploy screen can ask
+/// a machine that lacks a model to download the same repository and file. A
+/// file placed by hand has no record and no entry.
+pub(crate) async fn installed_sources(directories: Vec<PathBuf>) -> Vec<serde_json::Value> {
+    tokio::task::spawn_blocking(move || {
+        let mut sources = Vec::new();
+        for directory in directories {
+            let Ok(entries) = std::fs::read_dir(directory.join(".pom-hf")) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let Ok(data) = std::fs::read_to_string(entry.path()) else {
+                    continue;
+                };
+                let Ok(record) = serde_json::from_str::<InstalledRecord>(&data) else {
+                    continue;
+                };
+                let path = directory.join(&record.filename);
+                if !path.is_file() {
+                    continue;
+                }
+                sources.push(json!({
+                    "path": path.to_string_lossy(),
+                    "repo_id": record.repo_id,
+                    "revision": record.revision,
+                    "filename": record.filename,
+                }));
+            }
+        }
+        sources
+    })
+    .await
+    .unwrap_or_default()
+}
+
 async fn installed_repo_ids(state: &GatewayState) -> HashSet<String> {
     let directories = state.model_dirs().await;
     tokio::task::spawn_blocking(move || {
@@ -1871,6 +1909,38 @@ mod tests {
         let body = crate::gateway::testkit::body_of(response).await;
         assert_eq!(body["node_id"], own.as_str());
         assert!(body["downloads"].is_array());
+    }
+
+    /// A finished download names its repository beside the file; a record
+    /// whose file is gone names nothing.
+    #[tokio::test]
+    async fn installed_sources_name_the_repository_of_each_file() {
+        let dir = std::env::temp_dir().join(format!("pom-hf-sources-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(dir.join(".pom-hf")).unwrap();
+        std::fs::write(dir.join("m.gguf"), b"x").unwrap();
+        let record = |filename: &str| InstalledRecord {
+            source: "huggingface".into(),
+            repo_id: "org/m".into(),
+            revision: Some("main".into()),
+            filename: filename.into(),
+            quantization: None,
+            size_bytes: 1,
+            sha256: None,
+            files: Vec::new(),
+            downloaded_at: "now".into(),
+        };
+        for (name, file) in [("a", "m.gguf"), ("b", "gone.gguf")] {
+            std::fs::write(
+                dir.join(".pom-hf").join(format!("{name}.json")),
+                serde_json::to_vec(&record(file)).unwrap(),
+            )
+            .unwrap();
+        }
+        let sources = installed_sources(vec![dir.clone()]).await;
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0]["repo_id"], "org/m");
+        assert_eq!(sources[0]["filename"], "m.gguf");
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

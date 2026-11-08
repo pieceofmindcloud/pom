@@ -32,6 +32,23 @@ export interface WholeModelEntry {
   mmproj_reason: string | null;
   /** Node ids that have this file. */
   holders: string[];
+  /**
+   * The repository it was downloaded from, by any holder, with the other parts
+   * of a split file: what Download here asks a machine that lacks it to fetch.
+   * `null` when every copy was placed by hand.
+   */
+  source: { repo_id: string; revision: string | null; filename: string; extra_files: string[] } | null;
+}
+
+/** The source of `model` on `peer`, when that peer downloaded it through POM. */
+function sourceOf(peer: PeerCatalog, model: { path?: string; multipart_parts?: { path: string }[] }) {
+  const found = (peer.hf_sources ?? []).find((source) => source.path === model.path);
+  if (!found) return null;
+  const base = (path: string) => path.split(/[\\/]/).pop() ?? path;
+  const extra_files = (model.multipart_parts ?? [])
+    .map((part) => base(part.path))
+    .filter((name) => name !== base(found.filename));
+  return { repo_id: found.repo_id, revision: found.revision, filename: found.filename, extra_files };
 }
 
 export interface TensorParallelRankEntry {
@@ -82,10 +99,12 @@ export function wholeModelsOf(peers: PeerCatalog[] | undefined): WholeModelEntry
           mmproj_candidates: candidates,
           mmproj_reason: model.mmproj_reason ?? null,
           holders: [peer.node_id],
+          source: sourceOf(peer, model),
         });
         continue;
       }
       if (!found.holders.includes(peer.node_id)) found.holders.push(peer.node_id);
+      found.source ??= sourceOf(peer, model);
       // One machine reading the header and another failing to is a fact about
       // one file, not about the model: the answer that exists wins over the
       // absent one, and the deploy is planned against the machine that has it.

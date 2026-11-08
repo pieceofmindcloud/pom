@@ -31,6 +31,8 @@ As máquinas da implantação, cada uma com a faixa de camadas que vai servir, a
 Em Fatias, a lista mostra os conjuntos de fatias que alguma máquina da rede já tem. Em Modelo inteiro, os arquivos GGUF inteiros.
 ### Pôr as máquinas no mapa
 Arraste máquinas da faixa de baixo para o mapa. O planejador distribui as faixas, e **Cobertura do modelo**, no canto de baixo, conta as camadas cobertas.
+
+Em **Modelo inteiro**, o cartão de uma máquina que não tem o modelo avisa. **Baixar aqui** faz ela baixar o mesmo repositório e arquivo do Hugging Face que outra máquina baixou, com todas as partes de um arquivo dividido; o cartão passa a mostrar o progresso. Para um arquivo copiado à mão, coloque-o numa das pastas de modelos dessa máquina e aperte **Varrer**. Um modelo que ninguém baixou pelo POM oferece só Varrer.
 ### Dividir um modelo inteiro entre máquinas que o têm
 Em **Modelo inteiro**, quando duas ou mais máquinas do mapa têm o arquivo inteiro, a aba Máquina oferece **Dividir as camadas entre N máquinas**. Ela divide as camadas por igual, na ordem do mapa, em cortes que o modelo permite. Cada máquina mostra então sua faixa com **-** e **+**: um clique move o corte que ela divide com a vizinha em um passo válido, e um botão que não pode mover diz o porquê (não há corte válido nessa direção, ou uma máquina ficaria sem camadas). Cada máquina serve sua faixa a partir da própria cópia, então nada é copiado pela rede. Uma máquina que não consegue apontar para sua faixa grava a faixa em disco como fatia antes; a aba dela avisa, com o tamanho.
 

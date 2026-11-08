@@ -46,6 +46,26 @@ describe("wholeModelsOf", () => {
     expect(out[0].holders).toEqual(["ksia", "mac"]);
   });
 
+  it("takes the repository a holder downloaded it from, with the other parts", () => {
+    const parts = [
+      { index: 1, path: "/m/q-00001-of-00002.gguf", bytes: 1, tensor_count: 1 },
+      { index: 2, path: "/m/q-00002-of-00002.gguf", bytes: 1, tensor_count: 1 },
+    ];
+    const handPlaced = peer("mac", [model({ path: "/lm/qwen3.5-9b.gguf" })]);
+    const downloaded = {
+      ...peer("ksia", [model({ id: "2", path: "/m/q-00001-of-00002.gguf", multipart_parts: parts })]),
+      hf_sources: [{ path: "/m/q-00001-of-00002.gguf", repo_id: "org/q", revision: null, filename: "q-00001-of-00002.gguf" }],
+    };
+    const [entry] = wholeModelsOf([handPlaced, downloaded]);
+    expect(entry.source).toEqual({
+      repo_id: "org/q",
+      revision: null,
+      filename: "q-00001-of-00002.gguf",
+      extra_files: ["q-00002-of-00002.gguf"],
+    });
+    expect(wholeModelsOf([handPlaced])[0].source).toBeNull();
+  });
+
   /** A slice is not a whole model: both lists come out of the same scan, and
    *  `shard_range` is what separates them - the same criterion as the node. */
   it("ignores slices", () => {

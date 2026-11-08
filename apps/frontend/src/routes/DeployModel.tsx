@@ -67,6 +67,7 @@ import { useToast } from "../lib/toast";
 import { bytes, deployModelDisplayName, layerRange, megabytes } from "../lib/format";
 import { Confirm, Modal } from "../components/Confirm";
 import { DeploymentInspector, InspectorRow } from "../components/DeploymentInspector";
+import { ModelPresence } from "../components/ModelPresence";
 import { DeployNetworkCanvas } from "../components/DeployNetworkCanvas";
 import { DeployProgressModal } from "../components/DeployProgressModal";
 import { trackOf } from "../components/PipelineRail";
@@ -1620,6 +1621,11 @@ export function DeployModel() {
                 primaryCandidateIds={isTp ? tpCandidates : undefined}
                 primaryNodeId={isTp ? tp.primary_node_id : undefined}
                 onTogglePrimary={isTp ? togglePrimary : undefined}
+                cardFooter={isWhole && !service && wholeModel
+                  ? (nodeId) => wholeModel.holders.includes(nodeId)
+                    ? null
+                    : <ModelPresence nodeId={nodeId} machine={labelOf(nodeId)} model={wholeModel} />
+                  : undefined}
               />
             ) : (
               <div className="flex min-h-[22rem] flex-1 items-center justify-center rounded-xl border border-dashed border-line-strong p-4">

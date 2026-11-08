@@ -866,6 +866,10 @@ Key logic carriers:
   machine), never in the machine card. Back to one machine, `DeployModel`'s
   `rows` drops the row's role, so the deployment's role the inspector shows
   is the one deployed.
+- `ModelPresence.tsx` - the foot of a machine card (`DeployNetworkCanvas` `cardFooter`) when the
+  machine lacks the selected whole model: its running download from `useMachineDownloads`, or
+  **Download here** (the `WholeModelEntry.source` repository, file and split parts, sent with
+  `nodeId`) and **Rescan** (`rescanModels(nodeId)`, then the cluster catalog refetches).
 - `DeployNetworkCanvas.tsx` - the compact, deploy-time topology view. It
   reuses the visual contract of the `ModelNetworkCanvas`: the dotted background, machine
   cards, `autoLayout`, positions persisted per fingerprint, pointer drag,

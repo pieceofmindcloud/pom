@@ -1899,7 +1899,9 @@ pub(super) async fn save_network_chat(
 
 pub(super) async fn models(State(state): State<GatewayState>) -> impl IntoResponse {
     let catalog = local_catalog(&state).await;
+    let hf_sources = crate::model_provider_backend::installed_sources(state.model_dirs().await).await;
     Json(json!({
+        "hf_sources": hf_sources,
         // Not `sysmon`: that one is the raw operating system hostname and
         // ignores the `node_name` from pom.json. `network.hostname` is the name
         // this node announces to peers, and it is what the rest of the screen

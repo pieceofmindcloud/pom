@@ -178,7 +178,10 @@ pub(super) async fn enrich_capacity_previews(
                         .cloned()
                 })
                 .flatten();
-            let model_path = step.target_path.clone();
+            // A range the machine points at in its own whole file is costed
+            // on that file, for the range only.
+            let range_of_whole = step.target_path.is_none() && step.from_whole_path.is_some();
+            let model_path = step.target_path.clone().or_else(|| step.from_whole_path.clone());
             let eligible = !step.merged;
             let total_layers = step.total_layers.or(plan.total_layers);
             let req = CapacityPreviewRequest {
@@ -192,6 +195,7 @@ pub(super) async fn enrich_capacity_previews(
                 params: plan.params.clone(),
                 n_gpu_layers: step.n_gpu_layers,
                 offload_kqv: step.offload_kqv,
+                range_of_whole,
             };
             (index, peer, model_path, eligible, total_layers, req)
         })

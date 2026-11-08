@@ -140,6 +140,11 @@ pub struct CapacityPreviewRequest {
     pub n_gpu_layers: Option<u32>,
     #[serde(default)]
     pub offload_kqv: Option<bool>,
+    /// `model_path` is the whole model and the step serves only
+    /// `start_layer..=end_layer` of it (a range the machine points at in its
+    /// own copy). Absent on older coordinators: the path is the range's file.
+    #[serde(default)]
+    pub range_of_whole: bool,
 }
 
 pub(super) fn default_preview_peer_count() -> u32 {
@@ -176,6 +181,32 @@ pub struct CapacityPreview {
     /// Window requested by the operator. The real load may reduce it.
     pub effective_n_ctx: Option<u32>,
     pub gpus: Vec<GpuCapacityProjection>,
+    /// How many of the requested GPU layers fit in the free VRAM now, when
+    /// fewer than requested: the rest would run on the CPU. `None` when they
+    /// all fit, or on a machine with no dedicated VRAM (unified memory).
+    #[serde(default)]
+    pub gpu_layers_fit: Option<u32>,
+    /// Layers of this step that would run on the CPU from system RAM.
+    #[serde(default)]
+    pub cpu_layers: Option<u32>,
+    /// RAM the CPU layers' weights need.
+    #[serde(default)]
+    pub cpu_ram_bytes: Option<u64>,
+}
+
+/// The most of the first `requested` layers whose VRAM cost (`in_vram`,
+/// cumulative from the range's first layer) stays within `free_vram`. A layer
+/// count whose cost cannot be computed counts as not fitting.
+pub(super) fn gpu_layers_that_fit(
+    requested: u32,
+    free_vram: u64,
+    in_vram: impl Fn(u32) -> Option<u64>,
+) -> u32 {
+    let mut fit = requested;
+    while fit > 0 && in_vram(fit).is_none_or(|bytes| bytes > free_vram) {
+        fit -= 1;
+    }
+    fit
 }
 
 /// Distributes `projected_bytes` among the machine's GPUs.
@@ -328,7 +359,21 @@ pub(super) async fn capacity_preview_endpoint(
 
     // Layers local to this slice's file - `blk.0..`, not the model's global
     // numbering (see `split_model.py`).
-    let local_layer_count = layout.layer_count();
+    // A range of the whole model counts its own layers, at their global
+    // indices in the whole file's layout.
+    let (first_layer, local_layer_count) = if req.range_of_whole {
+        if req.end_layer < req.start_layer || req.end_layer >= layout.layer_count() {
+            return bad_request(format!(
+                "the range L{}-{} is outside the {} layers of the GGUF",
+                req.start_layer,
+                req.end_layer,
+                layout.layer_count()
+            ));
+        }
+        (req.start_layer, req.end_layer - req.start_layer + 1)
+    } else {
+        (0, layout.layer_count())
+    };
     let gpu_layers_local = effective_n_gpu_layers.max(0).min(local_layer_count as i32) as u32;
     let is_last = req.end_layer + 1 >= req.total_layers;
     let (weight_bytes, kv_bytes) = if gpu_layers_local == 0 {
@@ -347,8 +392,8 @@ pub(super) async fn capacity_preview_endpoint(
             &layout,
             Some(&info),
             Some(kv),
-            0,
-            gpu_layers_local - 1,
+            first_layer,
+            first_layer + gpu_layers_local - 1,
             is_last,
         ) {
             Ok((weight_bytes, kv_bytes, _total)) => (weight_bytes, kv_bytes),
@@ -363,6 +408,60 @@ pub(super) async fn capacity_preview_endpoint(
 
     let system = sysmon::sample().await;
     let (gpus, raw_fits, split_note) = split_projection(projected_bytes, &system.gpus);
+
+    // Overcommit: how many of the requested GPU layers fit in the free VRAM
+    // (minus the fit margin per device). The rest would run on the CPU.
+    let margin = u64::from(engine_cfg.fit_memory_margin_mb) * 1024 * 1024;
+    let dedicated: Vec<(u64, u64)> = system
+        .gpus
+        .iter()
+        .filter_map(|g| {
+            let total = (g.vram_total_mb?.max(0.0) * 1024.0 * 1024.0) as u64;
+            let used = (g.vram_used_mb.unwrap_or(0.0).max(0.0) * 1024.0 * 1024.0) as u64;
+            Some((total, used))
+        })
+        .collect();
+    let free_vram: u64 = dedicated
+        .iter()
+        .map(|(total, used)| total.saturating_sub(*used).saturating_sub(margin))
+        .sum();
+    let kv_plan = plan::KvPlanParams {
+        n_ctx: effective_n_ctx,
+        max_sessions: req.params.max_sessions.max(1),
+        cache_type_k: cfg.cache_type_k,
+        cache_type_v: cfg.cache_type_v,
+    };
+    let cost_of = |gpu_layers: u32| -> Option<(u64, u64)> {
+        if gpu_layers == 0 {
+            return Some((0, 0));
+        }
+        plan::range_cost(
+            &layout,
+            Some(&info),
+            Some(kv_plan),
+            first_layer,
+            first_layer + gpu_layers - 1,
+            is_last,
+        )
+        .ok()
+        .map(|(weights, kv, _)| (weights, kv))
+    };
+    let (gpu_layers_fit, cpu_layers, cpu_ram_bytes) = if dedicated.is_empty() || gpu_layers_local == 0 {
+        (None, None, None)
+    } else {
+        let in_vram = |gpu_layers: u32| {
+            cost_of(gpu_layers).map(|(weights, kv)| weights + if kv_in_vram { kv } else { 0 })
+        };
+        let fit = gpu_layers_that_fit(gpu_layers_local, free_vram, in_vram);
+        if fit >= gpu_layers_local {
+            (None, None, None)
+        } else {
+            let on_cpu = local_layer_count - fit;
+            let all = cost_of(local_layer_count).map(|(weights, _)| weights).unwrap_or(0);
+            let on_gpu = cost_of(fit).map(|(weights, _)| weights).unwrap_or(0);
+            (Some(fit), Some(on_cpu), Some(all.saturating_sub(on_gpu)))
+        }
+    };
     let (fits, degraded) = capacity_verdict(
         raw_fits,
         cfg.fit_memory,
@@ -382,6 +481,11 @@ pub(super) async fn capacity_preview_endpoint(
     if let Some(note) = split_note {
         notes.push(note);
     }
+    if let (Some(fit), Some(on_cpu)) = (gpu_layers_fit, cpu_layers) {
+        notes.push(format!(
+            "{fit} layers fit on the GPU, {on_cpu} on the CPU: generation will be much slower"
+        ));
+    }
     if !kv_in_vram && kv_bytes > 0 {
         notes.push(format!(
             "KV cache in RAM (offload off): ~{} MiB outside VRAM",
@@ -396,6 +500,9 @@ pub(super) async fn capacity_preview_endpoint(
         effective_n_gpu_layers: Some(effective_n_gpu_layers.max(0) as u32),
         effective_n_ctx: Some(effective_n_ctx),
         gpus,
+        gpu_layers_fit,
+        cpu_layers,
+        cpu_ram_bytes,
     })
     .into_response()
 }

@@ -905,6 +905,8 @@ deployStudio.lockRange,Lock the range of {machine},Travar a faixa de {machine}
 deployStudio.unlockRange,Unlock the range of {machine},Destravar a faixa de {machine}
 deployStudio.layerLimitLocked,This range is locked: unlock it to change it,Esta faixa está travada: destrave para mudar
 deployStudio.layerLimitNeighbourLocked,The machine sharing this cut is locked,A máquina que divide este corte está travada
+deployStudio.gpuCpuSplit,"{gpu} on GPU, {cpu} on CPU","{gpu} na GPU, {cpu} na CPU"
+deployStudio.gpuCpuSplitDetail,"The VRAM does not hold the whole range: the rest runs on the CPU from {ram} of RAM, and generation will be much slower.","A VRAM não comporta a faixa inteira: o resto roda na CPU usando {ram} de RAM, e a geração fica bem mais lenta."
 deployStudio.layersOnMachine,Layers on this machine,Camadas nesta máquina
 deployStudio.layersOnPeer,Layers available on this peer,Camadas disponíveis neste peer
 deployStudio.layersWithoutMachine,Layers without a machine: {ranges},Camadas sem máquina: {ranges}

@@ -765,6 +765,19 @@ describe("DeployModel · whole model", () => {
     await waitFor(() => expect(lastRanges()).toEqual([[0, 23], [24, 31]]));
   });
 
+  it("shows how many layers run on the GPU and how many on the CPU", async () => {
+    post.mockImplementation((url: string, body: { kind?: string }) => {
+      if (url !== "/api/ui/deploy/plan" || body?.kind !== "whole") return Promise.resolve(body?.kind === "whole" ? wholePlan() : shardPlan());
+      const plan = wholePlan();
+      plan.steps[0].capacity = { fits: true, degraded: true, note: null, gpus: [], gpu_layers_fit: 18, cpu_layers: 6, cpu_ram_bytes: 3 * 1024 ** 3 };
+      return Promise.resolve(plan);
+    });
+    mount();
+    chooseWhole();
+    await ensureWholeMachine();
+    expect(await screen.findByText(/18 na GPU, 6 na CPU/)).toBeTruthy();
+  });
+
   it("shows in the machine tab the note the node gives a step", async () => {
     post.mockImplementation((url: string, body: { kind?: string }) => {
       if (url !== "/api/ui/deploy/plan" || body?.kind !== "whole") return Promise.resolve(body?.kind === "whole" ? wholePlan() : shardPlan());

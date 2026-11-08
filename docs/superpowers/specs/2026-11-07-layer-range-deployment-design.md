@@ -213,7 +213,12 @@ that do. Deploy Studio sends `whole_ranges` from its "Split the layers over N
 machines" action and per-range - / + controls (first part of the Deploy
 Studio section), plus locks and Auto-balance by free memory (weights only;
 the KV and compute cost from `engine.estimate` is not counted yet). Several
-ranges per machine and the overcommit display are still to do. The POM branch pins the engine branch `pom-external-data` (`dc9e951`),
+ranges per machine is still to do. The overcommit display exists in a first
+form: the capacity preview reports `gpu_layers_fit`, `cpu_layers` and
+`cpu_ram_bytes` for a step (including a range of the own whole file), the
+machine's tab shows "N on GPU, M on CPU", and the note reaches the existing
+confirmation. The launch does not pin `n_gpu_layers` to the estimate yet:
+`fit_memory` still decides the real split at load time. The POM branch pins the engine branch `pom-external-data` (`dc9e951`),
 whose `llama-cpp.lock` points at the fork branch of the same name.
 
 ### Part B: Strata

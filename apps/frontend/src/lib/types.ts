@@ -2025,6 +2025,13 @@ export interface CapacityPreview {
   effective_n_gpu_layers?: number | null;
   effective_n_ctx?: number | null;
   gpus: GpuCapacityProjection[];
+  /** Requested GPU layers that fit in the free VRAM, when fewer than requested
+   *  (the rest run on the CPU). Absent when all fit, or on unified memory. */
+  gpu_layers_fit?: number | null;
+  /** Layers of the step that would run on the CPU from system RAM. */
+  cpu_layers?: number | null;
+  /** RAM the CPU layers' weights need. */
+  cpu_ram_bytes?: number | null;
 }
 
 /** A whole machine's projection: the sum, per GPU, of every step it would

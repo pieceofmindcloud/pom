@@ -580,6 +580,17 @@ and only show up that way.
 
 ## 3.1 Capacity preview (projected VRAM)
 
+A step that serves a range of the machine's own whole file (`from_whole_path`)
+is previewed on that file with `range_of_whole: true`, which costs only
+`start_layer..=end_layer`. On a machine with dedicated VRAM, the preview also
+answers how many of the requested GPU layers fit in the free VRAM minus the
+fit margin per device (`gpu_layers_fit`, `webui::params::gpu_layers_that_fit`),
+how many would run on the CPU (`cpu_layers`) and the RAM their weights need
+(`cpu_ram_bytes`), and adds "N layers fit on the GPU, M on the CPU: generation
+will be much slower" to its note. That note reaches the machine card and the
+confirmation before deploying; Deploy Studio shows "N on GPU, M on CPU" in the
+machine's tab. Unified memory reports no split.
+
 After `plan_endpoint` builds the steps (and only if `blocked` is empty),
 `enrich_capacity_previews` asks each target where the step is already
 materialized locally how that step would fill its VRAM with this plan's

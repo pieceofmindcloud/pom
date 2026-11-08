@@ -1953,6 +1953,15 @@ export function DeployModel() {
                         );
                       })()}
                       {(currentPlan?.steps ?? [])
+                        .filter((step) => step.target_node_id === machine.node_id && (step.capacity?.cpu_layers ?? 0) > 0)
+                        .map((step) => (
+                          <p key={`cpu-${step.start_layer}`} className="mt-2 border-l-2 border-amber/50 pl-2 text-[0.62rem] leading-snug text-amber">
+                            <span className="font-semibold">{t("deployStudio.gpuCpuSplit", { gpu: step.capacity?.gpu_layers_fit ?? 0, cpu: step.capacity?.cpu_layers ?? 0 })}</span>
+                            {" "}
+                            {t("deployStudio.gpuCpuSplitDetail", { ram: megabytes(Math.round((step.capacity?.cpu_ram_bytes ?? 0) / (1024 * 1024))) })}
+                          </p>
+                        ))}
+                      {(currentPlan?.steps ?? [])
                         .filter((step) => step.target_node_id === machine.node_id && step.note)
                         .map((step) => (
                           <p key={`note-${step.start_layer}`} className="mt-2 border-l-2 border-amber/50 pl-2 text-[0.62rem] leading-snug text-amber">

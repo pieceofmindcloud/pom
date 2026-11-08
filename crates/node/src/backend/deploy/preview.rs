@@ -33,6 +33,10 @@ pub(super) async fn plan_endpoint(
             return bad(json!({ "error": error }));
         }
     }
+    // A range the GGUF refuses is a blocked preview, not a bare error: the plan
+    // still carries `layer_options`, which is how the screen learns the valid
+    // cuts after a first guess. The deploy itself refuses such a range.
+    let mut range_refusal = None;
     let range_selection = match (&req.whole_ranges, &layer_options) {
         (None, _) => None,
         (Some(_), None) => {
@@ -43,7 +47,10 @@ pub(super) async fn plan_endpoint(
         (Some(ranges), Some(options)) => {
             match add_whole_ranges(&mut machines, &req.group, ranges, options) {
                 Ok(selection) => Some(selection),
-                Err(error) => return bad(json!({ "error": error })),
+                Err(error) => {
+                    range_refusal = Some(error);
+                    None
+                }
             }
         }
     };
@@ -64,6 +71,11 @@ pub(super) async fn plan_endpoint(
         layer_options,
         None,
     );
+    if let Some(reason) = range_refusal {
+        p.blocked = Some(reason);
+        // Not the node's suggestion: the operator named ranges.
+        p.auto = false;
+    }
     if req.kind == DeployKind::TensorParallel && p.blocked.is_none() && !has_tp_parts(&machines) {
         if let Some(tp) = &req.tp {
             if let Some(reason) = tp_shardability_check(&state, &machines, tp).await {

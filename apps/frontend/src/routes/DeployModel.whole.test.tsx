@@ -708,6 +708,50 @@ describe("DeployModel · whole model", () => {
     });
   });
 
+  it("redoes the split on the GGUF's real cuts when the node refuses the first guess", async () => {
+    answerPlans();
+    const plain = post.getMockImplementation()!;
+    const cuts = [11, 23];
+    post.mockImplementation((url: string, body: { whole_ranges?: Array<{ node_id: string; start_layer: number; end_layer: number }> }) => {
+      if (url !== "/api/ui/deploy/plan" || !body?.whole_ranges) return plain(url, body);
+      const base = wholePlan();
+      const layerOptions = { source_node_id: "ksia", total_layers: 32, cuts: cuts.map((end) => ({ end_layer: end, layers: end + 1, size_bytes: 1, remainder_bytes: 1 })), granularity: null, rule: "real boundaries", reason: null };
+      const bad = body.whole_ranges.find((range) => range.end_layer !== 31 && !cuts.includes(range.end_layer));
+      if (bad) {
+        return Promise.resolve({ ...base, auto: false, blocked: `the cut at layer L${bad.end_layer} does not respect the real rules of the GGUF`, layer_options: layerOptions });
+      }
+      return Promise.resolve({
+        ...base,
+        auto: false,
+        layer_options: layerOptions,
+        steps: body.whole_ranges.map((range, index) => ({
+          ...base.steps[0],
+          position: index + 1,
+          start_layer: range.start_layer,
+          end_layer: range.end_layer,
+          target_node_id: range.node_id,
+          target_host: range.node_id,
+          primary: range.start_layer === 0,
+        })),
+      });
+    });
+    mount();
+    chooseWhole();
+    fireEvent.click(await screen.findByRole("button", { name: /ksia RTT/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Remover ksia da implantação/ })).toBeTruthy());
+    fireEvent.click(await screen.findByRole("button", { name: /mac RTT/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Remover mac da implantação/ })).toBeTruthy());
+    fireEvent.click(await screen.findByRole("button", { name: /Dividir as camadas entre 2 máquinas/ }));
+
+    type RangesBody = { whole_ranges?: Array<{ node_id: string; start_layer: number; end_layer: number }> };
+    await waitFor(() => {
+      const sent = planCalls().map(([, body]) => (body as RangesBody).whole_ranges).filter(Boolean);
+      // The first guess cut at every-layer granularity; the second is on a real cut.
+      expect(sent[0]?.map((range) => [range.start_layer, range.end_layer])).toEqual([[0, 15], [16, 31]]);
+      expect(sent.at(-1)?.map((range) => [range.start_layer, range.end_layer])).toEqual([[0, 11], [12, 31]]);
+    });
+  });
+
   describe("with machines already in service", () => {
     const serving = (nodeId: string, model: string) => ({
       node_id: nodeId,

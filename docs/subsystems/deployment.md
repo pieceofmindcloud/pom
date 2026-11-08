@@ -153,7 +153,10 @@ itself, so nothing is cut on another machine or copied. `add_whole_ranges`
 refuses by name a machine without the whole model and a cut the GGUF's rules
 do not allow (`model-layer-options`), sizes each range from the cut table, and
 turns the ranges into the selection when `selection` is absent; coverage and
-order are the planner's checks. Such a step never gets the "over the network"
+order are the planner's checks. On `/api/ui/deploy/plan`, a refused range is a
+blocked plan (`auto: false`) that still carries `layer_options`, so the screen
+learns the valid cuts from its first guess; `/api/ui/deploy` refuses it
+outright. Such a step never gets the "over the network"
 note, and the disk check charges a real slice of the range only when the
 target does not announce `model/range-load-v1` (`pipeline::CAP_RANGE_LOAD`,
 announced with `POM_VIRTUAL_SLICES=1`): without it the target cuts the range

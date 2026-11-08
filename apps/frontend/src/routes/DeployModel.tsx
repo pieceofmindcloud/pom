@@ -511,6 +511,11 @@ export function DeployModel() {
   const wholeTotal = wholeModel?.total_layers ?? null;
   const splitsWhole = (candidate: DeploySelection[] | null): candidate is DeploySelection[] =>
     isWhole && !service && candidate != null && isWholeRangeSplit(candidate, wholeModel?.holders ?? [], wholeTotal);
+  /** Machines of a split made before the plan knew the GGUF's cuts. The first
+   *  split assumes every layer is a valid cut; once the plan answers with
+   *  `layer_options`, it is redone on the real cuts (a hybrid model is only cut
+   *  at its architectural boundaries). */
+  const pendingSplit = useRef<string[] | null>(null);
   const rowsPayload = (candidate: DeploySelection[] | null) =>
     candidate == null ? {} : splitsWhole(candidate) ? { whole_ranges: wholeRangesOf(candidate) } : { selection: candidate };
   /** The TpLaunch the node expects: `size` is derived from the workers picked,
@@ -780,6 +785,15 @@ export function DeployModel() {
       return single;
     });
   }, [selection, p]);
+  useEffect(() => {
+    const holders = pendingSplit.current;
+    const options = currentPlan?.layer_options;
+    if (!holders || !options || wholeTotal == null) return;
+    pendingSplit.current = null;
+    if (options.reason) return;
+    const next = evenSplit(holders, wholeTotal, validEnds(wholeTotal, options.cuts.map((cut) => cut.end_layer)));
+    if (!sameRows(next, rows)) setSelection(next);
+  }, [currentPlan, wholeTotal, rows]);
   /** One row per machine for the per-machine role: a whole model has one row per machine already; slices may put
    *  several ranges on one machine, which share its role. A sliced deployment may also hold a prefill machine that
    *  runs the whole model beside the slices. */
@@ -1869,7 +1883,10 @@ export function DeployModel() {
                                 size="sm"
                                 type="button"
                                 className="w-full"
-                                onClick={() => setSelection(evenSplit(holdersOnMap, wholeTotal, ends))}
+                                onClick={() => {
+                                  if (!currentPlan?.layer_options) pendingSplit.current = holdersOnMap;
+                                  setSelection(evenSplit(holdersOnMap, wholeTotal, ends));
+                                }}
                               >
                                 {t("deployStudio.splitLayers", { count: holdersOnMap.length })}
                               </Button>

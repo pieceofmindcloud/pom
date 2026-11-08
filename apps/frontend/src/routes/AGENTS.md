@@ -598,7 +598,10 @@ Per-file list:
   known) and per-range - / + (`stepRange`, which moves the shared cut by one
   valid step or returns why it cannot). When every row's machine holds the
   whole model and a row is partial (`isWholeRangeSplit`), the plan and the
-  deploy send the rows as `whole_ranges` instead of `selection`. A test mock
+  deploy send the rows as `whole_ranges` instead of `selection`. A split made
+  before the plan knew the cuts (`pendingSplit`) is redone on the real cuts
+  when the plan answers with `layer_options`, even a blocked one: a hybrid
+  model refuses the every-layer guess. A test mock
   answering those ranges must set `auto: false`, as the node does: an `auto`
   plan's topology becomes the "auto" query key and the plan refetches forever.
   Tests: `DeployModel.whole.test.tsx` ("splits the whole model..."),

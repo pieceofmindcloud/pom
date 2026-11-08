@@ -1305,7 +1305,9 @@ started at that head. A missing, invalid or vanished choice fails closed,
 without silently switching nodes.
 
 The same endpoint accepts `thinking_enabled: boolean` for that inference's
-choice. A missing field keeps the default on; `false` reaches the prefill
+choice. Without it the gateway reads the client's
+`chat_template_kwargs.enable_thinking`, then `reasoning_effort: "none"` as off
+(`openai::client_thinking`), and only then keeps the default on; `false` reaches the prefill
 metadata up to the deployment's head, which combines it with the global
 `no_thinking` before applying the template. The hub, ring and direct reply
 relays keep the field together with the existing metadata.

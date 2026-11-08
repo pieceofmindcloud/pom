@@ -33,6 +33,8 @@ For Shards, the model list shows the slice sets some machine of the network alre
 Drag machines from the strip at the bottom to the map. The planner places the ranges, and **Model coverage**, at the bottom right, counts the layers covered.
 ### Split a whole model over machines that have it
 In **Whole model**, when two or more machines on the map hold the whole file, the Machine tab offers **Split the layers over N machines**. It divides the layers evenly, in map order, at cuts the model allows. Each machine then shows its range with **-** and **+**: a click moves the cut it shares with its neighbour by one valid step, and a button that cannot move says why (no valid cut that way, or a machine would be left with no layers). Each machine serves its range from its own copy, so nothing is copied over the network. A machine that cannot point at its range writes it to disk as a slice first; its tab says so, with the size.
+
+The lock beside a range keeps it exactly as it is. **Auto-balance by free memory** then divides the layers of the unlocked machines in proportion to each one's free memory (GPU memory, or RAM on a machine without a GPU), at cuts the model allows, around the locked ranges. A locked range's - and + are off until you unlock it, and so are a neighbour's buttons when they would move the cut it shares with the locked range. This first version balances by weight size: the context's memory (KV cache) is not counted yet.
 ### Read the verdict
 When the selection cannot be deployed, a red line at the top says why - for example, which layers are in no chosen slice. The Deploy button stays off until the plan closes.
 ### Deploy

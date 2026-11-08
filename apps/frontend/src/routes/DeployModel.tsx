@@ -50,6 +50,8 @@ import { useNavigate } from "react-router-dom";
 import {
   Check,
   ChevronLeft,
+  Lock,
+  LockOpen,
   Minus,
   Plus,
   Rocket,
@@ -69,7 +71,7 @@ import { DeployNetworkCanvas } from "../components/DeployNetworkCanvas";
 import { DeployProgressModal } from "../components/DeployProgressModal";
 import { trackOf } from "../components/PipelineRail";
 import { tensorParallelModelsOf, wholeModelsOf } from "../lib/wholeModels";
-import { evenSplit, isWholeRangeSplit, stepRange, validEnds, wholeRangesOf } from "../lib/wholeRanges";
+import { autoBalance, evenSplit, isWholeRangeSplit, stepRange, validEnds, wholeRangesOf } from "../lib/wholeRanges";
 import { inferenceServicesOf, serviceRunsModel, serviceRunsSlices, serviceTakesDraft } from "../lib/inferenceServices";
 import {
   Badge,
@@ -516,6 +518,9 @@ export function DeployModel() {
    *  `layer_options`, it is redone on the real cuts (a hybrid model is only cut
    *  at its architectural boundaries). */
   const pendingSplit = useRef<string[] | null>(null);
+  /** Machines whose range the operator locked: Auto-balance and the
+   *  neighbours' - / + leave it exactly as it is. */
+  const [lockedNodes, setLockedNodes] = useState<Set<string>>(() => new Set());
   const rowsPayload = (candidate: DeploySelection[] | null) =>
     candidate == null ? {} : splitsWhole(candidate) ? { whole_ranges: wholeRangesOf(candidate) } : { selection: candidate };
   /** The TpLaunch the node expects: `size` is derived from the workers picked,
@@ -1839,19 +1844,58 @@ export function DeployModel() {
                         const holdersOnMap = mapMachineIds.filter((nodeId) => wholeModel?.holders.includes(nodeId));
                         const ends = validEnds(wholeTotal, currentPlan?.layer_options?.cuts.map((cut) => cut.end_layer) ?? null);
                         const split = splitsWhole(rows);
+                        const locked = new Set(rows.flatMap((row, index) => (lockedNodes.has(row.target_node_id) ? [index] : [])));
                         const limitText = (limit: string) =>
-                          t(limit === "noCut" ? "deployStudio.layerLimitNoCut" : "deployStudio.layerLimitEmpty");
+                          t({
+                            noCut: "deployStudio.layerLimitNoCut",
+                            neighbourEmpty: "deployStudio.layerLimitEmpty",
+                            locked: "deployStudio.layerLimitLocked",
+                            neighbourLocked: "deployStudio.layerLimitNeighbourLocked",
+                          }[limit] ?? "deployStudio.layerLimitEmpty");
+                        const options = currentPlan?.layer_options;
+                        const prefixBytes = (end: number): number | null => {
+                          if (!options || options.cuts.length === 0) return null;
+                          if (end === wholeTotal - 1) return options.cuts[0].size_bytes + options.cuts[0].remainder_bytes;
+                          return options.cuts.find((cut) => cut.end_layer === end)?.size_bytes ?? null;
+                        };
+                        const freeMemory = (nodeId: string) => {
+                          const live = liveMachines.find((item) => item.node_id === nodeId);
+                          const gpu = live?.gpu_free_mb ?? 0;
+                          return gpu > 0 ? gpu : live?.ram_free_mb ?? 0;
+                        };
+                        const balanced = split && options ? autoBalance(rows, locked, ends, prefixBytes, freeMemory) : null;
+                        const balanceReason = balanced == null
+                          ? t("deployStudio.autoBalanceWaiting")
+                          : Array.isArray(balanced)
+                            ? null
+                            : t(balanced === "allLocked" ? "deployStudio.autoBalanceAllLocked" : "deployStudio.autoBalanceNoSizes");
                         return (
                           <div className="mt-3 space-y-1.5 border-t border-line pt-2">
                             {split && taking.map((row) => {
                               const index = rows.indexOf(row);
-                              const fewer = stepRange(rows, index, "shrink", ends);
-                              const more = stepRange(rows, index, "grow", ends);
+                              const fewer = stepRange(rows, index, "shrink", ends, locked);
+                              const more = stepRange(rows, index, "grow", ends, locked);
+                              const isLocked = locked.has(index);
                               const count = row.end_layer - row.start_layer + 1;
                               return (
                                 <div key={`step-${row.start_layer}`} className="flex items-center justify-between gap-2">
                                   <span className="font-mono text-[0.64rem] text-muted">{layerRange(row.start_layer, row.end_layer)}</span>
                                   <div className="flex items-center gap-1">
+                                    <button
+                                      type="button"
+                                      aria-pressed={isLocked}
+                                      aria-label={t(isLocked ? "deployStudio.unlockRange" : "deployStudio.lockRange", { machine: machine.label })}
+                                      title={t(isLocked ? "deployStudio.unlockRange" : "deployStudio.lockRange", { machine: machine.label })}
+                                      onClick={() => setLockedNodes((current) => {
+                                        const next = new Set(current);
+                                        if (next.has(machine.node_id)) next.delete(machine.node_id);
+                                        else next.add(machine.node_id);
+                                        return next;
+                                      })}
+                                      className={`border p-0.5 ${isLocked ? "border-aqua/40 bg-aqua/10 text-aqua" : "border-line bg-ink text-muted hover:border-aqua/50 hover:text-fg"}`}
+                                    >
+                                      {isLocked ? <Lock className="h-3 w-3" /> : <LockOpen className="h-3 w-3" />}
+                                    </button>
                                     <button
                                       type="button"
                                       aria-label={t("deployStudio.fewerLayers", { machine: machine.label })}
@@ -1877,6 +1921,19 @@ export function DeployModel() {
                                 </div>
                               );
                             })}
+                            {split && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                type="button"
+                                className="w-full"
+                                disabled={!Array.isArray(balanced)}
+                                title={balanceReason ?? t("deployStudio.autoBalanceHint")}
+                                onClick={() => Array.isArray(balanced) && setSelection(balanced)}
+                              >
+                                {t("deployStudio.autoBalance")}
+                              </Button>
+                            )}
                             {holdersOnMap.length >= 2 && (
                               <Button
                                 variant="outline"

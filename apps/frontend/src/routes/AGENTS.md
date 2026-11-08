@@ -601,7 +601,13 @@ Per-file list:
   deploy send the rows as `whole_ranges` instead of `selection`. A split made
   before the plan knew the cuts (`pendingSplit`) is redone on the real cuts
   when the plan answers with `layer_options`, even a blocked one: a hybrid
-  model refuses the every-layer guess. A test mock
+  model refuses the every-layer guess. A lock per range (`lockedNodes`, by machine)
+  keeps it exact: `stepRange` refuses to move it or the cut a neighbour
+  shares with it ("locked" / "neighbourLocked"). Auto-balance
+  (`wholeRanges.autoBalance`) splits each run of unlocked ranges between
+  locked ones in proportion to the machines' free memory (live GPU free MB,
+  or RAM free MB without a GPU), at valid cuts, sized by the plan's
+  `layer_options` prefix bytes; weights only, no KV cost yet. A test mock
   answering those ranges must set `auto: false`, as the node does: an `auto`
   plan's topology becomes the "auto" query key and the plan refetches forever.
   Tests: `DeployModel.whole.test.tsx` ("splits the whole model..."),

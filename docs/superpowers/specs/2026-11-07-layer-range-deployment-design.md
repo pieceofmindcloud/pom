@@ -211,8 +211,9 @@ a node cannot tell whether its llama.cpp loads external tensor data (a
 prebuilt fork library cannot be inspected), so the operator sets it on builds
 that do. Deploy Studio sends `whole_ranges` from its "Split the layers over N
 machines" action and per-range - / + controls (first part of the Deploy
-Studio section); locks, Auto-balance, several ranges per machine and the
-overcommit display are still to do. The POM branch pins the engine branch `pom-external-data` (`dc9e951`),
+Studio section), plus locks and Auto-balance by free memory (weights only;
+the KV and compute cost from `engine.estimate` is not counted yet). Several
+ranges per machine and the overcommit display are still to do. The POM branch pins the engine branch `pom-external-data` (`dc9e951`),
 whose `llama-cpp.lock` points at the fork branch of the same name.
 
 ### Part B: Strata

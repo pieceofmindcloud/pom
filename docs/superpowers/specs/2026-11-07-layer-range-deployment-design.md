@@ -551,6 +551,12 @@ loading.
    remote rescan button waits for phase 7's machine cards).
 7. Deploy Studio: single Pipeline mode, machine cards with Download here,
    range editor, memory per machine; removal of the slice screens.
+   Done: Pipeline as the default mode (slices kept as legacy for old sets
+   and staged services), Download here / Rescan / progress on the cards,
+   copies refused by name, the CPU split in the deploy confirmation; the
+   range editor came in phase 3. Waiting: removing the slice screens, which
+   Strata stages still need until Strata loads a range of a whole pack;
+   Download here for sidecars; weights / KV / compute per card.
 8. Retire transfers: first release stops planning copies and offering sends
    (routes kept, deprecated); the next removes `transfer.rs` and the routes.
 9. Docs: `slicing.md`, `deployment.md`, `inference.md` (plugin engine

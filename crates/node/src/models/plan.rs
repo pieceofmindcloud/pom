@@ -453,15 +453,21 @@ pub async fn extract_shard(
     .await
 }
 
-/// Suffix of the opt-in that makes a node serve a range of a whole model it
+/// Suffix of the switch that makes a node serve a range of a whole model it
 /// holds through a header-only virtual slice instead of cutting a real one
-/// (`splitter::write_virtual_slice`). Off until the pinned engine is built
-/// from a fork commit with external tensor data: an engine without it fails to
-/// load the header.
+/// (`splitter::write_virtual_slice`). On by default: the pinned engine builds
+/// against the fork branch with external tensor data. `0` turns it off, for a
+/// build whose engine cannot load the header.
 pub const VIRTUAL_SLICES_ENV: &str = "VIRTUAL_SLICES";
 
 pub fn virtual_slices_enabled() -> bool {
-    crate::brand::env(VIRTUAL_SLICES_ENV).is_ok_and(|value| value == "1")
+    virtual_slices_from(crate::brand::env(VIRTUAL_SLICES_ENV).ok().as_deref())
+}
+
+/// Only `0` turns virtual slices off; unset, empty or any other value keeps
+/// the default.
+fn virtual_slices_from(value: Option<&str>) -> bool {
+    value.map(str::trim) != Some("0")
 }
 
 /// Where a node keeps its virtual slice headers: outside every model folder,
@@ -923,6 +929,15 @@ pub fn base_name_from_label(label: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn virtual_slices_are_on_unless_the_operator_sets_zero() {
+        assert!(virtual_slices_from(None));
+        assert!(virtual_slices_from(Some("")));
+        assert!(virtual_slices_from(Some("1")));
+        assert!(!virtual_slices_from(Some("0")));
+        assert!(!virtual_slices_from(Some(" 0 ")));
+    }
 
     #[test]
     fn a_dense_model_can_be_served_through_a_virtual_slice_and_an_unreadable_one_cannot() {

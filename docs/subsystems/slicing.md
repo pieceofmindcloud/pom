@@ -588,7 +588,7 @@ weights: three `general.external_data.*` keys give, per tensor, the source file
 and the absolute offset of its bytes, and only the injected identity
 `output_norm` keeps its data in the file. A llama.cpp build with the fork's
 external tensor data loads it as the same model as the real slice. A node
-uses it at apply time behind `POM_VIRTUAL_SLICES=1` (`deployment.md` section
+uses it at apply time unless `POM_VIRTUAL_SLICES=0` (`deployment.md` section
 8); see
 `docs/superpowers/specs/2026-11-07-layer-range-deployment-design.md`.
 

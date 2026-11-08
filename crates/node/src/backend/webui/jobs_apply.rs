@@ -945,7 +945,7 @@ async fn plugin_cuts_range(state: &GatewayState, req: &ApplyRequest) -> bool {
 async fn virtual_shard_for(req: &ApplyRequest, job_id: &str) -> anyhow::Result<Option<String>> {
     if !plan::virtual_slices_enabled() {
         info!(
-            "{} is not set: cutting layers {}-{} of {} locally",
+            "{}=0: cutting layers {}-{} of {} locally",
             crate::brand::env_var(plan::VIRTUAL_SLICES_ENV),
             req.start_layer,
             req.end_layer,

@@ -147,8 +147,8 @@ of a `whole_slice` on its source, or any `whole_ranges` entry) is not cut by
 `slice-ranges` and copied to itself: the planner marks its step
 `from_whole_path` (the machine's own whole GGUF), no pull is planned, and the
 launch applies that machine with the whole file, the range and `skip_split:
-false`. `run_apply` then cuts the range locally, or writes a virtual slice
-with `POM_VIRTUAL_SLICES=1` (section 8).
+false`. `run_apply` then writes a virtual slice (the default), or cuts the
+range locally with `POM_VIRTUAL_SLICES=0` (section 8).
 
 `model-layer-options` takes an optional `kv: {n_ctx, max_sessions}`; with it
 each cut also carries `kv_bytes` and `remainder_kv_bytes`, the KV cache of the
@@ -169,10 +169,10 @@ learns the valid cuts from its first guess; `/api/ui/deploy` refuses it
 outright. Such a step never gets the "over the network"
 note, and the disk check charges a real slice of the range only when the
 target does not announce `model/range-load-v1` (`pipeline::CAP_RANGE_LOAD`,
-announced with `POM_VIRTUAL_SLICES=1`): without it the target cuts the range
+announced unless `POM_VIRTUAL_SLICES=0`): without it the target cuts the range
 locally, the step's `note` says so ("cuts this range from its own copy: N GB
 written to disk"), and Deploy Studio shows step notes in the machine's tab.
-On the target, the fallback logs "POM_VIRTUAL_SLICES is not set: cutting
+On the target, the fallback logs "POM_VIRTUAL_SLICES=0: cutting
 layers a-b of <model> locally".
 
 The preflight also checks the output contract the loader requires. For the
@@ -1037,7 +1037,7 @@ The derived facts the machine needs to know:
   catalog).
 - `skip_split` or `(is_first && is_last && peer_count <= 1)` -> serves the file
   as is (the slice already exists on disk).
-- with `POM_VIRTUAL_SLICES=1` and a model the virtual slice supports
+- unless `POM_VIRTUAL_SLICES=0`, with a model the virtual slice supports
   (`plan::virtual_slice_refusal`: not a mixture-of-experts model split in
   several files under the `moe` or `auto` inference mode, whose external
   executor reads one source file; `dense` llama.cpp reads any number) -> `plan::write_virtual_shard`: a

@@ -143,8 +143,8 @@ Models, GGUF reading, planning and slice files. The module is used by
   `general.external_data.files`/`tensor_files`/`tensor_offsets`, which the
   llama.cpp fork's loader reads (branch `pom-external-data`).
   Tensors with data in the header (the identity `output_norm`) come first.
-  `plan::write_virtual_shard` is the apply step that uses it behind
-  `POM_VIRTUAL_SLICES=1`; `plan::virtual_slice_refusal` keeps on real
+  `plan::write_virtual_shard` is the apply step that uses it unless
+  `POM_VIRTUAL_SLICES=0` (on by default, `plan::virtual_slices_enabled`); `plan::virtual_slice_refusal` keeps on real
   slicing only a header it cannot read and, when the inference mode is `moe`
   or `auto`, a MoE model in several files (under `dense` llama.cpp reads the
   parts itself), since the MoE external executor follows a virtual slice into one source file

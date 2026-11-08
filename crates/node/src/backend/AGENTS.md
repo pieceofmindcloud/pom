@@ -1026,6 +1026,16 @@ travelling in `GenerationInput` and the prefill metadata, with the head applying
 kill-switch before rendering the template) is `docs/subsystems/web-ui.md` and
 `docs/subsystems/inference.md`.
 
+## Defects noted
+
+- `webui::leave_tests::leaving_for_a_peer_is_forwarded_to_that_peer` (`webui/tests/early.rs`)
+  passes alone and in the full `cargo test -p node --bin pom`, but failed twice in a row
+  (2026-11-08) when run filtered to `deploy:: webui::` together: it depends on test order or
+  shared state, not yet traced.
+- In the dev container ten tests fail at this branch's head, outside this folder: two
+  `splitter` tests expect English error text the pinned `llama-engine` gives in Portuguese, and
+  eight inference lab, relay, server reload and machine-address tests not investigated.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.

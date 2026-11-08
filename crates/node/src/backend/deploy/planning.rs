@@ -1682,7 +1682,7 @@ pub(super) fn plan_with_rtt_options(
                     ));
                 } else if !ready {
                     note = Some(format!(
-                        "{} GB over the network before starting",
+                        "this machine does not have this file ({} GB): files are not copied between machines",
                         gb(mem_need)
                     ));
                 }
@@ -1801,20 +1801,19 @@ pub(super) fn plan_with_rtt_options(
                             gb(need)
                         ));
                     } else if !ready && !from_whole {
-                        // The pull direction is the one the sender did not
-                        // choose, so `transfer::safe_model_path` keeps it inside
-                        // the sender's slice folder. A whole model is routinely
-                        // outside it — an LM Studio library, an Ollama store —
-                        // and that copy is refused at the far end, which is a
-                        // thing to read before pressing the button rather than
-                        // after the job fails.
+                        // Files are not copied between machines any more: this
+                        // plan is blocked (`copies_refusal`). The note says what
+                        // the machine lacks and how it gets it.
                         note = Some(if kind.whole() {
                             format!(
-                                "{} GB over the network before starting - the source machine only sends on its own what is in its slices folder; from outside it, send the file from the Transfers screen first",
+                                "this machine does not have the model ({} GB): download it here, or place the file in one of its model folders and rescan",
                                 gb(need)
                             )
                         } else {
-                            format!("{} GB over the network before starting", gb(need))
+                            format!(
+                                "this machine does not have this slice ({} GB): files are not copied between machines",
+                                gb(need)
+                            )
                         });
                     }
                 }

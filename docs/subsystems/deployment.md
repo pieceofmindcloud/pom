@@ -107,11 +107,15 @@ What actually changes:
   `model_label` to the peer - two different names for the same file are two
   models, here and in the pipeline planner.
 
-Known limit: if the target machine does not have the file yet, the copy uses
+Since phase 8 of the range deployment work, a plan in which a target lacks the
+file is refused (`machine_lacks_files`, section 4) instead of copying it; the
+machine downloads the model or gets it placed. What follows describes the copy
+path, which a current node no longer reaches (an older admin runs its own copy
+of it). Known limit: if the target machine does not have the file yet, the copy uses
 the **pull** direction, which `transfer::safe_model_path` confines to the
 sender's slice folder. A whole model almost always lives outside it (LM Studio
-library, Ollama store), so the step's `note` advises sending the file through
-the Transfers screen first.
+library, Ollama store). The step's `note` now says the machine does not have the
+model and to download it there or place the file and rescan.
 
 Planning a whole model does not wait for the full catalog. If the fast
 inventory already showed the file but the answer has no `total_layers` yet,
@@ -561,10 +565,11 @@ folder, often the folder of another quantization. Three pieces handle that.
 - **Plan and launch.** `deploy::attach_sidecars` resolves the screen's choice
   (`DeployRequest.vision_choice` / `mtp_choice`) or else the link: the head
   gets the projector, the tail gets the MTP draft. A target that already has a
-  file with that name and size uses it; otherwise a holder is chosen, the copy
-  joins `transfer_bytes` and the `pulls` of `lifecycle::run` (by path, landing
-  in the target's `received/` folder), and a file nobody has blocks the plan
-  naming it. `LaunchTarget`/`ApplyRequest` carry `mmproj_file` and
+  file with that name and size uses it; otherwise a holder is chosen and the
+  plan lists the copy, which a current node refuses as `machine_lacks_files`
+  (the copy through `transfer_bytes` and the `pulls` of `lifecycle::run`,
+  landing in `received/`, is no longer reached); a file nobody has
+  blocks the plan naming it. `LaunchTarget`/`ApplyRequest` carry `mmproj_file` and
   `mtp_draft_file`; the target resolves them on its own disk at apply time
   (`catalog::find_local_sidecar`), so a file copied a moment ago is found
   without waiting for the catalog cache. A model without `nextn` reports MTP as

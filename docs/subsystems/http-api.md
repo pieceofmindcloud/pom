@@ -1437,6 +1437,24 @@ never from the file name. For a dense model the UI hides the choice; when a
 combination is not supported yet, the reason stays visible and the deploy is
 refused so a preference that will not be honored is not presented.
 
+**Ranges of a whole model.** `DeployRequest.whole_ranges` (optional, on
+`/api/ui/deploy/plan` and `/api/ui/deploy`) is a list of
+`{ node_id, start_layer, end_layer }`, each machine holding the whole file
+itself; it becomes the selection when `selection` is absent, and each machine
+is applied with its own file and its range (`deployment.md`). A range refused
+for the model (a cut the GGUF does not allow) comes back as a `blocked` plan
+with `auto: false` and `layer_options`, the real cuts, so the screen can
+redo the split. Each step may carry a `note` (for example that the machine
+will write its range to disk because it does not announce
+`model/range-load-v1`) and `capacity.gpu_layers_fit`, `capacity.cpu_layers`
+and `capacity.cpu_ram_bytes` when the range overflows the VRAM; a CPU part
+beyond the machine's free RAM blocks the plan by name.
+**`POST /api/ui/model-layer-options`** (`ServingMember`, body
+`{ path, kv?: { n_ctx, max_sessions } }`) reads the valid cuts of a GGUF on
+that machine: `{ total_layers, cuts: [{ end_layer, layers, size_bytes,
+remainder_bytes, kv_bytes?, remainder_kv_bytes? }], granularity, rule }`;
+`kv` adds each cut's KV cache at that context with this node's cache types.
+
 `DeployPlan.copies` lists every file the deploy would copy between machines
 (`kind` `slice`/`mmproj`/`mtp`, `name`, `size_bytes`, `layers`, source and
 target node and host). The preview of a plan with copies is `blocked` with a

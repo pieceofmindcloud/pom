@@ -79,6 +79,13 @@ wraps the engine's own handler). Never patch the engine tree for POM glue.
 | Accept a hidden state of explicit width as input and hand out the last layer's residual | engine feature branch | a two-stage answer equals the whole-model answer (greedy) |
 | Stage link: earlier stage serves frames on loopback (`engine.link`), later stage connects to `prev_port` with the token, kind-byte envelope, tensors as `f32` | engine feature branch + plugin `engine.link`, `launch::STAGES`, `pom_settings` `prefill_max_inflight_chunks`, `hidden_state_dtype` | two machines serve one model |
 | Prompt pieces in flight, answers in order; prompt cache continued on every stage | engine | the prompt reads on both machines at once |
+| Optional: serve a range of the whole model with no slice on disk (llama.cpp: external tensor data, a header-only virtual slice; the node announces `model/range-load-v1`) | engine feature branch | the range answers as the real slice does; nothing written but the header |
+
+A plugin engine cannot yet be handed a range of a whole model: the range
+operations a plugin would describe (`stage_ranges`, `engine.cuts`,
+`engine.estimate`, `range` in `engine.load`) are designed in the layer range
+deployment spec (`docs/superpowers/specs/2026-11-07-layer-range-deployment-design.md`,
+Part B) but not implemented. Plugin engines with stages still run slices.
 
 ## Platforms
 

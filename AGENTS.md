@@ -126,7 +126,9 @@ the private repository `pom-plugin-llama.cpp`, pinned by `rev` in `Cargo.toml`
 with the `git` client (`[net] git-fetch-with-cli` in `.cargo/config.toml`).
 
 The Cargo builds and the Docker `source` mode need the `llama.cpp` fork on the
-`pom-tensor-parallel` branch. `.cargo/config.toml` sets `LLAMA_SOURCE=llama.cpp`
+branch the pinned `pom-plugin-llama.cpp` revision builds against (its
+`llama-cpp.lock`): today `pom-external-data`, the fork's `pom` branch plus the
+external tensor data loader that virtual slices need (`slicing.md`). `.cargo/config.toml` sets `LLAMA_SOURCE=llama.cpp`
 relative to this root: leave a checkout or a symlink of the fork there (gitignored).
 An `LLAMA_SOURCE` already set in the environment (CI, Docker) prevails. The
 binding's build accepts a checkout with `ggml`; with none, the preparation error

@@ -569,6 +569,14 @@ loading.
    contract), `plugins-ui.md` (describe fields), `file-transfer.md` (retired),
    `http-api.md`, the root `AGENTS.md` invariants, the guides, and the
    `pom-inference-engine` skill's contract and feature levels.
+   Done 2026-11-08 for what is implemented: each phase updated its docs,
+   and a final pass covered the API reference (`whole_ranges`,
+   `model-layer-options`), the `model/range-load-v1` capability, the root
+   build notes (fork branch `pom-external-data`), the skill's fork analysis
+   and L6, and the planner notes that still pointed at Transfers. The
+   plugin engine range contract (Part B: `stage_ranges`, `engine.cuts`,
+   `engine.estimate`, `range` in `engine.load`) and the `plugins-ui.md`
+   describe fields stay undocumented until they exist.
 
 ## Out of scope
 

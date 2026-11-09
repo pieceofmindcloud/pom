@@ -810,6 +810,39 @@ fn split_impl(
         bail!("the {arch} source declares PLE, but does not contain per_layer_token_embd.weight");
     }
 
+    // deepseek41 keeps one set of Engram hash constants per Engram layer, back to back (the fork checks
+    // n_layers * columns): a slice keeps the sets of its own Engram layers, which are contiguous. The head
+    // offsets index the whole table, which the slice carries whole, so they keep their values.
+    let engram_layer_count = ple_layers.len() as u32;
+    let engram_cut: Option<(u32, u32, u32, u32)> = if arch == "deepseek41" && !ple_layers.is_empty()
+    {
+        let scalar = |name: &str| {
+            entries
+                .iter()
+                .find(|entry| entry.key == format!("{arch}.{name}"))
+                .and_then(|entry| source_scalar_u32(mm, entry))
+        };
+        let first = ple_layers
+            .iter()
+            .position(|layer| (start_layer..=end_layer).contains(layer));
+        let kept = ple_layers
+            .iter()
+            .filter(|layer| (start_layer..=end_layer).contains(*layer))
+            .count();
+        match (
+            first,
+            scalar("ple.ngram_size"),
+            scalar("ple.heads_per_ngram"),
+        ) {
+            (Some(first), Some(ngram), Some(heads)) if ngram >= 2 => {
+                Some((first as u32, kept as u32, ngram, (ngram - 1) * heads))
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+
     let mut kv_out: Vec<KvOut> = Vec::with_capacity(n_kv + 4);
     let mut block_count_updated = false;
     let pom_prefix = format!("{}.", crate::brand::slug());
@@ -862,6 +895,32 @@ fn split_impl(
                         layer - start_layer,
                     )));
                 }
+                continue;
+            }
+        }
+        if let Some((first, kept, ngram, cols)) = engram_cut {
+            let chunk = if *key == format!("{arch}.ple.layer_multipliers") {
+                Some(ngram)
+            } else if *key == format!("{arch}.ple.head_offsets")
+                || *key == format!("{arch}.ple.head_vocab_sizes")
+            {
+                Some(cols)
+            } else {
+                None
+            };
+            if let Some(chunk) = chunk {
+                let total = entry.array.map(|array| array.count).unwrap_or(0);
+                if total != u64::from(chunk) * engram_layer_count as u64 {
+                    bail!(
+                        "metadata array '{key}' has length {total}; expected {chunk} per Engram layer for {engram_layer_count} layers"
+                    );
+                }
+                kv_out.push(KvOut::Encoded(encode_array_slice(
+                    mm,
+                    entry,
+                    first * chunk,
+                    kept * chunk,
+                )?));
                 continue;
             }
         }
@@ -4636,6 +4695,9 @@ mod tests {
             u32_array_kv("deepseek41.attention.indexer.source_layers", &[1, 4, 6]),
             i32_kv("deepseek41.attention.indexer.candidate_source_layer", 4),
             u32_array_kv("deepseek41.ple.layers", &[1, 3]),
+            // per Engram layer: ngram_size multipliers and (ngram_size - 1) * heads_per_ngram heads
+            u32_kv("deepseek41.ple.ngram_size", 2),
+            u32_kv("deepseek41.ple.heads_per_ngram", 6),
             u32_array_kv("deepseek41.ple.layer_multipliers", &[11, 13, 17, 19]),
             u32_array_kv("deepseek41.ple.head_offsets", &head_offsets),
             u32_array_kv("deepseek41.ple.head_vocab_sizes", &[20; 12]),
@@ -4668,6 +4730,35 @@ mod tests {
         }
         bytes
     }
+
+    #[test]
+    fn deepseek41_slice_keeps_the_hash_constants_of_its_own_engram_layers() {
+        let dir = std::env::temp_dir().join(format!("pom-ds41-engram-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let whole = dir.join("whole.gguf");
+        let out = dir.join("mid.gguf");
+        std::fs::write(&whole, deepseek41_test_gguf_bytes()).unwrap();
+        // layers 2-7 hold the second Engram layer (3) only
+        split(&whole, &out, 2, 7, false, true, |_| {}).unwrap();
+        let bytes = std::fs::read(&out).unwrap();
+
+        assert_eq!(kv_u32_array(&bytes, "deepseek41.ple.layers"), Some(vec![1]));
+        assert_eq!(
+            kv_u32_array(&bytes, "deepseek41.ple.layer_multipliers"),
+            Some(vec![17, 19])
+        );
+        assert_eq!(
+            kv_u32_array(&bytes, "deepseek41.ple.head_offsets"),
+            Some((6..12).map(|head| head * 20).collect()),
+            "the offsets index the whole table, which the slice carries"
+        );
+        assert_eq!(
+            kv_u32_array(&bytes, "deepseek41.ple.head_vocab_sizes"),
+            Some(vec![20; 6])
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
 
     fn deepseek41_split_at_valid_cut(dir: &Path) -> (Vec<u8>, Vec<u8>) {
         std::fs::create_dir_all(dir).unwrap();

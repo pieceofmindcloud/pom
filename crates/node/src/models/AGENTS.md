@@ -262,8 +262,10 @@ local index. The tensor `per_layer_token_embd.weight` accompanies only the slice
 that contain one of those layers. `deepseek41` follows the same model: its
 `attention.kv_source_layers`, `attention.indexer.source_layers` and `ple.layers`
 are filtered and rebased, `attention.indexer.candidate_source_layer` is rebased
-or left out (keeping its INT32 type, which llama.cpp checks), and the other
-Engram arrays are copied whole. Its valid cuts come from
+or left out (keeping its INT32 type, which llama.cpp checks), the Engram hash
+constants (`ple.layer_multipliers`, `ple.head_offsets`, `ple.head_vocab_sizes`,
+one set per Engram layer) are cut to the slice's Engram layers, and
+`engram.token_map` is copied whole. Its valid cuts come from
 `GgufLayout::restricted_slice_starts`: the KV and indexer sources shared by
 both lists, up to the candidate source (DeepSeek-V4.1-Flash: 2, 8, 14 and 20).
 A slice that starts mid-model gets the fork's layer-boundary state

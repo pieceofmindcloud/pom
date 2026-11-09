@@ -1,6 +1,6 @@
 # GPU work metering: live run on real nodes
 
-Date: 2026-11-09. Code: POM branch `feat/metering-phase1`, plugin
+Date: 2026-11-09. Code: POM branch `feat/gpu-work-metering`, plugin
 `pom-plugin-metering` `main`, both local.
 
 ## Setup

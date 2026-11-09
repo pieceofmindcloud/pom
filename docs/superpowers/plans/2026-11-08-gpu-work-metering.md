@@ -11,7 +11,7 @@ real UDP. Stage named paths only when committing.
 
 ## Status (2026-11-09)
 
-Local branches, not pushed: POM `feat/metering-phase1` (phases 1-2 and the
+Local branches, not pushed: POM `feat/gpu-work-metering` (phases 1-2 and the
 testable part of 3), `pom-plugin-metering` `main`. The spec's "Implementation
 notes" record where the code departs from this plan (the nonce rides the
 rewind/release, the head returns its token sequence, re-execution is a job).

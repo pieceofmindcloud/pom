@@ -231,6 +231,24 @@ fn encode_kv_u32(key: &str, value: u32) -> Vec<u8> {
     buf
 }
 
+/// A non-negative scalar written back with the integer type it had in the
+/// source: the loader checks the type, and the DeepSeek-V4.1 candidate source
+/// is an INT32 that a UINT32 copy made unreadable.
+fn encode_kv_like_source(key: &str, source_type: u32, value: u32) -> Vec<u8> {
+    match (source_type, i32::try_from(value)) {
+        (T_I32, Ok(signed)) => {
+            let mut buf = Vec::with_capacity(8 + key.len() + 4 + 4);
+            let kb = key.as_bytes();
+            buf.extend_from_slice(&(kb.len() as u64).to_le_bytes());
+            buf.extend_from_slice(kb);
+            buf.extend_from_slice(&T_I32.to_le_bytes());
+            buf.extend_from_slice(&signed.to_le_bytes());
+            buf
+        }
+        _ => encode_kv_u32(key, value),
+    }
+}
+
 fn encode_kv_u32_array(key: &str, values: &[u32]) -> Vec<u8> {
     let payload: Vec<u8> = values
         .iter()
@@ -838,7 +856,11 @@ fn split_impl(
             // is what a slice ending before this layer has.
             if let Some(layer) = source_scalar_u32(mm, entry) {
                 if (start_layer..=end_layer).contains(&layer) {
-                    kv_out.push(KvOut::Encoded(encode_kv_u32(key, layer - start_layer)));
+                    kv_out.push(KvOut::Encoded(encode_kv_like_source(
+                        key,
+                        entry.vtype,
+                        layer - start_layer,
+                    )));
                 }
                 continue;
             }
@@ -2826,6 +2848,26 @@ mod tests {
         assert_eq!(source_read_order(&tensors), vec![2, 1, 0]);
     }
 
+    /// The GGUF value type of `want`'s entry.
+    fn kv_type(mm: &[u8], want: &str) -> Option<u32> {
+        let mut r = R { data: mm, pos: 0 };
+        if r.u32().ok()? != GGUF_MAGIC {
+            return None;
+        }
+        r.u32().ok()?;
+        let _n_tensors = r.u64().ok()?;
+        let n_kv = r.u64().ok()?;
+        for _ in 0..n_kv {
+            let key = r.string().ok()?;
+            let vtype = r.u32().ok()?;
+            if key == want {
+                return Some(vtype);
+            }
+            r.skip_value(vtype).ok()?;
+        }
+        None
+    }
+
     fn kv_u32(mm: &[u8], want: &str) -> Option<u32> {
         let mut r = R { data: mm, pos: 0 };
         let magic = r.u32().ok()?;
@@ -2841,6 +2883,7 @@ mod tests {
             if key == want {
                 return match vtype {
                     T_U32 => Some(u32::from_le_bytes(r.take(4).ok()?.try_into().unwrap())),
+                    T_I32 => u32::try_from(i32::from_le_bytes(r.take(4).ok()?.try_into().unwrap())).ok(),
                     T_U64 => Some(r.u64().ok()? as u32),
                     _ => None,
                 };
@@ -4547,6 +4590,13 @@ mod tests {
             bytes.extend_from_slice(&value.to_le_bytes());
             bytes
         };
+        // The real DeepSeek-V4.1 files write the candidate source as INT32.
+        let i32_kv = |key: &str, value: i32| {
+            let mut bytes = string(key);
+            bytes.extend_from_slice(&T_I32.to_le_bytes());
+            bytes.extend_from_slice(&value.to_le_bytes());
+            bytes
+        };
         let u32_array_kv = |key: &str, values: &[u32]| {
             let mut bytes = string(key);
             bytes.extend_from_slice(&T_ARR.to_le_bytes());
@@ -4584,7 +4634,7 @@ mod tests {
             ),
             u32_array_kv("deepseek41.attention.kv_source_layers", &[1, 4]),
             u32_array_kv("deepseek41.attention.indexer.source_layers", &[1, 4, 6]),
-            u32_kv("deepseek41.attention.indexer.candidate_source_layer", 4),
+            i32_kv("deepseek41.attention.indexer.candidate_source_layer", 4),
             u32_array_kv("deepseek41.ple.layers", &[1, 3]),
             u32_array_kv("deepseek41.ple.layer_multipliers", &[11, 13, 17, 19]),
             u32_array_kv("deepseek41.ple.head_offsets", &head_offsets),
@@ -4695,6 +4745,11 @@ mod tests {
         assert_eq!(
             kv_u32(&second, "deepseek41.attention.indexer.candidate_source_layer"),
             Some(0)
+        );
+        assert_eq!(
+            kv_type(&second, "deepseek41.attention.indexer.candidate_source_layer"),
+            Some(T_I32),
+            "llama.cpp reads the candidate source as INT32 and refuses a UINT32"
         );
         assert_eq!(kv_u32_array(&second, "deepseek41.ple.layers"), Some(Vec::new()));
         assert_eq!(

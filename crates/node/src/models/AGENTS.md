@@ -301,14 +301,15 @@ when MTP was not requested).
 
 ## Defects noted
 
-- `deepseek41` slices are written, but a pipeline across them does not run yet.
-  `deepseek41.cpp` keeps `pre_prev`, the pre-mix of the previous layer's FFN,
-  which is not part of the residual, so a slice starting mid-model would
-  collapse its first attention input with the identity instead. The same graph
-  has no expanded `hc` input and sets `n_embd_out = n_embd`, so
-  `validate_hidden_tensor` refuses the wide residual on the receiving peer
-  instead of computing a wrong answer. Serving needs the fork to accept an
-  expanded input and carry `pre_prev` across the boundary.
+- A `deepseek41` pipeline across slices needs the fork branch
+  `fix/deepseek41-pipeline-state` (not yet merged into `pom`): it hands on the
+  hc streams plus `pre_prev`, the previous FFN's pre-mix, as
+  `[n_embd, hc + 1]` per token and resumes from that width. On the `pom`
+  branch a slice starting mid-model still collapses its first attention input
+  with the identity and the receiving peer refuses the wide residual. The only
+  valid cut of the published DeepSeek-V4.1-Flash is layer 20: Engram layers
+  (1 and 14) need token ids, which only the first slice has, and every layer
+  after 20 reads layer 20's compressed KV.
 
 - `ModelSource::Folder` is labelled `"Pasta"` (`catalog.rs`, the source label
   the catalog sends), so the Models screen shows a Portuguese word in the

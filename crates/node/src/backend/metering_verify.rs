@@ -63,6 +63,11 @@ pub(crate) struct ReexecuteRequest {
     /// The audited receipt's engine; only llama.cpp re-executes here.
     #[serde(default)]
     pub(crate) engine: Option<String>,
+    /// A calibration run (the ledger's `rpc.calibrate`): plugin engines are
+    /// re-executed whatever `metering.verify_plugin_engines` says, and both
+    /// readings come back in full.
+    #[serde(default)]
+    pub(crate) calibration: bool,
 }
 
 /// Verdict of one re-execution.
@@ -72,6 +77,9 @@ pub(crate) struct ReexecuteVerdict {
     pub(crate) chunks: Vec<toploc::Verdict>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) void: Option<String>,
+    /// Calibration: each reading's verdicts (`pieces`, `windows`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) readings: Option<Value>,
 }
 
 /// Finished and running jobs, by id. A peer call cannot wait minutes, so
@@ -91,7 +99,8 @@ pub(crate) async fn reexecute(state: &GatewayState, params: &Value) -> Result<Va
     validate(&request)?;
     let tokens = decode_tokens(&request.tokens)?;
     if let Some(engine) = request.engine.clone().filter(|e| e != "llama.cpp") {
-        let enabled = crate::metering::context().is_some_and(|ctx| ctx.settings.verify_plugin_engines);
+        let enabled = request.calibration
+            || crate::metering::context().is_some_and(|ctx| ctx.settings.verify_plugin_engines);
         if !enabled {
             return Ok(json!({ "job": finished_job(json!(void(format!(
                 "re-executing {engine} work is off until its TOPLOC limits are calibrated (metering.verify_plugin_engines)"
@@ -277,11 +286,19 @@ impl StageAudit {
             Ok((rows, width)) => check_chunks(&rows, width, &r.chunks, &params),
             Err(e) => return void(format!("reading the audited stage: {e}")),
         };
-        if pieces.pass {
+        if pieces.pass && !r.calibration {
             return pieces;
         }
         match window_rows(port, &token, tokens).await {
-            Ok((rows, width)) => either_layout(pieces, check_chunks(&rows, width, &r.chunks, &params)),
+            Ok((rows, width)) => {
+                let windows = check_chunks(&rows, width, &r.chunks, &params);
+                let readings = r
+                    .calibration
+                    .then(|| json!({ "pieces": pieces.chunks, "windows": windows.chunks }));
+                let mut verdict = either_layout(pieces, windows);
+                verdict.readings = readings;
+                verdict
+            }
             Err(_) => pieces,
         }
     }
@@ -489,7 +506,7 @@ pub(crate) fn check_chunks(output: &[f32], width: usize, chunks: &[String], para
             Err(e) => return failed(&format!("a proof does not open: {e}"), verdicts),
         }
     }
-    ReexecuteVerdict { pass: verdicts.iter().all(|v| v.pass), chunks: verdicts, void: None }
+    ReexecuteVerdict { pass: verdicts.iter().all(|v| v.pass), chunks: verdicts, void: None, readings: None }
 }
 
 /// Chunk by chunk, the better of two readings of the sequence: a chunk
@@ -510,19 +527,19 @@ pub(crate) fn either_layout(a: ReexecuteVerdict, b: ReexecuteVerdict) -> Reexecu
         chunks.push(pick);
     }
     let complete = chunks.len() == n && n > 0 && (a.chunks.len() == n || b.chunks.len() == n);
-    ReexecuteVerdict { pass: complete && chunks.iter().all(|c| c.pass), chunks, void: None }
+    ReexecuteVerdict { pass: complete && chunks.iter().all(|c| c.pass), chunks, void: None, readings: None }
 }
 
 /// A proof that does not open, or names rows that do not exist, is the
 /// node's fault: a failed sample, not a void one.
 fn failed(reason: &str, chunks: Vec<toploc::Verdict>) -> ReexecuteVerdict {
     tracing::warn!("metering re-execution: {reason}");
-    ReexecuteVerdict { pass: false, chunks, void: None }
+    ReexecuteVerdict { pass: false, chunks, void: None, readings: None }
 }
 
 fn void(reason: String) -> ReexecuteVerdict {
     tracing::warn!("metering re-execution void: {reason}");
-    ReexecuteVerdict { pass: false, chunks: vec![], void: Some(reason) }
+    ReexecuteVerdict { pass: false, chunks: vec![], void: Some(reason), readings: None }
 }
 
 fn run(r: &ReexecuteRequest, tokens: &[i32], model_path: &str, total: Option<u32>) -> ReexecuteVerdict {
@@ -645,6 +662,7 @@ mod tests {
             chunks,
             params: None,
             engine: None,
+            calibration: false,
         }
     }
 
@@ -712,12 +730,12 @@ mod tests {
     #[test]
     fn a_chunk_passes_when_either_reading_matches() {
         let v = |pass: bool, m: u32| toploc::Verdict { exp_mismatches: m, mant_err_mean: 1.0, mant_err_median: 1.0, pass };
-        let a = ReexecuteVerdict { pass: false, chunks: vec![v(true, 3), v(false, 90)], void: None };
-        let b = ReexecuteVerdict { pass: false, chunks: vec![v(false, 100), v(true, 10)], void: None };
+        let a = ReexecuteVerdict { pass: false, chunks: vec![v(true, 3), v(false, 90)], void: None, readings: None };
+        let b = ReexecuteVerdict { pass: false, chunks: vec![v(false, 100), v(true, 10)], void: None, readings: None };
         let both = either_layout(a, b);
         assert!(both.pass);
-        let a = ReexecuteVerdict { pass: false, chunks: vec![v(true, 3), v(false, 90)], void: None };
-        let b = ReexecuteVerdict { pass: false, chunks: vec![v(false, 100), v(false, 80)], void: None };
+        let a = ReexecuteVerdict { pass: false, chunks: vec![v(true, 3), v(false, 90)], void: None, readings: None };
+        let b = ReexecuteVerdict { pass: false, chunks: vec![v(false, 100), v(false, 80)], void: None, readings: None };
         let neither = either_layout(a, b);
         assert!(!neither.pass);
         assert_eq!(neither.chunks[1].exp_mismatches, 80);

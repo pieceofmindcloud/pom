@@ -186,6 +186,7 @@ impl StageAudit {
         last: u32,
         total: u32,
         prev: Option<(u16, String)>,
+        context: usize,
     ) -> Result<(u16, String), String> {
         let id = uuid::Uuid::new_v4().simple().to_string();
         let mut node = crate::runtime::NodeConfig::from_params(&crate::webui::RuntimeParams::default(), true);
@@ -200,6 +201,9 @@ impl StageAudit {
         node.max_sessions = 1;
         node.peer_count = 2;
         node.inference_service = Some(self.code.clone());
+        // The audit reads one sequence: a context that just holds it leaves
+        // the rest of the card to the engine's expert cache.
+        node.n_ctx = (context as u32).next_power_of_two().max(512);
         let link = match &prev {
             None => json!({}),
             Some((port, token)) => json!({ "token": token, "prev_port": port, "max_inflight": 1 }),
@@ -250,15 +254,29 @@ impl StageAudit {
                     }
                 }
             };
-            match self.start_stage(model_path, first, last, total, link).await {
+            match self.start_stage(model_path, first, last, total, link, tokens.len() + 64).await {
                 Ok(served) => prev = Some(served),
                 Err(e) => return void(format!("audit stage {first}..{last}: {e}")),
             }
         }
         let Some((port, token)) = prev else { return void("no audit stage".into()) };
-        match prompt_rows(port, &token, tokens).await {
-            Ok((rows, width)) => check_chunks(&rows, width, &r.chunks, &r.params.unwrap_or_default()),
-            Err(e) => void(format!("reading the audited stage: {e}")),
+        let params = r.params.unwrap_or_default();
+        // A stage answers a prompt piece with its prompt rows and a verify
+        // window with its window rows, two different tensors (Strata's window
+        // rows carry the hyper-connection streams). The stage proved whichever
+        // its later stage asked for - some engines read a prompt as windows -
+        // so both are read and the sample passes when every chunk matches one
+        // of them.
+        let pieces = match prompt_rows(port, &token, tokens).await {
+            Ok((rows, width)) => check_chunks(&rows, width, &r.chunks, &params),
+            Err(e) => return void(format!("reading the audited stage: {e}")),
+        };
+        if pieces.pass {
+            return pieces;
+        }
+        match window_rows(port, &token, tokens).await {
+            Ok((rows, width)) => check_chunks(&rows, width, &r.chunks, &params),
+            Err(_) => pieces,
         }
     }
 
@@ -335,6 +353,53 @@ async fn prompt_rows(port: u16, token: &str, tokens: &[i32]) -> Result<(Vec<f32>
             return Err("an answer of the wrong size".into());
         }
         rows.extend(values);
+    }
+    Ok((rows, width))
+}
+
+/// Tokens per verify window when the sequence is read as windows.
+const AUDIT_WINDOW: usize = 4;
+
+/// The audited stage's window rows for the whole sequence: hello, a new
+/// session, then verify windows each committed whole. Returns the rows and
+/// their width.
+async fn window_rows(port: u16, token: &str, tokens: &[i32]) -> Result<(Vec<f32>, usize), String> {
+    use crate::plugin_stage_link::{read_frame, write_frame};
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.map_err(|e| e.to_string())?;
+    let call = |payload: Vec<u8>| {
+        let mut frame = vec![1u8];
+        frame.extend(payload);
+        frame
+    };
+    let mut hello = vec![b'H'];
+    hello.extend(token.as_bytes());
+    write_frame(&mut stream, &call(hello)).await.map_err(|e| e.to_string())?;
+    let answer = read_frame(&mut stream).await.map_err(|e| e.to_string())?.ok_or("no hello")?;
+    if answer.len() < 18 || answer[1] != 0 {
+        return Err("the audited stage refused the hello".into());
+    }
+    let width = u32::from_le_bytes([answer[10], answer[11], answer[12], answer[13]]) as usize;
+    write_frame(&mut stream, &call(vec![b'Z'])).await.map_err(|e| e.to_string())?;
+    read_frame(&mut stream).await.map_err(|e| e.to_string())?.ok_or("no answer to the reset")?;
+    let mut rows = Vec::with_capacity(tokens.len() * width);
+    for (index, window) in tokens.chunks(AUDIT_WINDOW).enumerate() {
+        let mut w = vec![b'W'];
+        w.extend(((index * AUDIT_WINDOW) as i64).to_le_bytes());
+        w.extend((window.len() as u32).to_le_bytes());
+        for t in window {
+            w.extend(t.to_le_bytes());
+        }
+        write_frame(&mut stream, &call(w)).await.map_err(|e| e.to_string())?;
+        let answer = read_frame(&mut stream).await.map_err(|e| e.to_string())?.ok_or("no rows")?;
+        let values = crate::plugin_metering::answer_rows(&answer).ok_or("a window answer without rows")?;
+        if values.len() != window.len() * width {
+            return Err("a window answer of the wrong size".into());
+        }
+        rows.extend(values);
+        let mut c = vec![b'C'];
+        c.extend((window.len() as u32).to_le_bytes());
+        write_frame(&mut stream, &call(c)).await.map_err(|e| e.to_string())?;
+        read_frame(&mut stream).await.map_err(|e| e.to_string())?.ok_or("no answer to the commit")?;
     }
     Ok((rows, width))
 }
@@ -566,6 +631,19 @@ mod tests {
                         }
                         a
                     }
+                    b'W' => {
+                        let n = u32::from_le_bytes(frame[10..14].try_into().unwrap()) as usize;
+                        let mut a = vec![2u8];
+                        a.extend(1u32.to_le_bytes());
+                        a.push(0);
+                        for i in 0..n {
+                            let t = i32::from_le_bytes(frame[14 + 4 * i..18 + 4 * i].try_into().unwrap()) as f32;
+                            for _ in 0..width {
+                                a.extend((-t).to_le_bytes());
+                            }
+                        }
+                        a
+                    }
                     b'P' => {
                         let n = u32::from_le_bytes(frame[10..14].try_into().unwrap()) as usize;
                         let mut a = vec![2u8];
@@ -595,6 +673,15 @@ mod tests {
         assert_eq!(width, 4);
         assert_eq!(rows.len(), 300 * 4);
         assert_eq!(rows[299 * 4], 299.0);
+    }
+
+    #[tokio::test]
+    async fn the_audited_stage_is_read_as_committed_windows_too() {
+        let port = fake_stage(4).await;
+        let tokens: Vec<i32> = (0..10).collect();
+        let (rows, width) = window_rows(port, "secret", &tokens).await.unwrap();
+        assert_eq!((rows.len(), width), (40, 4));
+        assert_eq!(rows[9 * 4], -9.0);
     }
 
     #[tokio::test]

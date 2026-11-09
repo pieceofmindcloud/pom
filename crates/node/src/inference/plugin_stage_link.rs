@@ -1564,7 +1564,8 @@ async fn link_frame(
                 Ok(answer) => {
                     // GPU work metering: the request this engine served and its answer as it leaves.
                     if engine_answer_kind.is_some() {
-                        crate::plugin_metering::on_served(&serving, &frame, &answer);
+                        let prompt_phase = matches!(tokens, Some((LinkPhase::Prefill, _)));
+                        crate::plugin_metering::on_served(&serving, &frame, &answer, prompt_phase);
                     }
                     if let Some((phase, count)) = tokens {
                         // This machine's own work on the frame: its time here minus the waits its relays made.

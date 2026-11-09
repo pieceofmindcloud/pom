@@ -477,6 +477,11 @@ pub(crate) fn finish_bundle(
 ) {
     let Some(ctx) = context() else { return };
     let hops = receipt::assemble_hops(plan, &ticket.bnd, answers, prompt);
+    for hop in &hops {
+        if let receipt::HopStatus::Unmetered { reason } = &hop.status {
+            warn!("metering: {} left unmetered: {reason}", &hop.node[..12.min(hop.node.len())]);
+        }
+    }
     let gw_key = hex::encode(ctx.key.verifying_key().as_bytes());
     let t = now_ms();
     let cyc = metering_core::cycle::cycle_of(t, ctx.settings.cycle_secs);

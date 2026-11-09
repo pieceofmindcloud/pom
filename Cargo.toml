@@ -26,4 +26,4 @@ serde_json = "1"
 # from crates.io with the one from that same repository. The source of the llama.cpp fork comes from LLAMA_SOURCE
 # (see .cargo/config.toml).
 [patch.crates-io]
-llama-cpp-sys-2 = { git = "ssh://git@github.com/pieceofmindcloud/pom-plugin-llama.cpp.git", rev = "bb248f0f94f0bc74b5c0ffd3c62989a1208f089a" }
+llama-cpp-sys-2 = { git = "ssh://git@github.com/pieceofmindcloud/pom-plugin-llama.cpp.git", rev = "6fc1520c48574e9c2c29bb950d3e22a8d484e679" }

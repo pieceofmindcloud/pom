@@ -3352,6 +3352,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "metering-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "brand",
+ "ed25519-dalek 2.2.0",
+ "hex",
+ "hmac",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,7 +1,8 @@
 # Metering GPU work: signed work receipts and probabilistic re-execution
 
-Date: 2026-11-08 - Status: draft for iteration (revision 2: operator decisions
-on verification timing, drafts, gateway pay and retention)
+Date: 2026-11-08 - Status: draft for iteration (revision 3: drafts paid less,
+pay proportional to verified samples, visitor requests are paid work, plugin
+engines verified through `engine.verify`)
 
 ## Problem
 
@@ -41,11 +42,14 @@ is out of scope (see the end).
 - Consecutive hops attest the same bytes crossed between them, so a claim
   cannot be stitched from work that never connected.
 - During a payout cycle the admin challenges nodes at random; at the end of the
-  cycle the admin (or a dedicated verifier machine) re-executes a random sample
-  of the cycle's work. A node that fails either loses that cycle's earnings
-  and is flagged.
-- Pay follows the compute actually done, including rejected speculative drafts
-  when they cost a full forward pass.
+  cycle the admin (or a dedicated verifier machine) re-executes a fixed number
+  of samples per node. A node is paid in proportion to the samples it passed,
+  so one failure costs a share of the cycle, not all of it.
+- Pay follows the compute actually done; speculative draft positions are paid
+  less than ordinary tokens.
+- Work done for visitors is paid work: visitors are the network's paying
+  customers, and every bundle records the consumer so the next task (charging
+  visitors) can bill from the same records.
 - A gateway can be paid for routing without other members learning how much.
 - Everything kept for metering is bounded in payout cycles.
 - Released nodes keep serving with no change. Metering is optional: a node
@@ -59,7 +63,7 @@ is out of scope (see the end).
   per-node, per-cycle statements; how they are paid is the network's business.
 - Staking and slashing beyond forfeiting unpaid earnings.
 - Privacy of prompts from workers (needs GPU TEEs, a later tier).
-- Auditing tensor-parallel shards (they are receipted, see 10).
+- Auditing tensor-parallel shards (they are receipted, see 11).
 
 ## Threat model
 
@@ -89,8 +93,10 @@ An admin running the ledger is trusted, as it is today with the request log.
 |---|---|---|
 | `enabled` | `false` | with metering off, no receipt is built and nothing on the hot path changes |
 | `cycle` | `7d` | payout cycle length, set by the admin; cycles are numbered from a fixed epoch so every node agrees which cycle a timestamp falls in |
-| `retain_cycles` | `2` | how many closed cycles of receipts, summaries and token ids are kept (11) |
-| `audit_rate` | `0.02` | share of the cycle's bundles re-executed at cycle close (7) |
+| `retain_cycles` | `2` | how many closed cycles of receipts, summaries and token ids are kept (12) |
+| `samples_per_node` | `30` | receipts re-executed per node at cycle close (7) |
+| `penalty_factor` | `2.0` | how much each failed sample weighs against pay (7) |
+| `draft_weight` | `0.5` | pay weight of a speculative position relative to an ordinary one (9) |
 | `challenge_rate` | per node per cycle, e.g. `5` | random challenges sent during the cycle (6) |
 | `verifier` | the ledger admin | node id of a dedicated verifier machine, optional |
 | `gateway_fee` | `0` | gateway compensation rule (9) |
@@ -150,7 +156,7 @@ position). The summaries are leaves of a Merkle tree per receipt and only the
 root, `summ`, goes in the receipt, so a challenge (6) can ask for a few
 positions and check them against the signed root without moving all of them.
 They stay on the node in a bounded store (`metering_summaries`, unified
-SQLite), dropped by cycle (11). TOPLOC-style encoding is a candidate
+SQLite), dropped by cycle (12). TOPLOC-style encoding is a candidate
 replacement for the summary format (question 1); the receipt only carries a
 root, so swapping it needs a version, not a contract change.
 
@@ -166,8 +172,10 @@ then:
    and that `out_chain[n] == in_chain[n+1]` and the head's `in_chain` matches
    the token ids it sent;
 2. builds a **work bundle**: the plan, every receipt, the Merkle root of the
-   prompt and output token ids, the client API key identity (non-secret, as in
-   the request log) and its own counts;
+   prompt and output token ids, its own counts, and the **consumer**: the
+   client API key identity (non-secret, as in the request log) and, when the
+   request came from a visitor, the visitor's node id and network. The
+   consumer is what the visitor charging task will bill from;
 3. countersigns the bundle (`pom-work-bundle/v1`) and submits it to the metering
    plugin through `peer.metering.submit` (the signed plugin peer call,
    `plugin_host_api.rs`), to its own plugin first, else to each live admin
@@ -180,7 +188,7 @@ receipt on its next contact (`peer.metering.late`) for the gateway to attach
 before the cycle closes.
 
 The gateway keeps the prompt and output token ids of each submitted bundle for
-the retention period (11), so a challenge or an audit can re-execute it. They
+the retention period (12), so a challenge or an audit can re-execute it. They
 stay on the gateway, in the same store and under the same access as the
 request log.
 
@@ -212,8 +220,8 @@ within a deadline (e.g. 60 s, it is a local read).
   open.
 - For a small share of challenges, the admin also re-executes those positions
   (as in 7, prefill of only that request), which turns a challenge into an
-  early audit; a cheater found mid-cycle stops accruing at once, not at the
-  close.
+  early audit. A re-executed challenge counts as one of the node's samples for
+  the cycle (7); a failed one also raises the node's sample count at close.
 - Outcomes: `answered`, `matched` (when re-executed), `failed` (wrong path,
   wrong summary, mismatch) and `timeout`. A timeout is retried; repeated
   timeouts count as a failure.
@@ -224,10 +232,14 @@ When the cycle closes, the ledger stops accepting bundles for it, after a grace
 period for late receipts, and the admin or the dedicated verifier
 (`metering.verifier`) re-executes a sample of the cycle's bundles.
 
-**Selection.** Each bundle is selected with probability `audit_rate`, raised for
-new nodes, nodes with a challenge failure in the cycle and nodes with outlier
-counts. Selection is `HMAC(admin_secret, rid)` drawn at close, so no hop can
-know at compute time whether it will be checked.
+**Selection.** For each node, the ledger draws `samples_per_node` receipts
+(20 to 30 is the intended range) from the node's accepted receipts of the
+cycle, by `HMAC(admin_secret, rid || cycle)` order, so no hop can know at
+compute time which work will be checked. A node with fewer receipts has all of
+them checked. Re-executed challenges from the cycle count toward the samples.
+The admin may raise the count for new nodes or nodes with a failed challenge.
+Each sample is weighted by the layer-positions it carries, so a node cannot
+hide cheating in its large requests behind honest small ones.
 
 **Re-execution.** The verifier fetches the token ids from the gateway
 (`peer.metering.tokens`) and runs one **teacher-forced prefill** of prompt +
@@ -238,8 +250,10 @@ conversation, not a replay of the generation. Only computed positions are
 compared (cached ones have no summary).
 
 **Who verifies.** The admin running the plugin, or the dedicated verifier
-machine the admin named, which must hold the model ranges it checks. It is
-never one of the hops of the bundle. Its work is not billed as inference.
+machine the admin named, which must hold the model ranges it checks and run
+**the same engine** as the audited hop (llama.cpp and Strata do not give the
+same numbers, so each is compared against itself). It is never one of the hops
+of the bundle. Its work is not billed as inference.
 
 **Comparison.** The verifier fetches the audited hop's summaries
 (`peer.metering.summaries`), checks them against `summ`, and compares per
@@ -249,16 +263,31 @@ Batched and incremental execution and different GPUs do not give bit-equal
 results, which is why the comparison is tolerant and why exact hashes are only
 used for links.
 
-**Outcomes.**
+**Sample outcomes.**
 
 - `pass`.
-- `fail`: the node's cycle statement is withheld, the admin is alerted and the
-  node is challenged and audited at 100% in the next cycle; repeated failure
-  leads to the existing signed revocation, decided by an admin.
-- `inconclusive`: token ids or summaries no longer available, or the engine
-  cannot capture the boundary. A hop that cannot produce summaries it signed
-  forfeits that bundle; a gateway that cannot produce token ids forfeits its
-  own fee for it, and the hops are not penalized.
+- `fail`: summaries do not match beyond tolerance, or the node cannot produce
+  summaries it signed.
+- `void`: the sample cannot be judged for a reason that is not the node's
+  fault (the gateway lost the token ids, the verifier lacks the range). It is
+  replaced by another draw and does not count; a gateway that cannot produce
+  token ids forfeits its own fee for that bundle.
+
+**Payout.** With `w_pass` and `w_fail` the layer-position weights of the passed
+and failed samples:
+
+```
+fail_share = w_fail / (w_pass + w_fail)
+payout     = cycle_earnings x max(0, 1 - penalty_factor x fail_share)
+```
+
+One failure out of 30 costs a proportional slice, not the cycle. The penalty
+factor is above 1 on purpose: with plain proportional pay (`penalty_factor = 1`)
+a node that returns junk for 20% of its work loses 20% of its pay but also
+saves 20% of its compute, so cheating would break even; any factor above 1
+makes it a loss. The admin can set it to 1 if the tolerance proves too noisy
+for honest nodes. A `fail_share` above a threshold (e.g. 0.3) also alerts the
+admin, who may revoke the node through the existing signed revocation.
 
 ### 8. Fabricated requests
 
@@ -267,24 +296,38 @@ such a bundle must pass audit, and passing audit requires summaries matching
 the real model's output on those tokens, which means the GPU really did the
 work. So the work is real; the only question is whether the network wants to
 pay for demand it did not get. That is a pay policy, not a proof problem: an
-admin can restrict pay to bundles whose client API key identity matches the
-keys the network bills (the logs plugin already records it), and bundles whose
-gateway is a visitor are never paid (members plan under
-`2026-11-07-member-gateway-planning-design.md`). Signed client requests are
-not needed.
+admin can restrict pay to bundles whose consumer is someone the network bills
+(a visitor, or an API key the logs plugin records). Once visitors are charged,
+the problem mostly solves itself: a fabricated request names a consumer who
+pays for it. Signed client requests are not needed.
+
+**Visitors.** Work done for a visitor is paid like any other work; visitors are
+where the network's income comes from. Two cases:
+
+- Under `member_gateway` (`2026-11-07-member-gateway-planning-design.md`) the
+  visitor hands the request to a member entry node, which is the gateway: it
+  countersigns the bundle and names the visitor as consumer.
+- Under `direct`, the visitor plans and is the gateway itself. Its
+  countersignature is accepted for the hops' pay: the visitor is the one who
+  will be charged, so it has no reason to inflate the work. A visitor never
+  earns the gateway fee.
 
 ### 9. Pay rule and gateway compensation
 
 **Layer-positions.** A hop is paid for `positions x layers` it actually ran,
 weighted per model by the admin (dense vs MoE active parameters):
 
-- `prefill`, `decode` and `verify_accepted` positions over the hop's range;
-- `verify_rejected` positions are paid the same: a rejected draft still went
-  through the full range in the verification pass, so it cost a full forward;
-- `drafted` tokens are paid only for the draft layers that produced them (MTP
-  drafts come from the `nextn` block, one layer, not the whole model), so a
-  cheap draft never pays as a full token;
+- `prefill` and `decode` positions over the hop's range, weight 1;
+- `verify_accepted` and `verify_rejected` positions, weight `draft_weight`
+  (default 0.5): they go through the full range, but checked as a batch, which
+  costs a memory-bound GPU much less than the same number of decode steps;
+- `drafted` tokens, weight `draft_weight`, and only for the draft layers that
+  produced them (MTP drafts come from the `nextn` block, one layer, not the
+  whole model);
 - `cached` positions are not paid.
+
+Accepted drafts paying less does not discourage speculation: a node with MTP
+produces more tokens per second, so it still earns more per hour.
 
 The rule is "pay for layers executed per position", so a new speculative
 method falls into it by reporting what it ran.
@@ -305,7 +348,35 @@ A hop still knows a given node called it (mutual TLS), as it does today; it
 learns nothing about how many requests that node routes elsewhere or what it is
 paid.
 
-### 10. Modes and special cases
+### 10. Engines: `engine.verify`
+
+Receipts, link digests and summaries are made by the node, not the engine, so
+they work for any engine whose hidden state crosses the node. That holds for
+llama.cpp and for plugin engines with stages: the stage link
+(`engine-contract.md`, "Stages of a split model") hands each tensor to the node
+as `f32`, which then carries it to the next machine, so the node hashes and
+summarizes it the same way.
+
+Re-execution needs one more thing from the engine: a teacher-forced prefill of
+given tokens that returns the summary at the end of the loaded range for every
+position, instead of a sampled token. For the tail, whose output is logits, the
+summary is the top-k logits. This becomes an optional operation in the engine
+contract:
+
+- `engine.verify {tokens, positions}` -> per-position summaries, announced as
+  the capability `engine/verify-v1`.
+- llama.cpp: the node implements it from the existing prefill and sub-range
+  execution (`inference.md` 3.8).
+- Strata: nothing stops it. It already serves any range of the whole model
+  (`stage_ranges`, `--stage-layers`), so a verifier loads the audited range
+  and runs the prefill; what is missing is the operation that returns the
+  range output for every position rather than serving a request. It is a small
+  addition to `pom-plugin-strata`, on the same branch work as the stages.
+
+Until an engine announces `engine/verify-v1`, its samples are `void` and its
+nodes are paid on receipts alone, which the admin sees on the cycle screen.
+
+### 11. Modes and special cases
 
 - Ring, direct reply, remote token stream and hub all end with the same
   release, so collection is mode-independent. To verify: that every mode posts
@@ -315,7 +386,7 @@ paid.
 - `idle` reloads and thermal throttling change nothing: only computed positions
   are paid.
 
-### 11. Retention in cycles
+### 12. Retention in cycles
 
 Everything kept for metering is dropped by cycle, never by age: receipts and
 summaries on the hops, token ids on the gateways, bundles and statements in the
@@ -333,28 +404,24 @@ No inference frame changes.
 
 ## Phases
 
-1. Receipts, link digests, bundles, cycles and the ledger with private
-   statements; no checking. Counts become trustworthy against single-party
-   inflation.
-2. Output summaries, challenges during the cycle and re-execution at cycle
-   close by the admin.
-3. Dedicated verifier machine, adaptive challenge and audit rates, gateway fee,
-   plugin engines.
+1. Receipts, link digests, bundles with the consumer, cycles and the ledger
+   with private statements; no checking. Counts become trustworthy against
+   single-party inflation, and the visitor charging task can start from the
+   bundles.
+2. Output summaries, `engine.verify` for llama.cpp, challenges during the cycle
+   and sampled re-execution at cycle close with proportional payout.
+3. Dedicated verifier machine, `engine.verify` in `pom-plugin-strata`, gateway
+   fee, adaptive sample counts.
 
 ## Open questions
 
 1. Summary format: top-k + bf16 values, or TOPLOC; k, and all positions or a
    sample.
 2. Tolerance thresholds and how to calibrate them (a calibration run per model
-   and backend on deploy?).
-3. Weight of batched verification: a rejected draft verified in a batch costs
-   less wall time than a decode step on a memory-bound GPU. Is "same layers,
-   same pay" right, or should batched positions be discounted?
-4. Engine support for capturing a layer boundary in plugin engines (Strata,
-   vLLM): until they announce it, their audits are inconclusive. Is that
-   acceptable for paying them?
-5. A cycle statement withheld for one failed audit: forfeit the whole cycle, or
-   only the work since the last passed check?
+   and backend on deploy?). This sets how high `penalty_factor` can safely be.
+3. `draft_weight`: one value for the network, or measured per backend?
+4. Visitor charging (next task): price per layer-position or per token, and
+   whether the visitor's network or the visitor node is the account.
 
 ## Out of scope
 

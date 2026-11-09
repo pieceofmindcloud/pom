@@ -1125,6 +1125,30 @@ asks again in 3 s, the menu keeps Usage) and a `check` verdict of "no budget"
 is not cached, since the silent source may hold the budgets. The Usage menu
 entry is left out while `available` is false.
 
+### GPU work metering
+
+`NetworkSettings.metering` (principal only, fanned out with the network
+settings; a missing block is metering off) turns the metering on and sets the
+payout cycle, retention, samples, challenges, penalty, draft weight, verifier
+and gateway fee (`metering_core::settings::MeteringSettings`).
+
+- `/v1/session/rewind` and `/v1/session/release` accept an optional
+  `metering_bundle` (the gateway's nonce). With it, a metered hop adds
+  `receipt` (a compact token with the brand's `-work-receipt/v1` header) and,
+  on the head, `metering_tokens` to its answer. Without it the answer is
+  unchanged.
+- The ledger's node operations are plugin peer calls with code `metering` and
+  an op starting with `node.`, answered by the node itself whether or not it
+  runs the plugin (`plugin_services::plugin_peer_call`,
+  `plugin_host_api::peer_call`), and only to an admin: `node.tokens` (a
+  bundle's token sequence, from the gateway), `node.proofs` (a receipt's chunk
+  proofs with their Merkle paths, from the hop), `node.roles` (each node's role
+  from this node's view), `node.reexecute` / `node.reexecute_status` (the
+  verifier). `node.sign_statement` and `node.settings` answer only this node's
+  own plugin (`local`, which a remote call can never set).
+- The gateway delivers bundles to `peer.metering.submit` of its own plugin,
+  else of each live admin running it.
+
 ### `/admin/*`
 
 `GET /admin/nodes` (includes blocked but disconnected nodes, so the panel is

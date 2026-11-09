@@ -157,6 +157,9 @@ Notable pairs:
   local clocks, parallel span math and the `outside-node`/TTFT breakdown.
 - `2026-09-23-docker-prebuilt-llama-design.md` - Docker mode with prebuilt
   libraries from the fork.
+- `2026-11-08-gpu-work-metering-design.md` and its plan - paying for GPU work:
+  signed work receipts, gateway bundles, TOPLOC proofs, challenges and sampled
+  re-execution per payout cycle; why zero-knowledge proofs were rejected.
 
 Plans worth knowing: `2026-09-12-windows-crash-root-cause.md` (`model_loaded`
 tracing and the native `/health` boundaries),

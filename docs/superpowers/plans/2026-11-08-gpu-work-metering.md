@@ -9,6 +9,24 @@ commit. Rust builds and tests run in the dev container (no cargo on the host).
 Do not run `rustfmt` on the tree. Route tests use `gateway::testkit`, never
 real UDP. Stage named paths only when committing.
 
+## Status (2026-11-09)
+
+Local branches, not pushed: POM `feat/metering-phase1` (phases 1-2 and the
+testable part of 3), `pom-plugin-metering` `main`. The spec's "Implementation
+notes" record where the code departs from this plan (the nonce rides the
+rewind/release, the head returns its token sequence, re-execution is a job).
+
+- [x] 1.1-1.7 node side; 1.8 the ledger plugin; 1.9 docs
+- [x] 2.1 Merkle, 2.2 TOPLOC port (MIT, Prime Intellect), 2.3 proofs on the hot
+  path, 2.4 re-execution (decoded boundaries), 2.6 pay and payout, 2.7
+  challenges and sampling
+- [ ] 2.5 calibration at range ends (needs real-model runs; thresholds are the
+  paper's)
+- [x] 3.1 dedicated verifier, 3.3 private gateway fee
+- [ ] 3.2 Strata `engine.verify` and metering of plugin-engine hops
+- [x] 3.4 adaptive sample counts (new node or failed challenge: twice the samples)
+- [ ] tail proofs (the tail keeps none today)
+
 ## Shape of the work
 
 | Where | What |

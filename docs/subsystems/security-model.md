@@ -240,6 +240,22 @@ own.
   (`principal`, `admin`, `member`, `visitor`) and `head: false` for visitors.
   Each plugin must check `caller.role` itself.
 
+## GPU work metering
+
+- **Three token kinds, three headers.** Work receipts (signed by the hop),
+  bundles (countersigned by the gateway) and cycle statements (signed by the
+  ledger admin's node) are compact Ed25519 tokens like membership tokens, each
+  with its own `typ` (`<slug>-work-receipt/v1`, `-work-bundle/v1`,
+  `-cycle-statement/v1`), so none can pass for another. Each names its signer's
+  key and the signer's node id must be that key's hash.
+- **A receipt never names the gateway** (only an opaque nonce); only the bundle,
+  delivered to the ledger alone, does. A node reads only its own statements.
+- **The node signs a statement only for its own plugin**
+  (`node.sign_statement` requires the local marker the host API adds and the
+  peer route strips). The other `node.*` metering operations answer admins only.
+- **Visitors.** A visitor gateway's bundle pays the hops (it is the consumer)
+  but never earns the gateway fee.
+
 ## People signed in through a plugin
 
 A node can serve people, not only its operator. The node knows no identity

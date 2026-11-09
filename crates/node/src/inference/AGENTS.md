@@ -742,6 +742,12 @@ inference service runs a whole model instead through `plugin_engine.rs`.
   `Config::slot_save_path_effective`); with it empty the route answers 400. `replicate_slot_call`
   forwards the action to the TP workers. Capability `inference/slot-persist-v1`.
   See `inference.md` §3.1.1.
+- `infer_server/meter.rs` - the per-session GPU work meter (`MeterTable`,
+  held in `InferState.meters`, testable without an engine): counts, link
+  digests, the head's computed sequence and the TOPLOC proof buffer, fed from
+  the compute functions; `close` signs the turn's receipt when the gateway's
+  nonce arrives in the rewind or release (`server.rs`, `close_meter` /
+  `attach_receipt`). See `docs/subsystems/inference.md` 10.1.
 - `infer_server/ram_cache.rs` - the host-memory KV cache (`--cache-ram`):
   `KvRamCache` parks the serialized `prompt_seq` of a retained session that
   loses its sequence and `InferState::park_session`/`unpark_session`

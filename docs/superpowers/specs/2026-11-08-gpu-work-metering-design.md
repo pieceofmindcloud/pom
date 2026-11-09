@@ -1,7 +1,7 @@
 # Metering GPU work: signed work receipts and probabilistic re-execution
 
-Date: 2026-11-08 - Status: draft for iteration (revision 5: verifier reproduces
-lossy wire formats; TOPLOC calibrated at the end of each layer range)
+Date: 2026-11-08 - Status: implemented on local branches (revision 6: the
+implementation notes at the end record where the code departs from the text)
 
 ## Problem
 
@@ -485,6 +485,39 @@ Decided here so the bundles carry what it needs; designed in its own spec.
    per model family and engine, including late hops of lossy (f8, i4)
    pipelines. A calibration run on deploy is one way. The result also sets how
    high `penalty_factor` can safely be.
+
+## Implementation notes (revision 6, 2026-11-09)
+
+Where the implementation departs from the decisions above, it wins:
+
+- **The nonce rides the end of the turn, not the prefill.** Every hop meters
+  every session while metering is on; the gateway hands `metering_bundle` in
+  the `/v1/session/rewind` (the normal end of a turn, the session stays parked
+  for the prefix cache) or `/v1/session/release` it already posts to every
+  step, and the hop answers the receipt there. No forwarding path (ring,
+  direct, link, hub) had to carry a new field.
+- **The gateway holds text, not token ids.** The head returns its computed
+  sequence (`metering_tokens`) with its receipt; the gateway's head check
+  compares the head's input chain with that prompt after the `cached` prefix,
+  and the gateway keeps the sequence for re-execution.
+- **Proofs cover reproducible rows only.** Speculative batches are not proved
+  (their rejected rows never reach the sequence a verifier re-executes); each
+  chunk leaf carries its positions. The tail outputs tokens and keeps no
+  proofs: its work is paid on receipts alone, an open item.
+- **Link digests hash f32 as the next hop decodes them** (`decode(encoded)`), SHA-256.
+- **Peer bodies are capped at 256 KiB**: tokens travel as base64 (about 48k
+  tokens), and one re-execution checks at most 32 random chunks.
+- **Re-execution is a job** (`node.reexecute`, polled with
+  `node.reexecute_status`): it cuts each range from the verifier's local whole
+  model (found by catalog name), so the verifier must hold the whole model.
+  The model digest of a slice hop is not compared (a slice and the whole file
+  differ); the catalog name is.
+- **Statements** are signed by the ledger's own node (`node.sign_statement`,
+  local only) with the `-cycle-statement/v1` header. Model weights per model
+  are 1.0 (no setting yet).
+- **Plugin engines (Strata) are not metered yet**: the hooks are in the
+  llama.cpp inference server. `engine.verify` for Strata and metering of
+  plugin-engine hops stay open.
 
 ## Out of scope
 

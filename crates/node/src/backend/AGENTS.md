@@ -676,6 +676,20 @@ boundary.
   `cache_ms` sets how long a verdict is reused. Also the node's own Budget
   routes (`/api/ui/quota`, `/reset`, `/request`). Contract:
   `docs/subsystems/http-api.md`, "Token budgets, checked before the pipeline".
+- `metering.rs` - GPU work metering, node side: the metering context the
+  inference server reads (refreshed from `NetworkSettings.metering` every 5 s
+  by `spawn_refresher`, absent while metering is off), the TOPLOC proof buffer
+  of a session, the stores `metering_proofs` / `metering_tokens` /
+  `metering_outbox` (schema in `SCHEMA`, created by `db.rs`), the gateway's
+  bundle (`mint_ticket`, `finish_bundle`, the consumer through the task-local
+  `CONSUMER` set by `spawn_logged_generation_with_stops`), the outbox delivery
+  and the ledger's node operations (`node_op`). The gateway's collector is
+  `gateway::generation::MeterCollect`. Spec
+  `docs/superpowers/specs/2026-11-08-gpu-work-metering-design.md`.
+- `metering_verify.rs` - re-execution for the ledger (`node.reexecute`, an
+  asynchronous job): cuts and loads each range of the local whole model, runs
+  the head's sequence teacher-forced with each boundary's codec, and checks the
+  audited hop's TOPLOC chunks.
 - `reqlog.rs` - the audit adapter and the migration fallback. With the plugin
   active, the host writes in `enterprise.db`; independently of that destination, the
   POM's `AuditLog` replicates `begin` and `complete` to the effective admins over the p2p endpoint.

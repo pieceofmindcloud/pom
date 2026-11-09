@@ -3185,6 +3185,50 @@ production, downstream, channel reservation, queue and previous callback. The
 first control frame keeps the measurement of the transport used to start the
 stream.
 
+## 10.1 GPU work metering
+
+With `NetworkSettings.metering.enabled`, every hop meters the work it computes
+so the network can pay for it (spec `docs/superpowers/specs/2026-11-08-gpu-work-metering-design.md`,
+plan `docs/superpowers/plans/2026-11-08-gpu-work-metering.md`). The logic shared
+with the ledger is the crate `crates/metering-core`; the node side is
+`inference/infer_server/meter.rs` (the per-session meter) and
+`backend/metering.rs` (context, bundles, outbox, the ledger's node operations).
+
+- **Where the hooks are.** The compute functions (`prefill_blocking`,
+  `prefill_batch_blocking`, `step_blocking`, `step_batch_blocking`) record the
+  input (the decoded tensor, or the head's prompt token ids), the positions
+  computed, cached, decoded and verified, and the encoded output. Every reply
+  mode reaches them, so no forwarding path carries anything new.
+- **Link digests.** A running SHA-256 over each input item and over each output
+  item as the next hop decodes it (`wire::decode` of the encoded bytes): hop
+  `n`'s output digest equals hop `n+1`'s input digest for f32, f16, f8 and i4.
+  The head hashes prompt token ids one position at a time, so the gateway can
+  recompute it from the prompt whatever the chunking.
+- **TOPLOC proofs.** Rows a verifier can reproduce (prefill and plain decode
+  steps, not speculative batches) are proved in chunks of 32 positions with
+  `toploc/v1`; each chunk is a Merkle leaf with its positions, stored in
+  `metering_proofs`, and the receipt carries the root (`summ`). The tail
+  outputs tokens, not a hidden state, and keeps no proofs: its work is paid on
+  receipts alone (an open item).
+- **The receipt rides the end of the turn.** The gateway mints a bundle nonce
+  and sends it as `metering_bundle` in the `/v1/session/rewind` (the normal end
+  of a turn) or `/v1/session/release` it already posts to every step; the hop
+  signs the turn's receipt for that nonce and answers it as `receipt`, the
+  head adding its computed sequence as `metering_tokens` (LE i32, base64). A
+  call without the nonce drops the meter; an older gateway sees the answer it
+  always did. The gateway checks the receipts (`metering_core::receipt::assemble_hops`),
+  countersigns the bundle, keeps the token sequence (`metering_tokens` table)
+  and delivers the bundle to the ledger through `metering_outbox`, off the
+  request path.
+- **Re-execution** (`backend/metering_verify.rs`, `node.reexecute`): the
+  verifier cuts each range of the whole model it holds (virtual slice when
+  enabled, else a real slice under `virtual-slices/metering/`), loads it alone,
+  runs the head's sequence teacher-forced through the ranges in order with each
+  boundary's codec reproduced, and checks the audited hop's chunks. It runs as
+  a job polled with `node.reexecute_status`.
+- **Capability.** `metering/receipt-v1` is announced in `/health` while metering
+  is on.
+
 ## 11. Defects noted
 
 - **SIGSEGV when starting the context, regardless of logs (2026-09-04)**: on an

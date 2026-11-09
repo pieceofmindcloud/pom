@@ -36,6 +36,8 @@ pub(crate) struct SessionMeter {
     pub(crate) pending_verify: u32,
     pub(crate) in_chain: LinkChain,
     pub(crate) out_chain: LinkChain,
+    /// The forwarded frames' digest, set at close (`crate::metering::take_forwarded`).
+    pub(crate) out_chain_digest: Option<String>,
     pub(crate) wire: WireFormats,
     pub(crate) compute_ms: u64,
     pub(crate) proofs: crate::metering::ProofBuffer,
@@ -74,6 +76,7 @@ impl SessionMeter {
             pending_verify: 0,
             in_chain: LinkChain::default(),
             out_chain: LinkChain::default(),
+            out_chain_digest: None,
             wire: WireFormats::default(),
             compute_ms: 0,
             proofs: crate::metering::ProofBuffer::default(),
@@ -159,9 +162,13 @@ impl MeterTable {
     }
 
     /// A later hop's input: the decoded hidden state of `rows` positions.
-    pub(crate) fn input_tensor(&mut self, sid: &str, max_sessions: u32, first_pos: u32, rows: u32, values: &[f32], dtype: WireDtype) {
+    pub(crate) fn input_tensor(&mut self, sid: &str, max_sessions: u32, _first_pos: u32, rows: u32, values: &[f32], dtype: WireDtype) {
         if let Some(m) = self.open(sid, max_sessions) {
-            m.in_chain.absorb(first_pos..first_pos + rows, &f32_bytes(values));
+            let bytes = f32_bytes(values);
+            // Positions stay out of hidden-state links: the two ends see the
+            // same frames in the same order, but not always the same position
+            // bookkeeping (a forward frame carries no start position).
+            m.in_chain.absorb(0..rows, &bytes);
             m.wire.input = dtype_label(dtype);
         }
     }
@@ -176,7 +183,7 @@ impl MeterTable {
             Ok((_, Some((values, _)))) => f32_bytes(&values),
             _ => encoded.to_vec(),
         };
-        m.out_chain.absorb(first_pos..first_pos + rows, &decoded);
+        m.out_chain.absorb(0..rows, &decoded);
         m.wire.output = dtype_label(dtype);
         if let Some((values, width)) = hidden {
             m.proofs.push_rows(values, width, first_pos);
@@ -229,6 +236,12 @@ impl MeterTable {
         let ctx = crate::metering::context()?;
         m.computed.verify_accepted += std::mem::take(&mut m.pending_verify);
         let (summ, chunks) = m.proofs.finish(&ctx);
+        // The frames really forwarded to the next hop win over the replies
+        // (hub mode has none: the gateway forwards the reply).
+        if let Some((digest, dtype)) = crate::metering::take_forwarded(sid) {
+            m.out_chain_digest = Some(digest);
+            m.wire.output = dtype;
+        }
         let claims = ReceiptClaims {
             rid: uuid::Uuid::new_v4().simple().to_string(),
             net: ctx.net.clone(),
@@ -248,7 +261,7 @@ impl MeterTable {
             drafted: m.drafted,
             cached: m.cached,
             in_chain: m.in_chain.digest(),
-            out_chain: m.out_chain.digest(),
+            out_chain: m.out_chain_digest.take().unwrap_or_else(|| m.out_chain.digest()),
             summ,
             chunks,
             shard: slice.shard,

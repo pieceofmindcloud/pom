@@ -57,7 +57,7 @@ impl MeteringSettings {
     /// The settings with every field in range: an edited or hand-written
     /// block never breaks the ledger.
     pub fn normalized(mut self) -> Self {
-        self.cycle_secs = self.cycle_secs.max(3_600);
+        self.cycle_secs = self.cycle_secs.max(60);
         self.retain_cycles = self.retain_cycles.max(1);
         self.samples_per_node = self.samples_per_node.max(1);
         if !self.penalty_factor.is_finite() || self.penalty_factor < 0.0 {
@@ -93,7 +93,7 @@ mod tests {
             ..Default::default()
         }
         .normalized();
-        assert_eq!((s.cycle_secs, s.retain_cycles, s.samples_per_node), (3_600, 1, 1));
+        assert_eq!((s.cycle_secs, s.retain_cycles, s.samples_per_node), (60, 1, 1));
         assert_eq!((s.penalty_factor, s.draft_weight), (2.0, 1.0));
     }
 }

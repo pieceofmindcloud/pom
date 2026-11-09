@@ -769,6 +769,13 @@ async fn flush_batch_group_inner(path: String, calls: Vec<BatchCall>) {
         Err(error) => Err(error),
         Ok(items) => {
             async {
+                for item in &items {
+                    crate::metering::note_forward(
+                        Some(item.session_id.as_str()),
+                        item.tensor.as_ref().map(|(v, s)| (v.as_slice(), s.as_slice())),
+                        item.dtype,
+                    );
+                }
                 let (body, encode_timing) =
                     wire::encode_batch_items_profiled(&path, batch_id.clone(), &items)?;
                 let first = calls.first().expect("non-empty calls");
@@ -1147,11 +1154,18 @@ fn encode_frame_body_profiled(
     _encoding: FrameEncoding,
     use_batch_frame: bool,
 ) -> Result<(Vec<u8>, wire::WireEncodeTiming)> {
+    note_metered_forward(meta, tensor.as_ref().map(|(v, s)| (*v, s.as_slice())), dtype);
     if use_batch_frame {
         wire::encode_batch_single_profiled(meta, tensor, dtype)
     } else {
         wire::encode_profiled(meta, tensor, dtype)
     }
+}
+
+/// GPU work metering: the tensor this frame carries to the next hop
+/// (`crate::metering::note_forward`).
+fn note_metered_forward(meta: &Value, tensor: Option<(&[f32], &[usize])>, dtype: WireDtype) {
+    crate::metering::note_forward(meta.get("session_id").and_then(Value::as_str), tensor, dtype);
 }
 
 fn can_use_single_link(path: &str) -> bool {
@@ -1165,6 +1179,7 @@ fn encode_link_single_profiled(
     tensor: Option<(&[f32], TensorShape)>,
     dtype: WireDtype,
 ) -> Result<(Vec<u8>, wire::WireEncodeTiming)> {
+    note_metered_forward(meta, tensor.as_ref().map(|(v, s)| (*v, s.as_slice())), dtype);
     let session_id = meta
         .get("session_id")
         .and_then(Value::as_str)

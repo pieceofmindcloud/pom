@@ -265,6 +265,54 @@ fn outbox_done(db: &crate::db::PomDb, bid: &str, delivered: bool) -> Result<()> 
     })
 }
 
+// ── What a hop forwards to the next hop ──────────────────────────────────────
+
+/// Link digests of the frames this node sent onward, by session. In ring,
+/// direct and link modes a hop does not hand its reply to the next hop: it
+/// encodes a new frame for it (`relay.rs`), maybe in another format. The
+/// output link must hash what the next hop decodes, so the relay encoders
+/// report each forwarded tensor here and the meter takes it at close.
+type Forwarded = (metering_core::chain::LinkChain, String, std::time::Instant);
+static FORWARDED: Mutex<Option<HashMap<String, Forwarded>>> = Mutex::new(None);
+const MAX_FORWARDED: usize = 4096;
+
+/// A frame for `session_id` is about to leave for the next hop.
+pub(crate) fn note_forward(session_id: Option<&str>, tensor: Option<(&[f32], &[usize])>, dtype: crate::wire::WireDtype) {
+    let (Some(sid), Some((values, shape))) = (session_id, tensor) else { return };
+    if context().is_none() {
+        return;
+    }
+    let rows = shape.first().copied().unwrap_or(0) as u32;
+    let width = shape.get(1).copied().unwrap_or(0);
+    let decoded = match crate::metering_verify::roundtrip(values, width, dtype.as_str()) {
+        Ok(d) => d,
+        Err(_) => return,
+    };
+    let bytes: Vec<u8> = decoded.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let Ok(mut map) = FORWARDED.lock() else { return };
+    let map = map.get_or_insert_with(HashMap::new);
+    if map.len() >= MAX_FORWARDED && !map.contains_key(sid) {
+        if let Some(oldest) = map.iter().min_by_key(|(_, (_, _, at))| *at).map(|(k, _)| k.clone()) {
+            map.remove(&oldest);
+        }
+    }
+    let entry = map
+        .entry(sid.to_string())
+        .or_insert_with(|| (Default::default(), String::new(), std::time::Instant::now()));
+    entry.0.absorb(0..rows, &bytes);
+    entry.1 = dtype.as_str().to_string();
+}
+
+/// The forwarded link digest and format of `sid`, taken.
+pub(crate) fn take_forwarded(sid: &str) -> Option<(String, String)> {
+    FORWARDED
+        .lock()
+        .ok()?
+        .as_mut()?
+        .remove(sid)
+        .map(|(chain, dtype, _)| (chain.digest(), dtype))
+}
+
 // ── Model digest ─────────────────────────────────────────────────────────────
 
 /// A cheap fingerprint of the model file: SHA-256 of its size and first

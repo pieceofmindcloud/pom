@@ -266,8 +266,12 @@ pub fn assemble_hops(
     // Links: the head against the gateway's token chain, then each pair.
     let mut broken = vec![None::<String>; plan.len()];
     if let Some(Ok(head)) = opened.first() {
+        // `prompt` is the head's computed sequence (prompt, then the tokens
+        // fed back); its input chain covers the prompt positions it
+        // computed: `prefill` of them after the `cached` prefix.
         let cached = (head.cached as usize).min(prompt.len());
-        let expected = LinkChain::of_tokens(cached as u32, &prompt[cached..]);
+        let end = (cached + head.computed.prefill as usize).min(prompt.len());
+        let expected = LinkChain::of_tokens(cached as u32, &prompt[cached..end]);
         if head.in_chain != expected.digest() {
             broken[0] = Some("head input differs from the prompt sent".into());
         }
@@ -413,6 +417,25 @@ pub(crate) mod tests {
         let hops = assemble_hops(&plan, "b", &answers, &[9]);
         assert!(!metered(&hops[0]));
         assert!(metered(&hops[1]));
+    }
+
+    #[test]
+    fn the_head_check_ignores_the_generated_tokens_after_the_prompt() {
+        let (ka, kb) = (key(), key());
+        // The head's sequence: a 4-token prompt, then 3 tokens fed back.
+        let seq = vec![5, 6, 7, 8, 9, 9, 9];
+        let mut a = claims_for(&ka, [0, 10], "b");
+        a.computed.prefill = 4;
+        a.in_chain = LinkChain::of_tokens(0, &seq[..4]).digest();
+        a.out_chain = chain(b"h").digest();
+        let mut b = claims_for(&kb, [10, 20], "b");
+        b.in_chain = a.out_chain.clone();
+        let plan = vec![
+            StepRef { node: a.node.clone(), range: a.range },
+            StepRef { node: b.node.clone(), range: b.range },
+        ];
+        let answers = vec![Some(sign_receipt(&a, &ka).unwrap()), Some(sign_receipt(&b, &kb).unwrap())];
+        assert!(assemble_hops(&plan, "b", &answers, &seq).iter().all(metered));
     }
 
     #[test]

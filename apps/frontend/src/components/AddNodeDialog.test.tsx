@@ -159,7 +159,7 @@ describe("AddNodeDialog", () => {
     expect((screen.getByDisplayValue("maq1") as HTMLSelectElement).value).toBe("n1");
   });
 
-  it("offers again the slices and the whole model of the chosen machine", async () => {
+  it("asks a machine with the whole file which layers it serves, and lists a machine\'s own slices", async () => {
     const get = vi.spyOn(api, "get").mockImplementation(async (path) => {
       if (path !== "/api/ui/deployments") {
         throw new Error(`rota inesperada: ${path}`);
@@ -226,14 +226,13 @@ describe("AddNodeDialog", () => {
       const machine = screen.getByDisplayValue("maq1") as HTMLSelectElement;
       fireEvent.change(machine, { target: { value: "n2" } });
 
-      await waitFor(() => {
-        expect(screen.getByRole("option", { name: /modelo inteiro/i })).toBeTruthy();
-        expect(screen.getByRole("option", { name: "20-39" })).toBeTruthy();
-      });
+      // a machine with the whole file is asked which layers it serves, not "whole model or slices"
+      await waitFor(() => expect(screen.getByText("L0–39 · 40 camadas")).toBeTruthy());
+      expect(screen.queryByRole("option", { name: "20-39" })).toBeNull();
       // the machine's configuration is the deployment's active version, edited with the deployment inspector
       await waitFor(() => expect(get).toHaveBeenCalledWith("/api/ui/deployments"));
-      await waitFor(() => expect(screen.getAllByRole("combobox").length).toBeGreaterThan(4));
-      fireEvent.change(screen.getAllByRole("combobox")[1], { target: { value: "whole:0-39" } });
+      fireEvent.change(screen.getByLabelText("Camadas que esta máquina serve: end"), { target: { value: "20" } });
+      expect(screen.getByText("L0–19 · 20 camadas")).toBeTruthy();
       fireEvent.click(screen.getByRole("button", { name: "Adicionar" }));
       await waitFor(() => {
         expect(post).toHaveBeenLastCalledWith(
@@ -241,7 +240,7 @@ describe("AddNodeDialog", () => {
           expect.objectContaining({
             kind: "whole",
             start_layer: 0,
-            end_layer: 39,
+            end_layer: 19,
             cache_type_k: "q8_0",
             cache_type_v: "bf16",
             overrides: { params: expect.objectContaining({ n_ctx: 8192, offload_kqv: true }) },

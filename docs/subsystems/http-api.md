@@ -1409,7 +1409,11 @@ persisted catalog.
 
 `POST /api/ui/deploy/node/options` queries the catalog and configuration of the
 machine given in `target_node_id`. It returns the slice and whole-model options
-available on that machine, plus GPU/KV defaults and the accepted cache types.
+available on that machine, plus GPU/KV defaults and the accepted cache types,
+and `layer_cuts` (the valid layer boundaries of the whole file, `null` when the
+machine has none). `POST /api/ui/deploy/node` accepts `kind: "whole"` with a
+partial `start_layer`/`end_layer`: the machine serves that range of the whole
+GGUF through a virtual slice instead of the whole model.
 The screen calls the route again when the operator changes the dropdown,
 avoiding reusing another peer's plan.
 

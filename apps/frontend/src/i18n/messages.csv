@@ -653,6 +653,7 @@ deploy.addNode,Add,Adicionar
 deploy.addNodeCacheK,KV cache K,Cache KV K
 deploy.addNodeCacheV,KV cache V,Cache KV V
 deploy.addNodeKvPlacement,KV cache location,Local do cache KV
+deploy.addNodeLayers,Layers this machine serves,Camadas que esta máquina serve
 deploy.addNodeLoading,Loading this machine catalog…,Carregando o catálogo desta máquina…
 deploy.addNodeCtx,Context (empty = the deployment's),Contexto (vazio = o da implantação)
 deploy.addNodeSessions,Sessions (empty = the deployment's),Sessões (vazio = o da implantação)

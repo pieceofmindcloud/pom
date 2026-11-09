@@ -1613,6 +1613,9 @@ export interface AddNodeOptionsResponse {
     available: boolean;
     deployed: boolean;
   };
+  /** When the machine holds the whole model: the layers a range of it may end at (the GGUF's valid cuts). Any range
+   *  of the whole file is served as a virtual slice. Absent on an older node. */
+  layer_cuts?: number[] | null;
 }
 
 /** A slicing or apply run. `src/backend/webui/jobs_apply.rs` - `Job`. */

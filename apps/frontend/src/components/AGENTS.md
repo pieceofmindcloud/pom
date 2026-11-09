@@ -665,7 +665,11 @@ Per-file list:
   `POST /api/ui/deploy/node` applies to the target only (no redeploy of the
   cluster). `POST /api/ui/deploy/node/options` is re-read for the selected
   target, so its own slices and whole GGUF are offered instead of a fixed
-  cluster plan. The machine's whole configuration is edited with the same
+  cluster plan. When the target holds the whole file (virtual slices) and the
+  engine runs stages, the dialog does not ask "whole model or slices": it asks
+  which layers the machine serves with a `LayerRangeSlider` that snaps to the
+  valid cuts (`layer_cuts` from the options), plus a "Whole model" button; the
+  range goes as `kind: "whole"` with `start_layer`/`end_layer`. The machine's whole configuration is edited with the same
   `DeploymentInspector` as the deploy screen, starting from the active version of
   the deployment (`listDeployments`); it is sent as the machine's own `overrides.params`
   and the version keeps its parameters. The K/V cache choices come from the target's

@@ -1,7 +1,7 @@
 # Metering GPU work: signed work receipts and probabilistic re-execution
 
-Date: 2026-11-08 - Status: draft for iteration (revision 4: TOPLOC proofs,
-draft_weight per network, visitor charging per token on the visitor network)
+Date: 2026-11-08 - Status: draft for iteration (revision 5: verifier reproduces
+lossy wire formats; TOPLOC calibrated at the end of each layer range)
 
 ## Problem
 
@@ -125,6 +125,7 @@ Claims (draft):
 | `model` | model id and the digest of the GGUF (or slice manifest) served |
 | `range` | `[first, last)` layers executed for this session (sub-range per hop, `inference.md` 3.8) |
 | `engine` | engine and version (`llama.cpp`, a plugin engine) |
+| `wire` | hidden-state format negotiated on the hop's input and output (`f16`, `f32`, `f8`, `i4`), so the verifier reproduces it (7) |
 | `computed` | positions run through `range`: `prefill`, `decode`, `verify_accepted`, `verify_rejected` (speculative positions checked by this hop) |
 | `drafted` | draft tokens this hop generated with a draft head (MTP `nextn`), with the draft layers used |
 | `cached` | positions reused from the prefix cache, not computed |
@@ -274,6 +275,25 @@ audited hop's layer boundary. One batched prefill reproduces every position of
 every hop, decode included, so an audit costs about one prefill of the whole
 conversation, not a replay of the generation. Only computed positions are
 compared (cached ones have no proof).
+
+**Lossy wire formats.** When a hop's input crossed the wire in a lossy format
+(f8 or i4 groupwise, negotiated per hop), the verifier reproduces what the hop
+really received: it runs the plan's ranges in order and, at each boundary,
+encodes and decodes the hidden state with the same codec and format the
+receipt names (`wire`), before feeding the next range. The alternative, one
+clean f32 pass through the whole model, was rejected:
+
+- Its saving is small: one pass instead of one per range, plus a codec step
+  per boundary, against a budget of about 30 samples per node per cycle.
+- It judges a hop by noise it did not cause. Each lossy boundary adds error to
+  the input of every later hop, so an honest hop late in an i4 pipeline drifts
+  from the clean recomputation more than TOPLOC tolerates, and fails.
+- Loosening the thresholds to absorb that drift opens room for exactly the
+  cheating the check exists to catch (a cheaper quantization, skipped layers).
+
+The codec is the node's own deterministic CPU code (the `wire` module), so the
+verifier's encode and decode match the real ones bit for bit for the same
+input. With the default f16 the two options barely differ.
 
 **Who verifies.** The admin running the plugin, or the dedicated verifier
 machine the admin named, which must hold the model ranges it checks and run
@@ -459,14 +479,12 @@ Decided here so the bundles carry what it needs; designed in its own spec.
 
 ## Open questions
 
-1. TOPLOC at intermediate boundaries: the paper calibrates its thresholds on
-   the last hidden layer. Chunk size, k and thresholds for a hop's range
-   output must be measured per model family and engine (a calibration run on
-   deploy?). This also sets how high `penalty_factor` can safely be.
-2. TOPLOC under lossy wire formats: the proof is taken before f8/i4 encoding,
-   but the next hop computes from the decoded values. Is the verifier's
-   recomputation fed the decoded input (exact reproduction) or the clean f32
-   (larger drift)?
+1. Calibrating TOPLOC at the end of a layer range. The paper sets its
+   thresholds on the last hidden layer; POM checks each hop's output at the
+   end of its range, so chunk size, k and thresholds must be measured there,
+   per model family and engine, including late hops of lossy (f8, i4)
+   pipelines. A calibration run on deploy is one way. The result also sets how
+   high `penalty_factor` can safely be.
 
 ## Out of scope
 

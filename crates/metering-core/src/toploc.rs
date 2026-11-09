@@ -65,7 +65,16 @@ pub const PARAMS_VERSION: &str = "toploc/v1";
 impl Params {
     /// The limits of an engine's re-execution.
     ///
-    /// - llama.cpp: the paper's bf16 limits.
+    /// - llama.cpp (calibrated 2026-11-09 on Qwen3.8-27B IQ3_S, stages of 24
+    ///   layers, f8 link, work on an RTX 3060 and an RTX 5060 Ti re-executed
+    ///   on the 3060 and on CPU, 28 runs): honest re-execution is
+    ///   near-exact - at most 5 exponent mismatches, mean 1.6, median 1 -
+    ///   and one skipped layer of 24 already reaches at least 7 / 4.9 / 4.
+    ///   Limits: mean <= 3.0, median <= 2.5, and a loose exponent count (12)
+    ///   since it separates by only 2. Every honest chunk passes and every
+    ///   chunk of a one-layer skip fails; the paper's limits (38 / 10 / 8)
+    ///   caught only four skipped layers.
+    /// - Any other engine: the paper's bf16 limits.
     /// - Strata (calibrated 2026-11-09 on Flash-Next IQ3_XXS, layers 0-23,
     ///   f8 link, 20 runs; `docs/reports/gpu-work-metering-live-run.md`): an
     ///   honest stage's re-execution is deterministic but its top-128 picks
@@ -78,6 +87,10 @@ impl Params {
         match engine {
             "strata" => Self {
                 thresholds: Thresholds { t_exp: 128, t_mean: 20.0, t_median: 16.0 },
+                ..Self::default()
+            },
+            "llama.cpp" => Self {
+                thresholds: Thresholds { t_exp: 12, t_mean: 3.0, t_median: 2.5 },
                 ..Self::default()
             },
             _ => Self::default(),
@@ -420,7 +433,13 @@ mod tests {
         assert!(judge(104, 12.5, 8.0));
         assert!(!judge(109, 34.2, 27.0));
         assert!(!judge(128, 2f64.powi(64), 2f64.powi(64)));
-        assert_eq!(Params::for_engine("llama.cpp"), Params::default());
+        let llama = Params::for_engine("llama.cpp").thresholds;
+        let judge_llama = |m: u32, mean: f64, median: f64| m <= llama.t_exp && mean <= llama.t_mean && median <= llama.t_median;
+        // Worst honest chunk (GPU work, CPU verifier) and the mildest
+        // one-layer skip.
+        assert!(judge_llama(5, 1.6, 1.0));
+        assert!(!judge_llama(9, 4.9, 4.0));
+        assert_eq!(Params::for_engine("other"), Params::default());
     }
 
     #[test]

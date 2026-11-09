@@ -20,8 +20,8 @@ rewind/release, the head returns its token sequence, re-execution is a job).
 - [x] 2.1 Merkle, 2.2 TOPLOC port (MIT, Prime Intellect), 2.3 proofs on the hot
   path, 2.4 re-execution (decoded boundaries), 2.6 pay and payout, 2.7
   challenges and sampling
-- [~] 2.5 calibration: Strata done on Flash-Next (`rpc.calibrate`, limits in
-  `toploc::Params::for_engine`); llama.cpp still on the paper's limits
+- [x] 2.5 calibration (`rpc.calibrate`, limits in `toploc::Params::for_engine`):
+  Strata on Flash-Next, llama.cpp on Qwen3.8-27B across two GPU models and CPU
 - [x] 3.1 dedicated verifier, 3.3 private gateway fee
 - [x] 3.2 Strata: receipts from the stage link, audit engines in `pom-plugin-strata` (`engine.audit.*`, branch `feat/metering-audit`); validated live for receipts and challenges; re-execution off by default until Strata's TOPLOC limits are calibrated (report)
 - [x] 3.4 adaptive sample counts (new node or failed challenge: twice the samples)

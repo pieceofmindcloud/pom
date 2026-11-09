@@ -3230,8 +3230,11 @@ with the ledger is the crate `crates/metering-core`; the node side is
   verifier cuts each range of the whole model it holds (virtual slice when
   enabled, else a real slice under `virtual-slices/metering/`), loads it alone,
   runs the head's sequence teacher-forced through the ranges in order with each
-  boundary's codec reproduced, and checks the audited hop's chunks. It runs as
-  a job polled with `node.reexecute_status`.
+  boundary's codec reproduced, and checks the audited hop's chunks with the
+  engine's limits (`toploc::Params::for_engine`: for llama.cpp mean <= 3.0,
+  median <= 2.5, calibrated to catch one skipped layer of 24 - see
+  `docs/reports/gpu-work-metering-live-run.md`). It runs as a job polled with
+  `node.reexecute_status`.
 - **Capability.** `metering/receipt-v1` is announced in `/health` while metering
   is on.
 - **Split plugin engines (Strata)** are metered by `inference/plugin_metering.rs`

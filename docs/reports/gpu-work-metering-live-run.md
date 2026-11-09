@@ -129,3 +129,33 @@ model, short prompts. `verify_plugin_engines` stays off by default; a network
 serving this model may turn it on. Another model or engine needs its own run
 of `rpc.calibrate` (honest repeats and skipped layers) before its re-execution
 pays or penalizes anyone.
+
+## llama.cpp calibration, 2026-11-09
+
+Qwen3.8-27B IQ3_S over three machines with an f8 link: A layers 0-23 on an
+RTX 3060, C layers 24-47 on an RTX 5060 Ti, B (the tail) on CPU; CUDA build
+for architectures 86 and 120. Six turns (11-19 prompt tokens, up to 100 output
+tokens, five proof chunks per stage). Three receipts of A and three of C
+re-executed through `rpc.calibrate`: `honest` twice and `skip:1` / `skip:4`
+on the 3060 (24 runs), then `honest` again on a CPU verifier (4 runs). C's
+re-executions cross the f8 boundary (decoded) and another GPU model.
+
+| variant | exponent mismatches | mean | median |
+|---|---|---|---|
+| honest, GPU verifier | 0 - 4 | 0.2 - 0.7 | 0 - 1 |
+| honest, CPU verifier | 0 - 5 | 0.5 - 1.6 | 0 - 1 |
+| skip 1 of 24 layers | 7 - 24 | 4.9 - 13.3 | 4 - 9 |
+| skip 4 of 24 layers | 12 - 66 | 16.7 - 42.9 | 12 - 43 |
+
+- Re-execution is deterministic (repeats identical) and near-exact across
+  GPU models, through f8, and from GPU work to a CPU verifier.
+- The paper's limits (38 / 10 / 8) catch 4 skipped layers but let 4 of 6
+  one-layer skips pass.
+- **Limits for llama.cpp** (`toploc::Params::for_engine("llama.cpp")`):
+  mean <= 3.0, median <= 2.5, exponent count <= 12 (kept loose: it separates
+  honest from a one-layer skip by only 2). Every honest chunk passes, every
+  chunk of every one-layer skip fails. Confirmed through the normal path: two
+  honest receipts re-checked pass, a one-layer skip fails in all five chunks.
+
+Not measured: Metal or ROCm, other quantizations and models, long prompts.
+A network mixing those backends should run `rpc.calibrate` once.

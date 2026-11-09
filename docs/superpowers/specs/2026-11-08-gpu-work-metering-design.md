@@ -532,6 +532,11 @@ Where the implementation departs from the decisions above, it wins:
   that the mantissa error separates honest work (mean <= 12.5) from 4 skipped
   layers of 24 (>= 34.2): Strata's limits are mean <= 20, median <= 16
   (`toploc::Params::for_engine`). One skipped layer is not detected.
+- **llama.cpp calibrated too** (28 runs, two GPU models and a CPU verifier,
+  f8 link): honest re-execution is near-exact (mean <= 1.6), one skipped
+  layer of 24 reaches mean >= 4.9; limits mean <= 3.0, median <= 2.5,
+  exponent count <= 12 catch every one-layer skip, which the paper's limits
+  did not.
 
 ## Out of scope
 

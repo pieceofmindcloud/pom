@@ -257,6 +257,36 @@ pub fn chunks<'a>(rows: &'a [f32], width: usize, chunk: u32) -> impl Iterator<It
     rows.chunks(width.max(1) * chunk.max(1) as usize)
 }
 
+/// A stored chunk: the positions its rows cover (a chunk may skip positions,
+/// for example the speculative batches it does not prove) and its proof.
+/// Layout: u32 LE count, the positions as u32 LE, then the proof. This is the
+/// Merkle leaf, so the positions are signed together with the proof.
+pub fn encode_leaf(positions: &[u32], proof: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(4 + positions.len() * 4 + proof.len());
+    out.extend_from_slice(&(positions.len() as u32).to_le_bytes());
+    for p in positions {
+        out.extend_from_slice(&p.to_le_bytes());
+    }
+    out.extend_from_slice(proof);
+    out
+}
+
+pub fn decode_leaf(leaf: &[u8]) -> Result<(Vec<u32>, &[u8])> {
+    if leaf.len() < 4 {
+        bail!("malformed chunk");
+    }
+    let n = u32::from_le_bytes([leaf[0], leaf[1], leaf[2], leaf[3]]) as usize;
+    let end = 4 + n * 4;
+    if leaf.len() < end {
+        bail!("malformed chunk");
+    }
+    let positions = leaf[4..end]
+        .chunks_exact(4)
+        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+    Ok((positions, &leaf[end..]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -345,6 +375,15 @@ mod tests {
         assert!(check_chunk(&[0, 0, 1, 2], &v, &Params::default()).is_err());
         assert!(check_chunk(&[1, 2, 3], &v, &Params::default()).is_err());
         assert!(prove_chunk(&v[..10], 128).is_err());
+    }
+
+    #[test]
+    fn a_leaf_round_trips_positions_and_proof() {
+        let leaf = encode_leaf(&[3, 4, 9], &[1, 2, 3, 4]);
+        let (pos, proof) = decode_leaf(&leaf).unwrap();
+        assert_eq!(pos, vec![3, 4, 9]);
+        assert_eq!(proof, &[1, 2, 3, 4]);
+        assert!(decode_leaf(&[5, 0, 0, 0, 1]).is_err());
     }
 
     #[test]

@@ -1084,6 +1084,18 @@ pub(super) async fn resolve_deployment_slice_file(
         .map(|shard| shard.path.clone())
 }
 
+/// The local whole GGUF the catalog lists under `model_label`, with its
+/// layer count when the header told it. Used by the metering verifier
+/// (`crate::metering_verify`), which cuts ranges from it.
+pub(crate) async fn whole_model_by_label(state: &GatewayState, model_label: &str) -> Option<(String, Option<u32>)> {
+    let catalog = local_catalog(state).await;
+    catalog
+        .models
+        .iter()
+        .find(|m| !m.is_shard() && m.name == model_label)
+        .map(|m| (m.path.clone(), m.total_layers))
+}
+
 /// Schedule the inventory once at boot, so the first screen does not pay for
 /// the walk or wait for GGUF header enrichment.
 ///

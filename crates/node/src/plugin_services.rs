@@ -671,6 +671,20 @@ pub(crate) async fn plugin_peer_call(
     else {
         return refuse(StatusCode::FORBIDDEN, "the caller is not a live peer");
     };
+    // The metering ledger's node operations are answered by the node itself,
+    // whether or not it runs the plugin (`crate::metering::node_op`).
+    if crate::metering::is_node_op(&code, &op) {
+        let role = caller_role(&state, principal, &peer);
+        // A remote caller is never local, whatever its body says.
+        let mut params = params;
+        if let Some(object) = params.as_object_mut() {
+            object.remove("local");
+        }
+        return match crate::metering::node_op(&state, role, &op, &params).await {
+            Ok(reply) => axum::Json(reply).into_response(),
+            Err(error) => refuse(StatusCode::FORBIDDEN, &error),
+        };
+    }
     // Told apart from a failure below: the caller skips a node that does not
     // run the plugin, but a node that runs it and did not answer may hold the
     // data it asked for (the quota lookup, `backend/quota.rs`).

@@ -2244,8 +2244,11 @@ async fn generate_measured_stream(
     // that the session stayed parked at the end of the prompt, discarded along with the released
     // session in any other case.
     let mut lease = Some(prefix_lease);
+    // GPU work metering: the turn's receipts ride the rewind or the release
+    // below (`crate::metering`).
+    let meter = MeterCollect::start(&state, &plan);
     if let Some(retained_tokens) = retained_prefix_tokens {
-        if rewind_sessions(&plan, &session_id, retained_tokens, &state.peer_http).await {
+        if rewind_sessions(&plan, &session_id, retained_tokens, &state.peer_http, meter.as_ref()).await {
             if let Some(lease) = lease.take() {
                 lease.commit(cache_prompt.clone(), retained_tokens);
             }
@@ -2318,7 +2321,10 @@ async fn generate_measured_stream(
     }
     if let Some(lease) = lease.take() {
         lease.discard();
-        release_sessions(&plan, &session_id, &state.peer_http).await;
+        release_sessions_metered(&plan, &session_id, &state.peer_http, meter.as_ref()).await;
+    }
+    if let Some(meter) = meter {
+        meter.finish(&state, &plan);
     }
 
     if let Some(event) = terminal {
@@ -2623,13 +2629,17 @@ pub(super) async fn rewind_sessions(
     session_id: &str,
     retained_tokens: u32,
     clients: &crate::peer_client::PeerClients,
+    meter: Option<&MeterCollect>,
 ) -> bool {
     let mut all_ok = true;
-    for step in &plan.steps {
-        let body = serde_json::json!({
+    for (index, step) in plan.steps.iter().enumerate() {
+        let mut body = serde_json::json!({
             "session_id": session_id,
             "n_tokens": retained_tokens,
         });
+        if let Some(meter) = meter {
+            body["metering_bundle"] = serde_json::json!(meter.bnd());
+        }
         match post_session_lifecycle(
             clients,
             step,
@@ -2639,6 +2649,11 @@ pub(super) async fn rewind_sessions(
             SESSION_LIFECYCLE_TIMEOUT,
         )
         .await
+        .inspect(|body| {
+            if let Some(meter) = meter {
+                meter.record(index, body);
+            }
+        })
         {
             Ok(body)
                 if body.get("rewound").and_then(|v| v.as_bool()) == Some(true)
@@ -2687,9 +2702,23 @@ pub(super) async fn release_sessions(
     session_id: &str,
     clients: &crate::peer_client::PeerClients,
 ) {
-    for step in &plan.steps {
-        let body = serde_json::json!({ "session_id": session_id });
-        if let Err(error) = post_session_lifecycle(
+    release_sessions_metered(plan, session_id, clients, None).await
+}
+
+/// `release_sessions`, handing each hop the bundle nonce of a metered turn
+/// and collecting the receipts it answers (`crate::metering`).
+pub(super) async fn release_sessions_metered(
+    plan: &PipelinePlan,
+    session_id: &str,
+    clients: &crate::peer_client::PeerClients,
+    meter: Option<&MeterCollect>,
+) {
+    for (index, step) in plan.steps.iter().enumerate() {
+        let mut body = serde_json::json!({ "session_id": session_id });
+        if let Some(meter) = meter {
+            body["metering_bundle"] = serde_json::json!(meter.bnd());
+        }
+        match post_session_lifecycle(
             clients,
             step,
             "/v1/session/release",
@@ -2699,8 +2728,80 @@ pub(super) async fn release_sessions(
         )
         .await
         {
-            warn!("session release on {} failed: {error}", step.node_id);
+            Ok(answer) => {
+                if let Some(meter) = meter {
+                    meter.record(index, &answer);
+                }
+            }
+            Err(error) => warn!("session release on {} failed: {error}", step.node_id),
         }
+    }
+}
+
+/// The receipts of one metered turn, filled by the lifecycle calls
+/// (`rewind_sessions`, `release_sessions_metered`) and turned into a bundle
+/// by `finish` (`crate::metering::finish_bundle`).
+pub(super) struct MeterCollect {
+    ticket: crate::metering::BundleTicket,
+    answers: std::sync::Mutex<Vec<Option<String>>>,
+    tokens: std::sync::Mutex<Option<Vec<i32>>>,
+}
+
+impl MeterCollect {
+    /// A collector when this node meters the turn: metering on, and the
+    /// consumer known from the request's task (`crate::metering::CONSUMER`).
+    pub(super) fn start(state: &GatewayState, plan: &PipelinePlan) -> Option<Self> {
+        let consumer = crate::metering::current_consumer();
+        let gw_visitor = state.local_profile_is_visitor();
+        let ticket = crate::metering::mint_ticket(consumer, gw_visitor)?;
+        Some(Self {
+            ticket,
+            answers: std::sync::Mutex::new(vec![None; plan.steps.len()]),
+            tokens: std::sync::Mutex::new(None),
+        })
+    }
+
+    fn bnd(&self) -> &str {
+        &self.ticket.bnd
+    }
+
+    fn record(&self, index: usize, answer: &serde_json::Value) {
+        if let Some(receipt) = answer.get("receipt").and_then(|v| v.as_str()) {
+            if let Ok(mut answers) = self.answers.lock() {
+                if let Some(slot) = answers.get_mut(index) {
+                    *slot = Some(receipt.to_string());
+                }
+            }
+        }
+        if let Some(tokens) = answer.get("metering_tokens").and_then(|v| v.as_str()) {
+            use base64::Engine;
+            if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(tokens) {
+                let seq = bytes
+                    .chunks_exact(4)
+                    .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                    .collect();
+                if let Ok(mut slot) = self.tokens.lock() {
+                    slot.get_or_insert(seq);
+                }
+            }
+        }
+    }
+
+    /// Assembles, countersigns and queues the bundle. The prompt the head
+    /// checked against is the head's own sequence: the gateway holds text,
+    /// not token ids.
+    pub(super) fn finish(self, state: &GatewayState, plan: &PipelinePlan) {
+        let steps: Vec<metering_core::receipt::StepRef> = plan
+            .steps
+            .iter()
+            .map(|step| metering_core::receipt::StepRef {
+                node: step.node_id.clone(),
+                range: [step.start_layer, step.end_layer + 1],
+            })
+            .collect();
+        let answers = self.answers.into_inner().unwrap_or_default();
+        let tokens = self.tokens.into_inner().ok().flatten().unwrap_or_default();
+        crate::metering::finish_bundle(&state.database, &self.ticket, &steps, &answers, &tokens, &[]);
     }
 }
 
@@ -3308,12 +3409,13 @@ pub fn spawn_logged_generation_with_stops(
         .unwrap_or_else(|| Uuid::new_v4().simple().to_string());
     let received_at = chrono::Utc::now().to_rfc3339();
     let started = Instant::now();
+    let begin_caller = caller.clone();
     let begin = crate::reqlog::AuditRequest {
         id: request_id.clone(),
         received_at,
         route: route.to_string(),
         model: logged_model.clone(),
-        caller,
+        caller: caller.clone(),
         entry_node_id: entry_node_id.clone(),
         prompt: logged_prompt,
         request_details,
@@ -3333,7 +3435,12 @@ pub fn spawn_logged_generation_with_stops(
     });
 
     let (inner_tx, mut inner_rx) = mpsc::channel::<GenEvent>(64);
-    tokio::spawn(generate_stream_with_stops(input, inner_tx));
+    let visitor_self = input
+        .state
+        .local_profile_is_visitor()
+        .then(|| input.state.network.node_id.clone());
+    let consumer = crate::metering::consumer_of(&begin_caller, visitor_self.as_deref());
+    tokio::spawn(crate::metering::CONSUMER.scope(consumer, generate_stream_with_stops(input, inner_tx)));
 
     tokio::spawn(async move {
         let mut generated: u32 = 0;

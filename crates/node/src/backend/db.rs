@@ -185,7 +185,7 @@ impl PomDb {
             .map_err(|_| anyhow::anyhow!("local database connection mutex poisoned"))
     }
 
-    fn with_read<T>(
+    pub(crate) fn with_read<T>(
         &self,
         operation: &str,
         action: impl FnOnce(&Connection) -> Result<T>,
@@ -1824,6 +1824,7 @@ fn ensure_schema(connection: &Connection) -> Result<()> {
         DROP TABLE IF EXISTS geo_countries;
         PRAGMA user_version = 1;",
     )?;
+    connection.execute_batch(crate::metering::SCHEMA)?;
     let has_origin_node_id = connection
         .prepare("PRAGMA table_info(api_keys)")?
         .query_map([], |row| row.get::<_, String>(1))?

@@ -1471,6 +1471,13 @@ pub(crate) fn is_admin_key(document: &AdminTrustDocument, node_id: &str, pubkey:
         })
 }
 
+/// Whether `node_id` is an admin the chain names today, whatever its key.
+pub(crate) fn is_admin_node(document: &AdminTrustDocument, node_id: &str) -> bool {
+    std::iter::once(&document.primary)
+        .chain(document.grants.iter().map(|grant| &grant.subject))
+        .any(|principal| principal.node_id == node_id && control_issuer_is_admin(document, principal))
+}
+
 /// The counters that order two copies of a chain: principal transfers,
 /// grants and demotions.
 fn chain_counters(document: &AdminTrustDocument) -> (u64, u64, u64) {

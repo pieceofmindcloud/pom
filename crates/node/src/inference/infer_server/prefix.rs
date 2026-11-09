@@ -850,6 +850,8 @@ mod slot_count_tests {
 pub(crate) struct InferState {
     pub(super) engine: LlmEngine,
     pub(super) sessions: HashMap<String, Session>,
+    /// GPU work meters of the metered sessions (`meter.rs`).
+    pub(super) meters: super::meter::MeterTable,
     pub(super) seq_pool: Vec<u32>,
     pub(super) max_sessions: u32,
     pub(super) sampling: SamplingConfig,

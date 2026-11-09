@@ -223,6 +223,10 @@ pub mod quic;
 pub mod quic_policy;
 #[path = "backend/quota.rs"]
 mod quota;
+#[path = "backend/metering.rs"]
+mod metering;
+#[path = "backend/metering_verify.rs"]
+mod metering_verify;
 mod rag;
 #[path = "inference/relay.rs"]
 mod relay;
@@ -1761,6 +1765,7 @@ fn spawn_gateway_companions(gw_state: &GatewayState, database: &Arc<db::PomDb>, 
     crate::plugin_stage_link::install(gw_state.clone());
     crate::windows_firewall::spawn_startup_check(database.clone(), bind_port);
     crate::webui::spawn_network_settings_ratchet(gw_state.clone());
+    crate::metering::spawn_refresher(gw_state.clone());
     crate::plugins::spawn_host_context(gw_state.clone());
     crate::plugins::spawn_serving_watcher(gw_state.clone());
     crate::gateway::spawn_public_directory_republisher(gw_state.clone());

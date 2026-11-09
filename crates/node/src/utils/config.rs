@@ -255,7 +255,13 @@ pub struct NetworkSettings {
     /// `location_precision`. A more exact point is never stored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub location: Option<NetworkLocation>,
+    /// GPU work metering (`metering_core::settings`). Older nodes ignore the
+    /// block; a missing block is metering off.
+    #[serde(default)]
+    pub metering: MeteringSettings,
 }
+
+pub use metering_core::settings::MeteringSettings;
 
 impl NetworkSettings {
     /// Whether membership is open to anyone holding the trust document, with
@@ -1797,6 +1803,19 @@ mod tests {
         assert_eq!(parsed.thermal.limit_c, 82.0);
         assert_eq!(parsed.thermal.hysteresis_c, 7.0);
         assert_eq!(parsed.thermal.cooldown_secs, 45);
+    }
+
+    #[test]
+    fn metering_settings_default_off_and_round_trip() {
+        let old: NetworkSettings = serde_json::from_str("{}").unwrap();
+        assert!(!old.metering.enabled);
+        assert_eq!(old.metering.cycle_secs, 7 * 86_400);
+        let mut s = old.clone();
+        s.metering.enabled = true;
+        s.metering.draft_weight = 0.4;
+        let back: NetworkSettings =
+            serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back.metering, s.metering);
     }
 
     #[test]

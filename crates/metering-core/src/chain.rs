@@ -21,10 +21,14 @@ impl LinkChain {
         self.0 = h.finalize().into();
     }
 
-    /// Absorbs token ids, the head's input (and the gateway's view of it).
+    /// Absorbs prompt token ids, the head's input, one position at a time,
+    /// so the digest does not depend on how the prompt was cut into chunks:
+    /// the gateway recomputes it from the prompt alone.
     pub fn absorb_tokens(&mut self, first_pos: u32, tokens: &[i32]) {
-        let bytes: Vec<u8> = tokens.iter().flat_map(|t| t.to_le_bytes()).collect();
-        self.absorb(first_pos..first_pos + tokens.len() as u32, &bytes);
+        for (i, t) in tokens.iter().enumerate() {
+            let pos = first_pos + i as u32;
+            self.absorb(pos..pos + 1, &t.to_le_bytes());
+        }
     }
 
     pub fn of_tokens(first_pos: u32, tokens: &[i32]) -> Self {
@@ -69,6 +73,14 @@ mod tests {
         e.absorb(1..2, b"y");
         e.absorb(0..1, b"x");
         assert_ne!(d.digest(), e.digest());
+    }
+
+    #[test]
+    fn token_chain_does_not_depend_on_chunking() {
+        let mut chunked = LinkChain::default();
+        chunked.absorb_tokens(0, &[1, 2]);
+        chunked.absorb_tokens(2, &[3]);
+        assert_eq!(chunked, LinkChain::of_tokens(0, &[1, 2, 3]));
     }
 
     #[test]

@@ -118,6 +118,10 @@ pub(crate) fn step_blocking(
         .as_ref()
         .is_some_and(|spec| spec.source == DraftSource::Mtp)
         || mtp_k.is_some();
+    // GPU work meter (`meter.rs`): a later hop's input.
+    if let Some((hidden, shape)) = tensor.as_ref() {
+        s.meter_input_tensor(&sid_key, n_past, shape[0] as u32, hidden, wire_dtype);
+    }
     if let Some((hidden, shape)) = tensor {
         // Middle/last peer receiving a hidden state. `decode_hidden` already
         // handles any `n_tokens` — a speculative batch needs no special
@@ -230,6 +234,7 @@ pub(crate) fn step_blocking(
             vec![tid]
         };
         n_tokens = batch.len();
+        s.meter_fed_tokens(&sid_key, n_past, &batch);
         let logits_all = head_draft.is_some() || !is_last;
         engine_timing = s.engine.decode_tokens(&batch, n_past, seq_id, logits_all)?;
         // The composition of the batch decoded at the head - what the tail needs
@@ -261,6 +266,7 @@ pub(crate) fn step_blocking(
     timings.merge_engine_capture(&engine_timing);
 
     s.sessions.get_mut(&sid_key).unwrap().n_past += n_tokens as u32;
+    s.meter_step(&sid_key, n_tokens as u32, decode_started.elapsed().as_millis() as u64);
 
     // Whichever hop decided it — computed just now (the head) or forwarded
     // from one that did (everyone else) — this is what the tail verifies
@@ -428,6 +434,7 @@ pub(crate) fn step_blocking(
                             Some("nextn produced no tokens for the next round".to_owned());
                         None
                     } else {
+                        s.meter_drafted(&sid_key, dr.len() as u32, 1);
                         Some(dr)
                     }
                 } else {
@@ -444,6 +451,8 @@ pub(crate) fn step_blocking(
                     bail!("remote speculative rollback refused at the tail");
                 }
                 s.sessions.get_mut(&sid_key).unwrap().n_past = new_n_past;
+                s.meter_rollback(&sid_key, keep as u32, n_tokens as u32);
+                s.meter_truncate(&sid_key, new_n_past);
             }
 
             s.sessions
@@ -674,6 +683,11 @@ pub(crate) fn step_blocking(
         Some((&residual.values, residual.shape.clone())),
         wire_dtype,
     )?;
+    let width = residual.shape.get(1).copied().unwrap_or(0);
+    // A speculative batch's rows are not proved: its rejected rows never
+    // reach the sequence a verifier re-executes.
+    let provable = (n_tokens == 1).then_some((residual.values.as_slice(), width));
+    s.meter_output(&sid_key, n_past, n_tokens as u32, &bytes, wire_dtype, provable);
     timings.residual_wire_f16_encode_ns = timings
         .residual_wire_f16_encode_ns
         .saturating_add(wire_timing.f16_conversion_ns);

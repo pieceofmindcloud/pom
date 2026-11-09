@@ -489,7 +489,20 @@ pub(crate) async fn peer_call(
     }) {
         return refuse(StatusCode::PAYLOAD_TOO_LARGE, "params too large");
     }
-    let reply = if node_id == state.network.node_id {
+    let reply = if node_id == state.network.node_id && crate::metering::is_node_op(&code, op) {
+        // The ledger asking its own node (`crate::metering::node_op`).
+        let role = crate::plugin_services::local_role(&state).await;
+        let mut params = params.clone();
+        if let Some(object) = params.as_object_mut() {
+            object.insert("local".into(), serde_json::Value::Bool(true));
+        } else {
+            params = json!({ "local": true });
+        }
+        Some(match crate::metering::node_op(&state, role, op, &params).await {
+            Ok(reply) => reply,
+            Err(error) => json!({ "error": error }),
+        })
+    } else if node_id == state.network.node_id {
         let caller = json!({
             "node_id": state.network.node_id,
             "head": false,

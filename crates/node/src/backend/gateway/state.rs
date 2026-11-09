@@ -935,6 +935,13 @@ pub(super) fn is_public_ui_static_path(path: &str) -> bool {
 /// one stays one whatever it announces: on every node its membership token
 /// says so (`crate::membership`), and on the admins their admission list
 /// as well. Everywhere, a node that announces itself as a visitor is one.
+impl GatewayState {
+    /// Whether this node runs as a visitor (`crate::profile::NodeProfile`).
+    pub(crate) fn local_profile_is_visitor(&self) -> bool {
+        self.network.profile() == crate::profile::NodeProfile::Visitor
+    }
+}
+
 pub(crate) fn peer_is_visitor(state: &GatewayState, peer: &PeerInfo) -> bool {
     use crate::config::EnrollmentRole;
     peer.profile == crate::profile::NodeProfile::Visitor

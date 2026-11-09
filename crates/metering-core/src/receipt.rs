@@ -23,6 +23,45 @@ pub fn bundle_header() -> String {
     header("work-bundle")
 }
 
+pub fn statement_header() -> String {
+    header("cycle-statement")
+}
+
+/// A node's statement for a closed cycle (spec 5), signed by the ledger
+/// admin's node. Read only by that node and the ledger admins.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct StatementClaims {
+    pub net: String,
+    pub cyc: u64,
+    pub node: String,
+    /// Layer-positions accepted, after the pay rule.
+    pub layer_positions: f64,
+    /// Earnings before the audit, in the network's unit.
+    pub earnings: f64,
+    /// What is paid after the sampled re-execution.
+    pub payout: f64,
+    pub samples_passed: u32,
+    pub samples_failed: u32,
+    pub samples_void: u32,
+    pub challenges_failed: u32,
+    /// Merkle root of the node's accepted receipt ids (`rid`, sorted).
+    pub receipts_root: String,
+    pub receipts: u32,
+    /// The ledger's node and key.
+    pub issuer: String,
+    pub issuer_key: String,
+    pub t: u64,
+}
+
+pub fn open_statement(token: &str) -> Result<StatementClaims> {
+    let claims: StatementClaims =
+        token::open(token, &statement_header(), |c: &StatementClaims| c.issuer_key.clone())?;
+    if crate::node_id_of_pubkey_hex(&claims.issuer_key).as_deref() != Some(claims.issuer.as_str()) {
+        bail!("the statement's issuer is not its key's");
+    }
+    Ok(claims)
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModelRef {
     pub id: String,
@@ -194,14 +233,15 @@ pub fn tokens_digest(prompt: &[i32], output: &[i32]) -> String {
 
 /// The gateway's checks before countersigning (spec 4). `answers` is, per
 /// plan step in order, the receipt token the hop returned on release, if
-/// any. `prompt_first_pos` and `prompt` are what the gateway sent the head.
+/// any. `prompt` is the prompt the head tokenized; the head's input chain
+/// covers the positions it computed, after the `cached` prefix it reused.
 /// A failed check marks the hop unmetered with the reason; it never fails the
 /// request. A broken link marks both ends.
 pub fn assemble_hops(
     plan: &[StepRef],
     bnd: &str,
     answers: &[Option<String>],
-    head_input: &LinkChain,
+    prompt: &[i32],
 ) -> Vec<HopEntry> {
     let mut opened: Vec<Result<ReceiptClaims, String>> = plan
         .iter()
@@ -226,7 +266,9 @@ pub fn assemble_hops(
     // Links: the head against the gateway's token chain, then each pair.
     let mut broken = vec![None::<String>; plan.len()];
     if let Some(Ok(head)) = opened.first() {
-        if head.in_chain != head_input.digest() {
+        let cached = (head.cached as usize).min(prompt.len());
+        let expected = LinkChain::of_tokens(cached as u32, &prompt[cached..]);
+        if head.in_chain != expected.digest() {
             broken[0] = Some("head input differs from the prompt sent".into());
         }
     }
@@ -329,9 +371,10 @@ pub(crate) mod tests {
         c
     }
 
-    fn two_hops(break_link: bool) -> (Vec<StepRef>, Vec<Option<String>>, LinkChain) {
+    fn two_hops(break_link: bool) -> (Vec<StepRef>, Vec<Option<String>>, Vec<i32>) {
         let (ka, kb) = (key(), key());
-        let head_in = LinkChain::of_tokens(0, &[1, 2, 3, 4]);
+        let prompt = vec![1, 2, 3, 4];
+        let head_in = LinkChain::of_tokens(0, &prompt);
         let mut a = claims_for(&ka, [0, 10], "b");
         a.in_chain = head_in.digest();
         a.out_chain = chain(b"h").digest();
@@ -343,7 +386,7 @@ pub(crate) mod tests {
             StepRef { node: b.node.clone(), range: b.range },
         ];
         let answers = vec![Some(sign_receipt(&a, &ka).unwrap()), Some(sign_receipt(&b, &kb).unwrap())];
-        (plan, answers, head_in)
+        (plan, answers, prompt)
     }
 
     fn metered(h: &HopEntry) -> bool {
@@ -367,9 +410,27 @@ pub(crate) mod tests {
     #[test]
     fn a_head_that_did_not_read_the_prompt_sent_is_unmetered() {
         let (plan, answers, _) = two_hops(false);
-        let hops = assemble_hops(&plan, "b", &answers, &LinkChain::of_tokens(0, &[9]));
+        let hops = assemble_hops(&plan, "b", &answers, &[9]);
         assert!(!metered(&hops[0]));
         assert!(metered(&hops[1]));
+    }
+
+    #[test]
+    fn the_head_check_skips_the_cached_prefix() {
+        let (ka, kb) = (key(), key());
+        let prompt = vec![5, 6, 7, 8];
+        let mut a = claims_for(&ka, [0, 10], "b");
+        a.cached = 2;
+        a.in_chain = LinkChain::of_tokens(2, &prompt[2..]).digest();
+        a.out_chain = chain(b"h").digest();
+        let mut b = claims_for(&kb, [10, 20], "b");
+        b.in_chain = a.out_chain.clone();
+        let plan = vec![
+            StepRef { node: a.node.clone(), range: a.range },
+            StepRef { node: b.node.clone(), range: b.range },
+        ];
+        let answers = vec![Some(sign_receipt(&a, &ka).unwrap()), Some(sign_receipt(&b, &kb).unwrap())];
+        assert!(assemble_hops(&plan, "b", &answers, &prompt).iter().all(metered));
     }
 
     #[test]

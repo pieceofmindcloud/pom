@@ -718,7 +718,14 @@ machine's tab. Unified memory reports no split. When a step's CPU part
 (`cpu_ram_bytes`) exceeds the machine's free RAM, the plan is blocked by name
 (`preview::refuse_cpu_part_beyond_ram`): the load could not succeed. The
 check runs on the preview, so the screen's Deploy button stays off; a direct
-`POST /api/ui/deploy` does not repeat it.
+`POST /api/ui/deploy` does not repeat it. The VRAM and RAM projections leave
+out the lazy lookup tables (`plan::LAZY_LOOKUP_TABLES`, today
+`per_layer_token_embd.weight`): the llama.cpp fork creates them with
+`TENSOR_READ_LAZY` and reads only the rows of the tokens in use from the mapped
+file, so they weigh on disk. A `deepseek41` model's Engram table is about
+110 GB of a 170 GB file; charging it refused a machine whose RAM held every
+other weight. The note that compares a model's file size with a machine's
+free memory (`planning.rs`) still counts the whole file.
 
 After `plan_endpoint` builds the steps (and only if `blocked` is empty),
 `enrich_capacity_previews` asks each target where the step is already

@@ -263,6 +263,37 @@ fn usable_memory_bytes(budget_mb: f64, reserve: f64) -> Result<u64> {
     Ok(bytes.floor() as u64)
 }
 
+/// Tensors the llama.cpp fork creates with `TENSOR_READ_LAZY`: input-layer
+/// lookup tables read row by row (`get_rows`) from the memory-mapped file,
+/// with only the rows of the tokens in use prefetched. `per_layer_token_embd`
+/// is the per-layer embedding (PLE) of `qwen4exp` and `gemma4` and the Engram
+/// table of `deepseek41`, which alone is about 110 GB of a 170 GB file. They
+/// weigh on disk, never whole in VRAM or RAM, so a memory projection leaves
+/// them out; a slice file still carries them (`GgufLayout::slice_bytes`).
+pub(crate) const LAZY_LOOKUP_TABLES: &[&str] = &["per_layer_token_embd.weight"];
+
+/// Bytes of the model's lazy lookup tables (`LAZY_LOOKUP_TABLES`).
+pub(crate) fn lazy_table_bytes(tensors: &[crate::multipart::GgufTensor]) -> u64 {
+    tensors
+        .iter()
+        .filter(|tensor| LAZY_LOOKUP_TABLES.contains(&tensor.name.as_str()))
+        .map(|tensor| tensor.byte_size)
+        .sum()
+}
+
+/// The part of a range's weight cost that must be resident in memory.
+/// `weights` is `range_cost`'s serialized cost of the range and `layers` the
+/// bytes of its `blk.*` tensors; the lazy table rides in the rest only when
+/// the range carries it (a range without a PLE layer does not), and then it
+/// stays on disk.
+pub(crate) fn resident_weight_bytes(weights: u64, layers: u64, lazy_table: u64) -> u64 {
+    if lazy_table > 0 && weights.saturating_sub(layers) >= lazy_table {
+        weights - lazy_table
+    } else {
+        weights
+    }
+}
+
 /// `pub(crate)`: also used by the capacity preview of the deployment
 /// planner (`crate::deploy::capacity_preview_endpoint`), which charges the
 /// weight and KV of a range exactly as the slicing planner does here.
@@ -923,6 +954,39 @@ pub fn base_name_from_label(label: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tensor(name: &str, byte_size: u64) -> crate::multipart::GgufTensor {
+        crate::multipart::GgufTensor {
+            name: name.into(),
+            dims: vec![1],
+            dtype: 0,
+            part_index: 0,
+            offset: 0,
+            byte_size,
+        }
+    }
+
+    #[test]
+    fn only_the_lazy_lookup_tables_count_as_lazy() {
+        let tensors = [
+            tensor("token_embd.weight", 7),
+            tensor("blk.0.attn_q.weight", 11),
+            tensor("per_layer_token_embd.weight", 110),
+        ];
+        assert_eq!(lazy_table_bytes(&tensors), 110);
+        assert_eq!(lazy_table_bytes(&tensors[..2]), 0);
+    }
+
+    #[test]
+    fn a_range_that_carries_the_lazy_table_leaves_it_on_disk() {
+        // 40 GB of layers, 2 GB of embedding/head and the 110 GB table in the
+        // range's serialized cost: only the 42 GB must be resident.
+        assert_eq!(resident_weight_bytes(152, 40, 110), 42);
+        // A range without the table (its cost has no room for it) is untouched.
+        assert_eq!(resident_weight_bytes(42, 40, 110), 42);
+        // No table in the model.
+        assert_eq!(resident_weight_bytes(42, 40, 0), 42);
+    }
 
     #[test]
     fn a_dense_model_can_be_served_through_a_virtual_slice_and_an_unreadable_one_cannot() {

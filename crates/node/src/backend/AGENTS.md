@@ -266,7 +266,9 @@ boundary.
   `ConnectionAuth`) is the deploy-time, per-step, peer-local version: it
   resolves a `NodeConfig`/`EngineConfig` for a locally-present slice, reads
   the GGUF layout and live `SystemLoad.gpus[]`, and returns projected VRAM per
-  GPU. Weight and KV are calculated analytically; the endpoint never calls
+  GPU. The lazy lookup tables (`plan::LAZY_LOOKUP_TABLES`, read row by row
+  from the mapped file) are left out of the resident weights
+  (`plan::resident_weight_bytes`). Weight and KV are calculated analytically; the endpoint never calls
   `llama_backend_init`, `llama_rs_fit_params` or the real-load `fit_plan`.
   `fits` is therefore an estimate. When the raw projection does not fit,
   `degraded` is true only when `fit_memory` is enabled and the requested layer

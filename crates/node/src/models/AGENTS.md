@@ -73,6 +73,11 @@ Models, GGUF reading, planning and slice files. The module is used by
   output-tensor contract before offering or generating a range; required heads
   are charged and copied from the source when the loader demands their presence
   in partial ranges.
+  `LAZY_LOOKUP_TABLES`/`lazy_table_bytes`/`resident_weight_bytes`: the
+  `TENSOR_READ_LAZY` tables (`per_layer_token_embd.weight`, the PLE of
+  `qwen4exp`/`gemma4` and the Engram table of `deepseek41`) are part of a
+  slice's file cost but not of the memory a range needs; the capacity
+  preview subtracts them when the range carries them.
 - the engine's `gguf` module - reads the scalar or per-layer KV geometry
   (`attention.head_count_kv`, `key_length` and `value_length`) and the MoE
   evidence (`<arch>.expert_count`/`expert_used_count`) without loading the

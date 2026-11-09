@@ -358,6 +358,18 @@ pub(super) async fn capacity_preview_endpoint(
         Ok(Err(e)) => return bad_request(format!("could not read the GGUF: {e}")),
         Err(e) => return bad_request(format!("GGUF read failed: {e}")),
     };
+    // The lazy lookup tables (`plan::LAZY_LOOKUP_TABLES`) stay on disk: a
+    // projection that charged them asked 110 GB of RAM for the Engram table
+    // of a `deepseek41` model that llama.cpp reads row by row. Unreadable
+    // tables count as none, the old projection.
+    let tables_path = path.clone();
+    let lazy_table = tokio::task::spawn_blocking(move || {
+        crate::multipart::GgufSource::open(&tables_path)
+            .map(|source| plan::lazy_table_bytes(source.tensors()))
+            .unwrap_or(0)
+    })
+    .await
+    .unwrap_or(0);
     let info_path = path.clone();
     let info = match tokio::task::spawn_blocking(move || gguf::read_info(&info_path)).await {
         Ok(Ok(info)) => info,
@@ -384,6 +396,17 @@ pub(super) async fn capacity_preview_endpoint(
     } else {
         (0, layout.layer_count())
     };
+    // What of a range's weights must be resident: its serialized cost minus
+    // the lazy table when the range carries it.
+    let resident_bytes = |first: u32, count: u32, weights: u64| -> u64 {
+        let layers: u64 = layout
+            .layer_bytes
+            .iter()
+            .skip(first as usize)
+            .take(count as usize)
+            .sum();
+        plan::resident_weight_bytes(weights, layers, lazy_table)
+    };
     let gpu_layers_local = effective_n_gpu_layers.max(0).min(local_layer_count as i32) as u32;
     let is_last = req.end_layer + 1 >= req.total_layers;
     let (weight_bytes, kv_bytes) = if gpu_layers_local == 0 {
@@ -406,7 +429,10 @@ pub(super) async fn capacity_preview_endpoint(
             first_layer + gpu_layers_local - 1,
             is_last,
         ) {
-            Ok((weight_bytes, kv_bytes, _total)) => (weight_bytes, kv_bytes),
+            Ok((weight_bytes, kv_bytes, _total)) => (
+                resident_bytes(first_layer, gpu_layers_local, weight_bytes),
+                kv_bytes,
+            ),
             Err(e) => return bad_request(format!("could not compute the memory projection: {e}")),
         }
     };
@@ -454,7 +480,7 @@ pub(super) async fn capacity_preview_endpoint(
             is_last,
         )
         .ok()
-        .map(|(weights, kv, _)| (weights, kv))
+        .map(|(weights, kv, _)| (resident_bytes(first_layer, gpu_layers, weights), kv))
     };
     let (gpu_layers_fit, cpu_layers, cpu_ram_bytes) = if dedicated.is_empty() || gpu_layers_local == 0 {
         (None, None, None)

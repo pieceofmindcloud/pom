@@ -98,10 +98,10 @@ native extension points: a single active claimant takes the native URL.
 Valid menu icons (`apps/frontend/src/components/nav.ts`, `PLUGIN_ICONS`):
 `list-tree`, `chart-no-axes-column`, `blocks`, `gauge`, `terminal`,
 `history`, `settings`, `network`, `boxes`, `shield-check`, `book-open`,
-`folder-tree`, `send`, `messages-square`, `cpu`, `activity`. Anything else
+`folder-tree`, `send`, `messages-square`, `cpu`, `activity`, `search`. Anything else
 falls back to `blocks`.
 
-## 4. Browser SDK (`globalThis.__POM_HOST__`, `PLUGIN_HOST_VERSION = 7`)
+## 4. Browser SDK (`globalThis.__POM_HOST__`, `PLUGIN_HOST_VERSION = 8`)
 
 `React`, `ReactDOM`, `jsxRuntime`, `reactQuery`, `ui` (the design kit:
 `Panel`, `PanelHeader`, `PageHeader`, `FullBleedHeader`, `FullBleedToolbar`,
@@ -109,7 +109,7 @@ falls back to `blocks`.
 `Meter`, `Empty`, `Skeleton`, `ErrorState`, `Mono`, `ScrollX`, `Footnote`,
 `KeyValue`, `InfoTip`, `IconTip`, `AlertTooltip`), `format`,
 `components{Modal, TelemetryLine, ExecutionTelemetry, Markdown}`,
-`hooks{useI18n, useTheme, useCluster}`, `api.get`, `storageKey`,
+`hooks{useI18n, useTheme, useCluster}`, `api.get`, `api.post` (v8), `storageKey`,
 `context()` (v2), `events{subscribe, last}` (v2), `protocol` (v2),
 `plugin(code)` -> `{events, notifications{notify, confirm}, rpc, loader}` (v2,
 `rpc` v4, `loader` v7), `ready()` (v6).
@@ -138,7 +138,9 @@ Rules the existing plugins follow:
   `docs/subsystems/plugins-ui.md`, "POM's loader and installer".
 - Same-origin URLs: assets `/api/ui/plugins/<code>/assets/<path>`, RPC
   `/api/ui/plugins/<code>/rpc/<op>`, upstream `/api/ui/plugins/<code>/proxy/<path>`.
-  `api.get` only does GET; POST to the proxy with `fetch` and
+  `api.get` and `api.post` (v8) also reach the node's own `/api/ui/*` routes
+  with the panel's session (reference: `pom-plugin-hugging-face`). For the
+  plugin's upstream, `api.get` does GET; POST to the proxy with `fetch` and
   `credentials: "same-origin"`.
 
 ## 5. Calling back into the node (`host_api`)
@@ -212,6 +214,7 @@ and the `loader.*` commands (section 4) through the SDK or `pom:plugin-request`.
 |---|---|
 | `pom-plugin-base` | minimal ABI, every UI feature, events and notifications, workspace listing, loopback upstream |
 | `pom-plugin-jev` | gateway use through a loopback upstream that hides the key, `on_demand` |
+| `pom-plugin-hugging-face` | screen-only plugin over node routes: `api.get`/`api.post` (v8) to `/api/ui/model-provider/*`, tabs, the first run guide's `data-guide` marks |
 | `pom-plugin-qdrant` | supervised third-party binary (verified download), `host.services` kind `rag`, `peer.search`/`peer.connection`/`peer.collections`, admin-gated `rpc.*`, upstream that rewrites a dashboard |
 | `pom-plugin-logs` | licensed plugin, `ingest`, SQLite in `POM_PLUGIN_DB`, profile/node scoped `rpc.*`, `peer.quota.*`, `chat.telemetry` slot |
 | `pom-plugin-ghostly` | `host_api` client (`node`, `peers`, `peer`, `sign`), `peer.group_link`, `peer.whoami` |

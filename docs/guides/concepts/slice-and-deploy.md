@@ -11,16 +11,16 @@ These are three separate acts, and it helps to keep them apart: choosing who ser
 :::
 
 :::note First of all, a model
-Full models come from the machine's model folders. To download one, use Find HF models: the screen shows the license before the download and the progress shows up in Downloads. A model that fits whole on one machine is deployed on that machine alone.
+Full models come from the machine's model folders. To download one, use Search Models, the Hugging Face plugin's screen: it shows the license before the download and the progress on its Downloads tab. A model that fits whole on one machine is deployed on that machine alone.
 :::
 
 ## 1. Choose the ranges (no cutting)
 
 Each machine serves its range of layers straight from its own copy of the whole file, so nothing is cut before a deploy. The deploy screen proposes the cuts on the boundaries the model allows, and a change of cuts later is only a reload. Slicing the file survives only for tensor parallel shards, a development feature (Tensor parallel shards).
 
-## 2. Get the model onto each machine (Downloads)
+## 2. Get the model onto each machine
 
-Files are no longer sent between machines. Each machine that serves a range keeps its own copy of the whole model: download it there (from Find HF models, or **Download here** on its card in the deploy screen, which uses the same repository and file another machine downloaded), or copy the file into one of its model folders and **Rescan**. A machine serves its range from that copy; nothing crosses the network before the model starts.
+Files are no longer sent between machines. Each machine that serves a range keeps its own copy of the whole model: download it there (from Search Models, or **Download here** on its card in the deploy screen, which uses the same repository and file another machine downloaded), or copy the file into one of its model folders and **Rescan**. A machine serves its range from that copy; nothing crosses the network before the model starts.
 
 ## 3. Deploy (Deploy to network)
 

@@ -1,29 +1,27 @@
 ---
 id: screen-transfers
-label: Downloads
-summary: Acompanhe os modelos que cada máquina está baixando
-title: Downloads
+label: Transferências
+summary: Um arquivo que um admin mais antigo envia para esta máquina
+title: Transferências
 route: /transfers
 order: 90
 ---
 
 :::lead
-Downloads mostra os modelos que cada máquina está baixando do Hugging Face: os desta máquina e os que você começou em outras máquinas pela tela de implantação ou pela tela do Hugging Face. Arquivos não são mais enviados entre máquinas: cada máquina serve a partir da própria cópia do modelo.
+Transferências mostra um arquivo que um admin ainda numa versão mais antiga oferece a esta máquina, e o progresso dele. Ela não está no menu: o sino leva até ela quando chega uma oferta. Arquivos não são mais enviados entre máquinas - cada máquina serve a partir da própria cópia do modelo - e os downloads de modelos foram para a aba Downloads de Procurar Modelos, a tela do plugin do Hugging Face.
 :::
 
 :::steps
+### Aceitar ou recusar
+Uma oferta diz o modelo e a faixa de camadas que carrega. **Aceitar** começa; **Recusar** declina, e quem enviou vê como recusada, não como falha.
 ### Acompanhar
-Cada download mostra bytes, velocidade e o tempo restante. **Cancelar** para um download não concluído, **Tentar de novo** recomeça um que falhou e **Descartar** tira da lista.
-### Outras máquinas
-Um painel por máquina, **Downloads em** essa máquina, lista o que ela está baixando; os botões dele agem nela.
-### Um arquivo colocado à mão
-Copie-o para uma das pastas de modelos da máquina e aperte **Varrer** (na tela de Armazenamento para esta máquina, no cartão da máquina na tela de implantação para outra).
+Uma transferência em andamento mostra bytes, velocidade e o tempo restante; **Cancelar** para. As concluídas ficam listadas abaixo.
 :::
 
-:::note Transferências de um admin mais antigo
-Um admin ainda numa versão anterior pode oferecer um arquivo a esta máquina. A oferta e o progresso dela ainda aparecem aqui por mais uma versão, e o arquivo continua nunca passando por um relé público.
+:::note Mais uma versão
+Essas transferências são servidas por mais uma versão, para admins que ainda não atualizaram, e um arquivo continua nunca passando por um relé público.
 :::
 
 :::deep docs/subsystems/file-transfer.md
-As transferências aposentadas e o que as substituiu
+As transferências aposentadas e o que entrou no lugar
 :::

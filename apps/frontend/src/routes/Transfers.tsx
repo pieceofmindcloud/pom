@@ -1,5 +1,4 @@
 import { Check, CheckCircle2, Download, Inbox, Upload, X } from "lucide-react";
-import { MachineDownloadsPanel, ModelDownloadsPanel } from "../components/ModelDownloadsPanel";
 import {
   Badge,
   Button,
@@ -15,7 +14,7 @@ import {
 } from "../components/ui";
 import { api } from "../lib/api";
 import { bytes, duration, layerRange, rate } from "../lib/format";
-import { useModelDownloads, useOffers, useServingMachines, useTransfers } from "../lib/queries";
+import { useOffers, useTransfers } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import { canCancel, isActiveTransfer, isFinishedTransfer } from "../lib/transferStatus";
 import { transferHash, transferTitle } from "../lib/transferLabel";
@@ -24,10 +23,8 @@ import type { TransferOffer } from "../lib/types";
 
 export function Transfers() {
   const { t } = useI18n();
-  const machines = useServingMachines();
   const transfers = useTransfers();
   const offers = useOffers();
-  const modelDownloads = useModelDownloads();
   const toast = useToast();
 
   const jobs = transfers.data?.jobs ?? [];
@@ -76,11 +73,6 @@ export function Transfers() {
         )}
 
         <div className="space-y-5">
-          <ModelDownloadsPanel />
-          {machines.map((machine) => (
-            <MachineDownloadsPanel key={machine.nodeId} nodeId={machine.nodeId} name={machine.name} />
-          ))}
-
           {waiting.length > 0 && (
             <Panel>
               <PanelHeader
@@ -317,7 +309,7 @@ export function Transfers() {
         </div>
       </div>
 
-      {waiting.length === 0 && jobs.length === 0 && (modelDownloads.data?.length ?? 0) === 0 && (
+      {waiting.length === 0 && jobs.length === 0 && (
         <Footnote
           className="shrink-0 border-t border-line px-4 py-2.5"
           icon={<Inbox className="h-3.5 w-3.5" />}

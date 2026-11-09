@@ -1312,7 +1312,7 @@ guide.deployWait,The model is loading. This step ends by itself once it is servi
 guide.deployWhole,This model is small enough to run whole on one machine: choose Whole model.,Este modelo é pequeno o bastante para rodar inteiro em uma máquina: escolha Modelo inteiro.
 guide.downloadConfirm,Confirm the download and wait for it to finish; this step ends by itself.,Confirme o download e aguarde o término; este passo se encerra sozinho.
 guide.downloadFile,"Pick a file to download. Q4_K_M is a good default, under 500 MB.","Escolha um arquivo para baixar. Q4_K_M é uma boa opção, com menos de 500 MB."
-guide.downloadGo,"Open Models, then Find HF models, to download a small model from Hugging Face.","Abra Modelos e depois Encontrar Modelos HF para baixar um modelo pequeno do Hugging Face."
+guide.downloadGo,"Open Search Models to download a small model from Hugging Face. Not in the menu? Install the Hugging Face plugin in Plugins first.","Abra Procurar Modelos para baixar um modelo pequeno do Hugging Face. Não está no menu? Instale antes o plugin do Hugging Face em Plugins."
 guide.downloadHere,Search for {model} and open it.,Busque por {model} e abra-o.
 guide.downloadOpen,This is the one: open {model} to see its files.,É este: abra {model} para ver os arquivos.
 guide.downloadTitle,Download a small model,Baixe um modelo pequeno
@@ -1348,18 +1348,6 @@ https.title,Node certificate,Certificado do nó
 https.trust.not_trusted,Not trusted,Não confiável
 https.trust.trusted,Trusted,Confiável
 https.trust.unknown,Cannot tell,Não foi possível verificar
-huggingFace.clear,Remove saved token,Remover token salvo
-huggingFace.cleared,Saved Hugging Face token removed,Token salvo do Hugging Face removido
-huggingFace.precedence,"Precedence: HF_TOKEN, HUGGING_FACE_HUB_TOKEN, pom.json, then the Hugging Face cache file. Environment variables always win.","Precedência: HF_TOKEN, HUGGING_FACE_HUB_TOKEN, pom.json e, por fim, o arquivo de cache do Hugging Face. As variáveis de ambiente sempre vencem."
-huggingFace.save,Save token,Salvar token
-huggingFace.saveFailed,The Hugging Face token was not saved,O token do Hugging Face não foi salvo
-huggingFace.saved,Hugging Face token saved,Token do Hugging Face salvo
-huggingFace.source,Active source: {source},Fonte ativa: {source}
-huggingFace.subtitle,Optional access token for private and gated models.,Token de acesso opcional para modelos privados e gated.
-huggingFace.title,Hugging Face,Hugging Face
-huggingFace.tokenHint,The token is saved in this node''s pom.json with owner-only permissions and is never returned here.,O token é salvo no pom.json deste nó com permissão exclusiva do proprietário e nunca é devolvido aqui.
-huggingFace.tokenLabel,Access token,Token de acesso
-huggingFace.tokenPlaceholder,••••••••last four characters,••••••••últimos quatro caracteres
 imageDeploy.back,LLM models,Modelos LLM
 imageDeploy.chooseFile,Choose a file,Escolha um arquivo
 imageDeploy.chooseMachine,Choose a machine,Escolha uma máquina
@@ -1679,7 +1667,7 @@ models.fileCount,"{count}{count, plural, =1 { file} other { files}}","{count}{co
 models.folderMissing,does not exist on this machine,não existe nesta máquina
 models.folderSettings,Choose search folders in Settings › Model folders.,Escolha onde procurar em Configurações › Pastas de modelos.
 models.fullSubtitle,Complete GGUF files found on this machine. Full models can be sliced; shards are shown on the next screen.,Os GGUF completos encontrados nesta máquina. Um modelo inteiro é o que se fatia; as fatias ficam na tela ao lado.
-models.fullTitle,Full models,Modelos inteiros
+models.fullTitle,Models,Modelos
 models.imageEmptyDetail,No .safetensors files were found in the model folders. Files ComfyUI downloads land there.,Nenhum arquivo .safetensors foi encontrado nas pastas de modelos. Os arquivos que o ComfyUI baixa vão para lá.
 models.imageEmptyTitle,No image models,Nenhum modelo de imagem
 models.imageUnreadable,"Unreadable: {error}","Ilegível: {error}"
@@ -1736,7 +1724,6 @@ nav.deploy,Deploy to network,Implantar na rede
 nav.deploymentLogs,Deployment logs,Logs da implantação
 nav.deployments,Deployments,Implantações
 nav.documentation,Documentation,Documentação
-nav.fullModels,Full models,Modelos inteiros
 nav.history,History,Histórico
 nav.inProgress,In progress,Em andamento
 nav.logs,Logs,Logs
@@ -1751,7 +1738,6 @@ nav.networkParticipants,Network participants,Participantes da rede
 nav.plugins,Plugins,Plugins
 nav.preferences,Preferences,Preferências
 nav.publicNetworks,Networks,Redes
-nav.remoteModels,Find HF models,Encontrar Modelos HF
 nav.requestLogs,Request logs,Logs de requisições
 nav.sendFile,Send a file,Enviar um arquivo
 nav.settings,Settings,Configurações
@@ -1760,7 +1746,6 @@ nav.shareNetwork,Share network access,Compartilhar acesso à rede
 nav.sharing,Sharing,Compartilhamento
 nav.statistics,Statistics,Estatísticas
 nav.storage,Storage,Armazenamento
-nav.transfers,Downloads,Downloads
 nav.trustAnchor,Trust root,Raiz de confiança
 nav.trustMachine,This machine,Esta máquina
 network.acceptedEnrollments,Accepting new members,Aceitando novos membros
@@ -2631,86 +2616,8 @@ release.title,Release {range}?,Liberar {range}?
 release.uncovered,{range} has no owner,{range} ficou sem ninguém
 release.uncoveredDetail,Memory was released. The model stops serving until someone takes this range.,A memória foi liberada. O modelo para de atender até alguém assumir esta faixa.
 release.withSuccessor,Release and hand off,Liberar e passar adiante
-remoteModels.accessDenied,You do not have access to this model.,Você não tem acesso a este modelo.
-remoteModels.authDetail,"Authenticate on the POM node, then try again.",Faça a autenticação pelo nó do POM e tente novamente.
-remoteModels.authNeeded,Login needed,Login necessário
-remoteModels.authRequired,Provider authentication is required.,A autenticação do provider é necessária.
-remoteModels.authRequiredStatus,Hugging Face authentication is required.,Autenticação do Hugging Face necessária.
-remoteModels.authenticated,Authenticated,Autenticado
-remoteModels.authenticatedStatus,Authenticated as {username}.,Autenticado como {username}.
-remoteModels.author,Author,Autor
-remoteModels.availableSpace,Available space,Espaço disponível
-remoteModels.cancel,Cancel,Cancelar
-remoteModels.cancelled,Cancelled,Cancelado
-remoteModels.cliMissing,The model provider is not installed on this node.,O provedor de modelos não está instalado nesta máquina.
-remoteModels.cliMissingStatus,The Hugging Face CLI is not installed on this machine.,O CLI do Hugging Face não está instalado nesta máquina.
-remoteModels.cliUnavailable,CLI unavailable,CLI indisponível
-remoteModels.completed,Completed,Concluído
-remoteModels.configureAuth,Configure in Settings,Configurar em Configurações
-remoteModels.confirmDownload,Start download,Iniciar download
-remoteModels.destination,POM model folders,Pastas de modelos do POM
-remoteModels.destinationUnavailable,No model folder is configured on this node.,Nenhuma pasta de modelos está configurada nesta máquina.
-remoteModels.detailsTitle,Model details,Detalhes do modelo
-remoteModels.download,Download,Baixar
-remoteModels.downloadEmpty,No model downloads,Nenhum download de modelo
 remoteModels.downloadFailed,The model download could not be completed.,Não foi possível concluir o download do modelo.
-remoteModels.downloadInProgress,This model is already being downloaded.,Este modelo já está sendo baixado.
 remoteModels.downloadStarted,Model download started,Download do modelo começou
-remoteModels.downloadStartedDetail,{name} is being downloaded in the background.,{name} está sendo baixado em segundo plano.
-remoteModels.downloadTitle,Download model,Baixar modelo
-remoteModels.downloaded,Downloaded,Baixado
-remoteModels.downloading,Downloading,Baixando
-remoteModels.downloads,Most downloaded,Mais baixados
-remoteModels.downloadsCount,"{count}{count, plural, =1 { model download} other { model downloads}}","{count}{count, plural, =1 { download de modelo} other { downloads de modelos}}"
-remoteModels.downloadsTitle,Downloads,Downloads
-remoteModels.failed,Failed,Falhou
-remoteModels.files,Files,Arquivos
-remoteModels.gated,Gated,Gated
-remoteModels.gatedDetail,This model requires authorisation on the provider.,Este modelo exige autorização no provedor.
-remoteModels.gguf,GGUF,GGUF
-remoteModels.ggufFiles,GGUF quantisations,Quantizações GGUF
-remoteModels.ggufOnly,Only GGUF,Apenas GGUF
-remoteModels.installed,Installed,Instalado
-remoteModels.insufficientSpace,There is not enough disk space for this model.,Não há espaço suficiente para este modelo.
-remoteModels.license,License,Licença
-remoteModels.licenseUnknown,License not identified,Licença não identificada
-remoteModels.likes,Likes,Curtidas
-remoteModels.loginRequired,Log in to Hugging Face to search,Entre no Hugging Face para buscar
-remoteModels.modelInstalled,This model is already installed.,Este modelo já está instalado.
-remoteModels.noResults,No models match this search,Nenhum modelo corresponde à busca
-remoteModels.noResultsDetail,"Try an author, repository id, or a broader term.","Tente um autor, repo_id ou termo mais amplo."
-remoteModels.notFound,Model not found.,Modelo não encontrado.
-remoteModels.openDetails,Open details for {name},Abrir detalhes de {name}
-remoteModels.private,Private,Privado
-remoteModels.providerStatus,Provider status,Estado do provedor
-remoteModels.quantisation,Quantisation,Quantização
-remoteModels.queued,Queued,Na fila
-remoteModels.recent,Recently updated,Mais recentes
-remoteModels.relevance,Relevance,Relevância
-remoteModels.remaining,{time} remaining,{time} restantes
-remoteModels.requiredSpace,Space required,Espaço necessário
-remoteModels.results,"{count}{count, plural, =1 { result} other { results}}","{count}{count, plural, =1 { resultado} other { resultados}}"
-remoteModels.retry,Try again,Tentar de novo
-remoteModels.dismiss,Dismiss,Descartar
-remoteModels.dismissFailed,Could not dismiss the download,Não foi possível descartar o download
-remoteModels.revision,Revision,Revisão
-remoteModels.savedTo,Saved to,Salvo em
-remoteModels.searchAria,Search remote models,Buscar modelos remotos
-remoteModels.searchButton,Search,Buscar
-remoteModels.searchHint,"Search by model name, repository, author, or related terms.","Busque por nome, repositório, autor ou termos relacionados."
-remoteModels.searchLabel,Search models,Buscar modelos
-remoteModels.searchPlaceholder,"Qwen, DeepSeek, Gemma, author…","Qwen, DeepSeek, Gemma, autor…"
-remoteModels.size,Size,Tamanho
-remoteModels.sort,Sort,Ordenar
-remoteModels.speed,Speed,Velocidade
-remoteModels.starting,Starting,Começando
-remoteModels.subtitle,"Search the model provider, inspect GGUF files, and download one into this node''s model folders.","Busque no provedor, inspecione os arquivos GGUF e baixe um modelo para as pastas desta máquina."
-remoteModels.tags,Tags,Tags
-remoteModels.title,Find models on Hugging Face,Encontrar modelos no Hugging Face
-remoteModels.trending,Trending GGUF models,Modelos GGUF em alta
-remoteModels.trendingSubtitle,"Public Hugging Face discovery, without signing in.","Descoberta pública do Hugging Face, sem precisar entrar."
-remoteModels.updated,Updated,Atualizado
-remoteModels.verifying,Verifying,Verificando
 setup.addresses,Addresses other nodes should use,Endereços que os outros nós devem usar
 setup.adminDetail,Creates the cluster key and administers the network.,Cria a chave do cluster e administra a rede.
 setup.connectionKey,Cluster connection key,Chave de conexão do cluster
@@ -3121,8 +3028,8 @@ transfers.remaining,remaining,faltam
 transfers.replyNeeded,Your response is needed,Precisa da sua resposta
 transfers.sendFile,Send a file,Enviar um arquivo
 transfers.sendingTo,sending to {host},enviando para {host}
-transfers.subtitle,"The models each machine is downloading. Files are no longer sent between machines; an older admin's transfer to this machine still shows here.","Os modelos que cada máquina está baixando. Arquivos não são mais enviados entre máquinas; uma transferência de um admin mais antigo para esta máquina ainda aparece aqui."
-transfers.title,Downloads,Downloads
+transfers.subtitle,"Files an older admin sends to this machine. Model downloads moved to Search Models, the Hugging Face plugin''s screen.","Arquivos que um admin mais antigo envia para esta máquina. Os downloads de modelos foram para Procurar Modelos, a tela do plugin do Hugging Face."
+transfers.title,Transfers,Transferências
 trustAnchor.anchored,This node has a trust root,Este nó tem raiz de confiança
 trustAnchor.anchoredElsewhereDetail,The root was brought in by the operator and this node checks the administrators' chain against it.,A raiz foi trazida pelo operador e este nó confere a cadeia dos administradores contra ela.
 trustAnchor.anchoredHereDetail,The root is this machine's own key. Its fingerprint is what the operator carries to every other node.,A raiz é a chave desta máquina. A impressão digital dela é o que o operador leva a cada outro nó.
@@ -3474,15 +3381,7 @@ myKeys.revoked,revoked,revogada
 myKeys.empty,No keys yet.,Nenhuma chave ainda.
 myKeys.failed,The node refused the request.,O nó recusou o pedido.
 nav.myKeys,My API keys,Minhas chaves de API
-remoteModels.downloadOn,Download on,Baixar em
-remoteModels.thisMachine,This machine,Esta máquina
-remoteModels.remoteChecks,"{machine} downloads with its own Hugging Face token into its own models folder, and checks its free space when it starts.","{machine} baixa com o próprio token do Hugging Face para a própria pasta de modelos, e confere o espaço livre ao começar."
 remoteModels.downloadStartedOn,{name} is being downloaded on {machine}.,{name} está sendo baixado em {machine}.
-remoteModels.machineUnreachable,Could not reach that machine.,Não foi possível alcançar essa máquina.
-remoteModels.downloadsOn,Downloads on {machine},Downloads em {machine}
-remoteModels.splitParts,"This model is split into {count} files; all of them are downloaded.","Este modelo é dividido em {count} arquivos; todos são baixados."
-remoteModels.alsoDownload,Also download,Baixar também
-remoteModels.extraFailed,Could not start the download of {name}.,Não foi possível iniciar o download de {name}.
 paths.rescan,Rescan folders,Varrer pastas
 paths.rescanStarted,"Scanning the model folders again; new files show up in a moment.","Varrendo as pastas de modelos de novo; arquivos novos aparecem em instantes."
 paths.rescanFailed,Could not scan the folders again,Não foi possível varrer as pastas de novo

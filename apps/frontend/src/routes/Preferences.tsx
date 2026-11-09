@@ -6,7 +6,6 @@ import { Ban, KeyRound, Lock, MessagesSquare, RadioTower, ScrollText, ShieldChec
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { HttpsCertificatePanel } from "../components/HttpsCertificatePanel";
-import { HuggingFaceSettingsPanel } from "../components/HuggingFaceSettingsPanel";
 import {
   Badge,
   Button,
@@ -617,7 +616,6 @@ export function Preferences({ administrative = false }: { administrative?: boole
           <AdminAccessPanel />
           <HttpsCertificatePanel />
           {!inferOnly && <ThermalPanel policy={node.data?.thermal} busy={thermalSaving} onSave={(next) => void saveThermal(next)} />}
-          {!inferOnly && <HuggingFaceSettingsPanel />}
         </>}
       </div>
     </>

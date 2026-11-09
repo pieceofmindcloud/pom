@@ -1,17 +1,17 @@
 ---
 id: screen-models
-label: Modelos inteiros
+label: Modelos
 summary: Os arquivos GGUF inteiros encontrados nesta máquina
-title: Modelos inteiros
+title: Modelos
 route: /models
 order: 60
 ---
 
 :::lead
-Modelos inteiros lista cada arquivo GGUF inteiro que esta máquina achou nas pastas de modelos: um repositório do Ollama, uma biblioteca do LM Studio ou uma pasta comum de GGUF. Daqui um modelo é fatiado, enviado a outra máquina ou apagado. A aba **Imagem** lista os arquivos de modelos de imagem das mesmas pastas (modelos de difusão, text encoders, VAEs e o resto do que o ComfyUI carrega).
+Modelos lista cada arquivo GGUF inteiro que esta máquina achou nas pastas de modelos: um repositório do Ollama, uma biblioteca do LM Studio ou uma pasta comum de GGUF. Daqui um modelo é apagado (ou, no modo de desenvolvimento, cortado em partes tensor-parallel). Para baixar um, use Procurar Modelos, a tela do plugin do Hugging Face. A aba **Imagem** lista os arquivos de modelos de imagem das mesmas pastas (modelos de difusão, text encoders, VAEs e o resto do que o ComfyUI carrega).
 :::
 
-![Modelos inteiros: uma linha por modelo, com origem, camadas, arquitetura, projetor de visão, tamanho e ações.](../images/pt-BR/models.webp)
+![Modelos: uma linha por modelo, com origem, camadas, arquitetura, projetor de visão, tamanho e ações.](../images/pt-BR/models.webp)
 
 :::video https://www.youtube.com/watch?v=lCYW3TJ70M8
 Vídeo: as telas de Modelos - modelos inteiros, fatias e transferências - explicadas.

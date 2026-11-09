@@ -62,7 +62,7 @@ Per-file list:
   full-viewport table screen (the one `Deployments`/`PublicNetworks`/
   `DeploymentLogs` already used before these existed): a fixed edge-to-edge
   header bar and, optionally, a filter strip under it, above a body that
-  scrolls on its own. `WholeModels`, `SliceModels`, `RemoteModels`,
+  scrolls on its own. `WholeModels`, `SliceModels`
   and `Transfers` (`../routes/`) all build on these two instead of
   repeating the bar's markup; `Deployments`/`PublicNetworks` keep
   their own hand-written bar and were not touched, since refactoring a
@@ -197,7 +197,8 @@ Per-file list:
 - `nav.ts` - `NAV`: the menu as data. The Deployments section uses `Rocket` (it was
   `Boxes`, the same icon as Models), the History uses `History` and Logs has separate
   leaves for requests and deployment; Network Chat is its own
-  entry. The submenu does not
+  entry, and Models is one entry with no submenu (the search is the Hugging Face
+  plugin's Search Models; `PLUGIN_ICONS` has `search` for it). The submenu does not
   draw a leaf icon, so `Rocket` in the section and in the `/deploy` leaf do not
   collide. The table itself is an ordered array of `NavSection`
   (icon + `to` or `children: NavLeaf[]`), each leaf with `labelKey`, route and
@@ -314,8 +315,10 @@ Per-file list:
   The steps without a save end by themselves: `DownloadWatcher` (catalog or
   finished download job of `GUIDE_MODEL_REPO`), `DeployWatcher`
   (`ClusterView.active_model`) and `ChatWatcher` (`lastStreamResult`), each
-  mounted only while its step is current. On arriving at the download screen
-  it puts the repository in `?q=` once. It
+  mounted only while its step is current. The download step leads to the
+  Hugging Face plugin's Search Models (`../lib/modelSearch.ts`), or to Plugins
+  without the plugin (`withSearchPath`); on arriving at the search screen it
+  puts the repository in `?q=` once. It
   re-measures the target every 200 ms and on scroll/resize, draws through a
   portal above dialogs, and falls back to a corner card when there is no
   target. `PLAN` maps each step to its path, section and targets; adding a
@@ -1025,30 +1028,10 @@ Key logic carriers:
   Escape.
 ## Remote models and downloads
 
-- `RemoteModelDetails.tsx` - an on-demand window for a provider's model, with
-  priority for GGUF, quantization, size, license, revision and the
-  installed/downloading states. `RemoteModels.tsx` (`../routes/`) lists the results
-  in a full-width table and opens this window when a row is activated;
-  `RemoteModelCard.tsx`, the card the table replaced, was removed for going unused.
-- `RemoteModelProviderStatus.tsx` - the full presentation of the Hugging Face CLI's
-  structured state. `RemoteModels` uses only the compact login link inside the search
-  bar; the trending discovery is public and does not depend on the CLI.
-- `HuggingFaceSettingsPanel.tsx` - a password field for the optional token. The
-  saved value is never pre-filled nor rendered: the API provides only a mask and
-  the effective source, and the panel invalidates status/config after saving.
-- `DownloadModelDialog.tsx` - the confirmation of a remote download; it calls only the
-  structured API, shows the available space and the model folders resolved by
-  the backend, without accepting a path from the browser. **Download on** (shown when
-  `useServingMachines` lists other non-visitor peers) sends `node_id`: that machine downloads
-  with its own token and folder, so this machine's space and folders are hidden and do not block. `downloadCompanions`
-  (`lib/modelProvider.ts`) adds the other parts of a split GGUF to every download and offers
-  projectors and MTP drafts as **Also download** checkboxes; all go as `extraFiles`.
-- `ModelDownloadsPanel.tsx` - the progress, local destination, cancellation and retry of
-  `model_download` jobs coming from `useModelDownloads`; it is reused in Remote
-  Models and Transfers. The source of truth is the node and the panel creates no
-  local downloader. `MachineDownloadsPanel` is the same list for another machine
-  (`useMachineDownloads`, `GET .../downloads?node_id=`), its actions pass that `node_id`; it
-  renders nothing when the machine cannot be asked (an older node).
+The search, the model details, the download dialog, the downloads panel and the
+Hugging Face token panel left the POM with their screen: they are the Hugging
+Face plugin's (`pom-plugin-hugging-face`). What stays here is the deploy
+screen's **Download here** (`ModelPresence.tsx`, above).
 
 Links to other folders: everything imports `../lib/*` - `api.ts` (HTTP client
 with connection-key auth), `queries.ts` (all React Query hooks: `useNode`,

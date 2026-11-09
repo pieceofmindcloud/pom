@@ -17,9 +17,6 @@ const { transfersState } = vi.hoisted(() => ({
   transfersState: { value: { jobs: [] as unknown[] } },
 }));
 
-vi.mock("../components/ModelDownloadsPanel", () => ({
-  ModelDownloadsPanel: () => <div data-testid="model-downloads-panel">model downloads</div>,
-}));
 vi.mock("../lib/api", () => ({ api: { post: vi.fn() } }));
 vi.mock("../lib/queries", () => ({
   useModelDownloads: vi.fn(() => queryResult([])),
@@ -50,9 +47,9 @@ describe("Transfers", () => {
     transfersState.value = { jobs: [] };
   });
 
-  it("shows remote model downloads in the in-progress screen", () => {
+  it("leaves the model downloads to the Hugging Face plugin", () => {
     renderScreen();
-    expect(screen.getByTestId("model-downloads-panel")).toBeTruthy();
+    expect(screen.queryByText(/model downloads/i)).toBeNull();
   });
 
   it("offers no way to send a file: files are not copied between machines", () => {

@@ -306,7 +306,7 @@ when MTP was not requested).
   expanded input and carry `pre_prev` across the boundary.
 
 - `ModelSource::Folder` is labelled `"Pasta"` (`catalog.rs`, the source label
-  the catalog sends), so the Full models screen shows a Portuguese word in the
+  the catalog sends), so the Models screen shows a Portuguese word in the
   English interface. The label should be a code the UI translates.
 - The engine's `gguf::read_layout` (pom-plugin-llama.cpp, pinned `rev`) refuses
   in Portuguese ("dtype GGML 99 desconhecido no tensor ...", "tem comprimento

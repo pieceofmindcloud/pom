@@ -73,7 +73,7 @@ describe("Sidebar", () => {
   it("collapses to icon buttons and exposes child destinations in a hover flyout", () => {
     render(
       <MemoryRouter
-        initialEntries={["/models/remote"]}
+        initialEntries={["/deployments"]}
         future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <LocaleProvider initialLocale="pt-BR">
@@ -91,8 +91,8 @@ describe("Sidebar", () => {
     const scroller = screen.getByRole("navigation").querySelector(".overflow-y-auto") as HTMLElement;
     expect(scroller.className).toContain("overscroll-y-contain");
     expect(scroller.className).toContain("overflow-x-hidden");
-    expect(screen.getByRole("button", { name: "Modelos" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Modelos inteiros" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Implantações" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Histórico" })).toBeTruthy();
     expect(window.localStorage.getItem("pom.sidebar.collapsed")).toBe("true");
   });
 
@@ -108,11 +108,11 @@ describe("Sidebar", () => {
       </MemoryRouter>,
     );
     fireEvent.click(screen.getByRole("button", { name: "Minimizar menu" }));
-    const models = screen.getByRole("button", { name: "Modelos" });
-    fireEvent.click(models);
-    expect(models.getAttribute("aria-expanded")).toBe("true");
-    fireEvent.click(screen.getByRole("link", { name: "Encontrar Modelos HF" }));
-    expect(screen.getByTestId("route").textContent).toBe("/models/remote");
+    const deployments = screen.getByRole("button", { name: "Implantações" });
+    fireEvent.click(deployments);
+    expect(deployments.getAttribute("aria-expanded")).toBe("true");
+    fireEvent.click(screen.getByRole("link", { name: "Histórico" }));
+    expect(screen.getByTestId("route").textContent).toBe("/deployments");
   });
 
   it("offers no destination before the node says which profile this is", () => {

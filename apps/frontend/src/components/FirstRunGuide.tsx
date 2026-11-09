@@ -1,9 +1,10 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useI18n } from "../i18n/provider";
 import { useOptionalChatSessionController } from "../lib/chatStore";
 import { currentGuideStep, GUIDE_MODEL_REPO, isWizardStep, useGuide, useGuideActions, type GuideStepId, type WizardStepId } from "../lib/guide";
+import { MODEL_SEARCH_ROUTE, modelSearchRoute } from "../lib/modelSearch";
 import { useCluster, useLocalCatalog, useModelDownloads } from "../lib/queries";
 
 interface StepTarget {
@@ -33,9 +34,10 @@ const MODEL_FILE = /qwen2\.5-0\.5b-instruct/i;
 type HintStepId = Exclude<GuideStepId, WizardStepId>;
 
 const PLAN: Record<HintStepId, StepPlan> = {
+  // The Hugging Face plugin's Search Models; without the plugin the step
+  // points at Plugins, where it is installed (`withSearchPath`).
   download_model: {
-    path: "/models/remote",
-    section: "nav.models",
+    path: MODEL_SEARCH_ROUTE,
     targets: [
       { selector: '[data-guide="model-download-confirm"]', hint: "downloadConfirm" },
       { selector: '[data-guide="model-file"][data-guide-quantization="q4_k_m"]', hint: "downloadFile" },
@@ -103,6 +105,15 @@ interface Anchor {
   hint?: string;
 }
 
+/**
+ * The download step leads to the Hugging Face plugin's search; without the
+ * plugin there is no such screen, so the balloon points at Plugins instead.
+ */
+function withSearchPath(plan: StepPlan, searchRoute: string | null): StepPlan {
+  if (plan.path !== MODEL_SEARCH_ROUTE || searchRoute) return plan;
+  return { path: "/plugins", targets: [] };
+}
+
 function sameAnchor(a: Anchor | null, b: Anchor | null): boolean {
   if (!a || !b) return a === b;
   return a.left === b.left && a.top === b.top && a.width === b.width && a.height === b.height && a.hint === b.hint;
@@ -163,7 +174,8 @@ export function FirstRunGuide({ enabled = true }: { enabled?: boolean }) {
   const current = enabled ? currentGuideStep(guide.data) : null;
   // While the wizard is on screen there is nothing to point at.
   const step = isWizardStep(current) ? null : current;
-  const plan = step ? PLAN[step] : null;
+  const searchRoute = modelSearchRoute();
+  const plan = useMemo(() => (step ? withSearchPath(PLAN[step], searchRoute) : null), [step, searchRoute]);
   const onScreen = plan ? location.pathname === plan.path : false;
   const [anchor, setAnchor] = useState<Anchor | null>(null);
   const balloon = useRef<HTMLDivElement>(null);
@@ -203,7 +215,7 @@ export function FirstRunGuide({ enabled = true }: { enabled?: boolean }) {
   // the operator arrives, and leave it alone afterwards.
   const searched = useRef(false);
   useEffect(() => {
-    if (step !== "download_model" || !onScreen || searched.current) return;
+    if (step !== "download_model" || !onScreen || plan?.path !== MODEL_SEARCH_ROUTE || searched.current) return;
     searched.current = true;
     if (!new URLSearchParams(location.search).get("q")) {
       navigate(`${location.pathname}?q=${encodeURIComponent(GUIDE_MODEL_REPO)}`, { replace: true });

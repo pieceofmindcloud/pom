@@ -188,8 +188,8 @@ the boundary.
 (`History`): both sections used to use `Boxes`, the same icon as `Models`, and
 two sections with the same drawing cannot be told apart at a glance. The
 `/deploy` leaf keeps `Rocket` without clashing with the section, because the
-Sidebar draws no leaf icons. Inside `Models`, the order is `Find HF models`,
-`Full models`. The side menu can be minimized: in
+Sidebar draws no leaf icons. `Models` is one entry with no submenu; the
+search is the Hugging Face plugin's own `Search Models` entry. The side menu can be minimized: in
 that state it only shows icons, with a 64px brand header to line up with the
 toolbar. Sections with leaves show a submenu on hover, focus or click; picking a
 leaf navigates to its route. In the minimized state, navigation uses
@@ -218,19 +218,18 @@ local-only notice. Routes:
   clears the badge. On a mobile viewport, online users start hidden and show up
   through the `See online` button. The AI/NETWORK tabs are the first strip of
   the content on both chat screens, above the header and the conversation.
-- `/models` -> WholeModels; `/models/remote` -> RemoteModels; and
+- `/models` -> WholeModels; `/models/remote` redirects to the Hugging Face
+  plugin's Search Models, or to `/models` without the plugin; and
   `/models/slice` -> SliceModels (tensor parallel shards, development mode,
   off the menu), with the jobs panel embedded
 - `/shards` and `/shards/deploy` -> redirect to `/models` and `/deploy` (old
   links; the Shards screen was removed)
-- Those three routes, plus `/transfers`, are
+- `/models`, `/models/slice` and `/transfers` are
   full screen (`isFullBleed` in `App.tsx`), under the same contract as
   `/deployments`/`/deployments/logs`: a fixed header
   (`FullBleedHeader`/`FullBleedToolbar`, `components/ui.tsx`) and a table or
   its own content scrolling inside, instead of the central column with
-  `max-w-[1400px]`. `WholeModels` and the `RemoteModels` search became
-  full-width tables; `RemoteModelCard`, the card the search used before, was
-  removed. The vision / MTP link editor
+  `max-w-[1400px]`. `WholeModels` is a full-width table. The vision / MTP link editor
   (`SidecarLinkEditor`): two pickers over the compatible sidecars of every
   machine, each option naming its machines and the full path on each, saved on
   the principal. `WholeModels` keeps the catalog's projector column and opens
@@ -546,33 +545,24 @@ administration, they are persisted in the trust document.
 `routes/SetupWizard.tsx` and `components/setup-wizard/*` are still only the
 visual reference mock. They are not used by the real first access.
 
-### Remote models
+### Searching and downloading models (the Hugging Face plugin)
 
-`RemoteModels` loads, on opening, the trending GGUF models from the public
-Hugging Face API (`/api/models?sort=trendingScore&limit=20&filter=gguf`),
-without sending credentials. The provider search still uses the authenticated
-node; the login status stays compact inside the bar, next to the Search button.
-After the search, the detail resolves the license through the provider and
-shows the gated model marker before the download confirmation; so the screen
-neither assumes a license nor starts a protected operation without explaining
-the required authentication.
+Searching Hugging Face, the downloads and the token are not POM screens: they
+are the Search Models screen of the Hugging Face plugin
+(`pom-plugin-hugging-face`, `plugin_code` `huggingface`, route
+`/huggingface/models`), a menu entry that only exists while the plugin is
+installed. Its three tabs (Search, Downloads, Settings) call the node's own
+routes with the panel's session through the host SDK: `api.get` for
+`/api/ui/model-provider/*` and `/api/ui/jobs`, and `api.post` (host version 8)
+to start, cancel, retry or dismiss a download and to save the token. The
+backend did not move: the provider, the downloads persisted as jobs, the
+remote machines (`node_id`) and the token stay in the node, and the deploy
+screen's **Download here** keeps using them without the plugin.
 
-The screen title is "Find models on Hugging Face". The detail queries
-`GET /api/ui/model-provider/storage` and shows the model folders resolved from
-the configuration before starting. The download picks one of those folders; the
-job persisted in `GET /api/ui/jobs` records the final path and
-`ModelDownloadsPanel` shows progress, cancellation and retry. That panel also
-shows up in `/transfers`, next to file transfers. The dialog's **Download on** picks
-another machine that holds models (`useServingMachines`): the call carries `node_id`, the
-node forwards it, and that machine's downloads show in a `MachineDownloadsPanel` per machine
-below the local one.
-
-In `/config/preferences`, `HuggingFaceSettingsPanel` offers the optional token
-for private and gated models. The field is `password`, starts empty and only
-shows the mask returned by the backend. Saving or removing calls
-`/api/ui/model-provider/config`, invalidates the status and makes the provider
-reread the credential without restarting the process; the precedence follows
-what is documented in `http-api.md`.
+Without the plugin, `/models/remote` (an old link) lands on Models, the Chat's
+"download a model" step and the first run guide's download step point at
+Plugins (`lib/modelSearch.ts`, `modelSearchRoute()`), and `/transfers` is out
+of the menu, kept for an older admin's file transfers.
 
 ### Profiles: what each one sees
 
@@ -1099,8 +1089,8 @@ close. The announced one stays in the row's `title`. See `p2p-network.md`,
 "Diagnosis".
 
 `/config/trust` gathers this machine, network sharing and connection keys.
-`/config/preferences` holds the administrative exposure, the `ThermalPanel`,
-the `HuggingFaceSettingsPanel` and the link to storage.
+`/config/preferences` holds the administrative exposure, the `ThermalPanel`
+and the link to storage (the Hugging Face token is the plugin's Settings tab).
 `/config/preferences/admin` keeps the administrative preferences for TLS,
 QUIC, process logs between nodes, network chat and local discovery. The split
 reorganizes the same operations and keeps the existing authorization.
@@ -1112,8 +1102,7 @@ Switching to localhost clears the password. An old token is migrated to
 Argon2id on the first load, keeping its value as the password. The port is
 validated before saving and a collision is reported without starting on another
 port. The `ThermalPanel` reads and writes the policy at
-`GET/POST /api/ui/thermal`; the Hugging Face panel uses
-`/api/ui/model-provider/config`.
+`GET/POST /api/ui/thermal`.
 
 ## Settings / Preferences: no TLS switch
 
@@ -1733,8 +1722,8 @@ machine restarted. Today the fingerprint is only model + set of ranges.
   Redeploying the same shape from the Deploy Studio (same proven model, same
   machines and ranges) also lands on the same `deploy_id`; changing machine or
   range mints a new id. See `deployment.md` §7.1.
-- **Downloads** (`Transfers`, menu "Downloads", and `Notifications`): this machine's model
-  downloads and one panel per other machine, with progress and cancellation; pending offers
+- **Transfers** (`Transfers`, off the menu, and `Notifications`): the model downloads
+  moved to the Hugging Face plugin's Downloads tab; what stays is pending offers
   from an older admin (accept/refuse straight from the bell), active transfers (bytes, speed,
   ETA, cancel) and finished ones. Nothing offers sending any more: the send panel, the
   slices screen's "Send to..." and the full models screen's Send were removed with deploy
@@ -1841,8 +1830,9 @@ The first three have no save to report them, so the guide watches the node for
 their outcome while each is the current step (`DownloadWatcher`,
 `DeployWatcher`, `ChatWatcher`). A machine that already has the model, a
 deployment or an answer passes the step at once. The download needs the
-Hugging Face CLI on the node, like every download on that screen; without it
-the search does not run and the step can only be skipped.
+Hugging Face plugin: with it the step leads to its Search Models screen (which
+reads `?q=` and carries the same `data-guide` marks the native screen had);
+without it the step points at Plugins, where the plugin is installed.
 
 Each hint is a balloon that floats beside its target, with a ring around the
 target. While the operator is on another screen it points at the menu entry

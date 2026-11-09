@@ -1,27 +1,25 @@
 ---
 id: screen-transfers
-label: Downloads
-summary: Follow the models each machine is downloading
-title: Downloads
+label: Transfers
+summary: A file an older admin sends to this machine
+title: Transfers
 route: /transfers
 order: 90
 ---
 
 :::lead
-Downloads shows the models each machine is downloading from Hugging Face: this machine's, and those you started on other machines from the deploy screen or the Hugging Face screen. Files are no longer sent between machines: each machine serves from its own copy of the model.
+Transfers shows a file an admin still on an older version offers to this machine, and its progress. It is not in the menu: the bell links to it when an offer arrives. Files are no longer sent between machines - each machine serves from its own copy of the model - and the model downloads moved to the Downloads tab of Search Models, the Hugging Face plugin's screen.
 :::
 
 :::steps
+### Accept or refuse
+An offer names the model and the layer range it carries. **Accept** starts it; **Refuse** declines it, which the sender sees as refused, not as a failure.
 ### Follow
-Each download shows bytes, speed and the time left. **Cancel** stops an unfinished one, **Try again** restarts a failed one and **Dismiss** takes it off the list.
-### Other machines
-A panel per machine, **Downloads on** that machine, lists what it is downloading; its buttons act on that machine.
-### A file placed by hand
-Copy it into one of the machine's model folders and press **Rescan** (on the Storage screen for this machine, on the machine's card in the deploy screen for another one).
+A running transfer shows bytes, speed and the time left; **Cancel** stops it. The finished ones stay listed below.
 :::
 
-:::note Transfers from an older admin
-An admin still on an older version may offer a file to this machine. The offer and its progress still show here for one more release, and the file still never crosses a public relay.
+:::note One more release
+These transfers are served for one more release, for admins that have not updated yet, and a file still never crosses a public relay.
 :::
 
 :::deep docs/subsystems/file-transfer.md

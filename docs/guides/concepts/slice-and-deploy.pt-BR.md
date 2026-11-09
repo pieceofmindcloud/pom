@@ -11,18 +11,18 @@ São três atos distintos, e vale separá-los na cabeça: escolher quem serve qu
 :::
 
 :::note Antes de tudo, um modelo
-Os modelos inteiros vêm das pastas de modelos da máquina. Para baixar um, use Encontrar Modelos HF: a tela mostra a licença antes do download e o progresso fica em Downloads. Um modelo que cabe inteiro numa máquina é implantado só nela.
+Os modelos inteiros vêm das pastas de modelos da máquina. Para baixar um, use Procurar Modelos, a tela do plugin do Hugging Face: ela mostra a licença antes do download e o progresso na aba Downloads. Um modelo que cabe inteiro numa máquina é implantado só nela.
 :::
 
 ## 1. Escolher as faixas (sem cortar)
 
 Cada máquina serve a sua faixa de camadas direto da sua própria cópia do arquivo inteiro, então nada é cortado antes de uma implantação. A tela de implantação propõe os cortes nas fronteiras que o modelo permite, e mudar os cortes depois é só uma recarga. Fatiar o arquivo só sobrevive para as partes de tensor parallel, um recurso de desenvolvimento (Partes tensor-parallel).
 
-## 2. D## 2. Levar o modelo a cada máquina (Downloads)
+## 2. Levar o modelo a cada máquina
 
-Arquivos não são mais enviados entre máquinas. Cada máquina que serve uma faixa guarda a própria cópia do modelo inteiro: baixe nela (por Encontrar Modelos HF, ou **Baixar aqui** no cartão dela na tela de implantação, que usa o mesmo repositório e arquivo que outra máquina baixou), ou copie o arquivo para uma das pastas de modelos dela e **Varrer**. A máquina serve a faixa dela a partir dessa cópia; nada passa pela rede antes de o modelo começar.
+Arquivos não são mais enviados entre máquinas. Cada máquina que serve uma faixa guarda a própria cópia do modelo inteiro: baixe nela (por Procurar Modelos, ou **Baixar aqui** no cartão dela na tela de implantação, que usa o mesmo repositório e arquivo que outra máquina baixou), ou copie o arquivo para uma das pastas de modelos dela e **Varrer**. A máquina serve a faixa dela a partir dessa cópia; nada passa pela rede antes de o modelo começar.
 
-mplantar (Implantar na rede)
+## 3. Implantar (Implantar na rede)
 
 Aqui você escolhe qual máquina serve qual faixa e manda o cluster carregar. O nó sugere uma distribuição; a sua escolha viaja na requisição e o cluster é revarrido na hora de aplicar, em vez de confiar na prévia. Os cartões do mapa mostram quanto de memória cada máquina vai usar depois do deploy.
 

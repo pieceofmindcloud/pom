@@ -35,7 +35,7 @@ On the invitation step, each computer looking for the network shows up with its 
 After setup, the panel password is admin and the interface shows a fixed banner until you change it in Preferences. Folders, memory reserves and the thermal limit come from the machine's defaults and can also be adjusted later.
 :::
 
-With both machines in the network, the next step is a model: bring a GGUF into the models folder or use Find HF models, then follow the guide From model to serving cluster.
+With both machines in the network, the next step is a model: bring a GGUF into the models folder or use Search Models (the Hugging Face plugin, installed from Plugins), then follow the guide From model to serving cluster.
 
 :::note Machines on different networks
 Outside the same local network, automatic discovery does not reach the administrator. Start the node with --bootstrap <administrator>:42777 and see the guide Local network and internet.

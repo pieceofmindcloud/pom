@@ -84,8 +84,8 @@ describe("Preferences", () => {
 
     expect(screen.getByText("Preferências")).toBeTruthy();
     expect(screen.getByText("Proteção térmica da GPU")).toBeTruthy();
-    expect(screen.getByText("Hugging Face")).toBeTruthy();
-    expect(screen.getByText("••••••••cret")).toBeTruthy();
+    // The token moved to the Hugging Face plugin's Settings tab.
+    expect(screen.queryByText("Hugging Face")).toBeNull();
   });
 
   it("in the infer profile, hides the GPU thermal protection and Hugging Face", () => {
@@ -190,23 +190,6 @@ describe("Preferences", () => {
     mocks.passwordConfigured = false;
   });
 
-  it("keeps the saving of the Hugging Face credential", async () => {
-    mocks.saveHuggingFaceToken.mockResolvedValue({
-      configured: true,
-      masked: "••••••••cret",
-      source: "pom.json",
-    });
-    mount(<Preferences />);
-
-    fireEvent.change(screen.getByLabelText(/token de acesso/i), {
-      target: { value: "hf_super_secret" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: /salvar token/i }));
-
-    await waitFor(() => {
-      expect(mocks.saveHuggingFaceToken).toHaveBeenCalledWith("hf_super_secret");
-    });
-  });
 });
 
 describe("ThermalPanel", () => {

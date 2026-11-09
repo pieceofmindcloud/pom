@@ -10,6 +10,21 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FirstRunGuide } from "./FirstRunGuide";
 import { LocaleProvider } from "../i18n/provider";
+import { setPluginUi, type ActivePluginUi } from "../lib/pluginUi";
+
+/** The Hugging Face plugin, which serves the search the download step leads to. */
+const HUGGING_FACE: ActivePluginUi = {
+  code: "huggingface",
+  version: "0.1.0",
+  manifest: {
+    schema: "pom-plugin-ui/v1",
+    plugin_code: "huggingface",
+    menu: [{ id: "search_models", label: { en: "Search Models" }, to: "/models" }],
+    routes: [{ path: "/models", screen: "models" }],
+    screens: { models: { module: "ui/screens.js" } },
+    assets: ["ui/screens.js"],
+  },
+};
 
 const WIZARD = ["names", "bootstrap"];
 const STEPS = [...WIZARD, "download_model", "deploy_model", "chat", "join"];
@@ -53,6 +68,7 @@ function mount(path: string) {
 }
 
 afterEach(() => {
+  setPluginUi([]);
   cleanup();
   vi.unstubAllGlobals();
 });
@@ -67,17 +83,34 @@ describe("FirstRunGuide", () => {
   });
 
   it("sends the operator to the screen, then to the field on it", async () => {
+    setPluginUi([HUGGING_FACE]);
     serve(WIZARD);
     const first = mount("/");
     const hint = await screen.findByTestId("first-run-guide");
     expect(hint.getAttribute("data-guide-step")).toBe("download_model");
     expect(hint.textContent).toContain("Step 1 of 4");
-    expect(hint.textContent).toContain("Find HF models");
+    expect(hint.textContent).toContain("Search Models");
     first.unmount();
 
-    mount("/models/remote");
+    mount("/huggingface/models");
     const there = await screen.findByTestId("first-run-guide");
     expect(there.textContent).toContain("Search for Qwen/Qwen2.5-0.5B-Instruct-GGUF");
+  });
+
+  it("without the Hugging Face plugin, sends the download step to Plugins", async () => {
+    serve(WIZARD);
+    const link = document.createElement("a");
+    link.setAttribute("data-guide-nav", "/plugins");
+    document.body.append(link);
+    const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+      left: 10, top: 10, right: 110, bottom: 40, width: 100, height: 30, x: 10, y: 10, toJSON: () => ({}),
+    });
+    mount("/");
+    const hint = await screen.findByTestId("first-run-guide");
+    expect(hint.getAttribute("data-guide-step")).toBe("download_model");
+    expect(hint.textContent).toContain("Plugins");
+    link.remove();
+    rect.mockRestore();
   });
 
   it("moves to the next step when one is skipped and ends after the last", async () => {
@@ -125,7 +158,8 @@ describe("FirstRunGuide", () => {
     const row = document.createElement("button");
     row.setAttribute("data-guide-repo", "qwen/qwen2.5-0.5b-instruct-gguf");
     document.body.append(row);
-    mount("/models/remote");
+    setPluginUi([HUGGING_FACE]);
+    mount("/huggingface/models");
     const hint = await screen.findByTestId("first-run-guide");
     expect(hint.getAttribute("data-guide-step")).toBe("download_model");
     await waitFor(() => expect(hint.textContent).toContain("This is the one"));

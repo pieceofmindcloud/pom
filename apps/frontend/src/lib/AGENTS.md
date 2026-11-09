@@ -193,12 +193,16 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `transferLabel.ts` - how a slice names itself on screen (model + layers, hash on the side).
 - `modelProvider.ts` - serializes the remote search, filters download jobs,
   computes the derived cadence and only computes a percentage when the backend
-  knows the total bytes. `useRemoteModelProviderStatus` in `queries.ts` reads the
-  structured state of the CLI and of the Hugging Face session; `publicModelDiscovery.ts`
-  queries the public Hugging Face API to list trending GGUFs without credentials.
-- `api.ts` and `queries.ts` also expose `getHuggingFaceTokenConfig`,
-  `saveHuggingFaceToken` and `useHuggingFaceTokenConfig`; the response type
-  contains only `configured`, `masked` and `source`, never the raw token.
+  knows the total bytes. `api.ts` keeps the typed client of every
+  `/api/ui/model-provider/*` route (the token config answers only `configured`,
+  `masked` and `source`, never the raw token), but the search, downloads and
+  token screens are the Hugging Face plugin's (`pom-plugin-hugging-face`): the
+  POM only uses the download calls for the deploy screen's **Download here**
+  (`useMachineDownloads`, `startRemoteModelDownload`).
+- `modelSearch.ts` - `MODEL_SEARCH_ROUTE` (`/huggingface/models`) and
+  `modelSearchRoute()`, that route while the Hugging Face plugin serves it or
+  `null`; the Chat's download step and the first run guide use it, falling back
+  to `/plugins`.
 - `peerName.ts` - how a **machine** names itself on screen: `peerDisplayName` (announced name, short id only as a last resort) and `uniquePeerName` (tie-break by id when two nodes share a hostname). Used by `routes/Shards.tsx`.
 - `types.ts` - all API shapes served by the node, one authoritative source,
   including `ClusterLogEntry` and the authority state of the logs switch.
@@ -722,8 +726,8 @@ The mechanism lives in `docs/subsystems/plugins-ui.md`; these are the files that
   router read (`setPluginUi`, `resolvePluginRoute`, `pluginRouteProfiles`, `pluginMenuItems`,
   `pluginLabel`, `pluginAssetUrl`, `pluginSlot`). It knows no specific plugin.
 - `pluginHost.ts` - the SDK on `globalThis.__POM_HOST__` (React, React Query, the design kit, i18n,
-  theme, `api.get`...) that plugin screens use instead of packaging their own copies. Its version
-  history is in `plugins-ui.md`.
+  theme, `api.get`, `api.post` from version 8...) that plugin screens use instead of packaging their
+  own copies. Its version history is in `plugins-ui.md`.
 - `pluginReady.ts` - the "finished rendering" signal of a plugin screen: `usePluginReady` arms the
   gate on the host mount and opens it on `__POM_HOST__.ready()` or after `PLUGIN_READY_GRACE_MS`,
   whichever comes first, or when the plugin opens its screen through its loader. The signal is never

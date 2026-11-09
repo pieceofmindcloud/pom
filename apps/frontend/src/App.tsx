@@ -26,6 +26,7 @@ import { EnterpriseFeatureShowcase } from "./components/EnterpriseFeatureShowcas
 import { useI18n } from "./i18n/provider";
 import type { AdminAccessStatus } from "./lib/types";
 import { isDemoUser, loadSession } from "./lib/session";
+import { modelSearchRoute } from "./lib/modelSearch";
 import { DemoExpiredNotice, DemoNetwork, DemoQueue, DemoWelcome, useDemoSeat } from "./components/DemoMode";
 import pomMark from "./assets/pom-mark-dark.png";
 import { BrandLanguageSwitch } from "./components/BrandLanguageSwitch";
@@ -274,7 +275,6 @@ export const routeLoaders = {
   connectionKeys: () => import("./routes/Keys").then(({ ConnectionKeys }) => ConnectionKeys),
   transfers: () => import("./routes/Transfers").then(({ Transfers }) => Transfers),
   wholeModels: () => import("./routes/WholeModels").then(({ WholeModels }) => WholeModels),
-  remoteModels: () => import("./routes/RemoteModels").then(({ RemoteModels }) => RemoteModels),
   documentation: () => import("./routes/Documentation").then(({ Documentation }) => Documentation),
   forbidden: () => import("./routes/Forbidden").then(({ Forbidden }) => Forbidden),
 };
@@ -308,7 +308,6 @@ const TokenKeys = lazyRoute(routeLoaders.tokenKeys);
 const ConnectionKeys = lazyRoute(routeLoaders.connectionKeys);
 const Transfers = lazyRoute(routeLoaders.transfers);
 const WholeModels = lazyRoute(routeLoaders.wholeModels);
-const RemoteModels = lazyRoute(routeLoaders.remoteModels);
 const Documentation = lazyRoute(routeLoaders.documentation);
 const Forbidden = lazyRoute(routeLoaders.forbidden);
 
@@ -407,7 +406,6 @@ export default function App() {
       location.pathname === "/network-chat" ||
       location.pathname === "/config/keys/api" ||
       location.pathname === "/models" ||
-      location.pathname === "/models/remote" ||
       location.pathname === "/models/slice" ||
       location.pathname === "/plugins" ||
       location.pathname === "/transfers");
@@ -601,7 +599,8 @@ export default function App() {
                         <Route path="/public-networks" element={<Page><PublicNetworks /></Page>} />
                         <Route path="/network-chat" element={<Page><NetworkChat /></Page>} />
                         <Route path="/models" element={<Page><WholeModels /></Page>} />
-                        <Route path="/models/remote" element={<Page><RemoteModels /></Page>} />
+                        {/* The search moved to the Hugging Face plugin; an old link lands on it, or on Models. */}
+                        <Route path="/models/remote" element={<Navigate to={modelSearchRoute() ?? "/models"} replace />} />
                         <Route path="/models/slice" element={<Page><SliceModels /></Page>} />
                         <Route path="/shards" element={<Navigate to="/models" replace />} />
                         <Route path="/deploy" element={<Page><DeployModel /></Page>} />

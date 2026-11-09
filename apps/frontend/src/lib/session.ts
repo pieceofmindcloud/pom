@@ -86,6 +86,6 @@ export const USER_ROUTES = ["/", "/chat", "/logs", "/statistics", "/documentatio
 /**
  * What a demonstration node also shows a person, read-only: the plugins, the
  * models and slices, and the network it is in. Searching and downloading
- * models (`/models/remote`) is not among them.
+ * models (the Hugging Face plugin's screen) is not among them.
  */
 export const DEMO_USER_ROUTES = ["/plugins", "/models", "/models/slice", "/shards", "/config/network"] as const;

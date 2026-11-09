@@ -17,15 +17,21 @@ const dump = reference as ReferenceDump;
 // The dump is the frozen pre-ICU baseline. Keep intentional product-copy
 // revisions here rather than rewriting the generated 1.8 MB single-line file.
 const copyUpdates: Record<string, string> = {
-  // Transfers became Downloads when deployments stopped copying files.
-  "en:nav.transfers": "Downloads",
-  "pt-BR:nav.transfers": "Downloads",
-  "en:transfers.title": "Downloads",
-  "pt-BR:transfers.title": "Downloads",
+  // The model downloads moved to the Hugging Face plugin; Transfers keeps
+  // only an older admin's file transfers and left the menu.
+  "en:transfers.title": "Transfers",
+  "pt-BR:transfers.title": "Transferências",
   "en:transfers.subtitle":
-    "The models each machine is downloading. Files are no longer sent between machines; an older admin's transfer to this machine still shows here.",
+    "Files an older admin sends to this machine. Model downloads moved to Search Models, the Hugging Face plugin's screen.",
   "pt-BR:transfers.subtitle":
-    "Os modelos que cada máquina está baixando. Arquivos não são mais enviados entre máquinas; uma transferência de um admin mais antigo para esta máquina ainda aparece aqui.",
+    "Arquivos que um admin mais antigo envia para esta máquina. Os downloads de modelos foram para Procurar Modelos, a tela do plugin do Hugging Face.",
+  // Models has no submenu now that the search is the Hugging Face plugin's.
+  "en:guide.downloadGo":
+    "Open Search Models to download a small model from Hugging Face. Not in the menu? Install the Hugging Face plugin in Plugins first.",
+  "pt-BR:guide.downloadGo":
+    "Abra Procurar Modelos para baixar um modelo pequeno do Hugging Face. Não está no menu? Instale antes o plugin do Hugging Face em Plugins.",
+  "en:models.fullTitle": "Models",
+  "pt-BR:models.fullTitle": "Modelos",
   // "Network" beside "Networks" in the main menu read as the same thing twice.
   "en:nav.network": "My Network",
   "pt-BR:nav.network": "Minha Rede",
@@ -126,6 +132,11 @@ const MOVED_TO_PLUGINS = new Set([
 // Keys of the repetition-cycle detector, removed from the POM with it, of
 // the one-machine limit a whole model no longer has, of the profiles
 // renamed to `worker` and `visitor`, and of sending files between machines.
+const KEPT_MODEL_PROVIDER_KEYS = new Set([
+  "remoteModels.downloadFailed",
+  "remoteModels.downloadStarted",
+  "remoteModels.downloadStartedOn",
+]);
 const removed = (key: string) =>
   /^(profile|network\.enrollment|publicNetworks\.roleTip|quickSetup\.role)\.(node|infer)$/.test(key) ||
   key.startsWith("deploy.cycleDetection") ||
@@ -134,7 +145,11 @@ const removed = (key: string) =>
   // Sending files between machines, retired with deployments that copy.
   /^(sendFile\.|deploy\.copies|deploy\.copy)/.test(key) ||
   // The Shards and pipeline slicing screens, retired with ranges served from the whole model.
-  /^(shards\.|nav\.shards$|nav\.sliceModels$)/.test(key);
+  /^(shards\.|nav\.shards$|nav\.sliceModels$)/.test(key) ||
+  // Search Models, the downloads and the token moved to the Hugging Face
+  // plugin, with their copy; the deploy screen's "Download here" keeps three.
+  (/^(remoteModels|huggingFace)\./.test(key) && !KEPT_MODEL_PROVIDER_KEYS.has(key)) ||
+  /^nav\.(remoteModels|fullModels|transfers)$/.test(key);
 const moved = (key: string) =>
   key.startsWith("chat.telemetry.") || MOVED_TO_PLUGINS.has(key) || removed(key);
 

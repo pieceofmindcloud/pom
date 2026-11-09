@@ -8,8 +8,9 @@ cluster state in the browser. All copy goes through the i18n provider
 reasons, job steps) is English at the source and is shown as it arrives.
 
 `PublicNetworks.tsx` carries the `data-guide` attribute the first run guide's
-balloon points at (`components/FirstRunGuide.tsx`). So do `RemoteModels.tsx` (search field,
-result rows by `data-guide-repo`), `DeployModel.tsx` ("Whole model", the peer
+balloon points at (`components/FirstRunGuide.tsx`). So do the Hugging Face
+plugin's Search Models screen (search field, result rows by `data-guide-repo`,
+file and confirm buttons; outside this repository), `DeployModel.tsx` ("Whole model", the peer
 strip, the Deploy button while enabled) and `Chat.tsx` (the message field);
 those three steps report nothing, the guide watches for their outcome.
 
@@ -854,8 +855,8 @@ Per-file list:
   network mode until a password exists, linking to the password screen. The
   "Panel password" card, on every profile, opens `/config/password`
   (`components/ChangePassword.tsx`). It also mounts `HttpsCertificatePanel` (the node's
-  local CA, for every profile), `ThermalPanel` and
-  `HuggingFaceSettingsPanel`; there is no TLS panel, since TLS between nodes is
+  local CA, for every profile) and `ThermalPanel` (the Hugging Face token is the
+  plugin's Settings tab); there is no TLS panel, since TLS between nodes is
   always on. It also mounts the cluster logs switch,
   available to every admin (`cluster_logs_authority`) and applied in real time, and `QuicPanel`, which
   toggles the HTTP/3 preference in `POST /api/ui/network/quic` with the same
@@ -863,7 +864,7 @@ Per-file list:
   cluster `connection_key`. The route `/config/preferences/admin` renders
   only QUIC, process logs between nodes and the network chat, besides the
   local discovery switch, off by default; the normal route keeps
-  exposure, Hugging Face and thermal protection; Storage only has a menu entry.
+  exposure and thermal protection; Storage only has a menu entry.
 - `NotFound.tsx` - 404 fallback with a link back to `/`.
 - `Forbidden.tsx` - the screen the active profile does not open. It is not `NotFound`: the
   address exists, what is missing is the profile, so the text names the active profile and
@@ -879,19 +880,17 @@ Per-file list:
   `POST /api/ui/slice`; `asPlan` guards the TP plan shape; `SlicingJobsPanel`
   keeps jobs visible. An incomplete multipart source shows its reason and
   disables the start.
-- `Transfers.tsx` - The Downloads screen (menu "Downloads", route `/transfers`): this machine's
-  model downloads (`useModelDownloads`) and one `MachineDownloadsPanel` per other machine, in
-  the same in-progress screen as pending offers (accept/reject via
+- `Transfers.tsx` - Transfers (route `/transfers`, off the menu; the bell
+  links to it): an older admin's pending offers (accept/reject via
   `POST /api/transfer/offers/:id/accept|reject`), active transfers (bytes +
   speed + ETA + cancel via `POST /api/transfer/jobs/:id/cancel`), and finished
-  ones. Model downloads reuse `ModelDownloadsPanel`, so their backend progress,
-  configured destination path and cancel/retry actions stay visible here.
+  ones. The model downloads moved to the Hugging Face plugin's Downloads tab.
   State classification from `../lib/transferStatus`. `cancelled` is
   shown as **refused**, in amber, and not as a red failure: it was someone's decision,
   not an error. Slices appear by model and layer range
   (`../lib/transferLabel`), with the short hash beside them. Full-bleed shell; offers,
-  active and finished ones are each a full-width table instead of the earlier
-  list of cards, with a fixed header and actions in the last column.
+  active and finished ones are each a full-width table with a fixed header and
+  actions in the last column.
 - `WholeModels.tsx` - Full-model catalog from `useLocalCatalog`, one full-width
   table row (`ModelRow`) per model with actions: slice (development mode only, links to
   `/models/slice?path=` for tensor parallel shards), delete
@@ -907,18 +906,11 @@ Per-file list:
   `CatalogResponse.image_files` (`ImageModelRow`: name, path, source,
   translated category, family, dtype, size, delete only - image files are not
   sliced, and Send stays GGUF-only until the transfer gate accepts them).
-- `RemoteModels.tsx` - it shows trending GGUF models through the public Hugging
-  Face API on opening, without credentials; the authenticated search uses debounce in
-  `/api/ui/model-provider/search`, with a filter, sorting, pagination by URL,
-  lazy details and a download confirmation. The login status stays compact
-  inside the search bar, with an explicit Search action. The
-  detail resolves the license through the provider and marks gated models before the
-  download. The dialog shows the model folders resolved by the backend. The
-  jobs appear in the `ModelDownloadsPanel`, also in Transfers, so changing
-  the route or reloading does not lose a transfer. Full-bleed shell; the
-  results are a full-width table (name/tags, state, downloads,
-  likes, updated, action), no longer a grid of cards - `RemoteModelCard`
-  was removed for being unused.
+- Searching Hugging Face, the downloads and the token are not here: they are
+  the Search Models screen of the Hugging Face plugin (`pom-plugin-hugging-face`,
+  route `/huggingface/models`), which calls the node's
+  `/api/ui/model-provider/*` routes through the host SDK. `/models/remote`
+  redirects to it, or to `/models` without the plugin (`../App.tsx`).
 
 Key logic carriers:
 
@@ -981,10 +973,7 @@ in the repo root): `/v1/chat/completions`, `/v1/models`, `/api/ui/cluster`,
 `/admin/nodes`, `/admin/nodes/:id/block|unblock`, `/admin/api-keys`,
 `/admin/regenerate-key`, `/api/setup/hardware`, `/api/setup/models`,
 `/api/setup/admin-anchor/preview`, `/api/setup/health`, `/api/setup/save`,
-`/api/public/networks`, `/api/public/network`,
-`/api/ui/model-provider/search`, `/api/ui/model-provider/details`,
-`/api/ui/model-provider/storage`, `/api/ui/model-provider/downloads` and
-`/api/ui/model-provider/downloads/:id/{cancel,retry}`.
+`/api/public/networks` and `/api/public/network`.
 
 ## Multimodal deploy and chat
 

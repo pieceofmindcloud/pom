@@ -1,17 +1,17 @@
 ---
 id: screen-models
-label: Full models
+label: Models
 summary: The whole GGUF files found on this machine
-title: Full models
+title: Models
 route: /models
 order: 60
 ---
 
 :::lead
-Full models lists every whole GGUF file this machine found in its model folders: an Ollama store, an LM Studio library or a plain folder of GGUF files. From here a model is sliced, sent to another machine or deleted. The **Image** tab lists the image model files of the same folders (diffusion models, text encoders, VAEs and the rest of what ComfyUI loads).
+Models lists every whole GGUF file this machine found in its model folders: an Ollama store, an LM Studio library or a plain folder of GGUF files. From here a model is deleted (or, in development mode, cut into tensor parallel shards). To download one, use Search Models, the Hugging Face plugin's screen. The **Image** tab lists the image model files of the same folders (diffusion models, text encoders, VAEs and the rest of what ComfyUI loads).
 :::
 
-![Full models: one row per model, with its source, layers, architecture, vision projector, size and actions.](../images/en/models.webp)
+![Models: one row per model, with its source, layers, architecture, vision projector, size and actions.](../images/en/models.webp)
 
 :::video https://www.youtube.com/watch?v=lCYW3TJ70M8
 Video: the Models screens - full models, slices and transfers - explained.

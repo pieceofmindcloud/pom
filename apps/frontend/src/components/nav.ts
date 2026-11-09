@@ -78,14 +78,9 @@ export const NAV: NavSection[] = [
   { labelKey: "nav.dashboard", icon: Gauge, to: "/" },
   { labelKey: "nav.chat", icon: MessagesSquare, to: "/chat", chatPanelProfiles: ["visitor"] },
   { labelKey: "nav.networkChat", icon: MessagesSquare, to: "/network-chat" },
-  {
-    labelKey: "nav.models",
-    icon: Boxes,
-    children: [
-      { labelKey: "nav.remoteModels", to: "/models/remote", icon: Search },
-      { labelKey: "nav.fullModels", to: "/models", icon: Boxes, end: true },
-    ],
-  },
+  // Searching and downloading models is the Hugging Face plugin's own menu
+  // entry (Search Models), not a child of this one.
+  { labelKey: "nav.models", icon: Boxes, to: "/models" },
   {
     labelKey: "nav.deployments",
     icon: Rocket,
@@ -96,8 +91,6 @@ export const NAV: NavSection[] = [
       { labelKey: "nav.history", to: "/deployments", icon: History },
     ],
   },
-  // One screen: send a file, and everything under way or just finished.
-  { labelKey: "nav.transfers", icon: Send, to: "/transfers" },
   {
     labelKey: "nav.logs",
     icon: ListTree,
@@ -165,6 +158,7 @@ const PLUGIN_ICONS: Readonly<Record<string, LucideIcon>> = {
   "messages-square": MessagesSquare,
   cpu: Cpu,
   activity: Activity,
+  search: Search,
 };
 
 function pluginIcon(name?: string | null): LucideIcon {

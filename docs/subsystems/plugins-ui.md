@@ -155,7 +155,7 @@ targets of the same `plugin_code`, so an internal navigation does not retain
 the previous route's component. The plugin does not bundle another React:
 `lib/pluginHost.ts` exposes on `globalThis.__POM_HOST__` React, ReactDOM, the
 JSX runtime, React Query, the design kit (`components/ui`), `format`,
-`useI18n`, `useTheme`, `useCluster`, `api.get`, `Modal`, `TelemetryLine`,
+`useI18n`, `useTheme`, `useCluster`, `api.get`, `api.post`, `Modal`, `TelemetryLine`,
 `ExecutionTelemetry`, `Markdown` and `storageKey`. The plugin swaps those
 imports for reads of that object when bundling; hooks and contexts are the
 application's. The surface is versioned (`PLUGIN_HOST_VERSION`) and only grows
@@ -171,7 +171,11 @@ one marked by a teal line on top, drawn from the theme's `--tab-*` tokens
 `--tab-accent`, `--tab-icon`, full colours in both themes). Version 6 added
 `ready()`, the screen's "finished rendering" signal described below. Version 7
 added `plugin(code).loader`, POM's loader and installer over the screen (below,
-"POM's loader and installer"). The plugin's CSS
+"POM's loader and installer"). Version 8 added `api.post`, a same-origin POST
+to the node's API with the panel's own credentials (the connection key and the
+admin access token the tab holds), so a screen can act on the node routes it
+draws; the Hugging Face plugin starts downloads and saves the token with it.
+The node still authorizes every call. The plugin's CSS
 uses the same color tokens (CSS variables) as POM.
 
 ## Opening a plugin screen

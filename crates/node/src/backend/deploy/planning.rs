@@ -1496,28 +1496,77 @@ pub(super) fn plan_with_rtt_options(
     }
 
     // ── Coverage: gaps and overlap refuse ───────────────────────────────────
+    //
+    // Coverage is checked by path, as the inference routes run: a range is fine
+    // when it lies on some chain of contiguous ranges from layer 0 to the last
+    // layer. Two heads - the whole model on one machine, slices of it on others -
+    // are two such paths and overlap legitimately; a range on no complete path
+    // (one that half-overlaps another) would run layers twice and is a stop.
+    let mut ranges: Vec<(u32, u32)> = chosen
+        .iter()
+        .filter(|(_, _, overrides)| !prefill_entry(overrides))
+        .map(|(i, _, _)| (available[*i].start_layer, available[*i].end_layer))
+        .collect();
+    ranges.sort_unstable();
+    ranges.dedup();
     let mut missing: Vec<[u32; 2]> = Vec::new();
     let mut overlap: Vec<[u32; 2]> = Vec::new();
+    let span_end =
+        total_layers.unwrap_or_else(|| ranges.iter().map(|r| r.1 + 1).max().unwrap_or(0));
+    // layers no chosen range covers
     let mut next = 0u32;
-    let mut covered_exact: Option<(u32, u32)> = None;
-    for (i, _, overrides) in &chosen {
-        if prefill_entry(overrides) {
-            continue;
+    for &(start, end) in &ranges {
+        if start > next {
+            missing.push([next, start - 1]);
         }
-        let c = &available[*i];
-        if covered_exact == Some((c.start_layer, c.end_layer)) {
-            continue;
-        }
-        covered_exact = Some((c.start_layer, c.end_layer));
-        if c.start_layer > next {
-            missing.push([next, c.start_layer - 1]);
-        } else if c.start_layer < next {
-            overlap.push([c.start_layer, next.min(c.end_layer + 1) - 1]);
-        }
-        next = next.max(c.end_layer.saturating_add(1));
+        next = next.max(end.saturating_add(1));
     }
-    if let Some(total) = total_layers.filter(|t| next < *t) {
-        missing.push([next, total - 1]);
+    if next < span_end {
+        missing.push([next, span_end - 1]);
+    }
+    if missing.is_empty() && !ranges.is_empty() {
+        let last = span_end.saturating_sub(1);
+        let mut from_start: Vec<bool> = ranges.iter().map(|r| r.0 == 0).collect();
+        let mut to_end: Vec<bool> = ranges.iter().map(|r| r.1 == last).collect();
+        // propagate along contiguous ranges until nothing changes
+        loop {
+            let mut changed = false;
+            for a in 0..ranges.len() {
+                for b in 0..ranges.len() {
+                    if ranges[b].0 == ranges[a].1.saturating_add(1) {
+                        if from_start[a] && !from_start[b] {
+                            from_start[b] = true;
+                            changed = true;
+                        }
+                        if to_end[b] && !to_end[a] {
+                            to_end[a] = true;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        // An inference service's engine serves one path: there, any two distinct
+        // ranges that share layers still overlap (the prefill machine aside).
+        let one_path = params.inference_service.is_some();
+        for (index, &(start, end)) in ranges.iter().enumerate() {
+            if from_start[index] && to_end[index] && !one_path {
+                continue;
+            }
+            // the layers this off-path range shares with another chosen range
+            if let Some(&(other_start, other_end)) = ranges
+                .iter()
+                .find(|other| **other != (start, end) && other.0 <= end && start <= other.1)
+            {
+                let shared = [start.max(other_start), end.min(other_end)];
+                if !overlap.contains(&shared) {
+                    overlap.push(shared);
+                }
+            }
+        }
     }
     let complete = missing.is_empty() && overlap.is_empty() && !chosen.is_empty();
 

@@ -74,6 +74,62 @@ export function evenSplitSpan(nodeIds: string[], first: number, last: number, en
   return rows;
 }
 
+/** What a split can weigh: the bytes a range keeps in memory (weights and KV
+ *  cache) and what each machine can hold. `bytes` answers for ranges that start
+ *  and end on valid cuts, `null` when the sizes are not known. */
+export type SplitBalance = {
+  bytes: (start: number, end: number) => number | null;
+  capacity: (nodeId: string) => number;
+};
+
+/**
+ * Splits `first..last` over the machines in order, in proportion to what each
+ * one holds: machine k's boundary is the valid cut whose bytes from `first`
+ * come nearest to `total * (capacity of machines 0..k) / (all capacities)`.
+ * When the span fits the machines together, each one's share fits its own
+ * memory. Falls back to an even split when the sizes or capacities are unknown.
+ */
+export function balancedSplitSpan(
+  nodeIds: string[],
+  first: number,
+  last: number,
+  ends: number[],
+  balance: SplitBalance,
+): DeploySelection[] {
+  const total = balance.bytes(first, last);
+  const capacities = nodeIds.map((nodeId) => Math.max(0, balance.capacity(nodeId)));
+  const allCapacity = capacities.reduce((sum, value) => sum + value, 0);
+  if (total == null || total <= 0 || allCapacity <= 0) return evenSplitSpan(nodeIds, first, last, ends);
+  const rows: DeploySelection[] = [];
+  let start = first;
+  let held = 0;
+  for (let index = 0; index < nodeIds.length && start <= last; index++) {
+    const final = index === nodeIds.length - 1;
+    held += capacities[index];
+    let end = last;
+    if (!final) {
+      const target = (total * held) / allCapacity;
+      // leave a cut for each machine still to come
+      const candidates = ends.filter((cut) => cut >= start && cut < last);
+      const remaining = nodeIds.length - index - 1;
+      const usable = candidates.filter((cut) => ends.filter((later) => later > cut && later < last).length >= remaining - 1);
+      const pool = usable.length > 0 ? usable : candidates;
+      if (pool.length === 0) break;
+      end = pool.reduce((best, cut) => {
+        const bytes = balance.bytes(first, cut);
+        const bestBytes = balance.bytes(first, best);
+        if (bytes == null) return best;
+        if (bestBytes == null) return cut;
+        return Math.abs(bytes - target) < Math.abs(bestBytes - target) ? cut : best;
+      }, pool[0]);
+    }
+    rows.push({ start_layer: start, end_layer: end, target_node_id: nodeIds[index], n_gpu_layers: null, offload_kqv: null });
+    start = end + 1;
+  }
+  if (rows.length > 0) rows[rows.length - 1].end_layer = last;
+  return rows;
+}
+
 /**
  * Split the layers over the marked machines, leaving every other machine's
  * ranges as they are: the marked ones share the layers no unmarked machine
@@ -86,6 +142,7 @@ export function splitOverMarked(
   marked: string[],
   total: number,
   ends: number[],
+  balance?: SplitBalance,
 ): DeploySelection[] {
   const kept = rows.filter((row) => !marked.includes(row.target_node_id));
   const covered = new Array(total).fill(false);
@@ -100,7 +157,8 @@ export function splitOverMarked(
   // one stretch left uncovered: split it; none or several: split the whole model
   const [first, last] = gaps.length === 1 ? gaps[0] : [0, total - 1];
   const overrides = (nodeId: string) => rows.find((row) => row.target_node_id === nodeId);
-  const split = evenSplitSpan(marked, first, last, ends).map((row) => {
+  const shares = balance ? balancedSplitSpan(marked, first, last, ends, balance) : evenSplitSpan(marked, first, last, ends);
+  const split = shares.map((row) => {
     const previous = overrides(row.target_node_id);
     return {
       ...row,

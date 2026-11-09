@@ -70,7 +70,7 @@ import { DeployNetworkCanvas } from "../components/DeployNetworkCanvas";
 import { DeployProgressModal } from "../components/DeployProgressModal";
 import { trackOf } from "../components/PipelineRail";
 import { fileSourceOn, tensorParallelModelsOf, wholeModelsOf } from "../lib/wholeModels";
-import { evenSplit, isWholeRangeSplit, splitOverMarked, validEnds, wholeRangesOf } from "../lib/wholeRanges";
+import { evenSplit, isWholeRangeSplit, splitOverMarked, validEnds, wholeRangesOf, type SplitBalance } from "../lib/wholeRanges";
 import { inferenceServicesOf, serviceRunsModel, serviceCutsRanges,
   serviceRunsSlices, serviceTakesDraft } from "../lib/inferenceServices";
 import {
@@ -950,6 +950,53 @@ export function DeployModel() {
     if (!pomDevMode && pickedKind === "tensor_parallel") setPickedKind(null);
   }, [pomDevMode, pickedKind]);
   const eff: RuntimeParams = params ?? p?.params ?? ({} as RuntimeParams);
+  /**
+   * What a range keeps in memory and what a machine holds, for Split the layers
+   * and the Machines tab's projection. A range's bytes are its resident weights
+   * (the Engram-like lazy tables stay on disk) plus its KV cache, read from the
+   * survey's cut table and scaled to the context and sessions set in Global (the
+   * survey costed the defaults). A machine holds its GPUs' total VRAM, not the
+   * free part: the deploy releases the model it serves now; less the fit margin
+   * per GPU. A Mac (unified memory) holds 75% of its RAM, a machine with no GPU
+   * 80% of its RAM.
+   */
+  const splitBalance = useMemo((): SplitBalance | undefined => {
+    const options = currentPlan?.layer_options;
+    const total = wholeTotal;
+    if (!options || options.cuts.length === 0 || total == null) return undefined;
+    const surveyed = (p?.params?.n_ctx ?? 0) * Math.max(1, p?.params?.max_sessions ?? 1);
+    const asked = (eff.n_ctx ?? 0) * Math.max(1, eff.max_sessions ?? 1);
+    const kvScale = surveyed > 0 && asked > 0 ? asked / surveyed : 1;
+    const prefix = (end: number): number | null => {
+      if (end < 0) return 0;
+      const first = options.cuts[0];
+      if (end === total - 1) {
+        const weights = (first.resident_bytes ?? first.size_bytes) + (first.remainder_resident_bytes ?? first.remainder_bytes);
+        return weights + ((first.kv_bytes ?? 0) + (first.remainder_kv_bytes ?? 0)) * kvScale;
+      }
+      const cut = options.cuts.find((item) => item.end_layer === end);
+      return cut ? (cut.resident_bytes ?? cut.size_bytes) + (cut.kv_bytes ?? 0) * kvScale : null;
+    };
+    const MiB = 1024 * 1024;
+    const margin = (eff.fit_memory_margin_mb ?? 512) * MiB;
+    return {
+      bytes: (start, end) => {
+        const upTo = prefix(end);
+        const before = prefix(start - 1);
+        return upTo == null || before == null ? null : Math.max(0, upTo - before);
+      },
+      capacity: (nodeId) => {
+        const system = liveCluster.data?.peers.find((peer) => peer.node_id === nodeId)?.node?.system;
+        if (!system) return 0;
+        if (system.gpu_kind === "unified") return system.ram.total_mb * MiB * 0.75;
+        const gpus = system.gpus.filter((gpu) => (gpu.vram_total_mb ?? 0) > 0);
+        if (gpus.length > 0) {
+          return gpus.reduce((sum, gpu) => sum + Math.max(0, (gpu.vram_total_mb ?? 0) * MiB - margin), 0);
+        }
+        return system.ram.total_mb * MiB * 0.8;
+      },
+    };
+  }, [currentPlan, wholeTotal, p, eff.n_ctx, eff.max_sessions, eff.fit_memory_margin_mb, liveCluster.data]);
   /** What a deploy sends: the settings, with the inference service chosen
    *  above (never one remembered from another deploy). */
   const chosenArchitecture =
@@ -1692,11 +1739,12 @@ export function DeployModel() {
               onKqv={setPeerKqv}
               marked={markedNodeIds}
               onToggleMarked={toggleMarked}
+              balance={splitBalance}
               onSplit={(nodeIds, ends) => {
                 if (wholeTotal == null) return;
                 // the unmarked machines keep their ranges and settings, and stay on the map
                 setPreferredNodeIds((current) => [...new Set([...current, ...mapMachineIds])]);
-                setSelection(splitOverMarked(rows, nodeIds, wholeTotal, ends).sort(byLayer));
+                setSelection(splitOverMarked(rows, nodeIds, wholeTotal, ends, splitBalance).sort(byLayer));
               }}
             />
             )}
@@ -1854,6 +1902,7 @@ function MachinesTab({
   onKqv,
   marked,
   onToggleMarked,
+  balance,
   onSplit,
 }: {
   machines: { node_id: string; label: string }[];
@@ -1873,6 +1922,8 @@ function MachinesTab({
   /** The machines Split the layers works on. */
   marked: string[];
   onToggleMarked: (nodeId: string) => void;
+  /** Range sizes and machine capacities, for each machine's projected use. */
+  balance?: SplitBalance;
   onSplit: (nodeIds: string[], ends: number[]) => void;
 }) {
   const { t } = useI18n();
@@ -1947,9 +1998,6 @@ function MachinesTab({
                   className="h-3 w-3 shrink-0 accent-aqua"
                 />
                 <span className="min-w-0 truncate text-[0.7rem] font-semibold text-fg">{machine.label}</span>
-                {taking.some((row) => row.start_layer === 0) && (
-                  <Badge tone="iris" className="shrink-0 px-1 py-0 text-[0.54rem]">{t("deployStudio.head")}</Badge>
-                )}
               </label>
               <button
                 type="button"
@@ -1963,6 +2011,22 @@ function MachinesTab({
             </div>
             <div className="space-y-2 px-2 py-2">
               {taking.length === 0 && <p className="text-[0.62rem] text-faint">{t("deployStudio.noLayerAssigned")}</p>}
+              {taking.length > 0 && balance && (() => {
+                const sizes = taking.map((row) => balance.bytes(row.start_layer, row.end_layer));
+                if (sizes.some((size) => size == null)) return null;
+                const used = sizes.reduce<number>((sum, size) => sum + (size ?? 0), 0);
+                const holds = balance.capacity(machine.node_id);
+                if (holds <= 0) return null;
+                return (
+                  <p
+                    data-testid="machine-projection"
+                    className={`font-mono text-[0.6rem] ${used > holds ? "text-amber" : "text-faint"}`}
+                    title={t("deployStudio.projectionHint")}
+                  >
+                    {t("deployStudio.projection", { used: bytes(used), holds: bytes(holds) })}
+                  </p>
+                );
+              })()}
               {taking.map((row) => (
                 <div key={`${row.start_layer}-${row.end_layer}`} className="space-y-1">
                   <div className="flex items-center justify-between gap-2">

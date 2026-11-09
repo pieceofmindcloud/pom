@@ -1674,6 +1674,39 @@ fn the_whole_model_decoding_beside_the_slices_overlaps_them() {
 }
 
 #[test]
+fn two_heads_the_whole_model_and_its_slices_are_two_paths() {
+    // llama.cpp: the whole model on p and the slices on a and b are two routes
+    // from layer 0 to the last layer, not layers run twice
+    let machines = sliced_with_whole();
+    let p = plan_shards_with(
+        &machines,
+        Some(&[pick(0, 15, "a"), pick(16, 31, "b"), pick(0, 31, "p")]),
+        None,
+    );
+    assert!(p.blocked.is_none(), "{:?}", p.blocked);
+    assert!(p.complete && p.overlap.is_empty());
+}
+
+#[test]
+fn a_range_on_no_complete_path_still_overlaps() {
+    // 16-31 continues nothing that starts at 0 (0-15 is not chosen), and shares
+    // layers with the whole model: it would run them twice
+    let machines = sliced_with_whole();
+    let p = plan_shards_with(
+        &machines,
+        Some(&[pick(16, 31, "b"), pick(0, 31, "p")]),
+        None,
+    );
+    assert!(
+        p.blocked
+            .as_deref()
+            .is_some_and(|b| b.contains("two chosen slices")),
+        "{:?}",
+        p.blocked
+    );
+}
+
+#[test]
 fn a_prefill_machine_needs_an_inference_service() {
     use crate::webui::InferenceRole;
     let machines = sliced_with_whole();

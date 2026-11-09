@@ -220,7 +220,7 @@ describe("DeployNetworkCanvas", () => {
     view.unmount();
   });
 
-  it("marks a machine with Shift+click instead of inspecting it, and names the head", () => {
+  it("marks a machine with Shift+click instead of inspecting it", () => {
     const onInspect = vi.fn();
     const onToggleMarked = vi.fn();
     const rows = [
@@ -250,9 +250,6 @@ describe("DeployNetworkCanvas", () => {
     expect(onInspect).not.toHaveBeenCalled();
     fireEvent.click(cardB);
     expect(onInspect).toHaveBeenCalledWith("b");
-    // the machine that serves layer 0 is the head; the others are not
-    expect(within(screen.getByRole("heading", { name: /^a/ })).getByText("Cabeça")).toBeTruthy();
-    expect(within(screen.getByRole("heading", { name: /^b/ })).queryByText("Cabeça")).toBeNull();
   });
 
   it("stacks two heads and leaves the pipeline from the head to the machine that continues it", async () => {
@@ -276,16 +273,27 @@ describe("DeployNetworkCanvas", () => {
     expect(within(canvas).getByText("a | b")).toBeTruthy();
   });
 
-  it("says when the machine load was not observed instead of showing zero", () => {
+  it("keeps the toolbar, the legend and the route chips out of the area that scrolls", () => {
+    const steps = [step(0, 3, "a", 1), step(4, 11, "b", 2)];
+    renderCanvas(
+      plan(steps, [{ from_node_id: "a", to_node_id: "b", rtt_ms: 3.2, selected: true, note: "" }]),
+      steps.map(({ start_layer, end_layer, target_node_id }) => ({ start_layer, end_layer, target_node_id })),
+    );
+    const scroll = screen.getByTestId("deploy-map-scroll");
+    expect(scroll.contains(screen.getByText("Mapa da implantação"))).toBe(false);
+    expect(scroll.contains(screen.getByText("a → b · 3.2 ms"))).toBe(false);
+    expect(scroll.contains(screen.getByText("resposta"))).toBe(false);
+    // the cards scroll with the map
+    expect(scroll.contains(screen.getByRole("heading", { name: /^a/ }))).toBe(true);
+  });
+
+  it("shows no in-flight load on a deploy card: it says nothing about the deployment", () => {
     const current = plan([step(0, 3, "a", 1)], []);
-    current.machines = current.machines.map((item) => item.node_id === "a" ? { ...item, load: null } : item);
-
-    const view = renderCanvas(current, [{ start_layer: 0, end_layer: 3, target_node_id: "a" }]);
-
-    const card = screen.getByText("carga em voo indisponível").closest("article");
-    expect(card).not.toBeNull();
-    expect(within(card!).queryByText("0 em voo")).toBeNull();
-    view.unmount();
+    renderCanvas(current, [{ start_layer: 0, end_layer: 3, target_node_id: "a" }]);
+    const card = screen.getByRole("heading", { name: /^a/ }).closest("article")!;
+    expect(within(card as HTMLElement).queryByText(/em voo/)).toBeNull();
+    // the range sits in the header, next to the X
+    expect(within(card as HTMLElement).getByText("L0–3")).toBeTruthy();
   });
 
   it("anchors the curve on the correct side when the receiver is on the left", () => {

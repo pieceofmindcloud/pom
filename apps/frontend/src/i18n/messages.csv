@@ -954,6 +954,8 @@ deployStudio.machineWholeModel,Whole model,Modelo inteiro
 deployStudio.machinesEmpty,Drag a machine from the strip below onto the map.,Arraste uma máquina da faixa abaixo para o mapa.
 deployStudio.markMachine,Mark {machine} for Split the layers,Marcar {machine} para dividir as camadas
 deployStudio.marked,marked,marcada
+deployStudio.projection,≈ {used} of {holds},≈ {used} de {holds}
+deployStudio.projectionHint,"Resident weights and KV cache of this machine''s ranges, against its GPUs'' total VRAM less the fit margin (the deploy releases the model it serves now).","Pesos residentes e cache KV das faixas desta máquina, contra a VRAM total das GPUs dela menos a margem do ajuste (a implantação libera o modelo que ela serve agora)."
 deployStudio.splitLayers,Split the layers over {count} machines,Dividir as camadas entre {count} máquinas
 deployStudio.splitLayersHint,"Each machine serves its range from its own copy of the model, so nothing is copied.","Cada máquina serve sua faixa a partir da própria cópia do modelo, então nada é copiado."
 deployStudio.layerCount,{count} layers,{count} camadas
@@ -967,7 +969,7 @@ deployStudio.autoBalanceWaiting,Waiting for the model's cuts from the plan,Aguar
 deployStudio.autoBalanceAllLocked,Unlock at least two machines to balance their layers,Destrave pelo menos duas máquinas para equilibrar as camadas
 deployStudio.autoBalanceNoSizes,"The plan does not give the size of every cut yet, or the cuts are too few for every machine","O plano ainda não informa o tamanho de todo corte, ou os cortes são poucos para todas as máquinas"
 deployStudio.lockRange,Lock the range of {machine},Travar a faixa de {machine}
-deployStudio.splitMarkedHint,Splits over the marked machines the layers no unmarked machine serves (the whole model when they serve it all); unmarked machines keep their ranges. Shift+click a card on the map to mark or unmark it.,Divide entre as máquinas marcadas as camadas que nenhuma desmarcada serve (o modelo inteiro quando elas servem tudo); as desmarcadas mantêm as faixas. Shift+clique num cartão do mapa marca ou desmarca.
+deployStudio.splitMarkedHint,Splits over the marked machines the layers no unmarked machine serves (the whole model when they serve it all) in proportion to each one''s VRAM: each share''s weights and KV cache fit its machine when the model fits them together. Unmarked machines keep their ranges; Shift+click a card on the map to mark or unmark it.,Divide entre as máquinas marcadas as camadas que nenhuma desmarcada serve (o modelo inteiro quando elas servem tudo) na proporção da VRAM de cada uma: os pesos e o cache KV de cada parte cabem na sua máquina quando o modelo cabe nelas juntas. As desmarcadas mantêm as faixas; Shift+clique num cartão do mapa marca ou desmarca.
 deployStudio.tabMachines,"Machines ({count})","Máquinas ({count})"
 deployStudio.unlockRange,Unlock the range of {machine},Destravar a faixa de {machine}
 deployStudio.layerLimitLocked,This range is locked: unlock it to change it,Esta faixa está travada: destrave para mudar

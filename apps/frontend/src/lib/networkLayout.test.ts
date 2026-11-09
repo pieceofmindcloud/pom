@@ -4,6 +4,7 @@ import {
   autoLayout,
   clearPositions,
   deployLayout,
+  DEPLOY_CARD_SIZE,
   deploymentLayoutKey,
   fallbackPosition,
   GATEWAY_HEIGHT,
@@ -201,7 +202,7 @@ describe("deployLayout", () => {
       { id: "c", start_layer: 14, end_layer: 31 },
     ], []);
     expect(positions.a.left).toBe(positions.b.left);
-    expect(Math.abs(positions.b.top - positions.a.top)).toBeGreaterThanOrEqual(CARD_HEIGHT);
+    expect(Math.abs(positions.b.top - positions.a.top)).toBeGreaterThanOrEqual(DEPLOY_CARD_SIZE.height);
     // the range that continues a head takes the next column
     expect(positions.c.left).toBeGreaterThan(positions.b.left + CARD_WIDTH);
   });

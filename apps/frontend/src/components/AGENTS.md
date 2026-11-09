@@ -942,10 +942,13 @@ Key logic carriers:
   stacked, and an edge goes from a range to every range starting on the next
   layer (never head to head); the answer leaves from the machines on the last
   layer. `machineBounds` is the machine's own first and last layer (it used to
-  clamp the start to 0, which put every machine in the heads' column). A card
-  serving layer 0 carries the **Head** badge, the legend reads by starting
-  layer (machines joined by `|`), and Shift+click toggles the card's mark
-  (`markedNodeIds`/`onToggleMarked`) instead of inspecting it. On a narrow viewport, the map uses
+  clamp the start to 0, which put every machine in the heads' column). The
+  card is the slim deploy card (`DEPLOY_CARD_SIZE`): the name, its ranges next
+  to the X, GPU and RAM - no load, no RTT line. The toolbar, the legend (by
+  starting layer, machines joined by `|`) and the route chips sit on the
+  section, outside the area that scrolls (`deploy-map-scroll`), so they stay
+  put. Shift+click toggles the card's mark (`markedNodeIds`/`onToggleMarked`)
+  instead of inspecting it. On a narrow viewport, the map uses
   internal scrolling to preserve the cards' size and align the curve to the
   endpoints even when the content is wider than the panel. The separation exists because this graph
   represents a deployment that has not been applied yet.

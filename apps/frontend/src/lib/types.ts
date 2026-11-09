@@ -2496,6 +2496,11 @@ export interface WholeLayerCut {
    *  deployment's context. Absent on older nodes. */
   kv_bytes?: number | null;
   remainder_kv_bytes?: number | null;
+  /** Of `size_bytes` / `remainder_bytes`, what stays resident in memory (the
+   *  lazy lookup tables, a DeepSeek-V4.1 Engram table, stay on disk). Absent on
+   *  older nodes. */
+  resident_bytes?: number | null;
+  remainder_resident_bytes?: number | null;
 }
 
 export interface WholeLayerOptions {

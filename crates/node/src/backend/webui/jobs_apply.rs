@@ -570,6 +570,13 @@ pub(crate) struct LayerCut {
     pub kv_bytes: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remainder_kv_bytes: Option<u64>,
+    /// Of `size_bytes` / `remainder_bytes`, what must be resident in memory:
+    /// the lazy lookup tables (`plan::LAZY_LOOKUP_TABLES`, a `deepseek41`
+    /// Engram table) stay on disk. Absent on an older node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resident_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remainder_resident_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -825,6 +832,24 @@ pub(crate) async fn model_layer_options_local(
             .ok()
             .map(|(_, kv_bytes, _)| kv_bytes)
     };
+    let tables_path = canonical.clone();
+    let lazy_table = tokio::task::spawn_blocking(move || {
+        crate::multipart::GgufSource::open(&tables_path)
+            .map(|source| plan::lazy_table_bytes(source.tensors()))
+            .unwrap_or(0)
+    })
+    .await
+    .unwrap_or(0);
+    // A range's serialized bytes minus the lazy table when the range carries it.
+    let resident = |start: u32, end: u32, weights: u64| -> u64 {
+        let layers: u64 = layout
+            .layer_bytes
+            .iter()
+            .skip(start as usize)
+            .take((end + 1 - start) as usize)
+            .sum();
+        plan::resident_weight_bytes(weights, layers, lazy_table)
+    };
     let cuts = layout
         .valid_prefix_end_layers()
         .into_iter()
@@ -843,6 +868,20 @@ pub(crate) async fn model_layer_options_local(
             } else {
                 Some(0).filter(|_| kv_plan.is_some())
             },
+            resident_bytes: Some(resident(
+                0,
+                end_layer,
+                layout.slice_bytes(0, end_layer, end_layer + 1 >= total_layers),
+            )),
+            remainder_resident_bytes: Some(if end_layer + 1 < total_layers {
+                resident(
+                    end_layer + 1,
+                    total_layers - 1,
+                    layout.slice_bytes(end_layer + 1, total_layers - 1, true),
+                )
+            } else {
+                0
+            }),
         })
         .collect::<Vec<_>>();
     let valid_starts = std::iter::once(0)

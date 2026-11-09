@@ -3,8 +3,8 @@ import { ArrowRight, LayoutGrid, Minus, Plus, RotateCcw, ServerCog, Sparkles, X 
 import { useEffect, useMemo, useRef, useState, type PointerEvent, type ReactNode } from "react";
 import { layerRange, megabytes } from "../lib/format";
 import {
-  CARD_HEIGHT,
   CARD_WIDTH,
+  DEPLOY_CARD_SIZE,
   clearPositions,
   deployLayout,
   deploymentLayoutKey,
@@ -20,7 +20,7 @@ import type { DeployMachine, DeployPlan, DeploySelection, InferenceRole } from "
 import { edgeStyle, type EdgeState } from "./ModelNetworkCanvas";
 import { PipelineGatewayNode, type PipelineCycleCost } from "./PipelineGatewayNode";
 import { RouteRttLabel } from "./RouteRttLabel";
-import { AlertTooltip, Badge, Button, Dot, Progress } from "./ui";
+import { AlertTooltip, Badge, Button, Progress } from "./ui";
 import { useI18n } from "../i18n/provider";
 
 type DeployNetworkCanvasProps = {
@@ -223,8 +223,6 @@ function NodeCard({
 }) {
   const taking = machineRows(rows, machine.node_id);
   const active = taking.length > 0;
-  // whoever serves layer 0 is a head: it receives the prompts
-  const head = taking.some((row) => row.start_layer === 0);
   const { t } = useI18n();
   return (
     <article
@@ -252,7 +250,7 @@ function NodeCard({
         marked && !selected && "border-iris/70",
         !active && "opacity-75",
       )}
-      style={{ left: position.left, top: position.top, width: CARD_WIDTH, minHeight: CARD_HEIGHT, touchAction: "none" }}
+      style={{ left: position.left, top: position.top, width: CARD_WIDTH, minHeight: DEPLOY_CARD_SIZE.height, touchAction: "none" }}
     >
       <div className="absolute inset-x-3.5 top-0 h-px bg-iris/70" />
       <div className="flex items-start justify-between gap-3">
@@ -261,19 +259,19 @@ function NodeCard({
             <ServerCog className="h-4 w-4" />
           </span>
           <div className="min-w-0">
-            <h3 className="flex min-w-0 items-center gap-1.5 text-sm font-semibold text-fg">
-              <span className="truncate">{machine.label}</span>
-              {head && <Badge tone="iris" className="shrink-0 px-1 py-0 text-[9px]">{t("deployStudio.head")}</Badge>}
-              {marked && <span className="sr-only">{t("deployStudio.marked")}</span>}
+            <h3 className="truncate text-sm font-semibold text-fg">
+              {machine.label}
+              {marked && <span className="sr-only"> ({t("deployStudio.marked")})</span>}
             </h3>
-            <p className="flex min-w-0 items-center gap-1 truncate text-[10px] text-faint">
-              <span className="truncate">{active ? t("deployStudio.inDeployment") : t("deployStudio.availableForPlan")}</span>
-              {machine.rtt_ms != null && <><span aria-hidden="true">·</span><span className="shrink-0">RTT {machine.rtt_ms.toFixed(1)} ms</span></>}
-            </p>
+            {!active && <p className="truncate text-[10px] text-faint">{t("deployStudio.dropToInclude")}</p>}
           </div>
         </div>
-        <div className="flex items-center gap-1">
-          <Dot tone={active ? "aqua" : "neutral"} pulse={active} />
+        <div className="flex shrink-0 items-center gap-1">
+          {taking.map((row) => (
+            <Badge key={`${row.start_layer}-${row.end_layer}`} tone="iris" mono className="px-1.5 py-0 text-[0.62rem]">
+              {layerRange(row.start_layer, row.end_layer)}
+            </Badge>
+          ))}
           {onTogglePrimary && (
             <button
               type="button"
@@ -312,13 +310,6 @@ function NodeCard({
             <X className="h-3.5 w-3.5" />
           </button>
         </div>
-      </div>
-      <div className="mt-3 flex min-h-7 flex-wrap items-center gap-1 rounded-lg border border-line bg-raised/90 px-2 py-1.5">
-        {active ? taking.map((row) => (
-          <Badge key={`${row.start_layer}-${row.end_layer}`} tone="iris" mono className="px-1.5 py-0 text-[0.62rem]">
-            {layerRange(row.start_layer, row.end_layer)}
-          </Badge>
-        )) : <span className="font-mono text-[10px] text-faint">{t("deployStudio.dropToInclude")}</span>}
       </div>
       <div className="mt-3 space-y-2">
         {machine.capacity && machine.capacity.gpus.length > 0 ? (
@@ -394,12 +385,6 @@ function NodeCard({
           value={machine.ram_used_pct ?? null}
           detail={machine.ram_used_pct == null ? "-" : `${machine.ram_used_pct.toFixed(0)}% · ${megabytes(machine.ram_free_mb)}`}
           tone={machine.ram_used_pct != null && machine.ram_used_pct >= 88 ? "amber" : "iris"}
-        />
-        <CapacityBar
-          label={t("canvas.load")}
-          value={machine.load == null ? null : Math.min(100, (machine.load / 8) * 100)}
-          detail={machine.load == null ? t("dashboard.inFlightUnavailable") : t("canvas.inFlight", { count: machine.load })}
-          tone={machine.load != null && machine.load >= 7 ? "amber" : "aqua"}
         />
       </div>
       {footer}
@@ -501,7 +486,7 @@ export function DeployNetworkCanvas({
     if (dragging !== nodeId || !canvas.current) return;
     const bounds = canvas.current.getBoundingClientRect();
     const maxLeft = Math.max(16, bounds.width / zoom - CARD_WIDTH - 16);
-    const maxTop = Math.max(58, bounds.height / zoom - CARD_HEIGHT - 16);
+    const maxTop = Math.max(58, bounds.height / zoom - DEPLOY_CARD_SIZE.height - 16);
     updatePosition(nodeId, {
       left: Math.max(16, Math.min(maxLeft, (event.clientX - bounds.left) / zoom - dragOffset.current.x)),
       top: Math.max(58, Math.min(maxTop, (event.clientY - bounds.top) / zoom - dragOffset.current.y)),
@@ -570,13 +555,14 @@ export function DeployNetworkCanvas({
     }));
   const gatewayPosition = pipelineGatewayPosition(
     terminalNodeIds.map((nodeId) => positionOf(nodeId, nodeIds.indexOf(nodeId))),
+    terminalNodeIds.map(() => DEPLOY_CARD_SIZE),
   );
 
   return (
+    // The toolbar, the legend and the route chips sit on the section, outside
+    // the area that scrolls, so they stay put when the map scrolls.
     <section
-      ref={canvas}
-      className="relative h-full min-h-0 w-full overflow-auto bg-[radial-gradient(circle_at_1px_1px,rgba(91,78,255,.16)_1px,transparent_0)]"
-      style={{ backgroundSize: "18px 18px" }}
+      className="relative h-full min-h-0 w-full overflow-hidden"
       onDragOver={(event) => event.preventDefault()}
       onDrop={(event) => {
         event.preventDefault();
@@ -584,6 +570,57 @@ export function DeployNetworkCanvas({
         if (nodeId) onDropPeer(nodeId);
       }}
     >
+      <div
+        ref={canvas}
+        data-testid="deploy-map-scroll"
+        className="absolute inset-0 overflow-auto bg-[radial-gradient(circle_at_1px_1px,rgba(91,78,255,.16)_1px,transparent_0)]"
+        style={{ backgroundSize: "18px 18px" }}
+      >
+      {machines.length === 0 ? (
+        <div className="flex h-full items-center justify-center text-sm text-muted">{t("deployStudio.dropMachine")}</div>
+      ) : (
+        <div className="absolute inset-0 origin-top-left" style={{ transform: `scale(${zoom})`, width: `${100 / zoom}%`, height: `${100 / zoom}%` }}>
+          <svg aria-hidden="true" className="pointer-events-none absolute inset-0 h-full w-full overflow-visible">
+            <defs><marker id="deploy-route-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" className="fill-aqua" /></marker></defs>
+            {allEdges.map((route, index) => {
+              const fromIndex = nodeIds.indexOf(route.from_node_id);
+              const toIndex = nodeIds.indexOf(route.to_node_id);
+              if (fromIndex < 0 || toIndex < 0) return null;
+              const from = positionOf(route.from_node_id, fromIndex);
+              const to = positionOf(route.to_node_id, toIndex);
+              const geometry = routeGeometry(from, to, DEPLOY_CARD_SIZE, DEPLOY_CARD_SIZE);
+              const id = edgeId(route.from_node_id, route.to_node_id);
+              const state: EdgeState = selectedEdges.has(id) || (!selectedEdges.has(id) && route.selected) ? "principal" : candidateEdges.has(id) ? "paralela" : "inativa";
+              const style = edgeStyle(state);
+              return <path key={`${id}-${index}`} d={`M ${geometry.x1} ${geometry.y1} C ${geometry.c1x} ${geometry.c1y}, ${geometry.c2x} ${geometry.c2y}, ${geometry.x2} ${geometry.y2}`} className={style.className} strokeWidth={style.strokeWidth} strokeDasharray={style.strokeDasharray} markerEnd={style.markerEnd?.replace("route-arrow", "deploy-route-arrow")} />;
+            })}
+            {gatewayPosition && terminalNodeIds.map((nodeId) => {
+              const geometry = gatewayRouteGeometry(positionOf(nodeId, nodeIds.indexOf(nodeId)), gatewayPosition, DEPLOY_CARD_SIZE);
+              return <path key={`gateway-${nodeId}`} d={`M ${geometry.x1} ${geometry.y1} C ${geometry.c1x} ${geometry.c1y}, ${geometry.c2x} ${geometry.c2y}, ${geometry.x2} ${geometry.y2}`} className="fill-none stroke-aqua" strokeWidth="3" markerEnd="url(#deploy-route-arrow)" />;
+            })}
+          </svg>
+          {allEdges.map((route, index) => {
+            const fromIndex = nodeIds.indexOf(route.from_node_id);
+            const toIndex = nodeIds.indexOf(route.to_node_id);
+            if (fromIndex < 0 || toIndex < 0) return null;
+            const from = positionOf(route.from_node_id, fromIndex);
+            const to = positionOf(route.to_node_id, toIndex);
+            const geometry = routeGeometry(from, to, DEPLOY_CARD_SIZE, DEPLOY_CARD_SIZE);
+            return <RouteRttLabel key={`rtt-${route.from_node_id}-${route.to_node_id}-${index}`} rttMs={route.rtt_ms} left={geometry.labelX} top={geometry.labelY} />;
+          })}
+          {gatewayPosition && terminalNodeIds.map((nodeId) => {
+            const geometry = gatewayRouteGeometry(positionOf(nodeId, nodeIds.indexOf(nodeId)), gatewayPosition, DEPLOY_CARD_SIZE);
+            const route = plan.route_options?.find((option) => option.from_node_id === nodeId && option.to_node_id === "gateway");
+            return <RouteRttLabel key={`rtt-gateway-${nodeId}`} rttMs={route?.rtt_ms} left={geometry.labelX} top={geometry.labelY} />;
+          })}
+          {machines.map((machine, index) => (
+            <NodeCard key={machine.node_id} marked={markedNodeIds?.includes(machine.node_id)} onToggleMarked={onToggleMarked ? () => onToggleMarked(machine.node_id) : undefined} footer={cardFooter?.(machine.node_id)} machine={machine} rows={rows} position={positionOf(machine.node_id, index)} selected={inspectedNodeId === machine.node_id} dragging={dragging === machine.node_id} primaryNodeId={primaryNodeId} onTogglePrimary={onTogglePrimary && (primaryCandidateIds ?? []).includes(machine.node_id) ? () => onTogglePrimary(machine.node_id) : undefined} onInspect={() => onInspect(machine.node_id)} onAddPeer={() => onAddPeer(machine.node_id)} onRemovePeer={() => onRemovePeer(machine.node_id)} onPointerDown={(event) => beginDrag(machine.node_id, index, event)} onPointerMove={(event) => drag(machine.node_id, event)} onPointerUp={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); setDragging(null); }} />
+          ))}
+          {gatewayPosition && <PipelineGatewayNode position={gatewayPosition} cost={pipelineCost} />}
+        </div>
+      )}
+      </div>
+
       <div className="absolute left-4 top-3 z-20 flex max-w-[calc(100%-2rem)] flex-wrap items-center gap-2 border border-line bg-ink/90 p-1.5 shadow-panel backdrop-blur-md">
         <div className="flex items-center gap-2 px-2">
           <span className="eyebrow">{t("deployStudio.mapTitle")}</span>
@@ -597,48 +634,8 @@ export function DeployNetworkCanvas({
         <Button size="sm" aria-label={t("deployStudio.resetLayout")} title={t("deployStudio.resetLayout")} onClick={reset}><RotateCcw className="h-4 w-4" /></Button>
       </div>
 
-      {machines.length === 0 ? (
-        <div className="flex h-full items-center justify-center text-sm text-muted">{t("deployStudio.dropMachine")}</div>
-      ) : (
-        <div className="absolute inset-0 origin-top-left" style={{ transform: `scale(${zoom})`, width: `${100 / zoom}%`, height: `${100 / zoom}%` }}>
-          <svg aria-hidden="true" className="pointer-events-none absolute inset-0 h-full w-full overflow-visible">
-            <defs><marker id="deploy-route-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" className="fill-aqua" /></marker></defs>
-            {allEdges.map((route, index) => {
-              const fromIndex = nodeIds.indexOf(route.from_node_id);
-              const toIndex = nodeIds.indexOf(route.to_node_id);
-              if (fromIndex < 0 || toIndex < 0) return null;
-              const from = positionOf(route.from_node_id, fromIndex);
-              const to = positionOf(route.to_node_id, toIndex);
-              const geometry = routeGeometry(from, to);
-              const id = edgeId(route.from_node_id, route.to_node_id);
-              const state: EdgeState = selectedEdges.has(id) || (!selectedEdges.has(id) && route.selected) ? "principal" : candidateEdges.has(id) ? "paralela" : "inativa";
-              const style = edgeStyle(state);
-              return <path key={`${id}-${index}`} d={`M ${geometry.x1} ${geometry.y1} C ${geometry.c1x} ${geometry.c1y}, ${geometry.c2x} ${geometry.c2y}, ${geometry.x2} ${geometry.y2}`} className={style.className} strokeWidth={style.strokeWidth} strokeDasharray={style.strokeDasharray} markerEnd={style.markerEnd?.replace("route-arrow", "deploy-route-arrow")} />;
-            })}
-            {gatewayPosition && terminalNodeIds.map((nodeId) => {
-              const geometry = gatewayRouteGeometry(positionOf(nodeId, nodeIds.indexOf(nodeId)), gatewayPosition);
-              return <path key={`gateway-${nodeId}`} d={`M ${geometry.x1} ${geometry.y1} C ${geometry.c1x} ${geometry.c1y}, ${geometry.c2x} ${geometry.c2y}, ${geometry.x2} ${geometry.y2}`} className="fill-none stroke-aqua" strokeWidth="3" markerEnd="url(#deploy-route-arrow)" />;
-            })}
-          </svg>
-          {allEdges.map((route, index) => {
-            const fromIndex = nodeIds.indexOf(route.from_node_id);
-            const toIndex = nodeIds.indexOf(route.to_node_id);
-            if (fromIndex < 0 || toIndex < 0) return null;
-            const from = positionOf(route.from_node_id, fromIndex);
-            const to = positionOf(route.to_node_id, toIndex);
-            const geometry = routeGeometry(from, to);
-            return <RouteRttLabel key={`rtt-${route.from_node_id}-${route.to_node_id}-${index}`} rttMs={route.rtt_ms} left={geometry.labelX} top={geometry.labelY} />;
-          })}
-          {gatewayPosition && terminalNodeIds.map((nodeId) => {
-            const geometry = gatewayRouteGeometry(positionOf(nodeId, nodeIds.indexOf(nodeId)), gatewayPosition);
-            const route = plan.route_options?.find((option) => option.from_node_id === nodeId && option.to_node_id === "gateway");
-            return <RouteRttLabel key={`rtt-gateway-${nodeId}`} rttMs={route?.rtt_ms} left={geometry.labelX} top={geometry.labelY} />;
-          })}
-          {machines.map((machine, index) => (
-            <NodeCard key={machine.node_id} marked={markedNodeIds?.includes(machine.node_id)} onToggleMarked={onToggleMarked ? () => onToggleMarked(machine.node_id) : undefined} footer={cardFooter?.(machine.node_id)} machine={machine} rows={rows} position={positionOf(machine.node_id, index)} selected={inspectedNodeId === machine.node_id} dragging={dragging === machine.node_id} primaryNodeId={primaryNodeId} onTogglePrimary={onTogglePrimary && (primaryCandidateIds ?? []).includes(machine.node_id) ? () => onTogglePrimary(machine.node_id) : undefined} onInspect={() => onInspect(machine.node_id)} onAddPeer={() => onAddPeer(machine.node_id)} onRemovePeer={() => onRemovePeer(machine.node_id)} onPointerDown={(event) => beginDrag(machine.node_id, index, event)} onPointerMove={(event) => drag(machine.node_id, event)} onPointerUp={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); setDragging(null); }} />
-          ))}
-          {gatewayPosition && <PipelineGatewayNode position={gatewayPosition} cost={pipelineCost} />}
-          <div className="absolute bottom-3 left-4 flex items-center gap-2 border border-line bg-ink/90 px-3 py-2 text-[10px] text-muted shadow-panel backdrop-blur">
+      {machines.length > 0 && (
+          <div className="absolute bottom-3 left-4 z-20 flex items-center gap-2 border border-line bg-ink/90 px-3 py-2 text-[10px] text-muted shadow-panel backdrop-blur">
             <Sparkles className="h-3 w-3 text-aqua" /><span>prefill</span>
             {legendSteps.map((step) => (
               <span key={step.start} className="flex items-center gap-1">
@@ -650,7 +647,6 @@ export function DeployNetworkCanvas({
             ))}
             <ArrowRight className="h-3 w-3 text-faint" /><span>{t("deployStudio.legendAnswer")}</span>
           </div>
-        </div>
       )}
       {visibleRouteOptions.length > 0 && <div className="absolute bottom-3 right-4 z-20 flex max-w-[48%] gap-1 overflow-x-auto">{visibleRouteOptions.slice(0, 6).map((route) => <span key={`${route.from_node_id}-${route.to_node_id}`} className={clsx("shrink-0 border px-1.5 py-0.5 font-mono text-[10px]", route.selected ? "border-aqua/30 bg-aqua/10 text-aqua" : "border-line text-faint")}>{labelOf(route.from_node_id)} → {labelOf(route.to_node_id)} · {route.rtt_ms == null ? "RTT -" : `${route.rtt_ms.toFixed(1)} ms`}</span>)}</div>}
     </section>

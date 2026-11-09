@@ -71,10 +71,15 @@ Three rules come from the architecture, not from taste:
   serves the union. The merged step carries `parts`, one per slice. The same
   exact range on different nodes is a replica of the same stage and forms a
   valid parallel route.
-- **Partial overlap and a global gap are refusals.** Two ranges with different
-  cuts over the same layer would make the answer ambiguous; exact copies are
-  ignored in the logical coverage and stay available to the router. A valid
-  assignment must cover each required layer exactly once.
+- **Coverage is checked by path; a gap or a range on no path is a refusal.**
+  Every layer must be covered, and every chosen range must lie on some chain of
+  contiguous ranges from layer 0 to the last layer (`planning.rs`, the
+  coverage block). Two heads - the whole model on one machine, slices of it on
+  others - are two such paths and run as parallel routes. A range on no complete
+  path (one that half-overlaps another, like 0-10 beside 5-31) would run layers
+  twice: "layers L5-10 are in two chosen slices at the same time". Exact copies
+  are replicas of the same stage. Under a plugin's inference service, which
+  serves one path, any two distinct ranges that share layers still overlap.
 
 ## 1.1 Whole model: the degenerate case, not a second path
 

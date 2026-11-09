@@ -46,6 +46,8 @@ export const GATEWAY_HEIGHT = 140;
 
 export type CardSize = { width: number; height: number };
 export const CARD_SIZE: CardSize = { width: CARD_WIDTH, height: CARD_HEIGHT };
+/** The Deploy Studio's machine card: name, ranges, GPU and RAM only. */
+export const DEPLOY_CARD_SIZE: CardSize = { width: CARD_WIDTH, height: 150 };
 export const COMPACT_CARD_SIZE: CardSize = { width: COMPACT_CARD_WIDTH, height: COMPACT_CARD_HEIGHT };
 export const GATEWAY_SIZE: CardSize = { width: GATEWAY_WIDTH, height: GATEWAY_HEIGHT };
 
@@ -56,8 +58,8 @@ export const GATEWAY_SIZE: CardSize = { width: GATEWAY_WIDTH, height: GATEWAY_HE
 export const GATEWAY_LAYOUT_ID = "__gateway__";
 const GAP_X = 148;
 const GAP_Y = 40;
-const DEPLOY_GAP_X = 220;
-const DEPLOY_GAP_Y = 72;
+const DEPLOY_GAP_X = 172;
+const DEPLOY_GAP_Y = 56;
 const ORIGIN_X = 48;
 /** Horizontal axis around which each column is centered. */
 const AXIS_Y = 300;
@@ -258,10 +260,10 @@ export function autoLayout(
 export function deployLayout(
   assigned: LayoutNode[],
   unassignedIds: string[],
-  size: CardSize = CARD_SIZE,
+  size: CardSize = DEPLOY_CARD_SIZE,
 ): Record<string, CanvasPosition> {
-  // Wider than the Flow's: the deploy cards carry a footer (the model a machine
-  // lacks, its download) and the RTT label sits on the edge between columns.
+  // Wider than the Flow's: the deploy cards may carry a footer (the model a
+  // machine lacks, its download) and the RTT label sits on the edge between columns.
   const rowGap = DEPLOY_GAP_Y + 16;
   const positions = autoLayout(assigned, () => size, { x: DEPLOY_GAP_X, y: DEPLOY_GAP_Y });
   const bottom = assigned.length > 0

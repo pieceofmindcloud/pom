@@ -1016,7 +1016,6 @@ describe("DeployModel · pipeline map", () => {
     // the map opens on the three machines that hold the model, the layers split over them
     await waitFor(() => expect(screen.getByRole("tab", { name: "Máquinas (3)" })).toBeTruthy());
     machinesTab();
-    expect(screen.getAllByText("Cabeça").length).toBeGreaterThan(0);
     expect(screen.queryByText(/GPU uso/)).toBeNull();
 
     // opened as ksia 0-10, mac 11-20, salem 21-31; unmark salem: it keeps its range,

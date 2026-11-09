@@ -613,7 +613,12 @@ Per-file list:
   toggles it too), **Split the layers over N machines** over the marked ones that
   hold the model (`../lib/wholeRanges` `splitOverMarked`: the unmarked machines
   keep their rows, the marked share the one stretch they leave uncovered, or the
-  whole model when they cover it all, keeping their GPU/KV overrides), a **Head** badge on a
+  whole model when they cover it all, keeping their GPU/KV overrides; with
+  `splitBalance` the share of each is proportional to its capacity -
+  `balancedSplitSpan` on the cuts' resident weights plus KV, the KV scaled to
+  Global's context and sessions, against each machine's total VRAM less the fit
+  margin per GPU, 75% of RAM on unified memory, 80% without a GPU - and each
+  card shows that projection, amber over capacity), a **Head** badge on a
   machine serving layer 0, and the per-machine GPU
   layers / KV-on-GPU (llama.cpp only). Its remove button is "Take X off the
   map", distinct from the card's X. A machine without the model says so.

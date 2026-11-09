@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { autoBalance, evenSplit, isWholeRangeSplit, splitOverMarked, stepRange, validEnds, wholeRangesOf } from "./wholeRanges";
+import { autoBalance, balancedSplitSpan, evenSplit, isWholeRangeSplit, splitOverMarked, stepRange, validEnds, wholeRangesOf } from "./wholeRanges";
 import type { DeploySelection } from "./types";
 
 const row = (start: number, end: number, node: string): DeploySelection => ({
@@ -103,3 +103,34 @@ describe("splitOverMarked", () => {
     ]);
   });
 });
+
+describe("balancedSplitSpan", () => {
+  const GB = 1e9;
+  const every = (total: number) => Array.from({ length: total }, (_, layer) => layer);
+  // 1 GB a layer, weights and KV
+  const bytes = (start: number, end: number) => (end - start + 1) * GB;
+
+  it("gives a machine with twice the VRAM twice the bytes", () => {
+    const split = balancedSplitSpan(["big", "small"], 0, 29, every(30), {
+      bytes,
+      capacity: (node) => (node === "big" ? 24 * GB : 12 * GB),
+    });
+    expect(split.map((row) => [row.target_node_id, row.start_layer, row.end_layer])).toEqual([
+      ["big", 0, 19],
+      ["small", 20, 29],
+    ]);
+  });
+
+  it("keeps each share inside its machine when the model fits them together", () => {
+    const capacity = (node: string) => ({ a: 16, b: 12, c: 8 }[node] ?? 0) * GB;
+    const split = balancedSplitSpan(["a", "b", "c"], 0, 31, every(32), { bytes, capacity });
+    for (const row of split) expect(bytes(row.start_layer, row.end_layer)).toBeLessThanOrEqual(capacity(row.target_node_id));
+    expect(split.at(-1)!.end_layer).toBe(31);
+  });
+
+  it("splits evenly when the sizes are not known", () => {
+    const split = balancedSplitSpan(["a", "b"], 0, 31, every(32), { bytes: () => null, capacity: () => GB });
+    expect(split.map((row) => [row.start_layer, row.end_layer])).toEqual([[0, 15], [16, 31]]);
+  });
+});
+

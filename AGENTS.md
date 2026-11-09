@@ -306,9 +306,10 @@ breaks the whole product.
   which applies to every model served, not an eligibility criterion. Retention is
   the peer's local act at EOS; `/v1/session/rewind` only confirms. → `inference.md`
 - **The pipeline's order is the layers' order**, and one node may serve several
-  ranges. `merge` only joins adjacent ranges on the same node. Overlap and a
-  global hole are refusal. Whoever holds layer 0 processes the whole prompt of
-  every request. → `deployment.md`
+  ranges. `merge` only joins adjacent ranges on the same node. A global hole,
+  or a range on no chain of contiguous ranges from layer 0 to the last, is a
+  refusal; two such chains (two heads) are parallel routes. Whoever holds
+  layer 0 processes the whole prompt of every request. → `deployment.md`
 - **How many layers the model has is an `Option`, not a number.** A slice without
   `pom.*` metadata does not know the total; inventing zero was a real bug. →
   `slicing.md`

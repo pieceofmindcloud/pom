@@ -80,7 +80,7 @@ const KIND_TENSOR: u8 = 2;
 /// An engine's frame as it crosses between the machines: a tensor in
 /// `dtype`, through the POM's `wire` (its meta as hex in the header), and an
 /// opaque frame as it is.
-fn to_network(frame: Vec<u8>, dtype: crate::wire::WireDtype) -> Result<Vec<u8>, String> {
+pub(crate) fn to_network(frame: Vec<u8>, dtype: crate::wire::WireDtype) -> Result<Vec<u8>, String> {
     match frame.first() {
         Some(&KIND_BYTES) => Ok(frame),
         Some(&KIND_TENSOR) => {
@@ -113,7 +113,7 @@ fn to_network(frame: Vec<u8>, dtype: crate::wire::WireDtype) -> Result<Vec<u8>, 
 }
 
 /// The inverse of [`to_network`]: the frame the engine reads, its tensor in `f32`.
-fn from_network(body: &[u8]) -> Result<Vec<u8>, String> {
+pub(crate) fn from_network(body: &[u8]) -> Result<Vec<u8>, String> {
     match body.first() {
         Some(&KIND_BYTES) => Ok(body.to_vec()),
         Some(&KIND_TENSOR) => {
@@ -370,7 +370,7 @@ fn valid_token(token: &str) -> bool {
     (16..=256).contains(&token.len()) && token.bytes().all(|byte| byte.is_ascii_graphic())
 }
 
-async fn read_frame(stream: &mut (impl AsyncRead + Unpin)) -> std::io::Result<Option<Vec<u8>>> {
+pub(crate) async fn read_frame(stream: &mut (impl AsyncRead + Unpin)) -> std::io::Result<Option<Vec<u8>>> {
     let mut length = [0u8; 4];
     match stream.read_exact(&mut length).await {
         Ok(_) => {}
@@ -389,7 +389,7 @@ async fn read_frame(stream: &mut (impl AsyncRead + Unpin)) -> std::io::Result<Op
     Ok(Some(payload))
 }
 
-async fn write_frame(
+pub(crate) async fn write_frame(
     stream: &mut (impl AsyncWrite + Unpin),
     payload: &[u8],
 ) -> std::io::Result<()> {

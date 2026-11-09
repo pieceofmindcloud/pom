@@ -90,8 +90,8 @@ pub(crate) async fn reexecute(state: &GatewayState, params: &Value) -> Result<Va
     let request: ReexecuteRequest = serde_json::from_value(params.clone()).map_err(|e| format!("invalid request: {e}"))?;
     validate(&request)?;
     let tokens = decode_tokens(&request.tokens)?;
-    if let Some(engine) = request.engine.as_deref().filter(|e| *e != "llama.cpp") {
-        return Ok(json!({ "job": finished_job(json!(void(format!("re-executing {engine} work needs its engine.verify")))) }));
+    if let Some(engine) = request.engine.clone().filter(|e| e != "llama.cpp") {
+        return Ok(json!({ "job": start_plugin_audit(state, engine, request, tokens).await }));
     }
     let found = crate::webui::whole_model_by_label(state, &request.model).await;
     let id = uuid::Uuid::new_v4().simple().to_string();
@@ -116,6 +116,227 @@ pub(crate) async fn reexecute(state: &GatewayState, params: &Value) -> Result<Va
         }
     });
     Ok(json!({ "job": id }))
+}
+
+/// A re-execution on a plugin engine split in stages (`crate::plugin_metering`):
+/// the plugin's audit engines load the stages up to the audited one on this
+/// machine, chained through loopback relays that reproduce each boundary's
+/// codec (the same `to_network`/`from_network` as the real stage link), and
+/// this node asks the audited stage for its rows as prompt pieces of the
+/// whole sequence, the protocol its later stage uses.
+async fn start_plugin_audit(state: &GatewayState, code: String, request: ReexecuteRequest, tokens: Vec<i32>) -> String {
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    if let Ok(mut jobs) = jobs().lock() {
+        jobs.insert(id.clone(), (std::time::Instant::now(), None));
+    }
+    let (job, state) = (id.clone(), state.clone());
+    tokio::spawn(async move {
+        let _permit = ONE_AT_A_TIME.acquire().await;
+        let verdict = match crate::webui::whole_model_by_label(&state, &request.model).await {
+            None => void("the verifier does not hold this model".into()),
+            Some((model_path, total)) => {
+                let total = total.unwrap_or(request.ranges.last().map(|r| r[1]).unwrap_or(0));
+                if request.ranges[request.audited][1] >= total {
+                    // The serving stage outputs tokens, not rows: nothing to compare.
+                    void("the serving stage keeps no proofs".into())
+                } else {
+                    let audit = StageAudit::new(&state, &code);
+                    let verdict = audit.run(&request, &tokens, &model_path, total).await;
+                    audit.stop().await;
+                    verdict
+                }
+            }
+        };
+        if let Ok(mut jobs) = jobs().lock() {
+            jobs.insert(job, (std::time::Instant::now(), Some(json!(verdict))));
+        }
+    });
+    id
+}
+
+/// How long an audit stage may take to load (a first load builds its pack).
+const AUDIT_LOAD: std::time::Duration = std::time::Duration::from_secs(4 * 3600);
+/// Tokens per prompt piece sent to the audited stage.
+const AUDIT_PIECE: usize = 256;
+
+struct StageAudit {
+    plugins: std::sync::Arc<crate::plugins::PluginManager>,
+    code: String,
+    ids: std::sync::Mutex<Vec<String>>,
+}
+
+impl StageAudit {
+    fn new(state: &GatewayState, code: &str) -> Self {
+        Self { plugins: state.plugins.clone(), code: code.to_string(), ids: Default::default() }
+    }
+
+    async fn query(&self, op: &str, params: Value) -> Result<Value, String> {
+        self.plugins
+            .query_audit(&self.code, op, json!({ "params": params }))
+            .await
+            .ok_or_else(|| format!("the plugin '{}' did not answer {op}", self.code))
+    }
+
+    /// Starts the audit stage `[first, last)` and waits until it serves its
+    /// link; `prev` is the loopback port and secret of its earlier stage.
+    async fn start_stage(
+        &self,
+        model_path: &str,
+        first: u32,
+        last: u32,
+        total: u32,
+        prev: Option<(u16, String)>,
+    ) -> Result<(u16, String), String> {
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        let mut node = crate::runtime::NodeConfig::from_params(&crate::webui::RuntimeParams::default(), true);
+        node.model_path = model_path.to_string();
+        node.model_label = std::path::Path::new(model_path)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        node.start_layer = first;
+        node.end_layer = last - 1;
+        node.total_layers = total;
+        node.max_sessions = 1;
+        node.peer_count = 2;
+        node.inference_service = Some(self.code.clone());
+        let link = match &prev {
+            None => json!({}),
+            Some((port, token)) => json!({ "token": token, "prev_port": port, "max_inflight": 1 }),
+        };
+        let (gpus, devices) = crate::plugin_engine::node_gpus().await;
+        let load = crate::plugin_engine::load_params(&node, &gpus, &devices, Some(&link));
+        let started = self.query("engine.audit.start", json!({ "id": id, "load": load })).await?;
+        if started["status"] != "accepted" {
+            return Err(started["error"].as_str().unwrap_or("the audit engine was refused").to_string());
+        }
+        self.ids.lock().map_err(|e| e.to_string())?.push(id.clone());
+        let deadline = std::time::Instant::now() + AUDIT_LOAD;
+        loop {
+            let status = self.query("engine.audit.status", json!({ "id": id })).await?;
+            match status["status"]["state"].as_str() {
+                Some("ready") => {
+                    let port = status["link"]["port"].as_u64().and_then(|p| u16::try_from(p).ok());
+                    let token = status["link"]["token"].as_str().map(str::to_string);
+                    if let (Some(port), Some(token)) = (port, token) {
+                        return Ok((port, token));
+                    }
+                }
+                Some("error") => {
+                    return Err(status["status"]["detail"].as_str().unwrap_or("the audit stage failed").to_string())
+                }
+                _ => {}
+            }
+            if std::time::Instant::now() > deadline {
+                return Err("the audit stage did not load in time".into());
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        }
+    }
+
+    async fn run(&self, r: &ReexecuteRequest, tokens: &[i32], model_path: &str, total: u32) -> ReexecuteVerdict {
+        let mut prev: Option<(u16, String)> = None;
+        for (index, [first, last]) in r.ranges.iter().copied().enumerate().take(r.audited + 1) {
+            // A later audit stage reaches its earlier one through a relay that
+            // reproduces the boundary's codec.
+            let link = match prev.take() {
+                None => None,
+                Some((port, token)) => {
+                    let dtype = r.wire_out.get(index - 1).map(String::as_str).unwrap_or("f16");
+                    let dtype = crate::wire::WireDtype::parse(dtype).unwrap_or(crate::wire::WireDtype::F16);
+                    match codec_relay(port, dtype).await {
+                        Ok(relay_port) => Some((relay_port, token)),
+                        Err(e) => return void(format!("relay: {e}")),
+                    }
+                }
+            };
+            match self.start_stage(model_path, first, last, total, link).await {
+                Ok(served) => prev = Some(served),
+                Err(e) => return void(format!("audit stage {first}..{last}: {e}")),
+            }
+        }
+        let Some((port, token)) = prev else { return void("no audit stage".into()) };
+        match prompt_rows(port, &token, tokens).await {
+            Ok((rows, width)) => check_chunks(&rows, width, &r.chunks, &r.params.unwrap_or_default()),
+            Err(e) => void(format!("reading the audited stage: {e}")),
+        }
+    }
+
+    async fn stop(&self) {
+        let ids = std::mem::take(&mut *self.ids.lock().unwrap_or_else(|p| p.into_inner()));
+        for id in ids {
+            let _ = self.query("engine.audit.stop", json!({ "id": id })).await;
+        }
+    }
+}
+
+/// A loopback relay between a later audit stage and the earlier one at
+/// `prev_port`: requests pass as they are, tensor answers cross the wire's
+/// codec in `dtype`. Returns the port the later stage connects to.
+async fn codec_relay(prev_port: u16, dtype: crate::wire::WireDtype) -> Result<u16, String> {
+    use crate::plugin_stage_link::{from_network, read_frame, to_network, write_frame};
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.map_err(|e| e.to_string())?;
+    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+    tokio::spawn(async move {
+        let Ok((mut later, _)) = listener.accept().await else { return };
+        let Ok(mut earlier) = tokio::net::TcpStream::connect(("127.0.0.1", prev_port)).await else { return };
+        loop {
+            let Ok(Some(request)) = read_frame(&mut later).await else { break };
+            if write_frame(&mut earlier, &request).await.is_err() {
+                break;
+            }
+            let Ok(Some(answer)) = read_frame(&mut earlier).await else { break };
+            let answer = match to_network(answer.clone(), dtype).and_then(|net| from_network(&net)) {
+                Ok(decoded) => decoded,
+                Err(_) => answer,
+            };
+            if write_frame(&mut later, &answer).await.is_err() {
+                break;
+            }
+        }
+    });
+    Ok(port)
+}
+
+/// The audited stage's rows for the whole sequence: hello with its secret,
+/// a new session, then prompt pieces. Returns the rows and their width.
+async fn prompt_rows(port: u16, token: &str, tokens: &[i32]) -> Result<(Vec<f32>, usize), String> {
+    use crate::plugin_stage_link::{read_frame, write_frame};
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.map_err(|e| e.to_string())?;
+    let mut call = |payload: Vec<u8>| {
+        let mut frame = vec![1u8];
+        frame.extend(payload);
+        frame
+    };
+    let mut hello = vec![b'H'];
+    hello.extend(token.as_bytes());
+    write_frame(&mut stream, &call(hello)).await.map_err(|e| e.to_string())?;
+    let answer = read_frame(&mut stream).await.map_err(|e| e.to_string())?.ok_or("no hello")?;
+    // kind 1, status 0, then u32 lo, hi, window_floats, prompt_floats
+    if answer.len() < 18 || answer[1] != 0 {
+        return Err("the audited stage refused the hello".into());
+    }
+    let width = u32::from_le_bytes([answer[14], answer[15], answer[16], answer[17]]) as usize;
+    write_frame(&mut stream, &call(vec![b'Z'])).await.map_err(|e| e.to_string())?;
+    read_frame(&mut stream).await.map_err(|e| e.to_string())?.ok_or("no answer to the reset")?;
+    let mut rows = Vec::with_capacity(tokens.len() * width);
+    for (index, piece) in tokens.chunks(AUDIT_PIECE).enumerate() {
+        let mut p = vec![b'P'];
+        p.extend(((index * AUDIT_PIECE) as i64).to_le_bytes());
+        p.extend((piece.len() as u32).to_le_bytes());
+        for t in piece {
+            p.extend((*t as i64).to_le_bytes());
+        }
+        p.push(0);
+        write_frame(&mut stream, &call(p)).await.map_err(|e| e.to_string())?;
+        let answer = read_frame(&mut stream).await.map_err(|e| e.to_string())?.ok_or("no rows")?;
+        let values = crate::plugin_metering::answer_rows(&answer).ok_or("an answer without rows")?;
+        if values.len() != piece.len() * width {
+            return Err("an answer of the wrong size".into());
+        }
+        rows.extend(values);
+    }
+    Ok((rows, width))
 }
 
 /// A job that is already decided.
@@ -326,6 +547,66 @@ mod tests {
             params: None,
             engine: None,
         }
+    }
+
+    /// A fake audited stage: answers the hello, the reset and each prompt
+    /// piece with rows that are the token id repeated `width` times.
+    async fn fake_stage(width: u32) -> u16 {
+        use crate::plugin_stage_link::{read_frame, write_frame};
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (mut s, _) = listener.accept().await.unwrap();
+            while let Ok(Some(frame)) = read_frame(&mut s).await {
+                let answer = match frame[1] {
+                    b'H' => {
+                        let mut a = vec![1u8, 0];
+                        for v in [0u32, 10, width, width, 1] {
+                            a.extend(v.to_le_bytes());
+                        }
+                        a
+                    }
+                    b'P' => {
+                        let n = u32::from_le_bytes(frame[10..14].try_into().unwrap()) as usize;
+                        let mut a = vec![2u8];
+                        a.extend(1u32.to_le_bytes());
+                        a.push(0);
+                        for i in 0..n {
+                            let t = i64::from_le_bytes(frame[14 + 8 * i..22 + 8 * i].try_into().unwrap()) as f32;
+                            for _ in 0..width {
+                                a.extend(t.to_le_bytes());
+                            }
+                        }
+                        a
+                    }
+                    _ => vec![1u8, 0],
+                };
+                write_frame(&mut s, &answer).await.unwrap();
+            }
+        });
+        port
+    }
+
+    #[tokio::test]
+    async fn the_audited_stage_is_read_as_prompt_pieces_of_the_whole_sequence() {
+        let port = fake_stage(4).await;
+        let tokens: Vec<i32> = (0..300).collect();
+        let (rows, width) = prompt_rows(port, "secret", &tokens).await.unwrap();
+        assert_eq!(width, 4);
+        assert_eq!(rows.len(), 300 * 4);
+        assert_eq!(rows[299 * 4], 299.0);
+    }
+
+    #[tokio::test]
+    async fn the_codec_relay_hands_the_later_stage_what_the_wire_delivers() {
+        let port = fake_stage(64).await;
+        let relay = codec_relay(port, crate::wire::WireDtype::F8).await.unwrap();
+        let tokens: Vec<i32> = vec![3, 301, 7];
+        let (through, _) = prompt_rows(relay, "secret", &tokens).await.unwrap();
+        // f8 cannot hold 301 exactly; the relay answers what the wire delivers.
+        let direct: Vec<f32> = tokens.iter().flat_map(|t| std::iter::repeat(*t as f32).take(64)).collect();
+        let expected = roundtrip(&direct, 64 * 3, "f8").unwrap();
+        assert_eq!(through, expected);
     }
 
     #[test]

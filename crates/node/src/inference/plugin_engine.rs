@@ -234,7 +234,7 @@ fn kv_of(cfg: &crate::runtime::NodeConfig) -> &'static str {
 /// GPU with its vendor and its position among that vendor's cards - what the
 /// vendor's runtime numbers (`HIP_VISIBLE_DEVICES` for an AMD one), since the
 /// node counts AMD cards after the NVIDIA ones.
-async fn node_gpus() -> (Vec<u32>, Vec<Value>) {
+pub(crate) async fn node_gpus() -> (Vec<u32>, Vec<Value>) {
     gpus_of(crate::sysmon::sample().await.gpus)
 }
 

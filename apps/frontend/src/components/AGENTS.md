@@ -948,7 +948,10 @@ Key logic carriers:
   starting layer, machines joined by `|`) and the route chips sit on the
   section, outside the area that scrolls (`deploy-map-scroll`), so they stay
   put. Shift+click toggles the card's mark (`markedNodeIds`/`onToggleMarked`)
-  instead of inspecting it. On a narrow viewport, the map uses
+  instead of inspecting it. Dragging the dotted background scrolls the map like
+  its scrollbars (a gesture that starts on a card, button or field keeps its
+  own); the wheel and the trackpad pinch (a wheel with ctrlKey) zoom around the
+  pointer, 40% to 160%, through a native non-passive wheel listener. On a narrow viewport, the map uses
   internal scrolling to preserve the cards' size and align the curve to the
   endpoints even when the content is wider than the panel. The separation exists because this graph
   represents a deployment that has not been applied yet.

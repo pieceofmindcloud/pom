@@ -19,7 +19,7 @@ Deploy to network is the studio where a model goes into service: you choose the 
 ### The top bar
 What to deploy: **Pipeline** (a language model, from its whole GGUF) or **Image model**. Beside it, the engine (llama.cpp, or an inference service a plugin publishes), the model and the deployment's name, and the Deploy button.
 ### The map
-The machines in the deployment, each with the layer ranges it will serve and its live GPU, RAM and load. A machine follows the pipeline's order as soon as it has a range; **Organize** puts the cards you dragged back in place. The **Gateway** closes the cycle.
+The machines in the deployment, each with the layer ranges it will serve and its live GPU, RAM and load. A machine follows the pipeline's order as soon as it has a range; **Organize** puts the cards you dragged back in place. Drag the dotted background to move around the map; the mouse wheel or a trackpad pinch zooms. The **Gateway** closes the cycle.
 ### The inspector
 **Global** holds the settings of the whole deployment (context, sessions, sampling, the POM settings). **Machines** lists every machine on the map, in pipeline order, with only what you edit per machine: its layer ranges, GPU layers and whether the KV cache goes on the GPU.
 :::

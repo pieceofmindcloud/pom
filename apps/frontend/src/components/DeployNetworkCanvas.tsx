@@ -44,6 +44,10 @@ type DeployNetworkCanvasProps = {
   onToggleMarked?: (nodeId: string) => void;
 };
 
+const MIN_ZOOM = 0.4;
+const MAX_ZOOM = 1.6;
+const clampZoom = (zoom: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom));
+
 function machineRows(rows: DeploySelection[], nodeId: string) {
   return rows.filter((row) => row.target_node_id === nodeId).sort((a, b) => a.start_layer - b.start_layer);
 }
@@ -414,6 +418,40 @@ export function DeployNetworkCanvas({
   const canvas = useRef<HTMLDivElement>(null);
   const dragOffset = useRef({ x: 0, y: 0 });
   const [zoom, setZoom] = useState(1);
+  // the zoom the wheel handler reads between renders
+  const zoomRef = useRef(1);
+  zoomRef.current = zoom;
+  // dragging the dotted background scrolls the map, like its scrollbars
+  const pan = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
+  const [panning, setPanning] = useState(false);
+
+  // The wheel and the trackpad pinch (a wheel event with ctrlKey) zoom around
+  // the pointer. A native listener, not React's: React's wheel handler is
+  // passive and cannot keep the page from scrolling.
+  useEffect(() => {
+    const element = canvas.current;
+    if (!element) return;
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      const bounds = element.getBoundingClientRect();
+      const pointerX = event.clientX - bounds.left;
+      const pointerY = event.clientY - bounds.top;
+      const previous = zoomRef.current;
+      // a pinch sends small deltas, a mouse wheel larger ones
+      const next = clampZoom(previous * Math.exp(-event.deltaY * (event.ctrlKey ? 0.01 : 0.0015)));
+      if (next === previous) return;
+      const contentX = (element.scrollLeft + pointerX) / previous;
+      const contentY = (element.scrollTop + pointerY) / previous;
+      zoomRef.current = next;
+      setZoom(next);
+      requestAnimationFrame(() => {
+        element.scrollLeft = contentX * next - pointerX;
+        element.scrollTop = contentY * next - pointerY;
+      });
+    };
+    element.addEventListener("wheel", onWheel, { passive: false });
+    return () => element.removeEventListener("wheel", onWheel);
+  }, []);
   const [positions, setPositions] = useState<Record<string, CanvasPosition>>({});
   const [dragging, setDragging] = useState<string | null>(null);
 
@@ -573,8 +611,32 @@ export function DeployNetworkCanvas({
       <div
         ref={canvas}
         data-testid="deploy-map-scroll"
-        className="absolute inset-0 overflow-auto bg-[radial-gradient(circle_at_1px_1px,rgba(91,78,255,.16)_1px,transparent_0)]"
+        className={clsx(
+          "absolute inset-0 overflow-auto bg-[radial-gradient(circle_at_1px_1px,rgba(91,78,255,.16)_1px,transparent_0)]",
+          panning ? "cursor-grabbing select-none" : "cursor-grab",
+        )}
         style={{ backgroundSize: "18px 18px" }}
+        onPointerDown={(event) => {
+          // a card, a button or a field keeps its own gesture
+          if (event.button !== 0 || (event.target as Element).closest("article, button, a, input, select, textarea")) return;
+          const element = event.currentTarget;
+          pan.current = { x: event.clientX, y: event.clientY, left: element.scrollLeft, top: element.scrollTop };
+          element.setPointerCapture?.(event.pointerId);
+          setPanning(true);
+        }}
+        onPointerMove={(event) => {
+          const start = pan.current;
+          if (!start) return;
+          event.currentTarget.scrollLeft = start.left - (event.clientX - start.x);
+          event.currentTarget.scrollTop = start.top - (event.clientY - start.y);
+        }}
+        onPointerUp={(event) => {
+          if (!pan.current) return;
+          pan.current = null;
+          setPanning(false);
+          if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+        }}
+        onPointerCancel={() => { pan.current = null; setPanning(false); }}
       >
       {machines.length === 0 ? (
         <div className="flex h-full items-center justify-center text-sm text-muted">{t("deployStudio.dropMachine")}</div>
@@ -627,8 +689,8 @@ export function DeployNetworkCanvas({
           <span className="font-mono text-[10px] text-muted">{t("deployStudio.mapSummary", { nodes: machines.length, layers: plan.total_layers ?? "-" })}</span>
         </div>
         <span className="h-5 w-px bg-line" />
-        <Button size="sm" aria-label={t("canvas.zoomOut")} title={t("canvas.zoomOut")} onClick={() => setZoom((value) => Math.max(0.65, value - 0.1))}><Minus className="h-4 w-4" /></Button>
-        <Button size="sm" aria-label={t("canvas.zoomIn")} title={t("canvas.zoomIn")} onClick={() => setZoom((value) => Math.min(1.25, value + 0.1))}><Plus className="h-4 w-4" /></Button>
+        <Button size="sm" aria-label={t("canvas.zoomOut")} title={t("canvas.zoomOut")} onClick={() => setZoom((value) => clampZoom(value - 0.1))}><Minus className="h-4 w-4" /></Button>
+        <Button size="sm" aria-label={t("canvas.zoomIn")} title={t("canvas.zoomIn")} onClick={() => setZoom((value) => clampZoom(value + 0.1))}><Plus className="h-4 w-4" /></Button>
         <Button size="sm" aria-label={t("deployStudio.fitCanvas")} title={t("deployStudio.fitCanvas")} onClick={fit}>Fit</Button>
         <Button size="sm" aria-label={t("deployStudio.organizeMachines")} title={t("deployStudio.organizeMachines")} onClick={organize}><LayoutGrid className="h-4 w-4" /></Button>
         <Button size="sm" aria-label={t("deployStudio.resetLayout")} title={t("deployStudio.resetLayout")} onClick={reset}><RotateCcw className="h-4 w-4" /></Button>

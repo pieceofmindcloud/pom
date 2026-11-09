@@ -102,9 +102,13 @@ function stagesOf(plan: DeployPlan, rows: DeploySelection[] = []): Stage[] {
 function machineBounds(rows: DeploySelection[], machine: DeployMachine) {
   const taking = machineRows(rows, machine.node_id);
   const ranges = taking.length > 0 ? taking : machine.holds.map(([start_layer, end_layer]) => ({ start_layer, end_layer }));
+  // the machine's own first and last layer (0 only when it has no range at all):
+  // `Math.min(..., 0)` put every machine at layer 0, so the arrangement stacked
+  // the whole pipeline in the heads' column
+  if (ranges.length === 0) return { start_layer: 0, end_layer: 0 };
   return {
-    start_layer: Math.min(...ranges.map((range) => range.start_layer), 0),
-    end_layer: Math.max(...ranges.map((range) => range.end_layer), 0),
+    start_layer: Math.min(...ranges.map((range) => range.start_layer)),
+    end_layer: Math.max(...ranges.map((range) => range.end_layer)),
   };
 }
 
@@ -505,13 +509,27 @@ export function DeployNetworkCanvas({
   }
 
   const stages = stagesOf(plan, rows);
+  // The hops, as the Flow draws them: from a range to every range that starts on
+  // the next layer. The heads (layer 0) are where the pipeline leaves from, never
+  // a hop from one head to another; a prefill machine also hands its state to
+  // the machines that decode the same layers.
+  const assignedRows = rows.filter((row) => row.target_node_id && nodeIds.includes(row.target_node_id));
   const bridgeIds = new Set<string>();
-  for (let index = 1; index < stages.length; index += 1) {
-    for (const from of stages[index - 1].nodeIds) {
-      for (const to of stages[index].nodeIds) bridgeIds.add(edgeId(from, to));
+  for (const from of assignedRows) {
+    for (const to of assignedRows) {
+      if (from.target_node_id !== to.target_node_id && to.start_layer === from.end_layer + 1) {
+        bridgeIds.add(edgeId(from.target_node_id, to.target_node_id));
+      }
     }
   }
-  // The backend already limits the options to the next stage. This guard in the canvas
+  for (let index = 1; index < stages.length; index += 1) {
+    const previous = stages[index - 1];
+    const stage = stages[index];
+    if (previous.prefill && !stage.prefill && previous.start_layer === stage.start_layer && previous.end_layer === stage.end_layer) {
+      for (const from of previous.nodeIds) for (const to of stage.nodeIds) if (from !== to) bridgeIds.add(edgeId(from, to));
+    }
+  }
+  // The backend already limits the options to the hops. This guard in the canvas
   // keeps the visual rule even while an old peer still answers with the
   // previous broad list: no jump over a layer appears on the map.
   const visibleRouteOptions = (plan.route_options ?? []).filter(
@@ -520,10 +538,9 @@ export function DeployNetworkCanvas({
   const selectedEdges = new Set(visibleRouteOptions.filter((route) => route.selected).map((route) => edgeId(route.from_node_id, route.to_node_id)));
   const candidateEdges = new Set(visibleRouteOptions.filter((route) => !route.selected).map((route) => edgeId(route.from_node_id, route.to_node_id)));
   const edges = visibleRouteOptions.filter((route) => nodeIds.includes(route.from_node_id) && nodeIds.includes(route.to_node_id));
-  const principalEdges = stages.slice(1).flatMap((stage, stageIndex) => {
-    const previous = stages[stageIndex];
-    return previous.nodeIds.flatMap((from) => stage.nodeIds.map((to) => ({ from, to })));
-  }).filter((edge) => edge.from !== edge.to && !edges.some((route) => route.from_node_id === edge.from && route.to_node_id === edge.to));
+  const principalEdges = [...bridgeIds]
+    .map((id) => { const [from, to] = id.split(":"); return { from, to }; })
+    .filter((edge) => !edges.some((route) => route.from_node_id === edge.from && route.to_node_id === edge.to));
   const allEdges = [
     ...edges,
     ...principalEdges.map((edge) => ({
@@ -536,7 +553,21 @@ export function DeployNetworkCanvas({
       note: "pipeline",
     })),
   ];
-  const terminalNodeIds = stages.at(-1)?.nodeIds.filter((nodeId) => nodeIds.includes(nodeId)) ?? [];
+  // The answer leaves from the machines that run the last layer (a prefill machine never answers).
+  const lastLayer = assignedRows.length > 0 ? Math.max(...assignedRows.map((row) => row.end_layer)) : null;
+  const tailRows = assignedRows.filter((row) => row.end_layer === lastLayer);
+  const answeringRows = tailRows.some((row) => roleOf(rows, plan, row.target_node_id) !== "prefill")
+    ? tailRows.filter((row) => roleOf(rows, plan, row.target_node_id) !== "prefill")
+    : tailRows;
+  const terminalNodeIds = [...new Set(answeringRows.map((row) => row.target_node_id))];
+  // The legend reads like the columns: the heads (layer 0) together, then each
+  // later starting layer, the machines that start there joined by "|".
+  const legendSteps = [...new Set(assignedRows.map((row) => row.start_layer))]
+    .sort((a, b) => a - b)
+    .map((start) => ({
+      start,
+      nodeIds: [...new Set(assignedRows.filter((row) => row.start_layer === start).map((row) => row.target_node_id))],
+    }));
   const gatewayPosition = pipelineGatewayPosition(
     terminalNodeIds.map((nodeId) => positionOf(nodeId, nodeIds.indexOf(nodeId))),
   );
@@ -609,11 +640,11 @@ export function DeployNetworkCanvas({
           {gatewayPosition && <PipelineGatewayNode position={gatewayPosition} cost={pipelineCost} />}
           <div className="absolute bottom-3 left-4 flex items-center gap-2 border border-line bg-ink/90 px-3 py-2 text-[10px] text-muted shadow-panel backdrop-blur">
             <Sparkles className="h-3 w-3 text-aqua" /><span>prefill</span>
-            {stages.filter((stage) => stage.nodeIds.length > 0).map((stage, index) => (
-              <span key={`${stage.start_layer}-${stage.end_layer}-${index}`} className="flex items-center gap-1">
+            {legendSteps.map((step) => (
+              <span key={step.start} className="flex items-center gap-1">
                 <ArrowRight className="h-3 w-3 text-faint" />
-                <span className={stage.start_layer === 0 ? "text-iris" : "text-aqua"}>
-                  {stage.nodeIds.map(labelOf).join(" | ")}
+                <span className={step.start === 0 ? "text-iris" : "text-aqua"}>
+                  {step.nodeIds.map(labelOf).join(" | ")}
                 </span>
               </span>
             ))}

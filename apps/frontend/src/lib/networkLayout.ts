@@ -248,17 +248,12 @@ export function autoLayout(
 }
 
 /**
- * The Deploy Studio's arrangement. It differs from the Flow's on one point: the
- * deploy map is where machines are being *chosen*, and a column of cards stacked one
- * under the other read as a pipeline that does not exist.
- *
- * - A pipeline of several stages keeps `autoLayout`: one column per stage, replicas
- *   stacked, so the edges between stages read left to right.
- * - A single stage (a whole model, or replicas of one range) has no edge between its
- *   machines, so they sit side by side on the axis.
- * - Machines on the map without a range yet are not part of any stage: they sit side
- *   by side in a row under the plan (on the axis when nothing is assigned), never in
- *   the column of whatever range they happen to hold.
+ * The Deploy Studio's arrangement, the Flow's (`autoLayout`) with more room: one
+ * column per depth in the layer chain, so the heads (whoever serves layer 0) are
+ * the first column, stacked one under the other, and each later range follows
+ * the ranges it continues. Machines on the map without a range yet are not part
+ * of any stage: they sit side by side in a row under the plan (on the axis when
+ * nothing is assigned).
  */
 export function deployLayout(
   assigned: LayoutNode[],
@@ -268,17 +263,7 @@ export function deployLayout(
   // Wider than the Flow's: the deploy cards carry a footer (the model a machine
   // lacks, its download) and the RTT label sits on the edge between columns.
   const rowGap = DEPLOY_GAP_Y + 16;
-  let positions = autoLayout(assigned, () => size, { x: DEPLOY_GAP_X, y: DEPLOY_GAP_Y });
-  const lefts = new Set(Object.values(positions).map((position) => position.left));
-  if (assigned.length > 1 && lefts.size === 1) {
-    const ordered = [...assigned].sort(
-      (a, b) => a.start_layer - b.start_layer || a.end_layer - b.end_layer || a.id.localeCompare(b.id),
-    );
-    positions = Object.fromEntries(ordered.map((node, index) => [
-      node.id,
-      { left: ORIGIN_X + index * (size.width + rowGap), top: AXIS_Y - size.height / 2 },
-    ]));
-  }
+  const positions = autoLayout(assigned, () => size, { x: DEPLOY_GAP_X, y: DEPLOY_GAP_Y });
   const bottom = assigned.length > 0
     ? Math.max(...Object.values(positions).map((position) => position.top + size.height))
     : null;

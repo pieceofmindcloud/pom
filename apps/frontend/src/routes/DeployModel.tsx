@@ -888,15 +888,15 @@ export function DeployModel() {
    *  and an edit must redraw at once instead of waiting for the node. */
   const canvasPlan = useMemo(() => {
     if (!displayPlan) return displayPlan;
-    // the hops between consecutive stages, with their measured RTT
-    const stages = [...new Set(rows.map((row) => `${row.start_layer}-${row.end_layer}`))]
-      .map((key) => rows.filter((row) => `${row.start_layer}-${row.end_layer}` === key).map((row) => row.target_node_id));
+    // the hops (a range to every range that starts on the next layer), with their measured RTT
     const measured = networkRtt.data?.measurements ?? [];
-    const route_options = stages.slice(1).flatMap((stage, index) =>
-      stages[index].flatMap((from) => stage.flatMap((to) => {
-        const rtt = measured.find((item) => item.from_node_id === from && item.to_node_id === to)?.rtt_ms;
-        return from !== to && rtt != null ? [{ from_node_id: from, to_node_id: to, rtt_ms: rtt, selected: true, note: "pipeline" }] : [];
-      })));
+    const route_options = rows.flatMap((from) => rows.flatMap((to) => {
+      if (from.target_node_id === to.target_node_id || to.start_layer !== from.end_layer + 1) return [];
+      const rtt = measured.find((item) => item.from_node_id === from.target_node_id && item.to_node_id === to.target_node_id)?.rtt_ms;
+      return rtt != null
+        ? [{ from_node_id: from.target_node_id, to_node_id: to.target_node_id, rtt_ms: rtt, selected: true, note: "pipeline" }]
+        : [];
+    }));
     return {
       ...displayPlan,
       route_options,

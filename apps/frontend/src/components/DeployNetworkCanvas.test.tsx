@@ -255,6 +255,27 @@ describe("DeployNetworkCanvas", () => {
     expect(within(screen.getByRole("heading", { name: /^b/ })).queryByText("Cabeça")).toBeNull();
   });
 
+  it("stacks two heads and leaves the pipeline from the head to the machine that continues it", async () => {
+    const rows = [
+      { start_layer: 0, end_layer: 11, target_node_id: "a" },
+      { start_layer: 0, end_layer: 3, target_node_id: "b" },
+      { start_layer: 4, end_layer: 11, target_node_id: "c" },
+    ];
+    renderCanvas(
+      plan(rows.map((row, index) => step(row.start_layer, row.end_layer, row.target_node_id, index + 1)), []),
+      rows,
+    );
+    const cardOf = (nodeId: string) => screen.getByRole("heading", { name: new RegExp(`^${nodeId}`) }).closest("article") as HTMLElement;
+    // the two heads share the first column, one under the other
+    await waitFor(() => expect(cardOf("a").style.left).toBe(cardOf("b").style.left));
+    expect(parseFloat(cardOf("b").style.top)).not.toBe(parseFloat(cardOf("a").style.top));
+    expect(parseFloat(cardOf("c").style.left)).toBeGreaterThan(parseFloat(cardOf("b").style.left));
+    // one hop (b -> c, layer 4 follows layer 3) and the answer from both machines on the last layer
+    const canvas = screen.getByText("Mapa da implantação").closest("section")!;
+    expect(canvas.querySelectorAll('svg[aria-hidden="true"] path[marker-end]')).toHaveLength(3);
+    expect(within(canvas).getByText("a | b")).toBeTruthy();
+  });
+
   it("says when the machine load was not observed instead of showing zero", () => {
     const current = plan([step(0, 3, "a", 1)], []);
     current.machines = current.machines.map((item) => item.node_id === "a" ? { ...item, load: null } : item);

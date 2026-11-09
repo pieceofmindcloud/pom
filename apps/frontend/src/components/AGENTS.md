@@ -937,8 +937,14 @@ Key logic carriers:
   dragged positions too. Test: "moves a card to its pipeline column once it
   gets a range, without Reset". `deployLayout` spaces columns and replicas
   wider than the Flow (`DEPLOY_GAP_X`/`DEPLOY_GAP_Y` in `../lib/networkLayout`).
-  A card serving layer 0 carries the **Head** badge, the legend reads stage by
-  stage (replicas joined by `|`), and Shift+click toggles the card's mark
+  It lays out and links the machines as the Flow does: `autoLayout` columns by
+  depth in the layer chain, so the heads (layer 0) share the first column,
+  stacked, and an edge goes from a range to every range starting on the next
+  layer (never head to head); the answer leaves from the machines on the last
+  layer. `machineBounds` is the machine's own first and last layer (it used to
+  clamp the start to 0, which put every machine in the heads' column). A card
+  serving layer 0 carries the **Head** badge, the legend reads by starting
+  layer (machines joined by `|`), and Shift+click toggles the card's mark
   (`markedNodeIds`/`onToggleMarked`) instead of inspecting it. On a narrow viewport, the map uses
   internal scrolling to preserve the cards' size and align the curve to the
   endpoints even when the content is wider than the panel. The separation exists because this graph

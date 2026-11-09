@@ -1549,11 +1549,14 @@ pub(super) fn plan_with_rtt_options(
                 break;
             }
         }
-        // An inference service's engine serves one path: there, any two distinct
-        // ranges that share layers still overlap (the prefill machine aside).
+        // A plugin's split stages must form a path of their own. In whole-model
+        // mode, a chosen L0-last range is another complete head, not an extra
+        // stage on the split path; the plugin can run either route separately.
+        // Keep refusing partial overlaps or a split without a complete path.
         let one_path = params.inference_service.is_some();
+        let independent_whole = kind == DeployKind::Whole && ranges.contains(&(0, last));
         for (index, &(start, end)) in ranges.iter().enumerate() {
-            if from_start[index] && to_end[index] && !one_path {
+            if from_start[index] && to_end[index] && (!one_path || independent_whole) {
                 continue;
             }
             // the layers this off-path range shares with another chosen range
@@ -2075,10 +2078,19 @@ pub(super) fn plan_with_rtt_options(
         }
     }
 
+    // A whole-model head sorts between a split's first and last stages. Look
+    // for actual layer adjacency, not neighboring rows in display order.
+    let adjacent: Vec<_> = stage_ranges
+        .iter()
+        .flat_map(|from| {
+            stage_ranges
+                .iter()
+                .filter(move |to| to.0 == from.1.saturating_add(1))
+                .map(move |to| (*from, *to))
+        })
+        .collect();
     let mut route_options = Vec::new();
-    for pair in stage_ranges.windows(2) {
-        let from_range = pair[0];
-        let to_range = pair[1];
+    for (from_range, to_range) in adjacent {
         let from_nodes: Vec<String> = steps
             .iter()
             .filter(|step| {

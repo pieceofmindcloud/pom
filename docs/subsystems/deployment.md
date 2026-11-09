@@ -78,8 +78,13 @@ Three rules come from the architecture, not from taste:
   others - are two such paths and run as parallel routes. A range on no complete
   path (one that half-overlaps another, like 0-10 beside 5-31) would run layers
   twice: "layers L5-10 are in two chosen slices at the same time". Exact copies
-  are replicas of the same stage. Under a plugin's inference service, which
-  serves one path, any two distinct ranges that share layers still overlap.
+  are replicas of the same stage. Under a plugin's inference service, distinct
+  overlapping stages are refused, except in whole-model mode when one chosen
+  range covers the entire model and the other ranges form a complete route.
+  That whole-model head and the split route are independent; a partial range
+  without a complete path is still refused. Route options join consecutive
+  layer ranges, not consecutive rows in the plan (the whole head sorts between
+  the split stages).
 
 ## 1.1 Whole model: the degenerate case, not a second path
 

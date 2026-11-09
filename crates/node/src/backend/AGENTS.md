@@ -451,6 +451,9 @@ boundary.
   paths and it never invents a jump to a later layer. Overlapping loaded
   ranges are allowed when they belong to distinct paths;
   the coverage is validated by the executable path, not by the union of the files.
+  In whole-model mode, a plugin's full-range head may stand beside a complete
+  split route; the route-option edges still connect its split stages even when
+  the full head sorts between them. A partial overlap stays blocked.
   `undeploy` takes a whole pipeline off the air.
 - `webui/https.rs` - the local CA for the interface (`LocalOnly`):
   `GET /api/ui/tls/ca` (fingerprint, trust state, a past refusal, whether this

@@ -571,6 +571,69 @@
     }
 
     #[test]
+    fn a_plugin_whole_model_beside_two_contiguous_ranges_is_a_second_route() {
+        // All three machines hold their own 48-layer GGUF. The first two serve
+        // a split route; the last serves the entire model as an independent head.
+        let mut machines = build(vec![
+            m("gpu1", 900_000, &[(0, 47)]),
+            m("gpu2", 900_000, &[(0, 47)]),
+            m("whole", 900_000, &[(0, 47)]),
+        ]);
+        for machine in &mut machines {
+            machine.held[0].total_layers = Some(48);
+            machine.held[0].kind = HeldKind::Whole;
+            machine.held[0].name = "model".into();
+            machine.inference_url = Some(format!("http://{}:8181", machine.node_id));
+        }
+        let options = WholeLayerOptions {
+            source_node_id: "gpu1".into(),
+            total_layers: 48,
+            cuts: vec![LayerCut {
+                end_layer: 34,
+                layers: 35,
+                size_bytes: GIB,
+                remainder_bytes: GIB,
+                kv_bytes: None,
+                remainder_kv_bytes: None,
+                resident_bytes: None,
+                remainder_resident_bytes: None,
+            }],
+            granularity: Some(1),
+            rule: "every layer".into(),
+            reason: None,
+        };
+        let selections = super::add_whole_ranges(
+            &mut machines,
+            "model",
+            &[
+                WholeRangeSelection { node_id: "gpu1".into(), start_layer: 0, end_layer: 34 },
+                WholeRangeSelection { node_id: "gpu2".into(), start_layer: 35, end_layer: 47 },
+                WholeRangeSelection { node_id: "whole".into(), start_layer: 0, end_layer: 47 },
+            ],
+            &options,
+        ).unwrap();
+        let params = RuntimeParams {
+            inference_service: Some("strata".into()),
+            ..RuntimeParams::default()
+        };
+        let plan = super::plan("model", &machines, Some(&selections), &params, false, DeployKind::Whole, None);
+        assert_eq!(plan.blocked, None, "{:?}", plan.blocked);
+        assert!(plan.complete && plan.missing.is_empty() && plan.overlap.is_empty());
+        assert_eq!(plan.steps.len(), 3);
+        assert_eq!(plan.route_options.len(), 1);
+        assert_eq!((&*plan.route_options[0].from_node_id, &*plan.route_options[0].to_node_id), ("gpu1", "gpu2"));
+        let targets = super::launch_targets(&plan.steps, &machines, DeployKind::Whole, None, &[]).unwrap();
+        assert_eq!(targets.len(), 3);
+        assert!(targets.iter().find(|target| target.node_id == "whole").unwrap().skip_split);
+        assert!(targets.iter().filter(|target| target.node_id != "whole").all(|target| !target.skip_split));
+
+        // Without the first split stage, 35-47 is not a second route: it
+        // overlaps the whole model but has no path beginning at layer zero.
+        let stranded = super::plan("model", &machines, Some(&selections[1..]), &params, false, DeployKind::Whole, None);
+        assert!(stranded.blocked.as_deref().is_some_and(|reason| reason.contains("two chosen slices")));
+    }
+
+    #[test]
     fn a_range_from_the_own_whole_file_charges_disk_only_without_range_load() {
         let options = WholeLayerOptions {
             source_node_id: "a".to_string(),

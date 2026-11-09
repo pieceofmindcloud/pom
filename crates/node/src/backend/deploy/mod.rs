@@ -38,8 +38,9 @@
 //!   with its own source.
 //!   The same exact range on different machines is an allowed replica.
 //! * **Overlap is not a preference.** Two different cuts covering the same
-//!   layer would make the pipeline ambiguous, so that overlap is refused. The
-//!   same exact range on different machines is an explicit parallel route. A
+//!   layer in one path would make the pipeline ambiguous, so that overlap is
+//!   refused. A whole-model head beside a complete split path is an independent
+//!   route; the same exact range on different machines is a replica. A
 //!   *gap* is different: it makes the global coverage incomplete and therefore
 //!   refuses the pipeline before launch.
 //!

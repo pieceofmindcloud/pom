@@ -92,3 +92,40 @@ first machine.
   it on needs a calibration of the limits for the engine (honest variance
   against dishonest runs: another quantization, skipped layers), or an audit
   mode where the engine places experts deterministically.
+
+## Strata calibration, 2026-11-09
+
+Same setup (Flash-Next IQ3_XXS, stage 0 = layers 0-23 on an RTX 3060, f8
+link). Six fresh turns (11-19 prompt tokens, 120 output tokens, five proof
+chunks each); four receipts re-executed through the ledger's `rpc.calibrate`:
+`honest` three times, and the audited stage with its last 1 and 4 layers
+skipped (`skip:1`, `skip:4`), 20 runs, both readings recorded per chunk.
+
+- **Re-execution is deterministic**: the three honest runs of every receipt
+  are identical, number for number. The variance seen before was the
+  bookkeeping defects fixed above.
+- **Exponent mismatches are useless for Strata**: honest chunks show 44-120
+  of 128 (the verifier's top-128 picks differ from the live ones), so the
+  paper's limit (38) fails every honest stage.
+- **Mantissa error separates honest work from skipped layers**. Per chunk,
+  in the better of the two readings:
+
+  | variant | mean | median |
+  |---|---|---|
+  | honest | 3.7 - 12.5 | 3 - 8 |
+  | skip 1 of 24 layers | 4.1 - 12.4 | 3 - 11 |
+  | skip 4 of 24 layers | 34.2 - 60.8 (short last chunk: 6.2) | 27 - 64 |
+
+- **Limits for Strata** (`toploc::Params::for_engine("strata")`): mean <= 20,
+  median <= 16, exponent count not used. Every honest chunk passes; every
+  skip-4 sample fails in 4 of its 5 chunks. Skipping one layer is not
+  detected: it stays inside the honest range.
+- **Confirmed through the normal path** with `metering.verify_plugin_engines`
+  on: two honest receipts re-checked (`rpc.recheck`) pass, a skip-4
+  re-execution fails.
+
+Limits of this calibration: one model, one quantization, one stage, one GPU
+model, short prompts. `verify_plugin_engines` stays off by default; a network
+serving this model may turn it on. Another model or engine needs its own run
+of `rpc.calibrate` (honest repeats and skipped layers) before its re-execution
+pays or penalizes anyone.

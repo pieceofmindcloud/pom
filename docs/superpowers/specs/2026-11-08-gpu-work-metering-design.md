@@ -526,7 +526,12 @@ Where the implementation departs from the decisions above, it wins:
   Flash-Next, receipts and challenges work, but an honest stage's
   re-execution is not reproducible enough for the paper's limits (MoE expert
   tiering), so plugin-engine re-execution is off by default
-  (`metering.verify_plugin_engines`) and their samples are void.
+  (`metering.verify_plugin_engines`) and their samples are void. A later
+  calibration (20 runs) showed the re-execution is deterministic once the
+  defects were fixed, that the exponent count cannot be used for Strata, and
+  that the mantissa error separates honest work (mean <= 12.5) from 4 skipped
+  layers of 24 (>= 34.2): Strata's limits are mean <= 20, median <= 16
+  (`toploc::Params::for_engine`). One skipped layer is not detected.
 
 ## Out of scope
 

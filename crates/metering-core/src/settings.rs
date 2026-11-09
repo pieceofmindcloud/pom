@@ -27,11 +27,11 @@ pub struct MeteringSettings {
     pub gateway_fee: GatewayFee,
     /// Grace period after a cycle ends before it is frozen, for late receipts.
     pub grace_secs: u64,
-    /// Re-execute the work of plugin engines (Strata) at audit. Off until the
-    /// engine's TOPLOC limits are calibrated: on Flash-Next an honest stage's
-    /// re-execution varies between runs (expert tiering between GPU and CPU
-    /// kernels), so the paper's limits fail honest work. Off, those samples
-    /// are void and the stages are paid on receipts and challenges.
+    /// Re-execute the work of plugin engines (Strata) at audit, with the
+    /// engine's own limits (`toploc::Params::for_engine`). Strata's were
+    /// calibrated on Flash-Next only (they catch 4 skipped layers of 24, not
+    /// 1), so this stays off by default; off, those samples are void and the
+    /// stages are paid on receipts and challenges.
     pub verify_plugin_engines: bool,
 }
 

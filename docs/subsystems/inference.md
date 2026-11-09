@@ -3252,9 +3252,10 @@ with the ledger is the crate `crates/metering-core`; the node side is
   audited one beside the main engine, chains them through loopback relays that
   reproduce each boundary's codec, and reads the audited stage's rows as prompt
   pieces and as committed windows, judging each chunk against both. The
-  serving stage keeps no proofs (void). Off by default
-  (`metering.verify_plugin_engines`): on Flash-Next an honest stage's
-  re-execution varies too much for the paper's limits.
+  serving stage keeps no proofs (void). Each engine is judged by its own
+  limits (`toploc::Params::for_engine`); Strata's ignore the exponent count
+  and bound the mantissa error (calibrated on Flash-Next with the ledger's
+  `rpc.calibrate`). Off by default (`metering.verify_plugin_engines`).
 - A Strata window row is the prompt row followed by values that depend on
   the windowing; only the prompt part is proved (widths from the link's
   hello), every window is held until its commit, and only its kept rows are

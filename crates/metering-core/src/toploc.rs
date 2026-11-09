@@ -62,6 +62,29 @@ impl Default for Params {
 
 pub const PARAMS_VERSION: &str = "toploc/v1";
 
+impl Params {
+    /// The limits of an engine's re-execution.
+    ///
+    /// - llama.cpp: the paper's bf16 limits.
+    /// - Strata (calibrated 2026-11-09 on Flash-Next IQ3_XXS, layers 0-23,
+    ///   f8 link, 20 runs; `docs/reports/gpu-work-metering-live-run.md`): an
+    ///   honest stage's re-execution is deterministic but its top-128 picks
+    ///   differ from the live ones (44-120 exponent mismatches), so the
+    ///   exponent count is not used; the mean and median mantissa error of
+    ///   matched values tell work apart: honest at most 12.5 / 8, the stage
+    ///   with 4 of its 24 layers skipped at least 34.2 / 27. Skipping a
+    ///   single layer stays inside the honest range and is not detected.
+    pub fn for_engine(engine: &str) -> Self {
+        match engine {
+            "strata" => Self {
+                thresholds: Thresholds { t_exp: 128, t_mean: 20.0, t_median: 16.0 },
+                ..Self::default()
+            },
+            _ => Self::default(),
+        }
+    }
+}
+
 /// f32 to bf16 bits, round to nearest even; NaN stays a quiet NaN.
 pub fn bf16_bits(v: f32) -> u16 {
     let bits = v.to_bits();
@@ -384,6 +407,20 @@ mod tests {
         assert_eq!(pos, vec![3, 4, 9]);
         assert_eq!(proof, &[1, 2, 3, 4]);
         assert!(decode_leaf(&[5, 0, 0, 0, 1]).is_err());
+    }
+
+    #[test]
+    fn strata_limits_follow_the_calibration() {
+        let strata = Params::for_engine("strata").thresholds;
+        let judge = |mismatches: u32, mean: f64, median: f64| {
+            mismatches <= strata.t_exp && mean <= strata.t_mean && median <= strata.t_median
+        };
+        // The calibration's extremes: the worst honest chunk passes, the
+        // closest skip-4 chunk fails, and a proof that matches nothing fails.
+        assert!(judge(104, 12.5, 8.0));
+        assert!(!judge(109, 34.2, 27.0));
+        assert!(!judge(128, 2f64.powi(64), 2f64.powi(64)));
+        assert_eq!(Params::for_engine("llama.cpp"), Params::default());
     }
 
     #[test]

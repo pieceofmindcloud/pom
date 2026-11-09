@@ -3199,11 +3199,17 @@ with the ledger is the crate `crates/metering-core`; the node side is
   input (the decoded tensor, or the head's prompt token ids), the positions
   computed, cached, decoded and verified, and the encoded output. Every reply
   mode reaches them, so no forwarding path carries anything new.
-- **Link digests.** A running SHA-256 over each input item and over each output
-  item as the next hop decodes it (`wire::decode` of the encoded bytes): hop
-  `n`'s output digest equals hop `n+1`'s input digest for f32, f16, f8 and i4.
+- **Link digests.** A running SHA-256 over each input item (the decoded tensor:
+  rows and bytes, no positions) and over each item the hop forwards to the next
+  hop as that hop will decode it: the relay encoders report every forwarded
+  tensor (`metering::note_forward`, a codec round trip in the frame's format),
+  because in ring, direct and link modes the next hop gets a frame encoded for
+  it, not the reply. In hub mode the reply is what travels, and the meter's own
+  reply digest stands. Hop `n`'s output digest equals hop `n+1`'s input digest
+  for f32, f16, f8 and i4 (checked live, `docs/reports/gpu-work-metering-live-run.md`).
   The head hashes prompt token ids one position at a time, so the gateway can
-  recompute it from the prompt whatever the chunking.
+  recompute it from the prompt whatever the chunking; the check stops after the
+  prefilled prompt positions of the head's sequence.
 - **TOPLOC proofs.** Rows a verifier can reproduce (prefill and plain decode
   steps, not speculative batches) are proved in chunks of 32 positions with
   `toploc/v1`; each chunk is a Merkle leaf with its positions, stored in

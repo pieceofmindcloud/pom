@@ -55,6 +55,9 @@ separately). Layout:
 - `three-machine-network.md` - the three-machine network investigation: the
   deploy button that would not enable, the silent gossipsub and the untested
   tunnel.
+- `gpu-work-metering-live-run.md` - the metering checked on three real nodes
+  (CPU, f16 and f8 wires): the two defects it found and the re-executions that
+  passed.
 - `pipeline-telemetry.md` - distributed pipeline telemetry: the
   `outside-node` math, the missing second peer in decode and the
   `remote-stream` instrumentation.

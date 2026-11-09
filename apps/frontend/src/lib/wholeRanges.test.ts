@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { autoBalance, evenSplit, isWholeRangeSplit, stepRange, validEnds, wholeRangesOf } from "./wholeRanges";
+import { autoBalance, evenSplit, isWholeRangeSplit, splitOverMarked, stepRange, validEnds, wholeRangesOf } from "./wholeRanges";
 import type { DeploySelection } from "./types";
 
 const row = (start: number, end: number, node: string): DeploySelection => ({
@@ -68,5 +68,38 @@ describe("whole model ranges", () => {
 
     expect(autoBalance([row(0, 15, "a"), row(16, 31, "b")], new Set([0]), ends, prefix, () => 1)).toBe("allLocked");
     expect(autoBalance([row(0, 15, "a"), row(16, 31, "b")], new Set(), ends, () => null, () => 1)).toBe("noSizes");
+  });
+});
+
+describe("splitOverMarked", () => {
+  const row = (node: string, start: number, end: number, gpu: number | null = null) =>
+    ({ start_layer: start, end_layer: end, target_node_id: node, n_gpu_layers: gpu, offload_kqv: null });
+  const every = (total: number) => Array.from({ length: total }, (_, layer) => layer);
+
+  it("leaves the unmarked machines as they are and splits the layers they do not serve", () => {
+    const rows = [row("a", 0, 10, 20), row("b", 11, 20), row("c", 21, 31)];
+    expect(splitOverMarked(rows, ["a", "b"], 32, every(32))).toEqual([
+      row("c", 21, 31),
+      row("a", 0, 10, 20),
+      row("b", 11, 20),
+    ]);
+  });
+
+  it("splits the whole model when the unmarked machines serve it all (a parallel route)", () => {
+    const rows = [row("head", 0, 31), row("a", 0, 31), row("b", 0, 31)];
+    expect(splitOverMarked(rows, ["a", "b"], 32, every(32))).toEqual([
+      row("head", 0, 31),
+      row("a", 0, 15),
+      row("b", 16, 31),
+    ]);
+  });
+
+  it("stops the split on the valid cuts only", () => {
+    const rows = [row("a", 0, 39), row("b", 0, 39)];
+    const split = splitOverMarked(rows, ["a", "b"], 40, [1, 7, 13, 19, 39]);
+    expect(split.map((item) => [item.target_node_id, item.start_layer, item.end_layer])).toEqual([
+      ["a", 0, 19],
+      ["b", 20, 39],
+    ]);
   });
 });

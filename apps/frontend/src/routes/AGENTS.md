@@ -611,7 +611,9 @@ Per-file list:
   one machine can serve several ranges), a remove per range, a mark box per
   machine (`unmarked`, a new machine comes marked; Shift+click on a map card
   toggles it too), **Split the layers over N machines** over the marked ones that
-  hold the model (`../lib/wholeRanges` `evenSplit`), a **Head** badge on a
+  hold the model (`../lib/wholeRanges` `splitOverMarked`: the unmarked machines
+  keep their rows, the marked share the one stretch they leave uncovered, or the
+  whole model when they cover it all, keeping their GPU/KV overrides), a **Head** badge on a
   machine serving layer 0, and the per-machine GPU
   layers / KV-on-GPU (llama.cpp only). Its remove button is "Take X off the
   map", distinct from the card's X. A machine without the model says so.

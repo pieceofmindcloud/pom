@@ -54,6 +54,64 @@ export function evenSplit(nodeIds: string[], total: number, ends: number[]): Dep
   return rows;
 }
 
+/** Splits the layers `first..last` evenly over the machines, in order, with
+ *  each inner boundary on the nearest valid cut (`ends`, the layers a range may
+ *  stop at). Fewer ranges come back when the cuts are too coarse. */
+export function evenSplitSpan(nodeIds: string[], first: number, last: number, ends: number[]): DeploySelection[] {
+  const rows: DeploySelection[] = [];
+  const span = last - first + 1;
+  let start = first;
+  for (let index = 0; index < nodeIds.length && start <= last; index++) {
+    const final = index === nodeIds.length - 1;
+    const ideal = first + Math.round(((index + 1) * span) / nodeIds.length) - 1;
+    const candidates = ends.filter((end) => end >= start && end < last);
+    if (!final && candidates.length === 0) break;
+    const end = final ? last : nearest(candidates, ideal);
+    rows.push({ start_layer: start, end_layer: end, target_node_id: nodeIds[index], n_gpu_layers: null, offload_kqv: null });
+    start = end + 1;
+  }
+  if (rows.length > 0) rows[rows.length - 1].end_layer = last;
+  return rows;
+}
+
+/**
+ * Split the layers over the marked machines, leaving every other machine's
+ * ranges as they are: the marked ones share the layers no unmarked machine
+ * serves (one stretch of them), or the whole model when the unmarked machines
+ * cover it all (a parallel route). The marked machines keep their GPU/KV
+ * overrides; their old ranges give way to the split.
+ */
+export function splitOverMarked(
+  rows: DeploySelection[],
+  marked: string[],
+  total: number,
+  ends: number[],
+): DeploySelection[] {
+  const kept = rows.filter((row) => !marked.includes(row.target_node_id));
+  const covered = new Array(total).fill(false);
+  for (const row of kept) for (let layer = row.start_layer; layer <= row.end_layer && layer < total; layer++) covered[layer] = true;
+  const gaps: Array<[number, number]> = [];
+  for (let layer = 0; layer < total; layer++) {
+    if (covered[layer]) continue;
+    const previous = gaps[gaps.length - 1];
+    if (previous && previous[1] === layer - 1) previous[1] = layer;
+    else gaps.push([layer, layer]);
+  }
+  // one stretch left uncovered: split it; none or several: split the whole model
+  const [first, last] = gaps.length === 1 ? gaps[0] : [0, total - 1];
+  const overrides = (nodeId: string) => rows.find((row) => row.target_node_id === nodeId);
+  const split = evenSplitSpan(marked, first, last, ends).map((row) => {
+    const previous = overrides(row.target_node_id);
+    return {
+      ...row,
+      n_gpu_layers: previous?.n_gpu_layers ?? null,
+      offload_kqv: previous?.offload_kqv ?? null,
+      ...(previous?.inference_role ? { inference_role: previous.inference_role } : {}),
+    };
+  });
+  return [...kept, ...split];
+}
+
 export type StepLimit = "noCut" | "neighbourEmpty" | "locked" | "neighbourLocked";
 
 /** One − or + on the range at `index` (rows in layer order): moves the cut it

@@ -967,7 +967,7 @@ deployStudio.autoBalanceWaiting,Waiting for the model's cuts from the plan,Aguar
 deployStudio.autoBalanceAllLocked,Unlock at least two machines to balance their layers,Destrave pelo menos duas máquinas para equilibrar as camadas
 deployStudio.autoBalanceNoSizes,"The plan does not give the size of every cut yet, or the cuts are too few for every machine","O plano ainda não informa o tamanho de todo corte, ou os cortes são poucos para todas as máquinas"
 deployStudio.lockRange,Lock the range of {machine},Travar a faixa de {machine}
-deployStudio.splitMarkedHint,Splits over the marked machines that hold the model. Shift+click a card on the map to mark or unmark it.,Divide entre as máquinas marcadas que têm o modelo. Shift+clique num cartão do mapa marca ou desmarca.
+deployStudio.splitMarkedHint,Splits over the marked machines the layers no unmarked machine serves (the whole model when they serve it all); unmarked machines keep their ranges. Shift+click a card on the map to mark or unmark it.,Divide entre as máquinas marcadas as camadas que nenhuma desmarcada serve (o modelo inteiro quando elas servem tudo); as desmarcadas mantêm as faixas. Shift+clique num cartão do mapa marca ou desmarca.
 deployStudio.tabMachines,"Machines ({count})","Máquinas ({count})"
 deployStudio.unlockRange,Unlock the range of {machine},Destravar a faixa de {machine}
 deployStudio.layerLimitLocked,This range is locked: unlock it to change it,Esta faixa está travada: destrave para mudar

@@ -1019,20 +1019,22 @@ describe("DeployModel · pipeline map", () => {
     expect(screen.getAllByText("Cabeça").length).toBeGreaterThan(0);
     expect(screen.queryByText(/GPU uso/)).toBeNull();
 
-    // unmark salem: Split the layers works on ksia and mac only
+    // opened as ksia 0-10, mac 11-20, salem 21-31; unmark salem: it keeps its range,
+    // and Split shares the layers it does not serve (0-20) between ksia and mac
     fireEvent.click(screen.getByRole("checkbox", { name: "Marcar salem para dividir as camadas" }));
     fireEvent.click(screen.getByRole("button", { name: "Dividir as camadas entre 2 máquinas" }));
-    expect(screen.getAllByText("Nenhuma camada atribuída")).toHaveLength(1);
-    // ksia: 0-15 -> the end thumb dragged to layer 10 gives L0-9
-    fireEvent.change(screen.getByLabelText("Camadas de ksia: end"), { target: { value: "10" } });
+    expect(screen.queryByText("Nenhuma camada atribuída")).toBeNull();
+    // ksia: 0-10 -> the end thumb dragged to layer 8 gives L0-7
+    fireEvent.change(screen.getByLabelText("Camadas de ksia: end"), { target: { value: "8" } });
     await pressDeploy();
 
     await waitFor(() => expect(deploys()).toHaveLength(1));
     expect(deploys()[0][1]).toMatchObject({
       kind: "whole",
       whole_ranges: [
-        { node_id: "ksia", start_layer: 0, end_layer: 9 },
-        { node_id: "mac", start_layer: 16, end_layer: 31 },
+        { node_id: "ksia", start_layer: 0, end_layer: 7 },
+        { node_id: "mac", start_layer: 11, end_layer: 20 },
+        { node_id: "salem", start_layer: 21, end_layer: 31 },
       ],
     });
   });

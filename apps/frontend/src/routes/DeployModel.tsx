@@ -70,7 +70,7 @@ import { DeployNetworkCanvas } from "../components/DeployNetworkCanvas";
 import { DeployProgressModal } from "../components/DeployProgressModal";
 import { trackOf } from "../components/PipelineRail";
 import { fileSourceOn, tensorParallelModelsOf, wholeModelsOf } from "../lib/wholeModels";
-import { evenSplit, isWholeRangeSplit, validEnds, wholeRangesOf } from "../lib/wholeRanges";
+import { evenSplit, isWholeRangeSplit, splitOverMarked, validEnds, wholeRangesOf } from "../lib/wholeRanges";
 import { inferenceServicesOf, serviceRunsModel, serviceCutsRanges,
   serviceRunsSlices, serviceTakesDraft } from "../lib/inferenceServices";
 import {
@@ -1694,9 +1694,9 @@ export function DeployModel() {
               onToggleMarked={toggleMarked}
               onSplit={(nodeIds, ends) => {
                 if (wholeTotal == null) return;
-                // the unmarked machines stay on the map, without a range
+                // the unmarked machines keep their ranges and settings, and stay on the map
                 setPreferredNodeIds((current) => [...new Set([...current, ...mapMachineIds])]);
-                setSelection(evenSplit(nodeIds, wholeTotal, ends));
+                setSelection(splitOverMarked(rows, nodeIds, wholeTotal, ends).sort(byLayer));
               }}
             />
             )}

@@ -579,8 +579,16 @@ Per-file list:
   (`layer_options`), the default `params`, `capabilities` and `is_moe`; its query
   key is the model, the vision/sidecar picks and the service only, so a map edit
   never queries the node. The map draws the rows on screen (`canvasPlan` builds
-  its steps from `rows`). The first machine dropped on the map takes the whole
-  model; the next ones join without a range. **Deploy validates once**
+  its steps from `rows`), with the directional RTT of each hop between
+  consecutive stages from `useNetworkRtt` (the survey the Dashboard reads). A
+  model opens on its last deployment when one is remembered (each range checked
+  only against the machines and the layer count), else on the machines that
+  hold it with the layers split evenly (`evenSplit`; one machine under a
+  service without the prefill/decode role); either way the machines also go to
+  `preferredNodeIds`, so a split never drops one off the map. A machine dropped
+  on an empty map takes the whole model; the next ones join without a range.
+  The default deployment name is `deployModelDisplayName(chosen)` (no `.gguf`,
+  no split-file part number, no hash). **Deploy validates once**
   (`checkAndDeploy`): it posts the plan with the rows (`rowsPayload`:
   `whole_ranges` when every row's machine holds the whole model, else
   `selection`), and a `blocked` plan, a step `problem`, a machine without the
@@ -600,8 +608,11 @@ Per-file list:
   `../components/LayerRangeSlider` (two thumbs that stop only at
   `rangeBounds(total, validEnds(...))`, i.e. 0, each valid cut + 1 and the layer
   count), **Whole model**, **+ Range** (the first stretch no machine serves, so
-  one machine can serve several ranges), a remove per range, **Split the layers
-  over N machines** (`../lib/wholeRanges` `evenSplit`) and the per-machine GPU
+  one machine can serve several ranges), a remove per range, a mark box per
+  machine (`unmarked`, a new machine comes marked; Shift+click on a map card
+  toggles it too), **Split the layers over N machines** over the marked ones that
+  hold the model (`../lib/wholeRanges` `evenSplit`), a **Head** badge on a
+  machine serving layer 0, and the per-machine GPU
   layers / KV-on-GPU (llama.cpp only). Its remove button is "Take X off the
   map", distinct from the card's X. A machine without the model says so.
   For a real MoE model (`DeployPlan.is_moe`), the Global inspector shows the

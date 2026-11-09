@@ -1540,8 +1540,12 @@ machine restarted. Today the fingerprint is only model + set of ranges.
   (`inServiceAsked`), then `POST /api/ui/deploy`, which re-surveys the cluster
   itself. There is no capacity projection on the cards: the analytic preview
   did not count that the model a machine serves now is released by the deploy.
-  Every peer shows up in the bottom strip and can be dragged onto the map; the
-  first one takes the whole model, the next ones join without a range. In the
+  The map opens on the remembered deployment, or on the machines that hold the
+  model with the layers split over them; the hops between stages show the RTT
+  measured between the machines (`useNetworkRtt`), and a machine serving layer 0
+  carries the Head badge. Every other peer shows up in the bottom strip and can
+  be dragged onto the map, joining without a range. Split the layers works on
+  the marked machines (a box per machine, or Shift+click on a card). In the
   Globals tab, the inspector also lets you pick `cache_type_k` and
   `cache_type_v` for the installation; each change of the combos is applied
   through `POST /api/ui/cache-types`, with no save button, subtitle or `global`

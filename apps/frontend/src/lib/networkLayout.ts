@@ -56,6 +56,8 @@ export const GATEWAY_SIZE: CardSize = { width: GATEWAY_WIDTH, height: GATEWAY_HE
 export const GATEWAY_LAYOUT_ID = "__gateway__";
 const GAP_X = 148;
 const GAP_Y = 40;
+const DEPLOY_GAP_X = 220;
+const DEPLOY_GAP_Y = 72;
 const ORIGIN_X = 48;
 /** Horizontal axis around which each column is centered. */
 const AXIS_Y = 300;
@@ -175,6 +177,7 @@ export interface LayoutNode {
 export function autoLayout(
   nodes: LayoutNode[],
   sizeOf: (id: string) => CardSize = () => CARD_SIZE,
+  gaps: { x: number; y: number } = { x: GAP_X, y: GAP_Y },
 ): Record<string, CanvasPosition> {
   if (nodes.length === 0) return {};
 
@@ -229,7 +232,7 @@ export function autoLayout(
     }
     const groups = [...ranges.values()].map((group) => [...group].sort((a, b) => a.id.localeCompare(b.id)));
     const sizes = column.map((node) => sizeOf(node.id));
-    const gap = sizes.every((size) => size.height < CARD_HEIGHT) ? GAP_Y / 2 : GAP_Y;
+    const gap = sizes.every((size) => size.height < CARD_HEIGHT) ? gaps.y / 2 : gaps.y;
     const heightOf = (group: LayoutNode[]) =>
       group.reduce((sum, node) => sum + sizeOf(node.id).height, 0) + (group.length - 1) * gap;
     let top = AXIS_Y - heightOf(groups[0]) / 2;
@@ -239,7 +242,7 @@ export function autoLayout(
         top += sizeOf(node.id).height + gap;
       }
     }
-    left += Math.max(...sizes.map((size) => size.width)) + GAP_X;
+    left += Math.max(...sizes.map((size) => size.width)) + gaps.x;
   });
   return positions;
 }
@@ -262,8 +265,10 @@ export function deployLayout(
   unassignedIds: string[],
   size: CardSize = CARD_SIZE,
 ): Record<string, CanvasPosition> {
-  const rowGap = GAP_Y + 8;
-  let positions = autoLayout(assigned, () => size);
+  // Wider than the Flow's: the deploy cards carry a footer (the model a machine
+  // lacks, its download) and the RTT label sits on the edge between columns.
+  const rowGap = DEPLOY_GAP_Y + 16;
+  let positions = autoLayout(assigned, () => size, { x: DEPLOY_GAP_X, y: DEPLOY_GAP_Y });
   const lefts = new Set(Object.values(positions).map((position) => position.left));
   if (assigned.length > 1 && lefts.size === 1) {
     const ordered = [...assigned].sort(

@@ -58,7 +58,7 @@ import {
 } from "lucide-react";
 import { LayerRangeSlider, rangeBounds } from "../components/LayerRangeSlider";
 import { api, ApiError } from "../lib/api";
-import { useCacheTypes, useCluster, useClusterCatalog, useInvalidate, useJobs, useNode, useSidecarLinks } from "../lib/queries";
+import { useCacheTypes, useCluster, useClusterCatalog, useInvalidate, useJobs, useNetworkRtt, useNode, useSidecarLinks } from "../lib/queries";
 import type { SidecarPick } from "../components/SidecarPicker";
 import { recallDeploy, rememberDeploy, usableSelection } from "../lib/deployMemory";
 import { useToast } from "../lib/toast";
@@ -290,6 +290,10 @@ export function DeployModel() {
   const [strategy, setStrategy] = useState<DeployStrategy>("simple");
   const [preferredNodeIds, setPreferredNodeIds] = useState<string[]>([]);
   const [inspectedNodeId, setInspectedNodeId] = useState<string | null>(null);
+  /** Machines on the map the operator unmarked (a new machine comes marked):
+   *  Split the layers works on the marked ones. Shift+click on a card, or the
+   *  box by its name in the Machines tab, toggles the mark. */
+  const [unmarked, setUnmarked] = useState<Set<string>>(() => new Set());
   const [inspectorTab, setInspectorTab] = useState<"global" | "machine">("machine");
   const [inspectorOpen, setInspectorOpen] = useState(true);
   /** The whole model to deploy, when that is the question being asked. */
@@ -479,8 +483,9 @@ export function DeployModel() {
     if (!chosen) return;
     setDeploymentName((current) => {
       if (!current || current === defaultDeploymentName.current) {
-        defaultDeploymentName.current = chosen;
-        return chosen;
+        // the model's name, without `.gguf` and without a split file's part number
+        defaultDeploymentName.current = deployModelDisplayName(chosen);
+        return defaultDeploymentName.current;
       }
       return current;
     });
@@ -705,17 +710,40 @@ export function DeployModel() {
     if (!p || p.group !== chosen || kindOf(p) !== kind || restored.current.has(memoryKey)) return;
     restored.current.add(memoryKey);
 
+    const machineIds = p.machines.map((m) => m.node_id);
+    const total = p.total_layers ?? wholeTotal;
     const memory = recallDeploy(memoryKey);
-    if (!memory) return;
-
-    const usable = usableSelection(
-      memory.selection,
-      p.available,
-      p.machines.map((m) => m.node_id),
-    );
-    if (!usable) return;
+    // A range of the whole model is read from each machine's own copy, so a
+    // remembered range is usable while its machine is still here and the range
+    // fits the model (the survey names no range to compare it with).
+    const usable = !memory
+      ? null
+      : isWhole && total != null
+        ? (() => {
+            const kept = memory.selection.filter((row) =>
+              machineIds.includes(row.target_node_id) && row.start_layer >= 0 && row.end_layer < total && row.start_layer <= row.end_layer);
+            return kept.length > 0 ? kept : null;
+          })()
+        : usableSelection(memory.selection, p.available, machineIds);
+    if (!memory || !usable) {
+      // Nothing to bring back: open on the machines that hold the model, with
+      // the layers split evenly over them (one machine takes it whole).
+      if (isWhole && total != null && (selection ?? []).length === 0) {
+        const holders = (wholeModel?.holders ?? []).filter((nodeId) =>
+          machineIds.includes(nodeId) && (!service || service.nodeIds.includes(nodeId)));
+        const picked = service && !splitRoles ? holders.slice(0, 1) : holders;
+        if (picked.length > 0) {
+          const ends = validEnds(total, p.layer_options?.cuts.map((cut) => cut.end_layer) ?? null);
+          setSelection(evenSplit(picked, total, ends).sort(byLayer));
+          // on the map even when a split later leaves one without a range
+          setPreferredNodeIds(picked);
+        }
+      }
+      return;
+    }
 
     setSelection(usable.slice().sort(byLayer));
+    setPreferredNodeIds([...new Set(usable.map((row) => row.target_node_id))]);
     if (memory.params) setParams(memory.params);
     if (memory.deployment_name) setDeploymentName(memory.deployment_name);
     if (memory.strategy) setStrategy(memory.strategy);
@@ -773,6 +801,22 @@ export function DeployModel() {
       .filter((machine) => mapNodeIds.has(machine.node_id))
       .sort((a, b) => firstLayer(a.node_id) - firstLayer(b.node_id) || a.label.localeCompare(b.label));
   }, [liveMachines, mapNodeIds, rows]);
+  const markedNodeIds = useMemo(
+    () => orderedMapMachines.map((machine) => machine.node_id).filter((nodeId) => !unmarked.has(nodeId)),
+    [orderedMapMachines, unmarked],
+  );
+  function toggleMarked(nodeId: string) {
+    setUnmarked((current) => {
+      const next = new Set(current);
+      if (next.has(nodeId)) next.delete(nodeId);
+      else next.add(nodeId);
+      return next;
+    });
+  }
+  /** Directional RTT between the machines on the map, from the same survey the
+   *  Dashboard's map reads; the edges of the deploy map show it. */
+  const rttNodeIds = useMemo(() => [...mapMachineIds].sort(), [mapMachineIds]);
+  const networkRtt = useNetworkRtt(rttNodeIds, rttNodeIds.length >= 2);
   const tpCandidates = useMemo(
     () => tpGroup ? mapMachineIds : mapMachineIds.filter((nodeId) => wholeModel?.holders.includes(nodeId)),
     [mapMachineIds, tpGroup, wholeModel],
@@ -844,9 +888,18 @@ export function DeployModel() {
    *  and an edit must redraw at once instead of waiting for the node. */
   const canvasPlan = useMemo(() => {
     if (!displayPlan) return displayPlan;
+    // the hops between consecutive stages, with their measured RTT
+    const stages = [...new Set(rows.map((row) => `${row.start_layer}-${row.end_layer}`))]
+      .map((key) => rows.filter((row) => `${row.start_layer}-${row.end_layer}` === key).map((row) => row.target_node_id));
+    const measured = networkRtt.data?.measurements ?? [];
+    const route_options = stages.slice(1).flatMap((stage, index) =>
+      stages[index].flatMap((from) => stage.flatMap((to) => {
+        const rtt = measured.find((item) => item.from_node_id === from && item.to_node_id === to)?.rtt_ms;
+        return from !== to && rtt != null ? [{ from_node_id: from, to_node_id: to, rtt_ms: rtt, selected: true, note: "pipeline" }] : [];
+      })));
     return {
       ...displayPlan,
-      route_options: [],
+      route_options,
       steps: rows.map((row, index) => ({
         position: index + 1,
         start_layer: row.start_layer,
@@ -872,7 +925,7 @@ export function DeployModel() {
         parts: [],
       })),
     };
-  }, [displayPlan, rows]);
+  }, [displayPlan, rows, networkRtt.data]);
 
 
   const labelOf = (id: string) =>
@@ -1005,7 +1058,7 @@ export function DeployModel() {
       const started = await api.post<{ job_id: string }>("/api/ui/deploy", {
         group: chosen,
         kind,
-        deployment_name: deploymentName || chosen,
+        deployment_name: deploymentName || deployModelDisplayName(chosen),
         strategy,
         preferred_node_ids: preferredNodeIds,
         ...rowsPayload(selection ? rows : null),
@@ -1031,7 +1084,7 @@ export function DeployModel() {
         selection: rows,
         params: sentParams,
         merge: effMerge,
-        deployment_name: deploymentName || chosen,
+        deployment_name: deploymentName || deployModelDisplayName(chosen),
         strategy,
       });
       invalidate();
@@ -1191,7 +1244,7 @@ export function DeployModel() {
       const verdict = await api.post<DeployPlan>("/api/ui/deploy/plan", {
         group: chosen,
         kind,
-        deployment_name: deploymentName || chosen,
+        deployment_name: deploymentName || deployModelDisplayName(chosen),
         ...rowsPayload(rows),
         ...(params || service ? { params: sentParams } : {}),
         vision: useVision,
@@ -1361,7 +1414,7 @@ export function DeployModel() {
                 name="deployment_name"
                 value={deploymentName}
                 onChange={(event) => setDeploymentName(event.target.value)}
-                placeholder={chosen || t("deployStudio.deploymentName")}
+                placeholder={deployModelDisplayName(chosen) || t("deployStudio.deploymentName")}
                 className="h-9 min-w-0 flex-1 text-[0.78rem]"
               />
             </div>
@@ -1428,6 +1481,8 @@ export function DeployModel() {
                 onDropPeer={addPeerToDeployment}
                 labelOf={labelOf}
                 mapNodeIds={mapMachineIds}
+                markedNodeIds={markedNodeIds}
+                onToggleMarked={toggleMarked}
                 primaryCandidateIds={isTp ? tpCandidates : undefined}
                 primaryNodeId={isTp ? tp.primary_node_id : undefined}
                 onTogglePrimary={isTp ? togglePrimary : undefined}
@@ -1635,8 +1690,12 @@ export function DeployModel() {
               onRows={(next) => setSelection(next.slice().sort(byLayer))}
               onGpu={setPeerGpu}
               onKqv={setPeerKqv}
+              marked={markedNodeIds}
+              onToggleMarked={toggleMarked}
               onSplit={(nodeIds, ends) => {
                 if (wholeTotal == null) return;
+                // the unmarked machines stay on the map, without a range
+                setPreferredNodeIds((current) => [...new Set([...current, ...mapMachineIds])]);
                 setSelection(evenSplit(nodeIds, wholeTotal, ends));
               }}
             />
@@ -1793,6 +1852,8 @@ function MachinesTab({
   onRows,
   onGpu,
   onKqv,
+  marked,
+  onToggleMarked,
   onSplit,
 }: {
   machines: { node_id: string; label: string }[];
@@ -1809,6 +1870,9 @@ function MachinesTab({
   onRows: (rows: DeploySelection[]) => void;
   onGpu: (nodeId: string, value: number | null) => void;
   onKqv: (nodeId: string, value: boolean) => void;
+  /** The machines Split the layers works on. */
+  marked: string[];
+  onToggleMarked: (nodeId: string) => void;
   onSplit: (nodeIds: string[], ends: number[]) => void;
 }) {
   const { t } = useI18n();
@@ -1816,7 +1880,8 @@ function MachinesTab({
     return <p className="px-3 py-4 text-[0.68rem] text-faint">{t("deployStudio.machinesEmpty")}</p>;
   }
   const bounds = total == null ? [] : rangeBounds(total, ends);
-  const holdersOnMap = machines.map((machine) => machine.node_id).filter((nodeId) => holders.includes(nodeId));
+  // Split the layers over the marked machines that hold the model, in map order.
+  const splitOver = machines.map((machine) => machine.node_id).filter((nodeId) => holders.includes(nodeId) && marked.includes(nodeId));
   const newRow = (nodeId: string, start: number, end: number): DeploySelection => {
     const existing = rows.find((row) => row.target_node_id === nodeId);
     return {
@@ -1843,10 +1908,20 @@ function MachinesTab({
   };
   return (
     <div className="space-y-2 p-2">
-      {rangesOnWhole && holdersOnMap.length >= 2 && total != null && (
-        <Button variant="outline" size="sm" type="button" className="w-full" onClick={() => onSplit(holdersOnMap, ends)}>
-          {t("deployStudio.splitLayers", { count: holdersOnMap.length })}
-        </Button>
+      {rangesOnWhole && total != null && machines.length >= 2 && (
+        <>
+          <Button
+            variant="outline"
+            size="sm"
+            type="button"
+            className="w-full"
+            disabled={splitOver.length < 2}
+            onClick={() => onSplit(splitOver, ends)}
+          >
+            {t("deployStudio.splitLayers", { count: splitOver.length })}
+          </Button>
+          <p className="text-[0.58rem] leading-snug text-faint">{t("deployStudio.splitMarkedHint")}</p>
+        </>
       )}
       {machines.map((machine) => {
         const taking = rows.filter((row) => row.target_node_id === machine.node_id);
@@ -1862,7 +1937,20 @@ function MachinesTab({
             className={`border ${inspectedNodeId === machine.node_id ? "border-aqua/50 bg-aqua/[0.05]" : "border-line bg-ink/40"}`}
           >
             <div className="flex items-center justify-between gap-2 border-b border-line px-2 py-1.5">
-              <p className="min-w-0 truncate text-[0.7rem] font-semibold text-fg">{machine.label}</p>
+              <label className="flex min-w-0 items-center gap-1.5" onClick={(event) => event.stopPropagation()}>
+                <input
+                  type="checkbox"
+                  name={`marked_${machine.node_id}`}
+                  checked={marked.includes(machine.node_id)}
+                  onChange={() => onToggleMarked(machine.node_id)}
+                  aria-label={t("deployStudio.markMachine", { machine: machine.label })}
+                  className="h-3 w-3 shrink-0 accent-aqua"
+                />
+                <span className="min-w-0 truncate text-[0.7rem] font-semibold text-fg">{machine.label}</span>
+                {taking.some((row) => row.start_layer === 0) && (
+                  <Badge tone="iris" className="shrink-0 px-1 py-0 text-[0.54rem]">{t("deployStudio.head")}</Badge>
+                )}
+              </label>
               <button
                 type="button"
                 aria-label={t("deployStudio.machineOffMap", { machine: machine.label })}

@@ -39,6 +39,9 @@ type DeployNetworkCanvasProps = {
   pipelineCost?: PipelineCycleCost;
   /** Extra content at the foot of a machine's card (the model it lacks, its download). */
   cardFooter?: (nodeId: string) => ReactNode;
+  /** The machines marked for Split the layers; Shift+click on a card toggles one. */
+  markedNodeIds?: string[];
+  onToggleMarked?: (nodeId: string) => void;
 };
 
 function machineRows(rows: DeploySelection[], nodeId: string) {
@@ -194,6 +197,8 @@ function NodeCard({
   primaryNodeId,
   onTogglePrimary,
   footer,
+  marked,
+  onToggleMarked,
 }: {
   machine: DeployMachine;
   rows: DeploySelection[];
@@ -209,15 +214,22 @@ function NodeCard({
   primaryNodeId?: string;
   onTogglePrimary?: () => void;
   footer?: ReactNode;
+  marked?: boolean;
+  onToggleMarked?: () => void;
 }) {
   const taking = machineRows(rows, machine.node_id);
   const active = taking.length > 0;
+  // whoever serves layer 0 is a head: it receives the prompts
+  const head = taking.some((row) => row.start_layer === 0);
   const { t } = useI18n();
   return (
     <article
       role="button"
       tabIndex={0}
-      onClick={onInspect}
+      onClick={(event) => {
+        if (event.shiftKey && onToggleMarked) onToggleMarked();
+        else onInspect();
+      }}
       onDoubleClick={(event) => {
         event.stopPropagation();
         onAddPeer();
@@ -233,6 +245,7 @@ function NodeCard({
         "absolute select-none rounded-xl border bg-ink/95 p-3.5 shadow-panel backdrop-blur transition-[box-shadow,border-color]",
         dragging ? "cursor-grabbing border-iris shadow-lift" : "cursor-grab border-line-strong hover:border-iris/55 hover:shadow-lift",
         selected && "border-aqua ring-2 ring-aqua/30 shadow-[0_0_24px_rgba(65,224,206,0.16)]",
+        marked && !selected && "border-iris/70",
         !active && "opacity-75",
       )}
       style={{ left: position.left, top: position.top, width: CARD_WIDTH, minHeight: CARD_HEIGHT, touchAction: "none" }}
@@ -244,7 +257,11 @@ function NodeCard({
             <ServerCog className="h-4 w-4" />
           </span>
           <div className="min-w-0">
-            <h3 className="truncate text-sm font-semibold text-fg">{machine.label}</h3>
+            <h3 className="flex min-w-0 items-center gap-1.5 text-sm font-semibold text-fg">
+              <span className="truncate">{machine.label}</span>
+              {head && <Badge tone="iris" className="shrink-0 px-1 py-0 text-[9px]">{t("deployStudio.head")}</Badge>}
+              {marked && <span className="sr-only">{t("deployStudio.marked")}</span>}
+            </h3>
             <p className="flex min-w-0 items-center gap-1 truncate text-[10px] text-faint">
               <span className="truncate">{active ? t("deployStudio.inDeployment") : t("deployStudio.availableForPlan")}</span>
               {machine.rtt_ms != null && <><span aria-hidden="true">·</span><span className="shrink-0">RTT {machine.rtt_ms.toFixed(1)} ms</span></>}
@@ -401,6 +418,8 @@ export function DeployNetworkCanvas({
   onTogglePrimary,
   pipelineCost,
   cardFooter,
+  markedNodeIds,
+  onToggleMarked,
 }: DeployNetworkCanvasProps) {
   const { t } = useI18n();
   const canvas = useRef<HTMLDivElement>(null);
@@ -585,13 +604,20 @@ export function DeployNetworkCanvas({
             return <RouteRttLabel key={`rtt-gateway-${nodeId}`} rttMs={route?.rtt_ms} left={geometry.labelX} top={geometry.labelY} />;
           })}
           {machines.map((machine, index) => (
-            <NodeCard key={machine.node_id} footer={cardFooter?.(machine.node_id)} machine={machine} rows={rows} position={positionOf(machine.node_id, index)} selected={inspectedNodeId === machine.node_id} dragging={dragging === machine.node_id} primaryNodeId={primaryNodeId} onTogglePrimary={onTogglePrimary && (primaryCandidateIds ?? []).includes(machine.node_id) ? () => onTogglePrimary(machine.node_id) : undefined} onInspect={() => onInspect(machine.node_id)} onAddPeer={() => onAddPeer(machine.node_id)} onRemovePeer={() => onRemovePeer(machine.node_id)} onPointerDown={(event) => beginDrag(machine.node_id, index, event)} onPointerMove={(event) => drag(machine.node_id, event)} onPointerUp={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); setDragging(null); }} />
+            <NodeCard key={machine.node_id} marked={markedNodeIds?.includes(machine.node_id)} onToggleMarked={onToggleMarked ? () => onToggleMarked(machine.node_id) : undefined} footer={cardFooter?.(machine.node_id)} machine={machine} rows={rows} position={positionOf(machine.node_id, index)} selected={inspectedNodeId === machine.node_id} dragging={dragging === machine.node_id} primaryNodeId={primaryNodeId} onTogglePrimary={onTogglePrimary && (primaryCandidateIds ?? []).includes(machine.node_id) ? () => onTogglePrimary(machine.node_id) : undefined} onInspect={() => onInspect(machine.node_id)} onAddPeer={() => onAddPeer(machine.node_id)} onRemovePeer={() => onRemovePeer(machine.node_id)} onPointerDown={(event) => beginDrag(machine.node_id, index, event)} onPointerMove={(event) => drag(machine.node_id, event)} onPointerUp={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); setDragging(null); }} />
           ))}
           {gatewayPosition && <PipelineGatewayNode position={gatewayPosition} cost={pipelineCost} />}
           <div className="absolute bottom-3 left-4 flex items-center gap-2 border border-line bg-ink/90 px-3 py-2 text-[10px] text-muted shadow-panel backdrop-blur">
             <Sparkles className="h-3 w-3 text-aqua" /><span>prefill</span>
-            {nodeIds.map((nodeId, index) => <span key={nodeId} className="flex items-center gap-1"><ArrowRight className="h-3 w-3 text-faint" /><span className={index === 0 ? "text-iris" : "text-aqua"}>{labelOf(nodeId)}</span></span>)}
-            <ArrowRight className="h-3 w-3 text-faint" /><span>resposta</span>
+            {stages.filter((stage) => stage.nodeIds.length > 0).map((stage, index) => (
+              <span key={`${stage.start_layer}-${stage.end_layer}-${index}`} className="flex items-center gap-1">
+                <ArrowRight className="h-3 w-3 text-faint" />
+                <span className={stage.start_layer === 0 ? "text-iris" : "text-aqua"}>
+                  {stage.nodeIds.map(labelOf).join(" | ")}
+                </span>
+              </span>
+            ))}
+            <ArrowRight className="h-3 w-3 text-faint" /><span>{t("deployStudio.legendAnswer")}</span>
           </div>
         </div>
       )}

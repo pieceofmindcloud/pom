@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocaleProvider } from "../i18n/provider";
 import { CARD_HEIGHT, CARD_WIDTH, routeGeometry, type CanvasPosition } from "../lib/networkLayout";
@@ -205,7 +205,7 @@ describe("DeployNetworkCanvas", () => {
         />
       </LocaleProvider>
     );
-    const cardOf = (nodeId: string) => screen.getByRole("heading", { name: nodeId }).closest("article") as HTMLElement;
+    const cardOf = (nodeId: string) => screen.getByRole("heading", { name: new RegExp(`^${nodeId}\\b`) }).closest("article") as HTMLElement;
     // b is on the map without a range: it waits on the row under the pipeline
     const view = render(draw([{ start_layer: 0, end_layer: 11, target_node_id: "a" }]));
     await waitFor(() => expect(cardOf("b").style.top).not.toBe(cardOf("a").style.top));
@@ -218,6 +218,41 @@ describe("DeployNetworkCanvas", () => {
     await waitFor(() => expect(cardOf("b").style.top).toBe(cardOf("a").style.top));
     expect(parseFloat(cardOf("b").style.left)).toBeGreaterThan(parseFloat(cardOf("a").style.left));
     view.unmount();
+  });
+
+  it("marks a machine with Shift+click instead of inspecting it, and names the head", () => {
+    const onInspect = vi.fn();
+    const onToggleMarked = vi.fn();
+    const rows = [
+      { start_layer: 0, end_layer: 3, target_node_id: "a" },
+      { start_layer: 4, end_layer: 11, target_node_id: "b" },
+    ];
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <DeployNetworkCanvas
+          plan={plan([step(0, 3, "a", 1), step(4, 11, "b", 2)], [])}
+          rows={rows}
+          inspectedNodeId={null}
+          onInspect={onInspect}
+          onAddPeer={vi.fn()}
+          onRemovePeer={vi.fn()}
+          onDropPeer={vi.fn()}
+          labelOf={(nodeId) => nodeId}
+          mapNodeIds={["a", "b"]}
+          markedNodeIds={[]}
+          onToggleMarked={onToggleMarked}
+        />
+      </LocaleProvider>,
+    );
+    const cardB = screen.getByRole("heading", { name: /^b/ }).closest("article")!;
+    fireEvent.click(cardB, { shiftKey: true });
+    expect(onToggleMarked).toHaveBeenCalledWith("b");
+    expect(onInspect).not.toHaveBeenCalled();
+    fireEvent.click(cardB);
+    expect(onInspect).toHaveBeenCalledWith("b");
+    // the machine that serves layer 0 is the head; the others are not
+    expect(within(screen.getByRole("heading", { name: /^a/ })).getByText("Cabeça")).toBeTruthy();
+    expect(within(screen.getByRole("heading", { name: /^b/ })).queryByText("Cabeça")).toBeNull();
   });
 
   it("says when the machine load was not observed instead of showing zero", () => {

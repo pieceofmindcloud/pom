@@ -1,12 +1,13 @@
-import { useId } from "react";
+import { useId, useState } from "react";
 
 /**
  * Picks a layer range on a whole model with two thumbs on one track.
  *
- * `bounds` are the places a range may start or end, in layers: `0`, every
- * valid cut + 1 and the model's layer count (`rangeBounds`). The thumbs move
- * over those places only, so every range the slider gives is one the GGUF can
- * be cut at; the range is `[bounds[lo], bounds[hi] - 1]`.
+ * The track is in layers, so a thumb moves smoothly under the pointer; the
+ * range it gives snaps to `bounds`, the places a range may start or end: `0`,
+ * every valid cut + 1 and the model's layer count (`rangeBounds`). Every range
+ * the slider reports is one the GGUF can be cut at: `[start, end]` with
+ * `start` and `end + 1` in `bounds`. On release the thumb settles on the bound.
  */
 export function LayerRangeSlider({
   bounds,
@@ -24,52 +25,72 @@ export function LayerRangeSlider({
   onChange: (start: number, end: number) => void;
 }) {
   const id = useId();
-  const last = bounds.length - 1;
-  const lo = nearestIndex(bounds, start);
-  const hi = Math.max(lo + 1, nearestIndex(bounds, end + 1));
-  const pct = (index: number) => (last > 0 ? (index / last) * 100 : 0);
+  const total = bounds[bounds.length - 1] ?? 0;
+  // Where each thumb sits while it is being dragged (in layers), else null.
+  const [dragLo, setDragLo] = useState<number | null>(null);
+  const [dragHi, setDragHi] = useState<number | null>(null);
+  const lo = dragLo ?? start;
+  const hi = dragHi ?? end + 1;
+  const pct = (layer: number) => (total > 0 ? (layer / total) * 100 : 0);
+  const settle = () => { setDragLo(null); setDragHi(null); };
   const thumb =
     "pointer-events-none absolute inset-x-0 top-1/2 h-4 w-full -translate-y-1/2 appearance-none bg-transparent " +
     "[&::-webkit-slider-thumb]:pointer-events-auto [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:w-3.5 " +
-    "[&::-webkit-slider-thumb]:cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full " +
+    "[&::-webkit-slider-thumb]:cursor-grab [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full " +
     "[&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-aqua [&::-webkit-slider-thumb]:bg-ink " +
     "[&::-moz-range-thumb]:pointer-events-auto [&::-moz-range-thumb]:h-3 [&::-moz-range-thumb]:w-3 " +
-    "[&::-moz-range-thumb]:cursor-pointer [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-2 " +
+    "[&::-moz-range-thumb]:cursor-grab [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-2 " +
     "[&::-moz-range-thumb]:border-aqua [&::-moz-range-thumb]:bg-ink disabled:opacity-40";
   return (
     <div className="relative h-5" role="group" aria-labelledby={`${id}-label`}>
       <span id={`${id}-label`} className="sr-only">{label}</span>
       <div className="absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 rounded-full bg-line" />
+      {/* the valid cuts, as ticks on the track */}
+      {bounds.length <= 64 && bounds.slice(1, -1).map((bound) => (
+        <span key={bound} aria-hidden="true" className="absolute top-1/2 h-2 w-px -translate-y-1/2 bg-faint/60" style={{ left: `${pct(bound)}%` }} />
+      ))}
       <div
         className="absolute top-1/2 h-1 -translate-y-1/2 rounded-full bg-aqua/70"
-        style={{ left: `${pct(lo)}%`, width: `${pct(hi) - pct(lo)}%` }}
+        style={{ left: `${pct(Math.min(lo, hi))}%`, width: `${Math.abs(pct(hi) - pct(lo))}%` }}
       />
       <input
         type="range"
         aria-label={`${label}: start`}
         min={0}
-        max={last}
+        max={total}
         step={1}
         value={lo}
         disabled={disabled}
         onChange={(event) => {
-          const next = Math.min(Number(event.target.value), hi - 1);
-          onChange(bounds[next], bounds[hi] - 1);
+          const raw = Math.min(Number(event.target.value), total - 1);
+          setDragLo(raw);
+          const upper = snap(bounds, end + 1);
+          const next = snap(bounds.filter((bound) => bound < upper), raw);
+          if (next !== start) onChange(next, upper - 1);
         }}
+        onPointerUp={settle}
+        onBlur={settle}
+        onKeyUp={settle}
         className={thumb}
       />
       <input
         type="range"
         aria-label={`${label}: end`}
         min={0}
-        max={last}
+        max={total}
         step={1}
         value={hi}
         disabled={disabled}
         onChange={(event) => {
-          const next = Math.max(Number(event.target.value), lo + 1);
-          onChange(bounds[lo], bounds[next] - 1);
+          const raw = Math.max(Number(event.target.value), 1);
+          setDragHi(raw);
+          const lower = snap(bounds, start);
+          const next = snap(bounds.filter((bound) => bound > lower), raw);
+          if (next - 1 !== end) onChange(lower, next - 1);
         }}
+        onPointerUp={settle}
+        onBlur={settle}
+        onKeyUp={settle}
         className={thumb}
       />
     </div>
@@ -81,10 +102,11 @@ export function rangeBounds(total: number, ends: number[]): number[] {
   return [...new Set([0, ...ends.filter((end) => end < total - 1).map((end) => end + 1), total])].sort((a, b) => a - b);
 }
 
-function nearestIndex(bounds: number[], layer: number): number {
-  let best = 0;
-  for (let index = 1; index < bounds.length; index++) {
-    if (Math.abs(bounds[index] - layer) < Math.abs(bounds[best] - layer)) best = index;
+/** The bound nearest to `layer` (the first of two at the same distance). */
+function snap(bounds: number[], layer: number): number {
+  let best = bounds[0];
+  for (const bound of bounds) {
+    if (Math.abs(bound - layer) < Math.abs(best - layer)) best = bound;
   }
   return best;
 }

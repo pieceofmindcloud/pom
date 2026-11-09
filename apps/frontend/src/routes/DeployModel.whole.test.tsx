@@ -349,21 +349,28 @@ const planCalls = () =>
 const chooseWhole = () =>
   fireEvent.click(screen.getByRole("radio", { name: /Um modelo inteiro/ }));
 
-async function ensureWholeMachine(node = "ksia") {
-  const removeName = new RegExp(`Remover ${node} da implantação`);
-  const addName = new RegExp(`${node} RTT`);
-  await waitFor(() => {
-    expect(
-      screen.queryByRole("button", { name: removeName })
-        ?? screen.queryByRole("button", { name: addName }),
-    ).toBeTruthy();
-  });
-  if (!screen.queryByRole("button", { name: removeName })) {
-    fireEvent.click(screen.getByRole("button", { name: addName }));
+/** The map opens on the machines that hold the model: leaves only `nodes` on it. */
+async function onlyOnMap(...nodes: string[]) {
+  const all = ["ksia", "mac", "salem"];
+  const removeOf = (node: string) => screen.queryByRole("button", { name: new RegExp(`Remover ${node} da implantação`) });
+  const addOf = (node: string) => screen.queryByRole("button", { name: new RegExp(`${node} RTT`) });
+  // the survey answered and the map opened on its machines
+  await waitFor(() => expect(all.some((node) => removeOf(node))).toBe(true));
+  for (const node of all) {
+    if (!nodes.includes(node) && removeOf(node)) fireEvent.click(removeOf(node)!);
   }
-  await waitFor(() =>
-    expect(screen.getByRole("button", { name: removeName })).toBeTruthy(),
-  );
+  for (const node of nodes) {
+    if (!removeOf(node)) {
+      await waitFor(() => expect(addOf(node)).toBeTruthy());
+      fireEvent.click(addOf(node)!);
+    }
+    await waitFor(() => expect(removeOf(node)).toBeTruthy());
+  }
+}
+
+/** One machine on the map, the one most tests deploy on. */
+async function ensureWholeMachine(node = "ksia") {
+  await onlyOnMap(node);
 }
 
 describe("DeployModel · whole model", () => {
@@ -994,8 +1001,7 @@ describe("DeployModel · pipeline map", () => {
     expect(planCalls()[0][1]).toMatchObject({ group: "qwen3.5-9b", kind: "whole", whole_ranges: [] });
     const surveyed = planCalls().length;
 
-    await ensureWholeMachine("ksia");
-    await ensureWholeMachine("mac");
+    await onlyOnMap("ksia", "mac");
     machinesTab();
     fireEvent.click(screen.getByRole("button", { name: "Dividir as camadas entre 2 máquinas" }));
     fireEvent.change(screen.getByLabelText("Camadas de ksia: end"), { target: { value: "10" } });
@@ -1004,20 +1010,20 @@ describe("DeployModel · pipeline map", () => {
     expect(planCalls()).toHaveLength(surveyed);
   });
 
-  it("lists every machine of the map and lets each one take any range", async () => {
+  it("opens on the machines that hold the model and splits over the marked ones", async () => {
     answerWith();
     mount();
-    await ensureWholeMachine("ksia");
-    await ensureWholeMachine("mac");
+    // the map opens on the three machines that hold the model, the layers split over them
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Máquinas (3)" })).toBeTruthy());
     machinesTab();
-
-    expect(screen.getByRole("tab", { name: "Máquinas (2)" })).toBeTruthy();
-    // the second machine joins without a range; the card offers the whole model or a range
-    expect(screen.getAllByText("Nenhuma camada atribuída")).toHaveLength(1);
+    expect(screen.getAllByText("Cabeça").length).toBeGreaterThan(0);
     expect(screen.queryByText(/GPU uso/)).toBeNull();
 
+    // unmark salem: Split the layers works on ksia and mac only
+    fireEvent.click(screen.getByRole("checkbox", { name: "Marcar salem para dividir as camadas" }));
     fireEvent.click(screen.getByRole("button", { name: "Dividir as camadas entre 2 máquinas" }));
-    // ksia: 0-15 -> the end thumb at bound 10 gives L0-9
+    expect(screen.getAllByText("Nenhuma camada atribuída")).toHaveLength(1);
+    // ksia: 0-15 -> the end thumb dragged to layer 10 gives L0-9
     fireEvent.change(screen.getByLabelText("Camadas de ksia: end"), { target: { value: "10" } });
     await pressDeploy();
 
@@ -1029,6 +1035,21 @@ describe("DeployModel · pipeline map", () => {
         { node_id: "mac", start_layer: 16, end_layer: 31 },
       ],
     });
+  });
+
+  it("shows the measured RTT on the hop between two stages", async () => {
+    post.mockImplementation((url: string) => {
+      if (url === "/api/ui/chat/telemetry") {
+        return Promise.resolve({ measurements: [{ from_node_id: "ksia", to_node_id: "mac", rtt_ms: 7.5, transport: "quic" }] });
+      }
+      return Promise.resolve(url === "/api/ui/deploy" ? { job_id: "j1" } : wholePlan());
+    });
+    mount();
+    await onlyOnMap("ksia", "mac");
+    machinesTab();
+    fireEvent.click(screen.getByRole("button", { name: "Dividir as camadas entre 2 máquinas" }));
+
+    expect(await screen.findByText("RTT 7.5 ms")).toBeTruthy();
   });
 
   it("validates the map when Deploy is pressed and says why it cannot run", async () => {
@@ -1081,8 +1102,7 @@ describe("DeployModel · pipeline map", () => {
   it("offers f32 for the hidden state between machines and sends the choice", async () => {
     answerWith();
     mount();
-    await ensureWholeMachine("ksia");
-    await ensureWholeMachine("mac");
+    await onlyOnMap("ksia", "mac");
     machinesTab();
     fireEvent.click(screen.getByRole("button", { name: "Dividir as camadas entre 2 máquinas" }));
     fireEvent.click(screen.getByRole("tab", { name: "Globais" }));

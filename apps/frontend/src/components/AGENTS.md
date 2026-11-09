@@ -886,8 +886,10 @@ Key logic carriers:
   `rows` drops the row's role, so the deployment's role the inspector shows
   is the one deployed.
 - `LayerRangeSlider.tsx` - two thumbs on one track picking a layer range of a
-  whole model, stopping only at `rangeBounds` (0, each valid cut + 1, the layer
-  count); the Deploy Studio's Machines tab uses one per range.
+  whole model: the track is in layers so a thumb moves smoothly, the range it
+  reports snaps to `rangeBounds` (0, each valid cut + 1, the layer count, drawn
+  as ticks) and the thumb settles there on release; the Deploy Studio's
+  Machines tab uses one per range.
 - `ModelPresence.tsx` - `FilePresence` is the generic card foot for a file a machine lacks (`source`, `missing`
   text); `ModelPresence` wraps it for the model, and the studio uses it for each `mmproj`/`mtp` entry of
   `DeployPlan.copies` aimed at that machine, with the source from `fileSourceOn` (`lib/wholeModels.ts`).
@@ -933,7 +935,11 @@ Key logic carriers:
   gets a range moves into its pipeline column without Reset (the old merge kept
   the spot it had before, and the map stayed tangled). Organize drops the
   dragged positions too. Test: "moves a card to its pipeline column once it
-  gets a range, without Reset". On a narrow viewport, the map uses
+  gets a range, without Reset". `deployLayout` spaces columns and replicas
+  wider than the Flow (`DEPLOY_GAP_X`/`DEPLOY_GAP_Y` in `../lib/networkLayout`).
+  A card serving layer 0 carries the **Head** badge, the legend reads stage by
+  stage (replicas joined by `|`), and Shift+click toggles the card's mark
+  (`markedNodeIds`/`onToggleMarked`) instead of inspecting it. On a narrow viewport, the map uses
   internal scrolling to preserve the cards' size and align the curve to the
   endpoints even when the content is wider than the panel. The separation exists because this graph
   represents a deployment that has not been applied yet.

@@ -247,8 +247,12 @@ describe("DeployModel · plugin inference service", () => {
       });
     });
 
-    const add = await screen.findByRole("button", { name: /ksia RTT/ });
-    fireEvent.click(add);
+    // the map opens on the machine that runs the engine and holds the model
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: /Remover ksia da implantação/ })
+        ?? screen.queryByRole("button", { name: /ksia RTT/ })).toBeTruthy());
+    const add = screen.queryByRole("button", { name: /ksia RTT/ });
+    if (add) fireEvent.click(add);
     expect(screen.queryByRole("button", { name: /salem RTT/ })).toBeNull();
     // GPU layers and the KV cache on the GPU are llama.cpp's: not offered for the plugin's engine.
     await screen.findByRole("button", { name: /Remover ksia da implantação/ });

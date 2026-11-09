@@ -262,9 +262,6 @@ Test fixtures: a hand-written partial peer can still crash a component (see
 - A non-text, non-PDF attachment (a `.docx`, for example) is still read with
   `file.text()` in `routes/Chat.tsx`, so the model receives binary garbage instead
   of a refusal.
-- A hard-coded Portuguese word shows in the English interface: the `resposta`
-  step of the deploy map's route legend (`components/DeployNetworkCanvas.tsx`).
-  It belongs in `i18n/messages.csv`.
 
 ## Maintaining this file
 

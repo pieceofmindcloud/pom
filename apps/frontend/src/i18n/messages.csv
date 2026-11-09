@@ -935,6 +935,7 @@ deployStudio.gpuLayers,GPU layers,Camadas GPU
 deployStudio.gpuProjectedOf,GPU {index}: {projected} of {total},GPU {index}: {projected} de {total}
 deployStudio.gpuProjection,GPU · projection,GPU · projeção
 deployStudio.gpuUseFree,GPU used / free,GPU uso / livre
+deployStudio.head,Head,Cabeça
 deployStudio.heldBy,Held by,Está em
 deployStudio.hideInspector,Hide inspector,Ocultar inspetor
 deployStudio.inDeployment,in the deployment,na implantação
@@ -943,6 +944,7 @@ deployStudio.kindShards,Shards,Fatias
 deployStudio.kindWhole,Whole model,Modelo inteiro
 deployStudio.kvCacheOnGpu,KV cache on the GPU,KV cache na GPU
 deployStudio.layers,Layers,Camadas
+deployStudio.legendAnswer,answer,resposta
 deployStudio.machineAddRange,Range,Faixa
 deployStudio.machineLacksModel,This machine does not have the model: download it here or place the file in one of its model folders.,Esta máquina não tem o modelo: baixe-o aqui ou coloque o arquivo em uma das pastas de modelos dela.
 deployStudio.machineOffMap,Take {machine} off the map,Tirar {machine} do mapa
@@ -950,6 +952,8 @@ deployStudio.machineRangeAria,Layers of {machine},Camadas de {machine}
 deployStudio.machineRemoveRange,Remove {range} from {machine},Remover {range} de {machine}
 deployStudio.machineWholeModel,Whole model,Modelo inteiro
 deployStudio.machinesEmpty,Drag a machine from the strip below onto the map.,Arraste uma máquina da faixa abaixo para o mapa.
+deployStudio.markMachine,Mark {machine} for Split the layers,Marcar {machine} para dividir as camadas
+deployStudio.marked,marked,marcada
 deployStudio.splitLayers,Split the layers over {count} machines,Dividir as camadas entre {count} máquinas
 deployStudio.splitLayersHint,"Each machine serves its range from its own copy of the model, so nothing is copied.","Cada máquina serve sua faixa a partir da própria cópia do modelo, então nada é copiado."
 deployStudio.layerCount,{count} layers,{count} camadas
@@ -963,6 +967,7 @@ deployStudio.autoBalanceWaiting,Waiting for the model's cuts from the plan,Aguar
 deployStudio.autoBalanceAllLocked,Unlock at least two machines to balance their layers,Destrave pelo menos duas máquinas para equilibrar as camadas
 deployStudio.autoBalanceNoSizes,"The plan does not give the size of every cut yet, or the cuts are too few for every machine","O plano ainda não informa o tamanho de todo corte, ou os cortes são poucos para todas as máquinas"
 deployStudio.lockRange,Lock the range of {machine},Travar a faixa de {machine}
+deployStudio.splitMarkedHint,Splits over the marked machines that hold the model. Shift+click a card on the map to mark or unmark it.,Divide entre as máquinas marcadas que têm o modelo. Shift+clique num cartão do mapa marca ou desmarca.
 deployStudio.tabMachines,"Machines ({count})","Máquinas ({count})"
 deployStudio.unlockRange,Unlock the range of {machine},Destravar a faixa de {machine}
 deployStudio.layerLimitLocked,This range is locked: unlock it to change it,Esta faixa está travada: destrave para mudar

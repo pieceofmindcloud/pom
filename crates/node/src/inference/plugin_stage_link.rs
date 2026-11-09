@@ -973,6 +973,8 @@ async fn forward(
         set_phase(&code, LinkPhase::Prefill);
     }
     let phase = current_phase(&code);
+    // GPU work metering: the request, to pair with the earlier stage's answer below.
+    let request_frame = crate::metering::context().is_some().then(|| frame.clone());
     let frame = match to_network(frame, cfg.hidden_state_dtype) {
         Ok(frame) => frame,
         Err(error) => {
@@ -1020,11 +1022,17 @@ async fn forward(
             }
         };
         match attempt {
-            Ok(answer) => return from_network(&answer)
-                .map_err(
-                    |error| warn!(plugin = %code, %error, "stage link: the earlier stage's answer"),
-                )
-                .ok(),
+            Ok(answer) => {
+                let answer = from_network(&answer)
+                    .map_err(
+                        |error| warn!(plugin = %code, %error, "stage link: the earlier stage's answer"),
+                    )
+                    .ok();
+                if let (Some(request), Some(answer)) = (&request_frame, &answer) {
+                    crate::plugin_metering::on_relayed(&cfg, request, answer);
+                }
+                return answer;
+            }
             Err(Refusal::Retry(error)) if Instant::now() < deadline => {
                 warn!(plugin = %code, %error, "stage link: trying again");
                 *peer.lock().await = None;
@@ -1420,14 +1428,10 @@ async fn link_frame(
     if body.len() > MAX_FRAME {
         return refuse(StatusCode::PAYLOAD_TOO_LARGE, "frame too large");
     }
-    let Some(dtype) = state
-        .runtime
-        .config()
-        .await
-        .map(|cfg| cfg.hidden_state_dtype)
-    else {
+    let Some(serving) = state.runtime.config().await else {
         return refuse(StatusCode::CONFLICT, "this machine serves no model");
     };
+    let dtype = serving.hidden_state_dtype;
     let key = (caller, conn);
     if body.is_empty() {
         drop_connection(&key);
@@ -1555,8 +1559,13 @@ async fn link_frame(
             // its time here that was not its engine's work on it: its turn behind the frames posted with it, then the
             // engine still on the frame before (frames sent ahead wait here, and that is neither work nor network)
             let queued_ms = (arrived.elapsed().as_millis() as u64).saturating_sub(served_ms);
+            let engine_answer_kind = answer.first().copied();
             match to_network(answer, dtype) {
                 Ok(answer) => {
+                    // GPU work metering: the request this engine served and its answer as it leaves.
+                    if engine_answer_kind.is_some() {
+                        crate::plugin_metering::on_served(&serving, &frame, &answer);
+                    }
                     if let Some((phase, count)) = tokens {
                         // This machine's own work on the frame: its time here minus the waits its relays made.
                         let waited = peek_own_wait(&code, phase).saturating_sub(waits_before);

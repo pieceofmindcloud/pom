@@ -60,6 +60,9 @@ pub(crate) struct ReexecuteRequest {
     pub(crate) chunks: Vec<String>,
     #[serde(default)]
     pub(crate) params: Option<toploc::Params>,
+    /// The audited receipt's engine; only llama.cpp re-executes here.
+    #[serde(default)]
+    pub(crate) engine: Option<String>,
 }
 
 /// Verdict of one re-execution.
@@ -87,6 +90,9 @@ pub(crate) async fn reexecute(state: &GatewayState, params: &Value) -> Result<Va
     let request: ReexecuteRequest = serde_json::from_value(params.clone()).map_err(|e| format!("invalid request: {e}"))?;
     validate(&request)?;
     let tokens = decode_tokens(&request.tokens)?;
+    if let Some(engine) = request.engine.as_deref().filter(|e| *e != "llama.cpp") {
+        return Ok(json!({ "job": finished_job(json!(void(format!("re-executing {engine} work needs its engine.verify")))) }));
+    }
     let found = crate::webui::whole_model_by_label(state, &request.model).await;
     let id = uuid::Uuid::new_v4().simple().to_string();
     {
@@ -110,6 +116,15 @@ pub(crate) async fn reexecute(state: &GatewayState, params: &Value) -> Result<Va
         }
     });
     Ok(json!({ "job": id }))
+}
+
+/// A job that is already decided.
+fn finished_job(verdict: Value) -> String {
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    if let Ok(mut jobs) = jobs().lock() {
+        jobs.insert(id.clone(), (std::time::Instant::now(), Some(verdict)));
+    }
+    id
 }
 
 /// `node.reexecute_status`: `{done: false}` while it runs, else the verdict.
@@ -309,6 +324,7 @@ mod tests {
             audited: 1,
             chunks,
             params: None,
+            engine: None,
         }
     }
 

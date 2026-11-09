@@ -1048,6 +1048,12 @@ pub(crate) async fn generate(
                 }
             } else if let Some(done) = event.get("done") {
                 let total_ms = request_started.elapsed().as_millis() as u64;
+                // GPU work metering: the turn ran on this machine (a remote head meters its own done line).
+                if node_id == state.network.node_id {
+                    if let Some(cfg) = state.runtime.config().await {
+                        crate::plugin_metering::on_done(&cfg.deploy_id, done);
+                    }
+                }
                 // The plugin's basic data; everything else about the generation is measured here.
                 // The turn ran on this machine: its conversation goes on to the peers from a background task
                 // that waits for a deferred save (a remote head does this itself).
@@ -1789,6 +1795,7 @@ pub(crate) async fn engine_generate_route(
     );
     // This machine ran the turn: when its bridge reports the conversation saved, the turn goes on to the peers.
     let (watch_state, watch_code) = (state.clone(), code.clone());
+    let metering_deploy = state.runtime.config().await.map(|cfg| cfg.deploy_id);
     let mut pending: Vec<u8> = Vec::new();
     let stream = stream.inspect(move |item| {
         let Ok(bytes) = item else {
@@ -1797,8 +1804,15 @@ pub(crate) async fn engine_generate_route(
         pending.extend_from_slice(bytes);
         while let Some(end) = pending.iter().position(|byte| *byte == b'\n') {
             let line: Vec<u8> = pending.drain(..=end).collect();
-            if let Some(key) = serde_json::from_slice::<Value>(&line)
-                .ok()
+            let value = serde_json::from_slice::<Value>(&line).ok();
+            // GPU work metering: this machine served the turn; its counts are in the done line.
+            if let (Some(value), Some(deploy)) = (&value, &metering_deploy) {
+                if value.get("done").is_some() {
+                    crate::plugin_metering::on_done(deploy, &value["done"]);
+                }
+            }
+            if let Some(key) = value
+                .as_ref()
                 .and_then(|value| super::plugin_session::saved_session(&value["done"]))
             {
                 if super::plugin_session::PUSH_SYNC {

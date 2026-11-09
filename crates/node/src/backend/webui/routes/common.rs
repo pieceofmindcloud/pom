@@ -144,6 +144,10 @@ pub(super) fn routes() -> Router<GatewayState> {
             get(crate::plugin_stage_link::link_secret_route),
         )
         .route(
+            "/api/internal/plugins/:code/engine/metering/:deploy",
+            post(crate::plugin_metering::metering_route),
+        )
+        .route(
             "/api/internal/plugins/:code/engine/link/:deploy/:conn",
             post(crate::plugin_stage_link::link_frame_route).layer(
                 axum::extract::DefaultBodyLimit::max(crate::plugin_stage_link::MAX_FRAME),

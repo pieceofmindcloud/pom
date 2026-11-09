@@ -1067,6 +1067,7 @@ async fn generate_measured_stream(
             request_started,
         )
         .await;
+        collect_plugin_receipts(&state, &plan, &code).await;
         return;
     }
 
@@ -2736,6 +2737,52 @@ pub(super) async fn release_sessions_metered(
             Err(error) => warn!("session release on {} failed: {error}", step.node_id),
         }
     }
+}
+
+/// GPU work metering of a turn a split plugin engine served
+/// (`crate::plugin_metering`): every stage signs its receipt for the bundle
+/// nonce, and the gateway assembles the bundle as for a pipeline.
+async fn collect_plugin_receipts(state: &GatewayState, plan: &PipelinePlan, code: &str) {
+    let Some(meter) = MeterCollect::start(state, plan) else { return };
+    let body = serde_json::json!({ "metering_bundle": meter.bnd() });
+    let peers = state.network.alive_peers().await;
+    for (index, step) in plan.steps.iter().enumerate() {
+        let answer = if step.node_id == state.network.node_id {
+            match state.runtime.config().await {
+                Some(cfg) => crate::plugin_metering::close(&cfg, code, meter.bnd()).map(|(receipt, tokens)| {
+                    use base64::Engine;
+                    let bytes: Vec<u8> = tokens.iter().flat_map(|t| t.to_le_bytes()).collect();
+                    serde_json::json!({
+                        "receipt": receipt,
+                        "metering_tokens": if tokens.is_empty() { None } else {
+                            Some(base64::engine::general_purpose::STANDARD.encode(bytes))
+                        },
+                    })
+                }),
+                None => None,
+            }
+        } else {
+            match peers.iter().find(|p| p.node_id == step.node_id) {
+                Some(peer) => match state
+                    .control_post_json_routed(
+                        peer,
+                        &format!("/api/internal/plugins/{code}/engine/metering/{}", peer.deploy_id),
+                        &body,
+                        SESSION_LIFECYCLE_TIMEOUT,
+                    )
+                    .await
+                {
+                    Ok(response) if response.status().is_success() => response.json().await.ok(),
+                    _ => None,
+                },
+                None => None,
+            }
+        };
+        if let Some(answer) = answer {
+            meter.record(index, &answer);
+        }
+    }
+    meter.finish(state, plan);
 }
 
 /// The receipts of one metered turn, filled by the lifecycle calls

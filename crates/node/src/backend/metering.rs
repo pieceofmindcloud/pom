@@ -418,6 +418,14 @@ impl ProofBuffer {
 
 // ── Gateway: bundle ──────────────────────────────────────────────────────────
 
+/// The bundle nonce of a lifecycle body (`metering_bundle`), when well formed.
+pub(crate) fn nonce_of(body: &Value) -> Option<String> {
+    body.get("metering_bundle")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty() && s.len() <= 64 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
+        .map(str::to_string)
+}
+
 tokio::task_local! {
     /// Who a generation runs for, set by the logged generation from the
     /// request's credential (`gateway::spawn_logged_generation_with_stops`).

@@ -87,10 +87,7 @@ impl SessionMeter {
 
 /// The bundle nonce of a release body, when the gateway sent one.
 pub(crate) fn bundle_nonce(meta: &Value) -> Option<String> {
-    meta.get("metering_bundle")
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty() && s.len() <= 64 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
-        .map(str::to_string)
+    crate::metering::nonce_of(meta)
 }
 
 /// What a receipt says about the slice that did the work.

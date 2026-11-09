@@ -192,6 +192,8 @@ mod plugin_services;
 mod plugin_session;
 #[path = "inference/plugin_stage_link.rs"]
 mod plugin_stage_link;
+#[path = "inference/plugin_metering.rs"]
+mod plugin_metering;
 mod plugin_ui;
 #[path = "plugins.rs"]
 mod plugins;

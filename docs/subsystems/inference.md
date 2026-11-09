@@ -3234,6 +3234,24 @@ with the ledger is the crate `crates/metering-core`; the node side is
   a job polled with `node.reexecute_status`.
 - **Capability.** `metering/receipt-v1` is announced in `/health` while metering
   is on.
+- **Split plugin engines (Strata)** are metered by `inference/plugin_metering.rs`
+  from what the node already carries, with no engine change. The earlier stage
+  (`plugin_stage_link::link_frame`) pairs each stage-protocol request (`P` a
+  prompt piece, `W`/`V` a verify window, `C` a commit, `R` a resume, `Z` a new
+  session) with its engine's answer: it counts positions, hashes the answer
+  rows as the later machine decodes them, proves the prompt rows and, on the
+  first stage, hashes the token ids and keeps the sequence. The later stage
+  (`forward`) hashes the rows it receives. The serving stage counts from its
+  `done` line. After the stream, the gateway posts the bundle nonce to every
+  stage (`POST /api/internal/plugins/:code/engine/metering/:deploy`) and
+  assembles the bundle. The stage server holds one session, so the link's
+  frames between two closes are one turn's; overlapping turns on one split
+  deployment can break the links of both (they are then unmetered).
+- **Re-executing a Strata stage**: the verifier asks the plugin for audit
+  engines (`engine.audit.start|status|stop`) that load the stages up to the
+  audited one beside the main engine, chains them through loopback relays that
+  reproduce each boundary's codec, and reads the audited stage's rows as prompt
+  pieces of the whole sequence. The serving stage keeps no proofs (void).
 
 ## 11. Defects noted
 

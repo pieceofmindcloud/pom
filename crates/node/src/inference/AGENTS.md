@@ -742,6 +742,12 @@ inference service runs a whole model instead through `plugin_engine.rs`.
   `Config::slot_save_path_effective`); with it empty the route answers 400. `replicate_slot_call`
   forwards the action to the TP workers. Capability `inference/slot-persist-v1`.
   See `inference.md` §3.1.1.
+- `plugin_metering.rs` - GPU work metering of a split plugin engine (Strata):
+  parses the stage protocol's requests, pairs them with the answers on both
+  sides of the link (`plugin_stage_link`), counts the serving stage from its
+  `done` line, and signs the turn's receipt at
+  `POST /api/internal/plugins/:code/engine/metering/:deploy`. See
+  `docs/subsystems/inference.md` 10.1.
 - `infer_server/meter.rs` - the per-session GPU work meter (`MeterTable`,
   held in `InferState.meters`, testable without an engine): counts, link
   digests, the head's computed sequence and the TOPLOC proof buffer, fed from

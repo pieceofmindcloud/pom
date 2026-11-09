@@ -1148,6 +1148,10 @@ and gateway fee (`metering_core::settings::MeteringSettings`).
   own plugin (`local`, which a remote call can never set).
 - The gateway delivers bundles to `peer.metering.submit` of its own plugin,
   else of each live admin running it.
+- `POST /api/internal/plugins/:code/engine/metering/:deploy` `{metering_bundle}`
+  (signed node call): a stage of a split plugin engine answers its turn's
+  `receipt` (and, on the first stage, `metering_tokens`). The gateway calls it
+  on every stage after a plugin engine's stream.
 
 ### `/admin/*`
 

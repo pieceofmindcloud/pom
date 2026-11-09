@@ -23,7 +23,7 @@ rewind/release, the head returns its token sequence, re-execution is a job).
 - [ ] 2.5 calibration at range ends (needs real-model runs; thresholds are the
   paper's)
 - [x] 3.1 dedicated verifier, 3.3 private gateway fee
-- [ ] 3.2 Strata `engine.verify` and metering of plugin-engine hops
+- [x] 3.2 Strata: receipts from the stage link, audit engines in `pom-plugin-strata` (`engine.audit.*`, branch `feat/metering-audit`); live validation pending GPUs
 - [x] 3.4 adaptive sample counts (new node or failed challenge: twice the samples)
 - [ ] tail proofs (the tail keeps none today)
 

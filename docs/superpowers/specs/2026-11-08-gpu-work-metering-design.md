@@ -515,9 +515,14 @@ Where the implementation departs from the decisions above, it wins:
 - **Statements** are signed by the ledger's own node (`node.sign_statement`,
   local only) with the `-cycle-statement/v1` header. Model weights per model
   are 1.0 (no setting yet).
-- **Plugin engines (Strata) are not metered yet**: the hooks are in the
-  llama.cpp inference server. `engine.verify` for Strata and metering of
-  plugin-engine hops stay open.
+- **Split plugin engines (Strata) are metered from the stage link**, with no
+  engine change: the stage protocol's requests carry the positions and token
+  ids, and the answers the rows. A stage signs its receipt when the gateway
+  posts the nonce to it after the stream (plugin engines have no
+  rewind/release). `engine.verify` became the plugin's audit engines
+  (`engine.audit.*`): the verifier loads the stages up to the audited one and
+  reads its rows as prompt pieces through codec relays. A whole model on one
+  machine is metered from its `done` line and keeps no proofs.
 
 ## Out of scope
 

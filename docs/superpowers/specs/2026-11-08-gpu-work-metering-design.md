@@ -1,8 +1,7 @@
 # Metering GPU work: signed work receipts and probabilistic re-execution
 
-Date: 2026-11-08 - Status: draft for iteration (revision 3: drafts paid less,
-pay proportional to verified samples, visitor requests are paid work, plugin
-engines verified through `engine.verify`)
+Date: 2026-11-08 - Status: draft for iteration (revision 4: TOPLOC proofs,
+draft_weight per network, visitor charging per token on the visitor network)
 
 ## Problem
 
@@ -54,7 +53,7 @@ is out of scope (see the end).
 - Everything kept for metering is bounded in payout cycles.
 - Released nodes keep serving with no change. Metering is optional: a node
   without it serves as today and is simply not paid.
-- The hot path pays at most a hash and a small summary per frame; no extra
+- The hot path pays at most a hash and a TOPLOC proof per chunk of tokens; no extra
   network round trip per token.
 
 ## Non-goals
@@ -71,8 +70,8 @@ is out of scope (see the end).
 |---|---|---|
 | Inflating token or request counts | a worker | gateway countersignature (2, 4) |
 | Claiming work for requests that never happened | a worker | gateway countersignature, link digests (3) |
-| Serving a cheaper model or quantization, skipping layers, returning junk | a worker | challenges (6) and re-execution (7) against output summaries (3) |
-| Discarding summaries to dodge audits | a worker | challenges during the cycle (6) |
+| Serving a cheaper model or quantization, skipping layers, returning junk | a worker | challenges (6) and re-execution (7) against TOPLOC proofs (3) |
+| Discarding proofs to dodge audits | a worker | challenges during the cycle (6) |
 | Lying about what a neighbour sent | a worker | both neighbours sign the same digest (3) |
 | Fabricating requests with a colluding gateway | gateway + worker | not worth it: a fabricated bundle passes audit only if the work was really done (8) |
 | Replaying a receipt into another cycle or network | anyone | receipt id, network id, cycle, single submission (5) |
@@ -93,10 +92,10 @@ An admin running the ledger is trusted, as it is today with the request log.
 |---|---|---|
 | `enabled` | `false` | with metering off, no receipt is built and nothing on the hot path changes |
 | `cycle` | `7d` | payout cycle length, set by the admin; cycles are numbered from a fixed epoch so every node agrees which cycle a timestamp falls in |
-| `retain_cycles` | `2` | how many closed cycles of receipts, summaries and token ids are kept (12) |
+| `retain_cycles` | `2` | how many closed cycles of receipts, proofs and token ids are kept (12) |
 | `samples_per_node` | `30` | receipts re-executed per node at cycle close (7) |
 | `penalty_factor` | `2.0` | how much each failed sample weighs against pay (7) |
-| `draft_weight` | `0.5` | pay weight of a speculative position relative to an ordinary one (9) |
+| `draft_weight` | `0.5` | pay weight of a speculative position relative to an ordinary one, one value for the whole network (9) |
 | `challenge_rate` | per node per cycle, e.g. `5` | random challenges sent during the cycle (6) |
 | `verifier` | the ledger admin | node id of a dedicated verifier machine, optional |
 | `gateway_fee` | `0` | gateway compensation rule (9) |
@@ -130,11 +129,11 @@ Claims (draft):
 | `drafted` | draft tokens this hop generated with a draft head (MTP `nextn`), with the draft layers used |
 | `cached` | positions reused from the prefix cache, not computed |
 | `in_chain` / `out_chain` | link digests (3) |
-| `summ` | Merkle root of the output summaries kept for audit (3) |
+| `summ` | Merkle root of the TOPLOC chunk proofs kept for audit (3) |
 | `t0` / `t1` | session open and close, node clock |
 | `ms` | compute time, informational, never billed |
 
-### 3. Link digests and output summaries
+### 3. Link digests and TOPLOC proofs
 
 Each hop keeps two running digests per session, BLAKE3 over every frame item
 it handled, in order:
@@ -149,16 +148,43 @@ own item. Since the wire does not change bytes between hops, hop `n`'s
 its `in_chain` hashes the token ids, and the gateway computes the same value.
 The tail's output is the sampled tokens.
 
-For audit, each hop also keeps a compact **output summary** per computed
-position, taken from the f32 output before wire encoding: the top-k indices by
-magnitude and their values rounded to bf16 (k = 8 initially, about 48 bytes per
-position). The summaries are leaves of a Merkle tree per receipt and only the
-root, `summ`, goes in the receipt, so a challenge (6) can ask for a few
-positions and check them against the signed root without moving all of them.
-They stay on the node in a bounded store (`metering_summaries`, unified
-SQLite), dropped by cycle (12). TOPLOC-style encoding is a candidate
-replacement for the summary format (question 1); the receipt only carries a
-root, so swapping it needs a version, not a contract change.
+For audit, each hop also keeps an **output summary** of what it computed: a
+**TOPLOC proof** (Prime Intellect, "TOPLOC: A Locality Sensitive Hashing Scheme
+for Trustless Verifiable Inference", 2025), taken from the f32 output before
+wire encoding.
+
+How TOPLOC works, as the paper describes it: the computed positions are cut
+into chunks (32 tokens in the paper); for each chunk, the top-k entries by
+magnitude of the hidden state are encoded as a polynomial that maps each
+index to its value, which takes a few hundred bytes per chunk (about 258 bytes
+per 32 tokens in the paper, under 10 bytes per token). The verifier recomputes
+the hidden state, takes its own top-k, and accepts when enough indices overlap
+and the exponent and mantissa differences of the matching values stay under
+thresholds. The paper reports that these thresholds tell apart a different
+model, a different quantization or altered prompts, while tolerating different
+GPUs, attention kernels and tensor-parallel layouts, which is the
+nondeterminism POM has to tolerate.
+
+POM's adaptations:
+
+- The paper proves the last hidden layer; POM proves each hop's output at its
+  range boundary, so every hop of a pipeline carries its own proof. The tail
+  proves the last hidden layer, as in the paper. Thresholds for intermediate
+  boundaries must be calibrated (question 1).
+- Chunks follow the positions a hop computed in one session, cached positions
+  excluded; a session's last chunk may be short.
+- Chunk size, k and thresholds are network constants of the metering plugin,
+  versioned (`toploc/v1`), so all nodes and the verifier use the same ones.
+- The reference implementation (`toploc`, Python with C++ kernels) must be
+  ported to Rust for the node, or bound through its C++ core; the license is
+  to be checked before reuse.
+
+The chunk proofs are leaves of a Merkle tree per receipt and only the root,
+`summ`, goes in the receipt, so a challenge (6) can ask for a few chunks and
+check them against the signed root without moving all of them. They stay on
+the node in a bounded store (`metering_proofs`, unified SQLite), dropped by
+cycle (12). At under 10 bytes per token, a busy node keeps a cycle of proofs in
+tens of megabytes.
 
 ### 4. Collection: receipts ride the session release
 
@@ -211,19 +237,19 @@ request log.
 At random times during the cycle, the admin challenges a node about one of its
 accepted receipts from this cycle (`peer.metering.challenge`), chosen with
 `HMAC(admin_secret, rid || cycle) < rate` and spread so a node cannot tell when
-the next one comes. A challenge asks for the summaries of a few random
-positions of that receipt plus their Merkle paths, and the node must answer
+the next one comes. A challenge asks for the TOPLOC proofs of a few random
+chunks of that receipt plus their Merkle paths, and the node must answer
 within a deadline (e.g. 60 s, it is a local read).
 
 - The node proves it **still holds** what it signed: a node that discarded its
-  summaries to make audits inconclusive fails here, while the cycle is still
+  proofs to make audits inconclusive fails here, while the cycle is still
   open.
-- For a small share of challenges, the admin also re-executes those positions
+- For a small share of challenges, the admin also re-executes those chunks
   (as in 7, prefill of only that request), which turns a challenge into an
   early audit. A re-executed challenge counts as one of the node's samples for
   the cycle (7); a failed one also raises the node's sample count at close.
 - Outcomes: `answered`, `matched` (when re-executed), `failed` (wrong path,
-  wrong summary, mismatch) and `timeout`. A timeout is retried; repeated
+  wrong proof, mismatch) and `timeout`. A timeout is retried; repeated
   timeouts count as a failure.
 
 ### 7. Re-execution at cycle close
@@ -247,7 +273,7 @@ generated tokens with the same model digest, capturing the output at each
 audited hop's layer boundary. One batched prefill reproduces every position of
 every hop, decode included, so an audit costs about one prefill of the whole
 conversation, not a replay of the generation. Only computed positions are
-compared (cached ones have no summary).
+compared (cached ones have no proof).
 
 **Who verifies.** The admin running the plugin, or the dedicated verifier
 machine the admin named, which must hold the model ranges it checks and run
@@ -255,19 +281,18 @@ machine the admin named, which must hold the model ranges it checks and run
 same numbers, so each is compared against itself). It is never one of the hops
 of the bundle. Its work is not billed as inference.
 
-**Comparison.** The verifier fetches the audited hop's summaries
-(`peer.metering.summaries`), checks them against `summ`, and compares per
-position: overlap of top-k index sets and relative error of the values, with
-thresholds calibrated per model, KV cache type and backend (question 2).
-Batched and incremental execution and different GPUs do not give bit-equal
-results, which is why the comparison is tolerant and why exact hashes are only
-used for links.
+**Comparison.** The verifier fetches the audited hop's chunk proofs
+(`peer.metering.proofs`), checks them against `summ`, and runs the TOPLOC check
+per chunk against its own recomputed hidden state (3). A sample passes when
+every chunk passes. Batched and incremental execution and different GPUs do
+not give bit-equal results, which is why the comparison is TOPLOC's tolerant
+one and why exact hashes are only used for links.
 
 **Sample outcomes.**
 
 - `pass`.
-- `fail`: summaries do not match beyond tolerance, or the node cannot produce
-  summaries it signed.
+- `fail`: a chunk fails the TOPLOC check, or the node cannot produce
+  proofs it signed.
 - `void`: the sample cannot be judged for a reason that is not the node's
   fault (the gateway lost the token ids, the verifier lacks the range). It is
   replaced by another draw and does not count; a gateway that cannot produce
@@ -292,7 +317,7 @@ admin, who may revoke the node through the existing signed revocation.
 ### 8. Fabricated requests
 
 A gateway and a worker together can send requests nobody asked for. To be paid,
-such a bundle must pass audit, and passing audit requires summaries matching
+such a bundle must pass audit, and passing audit requires TOPLOC proofs matching
 the real model's output on those tokens, which means the GPU really did the
 work. So the work is real; the only question is whether the network wants to
 pay for demand it did not get. That is a pay policy, not a proof problem: an
@@ -350,7 +375,7 @@ paid.
 
 ### 10. Engines: `engine.verify`
 
-Receipts, link digests and summaries are made by the node, not the engine, so
+Receipts, link digests and proofs are made by the node, not the engine, so
 they work for any engine whose hidden state crosses the node. That holds for
 llama.cpp and for plugin engines with stages: the stage link
 (`engine-contract.md`, "Stages of a split model") hands each tensor to the node
@@ -358,13 +383,15 @@ as `f32`, which then carries it to the next machine, so the node hashes and
 summarizes it the same way.
 
 Re-execution needs one more thing from the engine: a teacher-forced prefill of
-given tokens that returns the summary at the end of the loaded range for every
-position, instead of a sampled token. For the tail, whose output is logits, the
-summary is the top-k logits. This becomes an optional operation in the engine
-contract:
+given tokens that returns the hidden state at the end of the loaded range for
+the asked positions, instead of a sampled token (the tail returns its last
+hidden layer, before the output head). The node then builds the TOPLOC proofs
+itself, with the same code as on the hot path. This becomes an optional
+operation in the engine contract:
 
-- `engine.verify {tokens, positions}` -> per-position summaries, announced as
-  the capability `engine/verify-v1`.
+- `engine.verify {tokens, positions}` -> the range output for those positions
+  (`f32`, in the stage link tensor format), announced as the capability
+  `engine/verify-v1`.
 - llama.cpp: the node implements it from the existing prefill and sub-range
   execution (`inference.md` 3.8).
 - Strata: nothing stops it. It already serves any range of the whole model
@@ -389,7 +416,7 @@ nodes are paid on receipts alone, which the admin sees on the cycle screen.
 ### 12. Retention in cycles
 
 Everything kept for metering is dropped by cycle, never by age: receipts and
-summaries on the hops, token ids on the gateways, bundles and statements in the
+proofs on the hops, token ids on the gateways, bundles and statements in the
 ledger are kept for the current cycle plus the last `retain_cycles` closed
 ones. `retain_cycles` is at least 1, so the cycle being verified is never
 dropped before its audit ends. A node drops a cycle's data when it falls out of
@@ -408,20 +435,38 @@ No inference frame changes.
    with private statements; no checking. Counts become trustworthy against
    single-party inflation, and the visitor charging task can start from the
    bundles.
-2. Output summaries, `engine.verify` for llama.cpp, challenges during the cycle
-   and sampled re-execution at cycle close with proportional payout.
+2. TOPLOC in Rust, proofs on the hot path, `engine.verify` for llama.cpp,
+   challenges during the cycle and sampled re-execution at cycle close with
+   proportional payout.
 3. Dedicated verifier machine, `engine.verify` in `pom-plugin-strata`, gateway
    fee, adaptive sample counts.
 
+## Next task: charging visitors
+
+Decided here so the bundles carry what it needs; designed in its own spec.
+
+- Visitors are charged **per token**: prompt tokens computed and generated
+  tokens, at prices the network's admin sets per model (prompt and output
+  priced apart, cached prompt tokens possibly cheaper). Not per layer-position:
+  the visitor buys answers, and the split of a model across machines is the
+  network's business.
+- The **account is the visitor's network**, not the visitor node: every bundle
+  whose consumer is a visitor records the visitor network's id (4), and all
+  visitors of that network draw on one account.
+- Hops are paid in layer-positions and visitors charged in tokens; the
+  difference between what visitors pay and what the cycle pays out is the
+  network's margin.
+
 ## Open questions
 
-1. Summary format: top-k + bf16 values, or TOPLOC; k, and all positions or a
-   sample.
-2. Tolerance thresholds and how to calibrate them (a calibration run per model
-   and backend on deploy?). This sets how high `penalty_factor` can safely be.
-3. `draft_weight`: one value for the network, or measured per backend?
-4. Visitor charging (next task): price per layer-position or per token, and
-   whether the visitor's network or the visitor node is the account.
+1. TOPLOC at intermediate boundaries: the paper calibrates its thresholds on
+   the last hidden layer. Chunk size, k and thresholds for a hop's range
+   output must be measured per model family and engine (a calibration run on
+   deploy?). This also sets how high `penalty_factor` can safely be.
+2. TOPLOC under lossy wire formats: the proof is taken before f8/i4 encoding,
+   but the next hop computes from the decoded values. Is the verifier's
+   recomputation fed the decoded input (exact reproduction) or the clean f32
+   (larger drift)?
 
 ## Out of scope
 

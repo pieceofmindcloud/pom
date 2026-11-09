@@ -367,10 +367,10 @@ that appears in the bell, now also with a bar on the screen itself. The copies k
 going out through `POST /api/transfer/pull` on each destination: no parallel
 mechanism was created.
 
-What the screen does **not** compute on its own: none of the validation. Each edit
-goes back to the node (with a 260 ms wait so as not to sweep the cluster on every
-key) and the "what happens" column says "checking…" while the answer still
-describes another choice.
+What the screen does **not** compute on its own: none of the validation. The
+plan is surveyed once per model (machines, valid cuts, defaults); map edits stay
+local, and pressing Deploy sends the map to the node once - a refusal opens a
+window with every reason, and nothing is deployed.
 
 ### Routes changed
 

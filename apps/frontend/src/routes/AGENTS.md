@@ -565,80 +565,49 @@ Per-file list:
   in-flight request count. A missing `/api/ui/node` response is rendered as
   unavailable, never as an empty model, incomplete pipeline or zero.
 ## Deploy
-- `DeployModel.tsx` - "Deploy on the network". Full-bleed Deploy Studio with a
-  top mode bar, separate technical model and operational deployment name,
-  central peer map and compact property inspector. Tensor mode, Simple/Complete
-  strategy and "Voltar ao plano do nó" ("Return to the node's plan") are visible only when `pom_dev_mode` is true.
-  (`../components/DeploymentInspector`, the same component the History uses
-  in read-only) and a draggable bottom peer strip. What stays in
-  `DeployModel` and did not move to the inspector are the sections only the deploy
-  screen has: the TP group, tensor parallel and the machine tab. Three shapes, chosen by the
-  mode bar at the top and carried to the node as `kind`: **Pipeline** (`whole`, the default
-  whenever a whole model exists; it opens on an empty map), **Slices (legacy)** (`shards`,
-  offered only with slice sets or a staged service; below), **a whole model** (one model picker from `../lib/wholeModels`, with
-  the deployment map as its machine choice and no "included"/merge; the
-  coverage ribbon shows once a second machine is on the map), or **tensor parallel** (`tensor_parallel`): when the catalog
-  has `tp_parts`, the picker groups the round by TP width and the inspector
-  shows one-based ranks such as `1of2` and `2of2`; otherwise it uses the
-  whole-model runtime path. Canvas membership is canonical: rows plus preferred
-  peers, with every live peer added by the Complete strategy except in whole
-  mode, where the operator adds each machine. Tensor selectors
-  reuse those map cards; pre-sliced TP accepts any mapped peer because the node
-  can transfer the needed rank, while whole-model TP filters mapped cards to
-  peers that hold the local GGUF. Eligible Tensor cards expose the accessible
-  primary toggle, which removes that node from workers.
-  `size` is derived from the selected TP group or `workers.length + 1`, never a
-  typed number, and the node derives the reduce URL from the primary's
-  inference port (the operator no longer types `rank0_url`). `tp` is in the
-  plan queryKey so changing primary/workers re-runs validation. A plan with no `kind`
-  is read as `"shards"` (`kindOf`), so an older peer mid-upgrade does not
-  silence the screen. Deploy memory is namespaced `whole:<name>`, because a
-  shard set and a model routinely share a name. Tests:
-  `DeployModel.whole.test.tsx`, `../lib/wholeModels.test.ts`.
-  Whole mode can split the model over machines that each hold it: the Machine
-  tab offers "Split the layers over N machines" (`../lib/wholeRanges`
-  `evenSplit`, on the plan's `layer_options` cuts, every layer while none are
-  known) and per-range - / + (`stepRange`, which moves the shared cut by one
-  valid step or returns why it cannot). When every row's machine holds the
-  whole model and a row is partial (`isWholeRangeSplit`), the plan and the
-  deploy send the rows as `whole_ranges` instead of `selection`. A split made
-  before the plan knew the cuts (`pendingSplit`) is redone on the real cuts
-  when the plan answers with `layer_options`, even a blocked one: a hybrid
-  model refuses the every-layer guess. A lock per range (`lockedNodes`, by machine)
-  keeps it exact: `stepRange` refuses to move it or the cut a neighbour
-  shares with it ("locked" / "neighbourLocked"). Auto-balance
-  (`wholeRanges.autoBalance`) splits each run of unlocked ranges between
-  locked ones in proportion to the machines' free memory (live GPU free MB,
-  or RAM free MB without a GPU), at valid cuts, sized by the plan's
-  `layer_options` prefix bytes: weights plus the cut's `kv_bytes` when the
-  node costs them (no compute buffers). A test mock
-  answering those ranges must set `auto: false`, as the node does: an `auto`
-  plan's topology becomes the "auto" query key and the plan refetches forever.
-  Tests: `DeployModel.whole.test.tsx` ("splits the whole model..."),
-  `../lib/wholeRanges.test.ts`.
-  In whole-model mode, the inspector does not repeat the GGUF's facts nor offer a
-  machine selector: the map is the only choice. When switching from slices to that
-  mode, the screen clears the map and lets the operator add the machine they want.
-  The first machine takes the whole file. A second one enters without a range
-  and gets one in the Machine tab, among the ranges it holds: the whole file
-  again (a replica) or a slice of the same model. The node accepts the map while
-  the ranges cover every layer, and with two distinct ranges the plan is a
-  pipeline (hidden-state precision included). Under an inference service the
-  whole model stays on one machine: a second one is refused with a warning.
-  On the first tensor request, `tpPayload` uses the first rank-0 holder as a
-  provisional primary so the map can load; workers remain opt-in map members.
-  The model list may appear before the reading of the GGUF headers finishes.
-  That global state does not disable the screen: the plan is what decides whether the current
-  selection has the metadata it needs. If a selected range still cannot
-  be resolved, the backend returns a single `blocked` specific to that
-  selection; a model not chosen, an absent peer or a peer without the
-  `metadata_complete` field does not block the deployment.
-  For a real MoE model, identified by `DeployPlan.is_moe` from GGUF metadata,
-  the Global inspector shows the inference engine selector and sends
-  `RuntimeParams.inference_mode` in whole-model, sliced and TP requests. Dense
-  models hide it. A MoE Tensor Parallelism plan keeps the selector visible but
-  is blocked with the backend's explicit unsupported reason, so the UI cannot
-  imply that the request will use another engine silently.
+- `DeployModel.tsx` - "Deploy on the network". Full-bleed Deploy Studio: a
+  top bar with the mode (**Pipeline** or **Image model** - slice sets, Whole
+  model and Tensor are not modes any more, `kind` is always `whole`), the
+  engine, the technical model, the operational deployment name and Deploy; a
+  central peer map (`../components/DeployNetworkCanvas`); a property inspector
+  with **Global** (`../components/DeploymentInspector`, the same component the
+  History uses read-only) and **Machines** (`MachinesTab`, below); and a
+  draggable bottom peer strip. The Simple/Complete strategies and "Back to the
+  node's plan" are gone.
+  **The plan is surveyed once per model**: `POST /api/ui/deploy/plan` with
+  `whole_ranges: []` (no range named) answers the machines, the valid cuts
+  (`layer_options`), the default `params`, `capabilities` and `is_moe`; its query
+  key is the model, the vision/sidecar picks and the service only, so a map edit
+  never queries the node. The map draws the rows on screen (`canvasPlan` builds
+  its steps from `rows`). The first machine dropped on the map takes the whole
+  model; the next ones join without a range. **Deploy validates once**
+  (`checkAndDeploy`): it posts the plan with the rows (`rowsPayload`:
+  `whole_ranges` when every row's machine holds the whole model, else
+  `selection`), and a `blocked` plan, a step `problem`, a machine without the
+  model (a `slice` copy, files are never copied) or an unsupported engine open
+  the "cannot run" `Modal` with every reason (`deploy-refusal`), nothing
+  deployed; an incomplete plan asks the partial-coverage `Confirm`
+  (`checked.missing`); then `inServiceAsked` names the machines already serving
+  (replace, or keep in parallel with `keep_existing: true`); then `deploy()`.
+  The button is grey only with an empty map (`whyNot`). There is no capacity
+  projection: the analytic preview did not count that the model a machine
+  serves is released by the deploy. A plan with no `kind` is read as
+  `"shards"` (`kindOf`). Deploy memory is namespaced `whole:<name>`. Tests:
+  `DeployModel.whole.test.tsx` ("pipeline map" covers the survey, the Machines
+  tab, the refusal window and the partial coverage question).
+  `MachinesTab` lists every machine on the map in pipeline order
+  (`orderedMapMachines`), without GPU/RAM/disk/RTT: each range on a
+  `../components/LayerRangeSlider` (two thumbs that stop only at
+  `rangeBounds(total, validEnds(...))`, i.e. 0, each valid cut + 1 and the layer
+  count), **Whole model**, **+ Range** (the first stretch no machine serves, so
+  one machine can serve several ranges), a remove per range, **Split the layers
+  over N machines** (`../lib/wholeRanges` `evenSplit`) and the per-machine GPU
+  layers / KV-on-GPU (llama.cpp only). Its remove button is "Take X off the
+  map", distinct from the card's X. A machine without the model says so.
+  For a real MoE model (`DeployPlan.is_moe`), the Global inspector shows the
+  inference engine selector and sends `RuntimeParams.inference_mode`. Dense
+  models hide it. While the survey names no head, the projector list comes from
+  the catalog.
 - `DeployModel.tsx` - "Inference service": when a machine publishes a plugin
   service of kind `inference` (`lib/inferenceServices.ts`), a select next to
   the mode bar offers it beside llama.cpp. Choosing it fixes the whole-model
@@ -650,93 +619,6 @@ Per-file list:
   settings the service declares (`pomSettings`). The Machine tab leaves out
   GPU layers and KV cache on the GPU, which only llama.cpp reads. Deploy memory is keyed per
   service. Test: `DeployModel.service.test.tsx`.
-- `DeployModel.tsx` - the slice shape: picks a slice set (`group`), lets the
-  planner place ranges on the central map, and exposes a 19rem collapsible
-  inspector. Its colored global section includes context, batching, sampling,
-  repetition, cycle detection, fit-memory, hidden-state dtype, execution toggles and the installation-wide KV cache
-  types. The hidden-state selector appears only for a sliced pipeline crossing
-  peer boundaries and offers f32/f16/f8/i4, with f16 as the default; the route
-  test checks that f32 reaches the deploy request. The two K/V cache combos apply changes immediately through
-  `POST /api/ui/cache-types`; the save button, subtitle and `global` badge are
-  intentionally absent. The MTP toggle seeds `mtp_min_probability` at `0.75`; the operator can
-  then edit that probability before deploying. The machine section includes
-  The MTP section also exposes the safe-by-default RAM fallback switch, so the
-  operator can refuse CPU drafting after measuring it. The machine section includes
-  GPU/KV overrides, machine capacity and the available layer ranges that can
-  be assigned to the selected peer. Choosing a range replaces that peer's
-  active range; the same range on a second peer remains a replica. Coverage is
-  a compact footer indicator. The inspector uses Global/Machine tab bars.
-  The inspector starts directly with the Global and Machine tabs, without the earlier
-  title and without external padding; capacity alerts appear as amber icons
-  beside the control and open the whole message by hover, focus or
-  click, including when the source carries identifiers without spaces.
-  `fit_memory` is on by default for shards and whole-model deployment, and the
-  screen disables it for tensor parallelism because llama.cpp cannot auto-fit
-  `split-mode tensor`.
-  Each numeric button of the inspector carries an `InfoTip` (`[i]` on hover/focus/
-  touch) with what the parameter does and how it affects the inference; the controls that
-  used `<label>` became a `<div>` with an `aria-label` on the `<input>` because a
-  `<button>` inside a `<label>` breaks the accessible name.
-  The map's cards are a **preview of the post-deploy**, not of the current state: with
-  `machine.capacity` in the plan, they show the projected VRAM per GPU, recalculated
-  on every context/batch/sessions adjustment (same debounce). Three states:
-  green (it fits), amber (`degraded` - the raw count does not fit, but `fit_memory`
-  can trim the request; it is a heuristic), pink (`!fits` - the count does not fit without
-  the automatic adjustment). Amber and
-  pink open a `Confirm` (`capacityAsked`, separate from the partial-coverage one)
-  naming the machines and the reason, with a title/text per case;
-  `canDeploy` does not change - it is a warning, not a block.
-  A third window (`inServiceAsked`, a `Modal`) comes last, when the live
-  cluster shows machines this deploy touches: the machines of the plan that
-  serve any model are listed as taken over ("Replace and deploy"), and the
-  machines outside the plan that serve this same model get the choice between
-  "Undeploy and deploy" and "Keep in parallel", which sends
-  `keep_existing: true`. There is no copy authorization any more: a plan with
-  `copies` comes `blocked` from the node, which names the machine, and the
-  screen never sends `allow_transfers`. The confirms
-  chain through `attemptDeploy`.
-  Topology edits are debounced 260 ms and validated by
-  `POST /api/ui/deploy/plan`. Runtime parameters, per-machine GPU/KV overrides
-  and the operational name stay local while editing: their changes do not
-  restart that cluster-wide survey or reuse its capacity projection. The plan
-  query key contains only layer ranges and target machines, while the deploy
-  request carries the current overrides. `POST /api/ui/deploy` re-surveys the cluster and
-  validates the current parameters before acting, returning a job shown through
-  `useJobs`. A failed preflight keeps the backend's reason visible in the rose
-  job banner, including the peer that stayed occupied.
-  Restores the last deploy from localStorage via
-  `../lib/deployMemory` (`recallDeploy`/`rememberDeploy`/`usableSelection`),
-  after the first plan, pruned against what still exists.
-- The TP inspector never offers pipeline layer buttons. It lists available and
-  selected ranks, while `DeployPlan.tp_targets` is the backend source of truth
-  for the exact pre-sliced file and rank destination.
-- `DeployModel` sends `strategy` and `preferred_node_ids` to the planner;
-  `deployment_name` and `RuntimeParams` are sent with the deploy request. The
-  map is explanatory: capacity/load come from the live
-  cluster and RTT comes from the directional survey in the plan;
-  adding a peer without a range only adds its card and keeps existing positions;
-  in whole-model mode, another peer joins the map without a range, except under
-  an inference service, where it is refused with a warning;
-  in pre-sliced tensor mode, adding a peer makes it eligible for a rank even
-  without a local rank file, while whole-model tensor mode still requires the
-  local GGUF; neither path adds an off-map peer implicitly;
-  assigning a range is what validates a new selection. Choosing a range removes
-  an empty placeholder for that same range, while an already assigned copy on
-  another machine remains as a replica. Removing a card deletes
-  that peer's routes and returns it to the bottom strip. `DeployNetworkCanvas` reuses the controls of
-  the Dashboard's canvas, draws nodes per range, bridges only between consecutive
-  stages and alternatives with a directional RTT, steers the curve by the facing
-  sides of the cards, keeps the GPU/RAM/load metrics updated by the cluster and does
-  not repeat peers already drawn in the footer. On a narrow viewport, the map gains
-  a minimum height and internal scrolling so it does not cut cards nor create overflow on
-  the page. Dragging or double-clicking adds
-  an available peer to the plan; assigning an available range edits
-  only that selection, keeps the ranges already on the peer as explicit
-  replicas and goes back to the backend for validation.
-- The list of slicing rounds uses `ShardSet.group` as the technical key and
-  `model_label` as the text; when there are two rounds of the same model, the selector
-  shows the `pom_id` prefix to disambiguate without changing the group sent to
-  the backend.
 - The global options conditioned by the model use `DeployPlan.capabilities`:
   `unsupported` stays hidden; `unknown` stays visible, disabled and
   explains the source and the reason. `no_embeddings` is the product exception:
@@ -937,22 +819,11 @@ Key logic carriers:
   hides the local development controls; the state of planning,
   launching and redeploying keeps the values received from the deployment,
   even when this node cannot edit them.
-- `DeployModel.rowsOf`/`sameRows` (DeployModel.tsx) - the selection model:
-  merged steps expand back into per-slice rows and the planner answer is compared
-  with the displayed rows after sorting by layer.
-- `DeployModel.validated`/`syncing`/`answered`/`whyNot` (DeployModel.tsx) - why
-  the button is grey, and who is allowed to say so. `sameRows` compares both
-  sides **sorted by layer**: the screen keeps its rows in layer order and the
-  node builds its answer its own way, and comparing position by position made a
-  plan that described exactly these rows look like a different plan. The
-  explanation panels hang off `answered` (the node has replied about *these*
-  rows), never off `validated`, so every planner answer can explain the disabled
-  button. `whyNot` puts the one-line reason next to
-  the disabled button, including the two states with no panel at all (nothing
-  selected, answer still in flight). Regression test: `DeployModel.test.tsx`.
-- `DeployModel.deploy` (DeployModel.tsx:602) - posts the current rows/settings
-  (from `rows`/`eff`, not the nullable edit state), remembers them via
-  `rememberDeploy`, and tracks the returned job id.
+- `DeployModel.rowsOf` (DeployModel.tsx) - the selection model: merged steps
+  expand back into per-slice rows; the screen keeps its rows in layer order.
+- `DeployModel.checkAndDeploy` (DeployModel.tsx) - the only validation: the plan
+  for the rows on screen, the refusal window or the confirms, then `deploy`,
+  which posts the current rows/settings and remembers them via `rememberDeploy`.
 - `SliceModels.asPlan` (SliceModels.tsx) - shape guard on the TP plan
   response; the one screen rendering straight off a POST body.
 - `Setup.save` (Setup.tsx) - posts the complete first-access payload, including

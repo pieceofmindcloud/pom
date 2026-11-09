@@ -11,7 +11,6 @@ import {
   fallbackPosition,
   gatewayRouteGeometry,
   pipelineGatewayPosition,
-  mergePositions,
   readPositions,
   routeGeometry,
   writePositions,
@@ -438,28 +437,30 @@ export function DeployNetworkCanvas({
       machines.filter((machine) => !assigned.includes(machine)).map((machine) => machine.node_id),
     );
   }, [machines, plan, rows]);
+  // `positions` holds only the cards the operator dragged, for this topology
+  // (`layoutKey`: the machines and their ranges). Every other card follows the
+  // arrangement, which is recomputed when a machine or a range changes - the
+  // old merge kept the spot a card had before it got a range, so the map stayed
+  // tangled until Reset.
   const positionOf = (nodeId: string, index: number) => positions[nodeId] ?? arrangement[nodeId] ?? fallbackPosition(index);
 
+  // A string key: `nodeIds` is a new array on every render of the screen.
+  const nodeKey = nodeIds.join("|");
   useEffect(() => {
-    setPositions((current) => {
-      const next = mergePositions(current, readPositions(layoutKey), arrangement, nodeIds);
-      writePositions(layoutKey, next);
-      return next;
-    });
-  }, [arrangement, layoutKey, nodeIds]);
+    const present = new Set(nodeKey.split("|"));
+    const dragged = readPositions(layoutKey);
+    setPositions(Object.fromEntries(Object.entries(dragged).filter(([nodeId]) => present.has(nodeId))));
+  }, [layoutKey, nodeKey]);
 
   const updatePosition = (nodeId: string, next: CanvasPosition) => setPositions((current) => {
     const updated = { ...current, [nodeId]: next };
     writePositions(layoutKey, updated);
     return updated;
   });
+  // Organize puts every card back on the arrangement, dragged ones included.
   const organize = () => {
-    setPositions((current) => {
-      const manuallyMoved = Object.fromEntries(Object.entries(current).filter(([id]) => id in arrangement));
-      const next = { ...arrangement, ...manuallyMoved };
-      writePositions(layoutKey, next);
-      return next;
-    });
+    clearPositions(layoutKey);
+    setPositions({});
     setZoom(1);
   };
   const reset = () => { clearPositions(layoutKey); setPositions({}); setZoom(1); };

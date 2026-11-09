@@ -51,21 +51,18 @@ import { ImageDeployStudio } from "../components/ImageDeployStudio";
 import {
   Check,
   ChevronLeft,
-  Lock,
-  LockOpen,
-  Minus,
   Plus,
   Rocket,
-  Server,
   ServerCog,
+  X,
 } from "lucide-react";
-import { machineKind } from "../components/MachineIcon";
+import { LayerRangeSlider, rangeBounds } from "../components/LayerRangeSlider";
 import { api, ApiError } from "../lib/api";
 import { useCacheTypes, useCluster, useClusterCatalog, useInvalidate, useJobs, useNode, useSidecarLinks } from "../lib/queries";
 import type { SidecarPick } from "../components/SidecarPicker";
 import { recallDeploy, rememberDeploy, usableSelection } from "../lib/deployMemory";
 import { useToast } from "../lib/toast";
-import { bytes, deployModelDisplayName, layerRange, megabytes } from "../lib/format";
+import { bytes, deployModelDisplayName, layerRange } from "../lib/format";
 import { Confirm, Modal } from "../components/Confirm";
 import { DeploymentInspector, InspectorRow } from "../components/DeploymentInspector";
 import { FilePresence, ModelPresence } from "../components/ModelPresence";
@@ -73,7 +70,7 @@ import { DeployNetworkCanvas } from "../components/DeployNetworkCanvas";
 import { DeployProgressModal } from "../components/DeployProgressModal";
 import { trackOf } from "../components/PipelineRail";
 import { fileSourceOn, tensorParallelModelsOf, wholeModelsOf } from "../lib/wholeModels";
-import { autoBalance, evenSplit, isWholeRangeSplit, stepRange, validEnds, wholeRangesOf } from "../lib/wholeRanges";
+import { evenSplit, isWholeRangeSplit, validEnds, wholeRangesOf } from "../lib/wholeRanges";
 import { inferenceServicesOf, serviceRunsModel, serviceCutsRanges,
   serviceRunsSlices, serviceTakesDraft } from "../lib/inferenceServices";
 import {
@@ -81,7 +78,6 @@ import {
   Button,
   ErrorState,
   Input,
-  MarqueeText,
   Select,
   Skeleton,
   Tabs,
@@ -143,35 +139,10 @@ function rowsOf(plan: DeployPlan | undefined): DeploySelection[] {
   );
 }
 
-const sameRows = (a: DeploySelection[], b: DeploySelection[]) =>
-  a.length === b.length &&
-  a.every(
-    (r, i) =>
-      r.start_layer === b[i].start_layer &&
-      r.end_layer === b[i].end_layer &&
-      r.target_node_id === b[i].target_node_id,
-  );
 
 const byLayer = (a: DeploySelection, b: DeploySelection) =>
   a.start_layer - b.start_layer ||
   a.end_layer - b.end_layer;
-
-/** The planner's expensive survey only depends on topology. Per-machine
- * launch overrides are carried by the selection for deploy, but changing one
- * must not make the node rediscover the same machines and ranges. */
-const topologyKey = (rows: DeploySelection[] | null) =>
-  rows === null
-    ? "auto"
-    : JSON.stringify(
-        rows
-          .map((row) => [row.start_layer, row.end_layer, row.target_node_id])
-          .sort((a, b) =>
-            Number(a[0]) - Number(b[0]) ||
-            Number(a[1]) - Number(b[1]) ||
-            String(a[2]).localeCompare(String(b[2])),
-          ),
-      );
-
 const launchOverridesKey = (rows: DeploySelection[] | null) =>
   rows === null
     ? "auto"
@@ -344,10 +315,12 @@ export function DeployModel() {
   /** `null` means "the node's default" — merged units off. */
   const [merge, setMerge] = useState<boolean | null>(null);
   const [asked, setAsked] = useState(false);
-  /** Second confirm, separate from the partial coverage one: the VRAM projection
-   *  exceeds the capacity of some machine. It warns, it does not block - the
-   *  operator can reduce context/sessions or deploy anyway. */
-  const [capacityAsked, setCapacityAsked] = useState(false);
+  /** True while Deploy validates the map (`checkAndDeploy`). */
+  const [checking, setChecking] = useState(false);
+  /** The node's answer to the map on screen, from the last Deploy press. */
+  const [checked, setChecked] = useState<DeployPlan | null>(null);
+  /** Why the map on screen cannot be deployed, as the last Deploy press found. */
+  const [refusal, setRefusal] = useState<string[] | null>(null);
   /** Third confirm: machines that already serve a model would be taken over
    *  or undeployed by this deploy. */
   const [inServiceAsked, setInServiceAsked] = useState(false);
@@ -470,10 +443,9 @@ export function DeployModel() {
   // Pipeline (a whole model, cut into ranges on the machines that hold it) is
   // the default; slices stay for a staged service and for slice sets made
   // before range loading.
-  const kind: DeployKind = service
-    ? service.stages && pickedKind === "shards" ? "shards" : "whole"
-    : pickedKind ?? (wholes.length === 0 && groups.length > 0 ? "shards" : "whole");
-  const offersSlices = Boolean(service?.stages) || groups.length > 0 || kind === "shards";
+  // The screen offers Pipeline (and Image model) only: virtual slices serve any
+  // range of a whole model, so slice sets, Whole model and Tensor are not modes.
+  const kind = "whole" as DeployKind;
   /** Pipeline as the default opens on an empty map, as choosing it did when
    *  slices were the default: the operator drops the machines that serve it. */
   const openedOnPipeline = useRef(false);
@@ -481,7 +453,6 @@ export function DeployModel() {
     if (openedOnPipeline.current || pickedKind !== null || service || kind !== "whole" || wholes.length === 0) return;
     openedOnPipeline.current = true;
     setSelection((current) => current ?? []);
-    setSettled((current) => current ?? []);
   }, [pickedKind, service, kind, wholes.length]);
   const isWhole = kind === "whole";
   const isTp = kind === "tensor_parallel";
@@ -529,14 +500,6 @@ export function DeployModel() {
   const rangesOnWhole = !service || serviceCutsRanges(service, wholeModel?.architecture ?? null);
   const splitsWhole = (candidate: DeploySelection[] | null): candidate is DeploySelection[] =>
     isWhole && rangesOnWhole && candidate != null && isWholeRangeSplit(candidate, wholeModel?.holders ?? [], wholeTotal);
-  /** Machines of a split made before the plan knew the GGUF's cuts. The first
-   *  split assumes every layer is a valid cut; once the plan answers with
-   *  `layer_options`, it is redone on the real cuts (a hybrid model is only cut
-   *  at its architectural boundaries). */
-  const pendingSplit = useRef<string[] | null>(null);
-  /** Machines whose range the operator locked: Auto-balance and the
-   *  neighbours' - / + leave it exactly as it is. */
-  const [lockedNodes, setLockedNodes] = useState<Set<string>>(() => new Set());
   const rowsPayload = (candidate: DeploySelection[] | null) =>
     candidate == null ? {} : splitsWhole(candidate) ? { whole_ranges: wholeRangesOf(candidate) } : { selection: candidate };
   /** The TpLaunch the node expects: `size` is derived from the workers picked,
@@ -566,37 +529,16 @@ export function DeployModel() {
       ? `tensor:${chosen}:${tpGroup?.tp_size ?? tp.worker_node_ids.length + 1}`
       : chosen;
 
-  // Map edits go to the node for validation, but not on every keystroke: the
-  // survey behind this route talks to every peer, and the settings are typed
-  // digit by digit. Runtime parameters are launch configuration, not topology,
-  // so changing them must not restart the full survey and capacity preview.
-  const [settled, setSettled] = useState<DeploySelection[] | null>(null);
-  /** The topology returned by an automatic plan. An explicit selection that
-   * only adds launch overrides must remain on this same query key. */
-  const autoTopologyKey = useRef<string | null>(null);
-  const queryTopologyKey = (rows: DeploySelection[] | null) => {
-    const key = topologyKey(rows);
-    return key !== "auto" && key === autoTopologyKey.current ? "auto" : key;
-  };
-  useEffect(() => {
-    const t = setTimeout(() => {
-      setSettled(selection);
-    }, 260);
-    return () => clearTimeout(t);
-  }, [selection]);
-
+  // The plan is surveyed once per model, not per map edit: it says which
+  // machines can serve the model, the valid cuts of the whole GGUF
+  // (`whole_ranges: []` asks for them without naming a range) and the default
+  // settings. Map edits stay on this screen; pressing Deploy validates the map
+  // once (`checkAndDeploy`) and says why it cannot run, if it cannot.
   const plan = useQuery({
     queryKey: [
       "deploy-plan",
       kind,
       chosen,
-      queryTopologyKey(settled),
-      merge == null ? "merge-padrão" : `merge-${merge}`,
-      strategy,
-      JSON.stringify(preferredNodeIds),
-      // TP: the plan revalidates when the primary/workers change - the shardability
-      // check runs on the node, so the change has to re-trigger the query.
-      isTp ? JSON.stringify(tpPayload()) : "sem-tp",
       // The plan answers where the projector and the MTP draft come from, so a
       // new choice (or vision turned on) asks again.
       JSON.stringify([useVision, visionPick, mtpPick]),
@@ -606,19 +548,13 @@ export function DeployModel() {
       api.post<DeployPlan>("/api/ui/deploy/plan", {
         group: chosen,
         kind,
-        strategy,
-        preferred_node_ids: preferredNodeIds,
-        ...rowsPayload(settled),
-        ...(isTp ? { tp: tpPayload() } : {}),
-        // The merge toggle is not on screen for a whole model. Sending it
-        // anyway would be sending a value the operator was never shown.
-        ...(merge != null && !isWhole ? { merge } : {}),
+        ...(rangesOnWhole ? { whole_ranges: [] } : { selection: [] }),
         vision: useVision,
         ...sidecarChoices(),
         ...(service ? { params: { inference_service: service.code } } : {}),
       }),
     enabled: chosen.length > 0,
-    staleTime: 10_000,
+    staleTime: 60_000,
     placeholderData: keepPreviousData,
   });
 
@@ -637,7 +573,10 @@ export function DeployModel() {
   // `/data/models/...` next to a peer's `/models/...`), so it only fills the
   // list while the first plan is loading.
   const mmprojCandidates = useMemo(() => {
-    const candidates = currentPlan
+    // The survey names no head (no range is chosen yet), so it may carry no
+    // projector: the catalog's list stands in until a plan names one.
+    const fromPlan = (currentPlan?.mmproj_candidates?.length ?? 0) > 0 || Boolean(currentPlan?.mmproj_path);
+    const candidates = currentPlan && fromPlan
       ? [
         ...(currentPlan.mmproj_candidates ?? []),
         ...(currentPlan.mmproj_path ? [currentPlan.mmproj_path] : []),
@@ -691,11 +630,6 @@ export function DeployModel() {
     if (!visionAvailable) setUseVision(false);
   }, [visionAvailable]);
   useEffect(() => {
-    if (p?.auto && p.group === chosen && kindOf(p) === kind) {
-      autoTopologyKey.current = topologyKey(rowsOf(p));
-    }
-  }, [chosen, kind, p]);
-  useEffect(() => {
     if (p?.params && nodeParams.current == null) nodeParams.current = p.params;
   }, [p]);
   /**
@@ -725,10 +659,6 @@ export function DeployModel() {
       };
     });
   }, [liveCluster.data, p]);
-  // The inspector tab's icon: the kind of the inspected machine (a GPU box, a Mac, a Windows PC), as the canvas draws it;
-  // a machine that has not reported its system yet is drawn as a server, not as a question mark.
-  const inspectedSystem = liveCluster.data?.peers.find((peer) => peer.node_id === inspectedNodeId)?.node?.system;
-  const InspectedMachineIcon = inspectedSystem ? machineKind(inspectedSystem).icon : Server;
   // Capacity is the only part of the plan that depends on RuntimeParams. It
   // cannot be reused after a launch setting changes, but that setting also
   // does not justify a new topology survey. Hide the old projection until the
@@ -806,15 +736,6 @@ export function DeployModel() {
       return single;
     });
   }, [selection, p]);
-  useEffect(() => {
-    const holders = pendingSplit.current;
-    const options = currentPlan?.layer_options;
-    if (!holders || !options || wholeTotal == null) return;
-    pendingSplit.current = null;
-    if (options.reason) return;
-    const next = evenSplit(holders, wholeTotal, validEnds(wholeTotal, options.cuts.map((cut) => cut.end_layer)));
-    if (!sameRows(next, rows)) setSelection(next);
-  }, [currentPlan, wholeTotal, rows]);
   /** One row per machine for the per-machine role: a whole model has one row per machine already; slices may put
    *  several ranges on one machine, which share its role. A sliced deployment may also hold a prefill machine that
    *  runs the whole model beside the slices. */
@@ -843,6 +764,15 @@ export function DeployModel() {
     () => liveMachines.filter((machine) => mapNodeIds.has(machine.node_id)).map((machine) => machine.node_id),
     [liveMachines, mapNodeIds],
   );
+  /** The machines on the map in pipeline order (first range), the ones
+   *  without a range last: the Machines tab lists them this way. */
+  const orderedMapMachines = useMemo(() => {
+    const firstLayer = (nodeId: string) =>
+      Math.min(...rows.filter((row) => row.target_node_id === nodeId).map((row) => row.start_layer), Number.POSITIVE_INFINITY);
+    return liveMachines
+      .filter((machine) => mapNodeIds.has(machine.node_id))
+      .sort((a, b) => firstLayer(a.node_id) - firstLayer(b.node_id) || a.label.localeCompare(b.label));
+  }, [liveMachines, mapNodeIds, rows]);
   const tpCandidates = useMemo(
     () => tpGroup ? mapMachineIds : mapMachineIds.filter((nodeId) => wholeModel?.holders.includes(nodeId)),
     [mapMachineIds, tpGroup, wholeModel],
@@ -910,51 +840,40 @@ export function DeployModel() {
       return { primary_node_id: primary, worker_node_ids: nextWorkers };
     });
   }, [isTp, tpCandidates, tpGroup, wholeModel]);
+  /** The map draws the rows on screen, not a plan: the survey names no range,
+   *  and an edit must redraw at once instead of waiting for the node. */
   const canvasPlan = useMemo(() => {
-    if (!displayPlan || selection == null) return displayPlan;
-    const assigned = new Set(rows.map((row) => `${row.target_node_id}:${row.start_layer}-${row.end_layer}`));
+    if (!displayPlan) return displayPlan;
     return {
       ...displayPlan,
-      steps: displayPlan.steps.filter((step) => assigned.has(`${step.target_node_id}:${step.start_layer}-${step.end_layer}`)),
+      route_options: [],
+      steps: rows.map((row, index) => ({
+        position: index + 1,
+        start_layer: row.start_layer,
+        end_layer: row.end_layer,
+        total_layers: displayPlan.total_layers,
+        name: "",
+        size_bytes: 0,
+        target_node_id: row.target_node_id,
+        target_host: row.target_node_id,
+        ready: true,
+        source_node_id: null,
+        source_host: null,
+        source_path: null,
+        target_path: null,
+        primary: row.start_layer === 0,
+        n_gpu_layers: row.n_gpu_layers ?? null,
+        offload_kqv: row.offload_kqv ?? null,
+        inference_role: row.inference_role ?? null,
+        options: [],
+        problem: null,
+        note: null,
+        merged: false,
+        parts: [],
+      })),
     };
-  }, [displayPlan, rows, selection]);
+  }, [displayPlan, rows]);
 
-  /**
-   * True while the plan in hand is still the answer to an older question.
-   *
-   * `isFetching` keeps the indicator tied to the request for the current key,
-   * including the tail after React Query has stopped showing placeholder data.
-   * `isPlaceholderData` still covers the interval where the previous answer is
-   * displayed. The debounce above is the other half - between a map edit and
-   * `settled` the query key has not moved yet, so the plan looks current when it
-   * is not. Runtime parameter edits do not enter this state because they do not
-   * alter topology.
-   */
-  const syncing =
-    plan.isFetching ||
-    plan.isPlaceholderData ||
-    queryTopologyKey(settled) !== queryTopologyKey(selection);
-
-  /** True while the node's answer still describes exactly these rows.
-   *
-   *  Order-insensitive on purpose. The screen keeps its rows in layer order and
-   *  the node builds its answer its own way; comparing position by position
-   *  made a plan that described exactly these rows look like a different plan,
-   *  and everything below - the refusal, the coverage warning, the button -
-   *  hung off that comparison. What matters is the set of (range, machine)
-   *  pairs, not the sequence they arrived in. */
-  const validated = !syncing && !!p && sameRows(rows, rowsOf(p).slice().sort(byLayer));
-
-  /**
-   * True when the node has answered about what is on screen right now.
-   *
-   * The explanations are gated on this rather than on `validated`, because the
-   * moment the node refuses part of a selection is the moment its answer stops
-   * matching the rows - and it is exactly then that the operator needs to read
-   * the reason. Gating the reason on the match meant the screen went silent
-   * precisely when it had something to say.
-   */
-  const answered = !!p && p.group === chosen && kindOf(p) === kind && !syncing;
 
   const labelOf = (id: string) =>
     p?.machines.find((m) => m.node_id === id)?.label ?? id.slice(0, 8);
@@ -1068,73 +987,6 @@ export function DeployModel() {
     );
   }
 
-  /** Adds a route for the range, preserving existing replicas. */
-  function assignRangeToMachine(startLayer: number, endLayer: number, nodeId: string) {
-    const candidate = p?.available.find(
-      (item) => item.start_layer === startLayer && item.end_layer === endLayer,
-    );
-    if (!candidate) return;
-    setSelection((current) => {
-      const base = (current ?? rows)
-        .filter(
-          (row) =>
-            row.start_layer !== candidate.start_layer ||
-            row.end_layer !== candidate.end_layer ||
-            row.target_node_id !== "",
-        )
-        .map((row) => ({ ...row }));
-      const existing = base.find((row) => row.target_node_id === nodeId);
-      const alreadyAssigned = base.some(
-        (row) =>
-          row.target_node_id === nodeId &&
-          row.start_layer === candidate.start_layer &&
-          row.end_layer === candidate.end_layer,
-      );
-      if (alreadyAssigned) return base;
-      // The whole model put on a machine of a sliced deployment joins as its
-      // prefill machine: it reads the prompts beside the stages instead of
-      // running their layers a second time.
-      const wholeBesideSlices = !isWhole && service && splitRoles && candidate.start_layer === 0
-        && p?.total_layers != null && candidate.end_layer + 1 === p.total_layers;
-      const inferenceRole = wholeBesideSlices ? "prefill" as const : existing?.inference_role;
-      // Assigning a range to another peer creates an explicit replica. Never
-      // silently remove the ranges the peer already serves.
-      return [
-        ...base,
-        {
-          start_layer: candidate.start_layer,
-          end_layer: candidate.end_layer,
-          target_node_id: nodeId,
-          n_gpu_layers: existing?.n_gpu_layers ?? null,
-          offload_kqv: existing?.offload_kqv ?? null,
-          ...(inferenceRole ? { inference_role: inferenceRole } : {}),
-        },
-      ].sort(byLayer);
-    });
-  }
-
-  /**
-   * Takes the range off this machine - the exact inverse of `assignRangeToMachine`.
-   *
-   * Removes only the row the operator clicked (range **and** machine), so the
-   * replicas of the same range on other machines stay where they were, for the
-   * same reason assigning preserves the neighbours. The machine stays on the
-   * canvas even with no range at all: a peer with no range is still a possibility,
-   * and taking a layer away is not the same gesture as "Remove from deployment".
-   */
-  function unassignRangeFromMachine(startLayer: number, endLayer: number, nodeId: string) {
-    edit((base) =>
-      base.filter(
-        (row) =>
-          !(
-            row.target_node_id === nodeId &&
-            row.start_layer === startLayer &&
-            row.end_layer === endLayer
-          ),
-      ),
-    );
-  }
-
   /** The screen's picks as the request wants them; "link" sends nothing. */
   function sidecarChoices() {
     const choice = (pick: SidecarPick) =>
@@ -1148,7 +1000,6 @@ export function DeployModel() {
   async function deploy(keepExisting = false) {
     setRunning(true);
     setAsked(false);
-    setCapacityAsked(false);
     setInServiceAsked(false);
     try {
       const started = await api.post<{ job_id: string }>("/api/ui/deploy", {
@@ -1229,19 +1080,6 @@ export function DeployModel() {
     }
   }
 
-  function restoreNodePlan() {
-    setSelection(null);
-    setSettled(null);
-    const defaults = nodeParams.current ?? p?.params ?? null;
-    setParams(defaults);
-    setMerge(p?.merge ?? null);
-    setPreferredNodeIds([]);
-    preserveEmptyPrimary.current = true;
-    seedTpWorkers.current = false;
-    setTp({ primary_node_id: "", worker_node_ids: [] });
-    setDeploymentName(chosen);
-  }
-
   function addPeerToDeployment(nodeId: string) {
     // An inference service runs a whole model on several machines only when it
     // declares the prefill/decode role (the machines hand conversations over as
@@ -1317,38 +1155,10 @@ export function DeployModel() {
   /** In Pipeline mode a machine without the model is not sent a copy: it
    *  downloads the model (Download here on its card) or gets the file placed.
    *  The ranges the plan would copy name those machines. */
-  const lackingModel = isWhole && rangesOnWhole
-    ? [...new Set((p?.copies ?? []).filter((copy) => copy.kind === "slice").map((copy) => copy.target_host))]
-    : [];
-  const canDeploy =
-    validated &&
-    lackingModel.length === 0 &&
-    !p?.blocked &&
-    inferenceModeSupported &&
-    rows.length > 0;
+  const canDeploy = !!p && rows.length > 0 && !checking && !running;
   const bottomMachines = liveMachines.filter(
     (machine) => !mapNodeIds.has(machine.node_id) && (!service || service.nodeIds.includes(machine.node_id)),
   );
-  /** Machines whose projection overflows the VRAM (rose) or that only fit because
-   *  "Fit to memory" would trim the request (amber) - both call for a warning
-   *  before deploying. */
-  /** The ranges that would run layers on the CPU, by machine: the deploy
-   *  asks for a confirmation naming each one and its CPU layer count. */
-  const cpuSplits = (displayPlan?.steps ?? [])
-    .filter((step) => step.target_node_id && (step.capacity?.cpu_layers ?? 0) > 0)
-    .map((step) => ({
-      nodeId: step.target_node_id!,
-      label: labelOf(step.target_node_id!),
-      gpu: step.capacity?.gpu_layers_fit ?? 0,
-      cpu: step.capacity?.cpu_layers ?? 0,
-    }));
-  const capacityWarnMachines = (displayPlan?.machines ?? []).filter(
-    (machine) =>
-      (machine.capacity && (!machine.capacity.fits || machine.capacity.degraded)) ||
-      cpuSplits.some((split) => split.nodeId === machine.node_id),
-  );
-  const anyOverCapacity = capacityWarnMachines.some((m) => !m.capacity?.fits);
-
   /**
    * Machines that serve a model now and that this deploy touches. A node
    * serves one model at a time, so a machine of the plan is taken over
@@ -1368,87 +1178,82 @@ export function DeployModel() {
     (peer) => !planNodeIds.has(peer.node_id) && peer.model === chosen,
   );
 
-  /** The deploy gesture, with the possible confirms on the way, each one
-   *  leading to the next: partial coverage (the model is not wholly in
-   *  service), the capacity projection (it overflows the VRAM, or the fit
-   *  would trim the request) and the machines already in service. */
-  function attemptDeploy(from: "coverage" | "capacity" | "copies" | "inService" = "coverage") {
+  /**
+   * Pressing Deploy: the map is validated here, once, against a fresh survey
+   * (`/api/ui/deploy/plan` with the rows on screen). A map that cannot run
+   * opens a window that says why; one that can goes through the confirms -
+   * partial coverage, then the machines already in service - and deploys.
+   * Nothing on the screen re-plans while the operator edits the map.
+   */
+  async function checkAndDeploy() {
+    setChecking(true);
+    try {
+      const verdict = await api.post<DeployPlan>("/api/ui/deploy/plan", {
+        group: chosen,
+        kind,
+        deployment_name: deploymentName || chosen,
+        ...rowsPayload(rows),
+        ...(params || service ? { params: sentParams } : {}),
+        vision: useVision,
+        ...sidecarChoices(),
+      });
+      setChecked(verdict);
+      const reasons: string[] = [];
+      if (verdict.blocked) reasons.push(verdict.blocked);
+      const lacking = rangesOnWhole
+        ? [...new Set((verdict.copies ?? []).filter((copy) => copy.kind === "slice").map((copy) => copy.target_host))]
+        : [];
+      if (lacking.length > 0) reasons.push(t("deploy.whyNotLacksModel", { machines: lacking.join(", ") }));
+      for (const step of verdict.steps) {
+        if (step.problem) reasons.push(`${labelOf(step.target_node_id)}: ${step.problem}`);
+      }
+      if (!inferenceModeSupported) reasons.push(inferenceModeReason ?? t("deployStudio.engineUnsupported"));
+      if (reasons.length > 0) {
+        setRefusal([...new Set(reasons)]);
+      } else if (!verdict.complete) {
+        setAsked(true);
+      } else {
+        proceedDeploy();
+      }
+    } catch (e) {
+      setRefusal([e instanceof Error ? e.message : String(e)]);
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  /** After the coverage question: the machines already in service, then deploy. */
+  function proceedDeploy() {
     setAsked(false);
-    setCapacityAsked(false);
-    if (from === "coverage" && !p?.complete) {
-      setAsked(true);
-    } else if ((from === "coverage" || from === "capacity") && capacityWarnMachines.length > 0) {
-      setCapacityAsked(true);
-    } else if (replacedPeers.length > 0 || elsewherePeers.length > 0) {
+    if (replacedPeers.length > 0 || elsewherePeers.length > 0) {
       setInServiceAsked(true);
     } else {
       void deploy();
     }
   }
 
-  /**
-   * Why the button is grey, in one line, next to the button.
-   *
-   * A disabled control with no reason beside it is the defect this screen was
-   * reported for: the operator sees grey and has nowhere to look. The panels
-   * above carry the long version; this says which of them to read, and covers
-   * the two states that have no panel at all - nothing selected, and an answer
-   * still on its way.
-   */
-  const whyNot: string | null = canDeploy
-    ? null
-    : rows.length === 0 && !isWhole
-      ? t("deploy.whyNotEmpty")
-      : syncing || !p
-        ? t("deploy.whyNotChecking")
-          : lackingModel.length > 0
-            ? t("deploy.whyNotLacksModel", { machines: lackingModel.join(", ") })
-          : p.blocked
-            ? t("deploy.whyNotBlocked")
-          : !inferenceModeSupported
-            ? t("deploy.whyNotBlocked")
-          : !validated
-            ? t("deploy.whyNotMismatch")
-            : rows.length === 0
-              ? t("deploy.whyNotNoModel")
-              : null;
+  /** Why the button is grey, in one line, next to the button. */
+  const whyNot: string | null = rows.length === 0 && p
+    ? t("deploy.whyNotEmpty")
+    : null;
   const cacheTypeChoices = cacheTypes.data?.choices?.length
     ? cacheTypes.data.choices
     : DEFAULT_CACHE_TYPES;
-
-  function selectKind(value: DeployKind) {
-    if (value === kind) return;
-    setPickedKind(value);
-    // Switching from slices to a whole GGUF changes the unit of the decision. The
-    // previous selection cannot pick a machine by accident while the new plan
-    // arrives: [] means an empty map and leaves the next choice to the
-    // operator. The other modes keep using the node's suggestion.
-    setSelection(value === "whole" ? [] : null);
-    setSettled(value === "whole" ? [] : null);
-    setPreferredNodeIds([]);
-    setJobId(null);
-  }
 
   if (imageMode) {
     return (
       <ImageDeployStudio
         modeBar={
           <div className="mr-auto flex items-center gap-1 rounded-lg border border-line bg-ink p-1" role="radiogroup">
-            {([
-              ["shards", t("deployStudio.kindShards")],
-              ["whole", t("deployStudio.kindWhole")],
-            ] as [DeployKind, string][]).map(([value, label]) => (
-              <button
-                key={value}
-                type="button"
-                role="radio"
-                aria-checked={false}
-                onClick={() => { setSearchParams({}); selectKind(value); }}
-                className="rounded-md px-3 py-1.5 text-[0.72rem] font-medium text-muted transition-colors hover:text-fg"
-              >
-                {label}
-              </button>
-            ))}
+            <button
+              type="button"
+              role="radio"
+              aria-checked={false}
+              onClick={() => setSearchParams({})}
+              className="rounded-md px-3 py-1.5 text-[0.72rem] font-medium text-muted transition-colors hover:text-fg"
+            >
+              {t("deployStudio.kindPipeline")}
+            </button>
             <button type="button" role="radio" aria-checked className="rounded-md bg-iris px-3 py-1.5 text-[0.72rem] font-medium text-white">
               {t("deployStudio.kindImage")}
             </button>
@@ -1471,28 +1276,16 @@ export function DeployModel() {
       >
         <div className="border-b border-line bg-surface/90 px-4 py-3 sm:px-5">
           <div className="flex flex-wrap items-center gap-2">
-            <div className="mr-auto flex items-center gap-1 rounded-lg border border-line bg-ink p-1">
-              {([
-                ["whole", t("deployStudio.kindPipeline")],
-                ...(offersSlices ? [["shards", t("deployStudio.kindShardsLegacy")] as [DeployKind, string]] : []),
-                ...(pomDevMode ? [["tensor_parallel", "Tensor"] as [DeployKind, string]] : []),
-              ] as [DeployKind, string][]).map(([value, label]) => (
-                <button
-                  key={value}
-                  type="button"
-                  role="radio"
-                  aria-label={value === "whole" ? t("deploy.kindWhole") : label}
-                  aria-checked={kind === value}
-                  data-guide={value === "whole" && kind !== "whole" ? "deploy-whole" : undefined}
-                  onClick={() => selectKind(value)}
-                  disabled={service != null && value !== "whole" && !(service.stages && value === "shards")}
-                  className={`rounded-md px-3 py-1.5 text-[0.72rem] font-medium transition-colors disabled:opacity-40 ${
-                    kind === value ? "bg-iris text-white" : "text-muted hover:text-fg"
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
+            <div className="mr-auto flex items-center gap-1 rounded-lg border border-line bg-ink p-1" role="radiogroup">
+              <button
+                type="button"
+                role="radio"
+                aria-label={t("deploy.kindWhole")}
+                aria-checked
+                className="rounded-md bg-iris px-3 py-1.5 text-[0.72rem] font-medium text-white"
+              >
+                {t("deployStudio.kindPipeline")}
+              </button>
               <button
                 type="button"
                 role="radio"
@@ -1519,7 +1312,6 @@ export function DeployModel() {
                     setWholeName("");
                     setGroup("");
                     setSelection(whole ? [] : null);
-                    setSettled(whole ? [] : null);
                     setPreferredNodeIds([]);
                     setJobId(null);
                   }}
@@ -1540,8 +1332,7 @@ export function DeployModel() {
                   else if (isTp && hasSlicedTp) setTensorGroupKey(event.target.value);
                   else if (isTp) setWholeName(event.target.value);
                   else setGroup(event.target.value);
-                  setSelection(null);
-                  setSettled(null);
+                  setSelection([]);
                   setPreferredNodeIds([]);
                 }}
                 className="h-9 min-w-0 flex-1 text-[0.78rem]"
@@ -1574,45 +1365,14 @@ export function DeployModel() {
                 className="h-9 min-w-0 flex-1 text-[0.78rem]"
               />
             </div>
-            {pomDevMode && <div className="flex items-center gap-1 rounded-lg border border-line bg-ink p-1">
-              {(["simple", "complete"] as DeployStrategy[]).map((value) => (
-                <button
-                  key={value}
-                  type="button"
-                  aria-pressed={strategy === value}
-                  onClick={() => {
-                    setStrategy(value);
-                    setSelection(null);
-                    setSettled(null);
-                    setPreferredNodeIds((current) =>
-                      isWhole ? [] : isTp ? current : value === "complete" ? liveMachines.map((machine) => machine.node_id) : [],
-                    );
-                  }}
-                  className={`rounded-md px-2.5 py-1.5 text-[0.7rem] font-medium ${
-                    strategy === value ? "bg-aqua/15 text-aqua" : "text-muted hover:text-fg"
-                  }`}
-                >
-                  {value === "simple" ? "Simples" : "Completa"}
-                </button>
-              ))}
-            </div>}
-            {pomDevMode && <Button
-              variant="outline"
-              size="sm"
-              type="button"
-              disabled={!p || running}
-              onClick={restoreNodePlan}
-            >
-              {t("deployStudio.restoreNodePlan")}
-            </Button>}
             <Button
               variant="primary"
               size="sm"
               icon={<Rocket className="h-3.5 w-3.5" />}
-              loading={running}
+              loading={running || checking}
               disabled={!canDeploy}
               data-guide={running ? "deploy-running" : canDeploy ? "deploy-run" : undefined}
-              onClick={() => attemptDeploy()}
+              onClick={() => void checkAndDeploy()}
             >
               {t("deployStudio.deploy")}
             </Button>
@@ -1620,16 +1380,6 @@ export function DeployModel() {
           {whyNot && <p className="mt-2 text-right text-[0.7rem] text-muted">{whyNot}</p>}
         </div>
 
-        {answered && p?.blocked && (
-          <div className="shrink-0 border-b border-rose/25 bg-rose/[0.06] px-4 py-2 text-[0.68rem] text-rose sm:px-5">
-            <span className="font-semibold">{t("deploy.blocked")}:</span>{" "}{p.blocked}
-          </div>
-        )}
-        {answered && p && !p.blocked && !p.complete && p.missing.length > 0 && (
-          <div className="shrink-0 border-b border-amber/25 bg-amber/[0.06] px-4 py-2 text-[0.68rem] text-amber">
-            {t("deployStudio.layersWithoutMachine", { ranges: p.missing.map(([start, end]) => layerRange(start, end)).join(", ") })}
-          </div>
-        )}
         {job && (
           <div className={`shrink-0 border-b px-4 py-1.5 text-[0.62rem] sm:px-5 ${job.state === "failed" ? "border-rose/40 bg-rose/[0.06]" : "border-line bg-ink/70"}`}>
             <div className="flex items-center justify-between gap-2 text-muted">
@@ -1687,24 +1437,9 @@ export function DeployModel() {
                         (copy) => copy.target_node_id === nodeId && (copy.kind === "mmproj" || copy.kind === "mtp"),
                       );
                       const lacksModel = !wholeModel.holders.includes(nodeId);
-                      const costed = (p?.steps ?? []).filter(
-                        (step) => step.target_node_id === nodeId && step.capacity?.weights_bytes != null,
-                      );
-                      const weights = costed.reduce((sum, step) => sum + (step.capacity?.weights_bytes ?? 0), 0);
-                      const kv = costed.reduce((sum, step) => sum + (step.capacity?.kv_bytes ?? 0), 0);
-                      const kvInRam = costed.some((step) => step.capacity?.kv_in_vram === false);
-                      const memory = costed.length > 0 && (
-                        <p className="mt-2 font-mono text-[9px] text-muted" data-testid="card-memory">
-                          {t(kvInRam ? "deployStudio.memoryKvRam" : "deployStudio.memoryKvVram", {
-                            weights: bytes(weights),
-                            kv: bytes(kv),
-                          })}
-                        </p>
-                      );
-                      if (!lacksModel && sidecars.length === 0) return memory || null;
+                      if (!lacksModel && sidecars.length === 0) return null;
                       return (
                         <>
-                          {memory}
                           {lacksModel && <ModelPresence nodeId={nodeId} machine={labelOf(nodeId)} model={wholeModel} />}
                           {sidecars.map((copy) => {
                             const source = fileSourceOn(cluster.data?.peers, copy.source_node_id, copy.name);
@@ -1743,14 +1478,8 @@ export function DeployModel() {
                 { value: "global", label: t("deployStudio.tabGlobal") },
                 {
                   value: "machine",
-                  // the machine's kind as an icon (the canvas's), its name alone; "Machine" stays for screen readers
-                  icon: <InspectedMachineIcon className="h-3.5 w-3.5" />,
-                  // a long machine name scrolls inside the tab instead of widening the row
-                  label: <>
-                    <span className="sr-only">{t("deployStudio.tabMachine")}: </span>
-                    <MarqueeText>{liveMachines.find((machine) => machine.node_id === inspectedNodeId)?.label ?? "-"}</MarqueeText>
-                  </>,
-                  disabled: !inspectedNodeId,
+                  label: t("deployStudio.tabMachines", { count: orderedMapMachines.length }),
+                  disabled: orderedMapMachines.length === 0,
                 },
               ]}
             />
@@ -1890,238 +1619,28 @@ export function DeployModel() {
                 <p className="mt-1.5 font-mono text-[0.58rem] text-faint">{tpPayload().size} ranks · {hasSlicedTp ? t("deployStudio.tpPartsPresliced") : t("deployStudio.wholeOnEachPeer")}</p>
               </section>
             )}
-            </> : <>
-            {(() => {
-              const machine = liveMachines.find((item) => item.node_id === inspectedNodeId);
-              const taking = rows.filter((row) => row.target_node_id === machine?.node_id);
-              const first = taking[0];
-              if (!machine) return <p className="py-4 text-[0.68rem] text-faint">{t("deployStudio.selectMachine")}</p>;
-              const availableForMachine = p?.available.filter((candidate) => candidate.holders.includes(machine.node_id)) ?? [];
-              return (
-                <section className="border border-aqua/20 bg-aqua/[0.035] pt-0">
-                  <div className="flex items-center justify-between gap-2 border-b border-aqua/20 bg-aqua/10 px-2 py-1.5">
-                    <div className="flex min-w-0 items-center gap-2">
-                      <p className="truncate text-[0.7rem] font-semibold text-fg">{machine.label}</p>
-                      {!taking.length && <Badge tone="neutral" className="px-1.5 py-0 text-[0.58rem]">{t("deployStudio.available")}</Badge>}
-                    </div>
-                  </div>
-                  <div className="px-2 pb-2">
-                  <dl className="mt-2 grid grid-cols-2 gap-x-2 gap-y-1.5 text-[0.62rem]">
-                    <div><dt className="text-faint">{t("deployStudio.gpuUseFree")}</dt><dd className="font-mono text-muted">{machine.gpu_used_pct == null ? "-" : `${machine.gpu_used_pct.toFixed(0)}%`} / {machine.gpu_free_mb > 0 ? megabytes(machine.gpu_free_mb) : "-"}</dd></div>
-                    <div><dt className="text-faint">{t("deployStudio.ramUseFree")}</dt><dd className="font-mono text-muted">{machine.ram_used_pct == null ? "-" : `${machine.ram_used_pct.toFixed(0)}%`} / {machine.ram_free_mb > 0 ? megabytes(machine.ram_free_mb) : "-"}</dd></div>
-                    <div><dt className="text-faint">{t("deployStudio.diskFree")}</dt><dd className="font-mono text-muted">{machine.disk_free_mb > 0 ? megabytes(machine.disk_free_mb) : "-"}</dd></div>
-                    <div><dt className="text-faint">{t("deployStudio.localRtt")}</dt><dd className="font-mono text-muted">{machine.rtt_ms == null ? "-" : `${machine.rtt_ms.toFixed(1)} ms`}</dd></div>
-                  </dl>
-                  {isTp ? (
-                    <>
-                      <div className="mt-3 border-t border-line pt-2">
-                        <p className="text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-faint">{t("deployStudio.ranksOnMachine")}</p>
-                        <div className="mt-1.5 flex flex-wrap gap-1">
-                          {tpRankRows.filter((rank) => rank.target_node_id === machine.node_id).map((rank) => (
-                            <Badge key={`${rank.rank}-${rank.size}`} tone="iris" mono className="px-1.5 py-0 text-[0.62rem]">{rank.rank + 1}of{rank.size}</Badge>
-                          ))}
-                          {!tpRankRows.some((rank) => rank.target_node_id === machine.node_id) && <span className="text-[0.64rem] text-faint">{t("deployStudio.noRankAssigned")}</span>}
-                        </div>
-                      </div>
-                      <div className="mt-3 border-t border-aqua/15 pt-2">
-                        <p className="text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-aqua">{t("deployStudio.ranksOnPeer")}</p>
-                        <div className="mt-1.5 flex flex-wrap gap-1">
-                          {(tpGroup?.ranks.filter((rank) => rank.holders.includes(machine.node_id)) ?? []).map((rank) => (
-                            <Badge key={`${rank.rank}-${rank.size}-available`} tone="aqua" mono className="px-1.5 py-0 text-[0.62rem]">{rank.rank + 1}of{rank.size}</Badge>
-                          ))}
-                        </div>
-                      </div>
-                    </>
-                  ) : (
-                    <>
-                      <div className="mt-3 border-t border-line pt-2">
-                        <p className="text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-faint">{t("deployStudio.layersOnMachine")}</p>
-                        <div className="mt-1.5 flex flex-wrap gap-1">
-                          {taking.length > 0 ? taking.map((row) => (
-                            <Badge key={`${row.start_layer}-${row.end_layer}`} tone="iris" mono className="px-1.5 py-0 text-[0.62rem]">{layerRange(row.start_layer, row.end_layer)}</Badge>
-                          )) : <span className="text-[0.64rem] text-faint">{t("deployStudio.noLayerAssigned")}</span>}
-                        </div>
-                      </div>
-                      {isWhole && rangesOnWhole && wholeTotal != null && (() => {
-                        // Ranges of the whole model, each from the machine's own copy.
-                        const holdersOnMap = mapMachineIds.filter((nodeId) => wholeModel?.holders.includes(nodeId));
-                        const ends = validEnds(wholeTotal, currentPlan?.layer_options?.cuts.map((cut) => cut.end_layer) ?? null);
-                        const split = splitsWhole(rows);
-                        const locked = new Set(rows.flatMap((row, index) => (lockedNodes.has(row.target_node_id) ? [index] : [])));
-                        const limitText = (limit: string) =>
-                          t({
-                            noCut: "deployStudio.layerLimitNoCut",
-                            neighbourEmpty: "deployStudio.layerLimitEmpty",
-                            locked: "deployStudio.layerLimitLocked",
-                            neighbourLocked: "deployStudio.layerLimitNeighbourLocked",
-                          }[limit] ?? "deployStudio.layerLimitEmpty");
-                        const options = currentPlan?.layer_options;
-                        // Weights plus the KV cache for the deployment's context, when the node costs it.
-                        const prefixBytes = (end: number): number | null => {
-                          if (!options || options.cuts.length === 0) return null;
-                          if (end === wholeTotal - 1) {
-                            const first = options.cuts[0];
-                            return first.size_bytes + first.remainder_bytes + (first.kv_bytes ?? 0) + (first.remainder_kv_bytes ?? 0);
-                          }
-                          const cut = options.cuts.find((item) => item.end_layer === end);
-                          return cut ? cut.size_bytes + (cut.kv_bytes ?? 0) : null;
-                        };
-                        const freeMemory = (nodeId: string) => {
-                          const live = liveMachines.find((item) => item.node_id === nodeId);
-                          const gpu = live?.gpu_free_mb ?? 0;
-                          return gpu > 0 ? gpu : live?.ram_free_mb ?? 0;
-                        };
-                        const balanced = split && options ? autoBalance(rows, locked, ends, prefixBytes, freeMemory) : null;
-                        const balanceReason = balanced == null
-                          ? t("deployStudio.autoBalanceWaiting")
-                          : Array.isArray(balanced)
-                            ? null
-                            : t(balanced === "allLocked" ? "deployStudio.autoBalanceAllLocked" : "deployStudio.autoBalanceNoSizes");
-                        return (
-                          <div className="mt-3 space-y-1.5 border-t border-line pt-2">
-                            {split && taking.map((row) => {
-                              const index = rows.indexOf(row);
-                              const fewer = stepRange(rows, index, "shrink", ends, locked);
-                              const more = stepRange(rows, index, "grow", ends, locked);
-                              const isLocked = locked.has(index);
-                              const count = row.end_layer - row.start_layer + 1;
-                              return (
-                                <div key={`step-${row.start_layer}`} className="flex items-center justify-between gap-2">
-                                  <span className="font-mono text-[0.64rem] text-muted">{layerRange(row.start_layer, row.end_layer)}</span>
-                                  <div className="flex items-center gap-1">
-                                    <button
-                                      type="button"
-                                      aria-pressed={isLocked}
-                                      aria-label={t(isLocked ? "deployStudio.unlockRange" : "deployStudio.lockRange", { machine: machine.label })}
-                                      title={t(isLocked ? "deployStudio.unlockRange" : "deployStudio.lockRange", { machine: machine.label })}
-                                      onClick={() => setLockedNodes((current) => {
-                                        const next = new Set(current);
-                                        if (next.has(machine.node_id)) next.delete(machine.node_id);
-                                        else next.add(machine.node_id);
-                                        return next;
-                                      })}
-                                      className={`border p-0.5 ${isLocked ? "border-aqua/40 bg-aqua/10 text-aqua" : "border-line bg-ink text-muted hover:border-aqua/50 hover:text-fg"}`}
-                                    >
-                                      {isLocked ? <Lock className="h-3 w-3" /> : <LockOpen className="h-3 w-3" />}
-                                    </button>
-                                    <button
-                                      type="button"
-                                      aria-label={t("deployStudio.fewerLayers", { machine: machine.label })}
-                                      title={Array.isArray(fewer) ? t("deployStudio.fewerLayers", { machine: machine.label }) : limitText(fewer)}
-                                      disabled={!Array.isArray(fewer)}
-                                      onClick={() => Array.isArray(fewer) && setSelection(fewer)}
-                                      className="border border-line bg-ink p-0.5 text-muted hover:border-aqua/50 hover:text-fg disabled:opacity-40"
-                                    >
-                                      <Minus className="h-3 w-3" />
-                                    </button>
-                                    <span className="min-w-[4.5rem] text-center font-mono text-[0.64rem] text-fg">{t("deployStudio.layerCount", { count })}</span>
-                                    <button
-                                      type="button"
-                                      aria-label={t("deployStudio.moreLayers", { machine: machine.label })}
-                                      title={Array.isArray(more) ? t("deployStudio.moreLayers", { machine: machine.label }) : limitText(more)}
-                                      disabled={!Array.isArray(more)}
-                                      onClick={() => Array.isArray(more) && setSelection(more)}
-                                      className="border border-line bg-ink p-0.5 text-muted hover:border-aqua/50 hover:text-fg disabled:opacity-40"
-                                    >
-                                      <Plus className="h-3 w-3" />
-                                    </button>
-                                  </div>
-                                </div>
-                              );
-                            })}
-                            {split && (
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                type="button"
-                                className="w-full"
-                                disabled={!Array.isArray(balanced)}
-                                title={balanceReason ?? t("deployStudio.autoBalanceHint")}
-                                onClick={() => Array.isArray(balanced) && setSelection(balanced)}
-                              >
-                                {t("deployStudio.autoBalance")}
-                              </Button>
-                            )}
-                            {holdersOnMap.length >= 2 && (
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                type="button"
-                                className="w-full"
-                                onClick={() => {
-                                  if (!currentPlan?.layer_options) pendingSplit.current = holdersOnMap;
-                                  setSelection(evenSplit(holdersOnMap, wholeTotal, ends));
-                                }}
-                              >
-                                {t("deployStudio.splitLayers", { count: holdersOnMap.length })}
-                              </Button>
-                            )}
-                            {split && <p className="text-[0.6rem] leading-snug text-faint">{t("deployStudio.splitLayersHint")}</p>}
-                          </div>
-                        );
-                      })()}
-                      {(currentPlan?.steps ?? [])
-                        .filter((step) => step.target_node_id === machine.node_id && (step.capacity?.cpu_layers ?? 0) > 0)
-                        .map((step) => (
-                          <p key={`cpu-${step.start_layer}`} className="mt-2 border-l-2 border-amber/50 pl-2 text-[0.62rem] leading-snug text-amber">
-                            <span className="font-semibold">{t("deployStudio.gpuCpuSplit", { gpu: step.capacity?.gpu_layers_fit ?? 0, cpu: step.capacity?.cpu_layers ?? 0 })}</span>
-                            {" "}
-                            {t("deployStudio.gpuCpuSplitDetail", { ram: megabytes(Math.round((step.capacity?.cpu_ram_bytes ?? 0) / (1024 * 1024))) })}
-                          </p>
-                        ))}
-                      {(currentPlan?.steps ?? [])
-                        .filter((step) => step.target_node_id === machine.node_id && step.note)
-                        .map((step) => (
-                          <p key={`note-${step.start_layer}`} className="mt-2 border-l-2 border-amber/50 pl-2 text-[0.62rem] leading-snug text-amber">
-                            {step.note}
-                          </p>
-                        ))}
-                      <div className="mt-3 border-t border-aqua/15 pt-2">
-                        <p className="text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-aqua">{t("deployStudio.layersOnPeer")}</p>
-                        <div className="mt-1.5 flex flex-wrap gap-1">
-                          {availableForMachine.length > 0 ? availableForMachine.map((candidate) => {
-                            const assigned = rows.some((row) => row.start_layer === candidate.start_layer && row.end_layer === candidate.end_layer && row.target_node_id === machine.node_id);
-                            const range = layerRange(candidate.start_layer, candidate.end_layer);
-                            return (
-                              <button
-                                key={`${candidate.start_layer}-${candidate.end_layer}`}
-                                type="button"
-                                aria-label={t(assigned ? "deployStudio.removeRangeAria" : "deployStudio.assignRangeAria", { range, machine: machine.label })}
-                                title={t(assigned ? "deployStudio.removeRangeTitle" : "deployStudio.assignRangeTitle", { range, machine: machine.label })}
-                                onClick={() => (assigned
-                                  ? unassignRangeFromMachine(candidate.start_layer, candidate.end_layer, machine.node_id)
-                                  : assignRangeToMachine(candidate.start_layer, candidate.end_layer, machine.node_id))}
-                                className={`border px-1.5 py-0.5 font-mono text-[0.6rem] ${assigned ? "border-aqua/30 bg-aqua/10 text-aqua hover:border-rose/50 hover:bg-rose/10 hover:text-rose" : "border-line bg-ink text-muted hover:border-aqua/50 hover:text-fg"}`}
-                              >
-                                {assigned ? `${range} ✓` : range}
-                              </button>
-                            );
-                          }) : <span className="text-[0.64rem] text-faint">{t("deployStudio.noSliceAvailable")}</span>}
-                        </div>
-                      </div>
-                    </>
-                  )}
-                  {/* The two per-machine properties use the same row as the
-                      global ones: the `[i]` before the name, in the same column, and
-                      the control on the right. The KV cache explanation was a fixed
-                      paragraph under the switch; now it is in the `[i]`,
-                      like all the others. Both are llama.cpp's: a plugin's
-                      engine does not read them. */}
-                  {first && !service && (
-                    <div className="mt-3 space-y-1 border-t border-line pt-2">
-                      <InspectorRow label={t("deployStudio.gpuLayers")} tip={t("deploy.knob.n_gpu_layersHint")}>
-                        <Input aria-label={t("deployStudio.gpuLayers")} name={`n_gpu_layers_${machine.node_id}`} type="number" min={0} value={first.n_gpu_layers ?? ""} placeholder={String(eff.n_gpu_layers)} onChange={(event) => setPeerGpu(machine.node_id, event.target.value === "" ? null : Math.max(0, Number(event.target.value) || 0))} compact className="text-right font-mono" />
-                      </InspectorRow>
-                      <InspectorRow label={t("deployStudio.kvCacheOnGpu")} tip={t("deploy.knob.offload_kqvHint")}>
-                        <Tick on={first.offload_kqv ?? eff.offload_kqv} label={t("deployStudio.kvCacheOnGpu")} onToggle={() => setPeerKqv(machine.node_id, !(first.offload_kqv ?? eff.offload_kqv))} />
-                      </InspectorRow>
-                    </div>
-                  )}
-                  </div>
-                </section>
-              );
-            })()}
-            </>}
+            </> : (
+            <MachinesTab
+              machines={orderedMapMachines}
+              rows={rows}
+              total={wholeTotal}
+              ends={wholeTotal == null ? [] : validEnds(wholeTotal, currentPlan?.layer_options?.cuts.map((cut) => cut.end_layer) ?? null)}
+              holders={wholeModel?.holders ?? []}
+              rangesOnWhole={isWhole && rangesOnWhole}
+              llama={!service}
+              defaults={{ n_gpu_layers: eff.n_gpu_layers, offload_kqv: eff.offload_kqv }}
+              inspectedNodeId={inspectedNodeId}
+              onInspect={setInspectedNodeId}
+              onRemoveMachine={removePeerFromDeployment}
+              onRows={(next) => setSelection(next.slice().sort(byLayer))}
+              onGpu={setPeerGpu}
+              onKqv={setPeerKqv}
+              onSplit={(nodeIds, ends) => {
+                if (wholeTotal == null) return;
+                setSelection(evenSplit(nodeIds, wholeTotal, ends));
+              }}
+            />
+            )}
             </aside>
             <button
               type="button"
@@ -2173,7 +1692,7 @@ export function DeployModel() {
         title={t("deploy.partialTitle")}
         description={
           <>
-            {p?.missing
+            {(checked?.missing ?? [])
               .map(([a, b]) => (a === b ? `L${a}` : `L${a}–${b}`))
               .join(", ")}{" "}
             {t("deploy.partialConfirm")}
@@ -2181,47 +1700,27 @@ export function DeployModel() {
         }
         confirmLabel={t("deploy.deploy")}
         busy={running}
-        onConfirm={() => attemptDeploy("capacity")}
+        onConfirm={proceedDeploy}
         onCancel={() => setAsked(false)}
       />
 
-      <Confirm
-        open={capacityAsked}
-        title={t(anyOverCapacity ? "deploy.capacityWarnTitle" : "deploy.capacityDegradedTitle")}
-        description={
-          <>
-            {t(anyOverCapacity ? "deploy.capacityWarnDetail" : "deploy.capacityDegradedDetail", {
-              machines: capacityWarnMachines.map((machine) => machine.label).join(", "),
-            })}
-            {capacityWarnMachines.some((machine) => machine.capacity?.note) && (
-              <ul className="mt-2 list-disc space-y-1 pl-4 text-[0.72rem] text-muted">
-                {capacityWarnMachines
-                  .filter((machine) => machine.capacity?.note)
-                  .map((machine) => (
-                    <li key={machine.node_id}>
-                      <span className="font-medium text-fg">{machine.label}:</span>{" "}
-                      {machine.capacity?.note}
-                    </li>
-                  ))}
-              </ul>
-            )}
-            {cpuSplits.length > 0 && (
-              <ul className="mt-2 list-disc space-y-1 pl-4 text-[0.72rem] text-amber" data-testid="deploy-cpu-splits">
-                {cpuSplits.map((split) => (
-                  <li key={split.nodeId}>
-                    <span className="font-medium">{split.label}:</span>{" "}
-                    {t("deploy.cpuSplitConfirm", { gpu: split.gpu, cpu: split.cpu })}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </>
+      <Modal
+        open={refusal != null}
+        title={t("deployStudio.cannotDeployTitle")}
+        onClose={() => setRefusal(null)}
+        footer={
+          <Button variant="primary" onClick={() => setRefusal(null)}>
+            {t("deployStudio.cannotDeployClose")}
+          </Button>
         }
-        confirmLabel={t("deploy.deploy")}
-        busy={running}
-        onConfirm={() => attemptDeploy("copies")}
-        onCancel={() => setCapacityAsked(false)}
-      />
+      >
+        <p className="text-[0.8rem] leading-relaxed text-muted">{t("deployStudio.cannotDeployDetail")}</p>
+        <ul className="mt-3 list-disc space-y-1.5 pl-5 text-[0.8rem] leading-relaxed text-fg" data-testid="deploy-refusal">
+          {(refusal ?? []).map((reason) => (
+            <li key={reason} className="break-words">{reason}</li>
+          ))}
+        </ul>
+      </Modal>
 
       <Modal
         open={inServiceAsked}
@@ -2269,5 +1768,204 @@ export function DeployModel() {
         ))}
       </Modal>
     </>
+  );
+}
+
+/**
+ * The Machines tab: every machine on the map, in pipeline order, with only
+ * what the operator edits - the layer ranges it serves and its llama.cpp
+ * overrides. A machine that holds the whole model can serve it whole, one
+ * range or several, each picked on the valid cuts (virtual slices read any of
+ * them from the whole file); nothing here re-plans, Deploy validates the map.
+ */
+function MachinesTab({
+  machines,
+  rows,
+  total,
+  ends,
+  holders,
+  rangesOnWhole,
+  llama,
+  defaults,
+  inspectedNodeId,
+  onInspect,
+  onRemoveMachine,
+  onRows,
+  onGpu,
+  onKqv,
+  onSplit,
+}: {
+  machines: { node_id: string; label: string }[];
+  rows: DeploySelection[];
+  total: number | null;
+  ends: number[];
+  holders: string[];
+  rangesOnWhole: boolean;
+  llama: boolean;
+  defaults: { n_gpu_layers: number; offload_kqv: boolean };
+  inspectedNodeId: string | null;
+  onInspect: (nodeId: string) => void;
+  onRemoveMachine: (nodeId: string) => void;
+  onRows: (rows: DeploySelection[]) => void;
+  onGpu: (nodeId: string, value: number | null) => void;
+  onKqv: (nodeId: string, value: boolean) => void;
+  onSplit: (nodeIds: string[], ends: number[]) => void;
+}) {
+  const { t } = useI18n();
+  if (machines.length === 0) {
+    return <p className="px-3 py-4 text-[0.68rem] text-faint">{t("deployStudio.machinesEmpty")}</p>;
+  }
+  const bounds = total == null ? [] : rangeBounds(total, ends);
+  const holdersOnMap = machines.map((machine) => machine.node_id).filter((nodeId) => holders.includes(nodeId));
+  const newRow = (nodeId: string, start: number, end: number): DeploySelection => {
+    const existing = rows.find((row) => row.target_node_id === nodeId);
+    return {
+      start_layer: start,
+      end_layer: end,
+      target_node_id: nodeId,
+      n_gpu_layers: existing?.n_gpu_layers ?? null,
+      offload_kqv: existing?.offload_kqv ?? null,
+      ...(existing?.inference_role ? { inference_role: existing.inference_role } : {}),
+    };
+  };
+  /** The first stretch of layers no machine serves, else the last range a cut allows. */
+  const freeRange = (): [number, number] | null => {
+    if (total == null || bounds.length < 2) return null;
+    const covered = new Array(total).fill(false);
+    for (const row of rows) for (let layer = row.start_layer; layer <= row.end_layer && layer < total; layer++) covered[layer] = true;
+    const startIndex = bounds.findIndex((bound) => bound < total && !covered[bound]);
+    if (startIndex >= 0) {
+      let endIndex = startIndex + 1;
+      while (endIndex < bounds.length - 1 && !covered[bounds[endIndex]]) endIndex++;
+      return [bounds[startIndex], bounds[endIndex] - 1];
+    }
+    return [bounds[bounds.length - 2], total - 1];
+  };
+  return (
+    <div className="space-y-2 p-2">
+      {rangesOnWhole && holdersOnMap.length >= 2 && total != null && (
+        <Button variant="outline" size="sm" type="button" className="w-full" onClick={() => onSplit(holdersOnMap, ends)}>
+          {t("deployStudio.splitLayers", { count: holdersOnMap.length })}
+        </Button>
+      )}
+      {machines.map((machine) => {
+        const taking = rows.filter((row) => row.target_node_id === machine.node_id);
+        const holds = holders.includes(machine.node_id);
+        const editable = rangesOnWhole && holds && total != null && bounds.length >= 2;
+        const first = taking[0];
+        const replaceRow = (target: DeploySelection, next: DeploySelection | null) =>
+          onRows(rows.flatMap((row) => (row === target ? (next ? [next] : []) : [row])));
+        return (
+          <section
+            key={machine.node_id}
+            onClick={() => onInspect(machine.node_id)}
+            className={`border ${inspectedNodeId === machine.node_id ? "border-aqua/50 bg-aqua/[0.05]" : "border-line bg-ink/40"}`}
+          >
+            <div className="flex items-center justify-between gap-2 border-b border-line px-2 py-1.5">
+              <p className="min-w-0 truncate text-[0.7rem] font-semibold text-fg">{machine.label}</p>
+              <button
+                type="button"
+                aria-label={t("deployStudio.machineOffMap", { machine: machine.label })}
+                title={t("deployStudio.machineOffMap", { machine: machine.label })}
+                onClick={(event) => { event.stopPropagation(); onRemoveMachine(machine.node_id); }}
+                className="flex h-5 w-5 shrink-0 items-center justify-center text-faint hover:bg-rose/10 hover:text-rose"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+            <div className="space-y-2 px-2 py-2">
+              {taking.length === 0 && <p className="text-[0.62rem] text-faint">{t("deployStudio.noLayerAssigned")}</p>}
+              {taking.map((row) => (
+                <div key={`${row.start_layer}-${row.end_layer}`} className="space-y-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-mono text-[0.64rem] text-fg">{layerRange(row.start_layer, row.end_layer)}</span>
+                    <span className="flex items-center gap-1.5">
+                      <span className="font-mono text-[0.58rem] text-faint">{t("deployStudio.layerCount", { count: row.end_layer - row.start_layer + 1 })}</span>
+                      {taking.length > 1 && (
+                        <button
+                          type="button"
+                          aria-label={t("deployStudio.machineRemoveRange", { range: layerRange(row.start_layer, row.end_layer), machine: machine.label })}
+                          title={t("deployStudio.machineRemoveRange", { range: layerRange(row.start_layer, row.end_layer), machine: machine.label })}
+                          onClick={(event) => { event.stopPropagation(); replaceRow(row, null); }}
+                          className="text-faint hover:text-rose"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      )}
+                    </span>
+                  </div>
+                  {editable && (
+                    <LayerRangeSlider
+                      bounds={bounds}
+                      start={row.start_layer}
+                      end={row.end_layer}
+                      label={t("deployStudio.machineRangeAria", { machine: machine.label })}
+                      onChange={(start, end) => replaceRow(row, newRow(machine.node_id, start, end))}
+                    />
+                  )}
+                </div>
+              ))}
+              {editable && (
+                <div className="flex gap-1.5">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    type="button"
+                    className="flex-1"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onRows([...rows.filter((row) => row.target_node_id !== machine.node_id), newRow(machine.node_id, 0, total - 1)]);
+                    }}
+                  >
+                    {t("deployStudio.machineWholeModel")}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    type="button"
+                    className="flex-1"
+                    icon={<Plus className="h-3 w-3" />}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      const range = freeRange();
+                      if (range) onRows([...rows, newRow(machine.node_id, range[0], range[1])]);
+                    }}
+                  >
+                    {t("deployStudio.machineAddRange")}
+                  </Button>
+                </div>
+              )}
+              {rangesOnWhole && !holds && (
+                <p className="text-[0.6rem] leading-snug text-amber">{t("deployStudio.machineLacksModel")}</p>
+              )}
+              {first && llama && (
+                <div className="space-y-1 border-t border-line pt-2" onClick={(event) => event.stopPropagation()}>
+                  <InspectorRow label={t("deployStudio.gpuLayers")} tip={t("deploy.knob.n_gpu_layersHint")}>
+                    <Input
+                      aria-label={t("deployStudio.gpuLayers")}
+                      name={`n_gpu_layers_${machine.node_id}`}
+                      type="number"
+                      min={0}
+                      value={first.n_gpu_layers ?? ""}
+                      placeholder={String(defaults.n_gpu_layers)}
+                      onChange={(event) => onGpu(machine.node_id, event.target.value === "" ? null : Math.max(0, Number(event.target.value) || 0))}
+                      compact
+                      className="text-right font-mono"
+                    />
+                  </InspectorRow>
+                  <InspectorRow label={t("deployStudio.kvCacheOnGpu")} tip={t("deploy.knob.offload_kqvHint")}>
+                    <Tick
+                      on={first.offload_kqv ?? defaults.offload_kqv}
+                      label={t("deployStudio.kvCacheOnGpu")}
+                      onToggle={() => onKqv(machine.node_id, !(first.offload_kqv ?? defaults.offload_kqv))}
+                    />
+                  </InspectorRow>
+                </div>
+              )}
+            </div>
+          </section>
+        );
+      })}
+    </div>
   );
 }

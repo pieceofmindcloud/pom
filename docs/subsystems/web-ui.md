@@ -578,9 +578,7 @@ completely hide `Configurações POM (DESENV)` ("POM settings (DEV)", the
 inference engine and idle unloading) when the flag is false; the whole sampler
 (min-p, frequency, DRY), the seed and where MTP runs are default settings
 shown to everyone, in the deploy inspector and in History's redeploy panel
-(the same inspector, editable, on the right side of the list). On the `/deploy` screen, Tensor, the
-Simple/Complete strategies and the "Back to the node's plan" button are also
-hidden when `pom_dev_mode` is false. This is only local visibility: the UI and the
+(the same inspector, editable, on the right side of the list). This is only local visibility: the UI and the
 backend keep the deployment values received over the network, even when the
 node cannot edit them.
 
@@ -1523,21 +1521,40 @@ machine restarted. Today the fingerprint is only model + set of ranges.
   the additional payload repeated in each one; if the tensor table does not
   allow the copy, the refusal lists the concrete reason. The final range is only
   offered when the table contains the full head.
-- **Deploy** (`DeployModel`): opens the Deploy Studio on a wide screen, with
-  Pipeline / Slices (legacy) / Tensor tabs (Pipeline, the whole model, is the default; a
-  Pipeline plan whose copies would carry a range to a machine without the model is refused by
-  name instead of offering the copy: `lackingModel` in `DeployModel.tsx`; the capacity
-  confirmation lists each step with `capacity.cpu_layers > 0` as `cpuSplits`), separate technical model and operational name,
-  Simple/Complete strategies, a central map and a compact property inspector.
-  Every peer shows up in the bottom strip and can be dragged onto the map; in
-  the Globals tab, the inspector also lets you pick `cache_type_k` and
+- **Deploy** (`DeployModel`): opens the Deploy Studio on a wide screen. The
+  mode bar offers **Pipeline** (a whole model, served in ranges from each
+  machine's own copy through virtual slices) and **Image model** only: slice
+  sets, Whole model and Tensor are not modes any more, and the Simple/Complete
+  strategies and "Back to the node's plan" are gone. Beside it: the engine, the
+  technical model, the operational name and Deploy. **The plan is surveyed once
+  per model** (`POST /api/ui/deploy/plan` with `whole_ranges: []`, which asks for
+  the machines, the valid cuts in `layer_options`, the default settings and the
+  capabilities without naming a range); map edits never query the node, so the
+  map does not redraw or re-validate while the operator works. The map draws
+  the rows on screen (`canvasPlan` builds its steps from them). **Deploy
+  validates the map once** (`checkAndDeploy`): it posts the plan with the rows,
+  and a `blocked` plan, a step `problem`, a machine without the model (a
+  `slice` copy) or an unsupported engine open a window listing every reason,
+  with nothing deployed; a plan that leaves layers without a machine asks
+  before going ahead, then the machines already in service are named
+  (`inServiceAsked`), then `POST /api/ui/deploy`, which re-surveys the cluster
+  itself. There is no capacity projection on the cards: the analytic preview
+  did not count that the model a machine serves now is released by the deploy.
+  Every peer shows up in the bottom strip and can be dragged onto the map; the
+  first one takes the whole model, the next ones join without a range. In the
+  Globals tab, the inspector also lets you pick `cache_type_k` and
   `cache_type_v` for the installation; each change of the combos is applied
   through `POST /api/ui/cache-types`, with no save button, subtitle or `global`
-  badge; the planner recomputes the suggestion considering existing cuts,
-  memory, RTT and load. The coverage bar shows missing and overlapping layers;
-  the map shows hops, capacity and known latency, plus alternative routes and
-  the projected load distribution. Each card separates the loaded physical range
-  from the sub-range actually executed. The inspector is its own component
+  badge. The **Machines** tab lists every machine on the map in pipeline order
+  (`MachinesTab`), without GPU/RAM/disk/RTT, with what the operator edits: each
+  range on a `LayerRangeSlider` (two thumbs that stop only at the valid cuts,
+  `rangeBounds`), **Whole model**, **+ Range** (the first stretch no machine
+  serves) so one machine can serve several ranges, a per-range remove,
+  **Split the layers over N machines** (`evenSplit`) and the per-machine GPU
+  layers and KV-on-GPU (llama.cpp only). When every row's machine holds the
+  whole model and a row is partial, the plan and the deploy send the rows as
+  `whole_ranges`. The coverage bar in the footer shows missing and overlapping
+  layers. The inspector is its own component
   (`components/DeploymentInspector.tsx`), and it is **the same** one History
   uses read-only: a single property list, not two copies that diverge on the
   first new field. It has three categories, and the boundary between them is
@@ -1560,124 +1577,54 @@ machine restarted. Today the fingerprint is only model + set of ranges.
   of the panel. The engine combo does not offer "Automatic" and assumes
   `llama.cpp` on mount - a presentation choice; the backend still accepts
   `auto` only when the request states it explicitly. Without a value, the
-  default is `llama.cpp` (`dense`). The cards are a **preview of how the system
-  will look after deployment**, not of the current state: each GPU of each
-  machine gets a projected VRAM bar (expected usage against the total, with the
-  current usage as a tick) that is recomputed on every change of context, batch
-  or simultaneous requests. The projection comes from
-  `POST /api/ui/deploy/capacity-preview`, an analytical estimate from GGUF
-  metadata and free VRAM on the peer, without loading weights or calling the
-  native fit (see `deployment.md` §3.1). The card turns amber when it only fits
-  because "Fit to memory" would trim the context or the GPU layers, and pink
-  when it does not fit even at the floor; both cases ask for a confirmation
-  naming the machines on `Deploy` - it is a warning, not a block, so the
-  operator can lower or raise the context as they like. Each parameter of the
+  default is `llama.cpp` (`dense`). Each parameter of the
   right panel has an `[i]` that opens on hover/focus/touch with what it means
   and how it affects inference; when the node reports a doubtful or limited
   capability, the same spot in the column shows the amber triangle with the
-  reason. The edges come from the planner's execution graph: they only connect
-  contiguous sub-ranges, keep equivalent entry branches and show the
-  directional RTT used to choose between them. The canvas does not invent
-  bridges from the card order, which keeps a fast entry when another loaded
-  range overlaps. Tensor uses the whole model on every rank and does not show
-  the old slice selection. The global properties (context, batch, sampling,
-  sessions) stay separate from the per-machine properties (`n_gpu_layers`, the
-  KV-on-GPU boolean and local capacity, on the same property line as the
-  globals - `[i]`, name, control); when a machine is selected, the inspector also
-  shows the layers it will run. The hidden-state precision
+  reason. The hidden-state precision
   (f32/f16/f8/i4g64/i4g128) only shows up when the state crosses a peer boundary
-  - a pipeline with distinct adjacent ranges, of slices or of a whole model spread
-  over its own slices; for a whole model on one range, Tensor or
-  slices on a single machine, the state is never serialized and the selector
-  would be inert. f16 is still the default; f32 is a lossless option with four
-  bytes per value, while f8 and i4 are lossy. In the globals, the whole model
-  facts section and its machine selector are not shown: the machine chosen on
-  the map is the only one that counts for the deployment. In the globals, the
+  - two distinct ranges on the map; for a whole model on one range the state is
+  never serialized and the selector would be inert. f16 is still the default;
+  f32 is a lossless option with four
+  bytes per value, while f8 and i4 are lossy. In the globals, the
   execution section has one **Speculation** choice - None, MTP or lookup -
   because the gateway never runs both in the same round (with both stored, MTP
   wins); MTP's numbers and where it runs only show with MTP chosen. A new
   deployment starts with MTP on (`RuntimeParams` default, used only when the
   plan supports it) and the minimum probability at `0.75`, a field the operator
   can still edit. The vision projector and the MTP draft show one summary line;
-  the path on every machine opens in a "More info" window. The **Inference engine**
+  the path on every machine opens in a "More info" window; while the survey
+  names no head, the projector list comes from the catalog. The **Inference engine**
   section only shows up when the GGUF's real metadata reports more than one
-  expert. The UI presents `dense` (llama.cpp) and `moe`, and sends the choice in
-  whole model, sliced pipeline and Tensor Parallelism modes. The backend also
+  expert. The UI presents `dense` (llama.cpp) and `moe`, and sends the choice.
+  The backend also
   accepts `auto` only when it arrives as an explicit choice from an API or a
   persisted deployment. For a dense model the section stays hidden. If the chosen
   combination is not supported, the selector stays visible with the explicit
-  reason and the deploy is blocked; telemetry is the source of truth about the
+  reason and Deploy names it in its window; telemetry is the source of truth about the
   engine that ran. The other conditional options get `DeployPlan.capabilities`
   from the backend: `no_thinking` uses `tokenizer.chat_template` and the GGUF
-  vocabulary, MTP uses the selected file's `nextn` metadata/tensors and only uses
-  the final peer's runtime as a limitation, and lookup uses the runtime
-  capabilities of every target. Proven absence in the model hides the option;
-  `unknown` keeps it visible and actionable, with source, reason and risk. A
-  runtime limitation is also an actionable warning. The `no_embeddings` switch
-  stays visible: on, provably unsafe peers refuse the deployment by name and
-  atomically; an undetermined topology can only proceed with an explicit
-  warning. **Shards** carries the "Merge neighboring shards on the same
-  machine" switch (`merge`), which is what lets a machine hold two adjacent
-  ranges: the node merges them into a single file (`splitter::merge`) before
-  starting, because `split` renames the blocks of every slice to `blk.0..` and
-  two cannot load side by side. Without it the planner refuses the pair, and the
-  refusal says to "merge the neighboring slices on screen" - the switch exists so
-  that sentence has a destination. It shows up under the same condition that
-  decides whether `merge` goes in the request (`!isWhole`): a control without a
-  send, or a send without a control, was exactly how it got lost once. There is
-  no second legacy table below the canvas: the map and the bottom strip hold the
-  topology, the directional RTTs and adding peers. Each edit goes back to the
-  node for validation; the deploy (`POST /api/ui/deploy`) **rescans the
-  cluster** instead of trusting the preview, and progress comes from
-  `GET /api/ui/jobs`. The map uses the same primitives as the Dashboard canvas:
-  dots in the background, draggable cards, zoom, Fit, Arrange and Reset, with
-  positions persisted per deployment. The inspector is 19rem wide, can be
-  collapsed from its left edge, starts directly with the Globals and Machine
-  tabs, with no title of its own and no outer `p-3` padding, and visually
-  separates global properties from the selected machine's. Capacity warnings sit
-  as amber icons next to the control: the full text, including source and
-  reason, opens on hover, focus or click in a fixed portal that breaks words and
-  identifiers without spaces without creating horizontal overflow. The set of
-  alerts stays spread next to the respective controls, instead of forming a row
-  of cards. The inspector lets you assign to a peer a range it already holds by
-  switching that peer's active range without moving another machine. The same
-  range on two peers is a valid parallel route, not a swap. Clicking an already
-  assigned range again removes the selection - the same button is the way there
-  and back. Leaving only removes that range on that machine: replicas of the
-  same range on other peers stay where they are, and the peer stays on the map
-  even without any range, because removing a layer is not the same gesture as
-  "Remove from deployment". Peers already on the map no longer show up in the
-  bottom bar; dragging or double-clicking an available peer adds the card
-  without redrawing the topology until a range is assigned. For a whole model,
-  the map is left empty when switching from slices, so the operator picks the
-  machine, which takes the whole file. More machines can be added: each gets a
-  range it holds in the Machine tab (the whole file as a replica, or a slice of
-  the same model), the coverage ribbon appears, and the node accepts the map
-  while the ranges cover every layer. Under an inference service the whole
-  model stays on one machine and a second one is refused with a warning. In Tensor, only
-  peers on the map enter as primary/worker, even if others have the model.
+  vocabulary, MTP uses the selected file's `nextn` metadata/tensors, and lookup
+  uses the runtime capabilities of every target. Proven absence in the model hides the option;
+  `unknown` keeps it visible and actionable, with source, reason and risk. The
+  `no_embeddings` switch stays visible: on, provably unsafe peers refuse the
+  deployment by name and atomically. The map uses the same primitives as the
+  Dashboard canvas: dots in the background, draggable cards, zoom, Fit,
+  Organize and Reset. Only a card the operator dragged keeps a stored position,
+  per topology (machines and ranges); every other card follows the
+  arrangement, recomputed when a machine or a range changes, so a machine that
+  gets a range moves into the pipeline without Reset; Organize drops the
+  dragged positions too. The inspector is 19rem wide and can be collapsed from
+  its left edge. Peers already on the map no longer show up in the bottom bar.
+  Under an inference service the whole model stays on one machine (unless it
+  declares the prefill/decode role) and a second one is refused with a warning.
   GPU, RAM and load are updated by the cluster view every 5 seconds; the
   Dashboard map shows the last effective RTT and transport observed in the
   inference run for each edge and, at the Gateway, every complete route of the
-  model with the aggregated RTT of each leg, including the return; when there is
-  a recent trace, the run's wire RTT beats the tunnel fallback probe. Routes are
-  listed from lowest to highest cost, with the node ids as a tie-break; a whole
-  model deployment with a single head is also queried, even with no edge in the
-  graph. The planner's directional survey stays reserved for route choice and
-  is not shown as if it were the run. A missing GPU shows as `no GPU`, without
-  an indeterminate bar. In Complete, every peer enters the canvas and the
-  candidate list in slice and Tensor modes; whole model keeps the one-machine
-  restriction. Coverage is reduced to the footer next to the peer bar. The last
+  model. A missing GPU shows as `no GPU`, without an indeterminate bar.
+  Coverage is reduced to the footer next to the peer bar. The last
   deployment of each model stays in `localStorage` (`deployMemory`) and comes
-  back filled in after the first plan, pruned against what still exists.
-  Topology changes are validated by `POST /api/ui/deploy/plan` after the 260 ms
-  debounce. Runtime parameters, per-machine GPU/KV overrides and the
-  operational name do not change machines or ranges, so they stay local during
-  editing and do not restart the distributed survey. The query key only
-  contains ranges and machines; the deploy carries the current overrides. If
-  any of them changes, the old capacity projection is hidden;
-  `POST /api/ui/deploy` runs the full preflight with the current values before
-  starting the deployment. The catalog's initial answer may only contain name,
+  back filled in after the first plan, pruned against what still exists. The catalog's initial answer may only contain name,
   path, size and manifest data, while the node reads the GGUF headers in the
   background. The screen shows the inventory right away. The catalog only reads
   the KV header and `stat` of the parts in the fast scan: it does not walk the
@@ -1699,15 +1646,10 @@ machine restarted. Today the fingerprint is only model + set of ranges.
   reconciles the result by `path + size + mtime` and keeps the models already
   read; only a new or changed file goes back to the header. A new attempt only
   happens on a TTL refresh or invalidation, and dropped tasks are logged.
-  **The grey button always says why.** The comparison between the node's plan
-  and the screen's rows (`sameRows`) sorts both sides by layer, because the
-  screen keeps the rows in that order and the node builds the answer its own
-  way; and the explanation panels render under `answered` (the node answered
-  about *these* rows), never under `validated`. The planner accepts several
-  ranges on the same machine, but keeps `blocked` for global gaps, overlap and
-  other real problems; `whyNot` puts the reason in one line next to the button,
-  including the two cases without a panel (nothing selected, answer in
-  flight). The map shows consecutive hops only forward, adds a virtual Gateway
+  **Deploy is grey only while the map is empty**, and `whyNot` says so next to
+  it; every other refusal comes from the one validation Deploy runs. The
+  planner accepts several ranges on the same machine, but keeps `blocked` for
+  global gaps, overlap and other real problems. The map shows consecutive hops only forward, adds a virtual Gateway
   at the end with the return leg when the tail is not the gateway yet and shows
   every candidate route, highlighting in the total the one with the lowest RTT.
   Internal scrolling on a narrow viewport neither cuts cards nor creates page

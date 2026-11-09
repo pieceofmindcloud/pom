@@ -215,27 +215,6 @@ describe("DeployModel · plugin inference service", () => {
     cluster = CLUSTER;
   });
 
-  it("with the engine that runs slices, offers only the slices of its architecture", async () => {
-    cluster = {
-      peers: CLUSTER.peers.map((peer) => ({
-        ...peer,
-        node: {
-          plugin_services: peer.node.plugin_services.map((service) => ({ ...service, stages: true })),
-        },
-      })),
-    };
-    mount([sliceSet("llama-3-70b", "llama"), sliceSet("qwen3.8-flash-next", "qwen4exp")]);
-    const model = (await screen.findByRole("combobox", { name: "Modelo técnico" })) as HTMLSelectElement;
-    await waitFor(() => expect(model.options.length).toBe(2));
-
-    fireEvent.change(screen.getByRole("combobox", { name: "Serviço de inferência" }), { target: { value: "strata" } });
-    // Pipeline is the default; a staged engine still offers its slice sets.
-    fireEvent.click(screen.getByRole("radio", { name: "Fatias (legado)" }));
-    await waitFor(() =>
-      expect([...model.options].map((option) => option.value)).toEqual(["qwen3.8-flash-next"]),
-    );
-    expect(screen.getByRole("radio", { name: "Fatias (legado)" }).getAttribute("aria-checked")).toBe("true");
-  });
 
   it("without a plugin inference service, there is no engine choice", async () => {
     cluster = { peers: [{ node_id: "ksia", node: { plugin_services: [] } }] };

@@ -50,15 +50,14 @@ screen. Whole-model mode is the controlled exception: when the operator asks
 for a prefix for another peer, the backend queries the real GGUF boundaries
 and materializes the ranges on the peer that owns the file.
 
-On the deploy screen, switching from slices to `whole` clears the map and does
-not pick a machine automatically. The operator adds the desired machine from
-the bottom strip; the UI keeps the one-machine rule for that mode. Changes to
-`RuntimeParams`, to the per-machine GPU/KV overrides in the inspector and to the
-operational name do not change the topology: the screen neither restarts the
-`plan` nor asks for a new capacity preview on every control. The plan key only
-considers ranges and machines; the overrides stay in the local rows and go into
-the deploy. The old projection stays hidden until `POST /api/ui/deploy`, which
-runs the full preflight with the current values before starting.
+The deploy screen offers Pipeline (this `whole` kind) and Image model only. It
+surveys the plan once per model, with `whole_ranges: []` (the machines, the
+valid cuts in `layer_options` and the defaults, no range named), and never
+re-plans on a map edit: the operator places machines and picks each one's
+ranges locally. Pressing Deploy posts the plan once with the rows on screen
+and lists every refusal (`blocked`, a step `problem`, a machine without the
+model) in a window before anything runs; then `POST /api/ui/deploy` runs the
+full preflight with the current values before starting.
 
 Three rules come from the architecture, not from taste:
 
@@ -717,7 +716,7 @@ confirmation before deploying; Deploy Studio shows "N on GPU, M on CPU" in the
 machine's tab. Unified memory reports no split. When a step's CPU part
 (`cpu_ram_bytes`) exceeds the machine's free RAM, the plan is blocked by name
 (`preview::refuse_cpu_part_beyond_ram`): the load could not succeed. The
-check runs on the preview, so the screen's Deploy button stays off; a direct
+check runs on the preview, so the screen's Deploy press names it; a direct
 `POST /api/ui/deploy` does not repeat it. The VRAM and RAM projections leave
 out the lazy lookup tables (`plan::LAZY_LOOKUP_TABLES`, today
 `per_layer_token_embd.weight`): the llama.cpp fork creates them with
@@ -730,11 +729,10 @@ free memory (`planning.rs`) still counts the whole file.
 After `plan_endpoint` builds the steps (and only if `blocked` is empty),
 `enrich_capacity_previews` asks each target where the step is already
 materialized locally how that step would fill its VRAM with this plan's
-parameters. That is what the Deploy screen uses to draw the cards as a
-**preview of the system after deployment**, not as the current state - one bar
-per GPU, projected usage against the total, recomputed on every change of
-context, batch or sessions (260 ms debounce and one round trip, like the rest
-of the plan).
+parameters. The Deploy screen no longer draws it: the screen surveys the plan
+without a range, and the estimate did not count that the model a machine
+serves now is released by the deploy, so it refused machines that would fit.
+The answer still carries it for an API caller.
 
 - **One call per `Step`** (`POST /api/ui/deploy/capacity-preview`, handler in
   `webui/routes/admin.rs`), only for `!merged` steps with a resolved `target_path` - a step
@@ -758,14 +756,13 @@ of the plan).
   effective layers, context and final layout. The route never calls
   `llama_backend_init`, `llama_rs_fit_params` or `fit_plan`, so it does not
   compete with the native load.
-- **Three visible states, no blocking.** Consistent with the "memory is an
+- **Three states, no blocking.** Consistent with the "memory is an
   estimate" rule (`a_target_short_on_memory_warns_and_still_deploys`):
-  **green** fits the analytical projection; **amber** (`fits && degraded`) the
+  `fits` against the analytical projection; `fits && degraded` the
   raw math does not fit, but `fit_memory` is on and the layers were left at the
-  default, so the real load can trim the request; **pink** (`!fits`) the math
-  does not fit and no automatic fit is allowed. Amber is an explicit
-  heuristic, not a claim about llama.cpp's result. All three states are
-  warnings and the screen still asks for a `Confirm` before deploying.
+  default, so the real load can trim the request; `!fits` the math
+  does not fit and no automatic fit is allowed. `degraded` is an explicit
+  heuristic, not a claim about llama.cpp's result, and none of them blocks.
 
   The endpoint admits four previews per process. When all slots are taken, it
   answers `429` immediately; the coordinator caps its fan-out at four
@@ -831,7 +828,7 @@ until `run` ends.
 
 | Route | Role |
 |---|---|
-| `POST /api/ui/deploy/plan` | preview (read, called on every edit); enriches the steps with the capacity projection |
+| `POST /api/ui/deploy/plan` | preview (read): the screen calls it once per model with `whole_ranges: []` for the machines and cuts, and once when Deploy is pressed for the map's verdict; enriches the steps with the capacity projection |
 | `POST /api/ui/deploy/capacity-preview` | per-step preview, local to the peer: estimates from GGUF metadata and free VRAM, without calling the native fit, and returns the projected VRAM per GPU (`deploy/preview.rs`) |
 | `POST /api/ui/deploy` | executes (rescans, refuses `blocked`/empty, job) |
 | `POST /api/ui/deploy/node/options` | catalog and local options of the machine chosen for an incremental change |

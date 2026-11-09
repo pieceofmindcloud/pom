@@ -885,6 +885,9 @@ Key logic carriers:
   machine), never in the machine card. Back to one machine, `DeployModel`'s
   `rows` drops the row's role, so the deployment's role the inspector shows
   is the one deployed.
+- `LayerRangeSlider.tsx` - two thumbs on one track picking a layer range of a
+  whole model, stopping only at `rangeBounds` (0, each valid cut + 1, the layer
+  count); the Deploy Studio's Machines tab uses one per range.
 - `ModelPresence.tsx` - `FilePresence` is the generic card foot for a file a machine lacks (`source`, `missing`
   text); `ModelPresence` wraps it for the model, and the studio uses it for each `mmproj`/`mtp` entry of
   `DeployPlan.copies` aimed at that machine, with the source from `fileSourceOn` (`lib/wholeModels.ts`).
@@ -924,9 +927,13 @@ Key logic carriers:
   (`vram_projected_mb / vram_total_mb`), a tick = the use right now, pink when
   the projection goes past the board, with an `AlertTooltip` listing the numbers when
   `!fits`. Without `capacity` and with an assigned range, the bar says "projection after the
-  copy". The hydration of positions keeps the existing cards when a new
-  peer enters without a range, so the topology is not reorganized because of
-  an inclusion not configured yet. On a narrow viewport, the map uses
+  copy". Only a card the operator dragged keeps a stored position, per
+  topology (`layoutKey`: machines and ranges); every other card follows the
+  arrangement, recomputed when a machine or a range changes, so a machine that
+  gets a range moves into its pipeline column without Reset (the old merge kept
+  the spot it had before, and the map stayed tangled). Organize drops the
+  dragged positions too. Test: "moves a card to its pipeline column once it
+  gets a range, without Reset". On a narrow viewport, the map uses
   internal scrolling to preserve the cards' size and align the curve to the
   endpoints even when the content is wider than the panel. The separation exists because this graph
   represents a deployment that has not been applied yet.

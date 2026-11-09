@@ -189,6 +189,37 @@ describe("DeployNetworkCanvas", () => {
     view.unmount();
   });
 
+  it("moves a card to its pipeline column once it gets a range, without Reset", async () => {
+    const draw = (rows: DeploySelection[]) => (
+      <LocaleProvider initialLocale="pt-BR">
+        <DeployNetworkCanvas
+          plan={plan(rows.map((row, index) => step(row.start_layer, row.end_layer, row.target_node_id, index + 1)), [])}
+          rows={rows}
+          inspectedNodeId="a"
+          onInspect={vi.fn()}
+          onAddPeer={vi.fn()}
+          onRemovePeer={vi.fn()}
+          onDropPeer={vi.fn()}
+          labelOf={(nodeId) => nodeId}
+          mapNodeIds={["a", "b"]}
+        />
+      </LocaleProvider>
+    );
+    const cardOf = (nodeId: string) => screen.getByRole("heading", { name: nodeId }).closest("article") as HTMLElement;
+    // b is on the map without a range: it waits on the row under the pipeline
+    const view = render(draw([{ start_layer: 0, end_layer: 11, target_node_id: "a" }]));
+    await waitFor(() => expect(cardOf("b").style.top).not.toBe(cardOf("a").style.top));
+
+    view.rerender(draw([
+      { start_layer: 0, end_layer: 3, target_node_id: "a" },
+      { start_layer: 4, end_layer: 11, target_node_id: "b" },
+    ]));
+    // with a range it joins the pipeline on the same axis, after a
+    await waitFor(() => expect(cardOf("b").style.top).toBe(cardOf("a").style.top));
+    expect(parseFloat(cardOf("b").style.left)).toBeGreaterThan(parseFloat(cardOf("a").style.left));
+    view.unmount();
+  });
+
   it("says when the machine load was not observed instead of showing zero", () => {
     const current = plan([step(0, 3, "a", 1)], []);
     current.machines = current.machines.map((item) => item.node_id === "a" ? { ...item, load: null } : item);

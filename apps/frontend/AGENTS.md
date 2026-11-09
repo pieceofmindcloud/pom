@@ -11,10 +11,9 @@ config keep the `pom` name; the brand is UI-only.
 `README.md` in this folder is the authoritative dev walkthrough (serving model,
 dev proxy setup, routing on the axum side). Its deployment section mirrors the
 current planner contract: one machine may own several valid ranges, while a
-global gap or overlap blocks the plan. The whole-model mode starts empty when
-chosen from slices, so the operator explicitly adds its machines.
-Topology edits query the planner after the 260 ms debounce; runtime settings
-remain local until the deploy preflight.
+global gap or overlap blocks the plan. The Deploy screen surveys the plan once
+per model and validates the map only when Deploy is pressed; map edits and
+runtime settings stay local until then.
 
 ## Build tooling
 
@@ -156,9 +155,10 @@ a choice.
   `ShardSet.mmproj_path`, already coming from the catalog - the screen only
   renders it). See `src/routes/AGENTS.md`.
 - `/deploy` -> DeployModel (first-level entry for putting models in service,
-  full-bleed Deploy Studio with central cluster map, property inspector and
-  draggable peer strip; whole-model mode takes more machines while their
-  ranges cover every layer, one machine only under an inference service)
+  full-bleed Deploy Studio with central cluster map, property inspector with
+  the Machines tab (each machine's layer ranges on sliders) and draggable peer
+  strip; Pipeline and Image model only, the map is validated when Deploy is
+  pressed; one machine only under an inference service)
 - `/deployments` -> Deployments, full-bleed like Logs: the same
   `DeploymentInspector` from the deploy screen opens on the right, in read-only
   mode, with the parameters of the chosen version
@@ -262,11 +262,9 @@ Test fixtures: a hand-written partial peer can still crash a component (see
 - A non-text, non-PDF attachment (a `.docx`, for example) is still read with
   `file.text()` in `routes/Chat.tsx`, so the model receives binary garbage instead
   of a refusal.
-- Two hard-coded Portuguese words show in the English interface: the
-  Simple/Complete strategy switch of the Deploy screen (`routes/DeployModel.tsx`,
-  `"Simples"`/`"Completa"`, development mode only) and the `resposta` step of the
-  deploy map's route legend (`components/DeployNetworkCanvas.tsx`). Both belong
-  in `i18n/messages.csv`.
+- A hard-coded Portuguese word shows in the English interface: the `resposta`
+  step of the deploy map's route legend (`components/DeployNetworkCanvas.tsx`).
+  It belongs in `i18n/messages.csv`.
 
 ## Maintaining this file
 

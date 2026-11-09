@@ -136,7 +136,7 @@ Claims (draft):
 
 ### 3. Link digests and TOPLOC proofs
 
-Each hop keeps two running digests per session, BLAKE3 over every frame item
+Each hop keeps two running digests per session, SHA-256 over every frame item
 it handled, in order:
 
 - `in_chain = H(in_chain || positions || H(item bytes received))`

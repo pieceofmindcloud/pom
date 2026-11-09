@@ -91,6 +91,12 @@ pub(crate) async fn reexecute(state: &GatewayState, params: &Value) -> Result<Va
     validate(&request)?;
     let tokens = decode_tokens(&request.tokens)?;
     if let Some(engine) = request.engine.clone().filter(|e| e != "llama.cpp") {
+        let enabled = crate::metering::context().is_some_and(|ctx| ctx.settings.verify_plugin_engines);
+        if !enabled {
+            return Ok(json!({ "job": finished_job(json!(void(format!(
+                "re-executing {engine} work is off until its TOPLOC limits are calibrated (metering.verify_plugin_engines)"
+            )))) }));
+        }
         return Ok(json!({ "job": start_plugin_audit(state, engine, request, tokens).await }));
     }
     let found = crate::webui::whole_model_by_label(state, &request.model).await;
@@ -275,7 +281,7 @@ impl StageAudit {
             return pieces;
         }
         match window_rows(port, &token, tokens).await {
-            Ok((rows, width)) => check_chunks(&rows, width, &r.chunks, &params),
+            Ok((rows, width)) => either_layout(pieces, check_chunks(&rows, width, &r.chunks, &params)),
             Err(_) => pieces,
         }
     }
@@ -330,11 +336,9 @@ async fn prompt_rows(port: u16, token: &str, tokens: &[i32]) -> Result<(Vec<f32>
     hello.extend(token.as_bytes());
     write_frame(&mut stream, &call(hello)).await.map_err(|e| e.to_string())?;
     let answer = read_frame(&mut stream).await.map_err(|e| e.to_string())?.ok_or("no hello")?;
-    // kind 1, status 0, then u32 lo, hi, window_floats, prompt_floats
-    if answer.len() < 18 || answer[1] != 0 {
+    let Some((_, width)) = crate::plugin_metering::hello_floats(&answer) else {
         return Err("the audited stage refused the hello".into());
-    }
-    let width = u32::from_le_bytes([answer[14], answer[15], answer[16], answer[17]]) as usize;
+    };
     write_frame(&mut stream, &call(vec![b'Z'])).await.map_err(|e| e.to_string())?;
     read_frame(&mut stream).await.map_err(|e| e.to_string())?.ok_or("no answer to the reset")?;
     let mut rows = Vec::with_capacity(tokens.len() * width);
@@ -375,13 +379,15 @@ async fn window_rows(port: u16, token: &str, tokens: &[i32]) -> Result<(Vec<f32>
     hello.extend(token.as_bytes());
     write_frame(&mut stream, &call(hello)).await.map_err(|e| e.to_string())?;
     let answer = read_frame(&mut stream).await.map_err(|e| e.to_string())?.ok_or("no hello")?;
-    if answer.len() < 18 || answer[1] != 0 {
+    let Some((width, prompt_width)) = crate::plugin_metering::hello_floats(&answer) else {
         return Err("the audited stage refused the hello".into());
-    }
-    let width = u32::from_le_bytes([answer[10], answer[11], answer[12], answer[13]]) as usize;
+    };
     write_frame(&mut stream, &call(vec![b'Z'])).await.map_err(|e| e.to_string())?;
     read_frame(&mut stream).await.map_err(|e| e.to_string())?.ok_or("no answer to the reset")?;
     let mut rows = Vec::with_capacity(tokens.len() * width);
+    // The stage proves only the prompt part of each window row
+    // (`plugin_metering::prompt_part`): keep the same part here.
+    let keep = if width > prompt_width && prompt_width > 0 { prompt_width } else { width };
     for (index, window) in tokens.chunks(AUDIT_WINDOW).enumerate() {
         let mut w = vec![b'W'];
         w.extend(((index * AUDIT_WINDOW) as i64).to_le_bytes());
@@ -395,13 +401,13 @@ async fn window_rows(port: u16, token: &str, tokens: &[i32]) -> Result<(Vec<f32>
         if values.len() != window.len() * width {
             return Err("a window answer of the wrong size".into());
         }
-        rows.extend(values);
+        rows.extend(values.chunks_exact(width).flat_map(|row| row[..keep].iter().copied()));
         let mut c = vec![b'C'];
         c.extend((window.len() as u32).to_le_bytes());
         write_frame(&mut stream, &call(c)).await.map_err(|e| e.to_string())?;
         read_frame(&mut stream).await.map_err(|e| e.to_string())?.ok_or("no answer to the commit")?;
     }
-    Ok((rows, width))
+    Ok((rows, keep))
 }
 
 /// A job that is already decided.
@@ -469,7 +475,14 @@ pub(crate) fn check_chunks(output: &[f32], width: usize, chunks: &[String], para
             return failed("a chunk is malformed", verdicts);
         };
         let Some(rows) = rows_at(output, width, &positions) else {
-            return failed("a chunk names positions past the sequence", verdicts);
+            let last = positions.iter().max().copied().unwrap_or(0);
+            return failed(
+                &format!(
+                    "a chunk names positions past the sequence (position {last}, {} rows of {width})",
+                    output.len() / width.max(1)
+                ),
+                verdicts,
+            );
         };
         match toploc::check_chunk(proof, &rows, params) {
             Ok(v) => verdicts.push(v),
@@ -477,6 +490,27 @@ pub(crate) fn check_chunks(output: &[f32], width: usize, chunks: &[String], para
         }
     }
     ReexecuteVerdict { pass: verdicts.iter().all(|v| v.pass), chunks: verdicts, void: None }
+}
+
+/// Chunk by chunk, the better of two readings of the sequence: a chunk
+/// passes when it matches either. A structural failure in one reading (a
+/// proof that does not open) fails the chunk in that reading only.
+pub(crate) fn either_layout(a: ReexecuteVerdict, b: ReexecuteVerdict) -> ReexecuteVerdict {
+    let n = a.chunks.len().max(b.chunks.len());
+    let mut chunks = Vec::with_capacity(n);
+    for i in 0..n {
+        let pick = match (a.chunks.get(i), b.chunks.get(i)) {
+            (Some(x), Some(y)) => {
+                if x.pass || (!y.pass && x.exp_mismatches <= y.exp_mismatches) { x.clone() } else { y.clone() }
+            }
+            (Some(x), None) => x.clone(),
+            (None, Some(y)) => y.clone(),
+            (None, None) => unreachable!(),
+        };
+        chunks.push(pick);
+    }
+    let complete = chunks.len() == n && n > 0 && (a.chunks.len() == n || b.chunks.len() == n);
+    ReexecuteVerdict { pass: complete && chunks.iter().all(|c| c.pass), chunks, void: None }
 }
 
 /// A proof that does not open, or names rows that do not exist, is the
@@ -673,6 +707,20 @@ mod tests {
         assert_eq!(width, 4);
         assert_eq!(rows.len(), 300 * 4);
         assert_eq!(rows[299 * 4], 299.0);
+    }
+
+    #[test]
+    fn a_chunk_passes_when_either_reading_matches() {
+        let v = |pass: bool, m: u32| toploc::Verdict { exp_mismatches: m, mant_err_mean: 1.0, mant_err_median: 1.0, pass };
+        let a = ReexecuteVerdict { pass: false, chunks: vec![v(true, 3), v(false, 90)], void: None };
+        let b = ReexecuteVerdict { pass: false, chunks: vec![v(false, 100), v(true, 10)], void: None };
+        let both = either_layout(a, b);
+        assert!(both.pass);
+        let a = ReexecuteVerdict { pass: false, chunks: vec![v(true, 3), v(false, 90)], void: None };
+        let b = ReexecuteVerdict { pass: false, chunks: vec![v(false, 100), v(false, 80)], void: None };
+        let neither = either_layout(a, b);
+        assert!(!neither.pass);
+        assert_eq!(neither.chunks[1].exp_mismatches, 80);
     }
 
     #[tokio::test]

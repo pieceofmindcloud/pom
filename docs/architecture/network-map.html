@@ -1,0 +1,903 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>POM Network Map</title>
+  <style>
+    :root {
+      --ink: #17202a;
+      --muted: #5b6673;
+      --line: #d8dee7;
+      --paper: #ffffff;
+      --soft: #f6f8fb;
+      --blue: #245f9e;
+      --blue-soft: #e8f1fb;
+      --green: #187a55;
+      --green-soft: #e8f6f0;
+      --amber: #9a6700;
+      --amber-soft: #fff4dc;
+      --red: #a33a3a;
+      --red-soft: #fdecec;
+      --purple: #65409b;
+      --purple-soft: #f1ebfb;
+      --slate: #425064;
+      --slate-soft: #eef2f7;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: #eef2f6;
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      line-height: 1.45;
+    }
+
+    main {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 28px 22px 56px;
+    }
+
+    header {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 24px 28px;
+      margin-bottom: 22px;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 30px;
+      letter-spacing: -0.02em;
+    }
+
+    h2 {
+      margin: 0 0 10px;
+      font-size: 22px;
+      letter-spacing: -0.01em;
+    }
+
+    h3 {
+      margin: 18px 0 8px;
+      font-size: 17px;
+    }
+
+    p { margin: 8px 0; }
+
+    .lede {
+      color: var(--muted);
+      max-width: 980px;
+      font-size: 16px;
+    }
+
+    section {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 22px 24px;
+      margin: 18px 0;
+      break-inside: avoid;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(260px, 360px);
+      gap: 22px;
+      align-items: start;
+    }
+
+    .grid.reverse {
+      grid-template-columns: minmax(260px, 360px) minmax(0, 1fr);
+    }
+
+    .diagram {
+      width: 100%;
+      overflow: auto;
+      background: var(--soft);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 10px;
+    }
+
+    svg {
+      display: block;
+      width: 100%;
+      min-width: 760px;
+      height: auto;
+    }
+
+    .notes {
+      font-size: 14px;
+      color: var(--muted);
+    }
+
+    .notes strong { color: var(--ink); }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 12px 0 0;
+    }
+
+    .chip {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 6px 10px;
+      background: var(--soft);
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+      margin-top: 14px;
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px 14px;
+      background: var(--soft);
+    }
+
+    .card h3 { margin: 0 0 6px; font-size: 15px; }
+    .card p { margin: 0; color: var(--muted); font-size: 14px; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 12px;
+      font-size: 14px;
+    }
+
+    th, td {
+      border: 1px solid var(--line);
+      padding: 9px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th { background: var(--soft); }
+
+    .small { font-size: 13px; color: var(--muted); }
+
+    .pill {
+      display: inline-block;
+      border-radius: 999px;
+      padding: 3px 8px;
+      font-size: 12px;
+      font-weight: 650;
+      border: 1px solid var(--line);
+      background: var(--soft);
+    }
+
+    .principal { color: var(--blue); background: var(--blue-soft); border-color: #b9d4f2; }
+    .secondary { color: var(--purple); background: var(--purple-soft); border-color: #d5c6ef; }
+    .worker { color: var(--green); background: var(--green-soft); border-color: #b9dfcd; }
+    .visitor { color: var(--amber); background: var(--amber-soft); border-color: #ecd29a; }
+    .danger { color: var(--red); background: var(--red-soft); border-color: #efc1c1; }
+
+    .footnote {
+      margin-top: 18px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    @media (max-width: 900px) {
+      .grid, .grid.reverse { grid-template-columns: 1fr; }
+      svg { min-width: 720px; }
+    }
+
+    @media print {
+      body { background: #fff; }
+      main { max-width: none; padding: 0; }
+      section, header { break-inside: avoid; border-color: #bbb; }
+      .diagram { background: #fff; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>POM Network Map</h1>
+      <p class="lede">
+        A visual explanation of the POM network: one machine, one cluster, many clusters, and the
+        roles that keep the network safe as it grows. The diagrams use generic machine names only.
+      </p>
+      <div class="legend">
+        <span class="chip">Cluster = one POM network with one trust chain</span>
+        <span class="chip">Node = one machine running one POM binary</span>
+        <span class="chip">Pipeline = model layers split across nodes</span>
+        <span class="chip">Gateway = the node that receives a client request</span>
+      </div>
+    </header>
+
+    <section>
+      <h2>1. The unit: every node is a full POM machine</h2>
+      <div class="grid">
+        <div class="diagram">
+          <svg viewBox="0 0 980 430" role="img" aria-label="Diagram of one POM node">
+            <defs>
+              <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="#425064"></path>
+              </marker>
+            </defs>
+
+            <rect x="28" y="28" width="924" height="374" rx="18" fill="#ffffff" stroke="#d8dee7"></rect>
+            <text x="52" y="62" font-size="20" font-weight="700" fill="#17202a">Machine A - one POM node</text>
+            <text x="52" y="88" font-size="14" fill="#5b6673">One Rust binary. It can be an admin, a worker, or a visitor, depending on how the network admitted it.</text>
+
+            <rect x="62" y="120" width="250" height="112" rx="12" fill="#e8f1fb" stroke="#b9d4f2"></rect>
+            <text x="82" y="150" font-size="16" font-weight="700" fill="#245f9e">Identity</text>
+            <text x="82" y="176" font-size="13" fill="#17202a">Ed25519 node key</text>
+            <text x="82" y="198" font-size="13" fill="#5b6673">node_id = SHA256(pubkey)</text>
+            <text x="82" y="218" font-size="13" fill="#5b6673">endpoint, pkarr, TLS derive from it</text>
+
+            <rect x="362" y="120" width="250" height="112" rx="12" fill="#eef2f7" stroke="#d8dee7"></rect>
+            <text x="382" y="150" font-size="16" font-weight="700" fill="#425064">Gateway port</text>
+            <text x="382" y="176" font-size="13" fill="#17202a">UI, admin API, client API</text>
+            <text x="382" y="198" font-size="13" fill="#5b6673">default HTTP 8080</text>
+            <text x="382" y="218" font-size="13" fill="#5b6673">every node serves this surface</text>
+
+            <rect x="662" y="120" width="250" height="112" rx="12" fill="#e8f6f0" stroke="#b9dfcd"></rect>
+            <text x="682" y="150" font-size="16" font-weight="700" fill="#187a55">Inference server</text>
+            <text x="682" y="176" font-size="13" fill="#17202a">loads model or slice in-process</text>
+            <text x="682" y="198" font-size="13" fill="#5b6673">default HTTP 8181</text>
+            <text x="682" y="218" font-size="13" fill="#5b6673">QUIC and HTTP hidden-state hops</text>
+
+            <rect x="62" y="262" width="250" height="104" rx="12" fill="#fff4dc" stroke="#ecd29a"></rect>
+            <text x="82" y="292" font-size="16" font-weight="700" fill="#9a6700">Discovery</text>
+            <text x="82" y="318" font-size="13" fill="#17202a">UDP LAN, mDNS, iroh gossip</text>
+            <text x="82" y="340" font-size="13" fill="#5b6673">default UDP 42777</text>
+            <text x="82" y="360" font-size="13" fill="#5b6673">endpoint and relay around +10000</text>
+
+            <rect x="362" y="262" width="250" height="104" rx="12" fill="#f1ebfb" stroke="#d5c6ef"></rect>
+            <text x="382" y="292" font-size="16" font-weight="700" fill="#65409b">Local state</text>
+            <text x="382" y="318" font-size="13" fill="#17202a">pom.json, pom.db, keys</text>
+            <text x="382" y="340" font-size="13" fill="#5b6673">profile and policies</text>
+            <text x="382" y="360" font-size="13" fill="#5b6673">local API keys never leave the node</text>
+
+            <rect x="662" y="262" width="250" height="104" rx="12" fill="#fdecec" stroke="#efc1c1"></rect>
+            <text x="682" y="292" font-size="16" font-weight="700" fill="#a33a3a">Role boundary</text>
+            <text x="682" y="318" font-size="13" fill="#17202a">role enforced by nodes</text>
+            <text x="682" y="340" font-size="13" fill="#5b6673">not by screens</text>
+            <text x="682" y="360" font-size="13" fill="#5b6673">visitor refuses model serving</text>
+
+            <line x1="312" y1="176" x2="362" y2="176" stroke="#425064" stroke-width="2" marker-end="url(#arrow)"></line>
+            <line x1="612" y1="176" x2="662" y2="176" stroke="#425064" stroke-width="2" marker-end="url(#arrow)"></line>
+            <line x1="187" y1="232" x2="187" y2="262" stroke="#425064" stroke-width="2" marker-end="url(#arrow)"></line>
+            <line x1="487" y1="232" x2="487" y2="262" stroke="#425064" stroke-width="2" marker-end="url(#arrow)"></line>
+            <line x1="787" y1="232" x2="787" y2="262" stroke="#425064" stroke-width="2" marker-end="url(#arrow)"></line>
+          </svg>
+        </div>
+        <div class="notes">
+          <p><strong>Key idea.</strong> A node is not an IP address. Its identity is a long-lived Ed25519 key.
+          The node id, iroh endpoint id, pkarr key, TLS certificate, and authority key all derive from that key.</p>
+          <p><strong>Ports.</strong> The defaults are UDP P2P 42777, inference QUIC 43777, gateway QUIC 44777,
+          iroh endpoint and relay 52777, HTTP gateway 8080, and inference HTTP 8181. Different machines may use the same numbers.</p>
+          <p><strong>Model source.</strong> The model is not passed on the command line. It is deployed through the UI,
+          and each serving node loads its assigned layer range locally.</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>2. One cluster: a model pipeline across machines</h2>
+      <div class="grid reverse">
+        <div class="notes">
+          <p><strong>Pipeline order is layer order.</strong> Whoever holds layer 0 receives the whole prompt.
+          Each next node receives hidden state, runs its own layers, and passes the state onward.</p>
+          <p><strong>Any node can be the gateway.</strong> The client request enters through one node's gateway port,
+          but the inference runs across the planned pipeline. There is no local fallback when the pipeline does not cover all layers.</p>
+          <p><strong>No weights travel because of slicing.</strong> Each peer extracts its own range from its own copy.
+          File transfer is a separate operator action.</p>
+          <p><strong>Idle is active.</strong> A peer can unload when idle, keep announcing its range, and be woken by the first request.</p>
+        </div>
+        <div class="diagram">
+          <svg viewBox="0 0 1080 520" role="img" aria-label="Diagram of one cluster serving a split model">
+            <defs>
+              <marker id="arrow2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="#245f9e"></path>
+              </marker>
+              <marker id="arrow3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="#187a55"></path>
+              </marker>
+            </defs>
+
+            <rect x="24" y="24" width="1032" height="472" rx="18" fill="#ffffff" stroke="#d8dee7"></rect>
+            <text x="48" y="58" font-size="20" font-weight="700" fill="#17202a">Cluster Alpha - one network, one trust chain</text>
+            <text x="48" y="84" font-size="14" fill="#5b6673">A model with 32 layers is deployed as L0-L15, L16-L23, and L24-L31.</text>
+
+            <rect x="70" y="120" width="190" height="112" rx="12" fill="#e8f1fb" stroke="#b9d4f2"></rect>
+            <text x="90" y="150" font-size="16" font-weight="700" fill="#245f9e">Client</text>
+            <text x="90" y="176" font-size="13" fill="#17202a">POST /api/generate</text>
+            <text x="90" y="198" font-size="13" fill="#17202a">or /v1/... routes</text>
+            <text x="90" y="220" font-size="13" fill="#5b6673">uses an API key minted by the gateway node</text>
+
+            <rect x="330" y="120" width="220" height="112" rx="12" fill="#eef2f7" stroke="#d8dee7"></rect>
+            <text x="350" y="150" font-size="16" font-weight="700" fill="#425064">Gateway node</text>
+            <text x="350" y="176" font-size="13" fill="#17202a">plans the pipeline</text>
+            <text x="350" y="198" font-size="13" fill="#17202a">admits the request</text>
+            <text x="350" y="220" font-size="13" fill="#5b6673">may also serve a layer range</text>
+
+            <rect x="620" y="120" width="190" height="112" rx="12" fill="#e8f6f0" stroke="#b9dfcd"></rect>
+            <text x="640" y="150" font-size="16" font-weight="700" fill="#187a55">Worker A</text>
+            <text x="640" y="176" font-size="13" fill="#17202a">layers 0-15</text>
+            <text x="640" y="198" font-size="13" fill="#17202a">prefill head</text>
+            <text x="640" y="220" font-size="13" fill="#5b6673">receives whole prompt</text>
+
+            <rect x="860" y="120" width="170" height="112" rx="12" fill="#e8f6f0" stroke="#b9dfcd"></rect>
+            <text x="880" y="150" font-size="16" font-weight="700" fill="#187a55">Worker B</text>
+            <text x="880" y="176" font-size="13" fill="#17202a">layers 16-23</text>
+            <text x="880" y="198" font-size="13" fill="#17202a">middle stage</text>
+            <text x="880" y="220" font-size="13" fill="#5b6673">hidden state hop</text>
+
+            <rect x="330" y="300" width="220" height="112" rx="12" fill="#e8f6f0" stroke="#b9dfcd"></rect>
+            <text x="350" y="330" font-size="16" font-weight="700" fill="#187a55">Worker C</text>
+            <text x="350" y="356" font-size="13" fill="#17202a">layers 24-31</text>
+            <text x="350" y="378" font-size="13" fill="#17202a">tail stage</text>
+            <text x="350" y="400" font-size="13" fill="#5b6673">output head</text>
+
+            <rect x="70" y="300" width="190" height="112" rx="12" fill="#fff4dc" stroke="#ecd29a"></rect>
+            <text x="90" y="330" font-size="16" font-weight="700" fill="#9a6700">Visitor node</text>
+            <text x="90" y="356" font-size="13" fill="#17202a">client entry point</text>
+            <text x="90" y="378" font-size="13" fill="#17202a">routes inference</text>
+            <text x="90" y="400" font-size="13" fill="#5b6673">never holds a model</text>
+
+            <rect x="620" y="300" width="410" height="112" rx="12" fill="#f6f8fb" stroke="#d8dee7"></rect>
+            <text x="640" y="330" font-size="16" font-weight="700" fill="#425064">Coverage rule</text>
+            <text x="640" y="356" font-size="13" fill="#17202a">valid: each required layer covered exactly once</text>
+            <text x="640" y="378" font-size="13" fill="#17202a">valid: exact replicas form parallel routes</text>
+            <text x="640" y="400" font-size="13" fill="#a33a3a">refused: partial overlap or a global gap</text>
+
+            <line x1="260" y1="176" x2="330" y2="176" stroke="#245f9e" stroke-width="2" marker-end="url(#arrow2)"></line>
+            <line x1="550" y1="176" x2="620" y2="176" stroke="#187a55" stroke-width="2" marker-end="url(#arrow3)"></line>
+            <line x1="810" y1="176" x2="860" y2="176" stroke="#187a55" stroke-width="2" marker-end="url(#arrow3)"></line>
+            <path d="M 945 232 C 945 270, 760 270, 550 330" fill="none" stroke="#187a55" stroke-width="2" marker-end="url(#arrow3)"></path>
+            <path d="M 440 412 C 440 450, 250 450, 165 412" fill="none" stroke="#245f9e" stroke-width="2" marker-end="url(#arrow2)"></path>
+            <path d="M 165 300 C 165 250, 250 250, 330 210" fill="none" stroke="#9a6700" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#arrow2)"></path>
+
+            <text x="270" y="150" font-size="12" fill="#245f9e">client request</text>
+            <text x="565" y="150" font-size="12" fill="#187a55">prompt / hidden state</text>
+            <text x="815" y="150" font-size="12" fill="#187a55">hidden state</text>
+            <text x="700" y="282" font-size="12" fill="#187a55">hidden state</text>
+            <text x="250" y="442" font-size="12" fill="#245f9e">answer</text>
+            <text x="180" y="262" font-size="12" fill="#9a6700">visitor gateway</text>
+          </svg>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>3. Roles: who may do what</h2>
+      <div class="grid">
+        <div class="diagram">
+          <svg viewBox="0 0 1080 560" role="img" aria-label="Diagram of roles and trust chain">
+            <defs>
+              <marker id="arrow4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="#425064"></path>
+              </marker>
+            </defs>
+
+            <rect x="24" y="24" width="1032" height="512" rx="18" fill="#ffffff" stroke="#d8dee7"></rect>
+            <text x="48" y="58" font-size="20" font-weight="700" fill="#17202a">Trust chain names admins only</text>
+            <text x="48" y="84" font-size="14" fill="#5b6673">Workers and visitors are proven by short-lived membership tokens, not by entries in the trust chain.</text>
+
+            <rect x="70" y="120" width="230" height="132" rx="12" fill="#e8f1fb" stroke="#b9d4f2"></rect>
+            <text x="90" y="150" font-size="17" font-weight="700" fill="#245f9e">Principal</text>
+            <text x="90" y="176" font-size="13" fill="#17202a">anchored in the trust chain</text>
+            <text x="90" y="198" font-size="13" fill="#17202a">settings, keys, grants, admissions</text>
+            <text x="90" y="220" font-size="13" fill="#17202a">removals, deploys, succession</text>
+            <text x="90" y="242" font-size="13" fill="#5b6673">the only role that changes the chain</text>
+
+            <rect x="380" y="120" width="230" height="132" rx="12" fill="#f1ebfb" stroke="#d5c6ef"></rect>
+            <text x="400" y="150" font-size="17" font-weight="700" fill="#65409b">Secondary admin</text>
+            <text x="400" y="176" font-size="13" fill="#17202a">grant signed by principal</text>
+            <text x="400" y="198" font-size="13" fill="#17202a">deploy and undeploy models</text>
+            <text x="400" y="220" font-size="13" fill="#17202a">approve admissions, remove members</text>
+            <text x="400" y="242" font-size="13" fill="#a33a3a">no settings, keys, admins, chain edits</text>
+
+            <rect x="690" y="120" width="180" height="132" rx="12" fill="#e8f6f0" stroke="#b9dfcd"></rect>
+            <text x="710" y="150" font-size="17" font-weight="700" fill="#187a55">Worker</text>
+            <text x="710" y="176" font-size="13" fill="#17202a">membership token</text>
+            <text x="710" y="198" font-size="13" fill="#17202a">serves model layers</text>
+            <text x="710" y="220" font-size="13" fill="#17202a">catalog, planning, transfers</text>
+            <text x="710" y="242" font-size="13" fill="#5b6673">no admin authority</text>
+
+            <rect x="910" y="120" width="140" height="132" rx="12" fill="#fff4dc" stroke="#ecd29a"></rect>
+            <text x="930" y="150" font-size="17" font-weight="700" fill="#9a6700">Visitor</text>
+            <text x="930" y="176" font-size="13" fill="#17202a">membership token</text>
+            <text x="930" y="198" font-size="13" fill="#17202a">routes inference</text>
+            <text x="930" y="220" font-size="13" fill="#17202a">never holds model</text>
+            <text x="930" y="242" font-size="13" fill="#17202a">no admin calls</text>
+
+            <rect x="70" y="300" width="430" height="170" rx="12" fill="#f6f8fb" stroke="#d8dee7"></rect>
+            <text x="90" y="330" font-size="16" font-weight="700" fill="#425064">Trust chain</text>
+            <text x="90" y="356" font-size="13" fill="#17202a">anchor, grants, demotions, transfers, revocations</text>
+            <text x="90" y="378" font-size="13" fill="#17202a">every signature is checked back to the anchor</text>
+            <text x="90" y="400" font-size="13" fill="#17202a">version counters let nodes catch up while principal is away</text>
+            <text x="90" y="422" font-size="13" fill="#17202a">admitting a worker or visitor changes no trust document</text>
+            <text x="90" y="444" font-size="13" fill="#5b6673">code: admin_trust.rs</text>
+
+            <rect x="560" y="300" width="490" height="170" rx="12" fill="#f6f8fb" stroke="#d8dee7"></rect>
+            <text x="580" y="330" font-size="16" font-weight="700" fill="#425064">Membership token</text>
+            <text x="580" y="356" font-size="13" fill="#17202a">JWT signed by an admin node key</text>
+            <text x="580" y="378" font-size="13" fill="#17202a">role worker or visitor, cluster id, subject key</text>
+            <text x="580" y="400" font-size="13" fill="#17202a">lifetime 10 minutes, renewed before expiry</text>
+            <text x="580" y="422" font-size="13" fill="#17202a">checked against the local chain and revocations</text>
+            <text x="580" y="444" font-size="13" fill="#5b6673">code: membership.rs</text>
+
+            <line x1="300" y1="186" x2="380" y2="186" stroke="#425064" stroke-width="2" marker-end="url(#arrow4)"></line>
+            <line x1="610" y1="186" x2="690" y2="186" stroke="#425064" stroke-width="2" marker-end="url(#arrow4)"></line>
+            <line x1="870" y1="186" x2="910" y2="186" stroke="#425064" stroke-width="2" marker-end="url(#arrow4)"></line>
+            <line x1="185" y1="252" x2="185" y2="300" stroke="#425064" stroke-width="2" marker-end="url(#arrow4)"></line>
+            <line x1="495" y1="252" x2="495" y2="300" stroke="#425064" stroke-width="2" marker-end="url(#arrow4)"></line>
+            <line x1="780" y1="252" x2="780" y2="300" stroke="#425064" stroke-width="2" marker-end="url(#arrow4)"></line>
+            <line x1="980" y1="252" x2="980" y2="300" stroke="#425064" stroke-width="2" marker-end="url(#arrow4)"></line>
+          </svg>
+        </div>
+        <div class="notes">
+          <p><strong>Principal.</strong> The network's root authority. It can change settings, mint or rotate the connection key,
+          grant or demote admins, approve admissions, remove members, and deploy models.</p>
+          <p><strong>Secondary admin.</strong> A practical operator role. It can deploy models, approve admissions, view logs,
+          and remove workers or visitors. It cannot change the network's core settings, keys, admins, or trust chain.</p>
+          <p><strong>Worker.</strong> Hardware that serves model layers. It can participate in serving routes, but it has no administrative authority.</p>
+          <p><strong>Visitor.</strong> A proxy node. It can run inference through the cluster, but it refuses to hold or serve a model,
+          even if an admin asks.</p>
+          <p><strong>Connection key.</strong> Every member holds it, including visitors. It authenticates transport and node-to-node calls,
+          but by itself it opens no administrative route.</p>
+        </div>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Role</th>
+            <th>Proven by</th>
+            <th>May do</th>
+            <th>Must not do</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="pill principal">Principal</span></td>
+            <td>Trust chain anchor or accepted transfer</td>
+            <td>Everything: settings, keys, grants, admissions, removals, deploys</td>
+            <td>Cannot be removed by a secondary admin</td>
+          </tr>
+          <tr>
+            <td><span class="pill secondary">Secondary admin</span></td>
+            <td>Grant signed by principal</td>
+            <td>Deploy, undeploy, logs, telemetry, approve admissions, remove workers and visitors</td>
+            <td>No settings, API keys, admin grants, trust chain changes</td>
+          </tr>
+          <tr>
+            <td><span class="pill worker">Worker</span></td>
+            <td>Membership token role worker</td>
+            <td>Serve model layers, participate in serving routes</td>
+            <td>No administrative authority</td>
+          </tr>
+          <tr>
+            <td><span class="pill visitor">Visitor</span></td>
+            <td>Membership token role visitor</td>
+            <td>Run inference through its own node</td>
+            <td>Never holds or serves a model; no admin calls</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>4. How nodes find each other and prove membership</h2>
+      <div class="grid reverse">
+        <div class="notes">
+          <p><strong>Discovery is not membership.</strong> A node may learn an address from UDP, mDNS, pkarr, or gossip,
+          but it only becomes a peer after local admission proof.</p>
+          <p><strong>Private networks.</strong> Admission uses the connection key through a challenge handshake.
+          The key never travels; the peer proves it knows the key and signs with its node key.</p>
+          <p><strong>Public networks.</strong> Admission checks the announced key against the local trust chain,
+          or, in the older open mode, checks that the node holds the matching anchor.</p>
+          <p><strong>Transport.</strong> Node-to-node HTTP is mutual TLS with certificates pinned to node ids.
+          The iroh path uses QUIC under the node key, relays, and hole punching.</p>
+          <p><strong>pkarr.</strong> A public key-to-address resolver. It publishes only public addresses and relay hints,
+          never private LAN addresses.</p>
+        </div>
+        <div class="diagram">
+          <svg viewBox="0 0 1080 560" role="img" aria-label="Diagram of discovery, admission, and transport">
+            <defs>
+              <marker id="arrow5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="#425064"></path>
+              </marker>
+              <marker id="arrow6" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="#245f9e"></path>
+              </marker>
+            </defs>
+
+            <rect x="24" y="24" width="1032" height="512" rx="18" fill="#ffffff" stroke="#d8dee7"></rect>
+            <text x="48" y="58" font-size="20" font-weight="700" fill="#17202a">From announcement to admitted peer</text>
+            <text x="48" y="84" font-size="14" fill="#5b6673">Addresses are hints. Identity is the node key. Membership is proven before routing.</text>
+
+            <rect x="70" y="120" width="210" height="112" rx="12" fill="#eef2f7" stroke="#d8dee7"></rect>
+            <text x="90" y="150" font-size="16" font-weight="700" fill="#425064">Announce</text>
+            <text x="90" y="176" font-size="13" fill="#17202a">node id, public key, endpoint</text>
+            <text x="90" y="198" font-size="13" fill="#17202a">model, layer range, profile</text>
+            <text x="90" y="220" font-size="13" fill="#17202a">relay offer, capabilities</text>
+
+            <rect x="340" y="120" width="210" height="112" rx="12" fill="#e8f1fb" stroke="#b9d4f2"></rect>
+            <text x="360" y="150" font-size="16" font-weight="700" fill="#245f9e">Admission gate</text>
+            <text x="360" y="176" font-size="13" fill="#17202a">private: handshake probe</text>
+            <text x="360" y="198" font-size="13" fill="#17202a">public: trust chain check</text>
+            <text x="360" y="220" font-size="13" fill="#17202a">cluster id mismatch refused</text>
+
+            <rect x="610" y="120" width="210" height="112" rx="12" fill="#e8f6f0" stroke="#b9dfcd"></rect>
+            <text x="630" y="150" font-size="16" font-weight="700" fill="#187a55">Peers table</text>
+            <text x="630" y="176" font-size="13" fill="#17202a">only admitted members</text>
+            <text x="630" y="198" font-size="13" fill="#17202a">feeds UI, routes, planning</text>
+            <text x="630" y="220" font-size="13" fill="#17202a">alive for 30 s without announce</text>
+
+            <rect x="880" y="120" width="170" height="112" rx="12" fill="#f1ebfb" stroke="#d5c6ef"></rect>
+            <text x="900" y="150" font-size="16" font-weight="700" fill="#65409b">Role check</text>
+            <text x="900" y="176" font-size="13" fill="#17202a">admin chain</text>
+            <text x="900" y="198" font-size="13" fill="#17202a">membership token</text>
+            <text x="900" y="220" font-size="13" fill="#17202a">revocation list</text>
+
+            <rect x="70" y="280" width="300" height="170" rx="12" fill="#f6f8fb" stroke="#d8dee7"></rect>
+            <text x="90" y="310" font-size="16" font-weight="700" fill="#425064">LAN path</text>
+            <text x="90" y="336" font-size="13" fill="#17202a">UDP broadcast and mDNS</text>
+            <text x="90" y="358" font-size="13" fill="#17202a">signed announces</text>
+            <text x="90" y="380" font-size="13" fill="#17202a">PeerRequest and PeerList</text>
+            <text x="90" y="402" font-size="13" fill="#17202a">works with no infrastructure</text>
+            <text x="90" y="424" font-size="13" fill="#5b6673">best for machines on the same network</text>
+
+            <rect x="410" y="280" width="300" height="170" rx="12" fill="#f6f8fb" stroke="#d8dee7"></rect>
+            <text x="430" y="310" font-size="16" font-weight="700" fill="#425064">Internet path</text>
+            <text x="430" y="336" font-size="13" fill="#17202a">iroh QUIC endpoint under node key</text>
+            <text x="430" y="358" font-size="13" fill="#17202a">gossip, relays, hole punching</text>
+            <text x="430" y="380" font-size="13" fill="#17202a">pkarr resolves key to current address</text>
+            <text x="430" y="402" font-size="13" fill="#17202a">tunnel reaches peers behind NAT</text>
+            <text x="430" y="424" font-size="13" fill="#5b6673">best for remote machines and CGNAT</text>
+
+            <rect x="750" y="280" width="300" height="170" rx="12" fill="#f6f8fb" stroke="#d8dee7"></rect>
+            <text x="770" y="310" font-size="16" font-weight="700" fill="#425064">Security</text>
+            <text x="770" y="336" font-size="13" fill="#17202a">mutual TLS between nodes</text>
+            <text x="770" y="358" font-size="13" fill="#17202a">certificate pinned to node id</text>
+            <text x="770" y="380" font-size="13" fill="#17202a">signed control envelopes</text>
+            <text x="770" y="402" font-size="13" fill="#17202a">connection key alone opens nothing</text>
+            <text x="770" y="424" font-size="13" fill="#5b6673">plain HTTP only for loopback</text>
+
+            <line x1="280" y1="176" x2="340" y2="176" stroke="#425064" stroke-width="2" marker-end="url(#arrow5)"></line>
+            <line x1="550" y1="176" x2="610" y2="176" stroke="#425064" stroke-width="2" marker-end="url(#arrow5)"></line>
+            <line x1="820" y1="176" x2="880" y2="176" stroke="#425064" stroke-width="2" marker-end="url(#arrow5)"></line>
+            <line x1="220" y1="232" x2="220" y2="280" stroke="#245f9e" stroke-width="2" marker-end="url(#arrow6)"></line>
+            <line x1="560" y1="232" x2="560" y2="280" stroke="#245f9e" stroke-width="2" marker-end="url(#arrow6)"></line>
+            <line x1="900" y1="232" x2="900" y2="280" stroke="#245f9e" stroke-width="2" marker-end="url(#arrow6)"></line>
+          </svg>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>5. How a new machine joins a cluster</h2>
+      <div class="grid">
+        <div class="diagram">
+          <svg viewBox="0 0 1080 520" role="img" aria-label="Diagram of a machine joining a network">
+            <defs>
+              <marker id="arrow7" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="#425064"></path>
+              </marker>
+            </defs>
+
+            <rect x="24" y="24" width="1032" height="472" rx="18" fill="#ffffff" stroke="#d8dee7"></rect>
+            <text x="48" y="58" font-size="20" font-weight="700" fill="#17202a">Joining is an explicit act</text>
+            <text x="48" y="84" font-size="14" fill="#5b6673">A candidate asks through the lobby. An admin decides. The candidate collects the grant and restarts as a member.</text>
+
+            <rect x="70" y="120" width="190" height="112" rx="12" fill="#fff4dc" stroke="#ecd29a"></rect>
+            <text x="90" y="150" font-size="16" font-weight="700" fill="#9a6700">Candidate</text>
+            <text x="90" y="176" font-size="13" fill="#17202a">own local network</text>
+            <text x="90" y="198" font-size="13" fill="#17202a">lobby client</text>
+            <text x="90" y="220" font-size="13" fill="#17202a">hardware card</text>
+
+            <rect x="320" y="120" width="190" height="112" rx="12" fill="#e8f1fb" stroke="#b9d4f2"></rect>
+            <text x="340" y="150" font-size="16" font-weight="700" fill="#245f9e">Lobby</text>
+            <text x="340" y="176" font-size="13" fill="#17202a">pull only</text>
+            <text x="340" y="198" font-size="13" fill="#17202a">Post, Fetch, Admission</text>
+            <text x="340" y="220" font-size="13" fill="#17202a">identity by transport key</text>
+
+            <rect x="570" y="120" width="190" height="112" rx="12" fill="#e8f1fb" stroke="#b9d4f2"></rect>
+            <text x="590" y="150" font-size="16" font-weight="700" fill="#245f9e">Admin decision</text>
+            <text x="590" y="176" font-size="13" fill="#17202a">principal or secondary</text>
+            <text x="590" y="198" font-size="13" fill="#17202a">approve or reject</text>
+            <text x="590" y="220" font-size="13" fill="#17202a">role fixed at admission</text>
+
+            <rect x="820" y="120" width="230" height="112" rx="12" fill="#e8f6f0" stroke="#b9dfcd"></rect>
+            <text x="840" y="150" font-size="16" font-weight="700" fill="#187a55">Grant</text>
+            <text x="840" y="176" font-size="13" fill="#17202a">trust document</text>
+            <text x="840" y="198" font-size="13" fill="#17202a">connection key</text>
+            <text x="840" y="220" font-size="13" fill="#17202a">relay hints and settings</text>
+
+            <rect x="70" y="290" width="980" height="150" rx="12" fill="#f6f8fb" stroke="#d8dee7"></rect>
+            <text x="90" y="320" font-size="16" font-weight="700" fill="#425064">After joining</text>
+            <text x="90" y="346" font-size="13" fill="#17202a">The node replaces its trust root, writes the granted network config, and restarts.</text>
+            <text x="90" y="368" font-size="13" fill="#17202a">Its own original network is not dropped: it is saved in standby and returns when the node leaves.</text>
+            <text x="90" y="390" font-size="13" fill="#17202a">The node announces its profile and, if it is a worker, the layer range it can serve.</text>
+            <text x="90" y="412" font-size="13" fill="#17202a">A visitor announces no serving range and refuses model-holding routes.</text>
+            <text x="90" y="434" font-size="13" fill="#5b6673">A rejected candidate may ask again after the retry window shown by the principal.</text>
+
+            <line x1="260" y1="176" x2="320" y2="176" stroke="#425064" stroke-width="2" marker-end="url(#arrow7)"></line>
+            <line x1="510" y1="176" x2="570" y2="176" stroke="#425064" stroke-width="2" marker-end="url(#arrow7)"></line>
+            <line x1="760" y1="176" x2="820" y2="176" stroke="#425064" stroke-width="2" marker-end="url(#arrow7)"></line>
+            <path d="M 935 232 C 935 260, 560 260, 560 290" fill="none" stroke="#425064" stroke-width="2" marker-end="url(#arrow7)"></path>
+          </svg>
+        </div>
+        <div class="notes">
+          <p><strong>Own network is never dropped.</strong> The network a node created at first launch is inherent to it.
+          Joining another network puts the own network into standby. Leaving restores it.</p>
+          <p><strong>Leaving costs the key.</strong> A member tells the principal before going silent.
+          The principal forgets the admission and rotates the connection key, unless the network is in the open mode.</p>
+          <p><strong>Key rotation does not cut inference.</strong> The new key has a transition window.
+          Nodes keep sending the old key briefly and accept both keys briefly, so in-flight work survives.</p>
+          <p><strong>Offline member.</strong> A member that missed a rotation can claim the new key through the lobby,
+          if it is still on the principal's member list.</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>6. Multiple clusters: how the network looks when it grows</h2>
+      <div class="grid reverse">
+        <div class="notes">
+          <p><strong>One active network per process.</strong> The current runtime keeps a single P2P network per node process.
+          A node can move between networks, but it does not serve two clusters at the same time.</p>
+          <p><strong>Clusters do not merge.</strong> Each cluster has its own principal, trust chain, cluster id,
+          connection key, policies, and deployment history.</p>
+          <p><strong>Shared relays are not shared membership.</strong> All clusters share the announce topic, and relays can meet traffic
+          from different networks. A peer announcing another cluster id is refused outright.</p>
+          <p><strong>Public directory.</strong> Public networks can publish signed descriptions. A relay can gather or receive them.
+          A candidate can read the directory and ask to join, but listing is not membership.</p>
+          <p><strong>Growth pattern.</strong> A large deployment becomes many clusters: a lab cluster, a datacenter cluster,
+          a public community cluster, and a private cluster. Machines move between them by leaving one and joining another.</p>
+        </div>
+        <div class="diagram">
+          <svg viewBox="0 0 1180 650" role="img" aria-label="Diagram of multiple clusters sharing relays but not membership">
+            <defs>
+              <marker id="arrow8" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="#425064"></path>
+              </marker>
+              <marker id="arrow9" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="#a33a3a"></path>
+              </marker>
+            </defs>
+
+            <rect x="24" y="24" width="1132" height="602" rx="18" fill="#ffffff" stroke="#d8dee7"></rect>
+            <text x="48" y="58" font-size="20" font-weight="700" fill="#17202a">Many clusters, one transport world, separate trust domains</text>
+            <text x="48" y="84" font-size="14" fill="#5b6673">Clusters may share relays and the public directory, but never membership, keys, trust chains, or inference pipelines.</text>
+
+            <rect x="70" y="120" width="430" height="230" rx="14" fill="#f6f8fb" stroke="#d8dee7"></rect>
+            <text x="90" y="150" font-size="17" font-weight="700" fill="#245f9e">Cluster Alpha</text>
+            <text x="90" y="174" font-size="13" fill="#5b6673">principal A, own connection key, own trust chain</text>
+
+            <rect x="100" y="190" width="110" height="70" rx="10" fill="#e8f1fb" stroke="#b9d4f2"></rect>
+            <text x="118" y="218" font-size="13" font-weight="700" fill="#245f9e">Principal</text>
+            <text x="118" y="238" font-size="12" fill="#5b6673">admin A</text>
+
+            <rect x="230" y="190" width="110" height="70" rx="10" fill="#f1ebfb" stroke="#d5c6ef"></rect>
+            <text x="248" y="218" font-size="13" font-weight="700" fill="#65409b">Secondary</text>
+            <text x="248" y="238" font-size="12" fill="#5b6673">admin B</text>
+
+            <rect x="360" y="190" width="110" height="70" rx="10" fill="#e8f6f0" stroke="#b9dfcd"></rect>
+            <text x="378" y="218" font-size="13" font-weight="700" fill="#187a55">Workers</text>
+            <text x="378" y="238" font-size="12" fill="#5b6673">layers</text>
+
+            <rect x="100" y="270" width="110" height="58" rx="10" fill="#fff4dc" stroke="#ecd29a"></rect>
+            <text x="118" y="294" font-size="13" font-weight="700" fill="#9a6700">Visitor</text>
+            <text x="118" y="312" font-size="12" fill="#5b6673">routes only</text>
+
+            <rect x="230" y="270" width="240" height="58" rx="10" fill="#e8f6f0" stroke="#b9dfcd"></rect>
+            <text x="248" y="294" font-size="13" font-weight="700" fill="#187a55">Pipeline</text>
+            <text x="248" y="312" font-size="12" fill="#5b6673">L0-L15, L16-L31, replicas</text>
+
+            <rect x="560" y="120" width="430" height="230" rx="14" fill="#f6f8fb" stroke="#d8dee7"></rect>
+            <text x="580" y="150" font-size="17" font-weight="700" fill="#245f9e">Cluster Beta</text>
+            <text x="580" y="174" font-size="13" fill="#5b6673">principal C, different connection key, different trust chain</text>
+
+            <rect x="590" y="190" width="110" height="70" rx="10" fill="#e8f1fb" stroke="#b9d4f2"></rect>
+            <text x="608" y="218" font-size="13" font-weight="700" fill="#245f9e">Principal</text>
+            <text x="608" y="238" font-size="12" fill="#5b6673">admin C</text>
+
+            <rect x="720" y="190" width="110" height="70" rx="10" fill="#e8f6f0" stroke="#b9dfcd"></rect>
+            <text x="738" y="218" font-size="13" font-weight="700" fill="#187a55">Workers</text>
+            <text x="738" y="238" font-size="12" fill="#5b6673">GPU pool</text>
+
+            <rect x="850" y="190" width="110" height="70" rx="10" fill="#fff4dc" stroke="#ecd29a"></rect>
+            <text x="868" y="218" font-size="13" font-weight="700" fill="#9a6700">Visitors</text>
+            <text x="868" y="238" font-size="12" fill="#5b6673">edge entry</text>
+
+            <rect x="590" y="270" width="370" height="58" rx="10" fill="#e8f6f0" stroke="#b9dfcd"></rect>
+            <text x="608" y="294" font-size="13" font-weight="700" fill="#187a55">Pipeline</text>
+            <text x="608" y="312" font-size="12" fill="#5b6673">whole model replicas or tensor parallel group</text>
+
+            <rect x="1030" y="120" width="150" height="230" rx="14" fill="#f6f8fb" stroke="#d8dee7"></rect>
+            <text x="1050" y="150" font-size="17" font-weight="700" fill="#425064">Shared</text>
+            <text x="1050" y="174" font-size="13" fill="#5b6673">transport world</text>
+
+            <rect x="1050" y="190" width="110" height="58" rx="10" fill="#eef2f7" stroke="#d8dee7"></rect>
+            <text x="1068" y="214" font-size="13" font-weight="700" fill="#425064">Relay</text>
+            <text x="1068" y="232" font-size="12" fill="#5b6673">meeting point</text>
+
+            <rect x="1050" y="260" width="110" height="58" rx="10" fill="#eef2f7" stroke="#d8dee7"></rect>
+            <text x="1068" y="284" font-size="13" font-weight="700" fill="#425064">pkarr</text>
+            <text x="1068" y="302" font-size="12" fill="#5b6673">key to address</text>
+
+            <rect x="1050" y="330" width="110" height="58" rx="10" fill="#eef2f7" stroke="#d8dee7"></rect>
+            <text x="1068" y="354" font-size="13" font-weight="700" fill="#425064">Directory</text>
+            <text x="1068" y="372" font-size="12" fill="#5b6673">public networks</text>
+
+            <rect x="70" y="400" width="1110" height="180" rx="14" fill="#fdecec" stroke="#efc1c1"></rect>
+            <text x="90" y="430" font-size="17" font-weight="700" fill="#a33a3a">What does not cross cluster boundaries</text>
+            <text x="90" y="456" font-size="13" fill="#17202a">Membership tokens, admin grants, connection keys, trust documents, deployment records, API keys, logs, and inference hops.</text>
+            <text x="90" y="478" font-size="13" fill="#17202a">A node in Alpha cannot use Alpha's key to join Beta. A node in Beta cannot serve Alpha's pipeline. A peer announcing another cluster id is refused.</text>
+            <text x="90" y="500" font-size="13" fill="#17202a">A public directory entry is an invitation to ask, not proof of membership. The candidate still needs an approved admission grant.</text>
+            <text x="90" y="522" font-size="13" fill="#17202a">A relay can carry encrypted traffic for many clusters, but it does not decide membership and cannot forge a network record.</text>
+            <text x="90" y="544" font-size="13" fill="#5b6673">A private network can still list public networks and reach lobbies, even while it announces nothing itself.</text>
+
+            <line x1="500" y1="235" x2="560" y2="235" stroke="#a33a3a" stroke-width="2" stroke-dasharray="7 5" marker-end="url(#arrow9)"></line>
+            <line x1="990" y1="235" x2="1030" y2="235" stroke="#425064" stroke-width="2" marker-end="url(#arrow8)"></line>
+            <line x1="1030" y1="235" x2="990" y2="235" stroke="#425064" stroke-width="2" marker-end="url(#arrow8)"></line>
+            <line x1="285" y1="350" x2="285" y2="400" stroke="#425064" stroke-width="2" marker-end="url(#arrow8)"></line>
+            <line x1="775" y1="350" x2="775" y2="400" stroke="#425064" stroke-width="2" marker-end="url(#arrow8)"></line>
+          </svg>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>7. A grown network: typical shapes</h2>
+      <div class="cards">
+        <div class="card">
+          <h3><span class="pill principal">Principal</span> control cluster</h3>
+          <p>A small cluster of admin machines. The principal holds settings and keys. Secondary admins run deployments and admissions.</p>
+        </div>
+        <div class="card">
+          <h3><span class="pill worker">Worker</span> serving pool</h3>
+          <p>GPU and RAM machines serve layer ranges. Some machines hold whole models, some hold slices, some hold several non-adjacent ranges.</p>
+        </div>
+        <div class="card">
+          <h3><span class="pill visitor">Visitor</span> edge nodes</h3>
+          <p>Laptops, branch offices, or public entry points route inference into the cluster without holding model weights.</p>
+        </div>
+        <div class="card">
+          <h3><span class="pill danger">Relay</span> shared meeting point</h3>
+          <p>A reachable node or dedicated relay helps NATed nodes meet. It is transport infrastructure, not a member of every cluster.</p>
+        </div>
+        <div class="card">
+          <h3><span class="pill secondary">Secondary admin</span> operations</h3>
+          <p>Day-to-day operators deploy models, approve machines, inspect telemetry, and remove bad members without touching core keys.</p>
+        </div>
+        <div class="card">
+          <h3><span class="pill worker">Idle</span> capacity</h3>
+          <p>Idle workers keep their announced ranges but unload the model. The first request wakes them in parallel before planning continues.</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>8. Request path through a grown cluster</h2>
+      <div class="grid">
+        <div class="diagram">
+          <svg viewBox="0 0 1180 520" role="img" aria-label="Diagram of a request through a grown cluster">
+            <defs>
+              <marker id="arrow10" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="#245f9e"></path>
+              </marker>
+              <marker id="arrow11" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="#187a55"></path>
+              </marker>
+            </defs>
+
+            <rect x="24" y="24" width="1132" height="472" rx="18" fill="#ffffff" stroke="#d8dee7"></rect>
+            <text x="48" y="58" font-size="20" font-weight="700" fill="#17202a">One client request, many hops</text>
+            <text x="48" y="84" font-size="14" fill="#5b6673">The gateway plans from live announcements and health checks, then the pipeline runs across serving peers.</text>
+
+            <rect x="70" y="120" width="170" height="100" rx="12" fill="#fff4dc" stroke="#ecd29a"></rect>
+            <text x="90" y="150" font-size="16" font-weight="700" fill="#9a6700">Client</text>
+            <text x="90" y="176" font-size="13" fill="#17202a">API key from node</text>
+            <text x="90" y="198" font-size="13" fill="#17202a">max_tokens budget</text>
+
+            <rect x="290" y="120" width="190" height="100" rx="12" fill="#e8f1fb" stroke="#b9d4f2"></rect>
+            <text x="310" y="150" font-size="16" font-weight="700" fill="#245f9e">Gateway</text>
+            <text x="310" y="176" font-size="13" fill="#17202a">admits request</text>
+            <text x="310" y="198" font-size="13" fill="#17202a">plans coverage</text>
+
+            <rect x="530" y="120" width="190" height="100" rx="12" fill="#e8f6f0" stroke="#b9dfcd"></rect>
+            <text x="550" y="150" font-size="16" font-weight="700" fill="#187a55">Head L0</text>
+            <text x="550" y="176" font-size="13" fill="#17202a">whole prompt</text>
+            <text x="550" y="198" font-size="13" fill="#17202a">prefill chunks</text>
+
+            <rect x="770" y="120" width="190" height="100" rx="12" fill="#e8f6f0" stroke="#b9dfcd"></rect>
+            <text x="790" y="150" font-size="16" font-weight="700" fill="#187a55">Middle</text>
+            <text x="790" y="176" font-size="13" fill="#17202a">hidden state</text>
+            <text x="790" y="198" font-size="13" fill="#17202a">decode steps</text>
+
+            <rect x="1010" y="120" width="150" height="100" rx="12" fill="#e8f6f0" stroke="#b9dfcd"></rect>
+            <text x="1030" y="150" font-size="16" font-weight="700" fill="#187a55">Tail</text>
+            <text x="1030" y="176" font-size="13" fill="#17202a">output head</text>
+            <text x="1030" y="198" font-size="13" fill="#17202a">sampling</text>
+
+            <rect x="70" y="280" width="330" height="150" rx="12" fill="#f6f8fb" stroke="#d8dee7"></rect>
+            <text x="90" y="310" font-size="16" font-weight="700" fill="#425064">Planning inputs</text>
+            <text x="90" y="336" font-size="13" fill="#17202a">announced model and layer range</text>
+            <text x="90" y="358" font-size="13" fill="#17202a">health confirmed runtime capacity</text>
+            <text x="90" y="380" font-size="13" fill="#17202a">directional RTT and in-flight load</text>
+            <text x="90" y="402" font-size="13" fill="#17202a">idle peers wake before the first hop</text>
+
+            <rect x="440" y="280" width="330" height="150" rx="12" fill="#f6f8fb" stroke="#d8dee7"></rect>
+            <text x="460" y="310" font-size="16" font-weight="700" fill="#425064">Wire</text>
+            <text x="460" y="336" font-size="13" fill="#17202a">hidden state f16 by default</text>
+            <text x="460" y="358" font-size="13" fill="#17202a">f32 lossless option</text>
+            <text x="460" y="380" font-size="13" fill="#17202a">f8 and i4 groupwise lossy options</text>
+            <text x="460" y="402" font-size="13" fill="#17202a">QUIC, HTTPS, or p2p tunnel</text>
+
+            <rect x="810" y="280" width="350" height="150" rx="12" fill="#f6f8fb" stroke="#d8dee7"></rect>
+            <text x="830" y="310" font-size="16" font-weight="700" fill="#425064">Limits</text>
+            <text x="830" y="336" font-size="13" fill="#17202a">client max_tokens bounds the request</text>
+            <text x="830" y="358" font-size="13" fill="#17202a">n_ctx bounds the session window</text>
+            <text x="830" y="380" font-size="13" fill="#17202a">max_new_tokens bounds one leg only</text>
+            <text x="830" y="402" font-size="13" fill="#17202a">no plan covering all layers means refusal</text>
+
+            <line x1="240" y1="170" x2="290" y2="170" stroke="#245f9e" stroke-width="2" marker-end="url(#arrow10)"></line>
+            <line x1="480" y1="170" x2="530" y2="170" stroke="#187a55" stroke-width="2" marker-end="url(#arrow11)"></line>
+            <line x1="720" y1="170" x2="770" y2="170" stroke="#187a55" stroke-width="2" marker-end="url(#arrow11)"></line>
+            <line x1="960" y1="170" x2="1010" y2="170" stroke="#187a55" stroke-width="2" marker-end="url(#arrow11)"></line>
+            <path d="M 1085 220 C 1085 250, 700 250, 385 220" fill="none" stroke="#245f9e" stroke-width="2" marker-end="url(#arrow10)"></path>
+            <line x1="235" y1="220" x2="235" y2="280" stroke="#425064" stroke-width="2" marker-end="url(#arrow10)"></line>
+            <line x1="605" y1="220" x2="605" y2="280" stroke="#425064" stroke-width="2" marker-end="url(#arrow10)"></line>
+            <line x1="985" y1="220" x2="985" y2="280" stroke="#425064" stroke-width="2" marker-end="url(#arrow10)"></line>
+          </svg>
+        </div>
+        <div class="notes">
+          <p><strong>Gateway is not a special machine.</strong> Any node can receive the client request. The difference is that the gateway
+          runs the planning and admission for that request.</p>
+          <p><strong>Head is special.</strong> The node holding layer 0 receives the whole prompt. The tail performs sampling and produces the answer.</p>
+          <p><strong>Parallel routes.</strong> Exact replicas of the same range are valid. The router can choose the copy with better measured latency and load.</p>
+          <p><strong>Tensor parallel.</strong> A group of ranks runs one collective stage. The gateway talks to rank 0, and rank 0 keeps the ranks in lockstep.</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>9. What to say to new people</h2>
+      <div class="cards">
+        <div class="card">
+          <h3>Start with identity</h3>
+          <p>Every machine has a key. The network trusts keys, not IPs. That is why a laptop can move networks and keep its identity.</p>
+        </div>
+        <div class="card">
+          <h3>Then explain roles</h3>
+          <p>Principal owns the network. Secondary admin operates deployments. Workers serve layers. Visitors route requests.</p>
+        </div>
+        <div class="card">
+          <h3>Then show the pipeline</h3>
+          <p>A model is split by layers. The pipeline order is the layer order. The whole prompt enters at layer 0.</p>
+        </div>
+        <div class="card">
+          <h3>Then show growth</h3>
+          <p>Large systems become many clusters. They may share relays and public listings, but each cluster keeps its own trust and keys.</p>
+        </div>
+      </div>
+    </section>
+
+    <p class="footnote">
+      Source of truth: <code>docs/subsystems/security-model.md</code>, <code>docs/subsystems/p2p-network.md</code>,
+      <code>docs/subsystems/deployment.md</code>, <code>docs/subsystems/inference.md</code>, and
+      <code>docs/subsystems/operations.md</code>. This page is a presentation map, not a replacement for those subsystem guides.
+    </p>
+  </main>
+</body>
+</html>

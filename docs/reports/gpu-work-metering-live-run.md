@@ -68,8 +68,27 @@ first machine.
   TOPLOC check runs; repeated re-executions of one receipt agree with each
   other (deterministic). A sample taken while the deployment still held the
   GPU was void (out of memory), as designed.
-- **Not yet confirmed:** an honest Strata sample passing as a whole. The
-  last fix (prompt windows proved at once, decode windows at their commit)
-  combines the two halves that each passed in separate runs; confirming it
-  needs a new cycle with both GPUs free, which another node of the cluster
-  took during the test.
+- **More found and fixed in later cycles:** the stage protocol commits prompt
+  windows like decode windows (`'V'` keep 6, `'C'` 6), and the later stage's
+  phase tag lags into the first decode window; so every window is now held
+  until its commit and only its kept rows are proved, the tag only deciding
+  whether kept positions count as prompt. A window row is the prompt row
+  (10240 floats) followed by 2564 values that depend on how the sequence was
+  cut into windows: only the prompt part is proved, learned from the link's
+  hello (`lo, hi, window_floats, prompt_floats, features`). The verifier
+  judges each chunk against both readings (prompt pieces, committed windows).
+- **Result:** the pipeline works end to end and some honest receipts pass
+  completely (every chunk within the paper's limits), but honest chunks also
+  fail, up to 116 of 128 exponent mismatches. The decisive case: four
+  receipts share the same first chunk (the same 32-token chat template, the
+  same stored proof), and re-executing it against the same tokens gave
+  verdicts from a pass to 96 mismatches depending on the rest of the
+  sequence. Strata's output for a fixed prefix is not reproducible enough for
+  the paper's TOPLOC limits - consistent with its MoE expert tiering, where an
+  expert runs on GPU or CPU kernels depending on the cache.
+- **Decision in code:** re-executing plugin engines is off by default
+  (`metering.verify_plugin_engines`); their samples are void and the stages
+  are paid on receipts and challenges, which this run confirmed work. Turning
+  it on needs a calibration of the limits for the engine (honest variance
+  against dishonest runs: another quantization, skipped layers), or an audit
+  mode where the engine places experts deterministically.

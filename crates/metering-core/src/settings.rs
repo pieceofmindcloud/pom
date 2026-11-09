@@ -27,6 +27,12 @@ pub struct MeteringSettings {
     pub gateway_fee: GatewayFee,
     /// Grace period after a cycle ends before it is frozen, for late receipts.
     pub grace_secs: u64,
+    /// Re-execute the work of plugin engines (Strata) at audit. Off until the
+    /// engine's TOPLOC limits are calibrated: on Flash-Next an honest stage's
+    /// re-execution varies between runs (expert tiering between GPU and CPU
+    /// kernels), so the paper's limits fail honest work. Off, those samples
+    /// are void and the stages are paid on receipts and challenges.
+    pub verify_plugin_engines: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -49,6 +55,7 @@ impl Default for MeteringSettings {
             verifier: None,
             gateway_fee: GatewayFee::default(),
             grace_secs: 3_600,
+            verify_plugin_engines: false,
         }
     }
 }

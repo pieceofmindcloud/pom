@@ -3251,7 +3251,14 @@ with the ledger is the crate `crates/metering-core`; the node side is
   engines (`engine.audit.start|status|stop`) that load the stages up to the
   audited one beside the main engine, chains them through loopback relays that
   reproduce each boundary's codec, and reads the audited stage's rows as prompt
-  pieces of the whole sequence. The serving stage keeps no proofs (void).
+  pieces and as committed windows, judging each chunk against both. The
+  serving stage keeps no proofs (void). Off by default
+  (`metering.verify_plugin_engines`): on Flash-Next an honest stage's
+  re-execution varies too much for the paper's limits.
+- A Strata window row is the prompt row followed by values that depend on
+  the windowing; only the prompt part is proved (widths from the link's
+  hello), every window is held until its commit, and only its kept rows are
+  proved.
 
 ## 11. Defects noted
 

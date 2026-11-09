@@ -56,6 +56,8 @@ pub(crate) enum Request {
     Window { pos0: u32, tokens: Vec<i32>, keep: Option<u32> },
     /// The previous window's first `n` tokens kept.
     Commit(u32),
+    /// The later stage's hello.
+    Hello,
     Other,
 }
 
@@ -94,6 +96,7 @@ pub(crate) fn parse_request(frame: &[u8]) -> Request {
                 Request::Window { pos0, tokens, keep }
             }
             b'C' => Request::Commit(u32_at(p, 1)?),
+            b'H' => Request::Hello,
             _ => Request::Other,
         })
     };
@@ -124,18 +127,27 @@ pub(crate) struct StageMeter {
     pub(crate) t0: u64,
     pub(crate) computed: Computed,
     pub(crate) cached: u32,
-    /// Width of the last verify window, until its commit splits it.
-    pending: u32,
     pub(crate) in_chain: LinkChain,
     pub(crate) out_chain: LinkChain,
     pub(crate) wire: WireFormats,
     /// The first stage's computed sequence, by position.
     pub(crate) seq: Vec<i32>,
     proofs: crate::metering::ProofBuffer,
-    /// The last window's rows `(pos0, tokens, rows)`, proved once its commit
-    /// says how many were kept: rejected drafts never reach the sequence a
-    /// verifier re-executes, so their rows are never proved.
-    window_rows: Option<(u32, usize, Vec<f32>)>,
+    /// The last window, until its commit says how many of its tokens were
+    /// kept: only kept rows are proved (rejected drafts never reach the
+    /// sequence a verifier re-executes) and only kept prompt tokens enter the
+    /// input chain.
+    held: Option<HeldWindow>,
+}
+
+#[derive(Debug)]
+struct HeldWindow {
+    pos0: u32,
+    tokens: Vec<i32>,
+    /// The prompt part of its rows.
+    rows: Option<Vec<f32>>,
+    /// The later stage said the window is part of the prompt.
+    prompt: bool,
 }
 
 impl StageMeter {
@@ -148,23 +160,27 @@ impl StageMeter {
         self.seq.extend_from_slice(tokens);
     }
 
-    /// Proves the first `keep` rows of the held window.
-    fn prove_kept(&mut self, keep: usize) {
-        if let Some((pos0, n, rows)) = self.window_rows.take() {
-            let keep = keep.min(n);
-            if keep > 0 && n > 0 && rows.len() % n == 0 {
-                let width = rows.len() / n;
-                self.proofs.push_rows(&rows[..keep * width], width, pos0);
+    /// The held window's commit: `keep` of its tokens were kept.
+    fn commit(&mut self, keep: u32, first: bool) {
+        let Some(w) = self.held.take() else { return };
+        let n = w.tokens.len();
+        let kept = (keep as usize).min(n);
+        if w.prompt {
+            self.computed.prefill += kept as u32;
+            self.computed.verify_rejected += (n - kept) as u32;
+            if first {
+                self.in_chain.absorb_tokens(w.pos0, &w.tokens[..kept]);
             }
+        } else if n == 1 && kept == 1 {
+            self.computed.decode += 1;
+        } else {
+            self.computed.verify_accepted += kept as u32;
+            self.computed.verify_rejected += (n - kept) as u32;
         }
-    }
-
-    fn commit(&mut self, keep: u32) {
-        self.prove_kept(keep as usize);
-        let width = std::mem::take(&mut self.pending);
-        let kept = keep.min(width);
-        self.computed.verify_accepted += kept;
-        self.computed.verify_rejected += width - kept;
+        if let Some(rows) = w.rows.filter(|r| kept > 0 && r.len() % n == 0) {
+            let width = rows.len() / n;
+            self.proofs.push_rows(&rows[..kept * width], width, w.pos0);
+        }
     }
 
     /// A request this machine's engine served, with its answer rows as the
@@ -175,33 +191,15 @@ impl StageMeter {
 
     /// `prompt_phase`: the later machine said the frame is part of the
     /// prompt. Some engines (Flash-Next, DeepSeek-V4.1) read a prompt as
-    /// verify windows (`'W'`), not prompt pieces: such a window is metered
-    /// and proved as a prompt piece.
+    /// verify windows (`'W'`/`'V'`), committed like decode windows; the tag
+    /// only decides whether the kept positions count as prompt (it lags at the
+    /// turn from prompt to decode, which the commit makes harmless).
     pub(crate) fn served_in(&mut self, request: &Request, rows: Option<&[f32]>, dtype: &str, first: bool, prompt_phase: bool) {
-        // A window inside the prompt is metered as prompt positions (the
-        // tokens enter the input chain) and every one of its rows is the
-        // prompt's: proved at once. A commit inside the prompt only confirms
-        // it. Checked live on Flash-Next: holding prompt windows for their
-        // commit proved the wrong rows.
-        if let (Request::Window { pos0, tokens, .. }, true) = (request, prompt_phase) {
-            self.window_rows = None;
-            self.computed.prefill += tokens.len() as u32;
-            if first {
-                self.in_chain.absorb_tokens(*pos0, tokens);
-                self.place(*pos0, tokens);
-            }
-            if let Some(rows) = rows.filter(|r| !tokens.is_empty() && r.len() % tokens.len() == 0) {
-                self.proofs.push_rows(rows, rows.len() / tokens.len(), *pos0);
-                self.out_chain.absorb(0..tokens.len() as u32, &f32_bytes(rows));
-                self.wire.output = dtype.to_string();
-            }
-            return;
-        }
-        if let (Request::Commit(_), true) = (request, prompt_phase) {
-            return;
-        }
         match request {
-            Request::Zero => self.seq.clear(),
+            Request::Zero => {
+                self.held = None;
+                self.seq.clear();
+            }
             Request::Resume(ids) => {
                 self.cached += ids.len() as u32;
                 if first {
@@ -220,28 +218,27 @@ impl StageMeter {
             }
             Request::Window { pos0, tokens, keep } => {
                 match keep {
-                    Some(keep) => self.commit(*keep),
-                    // A new window with no commit before it: the last one was
-                    // kept whole.
+                    Some(keep) => self.commit(*keep, first),
+                    // A window with no commit before it: the last one's
+                    // outcome is unknown, so it proves nothing.
                     None => {
-                        let whole = self.window_rows.as_ref().map(|w| w.1).unwrap_or(0);
-                        self.prove_kept(whole);
+                        if let Some(w) = self.held.take() {
+                            self.computed.verify_rejected += w.tokens.len() as u32;
+                        }
                     }
-                }
-                if let Some(rows) = rows {
-                    self.window_rows = Some((*pos0, tokens.len(), rows.to_vec()));
-                }
-                if tokens.len() == 1 && self.pending == 0 {
-                    self.computed.decode += 1;
-                } else {
-                    self.pending += tokens.len() as u32;
                 }
                 if first {
                     self.place(*pos0, tokens);
                 }
+                self.held = Some(HeldWindow {
+                    pos0: *pos0,
+                    tokens: tokens.clone(),
+                    rows: rows.map(|r| prompt_part(r, tokens.len()).into_owned()),
+                    prompt: prompt_phase,
+                });
             }
-            Request::Commit(keep) => self.commit(*keep),
-            Request::Other => {}
+            Request::Commit(keep) => self.commit(*keep, first),
+            Request::Hello | Request::Other => {}
         }
         if let Some(rows) = rows {
             let n = match request {
@@ -275,6 +272,36 @@ impl StageMeter {
 
 static METERS: Mutex<Option<(String, StageMeter)>> = Mutex::new(None);
 
+/// `(window_floats, prompt_floats)` of this machine's stage, from the hello
+/// its engine answered. A window row is the prompt row (the residual
+/// streams) followed by values that depend on how the sequence was cut into
+/// windows (on Flash-Next 12804 = 10240 + 2560 + 4); only the prompt part is
+/// proved, so a verifier reading the sequence in other windows, or as prompt
+/// pieces, reproduces it.
+static ROW_FLOATS: Mutex<Option<(usize, usize)>> = Mutex::new(None);
+
+/// The hello's answer: kind 1, status 0, then the stage's fields ending
+/// with u32 window_floats, prompt_floats, features. Read from the end: the
+/// fields before them have changed across engine versions.
+pub(crate) fn hello_floats(answer: &[u8]) -> Option<(usize, usize)> {
+    if answer.first() != Some(&KIND_BYTES) || answer.get(1) != Some(&0) || answer.len() < 2 + 12 {
+        return None;
+    }
+    let end = answer.len();
+    Some((u32_at(answer, end - 12)? as usize, u32_at(answer, end - 8)? as usize))
+}
+
+/// The prompt part of window rows (`n` rows), when the stage's widths are known.
+pub(crate) fn prompt_part(rows: &[f32], n: usize) -> std::borrow::Cow<'_, [f32]> {
+    let widths = ROW_FLOATS.lock().ok().and_then(|w| *w);
+    match widths {
+        Some((wf, pf)) if n > 0 && wf > pf && rows.len() == n * wf => {
+            std::borrow::Cow::Owned(rows.chunks_exact(wf).flat_map(|r| r[..pf].iter().copied()).collect())
+        }
+        _ => std::borrow::Cow::Borrowed(rows),
+    }
+}
+
 /// Runs `f` on this machine's meter of `deploy`, opening it while metering is on.
 fn with_meter(deploy: &str, f: impl FnOnce(&mut StageMeter)) {
     if crate::metering::context().is_none() {
@@ -296,6 +323,14 @@ pub(crate) fn on_served(cfg: &crate::runtime::NodeConfig, frame: &[u8], network_
         return;
     }
     let request = parse_request(frame);
+    if request == Request::Hello {
+        if let Some(widths) = hello_floats(network_answer) {
+            if let Ok(mut slot) = ROW_FLOATS.lock() {
+                *slot = Some(widths);
+            }
+        }
+        return;
+    }
     // What the later machine decodes: the wire's tensor of the answer.
     let rows = network_answer
         .first()
@@ -304,6 +339,19 @@ pub(crate) fn on_served(cfg: &crate::runtime::NodeConfig, frame: &[u8], network_
         .and_then(|(_, tensor)| tensor.map(|(values, _)| values));
     let first = cfg.start_layer == 0;
     let dtype = cfg.hidden_state_dtype.as_str();
+    // `<SLUG>_METERING_TRACE=1`: one line per served request, to compare a
+    // failing chunk's positions with what the stage was asked.
+    if crate::brand::env("METERING_TRACE").is_ok_and(|v| v == "1") {
+        let shape = match &request {
+            Request::Prompt { pos0, tokens } => format!("P pos {pos0} n {}", tokens.len()),
+            Request::Window { pos0, tokens, keep } => format!("W pos {pos0} n {} keep {keep:?}", tokens.len()),
+            Request::Commit(k) => format!("C {k}"),
+            Request::Resume(ids) => format!("R {}", ids.len()),
+            Request::Zero => "Z".into(),
+            Request::Hello | Request::Other => "other".into(),
+        };
+        tracing::info!(target: "pom::metering", "served {shape} prompt_phase {prompt_phase} rows {}", rows.as_ref().map_or(0, |r| r.len()));
+    }
     with_meter(&cfg.deploy_id, |m| m.served_in(&request, rows.as_deref(), dtype, first, prompt_phase));
 }
 
@@ -334,8 +382,8 @@ pub(crate) fn close(cfg: &crate::runtime::NodeConfig, code: &str, bnd: &str) -> 
             _ => StageMeter::new(),
         }
     };
-    // A window never committed kept nothing of its drafts.
-    meter.commit(0);
+    // A window never committed kept nothing.
+    meter.commit(0, false);
     let (summ, chunks) = meter.proofs.finish(&ctx);
     let claims = ReceiptClaims {
         rid: uuid::Uuid::new_v4().simple().to_string(),
@@ -470,10 +518,15 @@ mod tests {
         let mut m = StageMeter::new();
         let rows = vec![0.5f32; 2 * 64];
         m.served(&parse_request(&prompt(0, &[7, 8])), Some(&rows), "f16", true);
+        // A plain decode step, committed.
         m.served(&parse_request(&window(b'W', 2, &[9], None)), Some(&vec![0.1; 64]), "f16", true);
+        let mut c = vec![b'C'];
+        c.extend(1u32.to_le_bytes());
+        m.served(&parse_request(&bytes_frame(c)), None, "f16", true);
+        // A verify window keeping 1 of 3, then one keeping both of its 2.
         m.served(&parse_request(&window(b'W', 3, &[10, 11, 12], None)), Some(&vec![0.1; 192]), "f16", true);
         m.served(&parse_request(&window(b'V', 4, &[11, 13], Some(1))), Some(&vec![0.1; 128]), "f16", true);
-        m.commit(2);
+        m.commit(2, true);
         assert_eq!(m.computed.prefill, 2);
         assert_eq!(m.computed.decode, 1);
         assert_eq!((m.computed.verify_accepted, m.computed.verify_rejected), (3, 2));
@@ -487,13 +540,17 @@ mod tests {
         let mut m = StageMeter::new();
         let rows = vec![0.25f32; 3 * 64];
         m.served_in(&parse_request(&window(b'W', 0, &[5, 6, 7], None)), Some(&rows), "f8", true, true);
-        assert_eq!(m.computed.prefill, 3);
-        assert_eq!(m.computed.verify_accepted + m.computed.verify_rejected, 0);
-        assert_eq!(m.in_chain, LinkChain::of_tokens(0, &[5, 6, 7]));
-        assert_eq!(m.seq, vec![5, 6, 7]);
+        // Counted at its commit, folded into the next window.
+        assert_eq!(m.computed.prefill, 0);
         m.served_in(&parse_request(&window(b'V', 3, &[8, 9], Some(3))), Some(&vec![0.25; 128]), "f8", true, true);
-        assert_eq!(m.computed.prefill, 5);
-        assert_eq!(m.in_chain, LinkChain::of_tokens(0, &[5, 6, 7, 8, 9]));
+        assert_eq!(m.computed.prefill, 3);
+        assert_eq!(m.in_chain, LinkChain::of_tokens(0, &[5, 6, 7]));
+        // The tag lags into the decode: a window keeping 1 of 2 counts 1.
+        m.commit(1, true);
+        assert_eq!(m.computed.prefill, 4);
+        assert_eq!(m.computed.verify_rejected, 1);
+        assert_eq!(m.in_chain, LinkChain::of_tokens(0, &[5, 6, 7, 8]));
+        assert_eq!(m.seq, vec![5, 6, 7, 8, 9]);
     }
 
     #[test]
@@ -516,6 +573,21 @@ mod tests {
             let (positions, _) = metering_core::toploc::decode_leaf(&leaves[0]).unwrap();
             assert_eq!(&positions[..4], &[0, 1, 2, 3]);
         });
+    }
+
+    #[test]
+    fn only_the_prompt_part_of_a_window_row_is_kept() {
+        let mut hello = vec![KIND_BYTES, 0];
+        for v in [7u32, 0, 24, 5, 3, 1] {
+            hello.extend(v.to_le_bytes());
+        }
+        assert_eq!(hello_floats(&hello), Some((5, 3)));
+        *ROW_FLOATS.lock().unwrap() = Some((5, 3));
+        let rows: Vec<f32> = (0..10).map(|v| v as f32).collect();
+        assert_eq!(&*prompt_part(&rows, 2), &[0.0, 1.0, 2.0, 5.0, 6.0, 7.0]);
+        // Rows of another width are left as they are.
+        assert_eq!(prompt_part(&rows[..6], 2).len(), 6);
+        *ROW_FLOATS.lock().unwrap() = None;
     }
 
     #[test]

@@ -522,7 +522,11 @@ Where the implementation departs from the decisions above, it wins:
   rewind/release). `engine.verify` became the plugin's audit engines
   (`engine.audit.*`): the verifier loads the stages up to the audited one and
   reads its rows as prompt pieces through codec relays. A whole model on one
-  machine is metered from its `done` line and keeps no proofs.
+  machine is metered from its `done` line and keeps no proofs. Live on
+  Flash-Next, receipts and challenges work, but an honest stage's
+  re-execution is not reproducible enough for the paper's limits (MoE expert
+  tiering), so plugin-engine re-execution is off by default
+  (`metering.verify_plugin_engines`) and their samples are void.
 
 ## Out of scope
 

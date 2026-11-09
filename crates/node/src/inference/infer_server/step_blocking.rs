@@ -156,8 +156,15 @@ pub(crate) fn step_blocking(
                 batch_tokens.as_deref(),
             )?
         } else {
-            s.engine
-                .decode_hidden_without_mtp(&hidden, &shape, n_tokens, n_past, seq_id, logits_all)?
+            s.engine.decode_hidden_without_mtp(
+                &hidden,
+                &shape,
+                n_tokens,
+                n_past,
+                seq_id,
+                logits_all,
+                batch_tokens.as_deref(),
+            )?
         };
         // `batch_tokens` stays alive: the tail uses it in the `next_draft` gate
         // (verification) and in the plain path.

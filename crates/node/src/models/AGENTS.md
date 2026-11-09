@@ -262,9 +262,14 @@ local index. The tensor `per_layer_token_embd.weight` accompanies only the slice
 that contain one of those layers. `deepseek41` follows the same model: its
 `attention.kv_source_layers`, `attention.indexer.source_layers` and `ple.layers`
 are filtered and rebased, `attention.indexer.candidate_source_layer` is rebased
-or left out, and the other Engram arrays are copied whole. Its valid cuts come
-from `GgufLayout::restricted_slice_starts`; `merge` and tensor parallel refuse
-the architecture by name.
+or left out (keeping its INT32 type, which llama.cpp checks), and the other
+Engram arrays are copied whole. Its valid cuts come from
+`GgufLayout::restricted_slice_starts`: the KV and indexer sources shared by
+both lists, up to the candidate source (DeepSeek-V4.1-Flash: 2, 8, 14 and 20).
+A slice that starts mid-model gets the fork's layer-boundary state
+(`[n_embd, hc + 1]` per token: the hc streams plus the pending pre-mix) with
+the token ids of its rows, so its Engram layers run; `merge` and tensor
+parallel refuse the architecture by name.
 
 ### Multimodal projector
 
@@ -300,16 +305,6 @@ graph (`qwen4exp.cpp` gained that in `pieceofmindcloud/llama.cpp`,
 when MTP was not requested).
 
 ## Defects noted
-
-- A `deepseek41` pipeline across slices needs the fork branch
-  `fix/deepseek41-pipeline-state` (not yet merged into `pom`): it hands on the
-  hc streams plus `pre_prev`, the previous FFN's pre-mix, as
-  `[n_embd, hc + 1]` per token and resumes from that width. On the `pom`
-  branch a slice starting mid-model still collapses its first attention input
-  with the identity and the receiving peer refuses the wide residual. The only
-  valid cut of the published DeepSeek-V4.1-Flash is layer 20: Engram layers
-  (1 and 14) need token ids, which only the first slice has, and every layer
-  after 20 reads layer 20's compressed KV.
 
 - `ModelSource::Folder` is labelled `"Pasta"` (`catalog.rs`, the source label
   the catalog sends), so the Models screen shows a Portuguese word in the

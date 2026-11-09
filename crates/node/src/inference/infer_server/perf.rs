@@ -188,7 +188,7 @@ fn bench_on_sequence(s: &mut InferState, seq_id: u32) -> Result<BenchResult> {
             let mut shape: TensorShape = vec![n];
             shape.extend_from_slice(feature_shape);
             s.engine
-                .decode_hidden_without_mtp(&hidden, &shape, n, pos, seq_id, !is_last)?;
+                .decode_hidden_without_mtp(&hidden, &shape, n, pos, seq_id, !is_last, None)?;
         }
         if is_last {
             let _ = s.engine.logits_ith(n as i32 - 1);

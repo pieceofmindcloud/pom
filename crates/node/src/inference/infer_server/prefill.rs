@@ -1906,6 +1906,7 @@ pub(super) fn prefill_batch_blocking(
                         PreparedPrefillInput::Tokens(_) => Vec::new(),
                     },
                     mrope_positions: item.mrope_positions.clone(),
+                    tokens: item.chunk_tokens.clone(),
                 })
                 .collect();
             s.engine.decode_hidden_batch(&entries, need_residual)
@@ -2291,6 +2292,7 @@ pub(super) fn step_batch_blocking(
             scheduler_wait_reason,
             scheduler_session_existing,
             pipeline_session,
+            batch_tokens,
             ..
         } = job;
         let result = (|| -> Result<PreparedStep> {
@@ -2341,6 +2343,7 @@ pub(super) fn step_batch_blocking(
                 wire_dtype,
                 capture_block,
                 input,
+                batch_tokens,
                 queued_at,
                 scheduler_wait_us,
                 scheduler_wait_reason,
@@ -2454,6 +2457,7 @@ pub(super) fn step_batch_blocking(
                         PreparedStepInput::Tokens { .. } => Vec::new(),
                     },
                     mrope_positions: None,
+                    tokens: item.batch_tokens.clone(),
                 })
                 .collect();
             s.engine.decode_hidden_batch(&entries, need_residual)

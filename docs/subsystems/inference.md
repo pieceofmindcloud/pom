@@ -920,6 +920,17 @@ still refused with the shape in the error. `decode_hidden` and
 `decode_hidden_batch` use that same validated width to reserve the Rust batch,
 avoiding accepting a shape that would later overflow the copy into the buffer.
 
+`deepseek41` keeps state across a layer boundary that is not in the residual:
+the previous FFN's pre-mix. The fork's graph hands on `[n_embd, hc + 1]` per
+token (the hc streams plus a stream whose first `hc` values are that pre-mix)
+and reports that width as `n_embd_out`. Its Engram layers also hash token ids,
+so the engine sends the ids of the rows beside that state
+(`Engine::state_tokens`, from the `tokens` field the head already echoes to
+every hop: `chunk_tokens` in prefill, `batch_tokens` in decode), through
+`decode_hidden`, `decode_hidden_without_mtp` and
+`HiddenBatchEntry.tokens`. A peer that receives the state without ids would
+skip Engram silently, so every machine of such a pipeline needs this release.
+
 When there is an extra stream dimension, the residual must carry each stream.
 There is no generic boundary where a combined `n_embd` width is mathematically
 equivalent: the pre-combination and post-combination ops keep the streams, and

@@ -10,6 +10,9 @@ pub(super) struct PreparedStep {
     pub(super) wire_dtype: WireDtype,
     pub(super) capture_block: Option<u32>,
     pub(super) input: PreparedStepInput,
+    /// The batch's token ids as the head sent them (`tokens`), for a model
+    /// whose layer-boundary state carries them (`Engine::state_tokens`).
+    pub(super) batch_tokens: Option<Vec<i32>>,
     pub(super) queued_at: Instant,
     pub(super) scheduler_wait_us: u64,
     pub(super) scheduler_wait_reason: Option<&'static str>,

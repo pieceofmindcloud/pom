@@ -645,6 +645,9 @@ demo.welcomeDisabled,"Several features are disabled here: installing plugins, sl
 demo.welcomeIntro,This is a demonstration server: you can chat with the model the network serves and look around the panel.,Este é um servidor de demonstração: você pode conversar com o modelo que a rede serve e conhecer o painel.
 demo.welcomeStart,Start,Começar
 demo.welcomeTime,Your visit lasts {minutes} minutes. The clock in the top bar shows how much time you have left.,Sua visita dura {minutes} minutos. O relógio na barra de topo mostra quanto tempo ainda resta.
+demo.guestCooldown,Your demonstration time is over. You can start a new visit in {minutes} min.,Seu tempo de demonstração acabou. Você pode começar uma nova visita em {minutes} min.
+demo.guestExpired,Your demonstration time is over. Thanks for visiting!,Seu tempo de demonstração acabou. Obrigado pela visita!
+demo.welcomeDiscord,Join the community on Discord:,Entre na comunidade no Discord:
 demo.welcomeStar,Did you like Piece of Mind? Please leave a star on GitHub:,Gostou do Piece of Mind? Deixe uma estrela no GitHub:
 demo.welcomeStarLink,github.com/pieceofmindcloud/pom,github.com/pieceofmindcloud/pom
 demo.welcomeTitle,Welcome to the POM demonstration,Bem-vindo à demonstração do POM

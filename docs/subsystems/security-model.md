@@ -270,6 +270,19 @@ plugin never sees a cookie. Design:
   sign-in plugin's `rpc.me`). Plugins listed in `DEMO_PLUGINS` (every active
   one when unset) open their assets, RPCs and web proxy to a person; the
   sign-in plugin's `auth` screen and its `rpc.auth.*` never do.
+- **Demo without sign-in** (`DEMO_NO_AUTH=1`, only with `DEMO_MODE`). A
+  plugin whose `auth.providers` answer carries `"guest": true` opens guest
+  sessions: `/api/access` names its `guest_url` and the login screen goes
+  there at once, showing only the brand animation. The node passes
+  `demo_no_auth` and `guest_key` (a hash of the visitor's address,
+  `User-Agent` and `Accept-Language`) to the plugin's `auth.http`; the plugin
+  refuses `/guest/start` unless `demo_no_auth` is true. A guest is a user
+  session like any other (provider `guest`), so it gets the same seats,
+  redaction and quota. When a guest's seat runs out the session is revoked
+  and, for `DEMO_GUEST_COOLDOWN` minutes, every session of that guest ends
+  and a new one is refused (`/?demo_cooldown=<secs>`). Anyone can change
+  their fingerprint (another browser or address): the cool-down and the
+  per-guest budget slow casual reuse, they are not identity.
 - **Demo seats** (`backend/demo_slots.rs`). In demo mode a signed-in person
   takes one of `DEMO_MAX_SESSIONS` seats (default 10) for
   `DEMO_SESSION_TIME` minutes (default 20). Past the seats they wait in a FIFO

@@ -262,6 +262,46 @@ pub fn status(session: &str, user_id: &str) -> (SeatStatus, Vec<(String, String)
     }
 }
 
+/// `DEMO_GUEST_COOLDOWN` (minutes, default the session time): how long a
+/// guest whose time ran out waits before the same fingerprint gets a new
+/// session (`DEMO_NO_AUTH`).
+pub fn guest_cooldown() -> Duration {
+    static COOLDOWN: OnceLock<Duration> = OnceLock::new();
+    *COOLDOWN.get_or_init(|| {
+        std::env::var("DEMO_GUEST_COOLDOWN")
+            .ok()
+            .or_else(|| crate::brand::env("DEMO_GUEST_COOLDOWN").ok())
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .map(|minutes| Duration::from_secs(minutes * 60))
+            .unwrap_or_else(|| limits().1)
+    })
+}
+
+/// When each person's seat last ran out. In memory, like the seats.
+fn ended() -> &'static Mutex<HashMap<String, Instant>> {
+    static ENDED: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+    ENDED.get_or_init(Default::default)
+}
+
+/// Notes that this person's time ran out.
+pub fn note_expired(user_id: &str) {
+    if let Ok(mut ended) = ended().lock() {
+        let now = Instant::now();
+        let cooldown = guest_cooldown();
+        ended.retain(|_, at| now.duration_since(*at) < cooldown);
+        ended.insert(user_id.to_owned(), now);
+    }
+}
+
+/// Seconds this person still waits before a new guest session, if any.
+pub fn cooldown_left(user_id: &str) -> Option<u64> {
+    let ended = ended().lock().ok()?;
+    let at = ended.get(user_id)?;
+    let until = *at + guest_cooldown();
+    let now = Instant::now();
+    (until > now).then(|| (until - now).as_secs().max(1))
+}
+
 pub fn release(session: &str) {
     if let Ok(mut seats) = seats().lock() {
         seats.release(session, Instant::now());

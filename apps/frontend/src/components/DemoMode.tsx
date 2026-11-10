@@ -8,7 +8,7 @@
  * visitor gets in place of the Network settings. The node enforces all of it;
  * this is only what the person sees.
  */
-import { Clock, Globe2, Hourglass, LogOut, Star, Users } from "lucide-react";
+import { Clock, Globe2, Hourglass, LogOut, MessageCircle, Star, Users } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api, ApiError } from "../lib/api";
 import { useCluster, useNetworkInfo, useNode } from "../lib/queries";
@@ -21,6 +21,8 @@ import pomMark from "../assets/pom-mark-dark.png";
 
 /** The public POM repository, where a visitor who liked it can leave a star. */
 const POM_REPOSITORY = "https://github.com/pieceofmindcloud/pom";
+/** The POM community on Discord, offered in the welcome dialog. */
+const POM_DISCORD = "https://discord.gg/ptGMZbaDkN";
 const EXPIRED_FLAG = "pom.demo.expired";
 const WELCOMED_FLAG = "pom.demo.welcomed";
 
@@ -30,6 +32,18 @@ function storage(): Storage | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * `DEMO_NO_AUTH`: why a guest is not sent straight back in. The node answers
+ * `/?demo_cooldown=<secs>` while the same visitor waits after their time ran
+ * out; a tab whose time just ran out does not re-enter on its own either.
+ */
+export function guestHold(): { cooldownSecs: number } | { expired: true } | null {
+  const raw = new URLSearchParams(window.location.search).get("demo_cooldown");
+  const secs = raw ? Number(raw) : NaN;
+  if (Number.isFinite(secs) && secs > 0) return { cooldownSecs: secs };
+  return takeDemoExpired() ? { expired: true } : null;
 }
 
 /** Whether the last visit of this tab ended because its time ran out. */
@@ -181,6 +195,15 @@ export function DemoWelcome({ seat }: { seat: DemoSeat | undefined }) {
         <p>{t("demo.welcomeIntro")}</p>
         <p>{t("demo.welcomeDisabled")}</p>
         <p className="font-medium text-fg">{t("demo.welcomeTime", { minutes: total })}</p>
+        <p className="flex items-start gap-2 rounded-lg border border-iris/35 bg-iris/10 px-3 py-2 text-fg">
+          <MessageCircle className="mt-0.5 h-4 w-4 shrink-0 text-iris" aria-hidden="true" />
+          <span>
+            {t("demo.welcomeDiscord")}{" "}
+            <a className="font-medium text-iris underline" href={POM_DISCORD} target="_blank" rel="noreferrer" data-testid="demo-discord">
+              discord.gg/ptGMZbaDkN
+            </a>
+          </span>
+        </p>
         <p className="flex items-start gap-2 rounded-lg border border-amber/35 bg-amber/10 px-3 py-2 text-fg">
           <Star className="mt-0.5 h-4 w-4 shrink-0 text-amber" aria-hidden="true" />
           <span>

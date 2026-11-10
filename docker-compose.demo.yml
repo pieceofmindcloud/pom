@@ -24,6 +24,11 @@ services:
       DEMO_MODE: 1
       DEMO_MAX_SESSIONS: ${DEMO_MAX_SESSIONS:-10}
       DEMO_SESSION_TIME: ${DEMO_SESSION_TIME:-20}
+      # 1: no sign-in; each visitor gets a guest with POM_GUEST_PLAN's budget
+      # and, after their time, waits DEMO_GUEST_COOLDOWN minutes to return.
+      DEMO_NO_AUTH: ${DEMO_NO_AUTH:-0}
+      DEMO_GUEST_COOLDOWN: ${DEMO_GUEST_COOLDOWN:-20}
+      POM_GUEST_PLAN: ${POM_GUEST_PLAN:-demo}
       # Plugins a visitor reaches besides the sign-in plugin; empty or unset
       # means every active plugin.
       DEMO_PLUGINS: ${DEMO_PLUGINS:-}

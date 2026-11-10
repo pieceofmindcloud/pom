@@ -192,6 +192,8 @@ export interface AdminAccessStatus {
    */
   auth_providers?: AuthProvider[];
   demo_mode?: boolean;
+  /** `DEMO_NO_AUTH`: the login screen goes straight here for a guest session. */
+  guest_url?: string;
 }
 
 export interface AuthProvider {

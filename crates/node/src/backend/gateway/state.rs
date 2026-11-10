@@ -851,6 +851,10 @@ pub(super) struct AdminAccessStatus {
     /// path.
     pub(super) auth_providers: Vec<serde_json::Value>,
     pub(super) demo_mode: bool,
+    /// `DEMO_NO_AUTH`: where the login screen sends a visitor at once for a
+    /// guest session, with no sign-in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) guest_url: Option<String>,
 }
 
 /// Random per process, never persisted: a restart is a new id. It says nothing
@@ -866,6 +870,7 @@ pub(super) async fn admin_access_status(State(state): State<GatewayState>) -> im
     Json(AdminAccessStatus {
         auth_providers,
         demo_mode: crate::user_session::demo_mode(),
+        guest_url: crate::user_session::guest_start_url(),
         admin_exposure: cfg.admin_exposure,
         requires_password: cfg.admin_exposure.requires_password(),
         default_password: cfg.admin_exposure.requires_password() && cfg.admin_password_default,

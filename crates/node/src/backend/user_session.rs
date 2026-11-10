@@ -100,6 +100,66 @@ pub fn demo_mode() -> bool {
     })
 }
 
+/// `DEMO_NO_AUTH=1` (or the brand's `POM_DEMO_NO_AUTH`) on a demonstration
+/// node: whoever opens the page gets a guest session with no sign-in. The
+/// plugin that offers guests (`"guest": true` in its `auth.providers`
+/// answer) creates one person per visitor fingerprint with its guest plan.
+/// Without `DEMO_MODE` it does nothing.
+pub fn demo_no_auth() -> bool {
+    static NO_AUTH: OnceLock<bool> = OnceLock::new();
+    *NO_AUTH.get_or_init(|| {
+        let set = std::env::var("DEMO_NO_AUTH")
+            .ok()
+            .or_else(|| crate::brand::env("DEMO_NO_AUTH").ok())
+            .is_some_and(|value| truthy(&value));
+        if set && !demo_mode() {
+            tracing::warn!("DEMO_NO_AUTH is ignored without DEMO_MODE");
+        }
+        let on = set && demo_mode();
+        if on {
+            tracing::info!("demo mode without sign-in: every visitor gets a guest session");
+        }
+        on
+    })
+}
+
+/// Where a visitor starts a guest session, while some plugin offers guests
+/// and the node runs with `DEMO_NO_AUTH`.
+pub fn guest_start_url() -> Option<String> {
+    if !demo_no_auth() {
+        return None;
+    }
+    let cache = providers_cache().lock().ok()?;
+    cache
+        .guest_plugins
+        .iter()
+        .next()
+        .map(|code| format!("{AUTH_PREFIX}{code}/guest/start"))
+}
+
+/// A visitor's fingerprint for a guest session: the address and what the
+/// browser says about itself, hashed. The same browser on the same network
+/// comes back as the same guest, with the budget it already spent.
+fn guest_fingerprint(ip: Option<&str>, headers: &axum::http::HeaderMap) -> String {
+    let header = |name: header::HeaderName| {
+        headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_owned()
+    };
+    let digest = Sha256::digest(
+        format!(
+            "{}|{}|{}",
+            ip.unwrap_or(""),
+            header(header::USER_AGENT),
+            header(header::ACCEPT_LANGUAGE)
+        )
+        .as_bytes(),
+    );
+    digest[..16].iter().map(|b| format!("{b:02x}")).collect()
+}
+
 // ── Providers offered by plugins ─────────────────────────────────────────────
 
 static SIGN_IN_OFFERED: AtomicBool = AtomicBool::new(false);
@@ -111,6 +171,8 @@ struct ProvidersCache {
     providers: Vec<Value>,
     /// Plugins that offer sign-in: the only ones a user session reaches.
     plugins: BTreeSet<String>,
+    /// Plugins that create guest sessions (`DEMO_NO_AUTH`).
+    guest_plugins: BTreeSet<String>,
 }
 
 fn providers_cache() -> &'static Mutex<ProvidersCache> {
@@ -173,12 +235,22 @@ pub async fn auth_providers(state: &GatewayState) -> Vec<Value> {
         }
     }
     let answers = state.plugins.query_running("auth.providers").await;
-    let (providers, plugins) = collect_providers(&answers);
-    SIGN_IN_OFFERED.store(!providers.is_empty(), Ordering::Relaxed);
+    let (providers, mut plugins) = collect_providers(&answers);
+    let guest_plugins = if demo_no_auth() {
+        collect_guest_plugins(&answers)
+    } else {
+        BTreeSet::new()
+    };
+    plugins.extend(guest_plugins.iter().cloned());
+    SIGN_IN_OFFERED.store(
+        !providers.is_empty() || !guest_plugins.is_empty(),
+        Ordering::Relaxed,
+    );
     if let Ok(mut cache) = providers_cache().lock() {
         cache.at = Some(Instant::now());
         cache.providers = providers.clone();
         cache.plugins = plugins;
+        cache.guest_plugins = guest_plugins;
     }
     providers
 }
@@ -188,6 +260,17 @@ fn safe_segment(value: &str) -> bool {
         && value
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+/// Plugins whose `auth.providers` answer carries `"guest": true`.
+fn collect_guest_plugins(answers: &[(String, Value)]) -> BTreeSet<String> {
+    answers
+        .iter()
+        .filter(|(code, answer)| {
+            answer.get("guest").and_then(Value::as_bool) == Some(true) && safe_segment(code)
+        })
+        .map(|(code, _)| code.clone())
+        .collect()
 }
 
 fn collect_providers(answers: &[(String, Value)]) -> (Vec<Value>, BTreeSet<String>) {
@@ -552,6 +635,8 @@ pub(crate) async fn auth_http(
                 "auth_base": format!("{base}{AUTH_PREFIX}{code}"),
                 "client_ip": peer_ip,
                 "demo_mode": demo_mode(),
+                "demo_no_auth": demo_no_auth(),
+                "guest_key": demo_no_auth().then(|| guest_fingerprint(peer_ip.as_deref(), &parts.headers)),
             }),
         )
         .await
@@ -585,6 +670,19 @@ async fn plugin_auth_response(
         }
         user.plugin = code.to_owned();
         user.label = user.label.chars().take(120).collect();
+        // A guest whose time just ran out waits before coming back.
+        if demo_no_auth() && user.provider == "guest" {
+            if let Some(wait) = crate::demo_slots::cooldown_left(&user.user_id) {
+                return (
+                    StatusCode::SEE_OTHER,
+                    [
+                        (header::LOCATION, format!("/?demo_cooldown={wait}")),
+                        (header::CACHE_CONTROL, "no-store".into()),
+                    ],
+                )
+                    .into_response();
+            }
+        }
         tracing::info!(user = %user.user_id, provider = %user.provider, plugin = %code, "user signed in");
         let session_id = state.admin_sessions.lock().await.issue_user(user);
         let target = safe_redirect(reply.get("redirect").and_then(Value::as_str));
@@ -1024,6 +1122,7 @@ async fn seat_of(
         for (session, user_id) in &expired {
             sessions.revoke(session);
             forget_chat_tokens(user_id);
+            crate::demo_slots::note_expired(user_id);
             tracing::info!(user = %user_id, "demo seat expired");
         }
     }
@@ -1100,6 +1199,27 @@ pub(crate) async fn after_gate(
     let mut seat_json = None;
     if demo {
         let secure = is_secure(&request);
+        // A guest whose time ran out is signed off, and every session of the
+        // same visitor ends until the cool-down passes.
+        if demo_no_auth()
+            && user.provider == "guest"
+            && crate::demo_slots::cooldown_left(&user.user_id).is_some()
+        {
+            if let Some(session) =
+                crate::auth::session_id_from_cookie(request.headers(), secure).map(str::to_owned)
+            {
+                state.admin_sessions.lock().await.revoke(&session);
+                crate::demo_slots::release(&session);
+            }
+            forget_chat_tokens(&user.user_id);
+            let response = (
+                StatusCode::UNAUTHORIZED,
+                [("x-pom-admin-error", "demo_session_expired")],
+                Json(json!({ "error": "demo_session_expired" })),
+            )
+                .into_response();
+            return clear_session_cookies(response, request.headers(), secure);
+        }
         let seat = seat_of(state, user, request.headers(), secure).await;
         let now = Instant::now();
         let body = seat.to_json(now);
@@ -1278,6 +1398,32 @@ mod tests {
         assert_eq!(providers.len(), 1);
         assert_eq!(providers[0]["start_url"], "/auth/logs/oauth/google/start");
         assert!(plugins.contains("logs"));
+    }
+
+    #[test]
+    fn guest_plugins_are_the_ones_that_say_so() {
+        let answers = vec![
+            ("logs".to_owned(), json!({"providers": [], "guest": true})),
+            ("other".to_owned(), json!({"providers": []})),
+            ("../x".to_owned(), json!({"guest": true})),
+        ];
+        let guests = collect_guest_plugins(&answers);
+        assert_eq!(
+            guests.into_iter().collect::<Vec<_>>(),
+            vec!["logs".to_owned()]
+        );
+    }
+
+    #[test]
+    fn a_guest_fingerprint_follows_the_address_and_the_browser() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(header::USER_AGENT, HeaderValue::from_static("Firefox"));
+        let a = guest_fingerprint(Some("203.0.113.1"), &headers);
+        assert_eq!(a, guest_fingerprint(Some("203.0.113.1"), &headers));
+        assert_ne!(a, guest_fingerprint(Some("203.0.113.2"), &headers));
+        headers.insert(header::USER_AGENT, HeaderValue::from_static("Chrome"));
+        assert_ne!(a, guest_fingerprint(Some("203.0.113.1"), &headers));
+        assert_eq!(a.len(), 32);
     }
 
     #[test]

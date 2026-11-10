@@ -27,7 +27,7 @@ import { useI18n } from "./i18n/provider";
 import type { AdminAccessStatus } from "./lib/types";
 import { isDemoUser, loadSession } from "./lib/session";
 import { modelSearchRoute } from "./lib/modelSearch";
-import { DemoExpiredNotice, DemoNetwork, DemoQueue, DemoWelcome, useDemoSeat } from "./components/DemoMode";
+import { DemoExpiredNotice, DemoNetwork, guestHold, DemoQueue, DemoWelcome, useDemoSeat } from "./components/DemoMode";
 import pomMark from "./assets/pom-mark-dark.png";
 import { BrandLanguageSwitch } from "./components/BrandLanguageSwitch";
 import { Panel, PanelHeader } from "./components/ui";
@@ -74,6 +74,12 @@ function AdminAccessGate({ onAuthenticated }: { onAuthenticated: () => void }) {
   }, []);
 
   const providers = access?.auth_providers ?? [];
+  /** `DEMO_NO_AUTH`: why this guest stays here instead of going in. */
+  const [hold] = useState(guestHold);
+  const guestUrl = access?.guest_url;
+  useEffect(() => {
+    if (guestUrl && !hold && !operatorPath) window.location.replace(guestUrl);
+  }, [guestUrl, hold, operatorPath]);
 
   /** Shakes the form on a refused password, except with reduced motion. */
   function shake() {
@@ -160,9 +166,18 @@ function AdminAccessGate({ onAuthenticated }: { onAuthenticated: () => void }) {
         <p className="pom-login-sub">PIECE OF MIND</p>
         {/* A piece of mind traveling between machines: decorative. */}
         <span className="pom-login-link" aria-hidden="true"><i /><i /><i /></span>
-        {showProviders ? (
+        {guestUrl && !operatorPath ? (
+          // Without sign-in only the animation shows while the visit opens;
+          // a visit that ran out says so and stays here.
+          hold && (
+            <p role="status" className="pom-login-error" data-testid="demo-guest-hold">
+              {"cooldownSecs" in hold
+                ? t("demo.guestCooldown", { minutes: Math.max(1, Math.ceil(hold.cooldownSecs / 60)) })
+                : t("demo.guestExpired")}
+            </p>
+          )
+        ) : operatorPath === undefined && !access ? null : showProviders ? (
           <div className="pom-login-form">
-            <p className="pom-login-error" style={{ opacity: 0.8 }}>{t("accessGate.providersSubtitle")}</p>
             {providers.map((provider) => (
               <a
                 key={`${provider.plugin}:${provider.id}`}
@@ -173,7 +188,6 @@ function AdminAccessGate({ onAuthenticated }: { onAuthenticated: () => void }) {
                 {t("accessGate.signInWith", { provider: provider.label })}
               </a>
             ))}
-            {access?.demo_mode && <p className="pom-login-error" style={{ opacity: 0.7 }}>{t("accessGate.demoNotice")}</p>}
             {access?.demo_mode && <DemoExpiredNotice />}
           </div>
         ) : (

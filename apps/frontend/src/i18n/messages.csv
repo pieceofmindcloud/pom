@@ -986,7 +986,6 @@ deployStudio.mapTitle,Deployment map,Mapa da implantação
 deployStudio.markPrimary,Mark as primary,Marcar como primary
 deployStudio.markPrimaryAria,Mark {machine} as primary,Marcar {machine} como primary
 deployStudio.modelCoverage,Model coverage,Cobertura do modelo
-deployStudio.moeNeedsMetadata,MoE requires real expert metadata in the GGUF of this model.,MoE exige metadata real de experts no GGUF deste modelo.
 deployStudio.noGpu,no GPU,sem GPU
 deployStudio.noLayerAssigned,No layer assigned,Nenhuma camada atribuída
 deployStudio.noMachine,no machine,nenhuma máquina
@@ -1429,17 +1428,12 @@ inspector.capabilityLimited,Capability limited in the runtime; the control stays
 inspector.capabilitySource,Source: {source}.,Fonte: {source}.
 inspector.capabilityTopology,The topology limits this option; the control stays actionable.,A topologia limita esta opção; o controle continua acionável.
 inspector.capabilityUnknown,Capability not confirmed. Turning it on is at the operator''s own risk.,Capacidade não confirmada. Ligar é por conta e risco do usuário.
-inspector.engine.auto,Automatic,Automático
-inspector.engine.dense,llama.cpp,llama.cpp
-inspector.engine.moe,MoE,MoE
 inspector.engineDefault,Engine default,Padrão do motor
 inspector.engineOff,Off,Desligado
 inspector.engineOn,On,Ligado
 inspector.fitMemory,Fit to memory,Ajustar à memória
 inspector.guideBack,Back to the guide,Voltar ao guia
 inspector.guideHelp,Learn more about {section},Saiba mais sobre {section}
-inspector.inferenceMode,Inference engine,Motor de inferência
-inspector.inferenceModeHint,"Which engine runs the forward pass. The choice reaches the whole model, the shards and tensor parallelism alike; llama.cpp is the default and MoE is POM''s own path for mixture-of-experts models.","Qual motor roda a passagem à frente. A escolha vale para o modelo inteiro, para as fatias e para o Tensor Parallelism; o llama.cpp é o padrão e o MoE é o caminho próprio do POM para modelos de mistura de especialistas."
 inspector.inferenceServiceNote,"{name} runs the whole model on the chosen machine, on all of its NVIDIA cards. The context and the concurrent requests are passed to it; the llama.cpp settings do not apply.","O {name} roda o modelo inteiro na máquina escolhida, em todas as placas NVIDIA dela. O contexto e as requisições simultâneas são repassados a ele; as configurações do llama.cpp não se aplicam."
 inspector.knob.dry_allowed_length,DRY allowed length,DRY: tamanho permitido
 inspector.knob.dry_base,DRY base,DRY: base

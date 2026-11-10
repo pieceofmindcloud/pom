@@ -55,7 +55,7 @@ mod user_session;
 // etc. keep resolving across all of `node` without touching the ~40 files that
 // use them. See `docs/subsystems/build-and-run.md`.
 use ::brand;
-pub use llama_engine::{collective, gguf, kv_budget, llm, moe, mtp, multipart, sysmon, wire};
+pub use llama_engine::{collective, gguf, kv_budget, llm, mtp, multipart, sysmon, wire};
 #[path = "admin_trust.rs"]
 mod admin_trust;
 #[path = "network/anon_tunnel.rs"]

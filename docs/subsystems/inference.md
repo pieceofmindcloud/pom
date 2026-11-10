@@ -664,24 +664,6 @@ This policy is POM-only. llama.cpp's `common/fit.cpp` was not modified: the
 registry names the backend already exposes are enough to prevent an unsafe
 explicit ordering without changing the memory distribution after the probe.
 
-The external MoE executor is a host callback, but uses CUDA internally. Each
-entry of the bridge gets the shard's GPU ordinal and pins allocations, streams
-and events to that card, restoring the thread's current device on exit. Without
-that guard, the callback can leave the thread on one GPU and the scheduler's
-next wait on another receive a stream or event in the wrong current context.
-The resident cache measures the compute buffers per `CUDA<n>`, keeps a separate
-budget and LRU per card and the routes run the GPU groups in parallel before
-summing the partials. Telemetry publishes the device names and
-`device_cache_resident_bytes_by_device` in the same order as the shards. The 59
-splits observed with the hook are expected: each externalized layer crosses the
-custom host operation; reducing that number neither fixes the affinity nor
-replaces correct synchronization.
-
-Cache warm-up is opportunistic and cooperative. When the first real route
-arrives, the runtime cancels it without removing entries already admitted; so
-the warm-up thread cannot evict the request's working set nor turn a second call
-into another sequence of misses and uploads.
-
 The guard is also the degradation boundary for the defect observed on
 2026-09-01: the Vulkan/CUDA combination keeps llama.cpp's default order and does
 not get the list that made the slice change from `CUDA,Vulkan` to
@@ -1765,40 +1747,17 @@ long conversation, so `run_scheduler` reclaims through `spawn_blocking`.
 Each hop parks and restores on its own; a hop that no longer has the entry
 answers as it always did for a lost session and the gateway rebuilds cold.
 
-### 3.2 Executor selection
+### 3.2 Inference engine
 
-Before loading the weights, `executor::select` reads the GGUF header. Only an
-`expert_count > 1` classifies the model as MoE. In `auto`, any dense model or one
-with missing metadata stays on `dense/llama.cpp`. The persisted field
-`NodeConfig.inference_mode` reaches the selector before loading; when the field
-is not given, the persisted default is `dense` (`llama.cpp`). An explicit
-`dense` or `moe` choice beats the brand-derived `POM_INFERENCE_MODE`
-environment; in `auto`, that environment can still force a mode and, without an
-override, the metadata chooses. `moe` refuses a dense GGUF with an explicit
-error.
-
-The current MoE path shows up as `moe/q4_0` in `/health` when the selector picks
-that mode and opens its own runtime in `crates/llama-engine/src/moe/`: the
-dispatcher detects the GGUF's dtype, computes the top-k router and uses the
-global LRU. Received hidden states are transformed before the local decode;
-residuals produced from tokens go through the same bridge before moving on to
-the next hop. The wire stays f16 and no weight is transported. Attention,
-remaining operations and final sampling still delegate to `LlmEngine`, so this
-is a partial wiring of the block, not a full MoE transformer. Q4_0, NVFP4,
-K-quants and IQ-quants use their own loaders with validation of the GGUF order
-`[input, output, experts]` before the forward. With the `cuda` feature, Q4_0
-uses the heterogeneous CUDA bridge and the resident cache partitioned by
-`CUDA0`, `CUDA1`, ...; each shard gets the experts through a stable placement
-and the route joins the cards' partials in parallel. Without CUDA, the CPU
-decoder is an explicit choice in telemetry and in the startup log. The CUDA path
-stays reserved for dtypes with a validated bridge, and there is no silent native
-fallback when the external MoE selection fails.
+llama.cpp runs every model the inference server loads, MoE or dense; there is
+no engine choice in the deployment. `/health` and the per-hop telemetry report
+`selected_path` as `dense/llama.cpp`. A plugin's inference service runs a whole
+model instead (`plugin_engine`) and reports `executed_engine=plugin`.
 
 `path/engine mismatch` in the UI is a real telemetry label: `selected_path`
-records the chosen path (`moe/q4_0` or `dense/llama.cpp`) and `executed_engine`
-records the executor that actually ran. The flag shows up when they diverge,
-for example when the selected MoE path falls back to `llama.cpp`; it is not a
-symptom of the remote transport or the network. A complete lack of samples
+records the path the server loaded (`dense/llama.cpp`) and `executed_engine`
+records the executor that actually ran. The flag shows up when they diverge; it
+is not a symptom of the remote transport or the network. A complete lack of samples
 keeps the engine unknown and is not called a divergence.
 
 Before the events reach the HTTP adapters, the gateway also applies per-request
@@ -1975,8 +1934,7 @@ tokens and searched in the last `dry_penalty_last_n` tokens (0 is the whole
 history, capped at 8192). `dry_multiplier = 0`, the default, turns it off.
 
 `n_ubatch` is the physical micro-batch of a context under the memory fit:
-`min(n_batch, n_ubatch)`, and at most 128 on the main context of an external
-MoE executor. Its default, 512, is the value that was a constant before it
+`min(n_batch, n_ubatch)`. Its default, 512, is the value that was a constant before it
 became a deployment setting. With the fit off the micro-batch stays equal to
 `n_batch`. A smaller value shrinks the compute buffers in VRAM, including those
 of the MTP context.

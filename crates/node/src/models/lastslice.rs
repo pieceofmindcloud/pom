@@ -492,7 +492,6 @@ mod tests {
             peer_count: 5,
             peer_index: 0,
             primary: false,
-            inference_mode: Default::default(),
             inference_service: None,
             engine_settings: Default::default(),
             inference_role: Default::default(),

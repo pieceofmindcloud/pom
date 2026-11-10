@@ -8,7 +8,6 @@ import { DeploymentInspector, type VisionControl } from "./DeploymentInspector";
 afterEach(cleanup);
 
 const params: RuntimeParams = {
-  inference_mode: "auto",
   n_gpu_layers: 99,
   n_ctx: 8192,
   offload_kqv: true,
@@ -68,7 +67,6 @@ describe("DeploymentInspector idle policy", () => {
     mount(
       {
         ...params,
-        inference_mode: "moe",
         mtp_cpu_fallback_enabled: false,
         unload_if_idle: true,
         idle_minutes: 2,
@@ -84,7 +82,6 @@ describe("DeploymentInspector idle policy", () => {
     expect(screen.queryByRole("combobox", { name: "Inference engine" })).toBeNull();
     fireEvent.click(screen.getByRole("checkbox", { name: "Disable embeddings" }));
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
-      inference_mode: "moe",
       mtp_cpu_fallback_enabled: false,
       unload_if_idle: true,
       idle_minutes: 2,
@@ -100,7 +97,6 @@ describe("DeploymentInspector idle policy", () => {
     });
 
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
-      inference_mode: "auto",
       unload_if_idle: true,
     }));
     expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ idle_minutes: 15 }));

@@ -131,7 +131,8 @@ const MOVED_TO_PLUGINS = new Set([
 ]);
 // Keys of the repetition-cycle detector, removed from the POM with it, of
 // the one-machine limit a whole model no longer has, of the profiles
-// renamed to `worker` and `visitor`, and of sending files between machines.
+// renamed to `worker` and `visitor`, of sending files between machines, and of
+// the inference engine selector.
 const KEPT_MODEL_PROVIDER_KEYS = new Set([
   "remoteModels.downloadFailed",
   "remoteModels.downloadStarted",
@@ -149,7 +150,10 @@ const removed = (key: string) =>
   // Search Models, the downloads and the token moved to the Hugging Face
   // plugin, with their copy; the deploy screen's "Download here" keeps three.
   (/^(remoteModels|huggingFace)\./.test(key) && !KEPT_MODEL_PROVIDER_KEYS.has(key)) ||
-  /^nav\.(remoteModels|fullModels|transfers)$/.test(key);
+  /^nav\.(remoteModels|fullModels|transfers)$/.test(key) ||
+  // The inference engine selector, retired with the own MoE engine: llama.cpp runs every model.
+  /^inspector\.(engine\.(auto|dense|moe)|inferenceMode|inferenceModeHint)$/.test(key) ||
+  key === "deployStudio.moeNeedsMetadata";
 const moved = (key: string) =>
   key.startsWith("chat.telemetry.") || MOVED_TO_PLUGINS.has(key) || removed(key);
 

@@ -54,7 +54,6 @@ import {
 import type { EngineSetting, InferenceRole, MtpPlacement, PomSetting, SidecarOption, SidecarSlot } from "../lib/types";
 import type {
   DeploymentCapabilities,
-  InferenceMode,
   KvCacheType,
   RuntimeCapability,
   RuntimeParams,
@@ -370,13 +369,6 @@ export function DeploymentInspector({
   merge,
   vision,
   sidecars,
-  /**
-   * The engine is only a question when the model is MoE: in a dense model there is no
-   * choice to make, and a combo with a single answer is noise. The History
-   * always shows it, because there it is a record of what came up, not a question.
-   */
-  showInferenceMode = false,
-  inferenceModeAlert,
   /** The hidden-state precision only exists when the pipeline crosses machines. */
   showHiddenStateDtype = false,
   machineRoles,
@@ -392,8 +384,6 @@ export function DeploymentInspector({
   merge?: MergeControl;
   vision?: VisionControl;
   sidecars?: SidecarControls;
-  showInferenceMode?: boolean;
-  inferenceModeAlert?: string | null;
   showHiddenStateDtype?: boolean;
   /** A whole model on several machines split into prefill and decode: each machine's role, edited in the POM card. */
   machineRoles?: { nodeId: string; label: string; role: InferenceRole }[];
@@ -1010,32 +1000,6 @@ export function DeploymentInspector({
       </Section>
 
       {pomDevMode && <Section title={t("inspector.sectionPomDev")} tone="amber">
-        {showInferenceMode && (
-          <InspectorRow
-            label={t("inspector.inferenceMode")}
-            tip={t("inspector.inferenceModeHint")}
-            alert={inferenceModeAlert ?? undefined}
-          >
-            {readOnly ? (
-              <ReadValue>{t("inspector.engine." + (value.inference_mode ?? "dense"))}</ReadValue>
-            ) : (
-              <Select
-                aria-label={t("inspector.inferenceMode")}
-                name="inference_mode"
-                value={value.inference_mode === "auto" ? "dense" : (value.inference_mode ?? "dense")}
-                onChange={(event) =>
-                  set({ inference_mode: event.target.value as InferenceMode })
-                }
-                compact
-              >
-                {/* "Automático" continues to exist in the backend; it leaves here because
-                    the interface now decides per llama.cpp. */}
-                <option value="dense">{t("inspector.engine.dense")}</option>
-                <option value="moe">{t("inspector.engine.moe")}</option>
-              </Select>
-            )}
-          </InspectorRow>
-        )}
         {toggle({
           key: "unload_if_idle",
           label: t("deploy.unloadIfIdle"),

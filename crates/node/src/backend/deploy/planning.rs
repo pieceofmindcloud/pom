@@ -207,9 +207,9 @@ pub struct Plan {
     /// True only when the surveyed GGUF metadata reports more than one expert.
     /// The UI must never infer this from a filename or architecture label.
     pub(super) is_moe: bool,
-    /// Whether this plan can honor the requested inference mode.
+    /// Whether llama.cpp can run this plan's execution mode for this model.
     pub(super) inference_mode_supported: bool,
-    /// Explicit reason when the selected execution mode cannot be honored.
+    /// Explicit reason when it cannot (Tensor Parallelism of a MoE model).
     pub(super) inference_mode_reason: Option<String>,
     /// Conditional capabilities determined for the targets of this plan.
     pub(super) capabilities: crate::capabilities::DeploymentCapabilities,
@@ -1235,9 +1235,7 @@ pub(super) fn plan_with_rtt_options(
         .iter()
         .flat_map(|machine| &machine.held)
         .any(|shard| shard.is_moe);
-    let inference_mode_reason = if params.inference_mode == InferenceMode::Moe && !is_moe {
-        Some("MoE requires real expert metadata in the GGUF of this model.".to_string())
-    } else if kind == DeployKind::TensorParallel && is_moe {
+    let inference_mode_reason = if kind == DeployKind::TensorParallel && is_moe {
         Some("Tensor Parallelism does not support MoE in this version.".to_string())
     } else {
         None

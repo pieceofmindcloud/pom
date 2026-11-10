@@ -574,8 +574,8 @@ Any of the three can activate and install plugins on its own machine.
 `GET /api/ui/node` is the source the browser uses and the toolbar shows the
 label through i18n. The same snapshot carries `pom_dev_mode`, true only when the
 process was started with exactly `POM_DEV_MODE=1`. `DeployModel` and History
-completely hide `Configurações POM (DESENV)` ("POM settings (DEV)", the
-inference engine and idle unloading) when the flag is false; the whole sampler
+completely hide `Configurações POM (DESENV)` ("POM settings (DEV)", idle
+unloading) when the flag is false; the whole sampler
 (min-p, frequency, DRY), the seed and where MTP runs are default settings
 shown to everyone, in the deploy inspector and in History's redeploy panel
 (the same inspector, editable, on the right side of the list). This is only local visibility: the UI and the
@@ -1569,7 +1569,7 @@ machine restarted. Today the fingerprint is only model + set of ranges.
   (fit to memory, chunks in flight, the automatic prefill chunk, merging
   neighboring slices and hidden-state precision; its *Beta* group for settings
   still being measured is commented out while it has none) and *POM settings
-  (DEV)* (inference engine and per-peer idle unloading). Default settings and
+  (DEV)* (per-peer idle unloading). Default settings and
   POM settings each carry a help button by their title that opens their guide
   from Documentation in a dialog (`components/GuideDialog.tsx`, guides
   `default-settings` and `pom-settings`, written in `docs/guides/settings/` and
@@ -1598,15 +1598,10 @@ machine restarted. Today the fingerprint is only model + set of ranges.
   plan supports it) and the minimum probability at `0.75`, a field the operator
   can still edit. The vision projector and the MTP draft show one summary line;
   the path on every machine opens in a "More info" window; while the survey
-  names no head, the projector list comes from the catalog. The **Inference engine**
-  section only shows up when the GGUF's real metadata reports more than one
-  expert. The UI presents `dense` (llama.cpp) and `moe`, and sends the choice.
-  The backend also
-  accepts `auto` only when it arrives as an explicit choice from an API or a
-  persisted deployment. For a dense model the section stays hidden. If the chosen
-  combination is not supported, the selector stays visible with the explicit
-  reason and Deploy names it in its window; telemetry is the source of truth about the
-  engine that ran. The other conditional options get `DeployPlan.capabilities`
+  names no head, the projector list comes from the catalog. There is no
+  inference engine selector: llama.cpp runs every model. Tensor Parallelism of a
+  model whose GGUF reports more than one expert is not supported; the reason
+  stays visible and Deploy names it in its window. The conditional options get `DeployPlan.capabilities`
   from the backend: `no_thinking` uses `tokenizer.chat_template` and the GGUF
   vocabulary, MTP uses the selected file's `nextn` metadata/tensors, and lookup
   uses the runtime capabilities of every target. Proven absence in the model hides the option;

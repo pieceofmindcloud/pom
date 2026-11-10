@@ -1011,17 +1011,10 @@ export function DeployModel() {
   /** The server's GGUF metadata is the only source of truth for MoE. */
   const isMoePlan = p?.is_moe === true;
   /**
-   * Runtime mode is checked locally from the already-surveyed model shape.
-   * Changing this selector must not make the planner survey the cluster again;
-   * the deploy preflight repeats the same check with its fresh survey.
+   * Checked locally from the already-surveyed model shape; the deploy
+   * preflight repeats the same check with its fresh survey.
    */
-  const inferenceModeReason = !p
-    ? null
-    : eff.inference_mode === "moe" && !isMoePlan
-      ? t("deployStudio.moeNeedsMetadata")
-      : isTp && isMoePlan
-        ? t("deployStudio.tpNoMoe")
-        : null;
+  const inferenceModeReason = p && isTp && isMoePlan ? t("deployStudio.tpNoMoe") : null;
   const inferenceModeSupported = inferenceModeReason == null;
   /** Merged units in force: the operator's toggle, or the node's default. */
   const effMerge = merge ?? p?.merge ?? false;
@@ -1600,13 +1593,7 @@ export function DeployModel() {
                 onChange: (part, next) => void updateCacheTypes(part, next),
               }}
               merge={isWhole ? undefined : { value: effMerge, onChange: setMerge }}
-              showInferenceMode={isMoePlan}
               pomDevMode={pomDevMode}
-              inferenceModeAlert={
-                inferenceModeSupported
-                  ? undefined
-                  : (inferenceModeReason ?? t("deployStudio.engineUnsupported"))
-              }
               showHiddenStateDtype={crossesPeerBoundary}
               machineRoles={service && splitRoles && roleMachines.length > 1
                 ? roleMachines.map((row) => ({

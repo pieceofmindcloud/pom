@@ -73,7 +73,7 @@ use crate::network::PeerInfo;
 use crate::plan::DEFAULT_RESERVE_PCT;
 use crate::webui::{
     jobs, launch, new_job, set_job, set_job_progress, CapacityPreview, CapacityPreviewRequest,
-    InferenceMode, LaunchRequest, LaunchTarget, LayerCut, MergeSource, ModelLayerOptions,
+    LaunchRequest, LaunchTarget, LayerCut, MergeSource, ModelLayerOptions,
     ReconfigureSlice, RuntimeParams, SliceRange, SliceRangesRequest, PEER_TIMEOUT,
 };
 

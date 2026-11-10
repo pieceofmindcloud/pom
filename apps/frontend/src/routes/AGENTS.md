@@ -382,8 +382,7 @@ Per-file list:
   The `Think` button only appears when `/api/ui/chat/capabilities` returns
   `thinking: "supported"`. Its value is saved in `ChatSession` and sent as
   `thinking_enabled` on every message, persisting until a new user action.
-  Missing snapshots stay visible as missing data. The environment card also
-  renders the effective MoE executor and its concrete reason from `/health`.
+  Missing snapshots stay visible as missing data.
   Phase rows also render hidden-state bytes sent/received and the effective
   f32/f16/f8/i4 dtype. The conversion row separates peer and client f32/f16
   encode/decode work from the general frame timings. Its picker uses
@@ -622,10 +621,9 @@ Per-file list:
   machine serving layer 0, and the per-machine GPU
   layers / KV-on-GPU (llama.cpp only). Its remove button is "Take X off the
   map", distinct from the card's X. A machine without the model says so.
-  For a real MoE model (`DeployPlan.is_moe`), the Global inspector shows the
-  inference engine selector and sends `RuntimeParams.inference_mode`. Dense
-  models hide it. While the survey names no head, the projector list comes from
-  the catalog.
+  There is no inference engine selector: llama.cpp runs every model; a real MoE
+  model (`DeployPlan.is_moe`) only blocks Tensor Parallelism. While the survey
+  names no head, the projector list comes from the catalog.
 - `DeployModel.tsx` - "Inference service": when a machine publishes a plugin
   service of kind `inference` (`lib/inferenceServices.ts`), a select next to
   the mode bar offers it beside llama.cpp. Choosing it fixes the whole-model

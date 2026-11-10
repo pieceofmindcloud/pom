@@ -1361,8 +1361,8 @@ other text leave the flag false. The flag only controls the visibility of the
 controls in the browser: the plan, deploy, apply, reconfigure and redeploy
 handlers keep the fields of the `Configurações POM (DESENV)` ("POM settings
 (DEV)") section received in the request, even for clients that do not see those
-controls. When `inference_mode` does not exist, `RuntimeParams` uses `dense`
-(`llama.cpp`) by default; `auto` is an explicit choice.
+controls. There is no engine field: llama.cpp runs every model, and an old
+record's `inference_mode` is ignored.
 
 `GET /api/ui/infer/heads?model=<id>` is the dedicated read of the inference
 heads, allowed for the `visitor` and `admin` profiles: it returns only the live
@@ -1513,14 +1513,12 @@ the JSON representation of the accepted fields, without headers. The retention
 policy for full prompts still needs a product decision: `needs-decision:
 define retention and possible purge by age or volume`.
 
-The `POST /api/ui/deploy/plan` and `POST /api/ui/deploy` routes carry
-`params.inference_mode` (`auto`, `dense` or `moe`) in the development section,
-for the three execution modes: whole model, sliced pipeline and Tensor
-Parallelism. The planner also returns `is_moe`, `inference_mode_supported` and
-`inference_mode_reason`. `is_moe` comes from the GGUF's real expert metadata,
-never from the file name. For a dense model the UI hides the choice; when a
-combination is not supported yet, the reason stays visible and the deploy is
-refused so a preference that will not be honored is not presented.
+The `POST /api/ui/deploy/plan` planner returns `is_moe`,
+`inference_mode_supported` and `inference_mode_reason` for the three execution
+modes: whole model, sliced pipeline and Tensor Parallelism. `is_moe` comes from
+the GGUF's real expert metadata, never from the file name. Tensor Parallelism of
+a MoE model is not supported: the reason stays visible and the deploy is
+refused.
 
 **Ranges of a whole model.** `DeployRequest.whole_ranges` (optional, on
 `/api/ui/deploy/plan` and `/api/ui/deploy`) is a list of

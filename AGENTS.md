@@ -134,9 +134,9 @@ An `LLAMA_SOURCE` already set in the environment (CI, Docker) prevails. The
 binding's build accepts a checkout with `ggml`; with none, the preparation error
 shows the manual clone command.
 
-If `llama_moe_ffn_descriptor`, `llama_set_moe_ffn_callback` or the
-`moe_external_executor*` fields of `llama_model_params` are missing, the fork's
-checkout is out of date - it is not a preexisting defect of the project. In a new
+If the build complains about the fork's API (a missing `llama_*` function or
+field the binding uses), the fork's checkout is out of date - it is not a
+preexisting defect of the project. In a new
 copy, the first `cargo build` prepares the ignored content; do not create an
 additional symlink nor change files inside an existing checkout of the fork. See
 `docs/subsystems/build-and-run.md`, section "Preparing a local worktree".

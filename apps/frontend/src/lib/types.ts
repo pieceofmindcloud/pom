@@ -87,7 +87,7 @@ export interface SystemLoad {
 export type ServerState = "disabled" | "starting" | "ready" | "idle" | "failed" | "thermal";
 
 /** Engine the backend states it ran, with no inference by the interface. */
-export type ExecutionEngine = "llama.cpp" | "moe" | "plugin" | "unknown";
+export type ExecutionEngine = "llama.cpp" | "plugin" | "unknown";
 
 export interface RuntimeStatus {
   state: ServerState;
@@ -118,8 +118,6 @@ export interface NodeConfig {
   peer_count: number;
   peer_index: number;
   primary: boolean;
-  /** Persisted engine preference carried by the active deployment. */
-  inference_mode: InferenceMode;
   inference_port: number;
   n_gpu_layers: number;
   n_ctx: number;
@@ -873,12 +871,6 @@ export interface PeerRuntimeHealth {
   profile_sync_enabled?: boolean;
   /** Path selected by the GGUF; the per-request engine comes from the trace. */
   selected_path?: string;
-  /** Effective ownership of the experts on this node, separate from the selected path. */
-  moe_requested?: boolean;
-  moe_executor?: "cpu-reference" | "cuda" | "not-installed" | "not-requested" | "not-run" | "mixed";
-  moe_executor_dtypes?: number[];
-  /** Concrete reason when the MoE executor was not installed or uses the CPU. */
-  moe_executor_reason?: string | null;
   /** This node's KV cache in RAM. Absent on an old node. */
   cache_ram?: KvCacheRam;
   mtp_ready: boolean;
@@ -2334,8 +2326,6 @@ export interface DeployLoadDistribution {
 export type MtpPlacement = "auto" | "vram" | "ram";
 
 export interface RuntimeParams {
-  /** Engine preference; the runtime decides from GGUF metadata in auto mode. */
-  inference_mode: InferenceMode;
   /** The plugin whose inference service runs the whole model instead of
    *  llama.cpp (`"strata"`); absent is POM's own engine. */
   inference_service?: string | null;
@@ -2443,8 +2433,6 @@ export interface DeploymentCapabilities {
   hidden_state_i4g128?: RuntimeCapability;
 }
 
-export type InferenceMode = "auto" | "dense" | "moe";
-
 /** What the operator picked, as `POST /api/ui/deploy{,/plan}` accepts it. */
 export interface DeploySelection {
   start_layer: number;
@@ -2535,9 +2523,9 @@ export interface DeployPlan {
   mmproj_reason?: string | null;
   /** True only when the surveyed model's actual GGUF metadata is MoE. */
   is_moe?: boolean;
-  /** Whether this plan can honor the selected inference mode. */
+  /** Whether llama.cpp can run this plan's execution mode for this model. */
   inference_mode_supported?: boolean;
-  /** Why the selected inference mode cannot be honored, when applicable. */
+  /** Why it cannot (Tensor Parallelism of a MoE model), when applicable. */
   inference_mode_reason?: string | null;
   /** Conditional capabilities worked out by the backend for the current targets. */
   capabilities?: DeploymentCapabilities;

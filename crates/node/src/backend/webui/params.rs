@@ -321,7 +321,6 @@ pub(super) async fn capacity_preview_endpoint(
         peer_index: req.peer_index,
         primary: req.start_layer == 0,
         tp: None,
-        inference_mode: req.params.inference_mode,
         inference_port: 0,
         single_peer: req.single_peer,
         no_embeddings: req.params.no_embeddings,
@@ -341,7 +340,7 @@ pub(super) async fn capacity_preview_endpoint(
 
     let need_embeddings = cfg.needs_residual_export();
     let engine_cfg =
-        match crate::runtime::engine_config_from_node(&cfg, need_embeddings, false, Vec::new()) {
+        match crate::runtime::engine_config_from_node(&cfg, need_embeddings) {
             Ok(engine_cfg) => engine_cfg,
             Err(e) => return bad_request(format!("invalid configuration: {e}")),
         };

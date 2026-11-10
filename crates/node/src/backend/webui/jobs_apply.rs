@@ -994,11 +994,7 @@ async fn virtual_shard_for(req: &ApplyRequest, job_id: &str) -> anyhow::Result<O
     }
     let source = std::path::PathBuf::from(&req.source_model_path);
     let probe = source.clone();
-    // Only the MoE external executor is held to one source file; `dense`
-    // llama.cpp reads a virtual slice over the parts of a multi-file model.
-    let moe_executor = req.params.inference_mode != super::InferenceMode::Dense;
-    let refusal =
-        tokio::task::spawn_blocking(move || plan::virtual_slice_refusal(&probe, moe_executor)).await?;
+    let refusal = tokio::task::spawn_blocking(move || plan::virtual_slice_refusal(&probe)).await?;
     if let Some(reason) = refusal {
         info!(
             "virtual slice not used for {} ({reason}); slicing locally",
@@ -1252,7 +1248,6 @@ pub(super) async fn run_apply(
         peer_index: req.peer_index,
         primary: req.primary,
         tp: req.tp.clone(),
-        inference_mode: req.params.inference_mode,
         inference_port,
         single_peer: req.single_peer(),
         no_embeddings: req.no_embeddings(),

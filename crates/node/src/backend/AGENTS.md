@@ -860,10 +860,10 @@ change lands in the right place.
   pipeline telemetry. `RuntimeParams.fit_memory` stays on by default in shards and whole models so
   llama.cpp can fit the layers to free memory; `effective_params_for_kind` turns it off in tensor
   parallelism, which does not support the automatic fit in `split-mode tensor` - that is the only
-  structural rule it applies. `RuntimeParams.inference_mode` travels with the request in all three
-  kinds independently of `POM_DEV_MODE`; an absent mode is `dense`, `auto` only enters when
-  explicitly asked. The survey carries `is_moe` from the GGUF catalog (only expert metadata
-  identifies MoE) and the plan exposes `inference_mode_supported` / `inference_mode_reason`.
+  structural rule it applies. There is no engine choice in `RuntimeParams` (llama.cpp runs every
+  model; an old record's `inference_mode` is ignored). The survey carries `is_moe` from the GGUF
+  catalog (only expert metadata identifies MoE) and the plan exposes `inference_mode_supported` /
+  `inference_mode_reason`, which refuse Tensor Parallelism of a MoE model.
   `overlapping_layers`, `split_position`, `resolve_group` (empty picks the only pipeline in the
   air; two pipelines is a 400 - never guess), `undeploy_endpoint` and `deployment_authority` are
   the deploy and undeploy surface; the rules they enforce are `docs/subsystems/deployment.md`.

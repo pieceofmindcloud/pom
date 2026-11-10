@@ -113,7 +113,7 @@ cd apps/frontend && npm install && npm run build   # the web interface
 ```
 
 The build needs the `llama.cpp` fork checked out (or symlinked) at `./llama.cpp`
-on the `pom-tensor-parallel` branch, and the inference engine is fetched from a
+on the `pom` branch, and the inference engine is fetched from a
 pinned git dependency. With `--features cuda`, set `CUDAARCHS` to your GPU's
 architecture (for example `CUDAARCHS=120`) or llama.cpp compiles every CUDA
 object for ten architectures. Details: `docs/subsystems/build-and-run.md`.

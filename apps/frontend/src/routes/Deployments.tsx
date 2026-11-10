@@ -180,7 +180,6 @@ function RedeployPanel({
       <DeploymentInspector
         value={params}
         onChange={setParams}
-        showInferenceMode
         pomDevMode={pomDevMode}
         showHiddenStateDtype={params.hidden_state_dtype != null}
         inferenceService={engine ?? undefined}
@@ -729,7 +728,6 @@ export function Deployments() {
             <DeploymentInspector
               value={shownParams ?? inspected.version.params}
               readOnly
-              showInferenceMode
               pomDevMode={pomDevMode}
               showHiddenStateDtype={(shownParams ?? inspected.version.params).hidden_state_dtype != null}
               inferenceService={shownEngine ?? undefined}

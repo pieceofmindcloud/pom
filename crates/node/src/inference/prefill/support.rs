@@ -1278,12 +1278,6 @@ pub struct PhaseTrace {
     /// recorded; the effective `POM_PROFILE_SYNC` state is published separately
     /// by `/health` and must never be inferred from this timing.
     pub node_backend_sync_ms: f64,
-    /// Time of the external MoE forward, measured outside `llama_decode`.
-    ///
-    /// The llama.cpp hook is opt-in and records the forward after it
-    /// returns; without this field the trace confused this cost with the rest of the
-    /// backend and left the sum impossible to close.
-    pub node_moe_forward_ms: f64,
     /// Device-to-host copy of the residual, measured inside the capture hook.
     pub node_residual_capture_d2h_sync_ms: f64,
     /// Scheduler ask-to-ready wall, including graph evaluation and its sync.
@@ -1324,11 +1318,6 @@ pub struct PhaseTrace {
     pub executed_engines: Vec<crate::executor::ExecutionEngine>,
     pub engine_mismatch: bool,
     pub mixed_execution: bool,
-    pub moe_executor: Option<String>,
-    pub moe_executors: Vec<String>,
-    pub moe_executor_dtypes: Vec<u32>,
-    pub moe_executor_reason: Option<String>,
-    pub moe_executor_diagnostics: Option<crate::moe::runtime::MoeExecutorDiagnostics>,
     #[serde(skip)]
     pub(super) node_samples_ms: Vec<f64>,
     #[serde(skip)]
@@ -1401,40 +1390,6 @@ impl PhaseTrace {
                     .filter(|engine| *engine != crate::executor::ExecutionEngine::Unknown)
                     .collect()
             });
-        let moe_executor = node
-            .get("moe_executor")
-            .and_then(|value| value.as_str())
-            .filter(|value| *value != "not-run")
-            .map(str::to_owned);
-        let moe_executors = node
-            .get("moe_executors")
-            .and_then(|value| value.as_array())
-            .map(|values| {
-                values
-                    .iter()
-                    .filter_map(|value| value.as_str())
-                    .map(str::to_owned)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let moe_executor_dtypes = node
-            .get("moe_executor_dtypes")
-            .and_then(|value| value.as_array())
-            .map(|values| {
-                values
-                    .iter()
-                    .filter_map(|value| value.as_u64())
-                    .filter_map(|value| u32::try_from(value).ok())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let moe_executor_reason = node
-            .get("moe_executor_reason")
-            .and_then(|value| value.as_str())
-            .map(str::to_owned);
-        let moe_executor_diagnostics = node
-            .get("moe_executor_diagnostics")
-            .and_then(|value| serde_json::from_value(value.clone()).ok());
 
         self.processing_ms += processing_ms;
         self.round_trip_ms += round_trip_ms;
@@ -1481,7 +1436,6 @@ impl PhaseTrace {
         self.node_mtp_observe_ms += node_ms("mtp_observe_ms");
         self.node_backend_call_ms += node_ms("backend_call_ms");
         self.node_backend_sync_ms += node_ms("backend_sync_ms");
-        self.node_moe_forward_ms += node_ms("moe_forward_ms");
         self.node_residual_capture_d2h_sync_ms += node_ms("residual_capture_d2h_sync_ms");
         self.node_residual_capture_ready_wait_ms += node_ms("residual_capture_ready_wait_ms");
         self.node_residual_capture_tensor_get_ms += node_ms("residual_capture_tensor_get_ms");
@@ -1536,38 +1490,7 @@ impl PhaseTrace {
         for engine in engines {
             self.observe_engine(engine);
         }
-        self.observe_moe_executor(moe_executor);
-        for executor in moe_executors {
-            self.observe_moe_executor(Some(executor));
-        }
-        for dtype in moe_executor_dtypes {
-            if !self.moe_executor_dtypes.contains(&dtype) {
-                self.moe_executor_dtypes.push(dtype);
-            }
-        }
-        if let Some(reason) = moe_executor_reason {
-            if self.moe_executor_reason.is_none() {
-                self.moe_executor_reason = Some(reason);
-            }
-        }
-        if moe_executor_diagnostics.is_some() {
-            self.moe_executor_diagnostics = moe_executor_diagnostics;
-        }
         self.refresh_percentiles();
-    }
-
-    pub(super) fn observe_moe_executor(&mut self, next: Option<String>) {
-        let Some(next) = next else {
-            return;
-        };
-        if !self.moe_executors.contains(&next) {
-            self.moe_executors.push(next);
-        }
-        self.moe_executor = match self.moe_executors.as_slice() {
-            [executor] => Some(executor.clone()),
-            [] => None,
-            _ => Some("mixed".to_owned()),
-        };
     }
 
     pub(super) fn observe_engine(&mut self, next: crate::executor::ExecutionEngine) {
@@ -1604,9 +1527,7 @@ impl PhaseTrace {
             self.engine_mismatch = false;
             return;
         };
-        let expected = if path.starts_with("moe/") {
-            crate::executor::ExecutionEngine::Moe
-        } else if path.starts_with("dense/") {
+        let expected = if path.starts_with("dense/") {
             crate::executor::ExecutionEngine::LlamaCpp
         } else {
             crate::executor::ExecutionEngine::Unknown
@@ -1730,21 +1651,6 @@ impl PhaseTrace {
         }
         for engine in &next.executed_engines {
             self.observe_engine(*engine);
-        }
-        self.observe_moe_executor(next.moe_executor.clone());
-        for executor in &next.moe_executors {
-            self.observe_moe_executor(Some(executor.clone()));
-        }
-        for dtype in &next.moe_executor_dtypes {
-            if !self.moe_executor_dtypes.contains(dtype) {
-                self.moe_executor_dtypes.push(*dtype);
-            }
-        }
-        if self.moe_executor_reason.is_none() {
-            self.moe_executor_reason = next.moe_executor_reason.clone();
-        }
-        if next.moe_executor_diagnostics.is_some() {
-            self.moe_executor_diagnostics = next.moe_executor_diagnostics.clone();
         }
         self.refresh_percentiles();
     }

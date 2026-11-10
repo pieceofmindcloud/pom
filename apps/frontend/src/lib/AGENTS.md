@@ -395,23 +395,22 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   pipeline steps, including the source hash/path used by a transfer.
   `RuntimeParams.fit_memory` enables llama.cpp memory fitting and is normalized
   off for tensor parallel deployment. `RuntimeParams.fit_memory_margin_mb` is
-  the per-device safety reserve, defaulting to 256 MiB. `RuntimeParams.inference_mode` is the
-  persisted `auto`/`dense`/`moe` preference. `DeployPlan.is_moe` comes from the
+  the per-device safety reserve, defaulting to 256 MiB. There is no engine
+  choice: llama.cpp runs every model the POM serves (a plugin inference service
+  is `inference_service`). `DeployPlan.is_moe` comes from the
   node's GGUF expert metadata; the deploy screen must not infer MoE from a
   filename. `inference_mode_supported` and `inference_mode_reason` keep an
-  unsupported path visible instead of presenting a misleading selection.
+  unsupported execution mode (Tensor Parallelism of a MoE model) visible.
   The capacity preview is an analytic planning estimate, not the effective
   placement reported by the real load; the deploy screen keeps that distinction
   visible in its capacity warning.
   `DeployPlan.capabilities` is the backend tri-state contract for conditional
   global controls, including source and reason. The UI does not infer model or
   topology support from names; unknown remains visible but disabled.
-  `PeerRuntimeHealth` carries the selected path and effective MoE ownership
-  (`moe_requested`, `moe_executor`, dtypes and `moe_executor_reason`) alongside
+  `PeerRuntimeHealth` carries the selected path (`dense/llama.cpp`) alongside
   `mtp_ready` and an optional `mtp_allocation` and `mtp_unavailable_reason`;
-  the dashboard detail card reads these fields from `usePeerRuntime` so a
-  requested-but-unused executor, actual VRAM/RAM placement and a failed MTP
-  attach are visible.
+  the dashboard detail card reads these fields from `usePeerRuntime` so the
+  actual VRAM/RAM placement and a failed MTP attach are visible.
 - `isWholeModel(m)` - a whole `.gguf` vs a slice (`shard_range == null`).
 - `SizedRange` / `SizePlan` / `TpSlicePlan` / `PlannedShard` / `SplitPlan` -
   size-, tensor- and budget-driven slicing plans. Budget-driven shards expose

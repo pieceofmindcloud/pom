@@ -652,27 +652,12 @@ mod tests {
     }
 
     #[test]
-    fn inference_mode_defaults_to_dense_and_round_trips() {
-        let default: RuntimeParams = serde_json::from_str("{}").unwrap();
-        assert_eq!(default.inference_mode, InferenceMode::Dense);
-
-        let explicit: RuntimeParams = serde_json::from_value(serde_json::json!({
+    fn a_record_with_the_old_inference_mode_still_reads() {
+        let old: RuntimeParams = serde_json::from_value(serde_json::json!({
             "inference_mode": "moe"
         }))
         .unwrap();
-        assert_eq!(explicit.inference_mode, InferenceMode::Moe);
-        let encoded = serde_json::to_value(explicit).unwrap();
-        assert_eq!(encoded["inference_mode"], "moe");
-
-        let explicit_auto: RuntimeParams = serde_json::from_value(serde_json::json!({
-            "inference_mode": "auto"
-        }))
-        .unwrap();
-        assert_eq!(explicit_auto.inference_mode, InferenceMode::Auto);
-        assert_eq!(
-            serde_json::to_value(explicit_auto).unwrap()["inference_mode"],
-            "auto"
-        );
+        assert!(serde_json::to_value(old).unwrap().get("inference_mode").is_none());
     }
 
     #[test]

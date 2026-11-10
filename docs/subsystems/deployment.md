@@ -757,9 +757,7 @@ The answer still carries it for an API caller.
   quantization counts: `cache_type_k`/`cache_type_v` come from the
   installation config and KV is only added to VRAM when `offload_kqv` is on.
   Otherwise the cache lives in host RAM and the projection notes the
-  difference. The external MoE executor is left out because the route neither
-  opens the model nor computes expert ownership. The compute buffer is also
-  left out: the result is a planning signal, not a replacement for the real
+  difference. The compute buffer is left out: the result is a planning signal, not a replacement for the real
   load.
 - **Multi-GPU split.** Always proportional to current free VRAM. The answer
   marks the split as estimated and the real load stays the authority on

@@ -181,7 +181,6 @@ function moePlan(kind: DeployPlan["kind"] = "whole"): DeployPlan {
   p.inference_mode_reason = kind === "tensor_parallel"
     ? "Tensor Parallelism não suporta MoE nesta versão."
     : null;
-  p.params = { ...p.params, inference_mode: "auto" };
   return p;
 }
 
@@ -675,7 +674,7 @@ describe("DeployModel · whole model", () => {
     expect(screen.queryByText("conferindo com o nó…")).toBeNull();
   });
 
-  it("keeps the engine selector hidden for a dense model", async () => {
+  it("has no engine selector for a dense model", async () => {
     answerPlans();
     mount();
     chooseWhole();
@@ -684,7 +683,7 @@ describe("DeployModel · whole model", () => {
     expect(screen.queryByRole("combobox", { name: "Motor de inferência" })).toBeNull();
   });
 
-  it("shows and sends the engine choice in the whole model", async () => {
+  it("runs a MoE whole model on llama.cpp with no engine selector", async () => {
     post.mockImplementation((url: string, body: { kind?: string }) => {
       if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
       return Promise.resolve(moePlan(body.kind as DeployPlan["kind"]));
@@ -693,20 +692,15 @@ describe("DeployModel · whole model", () => {
     chooseWhole();
     await ensureWholeMachine();
     fireEvent.click(await screen.findByRole("tab", { name: "Globais" }));
-
-    const selector = await screen.findByRole("combobox", { name: "Motor de inferência" });
-    fireEvent.change(selector, { target: { value: "moe" } });
-    expect((selector as HTMLSelectElement).value).toBe("moe");
+    expect(screen.queryByRole("combobox", { name: "Motor de inferência" })).toBeNull();
 
     const button = screen.getByRole("button", { name: /^Implantar$/ });
     await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(button);
     await waitFor(() => {
       const deploy = post.mock.calls.find(([url]) => url === "/api/ui/deploy");
-      expect(deploy?.[1]).toMatchObject({
-        kind: "whole",
-        params: { inference_mode: "moe" },
-      });
+      expect(deploy?.[1]).toMatchObject({ kind: "whole" });
+      expect((deploy?.[1] as { params?: object }).params ?? {}).not.toHaveProperty("inference_mode");
     });
   });
 

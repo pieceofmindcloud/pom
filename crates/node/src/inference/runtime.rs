@@ -65,20 +65,11 @@ pub fn total_context_tokens(n_ctx: u32, max_sessions: u32) -> Result<u32> {
 ///
 /// Extracted to be reused by the capacity preview
 /// (`crate::deploy::capacity_preview_endpoint`), which needs the same normalized
-/// parameters without calling the FFI. `need_embeddings` stays a
-/// parameter instead of being recomputed here: the real load also considers
-/// the MoE inference path (`inference_path.is_moe()`), which depends on a
-/// GGUF read that the caller has already done; the preview uses only
-/// `cfg.needs_residual_export()`, which is the half that does not depend on the executor.
-/// `moe_external_executor`/`moe_external_executor_layers` are left out of the
-/// preview because expert ownership is decided by
-/// `MoeRuntime::external_executor_plan`, a separate GGUF read that it
-/// does not do. The real load receives these values in full.
+/// parameters without calling the FFI. Both pass `cfg.needs_residual_export()`
+/// as `need_embeddings`.
 pub(crate) fn engine_config_from_node(
     cfg: &NodeConfig,
     need_embeddings: bool,
-    moe_external_executor: bool,
-    moe_external_executor_layers: Vec<u8>,
 ) -> Result<crate::llm::EngineConfig> {
     let rs_seq_window = cfg.speculative_k.max(cfg.mtp_draft_tokens + 1);
     Ok(crate::llm::EngineConfig {
@@ -102,8 +93,6 @@ pub(crate) fn engine_config_from_node(
         moe_experts_in_ram: cfg.moe_experts_in_ram,
         moe_cache_mib: cfg.moe_cache_mib,
         rs_seq_window,
-        moe_external_executor,
-        moe_external_executor_layers,
     })
 }
 
@@ -181,10 +170,6 @@ pub struct NodeConfig {
     /// primary/worker of a group. `None` = node without TP (today's case).
     #[serde(default)]
     pub tp: Option<crate::network::TpIdentity>,
-    /// Persisted engine preference for this deployment. The executor decides
-    /// the concrete path from this value and the loaded GGUF metadata.
-    #[serde(default)]
-    pub inference_mode: crate::webui::InferenceMode,
     /// The plugin whose inference service runs this whole model instead of
     /// llama.cpp (`RuntimeParams::inference_service`); `None` is llama.cpp.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -404,7 +389,6 @@ impl NodeConfig {
             peer_index: 0,
             primary: false,
             tp: None,
-            inference_mode: p.inference_mode,
             inference_service: p.inference_service.clone(),
             engine_settings: p.engine_settings.clone(),
             inference_role: p.inference_role,
@@ -2430,7 +2414,6 @@ mod tests {
             peer_count: 2,
             peer_index: 0,
             primary: true,
-            inference_mode: Default::default(),
             inference_service: None,
             engine_settings: Default::default(),
             inference_role: Default::default(),

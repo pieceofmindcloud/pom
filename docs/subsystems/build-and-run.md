@@ -302,7 +302,7 @@ ssh <cuda-server> 'bash -lc "cd /data/ftk-cuda-src && \
 
 The `PATH` is needed because `build.rs` runs the `nvcc` program directly;
 `CUDACXX` must also be set for the sub-builds that follow the CMake
-convention. `CUDAARCHS=120` limits the MoE kernel to that server's GPU.
+convention. `CUDAARCHS=120` limits the CUDA build to that server's GPU.
 `NCCL_ROOT=/usr` points `FindNCCL` at the host install, and
 `GGML_CUDA_NCCL=ON` is needed to opt into the collective path. `build.rs` also
 reads the resolved library from `CMakeCache.txt` and emits the dynamic link for
@@ -933,19 +933,13 @@ places:
 
 **The wide list does not go through `sccache`**, which fails on it with `Missing
 "cubin" file output`. The Linux build step clears both wrappers of `nvcc`:
-`CMAKE_CUDA_COMPILER_LAUNCHER` for llama.cpp and `CCACHE` for the MoE kernels. C, C++
+`CMAKE_CUDA_COMPILER_LAUNCHER` for llama.cpp and `CCACHE`. C, C++
 and Rust keep the cache.
 
-**An empty `CUDAARCHS` is not the wide list.** Two builds read the variable.
-llama.cpp's CMake takes empty as unset and picks its wide list, but POM's MoE
-kernels (`crates/llama-engine/build.rs`, in `pom-plugin-llama.cpp`) call `nvcc`
-directly and turn each entry into a `--generate-code`, so with no entries they get
-only `nvcc`'s default: `sm_52` plus its PTX under CUDA 12.9, `sm_75` plus its PTX
-under CUDA 13. The list a release writes is the one llama.cpp's `CMakeLists.txt`
-derives for that toolkit, so both builds cover the same cards. Checked on
-2026-10-31 by compiling `cuda_kernels.cu` (85 s for the CUDA 13 list, 94 s for the
-12.9 one, against about 20 s for the default) and by configuring llama.cpp under CMake
-3.28, which resolves the written list and the empty value to the same result.
+**An empty `CUDAARCHS` is not the wide list for a release.** llama.cpp's CMake
+takes empty as unset and picks its wide list; the list a release writes is the
+one llama.cpp's `CMakeLists.txt` derives for that toolkit, written out so a
+builder's environment cannot narrow it.
 
 | Toolkit | Release list |
 |---|---|
@@ -1149,13 +1143,11 @@ affecting the other two. `release-windows.yml` has two variants (input
   LunarG's Vulkan SDK (`VULKAN_VERSION`). It builds with Ninja inside the MSVC
   environment (`ilammy/msvc-dev-cmd`), because CUDA with the Visual Studio
   generator requires the MSBuild integration. Architectures: `ggml-cuda.dll` arrives
-  ready from the fork with llama.cpp's wide list, and `POM_WINDOWS_CUDAARCHS`, which
-  only reaches POM's MoE kernels, repeats that list (see "GPU architectures"). On Windows CUDA is linked **dynamically**
+  ready from the fork with llama.cpp's wide list, and `POM_WINDOWS_CUDAARCHS`
+  repeats that list (see "GPU architectures"). On Windows CUDA is linked **dynamically**
   (`llama-cpp-sys-2/build.rs`), so the package ships `cudart64_*.dll`,
   `cublas64_*.dll` and `cublasLt64_*.dll` from the fork release's cudart
-  package next to `pom.exe` (redistributable under NVIDIA's license); `vulkan-1.dll` comes with the video driver. The own
-  MoE kernels (`crates/llama-engine/build.rs`) come out as `pom_moe_cuda.lib`
-  through `lib.exe` with `/MD` on MSVC, and as `.a` through `ar` elsewhere.
+  package next to `pom.exe` (redistributable under NVIDIA's license); `vulkan-1.dll` comes with the video driver.
 - **`cpu`**: no features, package `pom-<v>-x86_64-pc-windows-msvc.zip`.
 
 The GitHub build no longer produces `pom.pdb`; to diagnose a crash on Windows,

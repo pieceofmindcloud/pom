@@ -1,6 +1,6 @@
 # inference/ - the inference server, the wire format and the supervisor
 
-> **Crate move:** `llm.rs`, `mtp.rs` (+ `llama_mtp_shim.cpp`), `moe/`,
+> **Crate move:** `llm.rs`, `mtp.rs` (+ `llama_mtp_shim.cpp`),
 > `collective.rs`, `device_placement.rs` and `wire.rs` left for
 > `crates/llama-engine` (see its `AGENTS.md`). `node` re-exports them in
 > `main.rs`, so `crate::llm::…`, `crate::wire::…` and the rest keep working.
@@ -65,11 +65,9 @@ The model is loaded **in-process** by `llm.rs`; there is no Python process. The
 normal paths receive a ready `next_hops` from `routing/pipeline.rs`; TP is the
 controlled exception, since it coordinates its ranks and its transport tunnel in
 this directory.
-The `NodeConfig.inference_mode` field selects `dense/llama.cpp`, `moe/q4_0` or
-`auto` when that choice was asked for explicitly; if the field does not exist,
-the default is `dense`. `POM_DEV_MODE` does not take part in that selection,
-since it only controls the visibility of the deployment controls in the local
-UI.
+llama.cpp runs every model this server loads (`executor::LLAMA_CPP_PATH`,
+`dense/llama.cpp` in `/health`); there is no engine choice. A plugin's
+inference service runs a whole model instead through `plugin_engine.rs`.
 
 ## Files
 
@@ -154,29 +152,10 @@ UI.
   speed test sends the hidden state in the shape the capture produces
   (`perf::hidden_input_layout`: `[tokens, n_embd, streams]` on a model with
   several residual streams) and `POM_SLICE_BENCH=0` turns it off; session state,
-  the choice of the `dense/llama.cpp` or `moe/q4_0` path and the relay branch. The
-  MoE runtime receives hidden states before the local decode, or transforms the
-  residual that goes to the next hop, only when the selected path is MoE; on the
-  terminal hop the residual capture also calls the MoE block before sampling the
-  answer. The forward is marked after it returns. Attention, logits and the other
-  operations stay in `LlmEngine`, which provides the remaining compute boundary.
-  The handlers publish `selected_path`, `executed_engine`, `executed_engines`,
-  `moe_executor`, `moe_executors`, `moe_executor_dtypes`,
-  `moe_executor_reason` and `moe_forward_ms`, besides the
-  `engine_mismatch`/`mixed_execution` flags in `node_timings`; `/health` publishes
-  the selected path and the effective state of the MoE executor
-  (`moe_requested`, `moe_executor`, dtypes and reason), since it does not
-  represent a request. The MoE path with an external executor does not apply the
-  runtime to the hidden states a second time: if the hook is not installed, the
-  request fails closed instead of running native and external experts. The MTP
-  context created over the metadata-only model receives the same hook in
-  `LlmEngine`; without it `llama_decode` of the `nextn` context fails and the
-  session loses MTP.
-  For the CUDA MoE executor, `infer_server` passes the compute buffers measured
-  per ordinal to the runtime, which creates a resident shard per `CUDA<n>` and
-  publishes the devices in the diagnostics. The first real route cancels the
-  opportunistic warm-up so it does not evict the working set while a request is
-  in flight.
+  and the relay branch.
+  The handlers publish `selected_path`, `executed_engine`, `executed_engines`
+  and the `engine_mismatch`/`mixed_execution` flags in `node_timings`; `/health`
+  publishes the selected path, since it does not represent a request.
   The first prefill's metadata also carries `thinking_enabled`, the Chat's
   per-inference choice. The head combines that value with `no_thinking` before the
   template, and the hub, ring and direct paths preserve it across the relays.
@@ -188,13 +167,6 @@ UI.
   shared with the gateway while there is computation in flight; because of that
   the machine's own `/api/ui/node` can publish the real load, even when the
   request came straight to the inference port.
-  `PhaseTrace` also carries `node_moe_forward_ms`, which is the cost of the
-  external forward outside `llama_decode` and closes the backend's accounting.
-  `cuda` is only published after a real NVFP4 forward; `cpu-reference` includes the
-  GGML dtypes and the reason for the missing CUDA bridge. The gateway's
-  `PhaseTrace` keeps those fields per hop and per phase; `not-run` exposes the
-  absence of execution. When the CPU runtime supports the format, it is installed
-  as an external executor, with no implicit native fallback.
   Os handlers decodificam o frame e entregam
   commands to a bounded local queue; the worker selects one entry per session and
   may call the multi-sequence decode. Each `Session` keeps its own
@@ -241,9 +213,7 @@ UI.
   and free VRAM in `webui::capacity_preview_endpoint`.
   `runtime::engine_config_from_node` stays the `NodeConfig -> EngineConfig`
   conversion used by the real load and by the assembly of the estimate's
-  parameters; `need_embeddings` stays a parameter because the real load also adds
-  `inference_path.is_moe()`, and the MoE external executor stays out of the
-  preview. The MTP reservation does not open a model nor build a speculative
+  parameters; both pass `cfg.needs_residual_export()` as `need_embeddings`. The MTP reservation does not open a model nor build a speculative
   graph: for known architectures, `fit_plan` only computes the deterministic KV of
   the `nextn` blocks from the GGUF metadata, and places it on the last device of
   the load order (from the fastest to the slowest), where the last layers sit. The
@@ -429,223 +399,9 @@ UI.
   for the cleanup during the overlap window.
   The scenario of a cut in the middle of a prefill also confirms that no hop receives
   a partial removal and that the remaining sessions are released.
-- `moe/` - the in-house experts executor, an **experimental, opt-in** path:
-  the default `inference_mode` is `dense` (llama.cpp), and this executor only
-  runs for a MoE GGUF when a deployment asks for `moe` or `auto`. Its old
-  measurement journal (`freetoken-moe.md`) was removed; git history keeps it.
-  `cache.rs` keeps a global LRU per
-  model/layer/expert/format key, with active leases and eviction only of idle ones;
-  `admission.rs` computes the budget from the measured free memory; on the CUDA path
-  the admission also keeps a reserve derived from the CUDA compute buffer measured by
-  `llama.cpp`, with a relative margin and a nominal refusal if the report does not
-  exist or the expert does not fit;
-  `format_q4_0.rs` shares the GGUF parser, the dtype inventory and the Q4_0 decoder,
-  `format_plain.rs` implements the scalar F32/F16/BF16 banks,
-  `format_legacy_quants.rs` implements Q4_1/Q5_0/Q5_1/Q8_0,
-  `format_low_bits.rs` implements MXFP4/TQ1_0/TQ2_0/Q1_0/Q2_0,
-  `format_k_quants.rs` implements Q2_K/Q3_K/Q4_K/Q5_K/Q6_K/Q8_K,
-  `format_iq_quants.rs`
-  implements IQ2_XXS/IQ2_XS/IQ3_XXS/IQ1_S/IQ4_NL/IQ3_S/IQ2_S/IQ4_XS/IQ1_M,
-  with IQ4_NL using blocks of 32 elements and the other IQ ones blocks of 256,
-  `format_nvfp4.rs` implements the NVFP4 decoder on CPU; the full trace
-  `Nvfp4Trace`/`run_trace` stays restricted to the differential test proof, while the
-  runtime consumes only the expert's output; `cuda.rs` plus
-  `cuda_kernels.cu` provide CUDA executors driven by dtype when the `cuda` feature is
-  on: NVFP4, F32 (0), F16 (1), BF16 (30), Q4_0 (2),
-  Q2_K (10), Q3_K (11), Q4_K (12), Q5_K (13), Q6_K (14), IQ3_XXS (18),
-  IQ3_S (21), IQ2_S (22), IQ4_XS (23) and MXFP4 (39). Q8_K (15) stays out because it
-  is an activation format, never an expert weight format.
-  Every FFI entry of the external executor receives the shard's ordinal and pins the
-  allocations, streams and events to that GPU, restoring the caller's current device on
-  return. The cache measures each `CUDA<n>` separately and the routes aggregate the
-  partials of the boards involved in parallel. This is mandatory because the callback
-  runs inside the scheduler and may be followed by a copy or a wait of llama.cpp on
-  another GPU.
-  The heterogeneous bridge uses descriptors per role and dtype for those formats,
-  without converting the combination into a global dtype. The common hook receives the
-  llama.cpp route already in token-major order, the physical order produced by
-  `ggml_get_rows`; `llm.rs` validates and preserves that order before the runtime. The
-  scalar bridge reuses the `format_plain.rs` payload and validates the header before the
-  kernel.
-  K-quants and IQ-quants validate the GGUF convention
-  `[columns, rows, experts]` and accept fused or separate gate/up banks before handing
-  the payload to the cache. The IQ expansion uses the linked GGML primitives, while
-  cache, router and mat-vec stay in the in-house executor.
-  `format_heterogeneous.rs` is the boundary for GGUF UD and other files that mix
-  dtypes: the inventory records each tensor per layer and role, and the decoder is
-  chosen by that tensor's dtype. The callback receives the llama.cpp fork's metadata and
-  validates name, geometry and dtype against that inventory; a divergence exposes the
-  two concrete geometries. The batched CPU execution groups the routes by expert,
-  decodes each row once and preserves the token-major order on the output, including for
-  combinations like IQ3_XXS + MXFP4 on `deepseek4`. A combination without an external
-  decoder is refused before loading, naming the dtypes, with no silent native fallback.
-  When `ffn_gate_up_exps.weight` and the split tensors coexist, the inventory follows
-  llama.cpp's priority and uses only the fused one, without counting the duplicates as a
-  second route. The K and heterogeneous loaders resolve the canonical `.scale` and
-  `.input_scale` sidecars per expert, load the values into the payload/descriptor and
-  apply the scales in the gate, up and down stages.
-  The fork's `llama_moe_reshape_route_2d` helper always materializes the route with
-  `ggml_cont` before the reshape: `ggml_is_contiguous` alone does not prove the
-  producer's area is already ready for the copy between backends. Besides that,
-  `llm.rs` refuses the executor's input and output hidden with NaN or infinity,
-  identifying the layer and index before letting the value contaminate the next hop.
-  That makes a numerical failure observable, but it does not replace the proof of the
-  CUDA kernel. `qwen35moe` keeps
-  `ffn_*_shexp` out of the inventory: the callback only receives `ffn_*_exps`, and the
-  shared expert stays in the native `build_ffn`.
-  On the load of the process's first `LoadedModel`, the server records once, on the
-  default target, the raw value of `POM_MOE_ROUTE_DIAGNOSTICS` and the effective boolean
-  of the gate, before any MoE callback. The ignored test
-  `global_callback_emits_the_diagnostic_on_an_external_thread_and_records_the_gate`
-  installs the same global dispatcher, creates a thread outside Tokio and demands the
-  default and `moe.route_diagnostic` lines on the same sink.
-  The tests `the_shared_expert_stays_out_of_the_route_inventory` and
-  `route_inventory_separates_exps_from_shexp_and_the_sidecars` verify that only the four
-  exps names ending in `.weight` enter the classification, without counting `shexp` nor
-  sidecars. The test `fused_sidecars_use_the_right_component_and_split_fallback` verifies
-  the canonical names and the 0/1 component association of the fused one, besides the
-  fallback to separate gate/up. The proof
-  `q6_k_decodes_a_real_ggml_block_against_the_reference`
-  pins GGML's `block_q6_K` convention (`ql[128]`, `qh[64]`, `scales[16]`, `d[2]` at the
-  end of the block), and the proofs of eight experts with hidden 2048 cover the
-  `gate_up` K-quant and the heterogeneous path without accepting a non-finite output.
-  The differential CUDA proof of the MoE demands a full GGUF and real CUDA GPUs,
-  therefore it stays out of the local validation and has not been run yet.
-  `bandwidth.rs` and `coexecution.rs` are compiled on the CUDA path or in the tests;
-  they turn concurrent CPU/transfer measurements into a deterministic fraction of the
-  misses, split per expert, run the two lanes in parallel and sum outputs with a
-  validated width.
-  The IQ CUDA bridge has a differential diagnostic per dtype and stage in the tests
-  `executor_cuda_iq_preserva_iq3s_iq2s_e_iq4xs_do_decoder_cpu` and
-  `cuda_iq_diagnostic_divergence_per_stage`. The bridge's implementation is not by
-  itself a proof of correctness: the CUDA proof on the test CUDA server compared IQ3_S,
-  IQ2_S and IQ4_XS against the CPU decoder in `gate_up`, the activation and `down`, with
-  no first divergence. Those three dtypes may only be published by the dispatch after
-  that proof; a future divergence must reactivate the nominal refusal instead of falling
-  silently into another format.
-  Do not use a global dtype nor add a branch per architecture or model.
-  Before loading, `MoeRuntime::external_executor_plan` publishes ownership per layer:
-  layers with a device bridge or an in-house CPU decoder have their experts omitted from
-  llama.cpp; dtypes without a device cache and heterogeneous combinations outside the
-  validated CUDA set use `CPUReference` and record the dtype in the telemetry. Only
-  NVFP4 without CUDA and without an explicit CPU request stays unavailable with a visible
-  reason. Q4_0 and Q5_K use the heterogeneous CUDA bridge when the feature is available;
-  without it the CPU decoder keeps working, but the initialization log records the
-  effective `CPUReference`, the dtypes and the reason, besides the equivalent fields on
-  `/health`. **A single dtype without a bridge is enough to drop the whole route to
-  `CPUReference`**, and dynamic quants (UD) mix dtypes per expert role: check the
-  telemetry's `dtypes` list, never the file name.
-  The fork keeps the list as metadata copied into the model and the graph chooses
-  external/native per layer, never through a global flag that could leave experts without
-  an executor.
-  The `moe_executor_diagnostics` telemetry automatically exposes, when the CUDA MoE
-  executor is active, calls, LRU hits/misses, H2D/D2H bytes and the times of allocation,
-  kernel, synchronization, release, search/admission and expert loading on the host, batch
-  preparation and the copy of the results into Rust vectors. `POM_MOE_CUDA_PROFILE` is
-  legacy: it is neither needed nor does it change the cache policy.
-  To investigate the origin of an invalid route, `POM_MOE_ROUTE_DIAGNOSTICS=1` enables
-  two adjacent lines, `callback_entry_default` on the default target and `callback_entry`
-  on the `moe.route_diagnostic` target, as the callback's first action, before any
-  validation and with no layer filter. The pair exists to prove at the same point whether
-  the event reaches the sink and whether a per-target filter removes it. Both record the
-  raw pointers and counts received. Every `false` return also emits `callback_exit` with
-  the stable reason of the path that aborted, including null arguments, geometry,
-  normalization, metadata and forward. The first call of each request receives the
-  detailed sample; any call with a non-finite route also receives that sample, even if
-  another one was already recorded. The log records the raw values of token 0 and its
-  displacements in the token-major order produced by `ggml_get_rows`, the counts declared
-  by llama.cpp and expected by POM, addresses and bytes read, the dtypes in each tensor's
-  metadata and the dtypes assumed by the callback's arguments. It also records the same
-  sample after the Rust normalization. Without the variable the instrument stays off and
-  does not alter the execution path. The normalization validates and preserves that
-  order; it must not transpose the route again. `POM_MOE_ROUTE_DIAGNOSTICS=1`
-  only turns on the callback's diagnostic logs.
-  The runtime always records the entry of layer 0 in `moe.layer_input_diagnostic`, with
-  the count/first non-finite index, the finite range, hidden and route samples, before
-  choosing CPU or CUDA. That separates upstream contamination from a failure in one
-  executor.
-  `cuda_kernels.cu` reproduces ggml's Q8_0 convention for the activations, integer
-  accumulation per NVFP4 subblock and the direct decoding of the Q4_K/Q6_K superblocs
-  with SiLU on the K path. On Q6_K, both decoders read the layout
-  `ql[128]`, `qh[64]`, `scales[16]`, `d[2]`, with `d` in the last two bytes. The CUDA
-  path groups the active experts of a route into `(expert, row)` indices;
-  after the resident cache, the weight payload is uploaded once per miss and the
-  batch receives device pointers on the hits; each lease also keeps the allocation's
-  size to validate the geometry before the K/Q6_K kernel. The heterogeneous descriptor
-  carries the rows/columns of one expert's slice, without counting
-  the whole bank, and the route derives its geometry from that slice's down. The
-  route batch for several tokens sends ids, weights and offsets once per layer and
-  aggregates the output on the device; the unitary path stays available for the
-  resident executor.
-  The route batch uses six kernel launches and two synchronizations. The profile
-  publishes `cuda_call_wall_ms` as the non-overlapping external wall of the FFI call,
-  separate from H2D, kernel, launches, synchronization, D2H and release, which are
-  internal sub-measurements. The runtime also publishes `runtime_forward_ms`,
-  `host_batch_prepare_ms`,
-  `host_result_copy_ms` and `host_aggregation_ms` to close the MoE forward's accounting
-  without adding overlapping clocks.
-  Changes in `cuda_kernels.cu` are only validated with a CUDA compilation on the machine
-  that has `nvcc`; compiling the Rust crate on macOS does not compile that file. The
-  `CudaHeterogeneousTensor` descriptor keeps explicit ABI offsets for `data`, `bytes`,
-  `dtype`, `scale`, `input_scale`,
-  `secondary_scale` and `secondary_input_scale`, besides offset and size assertions on
-  both ends.
-  The NVFP4 and K-quant unpacking still happens in the kernel on each use, but the
-  expert's quantized bytes stay resident on the device between uses when the CUDA bridge
-  and the measured budget allow it. The cold RAM cache and the hot device cache have
-  separate statistics. After any CUDA change, run the build with
-  `--features vulkan,cuda` on the CUDA server and repeat both the differential CUDA tests
-  and the real proofs `cuda_nvfp4_executor_batch_preserves_the_real_gguf_geometry`
-  and `nvfp4_matches_llama_cpp_from_first_layer_and_stage`.
-  The loaders accept both the fused `ffn_gate_up_exps.weight` and the separate
-  `ffn_gate_exps.weight` and `ffn_up_exps.weight`; `router.rs` and
-  `block.rs` do the top-k and the weighted sum in the MoE block. `runtime.rs` detects the
-  experts' dtype, selects the validated decoder and wires the block to the hidden state on
-  the unitary and batch paths. The ignored test
-  `measures_the_h2d_d2h_band_of_the_nvfp4_batch` measures H2D, D2H, kernel and external
-  wall on small and Gemma4 geometries after the device cache warms up. The profile now
-  uses two persistent CUDA slots, separate streams and pinned host buffers to alternate
-  groups of tokens; `buffer_mask`, `buffer_switches`,
-  `kernel_span_ms` and `transfer_span_ms` distinguish overlapping work from merely summed
-  work. `CudaTransferProfile` reads, on the runtime, the optional sidecar with the four
-  measured bands; the creation and persistence of the sidecar belong to the test benches,
-  and `runtime.rs` passes that profile to the NVFP4. On a CUDA NVFP4 route,
-  resident experts stay on the GPU, misses are divided by the measured fraction and the
-  CPU and GPU lanes run in parallel; the telemetry publishes each lane's calls and the
-  chosen fraction.
-  The wire uses f16 by default (f32 is a deployment option) and no weight travels; the
-  seam still does not replace attention, the other layers or the `LlmEngine`'s sampling.
-  When the CUDA bridge exists, `MoeRuntime::start_device_warmup` may walk the canonical
-  payloads per layer, expert, role and dtype on a separate thread, using the same admission
-  as the resident cache. The warm-up is the default and can be explicitly turned off with
-  `POM_MOE_WARMUP=0`, `false`, `off` or `no`. The budget per board still derives from the
-  free memory and the reserve of the measured compute buffer; when it runs out, the warmup
-  ends with `budget-exhausted`, since it is not possible to keep every expert of a large
-  model in VRAM. If the model has a `<model>.cuda-profile.json` sidecar with `bandwidth`,
-  the heterogeneous block reuses the same measured fraction to run misses on
-  overlapping CPU and GPU lanes; without a sidecar it keeps the policy exclusively CUDA and
-  does not invent a hardware constant.
-  `warmup_status`, bytes, candidates and errors arrive in
-  `moe_executor_diagnostics`. The deadline is `POM_MOE_WARMUP_MAX_MS` (30 s by default).
-  The inference callback only signals the cooperative cancellation between payloads; it does
-  not wait for the warmup thread. The `join` is reserved for an explicit warmup swap,
-  outside the hot path.
-  Sources without a device bridge neither warm up nor take experts away from llama.cpp.
-  The numerical proof `nvfp4_matches_llama_cpp_from_first_layer_and_stage` is ignored
-  because it depends on a real GGUF: with `POM_MOE_NUMERIC_MODEL` and
-  `POM_MOE_NUMERIC_ACTIVATION`, it compares layer by layer the CPU decoder's `gate`, `up`,
-  activation and `down` against llama.cpp's ggml oracle before any CUDA comparison. The
-  first divergent stage must be reported, not silently fixed.
-  On NVFP4, the parser respects the GGUF order `[input, output, experts]`: gate/up are
-  `[hidden, intermediate, experts]` and down is
-  `[intermediate, hidden, experts]`. Inverting those axes makes the runtime refuse the
-  residual with an incompatible width.
-- `executor.rs` - classifies the GGUF architecture and resolves the
-  `auto/dense/moe` mode. In `infer_server::run`, an explicit choice persisted in the
-  deploy beats `POM_INFERENCE_MODE`; `auto` still accepts that override and, without it,
-  uses the GGUF metadata. The dense path stays in `LlmEngine`, and MoE selects the
-  in-house runtime by dtype. `ExecutionEngine` is the single source of the label that goes
-  out in the telemetry; missing on an old peer it becomes unknown in the interface.
+- `executor.rs` - `ExecutionEngine`, the single source of the engine label that
+  goes out in the telemetry (`llama.cpp`, `plugin`; missing on an old peer it
+  becomes unknown in the interface), and `LLAMA_CPP_PATH`.
 - `plugin_engine.rs` - whole-model inference by a plugin's inference service
   (`RuntimeParams::inference_service`, for example `"strata"`). On the target
   node, `run` replaces `infer_server::run` inside the runtime supervisor: it
@@ -738,10 +494,8 @@ UI.
   The runtime keeps the `pom.db` for the gateway's decisions; the inference server
   authenticates internal hops through the shared `connection_key` on private networks and
   through TLS on public networks. It does not consult client API keys.
-  `NodeConfig.inference_mode` keeps the `auto`/`dense`/`moe` preference that came from
-  the deploy; `infer_server::run` hands it to the selector before loading the model. The
-  chosen field still does not replace observation: the telemetry stays the source of truth
-  about the engine that actually ran, and it leaves a divergence visible. After two
+  The telemetry stays the source of truth about the engine that actually ran, and it
+  leaves a divergence visible. After two
   consecutive `/health` answers with
   `model_loaded`,
   `spawn_health_watch` also publishes on the `Network` the effective `RuntimeCapacity`
@@ -932,10 +686,7 @@ UI.
   with backpressure before allocating a session and a `429 Retry-After` answer when the
   queue reached its limit. With `batch_window_ms=0`, the first item goes to the worker with no
   timed wait; a positive value keeps the collection window. The `/health` exposes the limits
-  and the last batch counters. `moe_health_summary`
-  keeps the observable isolation: a dense runtime publishes
-  `moe_executor=not-requested`, with no dtypes nor MoE reason; the test in the
-  `infer_server` pins that contract even when MTP is active.
+  and the last batch counters.
 - direct reply block (in both handlers, when `direct_reply_to(&meta)`
   exists) - accumulates `hop_timings` on the way (`direct::accumulate` +
   `direct::hop_entry`); tail (`next_hops` empty): spawns `direct::deliver_result`
@@ -1028,8 +779,7 @@ UI.
 `llm.rs`:
 - `LlmEngine::load_with_cache` - loading with `EngineConfig` (total n_ctx, n_batch,
   n_gpu_layers, offload_kqv, fit_memory, its configurable margin per GPU,
-  max_sessions and
-  `moe_external_executor`). The runtime turns the per-session context into
+  and max_sessions). The runtime turns the per-session context into
   `n_ctx * max_sessions` before creating the engine. With
   `fit_memory=true` and the default of GPU layers (`99`), it calls llama.cpp's
   `llama_rs_fit_params` bridge before loading the weights. Before that, it queries through
@@ -1053,10 +803,7 @@ UI.
   split between single-session contexts) still **has no caller**: the server loads one context
   with `load`, and the `#[allow(dead_code)]` on the `pool` is the mark of that. `LlmEngine::load_with_cache` uses the runtime's `ModelCache` to create only a new
   context when the identity of the slice and of the weight loading did not change; KV,
-  context, session, batch and sampling parameters do not force a re-read of the GGUF. The
-  `moe_external_executor` flag is part of that identity: when on, the fork keeps the metadata
-  of the routed experts in a `no_alloc` context, with no weight buffer; a dense/native load
-  never shares that metadata-only model.
+  context, session, batch and sampling parameters do not force a re-read of the GGUF.
 - `LlmEngine::placement` / `LlmEngine::context_memory` - where the layers and the
   KV cache **actually** landed, from llama.cpp, through
   `llama_rs_model_placement_json` and `llama_rs_context_memory_json`

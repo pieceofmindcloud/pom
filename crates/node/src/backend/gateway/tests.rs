@@ -4,7 +4,7 @@ use super::*;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::{json, Value};
+    use serde_json::json;
     use tower::ServiceExt;
 
     async fn inference_auth_probe(_: crate::auth::ApiKeyAuth) -> StatusCode {
@@ -2076,51 +2076,6 @@ mod tests {
         );
     }
 
-    /// Live regression for the captain's Gemma4 request. Set
-    /// `POM_FTK_E2E_URL` to a gateway before running this ignored test; it is
-    /// deliberately not part of the default suite because it consumes a real
-    /// model and GPU time.
-    #[tokio::test]
-    #[ignore = "requires a live Gemma4 MoE gateway"]
-    async fn gemma4_hello_world_request_uses_moe_and_stops_on_its_turn() {
-        let base = std::env::var("POM_FTK_E2E_URL")
-            .expect("POM_FTK_E2E_URL must point at the live gateway");
-        let model = std::env::var("POM_FTK_E2E_MODEL")
-            .unwrap_or_else(|_| "Gemma4-26b-NVFP4.gguf".to_string());
-        let response = reqwest::Client::new()
-            .post(format!("{base}/api/generate"))
-            .json(&json!({
-                "model": model,
-                "prompt": "Escreva hello world 10 vezes.",
-                "max_tokens": 64
-            }))
-            .send()
-            .await
-            .expect("gateway request");
-        assert!(
-            response.status().is_success(),
-            "gateway returned {}",
-            response.status()
-        );
-        let body: Value = response.json().await.expect("JSON generation response");
-
-        assert!(body["tokens_generated"].as_u64().unwrap_or(513) <= 64);
-        assert!(body["trace"]["input_tokens"].as_u64().unwrap_or(0) > 0);
-        assert!(body["trace"]["complete"].as_bool().unwrap_or(false));
-        for phase in ["prefill", "decode"] {
-            let phase = &body["trace"]["hops"][0][phase];
-            assert_eq!(phase["executed_engine"], "moe");
-            assert_eq!(phase["engine_mismatch"], false);
-        }
-        let text = body["response"].as_str().unwrap_or_default();
-        for marker in ["<|im_start|>", "<|im_end|>", "<|channel>", "<channel|>"] {
-            assert!(
-                !text.contains(marker),
-                "raw template marker leaked: {marker}"
-            );
-        }
-    }
-
     #[test]
     fn token_estimate_is_pessimistic() {
         // 3 chars per token errs high, which is what a crash guard needs.
@@ -2573,7 +2528,6 @@ mod budget_tests {
             peer_count: 1,
             peer_index: 0,
             primary: true,
-            inference_mode: Default::default(),
             inference_service: None,
             engine_settings: Default::default(),
             inference_role: Default::default(),
@@ -4048,7 +4002,6 @@ pub(crate) mod testkit {
             peer_count: 2,
             peer_index: 0,
             primary: true,
-            inference_mode: Default::default(),
             inference_service: None,
             engine_settings: Default::default(),
             inference_role: Default::default(),

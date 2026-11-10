@@ -173,9 +173,8 @@ fn tensor_parallel_plans_disable_llama_fit() {
 }
 
 #[test]
-fn inference_mode_round_trips_for_whole_shards_and_tensor_parallel() {
+fn params_round_trip_for_whole_shards_and_tensor_parallel() {
     let mut requested = RuntimeParams::default();
-    requested.inference_mode = InferenceMode::Moe;
     requested.mtp_cpu_fallback_enabled = false;
     requested.unload_if_idle = true;
     requested.idle_minutes = 2;
@@ -195,8 +194,7 @@ fn inference_mode_round_trips_for_whole_shards_and_tensor_parallel() {
 
 #[test]
 fn moe_capability_is_reported_for_whole_shards_and_tensor_parallel() {
-    let mut params = RuntimeParams::default();
-    params.inference_mode = InferenceMode::Moe;
+    let params = RuntimeParams::default();
 
     let mut whole = whole_machine("whole", 900_000, true);
     whole.held[0].is_moe = true;

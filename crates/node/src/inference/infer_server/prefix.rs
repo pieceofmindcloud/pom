@@ -225,8 +225,6 @@ mod decision_prefix_tests {
             moe_experts_in_ram: false,
             moe_cache_mib: 0,
             rs_seq_window: 0,
-            moe_external_executor: false,
-            moe_external_executor_layers: Vec::new(),
             mmproj_path: None,
             mtp_draft_path: None,
         };
@@ -851,8 +849,6 @@ mod slot_count_tests {
 
 pub(crate) struct InferState {
     pub(super) engine: LlmEngine,
-    pub(super) moe: Option<Arc<crate::moe::runtime::MoeRuntime>>,
-    pub(super) moe_fallback_reason: Option<String>,
     pub(super) sessions: HashMap<String, Session>,
     pub(super) seq_pool: Vec<u32>,
     pub(super) max_sessions: u32,
@@ -896,7 +892,6 @@ pub(crate) struct InferState {
     /// "seq pool exhausted".
     pub(super) slot_freed: Arc<tokio::sync::Notify>,
     pub(super) original_block_count: Option<u32>,
-    pub(super) inference_path: crate::executor::InferencePath,
     /// Confidence cutoff of the MTP draft - see `NodeConfig::mtp_min_probability`.
     pub(super) mtp_min_probability: f32,
     /// TP identity of this node. Rank 0 needs the member list to put the
@@ -910,18 +905,6 @@ pub(crate) type SharedState = Arc<Mutex<InferState>>;
 
 pub(super) fn use_chat_template(requested: Option<bool>, configured_default: bool) -> bool {
     requested.unwrap_or(configured_default)
-}
-
-pub(super) fn record_terminal_engine(
-    timings: &mut NodeTimings,
-    path: crate::executor::InferencePath,
-    moe_forwarded: bool,
-) {
-    if path.is_moe() && moe_forwarded {
-        timings.record_engine(crate::executor::ExecutionEngine::Moe);
-    } else {
-        timings.record_engine(crate::executor::ExecutionEngine::LlamaCpp);
-    }
 }
 
 /// Records in the meta what this peer **did** with the retained prefix.

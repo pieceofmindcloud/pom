@@ -69,7 +69,6 @@ pub(crate) fn step_blocking(
             None,
         );
     }
-    timings.selected_path = s.inference_path;
 
     let setup_started = Instant::now();
     // This turn's generation runs on a copy of the prompt's KV: from here on
@@ -115,22 +114,10 @@ pub(crate) fn step_blocking(
             bail!("{error}");
         }
     }
-    let input_was_hidden = tensor.is_some();
-    let selected_moe = s.inference_path.is_moe();
     let mtp_verification = speculate
         .as_ref()
         .is_some_and(|spec| spec.source == DraftSource::Mtp)
         || mtp_k.is_some();
-    let mut moe_forwarded = false;
-    let tensor = if let Some((hidden, shape)) = tensor {
-        let hidden = s.apply_moe_hidden(hidden, shape[0], capture_block, &mut timings)?;
-        moe_forwarded = selected_moe
-            && s.engine.moe_external_executor_enabled()
-            && !s.engine.moe_hook_enabled();
-        Some((hidden, shape))
-    } else {
-        None
-    };
     if let Some((hidden, shape)) = tensor {
         // Middle/last peer receiving a hidden state. `decode_hidden` already
         // handles any `n_tokens` — a speculative batch needs no special
@@ -255,23 +242,7 @@ pub(crate) fn step_blocking(
             mtp_k_echo = Some(k);
         }
     }
-    if is_last
-        && selected_moe
-        && s.engine.moe_external_executor_enabled()
-        && !moe_forwarded
-        && !s.engine.moe_hook_enabled()
-    {
-        let residual = s.engine.take_residual(n_tokens)?;
-        let _ = s.apply_moe_hidden(residual.values, n_tokens, capture_block, &mut timings)?;
-        moe_forwarded = true;
-    }
-    timings.merge_engine_moe(&engine_timing);
-    moe_forwarded |= engine_timing.moe_forward_us != 0;
-    if is_last {
-        record_terminal_engine(&mut timings, s.inference_path, moe_forwarded);
-    } else {
-        timings.record_engine(crate::executor::ExecutionEngine::LlamaCpp);
-    }
+    timings.record_engine(crate::executor::ExecutionEngine::LlamaCpp);
     timings.decode_us += decode_started.elapsed().as_micros() as u64;
     s.perf.observe_decode(decode_started.elapsed(), n_tokens);
     if let Some(context) = profiling.as_ref() {
@@ -678,11 +649,7 @@ pub(crate) fn step_blocking(
     }
 
     let residual_started = Instant::now();
-    let mut residual = s.engine.take_residual(n_tokens)?;
-    if !input_was_hidden {
-        residual.values =
-            s.apply_moe_hidden(residual.values, n_tokens, capture_block, &mut timings)?;
-    }
+    let residual = s.engine.take_residual(n_tokens)?;
     timings.residual_us += residual_started.elapsed().as_micros() as u64;
     let mut reply_meta = json!({"done": false});
     // Whoever called us needs this to keep threading it toward the tail —

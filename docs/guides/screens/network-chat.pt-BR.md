@@ -17,7 +17,7 @@ O Chat da rede é uma conversa entre as máquinas da rede, não com um modelo: a
 ### Rede
 A sala que todo membro da rede lê. Mensagens e arquivos viajam pela própria rede, e a máquina principal os valida.
 ### Lobby
-A sala do administrador com as máquinas que estão pedindo para entrar. Cada candidata tem uma conversa própria, com **Aprovar** e **Recusar** acima das mensagens. Só aparece quando a rede mantém o lobby aberto.
+A sala do administrador com as máquinas que estão pedindo para entrar. Cada candidata tem uma conversa própria, com **Aprovar** e **Recusar** acima das mensagens. Só aparece quando a rede mantém o lobby aberto. Um visitante que informou a rede de origem ganha um campo **Crédito** ao lado deles: um valor digitado ali é creditado na conta da rede dele ao aprovar (veja Pagamentos).
 :::
 
 :::note Baixa prioridade de propósito

@@ -87,6 +87,12 @@ and requests are refused.
 
 ## The visitor's side
 
+`/v1/models` lists each charged model's `pricing` (OpenRouter's `prompt` and
+`completion` per token, in credits, plus the micro-credit figures). A Chat
+request refused with 402 says the network's credit ran out and links to the
+Credit page.
+
+
 The visitor reads `x_pom.payment` at the end of each relayed answer
 (`delegation::tap_payment`) and records it in `x402_spend` per host network.
 `/config/credit` (`apps/frontend/src/routes/MyCredit.tsx`) shows the balance,
@@ -98,7 +104,8 @@ declines it on the Payments screen.
 ## Routes
 
 - `GET /api/ui/payments` (principal): switch, prices, accounts with their
-  visitors, credit requests, last 200 ledger rows.
+  visitors, credit requests, income by cycle, visitors that would be cut off
+  (`cut_off`), last 200 ledger rows.
 - `POST /api/ui/payments/grant` (principal): `{account, amount_micro, note?}`.
 - `POST /api/ui/payments/decide` (principal): `{id, decision: approve|decline, amount_micro?}`.
 - `GET /api/ui/payments/balance`, `POST /api/ui/payments/request` (local, a visitor's own).
@@ -108,6 +115,27 @@ declines it on the Payments screen.
   home principal).
 
 The admin screen is `/config/payments` (`apps/frontend/src/routes/Payments.tsx`).
+
+## Compatibility (for the release notes)
+
+- Visitors announce `gateway/client-v1`. A visitor of an earlier release does
+  not delegate, so a network running `member_gateway_only` (required to
+  charge) cuts it off; the Payments screen lists such visitors in sight and
+  asks twice before turning charging on.
+- Everything else is additive: optional fields on network settings, the
+  admission request and record, `RuntimeParams.pricing`, `GenSummary` and
+  `/v1/models` (`pricing`); new tables and routes. A network that does not
+  charge behaves as before.
+
+## Income beside payouts
+
+A settlement whose request was metered names the bundle and cycle in the
+ledger row's detail (`{"bundle","cycle"}`). `GET /api/ui/payments` returns
+`cycles`: income per cycle and per account, beside the local metering
+plugin's `rpc.overview` for that cycle (statements' payouts once closed,
+earnings so far while open, `null` without the plugin), and the income
+charged with metering off. Payouts are in the metering ledger's units, not
+credits.
 
 ## Limits
 

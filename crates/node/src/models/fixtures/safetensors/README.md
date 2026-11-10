@@ -25,5 +25,8 @@ header length, then the header itself), so no weights were downloaded.
 | `controlnet` | controlnet | `comfyanonymous/ControlNet-v1-1_fp16_safetensors`, `control_v11p_sd15_canny_fp16.safetensors` |
 | `clip_vision` | clip_vision | `Comfy-Org/sigclip_vision_384`, `sigclip_vision_patch14_384.safetensors` |
 | `esrgan_upscale` | upscale | `Comfy-Org/Real-ESRGAN_repackaged`, `RealESRGAN_x4plus.safetensors` |
+| `minimax_h3_diffusion` | diffusion | `Comfy-Org/MiniMax-H3`, `diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors` |
+| `minimax_h3_video_vae` | vae | `Comfy-Org/MiniMax-H3`, `vae/minimax_h3_video_vae_int8_convrot.safetensors` |
+| `minimax_h3_audio_vae` | vae | `Comfy-Org/MiniMax-H3`, `vae/minimax_h3_audio_vae_fp32.safetensors` |
 
 All repositories are on Hugging Face (`https://huggingface.co/<repo>/resolve/main/<file>`).

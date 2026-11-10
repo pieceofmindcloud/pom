@@ -474,8 +474,8 @@ pub(crate) fn finish_bundle(
     answers: &[Option<String>],
     prompt: &[i32],
     output: &[i32],
-) {
-    let Some(ctx) = context() else { return };
+) -> Option<(String, u64)> {
+    let ctx = context()?;
     let hops = receipt::assemble_hops(plan, &ticket.bnd, answers, prompt);
     for hop in &hops {
         if let receipt::HopStatus::Unmetered { reason } = &hop.status {
@@ -505,14 +505,16 @@ pub(crate) fn finish_bundle(
         Ok(token) => token,
         Err(error) => {
             warn!("metering: countersigning the bundle failed: {error}");
-            return;
+            return None;
         }
     };
     if let Err(error) = tokens_store(database, &claims.bid, cyc, prompt, output)
         .and_then(|_| outbox_put(database, &claims.bid, cyc, &token))
     {
         warn!("metering: queuing the bundle failed: {error}");
+        return None;
     }
+    Some((claims.bid, cyc))
 }
 
 async fn deliver_outbox(state: &GatewayState) {

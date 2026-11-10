@@ -363,15 +363,111 @@ pub(crate) async fn overview(State(state): State<GatewayState>) -> Response {
         })
         .unwrap_or_default();
     Json(json!({
+        "cut_off": visitors_cut_off(&state).await,
         "enabled": settings.payments.enabled,
         "inference_access": settings.inference_access,
         "prices": settings.payments.prices,
         "principal": is_principal(&state),
         "accounts": accounts,
         "requests": credit_requests(&state),
+        "cycles": cycles(&state).await,
         "ledger": ledger,
     }))
     .into_response()
+}
+
+/// Income per metering cycle (the settlements naming a bundle of that
+/// cycle) beside what the metering ledger pays the machines for the same
+/// cycle, newest first; settlements without a bundle (metering off) are
+/// totalled apart.
+async fn cycles(state: &GatewayState) -> Value {
+    let rows: Vec<(String, i64, Option<String>)> = state
+        .database
+        .with_read("payments income", |c| {
+            let mut stmt = c.prepare(
+                "SELECT key_id, amount_micro, detail_json FROM x402_ledger WHERE kind = 'settle' ORDER BY id DESC LIMIT 20000",
+            )?;
+            let rows = stmt
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        })
+        .unwrap_or_default();
+    let (by_cycle, unmetered) = income_by_cycle(&rows);
+    let mut list = Vec::new();
+    for (cycle, (income, accounts)) in by_cycle.into_iter().rev().take(12) {
+        let payouts = cycle_payouts(state, cycle).await;
+        list.push(json!({
+            "cycle": cycle,
+            "income_micro": income,
+            "accounts": accounts,
+            "payouts": payouts,
+        }));
+    }
+    json!({ "list": list, "unmetered_income_micro": unmetered })
+}
+
+/// `(cycle -> (income, account -> income), income without a cycle)`.
+pub(crate) fn income_by_cycle(
+    rows: &[(String, i64, Option<String>)],
+) -> (
+    std::collections::BTreeMap<u64, (i64, std::collections::BTreeMap<String, i64>)>,
+    i64,
+) {
+    let mut by_cycle: std::collections::BTreeMap<u64, (i64, std::collections::BTreeMap<String, i64>)> = Default::default();
+    let mut unmetered = 0i64;
+    for (account, amount, detail) in rows {
+        let cycle = detail
+            .as_deref()
+            .and_then(|d| serde_json::from_str::<Value>(d).ok())
+            .and_then(|d| d["cycle"].as_u64());
+        match cycle {
+            Some(cycle) => {
+                let entry = by_cycle.entry(cycle).or_default();
+                entry.0 += amount;
+                *entry.1.entry(account.clone()).or_default() += amount;
+            }
+            None => unmetered += amount,
+        }
+    }
+    (by_cycle, unmetered)
+}
+
+/// What the local metering ledger pays for `cycle`: the statements' payouts
+/// once the cycle closed, the earnings so far otherwise. `None` without the
+/// metering plugin on this node.
+async fn cycle_payouts(state: &GatewayState, cycle: u64) -> Option<Value> {
+    let reply = state
+        .plugins
+        .query_audit(
+            crate::metering::PLUGIN_CODE,
+            "rpc.overview",
+            json!({ "params": { "cycle": cycle }, "profile": "admin", "node_id": state.network.node_id }),
+        )
+        .await?;
+    let overview = &reply["overview"];
+    let nodes = overview["nodes"].as_array()?;
+    let sum = |field: &str| -> f64 { nodes.iter().filter_map(|n| n["statement"][field].as_f64()).sum() };
+    Some(json!({
+        "closed": overview["closed"],
+        "payout": sum("payout"),
+        "earnings": sum("earnings"),
+        "nodes": nodes.len(),
+    }))
+}
+
+/// The visitors in sight that cannot go through an entry node (an older
+/// release, without `gateway/client-v1`): `member_gateway_only` cuts them off.
+pub(crate) async fn visitors_cut_off(state: &GatewayState) -> Vec<Value> {
+    state
+        .network
+        .alive_peers()
+        .await
+        .into_iter()
+        .filter(|p| crate::gateway::peer_is_visitor(state, p))
+        .filter(|p| !p.inference_frame_capabilities.iter().any(|c| c == crate::pipeline::CAP_GATEWAY_CLIENT))
+        .map(|p| json!({ "node_id": p.node_id, "name": p.hostname, "version": p.pom_version }))
+        .collect()
 }
 
 #[derive(Deserialize)]
@@ -653,6 +749,21 @@ mod tests {
         assert_eq!(set["m"], p(1, 2));
         assert!(with_price(&set, "m", p(1, 2)).is_none());
         assert!(with_price(&set, "m", p(0, 0)).unwrap().is_empty());
+    }
+
+    #[test]
+    fn income_lines_up_by_the_cycle_its_bundle_names() {
+        let rows = vec![
+            ("net:a".to_string(), 10, Some(r#"{"bundle":"b1","cycle":7}"#.to_string())),
+            ("net:b".to_string(), 5, Some(r#"{"bundle":"b2","cycle":7}"#.to_string())),
+            ("net:a".to_string(), 3, Some(r#"{"bundle":"b3","cycle":8}"#.to_string())),
+            ("net:a".to_string(), 2, None),
+        ];
+        let (by_cycle, unmetered) = income_by_cycle(&rows);
+        assert_eq!(by_cycle[&7].0, 15);
+        assert_eq!(by_cycle[&7].1["net:b"], 5);
+        assert_eq!(by_cycle[&8].0, 3);
+        assert_eq!(unmetered, 2);
     }
 
     #[test]

@@ -2324,8 +2324,10 @@ async fn generate_measured_stream(
         lease.discard();
         release_sessions_metered(&plan, &session_id, &state.peer_http, meter.as_ref()).await;
     }
-    if let Some(meter) = meter {
-        meter.finish(&state, &plan);
+    let bundle = meter.and_then(|meter| meter.finish(&state, &plan));
+    let mut terminal = terminal;
+    if let Some(GenEvent::Done(summary)) = terminal.as_mut() {
+        summary.metering_bundle = bundle;
     }
 
     if let Some(event) = terminal {
@@ -2782,7 +2784,7 @@ async fn collect_plugin_receipts(state: &GatewayState, plan: &PipelinePlan, code
             meter.record(index, &answer);
         }
     }
-    meter.finish(state, plan);
+    let _ = meter.finish(state, plan);
 }
 
 /// The receipts of one metered turn, filled by the lifecycle calls
@@ -2837,7 +2839,7 @@ impl MeterCollect {
     /// Assembles, countersigns and queues the bundle. The prompt the head
     /// checked against is the head's own sequence: the gateway holds text,
     /// not token ids.
-    pub(super) fn finish(self, state: &GatewayState, plan: &PipelinePlan) {
+    pub(super) fn finish(self, state: &GatewayState, plan: &PipelinePlan) -> Option<(String, u64)> {
         let steps: Vec<metering_core::receipt::StepRef> = plan
             .steps
             .iter()
@@ -2848,7 +2850,7 @@ impl MeterCollect {
             .collect();
         let answers = self.answers.into_inner().unwrap_or_default();
         let tokens = self.tokens.into_inner().ok().flatten().unwrap_or_default();
-        crate::metering::finish_bundle(&state.database, &self.ticket, &steps, &answers, &tokens, &[]);
+        crate::metering::finish_bundle(&state.database, &self.ticket, &steps, &answers, &tokens, &[])
     }
 }
 

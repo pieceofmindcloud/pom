@@ -1994,6 +1994,7 @@ mod tests {
     fn audit_status_distinguishes_length_from_transport_partial() {
         let summary = |finish_reason: Option<&str>, partial: bool| GenSummary {
             payment: None,
+            metering_bundle: None,
             source: "pipeline:node-a".into(),
             tokens_generated: 4000,
             reasoning_tokens: 0,

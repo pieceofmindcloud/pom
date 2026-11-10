@@ -1257,6 +1257,7 @@ pub(crate) async fn generate(
                 );
                 let summary = GenSummary {
                     payment: None,
+                    metering_bundle: None,
                     source: format!("pipeline:{}", shown_plan.hop_chain()),
                     tokens_generated: generated,
                     reasoning_tokens,

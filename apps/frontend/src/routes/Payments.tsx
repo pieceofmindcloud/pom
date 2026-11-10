@@ -20,6 +20,8 @@ import type { NetworkInfoView } from "../lib/types";
 
 type Price = { in_micro_per_1k: number; out_micro_per_1k: number };
 type Overview = {
+  /** Visitors in sight on an older release: turning charging on cuts them off. */
+  cut_off: { node_id: string; name: string; version: string }[];
   enabled: boolean;
   inference_access: string;
   prices: Record<string, Price>;
@@ -39,6 +41,15 @@ type Overview = {
     status: string;
     at: string;
   }[];
+  cycles: {
+    list: {
+      cycle: number;
+      income_micro: number;
+      accounts: Record<string, number>;
+      payouts: { closed: boolean; payout: number; earnings: number; nodes: number } | null;
+    }[];
+    unmetered_income_micro: number;
+  };
   ledger: { account: string; kind: string; amount_micro: number; detail: string | null; at: string }[];
 };
 
@@ -62,6 +73,7 @@ export function Payments() {
   const [enabled, setEnabled] = useState(false);
   const [prices, setPrices] = useState<{ model: string; input: string; output: string }[]>([]);
   const [saving, setSaving] = useState(false);
+  const [cutOffSeen, setCutOffSeen] = useState(false);
   const [grantAccount, setGrantAccount] = useState("");
   const [grantAmount, setGrantAmount] = useState("");
   const [granting, setGranting] = useState(false);
@@ -80,6 +92,13 @@ export function Payments() {
   }, [overview.data]);
 
   async function save() {
+    // Turning charging on cuts off the visitors that cannot delegate: the
+    // first press shows them, the second confirms.
+    const cutting = enabled && !overview.data?.enabled && (overview.data?.cut_off.length ?? 0) > 0;
+    if (cutting && !cutOffSeen) {
+      setCutOffSeen(true);
+      return;
+    }
     const network = info.data?.network as unknown as Record<string, unknown> | undefined;
     if (!network) return;
     setSaving(true);
@@ -177,9 +196,22 @@ export function Payments() {
               </Button>
             </div>
           </div>
+          {enabled && !data.enabled && data.cut_off.length > 0 && (
+            <div data-testid="payments-cut-off" className="rounded-lg border border-amber/40 bg-amber/10 p-3 text-sm">
+              <div className="font-medium text-amber">{t("payments.cutOffTitle", { count: data.cut_off.length })}</div>
+              <div className="mt-1 text-muted">{t("payments.cutOffHint")}</div>
+              <ul className="mt-2 list-disc pl-5 text-xs">
+                {data.cut_off.map((v) => (
+                  <li key={v.node_id}>
+                    {v.name || v.node_id.slice(0, 12)} <span className="text-faint">{v.version}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           <div>
             <Button variant="primary" icon={<Save className="h-4 w-4" />} loading={saving} disabled={!data.principal} onClick={() => void save()}>
-              {t("payments.save")}
+              {cutOffSeen && enabled && !data.enabled && data.cut_off.length > 0 ? t("payments.saveAnyway") : t("payments.save")}
             </Button>
           </div>
         </div>
@@ -257,6 +289,39 @@ export function Payments() {
           </div>
         </Panel>
       )}
+      <Panel>
+        <PanelHeader title={t("payments.cycles")} subtitle={t("payments.cyclesHint")} />
+        <div className="px-4 pb-4">
+          {data.cycles.list.length === 0 ? (
+            <div className="text-sm text-muted">{t("payments.noCycles")}</div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead className="text-left text-xs text-muted">
+                <tr><th>{t("payments.cycle")}</th><th>{t("payments.income")}</th><th>{t("payments.payouts")}</th><th>{t("payments.visitorNetworks")}</th></tr>
+              </thead>
+              <tbody>
+                {data.cycles.list.map((c) => (
+                  <tr key={c.cycle} className="border-t border-line">
+                    <td className="py-1.5 font-mono text-xs">{c.cycle}</td>
+                    <td>{credits(c.income_micro)}</td>
+                    <td>
+                      {c.payouts == null
+                        ? t("payments.payoutsUnknown")
+                        : c.payouts.closed
+                          ? c.payouts.payout.toLocaleString(undefined, { maximumFractionDigits: 4 })
+                          : t("payments.payoutsOpen", { earnings: c.payouts.earnings.toLocaleString(undefined, { maximumFractionDigits: 4 }) })}
+                    </td>
+                    <td className="text-xs">{Object.keys(c.accounts).length}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          {data.cycles.unmetered_income_micro > 0 && (
+            <div className="mt-2 text-xs text-muted">{t("payments.unmeteredIncome", { amount: credits(data.cycles.unmetered_income_micro) })}</div>
+          )}
+        </div>
+      </Panel>
       <Panel>
         <PanelHeader title={t("payments.ledger")} />
         <div className="px-4 pb-4">

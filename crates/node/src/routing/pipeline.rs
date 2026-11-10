@@ -200,6 +200,10 @@ pub const CAP_LINK_STREAM: &str = "transport/link-v1";
 /// (`POST /v1/gateway/delegate`, `crate::delegation`). Every member announces
 /// it; the visitor keeps those the network's `entry_nodes` policy allows.
 pub const CAP_GATEWAY_DELEGATE: &str = "gateway/delegate-v1";
+/// Announced by a visitor that hands its requests to an entry node when the
+/// network asks it to. A visitor without it (an older release) is cut off by
+/// `inference_access = member_gateway_only` (`docs/subsystems/payments.md`).
+pub const CAP_GATEWAY_CLIENT: &str = "gateway/client-v1";
 /// The node signs GPU work receipts in the session lifecycle answers when
 /// the gateway hands a bundle nonce (`crate::metering`).
 pub const CAP_METERING_RECEIPT: &str = "metering/receipt-v1";

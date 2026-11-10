@@ -471,10 +471,13 @@ pub const REDISCOVERY_INTERVAL: Duration = Duration::from_secs(30);
 pub const REDISCOVERY_GIVE_UP: Duration = Duration::from_secs(90);
 
 /// Adds the delegation capability to a member's announce: every node that is
-/// not a visitor can be an entry node (`crate::delegation`).
+/// not a visitor can be an entry node (`crate::delegation`), and a visitor
+/// says it delegates when asked to.
 fn with_delegation(profile: crate::profile::NodeProfile, mut caps: Vec<String>) -> Vec<String> {
     if profile != crate::profile::NodeProfile::Visitor {
         caps.push(crate::pipeline::CAP_GATEWAY_DELEGATE.into());
+    } else {
+        caps.push(crate::pipeline::CAP_GATEWAY_CLIENT.into());
     }
     caps
 }

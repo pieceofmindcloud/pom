@@ -1754,6 +1754,7 @@ mod tests {
     fn stop_reason_reflects_the_limit_and_tool_calls() {
         let summary = |n: u32| GenSummary {
             payment: None,
+            metering_bundle: None,
             source: "pipeline:a→b".into(),
             tokens_generated: n,
             reasoning_tokens: 0,

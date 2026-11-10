@@ -1008,6 +1008,10 @@ pub struct GenSummary {
     /// balance_micro}`), set at the settlement (`crate::delegation::settle`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub payment: Option<serde_json::Value>,
+    /// The metering bundle of the request and its cycle, when metered: the
+    /// settlement names it so income lines up with payouts.
+    #[serde(skip)]
+    pub metering_bundle: Option<(String, u64)>,
 }
 
 /// Performance summary of a request, aggregated over the whole pipeline.
@@ -1262,6 +1266,7 @@ pub(super) fn summary_for(
     trace.refresh_telemetry(total_ms);
     GenSummary {
         payment: None,
+        metering_bundle: None,
         source: format!(
             "pipeline:{}{}",
             plan.hop_chain(),

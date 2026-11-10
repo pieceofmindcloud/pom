@@ -479,6 +479,27 @@ struct ModelObject {
     /// gateway has no loaded deployment from which to read the limit.
     context_length: Option<u32>,
     top_provider: ModelProviderLimits,
+    /// What a visitor pays for the model when the network charges visitors
+    /// (`docs/subsystems/payments.md`), OpenRouter's `prompt`/`completion`
+    /// per token in the network's credits. Absent: free.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pricing: Option<serde_json::Value>,
+}
+
+/// The `pricing` of `id` under `settings`, when the network charges for it.
+pub(crate) fn model_pricing(settings: &crate::config::NetworkSettings, id: &str) -> Option<serde_json::Value> {
+    if !settings.payments.enabled {
+        return None;
+    }
+    let price = settings.payments.prices.get(crate::deployment::split_selector(id).0)?;
+    let per_token = |micro_per_1k: i64| format!("{}", micro_per_1k as f64 / 1e9);
+    Some(json!({
+        "prompt": per_token(price.in_micro_per_1k),
+        "completion": per_token(price.out_micro_per_1k),
+        "unit": "credit",
+        "in_micro_per_1k": price.in_micro_per_1k,
+        "out_micro_per_1k": price.out_micro_per_1k,
+    }))
 }
 
 #[derive(Debug, Serialize)]
@@ -510,6 +531,7 @@ fn model_object(
             context_length,
             max_completion_tokens,
         },
+        pricing: None,
     }
 }
 
@@ -581,13 +603,17 @@ pub(crate) async fn model_ids(state: &GatewayState) -> Vec<String> {
 async fn list_models(_auth: ApiKeyAuth, State(state): State<GatewayState>) -> impl IntoResponse {
     let created = chrono::Utc::now().timestamp();
     let peers = state.all_peers().await;
+    let settings = crate::payments::runtime::settings(&state).await;
     let mut data = Vec::new();
     for id in model_ids_from_peers(&peers) {
+        let pricing = model_pricing(&settings, &id);
         let (context_length, max_completion_tokens) = state
             .advertised_output_limits_from_peers(&peers, Some(&id))
             .await;
         let vision = crate::webui::model_vision_supported(&state, &id).await;
-        data.push(model_object(id, created, context_length, max_completion_tokens, vision));
+        let mut model = model_object(id, created, context_length, max_completion_tokens, vision);
+        model.pricing = pricing;
+        data.push(model);
     }
 
     let first_id = data.first().map(|model| model.id.clone());
@@ -615,17 +641,10 @@ async fn get_model(
             .advertised_output_limits_from_peers(&peers, Some(&id))
             .await;
         let vision = crate::webui::model_vision_supported(&state, &id).await;
-        (
-            cors_headers(),
-            Json(model_object(
-                id,
-                chrono::Utc::now().timestamp(),
-                context_length,
-                max_completion_tokens,
-                vision,
-            )),
-        )
-            .into_response()
+        let pricing = model_pricing(&crate::payments::runtime::settings(&state).await, &id);
+        let mut model = model_object(id, chrono::Utc::now().timestamp(), context_length, max_completion_tokens, vision);
+        model.pricing = pricing;
+        (cors_headers(), Json(model)).into_response()
     } else {
         error_response(
             StatusCode::NOT_FOUND,
@@ -2856,6 +2875,7 @@ mod tests {
     fn finish_reason_reflects_the_limit_and_tool_calls() {
         let summary = |n: u32| crate::gateway::GenSummary {
             payment: None,
+            metering_bundle: None,
             source: "pipeline:a→b".into(),
             tokens_generated: n,
             reasoning_tokens: 0,
@@ -3111,6 +3131,7 @@ mod tests {
     async fn a_partial_stream_ends_in_an_error_after_the_salvaged_text() {
         let mut summary = crate::gateway::GenSummary {
             payment: None,
+            metering_bundle: None,
             source: "pipeline:a (partial)".into(),
             tokens_generated: 1,
             reasoning_tokens: 0,
@@ -3155,6 +3176,7 @@ mod tests {
     fn final_stream_chunk_carries_generation_summary() {
         let summary = crate::gateway::GenSummary {
             payment: None,
+            metering_bundle: None,
             source: "pipeline:a→b".into(),
             tokens_generated: 12,
             reasoning_tokens: 5,
@@ -3198,4 +3220,19 @@ mod tests {
         assert_eq!(payload["x_pom"]["finish_reason"], "length");
         assert_eq!(payload["x_pom"]["partial"], true);
     }
+
+    #[test]
+    fn a_charged_model_lists_its_price_per_token() {
+        let mut settings = crate::config::NetworkSettings::default();
+        settings.payments.prices.insert(
+            "m".into(),
+            crate::config::ModelPrice { in_micro_per_1k: 300_000, out_micro_per_1k: 1_500_000 },
+        );
+        assert!(model_pricing(&settings, "m").is_none(), "free while charging is off");
+        settings.payments.enabled = true;
+        let price = model_pricing(&settings, "m@d-0123abcd").unwrap();
+        assert_eq!((price["prompt"].as_str(), price["completion"].as_str()), (Some("0.0003"), Some("0.0015")));
+        assert!(model_pricing(&settings, "other").is_none());
+    }
+
 }

@@ -195,7 +195,7 @@ function ModelIntroMark({ model }: { model: string }) {
   return <EventMark message={{ id: "model-at-start", role: "event", content: t("chat.modelAtStart", { model }), at: "" }} />;
 }
 
-export function ChatError({ message }: { message: string }) {
+export function ChatError({ message, kind }: { message: string; kind?: "payment_required" }) {
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);
 
@@ -214,7 +214,17 @@ export function ChatError({ message }: { message: string }) {
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-start gap-2.5">
           <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-rose" />
-          <p className="text-[0.82rem] font-medium text-fg">{t("chat.serverError")}</p>
+          {kind === "payment_required" ? (
+            <div className="min-w-0">
+              <p className="text-[0.82rem] font-medium text-fg">{t("chat.outOfCredit")}</p>
+              <p className="mt-0.5 text-[0.75rem] text-muted">
+                {t("chat.outOfCreditHint")}{" "}
+                <Link to="/config/credit" className="text-iris underline">{t("chat.outOfCreditLink")}</Link>
+              </p>
+            </div>
+          ) : (
+            <p className="text-[0.82rem] font-medium text-fg">{t("chat.serverError")}</p>
+          )}
         </div>
         <button
           type="button"
@@ -345,7 +355,7 @@ export function Bubble({
             </details>
           )}
           {message.error && (
-            <ChatError message={message.error} />
+            <ChatError message={message.error} kind={message.errorKind} />
           )}
           {showTelemetry && !trace && !timings && source && (
             <p className="mt-2 font-mono text-[0.68rem] text-faint">{source}</p>

@@ -282,7 +282,8 @@ pub(crate) fn request_size(body: &Value) -> (i64, i64) {
 
 /// The price of `model` in the network's settings, if charged.
 pub(crate) fn price_of(settings: &crate::config::NetworkSettings, model: &str) -> Option<crate::payments::DeploymentPricing> {
-    let price = settings.payments.prices.get(model)?;
+    // `<model>@<deploy_id>` picks a deployment of the same model: same price.
+    let price = settings.payments.prices.get(crate::deployment::split_selector(model).0)?;
     Some(crate::payments::DeploymentPricing {
         price_in_micro_per_1k: price.in_micro_per_1k,
         price_out_micro_per_1k: price.out_micro_per_1k,
@@ -441,7 +442,12 @@ pub(crate) fn settle(state: &GatewayState, charge: &Charge, summary: &crate::gat
         .map(|t| (t.input_tokens as i64, t.cached_tokens as i64))
         .unwrap_or((0, 0));
     let bill = crate::payments::bill_micro(&charge.pricing, prompt, cached, summary.tokens_generated as i64);
-    crate::payments::runtime::settle(state, &charge.account, charge.hold_micro, bill, None);
+    // The metering bundle lines the charge up with the payouts of its cycle.
+    let detail = summary
+        .metering_bundle
+        .as_ref()
+        .map(|(bid, cycle)| json!({ "bundle": bid, "cycle": cycle }).to_string());
+    crate::payments::runtime::settle(state, &charge.account, charge.hold_micro, bill, detail);
     json!({
         "account": charge.account,
         "charged_micro": bill,
@@ -606,6 +612,13 @@ data: {"x_pom":{"payment":{"account":"net:a","charged_micro":12,"balance_micro":
 data: [DONE]"#;
         assert_eq!(last_payment(sse).unwrap()["charged_micro"], 12);
         assert!(last_payment(br#"{"x_pom":{"payment":null}}"#).is_none());
+    }
+
+    #[test]
+    fn a_deployment_selector_pays_its_models_price() {
+        let mut settings = crate::config::NetworkSettings::default();
+        settings.payments.prices.insert("m".into(), crate::config::ModelPrice { in_micro_per_1k: 1, out_micro_per_1k: 2 });
+        assert!(price_of(&settings, "m@d-0123abcd").is_some());
     }
 
     #[test]

@@ -1670,6 +1670,7 @@ models.columnSource,Source,Fonte
 models.deleteAria,Delete {name} from disk,Excluir {name} do disco
 models.deleteButton,Delete,Excluir
 models.deleteConfirm,Delete {name} from this machine?,Apagar {name} do disco desta máquina?
+models.deleteDialogTitle,Confirm file deletion,Confirmar exclusão do arquivo
 models.deleteFailed,Could not delete,Não deu para apagar
 models.deleteForce,Delete anyway?,Apagar mesmo assim?
 models.deleteWarning,Warning:,Atenção:
@@ -1679,7 +1680,7 @@ models.emptyTitle,No full models found,Nenhum modelo inteiro encontrado
 models.fileCount,"{count}{count, plural, =1 { file} other { files}}","{count}{count, plural, =1 { arquivo} other { arquivos}}"
 models.folderMissing,does not exist on this machine,não existe nesta máquina
 models.folderSettings,Choose search folders in Settings › Model folders.,Escolha onde procurar em Configurações › Pastas de modelos.
-models.fullSubtitle,Complete GGUF files found on this machine. Full models can be sliced; shards are shown on the next screen.,Os GGUF completos encontrados nesta máquina. Um modelo inteiro é o que se fatia; as fatias ficam na tela ao lado.
+models.fullSubtitle,Complete GGUF files found on this machine. Inspect multipart parts and manage local model files here.,GGUFs completos encontrados nesta máquina. Consulte as partes dos modelos multipart e gerencie os arquivos locais por aqui.
 models.fullTitle,Models,Modelos
 models.imageEmptyDetail,No .safetensors files were found in the model folders. Files ComfyUI downloads land there.,Nenhum arquivo .safetensors foi encontrado nas pastas de modelos. Os arquivos que o ComfyUI baixa vão para lá.
 models.imageEmptyTitle,No image models,Nenhum modelo de imagem
@@ -1688,7 +1689,6 @@ models.kindImage,Image,Imagem
 models.kindLlm,LLM (GGUF),LLM (GGUF)
 models.kindMtp,MTP drafts,Rascunhos MTP
 models.layers,Layers,Camadas
-models.localSlice,Slicing is local: each machine extracts its own range from its own GGUF copy. No weights travel over the network.,Fatiar é local: cada máquina extrai a própria faixa da própria cópia do GGUF. Nenhum peso trafega pela rede.
 models.machineCount,"{count}{count, plural, =1 { model on this machine} other { models on this machine}}","{count}{count, plural, =1 { modelo nesta máquina} other { modelos nesta máquina}}"
 models.multipartFiles,"{count}{count, plural, =1 { physical file in this multipart model} other { physical files in this multipart model}}","{count}{count, plural, =1 { arquivo físico neste modelo multipart} other { arquivos físicos neste modelo multipart}}"
 models.multipartPart,{index} of {count},{index} de {count}
@@ -1706,7 +1706,6 @@ models.sidecarEmptyMtpTitle,No MTP draft files,Nenhum arquivo de rascunho MTP
 models.send,Send,Enviar
 models.sendAria,Send {name},Enviar {name}
 models.size,Size,Tamanho
-models.slice,Slice,Fatiar
 models.slowScan,The first scan of a slow volume takes time. The previous result stays on screen while it runs.,Varrer um volume lento leva tempo na primeira vez. O resultado anterior fica na tela enquanto isso.
 myMachine.nameHint,"Leave it empty to go by the system's hostname. The name is only a label: the machine's identity is its key.","Deixe vazio para usar o hostname do sistema. O nome é só um rótulo: a identidade da máquina é a chave dela."
 myMachine.nameLabel,Name,Nome

@@ -32,6 +32,8 @@ const copyUpdates: Record<string, string> = {
     "Abra Procurar Modelos para baixar um modelo pequeno do Hugging Face. Não está no menu? Instale antes o plugin do Hugging Face em Plugins.",
   "en:models.fullTitle": "Models",
   "pt-BR:models.fullTitle": "Modelos",
+  "en:models.fullSubtitle": "Complete GGUF files found on this machine. Inspect multipart parts and manage local model files here.",
+  "pt-BR:models.fullSubtitle": "GGUFs completos encontrados nesta máquina. Consulte as partes dos modelos multipart e gerencie os arquivos locais por aqui.",
   // "Network" beside "Networks" in the main menu read as the same thing twice.
   "en:nav.network": "My Network",
   "pt-BR:nav.network": "Minha Rede",
@@ -147,6 +149,8 @@ const removed = (key: string) =>
   /^(sendFile\.|deploy\.copies|deploy\.copy)/.test(key) ||
   // The Shards and pipeline slicing screens, retired with ranges served from the whole model.
   /^(shards\.|nav\.shards$|nav\.sliceModels$)/.test(key) ||
+  // The model table no longer has a Slice button or its local-slicing footnote.
+  /^models\.(localSlice|slice)$/.test(key) ||
   // Search Models, the downloads and the token moved to the Hugging Face
   // plugin, with their copy; the deploy screen's "Download here" keeps three.
   (/^(remoteModels|huggingFace)\./.test(key) && !KEPT_MODEL_PROVIDER_KEYS.has(key)) ||

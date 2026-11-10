@@ -142,8 +142,8 @@ a choice.
   redirects to the Hugging Face plugin's Search Models (`lib/modelSearch.ts`), or
   to `/models` without the plugin - searching, downloading and the token are that
   plugin's screen; `/models/slice` -> SliceModels, tensor parallel
-  shards only (development mode, off the menu, opened from a model's Slice
-  button), with the slicing jobs and their progress bars
+  shards only (development mode, off the menu, reachable through its route),
+  with the slicing jobs and their progress bars
 - `/shards` -> redirects to `/models`, `/shards/deploy` to `/deploy` (old
   links; the Shards screen was removed with pipeline slicing)
 - `/models`, `/models/slice`

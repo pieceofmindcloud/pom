@@ -6,7 +6,8 @@
  * the list of warnings, and only then do we ask whether the operator really
  * wants it. The two steps live here because the whole-models screen and the
  * slices screen do exactly the same thing, and two copies would diverge in the
- * warning text - which is the part that matters.
+ * warning text - which is the part that matters. The confirmation callback
+ * may be asynchronous so screens can use the shared in-app dialog.
  */
 import { api } from "./api";
 import { formatMessage, getActiveLocale } from "../i18n/locales";
@@ -27,15 +28,15 @@ function warningsOf(error: unknown): DeleteWarning[] {
 
 /**
  * `confirm` receives the text and returns whether the operator agreed. It is
- * injected so the screen can choose how to ask - and so the test does not need
- * a `window`.
+ * injected so the screen can choose how to ask, including asynchronously with
+ * the shared dialog, and so the test does not need a `window`.
  */
 export async function deleteModel(
   path: string,
   name: string,
-  confirm: (message: string) => boolean,
+  confirm: (message: string) => boolean | Promise<boolean>,
 ): Promise<DeleteOutcome> {
-  if (!confirm(formatMessage(getActiveLocale(), "models.deleteConfirm", { name }) + "\n\n" + path)) {
+  if (!(await confirm(formatMessage(getActiveLocale(), "models.deleteConfirm", { name }) + "\n\n" + path))) {
     return { status: "cancelled" };
   }
 
@@ -47,7 +48,7 @@ export async function deleteModel(
     if (warnings.length === 0) throw error;
 
     const list = warnings.map((w) => `• ${w.message}`).join("\n");
-    if (!confirm(formatMessage(getActiveLocale(), "models.deleteWarning") + "\n\n" + list + "\n\n" + formatMessage(getActiveLocale(), "models.deleteForce"))) {
+    if (!(await confirm(formatMessage(getActiveLocale(), "models.deleteWarning") + "\n\n" + list + "\n\n" + formatMessage(getActiveLocale(), "models.deleteForce")))) {
       return { status: "cancelled" };
     }
     const r = await api.post<{ freed_bytes: number }>("/api/ui/models/delete", {

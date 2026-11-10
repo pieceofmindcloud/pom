@@ -221,7 +221,7 @@ local-only notice. Routes:
 - `/models` -> WholeModels; `/models/remote` redirects to the Hugging Face
   plugin's Search Models, or to `/models` without the plugin; and
   `/models/slice` -> SliceModels (tensor parallel shards, development mode,
-  off the menu), with the jobs panel embedded
+  off the menu and no longer linked from WholeModels), with the jobs panel embedded
 - `/shards` and `/shards/deploy` -> redirect to `/models` and `/deploy` (old
   links; the Shards screen was removed)
 - `/models`, `/models/slice` and `/transfers` are
@@ -238,9 +238,11 @@ local-only notice. Routes:
   one-based part number, full path and byte size with an individual delete
   action. The Image tab lists discovered image-model files; the separate
   `Vision (mmproj)` and `MTP drafts` tabs list the local catalog's `sidecars`
-  by kind, including path, GGUF metadata, size and individual deletion. Delete
-  confirmations warn when a file is part of the currently served model or is
-  the active projector/draft. The deploy inspector offers the same pickers
+  by kind, including path, GGUF metadata, size and individual deletion. File
+  deletion begins in the shared in-app `Confirm` dialog; if the node returns
+  409 warnings for an active model/multipart part, projector/draft, transfer or
+  Ollama blob, a second dialog lists the reason and requires explicit
+  destructive confirmation. The deploy inspector offers the same pickers
   (head projector, tail MTP draft) prefilled from the link, and says whether
   the target already has the file or will copy it. With a plugin's inference
   service, the draft picker only shows for a model of its
@@ -1514,10 +1516,11 @@ machine restarted. Today the fingerprint is only model + set of ranges.
 - **Tensor parallel shards** (`SliceModels`, `/models/slice`): the Shards
   screen and pipeline slicing were removed once every pipeline deploy serves
   ranges straight from the whole model; slices already on disk keep serving
-  and show as a legacy deployment. The screen is out of the menu and is opened
-  by the Models screen's Slice button, drawn only with
-  `NodeInfo.pom_dev_mode`; without it the screen says tensor parallel needs
-  development mode and plans nothing. It picks a whole model and 2..64 ranks,
+  and show as a legacy deployment. The screen is out of the menu and is
+  reachable through its route only, drawn only with `NodeInfo.pom_dev_mode`;
+  WholeModels no longer offers a Slice button. Without development mode the
+  screen says tensor parallel needs development mode and plans nothing. It
+  picks a whole model and 2..64 ranks,
   previews one full range per rank (`1of2`, `2of2`), posts
   `POST /api/ui/slice/plan` with `mode: "tensor_parallel"` and `tp_size` (260
   ms debounce) and starts with `POST /api/ui/slice`. The activity panel keeps

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LocaleProvider } from "../i18n/provider";
@@ -114,7 +114,6 @@ vi.mock("../lib/queries", () => ({
     isFetching: false,
     refetch: catalogRefetch,
   }),
-  useNode: () => ({ data: { pom_dev_mode: false } }),
 }));
 
 vi.mock("../lib/deleteModel", () => ({
@@ -127,7 +126,16 @@ vi.mock("../lib/toast", () => ({
 
 beforeEach(() => {
   deleteModelMock.mockReset();
-  deleteModelMock.mockResolvedValue({ status: "deleted", freedBytes: 1_000_000 });
+  deleteModelMock.mockImplementation(async (
+    _path: string,
+    name: string,
+    confirm: (message: string) => boolean | Promise<boolean>,
+  ) => {
+    const confirmed = await confirm(`Delete ${name}?`);
+    return confirmed
+      ? { status: "deleted", freedBytes: 1_000_000 }
+      : { status: "cancelled" };
+  });
   catalogRefetch.mockReset();
 });
 
@@ -156,17 +164,15 @@ describe("WholeModels", () => {
     expect(textRow?.textContent).toContain("No projector");
   });
 
-  it("renders every model as a full-width table row with its actions", () => {
+  it("renders each model as one full-width row, without a Slice action", () => {
     renderScreen();
     const table = screen.getByRole("table");
     expect(table).toBeTruthy();
     expect(screen.getAllByRole("row")).toHaveLength(5); // header + 3 models + one multipart card row
-    // Pipelines serve ranges from the whole file; slicing is only for tensor
-    // parallel, which is a development feature.
     expect(screen.queryByRole("button", { name: "Slice" })).toBeNull();
   });
 
-  it("shows each physical multipart file and can delete one without splitting the model into rows", () => {
+  it("shows each physical multipart file and asks in a dialog before deleting one", async () => {
     renderScreen();
     expect(screen.getByText("multipart.gguf")).toBeTruthy();
     expect(screen.getByText("multipart-00001-of-00002.gguf")).toBeTruthy();
@@ -177,14 +183,27 @@ describe("WholeModels", () => {
     expect(screen.getByText("2 physical files in this multipart model")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Delete multipart-00002-of-00002.gguf from disk" }));
+    const dialog = screen.getByRole("dialog", { name: "Confirm file deletion" });
+    expect(within(dialog).getByText("Delete multipart-00002-of-00002.gguf?")).toBeTruthy();
     expect(deleteModelMock).toHaveBeenCalledWith(
       "/models/multipart-00002-of-00002.gguf",
       "multipart-00002-of-00002.gguf",
       expect.any(Function),
     );
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(catalogRefetch).toHaveBeenCalled());
   });
 
-  it("shows mmproj and MTP files in their own tabs with delete actions", () => {
+  it("cancels deletion when the confirmation dialog is dismissed", async () => {
+    renderScreen();
+    fireEvent.click(screen.getByRole("button", { name: "Delete gemma-3-4b-it.gguf from disk" }));
+    const dialog = screen.getByRole("dialog", { name: "Confirm file deletion" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(deleteModelMock).toHaveBeenCalled());
+    expect(catalogRefetch).not.toHaveBeenCalled();
+  });
+
+  it("shows mmproj and MTP files in their own tabs with confirmed delete actions", async () => {
     renderScreen();
     fireEvent.click(screen.getByRole("tab", { name: "Vision (mmproj)" }));
     expect(screen.getByText("mmproj-gemma-f16.gguf")).toBeTruthy();
@@ -192,6 +211,9 @@ describe("WholeModels", () => {
     expect(screen.getByText("1.9 GB")).toBeTruthy();
     expect(screen.queryByText("mtp-gemma-q8.gguf")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Delete mmproj-gemma-f16.gguf from disk" }));
+    const mmprojDialog = screen.getByRole("dialog", { name: "Confirm file deletion" });
+    fireEvent.click(within(mmprojDialog).getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(catalogRefetch).toHaveBeenCalledTimes(1));
     expect(deleteModelMock).toHaveBeenCalledWith("/models/mmproj-gemma-f16.gguf", "mmproj-gemma-f16.gguf", expect.any(Function));
 
     fireEvent.click(screen.getByRole("tab", { name: "MTP drafts" }));
@@ -200,6 +222,9 @@ describe("WholeModels", () => {
     expect(screen.getByText("954 MB")).toBeTruthy();
     expect(screen.queryByText("mmproj-gemma-f16.gguf")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Delete mtp-gemma-q8.gguf from disk" }));
+    const mtpDialog = screen.getByRole("dialog", { name: "Confirm file deletion" });
+    fireEvent.click(within(mtpDialog).getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(catalogRefetch).toHaveBeenCalledTimes(2));
     expect(deleteModelMock).toHaveBeenLastCalledWith("/models/mtp-gemma-q8.gguf", "mtp-gemma-q8.gguf", expect.any(Function));
   });
 
@@ -215,10 +240,11 @@ describe("WholeModels", () => {
     expect(screen.queryByText("qwen.gguf")).toBeNull();
   });
 
-  it("image rows offer delete and no slice", () => {
+  it("image rows offer delete with confirmation and no slice", () => {
     renderScreen();
     fireEvent.click(screen.getByRole("tab", { name: "Image" }));
-    expect(screen.getByRole("button", { name: /Delete pub\/repo\/ae.safetensors/ })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Delete pub\/repo\/ae.safetensors/ }));
+    expect(screen.getByRole("dialog", { name: "Confirm file deletion" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Slice" })).toBeNull();
   });
 });

@@ -1,11 +1,10 @@
-import { Boxes, FolderSearch, RefreshCw, Scissors, Trash2 } from "lucide-react";
+import { FolderSearch, RefreshCw, Trash2 } from "lucide-react";
 import { Link, useSearchParams } from "react-router-dom";
 import {
   Badge,
   Button,
   Empty,
   ErrorState,
-  Footnote,
   FullBleedHeader,
   Mono,
   ScrollX,
@@ -14,7 +13,7 @@ import {
 } from "../components/ui";
 import { bytes, num, optionalBasename } from "../lib/format";
 import { deleteModel } from "../lib/deleteModel";
-import { useLocalCatalog, useNode } from "../lib/queries";
+import { useLocalCatalog } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import {
   isWholeModel,
@@ -27,7 +26,7 @@ import {
 import { useI18n } from "../i18n/provider";
 import { isDemoUser } from "../lib/session";
 import { useState } from "react";
-import { Modal } from "../components/Confirm";
+import { Confirm, Modal } from "../components/Confirm";
 import { SidecarLinkEditor } from "../components/SidecarLinkEditor";
 import { useClusterCatalog } from "../lib/queries";
 
@@ -35,6 +34,55 @@ const SOURCE_TONE: Record<string, "sky" | "amber" | "neutral"> = {
   lmstudio: "sky",
   ollama: "amber",
 };
+
+type DeleteConfirmation = {
+  message: string;
+  resolve: (confirmed: boolean) => void;
+};
+
+function useModelFileDeletion(refetchCatalog: () => void) {
+  const { t } = useI18n();
+  const toast = useToast();
+  const [confirmation, setConfirmation] = useState<DeleteConfirmation | null>(null);
+
+  function askForConfirmation(message: string): Promise<boolean> {
+    return new Promise((resolve) => setConfirmation({ message, resolve }));
+  }
+
+  function answerConfirmation(confirmed: boolean) {
+    if (!confirmation) return;
+    const pending = confirmation;
+    setConfirmation(null);
+    pending.resolve(confirmed);
+  }
+
+  async function remove(path: string, name: string) {
+    try {
+      const out = await deleteModel(path, name, askForConfirmation);
+      if (out.status === "deleted") {
+        toast.success(t("models.deleted", { name, bytes: bytes(out.freedBytes) }));
+        refetchCatalog();
+      }
+    } catch (error) {
+      toast.fromError(t("models.deleteFailed"), error);
+    }
+  }
+
+  return {
+    remove,
+    dialog: (
+      <Confirm
+        open={confirmation !== null}
+        title={t("models.deleteDialogTitle")}
+        description={<p className="whitespace-pre-line break-words">{confirmation?.message}</p>}
+        confirmLabel={t("models.deleteButton")}
+        tone="danger"
+        onConfirm={() => answerConfirmation(true)}
+        onCancel={() => answerConfirmation(false)}
+      />
+    ),
+  };
+}
 
 /** The vision/MTP link of one whole model, in a window over the table. */
 function WholeModelLinks({ model, onClose }: { model: DiscoveredModel; onClose: () => void }) {
@@ -58,27 +106,16 @@ function WholeModelLinks({ model, onClose }: { model: DiscoveredModel; onClose: 
   );
 }
 
-export function ModelRow({ model }: { model: DiscoveredModel }) {
+export function ModelRow({
+  model,
+  onDelete,
+}: {
+  model: DiscoveredModel;
+  onDelete: (path: string, name: string) => Promise<void>;
+}) {
   const { t } = useI18n();
-  // Only tensor parallel still loads pre-cut shards, and it is a development
-  // feature: a pipeline deploy serves ranges straight from this file.
-  const pomDevMode = useNode().data?.pom_dev_mode === true;
-  const toast = useToast();
-  const catalog = useLocalCatalog();
   const mmprojName = optionalBasename(model.mmproj_path);
   const [linkOpen, setLinkOpen] = useState(false);
-
-  async function removeFile(path: string, name: string) {
-    try {
-      const out = await deleteModel(path, name, (m) => window.confirm(m));
-      if (out.status === "deleted") {
-        toast.success(t("models.deleted", { name, bytes: bytes(out.freedBytes) }));
-        void catalog.refetch();
-      }
-    } catch (e) {
-      toast.fromError(t("models.deleteFailed"), e);
-    }
-  }
 
   return (
     <>
@@ -126,28 +163,19 @@ export function ModelRow({ model }: { model: DiscoveredModel }) {
       <td className="whitespace-nowrap px-5 py-3.5">
         {/* A demonstration visitor sees the catalog, not its actions. */}
         <div className={isDemoUser() ? "hidden" : "flex shrink-0 items-center gap-2"}>
-          {pomDevMode && (
-            <Link
-              to={`/models/slice?path=${encodeURIComponent(model.path)}&name=${encodeURIComponent(model.name)}`}
-            >
-              <Button size="sm" icon={<Scissors className="h-3.5 w-3.5" />}>
-                {t("models.slice")}
-              </Button>
-            </Link>
-          )}
           <Button
             size="sm"
             variant="ghost"
             icon={<Trash2 className="h-3.5 w-3.5" />}
             aria-label={t("models.deleteAria", { name: model.name })}
-            onClick={() => void removeFile(model.path, model.name)}
+            onClick={() => void onDelete(model.path, model.name)}
           >
             {t("models.deleteButton")}
           </Button>
         </div>
       </td>
     </tr>
-    {model.multipart && <MultipartFiles model={model} onDelete={(path, name) => void removeFile(path, name)} />}
+    {model.multipart && <MultipartFiles model={model} onDelete={onDelete} />}
     </>
   );
 }
@@ -157,7 +185,7 @@ function MultipartFiles({
   onDelete,
 }: {
   model: DiscoveredModel;
-  onDelete: (path: string, name: string) => void;
+  onDelete: (path: string, name: string) => Promise<void>;
 }) {
   const { t } = useI18n();
   const parts = model.multipart_parts ?? [];
@@ -213,22 +241,14 @@ function MultipartFiles({
 }
 
 /** One image model file: no layers, no slicing; delete only. */
-export function ImageModelRow({ file }: { file: ImageModelFile }) {
+export function ImageModelRow({
+  file,
+  onDelete,
+}: {
+  file: ImageModelFile;
+  onDelete: (path: string, name: string) => Promise<void>;
+}) {
   const { t } = useI18n();
-  const toast = useToast();
-  const catalog = useLocalCatalog();
-
-  async function remove() {
-    try {
-      const out = await deleteModel(file.path, file.name, (m) => window.confirm(m));
-      if (out.status === "deleted") {
-        toast.success(t("models.deleted", { name: file.name, bytes: bytes(out.freedBytes) }));
-        void catalog.refetch();
-      }
-    } catch (e) {
-      toast.fromError(t("models.deleteFailed"), e);
-    }
-  }
 
   return (
     <tr className="border-t border-line align-top transition-colors duration-150 hover:bg-raised">
@@ -264,7 +284,7 @@ export function ImageModelRow({ file }: { file: ImageModelFile }) {
           variant="ghost"
           icon={<Trash2 className="h-3.5 w-3.5" />}
           aria-label={t("models.deleteAria", { name: file.name })}
-          onClick={() => void remove()}
+          onClick={() => void onDelete(file.path, file.name)}
         >
           {t("models.deleteButton")}
         </Button>}
@@ -273,22 +293,14 @@ export function ImageModelRow({ file }: { file: ImageModelFile }) {
   );
 }
 
-function SidecarRow({ sidecar }: { sidecar: Sidecar }) {
+function SidecarRow({
+  sidecar,
+  onDelete,
+}: {
+  sidecar: Sidecar;
+  onDelete: (path: string, name: string) => Promise<void>;
+}) {
   const { t } = useI18n();
-  const toast = useToast();
-  const catalog = useLocalCatalog();
-
-  async function remove() {
-    try {
-      const out = await deleteModel(sidecar.path, sidecar.file_name, (message) => window.confirm(message));
-      if (out.status === "deleted") {
-        toast.success(t("models.deleted", { name: sidecar.file_name, bytes: bytes(out.freedBytes) }));
-        void catalog.refetch();
-      }
-    } catch (error) {
-      toast.fromError(t("models.deleteFailed"), error);
-    }
-  }
 
   return (
     <tr className="border-t border-line align-top transition-colors duration-150 hover:bg-raised">
@@ -308,7 +320,7 @@ function SidecarRow({ sidecar }: { sidecar: Sidecar }) {
             variant="ghost"
             icon={<Trash2 className="h-3.5 w-3.5" />}
             aria-label={t("models.deleteAria", { name: sidecar.file_name })}
-            onClick={() => void remove()}
+            onClick={() => void onDelete(sidecar.path, sidecar.file_name)}
           >
             {t("models.deleteButton")}
           </Button>
@@ -318,7 +330,15 @@ function SidecarRow({ sidecar }: { sidecar: Sidecar }) {
   );
 }
 
-function SidecarTable({ sidecars, kind }: { sidecars: Sidecar[]; kind: SidecarKind }) {
+function SidecarTable({
+  sidecars,
+  kind,
+  onDelete,
+}: {
+  sidecars: Sidecar[];
+  kind: SidecarKind;
+  onDelete: (path: string, name: string) => Promise<void>;
+}) {
   const { t } = useI18n();
   const files = sidecars.filter((sidecar) => sidecar.kind === kind);
   if (files.length === 0) {
@@ -347,13 +367,19 @@ function SidecarTable({ sidecars, kind }: { sidecars: Sidecar[]; kind: SidecarKi
             <th className="px-5 py-2">{t("models.columnActions")}</th>
           </tr>
         </thead>
-        <tbody>{files.map((sidecar) => <SidecarRow key={sidecar.path} sidecar={sidecar} />)}</tbody>
+        <tbody>{files.map((sidecar) => <SidecarRow key={sidecar.path} sidecar={sidecar} onDelete={onDelete} />)}</tbody>
       </table>
     </ScrollX>
   );
 }
 
-function ImageModelTable({ files }: { files: ImageModelFile[] }) {
+function ImageModelTable({
+  files,
+  onDelete,
+}: {
+  files: ImageModelFile[];
+  onDelete: (path: string, name: string) => Promise<void>;
+}) {
   const { t } = useI18n();
   if (files.length === 0) {
     return (
@@ -378,7 +404,7 @@ function ImageModelTable({ files }: { files: ImageModelFile[] }) {
         </thead>
         <tbody>
           {files.map((file) => (
-            <ImageModelRow key={file.id} file={file} />
+            <ImageModelRow key={file.id} file={file} onDelete={onDelete} />
           ))}
         </tbody>
       </table>
@@ -418,6 +444,7 @@ export function ScannedRoots({
 export function WholeModels() {
   const { t } = useI18n();
   const catalog = useLocalCatalog();
+  const deletion = useModelFileDeletion(() => void catalog.refetch());
 
   // Slices have `shard_range` filled in and stay out of the list of whole
   // models - the catalog still brings both, and whoever needs the slices
@@ -480,9 +507,9 @@ export function WholeModels() {
           </div>
         )}
 
-        {catalog.data && kind === "image" && <ImageModelTable files={imageFiles} />}
-        {catalog.data && kind === "mmproj" && <SidecarTable sidecars={sidecars} kind="mmproj" />}
-        {catalog.data && kind === "mtp" && <SidecarTable sidecars={sidecars} kind="mtp" />}
+        {catalog.data && kind === "image" && <ImageModelTable files={imageFiles} onDelete={deletion.remove} />}
+        {catalog.data && kind === "mmproj" && <SidecarTable sidecars={sidecars} kind="mmproj" onDelete={deletion.remove} />}
+        {catalog.data && kind === "mtp" && <SidecarTable sidecars={sidecars} kind="mtp" onDelete={deletion.remove} />}
 
         {catalog.data && kind === "llm" && models.length === 0 && (
           <Empty
@@ -514,7 +541,7 @@ export function WholeModels() {
               </thead>
               <tbody>
                 {models.map((m) => (
-                  <ModelRow key={m.id} model={m} />
+                  <ModelRow key={m.id} model={m} onDelete={deletion.remove} />
                 ))}
               </tbody>
             </table>
@@ -526,14 +553,7 @@ export function WholeModels() {
         )}
       </div>
 
-      {catalog.data && kind === "llm" && models.length > 0 && (
-        <Footnote
-          className="shrink-0 border-t border-line px-4 py-2.5"
-          icon={<Boxes className="h-3.5 w-3.5" />}
-        >
-          {t("models.localSlice")}
-        </Footnote>
-      )}
+      {deletion.dialog}
     </div>
   );
 }

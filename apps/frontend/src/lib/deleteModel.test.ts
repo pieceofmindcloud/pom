@@ -37,7 +37,8 @@ describe("deleteModel", () => {
       .mockResolvedValueOnce({ freed_bytes: 7 } as never);
 
     const questions: string[] = [];
-    const out = await deleteModel("/m/f.gguf", "f.gguf", (m) => {
+    const out = await deleteModel("/m/f.gguf", "f.gguf", async (m) => {
+      await Promise.resolve();
       questions.push(m);
       return true;
     });

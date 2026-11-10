@@ -790,9 +790,11 @@ Per-file list:
   active and finished ones are each a full-width table with a fixed header and
   actions in the last column.
 - `WholeModels.tsx` - Full-model catalog from `useLocalCatalog`, one full-width
-  table row (`ModelRow`) per model with actions: slice (development mode only, links to
-  `/models/slice?path=` for tensor parallel shards), delete
-  (`../lib/deleteModel`). A dedicated "Vision (mmproj)" column shows the
+  table row (`ModelRow`) per model with delete as its only file action
+  (`../lib/deleteModel`); deletion starts in the shared in-app confirmation
+  dialog, and any server warning opens a second confirmation with the reasons.
+  Slicing is not launched from this screen. A dedicated "Vision (mmproj)"
+  column shows the
   projector's basename (`../lib/format::optionalBasename`) when
   `DiscoveredModel.mmproj_path` is set, or "no projector" otherwise - the
   catalog already resolves this file from GGUF identity and projection dimensions,
@@ -803,8 +805,8 @@ Per-file list:
   (mmproj)" and "MTP drafts"; `?kind=` preserves the choice across reloads.
   Multipart LLMs keep one logical model row, with a nested card listing each
   physical `multipart_parts` file, its one-based `0001-of-0004` index, path and
-  byte size; each part is deleted independently through the same confirmation
-  and warning flow as whole models. The sidecar tabs filter
+  byte size; each part is deleted independently through the same dialog and
+  warning flow as whole models. The sidecar tabs filter
   `CatalogResponse.sidecars` by kind and show the filename, full path, metadata,
   size and per-file delete action. Deleting a currently serving multipart part,
   active mmproj or active MTP file warns that it interrupts that resource.

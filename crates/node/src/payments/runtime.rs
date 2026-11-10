@@ -434,8 +434,8 @@ pub(crate) fn income_by_cycle(
 }
 
 /// What the local metering ledger pays for `cycle`: the statements' payouts
-/// once the cycle closed, the earnings so far otherwise. `None` without the
-/// metering plugin on this node.
+/// once the cycle closed (`null` amounts while it is open). `None` without
+/// the metering plugin on this node.
 async fn cycle_payouts(state: &GatewayState, cycle: u64) -> Option<Value> {
     let reply = state
         .plugins
@@ -447,9 +447,13 @@ async fn cycle_payouts(state: &GatewayState, cycle: u64) -> Option<Value> {
         .await?;
     let overview = &reply["overview"];
     let nodes = overview["nodes"].as_array()?;
-    let sum = |field: &str| -> f64 { nodes.iter().filter_map(|n| n["statement"][field].as_f64()).sum() };
+    // The statements, and with them the amounts, exist once the cycle closed.
+    let closed = overview["closed"].as_bool().unwrap_or(false);
+    let sum = |field: &str| -> Option<f64> {
+        closed.then(|| nodes.iter().filter_map(|n| n["statement"][field].as_f64()).sum())
+    };
     Some(json!({
-        "closed": overview["closed"],
+        "closed": closed,
         "payout": sum("payout"),
         "earnings": sum("earnings"),
         "nodes": nodes.len(),

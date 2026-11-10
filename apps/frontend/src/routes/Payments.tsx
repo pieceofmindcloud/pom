@@ -46,7 +46,7 @@ type Overview = {
       cycle: number;
       income_micro: number;
       accounts: Record<string, number>;
-      payouts: { closed: boolean; payout: number; earnings: number; nodes: number } | null;
+      payouts: { closed: boolean; payout: number | null; earnings: number | null; nodes: number } | null;
     }[];
     unmetered_income_micro: number;
   };
@@ -307,9 +307,9 @@ export function Payments() {
                     <td>
                       {c.payouts == null
                         ? t("payments.payoutsUnknown")
-                        : c.payouts.closed
+                        : c.payouts.closed && c.payouts.payout != null
                           ? c.payouts.payout.toLocaleString(undefined, { maximumFractionDigits: 4 })
-                          : t("payments.payoutsOpen", { earnings: c.payouts.earnings.toLocaleString(undefined, { maximumFractionDigits: 4 }) })}
+                          : t("payments.payoutsOpen", { nodes: c.payouts.nodes })}
                     </td>
                     <td className="text-xs">{Object.keys(c.accounts).length}</td>
                   </tr>

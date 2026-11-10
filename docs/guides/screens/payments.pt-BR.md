@@ -28,7 +28,7 @@ Todos os visitantes que vêm da mesma rede dividem uma conta, nomeada pela chave
 Um pedido é reservado contra o saldo antes de rodar e cobrado pelo que de fato usou quando termina. Quando o saldo não cobre um pedido, o visitante recebe uma recusa dizendo quanto falta, e o Chat dele aponta para a página de Crédito.
 :::
 
-:::tip Receita e pagamentos
+:::note Receita e pagamentos
 **Receita e pagamentos por ciclo** alinha o que os visitantes pagaram em cada ciclo de medição com o que a medição de trabalho de GPU paga às máquinas pelo mesmo ciclo, para você ver a margem da rede. Precisa do plugin de medição nesta máquina.
 :::
 

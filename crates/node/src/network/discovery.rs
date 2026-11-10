@@ -1949,12 +1949,7 @@ async fn answer_lobby_request(
             return LobbyResponse::rejected("role_not_accepted");
         }
         let status = chat.request_admission(&node_id, card.clone(), *role);
-        if let Some(claims) = home
-            .as_deref()
-            .and_then(|t| crate::home_statement::verify(t, &node_id, chrono::Utc::now().timestamp()).ok())
-        {
-            chat.set_admission_account(&node_id, crate::home_statement::account_of(&claims));
-        }
+        crate::home_statement::note_admission(chat, &node_id, home.as_deref());
         match status {
             Ok(crate::network_lobby::AdmissionStatus::Pending) if chat.auto_approves().await => {
                 chat.decide_admission(

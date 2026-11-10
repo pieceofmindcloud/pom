@@ -198,7 +198,7 @@ network.relayPolicyTitle,Relays,Relays
 "payments.on","Charging on","Cobrança ligada"
 "payments.outputPrice","Output / 1k","Saída / 1k"
 "payments.payouts","Payouts (metering units)","Pagamentos (unidades da medição)"
-"payments.payoutsOpen","open, {earnings} so far","aberto, {earnings} até agora"
+"payments.payoutsOpen","cycle open, {nodes} machines working","ciclo aberto, {nodes} máquinas trabalhando"
 "payments.payoutsUnknown","no metering ledger here","sem livro de medição aqui"
 "payments.prices","Prices per model","Preços por modelo"
 "payments.pricesHint","Credits per 1000 input and output tokens. A model without a price is free.","Créditos por 1000 tokens de entrada e de saída. Modelo sem preço é gratuito."

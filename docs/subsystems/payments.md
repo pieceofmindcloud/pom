@@ -52,7 +52,7 @@ home principal, naming the visitor's node key, checked against the caller's
 transport key; `crate::home_statement`). A node that is its home network's
 principal signs its own (a day). A member of a larger home network gets one
 from its principal (`POST /api/internal/home-statement`, a week) while it is
-home, renewed every hour past half its life, and keeps it in `pom.db`
+home (checked every minute, asked for when missing or past half its life), and keeps it in `pom.db`
 (`home_statement`) to show while it visits.
 
 The statement also travels with the admission request (`LobbyRequest::Admission.home`,
@@ -133,7 +133,7 @@ A settlement whose request was metered names the bundle and cycle in the
 ledger row's detail (`{"bundle","cycle"}`). `GET /api/ui/payments` returns
 `cycles`: income per cycle and per account, beside the local metering
 plugin's `rpc.overview` for that cycle (statements' payouts once closed,
-earnings so far while open, `null` without the plugin), and the income
+`null` amounts while open, `null` without the plugin), and the income
 charged with metering off. Payouts are in the metering ledger's units, not
 credits.
 

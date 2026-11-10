@@ -170,6 +170,15 @@ fn stored(state: &crate::gateway::GatewayState) -> Option<String> {
     serde_json::from_str(&json).ok()
 }
 
+/// On the principal, at an admission request: the account the candidate's
+/// home statement names, kept on its admission record. A statement for
+/// another node, forged or expired names nothing.
+pub(crate) fn note_admission(chat: &crate::network_chat::NetworkChat, node_id: &str, home: Option<&str>) {
+    if let Some(claims) = home.and_then(|t| verify(t, node_id, now()).ok()) {
+        chat.set_admission_account(node_id, account_of(&claims));
+    }
+}
+
 /// `POST /api/internal/home-statement` (on the home principal): a statement
 /// for the member that signed the call.
 pub(crate) async fn internal_issue(
@@ -184,8 +193,19 @@ pub(crate) async fn internal_issue(
         return refuse("signature_required");
     };
     let document = state.admin_trust.document();
-    let member = crate::admin_trust::control_issuer_is_admin(&document, &caller)
-        || crate::webui::is_approved_member(&state, &caller.node_id);
+    // An admin, or a worker its membership token proves. A visitor's home is
+    // its own network, never this one.
+    let worker = async {
+        let peer = state.network.alive_peers().await.into_iter().find(|p| p.node_id == caller.node_id);
+        match peer {
+            Some(peer) => {
+                state.network.is_member_key(&caller.node_id, &caller.pubkey).await
+                    && !crate::gateway::peer_is_visitor(&state, &peer)
+            }
+            None => false,
+        }
+    };
+    let member = crate::admin_trust::control_issuer_is_admin(&document, &caller) || worker.await;
     if !member {
         return refuse("not_a_member");
     }
@@ -195,11 +215,12 @@ pub(crate) async fn internal_issue(
     }
 }
 
-/// Keeps a member's statement from its home principal while it is home: on
-/// start and every hour, renewed when less than half its life is left.
+/// Keeps a member's statement from its home principal while it is home:
+/// checked every minute (the principal may not be in sight yet at start),
+/// asked for only when missing or past half its life.
 pub(crate) fn spawn_keeper(state: crate::gateway::GatewayState) {
     tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(3600));
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
         loop {
             ticker.tick().await;
             // Visiting: the home principal is out of reach.
@@ -222,12 +243,19 @@ pub(crate) fn spawn_keeper(state: crate::gateway::GatewayState) {
             let answer = state
                 .control_post_json(&peer, "/api/internal/home-statement", &serde_json::json!({}), std::time::Duration::from_secs(5))
                 .await;
-            let Ok(answer) = answer else { continue };
-            let Ok(body) = answer.json::<serde_json::Value>().await else { continue };
-            if let Some(token) = body["statement"].as_str() {
-                if verify(token, &state.network.node_id, now()).is_ok() {
-                    let _ = state.database.save_local_setting(STORED, token);
+            let body = match answer {
+                Ok(answer) => answer.json::<serde_json::Value>().await.unwrap_or_default(),
+                Err(error) => {
+                    tracing::debug!("home statement: the principal did not answer: {error:#}");
+                    continue;
                 }
+            };
+            match body["statement"].as_str() {
+                Some(token) if verify(token, &state.network.node_id, now()).is_ok() => {
+                    let _ = state.database.save_local_setting(STORED, token);
+                    tracing::info!("home statement: renewed from the home principal");
+                }
+                _ => tracing::warn!("home statement: the principal refused: {body}"),
             }
         }
     });

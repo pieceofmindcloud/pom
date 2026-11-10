@@ -28,7 +28,7 @@ All the visitors that come from the same network share one account, named by tha
 A request is held against the balance before it runs and charged what it actually used when it ends. When the balance cannot cover a request, the visitor gets a refusal saying how much is missing, and its Chat points it to its Credit page.
 :::
 
-:::tip Income and payouts
+:::note Income and payouts
 **Income and payouts by cycle** lines up what visitors paid in each metering cycle with what the GPU work metering pays the machines for the same cycle, so you can see the network's margin. It needs the metering plugin on this machine.
 :::
 

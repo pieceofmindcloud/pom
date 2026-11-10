@@ -614,6 +614,34 @@ data: [DONE]"#;
         assert!(last_payment(br#"{"x_pom":{"payment":null}}"#).is_none());
     }
 
+    /// An admission request with a home statement names the account; the
+    /// approval opens it with the credit typed in, and the Payments screen
+    /// lists the visitor under it.
+    #[tokio::test]
+    async fn an_approval_opens_the_visitors_account_with_its_credit() {
+        let visitor = key(45);
+        let state = testkit::state_with("principal-node", vec![]).await;
+        let id = id_of(&visitor);
+        state
+            .network_chat
+            .request_admission(&id, Default::default(), crate::config::EnrollmentRole::Visitor)
+            .unwrap();
+        // Another node's statement names nothing.
+        crate::home_statement::note_admission(&state.network_chat, &id, Some(&home(&key(46))));
+        assert!(state.network_chat.admission_of(&id).unwrap().account.is_none());
+        crate::home_statement::note_admission(&state.network_chat, &id, Some(&home(&visitor)));
+        let account = crate::payments::network_account(&hex::encode(visitor.verifying_key().as_bytes()));
+        assert_eq!(state.network_chat.admission_of(&id).unwrap().account.as_deref(), Some(account.as_str()));
+
+        let decision = crate::webui::AdmissionDecision { node_id: id.clone(), decision: "approve".into(), grant_micro: Some(5_000) };
+        let response = crate::webui::apply_decision(&state, decision).await;
+        assert!(response.status().is_success());
+        assert_eq!(crate::payments::runtime::state().book().balance(&account), 5_000);
+        let overview = testkit::body_of(crate::payments::runtime::overview(State(state)).await).await;
+        let listed = overview["accounts"].as_array().unwrap().iter().find(|a| a["account"] == account.as_str()).cloned().unwrap();
+        assert_eq!(listed["visitors"][0]["node_id"], id.as_str());
+    }
+
     #[test]
     fn a_deployment_selector_pays_its_models_price() {
         let mut settings = crate::config::NetworkSettings::default();

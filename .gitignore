@@ -62,3 +62,6 @@ apps/frontend/src/docs/
 # valid for anyone else. The versioned docker-compose.yml is not touched.
 docker-compose-ksia.yml
 dist-release-ksia/
+
+# Operator sign-in path a node makes on first start (secret)
+.*-operator-path

@@ -21,6 +21,8 @@ import {
   type DiscoveredModel,
   type ImageModelFile,
   type ModelSource,
+  type Sidecar,
+  type SidecarKind,
 } from "../lib/types";
 import { useI18n } from "../i18n/provider";
 import { isDemoUser } from "../lib/session";
@@ -66,11 +68,11 @@ export function ModelRow({ model }: { model: DiscoveredModel }) {
   const mmprojName = optionalBasename(model.mmproj_path);
   const [linkOpen, setLinkOpen] = useState(false);
 
-  async function remove() {
+  async function removeFile(path: string, name: string) {
     try {
-      const out = await deleteModel(model.path, model.name, (m) => window.confirm(m));
+      const out = await deleteModel(path, name, (m) => window.confirm(m));
       if (out.status === "deleted") {
-        toast.success(t("models.deleted", { name: model.name, bytes: bytes(out.freedBytes) }));
+        toast.success(t("models.deleted", { name, bytes: bytes(out.freedBytes) }));
         void catalog.refetch();
       }
     } catch (e) {
@@ -79,6 +81,7 @@ export function ModelRow({ model }: { model: DiscoveredModel }) {
   }
 
   return (
+    <>
     <tr className="border-t border-line align-top transition-colors duration-150 hover:bg-raised">
       <td className="min-w-[16rem] px-5 py-3.5">
         <div className="flex flex-wrap items-center gap-2">
@@ -137,10 +140,72 @@ export function ModelRow({ model }: { model: DiscoveredModel }) {
             variant="ghost"
             icon={<Trash2 className="h-3.5 w-3.5" />}
             aria-label={t("models.deleteAria", { name: model.name })}
-            onClick={() => void remove()}
+            onClick={() => void removeFile(model.path, model.name)}
           >
             {t("models.deleteButton")}
           </Button>
+        </div>
+      </td>
+    </tr>
+    {model.multipart && <MultipartFiles model={model} onDelete={(path, name) => void removeFile(path, name)} />}
+    </>
+  );
+}
+
+function MultipartFiles({
+  model,
+  onDelete,
+}: {
+  model: DiscoveredModel;
+  onDelete: (path: string, name: string) => void;
+}) {
+  const { t } = useI18n();
+  const parts = model.multipart_parts ?? [];
+  return (
+    <tr>
+      <td colSpan={7} className="px-5 pb-4">
+        <div className="rounded-xl border border-line bg-surface/50 p-4">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm font-medium text-fg">{t("models.multipartFiles", { count: parts.length })}</p>
+            <Mono>{bytes(model.size_bytes)}</Mono>
+          </div>
+          {model.multipart_error && (
+            <p className="mb-3 rounded-lg border border-amber/30 bg-amber/5 px-3 py-2 text-xs text-rose">
+              {model.multipart_error}
+            </p>
+          )}
+          {parts.length > 0 && (
+            <ul className="divide-y divide-line">
+              {parts.map((part) => {
+                const name = optionalBasename(part.path) ?? part.path;
+                return (
+                  <li key={part.path} className="flex flex-wrap items-center justify-between gap-3 py-2 first:pt-0 last:pb-0">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="break-path font-mono text-xs text-fg">{name}</span>
+                        <Badge mono tone="neutral">{t("models.multipartPart", { index: part.index + 1, count: parts.length })}</Badge>
+                      </div>
+                      <p className="break-path mt-1 font-mono text-[0.68rem] text-faint">{part.path}</p>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-3">
+                      <Mono>{bytes(part.bytes)}</Mono>
+                      {!isDemoUser() && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          icon={<Trash2 className="h-3.5 w-3.5" />}
+                          aria-label={t("models.deleteAria", { name })}
+                          onClick={() => onDelete(part.path, name)}
+                        >
+                          {t("models.deleteButton")}
+                        </Button>
+                      )}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
         </div>
       </td>
     </tr>
@@ -205,6 +270,86 @@ export function ImageModelRow({ file }: { file: ImageModelFile }) {
         </Button>}
       </td>
     </tr>
+  );
+}
+
+function SidecarRow({ sidecar }: { sidecar: Sidecar }) {
+  const { t } = useI18n();
+  const toast = useToast();
+  const catalog = useLocalCatalog();
+
+  async function remove() {
+    try {
+      const out = await deleteModel(sidecar.path, sidecar.file_name, (message) => window.confirm(message));
+      if (out.status === "deleted") {
+        toast.success(t("models.deleted", { name: sidecar.file_name, bytes: bytes(out.freedBytes) }));
+        void catalog.refetch();
+      }
+    } catch (error) {
+      toast.fromError(t("models.deleteFailed"), error);
+    }
+  }
+
+  return (
+    <tr className="border-t border-line align-top transition-colors duration-150 hover:bg-raised">
+      <td className="min-w-[16rem] px-5 py-3.5">
+        <span className="break-path font-mono text-xs text-fg">{sidecar.file_name}</span>
+        <p className="break-path mt-1 font-mono text-[0.68rem] text-faint">{sidecar.path}</p>
+      </td>
+      <td className="min-w-[12rem] px-5 py-3.5 text-sm text-fg">{sidecar.general_name ?? "—"}</td>
+      <td className="whitespace-nowrap px-5 py-3.5 text-sm text-fg">{sidecar.architecture ?? "—"}</td>
+      <td className="whitespace-nowrap px-5 py-3.5"><Mono>{sidecar.dim != null ? num(sidecar.dim) : "—"}</Mono></td>
+      <td className="whitespace-nowrap px-5 py-3.5">{sidecar.quant ?? "—"}</td>
+      <td className="whitespace-nowrap px-5 py-3.5"><Mono>{bytes(sidecar.size_bytes)}</Mono></td>
+      <td className="whitespace-nowrap px-5 py-3.5">
+        {!isDemoUser() && (
+          <Button
+            size="sm"
+            variant="ghost"
+            icon={<Trash2 className="h-3.5 w-3.5" />}
+            aria-label={t("models.deleteAria", { name: sidecar.file_name })}
+            onClick={() => void remove()}
+          >
+            {t("models.deleteButton")}
+          </Button>
+        )}
+      </td>
+    </tr>
+  );
+}
+
+function SidecarTable({ sidecars, kind }: { sidecars: Sidecar[]; kind: SidecarKind }) {
+  const { t } = useI18n();
+  const files = sidecars.filter((sidecar) => sidecar.kind === kind);
+  if (files.length === 0) {
+    const isMmproj = kind === "mmproj";
+    return (
+      <Empty
+        icon={<FolderSearch className="h-5 w-5" />}
+        title={t(isMmproj ? "models.sidecarEmptyMmprojTitle" : "models.sidecarEmptyMtpTitle")}
+      >
+        {t(isMmproj ? "models.sidecarEmptyMmprojDetail" : "models.sidecarEmptyMtpDetail")}
+      </Empty>
+    );
+  }
+
+  return (
+    <ScrollX>
+      <table className="w-full min-w-[64rem] text-sm">
+        <thead className="sticky top-0 z-10 bg-surface/95 backdrop-blur-sm">
+          <tr className="text-left text-xs text-faint">
+            <th className="px-5 py-2">{t("models.columnName")}</th>
+            <th className="px-5 py-2">{t("models.columnFamily")}</th>
+            <th className="px-5 py-2">{t("models.sidecarArchitecture")}</th>
+            <th className="px-5 py-2">{t("models.sidecarDimension")}</th>
+            <th className="px-5 py-2">{t("models.quant")}</th>
+            <th className="px-5 py-2">{t("models.size")}</th>
+            <th className="px-5 py-2">{t("models.columnActions")}</th>
+          </tr>
+        </thead>
+        <tbody>{files.map((sidecar) => <SidecarRow key={sidecar.path} sidecar={sidecar} />)}</tbody>
+      </table>
+    </ScrollX>
   );
 }
 
@@ -279,12 +424,16 @@ export function WholeModels() {
   // reads `shard_sets` (or asks the inverse question).
   const models = (catalog.data?.models ?? []).filter(isWholeModel);
   const imageFiles = catalog.data?.image_files ?? [];
+  const sidecars = catalog.data?.sidecars ?? [];
   const [params, setParams] = useSearchParams();
-  const kind = params.get("kind") === "image" ? "image" : "llm";
-  const chooseKind = (next: "llm" | "image") => {
+  const requestedKind = params.get("kind");
+  const kind = requestedKind === "image" || requestedKind === "mmproj" || requestedKind === "mtp"
+    ? requestedKind
+    : "llm";
+  const chooseKind = (next: "llm" | "image" | "mmproj" | "mtp") => {
     const updated = new URLSearchParams(params);
-    if (next === "image") updated.set("kind", "image");
-    else updated.delete("kind");
+    if (next === "llm") updated.delete("kind");
+    else updated.set("kind", next);
     setParams(updated, { replace: true });
   };
 
@@ -308,6 +457,8 @@ export function WholeModels() {
         items={[
           { value: "llm", label: t("models.kindLlm") },
           { value: "image", label: t("models.kindImage") },
+          { value: "mmproj", label: t("models.mmproj") },
+          { value: "mtp", label: t("models.kindMtp") },
         ]}
         value={kind}
         onChange={chooseKind}
@@ -330,6 +481,8 @@ export function WholeModels() {
         )}
 
         {catalog.data && kind === "image" && <ImageModelTable files={imageFiles} />}
+        {catalog.data && kind === "mmproj" && <SidecarTable sidecars={sidecars} kind="mmproj" />}
+        {catalog.data && kind === "mtp" && <SidecarTable sidecars={sidecars} kind="mtp" />}
 
         {catalog.data && kind === "llm" && models.length === 0 && (
           <Empty

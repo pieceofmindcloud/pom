@@ -233,7 +233,14 @@ local-only notice. Routes:
   (`SidecarLinkEditor`): two pickers over the compatible sidecars of every
   machine, each option naming its machines and the full path on each, saved on
   the principal. `WholeModels` keeps the catalog's projector column and opens
-  the same editor in a window. The deploy inspector offers the same pickers
+  the same editor in a window. The model table keeps a multipart GGUF as one
+  logical row and expands it into its physical `multipart_parts`, showing each
+  one-based part number, full path and byte size with an individual delete
+  action. The Image tab lists discovered image-model files; the separate
+  `Vision (mmproj)` and `MTP drafts` tabs list the local catalog's `sidecars`
+  by kind, including path, GGUF metadata, size and individual deletion. Delete
+  confirmations warn when a file is part of the currently served model or is
+  the active projector/draft. The deploy inspector offers the same pickers
   (head projector, tail MTP draft) prefilled from the link, and says whether
   the target already has the file or will copy it. With a plugin's inference
   service, the draft picker only shows for a model of its

@@ -1686,14 +1686,23 @@ models.imageEmptyTitle,No image models,Nenhum modelo de imagem
 models.imageUnreadable,"Unreadable: {error}","Ilegível: {error}"
 models.kindImage,Image,Imagem
 models.kindLlm,LLM (GGUF),LLM (GGUF)
+models.kindMtp,MTP drafts,Rascunhos MTP
 models.layers,Layers,Camadas
 models.localSlice,Slicing is local: each machine extracts its own range from its own GGUF copy. No weights travel over the network.,Fatiar é local: cada máquina extrai a própria faixa da própria cópia do GGUF. Nenhum peso trafega pela rede.
 models.machineCount,"{count}{count, plural, =1 { model on this machine} other { models on this machine}}","{count}{count, plural, =1 { modelo nesta máquina} other { modelos nesta máquina}}"
+models.multipartFiles,"{count}{count, plural, =1 { physical file in this multipart model} other { physical files in this multipart model}}","{count}{count, plural, =1 { arquivo físico neste modelo multipart} other { arquivos físicos neste modelo multipart}}"
+models.multipartPart,{index} of {count},{index} de {count}
 models.mmproj,Vision (mmproj),Visão (mmproj)
 models.mmprojNone,No projector,Sem projetor
 models.quant,Quantisation,Quantização
 models.rescan,Scan again,Varrer de novo
 models.scannedFolders,Scanned folders,Pastas varridas
+models.sidecarArchitecture,Architecture,Arquitetura
+models.sidecarDimension,Embedding/projection width,Largura do embedding/projeção
+models.sidecarEmptyMmprojDetail,No vision-projector GGUF files were found in the catalogued folders.,A varredura não encontrou GGUFs de projetor de visão nas pastas catalogadas.
+models.sidecarEmptyMmprojTitle,No vision projector files,Nenhum arquivo de projetor de visão
+models.sidecarEmptyMtpDetail,No MTP draft GGUF files were found in the catalogued folders.,A varredura não encontrou GGUFs de rascunho MTP nas pastas catalogadas.
+models.sidecarEmptyMtpTitle,No MTP draft files,Nenhum arquivo de rascunho MTP
 models.send,Send,Enviar
 models.sendAria,Send {name},Enviar {name}
 models.size,Size,Tamanho

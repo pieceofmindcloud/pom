@@ -1033,23 +1033,17 @@ pub(super) async fn delete_model(
         .unwrap_or(0);
     let mut warnings = Vec::new();
 
-    // Serving now: deleting takes the model offline without anything on the
-    // screen saying so, and the node keeps announcing coverage until the next
-    // request breaks.
+    // Serving now: deleting the model, one of its multipart files or one of
+    // its active sidecars must never be silent.
     if let Some(cfg) = state.runtime.config().await {
-        if std::path::Path::new(&cfg.model_path)
-            .canonicalize()
-            .map(|p| p == path)
-            .unwrap_or(false)
-        {
-            warnings.push(json!({
-                "kind": "serving",
-                "message": format!(
-                    "this node is serving layers {}-{} of this file; deleting takes the model offline",
-                    cfg.start_layer, cfg.end_layer
-                ),
-            }));
-        }
+        warnings.extend(active_resource_warnings(
+            &cfg.model_path,
+            cfg.mmproj_path.as_deref(),
+            cfg.mtp_draft_path.as_deref(),
+            cfg.start_layer,
+            cfg.end_layer,
+            &path,
+        ));
     }
 
     // In transit: deleting from under a transfer in progress.
@@ -1100,6 +1094,71 @@ pub(super) async fn delete_model(
     Json(json!({ "deleted": true, "path": target, "freed_bytes": size })).into_response()
 }
 
+fn active_resource_warnings(
+    model_path: &str,
+    mmproj_path: Option<&str>,
+    mtp_draft_path: Option<&str>,
+    start_layer: u32,
+    end_layer: u32,
+    target: &std::path::Path,
+) -> Vec<serde_json::Value> {
+    let mut warnings = Vec::new();
+    if active_multipart_file(model_path, target) {
+        warnings.push(json!({
+            "kind": "serving",
+            "message": format!(
+                "this node is serving layers {start_layer}-{end_layer} from this model; deleting the file takes the model offline"
+            ),
+        }));
+    }
+    if mmproj_path.is_some_and(|active| canonical_file_matches(active, target)) {
+        warnings.push(json!({
+            "kind": "serving",
+            "message": "this node is using this file as its active vision projector; deleting it disables image input",
+        }));
+    }
+    if mtp_draft_path.is_some_and(|active| canonical_file_matches(active, target)) {
+        warnings.push(json!({
+            "kind": "serving",
+            "message": "this node is using this file as its active MTP draft; deleting it disables this draft",
+        }));
+    }
+    warnings
+}
+
+fn canonical_file_matches(candidate: &str, target: &std::path::Path) -> bool {
+    std::path::Path::new(candidate)
+        .canonicalize()
+        .map(|candidate| candidate == target)
+        .unwrap_or(false)
+}
+
+/// Match any physical source file, not only the first file selected in the
+/// runtime configuration. `declared_split_count` reads only the GGUF header;
+/// the source maps the parts without loading their weights.
+fn active_multipart_file(model_path: &str, target: &std::path::Path) -> bool {
+    if canonical_file_matches(model_path, target) {
+        return true;
+    }
+    if !crate::multipart::declared_split_count(std::path::Path::new(model_path))
+        .ok()
+        .flatten()
+        .is_some_and(|count| count > 1)
+    {
+        return false;
+    }
+    crate::multipart::GgufSource::open(std::path::Path::new(model_path))
+        .map(|source| {
+            source.parts().iter().any(|part| {
+                part.path
+                    .canonicalize()
+                    .map(|part| part == target)
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
 /// What the Full models screen may delete: a GGUF, or a file with an image
 /// model extension inside one of the whole-model folders. The folder rule
 /// keeps a generic extension like `.bin` from reaching any file on disk.
@@ -1148,6 +1207,43 @@ pub(super) type UiQuery = Query<HashMap<String, String>>;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deleting_an_active_projector_or_mtp_draft_returns_a_serving_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let projector = dir.path().join("mmproj.gguf");
+        let draft = dir.path().join("mtp.gguf");
+        std::fs::write(&projector, b"projector").unwrap();
+        std::fs::write(&draft, b"draft").unwrap();
+
+        let projector_warnings = active_resource_warnings(
+            "/models/model.gguf",
+            Some(projector.to_str().unwrap()),
+            None,
+            0,
+            32,
+            &projector,
+        );
+        assert_eq!(projector_warnings.len(), 1);
+        assert!(projector_warnings[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("active vision projector"));
+
+        let draft_warnings = active_resource_warnings(
+            "/models/model.gguf",
+            None,
+            Some(draft.to_str().unwrap()),
+            0,
+            32,
+            &draft,
+        );
+        assert_eq!(draft_warnings.len(), 1);
+        assert!(draft_warnings[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("active MTP draft"));
+    }
 
     #[test]
     fn setup_percentages_stay_inside_the_operator_range() {

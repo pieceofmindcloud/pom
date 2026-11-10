@@ -140,8 +140,11 @@ boundary.
   `mod.rs`, `routes/` (common, infer, node and admin), `catalog.rs`, `cluster.rs`, `params.rs`, `jobs.rs`,
   `jobs_apply.rs`, `slicing.rs`, `lifecycle.rs`, `setup.rs`, `trust.rs` and test fragments:
   catalog, cluster view, slicing, apply/launch, merge, jobs, release, leave,
-  storage paths, thermal policy (`GET/POST /api/ui/thermal`), local auto-discovery
-  preference (`GET/POST /api/ui/network/auto-discovery`), cluster process
+  storage paths, model-file deletion (`POST /api/ui/models/delete`: only
+  catalog-eligible GGUF/image files; 409 warnings cover active model/multipart
+  parts, projector/draft sidecars, in-flight transfers and Ollama blobs), thermal
+  policy (`GET/POST /api/ui/thermal`), local auto-discovery preference
+  (`GET/POST /api/ui/network/auto-discovery`), cluster process
   logs (`GET /api/ui/cluster-logs` answered by the logs plugin, 403
   `logs_plugin_required` without it; `POST /api/ui/network/logs`, any
   admin - a secondary forwards it to the principal, signed - refuses turning collection on unless the logs plugin is active on that

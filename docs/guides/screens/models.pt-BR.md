@@ -8,7 +8,7 @@ order: 60
 ---
 
 :::lead
-Modelos lista cada arquivo GGUF inteiro que esta máquina achou nas pastas de modelos: um repositório do Ollama, uma biblioteca do LM Studio ou uma pasta comum de GGUF. Daqui um modelo é apagado (ou, no modo de desenvolvimento, cortado em partes tensor-parallel). Para baixar um, use Procurar Modelos, a tela do plugin do Hugging Face. A aba **Imagem** lista os arquivos de modelos de imagem das mesmas pastas (modelos de difusão, text encoders, VAEs e o resto do que o ComfyUI carrega).
+Modelos lista cada modelo GGUF inteiro encontrado nas pastas desta máquina: um repositório do Ollama, uma biblioteca do LM Studio ou uma pasta comum de GGUF. Modelos multipart continuam em uma única entrada, com cada parte física (por exemplo, `0001-of-0004`) e seu tamanho listados abaixo; cada parte pode ser apagada individualmente. As abas **Imagem**, **Visão (mmproj)** e **Rascunhos MTP** listam os arquivos locais e permitem apagá-los individualmente. Apagar um arquivo usado pelo modelo em execução ou como projetor/rascunho ativo mostra um aviso de interrupção. Para baixar um modelo, use Procurar Modelos, a tela do plugin do Hugging Face.
 :::
 
 ![Modelos: uma linha por modelo, com origem, camadas, arquitetura, projetor de visão, tamanho e ações.](../images/pt-BR/models.webp)
@@ -20,12 +20,12 @@ Vídeo: as telas de Modelos - modelos inteiros, fatias e transferências - expli
 :::cards
 ### Camadas e arquitetura
 Lidas do cabeçalho do GGUF, sem carregar o modelo. O número de camadas é o que uma implantação divide em faixas.
-### Visão (mmproj)
-O projetor de visão que pertence ao modelo, quando existe. **Visão e MTP** liga a este modelo um projetor ou um rascunho MTP encontrado em qualquer máquina da rede.
+### Arquivos de visão e MTP
+As abas **Visão (mmproj)** e **Rascunhos MTP** mostram arquivos locais, caminhos, metadados e tamanhos. O projetor de visão associado a um modelo também aparece em sua linha. **Visão e MTP** liga a este modelo um projetor ou rascunho MTP encontrado em qualquer máquina da rede.
 ### Fatiar
 Só no modo de desenvolvimento: abre Partes tensor-parallel com este arquivo escolhido. Uma implantação em pipeline não precisa fatiar.
 ### Modelos de imagem
-A aba **Imagem** lista os arquivos `.safetensors` das mesmas pastas com o que cada um é: modelo de difusão, text encoder, VAE, checkpoint, LoRA, ControlNet, CLIP Vision ou upscaler, lido do cabeçalho do próprio arquivo, nunca do nome. Família e tipo de dado vêm do mesmo cabeçalho. Esses arquivos são apagados daqui; não são fatiados.
+A aba **Imagem** lista os arquivos de imagem das mesmas pastas com o que cada um é: modelo de difusão, text encoder, VAE, checkpoint, LoRA, ControlNet, CLIP Vision ou upscaler, lido do cabeçalho do próprio arquivo, nunca do nome. Família e tipo de dado vêm do mesmo cabeçalho. Esses arquivos são apagados daqui; não são fatiados.
 :::
 
 :::note De onde vêm estes arquivos

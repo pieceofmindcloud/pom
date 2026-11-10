@@ -799,11 +799,19 @@ Per-file list:
   the screen only renders it; the cell's "Vision and MTP" button opens the
   `SidecarLinkEditor` in a window. `ScannedRoots`
   lists the scanned folders and per-folder file counts. Full-bleed shell.
-  A `Tabs` pair under the header switches between "LLM (GGUF)" and "Image"
-  (`?kind=image` keeps the choice across a reload); the Image tab lists
-  `CatalogResponse.image_files` (`ImageModelRow`: name, path, source,
-  translated category, family, dtype, size, delete only - image files are not
-  sliced, and Send stays GGUF-only until the transfer gate accepts them).
+  The `Tabs` under the header switch among "LLM (GGUF)", "Image", "Vision
+  (mmproj)" and "MTP drafts"; `?kind=` preserves the choice across reloads.
+  Multipart LLMs keep one logical model row, with a nested card listing each
+  physical `multipart_parts` file, its one-based `0001-of-0004` index, path and
+  byte size; each part is deleted independently through the same confirmation
+  and warning flow as whole models. The sidecar tabs filter
+  `CatalogResponse.sidecars` by kind and show the filename, full path, metadata,
+  size and per-file delete action. Deleting a currently serving multipart part,
+  active mmproj or active MTP file warns that it interrupts that resource.
+  The Image tab lists `CatalogResponse.image_files` (`ImageModelRow`: name,
+  path, source, translated category, family, dtype, size, delete only - image
+  files are not sliced, and Send stays GGUF-only until the transfer gate
+  accepts them).
 - Searching Hugging Face, the downloads and the token are not here: they are
   the Search Models screen of the Hugging Face plugin (`pom-plugin-hugging-face`,
   route `/huggingface/models`), which calls the node's
